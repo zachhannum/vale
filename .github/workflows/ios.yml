@@ -129,7 +129,7 @@ jobs:
           expect CFBundleShortVersionString "${{ steps.version.outputs.version }}"
           expect CFBundleVersion "${{ steps.version.outputs.build }}"
           expect ITSAppUsesNonExemptEncryption false
-          expect CFBundleIconName
+          expect CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName AppIcon
           echo "bundle_id=$(read_key CFBundleIdentifier)" >> "$GITHUB_OUTPUT"
 
       - name: Write the comment
