@@ -1,4 +1,4 @@
-//! Milestone 1 demo for `vale-labeler`.
+//! Demo for `vale-labeler`.
 
 pub mod data;
 pub mod project;
