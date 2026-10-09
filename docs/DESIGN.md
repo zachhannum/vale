@@ -370,7 +370,7 @@ The labeling prototype came first, and it is done. The work after it has eleven 
 
 | Phase | Name | At the end of the phase |
 | --- | --- | --- |
-| 0 | iPad test loop and CI | Each PR arrives on the iPad through SideStore, and CI builds all four platforms. |
+| 0 | iPad test loop and CI | Each PR arrives on the iPad through TestFlight, and CI builds all four platforms. |
 | 1 | Globe and heightmap painting | You paint a heightmap on the globe with Apple Pencil or a pen tablet, in the real app. |
 | 2 | Projects and storage | The world that you paint is a project file that you can close, open again, and move between devices. |
 | 3 | Toolbox and freehand lines | The toolbox turns the heightmap into topography polygons, and you draw rivers and borders as lines. |
