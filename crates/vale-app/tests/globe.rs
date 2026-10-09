@@ -658,3 +658,141 @@ fn a_fast_stroke_of_a_small_brush_does_not_fall_behind() {
     assert!(globe.map.sample(place(&h, c + Vec2::new(100.0, 0.0))) > base);
     assert_eq!(globe.map.sample(place(&h, c + Vec2::new(0.0, 40.0))), base);
 }
+
+/// A pen stroke across the middle of the globe, with half of the full force.
+fn pen_stroke(h: &mut Harness<'static, AppState>) {
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 0.0));
+    first_touch(h, egui::TouchPhase::Start, from, Some(0.5));
+    h.step();
+    for i in 1..=8 {
+        let pos = from.lerp(to, i as f32 / 8.0);
+        first_touch(h, egui::TouchPhase::Move, pos, Some(0.5));
+        h.step();
+    }
+    first_touch(h, egui::TouchPhase::End, to, Some(0.5));
+    h.step();
+}
+
+#[test]
+fn the_four_modes_work_with_a_mouse_and_with_a_pen() {
+    use vale_terrain::{Mode, meters_to_level};
+    let _gpu = one_gpu_test();
+    for pen in [false, true] {
+        let mut h = gpu_harness();
+        h.state_mut().globe.tool = Tool::Brush;
+        h.run_steps(1);
+        let base = h.state().globe.map.base();
+        let under = place(&h, h.state().globe.rect.center());
+        let level = meters_to_level(3000.0);
+        h.state_mut().globe.brush.flatten_level = Some(level);
+        let mut stroke = |mode: Mode| {
+            h.state_mut().globe.brush.mode = mode;
+            match pen {
+                true => pen_stroke(&mut h),
+                false => drop(mouse_stroke(&mut h)),
+            }
+            settle(&mut h);
+            h.state().globe.map.sample(under)
+        };
+        let raised = stroke(Mode::Raise);
+        assert!(raised > base, "pen {pen}: {raised}");
+        // The ground next to the stroke is lower, so the middle goes down.
+        let smooth = stroke(Mode::Smooth);
+        assert!(smooth < raised && smooth > base, "pen {pen}: {smooth}");
+        let lowered = stroke(Mode::Lower);
+        assert!(lowered < smooth, "pen {pen}: {lowered}");
+        let flat = stroke(Mode::Flatten);
+        assert!(flat > lowered && flat <= level, "pen {pen}: {flat}");
+        assert_eq!(h.state().globe.stats.last().unwrap().id, 4);
+    }
+}
+
+#[test]
+fn a_press_on_the_globe_picks_the_flatten_level() {
+    use vale_terrain::Mode;
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(1);
+    let base = h.state().globe.map.base();
+    let c = mouse_stroke(&mut h);
+    settle(&mut h);
+    let under = place(&h, c);
+    let raised = h.state().globe.map.sample(under);
+    assert!(raised > base);
+
+    // A mouse press picks the level, and it does not paint.
+    h.state_mut().globe.brush.mode = Mode::Flatten;
+    h.state_mut().globe.pick_level = true;
+    h.run_steps(1);
+    button(&mut h, egui::PointerButton::Primary, c, true);
+    h.step();
+    button(&mut h, egui::PointerButton::Primary, c, false);
+    h.run_steps(2);
+    let globe = &h.state().globe;
+    assert_eq!(globe.brush.flatten_level, Some(raised));
+    assert!(!globe.pick_level && !globe.busy());
+    assert_eq!(globe.stats.last().unwrap().id, 1);
+    assert_eq!(globe.map.sample(under), raised);
+
+    // A pen picks the level of the ground beside the stroke.
+    let beside = c + Vec2::new(0.0, 90.0);
+    h.state_mut().globe.pick_level = true;
+    first_touch(&mut h, egui::TouchPhase::Start, beside, Some(0.3));
+    h.step();
+    first_touch(&mut h, egui::TouchPhase::End, beside, Some(0.3));
+    h.run_steps(2);
+    let globe = &h.state().globe;
+    assert_eq!(globe.brush.flatten_level, Some(base));
+    assert!(!globe.pick_level);
+    assert_eq!(globe.stats.last().unwrap().id, 1);
+
+    // The next stroke moves the ground to that level.
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    let flat = h.state().globe.map.sample(under);
+    assert!(flat < raised && flat >= base, "{flat}");
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 2);
+    std::fs::create_dir_all("../../target/app").unwrap();
+    let frame = h.render().unwrap();
+    frame.save("../../target/app/test-brush-panel.png").unwrap();
+}
+
+#[test]
+fn the_brush_panel_locks_the_ground_size_of_the_brush() {
+    let mut h = harness();
+    assert!(h.query_by_label("Lock size").is_none());
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    for label in ["Raise", "Lower", "Smooth", "Flatten", "Radius", "Hardness"] {
+        assert!(h.query_all_by_label(label).next().is_some(), "{label}");
+    }
+    assert!(h.query_by_label("Pick from globe").is_none());
+    h.get_by_label("Flatten").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Pick from globe").is_some());
+
+    // Without the lock, the brush covers half of the ground at twice the zoom.
+    let world_km = h.state().doc.project.world.radius_km;
+    let km = |h: &Harness<'static, AppState>| {
+        let globe = &h.state().globe;
+        globe.brush.radius_km(globe.radius(), world_km)
+    };
+    let before = km(&h);
+    assert!((before - 36.0 / h.state().globe.radius() * world_km).abs() < 1e-6);
+    h.state_mut().globe.view.zoom = 2.0;
+    h.run_steps(1);
+    assert!((km(&h) - before / 2.0).abs() < 1e-6);
+
+    h.get_by_label("Lock size").click();
+    h.run_steps(2);
+    assert!(h.state().globe.brush.lock.is_some());
+    let locked = km(&h);
+    assert!((locked - before / 2.0).abs() < 1e-6);
+    for zoom in [0.5, 1.0, 8.0, 40.0] {
+        h.state_mut().globe.view.zoom = zoom;
+        h.run_steps(1);
+        assert!((km(&h) - locked).abs() < 1e-6, "zoom {zoom}");
+    }
+}

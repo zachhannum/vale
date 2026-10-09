@@ -28,6 +28,9 @@ pub struct BrushSettings {
     pub mode: Mode,
     /// The radius on screen, in points.
     pub size_points: f32,
+    /// The locked radius on the sphere, in radians. `None`: the radius
+    /// follows the zoom, and `size_points` sets it.
+    pub lock: Option<f64>,
     pub hardness: f64,
     /// The height that one pass adds at full pressure, in meters, roughly.
     pub strength_m: f64,
@@ -41,6 +44,7 @@ impl Default for BrushSettings {
         BrushSettings {
             mode: Mode::Raise,
             size_points: 36.0,
+            lock: None,
             hardness: 0.3,
             strength_m: 1500.0,
             flatten_level: None,
@@ -48,8 +52,77 @@ impl Default for BrushSettings {
     }
 }
 
-/// The brush radius as an angle on the sphere, in radians. `globe_radius` is
-/// the radius of the globe on screen, in points.
+/// The limits of a locked radius, in radians.
+const LOCK_RADIUS: std::ops::RangeInclusive<f64> = 1e-4..=MAX_BRUSH_RADIUS;
+
+impl BrushSettings {
+    /// The brush radius as an angle on the sphere, in radians. `globe_radius`
+    /// is the radius of the globe on screen, in points.
+    pub fn radius(&self, globe_radius: f64) -> f64 {
+        match self.lock {
+            Some(angle) => angle.clamp(*LOCK_RADIUS.start(), *LOCK_RADIUS.end()),
+            None => brush_radius(self.size_points, globe_radius),
+        }
+    }
+
+    /// The brush radius on screen, in points.
+    pub fn points(&self, globe_radius: f64) -> f32 {
+        match self.lock {
+            Some(_) => (self.radius(globe_radius) * globe_radius) as f32,
+            None => self.size_points,
+        }
+    }
+
+    /// Locks the radius on the sphere, or lets it follow the zoom again. The
+    /// brush keeps its size at this zoom.
+    pub fn set_lock(&mut self, lock: bool, globe_radius: f64) {
+        if lock == self.lock.is_some() {
+            return;
+        }
+        if !lock {
+            let points = self.points(globe_radius);
+            self.size_points = points.clamp(*SIZE_POINTS.start(), *SIZE_POINTS.end());
+        }
+        self.lock = lock.then(|| self.radius(globe_radius));
+    }
+
+    /// The brush radius on the ground, in kilometers. `world_km` is the
+    /// radius of the world.
+    pub fn radius_km(&self, globe_radius: f64, world_km: f64) -> f64 {
+        self.radius(globe_radius) * world_km
+    }
+
+    /// The limits of `radius_km` at this zoom.
+    pub fn radius_km_range(
+        &self,
+        globe_radius: f64,
+        world_km: f64,
+    ) -> std::ops::RangeInclusive<f64> {
+        let (min, max) = match self.lock {
+            Some(_) => (*LOCK_RADIUS.start(), *LOCK_RADIUS.end()),
+            None => (
+                brush_radius(*SIZE_POINTS.start(), globe_radius),
+                brush_radius(*SIZE_POINTS.end(), globe_radius),
+            ),
+        };
+        min * world_km..=max * world_km
+    }
+
+    /// Sets the brush radius on the ground, in kilometers.
+    pub fn set_radius_km(&mut self, km: f64, globe_radius: f64, world_km: f64) {
+        let angle = km / world_km;
+        match &mut self.lock {
+            Some(lock) => *lock = angle.clamp(*LOCK_RADIUS.start(), *LOCK_RADIUS.end()),
+            None => {
+                let points = (angle * globe_radius) as f32;
+                self.size_points = points.clamp(*SIZE_POINTS.start(), *SIZE_POINTS.end());
+            }
+        }
+    }
+}
+
+/// The radius of a brush that follows the zoom, as an angle on the sphere in
+/// radians. `globe_radius` is the radius of the globe on screen, in points.
 pub fn brush_radius(size_points: f32, globe_radius: f64) -> f64 {
     (f64::from(size_points) / globe_radius).clamp(1e-4, MAX_BRUSH_RADIUS)
 }
@@ -308,6 +381,51 @@ mod tests {
         assert_eq!(brush_radius(0.0, 360.0), 1e-4);
         assert_eq!(pen_flow(0.25), 0.5);
         assert_eq!(pen_flow(3.0), 1.0);
+    }
+
+    #[test]
+    fn the_radius_in_kilometers_uses_the_world_radius() {
+        let mut brush = BrushSettings::default();
+        // 36 points on a globe of 360 points are 0.1 radians.
+        assert!((brush.radius_km(360.0, 6371.0) - 637.1).abs() < 1e-9);
+        assert!((brush.radius_km(360.0, 1000.0) - 100.0).abs() < 1e-9);
+        brush.set_radius_km(50.0, 360.0, 1000.0);
+        assert!((brush.size_points - 18.0).abs() < 1e-4);
+        assert!((brush.radius_km(360.0, 1000.0) - 50.0).abs() < 1e-3);
+        let range = brush.radius_km_range(360.0, 1000.0);
+        assert!((range.start() - 4.0 / 0.36).abs() < 1e-9);
+        assert_eq!(*range.end(), MAX_BRUSH_RADIUS * 1000.0);
+        brush.set_radius_km(1.0, 360.0, 1000.0);
+        assert_eq!(brush.size_points, 4.0);
+
+        brush.set_lock(true, 360.0);
+        brush.set_radius_km(20.0, 360.0, 1000.0);
+        assert_eq!(brush.lock, Some(0.02));
+        assert_eq!(brush.radius_km(720.0, 500.0), 10.0);
+        assert_eq!(brush.radius_km_range(720.0, 500.0), 0.05..=150.0);
+    }
+
+    #[test]
+    fn the_size_lock_keeps_the_ground_size_at_each_zoom() {
+        let mut brush = BrushSettings::default();
+        // Without the lock, the size on screen stays, and the ground size
+        // follows the zoom.
+        assert!((brush.radius(360.0) - 0.1).abs() < 1e-9);
+        assert!((brush.radius(720.0) - 0.05).abs() < 1e-9);
+        assert_eq!(brush.points(720.0), 36.0);
+
+        brush.set_lock(true, 360.0);
+        for globe_radius in [180.0, 360.0, 720.0, 14400.0] {
+            assert!((brush.radius(globe_radius) - 0.1).abs() < 1e-9);
+            assert!((brush.radius_km(globe_radius, 6371.0) - 637.1).abs() < 1e-6);
+        }
+        assert!((brush.points(720.0) - 72.0).abs() < 1e-4);
+
+        // The brush keeps its size on screen when the lock goes off.
+        brush.set_lock(false, 720.0);
+        assert_eq!(brush.lock, None);
+        assert!((brush.size_points - 72.0).abs() < 1e-4);
+        assert!((brush.radius(720.0) - 0.1).abs() < 1e-6);
     }
 
     fn plan(map: &Heightmap, radius: f64) -> StampPlan {

@@ -4,7 +4,8 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use super::{Action, AppState, ExportFormat, Workspace};
-use crate::globe::brush::SIZE_POINTS;
+use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
+
 use crate::globe::{Tool, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
@@ -68,21 +69,7 @@ pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.weak(stats::DELAY_NOTE);
                 ui.separator();
 
-                // Temporary controls, until the app has the brush controls and
-                // the undo command.
-                ui.horizontal_wrapped(|ui| {
-                    use vale_terrain::Mode;
-                    for (mode, name) in [
-                        (Mode::Raise, "Raise"),
-                        (Mode::Lower, "Lower"),
-                        (Mode::Smooth, "Smooth"),
-                        (Mode::Flatten, "Flatten"),
-                    ] {
-                        ui.radio_value(&mut globe.brush.mode, mode, name);
-                    }
-                });
-                ui.add(egui::Slider::new(&mut globe.brush.size_points, SIZE_POINTS).text("Size"));
-                ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
+                // Temporary controls, until the app has the undo command.
                 ui.horizontal(|ui| {
                     let undo = ui.add_enabled(globe.can_undo(), egui::Button::new("Undo"));
                     if undo.clicked() {
@@ -100,6 +87,96 @@ pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
                 }
             });
         });
+}
+
+/// The controls of the brush. The panel is open in the brush tool.
+pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
+    if state.globe.tool != Tool::Brush {
+        state.globe.pick_level = false;
+        return;
+    }
+    egui::Panel::left("brush")
+        .default_size(240.0)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("Brush");
+                brush_controls(ui, state);
+            });
+        });
+}
+
+fn brush_controls(ui: &mut egui::Ui, state: &mut AppState) {
+    let world_km = state.doc.project.world.radius_km;
+    let globe = &mut state.globe;
+    let globe_radius = globe.radius();
+    ui.horizontal_wrapped(|ui| {
+        for (mode, name) in [
+            (Mode::Raise, "Raise"),
+            (Mode::Lower, "Lower"),
+            (Mode::Smooth, "Smooth"),
+            (Mode::Flatten, "Flatten"),
+        ] {
+            ui.selectable_value(&mut globe.brush.mode, mode, name);
+        }
+    });
+    ui.add_space(6.0);
+
+    let mut km = globe.brush.radius_km(globe_radius, world_km);
+    let range = globe.brush.radius_km_range(globe_radius, world_km);
+    let slider = egui::Slider::new(&mut km, range)
+        .logarithmic(true)
+        .custom_formatter(|km, _| three_significant(km))
+        .suffix(" km")
+        .text("Radius");
+    if ui.add(slider).changed() {
+        globe.brush.set_radius_km(km, globe_radius, world_km);
+    }
+    let mut lock = globe.brush.lock.is_some();
+    let lock_box = ui.checkbox(&mut lock, "Lock size");
+    lock_box.on_hover_text("The brush keeps its size on the ground when you zoom.");
+    globe.brush.set_lock(lock, globe_radius);
+
+    ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
+    let strength = egui::Slider::new(&mut globe.brush.strength_m, 50.0..=6000.0)
+        .logarithmic(true)
+        .fixed_decimals(0)
+        .suffix(" m")
+        .text("Strength");
+    ui.add(strength);
+
+    if globe.brush.mode != Mode::Flatten {
+        globe.pick_level = false;
+        return;
+    }
+    ui.add_space(6.0);
+    ui.strong("Flatten level");
+    match globe.brush.flatten_level {
+        Some(level) => {
+            ui.horizontal(|ui| {
+                let mut meters = level_to_meters(level);
+                let value = egui::DragValue::new(&mut meters)
+                    .speed(10.0)
+                    .range(ELEV_MIN..=ELEV_MAX)
+                    .fixed_decimals(0)
+                    .suffix(" m");
+                if ui.add(value).changed() {
+                    globe.brush.flatten_level = Some(meters_to_level(meters));
+                }
+                if ui.button("Use stroke start").clicked() {
+                    globe.brush.flatten_level = None;
+                }
+            });
+        }
+        None => {
+            ui.label("The level under the start of the stroke");
+        }
+    }
+    let pick = egui::Button::new("Pick from globe").selected(globe.pick_level);
+    let pick = ui.add(pick);
+    if pick.clicked() {
+        globe.pick_level = !globe.pick_level;
+    }
+    pick.on_hover_text("The next press on the globe sets the level.");
 }
 
 pub fn left(ui: &mut egui::Ui, state: &mut AppState) {

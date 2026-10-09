@@ -88,6 +88,7 @@ impl StrokeTest {
         BrushSettings {
             mode: part.mode,
             size_points: part.size_points,
+            lock: None,
             ..self.saved
         }
     }
