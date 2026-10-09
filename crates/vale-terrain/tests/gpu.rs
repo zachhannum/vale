@@ -3,7 +3,9 @@
 use std::sync::{OnceLock, mpsc};
 
 use vale_terrain::math::{V3, lonlat_to_dir};
-use vale_terrain::{FACES, GpuHeightmap, Heightmap, Mode, STAMP_SLOTS, Stamp, TexelRect};
+use vale_terrain::{
+    FACES, GROUP_STAMPS, GpuHeightmap, Heightmap, Mode, STAMP_SLOTS, Stamp, StampPlan, TexelRect,
+};
 
 /// The largest difference between a GPU level and a CPU level after raise,
 /// lower, and flatten stamps, in 16-bit steps. The shader works with 32-bit
@@ -17,7 +19,7 @@ const SMOOTH_TOLERANCE: u16 = 2;
 /// The same for a stroke of raise or lower stamps. Each stamp rounds its
 /// result, and the next stamp adds to it, so the differences of the stamps
 /// that touch one texel can add. In the strokes of this file, up to 90
-/// stamps touch one texel, and the largest difference is 2.
+/// stamps touch one texel, and the largest difference is 1.
 const ADD_STROKE_TOLERANCE: u16 = 3;
 
 struct Gpu {
@@ -435,4 +437,231 @@ fn smooth_leaves_no_seam_at_a_cube_corner() {
     // Faces 0, 2, and 4 meet at this corner. Each line is 6 texels from it.
     let corner = lonlat_to_dir(45.0, 35.264);
     smooth_and_check([20000, 40000, 60000], corner, 249, &[0, 2, 4], false);
+}
+
+/// The result of the same stamps in groups and one at a time.
+struct GroupRun {
+    /// The GPU texels of each face after the stamps in groups.
+    faces: Vec<Vec<u16>>,
+    /// The number of stamps in each group.
+    groups: Vec<usize>,
+    /// The number of times that the batch was full.
+    full: usize,
+    /// The largest difference between a GPU texel and a CPU texel.
+    difference: u16,
+}
+
+/// Applies the stamps to `cpu`, to a GPU copy in groups, and to a GPU copy
+/// one at a time. The two GPU results must be the same.
+fn run_groups(cpu: &mut Heightmap, stamps: &[Stamp]) -> GroupRun {
+    let gpu = gpu();
+    let grouped = gpu.copy_of(cpu);
+    let single = gpu.copy_of(cpu);
+    let plans: Vec<StampPlan> = stamps.iter().map(|stamp| cpu.stamp_plan(stamp)).collect();
+
+    let (mut groups, mut full) = (Vec::new(), 0);
+    let mut enc = gpu.encoder();
+    let mut rest = &plans[..];
+    while !rest.is_empty() {
+        let mut count = grouped.stamp_group(&gpu.queue, &mut enc, rest);
+        if count == 0 {
+            gpu.submit(std::mem::replace(&mut enc, gpu.encoder()));
+            grouped.begin_batch();
+            full += 1;
+            count = grouped.stamp_group(&gpu.queue, &mut enc, rest);
+            assert!(count > 0, "an empty batch takes a group");
+        }
+        groups.push(count);
+        rest = &rest[count..];
+    }
+    gpu.submit(enc);
+    grouped.begin_batch();
+
+    let mut enc = gpu.encoder();
+    for plan in &plans {
+        if !single.stamp(&gpu.queue, &mut enc, plan) {
+            gpu.submit(std::mem::replace(&mut enc, gpu.encoder()));
+            single.begin_batch();
+            assert!(single.stamp(&gpu.queue, &mut enc, plan));
+        }
+    }
+    gpu.submit(enc);
+    single.begin_batch();
+
+    for stamp in stamps {
+        cpu.stamp(stamp);
+    }
+    let faces = gpu.read_all(&grouped);
+    let one_at_a_time = gpu.read_all(&single);
+    for face in 0..FACES {
+        assert!(
+            faces[face] == one_at_a_time[face],
+            "face {face}: the groups and the single stamps give different texels"
+        );
+    }
+    GroupRun {
+        difference: max_difference(cpu, &faces),
+        faces,
+        groups,
+        full,
+    }
+}
+
+/// A stamp with a small effect, so that many of them on one texel stay
+/// inside the range of the levels.
+fn light(lon: f64, lat: f64, radius: f64, mode: Mode) -> Stamp {
+    Stamp {
+        flow: 0.1,
+        strength: 1500.0,
+        ..stamp(lonlat_to_dir(lon, lat), radius, 0.5, mode)
+    }
+}
+
+/// A stroke of `count` stamps along a line of longitude and latitude.
+fn stroke(from: (f64, f64), to: (f64, f64), count: usize, radius: f64, mode: Mode) -> Vec<Stamp> {
+    (0..count)
+        .map(|i| {
+            let t = i as f64 / count as f64;
+            let lon = from.0 + (to.0 - from.0) * t;
+            let lat = from.1 + (to.1 - from.1) * t;
+            light(lon, lat, radius, mode)
+        })
+        .collect()
+}
+
+/// Strokes of small stamps at about 0.1 of the radius apart, across a face
+/// edge and past a cube corner.
+#[test]
+fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
+    let lines = [
+        ("face edge", (31.0, 2.0), (59.0, 5.0)),
+        ("cube corner", (35.0, 25.264), (55.0, 45.264)),
+    ];
+    let modes = [Mode::Raise, Mode::Lower, Mode::Flatten];
+    let mut worst = [0; 3];
+    for (m, mode) in modes.into_iter().enumerate() {
+        for (place, from, to) in lines {
+            let stamps = stroke(from, to, 240, 0.02, mode);
+            let mut cpu = hills(256);
+            let before: Vec<Vec<u16>> = (0..FACES)
+                .map(|face| {
+                    let mut old = Vec::new();
+                    cpu.read_rect(face, full(256), &mut old);
+                    old
+                })
+                .collect();
+            let GroupRun {
+                faces,
+                groups,
+                difference,
+                ..
+            } = run_groups(&mut cpu, &stamps);
+            assert!(
+                groups.len() <= stamps.len() / GROUP_STAMPS + 2,
+                "{mode:?} stroke at the {place}: the groups are {groups:?}"
+            );
+            let touched = (0..FACES)
+                .filter(|&face| before[face] != faces[face])
+                .count();
+            let expected = if place == "cube corner" { 3 } else { 2 };
+            assert_eq!(touched, expected, "{mode:?} stroke at the {place}");
+            let limit = match mode {
+                Mode::Flatten => TOLERANCE,
+                _ => ADD_STROKE_TOLERANCE,
+            };
+            assert!(
+                difference <= limit,
+                "{mode:?} stroke at the {place}: the difference is {difference}"
+            );
+            worst[m] = worst[m].max(difference);
+        }
+    }
+    eprintln!("stroke in groups, largest difference for {modes:?}: {worst:?}");
+}
+
+#[test]
+fn a_group_has_one_mode_and_no_smooth_stamp() {
+    use Mode::{Flatten, Lower, Raise, Smooth};
+    let modes = [
+        Raise, Raise, Smooth, Smooth, Flatten, Lower, Lower, Lower, Raise, Smooth, Flatten, Flatten,
+    ];
+    let stamps: Vec<Stamp> = modes
+        .into_iter()
+        .enumerate()
+        .map(|(i, mode)| light(44.0 + 0.1 * i as f64, 34.0, 0.05, mode))
+        .collect();
+    let mut cpu = hills(256);
+    let GroupRun {
+        groups, difference, ..
+    } = run_groups(&mut cpu, &stamps);
+    assert_eq!(groups, [2, 1, 1, 1, 3, 1, 1, 2]);
+    assert!(difference <= SMOOTH_TOLERANCE, "{difference}");
+}
+
+#[test]
+fn a_group_has_a_largest_size() {
+    let stamps = vec![light(10.0, 5.0, 0.03, Mode::Raise); GROUP_STAMPS + 8];
+    let mut cpu = hills(256);
+    let GroupRun {
+        groups, difference, ..
+    } = run_groups(&mut cpu, &stamps);
+    assert_eq!(groups, [GROUP_STAMPS, 8]);
+    assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
+}
+
+/// Each stamp at the cube corner takes three passes, and a change of mode
+/// ends a group. The batch is full before the end of the list.
+#[test]
+fn a_full_batch_takes_no_group() {
+    let count = STAMP_SLOTS as usize;
+    let stamps: Vec<Stamp> = (0..count)
+        .map(|i| {
+            let mode = [Mode::Raise, Mode::Lower][i / 2 % 2];
+            light(45.0, 35.264, 0.04, mode)
+        })
+        .collect();
+    let mut cpu = hills(256);
+    let GroupRun {
+        groups,
+        full,
+        difference,
+        ..
+    } = run_groups(&mut cpu, &stamps);
+    assert_eq!(groups, vec![2; count / 2]);
+    // Each group takes 3 of the slots.
+    assert_eq!(full, (count / 2 * 3 - 1) / STAMP_SLOTS as usize);
+    assert!(full > 0);
+    assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
+}
+
+/// Two places on one face. One pass for both would cover the texels between
+/// them.
+#[test]
+fn stamps_far_apart_are_not_one_group() {
+    let stamps: Vec<Stamp> = (0..12)
+        .map(|i| {
+            let lon = if i % 2 == 0 { -30.0 } else { 30.0 };
+            light(lon, 0.0, 0.03, Mode::Raise)
+        })
+        .collect();
+    let mut cpu = hills(256);
+    let GroupRun {
+        groups, difference, ..
+    } = run_groups(&mut cpu, &stamps);
+    assert_eq!(groups, [1; 12]);
+    assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
+
+    // Stamps on two faces are one group, with one pass for each face.
+    let stamps: Vec<Stamp> = (0..12)
+        .map(|i| {
+            let lon = if i % 2 == 0 { 0.0 } else { 90.0 };
+            light(lon, 0.0, 0.03, Mode::Raise)
+        })
+        .collect();
+    let mut cpu = hills(256);
+    let GroupRun {
+        groups, difference, ..
+    } = run_groups(&mut cpu, &stamps);
+    assert_eq!(groups, [12]);
+    assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
 }

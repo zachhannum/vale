@@ -53,7 +53,7 @@ pub struct TexelRect {
 }
 
 impl TexelRect {
-    fn union(self, o: TexelRect) -> TexelRect {
+    pub(crate) fn union(self, o: TexelRect) -> TexelRect {
         TexelRect {
             x0: self.x0.min(o.x0),
             y0: self.y0.min(o.y0),

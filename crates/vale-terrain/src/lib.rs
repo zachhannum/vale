@@ -16,5 +16,5 @@ pub use cube::{
     ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, level_to_meters, meters_to_level, unwarp, warp,
 };
 #[cfg(feature = "gpu")]
-pub use gpu::{GpuHeightmap, Readback, STAMP_SLOTS};
+pub use gpu::{GROUP_STAMPS, GpuHeightmap, Readback, STAMP_SLOTS};
 pub use heightmap::{Heightmap, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, TILE_SIZE, TexelRect};

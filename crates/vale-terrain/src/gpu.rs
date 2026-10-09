@@ -10,9 +10,20 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::cube::FACES;
 use crate::heightmap::{Mode, StampPlan, TexelRect};
 
-/// The number of faces that the stamps of one batch can touch. One stamp
-/// touches three faces at most.
+/// The number of face passes in one batch. One group of stamps takes one pass
+/// for each face that it touches.
 pub const STAMP_SLOTS: u32 = 256;
+
+/// The largest number of stamps in one group.
+pub const GROUP_STAMPS: usize = 32;
+
+/// A group stops before the stamp that makes its rectangle on a face larger
+/// than this number of times the largest stamp rectangle on that face. Each
+/// texel of the group rectangle costs one read, one write, and one rectangle
+/// test for each stamp. A straight run of `GROUP_STAMPS` stamps at 0.12 of the
+/// radius apart covers 3 times one stamp rectangle, and a diagonal run covers
+/// 5.5 times.
+const UNION_LIMIT: usize = 8;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Uint;
 
@@ -27,7 +38,7 @@ const ROW_ALIGN: usize = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
 /// are made here, and the shader works with small differences.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
+struct FaceStamp {
     /// The brush center on this face in texels: the whole part and the rest.
     /// The center can be past the face edge.
     center: [i32; 2],
@@ -36,20 +47,19 @@ struct Uniforms {
     /// angle of each one.
     flat: [f32; 2],
     cos_center: [f32; 2],
+    /// The texels that the stamp can change: x0, y0, x1, y1. The other values
+    /// are valid only if the stamp has a rectangle on this face.
+    rect: [i32; 4],
     radius: f32,
     hardness: f32,
     flow: f32,
     strength: f32,
     level: f32,
-    face: u32,
-    mode: u32,
-    reach: i32,
-    size: i32,
-    pad: u32,
+    pad: [u32; 3],
 }
 
-impl Uniforms {
-    fn new(size: u32, face: usize, plan: &StampPlan) -> Uniforms {
+impl FaceStamp {
+    fn new(size: u32, face: usize, rect: TexelRect, plan: &StampPlan) -> FaceStamp {
         let stamp = &plan.stamp;
         let axis = face / 2;
         let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
@@ -60,27 +70,64 @@ impl Uniforms {
         ];
         let angle = flat.map(f64::atan);
         let texel = angle.map(|t| (t / FRAC_PI_4 + 1.0) * 0.5 * f64::from(size));
-        Uniforms {
+        FaceStamp {
             center: texel.map(|t| t.floor() as i32),
             center_rest: texel.map(|t| (t - t.floor()) as f32),
             flat: flat.map(|a| a as f32),
             cos_center: angle.map(|t| t.cos() as f32),
+            rect: [rect.x0, rect.y0, rect.x1, rect.y1].map(|t| t as i32),
             radius: stamp.radius as f32,
             hardness: stamp.hardness.clamp(0.0, 0.999) as f32,
             flow: stamp.flow as f32,
             strength: stamp.strength as f32,
             level: f32::from(stamp.level),
-            face: face as u32,
-            mode: match stamp.mode {
-                Mode::Raise => 0,
-                Mode::Lower => 1,
-                Mode::Smooth => 2,
-                Mode::Flatten => 3,
-            },
-            reach: plan.reach as i32,
-            size: size as i32,
-            pad: 0,
+            pad: [0; 3],
         }
+    }
+}
+
+/// The stamps of one group on one face. The layout matches `stamp.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniforms {
+    face: u32,
+    mode: u32,
+    reach: i32,
+    size: i32,
+    count: u32,
+    pad: [u32; 3],
+    stamps: [FaceStamp; GROUP_STAMPS],
+}
+
+fn area(rect: TexelRect) -> usize {
+    (rect.x1 - rect.x0) * (rect.y1 - rect.y0)
+}
+
+/// The rectangle of each face that a group covers, and the area of the
+/// largest stamp rectangle on that face.
+#[derive(Clone, Copy, Default)]
+struct Cover {
+    rects: [Option<TexelRect>; FACES],
+    largest: [usize; FACES],
+}
+
+impl Cover {
+    fn with(mut self, plan: &StampPlan) -> Cover {
+        for (face, rect) in plan.rects.iter().enumerate() {
+            let Some(rect) = *rect else { continue };
+            self.rects[face] = Some(self.rects[face].map_or(rect, |all| all.union(rect)));
+            self.largest[face] = self.largest[face].max(area(rect));
+        }
+        self
+    }
+
+    fn passes(&self) -> u32 {
+        self.rects.iter().flatten().count() as u32
+    }
+
+    fn is_wide(&self) -> bool {
+        let mut rects = self.rects.iter().zip(self.largest);
+        rects.any(|(rect, largest)| rect.is_some_and(|rect| area(rect) > UNION_LIMIT * largest))
     }
 }
 
@@ -95,7 +142,7 @@ pub struct GpuHeightmap {
     scratch: wgpu::Texture,
     pipeline: wgpu::RenderPipeline,
     bind_groups: [wgpu::BindGroup; FACES],
-    /// One slot of `slot_size` bytes for each stamp on each face of a batch.
+    /// One slot of `slot_size` bytes for each pass of a batch.
     uniforms: wgpu::Buffer,
     slot_size: u32,
     used_slots: AtomicU32,
@@ -365,32 +412,96 @@ impl GpuHeightmap {
         enc: &mut wgpu::CommandEncoder,
         plan: &StampPlan,
     ) -> bool {
+        self.stamp_group(queue, enc, std::slice::from_ref(plan)) == 1
+    }
+
+    /// Adds the first stamps of `plans` to `enc` as one group, with one pass
+    /// for each face. Returns the number of stamps in the group. The result
+    /// is the same as that of `stamp` for each one in order.
+    ///
+    /// The stamps of a group have one mode. A smooth stamp is a group of one.
+    /// A group has `GROUP_STAMPS` stamps at most, and it stops before a stamp
+    /// that is far from the others.
+    ///
+    /// Returns 0 and adds nothing if the batch is full. Then submit `enc`,
+    /// call `begin_batch`, and add the stamps to a new encoder.
+    pub fn stamp_group(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plans: &[StampPlan],
+    ) -> usize {
+        let Some(first) = plans.first() else {
+            return 0;
+        };
+        let mode = first.stamp.mode;
+        // A smooth stamp reads the results of the stamp before it on the
+        // texels around each texel. The other modes read one texel.
+        let most = match mode {
+            Mode::Smooth => 1,
+            _ => GROUP_STAMPS,
+        };
         // The values of each slot go to the GPU at the submit, so each pass
         // of the batch needs its own slot.
-        let first = self.used_slots.load(Ordering::Relaxed);
-        let count = plan.rects.iter().flatten().count() as u32;
-        if first + count > STAMP_SLOTS {
-            return false;
+        let first_slot = self.used_slots.load(Ordering::Relaxed);
+        let free = STAMP_SLOTS - first_slot;
+        let mut cover = Cover::default();
+        let mut count = 0;
+        for plan in plans.iter().take(most) {
+            let next = cover.with(plan);
+            let apart = count > 0 && (plan.stamp.mode != mode || next.is_wide());
+            if apart || next.passes() > free {
+                break;
+            }
+            cover = next;
+            count += 1;
         }
-        self.used_slots.store(first + count, Ordering::Relaxed);
+        if count == 0 {
+            return 0;
+        }
+        let group = &plans[..count];
+        self.used_slots
+            .store(first_slot + cover.passes(), Ordering::Relaxed);
 
         let n = self.face_size as usize;
         // The smooth mode reads texels at this distance from the rectangle.
-        let grow = match plan.stamp.mode {
-            Mode::Smooth => plan.reach,
+        let grow = match mode {
+            Mode::Smooth => first.reach,
             _ => 0,
         };
         // The faces go in rising order, as in `Heightmap::stamp`. A smooth
         // pass reads the new levels of the faces before it.
-        let touched = plan.rects.iter().enumerate();
+        let touched = cover.rects.iter().enumerate();
         let touched = touched.filter_map(|(face, rect)| Some((face, (*rect)?)));
-        for (slot, (face, rect)) in (first..).zip(touched) {
+        for (slot, (face, rect)) in (first_slot..).zip(touched) {
             let offset = slot * self.slot_size;
-            let uniforms = Uniforms::new(self.face_size, face, plan);
+            let mut uniforms = Uniforms {
+                face: face as u32,
+                mode: match mode {
+                    Mode::Raise => 0,
+                    Mode::Lower => 1,
+                    Mode::Smooth => 2,
+                    Mode::Flatten => 3,
+                },
+                reach: first.reach as i32,
+                size: self.face_size as i32,
+                count: 0,
+                ..bytemuck::Zeroable::zeroed()
+            };
+            // A stamp with no rectangle on this face is not in the list.
+            for plan in group {
+                if let Some(rect) = plan.rects[face] {
+                    uniforms.stamps[uniforms.count as usize] =
+                        FaceStamp::new(self.face_size, face, rect, plan);
+                    uniforms.count += 1;
+                }
+            }
+            let used = size_of::<Uniforms>()
+                - (GROUP_STAMPS - uniforms.count as usize) * size_of::<FaceStamp>();
             queue.write_buffer(
                 &self.uniforms,
                 u64::from(offset),
-                bytemuck::bytes_of(&uniforms),
+                &bytemuck::bytes_of(&uniforms)[..used],
             );
             let read = TexelRect {
                 x0: rect.x0.saturating_sub(grow),
@@ -410,7 +521,7 @@ impl GpuHeightmap {
             pass.set_scissor_rect(rect.x0 as u32, rect.y0 as u32, size.width, size.height);
             pass.draw(0..3, 0..1);
         }
-        true
+        count
     }
 
     /// Adds a copy of a rectangle to `enc`, for a read on the CPU.
