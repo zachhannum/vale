@@ -1,11 +1,10 @@
 //! A prototype that tests the riskiest part of the Vale design: pen drawing
 //! on a globe, in egui, on desktop and on iPad.
 //!
-//! The crate does not use the other Vale crates. `README.md` in this crate
+//! The heightmap and the brush come from `vale-terrain`. `README.md` in this crate
 //! lists what the prototype tests and what it leaves out.
 
 pub mod app;
-pub mod cube;
 pub mod gpu;
 #[cfg(not(target_os = "ios"))]
 pub mod headless;

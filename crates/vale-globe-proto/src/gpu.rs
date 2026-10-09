@@ -2,7 +2,7 @@
 
 use eframe::egui_wgpu::{self, wgpu};
 
-use crate::cube::{FACES, Upload};
+use vale_terrain::FACES;
 
 pub const MAX_BANDS: usize = 16;
 
@@ -146,6 +146,16 @@ pub struct GlobeCallback {
     /// The changed texels that wait for the GPU. egui can run a frame and
     /// not paint it, so the queue keeps them until `prepare` runs.
     pub uploads: UploadQueue,
+}
+
+/// Changed texels of one face, ready for the GPU.
+pub struct Upload {
+    pub face: u32,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u16>,
 }
 
 /// Changed texels, each with the face size of its heightmap.

@@ -434,14 +434,14 @@ The prototype leaves out the following.
 
 ### Globe prototype
 
-The globe prototype is the crate `vale-globe-proto`. It tests two things ahead of phase 1: that a brush on a cube map stays round at every place on the sphere, and that egui can take Apple Pencil input on iPad. It uses no other Vale crate. The command `cargo run --release -p vale-globe-proto` opens the window, and `scripts/globe-proto-ipad.sh` builds the app and starts it on a connected iPad.
+The globe prototype is the crate `vale-globe-proto`. It tests two things ahead of phase 1: that a brush on a cube map stays round at every place on the sphere, and that egui can take Apple Pencil input on iPad. The heightmap and the brush come from `vale-terrain`. The command `cargo run --release -p vale-globe-proto` opens the window, and `scripts/globe-proto-ipad.sh` builds the app and starts it on a connected iPad.
 
-The prototype has a pressure brush with the four modes, the stepped preview in one shader pass, a freehand line tool, and a panel that shows what the pen delivers. Its unit tests make sure that one stamp covers the same ground at the equator, at a pole, on a face edge, and at a cube corner.
+The prototype has a pressure brush with the four modes, the stepped preview in one shader pass, a freehand line tool, and a panel that shows what the pen delivers. The unit tests of `vale-terrain` make sure that one stamp covers the same ground at the equator, at a pole, on a face edge, and at a cube corner.
 
 It differs from the design in four ways.
 
 1. The brush stamps on the CPU, and the app sends the changed texels to the GPU. The design stamps in wgpu shaders.
-2. The heightmap is six full faces in memory, with no tiles and no project file.
+2. The heightmap has no project file, and the GPU texture holds six full faces.
 3. Pen input comes through egui touch events. A touch with a force counts as a pen, because on iPad only Apple Pencil has a force.
 4. Hover, tilt, and the 240 Hz pen samples do not arrive, because winit 0.30 does not read them on iOS. If the iPad test shows that the app needs them, a UIKit gesture recognizer below egui can supply them.
 

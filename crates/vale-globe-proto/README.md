@@ -2,7 +2,7 @@
 
 This crate is a prototype. It tests one design goal of Vale: you paint a heightmap on a globe with a pen, and the brush does not stretch at any place on the sphere. It also answers an open question of the design: is egui good enough for Apple Pencil on iPad?
 
-The crate does not use the other Vale crates, and it is not published.
+The heightmap and the brush come from the crate `vale-terrain`. The crate is not published.
 
 ## Run on the desktop
 
@@ -108,9 +108,8 @@ If hover or the sample rate fails the test, the next step is a small piece of UI
 ## How the prototype differs from the design
 
 - The brush stamps on the CPU, and the app sends the changed texels to the GPU. The design stamps in a wgpu shader. The time in "Brush on CPU" tells you how much that matters.
-- The heightmap is one level of six full faces in memory. The design stores tiles, and only the tiles that you painted.
+- The heightmap has one level of tiles. The GPU texture holds six full faces.
 - The app saves nothing. There is no project file.
-- The smooth mode does not read across a cube face edge.
 - The shader reads the cube map with its own bilinear filter and does not blend across a face edge.
-- Undo keeps copies of the changed faces for the last eight strokes.
+- Undo keeps copies of the changed tiles for the last eight strokes.
 - There is no polygonize tool. Lines are not stored as features.

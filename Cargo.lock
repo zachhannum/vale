@@ -3763,6 +3763,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "image",
+ "vale-terrain",
 ]
 
 [[package]]
@@ -3825,6 +3826,10 @@ dependencies = [
  "vale-render",
  "vale-store",
 ]
+
+[[package]]
+name = "vale-terrain"
+version = "0.1.0"
 
 [[package]]
 name = "vcpkg"
