@@ -56,6 +56,7 @@ pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
                         ui.label(stroke.delay_line());
                         ui.label(stroke.frame_line());
                         ui.label(stroke.stamps_line());
+                        ui.label(stroke.passes_line());
                         ui.label(stroke.texels_line());
                     }
                     None => {

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu::{self, wgpu};
 
-use vale_terrain::{GpuHeightmap, Heightmap, Readback, StampPlan, TexelRect};
+use vale_terrain::{FACES, GpuHeightmap, Heightmap, Readback, StampPlan, TexelRect};
 
 /// The time between two polls of the device while GPU work is in flight.
 const POLL_STEP: Duration = Duration::from_micros(250);
@@ -161,6 +161,8 @@ pub enum Event {
         sample: Instant,
         done: Instant,
     },
+    /// The number of passes that the stamps of one frame made.
+    Passes { stroke: u64, passes: u32 },
     Texels {
         stroke: u64,
         face: u32,
@@ -318,6 +320,8 @@ struct Batch<'a> {
     /// The stroke and the sample time of each stamp in the encoder.
     stamps: Vec<(u64, Instant)>,
     readbacks: Vec<(u64, u32, TexelRect, Readback)>,
+    /// The number of stamp passes of each stroke.
+    passes: Vec<(u64, u32)>,
 }
 
 impl Batch<'_> {
@@ -368,6 +372,38 @@ impl Batch<'_> {
         }
     }
 
+    /// Adds stamps that follow one another in the queue, in groups. `samples`
+    /// has the stroke and the sample time of each stamp.
+    fn stamp_run(&mut self, plans: &[StampPlan], samples: &[(u64, Instant)]) {
+        let (heights, queue) = (self.heights, self.queue);
+        let mut at = 0;
+        let mut full = false;
+        while at < plans.len() {
+            let group = heights.stamp_group(queue, self.encoder(), &plans[at..]);
+            if group == 0 {
+                // An empty batch takes one stamp at least.
+                if full {
+                    return;
+                }
+                full = true;
+                self.submit();
+                heights.begin_batch();
+                continue;
+            }
+            full = false;
+            let end = at + group;
+            let touched = |face: &usize| plans[at..end].iter().any(|p| p.rects[*face].is_some());
+            let passes = (0..FACES).filter(touched).count() as u32;
+            let stroke = samples[at].0;
+            match self.passes.iter_mut().find(|(id, _)| *id == stroke) {
+                Some((_, count)) => *count += passes,
+                None => self.passes.push((stroke, passes)),
+            }
+            self.stamps.extend(&samples[at..end]);
+            at = end;
+        }
+    }
+
     fn run(&mut self, op: Op) {
         match op {
             Op::Reset(level) => {
@@ -380,14 +416,7 @@ impl Batch<'_> {
                 self.submit();
                 self.heights.upload(self.queue, face, rect, &data);
             }
-            Op::Stamp { plan, stroke, time } => {
-                let (heights, queue) = (self.heights, self.queue);
-                if !heights.stamp(queue, self.encoder(), &plan) {
-                    self.submit();
-                    heights.stamp(queue, self.encoder(), &plan);
-                }
-                self.stamps.push((stroke, time));
-            }
+            Op::Stamp { plan, stroke, time } => self.stamp_run(&[*plan], &[(stroke, time)]),
             Op::Readback { stroke, face, rect } => {
                 let (heights, device) = (self.heights, self.device);
                 let readback = heights.read_rect(device, self.encoder(), face, rect);
@@ -424,16 +453,35 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             encoder: None,
             stamps: Vec::new(),
             readbacks: Vec::new(),
+            passes: Vec::new(),
         };
+        // The stamps that follow one another in the queue.
+        let (mut plans, mut samples) = (Vec::new(), Vec::new());
         for (face_size, op) in ops {
             // A change of a heightmap that the app replaced.
-            if face_size == self.face_size {
-                batch.run(op);
+            if face_size != self.face_size {
+                continue;
+            }
+            match op {
+                Op::Stamp { plan, stroke, time } => {
+                    plans.push(*plan);
+                    samples.push((stroke, time));
+                }
+                op => {
+                    batch.stamp_run(&plans, &samples);
+                    plans.clear();
+                    samples.clear();
+                    batch.run(op);
+                }
             }
         }
+        batch.stamp_run(&plans, &samples);
         // This submit is before the submit of egui, so the frame shows the
         // new levels.
         batch.submit();
+        for (stroke, passes) in batch.passes {
+            let _ = self.link.events.send(Event::Passes { stroke, passes });
+        }
         Vec::new()
     }
 

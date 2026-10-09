@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
-use vale_terrain::{ELEV_MAX, ELEV_MIN, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan};
+use vale_terrain::{ELEV_MAX, ELEV_MIN, GROUP_STAMPS, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan};
 
 use super::math::{V3, add, angle, normalize, scale};
 
@@ -16,8 +16,10 @@ pub const FIXED_FLOW: f64 = 0.5;
 pub const PRESSURE_GAIN: f64 = 2.0;
 /// The limits of the brush radius on screen, in points.
 pub const SIZE_POINTS: std::ops::RangeInclusive<f32> = 4.0..=160.0;
-/// The most stamps that one frame sends to the GPU.
-pub const FRAME_STAMPS: usize = 48;
+/// The most passes that the stamps of one frame cost. A smooth stamp costs
+/// one pass. A stamp of another mode costs one part in `GROUP_STAMPS` of a
+/// pass, because the GPU applies a group of them in one pass.
+pub const FRAME_PASSES: usize = 48;
 /// The most texels that the stamps of one frame cover.
 pub const FRAME_TEXELS: u64 = 40_000_000;
 
@@ -157,6 +159,14 @@ pub fn plan_texels(plan: &StampPlan) -> u64 {
     rects.map(|r| ((r.x1 - r.x0) * (r.y1 - r.y0)) as u64).sum()
 }
 
+/// The cost of a stamp, where `GROUP_STAMPS` is the cost of one pass.
+fn stamp_cost(plan: &StampPlan) -> usize {
+    match plan.stamp.mode {
+        Mode::Smooth => GROUP_STAMPS,
+        Mode::Raise | Mode::Lower | Mode::Flatten => 1,
+    }
+}
+
 /// The stamps that wait for the GPU, each with the time of its pen sample.
 #[derive(Default)]
 pub struct Backlog {
@@ -180,17 +190,19 @@ impl Backlog {
         self.stamps.clear();
     }
 
-    /// Takes the stamps of one frame, oldest first: at most `FRAME_STAMPS`
-    /// stamps and `FRAME_TEXELS` texels, and at least one stamp.
+    /// Takes the stamps of one frame, oldest first: at most `FRAME_PASSES`
+    /// passes and `FRAME_TEXELS` texels, and at least one stamp.
     pub fn take_frame(&mut self) -> Vec<(StampPlan, Instant)> {
         let mut out = Vec::new();
-        let mut texels = 0;
+        let (mut cost, mut texels) = (0, 0);
         while let Some((plan, _)) = self.stamps.front() {
-            let more = plan_texels(plan);
-            let full = out.len() == FRAME_STAMPS || texels + more > FRAME_TEXELS;
+            let (more_cost, more) = (stamp_cost(plan), plan_texels(plan));
+            let full =
+                cost + more_cost > FRAME_PASSES * GROUP_STAMPS || texels + more > FRAME_TEXELS;
             if full && !out.is_empty() {
                 break;
             }
+            cost += more_cost;
             texels += more;
             out.extend(self.stamps.pop_front());
         }
@@ -299,15 +311,57 @@ mod tests {
     }
 
     fn plan(map: &Heightmap, radius: f64) -> StampPlan {
+        plan_of(map, radius, Mode::Raise)
+    }
+
+    fn plan_of(map: &Heightmap, radius: f64, mode: Mode) -> StampPlan {
         map.stamp_plan(&Stamp {
             center: lonlat_to_dir(0.0, 0.0),
             radius,
             hardness: 0.3,
             flow: 1.0,
-            mode: Mode::Raise,
+            mode,
             level: 0,
             strength: 1.0,
         })
+    }
+
+    #[test]
+    fn smooth_stamps_cost_one_pass_each() {
+        let map = Heightmap::new(256, 0);
+        let start = Instant::now();
+        let mut backlog = Backlog::default();
+        for i in 0..FRAME_PASSES + 10 {
+            let plan = plan_of(&map, 0.01, Mode::Smooth);
+            backlog.push(plan, start + Duration::from_millis(i as u64));
+        }
+        assert_eq!(backlog.take_frame().len(), FRAME_PASSES);
+        let second = backlog.take_frame();
+        assert_eq!(second.len(), 10);
+        assert_eq!(
+            second[0].1,
+            start + Duration::from_millis(FRAME_PASSES as u64)
+        );
+
+        // Half of the passes go to smooth stamps, and the other half to 32
+        // times as many stamps of another mode.
+        for mode in [Mode::Smooth, Mode::Flatten] {
+            for _ in 0..2000 {
+                backlog.push(plan_of(&map, 0.01, mode), start);
+            }
+            let frame = backlog.take_frame();
+            let count = match mode {
+                Mode::Smooth => FRAME_PASSES,
+                _ => FRAME_PASSES * GROUP_STAMPS,
+            };
+            assert_eq!(frame.len(), count);
+            backlog.clear();
+        }
+        for i in 0..2000 {
+            let mode = if i < 24 { Mode::Smooth } else { Mode::Lower };
+            backlog.push(plan_of(&map, 0.01, mode), start);
+        }
+        assert_eq!(backlog.take_frame().len(), 24 + 24 * GROUP_STAMPS);
     }
 
     #[test]
@@ -315,18 +369,18 @@ mod tests {
         let map = Heightmap::new(256, 0);
         let start = Instant::now();
         let mut backlog = Backlog::default();
-        for i in 0..FRAME_STAMPS + 10 {
+        // One frame takes 1536 small raise stamps.
+        let most = FRAME_PASSES * GROUP_STAMPS;
+        assert_eq!(most, 1536);
+        for i in 0..most + 10 {
             backlog.push(plan(&map, 0.01), start + Duration::from_millis(i as u64));
         }
         let first = backlog.take_frame();
-        assert_eq!(first.len(), FRAME_STAMPS);
+        assert_eq!(first.len(), most);
         assert_eq!(backlog.len(), 10);
         let second = backlog.take_frame();
         assert_eq!(second.len(), 10);
-        assert_eq!(
-            second[0].1,
-            start + Duration::from_millis(FRAME_STAMPS as u64)
-        );
+        assert_eq!(second[0].1, start + Duration::from_millis(most as u64));
         assert!(backlog.take_frame().is_empty());
     }
 

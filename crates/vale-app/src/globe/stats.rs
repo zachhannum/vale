@@ -57,6 +57,8 @@ pub struct StrokeStats {
     /// The stamps and the texels that one frame sent to the GPU.
     pub stamps: Series,
     pub texels: Series,
+    /// The passes that the stamps of one frame made on the GPU.
+    pub passes: Series,
     last_frame: Option<Instant>,
 }
 
@@ -111,6 +113,15 @@ impl StrokeStats {
         )
     }
 
+    pub fn passes_line(&self) -> String {
+        let p = &self.passes;
+        format!(
+            "Passes in a frame: mean {:.1}, worst {:.0}",
+            p.mean(),
+            p.worst
+        )
+    }
+
     pub fn texels_line(&self) -> String {
         let t = &self.texels;
         format!(
@@ -151,6 +162,7 @@ impl Stats {
             frame_ms: Series::default(),
             stamps: Series::default(),
             texels: Series::default(),
+            passes: Series::default(),
             last_frame: None,
         });
     }
@@ -176,6 +188,13 @@ impl Stats {
         if let Some(stroke) = self.stroke(id) {
             stroke.stamps.add(stamps as f64);
             stroke.texels.add(texels as f64);
+        }
+    }
+
+    /// Records the passes that the stamps of one frame made.
+    pub fn passes(&mut self, id: u64, passes: u32) {
+        if let Some(stroke) = self.stroke(id) {
+            stroke.passes.add(f64::from(passes));
         }
     }
 
@@ -223,6 +242,7 @@ impl Stats {
                 stroke.delay_line(),
                 stroke.frame_line(),
                 stroke.stamps_line(),
+                stroke.passes_line(),
                 stroke.texels_line(),
             ] {
                 out.push_str(&line);
@@ -264,6 +284,8 @@ mod tests {
         stats.frame(2, t + ms(48));
         stats.stamps(2, 3, 30_000_000);
         stats.stamps(2, 1, 10_000_000);
+        stats.passes(2, 3);
+        stats.passes(2, 2);
         // A delay can arrive after the next stroke starts.
         stats.delay(1, t, t + ms(4));
         stats.delay(2, t, t + ms(2));
@@ -280,6 +302,7 @@ mod tests {
         assert!((last.frame_ms.worst - 32.0).abs() < 1e-9);
         assert_eq!((last.stamps.mean(), last.stamps.worst), (2.0, 3.0));
         assert_eq!(last.texels.worst, 30_000_000.0);
+        assert_eq!(last.passes_line(), "Passes in a frame: mean 2.5, worst 3");
         assert!((stats.worst_delay_ms().unwrap() - 6.0).abs() < 1e-9);
         assert_eq!(
             last.delay_line(),

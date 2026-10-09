@@ -599,7 +599,11 @@ fn the_stroke_test_runs_and_gives_the_stroke_delay() {
     let report = globe.test_report.as_deref().unwrap();
     assert!(report.contains("raise, 160 pt"), "{report}");
     assert!(report.contains("smooth, 160 pt"), "{report}");
-    assert_eq!(report.matches("Stroke delay: last ").count(), 2, "{report}");
+    assert!(report.contains("Stroke 3: raise, 4 pt"), "{report}");
+    assert!(report.contains("Stroke 4: smooth, 4 pt"), "{report}");
+    assert_eq!(report.matches("Stroke delay: last ").count(), 4, "{report}");
+    assert_eq!(report.matches("Passes in a frame").count(), 4, "{report}");
+    assert_eq!(globe.stats.backlog, 0);
     assert!(globe.stats.last().unwrap().delay_ms.count >= 1);
     assert_eq!(globe.brush, brush);
     // The stroke is in the CPU heightmap, on both sides of a face edge.
@@ -610,4 +614,47 @@ fn the_stroke_test_runs_and_gives_the_stroke_delay() {
     std::fs::create_dir_all("../../target/app").unwrap();
     let frame = h.render().unwrap();
     frame.save("../../target/app/test-brush-debug.png").unwrap();
+}
+
+#[test]
+fn a_fast_stroke_of_a_small_brush_does_not_fall_behind() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.state_mut().globe.brush.size_points = 4.0;
+    h.run_steps(1);
+    let base = h.state().globe.map.base();
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(110.0, 0.0), c + Vec2::new(110.0, 0.0));
+    let under = place(&h, c);
+    button(&mut h, egui::PointerButton::Primary, from, true);
+    h.step();
+    h.event(egui::Event::PointerMoved(to));
+    h.step();
+    // One frame took all stamps of the move.
+    assert_eq!(h.state().globe.stats.backlog, 0);
+    button(&mut h, egui::PointerButton::Primary, to, false);
+    settle(&mut h);
+    h.run_steps(2);
+
+    let globe = &h.state().globe;
+    let stroke = globe.stats.last().unwrap();
+    assert!(stroke.stamps.worst >= 300.0, "{}", stroke.stamps_line());
+    assert!(stroke.stamps.count <= 2, "{}", stroke.stamps_line());
+    // 32 stamps go in one pass on each face that they touch.
+    let passes = stroke.passes.worst;
+    assert!(
+        passes >= stroke.stamps.worst / 32.0,
+        "{}",
+        stroke.passes_line()
+    );
+    assert!(
+        passes <= stroke.stamps.worst / 8.0,
+        "{}",
+        stroke.passes_line()
+    );
+    assert_eq!(globe.stats.backlog, 0);
+    assert!(globe.map.sample(under) > base);
+    assert!(globe.map.sample(place(&h, c + Vec2::new(100.0, 0.0))) > base);
+    assert_eq!(globe.map.sample(place(&h, c + Vec2::new(0.0, 40.0))), base);
 }

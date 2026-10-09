@@ -196,8 +196,7 @@ impl Globe {
         self.can_undo() && self.map.undo()
     }
 
-    /// Starts the stroke test: a raise stroke and then a smooth stroke, each
-    /// `seconds` long, with the largest brush.
+    /// Starts the stroke test. A slow stroke is `seconds` long.
     pub fn start_stroke_test(&mut self, seconds: f64) {
         if self.format.is_some() && !self.busy() {
             self.test = Some(StrokeTest::new(self.brush, seconds));
@@ -232,6 +231,7 @@ impl Globe {
                     sample,
                     done,
                 } => self.stats.delay(stroke, sample, done),
+                Event::Passes { stroke, passes } => self.stats.passes(stroke, passes),
                 Event::Texels {
                     stroke,
                     face,
@@ -259,17 +259,17 @@ impl Globe {
         };
         let idle = self.stroke.is_none() && self.inputs.is_empty();
         if !test.drawing() && idle {
-            match test.next_mode() {
-                Some(mode) => {
-                    self.brush = test.brush(mode);
+            match test.next() {
+                Some(part) => {
+                    self.brush = test.brush(part);
                     self.inputs.push_back(Input::Down);
-                    test.begin(now);
+                    test.begin(now, part);
                 }
                 // The last delay must arrive before the report.
                 None if in_flight => {}
                 None => {
                     self.brush = test.saved;
-                    self.test_report = Some(self.stats.report(stroke_test::MODES.len()));
+                    self.test_report = Some(self.stats.report(stroke_test::PARTS.len()));
                     return;
                 }
             }
