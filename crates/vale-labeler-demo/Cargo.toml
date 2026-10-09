@@ -1,6 +1,6 @@
 [package]
 name = "vale-labeler-demo"
-description = "Milestone 1 command-line demo for vale-labeler"
+description = "Command-line demo for vale-labeler"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

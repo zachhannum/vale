@@ -82,7 +82,7 @@ egui is the least certain choice. It is productive for tool panels, but complex 
 
 These choices come from memory and not from a fresh survey. Make sure of the current release status of Vello, Parley, and Krilla before you commit.
 
-The status was checked on 2026-10-08. The current releases are Vello 0.11.0 (2026-10-02), Parley 0.11.1 (2026-08-16), and Krilla 0.8.2 (2026-06-04). All three are before 1.0 and active. Milestone 1 depends on Parley 0.11.1 and on `vello_cpu` 0.3.0, the CPU renderer of the Vello project. It does not depend on GPU Vello or on Krilla.
+The status was checked on 2026-10-08. The current releases are Vello 0.11.0 (2026-10-02), Parley 0.11.1 (2026-08-16), and Krilla 0.8.2 (2026-06-04). All three are before 1.0 and active. The labeling prototype depends on Parley 0.11.1 and on `vello_cpu` 0.3.0, the CPU renderer of the Vello project. It does not depend on GPU Vello or on Krilla.
 
 The app prototype depends on Krilla 0.8.2, eframe 0.36.2, and `proj` 0.31.0. It does not depend on GPU Vello. Vello 0.11.0 and eframe 0.36.2 both use `wgpu` 30, so a GPU Vello backend can share the egui device later.
 
@@ -113,7 +113,7 @@ Data moves from left to right. The terrain crate is not in the diagram. It write
 | render | Display list and the Vello, Krilla, SVG, and raster backends |
 | app | egui shell, tools, panels |
 
-An unpublished ninth crate, `vale-labeler-demo`, holds the command-line tool for milestone 1. The binary of the app crate is named `vale-app`.
+An unpublished ninth crate, `vale-labeler-demo`, holds the command-line tool for the labeling prototype. The binary of the app crate is named `vale-app`.
 
 An unpublished tenth crate, `vale-globe-proto`, is a prototype that tests pen drawing on the globe. The section "Globe prototype" describes it.
 
@@ -364,45 +364,53 @@ Photoshop, Illustrator, and similar tools keep color artwork and textures. The l
 
 A full vector drawing tool set comes after version 1.
 
-## Milestones
+## Phases
 
-The order puts the two differentiators first and the app shell fourth. The first three milestones are command-line tools, so each one proves its part before any UI exists.
+The labeling prototype came first, and it is done. The work after it has eleven phases, in the order of the table. The globe comes first, because you draw the world in the app. Thus the drawing tools arrive before the map tools.
 
-| Order | Milestone | Done when |
+| Phase | Name | At the end of the phase |
 | --- | --- | --- |
-| 1 | Labeling prototype | The library labels points and lines from Natural Earth data and writes a PNG. |
-| 2 | Projection pipeline | A command-line tool renders one map frame of a custom-radius world to PDF, with clipping and a graticule. |
-| 3 | Storage and import | A project file holds layers from linked SVG and PNG sources, and a file change triggers a reload. |
-| 4 | App shell | The app shows a layer list, a map canvas, and a map frame editor with projection suggestions. |
-| 5 | Styling | Rule-based styles draw all symbolizers of version 1 on screen and in PDF. |
-| 6 | Labeling in the app | Polygon labels and fallbacks work, and manual overrides survive a reload and a projection change. |
-| 7 | Atlas export | A multi-page PDF, per-page SVG, and per-page raster export with page templates. |
-| 8 | Editing tools | Point placement, the attribute table, and vertex editing. |
-| 9 | Globe and heightmap | You paint a heightmap on the globe with a pen, with the stepped preview, and the project file keeps it. |
-| 10 | Toolbox and lines | The toolbox runs polygonize, map frames draw the topography polygons, and the freehand line tool works. |
-From milestone 4 on, a milestone is done only when it works on desktop and on iPad.
+| 0 | iPad test loop and CI | Each PR arrives on the iPad through SideStore, and CI builds all four platforms. |
+| 1 | Globe and heightmap painting | You paint a heightmap on the globe with Apple Pencil or a pen tablet, in the real app. |
+| 2 | Projects and storage | The world that you paint is a project file that you can close, open again, and move between devices. |
+| 3 | Toolbox and freehand lines | The toolbox turns the heightmap into topography polygons, and you draw rivers and borders as lines. |
+| 4 | Map frames and projections | You draw a map frame on the globe, and the app shows that region in a projection that fits it. |
+| 5 | Vector data editing | You place cities and other points, edit attributes, and edit lines and polygons by vertex. |
+| 6 | Styling | Rule-based styles draw all symbolizers of version 1 on screen and in PDF. |
+| 7 | Labeling in the app | Labels come from attributes, polygon labels and fallbacks work, and manual changes stay. |
+| 8 | Atlas and export | An atlas of map frames exports as a multi-page PDF, SVG files, and raster files. |
+| 9 | Import and linked sources | Files from other tools come in as linked sources and reload when they change. |
+| 10 | Version 1 release | Version 1 is in the App Store and on the three desktop platforms. |
 
-Milestones 9 and 10 are last in the table only because the earlier numbers are in use. Their place in the order is an open question.
+From phase 1 on, a phase is done only when it works on desktop and on iPad.
 
-The app prototype covers a thin part of milestones 2, 3, 4, 5, and 7. It does not finish any of them.
+No phase is a command-line tool alone. Five command-line tools stay, and each one runs the same core crates as the app.
 
-### Milestone 1 prototype
+- `vale-labeler-demo` is the regression test of the labeler.
+- In phase 2, a command exports the heightmap as an equirectangular GeoTIFF.
+- In phase 3, a command runs a toolbox tool on a project file.
+- In phase 4, a command renders one map frame of a custom-radius world to PDF, with clipping and a graticule.
+- In phase 8, a command exports the atlas as a multi-page PDF.
 
-Milestone 1 differs from the design above in five ways. Each difference ends when the crate named for it exists.
+The app prototype covers a thin part of phases 2, 4, 6, 8, and 9. It does not finish any of them.
+
+### Labeling prototype
+
+The labeling prototype differs from the design above in five ways. Each difference ends when the crate named for it exists.
 
 1. A separate crate, `vale-labeler-demo`, holds the command-line tool for data loading, projection, and rendering. It is not published. It ends when `vale-render` and the later command-line tools take over its jobs.
 2. The demo rasterizes with `vello_cpu`. It now draws through the display list of `vale-render`. This difference ends when the GPU Vello backend exists.
 3. The demo has two hand-written spherical projections, Equal Earth and Lambert azimuthal equal-area. They stay in the demo as a fixed test input. The app uses PROJ through `vale-sphere`.
 4. The labeler uses fonts that the caller registers as bytes. System font discovery is available but off by default, so output is the same on every machine. This ends when `vale-app` and `vale-style` choose fonts for the user.
-5. Of the five fallbacks in the labeling engine, milestone 1 has only the last one, removal with a reason. The other four arrive in milestone 6.
+5. Of the five fallbacks in the labeling engine, the prototype has only the last one, removal with a reason. The other four arrive in phase 7.
 
-Milestone 1 is done. The command `cargo run --release -p vale-labeler-demo -- --preset world` writes the labeled PNG.
+The labeling prototype is done. The command `cargo run --release -p vale-labeler-demo -- --preset world` writes the labeled PNG.
 
 ### App prototype
 
-The app prototype is a vertical slice. It makes a runnable app early. It takes a thin part of milestones 2, 3, 4, 5, and 7 at once, before the command-line tools of milestones 2 and 3 exist. It differs from the design above in nine ways. The command `cargo run --release -p vale-app` opens the window. The command `cargo run --release -p vale-app -- --screenshot target/app/ui.png --size 1440x900 --report` draws the full UI to a PNG without a window.
+The app prototype is a vertical slice. It makes a runnable app early. It takes a thin part of phases 2, 4, 6, 8, and 9 at once. It differs from the design above in nine ways. The command `cargo run --release -p vale-app` opens the window. The command `cargo run --release -p vale-app -- --screenshot target/app/ui.png --size 1440x900 --report` draws the full UI to a PNG without a window.
 
-1. The prototype is a vertical slice through milestones 2, 3, 4, 5, and 7. It does not finish any of them.
+1. The prototype is a vertical slice through phases 2, 4, 6, 8, and 9. It does not finish any of them.
 2. The map is drawn by `vello_cpu` on screen and in PNG files. The display list of `vale-render` exists, and the GPU Vello backend does not. The same pixels come out with and without a window, so tests need no GPU. The PDF export uses Krilla, and text in the PDF stays text.
 3. `vale-store` holds the project in memory. There is no GeoPackage file, no undo log, and no UUID. A feature ID is its index in the layer.
 4. `vale-import` reads GeoJSON only, and it copies the data. There are no linked sources and no file watch.
@@ -426,7 +434,7 @@ The prototype leaves out the following.
 
 ### Globe prototype
 
-The globe prototype is the crate `vale-globe-proto`. It tests two things ahead of milestone 9: that a brush on a cube map stays round at every place on the sphere, and that egui can take Apple Pencil input on iPad. It uses no other Vale crate. The command `cargo run --release -p vale-globe-proto` opens the window, and `scripts/globe-proto-ipad.sh` builds the app and starts it on a connected iPad.
+The globe prototype is the crate `vale-globe-proto`. It tests two things ahead of phase 1: that a brush on a cube map stays round at every place on the sphere, and that egui can take Apple Pencil input on iPad. It uses no other Vale crate. The command `cargo run --release -p vale-globe-proto` opens the window, and `scripts/globe-proto-ipad.sh` builds the app and starts it on a connected iPad.
 
 The prototype has a pressure brush with the four modes, the stepped preview in one shader pass, a freehand line tool, and a panel that shows what the pen delivers. Its unit tests make sure that one stamp covers the same ground at the equator, at a pole, on a face edge, and at a cube corner.
 
@@ -439,11 +447,11 @@ It differs from the design in four ways.
 
 A first test on an iPad with Apple Pencil on 2026-10-08 gave these results: painting and navigation are smooth, pressure works, and palm rejection works. The app gets 120 pen samples per second, and it gets no hover events. Both results match item 4. `crates/vale-globe-proto/README.md` lists all the tests.
 
-This document sets no dates. The labeling work continues in parallel after milestone 1, because its quality grows with test cases and not with a deadline.
+This document sets no dates. The labeling work continues in parallel with the phases, because its quality grows with test cases and not with a deadline.
 
 ## Risks and open questions
 
-The largest risk is the scope of the labeling engine, and the milestone order exists to contain it.
+The largest risk is the scope of the labeling engine. To contain it, the library came first, and it grows in parallel with the phases.
 
 | Risk | Response |
 | --- | --- |
@@ -451,17 +459,17 @@ The largest risk is the scope of the labeling engine, and the milestone order ex
 | Vello, Parley, and Krilla are young libraries. | The display list isolates them. Skia is the fallback renderer, because it draws to screen, PDF, and SVG. |
 | egui 0.36 and wgpu 30 are new, and Vello must keep the same wgpu version as eframe. | The map is a CPU-rendered texture today, so the app does not depend on that match. |
 | egui limits the panels and tables. | Keep all logic in the core crates. If a real limit appears, change the shell. |
-| PROJ is hard to package on Windows. | Use the bundled build and add a Windows build to CI in milestone 2. |
+| PROJ is hard to package on Windows. | Use the bundled build and add a Windows build to CI in phase 0. |
 | When you edit a linked file by hand, features lose identity. | Use element IDs first and geometry matching second, and report each lost match. |
-| Painting needs a fast, steady stroke, and a slow brush makes the tool useless. | Stamp on the GPU and repaint only the tiles under the brush. Measure the stroke delay in milestone 9. |
+| Painting needs a fast, steady stroke, and a slow brush makes the tool useless. | Stamp on the GPU and repaint only the tiles under the brush. Measure the stroke delay in phase 1. |
 | One heightmap resolution does not fit both a world and a small region. | Store tiles in levels, so a region can hold finer tiles. This design is not done. |
-| egui gives no hover, no tilt, and only 120 pen samples per second on iPad. | The iPad test of the globe prototype passed for painting, pressure, and palm rejection. Add a UIKit gesture recognizer below egui for hover, tilt, and the 240 Hz samples in milestone 9. |
+| egui gives no hover, no tilt, and only 120 pen samples per second on iPad. | The iPad test of the globe prototype passed for painting, pressure, and palm rejection. Add a UIKit gesture recognizer below egui for hover, tilt, and the 240 Hz samples in phase 1. |
 | Reprojected rasters look soft. | Show the resolution of each source against each map frame, and support regional sources. |
 
-Three questions are open, and four are decided.
+Two questions are open, and five are decided.
 
 - [x] Decided: heightmap painting on the globe, the toolbox, and freehand lines are in version 1. A full vector drawing tool set is not.
-- [ ] Do milestones 9 and 10 move ahead of styling and labeling in the app?
+- [x] Decided: the globe and the toolbox come before styling and labeling in the app. They are phases 1 and 3.
 - [x] Decided: the shell stays egui. The globe prototype ran on an iPad with Apple Pencil, and painting, pressure, and palm rejection work. Hover and the 240 Hz pen samples need a UIKit gesture recognizer below egui.
 - [x] Decided: the app and the labeler use a dual MIT and Apache-2.0 license.
 - [ ] Does export need CMYK for commercial print?
