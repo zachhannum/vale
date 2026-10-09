@@ -87,6 +87,38 @@ xcodebuild -project ValeApp.xcodeproj -scheme ValeApp -sdk iphonesimulator -arch
 
 The iOS target is in `crates/vale-app/ios`. `project.yml` describes the Xcode project. `build-rust.sh` builds the Rust static library, and `toolchain.cmake` tells the PROJ build which iOS SDK to use. The static PROJ library holds its own database, so the app bundle needs no PROJ data files.
 
+## Install a PR build on an iPad
+
+CI builds an unsigned `.ipa` file for each PR and for `main`. SideStore is an app on the iPad that signs the file with a free Apple account and installs it. You need no Mac for each build.
+
+Do these steps one time. They need a computer.
+
+1. On the iPad, set a passcode and turn on Developer Mode.
+2. Install SideStore and LocalDevVPN, and make the pairing file. The SideStore documentation gives the method.
+3. Sign in to SideStore with an Apple account. SideStore is a third-party tool and it gets the login, so think about a separate Apple account.
+4. On the iPad, open `https://zachhannum.github.io/vale/` and tap "Add the source to SideStore".
+
+To install a build, do these steps on the iPad:
+
+1. Connect LocalDevVPN.
+2. Open the PR on GitHub and find the comment "The iPad build of commit ... is ready".
+3. Tap "Install in SideStore".
+
+The build of `main` and of each open PR is also in the source, on the page of the Vale app in SideStore.
+
+All builds have the bundle ID `dev.vale.app`, so a new build installs over the old one and keeps the app data. The version number tells you which build is installed. It is `0.<PR>.<build>`, and PR 0 is `main`. For example, `0.112.57` is build 57, from PR 112.
+
+Do not install the build of a PR from a fork before you read its code.
+
+A free Apple account has these limits:
+
+- An install stops after seven days. Open SideStore with LocalDevVPN connected to renew it.
+- Only three apps can be installed at one time. SideStore is one of them.
+- Only ten app IDs can be made in seven days. Vale uses one.
+- Some entitlements are not available, for example iCloud containers.
+
+Each build is a pre-release on GitHub with the tag `pr-<number>` or `main-build`. The workflow `sidestore-publish.yml` publishes it, writes the source to the `gh-pages` branch, and updates the PR comment. GitHub Pages serves that branch. When a PR closes, `sidestore-cleanup.yml` removes its build. The scripts are in `scripts/sidestore`.
+
 ## What the prototype leaves out
 
 - Project files. There is no save and no undo. When the window closes, the session ends.
