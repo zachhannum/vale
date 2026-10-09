@@ -24,6 +24,10 @@ The window opens on the globe workspace. The globe shows the heightmap of the wo
 - Scroll the wheel to zoom. On a trackpad, scroll with two fingers to rotate, and pinch to zoom.
 - Hold Shift and drag to twist the globe about the middle of the view. On a trackpad, use the rotate gesture.
 - On a touch screen, pinch and twist with two fingers. The place under your fingers stays under your fingers.
+- Click "Brush" in the tool bar to paint the heightmap. A pen or the left mouse button paints. A finger, the other mouse buttons, and Shift with a drag move the globe.
+- Click "Debug" in the tool bar to open the brush debug panel. It has the brush mode, the brush size, and "Undo". It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
+
+In the window, each face of the heightmap has 8,192 pixels, and the GPU holds 940 MB for it. If the computer has no GPU, start the app with `--face-size 1024`.
 
 Click "Map" in the tool bar to open the flat map with the Natural Earth 110m sample world. You can do these things there.
 
@@ -54,9 +58,10 @@ cargo run --release -p vale-app -- --export target/app/map.pdf
 cargo run --release -p vale-app -- --export target/app/map.png --pixel-ratio 2
 cargo run --release -p vale-app -- --probe 25,25
 cargo run --release -p vale-app -- --report
+cargo run --release -p vale-app -- --stroke-test --face-size 8192
 ```
 
-`--screenshot` draws the full UI in the globe workspace. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts.
+`--screenshot` draws the full UI in the globe workspace. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
 
 | Argument | Meaning |
 | --- | --- |
@@ -66,6 +71,7 @@ cargo run --release -p vale-app -- --report
 | `--radius-km <KM>` | Radius of the world. The default is 6371. |
 | `--look-at <LON,LAT>` | Put this place at the middle of the view, on the globe and on the map |
 | `--zoom <F>` | Zoom factor on the fitted view, on the globe and on the map |
+| `--face-size <N>` | Pixels on one edge of a heightmap face. The default is 8192 in the window and 1024 without a window. |
 | `--size <WxH>` | Size in points. The default is 1280x800. |
 | `--pixel-ratio <F>` | Pixels per point of the output |
 | `--hide <LAYER>` | Hide the layer with this name |

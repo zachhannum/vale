@@ -137,20 +137,21 @@ pub fn write_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     std::fs::write(path, bytes).with_context(|| format!("cannot write {}", path.display()))
 }
 
-/// Renders the whole UI offscreen. Returns the image and the state.
+/// The UI on an offscreen wgpu renderer. `setup` picks the GPU adapter.
 #[cfg(not(target_os = "ios"))]
-pub fn ui_png(
+pub fn ui_harness(
     mut state: crate::ui::AppState,
     size: (f64, f64),
     pixel_ratio: f64,
-) -> anyhow::Result<(image::RgbaImage, crate::ui::AppState)> {
+    setup: eframe::egui_wgpu::WgpuSetup,
+) -> egui_kittest::Harness<'static, crate::ui::AppState> {
     state.headless = true;
     let render_state = egui_kittest::wgpu::create_render_state(
-        egui_kittest::wgpu::default_wgpu_setup(),
+        setup,
         eframe::egui_wgpu::RendererOptions::PREDICTABLE,
     );
-    state.globe.format = Some(render_state.target_format);
-    let mut harness = egui_kittest::Harness::builder()
+    state.globe.attach(&render_state);
+    egui_kittest::Harness::builder()
         .with_size(eframe::egui::vec2(size.0 as f32, size.1 as f32))
         .with_pixels_per_point(pixel_ratio as f32)
         .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
@@ -159,7 +160,73 @@ pub fn ui_png(
         .build_ui_state(
             |ui, state: &mut crate::ui::AppState| crate::ui::draw(ui, state),
             state,
-        );
+        )
+}
+
+/// A wgpu setup that takes a hardware GPU before a software adapter.
+#[cfg(not(target_os = "ios"))]
+fn hardware_setup() -> eframe::egui_wgpu::WgpuSetup {
+    use eframe::egui_wgpu::{WgpuSetup, wgpu};
+    let WgpuSetup::CreateNew(mut setup) = egui_kittest::wgpu::default_wgpu_setup() else {
+        unreachable!("the default setup makes a new instance");
+    };
+    setup.native_adapter_selector = Some(std::sync::Arc::new(|adapters, _surface| {
+        let rank = |adapter: &&wgpu::Adapter| match adapter.get_info().device_type {
+            wgpu::DeviceType::DiscreteGpu => 0,
+            wgpu::DeviceType::IntegratedGpu => 1,
+            wgpu::DeviceType::VirtualGpu | wgpu::DeviceType::Other => 2,
+            wgpu::DeviceType::Cpu => 3,
+        };
+        let best = adapters.iter().min_by_key(rank);
+        best.cloned().ok_or_else(|| "No adapter found".to_owned())
+    }));
+    WgpuSetup::CreateNew(setup)
+}
+
+/// The longest time that the stroke test can take.
+#[cfg(not(target_os = "ios"))]
+const STROKE_TEST_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Runs the stroke test of the globe offscreen. Returns the text with the
+/// stroke delay. The frames run one after the other, with no display to
+/// wait for.
+#[cfg(not(target_os = "ios"))]
+pub fn stroke_test(
+    mut state: crate::ui::AppState,
+    size: (f64, f64),
+    pixel_ratio: f64,
+) -> anyhow::Result<String> {
+    state.workspace = crate::ui::Workspace::Globe;
+    let mut harness = ui_harness(state, size, pixel_ratio, hardware_setup());
+    let no_gpu = |e| anyhow!("cannot render the UI offscreen (no GPU adapter?): {e}");
+    // The first frames set the size of the canvas and clear the heightmap.
+    for _ in 0..3 {
+        harness.step();
+        harness.render().map_err(no_gpu)?;
+    }
+    let globe = &mut harness.state_mut().globe;
+    globe.start_stroke_test(crate::globe::stroke_test::SECONDS);
+    let start = std::time::Instant::now();
+    while harness.state().globe.busy() {
+        if start.elapsed() > STROKE_TEST_LIMIT {
+            bail!("the stroke test did not end");
+        }
+        harness.step();
+        harness.render().map_err(no_gpu)?;
+    }
+    let report = harness.state_mut().globe.test_report.take();
+    report.ok_or_else(|| anyhow!("the stroke test gave no numbers"))
+}
+
+/// Renders the whole UI offscreen. Returns the image and the state.
+#[cfg(not(target_os = "ios"))]
+pub fn ui_png(
+    state: crate::ui::AppState,
+    size: (f64, f64),
+    pixel_ratio: f64,
+) -> anyhow::Result<(image::RgbaImage, crate::ui::AppState)> {
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut harness = ui_harness(state, size, pixel_ratio, setup);
     harness.run_steps(4);
     let image = harness.render().map_err(|e| {
         anyhow!("cannot render the UI offscreen (no GPU adapter?): {e}. Use --map-only for a CPU render.")

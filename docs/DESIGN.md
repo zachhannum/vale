@@ -410,7 +410,9 @@ The labeling prototype is done. The command `cargo run --release -p vale-labeler
 
 The app prototype is a vertical slice. It makes a runnable app early. It takes a thin part of phases 2, 4, 6, 8, and 9 at once. It differs from the design above in nine ways. The command `cargo run --release -p vale-app` opens the window. The command `cargo run --release -p vale-app -- --screenshot target/app/ui.png --size 1440x900 --report` draws the full UI to a PNG without a window.
 
-The app opens on the globe workspace. The globe view and its navigation are in `vale-app`, and the globe draws the heightmap of `vale-terrain` in greyscale with a graticule. The heightmap is empty, because the app has no brush yet. The GPU texture holds six full faces of 1,024 pixels. A switch in the tool bar opens the flat map, and the nine items below are about the flat map.
+The app opens on the globe workspace. The globe view and its navigation are in `vale-app`, and the globe draws the heightmap of `vale-terrain` in greyscale with a graticule. A brush tool paints the heightmap. The GPU texture holds six full faces of 8,192 pixels, which is 805 MB, and a copy of one face for the brush takes 134 MB more. A switch in the tool bar opens the flat map, and the nine items below are about the flat map.
+
+The brush stamps in a wgpu shader of `vale-terrain`, one pass for each face that the stamp touches. Up to 32 raise, lower, or flatten stamps share one pass. A smooth stamp has its own pass, because it reads the texels around it. The pass writes only the rectangle under the brush. While you paint, the GPU texture is the working copy. At the end of a stroke the app reads the changed texels back into the heightmap of `vale-terrain`, which stays the document. The CPU stamp is the reference, and the tests of `vale-terrain` compare the two. The result of one stamp differs by at most 1 of the 65,536 levels, and by at most 2 in the smooth mode. Over a stroke of many raise or lower stamps, the tests allow a difference of 3. A debug panel shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work.
 
 1. The prototype is a vertical slice through phases 2, 4, 6, 8, and 9. It does not finish any of them.
 2. The map is drawn by `vello_cpu` on screen and in PNG files. The display list of `vale-render` exists, and the GPU Vello backend does not. The same pixels come out with and without a window, so tests need no GPU. The PDF export uses Krilla, and text in the PDF stays text.
@@ -442,7 +444,7 @@ The prototype has a pressure brush with the four modes, the stepped preview in o
 
 It differs from the design in four ways.
 
-1. The brush stamps on the CPU, and the app sends the changed texels to the GPU. The design stamps in wgpu shaders.
+1. The brush stamps on the CPU, and the prototype sends the changed texels to the GPU. The design stamps in wgpu shaders, and `vale-app` does.
 2. The heightmap has no project file, and the GPU texture holds six full faces.
 3. Pen input comes through egui touch events. A touch with a force counts as a pen, because on iPad only Apple Pencil has a force.
 4. Hover, tilt, and the 240 Hz pen samples do not arrive, because winit 0.30 does not read them on iOS. If the iPad test shows that the app needs them, a UIKit gesture recognizer below egui can supply them.

@@ -18,6 +18,7 @@ pub mod view;
 pub extern "C" fn vale_app_main() {
     let result = ui::AppState::new(document::Document::sample()).and_then(|mut state| {
         state.file_buttons = false;
+        state.globe.set_face_size(globe::WINDOW_FACE_SIZE);
         app::run_window(state, (1280.0, 800.0), None)
     });
     if let Err(err) = result {

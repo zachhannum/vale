@@ -1,10 +1,15 @@
 //! The globe canvas.
 
+use std::time::Instant;
+
 use eframe::egui;
 use eframe::egui_wgpu;
 
 use super::AppState;
+use crate::globe::brush::{FIXED_FLOW, Sample, brush_radius, pen_flow};
 use crate::globe::math::dir_to_lonlat;
+use crate::globe::nav::{Painting, on_canvas};
+use crate::globe::{Globe, Tool};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
 
@@ -14,7 +19,106 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         .show(ui, |ui| canvas(ui, state));
 }
 
+/// Reads the pen and the mouse for the brush. In the brush tool, a pen and
+/// the primary mouse button paint. A touch with a force is a pen.
+fn brush_input(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    resp: &egui::Response,
+    globe: &mut Globe,
+    now: Instant,
+) -> Painting {
+    if globe.tool != Tool::Brush || globe.format.is_none() {
+        if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
+            globe.pen_up();
+        }
+        globe.input.pos = None;
+        return Painting::default();
+    }
+    let radius = brush_radius(globe.brush.size_points, globe.view.radius(rect));
+    let sample = |globe: &mut Globe, pos: egui::Pos2, flow: f64| {
+        let dir = globe.view.unproject(rect, pos);
+        globe.input.pos = Some(pos);
+        globe.pen_sample(Sample { dir, flow, radius }, now);
+    };
+    let mut touched = false;
+    let events = ui.input(|i| i.events.clone());
+    for event in &events {
+        let egui::Event::Touch {
+            id,
+            phase,
+            pos,
+            force,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        touched = true;
+        let flow = force.map_or(FIXED_FLOW, pen_flow);
+        match phase {
+            egui::TouchPhase::Start => {
+                let free = globe.input.pen.is_none() && !globe.input.mouse;
+                if force.is_some() && free && on_canvas(ui, rect, *pos) {
+                    globe.input.pen = Some(id.0);
+                    globe.pen_down();
+                    sample(globe, *pos, flow);
+                }
+            }
+            egui::TouchPhase::Move => {
+                if globe.input.pen == Some(id.0) {
+                    sample(globe, *pos, flow);
+                }
+            }
+            egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                if globe.input.pen == Some(id.0) {
+                    globe.input.pen = None;
+                    globe.input.pos = None;
+                    globe.pen_up();
+                }
+            }
+        }
+    }
+
+    let (pos, pressed, down, shift, moved) = ui.input(|i| {
+        (
+            i.pointer.latest_pos(),
+            i.pointer.primary_pressed(),
+            i.pointer.primary_down(),
+            i.modifiers.shift,
+            i.pointer.delta() != egui::Vec2::ZERO,
+        )
+    });
+    // The first touch is also the egui pointer.
+    let touched = touched || globe.nav.touching() || globe.input.pen.is_some();
+    match pos {
+        Some(pos) if globe.input.mouse && down => {
+            if moved {
+                sample(globe, pos, FIXED_FLOW);
+            }
+        }
+        _ if globe.input.mouse => {
+            globe.input.mouse = false;
+            globe.pen_up();
+        }
+        Some(pos) if pressed && !shift && !touched && resp.contains_pointer() => {
+            globe.input.mouse = true;
+            globe.pen_down();
+            sample(globe, pos, FIXED_FLOW);
+        }
+        _ => {}
+    }
+    if globe.input.pen.is_none() {
+        globe.input.pos = resp.hover_pos();
+    }
+    Painting {
+        pen: true,
+        mouse: globe.input.mouse,
+    }
+}
+
 fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
+    let now = Instant::now();
     let globe = &mut state.globe;
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
@@ -24,12 +128,14 @@ fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
     if rect.width() < 8.0 || rect.height() < 8.0 {
         return;
     }
-    globe.nav.update(ui, rect, &resp, &mut globe.view);
+    let painting = brush_input(ui, rect, &resp, globe, now);
+    globe.nav.update(ui, rect, &resp, &mut globe.view, painting);
     state.cursor_lonlat = resp
         .hover_pos()
         .and_then(|pos| globe.view.unproject(rect, pos))
         .map(|dir| dir_to_lonlat(dir).into());
 
+    let more = globe.advance(now);
     match globe.callback(ui.ctx().pixels_per_point()) {
         Some(callback) => {
             painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
@@ -44,7 +150,13 @@ fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
             );
         }
     }
-    if globe.nav.active() {
+    if let Some(pos) = globe.input.pos.filter(|_| globe.tool == Tool::Brush) {
+        let globe_radius = globe.view.radius(rect);
+        let radius = brush_radius(globe.brush.size_points, globe_radius) * globe_radius;
+        let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(170));
+        painter.circle_stroke(pos, radius as f32, stroke);
+    }
+    if globe.nav.active() || more {
         ui.ctx().request_repaint();
     }
 }

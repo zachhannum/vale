@@ -53,7 +53,7 @@ pub struct TexelRect {
 }
 
 impl TexelRect {
-    fn union(self, o: TexelRect) -> TexelRect {
+    pub(crate) fn union(self, o: TexelRect) -> TexelRect {
         TexelRect {
             x0: self.x0.min(o.x0),
             y0: self.y0.min(o.y0),
@@ -61,6 +61,18 @@ impl TexelRect {
             y1: self.y1.max(o.y1),
         }
     }
+}
+
+/// The texels that one stamp can touch.
+#[derive(Clone, Copy, Debug)]
+pub struct StampPlan {
+    /// The stamp, with the radius inside the limits of the brush.
+    pub stamp: Stamp,
+    /// The rectangle of each face that the brush circle can touch.
+    pub rects: [Option<TexelRect>; FACES],
+    /// The distance from a texel to the neighbors that the smooth mode reads,
+    /// in texels.
+    pub reach: usize,
 }
 
 type Tile = Box<[u16]>;
@@ -84,6 +96,8 @@ pub struct Heightmap {
     /// The flat face coordinate at each texel center.
     flat: Vec<f64>,
     dirty: [Option<TexelRect>; FACES],
+    /// The base level or the full set of tiles is new.
+    reset: bool,
     stroke: Option<Saved>,
     undo: Vec<Saved>,
 }
@@ -109,6 +123,7 @@ impl Heightmap {
                 .map(|i| unwarp((i as f64 + 0.5) / n as f64 * 2.0 - 1.0))
                 .collect(),
             dirty: [None; FACES],
+            reset: true,
             stroke: None,
             undo: Vec::new(),
         };
@@ -118,6 +133,20 @@ impl Heightmap {
 
     pub fn face_size(&self) -> usize {
         self.n
+    }
+
+    /// The level of each texel in a tile that has no memory.
+    pub fn base(&self) -> u16 {
+        self.base
+    }
+
+    /// The face and the texels of each tile that holds memory.
+    pub fn allocated_rects(&self) -> impl Iterator<Item = (usize, TexelRect)> + '_ {
+        self.tiles
+            .iter()
+            .enumerate()
+            .filter(|(_, tile)| tile.is_some())
+            .map(|(index, _)| self.tile_rect(index))
     }
 
     /// The number of tiles that hold memory.
@@ -172,6 +201,17 @@ impl Heightmap {
         std::mem::take(&mut self.dirty)
     }
 
+    /// Returns `true` one time after the base level or the full set of tiles
+    /// changed. A new heightmap, `fill`, and the undo of a `fill` do this. A
+    /// reader then needs the base level and each tile again, so the call also
+    /// clears the changed rectangles.
+    pub fn take_reset(&mut self) -> bool {
+        if self.reset {
+            self.dirty = [None; FACES];
+        }
+        std::mem::take(&mut self.reset)
+    }
+
     /// Sets all texels to `level` and frees all tiles.
     pub fn fill(&mut self, level: u16) {
         let mut saved = Saved {
@@ -188,6 +228,7 @@ impl Heightmap {
             self.base = level;
             self.push_undo(saved);
             self.mark_all_dirty();
+            self.reset = true;
         }
     }
 
@@ -257,6 +298,44 @@ impl Heightmap {
                     None => out.resize(out.len() + end - x, self.base),
                 }
                 x = end;
+            }
+        }
+    }
+
+    /// Writes the texels of a rectangle, row by row. The texels come from a
+    /// copy of the heightmap that is already up to date, so the call marks
+    /// nothing as changed. A tile with no changed texel takes no memory.
+    pub fn store_rect(&mut self, face: usize, rect: TexelRect, data: &[u16]) {
+        let (t, base) = (self.tile, self.base);
+        let width = rect.x1 - rect.x0;
+        assert_eq!(data.len(), width * (rect.y1 - rect.y0), "the data size");
+        if data.is_empty() {
+            return;
+        }
+        for ty in rect.y0 / t..=(rect.y1 - 1) / t {
+            for tx in rect.x0 / t..=(rect.x1 - 1) / t {
+                let index = (face * self.per_side + ty) * self.per_side + tx;
+                let (x0, x1) = (rect.x0.max(tx * t), rect.x1.min((tx + 1) * t));
+                let (y0, y1) = (rect.y0.max(ty * t), rect.y1.min((ty + 1) * t));
+                // The row of `data` and the row of the tile, for each `y`.
+                let rows = (y0..y1).map(|y| {
+                    let from = (y - rect.y0) * width + (x0 - rect.x0);
+                    let to = (y - ty * t) * t + (x0 - tx * t);
+                    (&data[from..from + x1 - x0], to..to + x1 - x0)
+                });
+                let tile = &mut self.tiles[index];
+                let same = rows.clone().all(|(new, to)| match tile.as_deref() {
+                    Some(tile) => tile[to] == *new,
+                    None => new.iter().all(|&level| level == base),
+                });
+                if same {
+                    continue;
+                }
+                save_tile(&mut self.stroke, index, tile);
+                let tile = tile.get_or_insert_with(|| vec![base; t * t].into());
+                for (new, to) in rows {
+                    tile[to].copy_from_slice(new);
+                }
             }
         }
     }
@@ -337,6 +416,7 @@ impl Heightmap {
         if saved.base != self.base {
             self.base = saved.base;
             self.mark_all_dirty();
+            self.reset = true;
         }
         for (index, old) in saved.tiles {
             self.tiles[index] = old;
@@ -401,21 +481,32 @@ impl Heightmap {
         })
     }
 
+    /// The texels that a stamp can touch.
+    pub fn stamp_plan(&self, stamp: &Stamp) -> StampPlan {
+        let radius = stamp.radius.clamp(1e-6, MAX_BRUSH_RADIUS);
+        StampPlan {
+            stamp: Stamp { radius, ..*stamp },
+            rects: std::array::from_fn(|face| self.stamp_rect(face, stamp.center, radius)),
+            reach: ((radius / (FRAC_PI_2 / self.n as f64)) * 0.25).max(1.0) as usize,
+        }
+    }
+
     /// Applies one stamp. Returns the number of texels that it visited.
     pub fn stamp(&mut self, stamp: &Stamp) -> usize {
-        let radius = stamp.radius.clamp(1e-6, MAX_BRUSH_RADIUS);
+        let plan = self.stamp_plan(stamp);
         let mut visited = 0;
-        for face in 0..FACES {
-            if let Some(rect) = self.stamp_rect(face, stamp.center, radius) {
-                visited += self.stamp_face(face, rect, stamp, radius);
+        for (face, rect) in plan.rects.into_iter().enumerate() {
+            if let Some(rect) = rect {
+                visited += self.stamp_face(face, rect, &plan.stamp, plan.reach);
                 self.mark_dirty(face, rect);
             }
         }
         visited
     }
 
-    fn stamp_face(&mut self, face: usize, rect: TexelRect, stamp: &Stamp, radius: f64) -> usize {
+    fn stamp_face(&mut self, face: usize, rect: TexelRect, stamp: &Stamp, reach: usize) -> usize {
         let (t, base) = (self.tile, self.base);
+        let radius = stamp.radius;
         let axis = face / 2;
         let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
         let c = stamp.center;
@@ -424,7 +515,6 @@ impl Heightmap {
         let hard = stamp.hardness.clamp(0.0, 0.999);
         // The smooth mode reads neighbors, so it needs the values from before.
         // Near a face edge, the neighbors are on the next face.
-        let reach = ((radius / (FRAC_PI_2 / self.n as f64)) * 0.25).max(1.0) as usize;
         let (bx, by) = (rect.x0 as i64 - reach as i64, rect.y0 as i64 - reach as i64);
         let (bw, bh) = (rect.x1 - rect.x0 + 2 * reach, rect.y1 - rect.y0 + 2 * reach);
         let before = if stamp.mode == Mode::Smooth {
@@ -736,6 +826,153 @@ mod tests {
         assert!(map.undo());
         assert_eq!(map.allocated_tiles(), 0);
         assert_eq!(map.sample(center), 100);
+    }
+
+    #[test]
+    fn stamp_plan_lists_the_texels_that_stamp_marks() {
+        let mut map = Heightmap::with_tile_size(64, 16, 100);
+        let stamp = raise(lonlat_to_dir(45.0, 35.264), 5.0);
+        let plan = map.stamp_plan(&stamp);
+        assert_eq!(plan.stamp.radius, MAX_BRUSH_RADIUS);
+        // A quarter of the radius, in texels of 90 / 64 degrees.
+        assert_eq!(plan.reach, 3);
+        assert_eq!(plan.rects.iter().flatten().count(), 3);
+        map.take_dirty();
+        map.stamp(&stamp);
+        assert_eq!(map.take_dirty(), plan.rects);
+        assert_eq!(map.stamp_plan(&raise(stamp.center, 0.001)).reach, 1);
+    }
+
+    #[test]
+    fn base_is_the_level_of_a_fill() {
+        let mut map = Heightmap::with_tile_size(64, 16, 100);
+        assert_eq!(map.base(), 100);
+        map.set(0, 1, 1, 5);
+        assert_eq!(map.base(), 100);
+        map.fill(300);
+        assert_eq!(map.base(), 300);
+        map.undo();
+        assert_eq!(map.base(), 100);
+    }
+
+    #[test]
+    fn take_reset_is_true_one_time_after_a_new_base() {
+        let mut map = Heightmap::with_tile_size(64, 16, 100);
+        assert!(map.take_reset());
+        assert_eq!(map.take_dirty(), [None; FACES]);
+        assert!(!map.take_reset());
+
+        // A stamp and its undo keep the base level.
+        map.begin_stroke();
+        map.stamp(&raise(lonlat_to_dir(0.0, 0.0), 0.1));
+        map.end_stroke();
+        map.undo();
+        assert!(!map.take_reset());
+        assert!(map.take_dirty()[0].is_some());
+
+        map.fill(300);
+        assert!(map.take_reset());
+        assert!(!map.take_reset());
+        // A fill to the same level changes nothing.
+        map.fill(300);
+        assert!(!map.take_reset());
+
+        map.undo();
+        assert!(map.take_reset());
+        assert_eq!(map.take_dirty(), [None; FACES]);
+
+        // `take_dirty` does not clear the reset.
+        map.fill(500);
+        map.take_dirty();
+        assert!(map.take_reset());
+    }
+
+    #[test]
+    fn allocated_rects_lists_the_tiles_with_memory() {
+        let mut map = Heightmap::with_tile_size(40, 16, 0);
+        assert_eq!(map.allocated_rects().count(), 0);
+        map.set(1, 3, 20, 9);
+        map.set(4, 39, 39, 9);
+        let rect = |x0, y0, x1, y1| TexelRect { x0, y0, x1, y1 };
+        // The last tile of a face stops at the face edge.
+        let expected = vec![(1, rect(0, 16, 16, 32)), (4, rect(32, 32, 40, 40))];
+        assert_eq!(map.allocated_rects().collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn store_rect_writes_texels_and_undo_puts_them_back() {
+        let mut map = Heightmap::with_tile_size(64, 16, 100);
+        map.set(2, 20, 20, 7);
+        map.take_dirty();
+        // The rectangle covers parts of 9 tiles. Only one new texel is not
+        // equal to the texel in the map.
+        let rect = TexelRect {
+            x0: 10,
+            y0: 12,
+            x1: 40,
+            y1: 36,
+        };
+        let mut data = Vec::new();
+        map.read_rect(2, rect, &mut data);
+        data[(33 - 12) * 30 + (35 - 10)] = 900;
+        map.begin_stroke();
+        map.store_rect(2, rect, &data);
+        assert!(map.end_stroke());
+        assert_eq!(map.take_dirty(), [None; FACES]);
+        assert_eq!(map.allocated_tiles(), 2);
+        assert_eq!(map.get(2, 35, 33), 900);
+        assert_eq!(map.get(2, 20, 20), 7);
+        let mut back = Vec::new();
+        map.read_rect(2, rect, &mut back);
+        assert_eq!(back, data);
+
+        assert!(map.undo());
+        assert_eq!(map.allocated_tiles(), 1);
+        assert_eq!(map.get(2, 35, 33), 100);
+        assert_eq!(map.get(2, 20, 20), 7);
+
+        // Equal texels are not a change of the stroke.
+        map.begin_stroke();
+        map.store_rect(2, rect, &vec![100; 30 * 24][..]);
+        assert!(map.end_stroke());
+        map.begin_stroke();
+        map.store_rect(2, rect, &vec![100; 30 * 24][..]);
+        assert!(!map.end_stroke());
+    }
+
+    /// A stroke with each mode across a cube corner gives a fixed result. The
+    /// sum is a hash of the levels of all texels.
+    #[test]
+    fn stamp_results_do_not_change() {
+        let mut map = Heightmap::with_tile_size(64, 16, 30000);
+        for (i, mode) in [Mode::Raise, Mode::Lower, Mode::Flatten, Mode::Smooth]
+            .into_iter()
+            .enumerate()
+        {
+            for step in 0..6 {
+                map.stamp(&Stamp {
+                    hardness: 0.4,
+                    flow: 0.7,
+                    mode,
+                    level: 41000,
+                    strength: 900.0,
+                    ..raise(
+                        lonlat_to_dir(40.0 + 2.0 * step as f64, 30.0 + i as f64),
+                        0.5,
+                    )
+                });
+            }
+        }
+        let mut sum = 0u64;
+        for face in 0..FACES {
+            for y in 0..64 {
+                for x in 0..64 {
+                    let level = u64::from(map.get(face, x, y));
+                    sum = sum.wrapping_mul(31).wrapping_add(level);
+                }
+            }
+        }
+        assert_eq!(sum, 3970950523126258947);
     }
 
     #[test]

@@ -1,11 +1,12 @@
 use clap::Parser;
 use eframe::egui::{self, Pos2, Vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
-use vale_app::cli::{Args, apply_globe_view};
+use egui_kittest::kittest::{NodeT, Queryable};
+use vale_app::cli::{Args, apply_globe, apply_globe_view};
 use vale_app::document::Document;
 use vale_app::globe::math::{V3, angle, lonlat_to_dir};
 use vale_app::globe::view::GlobeView;
+use vale_app::globe::{FACE_SIZE, Tool};
 use vale_app::headless;
 use vale_app::ui::{AppState, Workspace, draw};
 
@@ -56,18 +57,38 @@ fn wheel(h: &mut Harness<'static, AppState>, unit: egui::MouseWheelUnit, delta: 
 }
 
 fn touch(h: &mut Harness<'static, AppState>, id: u64, phase: egui::TouchPhase, pos: Pos2) {
+    touch_with_force(h, id, phase, pos, None);
+}
+
+fn touch_with_force(
+    h: &mut Harness<'static, AppState>,
+    id: u64,
+    phase: egui::TouchPhase,
+    pos: Pos2,
+    force: Option<f32>,
+) {
     h.event(egui::Event::Touch {
         device_id: egui::TouchDeviceId(0),
         id: egui::TouchId(id),
         phase,
         pos,
-        force: None,
+        force,
     });
 }
 
 /// The first finger is also the pointer, as in the window on iPad.
 fn first_finger(h: &mut Harness<'static, AppState>, phase: egui::TouchPhase, pos: Pos2) {
-    touch(h, 1, phase, pos);
+    first_touch(h, phase, pos, None);
+}
+
+/// The first touch is also the pointer. A touch with a force is a pen.
+fn first_touch(
+    h: &mut Harness<'static, AppState>,
+    phase: egui::TouchPhase,
+    pos: Pos2,
+    force: Option<f32>,
+) {
+    touch_with_force(h, 1, phase, pos, force);
     h.event(egui::Event::PointerMoved(pos));
     if phase != egui::TouchPhase::Move {
         h.event(egui::Event::PointerButton {
@@ -292,6 +313,7 @@ fn a_touch_on_the_tool_bar_does_not_move_the_globe() {
 
 #[test]
 fn the_screenshot_draws_the_heightmap_on_the_globe() {
+    let _gpu = one_gpu_test();
     let mut state = state();
     // A high patch in the middle of the face that looks at the eye.
     state.globe.view = GlobeView::centered(0.0, 0.0);
@@ -315,4 +337,324 @@ fn the_screenshot_draws_the_heightmap_on_the_globe() {
     assert_eq!(disk[0], disk[1]);
     assert_ne!(outside, disk);
     assert!(state.composed.is_none());
+}
+
+/// The face size of the brush tests.
+const BRUSH_FACE_SIZE: usize = 256;
+
+/// One test at a time makes a wgpu device. Software adapters fail when two
+/// threads make devices at the same time.
+fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A harness with the wgpu renderer. Each step renders, so each step runs the
+/// GPU work of the globe.
+fn gpu_harness() -> Harness<'static, AppState> {
+    let mut state = state();
+    state.globe.set_face_size(BRUSH_FACE_SIZE);
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    h
+}
+
+/// Runs frames until the stroke is in the CPU heightmap.
+fn settle(h: &mut Harness<'static, AppState>) {
+    for _ in 0..400 {
+        h.step();
+        if !h.state().globe.busy() {
+            return;
+        }
+    }
+    panic!("the stroke did not end");
+}
+
+/// A drag of the primary mouse button across the middle of the globe. Returns
+/// the middle.
+fn mouse_stroke(h: &mut Harness<'static, AppState>) -> Pos2 {
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 0.0));
+    button(h, egui::PointerButton::Primary, from, true);
+    h.step();
+    for i in 1..=8 {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 8.0)));
+        h.step();
+    }
+    button(h, egui::PointerButton::Primary, to, false);
+    h.step();
+    c
+}
+
+/// The frame without the pointer, cut to the canvas of the globe.
+fn canvas_image(h: &mut Harness<'static, AppState>) -> image::RgbaImage {
+    h.remove_cursor();
+    h.run_steps(2);
+    let rect = h.state().globe.rect;
+    let (x, y) = (rect.min.x.ceil() as u32, rect.min.y.ceil() as u32);
+    let (w, h_) = (rect.width().floor() as u32, rect.height().floor() as u32);
+    let frame = h.render().unwrap();
+    image::imageops::crop_imm(&frame, x, y, w - 1, h_ - 1).to_image()
+}
+
+#[test]
+fn face_size_sets_the_heightmap_of_the_globe() {
+    let args = Args::try_parse_from(["vale-app", "--face-size", "512", "--stroke-test"]).unwrap();
+    assert!(args.stroke_test);
+    let mut state = state();
+    apply_globe(&args, &mut state.globe, FACE_SIZE).unwrap();
+    assert_eq!(state.globe.map.face_size(), 512);
+    assert_eq!(state.globe.stats.face_size, 512);
+
+    let args = Args::try_parse_from(["vale-app"]).unwrap();
+    apply_globe(&args, &mut state.globe, FACE_SIZE).unwrap();
+    assert_eq!(state.globe.map.face_size(), FACE_SIZE);
+
+    let args = Args::try_parse_from(["vale-app", "--face-size", "0"]).unwrap();
+    assert!(apply_globe(&args, &mut state.globe, FACE_SIZE).is_err());
+}
+
+#[test]
+fn painting_changes_the_globe() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    h.get_by_label("Brush").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.tool, Tool::Brush);
+    let view = h.state().globe.view;
+    let before = canvas_image(&mut h);
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    let after = canvas_image(&mut h);
+    // The drag paints and does not rotate.
+    assert_eq!(h.state().globe.view, view);
+    let (w, hh) = before.dimensions();
+    let under = (w / 2 + 7, hh / 2 + 5);
+    let far = (w / 2 + 7, hh / 2 + 120);
+    let red = |img: &image::RgbaImage, (x, y): (u32, u32)| img.get_pixel(x, y).0[0];
+    assert!(
+        red(&after, under) > red(&before, under) + 4,
+        "{} and {}",
+        red(&after, under),
+        red(&before, under)
+    );
+    assert_eq!(
+        after.get_pixel(far.0, far.1),
+        before.get_pixel(far.0, far.1)
+    );
+}
+
+#[test]
+fn the_debug_panel_shows_the_stroke_delay() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    assert!(h.query_by_label_contains("Stroke delay").is_none());
+    h.get_by_label("Debug").click();
+    h.get_by_label("Brush").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Stroke delay: no stroke").is_some());
+    assert!(h.state().globe.rect.width() < 640.0);
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    for _ in 0..400 {
+        if h.state().globe.stats.last().unwrap().delay_ms.count > 0 {
+            break;
+        }
+        h.step();
+    }
+    h.run_steps(2);
+    let label = h.get_by_label_contains("Stroke delay: last");
+    let text = label.accesskit_node().value().unwrap();
+    // "Stroke delay: last 1.23 ms, mean ..."
+    let number = text
+        .strip_prefix("Stroke delay: last ")
+        .and_then(|rest| rest.split_once(" ms"))
+        .map(|(number, _)| number.parse::<f64>());
+    assert!(matches!(number, Some(Ok(ms)) if ms > 0.0), "{text}");
+    assert!(h.query_by_label_contains("GPU: ").is_some());
+    assert!(h.query_by_label_contains("Frame interval").is_some());
+    assert!(h.query_by_label_contains("is not included").is_some());
+}
+
+#[test]
+fn a_stroke_reaches_the_cpu_heightmap_and_undo_puts_it_back() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    let before = canvas_image(&mut h);
+    let base = h.state().globe.map.base();
+    let c = mouse_stroke(&mut h);
+    let under = place(&h, c);
+    // The stroke is on the GPU only, until its texels come back.
+    settle(&mut h);
+    let globe = &h.state().globe;
+    assert!(globe.map.sample(under) > base);
+    assert!(globe.map.allocated_tiles() > 0);
+    assert!(globe.can_undo());
+    let painted = canvas_image(&mut h);
+    assert_ne!(painted.as_raw(), before.as_raw());
+
+    assert!(h.state_mut().globe.undo());
+    assert_eq!(h.state().globe.map.sample(under), base);
+    assert_eq!(h.state().globe.map.allocated_tiles(), 0);
+    let after = canvas_image(&mut h);
+    assert!(
+        after.as_raw() == before.as_raw(),
+        "the render is not as before"
+    );
+}
+
+#[test]
+fn navigate_is_unchanged_with_the_brush_tool_off() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 20.0));
+    let grabbed = place(&h, from);
+    button(&mut h, egui::PointerButton::Primary, from, true);
+    h.step();
+    h.event(egui::Event::PointerMoved(to));
+    h.step();
+    button(&mut h, egui::PointerButton::Primary, to, false);
+    h.run_steps(3);
+    assert!(off(&h, grabbed, to) < 0.05);
+    // A pen also rotates.
+    let grabbed = place(&h, from);
+    first_touch(&mut h, egui::TouchPhase::Start, from, Some(0.5));
+    h.step();
+    first_touch(&mut h, egui::TouchPhase::Move, to, Some(0.5));
+    h.step();
+    first_touch(&mut h, egui::TouchPhase::End, to, Some(0.5));
+    h.run_steps(3);
+    assert!(off(&h, grabbed, to) < 0.05);
+
+    let globe = &h.state().globe;
+    assert!(!globe.busy());
+    assert!(globe.stats.last().is_none());
+    assert_eq!(globe.map.allocated_tiles(), 0);
+    assert!(!globe.can_undo());
+}
+
+#[test]
+fn in_the_brush_tool_a_pen_paints_and_the_other_input_moves_the_globe() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(1);
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 20.0));
+
+    // The secondary button and a finger rotate, and they do not paint.
+    let grabbed = place(&h, from);
+    button(&mut h, egui::PointerButton::Secondary, from, true);
+    h.step();
+    h.event(egui::Event::PointerMoved(to));
+    h.step();
+    button(&mut h, egui::PointerButton::Secondary, to, false);
+    h.run_steps(2);
+    assert!(off(&h, grabbed, to) < 0.05);
+    let grabbed = place(&h, from);
+    first_finger(&mut h, egui::TouchPhase::Start, from);
+    h.step();
+    first_finger(&mut h, egui::TouchPhase::Move, to);
+    h.step();
+    first_finger(&mut h, egui::TouchPhase::End, to);
+    h.run_steps(2);
+    assert!(off(&h, grabbed, to) < 0.05);
+    assert!(h.state().globe.stats.last().is_none());
+
+    // A pen paints, and it does not rotate.
+    let view = h.state().globe.view;
+    let base = h.state().globe.map.base();
+    let under = place(&h, c);
+    first_touch(&mut h, egui::TouchPhase::Start, from, Some(0.5));
+    h.step();
+    first_touch(&mut h, egui::TouchPhase::Move, c, Some(0.5));
+    h.step();
+    first_touch(&mut h, egui::TouchPhase::Move, to, Some(0.5));
+    h.step();
+    first_touch(&mut h, egui::TouchPhase::End, to, Some(0.5));
+    settle(&mut h);
+    assert_eq!(h.state().globe.view, view);
+    assert!(h.state().globe.map.sample(under) > base);
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 1);
+}
+
+#[test]
+fn the_stroke_test_runs_and_gives_the_stroke_delay() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    h.get_by_label("Debug").click();
+    h.run_steps(2);
+    let brush = h.state().globe.brush;
+    h.state_mut().globe.start_stroke_test(0.25);
+    assert!(h.state().globe.busy());
+    settle(&mut h);
+    h.run_steps(2);
+    let globe = &h.state().globe;
+    let report = globe.test_report.as_deref().unwrap();
+    assert!(report.contains("raise, 160 pt"), "{report}");
+    assert!(report.contains("smooth, 160 pt"), "{report}");
+    assert!(report.contains("Stroke 3: raise, 4 pt"), "{report}");
+    assert!(report.contains("Stroke 4: smooth, 4 pt"), "{report}");
+    assert_eq!(report.matches("Stroke delay: last ").count(), 4, "{report}");
+    assert_eq!(report.matches("Passes in a frame").count(), 4, "{report}");
+    assert_eq!(globe.stats.backlog, 0);
+    assert!(globe.stats.last().unwrap().delay_ms.count >= 1);
+    assert_eq!(globe.brush, brush);
+    // The stroke is in the CPU heightmap, on both sides of a face edge.
+    let base = globe.map.base();
+    assert!(globe.map.sample(lonlat_to_dir(30.0, 21.0)) > base);
+    assert!(globe.map.sample(lonlat_to_dir(60.0, 21.0)) > base);
+    assert!(h.query_by_label("Stroke test").is_some());
+    std::fs::create_dir_all("../../target/app").unwrap();
+    let frame = h.render().unwrap();
+    frame.save("../../target/app/test-brush-debug.png").unwrap();
+}
+
+#[test]
+fn a_fast_stroke_of_a_small_brush_does_not_fall_behind() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.state_mut().globe.brush.size_points = 4.0;
+    h.run_steps(1);
+    let base = h.state().globe.map.base();
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(110.0, 0.0), c + Vec2::new(110.0, 0.0));
+    let under = place(&h, c);
+    button(&mut h, egui::PointerButton::Primary, from, true);
+    h.step();
+    h.event(egui::Event::PointerMoved(to));
+    h.step();
+    // One frame took all stamps of the move.
+    assert_eq!(h.state().globe.stats.backlog, 0);
+    button(&mut h, egui::PointerButton::Primary, to, false);
+    settle(&mut h);
+    h.run_steps(2);
+
+    let globe = &h.state().globe;
+    let stroke = globe.stats.last().unwrap();
+    assert!(stroke.stamps.worst >= 300.0, "{}", stroke.stamps_line());
+    assert!(stroke.stamps.count <= 2, "{}", stroke.stamps_line());
+    // 32 stamps go in one pass on each face that they touch.
+    let passes = stroke.passes.worst;
+    assert!(
+        passes >= stroke.stamps.worst / 32.0,
+        "{}",
+        stroke.passes_line()
+    );
+    assert!(
+        passes <= stroke.stamps.worst / 8.0,
+        "{}",
+        stroke.passes_line()
+    );
+    assert_eq!(globe.stats.backlog, 0);
+    assert!(globe.map.sample(under) > base);
+    assert!(globe.map.sample(place(&h, c + Vec2::new(100.0, 0.0))) > base);
+    assert_eq!(globe.map.sample(place(&h, c + Vec2::new(0.0, 40.0))), base);
 }
