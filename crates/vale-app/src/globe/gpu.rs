@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu::{self, wgpu};
 
-use vale_terrain::{FACES, GpuHeightmap, Heightmap, Readback, StampPlan, TexelRect};
+use vale_terrain::{FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan, TexelRect};
+
+use super::preview::BandUniform;
 
 /// The time between two polls of the device while GPU work is in flight.
 const POLL_STEP: Duration = Duration::from_micros(250);
@@ -18,6 +20,7 @@ pub struct Uniforms {
     pub rot: [[f32; 4]; 3],
     pub globe: [f32; 4],
     pub params: [f32; 4],
+    pub bands: [BandUniform; MAX_BANDS],
 }
 
 struct Resources {
