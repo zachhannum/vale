@@ -87,6 +87,33 @@ xcodebuild -project ValeApp.xcodeproj -scheme ValeApp -sdk iphonesimulator -arch
 
 The iOS target is in `crates/vale-app/ios`. `project.yml` describes the Xcode project. `build-rust.sh` builds the Rust static library, and `toolchain.cmake` tells the PROJ build which iOS SDK to use. The static PROJ library holds its own database, so the app bundle needs no PROJ data files.
 
+## Get a PR build on an iPad
+
+CI uploads a build to TestFlight for each PR from a branch of this repository, and for each push to `main`. The TestFlight app on the iPad then offers the build. The upload needs a membership in the Apple Developer Program.
+
+Do these steps one time:
+
+1. In the Apple developer account, register the bundle ID `dev.vale.app`. If the ID is not free, change `PRODUCT_BUNDLE_IDENTIFIER` in `crates/vale-app/ios/project.yml`.
+2. In App Store Connect, create the app record with that bundle ID.
+3. In App Store Connect, under "Users and Access", create an API key with the Admin role. Xcode can sign the build only with an Admin key. Download the `.p8` file.
+4. In the GitHub repository, add these Actions secrets:
+   - `ASC_KEY_P8`: the full text of the `.p8` file.
+   - `ASC_KEY_ID`: the key ID.
+   - `ASC_ISSUER_ID`: the issuer ID, from the same page as the key.
+   - `APPLE_TEAM_ID`: the team ID, from the membership page of the developer account.
+5. In App Store Connect, under "TestFlight", create an internal group, turn on automatic distribution, and add yourself.
+6. On the iPad, install the TestFlight app and sign in with the same Apple account.
+
+After a push to a PR, a comment on the PR shows the build number and the state of the upload. Apple needs some minutes to process each upload. When the comment says that the build is ready, open TestFlight on the iPad and install it.
+
+The version of a build is `0.1.<PR>`, and `main` is `0.1.0`. TestFlight thus shows one row for each PR. The build number is the number of the workflow run and its attempt, for example `57.1`. The "What to Test" text of a build holds the PR number, the PR title, and the iPad test section of the PR description.
+
+A PR from a fork gets no secrets. CI then makes the archive with no signature and uploads nothing.
+
+All builds have the same bundle ID, so a new build installs over the old one and keeps the app data. A TestFlight build stops after 90 days.
+
+The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts/testflight/testflight.py`.
+
 ## What the prototype leaves out
 
 - Project files. There is no save and no undo. When the window closes, the session ends.
