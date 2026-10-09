@@ -70,7 +70,7 @@ If the script stops, it prints the cause and what to do. These are the usual cau
 | --- | --- |
 | No iPad found | Make sure that the cable is connected and that the iPad is unlocked. Tap Trust on the iPad. |
 | No Apple developer team found | Open the Xcode app. In the menu bar, select Xcode, then Settings, then Accounts. Press the plus button and sign in with your Apple ID. |
-| The build failed | Read the lines above the message. The full log is in `target/globe-proto/xcodebuild.log`. |
+| The build failed | Read the lines above the message. The full log is in `target/ios/vale-globe-proto/xcodebuild.log`. |
 | The app is installed, but it did not start | On the iPad, open Settings, then General, then VPN & Device Management. Tap your developer name, and tap Trust. Then tap the Vale Globe icon. |
 
 To run the app again later, tap the Vale Globe icon on the iPad. Run the script again only after the code changes.

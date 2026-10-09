@@ -20,7 +20,7 @@ cargo run --release -p vale-app
 
 The window opens with the Natural Earth 110m sample world. You can do these things.
 
-- Drag the map to pan. Scroll or pinch to zoom.
+- Drag the map to pan. Scroll or pinch to zoom. On a touch screen, two fingers pan and zoom.
 - Double-click the map to move the center of the projection there.
 - Use the left panel to set the world radius, the projection, and its center.
 - Tick a layer to show it. Click "Edit" on a layer to select it. The inspector then shows its style.
@@ -63,6 +63,29 @@ cargo run --release -p vale-app -- --report
 | `--hide <LAYER>` | Hide the layer with this name |
 | `--no-labels`, `--no-graticule` | Turn the labels or the graticule off |
 | `--smoke-frames <N>` | Open the window, draw N frames, and exit |
+
+## Run on an iPad
+
+You need a Mac with Xcode. Do the one-time steps for the Mac and for the iPad in `crates/vale-globe-proto/README.md`, in the section "Run on an iPad". Then connect the iPad, unlock it, and run this script:
+
+```sh
+scripts/app-ipad.sh
+```
+
+The script builds the app, installs it on the iPad, and starts it. It prints four steps and then "Done". The first build takes a few minutes, because it makes PROJ for iOS. If the build fails, read the full log in `target/ios/vale-app/xcodebuild.log`.
+
+The app opens with the sample world. Drag with one finger to pan. Pinch with two fingers to zoom. The iPad app has no buttons to open or export files.
+
+To build for the iOS simulator on a Mac with Apple silicon, run these commands:
+
+```sh
+rustup target add aarch64-apple-ios-sim
+cd crates/vale-app/ios
+xcodegen generate
+xcodebuild -project ValeApp.xcodeproj -scheme ValeApp -sdk iphonesimulator -arch arm64 CODE_SIGNING_ALLOWED=NO build
+```
+
+The iOS target is in `crates/vale-app/ios`. `project.yml` describes the Xcode project. `build-rust.sh` builds the Rust static library, and `toolchain.cmake` tells the PROJ build which iOS SDK to use. The static PROJ library holds its own database, so the app bundle needs no PROJ data files.
 
 ## What the prototype leaves out
 

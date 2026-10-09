@@ -1,15 +1,25 @@
 #!/bin/sh
-# Builds the globe prototype, installs it on the connected iPad, and starts it.
-# You do not need to open Xcode.
+# Builds one iOS app of the workspace, installs it on the connected iPad, and
+# starts it. `app-ipad.sh` and `globe-proto-ipad.sh` call this script.
 #
-# Usage: scripts/globe-proto-ipad.sh
+# Usage: scripts/ipad-run.sh CRATE PROJECT BUNDLE_ID NAME
+#   CRATE      The crate that has the `ios` directory, for example vale-app.
+#   PROJECT    The name of the Xcode project and of its scheme.
+#   BUNDLE_ID  The bundle identifier of the app.
+#   NAME       The name of the app on the iPad.
 # Set DEVELOPMENT_TEAM to use a different Apple developer team.
 set -eu
 
+[ $# -eq 4 ] || { echo "Usage: $0 CRATE PROJECT BUNDLE_ID NAME" >&2; exit 2; }
+crate="$1"
+project="$2"
+bundle_id="$3"
+name="$4"
+
 root="$(cd "$(dirname "$0")/.." && pwd)"
-ios="$root/crates/vale-globe-proto/ios"
-derived="$root/target/globe-proto/xcode"
-bundle_id=dev.vale.globe-proto
+ios="$root/crates/$crate/ios"
+out="$root/target/ios/$crate"
+derived="$out/xcode"
 
 fail() {
     printf '\nStopped: %s\n' "$1" >&2
@@ -22,9 +32,9 @@ rustup target list --installed | grep -qx aarch64-apple-ios ||
 
 # The team comes from a signing certificate in the keychain.
 team="${DEVELOPMENT_TEAM:-}"
-for name in "Apple Development" "Developer ID Application"; do
+for cert in "Apple Development" "Developer ID Application"; do
     if [ -z "$team" ]; then
-        team="$(security find-certificate -a -c "$name" -p 2>/dev/null |
+        team="$(security find-certificate -a -c "$cert" -p 2>/dev/null |
             openssl x509 -noout -subject 2>/dev/null |
             sed -n 's/.*OU *= *\([A-Z0-9]\{10\}\).*/\1/p' | head -1)"
     fi
@@ -57,8 +67,9 @@ rm -f "$devices"
 echo "2 of 4: Build the app (the first build takes a few minutes)"
 cd "$ios"
 xcodegen generate --quiet
-log="$root/target/globe-proto/xcodebuild.log"
-if ! xcodebuild -project ValeGlobeProto.xcodeproj -scheme ValeGlobeProto \
+mkdir -p "$out"
+log="$out/xcodebuild.log"
+if ! xcodebuild -project "$project.xcodeproj" -scheme "$project" \
     -configuration Release -destination "id=$udid" -derivedDataPath "$derived" \
     -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
     DEVELOPMENT_TEAM="$team" build >"$log" 2>&1; then
@@ -77,11 +88,11 @@ fi
 
 echo "3 of 4: Install the app on the iPad"
 xcrun devicectl device install app --device "$udid" \
-    "$derived/Build/Products/Release-iphoneos/ValeGlobeProto.app" >/dev/null ||
+    "$derived/Build/Products/Release-iphoneos/$project.app" >/dev/null ||
     fail "The install failed. Unlock the iPad and make sure that Developer Mode is on."
 
 echo "4 of 4: Start the app"
 xcrun devicectl device process launch --device "$udid" "$bundle_id" >/dev/null ||
-    fail "The app is installed, but it did not start. Unlock the iPad and tap the Vale Globe icon."
+    fail "The app is installed, but it did not start. Unlock the iPad and tap the $name icon."
 
-echo "Done. Vale Globe runs on the iPad."
+echo "Done. $name runs on the iPad."
