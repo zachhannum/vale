@@ -6,10 +6,11 @@ use std::time::Instant;
 use eframe::egui::{self, Color32, Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 
-use crate::cube::{
+use vale_terrain::{
     ELEV_MAX, ELEV_MIN, Heightmap, MAX_BRUSH_RADIUS, Mode, Stamp, level_to_meters, meters_to_level,
 };
-use crate::gpu::{GlobeCallback, MAX_BANDS, Uniforms, UploadQueue};
+
+use crate::gpu::{GlobeCallback, MAX_BANDS, Uniforms, Upload, UploadQueue};
 use crate::math::{V3, angle, dir_to_lonlat, slerp};
 use crate::view::GlobeView;
 
@@ -771,7 +772,22 @@ impl ProtoApp {
 
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, BACKGROUND);
-        let uploads = self.map.take_uploads();
+        let mut uploads = Vec::new();
+        for (face, rect) in self.map.take_dirty().into_iter().enumerate() {
+            let Some(rect) = rect else {
+                continue;
+            };
+            let mut data = Vec::new();
+            self.map.read_rect(face, rect, &mut data);
+            uploads.push(Upload {
+                face: face as u32,
+                x: rect.x0 as u32,
+                y: rect.y0 as u32,
+                width: (rect.x1 - rect.x0) as u32,
+                height: (rect.y1 - rect.y0) as u32,
+                data,
+            });
+        }
         self.stats.upload_texels = uploads.iter().map(|u| u.data.len()).sum();
         let face_size = self.map.face_size() as u32;
         self.uploads

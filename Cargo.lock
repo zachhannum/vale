@@ -3763,6 +3763,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "image",
+ "vale-terrain",
 ]
 
 [[package]]

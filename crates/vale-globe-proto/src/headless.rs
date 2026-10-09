@@ -4,8 +4,9 @@ use std::time::Instant;
 
 use eframe::egui;
 
+use vale_terrain::{Heightmap, Mode, Stamp};
+
 use crate::app::{ProtoApp, Source, Tool};
-use crate::cube::{Heightmap, Mode, Stamp};
 use crate::math::{V3, lonlat_to_dir, slerp};
 
 /// Paints one stroke through places given as longitude, latitude, and flow.

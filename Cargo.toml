@@ -27,4 +27,5 @@ vale-store = { path = "crates/vale-store", version = "0.1.0" }
 vale-style = { path = "crates/vale-style", version = "0.1.0" }
 vale-render = { path = "crates/vale-render", version = "0.1.0" }
 vale-sphere = { path = "crates/vale-sphere", version = "0.1.0" }
+vale-terrain = { path = "crates/vale-terrain", version = "0.1.0" }
 vale-import = { path = "crates/vale-import", version = "0.1.0" }
