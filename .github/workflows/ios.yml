@@ -67,12 +67,10 @@ jobs:
       VERSION_PREFIX: "0.1"
       PR: ${{ github.event.pull_request.number }}
       SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      ARCHIVE: ${{ runner.temp }}/ValeApp.xcarchive
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      ASC_KEY_PATH: ${{ runner.temp }}/asc-key.p8
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
@@ -98,6 +96,8 @@ jobs:
       - name: Set the version and the build number
         id: version
         run: |
+          echo "ARCHIVE=$RUNNER_TEMP/ValeApp.xcarchive" >> "$GITHUB_ENV"
+          echo "ASC_KEY_PATH=$RUNNER_TEMP/asc-key.p8" >> "$GITHUB_ENV"
           echo "version=$VERSION_PREFIX.${PR:-0}" >> "$GITHUB_OUTPUT"
           echo "build=${{ github.run_number }}.${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
@@ -193,4 +193,4 @@ jobs:
 
       - name: Delete the key
         if: always()
-        run: rm -f "$ASC_KEY_PATH"
+        run: rm -f "$RUNNER_TEMP/asc-key.p8"
