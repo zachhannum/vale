@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vale builds for iPad</title>
+<style>
+  body { font: 17px/1.5 -apple-system, system-ui, sans-serif; max-width: 34em; margin: 3em auto; padding: 0 1em; color: #1c2b2d; }
+  a.button { display: block; margin: 1em 0; padding: 0.8em 1em; border-radius: 12px; background: #2f6f73; color: #fff; text-align: center; text-decoration: none; }
+  a.plain { color: #2f6f73; }
+  code { font-size: 0.9em; }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<h1>Vale builds for iPad</h1>
+
+<div id="build" hidden>
+  <p>Build <code id="file"></code> from <code id="tag"></code>.</p>
+  <a class="button" id="install">Install in SideStore</a>
+  <p><a class="plain" id="download">Download the .ipa file</a></p>
+</div>
+
+<p>SideStore must be installed on this iPad. To see the builds of <code>main</code> and of each open PR in SideStore, add the source one time.</p>
+<a class="button" id="source">Add the source to SideStore</a>
+<p>The source is at <a class="plain" id="json" href="apps.json">apps.json</a>.</p>
+
+<script>
+  // A project page is at https://<owner>.github.io/<repository>/.
+  var owner = location.hostname.split(".")[0];
+  var repository = location.pathname.split("/")[1];
+  var base = location.origin + "/" + repository + "/";
+  var json = base + "apps.json";
+  document.getElementById("json").href = json;
+  document.getElementById("source").href = "sidestore://source?url=" + encodeURIComponent(json);
+
+  // The page builds the download link itself, so a link to this page cannot
+  // install a file from a different place.
+  var query = new URLSearchParams(location.search);
+  var tag = query.get("tag") || "";
+  var file = query.get("file") || "";
+  if (/^(main-build|pr-\d+)$/.test(tag) && /^Vale-\d+\.\d+\.\d+\.ipa$/.test(file)) {
+    var ipa = "https://github.com/" + owner + "/" + repository + "/releases/download/" + tag + "/" + file;
+    document.getElementById("tag").textContent = tag;
+    document.getElementById("file").textContent = file;
+    document.getElementById("install").href = "sidestore://install?url=" + encodeURIComponent(ipa);
+    document.getElementById("download").href = ipa;
+    document.getElementById("build").hidden = false;
+  }
+</script>
+</body>
+</html>
