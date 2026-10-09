@@ -3,7 +3,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
 use vale_app::headless;
-use vale_app::ui::{AppState, draw};
+use vale_app::ui::{AppState, Workspace, draw};
 use vale_render::Color;
 use vale_store::LayerId;
 
@@ -12,6 +12,7 @@ const SIZE: (f32, f32) = (1400.0, 900.0);
 fn harness_with(doc: Document) -> Harness<'static, AppState> {
     let mut state = AppState::new(doc).unwrap();
     state.headless = true;
+    state.workspace = Workspace::Map;
     let mut h = Harness::builder()
         .with_size(egui::vec2(SIZE.0, SIZE.1))
         .with_pixels_per_point(1.0)
@@ -208,6 +209,7 @@ fn unplaced_summary() {
 fn inspector_screenshots() {
     use vale_app::pipeline::Selection;
     let mut state = AppState::new(Document::sample()).unwrap();
+    state.workspace = Workspace::Map;
     let places = state
         .doc
         .project

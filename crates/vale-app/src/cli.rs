@@ -7,7 +7,9 @@ use clap::Parser;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use crate::document::Document;
+use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
 use crate::pipeline::Pipeline;
+use crate::ui::Workspace;
 
 #[derive(Parser, Clone, Debug)]
 #[command(
@@ -16,6 +18,9 @@ use crate::pipeline::Pipeline;
     about = "Vale: a desktop GIS for fictional worlds"
 )]
 pub struct Args {
+    /// The workspace that the app opens.
+    #[arg(long, value_enum, default_value_t)]
+    pub workspace: Workspace,
     /// GeoJSON files to open in place of the sample world.
     #[arg(value_name = "FILES")]
     pub files: Vec<PathBuf>,
@@ -189,5 +194,15 @@ pub fn apply_view(
     }
     view.scale *= args.zoom;
     doc.frame.view = Some(view);
+    Ok(())
+}
+
+/// Applies `--look-at` and `--zoom` to the view of the globe.
+pub fn apply_globe_view(args: &Args, view: &mut GlobeView) -> anyhow::Result<()> {
+    if let Some(spec) = &args.look_at {
+        let [lon, lat] = parse_pair(spec)?;
+        *view = GlobeView::centered(lon, lat);
+    }
+    view.zoom = args.zoom.clamp(ZOOM_MIN, ZOOM_MAX);
     Ok(())
 }

@@ -18,7 +18,14 @@ The first build makes PROJ from source. It takes about one minute.
 cargo run --release -p vale-app
 ```
 
-The window opens with the Natural Earth 110m sample world. You can do these things.
+The window opens on the globe workspace. The globe shows the heightmap of the world in greyscale. You can do these things.
+
+- Drag the globe to rotate it. On a touch screen, use one finger.
+- Scroll the wheel to zoom. On a trackpad, scroll with two fingers to rotate, and pinch to zoom.
+- Hold Shift and drag to twist the globe about the middle of the view. On a trackpad, use the rotate gesture.
+- On a touch screen, pinch and twist with two fingers. The place under your fingers stays under your fingers.
+
+Click "Map" in the tool bar to open the flat map with the Natural Earth 110m sample world. You can do these things there.
 
 - Drag the map to pan. Scroll or pinch to zoom. On a touch screen, two fingers pan and zoom.
 - Double-click the map to move the center of the projection there.
@@ -49,15 +56,16 @@ cargo run --release -p vale-app -- --probe 25,25
 cargo run --release -p vale-app -- --report
 ```
 
-`--screenshot` draws the full UI. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts.
+`--screenshot` draws the full UI in the globe workspace. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts.
 
 | Argument | Meaning |
 | --- | --- |
+| `--workspace <NAME>` | `globe` or `map`. The default is `globe`. |
 | `--projection <ID>` | `equal-earth`, `mercator`, `lambert-azimuthal`, `orthographic`, or `stereographic` |
 | `--center <LON,LAT>` | Center of the projection |
 | `--radius-km <KM>` | Radius of the world. The default is 6371. |
-| `--look-at <LON,LAT>` | Put this place at the middle of the view |
-| `--zoom <F>` | Zoom factor on the fitted view |
+| `--look-at <LON,LAT>` | Put this place at the middle of the view, on the globe and on the map |
+| `--zoom <F>` | Zoom factor on the fitted view, on the globe and on the map |
 | `--size <WxH>` | Size in points. The default is 1280x800. |
 | `--pixel-ratio <F>` | Pixels per point of the output |
 | `--hide <LAYER>` | Hide the layer with this name |

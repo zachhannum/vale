@@ -4,6 +4,7 @@ pub mod app;
 pub mod cli;
 pub mod document;
 pub mod furniture;
+pub mod globe;
 pub mod headless;
 pub mod labels;
 pub mod pick;

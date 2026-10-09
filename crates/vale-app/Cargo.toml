@@ -17,10 +17,12 @@ vale-render.workspace = true
 vale-sphere.workspace = true
 vale-import.workspace = true
 vale-labeler.workspace = true
+vale-terrain.workspace = true
 eframe.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 kurbo.workspace = true
+bytemuck = "1.25.2"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 egui_kittest.workspace = true

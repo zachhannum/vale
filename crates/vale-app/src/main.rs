@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use vale_app::app::run_window;
-use vale_app::cli::{Args, apply_view, parse_pair};
+use vale_app::cli::{Args, apply_globe_view, apply_view, parse_pair};
 use vale_app::headless;
 use vale_app::pipeline::Pipeline;
 use vale_app::ui::AppState;
@@ -17,8 +17,14 @@ fn run() -> anyhow::Result<u8> {
 
     let headless_run =
         args.export.is_some() || args.screenshot.is_some() || !args.probe.is_empty() || args.report;
+    let new_state = |doc| -> anyhow::Result<AppState> {
+        let mut state = AppState::new(doc)?;
+        state.workspace = args.workspace;
+        apply_globe_view(&args, &mut state.globe.view)?;
+        Ok(state)
+    };
     if !headless_run {
-        let state = AppState::new(doc)?;
+        let state = new_state(doc)?;
         run_window(state, size, args.smoke_frames.map(u64::from))?;
         return Ok(0);
     }
@@ -40,7 +46,7 @@ fn run() -> anyhow::Result<u8> {
             );
             composed = Some(image.composed);
         } else {
-            let state = AppState::new(doc.clone())?;
+            let state = new_state(doc.clone())?;
             let (image, state) = headless::ui_png(state, size, ratio)?;
             if let Some(parent) = path.parent()
                 && !parent.as_os_str().is_empty()

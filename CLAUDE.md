@@ -10,7 +10,7 @@ The labeling prototype is done. The `vale-labeler` library labels points and lin
 cargo run --release -p vale-labeler-demo -- --preset world --out target/demo/world.png
 ```
 
-An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. This command opens the window:
+An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. The app opens on the globe workspace, and a switch in the tool bar opens the flat map. This command opens the window:
 
 ```sh
 cargo run --release -p vale-app

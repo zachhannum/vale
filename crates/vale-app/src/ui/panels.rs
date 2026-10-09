@@ -3,13 +3,16 @@
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
-use super::{Action, AppState, ExportFormat};
+use super::{Action, AppState, ExportFormat, Workspace};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.strong("Vale");
-            if !state.file_buttons {
+            ui.separator();
+            ui.selectable_value(&mut state.workspace, Workspace::Globe, "Globe");
+            ui.selectable_value(&mut state.workspace, Workspace::Map, "Map");
+            if !state.file_buttons || state.workspace != Workspace::Map {
                 return;
             }
             ui.separator();
@@ -187,7 +190,9 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
                 None => ui.label("lon –, lat –"),
             };
             ui.separator();
-            if let Some(c) = &state.composed {
+            if let Some(c) = &state.composed
+                && state.workspace == Workspace::Map
+            {
                 ui.label(format!("1 pt = {} km", three_significant(c.km_per_point)));
                 ui.separator();
                 ui.label(format!(

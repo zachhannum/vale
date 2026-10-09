@@ -6,7 +6,7 @@ use egui_kittest::kittest::Queryable;
 use kurbo::Point;
 use vale_app::document::Document;
 use vale_app::headless;
-use vale_app::ui::{Action, AppState, ExportFormat, draw};
+use vale_app::ui::{Action, AppState, ExportFormat, Workspace, draw};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
@@ -14,6 +14,7 @@ const SIZE: (f64, f64) = (1280.0, 800.0);
 fn state_with(doc: Document) -> AppState {
     let mut state = AppState::new(doc).unwrap();
     state.headless = true;
+    state.workspace = Workspace::Map;
     state
 }
 

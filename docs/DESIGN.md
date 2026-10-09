@@ -410,6 +410,8 @@ The labeling prototype is done. The command `cargo run --release -p vale-labeler
 
 The app prototype is a vertical slice. It makes a runnable app early. It takes a thin part of phases 2, 4, 6, 8, and 9 at once. It differs from the design above in nine ways. The command `cargo run --release -p vale-app` opens the window. The command `cargo run --release -p vale-app -- --screenshot target/app/ui.png --size 1440x900 --report` draws the full UI to a PNG without a window.
 
+The app opens on the globe workspace. The globe view and its navigation are in `vale-app`, and the globe draws the heightmap of `vale-terrain` in greyscale with a graticule. The heightmap is empty, because the app has no brush yet. The GPU texture holds six full faces of 1,024 pixels. A switch in the tool bar opens the flat map, and the nine items below are about the flat map.
+
 1. The prototype is a vertical slice through phases 2, 4, 6, 8, and 9. It does not finish any of them.
 2. The map is drawn by `vello_cpu` on screen and in PNG files. The display list of `vale-render` exists, and the GPU Vello backend does not. The same pixels come out with and without a window, so tests need no GPU. The PDF export uses Krilla, and text in the PDF stays text.
 3. `vale-store` holds the project in memory. There is no GeoPackage file, no undo log, and no UUID. A feature ID is its index in the layer.
