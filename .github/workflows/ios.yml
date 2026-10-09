@@ -119,12 +119,17 @@ jobs:
         id: app
         run: |
           app=$(echo "$ARCHIVE"/Products/Applications/*.app)
+          plutil -p "$app/Info.plist"
           test -f "$app/Assets.car"
           read_key() { plutil -extract "$1" raw "$app/Info.plist"; }
-          test "$(read_key CFBundleShortVersionString)" = "${{ steps.version.outputs.version }}"
-          test "$(read_key CFBundleVersion)" = "${{ steps.version.outputs.build }}"
-          test "$(read_key ITSAppUsesNonExemptEncryption)" = "false"
-          read_key CFBundleIconName
+          expect() {
+            value=$(read_key "$1") || { echo "::error::Info.plist has no $1"; exit 1; }
+            test -z "${2-}" || test "$value" = "$2" || { echo "::error::$1 is $value, not $2"; exit 1; }
+          }
+          expect CFBundleShortVersionString "${{ steps.version.outputs.version }}"
+          expect CFBundleVersion "${{ steps.version.outputs.build }}"
+          expect ITSAppUsesNonExemptEncryption false
+          expect CFBundleIconName
           echo "bundle_id=$(read_key CFBundleIdentifier)" >> "$GITHUB_OUTPUT"
 
       - name: Write the comment
