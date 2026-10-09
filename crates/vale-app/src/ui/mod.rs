@@ -8,10 +8,12 @@ use vale_sphere::LonLat;
 use vale_store::LayerId;
 
 use crate::document::Document;
+use crate::globe::Globe;
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
 
 pub mod canvas;
+pub mod globe;
 pub mod inspector;
 pub mod panels;
 
@@ -30,7 +32,19 @@ pub enum ExportFormat {
     Pdf,
 }
 
+/// A full-window view with its own canvas and panels.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum Workspace {
+    /// The world on a globe.
+    #[default]
+    Globe,
+    /// The flat map of one map frame.
+    Map,
+}
+
 pub struct AppState {
+    pub workspace: Workspace,
+    pub globe: Globe,
     pub doc: Document,
     pub pipeline: Pipeline,
     pub fonts: Fonts,
@@ -63,6 +77,8 @@ pub struct AppState {
 impl AppState {
     pub fn new(doc: Document) -> anyhow::Result<Self> {
         Ok(AppState {
+            workspace: Workspace::default(),
+            globe: Globe::default(),
             doc,
             pipeline: Pipeline::new(),
             fonts: fonts()?,
@@ -132,10 +148,18 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
         panels::toolbar(ui, state);
-        panels::left(ui, state);
-        inspector::draw(ui, state);
-        panels::status(ui, state);
-        canvas::draw(ui, state);
+        match state.workspace {
+            Workspace::Globe => {
+                panels::status(ui, state);
+                globe::draw(ui, state);
+            }
+            Workspace::Map => {
+                panels::left(ui, state);
+                inspector::draw(ui, state);
+                panels::status(ui, state);
+                canvas::draw(ui, state);
+            }
+        }
     });
     state.frames += 1;
 }

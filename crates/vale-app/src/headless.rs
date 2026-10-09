@@ -145,10 +145,17 @@ pub fn ui_png(
     pixel_ratio: f64,
 ) -> anyhow::Result<(image::RgbaImage, crate::ui::AppState)> {
     state.headless = true;
+    let render_state = egui_kittest::wgpu::create_render_state(
+        egui_kittest::wgpu::default_wgpu_setup(),
+        eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+    );
+    state.globe.format = Some(render_state.target_format);
     let mut harness = egui_kittest::Harness::builder()
         .with_size(eframe::egui::vec2(size.0 as f32, size.1 as f32))
         .with_pixels_per_point(pixel_ratio as f32)
-        .wgpu()
+        .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+            render_state,
+        ))
         .build_ui_state(
             |ui, state: &mut crate::ui::AppState| crate::ui::draw(ui, state),
             state,

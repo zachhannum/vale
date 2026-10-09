@@ -3741,6 +3741,7 @@ name = "vale-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "clap",
  "eframe",
  "egui_kittest",
@@ -3753,6 +3754,7 @@ dependencies = [
  "vale-sphere",
  "vale-store",
  "vale-style",
+ "vale-terrain",
 ]
 
 [[package]]
