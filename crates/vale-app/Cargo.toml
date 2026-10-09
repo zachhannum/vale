@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+crate-type = ["staticlib", "rlib"]
+
 [dependencies]
 vale-store.workspace = true
 vale-style.workspace = true
@@ -15,12 +18,14 @@ vale-sphere.workspace = true
 vale-import.workspace = true
 vale-labeler.workspace = true
 eframe.workspace = true
-egui_kittest.workspace = true
-image.workspace = true
-rfd.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 kurbo.workspace = true
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+egui_kittest.workspace = true
+image.workspace = true
+rfd.workspace = true
 
 [[bin]]
 name = "vale-app"

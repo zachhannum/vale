@@ -22,6 +22,12 @@ This command renders the full UI to a PNG without a window:
 cargo run --release -p vale-app -- --screenshot target/app/ui.png --size 1440x900 --report
 ```
 
+This command builds the app and starts it on a connected iPad:
+
+```sh
+scripts/app-ipad.sh
+```
+
 A globe prototype also exists, in `vale-globe-proto`. It tests pen drawing on a globe and Apple Pencil input through egui, ahead of phase 1. A first test on an iPad showed smooth painting, pressure, and palm rejection. The app gets 120 pen samples per second and no hover events, as the winit source predicted. `crates/vale-globe-proto/README.md` has the test list. The first command opens the window on the desktop. The second command builds the app and starts it on a connected iPad:
 
 ```sh

@@ -19,7 +19,7 @@ fn mark_view_change(state: &mut AppState, now: f64) {
     state.last_view_change = Some(now);
 }
 
-/// Zooms about a page position. Used by the scroll wheel and by pinch.
+/// Zooms about a page position.
 pub fn zoom_at(state: &mut AppState, q: Point, factor: f64, now: f64) {
     let size = state.canvas_size;
     let Ok(fit) = state.pipeline.fit_scale(&state.doc, size) else {
@@ -79,7 +79,25 @@ fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
     let now = ui.input(|i| i.time);
     let mut view_changed = false;
 
-    if resp.dragged() {
+    // Two fingers: the map follows the middle of the fingers, and the pinch zooms about it.
+    let fingers = ui
+        .input(|i| i.multi_touch())
+        .filter(|touch| rect.contains(touch.center_pos));
+    if let Some(touch) = fingers {
+        let d = touch.translation_delta;
+        if d != egui::Vec2::ZERO
+            && let Ok(view) = state.pipeline.resolve_view(&state.doc, size)
+        {
+            state.doc.frame.view = Some(view.panned(f64::from(d.x), f64::from(d.y)));
+            mark_view_change(state, now);
+            view_changed = true;
+        }
+        let factor = f64::from(touch.zoom_delta);
+        if (factor - 1.0).abs() > 1e-4 {
+            zoom_at(state, local(touch.center_pos, rect), factor, now);
+            view_changed = true;
+        }
+    } else if resp.dragged() {
         let d = resp.drag_delta();
         if d != egui::Vec2::ZERO
             && let Ok(view) = state.pipeline.resolve_view(&state.doc, size)
@@ -96,7 +114,7 @@ fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
         let q = local(pos, rect);
         let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
         let factor = (f64::from(scroll) * 0.002).exp() * f64::from(pinch);
-        if (factor - 1.0).abs() > 1e-4 {
+        if fingers.is_none() && (factor - 1.0).abs() > 1e-4 {
             zoom_at(state, q, factor, now);
             view_changed = true;
         }

@@ -9,6 +9,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.strong("Vale");
+            if !state.file_buttons {
+                return;
+            }
             ui.separator();
             if ui.button("Open GeoJSON…").clicked() {
                 state.actions.push(Action::OpenDialog);

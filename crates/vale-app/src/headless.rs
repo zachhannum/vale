@@ -138,6 +138,7 @@ pub fn write_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 }
 
 /// Renders the whole UI offscreen. Returns the image and the state.
+#[cfg(not(target_os = "ios"))]
 pub fn ui_png(
     mut state: crate::ui::AppState,
     size: (f64, f64),

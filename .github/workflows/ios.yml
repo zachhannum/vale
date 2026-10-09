@@ -1,0 +1,56 @@
+name: iOS
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build vale-app (${{ matrix.sdk }})
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: iphoneos
+            target: aarch64-apple-ios
+            destination: generic/platform=iOS
+          - sdk: iphonesimulator
+            target: aarch64-apple-ios-sim
+            destination: generic/platform=iOS Simulator
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Install xcodegen
+        run: command -v xcodegen || brew install xcodegen
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # The build has no code signing, so it needs no secrets.
+      - name: Build the app
+        working-directory: crates/vale-app/ios
+        run: |
+          xcodegen generate
+          xcodebuild -project ValeApp.xcodeproj -scheme ValeApp \
+            -configuration Release -sdk ${{ matrix.sdk }} \
+            -destination "${{ matrix.destination }}" \
+            -derivedDataPath "$RUNNER_TEMP/xcode" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+            -quiet build

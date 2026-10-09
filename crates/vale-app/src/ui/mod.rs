@@ -55,6 +55,8 @@ pub struct AppState {
     pub actions: Vec<Action>,
     /// True: no timers, always `Quality::Final`.
     pub headless: bool,
+    /// False: the tool bar has no buttons that need a file dialog.
+    pub file_buttons: bool,
     pub frames: u64,
 }
 
@@ -77,6 +79,7 @@ impl AppState {
             status: String::new(),
             actions: Vec::new(),
             headless: false,
+            file_buttons: true,
             frames: 0,
         })
     }

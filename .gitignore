@@ -3,3 +3,5 @@
 .DS_Store
 /crates/vale-globe-proto/ios/ValeGlobeProto.xcodeproj/
 /crates/vale-globe-proto/ios/Info.plist
+/crates/vale-app/ios/ValeApp.xcodeproj/
+/crates/vale-app/ios/Info.plist
