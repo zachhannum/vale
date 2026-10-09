@@ -129,7 +129,8 @@ jobs:
           expect CFBundleShortVersionString "${{ steps.version.outputs.version }}"
           expect CFBundleVersion "${{ steps.version.outputs.build }}"
           expect ITSAppUsesNonExemptEncryption false
-          expect CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName AppIcon
+          # The app is for iPad only, so the icon name is in the iPad key.
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName" "$app/Info.plist"
           echo "bundle_id=$(read_key CFBundleIdentifier)" >> "$GITHUB_OUTPUT"
 
       - name: Write the comment
