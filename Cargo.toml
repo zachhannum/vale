@@ -20,6 +20,9 @@ vale-labeler = { path = "crates/vale-labeler", version = "0.1.0" }
 proj = { version = "0.31.0", default-features = false, features = ["bundled_proj"] }
 krilla = { version = "0.8.2", default-features = false }
 eframe = "0.36.2"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+pollster = "0.4.0"
 egui_kittest = { version = "0.36.2", features = ["wgpu"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = "0.17.2"
