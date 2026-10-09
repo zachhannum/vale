@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
+use crate::bands::Bands;
 use crate::cube::{FACES, face_dir, face_of, unwarp, warp};
 use crate::math::{V3, cross, normalize};
 
@@ -100,6 +101,8 @@ pub struct Heightmap {
     reset: bool,
     stroke: Option<Saved>,
     undo: Vec<Saved>,
+    /// The band limits and the color ramp of the preview.
+    pub bands: Bands,
 }
 
 impl Heightmap {
@@ -126,6 +129,7 @@ impl Heightmap {
             reset: true,
             stroke: None,
             undo: Vec::new(),
+            bands: Bands::default(),
         };
         map.mark_all_dirty();
         map
