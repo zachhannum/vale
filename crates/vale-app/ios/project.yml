@@ -10,10 +10,16 @@ targets:
     platform: iOS
     sources:
       - main.m
+      - Assets.xcassets
     info:
       path: Info.plist
       properties:
         CFBundleDisplayName: Vale
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        # The app has no encryption of its own, so TestFlight does not ask about it.
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UIRequiresFullScreen: true
         UIApplicationSupportsIndirectInputEvents: true
@@ -27,6 +33,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.vale.app
         TARGETED_DEVICE_FAMILY: "2"
+        # CI sets the version and the build number of each TestFlight build.
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         ENABLE_USER_SCRIPT_SANDBOXING: false
         # PROJ is in the Rust library. It needs the C++ library and SQLite.

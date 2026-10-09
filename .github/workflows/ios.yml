@@ -21,9 +21,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - sdk: iphoneos
-            target: aarch64-apple-ios
-            destination: generic/platform=iOS
           - sdk: iphonesimulator
             target: aarch64-apple-ios-sim
             destination: generic/platform=iOS Simulator
@@ -54,3 +51,146 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/xcode" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
             -quiet build
+
+  # This job makes the archive for each PR, so a PR from a fork also tests the
+  # device build. The steps that sign and upload run only when the secrets exist.
+  testflight:
+    name: Archive vale-app and upload it to TestFlight
+    # App Store Connect accepts only a build from Xcode 26 or later.
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      # The version is this prefix and then the PR number, or 0 for `main`.
+      VERSION_PREFIX: "0.1"
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      ARCHIVE: ${{ runner.temp }}/ValeApp.xcarchive
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ASC_KEY_PATH: ${{ runner.temp }}/asc-key.p8
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test the TestFlight script
+        run: python3 -m unittest discover scripts/testflight
+
+      - name: Install the Rust target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-ios
+
+      - name: Install xcodegen
+        run: command -v xcodegen || brew install xcodegen
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-apple-ios-xcode26
+
+      # TestFlight groups the builds by version, so each PR has its own row.
+      # The build number holds the attempt, so a second attempt of a run gets a new number.
+      - name: Set the version and the build number
+        id: version
+        run: |
+          echo "version=$VERSION_PREFIX.${PR:-0}" >> "$GITHUB_OUTPUT"
+          echo "build=${{ github.run_number }}.${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
+      - name: Make the archive
+        working-directory: crates/vale-app/ios
+        run: |
+          xcodebuild -version
+          xcodegen generate
+          xcodebuild archive -project ValeApp.xcodeproj -scheme ValeApp \
+            -configuration Release -destination generic/platform=iOS \
+            -archivePath "$ARCHIVE" -derivedDataPath "$RUNNER_TEMP/xcode" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION="${{ steps.version.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build }}" \
+            -quiet
+
+      # App Store Connect rejects an upload that has no icon or no version.
+      - name: Make sure that the archive has what TestFlight needs
+        id: app
+        run: |
+          app=$(echo "$ARCHIVE"/Products/Applications/*.app)
+          test -f "$app/Assets.car"
+          read_key() { plutil -extract "$1" raw "$app/Info.plist"; }
+          test "$(read_key CFBundleShortVersionString)" = "${{ steps.version.outputs.version }}"
+          test "$(read_key CFBundleVersion)" = "${{ steps.version.outputs.build }}"
+          test "$(read_key ITSAppUsesNonExemptEncryption)" = "false"
+          read_key CFBundleIconName
+          echo "bundle_id=$(read_key CFBundleIdentifier)" >> "$GITHUB_OUTPUT"
+
+      - name: Write the comment
+        if: env.ASC_KEY_P8 != '' && env.PR != ''
+        run: |
+          scripts/testflight/testflight.py comment --state uploading --pr "$PR" --sha "$SHA" \
+            --version "${{ steps.version.outputs.version }}" --build "${{ steps.version.outputs.build }}"
+
+      # Xcode signs the archive with a certificate that Apple keeps, so the
+      # repository holds no certificate and no profile.
+      - name: Sign the archive and upload it
+        if: env.ASC_KEY_P8 != ''
+        run: |
+          printf '%s\n' "$ASC_KEY_P8" > "$ASC_KEY_PATH"
+          cat > "$RUNNER_TEMP/export.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath "$ARCHIVE" \
+            -exportOptionsPlist "$RUNNER_TEMP/export.plist" -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates -authenticationKeyPath "$ASC_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Update the comment
+        if: env.ASC_KEY_P8 != '' && env.PR != ''
+        run: |
+          scripts/testflight/testflight.py comment --state processing --pr "$PR" --sha "$SHA" \
+            --version "${{ steps.version.outputs.version }}" --build "${{ steps.version.outputs.build }}"
+
+      - name: Wait for Apple and set the "What to Test" text
+        id: notes
+        if: env.ASC_KEY_P8 != ''
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          scripts/testflight/testflight.py notes --bundle-id "${{ steps.app.outputs.bundle_id }}" \
+            --pr "$PR" --sha "$SHA" \
+            --version "${{ steps.version.outputs.version }}" --build "${{ steps.version.outputs.build }}"
+
+      - name: Write the result to the comment
+        if: (!cancelled()) && env.ASC_KEY_P8 != '' && env.PR != '' && steps.version.outputs.build != ''
+        run: |
+          state="${{ steps.notes.outputs.state }}"
+          scripts/testflight/testflight.py comment --state "${state:-failed}" --pr "$PR" --sha "$SHA" \
+            --version "${{ steps.version.outputs.version }}" --build "${{ steps.version.outputs.build }}" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Keep the logs of a failed upload
+        if: failure() && env.ASC_KEY_P8 != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: testflight-logs
+          path: ${{ runner.temp }}/export
+          if-no-files-found: ignore
+
+      - name: Delete the key
+        if: always()
+        run: rm -f "$ASC_KEY_PATH"
