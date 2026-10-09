@@ -3827,6 +3827,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vale-terrain"
+version = "0.1.0"
+
+[[package]]
 name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
