@@ -50,6 +50,9 @@ pub struct BrushInput {
     pub mouse: bool,
     /// The last position of the pen.
     pub pos: Option<Pos2>,
+    /// The pen or the button that is down picks the flatten level, and it
+    /// does not paint.
+    pub picking: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -98,6 +101,8 @@ pub struct Globe {
     pub tool: Tool,
     pub brush: BrushSettings,
     pub input: BrushInput,
+    /// The next press on the globe picks the flatten level.
+    pub pick_level: bool,
     pub stats: Stats,
     /// The brush debug panel is open.
     pub debug: bool,
@@ -131,6 +136,7 @@ impl Globe {
             tool: Tool::default(),
             brush: BrushSettings::default(),
             input: BrushInput::default(),
+            pick_level: false,
             stats: Stats::new(face_size as u32),
             debug: false,
             test_report: None,
@@ -180,6 +186,20 @@ impl Globe {
 
     pub fn pen_up(&mut self) {
         self.inputs.push_back(Input::Up);
+    }
+
+    /// The radius of the globe on screen, in points.
+    pub fn radius(&self) -> f64 {
+        self.view.radius(self.rect)
+    }
+
+    /// Sets the flatten level from the heightmap at a place. During a stroke
+    /// the heightmap is behind the GPU, and the level does not change.
+    pub fn pick(&mut self, dir: Option<V3>) {
+        if let Some(dir) = dir.filter(|_| !self.busy()) {
+            self.brush.flatten_level = Some(self.map.sample(dir));
+            self.pick_level = false;
+        }
     }
 
     /// True while a stroke or a stroke test is not complete.
@@ -274,7 +294,7 @@ impl Globe {
                 }
             }
         }
-        let radius = brush::brush_radius(self.brush.size_points, self.view.radius(self.rect));
+        let radius = self.brush.radius(self.radius());
         for dir in test.due(now) {
             let sample = Sample {
                 dir: Some(dir),
@@ -300,8 +320,9 @@ impl Globe {
                     }
                     self.strokes += 1;
                     self.map.begin_stroke();
+                    let points = self.brush.points(self.radius());
                     self.stats
-                        .begin_stroke(self.strokes, self.brush.mode, self.brush.size_points);
+                        .begin_stroke(self.strokes, self.brush.mode, points);
                     self.stroke = Some(Active {
                         id: self.strokes,
                         stroke: Stroke::default(),
