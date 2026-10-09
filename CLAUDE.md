@@ -29,9 +29,9 @@ cargo run --release -p vale-globe-proto
 scripts/globe-proto-ipad.sh
 ```
 
-The app prototype leaves out project files, linked sources, rule-based styles, polygon labels, the atlas, conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
+The app prototype leaves out project files, linked sources, rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
 
-The current milestone is milestone 2, the projection pipeline. It is done when a command-line tool renders one map frame of a custom-radius world to PDF, with clipping and a graticule.
+The current milestone is milestone 2, the projection pipeline. When a command-line tool renders one map frame of a custom-radius world to PDF, with clipping and a graticule, the milestone is done.
 
 The milestone table in `docs/DESIGN.md` gives the order of the work after that. When a milestone is done, update this section.
 
@@ -46,3 +46,67 @@ The milestone table in `docs/DESIGN.md` gives the order of the work after that. 
 - Procedural world generation is a permanent non-goal.
 - If a change contradicts `docs/DESIGN.md`, update the document in the same change.
 - Reference files for the demo are updated with `VALE_UPDATE_REFERENCE=1`.
+
+## Work tracking
+
+- GitHub issues track the work. Issue #1 is the epic for version 1. Each phase is an issue, and its tasks are its sub-issues.
+- Each issue has a list that starts with "This task is done when" or "This phase is done when". That list is the definition of done.
+
+## Implementing changes
+
+- Commit as you go, in small chunks that you can test. Do not make one large commit at the end of a feature.
+- Keep the work inside the "done when" list of the issue. A small fix that you see on the way can go in the same PR.
+- Write one test for each item of the "done when" list that a test can prove.
+- Before you update a reference file, look at the new output. Review a changed reference file as you review code.
+
+## Context usage
+
+A feature session keeps its context small on purpose.
+
+- If a lookup spans crates, give it to a subagent. Read only the files that you are about to change.
+- Before the first edit, find each design decision that the issue and `docs/DESIGN.md` leave open. Plan it one time, with a planning subagent.
+- If a feature spans more than one crate, give each crate to one subagent. If another crate depends on a crate, commit that crate first. Independent crates can run in separate worktrees at the same time.
+- The lead session commits, makes sure that each item of the "done when" list is true, and opens the PR. A subagent returns a diff or a plan. It does not own the definition of done.
+- Do not start a subagent for one lookup or for an edit to one file.
+- Run a command with long output in the background. Examples are `cargo build`, `cargo test`, `cargo clippy`, and `gh run watch`. Bring only the lines that fail into the context.
+- Read a generated file or a data file only at the section that changes. Examples are a reference file and Natural Earth data. Before you open a changed reference file, look at `git diff --stat`.
+- After you edit a file, do not read it again. If the change does not apply, Edit and Write fail with an error.
+- Do not read an unrelated crate "to be safe".
+- After the tests pass and a commit lands, compact the session. Do not wait for an automatic compaction in the middle of a task.
+
+## Pull requests
+
+- Use one branch for each issue: `feat/<issue>-slug`, `fix/<issue>-slug`, or `chore/<issue>-slug`.
+- Write `Closes #N` in the PR description. Before you ask for review, make sure that each item of the "done when" list is true.
+- Do not wrap PR and issue bodies. Write one line for each paragraph and each list item, with blank lines between them. GitHub shows a single newline as a line break.
+- Before you push, run these commands and make sure that all three succeed:
+
+  ```sh
+  cargo fmt --all --check
+  cargo clippy --workspace --all-targets
+  cargo test --workspace
+  ```
+
+- If the PR has CI runs, watch them with `gh run watch`. After they pass, ask for review.
+- Claude does not merge. A person reviews and merges each PR.
+- Do not force-push `main`. While the PR of a feature branch is open, you can rewrite the history of that branch.
+- Do not add Co-Authored-By trailers to commits.
+
+## Documentation rules
+
+These rules apply to code comments and to all documentation: this file, `docs/`, and the README files.
+
+Do these things:
+
+- Keep the text short.
+- Write statements of how things are.
+- Before prose lands, apply the `simple-english` skill to it. This includes comments, `docs/`, the README files, and PR and issue bodies.
+
+Do not do these things:
+
+- If the reason for something is obvious, do not document it.
+- Do not repeat what the code or another document already says.
+- Do not document deletions.
+- Do not document changes over time. The history is in git.
+- Do not include links to code, PRs, issues, or error pages.
+- Do not explain why you did not use an alternative.
