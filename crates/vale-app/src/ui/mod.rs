@@ -152,6 +152,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             Workspace::Globe => {
                 panels::status(ui, state);
                 panels::brush_debug(ui, state);
+                panels::brush(ui, state);
                 globe::draw(ui, state);
             }
             Workspace::Map => {
