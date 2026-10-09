@@ -93,6 +93,18 @@ fn toolbar_buttons_push_actions() {
 }
 
 #[test]
+fn file_buttons_can_be_hidden() {
+    let mut state = state_with(Document::sample());
+    state.file_buttons = false;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(2);
+    assert!(h.query_by_label("Open GeoJSON…").is_none());
+    assert!(h.query_by_label("Export PDF…").is_none());
+}
+
+#[test]
 fn drag_pans_the_map() {
     let mut h = harness();
     h.run_steps(3);
