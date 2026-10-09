@@ -20,6 +20,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
                 ui.selectable_value(&mut state.globe.tool, Tool::Brush, "Brush");
                 ui.separator();
+                ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
+                ui.toggle_value(&mut state.globe.preview.panel, "Elevation");
                 ui.toggle_value(&mut state.globe.debug, "Debug");
             }
             if !state.file_buttons || state.workspace != Workspace::Map {
