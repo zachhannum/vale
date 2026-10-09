@@ -1,0 +1,62 @@
+name: SideStore publish
+
+# Publishes the `.ipa` file of one run of the iOS workflow. The steps use
+# the file as data, and they do not run code from it.
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        description: The run of the iOS workflow that holds the `vale-ipa` artifact.
+        type: string
+        required: true
+      run_number:
+        description: The number of that run. It is the build number.
+        type: string
+        required: true
+      sha:
+        description: The commit of the build.
+        type: string
+        required: true
+      pr:
+        description: The number of the PR. Empty for a build of `main`.
+        type: string
+        default: ""
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_NUMBER: ${{ inputs.run_number }}
+      SHA: ${{ inputs.sha }}
+      PR: ${{ inputs.pr }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test the script
+        run: python3 -m unittest discover scripts/sidestore
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vale-ipa
+          path: ${{ runner.temp }}/ipa
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Publish the release
+        run: |
+          python3 scripts/sidestore/sidestore.py publish \
+            --ipa "$RUNNER_TEMP/ipa/Vale.ipa" --sha "$SHA" --run-number "$RUN_NUMBER" --pr "$PR"
+
+      - name: Update the source
+        run: scripts/sidestore/push-source.sh
+
+      - name: Update the PR comment
+        if: inputs.pr != ''
+        run: python3 scripts/sidestore/sidestore.py comment --sha "$SHA" --run-number "$RUN_NUMBER" --pr "$PR"

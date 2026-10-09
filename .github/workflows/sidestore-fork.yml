@@ -1,0 +1,52 @@
+name: SideStore publish (fork)
+
+# A PR from a fork builds with a token that cannot write. This workflow runs
+# after that build, with the code of `main`, and publishes the file.
+on:
+  workflow_run:
+    workflows: [iOS]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  find:
+    name: Find the PR
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.find.outputs.pr }}
+    steps:
+      # The names come from the fork, so they go through the environment.
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          pr="$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+            -f state=open -f head="$HEAD_OWNER:$HEAD_BRANCH" \
+            --jq '.[] | select(.head.sha == $ENV.HEAD_SHA) | .number' | head -n 1)"
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish for SideStore
+    needs: find
+    if: needs.find.outputs.pr != ''
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/sidestore-publish.yml
+    with:
+      run_id: ${{ github.event.workflow_run.id }}
+      run_number: ${{ github.event.workflow_run.run_number }}
+      sha: ${{ github.event.workflow_run.head_sha }}
+      pr: ${{ needs.find.outputs.pr }}

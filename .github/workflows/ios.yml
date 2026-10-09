@@ -54,3 +54,44 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/xcode" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
             -quiet build
+
+      # SideStore signs the file on the iPad. The version is 0.<PR>.<build>,
+      # and PR 0 is `main`. `scripts/sidestore/sidestore.py` makes the same
+      # number.
+      - name: Pack the .ipa file
+        if: matrix.sdk == 'iphoneos'
+        env:
+          VERSION: 0.${{ github.event.pull_request.number || 0 }}.${{ github.run_number }}
+        run: |
+          app="$RUNNER_TEMP/xcode/Build/Products/Release-iphoneos/ValeApp.app"
+          plutil -replace CFBundleShortVersionString -string "$VERSION" "$app/Info.plist"
+          plutil -replace CFBundleVersion -string "$GITHUB_RUN_NUMBER" "$app/Info.plist"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$app" "$RUNNER_TEMP/ipa/Payload/"
+          cd "$RUNNER_TEMP/ipa"
+          zip -qry Vale.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.sdk == 'iphoneos'
+        with:
+          name: vale-ipa
+          path: ${{ runner.temp }}/ipa/Vale.ipa
+          if-no-files-found: error
+          retention-days: 7
+
+  # A PR from a fork has a token that cannot write. The workflow
+  # `sidestore-fork.yml` publishes the build of such a PR.
+  publish:
+    name: Publish for SideStore
+    needs: build
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/sidestore-publish.yml
+    with:
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      pr: ${{ github.event.pull_request.number || '' }}

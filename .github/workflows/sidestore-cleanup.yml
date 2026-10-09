@@ -1,0 +1,28 @@
+name: SideStore cleanup
+
+# Removes the build of a PR when the PR closes. The job runs the code of the
+# base branch, so it is safe for a PR from a fork.
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  remove:
+    name: Remove the build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove the release
+        run: python3 scripts/sidestore/sidestore.py remove --pr "$PR"
+
+      - name: Update the source
+        run: scripts/sidestore/push-source.sh
