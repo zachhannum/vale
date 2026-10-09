@@ -1,0 +1,27 @@
+[package]
+name = "vale-app"
+description = "Vale desktop app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+vale-store.workspace = true
+vale-style.workspace = true
+vale-render.workspace = true
+vale-sphere.workspace = true
+vale-import.workspace = true
+vale-labeler.workspace = true
+eframe.workspace = true
+egui_kittest.workspace = true
+image.workspace = true
+rfd.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+kurbo.workspace = true
+
+[[bin]]
+name = "vale-app"
+path = "src/main.rs"

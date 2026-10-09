@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vale projection</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./vale.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+a{color:#45c4a8}a:hover{color:#8fe0cd}
+</style>
+</helmet>
+<div class="app">
+<header class="top">
+<div class="brand">Vale</div>
+<nav class="tabs" aria-label="Workspace"><a class="tab" href="Import.dc.html">World</a><a class="tab on" href="Main.dc.html">Maps</a><a class="tab" href="Atlas.dc.html">Atlas</a></nav>
+<div class="grow"></div>
+<div class="mono mute">kareth.gpkg</div>
+</header>
+<div class="sub"><select class="in" aria-label="Map frame" style="flex: 0 1 200px"><option>Vesperan</option><option>Kareth, the world</option><option>Dravenhold</option><option>Marrow Sea</option></select><div class="grow"></div><nav class="seg" aria-label="Map mode"><a href="Main.dc.html">Layout</a><a class="on" href="Projection.dc.html">Projection</a><a href="Style.dc.html">Style</a><a href="Labels.dc.html">Labels</a><a href="Data.dc.html">Data</a></nav></div><div class="body"><aside class="side l"><section class="sec"><h2>Projection</h2><div class="row sel"><span style="flex: 1">Lambert conformal conic</span><span class="mute">0.5%</span></div><div class="row"><span style="flex: 1">Transverse Mercator</span><span class="mute">0.4%</span></div><div class="row"><span style="flex: 1">Albers equal-area conic</span><span class="mute">0.9%</span></div><div class="row"><span style="flex: 1">Azimuthal equal-area</span><span class="mute">0.3%</span></div><div class="row"><span style="flex: 1">Polar stereographic</span><span class="mute">6%</span></div><div class="row"><span style="flex: 1">Mercator</span><span class="warn">15%</span></div><div class="row"><span style="flex: 1">Orthographic</span></div><div class="row"><span style="flex: 1">Equal Earth</span></div><div class="row"><span style="flex: 1">Custom</span></div></section></aside><main class="canvas"><div class="work"><div class="stage"><div class="sheet bare"><img class="lay" src="./plate-base.svg" alt="Map with distortion circles"><svg class="lay" viewBox="0 0 1500 2000"><g fill="#c2382b" fill-opacity=".14" stroke="#9c2415" stroke-width="3"><circle cx="420" cy="420" r="70.6"></circle><circle cx="760" cy="420" r="70.6"></circle><circle cx="1100" cy="420" r="70.6"></circle><circle cx="420" cy="820" r="70.1"></circle><circle cx="760" cy="820" r="70.1"></circle><circle cx="1100" cy="820" r="70.1"></circle><circle cx="420" cy="1220" r="70.1"></circle><circle cx="760" cy="1220" r="70.1"></circle><circle cx="1100" cy="1220" r="70.1"></circle><circle cx="420" cy="1620" r="70.6"></circle><circle cx="760" cy="1620" r="70.6"></circle><circle cx="1100" cy="1620" r="70.6"></circle></g></svg></div></div></div><div class="status"><span class="mono">29.27°E 45.70°N</span><div class="grow"></div><span class="mono">47%</span></div></main><aside class="side r"><section class="sec"><h2>Parameters</h2><div class="row"><span class="lab">Center</span><input class="in mono" value="30.0°E" aria-label="Center longitude"><input class="in mono" value="46.0°N" aria-label="Center latitude"></div><div class="row"><span class="lab">Parallels</span><input class="in mono" value="41.3°N" aria-label="Parallel 1"><input class="in mono" value="50.7°N" aria-label="Parallel 2"></div><div class="row"><span class="lab">Rotation</span><input class="in mono" value="0.0°" aria-label="Rotation"></div><label class="row"><input class="chk" type="checkbox" checked="{{ true }}"><span>Fit parallels to frame</span></label></section><section class="sec"><h2>Distortion</h2><table class="t"><thead><tr><th></th><th>Scale</th><th>Area</th></tr></thead><tbody><tr><td>North</td><td class="mono">+0.4%</td><td class="mono">+0.8%</td></tr><tr><td>Center</td><td class="mono">−0.3%</td><td class="mono">−0.6%</td></tr><tr><td>South</td><td class="mono">+0.5%</td><td class="mono">+1.0%</td></tr></tbody></table><div style="margin-top: 8px"><label class="row"><input class="chk" type="checkbox" checked="{{ true }}"><span>Tissot circles</span></label></div></section><section class="sec"><h2>PROJ</h2><textarea class="in mono" rows="3" aria-label="PROJ string" style="width: 100%">+proj=lcc +lat_1=41.3 +lat_2=50.7 +lat_0=46 +lon_0=30 +R=4820000</textarea></section></aside></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

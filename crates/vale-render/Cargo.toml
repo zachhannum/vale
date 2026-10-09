@@ -1,0 +1,13 @@
+[package]
+name = "vale-render"
+description = "Display list and raster and PDF backends for Vale"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+kurbo.workspace = true
+vello_cpu.workspace = true
+krilla.workspace = true
+vale-labeler.workspace = true

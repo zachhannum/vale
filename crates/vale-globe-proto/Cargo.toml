@@ -1,0 +1,23 @@
+[package]
+name = "vale-globe-proto"
+description = "Prototype that tests pen drawing on a globe, on desktop and iPad"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+eframe.workspace = true
+bytemuck = "1.25.2"
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+egui_kittest.workspace = true
+image.workspace = true
+
+[[bin]]
+name = "vale-globe-proto"
+path = "src/main.rs"

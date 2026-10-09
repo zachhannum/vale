@@ -1,0 +1,4 @@
+gen/__pycache__/
+gen/sketch.svg
+gen/preview.svg
+gen/info.json

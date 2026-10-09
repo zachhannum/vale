@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+kurbo = "0.13.1"
+parley = "0.11.1"
+skrifa = "0.44.0"
+vello_cpu = "0.3.0"
+serde_json = "1.0.151"
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+vale-labeler = { path = "crates/vale-labeler", version = "0.1.0" }
+proj = { version = "0.31.0", default-features = false, features = ["bundled_proj"] }
+krilla = { version = "0.8.2", default-features = false }
+eframe = "0.36.2"
+egui_kittest = { version = "0.36.2", features = ["wgpu"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+rfd = "0.17.2"
+vale-store = { path = "crates/vale-store", version = "0.1.0" }
+vale-style = { path = "crates/vale-style", version = "0.1.0" }
+vale-render = { path = "crates/vale-render", version = "0.1.0" }
+vale-sphere = { path = "crates/vale-sphere", version = "0.1.0" }
+vale-import = { path = "crates/vale-import", version = "0.1.0" }

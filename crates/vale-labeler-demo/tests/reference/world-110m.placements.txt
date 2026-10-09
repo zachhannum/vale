@@ -1,0 +1,201 @@
+5	Palikir	TopRight	1693.3	396.1
+6	Majuro	TopRight	1760.3	396.5
+7	Funafuti	TopLeft	1742.8	497.5
+8	Melekeok	TopRight	1589.0	392.3
+9	Bir Lehlou	TopRight	889.7	272.7
+11	Tarawa	TopRight	1770.5	433.1
+12	Moroni	TopRight	1135.0	518.5
+13	Andorra	TopLeft	877.5	175.6
+14	Port-of-Spain	Right	647.0	381.3
+15	Kigali	TopLeft	1026.8	455.9
+17	Juba	TopRight	1070.1	411.0
+21	Doha	TopRight	1160.3	277.9
+23	Sri Jayawardenepura Kotte	TopRight	1373.9	397.7
+24	Baguio	TopRight	1503.2	335.8
+25	Dodoma	BottomLeft	1044.5	498.6
+27	Laayoune	TopLeft	806.0	268.1
+30	Djibouti	TopLeft	1081.4	367.0
+31	Putrajaya	TopRight	1429.3	423.9
+32	Kyoto	BottomRight	1526.8	236.7
+35	Bridgetown	Right	652.8	365.4
+37	Bujumbura	Right	1082.8	473.5
+38	Kingstown	TopLeft	568.9	357.0
+39	Castries	TopRight	634.1	350.0
+41	Port Louis	BottomRight	1207.4	589.5
+43	Manama	TopLeft	1104.7	272.3
+45	Montevideo	BottomRight	689.3	680.2
+47	Tunis	TopRight	964.4	208.3
+50	Lusaka	BottomLeft	1011.1	558.8
+51	Harare	TopRight	1073.0	558.2
+52	Dili	TopLeft	1497.5	497.8
+53	Port Vila	TopLeft	1675.2	557.4
+55	Georgetown	TopRight	657.9	398.6
+56	Reykjavík	TopRight	854.8	71.9
+57	Port-au-Prince	TopLeft	508.1	320.7
+58	Kampala	TopRight	1089.6	441.0
+59	Paramaribo	BottomRight	670.6	419.5
+60	Niamey	TopRight	937.6	354.6
+61	Dushanbe	TopRight	1235.7	198.0
+62	Asunción	BottomRight	662.3	621.6
+63	Managua	Right	516.7	371.8
+64	Freetown	Right	869.3	394.4
+65	Islamabad	BottomRight	1263.5	242.9
+66	Kathmandu	BottomLeft	1254.8	279.2
+67	Bloemfontein	BottomLeft	975.5	645.3
+68	Pretoria	TopRight	1059.5	608.0
+69	Port Moresby	TopLeft	1571.1	505.3
+70	Honiara	TopLeft	1649.2	503.8
+71	Panama City	BottomLeft	472.4	400.6
+72	Rabat	TopRight	891.1	224.6
+73	Chișinău	TopRight	1048.8	152.5
+74	Maputo	BottomRight	1079.2	627.6
+75	Mogadishu	TopRight	1159.6	429.5
+76	Muscat	BottomRight	1200.1	305.2
+77	Colombo	TopLeft	1257.9	396.0
+78	Ulaanbaatar	TopRight	1380.1	146.3
+79	Windhoek	TopRight	1014.8	588.2
+80	Abuja	TopRight	956.9	383.6
+81	Bissau	BottomLeft	801.3	380.2
+82	Amman	BottomRight	1089.8	253.6
+84	Riga	TopRight	1008.4	103.1
+85	Bishkek	TopLeft	1190.6	173.6
+86	Maseru	BottomRight	1052.7	646.8
+87	Antananarivo	TopRight	1170.5	565.1
+88	Quito	TopRight	536.8	444.2
+89	San José	Left	461.5	385.7
+90	San Salvador	BottomLeft	427.1	368.1
+91	Kingston	BottomRight	564.2	342.2
+92	N'Djamena	TopRight	1010.3	363.8
+94	Asmara	Top	1086.6	340.0
+97	Lilongwe	TopLeft	1032.1	534.7
+98	Guatemala City	TopLeft	414.5	347.3
+99	Libreville	BottomRight	977.2	455.4
+100	Suva	TopRight	1769.5	560.2
+101	Valparaíso	TopLeft	541.7	654.3
+102	Nouakchott	TopRight	863.5	323.5
+103	Bamako	Top	861.6	357.1
+104	Beirut	TopRight	1082.0	225.6
+105	Tbilisi	TopRight	1112.5	180.0
+106	Nur-Sultan	TopLeft	1148.8	129.5
+107	Vientiane	BottomRight	1421.7	340.8
+108	Brazzaville	TopLeft	939.2	469.6
+109	Conakry	TopRight	862.7	380.4
+111	Ottawa	TopRight	609.3	159.9
+113	Bandar Seri Begawan	BottomRight	1530.1	427.3
+114	Sucre	BottomLeft	568.9	582.4
+116	Bangui	TopRight	1015.9	414.5
+117	Yaoundé	BottomRight	986.1	432.4
+119	Yerevan	Bottom	1092.1	206.8
+120	Baku	BottomRight	1134.5	203.8
+121	Phnom Penh	BottomLeft	1365.2	382.1
+122	La Paz	TopRight	596.7	549.7
+126	Thimphu	Right	1346.4	274.0
+128	Canberra	TopLeft	1532.2	666.1
+131	Naypyidaw	TopLeft	1320.1	314.2
+132	Nuku'alofa	TopRight	107.5	579.1
+133	Hargeisa	TopRight	1144.8	380.4
+134	Victoria	TopRight	1196.7	472.1
+135	São Tomé	TopLeft	899.7	439.3
+136	Apia	TopRight	88.4	533.9
+137	Valletta	BottomLeft	937.6	229.8
+138	Malé	TopRight	1277.6	414.1
+140	Praia	TopRight	806.0	344.1
+141	Nassau	TopRight	565.1	279.5
+143	Wellington	TopRight	1687.1	702.3
+144	Hanoi	BottomRight	1422.7	321.2
+145	Ankara	TopRight	1067.0	190.1
+147	Sanaa	TopRight	1134.3	341.3
+148	Bucharest	Right	1046.0	173.2
+150	Lisbon	BottomLeft	836.5	213.4
+151	Khartoum	TopLeft	1022.1	339.6
+152	Oslo	TopRight	957.0	88.1
+154	Pyongyang	BottomLeft	1410.6	213.5
+155	Dar es Salaam	BottomRight	1138.5	502.7
+156	Dublin	TopLeft	851.9	118.7
+157	Monrovia	Left	813.6	408.4
+158	Kuala Lumpur	Left	1349.4	430.6
+159	Havana	TopLeft	486.4	291.7
+161	Kuwait City	TopRight	1158.1	254.3
+162	Santo Domingo	TopRight	617.7	322.7
+163	Accra	BottomRight	918.5	421.7
+164	Tripoli	TopRight	981.5	232.8
+165	Tel Aviv	TopLeft	1031.3	236.2
+166	Helsinki	TopRight	1019.5	87.0
+167	København	TopLeft	910.2	107.6
+168	Abidjan	BottomLeft	853.2	424.4
+169	Brasília	TopRight	695.8	544.8
+171	Dhaka	TopRight	1347.2	287.7
+172	Luanda	TopRight	990.7	499.7
+173	Algiers	TopLeft	888.7	209.9
+174	Yangon	TopLeft	1333.5	333.7
+175	San Francisco	TopRight	397.2	204.4
+176	Denver	TopRight	464.6	193.3
+177	Houston	TopLeft	440.6	252.4
+178	Miami	TopLeft	509.3	276.7
+179	Atlanta	TopRight	540.3	228.1
+180	Chicago	BottomRight	546.5	195.1
+181	Caracas	BottomLeft	548.2	389.2
+182	Kyiv	TopRight	1039.1	134.9
+184	Tashkent	Left	1165.2	190.5
+185	Madrid	Left	857.3	195.6
+188	Bangkok	TopLeft	1354.9	353.0
+189	Lima	TopLeft	509.0	520.8
+190	Dakar	BottomLeft	794.7	361.6
+191	Johannesburg	Left	981.4	620.4
+193	Casablanca	TopLeft	836.2	228.9
+194	Seoul	TopRight	1478.6	203.7
+195	Manila	BottomRight	1506.5	362.3
+196	Monterrey	TopRight	460.7	278.7
+197	Berlin	TopRight	974.5	122.7
+198	Ürümqi	TopRight	1290.8	170.7
+199	Chengdu	TopRight	1398.5	247.7
+200	Ōsaka	Left	1486.8	228.4
+201	Kinshasa	TopRight	1005.7	470.1
+202	New Delhi	TopRight	1290.0	257.4
+203	Bengaluru	TopRight	1302.0	359.5
+204	Athens	Right	1030.1	209.5
+205	Baghdad	Right	1132.4	238.3
+206	Addis Ababa	BottomRight	1129.1	398.6
+207	Tehran	Right	1154.1	223.0
+208	Vancouver	TopRight	428.1	141.3
+209	Toronto	TopLeft	542.8	171.3
+210	Buenos Aires	TopRight	682.5	662.3
+211	Kabul	TopRight	1230.4	221.6
+213	Melbourne	TopRight	1565.4	682.7
+214	Taipei	TopRight	1488.3	281.1
+215	Auckland	TopRight	1695.7	677.1
+216	Los Angeles	TopRight	401.0	227.4
+217	Washington,  D.C.	BottomRight	619.0	213.9
+218	New York	TopRight	606.2	187.5
+219	London	BottomLeft	872.8	144.2
+220	Istanbul	BottomLeft	1002.4	198.6
+221	Riyadh	BottomLeft	1094.3	299.8
+222	Cape Town	TopLeft	945.8	659.7
+223	Moscow	TopRight	1073.4	107.4
+224	Mexico City	TopLeft	391.0	316.5
+225	Lagos	TopRight	938.5	401.0
+226	Rome	BottomLeft	932.5	195.7
+227	Beijing	TopRight	1429.2	191.9
+228	Nairobi	Right	1107.5	458.2
+229	Jakarta	TopRight	1444.5	483.4
+230	Bogota	TopRight	564.1	413.1
+231	Cairo	TopLeft	1023.5	248.6
+232	Shanghai	TopRight	1476.9	244.4
+233	Tokyo	TopRight	1542.1	216.2
+234	Mumbai	TopLeft	1224.7	319.0
+235	Paris	BottomLeft	891.3	157.9
+236	Santiago	BottomLeft	551.8	673.1
+237	Kolkata	TopLeft	1295.9	296.8
+238	Rio de Janeiro	TopRight	732.1	593.1
+239	São Paulo	TopLeft	655.2	596.3
+240	Sydney	TopRight	1598.4	660.7
+241	Singapore	BottomRight	1442.3	451.1
+242	Hong Kong	TopRight	1467.5	299.8
+1000001	Mekong	LineAbove	1383.5	306.0
+1000002	Ob	LineAbove	1195.0	114.4
+1000003	Peace	LineAbove	457.6	99.8
+1000005	Paraná	LineAbove	620.5	618.9
+1000007	Lena	LineAbove	1348.6	84.6
+1000008	Chang	LineAbove	1348.6	241.4
+1000009	Nile	LineAbove	1040.7	303.8
+1000010	Amazonas	LineAbove	617.3	458.2

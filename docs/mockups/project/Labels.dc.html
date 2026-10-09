@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vale labels</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./vale.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+a{color:#45c4a8}a:hover{color:#8fe0cd}
+</style>
+</helmet>
+<div class="app">
+<header class="top">
+<div class="brand">Vale</div>
+<nav class="tabs" aria-label="Workspace"><a class="tab" href="Import.dc.html">World</a><a class="tab on" href="Main.dc.html">Maps</a><a class="tab" href="Atlas.dc.html">Atlas</a></nav>
+<div class="grow"></div>
+<div class="mono mute">kareth.gpkg</div>
+</header>
+<div class="sub"><select class="in" aria-label="Map frame" style="flex: 0 1 200px"><option>Vesperan</option><option>Kareth, the world</option><option>Dravenhold</option><option>Marrow Sea</option></select><div class="grow"></div><nav class="seg" aria-label="Map mode"><a href="Main.dc.html">Layout</a><a href="Projection.dc.html">Projection</a><a href="Style.dc.html">Style</a><a class="on" href="Labels.dc.html">Labels</a><a href="Data.dc.html">Data</a></nav></div><div class="body"><aside class="side l"><section class="sec"><h2>Label classes</h2><div class="row"><span style="flex: 1">Countries</span></div><div class="row"><span style="flex: 1">Seas</span></div><div class="row"><span style="flex: 1">Provinces</span></div><div class="row sel"><span style="flex: 1">Cities</span></div><div class="row"><span style="flex: 1">Towns</span><span class="warn">1</span></div><div class="row"><span style="flex: 1">Ranges</span></div><div class="row"><span style="flex: 1">Rivers</span><span class="warn">1</span></div><div class="row"><span style="flex: 1">Peaks</span></div><div class="row"><span style="flex: 1">Islands</span><span class="warn">1</span></div><div class="row"><span style="flex: 1">Sea routes</span></div></section><section class="sec"><h2>Cities</h2><div class="row"><span class="lab">Text</span><input class="in mono" value="name" aria-label="Text"></div><div class="row"><span class="lab">Filter</span><input class="in mono" value="rank &lt;= 2" aria-label="Filter"></div><div class="row"><span class="lab">Font</span><select class="in" aria-label="Font"><option>Serif small caps</option></select></div><div class="row"><span class="lab">Size</span><input class="in mono" value="7 pt" aria-label="Size"></div><div class="row"><span class="lab">Position</span><select class="in" aria-label="Position"><option>Around symbol</option><option>On symbol</option></select></div></section><section class="sec"><h2>Fallbacks</h2><label class="row"><input class="chk" type="checkbox" checked="{{ true }}"><span>Shrink to 6 pt</span></label><label class="row"><input class="chk" type="checkbox" checked="{{ true }}"><span>Stack</span></label><label class="row"><input class="chk" type="checkbox"><span>Short name</span></label><label class="row"><input class="chk" type="checkbox" checked="{{ true }}"><span>Leader line</span></label></section></aside><main class="canvas"><div class="work"><div class="rail" role="toolbar" aria-label="Tools"><button class="tool" aria-label="Select"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-2 6z"></path></svg></button><button class="tool" aria-label="Pan"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"></path></svg></button><button class="tool" aria-label="Place point"><svg viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0112 0c0 5-6 11-6 11z"></path><circle cx="12" cy="10" r="2"></circle></svg></button><button class="tool" aria-label="Edit vertices"><svg viewBox="0 0 24 24"><path d="M5 18l5-10 5 6 4-8"></path><circle cx="5" cy="18" r="1.5"></circle><circle cx="10" cy="8" r="1.5"></circle><circle cx="15" cy="14" r="1.5"></circle></svg></button><button class="tool on" aria-label="Edit labels"><svg viewBox="0 0 24 24"><path d="M6 6h12M12 6v13M9 19h6"></path></svg></button></div><div class="stage"><div class="view bare" style="aspect-ratio: 3 / 2"><div class="zoom" style="width: 277.8%; left: -127.8%; top: -230.6%"><img class="lay" src="./plate-base.svg" alt="Map zoomed to Castellane"><img class="lay" src="./plate-labels.svg" alt=""><svg class="lay" viewBox="0 0 1500 2000"><g fill="#0f4a3e" fill-opacity=".1" stroke="#0f4a3e" stroke-width=".8" stroke-dasharray="3 2"><rect x="956" y="1013" width="77" height="12.5"></rect><rect x="867" y="995" width="77" height="12.5"></rect><rect x="867" y="1013" width="77" height="12.5"></rect></g><rect x="954.5" y="993.5" width="80" height="15" fill="none" stroke="#0e8f76" stroke-width="1.6"></rect><rect x="890" y="885.5" width="66" height="15" fill="none" stroke="#b36b00" stroke-width="1.2"></rect><rect x="769.5" y="924" width="30.5" height="13" fill="none" stroke="#b36b00" stroke-width="1.2"></rect></svg></div><div role="toolbar" aria-label="Label actions" class="float" style="left: 45%; top: 61%"><button class="btn">Pin</button><button class="btn">Next</button><button class="btn">Hide</button></div></div></div></div><div class="status"><span class="mono">31.42°E 46.31°N</span><div class="grow"></div><span class="mono">130%</span></div></main><aside class="side r"><section class="sec"><h2>Castellane</h2><table class="t"><tbody><tr class="sel"><td>Northeast</td><td class="mono">0.22</td></tr><tr><td>Southeast</td><td class="mono mute">0.47</td></tr><tr><td>Northwest</td><td class="mono mute">0.66</td></tr><tr><td>Southwest</td><td class="mono mute">0.81</td></tr></tbody></table></section><section class="sec"><h2>Overrides</h2><div class="row"><span style="flex: 1">Deepwell</span><span class="mute">Pinned</span></div><div class="row"><span style="flex: 1">Tarn</span><span class="mute">Moved</span></div><div class="row"><span style="flex: 1">Greywater</span><span class="mute">Moved</span></div><div class="row"><span style="flex: 1">Sable Ford</span><span class="mute">Hidden</span></div></section><section class="sec"><h2>Not placed</h2><div class="row"><span style="flex: 1">Callow Ferry</span><span class="mute">Overlap</span></div><div class="row"><span style="flex: 1">Little Sable</span><span class="mute">Too long</span></div><div class="row"><span style="flex: 1">Skerry Rocks</span><span class="mute">Overlap</span></div></section></aside></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

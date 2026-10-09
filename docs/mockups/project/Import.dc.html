@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vale world</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./vale.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+a{color:#45c4a8}a:hover{color:#8fe0cd}
+</style>
+</helmet>
+<div class="app">
+<header class="top">
+<div class="brand">Vale</div>
+<nav class="tabs" aria-label="Workspace"><a class="tab on" href="Import.dc.html">World</a><a class="tab" href="Main.dc.html">Maps</a><a class="tab" href="Atlas.dc.html">Atlas</a></nav>
+<div class="grow"></div>
+<div class="mono mute">kareth.gpkg</div>
+</header>
+<div class="sub"><div class="grow"></div><nav class="seg" aria-label="World mode"><a href="Draw.dc.html">Draw</a><a class="on" href="Import.dc.html">Sources</a></nav></div><div class="body"><aside class="side l"><section class="sec"><h2>World</h2><div class="row"><span class="lab">Name</span><input class="in" value="Kareth" aria-label="Name"></div><div class="row"><span class="lab">Radius</span><input class="in mono" value="4,820 km" aria-label="Radius"></div><div class="row"><span class="lab">Degree</span><span class="mono mute">84.1 km</span></div></section><section class="sec"><h2>Sources</h2><div class="row"><span style="flex: 1">kareth-topography.geojson</span></div><div class="row"><span style="flex: 1">kareth-lines.svg</span></div><div class="row sel"><span style="flex: 1">coast-scan.png</span><span class="warn">No extents</span></div><div class="row"><span style="flex: 1">dravenhold-coast.psd</span><span class="bad">Missing</span></div><div class="row" style="margin-top: 8px"><button class="btn">Add source</button></div></section></aside><main class="canvas"><div class="stage"><div class="view" style="aspect-ratio: 2 / 1; max-width: none"><img class="lay" src="./world-base.svg" alt="World map of Kareth with elevation bands"><svg class="lay" viewBox="0 0 1000 500" font-family="Helvetica, Arial, sans-serif" font-size="9" font-weight="bold"><g fill="none" stroke="#9c2415" stroke-width="1.2"><rect x="516.7" y="105.6" width="50" height="38.8"></rect><rect x="558.3" y="102.8" width="50" height="38.9"></rect><rect x="588.9" y="88.9" width="55.5" height="38.9"></rect></g><rect x="552.8" y="100" width="58.3" height="44.4" fill="none" stroke="#17191c" stroke-width="1.2" stroke-dasharray="4 2"></rect><g fill="#17191c" stroke="#f3efdf" stroke-width="2.4" paint-order="stroke"><text x="514" y="156" text-anchor="end">Dravenhold</text><text x="583" y="156" text-anchor="middle">Vesperan</text><text x="648" y="86">Marrow Sea</text></g></svg></div></div><div class="status"><span class="mono">32.04°E 46.98°N</span></div></main><aside class="side r"><section class="sec"><h2>coast-scan.png</h2><div style="position: relative; aspect-ratio: 21 / 16; overflow: hidden; background: #f4f1e6; margin-bottom: 12px"><img class="lay" src="/_blob/3de283ab580ffe42d27ea4cd6819505d" alt="Scanned coast sketch"><div class="pt" style="left: 23.8%; top: 25%">1</div><div class="pt" style="left: 81%; top: 75%">2</div></div><div class="seg" role="group" aria-label="Extents method" style="margin-bottom: 10px"><button>Globe</button><button>Extents</button><button class="on">Points</button></div><div class="row"><span class="lab">Point 1</span><input class="in mono" value="24°E" aria-label="Point 1 longitude"><input class="in mono" value="50°N" aria-label="Point 1 latitude"></div><div class="row"><span class="lab">Point 2</span><input class="in mono" value="36°E" aria-label="Point 2 longitude"><input class="in mono" value="42°N" aria-label="Point 2 latitude"></div><div class="row"><span class="lab">Extents</span><span class="mono mute">19–40°E · 38–54°N</span></div><div class="row" style="margin-top: 12px; justify-content: flex-end"><button class="btn pri">Link</button></div></section></aside></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

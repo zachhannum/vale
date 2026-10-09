@@ -1,0 +1,21 @@
+[package]
+name = "vale-labeler-demo"
+description = "Milestone 1 command-line demo for vale-labeler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "vale-labeler-demo"
+path = "src/main.rs"
+
+[dependencies]
+vale-labeler.workspace = true
+vale-render.workspace = true
+kurbo.workspace = true
+vello_cpu.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+clap.workspace = true

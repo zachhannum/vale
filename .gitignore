@@ -1,0 +1,5 @@
+/target
+/data/natural-earth/50m/
+.DS_Store
+/crates/vale-globe-proto/ios/ValeGlobeProto.xcodeproj/
+/crates/vale-globe-proto/ios/Info.plist

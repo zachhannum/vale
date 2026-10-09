@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vale style</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./vale.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+a{color:#45c4a8}a:hover{color:#8fe0cd}
+</style>
+</helmet>
+<div class="app">
+<header class="top">
+<div class="brand">Vale</div>
+<nav class="tabs" aria-label="Workspace"><a class="tab" href="Import.dc.html">World</a><a class="tab on" href="Main.dc.html">Maps</a><a class="tab" href="Atlas.dc.html">Atlas</a></nav>
+<div class="grow"></div>
+<div class="mono mute">kareth.gpkg</div>
+</header>
+<div class="sub"><select class="in" aria-label="Map frame" style="flex: 0 1 200px"><option>Vesperan</option><option>Kareth, the world</option><option>Dravenhold</option><option>Marrow Sea</option></select><div class="grow"></div><nav class="seg" aria-label="Map mode"><a href="Main.dc.html">Layout</a><a href="Projection.dc.html">Projection</a><a class="on" href="Style.dc.html">Style</a><a href="Labels.dc.html">Labels</a><a href="Data.dc.html">Data</a></nav></div><div class="body"><aside class="side l"><section class="sec"><h2>Styles</h2><div class="row"><span class="sw" style="background: #5a3229"></span><span style="flex: 1">Places</span></div><div class="row"><span class="sw" style="background: #4a3a32"></span><span style="flex: 1">Peaks</span></div><div class="row"><span class="sw" style="background: #2c5866"></span><span style="flex: 1">Sea routes</span></div><div class="row"><span class="sw" style="background: #86503f"></span><span style="flex: 1">Roads</span></div><div class="row"><span class="sw" style="background: #bf5645"></span><span style="flex: 1">Province borders</span></div><div class="row"><span class="sw" style="background: #c98f88"></span><span style="flex: 1">National border</span></div><div class="row"><span class="sw" style="background: #3f8aa3"></span><span style="flex: 1">Rivers and lakes</span></div><div class="row sel"><span class="sw" style="background: #e2dca6"></span><span style="flex: 1">Topography</span></div><div class="row"><span class="sw" style="background: #b6d0d3"></span><span style="flex: 1">Bathymetry</span></div></section></aside><main class="canvas" style="background: #17191c"><section class="sec"><h2>Rules</h2><table class="t"><tbody><tr class="sel"><td style="width: 28px"><input class="chk" type="checkbox" checked="{{ true }}" aria-label="Land on"></td><td>Land</td><td class="mono mute">elev_min &gt;= 0</td><td class="mute">Fill</td></tr><tr><td><input class="chk" type="checkbox" checked="{{ true }}" aria-label="Coastline on"></td><td>Coastline</td><td class="mono mute">elev_min = 0</td><td class="mute">Stroke</td></tr></tbody></table></section><section class="sec" style="flex: 1"><h2>Land</h2><div style="max-width: 520px"><div class="row"><span class="lab">Filter</span><input class="in mono" value="elev_min &gt;= 0" aria-label="Filter"></div><div class="row"><span class="lab">Fill</span><div class="seg" role="group" aria-label="Fill kind"><button class="on">Color</button><button>Pattern</button><button>Texture</button></div></div><div class="row"><span class="lab">Color by</span><input class="in mono" value="elev_min" aria-label="Color by"></div><div style="display: flex; gap: 2px; margin: 12px 0 0 100px"><div style="flex: 1; min-width: 0"><div style="height: 36px; background: #a2b291"></div><div class="mono mute" style="margin-top: 4px; font-size: 11px">0</div></div><div style="flex: 1; min-width: 0"><div style="height: 36px; background: #b2bf99"></div><div class="mono mute" style="margin-top: 4px; font-size: 11px">100</div></div><div style="flex: 1; min-width: 0"><div style="height: 36px; background: #c8ce9f"></div><div class="mono mute" style="margin-top: 4px; font-size: 11px">200</div></div><div style="flex: 1; min-width: 0"><div style="height: 36px; background: #e2dca6"></div><div class="mono mute" style="margin-top: 4px; font-size: 11px">400</div></div><div style="flex: 1; min-width: 0"><div style="height: 36px; background: #e9d49c"></div><div class="mono mute" style="margin-top: 4px; font-size: 11px">700</div></div><div style="flex: 1; min-width: 0"><div style="height: 36px; background: #dcb98b"></div><div class="mono mute" style="margin-top: 4px; font-size: 11px">1,000</div></div><div style="flex: 1; min-width: 0"><div style="height: 36px; background: #cc9a7b"></div><div class="mono mute" style="margin-top: 4px; font-size: 11px">1,400</div></div><div style="flex: 1; min-width: 0"><div style="height: 36px; background: #bd7f6e"></div><div class="mono mute" style="margin-top: 4px; font-size: 11px">1,800</div></div></div></div></section></main><aside class="side r" style="flex-basis: 360px"><section class="sec"><div class="sheet bare" style="box-shadow: none; max-width: 330px; margin: 0 auto"><img class="lay" src="./plate-base.svg" alt="Style preview"><img class="lay" src="./plate-labels.svg" alt=""></div></section></aside></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vale labels on iPad</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./vale.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+a{color:#45c4a8}
+</style>
+</helmet>
+<div class="app pad">
+<nav class="seg card" aria-label="Workspace" style="left: 16px; top: 16px"><a href="PadDraw.dc.html">World</a><a class="on" href="PadMap.dc.html">Maps</a><a href="PadMap.dc.html">Atlas</a></nav>
+<div class="view bare" style="position: absolute; inset: 0; max-width: none"><div style="position: absolute; left: -1300px; top: -1603px; width: 3000px; height: 4000px"><img class="lay" src="./plate-base.svg" alt="Map zoomed to Castellane"><img class="lay" src="./plate-labels.svg" alt=""><svg class="lay" viewBox="0 0 1500 2000"><g fill="#0f4a3e" fill-opacity=".1" stroke="#0f4a3e" stroke-width=".8" stroke-dasharray="3 2"><rect x="956" y="1013" width="77" height="12.5"></rect><rect x="867" y="995" width="77" height="12.5"></rect><rect x="867" y="1013" width="77" height="12.5"></rect></g><rect x="954.5" y="993.5" width="80" height="15" fill="none" stroke="#0e8f76" stroke-width="1.6"></rect><rect x="890" y="885.5" width="66" height="15" fill="none" stroke="#b36b00" stroke-width="1.2"></rect></svg></div></div><nav class="seg card" aria-label="Map mode" style="left: 50%; top: 16px; transform: translateX(-50%)"><a href="PadMap.dc.html">Layout</a><a href="PadMap.dc.html">Projection</a><a href="PadMap.dc.html">Style</a><a class="on" href="PadLabels.dc.html">Labels</a><a href="PadMap.dc.html">Data</a></nav><div class="card pill" style="right: 16px; top: 16px">Vesperan</div><div class="card ptools" style="left: 16px; top: 84px" role="toolbar" aria-label="Tools"><button class="tool" aria-label="Select"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-2 6z"></path></svg></button><button class="tool" aria-label="Pan"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"></path></svg></button><button class="tool" aria-label="Place point"><svg viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0112 0c0 5-6 11-6 11z"></path><circle cx="12" cy="10" r="2"></circle></svg></button><button class="tool" aria-label="Edit vertices"><svg viewBox="0 0 24 24"><path d="M5 18l5-10 5 6 4-8"></path><circle cx="5" cy="18" r="1.5"></circle><circle cx="10" cy="8" r="1.5"></circle><circle cx="15" cy="14" r="1.5"></circle></svg></button><button class="tool on" aria-label="Edit labels"><svg viewBox="0 0 24 24"><path d="M6 6h12M12 6v13M9 19h6"></path></svg></button></div><div role="toolbar" aria-label="Label actions" class="card ptools" style="left: 590px; top: 440px; flex-direction: row"><button class="btn">Pin</button><button class="btn">Next</button><button class="btn">Hide</button></div><div class="card panel" style="right: 16px; top: 84px; width: 220px"><h2>Not placed</h2><div class="row"><span style="flex: 1">Callow Ferry</span></div><div class="row"><span style="flex: 1">Little Sable</span></div><div class="row"><span style="flex: 1">Skerry Rocks</span></div></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1194,"height":834}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

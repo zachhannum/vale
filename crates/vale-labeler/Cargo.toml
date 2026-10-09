@@ -1,0 +1,13 @@
+[package]
+name = "vale-labeler"
+description = "Automatic map label placement on page-space geometry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+exclude = ["tests/"]
+
+[dependencies]
+kurbo.workspace = true
+parley.workspace = true
+skrifa.workspace = true

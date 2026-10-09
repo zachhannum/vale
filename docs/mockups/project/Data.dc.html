@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vale data</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./vale.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+a{color:#45c4a8}a:hover{color:#8fe0cd}
+</style>
+</helmet>
+<div class="app">
+<header class="top">
+<div class="brand">Vale</div>
+<nav class="tabs" aria-label="Workspace"><a class="tab" href="Import.dc.html">World</a><a class="tab on" href="Main.dc.html">Maps</a><a class="tab" href="Atlas.dc.html">Atlas</a></nav>
+<div class="grow"></div>
+<div class="mono mute">kareth.gpkg</div>
+</header>
+<div class="sub"><select class="in" aria-label="Map frame" style="flex: 0 1 200px"><option>Vesperan</option><option>Kareth, the world</option><option>Dravenhold</option><option>Marrow Sea</option></select><div class="grow"></div><nav class="seg" aria-label="Map mode"><a href="Main.dc.html">Layout</a><a href="Projection.dc.html">Projection</a><a href="Style.dc.html">Style</a><a href="Labels.dc.html">Labels</a><a class="on" href="Data.dc.html">Data</a></nav></div><div class="body"><main class="canvas"><div class="work" style="min-height: 440px"><div class="rail" role="toolbar" aria-label="Tools"><button class="tool" aria-label="Select"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-2 6z"></path></svg></button><button class="tool" aria-label="Pan"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"></path></svg></button><button class="tool on" aria-label="Place point"><svg viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0112 0c0 5-6 11-6 11z"></path><circle cx="12" cy="10" r="2"></circle></svg></button><button class="tool" aria-label="Edit vertices"><svg viewBox="0 0 24 24"><path d="M5 18l5-10 5 6 4-8"></path><circle cx="5" cy="18" r="1.5"></circle><circle cx="10" cy="8" r="1.5"></circle><circle cx="15" cy="14" r="1.5"></circle></svg></button><button class="tool" aria-label="Edit labels"><svg viewBox="0 0 24 24"><path d="M6 6h12M12 6v13M9 19h6"></path></svg></button></div><div class="stage" style="padding: 16px"><div class="view bare" style="aspect-ratio: 9 / 5; max-width: 860px"><div class="zoom" style="width: 277.8%; left: -98.1%; top: -323.3%"><img class="lay" src="./plate-base.svg" alt="Map zoomed to Ostrey"><img class="lay" src="./plate-labels.svg" alt=""><svg class="lay" viewBox="0 0 1500 2000"><circle cx="700" cy="1060" r="9" fill="none" stroke="#0e8f76" stroke-width="1.6"></circle><circle cx="700" cy="1060" r="4" fill="#45c4a8" stroke="#0b1f1a" stroke-width="1.2"></circle></svg></div></div></div></div><div class="sub" style="border-top: 1px solid #2a2e34"><strong>Places</strong><span class="mute">58</span><div class="grow"></div><input class="in" placeholder="Filter" aria-label="Filter" style="flex: 0 1 220px"></div><div class="scroll" style="background: #1f2226"><table class="t"><thead><tr><th>Name</th><th>Kind</th><th>Rank</th><th>Port</th></tr></thead><tbody><tr><td>Ardent</td><td>Town</td><td class="mono">3</td><td class="mute"></td></tr><tr><td>Castellane</td><td>City</td><td class="mono">2</td><td class="mute">Port</td></tr><tr><td>Hartle</td><td>Town</td><td class="mono">3</td><td class="mute"></td></tr><tr class="sel"><td><span class="mute">New place</span></td><td>Town</td><td class="mono">3</td><td class="mute"></td></tr><tr><td>Ostrey</td><td>Town</td><td class="mono">3</td><td class="mute"></td></tr><tr><td>Tolver</td><td>Town</td><td class="mono">3</td><td class="mute"></td></tr><tr><td>Yarrow</td><td>Town</td><td class="mono">3</td><td class="mute">Port</td></tr></tbody></table></div><div class="status"><span class="mono">29.27°E 45.70°N</span><div class="grow"></div><span class="mono">130%</span></div></main><aside class="side r"><section class="sec"><h2>New place</h2><div class="row"><span class="lab">Name</span><input class="in" aria-label="Name"></div><div class="row"><span class="lab">Kind</span><select class="in" aria-label="Kind"><option>Town</option><option>City</option><option>Capital</option></select></div><div class="row"><span class="lab">Rank</span><input class="in mono" value="3" aria-label="Rank"></div><label class="row"><input class="chk" type="checkbox"><span>Port</span></label><div class="row"><span class="lab">Position</span><span class="mono mute">29.27°E 45.70°N</span></div><div class="row" style="margin-top: 12px; justify-content: flex-end"><button class="btn pri">Add</button></div></section><section class="sec"><h2>Snap</h2><label class="row"><input class="chk" type="checkbox" checked="{{ true }}"><span>Vertices</span></label><label class="row"><input class="chk" type="checkbox" checked="{{ true }}"><span>Lines</span></label></section></aside></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

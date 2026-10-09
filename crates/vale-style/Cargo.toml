@@ -1,0 +1,11 @@
+[package]
+name = "vale-style"
+description = "Layer and map styles for Vale"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+vale-store.workspace = true
+vale-render.workspace = true
