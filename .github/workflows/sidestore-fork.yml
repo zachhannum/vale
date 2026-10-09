@@ -43,6 +43,7 @@ jobs:
     permissions:
       actions: read
       contents: write
+      pages: read
       pull-requests: write
     uses: ./.github/workflows/sidestore-publish.yml
     with:

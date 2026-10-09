@@ -30,6 +30,7 @@ jobs:
     permissions:
       actions: read
       contents: write
+      pages: read
       pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}

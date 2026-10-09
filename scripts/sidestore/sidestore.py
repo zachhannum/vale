@@ -41,13 +41,13 @@ def tag_of(pr):
     return f"pr-{int(pr)}" if pr else MAIN_TAG
 
 
-def pages_url(repo):
+def default_pages_url(repo):
     owner, name = repo.split("/", 1)
     return f"https://{owner.lower()}.github.io/{name}/"
 
 
-def install_url(repo, tag, asset):
-    return f"{pages_url(repo)}?tag={tag}&file={asset}"
+def install_url(pages, tag, asset):
+    return f"{pages}?tag={tag}&file={asset}"
 
 
 def ipad_test_section(body):
@@ -78,7 +78,7 @@ def ipad_test_section(body):
     return ""
 
 
-def build_source(repo, releases):
+def build_source(repo, releases, pages):
     """Makes the source from the list of releases that the GitHub API returns."""
     versions = []
     for release in releases:
@@ -100,7 +100,6 @@ def build_source(repo, releases):
             )
     versions.sort(key=lambda v: v["date"], reverse=True)
 
-    pages = pages_url(repo)
     apps = []
     if versions:
         newest = versions[0]
@@ -132,7 +131,7 @@ def build_source(repo, releases):
     }
 
 
-def comment_body(repo, pr, sha, run_number):
+def comment_body(repo, pr, sha, run_number, pages):
     number = pr["number"]
     tag = tag_of(number)
     ver = version(number, run_number)
@@ -142,7 +141,7 @@ def comment_body(repo, pr, sha, run_number):
         MARKER,
         f"The iPad build of commit {sha} is ready. The version is {ver}.",
         "",
-        f"[Install in SideStore]({install_url(repo, tag, asset)}) or [download the .ipa file]({download}).",
+        f"[Install in SideStore]({install_url(pages, tag, asset)}) or [download the .ipa file]({download}).",
     ]
     head_repo = (pr.get("head") or {}).get("repo") or {}
     if head_repo.get("full_name") != repo:
@@ -173,6 +172,15 @@ def api(path, method="GET", body=None):
 
 def repository():
     return os.environ["GITHUB_REPOSITORY"]
+
+
+def pages_url(repo):
+    """Returns the address of the GitHub Pages site. An account can have its own domain."""
+    site = gh("api", f"repos/{repo}/pages", "--jq", ".html_url", check=False)
+    url = site.stdout.strip()
+    if site.returncode != 0 or not url:
+        return default_pages_url(repo)
+    return re.sub(r"^http://", "https://", url).rstrip("/") + "/"
 
 
 def find_comment(repo, number):
@@ -238,7 +246,7 @@ def publish(args):
 def comment(args):
     repo = repository()
     pr = open_pr(repo, args.pr)
-    set_comment(repo, pr["number"], comment_body(repo, pr, args.sha, args.run_number), create=True)
+    set_comment(repo, pr["number"], comment_body(repo, pr, args.sha, args.run_number, pages_url(repo)), create=True)
 
 
 def remove(args):
@@ -254,9 +262,10 @@ def source(args):
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     releases = api(f"repos/{repo}/releases?per_page=100")
-    (out / "apps.json").write_text(json.dumps(build_source(repo, releases), indent=2) + "\n")
-    for name in ("index.html", "icon.png"):
-        shutil.copyfile(HERE / name, out / name)
+    (out / "apps.json").write_text(json.dumps(build_source(repo, releases, pages_url(repo)), indent=2) + "\n")
+    page = (HERE / "index.html").read_text().replace("OWNER/REPOSITORY", repo)
+    (out / "index.html").write_text(page)
+    shutil.copyfile(HERE / "icon.png", out / "icon.png")
     (out / ".nojekyll").touch()
 
 

@@ -5,6 +5,7 @@ import unittest
 import sidestore
 
 REPO = "Owner/vale"
+PAGES = "https://example.org/vale/"
 
 
 def release(tag, name, asset, created, size=10):
@@ -31,6 +32,7 @@ class Source(unittest.TestCase):
                 release("pr-12", "PR #12: Globe (bbbbbbb)", "Vale-0.12.9.ipa", "2026-10-03T00:00:00Z", 42),
                 release("pr-15", "PR #15: Pen (ccccccc)", "Vale-0.15.8.ipa", "2026-10-02T00:00:00Z"),
             ],
+            PAGES,
         )
         self.assertEqual(len(source["apps"]), 1)
         app = source["apps"][0]
@@ -39,7 +41,7 @@ class Source(unittest.TestCase):
         self.assertEqual(app["version"], "0.12.9")
         self.assertEqual(app["size"], 42)
         self.assertEqual(app["downloadURL"], f"https://github.com/{REPO}/releases/download/pr-12/Vale-0.12.9.ipa")
-        self.assertEqual(source["sourceURL"], "https://owner.github.io/vale/apps.json")
+        self.assertEqual(source["sourceURL"], "https://example.org/vale/apps.json")
 
     def test_ignores_other_releases_and_other_files(self):
         source = sidestore.build_source(
@@ -48,6 +50,7 @@ class Source(unittest.TestCase):
                 release("v1.0.0", "Version 1", "Vale-1.0.0.ipa", "2026-10-01T00:00:00Z"),
                 release("pr-3", "PR #3", "notes.txt", "2026-10-01T00:00:00Z"),
             ],
+            PAGES,
         )
         self.assertEqual(source["apps"], [])
 
@@ -57,17 +60,17 @@ class Comment(unittest.TestCase):
         return {"number": 12, "body": body, "head": {"repo": {"full_name": head}}}
 
     def test_shows_the_install_link_the_commit_and_the_ipad_test(self):
-        body = sidestore.comment_body(REPO, self.pr("## iPad test\n\nDraw a line.\n\n## Notes\n\nNo."), "abc1234def", 9)
+        body = sidestore.comment_body(REPO, self.pr("## iPad test\n\nDraw a line.\n\n## Notes\n\nNo."), "abc1234def", 9, PAGES)
         self.assertTrue(body.startswith(sidestore.MARKER))
         self.assertIn("commit abc1234def", body)
-        self.assertIn("https://owner.github.io/vale/?tag=pr-12&file=Vale-0.12.9.ipa", body)
+        self.assertIn("https://example.org/vale/?tag=pr-12&file=Vale-0.12.9.ipa", body)
         self.assertIn(f"https://github.com/{REPO}/releases/download/pr-12/Vale-0.12.9.ipa", body)
         self.assertIn("> Draw a line.", body)
         self.assertNotIn("No.", body)
         self.assertNotIn("fork", body)
 
     def test_warns_about_a_fork(self):
-        body = sidestore.comment_body(REPO, self.pr("", head="other/vale"), "abc1234", 9)
+        body = sidestore.comment_body(REPO, self.pr("", head="other/vale"), "abc1234", 9, PAGES)
         self.assertIn("Read its code before you install the build.", body)
         self.assertIn("has no iPad test section", body)
 
@@ -91,6 +94,7 @@ class Version(unittest.TestCase):
         self.assertEqual(sidestore.version("", 57), "0.0.57")
         self.assertEqual(sidestore.tag_of("12"), "pr-12")
         self.assertEqual(sidestore.tag_of(""), "main-build")
+        self.assertEqual(sidestore.default_pages_url(REPO), "https://owner.github.io/vale/")
 
 
 if __name__ == "__main__":

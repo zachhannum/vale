@@ -26,11 +26,9 @@
 <p>The source is at <a class="plain" id="json" href="apps.json">apps.json</a>.</p>
 
 <script>
-  // A project page is at https://<owner>.github.io/<repository>/.
-  var owner = location.hostname.split(".")[0];
-  var repository = location.pathname.split("/")[1];
-  var base = location.origin + "/" + repository + "/";
-  var json = base + "apps.json";
+  // `sidestore.py` writes the name of the repository here.
+  var repository = "OWNER/REPOSITORY";
+  var json = new URL("apps.json", location.href.split(/[?#]/)[0]).href;
   document.getElementById("json").href = json;
   document.getElementById("source").href = "sidestore://source?url=" + encodeURIComponent(json);
 
@@ -40,7 +38,7 @@
   var tag = query.get("tag") || "";
   var file = query.get("file") || "";
   if (/^(main-build|pr-\d+)$/.test(tag) && /^Vale-\d+\.\d+\.\d+\.ipa$/.test(file)) {
-    var ipa = "https://github.com/" + owner + "/" + repository + "/releases/download/" + tag + "/" + file;
+    var ipa = "https://github.com/" + repository + "/releases/download/" + tag + "/" + file;
     document.getElementById("tag").textContent = tag;
     document.getElementById("file").textContent = file;
     document.getElementById("install").href = "sidestore://install?url=" + encodeURIComponent(ipa);

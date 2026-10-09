@@ -96,7 +96,7 @@ Do these steps one time. They need a computer.
 1. On the iPad, set a passcode and turn on Developer Mode.
 2. Install SideStore and LocalDevVPN, and make the pairing file. The SideStore documentation gives the method.
 3. Sign in to SideStore with an Apple account. SideStore is a third-party tool and it gets the login, so think about a separate Apple account.
-4. On the iPad, open `https://zachhannum.github.io/vale/` and tap "Add the source to SideStore".
+4. On the iPad, open `https://zachhannum.engineer/vale/` and tap "Add the source to SideStore".
 
 To install a build, do these steps on the iPad:
 
