@@ -4,6 +4,8 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use super::{Action, AppState, ExportFormat, Workspace};
+use crate::globe::brush::SIZE_POINTS;
+use crate::globe::{Tool, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -12,6 +14,13 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             ui.separator();
             ui.selectable_value(&mut state.workspace, Workspace::Globe, "Globe");
             ui.selectable_value(&mut state.workspace, Workspace::Map, "Map");
+            if state.workspace == Workspace::Globe {
+                ui.separator();
+                ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
+                ui.selectable_value(&mut state.globe.tool, Tool::Brush, "Brush");
+                ui.separator();
+                ui.toggle_value(&mut state.globe.debug, "Debug");
+            }
             if !state.file_buttons || state.workspace != Workspace::Map {
                 return;
             }
@@ -27,6 +36,69 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     });
+}
+
+/// The numbers of the brush on the GPU, and controls for a test of the brush.
+pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
+    if !state.globe.debug {
+        return;
+    }
+    egui::Panel::right("brush_debug")
+        .default_size(300.0)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let globe = &mut state.globe;
+                ui.heading("Brush debug");
+                ui.label(globe.stats.gpu_line());
+                match globe.stats.last() {
+                    Some(stroke) => {
+                        ui.label(stroke.title());
+                        ui.label(stroke.delay_line());
+                        ui.label(stroke.frame_line());
+                        ui.label(stroke.stamps_line());
+                        ui.label(stroke.texels_line());
+                    }
+                    None => {
+                        ui.label("Stroke delay: no stroke");
+                    }
+                }
+                ui.label(globe.stats.worst_line());
+                ui.label(format!("Backlog: {} stamps", globe.stats.backlog));
+                ui.weak(stats::DELAY_NOTE);
+                ui.separator();
+
+                // Temporary controls, until the app has the brush controls and
+                // the undo command.
+                ui.horizontal_wrapped(|ui| {
+                    use vale_terrain::Mode;
+                    for (mode, name) in [
+                        (Mode::Raise, "Raise"),
+                        (Mode::Lower, "Lower"),
+                        (Mode::Smooth, "Smooth"),
+                        (Mode::Flatten, "Flatten"),
+                    ] {
+                        ui.radio_value(&mut globe.brush.mode, mode, name);
+                    }
+                });
+                ui.add(egui::Slider::new(&mut globe.brush.size_points, SIZE_POINTS).text("Size"));
+                ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
+                ui.horizontal(|ui| {
+                    let undo = ui.add_enabled(globe.can_undo(), egui::Button::new("Undo"));
+                    if undo.clicked() {
+                        globe.undo();
+                    }
+                    let test = egui::Button::new("Run stroke test");
+                    if ui.add_enabled(!globe.busy(), test).clicked() {
+                        globe.start_stroke_test(stroke_test::SECONDS);
+                    }
+                });
+                if let Some(report) = &globe.test_report {
+                    ui.separator();
+                    ui.strong("Stroke test");
+                    ui.label(report);
+                }
+            });
+        });
 }
 
 pub fn left(ui: &mut egui::Ui, state: &mut AppState) {

@@ -20,6 +20,21 @@ enum Drag {
     Twist,
 }
 
+/// The input that the brush takes and that does not move the view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Painting {
+    /// A pen paints.
+    pub pen: bool,
+    /// The primary mouse button paints.
+    pub mouse: bool,
+}
+
+/// True if a screen position is on the canvas, with no other layer above.
+pub fn on_canvas(ui: &egui::Ui, rect: Rect, pos: Pos2) -> bool {
+    let layer = ui.layer_id();
+    rect.contains(pos) && ui.ctx().layer_id_at(pos).is_none_or(|top| top == layer)
+}
+
 /// The input state of the globe between frames.
 #[derive(Default)]
 pub struct Nav {
@@ -30,6 +45,7 @@ pub struct Nav {
     drag: Option<Drag>,
     /// The last scroll came from a trackpad and not from a wheel.
     trackpad: bool,
+    painting: Painting,
 }
 
 /// The angle from `a` to `b` in radians, from -π to π. Screen y points down,
@@ -50,9 +66,14 @@ impl Nav {
         !self.fingers.is_empty() || self.drag.is_some()
     }
 
+    /// True while a finger or a pen is down on the canvas.
+    pub fn touching(&self) -> bool {
+        !self.fingers.is_empty() || self.pen.is_some()
+    }
+
     /// Records one touch event. A touch that starts off the canvas is not a finger
-    /// of the globe. `pen` is true for a touch with a force, and a pen moves the
-    /// globe as one finger does.
+    /// of the globe. `pen` is true for a touch with a force. A pen that does not
+    /// paint moves the globe as one finger does.
     pub fn touch(
         &mut self,
         id: u64,
@@ -69,6 +90,9 @@ impl Nav {
                 if pen {
                     self.pen = Some(id);
                     self.fingers.clear();
+                    if self.painting.pen {
+                        return;
+                    }
                 }
                 self.fingers.insert(id, Finger { pos, prev: pos });
             }
@@ -130,11 +154,12 @@ impl Nav {
                 i.rotation_delta(),
             )
         });
-        if pressed && resp.contains_pointer() {
+        let paints = self.painting.mouse;
+        if pressed && resp.contains_pointer() && !paints {
             self.drag = Some(if shift { Drag::Twist } else { Drag::Rotate });
         }
         match (self.drag, pos) {
-            (Some(drag), Some(pos)) if down => {
+            (Some(drag), Some(pos)) if down && !paints => {
                 if delta != Vec2::ZERO {
                     match drag {
                         Drag::Rotate => view.gesture(rect, pos - delta, pos, 1.0, 0.0),
@@ -168,15 +193,17 @@ impl Nav {
         }
     }
 
-    /// Reads the input of one frame and moves the view.
+    /// Reads the input of one frame and moves the view. The input in
+    /// `painting` belongs to the brush.
     pub fn update(
         &mut self,
         ui: &egui::Ui,
         rect: Rect,
         resp: &egui::Response,
         view: &mut GlobeView,
+        painting: Painting,
     ) {
-        let layer = ui.layer_id();
+        self.painting = painting;
         let mut touched = false;
         let events = ui.input(|i| i.events.clone());
         for event in &events {
@@ -189,8 +216,7 @@ impl Nav {
                     ..
                 } => {
                     touched = true;
-                    let on_canvas = rect.contains(*pos)
-                        && ui.ctx().layer_id_at(*pos).is_none_or(|top| top == layer);
+                    let on_canvas = on_canvas(ui, rect, *pos);
                     self.touch(id.0, *phase, *pos, on_canvas, force.is_some());
                 }
                 // A trackpad scrolls in points. A wheel scrolls in lines or pages.
@@ -201,8 +227,8 @@ impl Nav {
             }
         }
         // The first finger is also the egui pointer, so the pointer path is off
-        // while fingers are down.
-        if touched || !self.fingers.is_empty() {
+        // while a finger or a pen is down.
+        if touched || self.touching() {
             self.drag = None;
             self.move_fingers(view, rect);
         } else {
@@ -262,6 +288,27 @@ mod tests {
         assert_eq!(view.zoom, 1.0);
         let after = view.project(rect(), place).unwrap();
         assert!((after - to).length() < 0.01, "{after:?}");
+    }
+
+    #[test]
+    fn a_pen_that_paints_does_not_move_the_globe() {
+        let mut nav = Nav {
+            painting: Painting {
+                pen: true,
+                mouse: false,
+            },
+            ..Nav::default()
+        };
+        let mut view = GlobeView::centered(15.0, 25.0);
+        let before = view;
+        nav.touch(1, Start, Pos2::new(300.0, 250.0), true, true);
+        // A palm.
+        nav.touch(2, Start, Pos2::new(500.0, 400.0), true, false);
+        nav.touch(1, Move, Pos2::new(380.0, 330.0), true, true);
+        nav.touch(2, Move, Pos2::new(520.0, 300.0), true, false);
+        nav.move_fingers(&mut view, rect());
+        assert_eq!(view, before);
+        assert!(nav.touching() && !nav.active());
     }
 
     /// Two fingers move apart, turn, and shift. Returns how far the place under

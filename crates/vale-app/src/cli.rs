@@ -7,6 +7,7 @@ use clap::Parser;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use crate::document::Document;
+use crate::globe::Globe;
 use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
 use crate::pipeline::Pipeline;
 use crate::ui::Workspace;
@@ -69,6 +70,14 @@ pub struct Args {
     /// Print the world, the layers, and the label counts.
     #[arg(long)]
     pub report: bool,
+    /// Texels on one edge of a cube face of the globe. The window uses 8192
+    /// and headless output uses 1024, or less if the GPU has a lower limit.
+    #[arg(long, value_name = "N")]
+    pub face_size: Option<u32>,
+    /// Headless: paint a fixed stroke on the globe, print the stroke delay,
+    /// and exit.
+    #[arg(long)]
+    pub stroke_test: bool,
     /// Open the window, draw N frames, and exit with code 0.
     #[arg(long, value_name = "N")]
     pub smoke_frames: Option<u32>,
@@ -170,6 +179,27 @@ impl Args {
         }
         Ok((w, h))
     }
+}
+
+/// The limits of `--face-size`.
+const FACE_SIZES: std::ops::RangeInclusive<u32> = 16..=16384;
+
+/// Applies `--face-size`, `--look-at`, and `--zoom` to the globe.
+/// `face_size` is the face size without the flag.
+pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::Result<()> {
+    let face_size = match args.face_size {
+        Some(n) if FACE_SIZES.contains(&n) => n as usize,
+        Some(n) => bail!(
+            "the face size must be from {} to {}, got {n}",
+            FACE_SIZES.start(),
+            FACE_SIZES.end()
+        ),
+        None => face_size,
+    };
+    if face_size != globe.map.face_size() {
+        globe.set_face_size(face_size);
+    }
+    apply_globe_view(args, &mut globe.view)
 }
 
 /// Applies `--zoom` and `--look-at` to the view of the document.

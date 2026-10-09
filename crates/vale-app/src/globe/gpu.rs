@@ -1,8 +1,15 @@
 //! The wgpu side: the cube map texture and the paint callback of the globe.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
 use eframe::egui_wgpu::{self, wgpu};
 
-use vale_terrain::{FACES, Heightmap};
+use vale_terrain::{GpuHeightmap, Heightmap, Readback, StampPlan, TexelRect};
+
+/// The time between two polls of the device while GPU work is in flight.
+const POLL_STEP: Duration = Duration::from_micros(250);
 
 /// The values that the shader reads. The layout matches `globe.wgsl`.
 #[repr(C)]
@@ -19,33 +26,22 @@ struct Resources {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
-    texture: wgpu::Texture,
+    heights: GpuHeightmap,
+    _poller: Poller,
 }
 
 impl Resources {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, face_size: u32) -> Resources {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        face_size: u32,
+        busy: &Arc<Busy>,
+    ) -> Resources {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("globe"),
             source: wgpu::ShaderSource::Wgsl(include_str!("globe.wgsl").into()),
         });
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("heightmap"),
-            size: wgpu::Extent3d {
-                width: face_size,
-                height: face_size,
-                depth_or_array_layers: FACES as u32,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R16Uint,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
+        let heights = GpuHeightmap::new(device, face_size);
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globe uniforms"),
             size: size_of::<Uniforms>() as u64,
@@ -87,7 +83,7 @@ impl Resources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
+                    resource: wgpu::BindingResource::TextureView(heights.view()),
                 },
             ],
         });
@@ -127,8 +123,180 @@ impl Resources {
             pipeline,
             bind_group,
             uniform_buffer,
-            texture,
+            heights,
+            _poller: Poller::new(device.clone(), busy.clone()),
         }
+    }
+}
+
+/// One change of the GPU heightmap. The changes run in the order of the queue.
+pub enum Op {
+    /// Sets all texels to one level.
+    Reset(u16),
+    /// Writes texels of the CPU heightmap.
+    Upload {
+        face: u32,
+        rect: TexelRect,
+        data: Vec<u16>,
+    },
+    /// One stamp of a stroke. `time` is the frame that read its pen sample.
+    Stamp {
+        plan: Box<StampPlan>,
+        stroke: u64,
+        time: Instant,
+    },
+    /// Reads texels back for the CPU heightmap.
+    Readback {
+        stroke: u64,
+        face: u32,
+        rect: TexelRect,
+    },
+}
+
+/// A result of the GPU work. The UI reads the results at the next frame.
+pub enum Event {
+    /// The GPU work for the stamps of one pen sample is done.
+    Done {
+        stroke: u64,
+        sample: Instant,
+        done: Instant,
+    },
+    Texels {
+        stroke: u64,
+        face: u32,
+        rect: TexelRect,
+        data: Vec<u16>,
+    },
+}
+
+/// The count of the results that the GPU has not given yet.
+#[derive(Default)]
+pub struct Busy {
+    count: Mutex<usize>,
+    wake: Condvar,
+}
+
+impl Busy {
+    pub fn any(&self) -> bool {
+        *self.count.lock().expect("no panic holds the lock") > 0
+    }
+
+    fn token(self: &Arc<Busy>) -> Token {
+        *self.count.lock().expect("no panic holds the lock") += 1;
+        self.wake.notify_all();
+        Token(self.clone())
+    }
+}
+
+/// One result that the GPU has not given yet. A callback of wgpu holds it.
+struct Token(Arc<Busy>);
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        *self.0.count.lock().expect("no panic holds the lock") -= 1;
+    }
+}
+
+/// A thread that polls the device while results are in flight. wgpu runs a
+/// callback only during a submit or a poll, so without the thread a result
+/// arrives one frame late.
+struct Poller {
+    quit: Arc<AtomicBool>,
+    busy: Arc<Busy>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Poller {
+    fn new(device: wgpu::Device, busy: Arc<Busy>) -> Poller {
+        let quit = Arc::new(AtomicBool::new(false));
+        let (thread_quit, thread_busy) = (quit.clone(), busy.clone());
+        let run = move || {
+            let (quit, busy) = (thread_quit, thread_busy);
+            loop {
+                {
+                    let mut count = busy.count.lock().expect("no panic holds the lock");
+                    while *count == 0 && !quit.load(Ordering::Relaxed) {
+                        count = busy.wake.wait(count).expect("no panic holds the lock");
+                    }
+                }
+                if quit.load(Ordering::Relaxed) {
+                    return;
+                }
+                // A poll that does not wait holds no lock that a submit needs.
+                let _ = device.poll(wgpu::PollType::Poll);
+                std::thread::sleep(POLL_STEP);
+            }
+        };
+        let thread = std::thread::Builder::new()
+            .name("vale-gpu-poll".to_string())
+            .spawn(run)
+            .expect("the system can start a thread");
+        Poller {
+            quit,
+            busy,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Poller {
+    fn drop(&mut self) {
+        {
+            let _count = self.busy.count.lock().expect("no panic holds the lock");
+            self.quit.store(true, Ordering::Relaxed);
+            self.busy.wake.notify_all();
+        }
+        // The thread holds the device, so it ends before the renderer does.
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The path from the UI to the paint callback and back.
+#[derive(Clone)]
+pub struct Link {
+    /// The changes that wait for the GPU, each with the face size of its
+    /// heightmap. egui can run a frame and not paint it, so the queue keeps
+    /// them until `prepare` runs.
+    ops: Arc<Mutex<Vec<(u32, Op)>>>,
+    events: mpsc::Sender<Event>,
+    pub busy: Arc<Busy>,
+}
+
+impl Link {
+    pub fn new() -> (Link, mpsc::Receiver<Event>) {
+        let (events, receiver) = mpsc::channel();
+        let link = Link {
+            ops: Arc::default(),
+            events,
+            busy: Arc::default(),
+        };
+        (link, receiver)
+    }
+
+    pub fn push(&self, face_size: u32, op: Op) {
+        let mut ops = self.ops.lock().expect("no panic holds the lock");
+        ops.push((face_size, op));
+    }
+}
+
+/// Moves the changes of the CPU heightmap to the queue.
+pub fn queue_changes(map: &mut Heightmap, link: &Link) {
+    let face_size = map.face_size() as u32;
+    let mut rects: Vec<(usize, TexelRect)> = Vec::new();
+    if map.take_reset() {
+        link.push(face_size, Op::Reset(map.base()));
+        rects.extend(map.allocated_rects());
+    } else {
+        let dirty = map.take_dirty().into_iter().enumerate();
+        rects.extend(dirty.filter_map(|(face, rect)| Some((face, rect?))));
+    }
+    for (face, rect) in rects {
+        let mut data = Vec::new();
+        map.read_rect(face, rect, &mut data);
+        let face = face as u32;
+        link.push(face_size, Op::Upload { face, rect, data });
     }
 }
 
@@ -137,45 +305,95 @@ pub struct GlobeCallback {
     pub format: wgpu::TextureFormat,
     pub face_size: u32,
     pub uniforms: Uniforms,
-    /// The changed texels that wait for the GPU. egui can run a frame and
-    /// not paint it, so the queue keeps them until `prepare` runs.
-    pub uploads: UploadQueue,
+    pub link: Link,
 }
 
-/// Changed texels of one face, ready for the GPU.
-pub struct Upload {
-    pub face: u32,
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-    pub data: Vec<u16>,
+/// The commands of one `prepare` call that wait for a submit.
+struct Batch<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    heights: &'a GpuHeightmap,
+    link: &'a Link,
+    encoder: Option<wgpu::CommandEncoder>,
+    /// The stroke and the sample time of each stamp in the encoder.
+    stamps: Vec<(u64, Instant)>,
+    readbacks: Vec<(u64, u32, TexelRect, Readback)>,
 }
 
-/// Changed texels, each with the face size of its heightmap.
-pub type UploadQueue = std::sync::Arc<std::sync::Mutex<Vec<(u32, Upload)>>>;
+impl Batch<'_> {
+    fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
+        self.encoder.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("heightmap"),
+                })
+        })
+    }
 
-/// Moves the changed texels of the heightmap to the queue.
-pub fn queue_dirty(map: &mut Heightmap, uploads: &UploadQueue) {
-    let face_size = map.face_size() as u32;
-    let mut queue = uploads.lock().expect("no panic holds the lock");
-    for (face, rect) in map.take_dirty().into_iter().enumerate() {
-        let Some(rect) = rect else {
-            continue;
+    /// Submits the commands and asks for their results.
+    fn submit(&mut self) {
+        let Some(encoder) = self.encoder.take() else {
+            return;
         };
-        let mut data = Vec::new();
-        map.read_rect(face, rect, &mut data);
-        queue.push((
-            face_size,
-            Upload {
-                face: face as u32,
-                x: rect.x0 as u32,
-                y: rect.y0 as u32,
-                width: (rect.x1 - rect.x0) as u32,
-                height: (rect.y1 - rect.y0) as u32,
-                data,
-            },
-        ));
+        self.queue.submit([encoder.finish()]);
+        let mut stamps = std::mem::take(&mut self.stamps);
+        if !stamps.is_empty() {
+            self.heights.begin_batch();
+            // The stamps of one pen sample give one delay.
+            stamps.dedup();
+            let (events, token) = (self.link.events.clone(), self.link.busy.token());
+            self.queue.on_submitted_work_done(move || {
+                let done = Instant::now();
+                for (stroke, sample) in stamps {
+                    let _ = events.send(Event::Done {
+                        stroke,
+                        sample,
+                        done,
+                    });
+                }
+                drop(token);
+            });
+        }
+        for (stroke, face, rect, readback) in self.readbacks.drain(..) {
+            let (events, token) = (self.link.events.clone(), self.link.busy.token());
+            readback.map(move |data| {
+                let _ = events.send(Event::Texels {
+                    stroke,
+                    face,
+                    rect,
+                    data,
+                });
+                drop(token);
+            });
+        }
+    }
+
+    fn run(&mut self, op: Op) {
+        match op {
+            Op::Reset(level) => {
+                let heights = self.heights;
+                heights.clear(self.encoder(), level);
+            }
+            Op::Upload { face, rect, data } => {
+                // The write runs before the commands of the next submit, so
+                // the commands before it go first.
+                self.submit();
+                self.heights.upload(self.queue, face, rect, &data);
+            }
+            Op::Stamp { plan, stroke, time } => {
+                let (heights, queue) = (self.heights, self.queue);
+                if !heights.stamp(queue, self.encoder(), &plan) {
+                    self.submit();
+                    heights.stamp(queue, self.encoder(), &plan);
+                }
+                self.stamps.push((stroke, time));
+            }
+            Op::Readback { stroke, face, rect } => {
+                let (heights, device) = (self.heights, self.device);
+                let readback = heights.read_rect(device, self.encoder(), face, rect);
+                self.readbacks.push((stroke, face, rect, readback));
+            }
+        }
     }
 }
 
@@ -192,40 +410,30 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             .get::<Resources>()
             .is_none_or(|r| r.face_size != self.face_size || r.format != self.format);
         if stale {
-            resources.insert(Resources::new(device, self.format, self.face_size));
+            let busy = &self.link.busy;
+            resources.insert(Resources::new(device, self.format, self.face_size, busy));
         }
         let res: &Resources = resources.get().expect("inserted above");
         queue.write_buffer(&res.uniform_buffer, 0, bytemuck::bytes_of(&self.uniforms));
-        let uploads = std::mem::take(&mut *self.uploads.lock().expect("no panic holds the lock"));
-        for (face_size, up) in &uploads {
-            // Texels of a heightmap that the app replaced.
-            if *face_size != self.face_size {
-                continue;
+        let ops = std::mem::take(&mut *self.link.ops.lock().expect("no panic holds the lock"));
+        let mut batch = Batch {
+            device,
+            queue,
+            heights: &res.heights,
+            link: &self.link,
+            encoder: None,
+            stamps: Vec::new(),
+            readbacks: Vec::new(),
+        };
+        for (face_size, op) in ops {
+            // A change of a heightmap that the app replaced.
+            if face_size == self.face_size {
+                batch.run(op);
             }
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &res.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: up.x,
-                        y: up.y,
-                        z: up.face,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                bytemuck::cast_slice(&up.data),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(up.width * 2),
-                    rows_per_image: Some(up.height),
-                },
-                wgpu::Extent3d {
-                    width: up.width,
-                    height: up.height,
-                    depth_or_array_layers: 1,
-                },
-            );
         }
+        // This submit is before the submit of egui, so the frame shows the
+        // new levels.
+        batch.submit();
         Vec::new()
     }
 

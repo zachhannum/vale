@@ -101,7 +101,9 @@ pub fn run_window(
         options,
         Box::new(|cc| {
             let mut app = app;
-            app.state.globe.format = cc.wgpu_render_state.as_ref().map(|s| s.target_format);
+            if let Some(render_state) = &cc.wgpu_render_state {
+                app.state.globe.attach(render_state);
+            }
             if cfg!(target_os = "ios") {
                 apply_touch_style(&cc.egui_ctx);
             }
