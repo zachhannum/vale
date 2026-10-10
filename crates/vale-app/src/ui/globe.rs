@@ -37,15 +37,20 @@ fn release(globe: &mut Globe) {
     }
 }
 
-/// Reads the hover events of the pen queue.
+/// Reads the hover events of the pen queue. A hover event can arrive after
+/// the pen comes down, so the pen does not hover while it is down.
 fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
+    let pen = &mut globe.pen;
     for (pos, event) in events {
         match event.phase {
-            PenPhase::Hover => {
-                globe.pen.hover = Some(*pos);
-                globe.pen.stats.hover(event);
+            PenPhase::Hover if !pen.down => {
+                pen.hover = Some(*pos);
+                pen.stats.hover(event);
             }
-            PenPhase::HoverEnd | PenPhase::Down => globe.pen.hover = None,
+            PenPhase::Down | PenPhase::Up | PenPhase::Cancel | PenPhase::HoverEnd => {
+                pen.down = event.phase == PenPhase::Down;
+                pen.hover = None;
+            }
             _ => {}
         }
     }

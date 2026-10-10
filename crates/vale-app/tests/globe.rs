@@ -1142,6 +1142,26 @@ fn the_brush_circle_follows_a_pen_that_hovers() {
     queue.push([pen_event(PenPhase::HoverEnd, c, 4.0)]);
     h.step();
     assert_eq!(h.state().globe.input.pos, None);
+
+    // A hover event at the start of a stroke arrives after the pen is down.
+    // After the stroke, the circle does not go back to the start.
+    let to = c + Vec2::new(40.0, 0.0);
+    queue.push([
+        pen_event(PenPhase::Down, c, 5.0),
+        pen_event(PenPhase::Hover, c, 5.0),
+    ]);
+    h.step();
+    queue.push([pen_event(PenPhase::Move, to, 5.1)]);
+    h.step();
+    assert_eq!(h.state().globe.input.pos, Some(to));
+    queue.push([pen_event(PenPhase::Up, to, 5.2)]);
+    h.step();
+    assert_eq!(h.state().globe.input.pos, None);
+    settle(&mut h);
+    let near = to + Vec2::new(5.0, 5.0);
+    queue.push([pen_event(PenPhase::Hover, near, 5.3)]);
+    h.step();
+    assert_eq!(h.state().globe.input.pos, Some(near));
 }
 
 #[test]

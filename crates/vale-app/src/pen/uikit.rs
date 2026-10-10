@@ -85,8 +85,11 @@ define_class!(
             let view = self.view();
             let view = view.as_deref();
             let state = hover.state();
-            let moves = state == UIGestureRecognizerState::Began
-                || state == UIGestureRecognizerState::Changed;
+            // After a stroke, the first position can be the start of the stroke.
+            if state == UIGestureRecognizerState::Began {
+                return;
+            }
+            let moves = state == UIGestureRecognizerState::Changed;
             let p = hover.locationInView(view);
             let height = available!(ios = 16.1).then(|| hover.zOffset() as f32);
             let tilt = available!(ios = 16.4).then(|| {

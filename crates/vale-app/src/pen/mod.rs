@@ -167,6 +167,8 @@ pub struct Pen {
     pub queue: Option<PenQueue>,
     /// The position of a pen that hovers, in egui points.
     pub hover: Option<Pos2>,
+    /// The pen of the queue is on the screen.
+    pub down: bool,
     pub stats: PenStats,
 }
 
