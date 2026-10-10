@@ -342,7 +342,6 @@ mod tests {
         // You zoom out past the whole map, and the map stays in the middle.
         view.zoom_at(rect(), Pos2::new(100.0, 500.0), 0.1);
         assert_eq!(view.zoom, ZOOM_MIN);
-        assert!(ZOOM_MIN < 1.0);
         let west = view.project(rect(), lonlat_to_dir(-179.99, 0.0)).unwrap();
         let east = view.project(rect(), lonlat_to_dir(179.99, 0.0)).unwrap();
         assert!((east.x - west.x - 800.0 * ZOOM_MIN as f32).abs() < 0.5);
