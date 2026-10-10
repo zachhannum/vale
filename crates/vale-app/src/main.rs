@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use vale_app::app::run_window;
-use vale_app::cli::{Args, apply_globe, apply_view, parse_pair};
+use vale_app::cli::{Args, apply_globe, apply_import, apply_view, parse_pair};
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
 use vale_app::pipeline::Pipeline;
@@ -32,7 +32,8 @@ fn run() -> anyhow::Result<u8> {
         Ok(state)
     };
     if !headless_run {
-        let state = new_state(doc, WINDOW_FACE_SIZE)?;
+        let mut state = new_state(doc, WINDOW_FACE_SIZE)?;
+        apply_import(&args, &mut state, false)?;
         run_window(state, size, args.smoke_frames.map(u64::from))?;
         return Ok(0);
     }
@@ -59,7 +60,13 @@ fn run() -> anyhow::Result<u8> {
             composed = Some(image.composed);
         } else {
             let state = new_state(doc.clone(), FACE_SIZE)?;
-            let (image, state) = headless::ui_png(state, size, ratio)?;
+            // The renderer can make the face size smaller, and that drops an
+            // import. So the import runs after the renderer is there.
+            let import = |state: &mut AppState| apply_import(&args, state, true);
+            let (image, state) = headless::ui_png_with(state, size, ratio, import)?;
+            if args.import_heightmap.is_some() {
+                println!("{}", state.status);
+            }
             if let Some(parent) = path.parent()
                 && !parent.as_os_str().is_empty()
             {

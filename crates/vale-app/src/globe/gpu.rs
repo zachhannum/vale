@@ -1,5 +1,6 @@
 //! The wgpu side: the cube map texture and the paint callback of the globe.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -17,6 +18,9 @@ use super::preview::BandUniform;
 
 /// The time between two polls of the device while GPU work is in flight.
 const POLL_STEP: Duration = Duration::from_micros(250);
+
+/// The most texels that one call sends. 8,192 x 512 texels are 8 MB.
+const UPLOAD_TEXELS: usize = 1 << 22;
 
 /// The values that the shader reads. The layout matches `globe.wgsl`.
 #[repr(C)]
@@ -400,12 +404,59 @@ pub struct Changes {
     pub rects: Vec<(usize, TexelRect)>,
 }
 
-/// Moves the changes of the CPU heightmap to the queue.
-pub fn queue_changes(map: &mut Heightmap, link: &Link) -> Changes {
+/// The changed texels of the CPU heightmap that wait for the GPU.
+pub struct Uploads {
+    /// The strips of each face, in the order of the changes.
+    strips: VecDeque<(usize, TexelRect)>,
+    /// The most texels that one call of `queue_changes` sends.
+    pub budget: usize,
+}
+
+impl Default for Uploads {
+    fn default() -> Uploads {
+        Uploads {
+            strips: VecDeque::new(),
+            budget: UPLOAD_TEXELS,
+        }
+    }
+}
+
+impl Uploads {
+    pub fn is_empty(&self) -> bool {
+        self.strips.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.strips.clear();
+    }
+}
+
+fn texels(rect: TexelRect) -> usize {
+    (rect.x1 - rect.x0) * (rect.y1 - rect.y0)
+}
+
+/// Cuts a rectangle into strips of its full width. A strip has `texels`
+/// texels at most, and one row at least.
+fn strips(rect: TexelRect, texels: usize) -> impl Iterator<Item = TexelRect> {
+    let rows = (texels / (rect.x1 - rect.x0).max(1)).max(1);
+    (rect.y0..rect.y1).step_by(rows).map(move |y0| TexelRect {
+        y0,
+        y1: (y0 + rows).min(rect.y1),
+        ..rect
+    })
+}
+
+/// Moves the changes of the CPU heightmap to the queue. One call sends the
+/// texels of one budget, and the other strips wait in `pending`. A strip gets
+/// its texels when the call sends it, so it has each change up to that time.
+pub fn queue_changes(map: &mut Heightmap, link: &Link, pending: &mut Uploads) -> Changes {
     let face_size = map.face_size() as u32;
+    let budget = pending.budget;
     let mut rects: Vec<(usize, TexelRect)> = Vec::new();
     let reset = map.take_reset();
     if reset {
+        // The reset replaces each texel, so the strips before it are stale.
+        pending.clear();
         link.push(face_size, Op::Reset(map.base()));
         rects.extend(map.allocated_rects());
     } else {
@@ -413,7 +464,18 @@ pub fn queue_changes(map: &mut Heightmap, link: &Link) -> Changes {
         rects.extend(dirty.filter_map(|(face, rect)| Some((face, rect?))));
     }
     for &(face, rect) in &rects {
-        let mut data = Vec::new();
+        let cut = strips(rect, budget).map(|strip| (face, strip));
+        pending.strips.extend(cut);
+    }
+    let mut sent = 0;
+    while let Some(&(face, rect)) = pending.strips.front() {
+        // A call sends one strip at least.
+        if sent > 0 && sent + texels(rect) > budget {
+            break;
+        }
+        pending.strips.pop_front();
+        sent += texels(rect);
+        let mut data = Vec::with_capacity(texels(rect));
         map.read_rect(face, rect, &mut data);
         let face = face as u32;
         link.push(face_size, Op::Upload { face, rect, data });
@@ -658,5 +720,41 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         if let Some(res) = resources.get::<Resources>() {
             res.draw(render_pass, self.flat.is_some(), info.screen_size_px);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The strips cover the rectangle from the top, with no gap and no
+    /// overlap. Returns the number of strips.
+    fn check(rect: TexelRect, budget: usize) -> usize {
+        let mut y = rect.y0;
+        let mut count = 0;
+        for strip in strips(rect, budget) {
+            assert_eq!((strip.x0, strip.x1), (rect.x0, rect.x1));
+            assert_eq!(strip.y0, y);
+            assert!(strip.y1 > strip.y0 && strip.y1 <= rect.y1);
+            let rows = strip.y1 - strip.y0;
+            assert!(texels(strip) <= budget || rows == 1, "{strip:?}");
+            y = strip.y1;
+            count += 1;
+        }
+        assert_eq!(y, rect.y1);
+        count
+    }
+
+    #[test]
+    fn strips_cover_a_rectangle_within_the_budget() {
+        let rect = |x0, y0, x1, y1| TexelRect { x0, y0, x1, y1 };
+        assert_eq!(check(rect(0, 0, 8192, 8192), UPLOAD_TEXELS), 16);
+        assert_eq!(check(rect(0, 0, 256, 256), UPLOAD_TEXELS), 1);
+        // The last strip is shorter than the others.
+        assert_eq!(check(rect(3, 5, 103, 75), 1000), 7);
+        assert_eq!(check(rect(3, 5, 103, 75), 999), 8);
+        // A row that is wider than the budget is one strip.
+        assert_eq!(check(rect(10, 20, 110, 27), 64), 7);
+        assert_eq!(check(rect(0, 0, 1, 1), 1), 1);
     }
 }

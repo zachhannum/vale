@@ -1043,6 +1043,62 @@ fn no_seam_shows_at_a_face_edge_or_at_a_cube_corner() {
     }
 }
 
+/// Sets each texel of some faces to noise.
+fn set_noise(h: &mut Harness<'static, AppState>, faces: &[usize], seed: usize) {
+    let map = &mut h.state_mut().globe.map;
+    let n = map.face_size();
+    for &face in faces {
+        for y in 0..n {
+            for x in 0..n {
+                // The noise takes small numbers only.
+                let block = (x / 16 * 16 + y / 16) as u16;
+                let level = noise(face + seed, x % 16, y % 16) ^ block.wrapping_mul(251);
+                map.set(face, x, y, level);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_large_change_reaches_the_gpu_in_parts() {
+    let _gpu = one_gpu_test();
+    let all = [0, 1, 2, 3, 4, 5];
+    // The first and the last face change again while strips wait.
+    let again = [0, 5];
+    let mut parts = gpu_harness();
+    parts.state_mut().globe.uploads.budget = 16 * BRUSH_FACE_SIZE;
+    set_noise(&mut parts, &all, 0);
+    parts.step();
+    assert!(parts.state().globe.busy());
+    assert!(!parts.state().globe.can_undo());
+    set_noise(&mut parts, &again, 6);
+    let mut steps = 0;
+    while parts.state().globe.busy() {
+        parts.step();
+        steps += 1;
+        assert!(steps < 400, "the texels did not reach the GPU");
+    }
+    // Each frame sends two budgets, and the six faces are 96 budgets.
+    assert!(steps >= 40, "{steps}");
+
+    let mut whole = gpu_harness();
+    set_noise(&mut whole, &all, 0);
+    set_noise(&mut whole, &again, 6);
+    whole.step();
+    assert!(!whole.state().globe.busy());
+
+    for (lon, lat) in [(15.0, 25.0), (-165.0, -25.0), (100.0, 80.0)] {
+        for h in [&mut parts, &mut whole] {
+            h.state_mut().globe.view = GlobeView::centered(lon, lat);
+        }
+        let (a, b) = (canvas_image(&mut parts), canvas_image(&mut whole));
+        assert!(
+            a.as_raw() == b.as_raw(),
+            "the render differs at {lon}, {lat}"
+        );
+    }
+}
+
 fn pen_event(phase: PenPhase, pos: Pos2, time: f64) -> PenEvent {
     let hovers = matches!(phase, PenPhase::Hover | PenPhase::HoverEnd);
     PenEvent {

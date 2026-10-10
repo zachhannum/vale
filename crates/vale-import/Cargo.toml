@@ -1,6 +1,6 @@
 [package]
 name = "vale-import"
-description = "Vector data import for Vale"
+description = "Vector and raster data import for Vale"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,7 @@ license.workspace = true
 [dependencies]
 vale-store.workspace = true
 serde_json.workspace = true
+image = { workspace = true, features = ["tiff"] }
+
+[dev-dependencies]
+tiff.workspace = true

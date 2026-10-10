@@ -8,8 +8,8 @@ use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
-use vale_app::ui::pad::{Panel, RECENTER, RESET, readout_text, theme};
-use vale_app::ui::{AppState, Layout, Workspace, draw};
+use vale_app::ui::pad::{IMPORT_HEIGHTMAP, Panel, RECENTER, RESET, readout_text, theme};
+use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
 use vale_terrain::Mode;
 
 type Pad = Harness<'static, AppState>;
@@ -192,6 +192,80 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             check_controls(&h, &format!("{size:?} with the menu"));
         }
     }
+}
+
+/// Writes a 16-bit greyscale PNG with a slope from west to east.
+fn heightmap_file(name: &str, width: u32, height: u32) -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/app/test-import");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    let level = |x: u32, _| image::Luma([(x * 65535 / width) as u16]);
+    let image = image::ImageBuffer::<image::Luma<u16>, _>::from_fn(width, height, level);
+    image.save(&path).unwrap();
+    path
+}
+
+#[test]
+fn the_height_panel_asks_for_a_heightmap_file() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        // iOS has no file dialog of the desktop.
+        h.state_mut().file_buttons = false;
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Height");
+        check_controls(&h, &format!("{size:?}"));
+        assert!(h.state().actions.is_empty());
+        tap(&mut h, IMPORT_HEIGHTMAP);
+        let actions = &h.state().actions;
+        assert_eq!(actions, &[Action::ImportHeightmapDialog], "{size:?}");
+    }
+}
+
+#[test]
+fn the_height_panel_shows_the_warning_of_a_wrong_aspect_ratio() {
+    let path = heightmap_file("pad-ratio.png", 300, 200);
+    for size in BOARDS {
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Height");
+        assert!(h.query_by_label_contains("twice as wide").is_none());
+        h.state_mut()
+            .run_action(Action::ImportHeightmap(path.clone()));
+        h.run_steps(3);
+        assert!(h.state().import_note.as_ref().unwrap().warning);
+        assert!(
+            h.query_by_label_contains("twice as wide").is_some(),
+            "{size:?}"
+        );
+        check_controls(&h, &format!("{size:?} with the warning"));
+    }
+}
+
+#[test]
+fn the_import_row_is_off_while_an_import_runs() {
+    let path = heightmap_file("pad-busy.png", 512, 256);
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    tap(&mut h, "Open Height");
+    assert!(control(&h, IMPORT_HEIGHTMAP).is_some());
+    // The worker gives one face in each frame.
+    h.state_mut().globe.start_import(path);
+    h.run_steps(2);
+    assert!(h.state().globe.importing());
+    assert!(control(&h, IMPORT_HEIGHTMAP).is_none());
+    assert!(
+        h.query_by_label_contains("Importing pad-busy.png")
+            .is_some()
+    );
+    let start = std::time::Instant::now();
+    while h.state().globe.busy() {
+        assert!(start.elapsed().as_secs() < 30, "the import did not end");
+        h.step();
+    }
+    h.run_steps(2);
+    assert!(control(&h, IMPORT_HEIGHTMAP).is_some());
+    assert!(h.query_by_label_contains("Imported pad-busy.png").is_some());
+    assert!(!h.state().import_note.as_ref().unwrap().warning);
 }
 
 #[test]
@@ -455,7 +529,7 @@ fn text_on_a_card_is_easy_to_read_over_a_white_canvas() {
         let fill = [pixel.0[0], pixel.0[1], pixel.0[2]];
         // The canvas shows through the card.
         assert!(fill[0] > 55, "{card:?}: {fill:?}");
-        for text in [theme::TEXT, theme::MUTE] {
+        for text in [theme::TEXT, theme::MUTE, theme::WARN] {
             let ratio = contrast([text.r(), text.g(), text.b()], fill);
             assert!(ratio >= 4.5, "{card:?}: {ratio:.2} for {text:?}");
         }

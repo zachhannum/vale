@@ -77,7 +77,7 @@ fn brush_input(
         .map(|e| (egui::pos2(e.pos[0] / zoom, e.pos[1] / zoom), e))
         .collect();
     hover_input(globe, &queue);
-    if globe.tool != Tool::Brush || globe.format.is_none() {
+    if globe.tool != Tool::Brush || globe.format.is_none() || globe.importing() {
         if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
             release(globe);
             globe.pen.stats.up();

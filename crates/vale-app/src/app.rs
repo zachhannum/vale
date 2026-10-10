@@ -2,6 +2,7 @@
 
 use eframe::egui;
 
+use crate::files::PickQueue;
 #[cfg(not(target_os = "ios"))]
 use crate::ui::ExportFormat;
 use crate::ui::{self, Action, AppState};
@@ -10,6 +11,10 @@ struct ValeApp {
     state: AppState,
     smoke_frames: Option<u64>,
     closing: bool,
+    /// The files that the file picker of the system gave.
+    picked: PickQueue,
+    #[cfg(target_os = "ios")]
+    picker: Option<crate::files::uikit::Picker>,
 }
 
 impl eframe::App for ValeApp {
@@ -17,16 +22,28 @@ impl eframe::App for ValeApp {
         ui::draw(ui, &mut self.state);
 
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
-        let paths: Vec<_> = dropped
-            .into_iter()
-            .map(|f| f.path().to_path_buf())
-            .collect();
+        let paths = dropped.into_iter().map(|f| f.path().to_path_buf());
+        let (heightmaps, paths): (Vec<_>, Vec<_>) = paths.partition(|p| ui::is_heightmap_path(p));
         if !paths.is_empty() {
             self.state.run_action(Action::OpenFiles(paths));
+        }
+        // One image fills the globe, so the last one wins.
+        if let Some(path) = heightmaps.into_iter().next_back() {
+            self.state.run_action(Action::ImportHeightmap(path));
+        }
+
+        for path in self.picked.take() {
+            self.state.run_action(Action::ImportHeightmap(path));
         }
 
         for action in std::mem::take(&mut self.state.actions) {
             match action {
+                #[cfg(target_os = "ios")]
+                Action::ImportHeightmapDialog => {
+                    if let Some(picker) = &self.picker {
+                        picker.pick_heightmap();
+                    }
+                }
                 #[cfg(not(target_os = "ios"))]
                 Action::OpenDialog => {
                     let picked = rfd::FileDialog::new()
@@ -44,6 +61,15 @@ impl eframe::App for ValeApp {
                     };
                     if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
                         self.state.run_action(Action::Export(path));
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
+                Action::ImportHeightmapDialog => {
+                    let picked = rfd::FileDialog::new()
+                        .add_filter("Heightmap", &["png", "tif", "tiff"])
+                        .pick_file();
+                    if let Some(path) = picked {
+                        self.state.run_action(Action::ImportHeightmap(path));
                     }
                 }
                 other => self.state.run_action(other),
@@ -95,6 +121,9 @@ pub fn run_window(
         state,
         smoke_frames,
         closing: false,
+        picked: PickQueue::default(),
+        #[cfg(target_os = "ios")]
+        picker: None,
     };
     eframe::run_native(
         "Vale",
@@ -115,6 +144,11 @@ pub fn run_window(
                     let queue = crate::pen::PenQueue::default();
                     app.state.globe.pen.queue = Some(queue.clone());
                     crate::pen::uikit::install(handle.ui_view, cc.egui_ctx.clone(), queue);
+                    let (picked, ctx) = (app.picked.clone(), cc.egui_ctx.clone());
+                    app.picker = handle.ui_view_controller.and_then(|controller| {
+                        let wake = Box::new(move || ctx.request_repaint());
+                        crate::files::uikit::Picker::new(controller, picked, wake)
+                    });
                 }
             }
             Ok(Box::new(app))

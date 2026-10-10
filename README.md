@@ -34,10 +34,11 @@ The window opens on the globe workspace. The globe shows the heightmap of the wo
 - In the flat view, the list next to "Flat" sets the projection: equirectangular, Equal Earth, Mercator, Lambert azimuthal, orthographic, or stereographic. In the iPad layout, the button next to "Flat" opens the same list.
 - "Recenter" makes the place at the middle of the canvas the center of the projection. Move the map first. "Reset" puts the center of the projection back and shows the whole map. In the iPad layout, the two actions are buttons to the right of the view switch.
 - Click "Greyscale" in the tool bar to show the plain heightmap.
+- Click "Import heightmap…" in the tool bar to replace the heightmap with an equirectangular image. You can also drop the image on the window. The image is a PNG or TIFF file, and 16-bit greyscale gives the best result. Black is -6,000 m, and white is 6,000 m. If the image is not twice as wide as it is tall, the status bar shows a warning. In the iPad layout, the button is in the panel of the Height layer. "Undo" puts the old heightmap back. If the old heightmap has more painted tiles than the undo memory of 256 MB holds, the import has no undo step.
 - Click "Elevation" in the tool bar to open the elevation panel. The bar shows the band limits, which are the elevations where the tints change. Tap a free place on the bar to add a limit. Drag a limit to move it. Tap a limit and click "Remove" to remove it. Sea level is a limit that stays. Clear "Levels" to show the color ramp with no steps. The land colors and the sea colors are separate.
 - Click "Debug" in the tool bar to open the brush debug panel. It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. It shows the memory of the undo steps. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
 
-In the window, each face of the heightmap has 8,192 pixels, and the GPU holds 940 MB for it. If the computer has no GPU, start the app with `--face-size 1024`.
+In the window, each face of the heightmap has 8,192 pixels, and the GPU holds 940 MB for it. After an import, the heightmap also holds 805 MB of main memory. If the computer has no GPU, start the app with `--face-size 1024`.
 
 Click "Map" in the tool bar to open the flat map with the Natural Earth 110m sample world. You can do these things there.
 
@@ -46,7 +47,7 @@ Click "Map" in the tool bar to open the flat map with the Natural Earth 110m sam
 - Use the left panel to set the world radius, the projection, and its center.
 - Tick a layer to show it. Click "Edit" on a layer to select it. The inspector then shows its style.
 - Click a feature to see its attributes. The inspector lists the labels that did not fit.
-- Open a GeoJSON file with the button, or drop a file on the window.
+- Open a GeoJSON file with the button, or drop a GeoJSON file on the window.
 - Export the view to PNG or PDF with the buttons in the tool bar.
 
 ## Open your own data
@@ -82,6 +83,7 @@ cargo run --release -p vale-app -- --stroke-test --face-size 8192
 | `--look-at <LON,LAT>` | Put this place at the middle of the view, on the globe and on the map |
 | `--zoom <F>` | Zoom factor on the fitted view, on the globe and on the map |
 | `--face-size <N>` | Pixels on one edge of a heightmap face. The default is 8192 in the window and 1024 without a window. |
+| `--import-heightmap <FILE>` | Import this equirectangular PNG or TIFF heightmap into the globe |
 | `--size <WxH>` | Size in points. The default is 1280x800. |
 | `--pixel-ratio <F>` | Pixels per point of the output |
 | `--hide <LAYER>` | Hide the layer with this name |
@@ -98,7 +100,7 @@ scripts/app-ipad.sh
 
 The script builds the app, installs it on the iPad, and starts it. It prints four steps and then "Done". The first build takes a few minutes, because it makes PROJ for iOS. If the build fails, read the full log in `target/ios/vale-app/xcodebuild.log`.
 
-The app opens on the globe of the sample world, in the iPad layout. Paint with Apple Pencil. Drag with one finger to turn the globe, and pinch with two fingers to zoom. The iPad app has no buttons to open or export files.
+The app opens on the globe of the sample world, in the iPad layout. Paint with Apple Pencil. Drag with one finger to turn the globe, and pinch with two fingers to zoom. To import a heightmap, tap the layers button, open the Height layer, and tap "Import heightmap…". The file picker of the Files app opens. The iPad app has no other buttons to open or export files.
 
 To build for the iOS simulator on a Mac with Apple silicon, run these commands:
 

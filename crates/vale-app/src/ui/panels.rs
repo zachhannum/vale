@@ -35,6 +35,11 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
                 ui.toggle_value(&mut state.globe.preview.panel, "Elevation");
                 ui.toggle_value(&mut state.globe.debug, "Debug");
+                ui.separator();
+                let import = egui::Button::new("Import heightmap…");
+                if ui.add_enabled(!state.globe.busy(), import).clicked() {
+                    state.actions.push(Action::ImportHeightmapDialog);
+                }
             }
             if !state.file_buttons || state.workspace != Workspace::Map {
                 return;
@@ -442,9 +447,11 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
                     c.labels.unplaced.len()
                 ));
             }
-            if !state.status.is_empty() {
+            let progress = state.globe.import_progress();
+            let text = progress.as_deref().unwrap_or(&state.status);
+            if !text.is_empty() {
                 ui.separator();
-                ui.label(&state.status);
+                ui.label(text);
             }
         });
     });

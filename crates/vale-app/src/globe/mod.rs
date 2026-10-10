@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::f64::consts::PI;
+use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
@@ -16,6 +17,7 @@ pub mod backdrop;
 pub mod brush;
 pub mod flat;
 pub mod gpu;
+pub mod import;
 pub mod math;
 pub mod nav;
 pub mod preview;
@@ -28,7 +30,8 @@ use crate::pen::Pen;
 use backdrop::Canvas;
 use brush::{Backlog, BrushSettings, Sample, Stroke, plan_texels};
 use flat::FlatView;
-use gpu::{Event, GlobeCallback, Link, Op, Uniforms};
+use gpu::{Event, GlobeCallback, Link, Op, Uniforms, Uploads};
+use import::{ImportResult, Job, Step};
 use math::V3;
 use nav::Nav;
 use preview::{Preview, band_uniforms};
@@ -138,6 +141,8 @@ pub struct Globe {
     pub blur: bool,
     /// The text of the last stroke test.
     pub test_report: Option<String>,
+    /// The changed texels that wait for the GPU.
+    pub uploads: Uploads,
     link: Link,
     events: mpsc::Receiver<Event>,
     /// Pen input that waits for the stroke before it.
@@ -153,6 +158,10 @@ pub struct Globe {
     chosen: Option<Window>,
     /// The newest window of small rivers that went to the GPU.
     window: Option<Arc<ChannelWindow>>,
+    /// The import that runs.
+    import: Option<Job>,
+    /// The result of the last import, until the UI takes it.
+    import_result: Option<ImportResult>,
 }
 
 impl Default for Globe {
@@ -187,6 +196,7 @@ impl Globe {
             debug: false,
             blur: true,
             test_report: None,
+            uploads: Uploads::default(),
             link,
             events,
             inputs: VecDeque::new(),
@@ -194,6 +204,8 @@ impl Globe {
             backlog: Backlog::default(),
             strokes: 0,
             test: None,
+            import: None,
+            import_result: None,
         }
     }
 
@@ -208,6 +220,9 @@ impl Globe {
         self.chosen = None;
         self.window = None;
         self.stats.face_size = face_size as u32;
+        self.uploads.clear();
+        self.import = None;
+        self.import_result = None;
         self.inputs.clear();
         self.backlog.clear();
         self.stroke = None;
@@ -275,9 +290,14 @@ impl Globe {
         }
     }
 
-    /// True while a stroke or a stroke test is not complete.
+    /// True while a stroke, a stroke test, or an import is not complete, or
+    /// texels wait for the GPU.
     pub fn busy(&self) -> bool {
-        self.stroke.is_some() || !self.inputs.is_empty() || self.test.is_some()
+        self.stroke.is_some()
+            || !self.inputs.is_empty()
+            || self.test.is_some()
+            || !self.uploads.is_empty()
+            || self.import.is_some()
     }
 
     pub fn can_undo(&self) -> bool {
@@ -355,7 +375,7 @@ impl Globe {
     /// rivers. Asks for the window of the view if the view left the last
     /// one. Sends the rivers that arrived to the GPU.
     fn queue_changes(&mut self) {
-        let changes = gpu::queue_changes(&mut self.map, &self.link);
+        let changes = gpu::queue_changes(&mut self.map, &self.link, &mut self.uploads);
         if changes.reset {
             self.rivers.rebuild(&self.map);
         }
@@ -391,6 +411,86 @@ impl Globe {
         }
     }
 
+    /// Starts the import of an equirectangular image on a worker thread. The
+    /// image replaces the heightmap. One import runs at a time.
+    pub fn start_import(&mut self, path: PathBuf) {
+        if let Some(job) = &self.import {
+            let name = import::file_name(&path);
+            let text = format!(
+                "cannot import {name}: the import of {} is not complete",
+                job.name
+            );
+            self.import_result = Some(Err(text));
+            return;
+        }
+        self.import_result = None;
+        self.import = Some(Job::start(path, self.map.face_size()));
+    }
+
+    pub fn importing(&self) -> bool {
+        self.import.is_some()
+    }
+
+    /// The text that tells how far the import is, or `None` with no import.
+    pub fn import_progress(&self) -> Option<String> {
+        self.import.as_ref().map(Job::progress)
+    }
+
+    /// Waits for the end of the import. If a stroke is not complete, the call
+    /// returns before the first face, and `advance` continues the import.
+    pub fn wait_import(&mut self) {
+        self.pump_import(true);
+    }
+
+    /// Takes the result of the last import.
+    pub fn take_import_result(&mut self) -> Option<ImportResult> {
+        self.import_result.take()
+    }
+
+    /// Moves the faces that the worker made into the heightmap. Without
+    /// `block`, one call takes one face at most.
+    fn pump_import(&mut self, block: bool) {
+        loop {
+            // A stroke that is open owns the undo entry of the heightmap, and
+            // its texels come back from the GPU later. The first face waits
+            // for the end of each stroke.
+            let idle = self.stroke.is_none() && self.inputs.is_empty() && self.test.is_none();
+            let Some(job) = &mut self.import else {
+                return;
+            };
+            // Before the worker has the file, it sends no face.
+            if job.info.is_some() && job.faces == 0 && !idle {
+                return;
+            }
+            match job.next(block) {
+                Step::Wait => return,
+                Step::Read => {}
+                Step::Face(face, levels) => {
+                    if job.faces == 0 {
+                        self.map.begin_stroke();
+                    }
+                    self.map.store_face(face, &levels);
+                    job.faces += 1;
+                    if job.faces == FACES {
+                        self.map.end_stroke();
+                        self.import_result = self.import.take().and_then(|job| job.info).map(Ok);
+                    }
+                    if !block {
+                        return;
+                    }
+                }
+                Step::Failed(text) => {
+                    // The faces that arrived go back out of the heightmap.
+                    if job.faces > 0 {
+                        self.map.cancel_stroke();
+                    }
+                    self.import = None;
+                    self.import_result = Some(Err(text));
+                }
+            }
+        }
+    }
+
     /// Starts the stroke test. A slow stroke is `seconds` long.
     pub fn start_stroke_test(&mut self, seconds: f64) {
         if self.format.is_some() && !self.busy() {
@@ -404,12 +504,14 @@ impl Globe {
     pub fn advance(&mut self, now: Instant) -> bool {
         if self.format.is_none() {
             self.inputs.clear();
-            return false;
+            self.pump_import(false);
+            return self.import.is_some();
         }
         // The count comes first. A result that arrives after this line makes
         // one more frame.
         let in_flight = self.link.busy.any();
         self.read_events();
+        self.pump_import(false);
         // An undo or a redo goes to the GPU before the stamps of the next
         // stroke.
         self.queue_changes();
@@ -494,6 +596,15 @@ impl Globe {
                     if let Some(active) = &mut self.stroke {
                         // The stroke before this one still waits for its texels.
                         active.ended = true;
+                        break;
+                    }
+                    // A strip that waits has texels from before the stroke.
+                    // It must reach the GPU before the first stamp.
+                    if !self.uploads.is_empty() {
+                        break;
+                    }
+                    // The import has the undo entry of the heightmap.
+                    if self.import.as_ref().is_some_and(|job| job.faces > 0) {
                         break;
                     }
                     self.strokes += 1;

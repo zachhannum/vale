@@ -6,7 +6,7 @@ use egui_kittest::kittest::Queryable;
 use kurbo::Point;
 use vale_app::document::Document;
 use vale_app::headless;
-use vale_app::ui::{Action, AppState, ExportFormat, Workspace, draw};
+use vale_app::ui::{Action, AppState, ExportFormat, Workspace, draw, is_heightmap_path};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
@@ -103,6 +103,33 @@ fn file_buttons_can_be_hidden() {
     h.run_steps(2);
     assert!(h.query_by_label("Open GeoJSON…").is_none());
     assert!(h.query_by_label("Export PDF…").is_none());
+}
+
+#[test]
+fn the_import_button_shows_with_and_without_the_file_buttons() {
+    for file_buttons in [true, false] {
+        let mut state = state_with(Document::sample());
+        state.workspace = Workspace::Globe;
+        state.file_buttons = file_buttons;
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+            .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+        h.run_steps(2);
+        h.get_by_label("Import heightmap…").click();
+        h.run_steps(1);
+        let actions = &h.state().actions;
+        assert_eq!(actions, &[Action::ImportHeightmapDialog], "{file_buttons}");
+    }
+}
+
+#[test]
+fn a_heightmap_file_has_the_extension_of_a_png_or_tiff_image() {
+    for name in ["a.png", "b.TIF", "dir/c.Tiff", "d.tar.png"] {
+        assert!(is_heightmap_path(Path::new(name)), "{name}");
+    }
+    for name in ["a.geojson", "png", "b.png.json", "c.jpg", ""] {
+        assert!(!is_heightmap_path(Path::new(name)), "{name}");
+    }
 }
 
 #[test]
