@@ -4,8 +4,8 @@ use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
-use vale_app::globe::Tool;
 use vale_app::globe::view::GlobeView;
+use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::{Panel, readout_text, theme};
@@ -156,7 +156,7 @@ fn check_controls(h: &Pad, what: &str) {
             assert_ne!(a.name, b.name, "{what}");
             // The open menu covers the cards below it.
             let row = |c: &vale_app::ui::pad::widgets::Control| {
-                ["World", "Globe", "Maps"].contains(&c.name.as_str())
+                ["World", "Globe", "Flat", "Maps"].contains(&c.name.as_str())
             };
             let covered = menu.is_some() && row(a) != row(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
@@ -493,6 +493,27 @@ fn the_pen_paints_on_the_canvas_and_a_panel_stays_open() {
 }
 
 #[test]
+fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Lower");
+    tap(&mut h, "Layers");
+    tap(&mut h, "Brush settings");
+    let panels = h.state().pad.panels.clone();
+    assert_eq!(panels.len(), 2);
+    for (name, view) in [("Flat", WorldView::Flat), ("Globe", WorldView::Globe)] {
+        tap(&mut h, name);
+        let s = h.state();
+        assert_eq!(s.globe.world_view, view);
+        assert_eq!(s.workspace, Workspace::Globe);
+        assert_eq!(
+            (s.globe.tool, s.globe.brush.mode),
+            (Tool::Brush, Mode::Lower)
+        );
+        assert_eq!(s.pad.panels, panels);
+    }
+}
+
+#[test]
 fn the_top_row_and_the_panels_match_the_landscape_board() {
     let mut h = pad(BOARDS[0]);
     let r = h.state().pad.rects.unwrap();
@@ -502,8 +523,9 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(control(&h, "World").unwrap().min, pos2(20.0, 36.0));
     assert!(control(&h, "Maps").is_some());
     assert!(control(&h, "Workspace").is_none());
-    // Atlas and Flat do nothing yet, so they are not controls.
-    assert!(control(&h, "Atlas").is_none() && control(&h, "Flat").is_none());
+    // Atlas does nothing yet, so it is not a control.
+    assert!(control(&h, "Atlas").is_none());
+    assert!(r.view.unwrap().contains_rect(control(&h, "Flat").unwrap()));
     assert_eq!(r.view.unwrap().center(), pos2(597.0, 58.0));
     assert!(r.view.unwrap().contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(
@@ -604,8 +626,13 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         );
         let tops = ["World", "Globe", "Maps"].map(|name| control(&h, name).unwrap().top());
         assert_eq!(tops, [98.0, 146.0, 255.0]);
+        tap(&mut h, "Flat");
+        assert!(!h.state().pad.menu);
+        assert_eq!(h.state().globe.world_view, WorldView::Flat);
+        tap(&mut h, "Workspace");
         tap(&mut h, "Globe");
         assert!(!h.state().pad.menu);
+        assert_eq!(h.state().globe.world_view, WorldView::Globe);
 
         // A panel is a sheet at the bottom, and one sheet shows at a time.
         tap(&mut h, "Layers");
