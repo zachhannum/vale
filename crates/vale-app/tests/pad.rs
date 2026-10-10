@@ -8,7 +8,7 @@ use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
-use vale_app::ui::pad::{Panel, readout_text, theme};
+use vale_app::ui::pad::{CENTER_HERE, Panel, readout_text, theme};
 use vale_app::ui::{AppState, Layout, Workspace, draw};
 use vale_terrain::Mode;
 
@@ -163,7 +163,7 @@ fn check_controls(h: &Pad, what: &str) {
                     .iter()
                     .any(|k| k.name() == name);
                 let menu = ["World", "Globe", "Flat", "Maps"].contains(&name);
-                menu || kind || name == "Center here" || (in_menu && name == "Projection")
+                menu || kind || name == CENTER_HERE || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
@@ -549,12 +549,24 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
         (Tool::Brush, Mode::Lower)
     );
 
-    // "Center here" moves the center of the projection to the middle.
+    // At the smallest zoom that fills the canvas, the middle of the view is
+    // the center of the projection, so the action is off. A line keeps it
+    // apart from the projections.
+    tap(&mut h, "Projection");
+    assert!(control(&h, CENTER_HERE).is_none());
+    let list = h.state().pad.projections_rect.unwrap();
+    assert_eq!(list.height(), 10.0 + 7.0 * 48.0 + 13.0 + 10.0);
+    tap(&mut h, "Projection");
+    assert!(!h.state().pad.projections);
+
+    // The action moves the center of the projection to the middle.
     // At the smallest zoom, the map stays in the middle of the canvas.
     h.state_mut().globe.flat.zoom = 8.0;
     h.state_mut().globe.flat.look_at(60.0, 0.0);
     tap(&mut h, "Projection");
-    tap(&mut h, "Center here");
+    let row = control(&h, CENTER_HERE).unwrap();
+    assert!(row.top() >= control(&h, "Stereographic").unwrap().bottom() + 13.0);
+    tap(&mut h, CENTER_HERE);
     assert!((h.state().globe.flat.spec().lon0 - 60.0).abs() < 1e-6);
 
     // A touch off the list closes it, and the globe has no list.

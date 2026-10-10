@@ -9,8 +9,8 @@ use vale_sphere::{Point, Projection, ProjectionKind, ProjectionSpec, wrap180};
 use super::math::{V3, add, cross, dir_to_lonlat, lonlat_to_dir, normalize, scale};
 use super::view::Camera;
 
-/// At this zoom, the whole map fits the canvas.
-pub const ZOOM_MIN: f64 = 1.0;
+/// The limits of the zoom. At a zoom of 1, the whole map fits the canvas.
+pub const ZOOM_MIN: f64 = 0.25;
 pub const ZOOM_MAX: f64 = 64.0;
 
 /// The number of points of a brush outline.
@@ -114,12 +114,26 @@ impl FlatView {
         }
     }
 
+    /// The projection with its center at the place at the middle of the
+    /// canvas. `None`: the place is off the map, or it is the center now.
+    fn spec_here(&self) -> Option<ProjectionSpec> {
+        let [lon0, lat0] = self.projection.inverse(self.center)?;
+        let (now, kind) = (self.spec(), self.spec().kind);
+        let here = ProjectionSpec { kind, lon0, lat0 }.normalized();
+        let moved = (here.lon0 - now.lon0).abs() > 1e-6 || (here.lat0 - now.lat0).abs() > 1e-6;
+        moved.then_some(here)
+    }
+
+    /// True if `center_here` changes the projection.
+    pub fn can_center_here(&self) -> bool {
+        self.spec_here().is_some()
+    }
+
     /// Makes the place at the middle of the canvas the center of the
     /// projection.
     pub fn center_here(&mut self) {
-        if let Some([lon0, lat0]) = self.projection.inverse(self.center) {
-            let kind = self.spec().kind;
-            self.set_spec(ProjectionSpec { kind, lon0, lat0 });
+        if let Some(spec) = self.spec_here() {
+            self.set_spec(spec);
         }
     }
 
@@ -325,8 +339,15 @@ mod tests {
         // The map is less high than the canvas, so it does not move up.
         view.gesture(rect(), middle, Pos2::new(410.0, 100.0), 1.0, 0.0);
         assert_eq!(view.center.y, 0.0);
-        view.zoom_at(rect(), middle, 0.1);
+        // You zoom out past the whole map, and the map stays in the middle.
+        view.zoom_at(rect(), Pos2::new(100.0, 500.0), 0.1);
         assert_eq!(view.zoom, ZOOM_MIN);
+        assert!(ZOOM_MIN < 1.0);
+        let west = view.project(rect(), lonlat_to_dir(-179.99, 0.0)).unwrap();
+        let east = view.project(rect(), lonlat_to_dir(179.99, 0.0)).unwrap();
+        assert!((east.x - west.x - 800.0 * ZOOM_MIN as f32).abs() < 0.5);
+        assert!(((west.x + east.x) / 2.0 - middle.x).abs() < 0.01);
+        assert!(!view.can_center_here());
         // The pan stops at the edges of the map.
         view.zoom = 4.0;
         view.gesture(rect(), middle, Pos2::new(9000.0, 9000.0), 1.0, 0.0);

@@ -66,7 +66,17 @@ fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     flat.set_spec(ProjectionSpec { kind, ..spec });
-    if ui.button(super::pad::CENTER_HERE).clicked() {
+    let button = ui.add_enabled(
+        flat.can_center_here(),
+        egui::Button::new(super::pad::CENTER_HERE),
+    );
+    let help = "Makes the place at the middle of the view the center of the projection. \
+                Zoom in and move the map first.";
+    if button
+        .on_hover_text(help)
+        .on_disabled_hover_text(help)
+        .clicked()
+    {
         flat.center_here();
     }
 }

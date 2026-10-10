@@ -104,8 +104,14 @@ fn hit(
     resp
 }
 
+/// The space between the highlight of a control and the edge of its touch
+/// area. The highlights of two controls that touch have a margin of two times
+/// this space.
+pub const HIGHLIGHT_INSET: f32 = 2.0;
+
 fn fill(ui: &egui::Ui, rect: Rect, resp: &Response, active: bool) {
     if active || resp.is_pointer_button_down_on() {
+        let rect = rect.shrink(HIGHLIGHT_INSET);
         ui.painter()
             .rect_filled(rect, theme::CONTROL_RADIUS, theme::raise());
     }
@@ -400,8 +406,11 @@ pub fn text_row(
         Some(selected),
     );
     if selected || resp.is_pointer_button_down_on() {
-        ui.painter()
-            .rect_filled(rect.expand2(vec2(8.0, 0.0)), 5.0, theme::raise());
+        ui.painter().rect_filled(
+            rect.expand2(vec2(8.0, -HIGHLIGHT_INSET)),
+            5.0,
+            theme::raise(),
+        );
     }
     let at = pos2(rect.left() + indent, rect.center().y);
     let color = fade(theme::TEXT, enabled);

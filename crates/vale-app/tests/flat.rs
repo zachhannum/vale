@@ -9,6 +9,7 @@ use vale_app::globe::math::{V3, lonlat_to_dir};
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
+use vale_app::ui::pad::CENTER_HERE;
 use vale_app::ui::{AppState, draw};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_terrain::{Mode, meters_to_level};
@@ -311,7 +312,7 @@ fn the_tool_bar_picks_the_projection_of_the_flat_view() {
     // At the smallest zoom, the map stays in the middle of the canvas.
     h.state_mut().globe.flat.zoom = 8.0;
     h.state_mut().globe.flat.look_at(50.0, 40.0);
-    h.get_by_label("Center here").click();
+    h.get_by_label(CENTER_HERE).click();
     h.run_steps(2);
     let spec = h.state().globe.flat.spec();
     assert!(

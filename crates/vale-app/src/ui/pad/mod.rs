@@ -109,7 +109,7 @@ const WORKSPACES: [&str; 3] = ["World", "Maps", "Atlas"];
 const VIEWS: [&str; 2] = ["Globe", "Flat"];
 /// The action that makes the middle of the canvas the center of the
 /// projection.
-pub const CENTER_HERE: &str = "Center here";
+pub const CENTER_HERE: &str = "Center projection on view";
 /// The control that opens the list of the projections.
 pub const PROJECTION: &str = "Projection";
 const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
@@ -582,7 +582,8 @@ fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     let size = vec2(ui.available_width(), PANEL_ROW);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect.expand2(vec2(8.0, 0.0)), 5.0, theme::raise());
+    let highlight = rect.expand2(vec2(8.0, -widgets::HIGHLIGHT_INSET));
+    painter.rect_filled(highlight, 5.0, theme::raise());
     let icon = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
     icons::paint(painter, icon, Icon::Raster, 18.0, theme::MUTE);
     let at = pos2(rect.left() + 28.0, rect.center().y);
@@ -655,7 +656,7 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
 /// switch, or in the place of the workspace menu.
 fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let rows = ProjectionKind::ALL.len() as f32 + 1.0;
-    let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 10.0);
+    let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 13.0 + 10.0);
     let min = match rects.view {
         Some(view) => pos2(view.center().x - size.x / 2.0, view.bottom() + PAD),
         None => rects.menu,
@@ -704,7 +705,13 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
                     state.pad.projections = false;
                 }
             }
-            if widgets::text_row(ui, controls, CENTER_HERE, 0.0, false, true).clicked() {
+            // The action below the line is not a projection.
+            let (rule, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());
+            let line = Rect::from_center_size(rule.center(), vec2(rule.width(), 1.0));
+            ui.painter().rect_filled(line, 0.0, theme::raise());
+            let enabled = state.globe.flat.can_center_here();
+            if widgets::text_row(ui, controls, CENTER_HERE, 0.0, false, enabled).clicked() {
                 state.globe.flat.center_here();
                 state.pad.projections = false;
             }
