@@ -16,11 +16,15 @@ struct Uniforms {
     rot0: vec4<f32>,
     rot1: vec4<f32>,
     rot2: vec4<f32>,
-    // Center x and y and radius in pixels, then pixels per point.
+    // Center x and y and radius in pixels, then pixels per point. On the
+    // flat map, the radius is the size of one radian.
     globe: vec4<f32>,
     // Face size in texels, the graticule step in radians, the preview mode,
     // and the band count. A step of 0 hides the graticule.
     params: vec4<f32>,
+    // 1 for the flat map, then the longitude and the latitude at the center,
+    // in radians.
+    flat: vec4<f32>,
     // The bands, from the lowest to the highest.
     bands: array<Band, 32>,
 }
@@ -145,15 +149,26 @@ fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
 fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let radius = u.globe.z;
     let p = vec2<f32>(frag.x - u.globe.x, u.globe.y - frag.y) / radius;
+    let is_flat = u.flat.x > 0.5;
     let r = length(p);
-    // One pixel of soft edge at the limb.
-    let cover = clamp((1.0 - r) * radius + 0.5, 0.0, 1.0);
+    // One pixel of soft edge at the limb, or at a pole of the flat map.
+    var cover = clamp((1.0 - r) * radius + 0.5, 0.0, 1.0);
+    var v = vec3<f32>(0.0, 0.0, 1.0);
+    var d: vec3<f32>;
+    if is_flat {
+        let lon = u.flat.y + p.x;
+        let lat = u.flat.z + p.y;
+        cover = clamp((PI * 0.5 - abs(lat)) * radius + 0.5, 0.0, 1.0);
+        let c = clamp(lat, -PI * 0.5, PI * 0.5);
+        d = vec3<f32>(cos(c) * cos(lon), cos(c) * sin(lon), sin(c));
+    } else {
+        let rr = min(r, 1.0);
+        v = vec3<f32>(p / max(r, 1e-6) * rr, sqrt(max(1.0 - rr * rr, 0.0)));
+        d = v.x * u.rot0.xyz + v.y * u.rot1.xyz + v.z * u.rot2.xyz;
+    }
     if cover <= 0.0 {
         discard;
     }
-    let rr = min(r, 1.0);
-    let v = vec3<f32>(p / max(r, 1e-6) * rr, sqrt(max(1.0 - rr * rr, 0.0)));
-    let d = v.x * u.rot0.xyz + v.y * u.rot1.xyz + v.z * u.rot2.xyz;
 
     let h = height(d);
     let width = fwidth(h);
@@ -171,10 +186,15 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let lat = asin(clamp(d.z, -1.0, 1.0));
         let lon = atan2(d.y, d.x);
         let dlat = abs(fract(lat / grat + 0.5) - 0.5) * grat;
-        let coslat = max(cos(lat), 1e-4);
+        // On the flat map, a meridian is as wide in longitude at each
+        // latitude, and the meridians do not crowd together.
+        var coslat = max(cos(lat), 1e-4);
+        var keep = step(abs(lat), PI * 0.5 - grat * 0.5);
+        if is_flat {
+            coslat = 1.0;
+            keep = 1.0;
+        }
         let dlon = abs(fract(lon / grat + 0.5) - 0.5) * grat * coslat;
-        // Meridians stop near the poles, where they crowd together.
-        let keep = step(abs(lat), PI * 0.5 - grat * 0.5);
         let line = max(1.0 - smoothstep(0.0, px * 1.5, dlat),
                        keep * (1.0 - smoothstep(0.0, px * 1.5, dlon)));
         color = mix(color, vec3<f32>(0.08, 0.12, 0.18), line * 0.22);

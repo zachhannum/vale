@@ -7,7 +7,7 @@ use super::{Action, AppState, ExportFormat, Workspace};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
 use crate::globe::brush::{FLOW, STRENGTH_M};
-use crate::globe::{Tool, stats, stroke_test};
+use crate::globe::{Tool, WorldView, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -21,6 +21,14 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
                 ui.selectable_value(&mut state.globe.tool, Tool::Brush, "Brush");
                 ui.separator();
+                let mut flat = state.globe.world_view == WorldView::Flat;
+                if ui.toggle_value(&mut flat, "Flat").changed() {
+                    state.globe.world_view = if flat {
+                        WorldView::Flat
+                    } else {
+                        WorldView::Globe
+                    };
+                }
                 ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
                 ui.toggle_value(&mut state.globe.preview.panel, "Elevation");
                 ui.toggle_value(&mut state.globe.debug, "Debug");

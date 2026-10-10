@@ -8,6 +8,8 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use crate::document::Document;
 use crate::globe::Globe;
+use crate::globe::WorldView;
+use crate::globe::flat::{self, FlatView};
 use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
 use crate::pipeline::Pipeline;
 use crate::ui::pad::Panel;
@@ -23,6 +25,9 @@ pub struct Args {
     /// The workspace that the app opens.
     #[arg(long, value_enum, default_value_t)]
     pub workspace: Workspace,
+    /// The view of the world in the globe workspace.
+    #[arg(long, value_enum, default_value_t)]
+    pub view: WorldView,
     /// The arrangement of the controls. The iPad uses `pad`.
     #[arg(long, value_enum, default_value_t)]
     pub layout: Layout,
@@ -191,7 +196,7 @@ impl Args {
 /// The limits of `--face-size`.
 const FACE_SIZES: std::ops::RangeInclusive<u32> = 16..=16384;
 
-/// Applies `--face-size`, `--look-at`, and `--zoom` to the globe.
+/// Applies `--face-size`, `--view`, `--look-at`, and `--zoom` to the globe.
 /// `face_size` is the face size without the flag.
 pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::Result<()> {
     let face_size = match args.face_size {
@@ -206,6 +211,12 @@ pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::
     if face_size != globe.map.face_size() {
         globe.set_face_size(face_size);
     }
+    globe.world_view = args.view;
+    if let Some(spec) = &args.look_at {
+        let [lon, lat] = parse_pair(spec)?;
+        globe.flat = FlatView::centered(lon, lat);
+    }
+    globe.flat.zoom = args.zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX);
     apply_globe_view(args, &mut globe.view)
 }
 

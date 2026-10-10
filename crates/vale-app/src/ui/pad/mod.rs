@@ -8,8 +8,8 @@ use vale_sphere::LonLat;
 use vale_terrain::Mode;
 
 use super::{AppState, Workspace, elevation, globe, panels};
-use crate::globe::Tool;
 use crate::globe::brush::{FLOW, STRENGTH_M};
+use crate::globe::{Tool, WorldView};
 
 pub mod geometry;
 pub mod icons;
@@ -103,6 +103,7 @@ impl PadState {
 
 const WORKSPACES: [&str; 3] = ["World", "Maps", "Atlas"];
 const VIEWS: [&str; 2] = ["Globe", "Flat"];
+const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
 
 /// The text of the position readout.
 pub fn readout_text(lonlat: Option<LonLat>, meters: Option<f64>) -> String {
@@ -213,7 +214,11 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             Order::Middle,
             radius,
             |ui| {
-                widgets::segments(ui, controls, &[(VIEWS[0], true), (VIEWS[1], false)], 0);
+                let active = state.globe.world_view as usize;
+                let items = [(VIEWS[0], true), (VIEWS[1], true)];
+                if let Some(chosen) = widgets::segments(ui, controls, &items, active) {
+                    state.globe.world_view = WORLD_VIEWS[chosen];
+                }
             },
         );
     }
@@ -647,16 +652,20 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
                 state.pad.menu = false;
             }
             if compact {
-                let globe = widgets::text_row(ui, controls, VIEWS[0], 16.0, false, true);
-                let tick = Rect::from_center_size(
-                    pos2(globe.rect.right() - 14.0, globe.rect.center().y),
-                    vec2(18.0, 18.0),
-                );
-                icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-                if globe.clicked() {
-                    state.pad.menu = false;
+                for (label, view) in VIEWS.into_iter().zip(WORLD_VIEWS) {
+                    let row = widgets::text_row(ui, controls, label, 16.0, false, true);
+                    if state.globe.world_view == view {
+                        let tick = Rect::from_center_size(
+                            pos2(row.rect.right() - 14.0, row.rect.center().y),
+                            vec2(18.0, 18.0),
+                        );
+                        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                    }
+                    if row.clicked() {
+                        state.globe.world_view = view;
+                        state.pad.menu = false;
+                    }
                 }
-                widgets::text_row(ui, controls, VIEWS[1], 16.0, false, false);
             }
             let (rule, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());

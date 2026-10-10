@@ -11,6 +11,7 @@ use vale_terrain::{FACES, Heightmap, TexelRect, meters_to_level};
 
 pub mod backdrop;
 pub mod brush;
+pub mod flat;
 pub mod gpu;
 pub mod math;
 pub mod nav;
@@ -22,6 +23,7 @@ pub mod view;
 use crate::pen::Pen;
 use backdrop::Canvas;
 use brush::{Backlog, BrushSettings, Sample, Stroke, plan_texels};
+use flat::FlatView;
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms};
 use math::V3;
 use nav::Nav;
@@ -44,6 +46,15 @@ pub enum Tool {
     #[default]
     Navigate,
     Brush,
+}
+
+/// The way that the world workspace shows the world.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum WorldView {
+    #[default]
+    Globe,
+    /// The whole world as a flat map.
+    Flat,
 }
 
 /// The pen or the mouse button that paints. The canvas sets it.
@@ -100,6 +111,9 @@ pub struct Globe {
     /// ahead of it. The texels come back when the stroke ends.
     pub map: Heightmap,
     pub view: GlobeView,
+    pub flat: FlatView,
+    /// The view that the canvas shows.
+    pub world_view: WorldView,
     pub nav: Nav,
     /// The canvas in screen points. Set by the canvas each frame.
     pub rect: Rect,
@@ -141,6 +155,8 @@ impl Globe {
         Globe {
             map: Heightmap::new(face_size, meters_to_level(START_ELEVATION)),
             view: GlobeView::centered(15.0, 25.0),
+            flat: FlatView::default(),
+            world_view: WorldView::default(),
             nav: Nav::default(),
             rect: Rect::ZERO,
             format: None,
@@ -211,9 +227,21 @@ impl Globe {
         self.inputs.push_back(Input::Up);
     }
 
-    /// The radius of the globe on screen, in points.
+    /// The size of one radian on screen, in points. On the globe, this is
+    /// the radius of the globe. On the flat map, it is true along a meridian.
     pub fn radius(&self) -> f64 {
-        self.view.radius(self.rect)
+        match self.world_view {
+            WorldView::Globe => self.view.radius(self.rect),
+            WorldView::Flat => self.flat.scale(self.rect),
+        }
+    }
+
+    /// The world direction under a screen position, or `None` off the world.
+    pub fn unproject(&self, pos: Pos2) -> Option<V3> {
+        match self.world_view {
+            WorldView::Globe => self.view.unproject(self.rect, pos),
+            WorldView::Flat => self.flat.unproject(self.rect, pos),
+        }
     }
 
     /// Sets the flatten level from the heightmap at a place. During a stroke
@@ -445,12 +473,19 @@ impl Globe {
         gpu::queue_changes(&mut self.map, &self.link);
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
         let center = self.rect.center();
-        let radius = self.view.radius(self.rect) as f32;
+        let radius = self.radius() as f32;
+        let (zoom, flat) = match self.world_view {
+            WorldView::Globe => (self.view.zoom, [0.0; 4]),
+            WorldView::Flat => {
+                let flat = &self.flat;
+                (flat.zoom, [1.0, flat.lon as f32, flat.lat as f32, 0.0])
+            }
+        };
         let graticule_degrees: f64 = if !self.preview.graticule {
             0.0
-        } else if self.view.zoom < 3.0 {
+        } else if zoom < 3.0 {
             15.0
-        } else if self.view.zoom < 12.0 {
+        } else if zoom < 12.0 {
             5.0
         } else {
             1.0
@@ -473,6 +508,7 @@ impl Globe {
                     self.preview.mode(),
                     band_count as f32,
                 ],
+                flat,
                 bands,
             },
             link: self.link.clone(),

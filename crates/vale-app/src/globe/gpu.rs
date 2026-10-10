@@ -21,6 +21,7 @@ pub struct Uniforms {
     pub rot: [[f32; 4]; 3],
     pub globe: [f32; 4],
     pub params: [f32; 4],
+    pub flat: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
 }
 
