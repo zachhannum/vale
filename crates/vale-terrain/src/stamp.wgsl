@@ -28,6 +28,10 @@ struct Group {
     reach: i32,
     size: i32,
     count: u32,
+    // The level of the sea.
+    sea: u32,
+    // The number of texels along one side of a face of the channel map.
+    channel_size: u32,
     stamps: array<Stamp, GROUP_STAMPS>,
 }
 
@@ -36,6 +40,7 @@ const PI_4 = 0.7853981633974483;
 const RAISE = 0u;
 const LOWER = 1u;
 const SMOOTH = 2u;
+const CARVE = 4u;
 
 @group(0) @binding(0) var<uniform> group: Group;
 // A copy of this face from before the pass.
@@ -45,6 +50,10 @@ const SMOOTH = 2u;
 @group(0) @binding(3) var past_nu: texture_2d<u32>;
 @group(0) @binding(4) var past_pv: texture_2d<u32>;
 @group(0) @binding(5) var past_nv: texture_2d<u32>;
+// The channel map of all faces. The red byte of a texel is the distance to
+// the nearest river in channel texels, times 32. The green byte is the size
+// of that river, or 0 if no river is near.
+@group(0) @binding(6) var channels: texture_2d_array<u32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -141,6 +150,29 @@ fn atan_unit(t: f32) -> f32 {
     return 4.0 * atan_series(quarter);
 }
 
+// The distance from a texel to the nearest river in channel texels, and the
+// size of that river. The steps are those of `ChannelMap::sample`.
+fn river_at(at: vec2<i32>) -> vec2<f32> {
+    let size = f32(group.channel_size);
+    let c = (vec2<f32>(at) + 0.5) * size / f32(group.size) - 0.5;
+    let whole = floor(c);
+    let t = c - whole;
+    let last = vec2<i32>(i32(group.channel_size) - 1);
+    let p0 = clamp(vec2<i32>(whole), vec2<i32>(0), last);
+    let p1 = clamp(vec2<i32>(whole) + 1, vec2<i32>(0), last);
+    let face = i32(group.face);
+    let a = vec2<f32>(textureLoad(channels, p0, face, 0).rg);
+    let b = vec2<f32>(textureLoad(channels, vec2<i32>(p1.x, p0.y), face, 0).rg);
+    let c0 = vec2<f32>(textureLoad(channels, vec2<i32>(p0.x, p1.y), face, 0).rg);
+    let d = vec2<f32>(textureLoad(channels, p1, face, 0).rg);
+    // The products are exact when both sizes are powers of two. The builtin
+    // `mix` can use other steps.
+    let top = a.x * (1.0 - t.x) + b.x * t.x;
+    let bottom = c0.x * (1.0 - t.x) + d.x * t.x;
+    let distance = (top * (1.0 - t.y) + bottom * t.y) / 32.0;
+    return vec2<f32>(distance, max(max(a.y, b.y), max(c0.y, d.y)));
+}
+
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     let at = vec2<i32>(floor(position.xy));
@@ -151,6 +183,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     // between two passes.
     var value = f32(textureLoad(before, at, 0).r);
     var changed = false;
+    var river = vec2<f32>(0.0);
+    if group.mode == CARVE {
+        river = river_at(at);
+    }
     for (var i = 0u; i < group.count; i++) {
         let stamp = group.stamps[i];
         // `Heightmap::stamp` visits the texels of this rectangle only.
@@ -206,6 +242,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                     + old;
                 change = (sum - 9.0 * old) / 9.0 * min(amount, 1.0);
             }
+            case CARVE {
+                // A large river has a wide and deep valley. With no river
+                // near, the size is 0 and the level stays.
+                if river.y > 0.0 {
+                    let size = river.y / 255.0;
+                    let k = clamp(river.x / (1.5 + 4.5 * size), 0.0, 1.0);
+                    let profile = 1.0 - k * k * (3.0 - 2.0 * k);
+                    change = -amount * stamp.strength * profile * (0.25 + 0.75 * size);
+                }
+            }
             default {
                 change = (stamp.level - old) * min(amount, 1.0);
             }
@@ -213,6 +259,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         // Round half up, as Rust `round` does for a positive number. The old
         // level is a whole number, so the rounding of the change is enough.
         value = clamp(old + floor(change + 0.5), 0.0, 65535.0);
+        if group.mode == CARVE {
+            // Land does not go below sea level.
+            value = max(value, min(old, f32(group.sea)));
+        }
         changed = true;
     }
     if !changed {

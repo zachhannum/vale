@@ -1,10 +1,11 @@
 //! The brush on the GPU against the brush on the CPU.
 
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 
-use vale_terrain::math::{V3, lonlat_to_dir};
+use vale_terrain::math::{V3, dot, lonlat_to_dir};
 use vale_terrain::{
-    FACES, GROUP_STAMPS, GpuHeightmap, Heightmap, Mode, STAMP_SLOTS, Stamp, StampPlan, TexelRect,
+    ChannelMap, CoarseHeights, FACES, GROUP_STAMPS, GpuHeightmap, Heightmap, Mode, STAMP_SLOTS,
+    Stamp, StampPlan, TexelRect, channel_map,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -71,7 +72,7 @@ impl Gpu {
         self.queue.submit([enc.finish()]);
     }
 
-    /// A GPU heightmap with the texels of `cpu`.
+    /// A GPU heightmap with the texels and the channel map of `cpu`.
     fn copy_of(&self, cpu: &Heightmap) -> GpuHeightmap {
         let map = GpuHeightmap::new(&self.device, cpu.face_size() as u32);
         let mut enc = self.encoder();
@@ -82,6 +83,9 @@ impl Gpu {
             let mut data = Vec::new();
             cpu.read_rect(face, rect, &mut data);
             map.upload(&self.queue, face as u32, rect, &data);
+        }
+        if let Some(channels) = cpu.channels() {
+            map.upload_channels(&self.queue, channels);
         }
         map
     }
@@ -437,6 +441,151 @@ fn smooth_leaves_no_seam_at_a_cube_corner() {
     // Faces 0, 2, and 4 meet at this corner. Each line is 6 texels from it.
     let corner = lonlat_to_dir(45.0, 35.264);
     smooth_and_check([20000, 40000, 60000], corner, 249, &[0, 2, 4], false);
+}
+
+/// A heightmap with one large slope down to a sea, low hills on the slope,
+/// and the channel map of its rivers.
+fn river_land(n: usize) -> Heightmap {
+    static CHANNELS: OnceLock<Arc<ChannelMap>> = OnceLock::new();
+    let low = lonlat_to_dir(160.0, -20.0);
+    let mut map = Heightmap::new(n, 0);
+    for face in 0..FACES {
+        let mut data = Vec::with_capacity(n * n);
+        for y in 0..n {
+            for x in 0..n {
+                let d = map.texel_dir(face, x, y);
+                let slope = 31000.0 + 7000.0 * (1.0 - dot(d, low));
+                let hill = 300.0 * (40.0 * d[0]).sin() * (40.0 * d[1]).cos()
+                    + 200.0 * (55.0 * d[2] + 20.0 * d[0]).sin();
+                data.push((slope + hill) as u16);
+            }
+        }
+        map.store_rect(face, full(n), &data);
+    }
+    assert_eq!(n, 256, "the channel map is for one size");
+    let channels = CHANNELS.get_or_init(|| {
+        let channels = channel_map(&CoarseHeights::new(&map));
+        assert!(channels.has_rivers());
+        Arc::new(channels)
+    });
+    map.set_channels(Some(channels.clone()));
+    map
+}
+
+/// The number of levels that are not the same.
+fn changes(before: &[u16], after: &[u16]) -> usize {
+    let pairs = before.iter().zip(after);
+    pairs.filter(|(old, new)| old != new).count()
+}
+
+/// The levels of all faces.
+fn levels(map: &Heightmap) -> Vec<u16> {
+    let mut all = Vec::new();
+    for face in 0..FACES {
+        map.read_rect(face, full(map.face_size()), &mut all);
+    }
+    all
+}
+
+#[test]
+fn gpu_carve_matches_cpu_for_one_stamp() {
+    let places = [
+        ("face center", lonlat_to_dir(1.3, 0.7)),
+        ("face edge", lonlat_to_dir(45.0, 0.0)),
+        ("cube corner", lonlat_to_dir(45.0, 35.264)),
+        ("pole", lonlat_to_dir(0.0, 90.0)),
+    ];
+    let mut worst = 0;
+    for (place, center) in places {
+        for radius in [0.06, 0.3] {
+            for hardness in [0.0, 0.95] {
+                let mut cpu = river_land(256);
+                let before = levels(&cpu);
+                let stamp = stamp(center, radius, hardness, Mode::Carve);
+                let difference = run(&mut cpu, &[stamp]).difference;
+                let name = format!("the {place}, radius {radius}, hardness {hardness}");
+                let changed = changes(&before, &levels(&cpu));
+                assert!(changed > 0, "{name}: no river is in the brush");
+                assert!(
+                    difference <= TOLERANCE,
+                    "{name}: the difference is {difference}"
+                );
+                worst = worst.max(difference);
+            }
+        }
+    }
+    eprintln!("one carve stamp, largest difference: {worst}");
+}
+
+/// Strokes across a face edge and past a cube corner. Many stamps touch
+/// each texel, so the ground at some rivers goes down to sea level.
+#[test]
+fn gpu_carve_matches_cpu_for_a_stroke() {
+    let lines = [
+        ("face edge", (31.0, 2.0), (59.0, 5.0)),
+        ("cube corner", (35.0, 25.264), (55.0, 45.264)),
+    ];
+    let mut worst = 0;
+    for (place, from, to) in lines {
+        let stamps = stroke(from, to, 240, 0.05, Mode::Carve);
+        let mut cpu = river_land(256);
+        let before = levels(&cpu);
+        let GroupRun {
+            groups, difference, ..
+        } = run_groups(&mut cpu, &stamps);
+        assert!(
+            groups.len() <= stamps.len() / GROUP_STAMPS + 2,
+            "stroke at the {place}: the groups are {groups:?}"
+        );
+        let changed = changes(&before, &levels(&cpu));
+        assert!(
+            changed > 200,
+            "stroke at the {place}: {changed} texels changed"
+        );
+        assert!(
+            difference <= ADD_STROKE_TOLERANCE,
+            "stroke at the {place}: the difference is {difference}"
+        );
+        worst = worst.max(difference);
+    }
+    eprintln!("carve stroke in groups, largest difference: {worst}");
+}
+
+#[test]
+fn upload_channels_reaches_the_shader() {
+    let gpu = gpu();
+    let n = 256;
+    let mut cpu = river_land(n);
+    cpu.set_channels(None);
+    let before = levels(&cpu);
+    // The copy has the channel map of a new `GpuHeightmap`, with no rivers.
+    let map = gpu.copy_of(&cpu);
+    let plan = cpu.stamp_plan(&stamp(lonlat_to_dir(45.0, 0.0), 0.3, 0.5, Mode::Carve));
+    let carve = || {
+        let mut enc = gpu.encoder();
+        assert!(map.stamp(&gpu.queue, &mut enc, &plan));
+        gpu.submit(enc);
+        map.begin_batch();
+        gpu.read_all(&map).concat()
+    };
+    assert!(carve() == before);
+
+    let channels = river_land(n)
+        .channels()
+        .expect("the map has rivers")
+        .clone();
+    assert_eq!(channels.size(), ChannelMap::size_for(n));
+    map.upload_channels(&gpu.queue, &channels);
+    cpu.set_channels(Some(channels));
+    cpu.stamp(&plan.stamp);
+    let carved = carve();
+    assert!(carved != before);
+    let cpu_levels = levels(&cpu);
+    let difference = carved.iter().zip(&cpu_levels).map(|(a, b)| a.abs_diff(*b));
+    assert!(difference.max().unwrap() <= TOLERANCE);
+
+    map.upload_channels(&gpu.queue, &ChannelMap::empty(ChannelMap::size_for(n)));
+    assert!(carve() == carved);
 }
 
 /// The result of the same stamps in groups and one at a time.
