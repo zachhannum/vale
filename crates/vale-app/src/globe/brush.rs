@@ -4,7 +4,10 @@ use std::collections::VecDeque;
 use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
-use vale_terrain::{ELEV_MAX, ELEV_MIN, GROUP_STAMPS, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan};
+use vale_terrain::{
+    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, MAX_BRUSH_RADIUS, Mode, RIVER_MIN_CELLS,
+    RIVER_MIN_CELLS_LOWEST, Stamp, StampPlan,
+};
 
 use super::math::{V3, add, angle, normalize, scale};
 
@@ -43,6 +46,40 @@ pub struct BrushSettings {
     /// The target of the flatten mode. `None`: the level under the start of
     /// the stroke.
     pub flatten_level: Option<u16>,
+    /// The number of cells that a river of the carve mode drains at least.
+    /// At 1, each place on the land is on a river, and the carve mode
+    /// reaches all the land.
+    pub reach_cells: f64,
+    /// The width of the valleys of the carve mode. The valleys have their
+    /// usual width at 1.
+    pub valley: f64,
+}
+
+/// The limits of `BrushSettings::reach_cells`, and of the cutoff of the river
+/// lines. The last limit gives the fewest rivers.
+pub const REACH_CELLS: std::ops::RangeInclusive<f64> = RIVER_MIN_CELLS_LOWEST..=250.0;
+
+/// The place of a number of cells in `REACH_CELLS` on a logarithmic scale,
+/// from 0 at the fewest rivers to 1 at the most.
+pub fn reach_fraction(cells: f64) -> f64 {
+    let (low, high) = (*REACH_CELLS.start(), *REACH_CELLS.end());
+    ((high / cells).ln() / (high / low).ln()).clamp(0.0, 1.0)
+}
+
+/// The number of cells at a place on the scale. The inverse of
+/// `reach_fraction`.
+pub fn reach_cells(fraction: f64) -> f64 {
+    let (low, high) = (*REACH_CELLS.start(), *REACH_CELLS.end());
+    high * (low / high).powf(fraction.clamp(0.0, 1.0))
+}
+
+/// The text of a place on the scale.
+pub fn reach_text(fraction: f64) -> String {
+    if fraction >= 1.0 {
+        "all".to_string()
+    } else {
+        format!("{:.0}%", fraction * 100.0)
+    }
 }
 
 impl Default for BrushSettings {
@@ -55,6 +92,8 @@ impl Default for BrushSettings {
             flow: 1.0,
             strength_m: 1500.0,
             flatten_level: None,
+            reach_cells: RIVER_MIN_CELLS,
+            valley: 1.0,
         }
     }
 }
@@ -212,7 +251,7 @@ impl Tip<'_> {
             mode: self.brush.mode,
             level: self.level,
             strength: self.brush.strength_m * STAMP_SPACING / span,
-            valley: 1.0,
+            valley: self.brush.valley,
         }
     }
 }

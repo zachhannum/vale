@@ -1806,12 +1806,8 @@ fn mouse_drag(h: &mut Harness<'static, AppState>, from: Pos2, to: Pos2) {
     settle(h);
 }
 
-/// Writes images of a near view with the window of small rivers, for a
-/// person to look at.
-#[test]
-#[ignore]
-fn screenshots_with_a_river_window() {
-    let _gpu = one_gpu_test();
+/// A near view of the island in the desktop layout, with the carve mode.
+fn window_view(reach_cells: f64) -> Harness<'static, AppState> {
     let mut state = state();
     let globe = &mut state.globe;
     globe.view = GlobeView::centered(0.0, 0.0);
@@ -1819,6 +1815,7 @@ fn screenshots_with_a_river_window() {
     globe.tool = Tool::Brush;
     globe.brush.mode = Mode::Carve;
     globe.brush.strength_m = 3000.0;
+    globe.brush.reach_cells = reach_cells;
     globe.debug = true;
     set_small_island(&mut globe.map, 0.6);
     let setup = egui_kittest::wgpu::default_wgpu_setup();
@@ -1826,25 +1823,40 @@ fn screenshots_with_a_river_window() {
     h.set_render_every_step(true);
     h.run_steps(3);
     assert!(h.state().globe.window().is_some());
-    let shot = |h: &mut Harness<'static, AppState>, name: &str| {
-        h.remove_cursor();
-        h.run_steps(2);
-        save(&h.render().unwrap(), name);
-    };
-    shot(&mut h, "rivers-window");
-    h.state_mut().globe.preview.river_width = 3.0;
-    shot(&mut h, "rivers-window-wide");
-    h.state_mut().globe.preview.river_width = 1.0;
+    h
+}
 
+/// Three carve strokes across the view.
+fn carve_three_strokes(h: &mut Harness<'static, AppState>) {
     let c = h.state().globe.rect.center();
     for (from, to) in [
         (Vec2::new(-300.0, -200.0), Vec2::new(250.0, -120.0)),
         (Vec2::new(-250.0, 0.0), Vec2::new(300.0, 60.0)),
         (Vec2::new(-200.0, 220.0), Vec2::new(200.0, 150.0)),
     ] {
-        mouse_drag(&mut h, c + from, c + to);
+        mouse_drag(h, c + from, c + to);
     }
+}
+
+/// Writes images of a near view with the window of small rivers, for a
+/// person to look at.
+#[test]
+#[ignore]
+fn screenshots_with_a_river_window() {
+    let _gpu = one_gpu_test();
+    let shot = |h: &mut Harness<'static, AppState>, name: &str| {
+        h.remove_cursor();
+        h.run_steps(2);
+        save(&h.render().unwrap(), name);
+    };
+    let mut h = window_view(vale_terrain::RIVER_MIN_CELLS);
+    shot(&mut h, "rivers-window");
+    h.state_mut().globe.preview.river_width = 3.0;
+    shot(&mut h, "rivers-window-wide");
+    h.state_mut().globe.preview.river_width = 1.0;
+    carve_three_strokes(&mut h);
     shot(&mut h, "rivers-window-carved");
+    shot(&mut h, "reach-default-carved");
 
     // The view moves, and the frame comes before the next window. The frame
     // shows the window of the view before, and the channel map around it.
@@ -1854,4 +1866,166 @@ fn screenshots_with_a_river_window() {
     h.step();
     assert!(h.state().globe.rivers_pending());
     save(&h.render().unwrap(), "rivers-window-replaced");
+    drop(h);
+
+    let mut h = window_view(1.0);
+    carve_three_strokes(&mut h);
+    shot(&mut h, "reach-full-carved");
+    h.state_mut().globe.preview.river_lines = 1.0;
+    shot(&mut h, "reach-full-lines");
+}
+
+/// One carve stroke across the middle of a near view of the island. Returns
+/// the number of texels that the stroke changed, and the part of the land in
+/// the core of the stroke that is lower after it. The core is the ground
+/// nearer to the path of the pen than 0.4 times the radius of the brush.
+fn carve_near(reach_cells: f64, valley: f64) -> (usize, f64) {
+    const N: usize = 1024;
+    let mut h = island_harness(N, 0.35, 8.0);
+    let globe = &mut h.state_mut().globe;
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Carve;
+    globe.brush.size_points = 60.0;
+    globe.brush.strength_m = 3000.0;
+    globe.brush.reach_cells = reach_cells;
+    globe.brush.valley = valley;
+    h.run_steps(2);
+    assert!(h.state().globe.window().is_some());
+
+    let texels = || (N / 4..3 * N / 4).flat_map(|y| (N / 4..3 * N / 4).map(move |x| (x, y)));
+    let levels = |map: &vale_terrain::Heightmap| -> Vec<u16> {
+        texels()
+            .map(|(x, y)| map.get(0, x as i64, y as i64))
+            .collect()
+    };
+    let before = levels(&h.state().globe.map);
+    let c = mouse_stroke(&mut h);
+    settle(&mut h);
+    let globe = &h.state().globe;
+    let after = levels(&globe.map);
+    let sea = meters_to_level(0.0);
+    let (mut changed, mut land, mut lower) = (0, 0, 0);
+    for (i, (x, y)) in texels().enumerate() {
+        changed += usize::from(after[i] != before[i]);
+        let dir = globe.map.texel_dir(0, x, y);
+        let Some(pos) = globe.view.project(globe.rect, dir) else {
+            continue;
+        };
+        let core = (pos.x - c.x).abs() <= 40.0 && (pos.y - c.y).abs() <= 24.0;
+        if core && before[i] > sea {
+            land += 1;
+            lower += usize::from(after[i] < before[i]);
+        }
+    }
+    assert!(land > 500, "{land}");
+    (changed, lower as f64 / land as f64)
+}
+
+#[test]
+fn at_full_reach_carve_lowers_all_the_land_under_the_brush() {
+    let _gpu = one_gpu_test();
+    let (_, usual) = carve_near(vale_terrain::RIVER_MIN_CELLS, 1.0);
+    let (_, full) = carve_near(1.0, 1.0);
+    assert!(usual < 0.5, "{usual}");
+    assert!(full >= 0.95, "{full}");
+}
+
+#[test]
+fn the_valley_width_slider_reaches_the_stamps() {
+    let _gpu = one_gpu_test();
+    let (narrow, _) = carve_near(vale_terrain::RIVER_MIN_CELLS, vale_terrain::VALLEY_MIN);
+    let (wide, _) = carve_near(vale_terrain::RIVER_MIN_CELLS, vale_terrain::VALLEY_MAX);
+    assert!(narrow > 100 && wide > narrow * 3 / 2, "{narrow} and {wide}");
+}
+
+/// The number of river pixels on the canvas.
+fn count_rivers(h: &mut Harness<'static, AppState>) -> usize {
+    let img = canvas_image(h);
+    river_pixels(h, &img)
+}
+
+#[test]
+fn full_reach_does_not_change_the_river_lines() {
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(1024, 0.35, 8.0);
+    let usual = count_rivers(&mut h);
+    h.state_mut().globe.brush.reach_cells = 1.0;
+    h.run_steps(2);
+    let globe = &h.state().globe;
+    assert_eq!(globe.window().unwrap().min_cells(), 1.0);
+    assert_eq!(globe.channels().unwrap().min_cells(), 1.0);
+    let full = count_rivers(&mut h);
+    save(&canvas_image(&mut h), "reach-full-default-lines");
+    assert!(usual > 300, "{usual}");
+    let change = (full as f64 - usual as f64).abs() / usual as f64;
+    assert!(change < 0.3, "{usual} and {full}");
+}
+
+#[test]
+fn the_river_lines_slider_hides_small_rivers() {
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(1024, 0.35, 8.0);
+    let bytes = |h: &Harness<'static, AppState>| {
+        let globe = &h.state().globe;
+        let channels = globe.channels().unwrap().bytes().to_vec();
+        (channels, globe.window().unwrap().bytes().to_vec())
+    };
+    let usual = count_rivers(&mut h);
+    let before = bytes(&h);
+    h.state_mut().globe.preview.river_lines = 250.0;
+    let few = count_rivers(&mut h);
+    assert!(bytes(&h) == before);
+    assert!(few > 0 && few * 5 < usual * 4, "{few} and {usual}");
+
+    // The lines do not go below the reach of the brush.
+    h.state_mut().globe.preview.river_lines = 8.0;
+    assert_eq!(count_rivers(&mut h), usual);
+    h.state_mut().globe.brush.reach_cells = 8.0;
+    h.run_steps(2);
+    let fine = bytes(&h);
+    assert!(fine != before);
+    let many = count_rivers(&mut h);
+    assert!(bytes(&h) == fine);
+    assert!(many * 4 > usual * 5, "{many} and {usual}");
+}
+
+#[test]
+fn the_river_width_slider_works_in_a_near_view() {
+    let _gpu = one_gpu_test();
+    // A channel texel of the window is more than 4 pixels wide.
+    let mut h = island_harness(1024, 0.35, 30.0);
+    assert!(h.state().globe.window().is_some());
+    let thin = count_rivers(&mut h);
+    h.state_mut().globe.preview.river_width = 3.0;
+    let wide = count_rivers(&mut h);
+    save(&canvas_image(&mut h), "rivers-near-wide");
+    assert!(thin > 300 && wide >= 2 * thin, "{thin} and {wide}");
+}
+
+#[test]
+fn a_change_of_the_reach_does_not_block_painting() {
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(1024, 0.35, 8.0);
+    let globe = &mut h.state_mut().globe;
+    globe.set_rivers_sync(false);
+    globe.tool = Tool::Brush;
+    h.step();
+    settle_rivers(&mut h);
+
+    h.state_mut().globe.brush.reach_cells = 1.0;
+    h.step();
+    assert!(h.state().globe.rivers_pending());
+    let c = mouse_stroke(&mut h);
+    let under = place(&h, c);
+    let level = h.state().globe.map.sample(under);
+    settle(&mut h);
+    // The stroke is complete, and the maps of the new reach are not.
+    let globe = &h.state().globe;
+    assert!(globe.map.sample(under) > level);
+    assert!(globe.rivers_pending());
+
+    settle_rivers(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.channels().unwrap().min_cells(), 1.0);
+    assert_eq!(globe.window().unwrap().min_cells(), 1.0);
 }

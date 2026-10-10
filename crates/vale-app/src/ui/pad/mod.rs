@@ -5,10 +5,10 @@ use std::collections::HashMap;
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
-use vale_terrain::Mode;
+use vale_terrain::{Mode, VALLEY_MAX, VALLEY_MIN};
 
 use super::{Action, AppState, Workspace, elevation, globe, panels};
-use crate::globe::brush::{FLOW, STRENGTH_M};
+use crate::globe::brush::{FLOW, STRENGTH_M, reach_cells, reach_fraction, reach_text};
 use crate::globe::{Tool, WorldView};
 
 pub mod geometry;
@@ -610,6 +610,20 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     });
     if let Some(meters) = strength {
         brush.strength_m = meters;
+    }
+    if brush.mode == Mode::Carve {
+        let mut reach = reach_fraction(brush.reach_cells);
+        let text = reach_text(reach);
+        if widgets::row_slider(ui, controls, "Brush reach", "Reach", &mut reach, &text) {
+            brush.reach_cells = reach_cells(reach);
+        }
+        let text = format!("{:.2}", brush.valley);
+        let range = VALLEY_MIN..=VALLEY_MAX;
+        let mut fraction = (brush.valley - range.start()) / (range.end() - range.start());
+        let label = "Valley width";
+        if widgets::row_slider(ui, controls, "Brush valley", label, &mut fraction, &text) {
+            brush.valley = range.start() + fraction * (range.end() - range.start());
+        }
     }
     ui.spacing_mut().item_spacing.y = 6.0;
     panels::brush_settings(ui, state);

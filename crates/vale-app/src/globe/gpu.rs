@@ -33,6 +33,7 @@ pub struct Uniforms {
     pub screen: [f32; 4],
     pub window: [f32; 4],
     pub rivers: [f32; 4],
+    pub lines: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
 }
 

@@ -35,6 +35,9 @@ struct Uniforms {
     // number of channel texels along one side of the window, and the factor
     // of the width of a river line.
     rivers: vec4<f32>,
+    // The lowest flow byte of a river with a line, in the channel map and
+    // in the window.
+    lines: vec4<f32>,
     // The bands, from the lowest to the highest.
     bands: array<Band, 32>,
 }
@@ -54,9 +57,13 @@ const PI: f32 = 3.14159265;
 const RIVER_COLOR: vec3<f32> = vec3<f32>(0.16, 0.36, 0.62);
 // The distance byte of the channel map for a distance of one channel texel.
 const CHANNEL_SCALE: f32 = 32.0;
-// The edge of a line is not farther from the river than this number of
-// channel texels. The channel map holds no distance past 255 / 32 texels.
-const CHANNEL_REACH: f32 = 7.5;
+// A river writes the channel texels that are nearer to it than this, for
+// the smallest river and for the largest. `vale-terrain` has the numbers.
+// The distance that a place gets for the part of its 4 channel texels that
+// are of rivers with no line, in channel texels.
+const MISSING: f32 = 0.6;
+const REACH_SMALL: f32 = 3.375;
+const REACH_LARGE: f32 = 7.96;
 // The channel texels at each side of the window with no sure distance.
 const WINDOW_MARGIN: f32 = 8.0;
 
@@ -168,11 +175,37 @@ fn channel(face: i32, x: i32, y: i32) -> vec2<f32> {
     return vec2<f32>(textureLoad(channels, c, face, 0).rg);
 }
 
-// The distance from a world direction to the nearest river of the window in
-// channel texels of the window, and the size of that river from 0 to 255.
-// The third number is 1 if the window covers the direction, and 0 if not.
-// Each of the first two is a blend of the 4 texels around the place, as in
-// `stamp.wgsl` of `vale-terrain`.
+// The river at a place between 4 channel texels. `t` is the place between
+// them. Each texel holds the distance to its nearest river, and the size of
+// that river. A texel of a river below `cut` has no part, so the distance is
+// a blend of the texels of the rivers that draw. The result is the distance
+// in channel texels and the largest size, or a size of 0 with no river.
+fn blend_rivers(
+    c00: vec2<f32>,
+    c10: vec2<f32>,
+    c01: vec2<f32>,
+    c11: vec2<f32>,
+    t: vec2<f32>,
+    cut: f32,
+) -> vec2<f32> {
+    let low = max(cut, 0.5);
+    let w = vec4<f32>((1.0 - t.x) * (1.0 - t.y), t.x * (1.0 - t.y), (1.0 - t.x) * t.y, t.x * t.y)
+        * step(vec4<f32>(low), vec4<f32>(c00.y, c10.y, c01.y, c11.y));
+    let sum = w.x + w.y + w.z + w.w;
+    if sum < 1e-4 {
+        return vec2<f32>(0.0);
+    }
+    let near = dot(w, vec4<f32>(c00.x, c10.x, c01.x, c11.x)) / sum / CHANNEL_SCALE;
+    // A texel with no part is farther from the river than the others.
+    let distance = near + (1.0 - sum) * MISSING;
+    let sizes = step(vec4<f32>(1e-6), w) * vec4<f32>(c00.y, c10.y, c01.y, c11.y);
+    return vec2<f32>(distance, max(max(sizes.x, sizes.y), max(sizes.z, sizes.w)));
+}
+
+// The river of the window at a world direction: the distance in channel
+// texels of the window, and the size from 0 to 255. The third number is 1 if
+// the window covers the direction, and 0 if not. The place in the window
+// comes from the steps of `stamp.wgsl` of `vale-terrain`.
 fn window_river(d: vec3<f32>) -> vec3<f32> {
     if u.window.x < 0.5 {
         return vec3<f32>(0.0);
@@ -192,31 +225,24 @@ fn window_river(d: vec3<f32>) -> vec3<f32> {
         return vec3<f32>(0.0);
     }
     let i = vec2<i32>(floor(c));
-    let t = c - floor(c);
     let c00 = vec2<f32>(textureLoad(window_channels, i, 0).rg);
     let c10 = vec2<f32>(textureLoad(window_channels, i + vec2<i32>(1, 0), 0).rg);
     let c01 = vec2<f32>(textureLoad(window_channels, i + vec2<i32>(0, 1), 0).rg);
     let c11 = vec2<f32>(textureLoad(window_channels, i + vec2<i32>(1, 1), 0).rg);
-    let both = mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y);
-    return vec3<f32>(both.x / CHANNEL_SCALE, both.y, 1.0);
+    return vec3<f32>(blend_rivers(c00, c10, c01, c11, c - floor(c), u.lines.y), 1.0);
 }
 
-// The distance from a world direction to the nearest river of the channel
-// map in channel texels, and the size of that river from 0 to 255. The
-// distance is a blend of the 4 texels around the place, and the size is the
-// largest of the 4, as in `stamp.wgsl` of `vale-terrain`.
+// The river of the channel map at a world direction: the distance in
+// channel texels, and the size from 0 to 255.
 fn map_river(d: vec3<f32>) -> vec2<f32> {
     let p = place(d);
     let f = p.at * u.flat.y - 0.5;
     let i = vec2<i32>(floor(f));
-    let t = f - floor(f);
     let c00 = channel(p.face, i.x, i.y);
     let c10 = channel(p.face, i.x + 1, i.y);
     let c01 = channel(p.face, i.x, i.y + 1);
     let c11 = channel(p.face, i.x + 1, i.y + 1);
-    let flow = max(max(c00.y, c10.y), max(c01.y, c11.y));
-    let distance = mix(mix(c00.x, c10.x, t.x), mix(c01.x, c11.x, t.x), t.y) / CHANNEL_SCALE;
-    return vec2<f32>(distance, flow);
+    return blend_rivers(c00, c10, c01, c11, f - floor(f), u.lines.x);
 }
 
 // The part of a pixel that a river covers at a world direction, from 0 to 1.
@@ -226,22 +252,32 @@ fn map_river(d: vec3<f32>) -> vec2<f32> {
 fn river(d: vec3<f32>, pixel: f32) -> f32 {
     let in_window = window_river(d);
     var found = in_window.xy;
+    var cut = u.lines.y;
     // The angle of one channel texel.
     var angle = u.rivers.x * PI / 4.0 / u.params.x;
     if in_window.z < 0.5 {
         found = map_river(d);
+        cut = u.lines.x;
         angle = PI / 2.0 / u.flat.y;
     }
-    let flow = found.y / 255.0;
-    if flow <= 0.0 {
+    if found.y <= 0.0 {
         return 0.0;
     }
+    // The size of the river above the smallest river with a line. A river
+    // of one size has one width at each cut.
+    let flow = (found.y - cut) / 255.0;
     // The size of one channel texel in pixels.
     let texel = angle / pixel;
     // Half of the width of the line in pixels. A large river has a wide
-    // line. A line that is thin against the texels has steps.
-    let half = max((0.6 + 1.4 * flow) * u.rivers.z, 0.7 * texel);
-    let edge = min(half + 0.5, CHANNEL_REACH * texel);
+    // line. A line that is thin against the texels has steps. The width
+    // factor makes each line wider, and it makes a line thinner down to
+    // the width that has no steps.
+    let width = u.rivers.z;
+    let line = 0.6 + 1.4 * flow;
+    let half = max(line * min(width, 1.0), 0.7 * texel) * max(width, 1.0);
+    // The channels hold the distance to the river out to its reach.
+    let reach = mix(REACH_SMALL, REACH_LARGE, found.y / 255.0) - 0.5;
+    let edge = min(half + 0.5, reach * texel);
     return clamp(edge - found.x * texel, 0.0, 1.0);
 }
 
