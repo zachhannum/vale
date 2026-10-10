@@ -1124,8 +1124,8 @@ mod tests {
             assert!(*old >= sea || new == old);
         }
 
-        // Near the north coast, the slope is too short for a river.
-        let far = carve(0.0, 19.0, 0.01);
+        // At the top of the slope, too little land drains for a river.
+        let far = carve(28.0, 19.0, 0.01);
         let channels = map.channels().expect("the map has channels").clone();
         assert_eq!(channels.at(far.center).1, 0);
         assert!(map.stamp(&far) > 0);

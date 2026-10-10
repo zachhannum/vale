@@ -100,6 +100,15 @@ fn neighbors(m: usize, i: usize) -> [u32; 8] {
 }
 
 /// The solid angle of each cell of one face, in steradians, row by row.
+/// A fixed number from 0 to 1 for neighbor `k` of cell `i`.
+fn scatter(i: usize, k: usize) -> f64 {
+    let mut h = (i as u32).wrapping_mul(8).wrapping_add(k as u32);
+    h = (h ^ (h >> 16)).wrapping_mul(0x7feb_352d);
+    h = (h ^ (h >> 15)).wrapping_mul(0x846c_a68b);
+    h ^= h >> 16;
+    f64::from(h) / f64::from(u32::MAX)
+}
+
 fn solid_angles(m: usize) -> Vec<f64> {
     let flat: Vec<f64> = (0..m).map(|i| unwarp(center(m, i as i64))).collect();
     let step = |f: f64| (1.0 + f * f) * FRAC_PI_4 * 2.0 / m as f64;
@@ -205,7 +214,7 @@ pub struct FlowMap {
 
 impl FlowMap {
     /// Fills each pit to the level of its rim, from the coast to the land
-    /// inside. Then each cell drains to its steepest neighbor that is lower
+    /// inside. Then each cell drains to a steep neighbor that is lower
     /// in the filled land. A world with no ocean or no land has no flow.
     pub fn new(heights: &CoarseHeights) -> FlowMap {
         let m = heights.m;
@@ -243,7 +252,7 @@ impl FlowMap {
         let mut done = vec![false; count];
         while let Some(Reverse((level, _, i))) = heap.pop() {
             let i = i as usize;
-            let mut steepest = 0.0;
+            let mut best = 0.0;
             for (k, &j) in neighbors(m, i).iter().enumerate() {
                 let j = j as usize;
                 if is_land(j) && !done[j] {
@@ -257,10 +266,14 @@ impl FlowMap {
                     }
                     continue;
                 }
-                let drop = f64::from(level) - f64::from(filled[j]);
+                // The scatter lets a cell on an even slope or on a flat turn
+                // to one side, so that the streams join. Without it they run
+                // side by side.
+                let drop = f64::from(level) - f64::from(filled[j]) + 1.0;
                 let slope = if k < 4 { drop } else { drop * FRAC_1_SQRT_2 };
-                if slope > steepest {
-                    steepest = slope;
+                let score = slope * (0.75 + 0.5 * scatter(i, k));
+                if score > best {
+                    best = score;
                     receiver[i] = j as u32;
                 }
             }
