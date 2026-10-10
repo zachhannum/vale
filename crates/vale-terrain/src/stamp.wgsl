@@ -17,7 +17,6 @@ struct Stamp {
     flow: f32,
     strength: f32,
     level: f32,
-    valley: f32,
 }
 
 // The same number as `GROUP_STAMPS` in `gpu.rs`.
@@ -66,9 +65,6 @@ const CARVE = 4u;
 
 // The same number as `WINDOW_MARGIN` in `flow.rs`.
 const WINDOW_MARGIN = 8.0;
-
-// The same number as `VALLEY_WIDEST` in `flow.rs`.
-const VALLEY_WIDEST = 7.5;
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -327,8 +323,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                 // near, the size is 0 and the level stays.
                 if river.y > 0.0 {
                     let size = river.y / 255.0;
-                    let width = min((1.5 + 4.5 * size) * stamp.valley, VALLEY_WIDEST);
-                    let k = clamp(river.x / width, 0.0, 1.0);
+                    let k = clamp(river.x / (1.5 + 4.5 * size), 0.0, 1.0);
                     let profile = 1.0 - k * k * (3.0 - 2.0 * k);
                     change = -amount * stamp.strength * profile * (0.25 + 0.75 * size);
                 }

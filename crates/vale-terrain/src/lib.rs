@@ -23,9 +23,8 @@ pub use cube::{
 pub use equirect::Equirect;
 pub use flow::{
     CHANNEL_SCALE, ChannelMap, ChannelWindow, CoarseHeights, FLOW_SIZE, FlowMap, RIVER_MIN_AREA,
-    RIVER_MIN_CELLS, RIVER_MIN_CELLS_LOWEST, RIVER_OCTAVES, VALLEY_MAX, VALLEY_MIN, VALLEY_WIDEST,
-    WINDOW_CELLS, WINDOW_MARGIN, Window, WindowHeights, channel_map, window_channels,
-    window_channels_with,
+    RIVER_MIN_CELLS, RIVER_OCTAVES, WINDOW_CELLS, WINDOW_MARGIN, Window, WindowHeights,
+    channel_map, window_channels,
 };
 #[cfg(feature = "gpu")]
 pub use gpu::{GROUP_STAMPS, GpuHeightmap, Readback, STAMP_SLOTS};

@@ -5,8 +5,8 @@ use std::f64::consts::FRAC_PI_2;
 use std::sync::{Arc, mpsc};
 
 use vale_terrain::{
-    ChannelMap, ChannelWindow, CoarseHeights, FlowMap, Heightmap, RIVER_MIN_CELLS, TexelRect,
-    WINDOW_CELLS, WINDOW_MARGIN, Window, WindowHeights, window_channels_with,
+    ChannelMap, ChannelWindow, CoarseHeights, FlowMap, Heightmap, TexelRect, WINDOW_CELLS,
+    WINDOW_MARGIN, Window, WindowHeights, window_channels,
 };
 
 use super::math::V3;
@@ -75,31 +75,11 @@ pub fn cell_angle(window: &Window) -> f64 {
     window.cell as f64 * FRAC_PI_2 / window.face_size as f64
 }
 
-/// One request, with its number. The last value is the number of cells that
-/// a river drains at least.
+/// One request, with its number.
 enum Job {
-    /// `None`: the heights are those of the global job before.
-    Global(u64, Option<CoarseHeights>, f64),
-    Window(u64, WindowHeights, f64),
+    Global(u64, CoarseHeights),
+    Window(u64, WindowHeights),
 }
-
-impl Job {
-    /// Puts the job in the place of an older job of its kind that waits.
-    fn replace(self, global: &mut Option<GlobalJob>, window: &mut Option<WindowJob>) {
-        match self {
-            Job::Global(number, heights, min_cells) => {
-                let old = global.take().and_then(|(_, heights, _)| heights);
-                *global = Some((number, heights.or(old), min_cells));
-            }
-            Job::Window(number, heights, min_cells) => {
-                *window = Some((number, heights, min_cells));
-            }
-        }
-    }
-}
-
-type GlobalJob = (u64, Option<CoarseHeights>, f64);
-type WindowJob = (u64, WindowHeights, f64);
 
 enum Done {
     Global(u64, ChannelMap),
@@ -127,10 +107,6 @@ pub struct Rivers {
     sync: bool,
     /// The flow of the newest request in the sync mode.
     flow: Option<FlowMap>,
-    /// The number of cells that a river drains at least.
-    min_cells: f64,
-    /// The heights of the window of the newest window request.
-    window_heights: Option<WindowHeights>,
     /// The sync mode has a flow, or the worker has one or gets one before
     /// the next window.
     has_flow: bool,
@@ -148,29 +124,29 @@ pub struct Rivers {
 /// Computes the newest job of each kind until the sender is gone. A window
 /// job runs after the global jobs, with the flow of the newest one.
 fn work(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>) {
-    let mut flow: Option<FlowMap> = None;
+    let mut flow = None;
     let (mut global, mut window) = (None, None);
     loop {
         if global.is_none() && window.is_none() {
             match jobs.recv() {
-                Ok(job) => job.replace(&mut global, &mut window),
+                Ok(Job::Global(number, heights)) => global = Some((number, heights)),
+                Ok(Job::Window(number, heights)) => window = Some((number, heights)),
                 Err(_) => return,
             }
         }
         for job in jobs.try_iter() {
-            job.replace(&mut global, &mut window);
-        }
-        let result = if let Some((number, heights, min_cells)) = global.take() {
-            if let Some(heights) = heights {
-                flow = Some(FlowMap::new(&heights));
+            match job {
+                Job::Global(number, heights) => global = Some((number, heights)),
+                Job::Window(number, heights) => window = Some((number, heights)),
             }
-            // The first global job has heights, so the flow is there.
-            let Some(flow) = &flow else { continue };
-            Done::Global(number, flow.channels_with(min_cells))
-        } else if let Some((number, heights, min_cells)) = window.take() {
+        }
+        let result = if let Some((number, heights)) = global.take() {
+            let new = flow.insert(FlowMap::new(&heights));
+            Done::Global(number, new.channels())
+        } else if let Some((number, heights)) = window.take() {
             // A window job comes after a global job, so the flow is there.
             let Some(flow) = &flow else { continue };
-            Done::Window(number, window_channels_with(&heights, flow, min_cells))
+            Done::Window(number, window_channels(&heights, flow))
         } else {
             continue;
         };
@@ -187,8 +163,6 @@ impl Rivers {
             coarse: CoarseHeights::new(map),
             sync,
             flow: None,
-            min_cells: RIVER_MIN_CELLS,
-            window_heights: None,
             has_flow: false,
             jobs: None,
             done,
@@ -234,51 +208,35 @@ impl Rivers {
         let _ = jobs.send(job);
     }
 
-    /// Asks for the channel map. With `heights`, the flow comes from them.
-    /// Without, the flow of the request before stays.
-    fn request_global(&mut self, heights: Option<CoarseHeights>) {
-        self.global.sent += 1;
-        self.has_flow = true;
-        let (number, min_cells) = (self.global.sent, self.min_cells);
-        if !self.sync {
-            self.send(Job::Global(number, heights, min_cells));
-            return;
-        }
-        if let Some(heights) = heights {
-            self.flow = Some(FlowMap::new(&heights));
-        }
-        if let Some(flow) = &self.flow {
-            let _ = self
-                .done
-                .send(Done::Global(number, flow.channels_with(min_cells)));
-        }
-    }
-
     /// Asks for the channel map of the heights as they are now.
     pub fn request(&mut self) {
-        self.request_global(Some(self.coarse.clone()));
-    }
-
-    fn request_window_heights(&mut self, heights: WindowHeights) {
-        if !self.has_flow {
-            self.request();
+        self.global.sent += 1;
+        self.has_flow = true;
+        let (number, heights) = (self.global.sent, self.coarse.clone());
+        if self.sync {
+            let flow = self.flow.insert(FlowMap::new(&heights));
+            let _ = self.done.send(Done::Global(number, flow.channels()));
+        } else {
+            self.send(Job::Global(number, heights));
         }
-        self.window.sent += 1;
-        let (number, min_cells) = (self.window.sent, self.min_cells);
-        match &self.flow {
-            Some(flow) if self.sync => {
-                let channels = window_channels_with(&heights, flow, min_cells);
-                let _ = self.done.send(Done::Window(number, channels));
-            }
-            _ => self.send(Job::Window(number, heights.clone(), min_cells)),
-        }
-        self.window_heights = Some(heights);
     }
 
     /// Asks for the small rivers of a window of the heightmap as it is now.
     /// The result of a window request before this one does not arrive.
     pub fn request_window(&mut self, map: &Heightmap, window: Window) {
-        self.request_window_heights(WindowHeights::new(map, window));
+        if !self.has_flow {
+            self.request();
+        }
+        self.window.sent += 1;
+        let (number, heights) = (self.window.sent, WindowHeights::new(map, window));
+        match &self.flow {
+            Some(flow) if self.sync => {
+                let _ = self
+                    .done
+                    .send(Done::Window(number, window_channels(&heights, flow)));
+            }
+            _ => self.send(Job::Window(number, heights)),
+        }
     }
 
     /// Stops the wait for a window. The result of a window request before
@@ -287,26 +245,6 @@ impl Rivers {
         self.window.sent += 1;
         self.window.received = self.window.sent;
         self.channel_window = None;
-        self.window_heights = None;
-    }
-
-    /// Sets the number of cells that a river drains at least. After a change,
-    /// asks for the channel map and the window again, with the same heights.
-    pub fn set_min_cells(&mut self, min_cells: f64) {
-        if min_cells == self.min_cells {
-            return;
-        }
-        self.min_cells = min_cells;
-        if self.global.sent == 0 {
-            return;
-        }
-        match self.has_flow {
-            true => self.request_global(None),
-            false => self.request(),
-        }
-        if let Some(heights) = self.window_heights.take() {
-            self.request_window_heights(heights);
-        }
     }
 
     fn read(&mut self) {

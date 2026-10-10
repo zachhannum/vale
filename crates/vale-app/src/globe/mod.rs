@@ -34,7 +34,7 @@ use gpu::{Event, GlobeCallback, Link, Op, Uniforms, Uploads};
 use import::{ImportResult, Job, Step};
 use math::V3;
 use nav::Nav;
-use preview::{Preview, band_uniforms, line_cut};
+use preview::{Preview, band_uniforms};
 use rivers::{Rivers, choose_window};
 use stats::Stats;
 use stroke_test::StrokeTest;
@@ -375,7 +375,6 @@ impl Globe {
     /// rivers. Asks for the window of the view if the view left the last
     /// one. Sends the rivers that arrived to the GPU.
     fn queue_changes(&mut self) {
-        self.rivers.set_min_cells(self.brush.reach_cells);
         let changes = gpu::queue_changes(&mut self.map, &self.link, &mut self.uploads);
         if changes.reset {
             self.rivers.rebuild(&self.map);
@@ -734,15 +733,6 @@ impl Globe {
         };
         let window_size = (2 * vale_terrain::WINDOW_CELLS) as f32;
         let rivers = [cell as f32, window_size, self.preview.river_width, 0.0];
-        let cut = |min_cells: Option<f64>| {
-            min_cells.map_or(0.0, |min| line_cut(self.preview.river_lines, min))
-        };
-        let lines = [
-            cut(self.channels.as_deref().map(ChannelMap::min_cells)),
-            cut(self.window.as_deref().map(ChannelWindow::min_cells)),
-            0.0,
-            0.0,
-        ];
         let graticule_degrees: f64 = if !self.preview.graticule {
             0.0
         } else if zoom < 3.0 {
@@ -774,7 +764,6 @@ impl Globe {
                 screen: [0.0; 4],
                 window,
                 rivers,
-                lines,
                 bands,
             },
             flat: mesh,

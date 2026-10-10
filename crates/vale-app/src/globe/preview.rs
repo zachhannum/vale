@@ -1,6 +1,6 @@
 //! The preview of the heightmap: stepped tints, a smooth ramp, or greyscale.
 
-use vale_terrain::{Bands, MAX_BANDS, RIVER_MIN_CELLS, RIVER_OCTAVES, Rgb, meters_to_level};
+use vale_terrain::{Bands, MAX_BANDS, Rgb, meters_to_level};
 
 /// How the globe shows the heightmap.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -14,8 +14,6 @@ pub struct Preview {
     pub rivers: bool,
     /// The factor of the width of a river line on screen.
     pub river_width: f32,
-    /// The number of cells that a river with a line drains at least.
-    pub river_lines: f32,
     /// The elevation panel is open.
     pub panel: bool,
     /// The band limit that the panel edits, as an index into the limits.
@@ -30,19 +28,10 @@ impl Default for Preview {
             graticule: true,
             rivers: true,
             river_width: 1.0,
-            river_lines: RIVER_MIN_CELLS as f32,
             panel: false,
             selected: None,
         }
     }
-}
-
-/// The lowest flow byte of a river with a line, in a map of rivers that
-/// drain `min_cells` cells at least. `lines` is the number of cells that a
-/// river with a line drains at least.
-pub fn line_cut(lines: f32, min_cells: f64) -> f32 {
-    let octaves = (f64::from(lines) / min_cells).log2();
-    (255.0 * octaves / RIVER_OCTAVES).clamp(0.0, 254.0) as f32
 }
 
 impl Preview {

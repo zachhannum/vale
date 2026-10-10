@@ -41,18 +41,6 @@ const SMOOTH_PASSES: usize = 2;
 /// has `FLOW_SIZE` cells along one side of a face.
 pub const RIVER_MIN_CELLS: f64 = 62.0;
 
-/// The lowest number of cells that a river cell must drain. At this number,
-/// each land cell is a river cell.
-pub const RIVER_MIN_CELLS_LOWEST: f64 = 1.0;
-
-/// The limits of the valley width factor of the carve mode.
-pub const VALLEY_MIN: f64 = 0.4;
-pub const VALLEY_MAX: f64 = 1.25;
-
-/// The widest valley of the carve mode, from the river to the side, in
-/// channel texels. It is less than `CHANNEL_REACH`.
-pub const VALLEY_WIDEST: f64 = 7.5;
-
 /// The number of cells along one side of the window that `GpuHeightmap`
 /// holds.
 pub const WINDOW_CELLS: usize = 512;
@@ -397,93 +385,29 @@ impl FlowMap {
     }
 
     pub fn is_river(&self, face: usize, x: usize, y: usize) -> bool {
-        self.is_river_with(face, x, y, RIVER_MIN_CELLS)
-    }
-
-    /// The same as `is_river`, for rivers that drain `min_cells` cells or
-    /// more. `RIVER_MIN_CELLS` cells have an area of `RIVER_MIN_AREA`.
-    pub fn is_river_with(&self, face: usize, x: usize, y: usize, min_cells: f64) -> bool {
-        Threshold::global(min_cells).holds(self.area(face, x, y))
+        self.area(face, x, y) >= RIVER_MIN_AREA
     }
 
     /// The river cells as nodes, and the first ocean cell after each river.
-    #[cfg(test)]
     fn rivers(&self) -> Rivers {
-        self.rivers_with(RIVER_MIN_CELLS)
-    }
-
-    fn rivers_with(&self, min_cells: f64) -> Rivers {
         let dir = |i: usize| {
             let (face, x, y) = split(self.m, i);
             cell_dir(self.m, face, x, y)
         };
-        let threshold = Threshold::global(min_cells);
-        Rivers::new(&self.receiver, &self.area, threshold, dir, dir)
+        Rivers::new(&self.receiver, &self.area, RIVER_MIN_AREA, dir, dir)
     }
 
     /// Draws each river into a channel map with 2 texels for each cell along
     /// one axis.
     pub fn channels(&self) -> ChannelMap {
-        self.channels_with(RIVER_MIN_CELLS)
-    }
-
-    /// The same as `channels`, for rivers that drain `min_cells` cells or
-    /// more.
-    pub fn channels_with(&self, min_cells: f64) -> ChannelMap {
-        let threshold = Threshold::global(min_cells);
         let mut map = ChannelMap::empty(2 * self.m);
-        map.min_cells = threshold.min_cells;
-        let mut rivers = self.rivers_with(min_cells);
+        let mut rivers = self.rivers();
         rivers.smooth();
         for (k, &cell) in rivers.cells.iter().enumerate() {
-            let flow = threshold.flow_byte(f64::from(self.area[cell as usize]));
+            let flow = flow_byte(f64::from(self.area[cell as usize]));
             map.draw(rivers.pos[k], rivers.pos[rivers.down[k] as usize], flow);
         }
         map
-    }
-}
-
-/// The area that a cell must drain to be a river cell.
-#[derive(Clone, Copy)]
-struct Threshold {
-    min_cells: f64,
-    /// The area of `min_cells` cells, in steradians.
-    area: f64,
-}
-
-impl Threshold {
-    /// `area` gives the area of a number of cells. `min_cells` goes up to
-    /// `RIVER_MIN_CELLS_LOWEST` if it is less.
-    fn new(min_cells: f64, area: impl Fn(f64) -> f64) -> Threshold {
-        let min_cells = min_cells.max(RIVER_MIN_CELLS_LOWEST);
-        Threshold {
-            min_cells,
-            area: area(min_cells),
-        }
-    }
-
-    /// The threshold of the full map, where `RIVER_MIN_CELLS` cells have an
-    /// area of `RIVER_MIN_AREA`.
-    fn global(min_cells: f64) -> Threshold {
-        Threshold::new(min_cells, |cells| {
-            RIVER_MIN_AREA * (cells / RIVER_MIN_CELLS)
-        })
-    }
-
-    /// Whether a cell that drains `area` is a river cell. The cells of a
-    /// grid do not have one area. At the lowest number, each cell that
-    /// drains some land is a river cell, also a cell that is smaller than
-    /// the others.
-    fn holds(&self, area: f64) -> bool {
-        if self.min_cells <= RIVER_MIN_CELLS_LOWEST {
-            area > 0.0
-        } else {
-            area >= self.area
-        }
-    }
-
-    fn flow_byte(&self, area: f64) -> u8 {
-        size_byte(area / self.area)
     }
 }
 
@@ -502,20 +426,20 @@ struct Rivers {
 }
 
 impl Rivers {
-    /// Makes a node for each cell that drains enough for `threshold`. `place`
+    /// Makes a node for each cell that drains `min_area` or more. `place`
     /// gives the place of a cell. `outside` gives the place where the water
     /// of a cell goes past the end of the grid.
     fn new(
         receiver: &[u32],
         area: &[f32],
-        threshold: Threshold,
+        min_area: f64,
         place: impl Fn(usize) -> V3,
         outside: impl Fn(usize) -> V3,
     ) -> Rivers {
         let mut rivers = Rivers::default();
         // The node of each river cell.
         let mut node = vec![NONE; area.len()];
-        for i in (0..area.len()).filter(|&i| threshold.holds(f64::from(area[i]))) {
+        for i in (0..area.len()).filter(|&i| f64::from(area[i]) >= min_area) {
             node[i] = rivers.cells.len() as u32;
             rivers.cells.push(i as u32);
             rivers.pos.push(place(i));
@@ -574,7 +498,6 @@ impl Rivers {
     }
 }
 
-#[cfg(test)]
 fn flow_byte(area: f64) -> u8 {
     size_byte(area / RIVER_MIN_AREA)
 }
@@ -587,28 +510,13 @@ fn size_byte(ratio: f64) -> u8 {
         .clamp(1.0, 255.0) as u8
 }
 
-/// The distance from a river of a size to the last texels that it writes, in
-/// channel texels. The carve mode reads the 4 texels around a place in the
-/// valley, so the reach is more than the widest valley of the river.
-fn reach(flow: u8) -> f64 {
-    let widest = (1.5 + 4.5 * f64::from(flow) / 255.0) * VALLEY_MAX;
-    (widest + 1.5).min(CHANNEL_REACH)
-}
-
-/// The largest distance byte of a texel that is on a river, which is one
-/// channel texel.
-const ON_RIVER: u8 = CHANNEL_SCALE as u8;
-
 /// Draws a straight part of a river from `a` to `b` into a square of channel
-/// texels with `size` texels along one side. The part writes the texels in
-/// its reach. A texel on a river keeps the largest river that writes it. Each
-/// other texel keeps the nearest river.
+/// texels with `size` texels along one side. A texel keeps the nearest river.
 fn draw_line(data: &mut [u8], size: usize, a: (f64, f64), b: (f64, f64), flow: u8) {
     let ((ax, ay), (bx, by)) = (a, b);
     let last = (size - 1) as f64;
-    let reach = reach(flow);
-    let from = |a: f64, b: f64| (a.min(b) - reach).ceil().max(0.0);
-    let to = |a: f64, b: f64| (a.max(b) + reach).floor().min(last);
+    let from = |a: f64, b: f64| (a.min(b) - CHANNEL_REACH).ceil().max(0.0);
+    let to = |a: f64, b: f64| (a.max(b) + CHANNEL_REACH).floor().min(last);
     let (x0, x1, y0, y1) = (from(ax, bx), to(ax, bx), from(ay, by), to(ay, by));
     if x0 > x1 || y0 > y1 {
         return;
@@ -623,28 +531,15 @@ fn draw_line(data: &mut [u8], size: usize, a: (f64, f64), b: (f64, f64), flow: u
             } else {
                 0.0
             };
-            let (qx, qy) = (px - t * dx, py - t * dy);
-            let distance_sq = qx * qx + qy * qy;
-            if distance_sq > reach * reach {
-                continue;
-            }
-            let byte = (distance_sq.sqrt() * CHANNEL_SCALE).round();
+            let distance = (px - t * dx).hypot(py - t * dy);
+            let byte = (distance * CHANNEL_SCALE).round();
             if byte >= 255.0 {
                 continue;
             }
             let byte = byte as u8;
             let at = (y * size + x) * 2;
             let old = &mut data[at..at + 2];
-            // On a river, the largest river comes first. Thus a small stream
-            // next to a large river does not cut its line.
-            let key = |byte: u8, flow: u8| {
-                if byte <= ON_RIVER {
-                    (0, 255 - flow, byte)
-                } else {
-                    (1, byte, 255 - flow)
-                }
-            };
-            if key(byte, flow) < key(old[0], old[1]) {
+            if byte < old[0] || (byte == old[0] && flow > old[1]) {
                 old.copy_from_slice(&[byte, flow]);
             }
         }
@@ -663,11 +558,9 @@ fn blend(values: [f64; 4], tx: f64, ty: f64) -> f64 {
 /// The rivers as a texture. Each texel has two bytes. The first byte is the
 /// distance to the nearest river in channel texels, times `CHANNEL_SCALE`.
 /// The second byte is the size of that river from 1 to 255, or 0 if no river
-/// is near. A texel with no river near holds 255 and 0. A large river is
-/// near at a larger distance than a small river.
+/// is near. A texel with no river near holds 255 and 0.
 pub struct ChannelMap {
     size: usize,
-    min_cells: f64,
     data: Vec<u8>,
 }
 
@@ -677,7 +570,6 @@ impl ChannelMap {
         assert!(size > 0, "the size must not be zero");
         ChannelMap {
             size,
-            min_cells: RIVER_MIN_CELLS,
             data: [255, 0].repeat(FACES * size * size),
         }
     }
@@ -691,12 +583,6 @@ impl ChannelMap {
     /// The number of texels along one side of a face.
     pub fn size(&self) -> usize {
         self.size
-    }
-
-    /// The number of cells that a river cell of this map drains at least. A
-    /// river that drains this number has a size byte of 1.
-    pub fn min_cells(&self) -> f64 {
-        self.min_cells
     }
 
     /// The two bytes of each texel, face by face, in row order.
@@ -752,21 +638,14 @@ impl ChannelMap {
     /// the grid continues past the face edges.
     fn draw(&mut self, a: V3, b: V3, flow: u8) {
         let k = self.size as f64;
-        // The largest flat coordinate of an end of a part that can reach a
-        // texel of the face. A part is less than 4 texels long.
-        let past = 2.0 * (CHANNEL_REACH + 4.0) / k;
-        let limit = unwarp((1.0 + past).min(1.9));
         for face in 0..FACES {
             let axis = face / 2;
             let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
             let project = |d: V3| {
                 let depth = d[axis] * sign;
-                let (u, v) = (d[(axis + 1) % 3], d[(axis + 2) % 3]);
-                if depth <= 0.0 || u.abs() > limit * depth || v.abs() > limit * depth {
-                    return None;
-                }
                 let texel = |a: f64| (warp(a / depth) + 1.0) * 0.5 * k - 0.5;
-                Some((texel(u), texel(v)))
+                // A place within reach of the face has more depth than this.
+                (depth > 0.2).then(|| (texel(d[(axis + 1) % 3]), texel(d[(axis + 2) % 3])))
             };
             let (Some((ax, ay)), Some((bx, by))) = (project(a), project(b)) else {
                 continue;
@@ -995,20 +874,14 @@ struct WindowFlow {
     window: Window,
     receiver: Vec<u32>,
     area: Vec<f32>,
-    threshold: Threshold,
+    /// The smallest area that a river cell drains, in steradians.
+    min_area: f64,
 }
 
 impl WindowFlow {
     /// `global` gives the rivers that come into the window from outside.
-    #[cfg(test)]
     fn new(heights: &WindowHeights, global: Option<&FlowMap>) -> WindowFlow {
-        WindowFlow::with(heights, global, RIVER_MIN_CELLS)
-    }
-
-    /// The same as `new`, for rivers that drain `min_cells` cells or more.
-    fn with(heights: &WindowHeights, global: Option<&FlowMap>, min_cells: f64) -> WindowFlow {
         let window = heights.window;
-        let outside = Threshold::global(min_cells);
         let mut inflow = Vec::new();
         if let Some(global) = global {
             let m = global.m;
@@ -1021,7 +894,7 @@ impl WindowFlow {
             // A river that comes in keeps the area that it drains outside.
             for (i, &area) in global.area.iter().enumerate() {
                 let to = global.receiver[i];
-                if !outside.holds(f64::from(area)) || to == NONE || inside(i).is_some() {
+                if f64::from(area) < RIVER_MIN_AREA || to == NONE || inside(i).is_some() {
                     continue;
                 }
                 if let Some(cell) = inside(to as usize) {
@@ -1036,7 +909,7 @@ impl WindowFlow {
             window,
             receiver,
             area,
-            threshold: Threshold::new(min_cells, |cells| cells * solid / count as f64),
+            min_area: RIVER_MIN_CELLS * solid / count as f64,
         }
     }
 
@@ -1054,7 +927,7 @@ impl WindowFlow {
             let [x, y, _] = place(i);
             [x + past(i % cells), y + past(i / cells), 0.0]
         };
-        Rivers::new(&self.receiver, &self.area, self.threshold, place, outside)
+        Rivers::new(&self.receiver, &self.area, self.min_area, place, outside)
     }
 
     fn channels(&self) -> ChannelWindow {
@@ -1065,15 +938,12 @@ impl WindowFlow {
         // A cell is 2 channel texels wide.
         let texel = |p: V3| (2.0 * p[0] - 0.5, 2.0 * p[1] - 0.5);
         for (k, &cell) in rivers.cells.iter().enumerate() {
-            let flow = self
-                .threshold
-                .flow_byte(f64::from(self.area[cell as usize]));
+            let flow = size_byte(f64::from(self.area[cell as usize]) / self.min_area);
             let (a, b) = (rivers.pos[k], rivers.pos[rivers.down[k] as usize]);
             draw_line(&mut data, size, texel(a), texel(b), flow);
         }
         ChannelWindow {
             window: self.window,
-            min_cells: self.threshold.min_cells,
             data,
         }
     }
@@ -1084,7 +954,6 @@ impl WindowFlow {
 /// is in channel texels of the window.
 pub struct ChannelWindow {
     window: Window,
-    min_cells: f64,
     data: Vec<u8>,
 }
 
@@ -1096,11 +965,6 @@ impl ChannelWindow {
     /// The number of texels along one side.
     pub fn size(&self) -> usize {
         self.window.channels()
-    }
-
-    /// The number of cells that a river cell of this window drains at least.
-    pub fn min_cells(&self) -> f64 {
-        self.min_cells
     }
 
     /// The two bytes of each texel, in row order.
@@ -1154,17 +1018,7 @@ impl ChannelWindow {
 /// The channels of the rivers in a window. A river of `global` that comes
 /// into the window keeps its size.
 pub fn window_channels(heights: &WindowHeights, global: &FlowMap) -> ChannelWindow {
-    window_channels_with(heights, global, RIVER_MIN_CELLS)
-}
-
-/// The same as `window_channels`, for rivers that drain `min_cells` cells or
-/// more, in the window and in `global`.
-pub fn window_channels_with(
-    heights: &WindowHeights,
-    global: &FlowMap,
-    min_cells: f64,
-) -> ChannelWindow {
-    WindowFlow::with(heights, Some(global), min_cells).channels()
+    WindowFlow::new(heights, Some(global)).channels()
 }
 
 #[cfg(test)]
@@ -1422,11 +1276,7 @@ mod tests {
         let mut on_river = 0;
         for j in k / 2 - 12..k / 2 + 12 {
             let (a, b) = (channels.texel(0, k - 1, j), channels.texel(2, j, k - 1));
-            // Past the reach of a small river, a texel holds a large river
-            // that is not so near.
-            if a[0].min(b[0]) < 64 {
-                assert!(a[0].abs_diff(b[0]) <= 32, "row {j}: {a:?} {b:?}");
-            }
+            assert!(a[0].abs_diff(b[0]) <= 32, "row {j}: {a:?} {b:?}");
             if a[0] < 32 && b[0] < 32 {
                 assert!(a[1] > 0 && b[1] > 0);
                 on_river += 1;
@@ -1461,14 +1311,11 @@ mod tests {
                 for j in 0..12 {
                     let y = if up { m + 1 + j } else { m - j };
                     let [distance, flow] = channels.texel(0, x, y);
-                    let from_river = j as f64 + 0.5;
-                    // The river at this place writes the texels in its reach.
-                    let reach = reach(channels.texel(0, x, m)[1]);
-                    if from_river < reach - 0.5 {
-                        let expected = from_river * CHANNEL_SCALE;
+                    let expected = (j as f64 + 0.5) * CHANNEL_SCALE;
+                    if expected < 250.0 {
                         assert!((f64::from(distance) - expected).abs() <= 2.0, "{x} {j}");
                         assert!(flow > 0);
-                    } else if from_river > reach + 0.5 {
+                    } else {
                         assert_eq!([distance, flow], [255, 0], "{x} {j}");
                     }
                 }
@@ -1575,8 +1422,7 @@ mod tests {
 
     impl WindowFlow {
         fn rivers_count(&self) -> usize {
-            let rivers = self.area.iter();
-            let rivers = rivers.filter(|&&a| self.threshold.holds(f64::from(a)));
+            let rivers = self.area.iter().filter(|&&a| f64::from(a) >= self.min_area);
             rivers.count()
         }
     }
@@ -1772,176 +1618,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_default_threshold_gives_the_same_channels() {
-        let m = 48;
-        let flow = FlowMap::new(&CoarseHeights::from_fn(m, lumpy));
-        let channels = flow.channels();
-        assert!(channels.has_rivers());
-        assert_eq!(channels.min_cells(), RIVER_MIN_CELLS);
-        assert!(channels.bytes() == flow.channels_with(RIVER_MIN_CELLS).bytes());
-        assert!(channels.bytes() != flow.channels_with(4.0 * RIVER_MIN_CELLS).bytes());
-        for (face, x, y) in cells(m) {
-            let river = flow.is_river(face, x, y);
-            assert_eq!(river, flow.is_river_with(face, x, y, RIVER_MIN_CELLS));
-            assert_eq!(river, flow.area(face, x, y) >= RIVER_MIN_AREA);
-        }
-
-        let window = Window::centered(lonlat_to_dir(10.0, 5.0), 1024, 2, 64);
-        let heights = WindowHeights::from_fn(window, slope);
-        let global = FlowMap::new(&CoarseHeights::from_fn(m, slope));
-        let channels = window_channels(&heights, &global);
-        assert!(channels.has_rivers());
-        assert_eq!(channels.min_cells(), RIVER_MIN_CELLS);
-        let same = window_channels_with(&heights, &global, RIVER_MIN_CELLS);
-        assert!(channels.bytes() == same.bytes());
-        let other = window_channels_with(&heights, &global, 8.0);
-        assert_eq!(other.min_cells(), 8.0);
-        assert!(channels.bytes() != other.bytes());
-    }
-
-    /// The land of a window with no sea, and its flow at a threshold.
-    fn high_window(min_cells: f64) -> (WindowHeights, WindowFlow) {
-        let window = Window::centered(lonlat_to_dir(10.0, 5.0), 1024, 2, 64);
-        let land = |d: V3| meters_to_level(slope_meters(d) + 2000.0);
-        let heights = WindowHeights::from_fn(window, land);
-        let flow = WindowFlow::with(&heights, None, min_cells);
-        (heights, flow)
-    }
-
-    #[test]
-    fn a_lower_threshold_takes_the_rivers_higher_up() {
-        let (heights, few) = high_window(RIVER_MIN_CELLS);
-        let (_, many) = high_window(8.0);
-        let rivers = |flow: &WindowFlow| -> Vec<bool> {
-            let areas = flow.area.iter();
-            areas.map(|&a| flow.threshold.holds(f64::from(a))).collect()
-        };
-        let (few, many) = (rivers(&few), rivers(&many));
-        assert!(few.iter().zip(&many).all(|(few, many)| !few || *many));
-        let count = |rivers: &[bool]| rivers.iter().filter(|&&river| river).count();
-        assert!(
-            count(&many) > 3 * count(&few),
-            "{} {}",
-            count(&many),
-            count(&few)
-        );
-        // The highest river cell.
-        let top = |rivers: &[bool]| {
-            let levels = heights.levels.iter().zip(rivers);
-            levels
-                .filter(|(_, river)| **river)
-                .map(|(level, _)| *level)
-                .max()
-        };
-        assert!(top(&many) > top(&few));
-
-        let m = 128;
-        let global = FlowMap::new(&CoarseHeights::from_fn(m, lumpy));
-        let (mut few, mut many) = (0, 0);
-        for (face, x, y) in cells(m) {
-            let (at_248, at_62) = (
-                global.is_river_with(face, x, y, 4.0 * RIVER_MIN_CELLS),
-                global.is_river(face, x, y),
-            );
-            assert!(!at_248 || at_62);
-            few += usize::from(at_248);
-            many += usize::from(at_62);
-        }
-        assert!(few > 0 && many > 2 * few, "{many} {few}");
-    }
-
-    #[test]
-    fn at_the_lowest_threshold_each_land_cell_is_a_river() {
-        // A texel is 0.71 channel texels or less from the center of its
-        // cell. The smoothing moves the node of a cell, so the distance to
-        // the nearest river can be more. The largest distance byte in this
-        // test is 66, which is 2.1 channel texels.
-        const FARTHEST: u8 = 72;
-        let m = 48;
-        let heights = CoarseHeights::from_fn(m, lumpy);
-        let flow = FlowMap::new(&heights);
-        let channels = flow.channels_with(RIVER_MIN_CELLS_LOWEST);
-        assert_eq!(channels.min_cells(), 1.0);
-        let (mut land, mut lowest, mut farthest) = (0, 0, 0);
-        for i in 0..FACES * m * m {
-            let (face, x, y) = split(m, i);
-            let ocean = is_ocean(&heights, (face, x, y));
-            assert_eq!(flow.is_river_with(face, x, y, 1.0), !ocean);
-            // The cells at the coast have ocean texels next to them.
-            let near = neighbors(m, i);
-            if ocean
-                || near
-                    .iter()
-                    .any(|&j| is_ocean(&heights, split(m, j as usize)))
-            {
-                continue;
-            }
-            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                let [distance, size] = channels.texel(face, 2 * x + dx, 2 * y + dy);
-                assert!(
-                    size > 0 && distance <= FARTHEST,
-                    "{face} {x} {y}: {distance}"
-                );
-                land += 1;
-                lowest += usize::from(size == 1);
-                farthest = farthest.max(distance);
-            }
-        }
-        eprintln!("global: {lowest} of {land} texels have size 1, farthest {farthest}");
-        assert!(land > 1000 && lowest < land);
-
-        let (_, flow) = high_window(RIVER_MIN_CELLS_LOWEST);
-        assert_eq!(flow.rivers_count(), 64 * 64);
-        let channels = flow.channels();
-        let (mut land, mut lowest, mut farthest) = (0, 0, 0);
-        for y in 8..120 {
-            for x in 8..120 {
-                let [distance, size] = channels.texel(x, y);
-                assert!(size > 0 && distance <= FARTHEST, "{x} {y}: {distance}");
-                land += 1;
-                lowest += usize::from(size == 1);
-                farthest = farthest.max(distance);
-            }
-        }
-        eprintln!("window: {lowest} of {land} texels have size 1, farthest {farthest}");
-        assert!(lowest > 0 && lowest < land);
-    }
-
-    #[test]
-    fn a_segment_writes_only_its_own_reach() {
-        let size = 64;
-        let (a, b) = ((20.3, 30.0), (40.0, 33.5));
-        let mut written = Vec::new();
-        for flow in [1, 120, 255] {
-            let mut data = [255, 0].repeat(size * size);
-            draw_line(&mut data, size, a, b, flow);
-            let reach = reach(flow);
-            let mut count = 0;
-            for (i, texel) in data.as_chunks::<2>().0.iter().enumerate() {
-                // The distance from the texel to the line.
-                let (px, py) = ((i % size) as f64 - a.0, (i / size) as f64 - a.1);
-                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-                let t = ((px * dx + py * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-                let distance = (px - t * dx).hypot(py - t * dy);
-                let byte = (distance * CHANNEL_SCALE).round();
-                if distance <= reach && byte < 255.0 {
-                    assert_eq!(*texel, [byte as u8, flow], "texel {i}");
-                    count += 1;
-                } else {
-                    assert_eq!(*texel, [255, 0], "texel {i}");
-                }
-            }
-            written.push(count);
-        }
-        assert!(written[0] > 100 && written[0] < written[1] && written[1] < written[2]);
-        // A small river has a narrow valley, and a large river stops at the
-        // largest distance that a texel holds.
-        assert!((reach(1) - (1.5 * VALLEY_MAX + 1.5)).abs() < 0.03);
-        assert_eq!(reach(255), CHANNEL_REACH);
-        assert!(reach(200) > VALLEY_WIDEST.min((1.5 + 4.5 * 200.0 / 255.0) * VALLEY_MAX) + 1.4);
-    }
-
     /// Run with `--release --ignored --nocapture` for the time of a window
     /// of `WINDOW_CELLS` cells on a face of 8192 texels.
     #[test]
@@ -1965,36 +1641,14 @@ mod tests {
             let start = std::time::Instant::now();
             let heights = WindowHeights::new(&map, window);
             let read = start.elapsed();
-            for min_cells in [RIVER_MIN_CELLS, RIVER_MIN_CELLS_LOWEST] {
-                let start = std::time::Instant::now();
-                let channels = window_channels_with(&heights, &global, min_cells);
-                let time = start.elapsed();
-                let k = channels.size();
-                let inside = (8..k - 8).flat_map(|y| (8..k - 8).map(move |x| (x, y)));
-                let texels: Vec<[u8; 2]> = inside.map(|(x, y)| channels.texel(x, y)).collect();
-                eprintln!(
-                    "cell {cell}, {min_cells} cells: heights {read:?}, channels {time:?}, {}",
-                    shares(&texels)
-                );
-                assert!(channels.has_rivers());
-            }
+            let start = std::time::Instant::now();
+            let channels = window_channels(&heights, &global);
+            eprintln!(
+                "cell {cell}: heights {read:?}, channels {:?}",
+                start.elapsed()
+            );
+            assert!(channels.has_rivers());
         }
-    }
-
-    /// The shares of the texels with the lowest size, with no river, and at
-    /// more than 1.5 and 1 channel texels from a river.
-    fn shares(texels: &[[u8; 2]]) -> String {
-        let share = |test: &dyn Fn(&[u8; 2]) -> bool| {
-            texels.iter().filter(|t| test(t)).count() as f64 / texels.len() as f64
-        };
-        format!(
-            "size 1: {:.3}, no river: {:.3}, past 1.5: {:.4}, past 1: {:.3}, at 0.5 or less: {:.3}",
-            share(&|t| t[1] == 1),
-            share(&|t| t[1] == 0),
-            share(&|t| t[1] > 0 && t[0] > 48),
-            share(&|t| t[1] > 0 && t[0] > 32),
-            share(&|t| t[0] <= 16),
-        )
     }
 
     /// Run with `--release --ignored --nocapture` for the time of the flow
@@ -2011,22 +1665,6 @@ mod tests {
         let start = std::time::Instant::now();
         let flow = FlowMap::new(&heights);
         let flow_time = start.elapsed();
-        for min_cells in [RIVER_MIN_CELLS, RIVER_MIN_CELLS_LOWEST] {
-            let start = std::time::Instant::now();
-            let channels = flow.channels_with(min_cells);
-            let time = start.elapsed();
-            // The texels of the land cells.
-            let k = channels.size();
-            let texels: Vec<[u8; 2]> = (0..FACES * k * k)
-                .filter(|i| heights.level(i / (k * k), i % k / 2, i / k % k / 2) >= sea())
-                .map(|i| channels.texel(i / (k * k), i % k, i / k % k))
-                .collect();
-            eprintln!(
-                "{min_cells} cells: channels {time:?}, on land {}",
-                shares(&texels)
-            );
-        }
-        let start = std::time::Instant::now();
         let channels = flow.channels();
         let rivers = flow
             .area

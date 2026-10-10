@@ -60,8 +60,7 @@ struct FaceStamp {
     flow: f32,
     strength: f32,
     level: f32,
-    valley: f32,
-    pad: [u32; 2],
+    pad: [u32; 3],
 }
 
 impl FaceStamp {
@@ -87,8 +86,7 @@ impl FaceStamp {
             flow: stamp.flow as f32,
             strength: stamp.strength as f32,
             level: f32::from(stamp.level),
-            valley: stamp.valley as f32,
-            pad: [0; 2],
+            pad: [0; 3],
         }
     }
 }

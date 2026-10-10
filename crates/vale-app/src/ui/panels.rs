@@ -4,13 +4,9 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use super::{Action, AppState, ExportFormat, Workspace, pad};
-use vale_terrain::{
-    ELEV_MAX, ELEV_MIN, Mode, VALLEY_MAX, VALLEY_MIN, level_to_meters, meters_to_level,
-};
+use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::brush::{
-    BrushSettings, FLOW, STRENGTH_M, reach_cells, reach_fraction, reach_text,
-};
+use crate::globe::brush::{FLOW, STRENGTH_M};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
@@ -114,19 +110,13 @@ pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
 /// The state of the window of small rivers. `world_km` is the radius of
 /// the world.
 fn window_line(globe: &Globe, world_km: f64) -> String {
-    let from = |cells: f64| format!("rivers from {} cells", three_significant(cells));
-    let window = match globe.window() {
+    match globe.window() {
         Some(channels) => {
             let km = rivers::cell_angle(&channels.window()) * world_km;
-            let km = three_significant(km);
-            format!("cells of {km} km, {}", from(channels.min_cells()))
+            format!("River window: cells of {} km", three_significant(km))
         }
-        None => "off".to_string(),
-    };
-    let map = globe
-        .channels()
-        .map_or("none".to_string(), |c| from(c.min_cells()));
-    format!("River window: {window}. River map: {map}")
+        None => "River window: off".to_string(),
+    }
 }
 
 pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
@@ -241,23 +231,6 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add(strength);
 }
 
-/// The rivers that the carve mode follows, and the width of its valleys.
-fn carve_settings(ui: &mut egui::Ui, brush: &mut BrushSettings) {
-    let mut reach = reach_fraction(brush.reach_cells) * 100.0;
-    let slider = egui::Slider::new(&mut reach, 0.0..=100.0)
-        .custom_formatter(|reach, _| reach_text(reach / 100.0))
-        .text("Reach");
-    let slider = ui.add(slider);
-    if slider.changed() {
-        brush.reach_cells = reach_cells(reach / 100.0);
-    }
-    slider.on_hover_text(
-        "The brush follows small rivers at a high value, and all the land at the end.",
-    );
-    let range = VALLEY_MIN..=VALLEY_MAX;
-    ui.add(egui::Slider::new(&mut brush.valley, range).text("Valley width"));
-}
-
 /// The lock of the size and the flatten level.
 pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     let globe = &mut state.globe;
@@ -266,9 +239,6 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     let lock_box = ui.checkbox(&mut lock, "Lock size");
     lock_box.on_hover_text("The brush keeps its size on the ground when you zoom.");
     globe.brush.set_lock(lock, globe_radius);
-    if globe.brush.mode == Mode::Carve {
-        carve_settings(ui, &mut globe.brush);
-    }
 
     if globe.brush.mode != Mode::Flatten {
         globe.pick_level = false;

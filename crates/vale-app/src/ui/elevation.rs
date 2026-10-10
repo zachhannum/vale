@@ -4,7 +4,6 @@ use eframe::egui;
 use vale_terrain::{Bands, ELEV_MAX, ELEV_MIN, Rgb};
 
 use super::AppState;
-use crate::globe::brush::{reach_cells, reach_fraction};
 use crate::globe::preview::Preview;
 
 /// The range of the factor of the width of a river line.
@@ -79,16 +78,6 @@ pub(super) fn controls(ui: &mut egui::Ui, state: &mut AppState) {
     ui.checkbox(&mut preview.rivers, "Rivers");
     let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
     ui.add_enabled(preview.rivers, width);
-    let mut detail = reach_fraction(f64::from(preview.river_lines)) * 100.0;
-    let lines = egui::Slider::new(&mut detail, 0.0..=100.0)
-        .fixed_decimals(0)
-        .suffix("%")
-        .text("River lines");
-    let lines = ui.add_enabled(preview.rivers, lines);
-    if lines.changed() {
-        preview.river_lines = reach_cells(detail / 100.0) as f32;
-    }
-    lines.on_hover_text("Small rivers get a line at a high value.");
     ui.separator();
     limit_bar(ui, bands, preview);
     selected_limit(ui, bands, preview);

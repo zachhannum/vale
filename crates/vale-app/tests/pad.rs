@@ -206,23 +206,6 @@ fn heightmap_file(name: &str, width: u32, height: u32) -> std::path::PathBuf {
 }
 
 #[test]
-fn a_finger_moves_the_river_sliders_of_the_height_panel() {
-    let mut h = pad(BOARDS[0]);
-    tap(&mut h, "Layers");
-    tap(&mut h, "Open Height");
-    assert!(h.query_all_by_label("River width").next().is_some());
-    // The slider is at the left of its name.
-    let nodes = h.query_all_by_label("River lines");
-    let rect = nodes
-        .map(|node| node.rect())
-        .min_by(|a, b| a.left().total_cmp(&b.left()))
-        .unwrap();
-    let lines = h.state().globe.preview.river_lines;
-    drag(&mut h, rect.center(), rect.right_center(), None);
-    assert!(h.state().globe.preview.river_lines < lines);
-}
-
-#[test]
 fn the_height_panel_asks_for_a_heightmap_file() {
     for size in BOARDS {
         let mut h = pad(size);
@@ -325,17 +308,6 @@ fn a_finger_hits_each_control_at_the_first_try() {
     }
     assert_eq!(h.state().globe.brush.flow, 1.0);
     assert_eq!(h.state().globe.brush.hardness, 1.0);
-    // The carve mode has two more sliders in the brush panel.
-    assert!(control(&h, "Brush reach").is_none());
-    h.state_mut().globe.brush.mode = Mode::Carve;
-    h.run_steps(2);
-    for name in ["Brush reach", "Brush valley"] {
-        let rect = control(&h, name).unwrap();
-        drag(&mut h, rect.center(), rect.right_center(), None);
-    }
-    assert!((h.state().globe.brush.reach_cells - 1.0).abs() < 1e-9);
-    assert_eq!(h.state().globe.brush.valley, vale_terrain::VALLEY_MAX);
-    check_controls(&h, "the brush panel in the carve mode");
     let size = h.state().globe.brush.size_points;
     let rect = control(&h, "Size").unwrap();
     drag(&mut h, rect.center(), rect.center_bottom(), None);
