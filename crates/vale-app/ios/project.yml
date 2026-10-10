@@ -48,6 +48,7 @@ targets:
         basedOnDependencyAnalysis: false
     dependencies:
       - sdk: UIKit.framework
+      - sdk: UniformTypeIdentifiers.framework
       - sdk: Foundation.framework
       - sdk: CoreFoundation.framework
       - sdk: CoreGraphics.framework

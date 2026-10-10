@@ -13,7 +13,7 @@ use crate::globe::flat::{self, FlatView};
 use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
 use crate::pipeline::Pipeline;
 use crate::ui::pad::Panel;
-use crate::ui::{Layout, Workspace};
+use crate::ui::{Action, AppState, Layout, Workspace};
 
 #[derive(Parser, Clone, Debug)]
 #[command(
@@ -92,6 +92,9 @@ pub struct Args {
     /// and headless output uses 1024, or less if the GPU has a lower limit.
     #[arg(long, value_name = "N")]
     pub face_size: Option<u32>,
+    /// Import this equirectangular PNG or TIFF heightmap into the globe.
+    #[arg(long, value_name = "FILE")]
+    pub import_heightmap: Option<PathBuf>,
     /// Headless: paint a fixed stroke on the globe, print the stroke delay,
     /// and exit.
     #[arg(long)]
@@ -234,6 +237,28 @@ pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::
         globe.flat.look_at(lon, lat);
     }
     apply_globe_view(args, &mut globe.view)
+}
+
+/// Applies `--import-heightmap`. `wait`: the import ends before the call
+/// returns, and a failure is an error. Without `wait`, the host starts the
+/// import at its first frame.
+pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<()> {
+    let Some(path) = &args.import_heightmap else {
+        return Ok(());
+    };
+    if !wait {
+        state.actions.push(Action::ImportHeightmap(path.clone()));
+        return Ok(());
+    }
+    state.import_note = None;
+    state.globe.start_import(path.clone());
+    state.globe.wait_import();
+    match state.globe.take_import_result() {
+        Some(Err(text)) => bail!("{text}"),
+        Some(result) => state.note_import(result),
+        None => bail!("the import of {} did not end", path.display()),
+    }
+    Ok(())
 }
 
 /// Applies `--zoom` and `--look-at` to the view of the document.
