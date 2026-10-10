@@ -18,6 +18,7 @@ pub mod stats;
 pub mod stroke_test;
 pub mod view;
 
+use crate::pen::Pen;
 use brush::{Backlog, BrushSettings, Sample, Stroke, plan_texels};
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms};
 use math::V3;
@@ -71,6 +72,8 @@ struct Active {
     stroke: Stroke,
     /// The texels of each face that the stamps can change.
     touched: [Option<TexelRect>; FACES],
+    /// The time of the last sample.
+    sampled: Option<Instant>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
     /// The number of rectangles that the GPU has not given back. `None`: the
@@ -104,6 +107,7 @@ pub struct Globe {
     pub preview: Preview,
     pub brush: BrushSettings,
     pub input: BrushInput,
+    pub pen: Pen,
     /// The next press on the globe picks the flatten level.
     pub pick_level: bool,
     pub stats: Stats,
@@ -140,6 +144,7 @@ impl Globe {
             preview: Preview::default(),
             brush: BrushSettings::default(),
             input: BrushInput::default(),
+            pen: Pen::default(),
             pick_level: false,
             stats: Stats::new(face_size as u32),
             debug: false,
@@ -334,6 +339,7 @@ impl Globe {
                         id: self.strokes,
                         stroke: Stroke::default(),
                         touched: [None; FACES],
+                        sampled: None,
                         ended: false,
                         reading: None,
                     });
@@ -350,14 +356,24 @@ impl Globe {
                             level_at,
                             &mut stamps,
                         );
+                        active.sampled = Some(time);
                         for stamp in &stamps {
                             self.backlog.push(map.stamp_plan(stamp), time);
                         }
                     }
                 }
                 Input::Up => {
-                    if let Some(active) = &mut self.stroke {
+                    if let Some(active) = self.stroke.as_mut().filter(|a| !a.ended) {
                         active.ended = true;
+                        let map = &self.map;
+                        let mut stamps = Vec::new();
+                        active
+                            .stroke
+                            .finish(&self.brush, map.face_size(), &mut stamps);
+                        for stamp in &stamps {
+                            let time = active.sampled.unwrap_or_else(Instant::now);
+                            self.backlog.push(map.stamp_plan(stamp), time);
+                        }
                     }
                 }
             }
