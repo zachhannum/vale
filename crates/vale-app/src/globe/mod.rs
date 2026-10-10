@@ -278,6 +278,15 @@ impl Globe {
         self.can_undo() && self.map.undo()
     }
 
+    pub fn can_redo(&self) -> bool {
+        !self.busy() && self.map.can_redo()
+    }
+
+    /// Puts back the last stroke that `undo` took away.
+    pub fn redo(&mut self) -> bool {
+        self.can_redo() && self.map.redo()
+    }
+
     /// True until the rivers of the last change of the heightmap arrive.
     pub fn rivers_pending(&self) -> bool {
         self.rivers.pending()
@@ -333,7 +342,8 @@ impl Globe {
         // one more frame.
         let in_flight = self.link.busy.any();
         self.read_events();
-        // An undo goes to the GPU before the stamps of the next stroke.
+        // An undo or a redo goes to the GPU before the stamps of the next
+        // stroke.
         self.queue_changes();
         self.run_test(now, in_flight);
         self.read_inputs();

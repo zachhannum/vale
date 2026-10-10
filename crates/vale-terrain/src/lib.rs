@@ -25,4 +25,6 @@ pub use flow::{
 };
 #[cfg(feature = "gpu")]
 pub use gpu::{GROUP_STAMPS, GpuHeightmap, Readback, STAMP_SLOTS};
-pub use heightmap::{Heightmap, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, TILE_SIZE, TexelRect};
+pub use heightmap::{
+    Heightmap, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT,
+};

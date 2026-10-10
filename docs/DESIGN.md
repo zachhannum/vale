@@ -139,7 +139,8 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | --- | --- |
 | World | Radius, name, display units |
 | Source | Path to a linked file, extents, last known file hash |
-| Raster | Cube map tiles, unit, value range, ramp, band limits |
+| Raster | Face size, unit, value range, ramp, band limits |
+| Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Layer | Type (raster, points, lines, or polygons), attribute schema, link to a source, to a raster, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Style | Ordered rules of one layer, stored as JSON |
@@ -151,6 +152,8 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 QGIS opens the feature tables directly and ignores the extra tables. That gives interchange with no export step. The topography polygons are feature tables, so QGIS reads them too. The heightmap is not a standard table, and the app exports it as an equirectangular GeoTIFF.
 
 Each feature has a UUID in addition to the integer row ID. The UUID never changes, so overrides and styles survive an edit, a reload, or a new projection.
+
+The key of a raster tile is the raster, the level, the face, the column, and the row. The face is a number from 0 to 5. The column and the row count tiles of 256 pixels from the corner of the face. Level 0 has the face size of the raster, and the level is always 0 in version 1. A higher level is for finer tiles in a region, which come after version 1. The level field lets those tiles arrive with no change of the file format.
 
 Overrides belong to a map frame and not to the feature. A label that you move on the regional map stays where the engine put it on the world map.
 
@@ -221,13 +224,30 @@ The heightmap is a 16-bit greyscale cube map. Each of the six faces splits into 
 
 An equirectangular image is the wrong store. It spends most of its pixels near the poles, and a round brush becomes a wide ellipse there. On a cube map with equal-angle spacing, a pixel covers close to the same ground everywhere.
 
-A worked example gives the resolution. With faces of 8,192 pixels, the equator has 32,768 pixels. On an Earth-size world that is 1.2 km per pixel.
+A raster layer has one face size, which is the number of pixels along the edge of a face. The size is high enough that a regional map uses the same raster layer as the world map. You pick the face size when you add a raster layer. The app offers 4,096 and 8,192 pixels, and 8,192 is the default. The Raster record stores the face size.
+
+The app shows three values next to each size:
+
+- The ground per pixel at the equator, for the radius of the world.
+- The size of an equirectangular world map of equal detail, which is four times the face size by two times the face size.
+- The memory of a layer that is painted all over, before compression.
+
+These numbers are for an Earth-size world.
+
+| Face size | World map of equal detail | Ground per pixel | Pixels across a 1,000 km region | Memory when painted all over |
+| --- | --- | --- | --- | --- |
+| 4,096 | 16,384 × 8,192 | 2.4 km | 410 | 200 MB |
+| 8,192 | 32,768 × 16,384 | 1.2 km | 830 | 805 MB |
+
+You can change the face size of a raster layer later. The app then resamples each painted tile. For a smaller size, each new pixel is the mean of the pixels that it covers. For a larger size, the app interpolates between the pixels, which adds no detail. The change is one edit, so undo brings the old tiles back.
 
 ### Brush
 
 The brush is a circle on the sphere with a radius in kilometers and a soft edge. It has four modes: raise, lower, smooth, and flatten to a level.
 
 A pen sets the flow from pressure. A mouse uses a fixed flow. The brush size follows the zoom unless you lock it.
+
+One stroke is one undo step. The step holds only the tiles that the stroke changed. In phase 1, the steps are in memory, and they use 256 MB at most. If a new step goes over that limit, the oldest steps go. Phase 2 moves the steps into the undo log of the project file.
 
 ### Stepped preview
 
@@ -290,6 +310,7 @@ These rules apply to the layout:
 - If the Brush panel and the right panel do not fit side by side, one panel shows at a time.
 - The two sliders are 140 points high. In a short window they become shorter, down to 110 points, which fits an iPad that is 744 points high. In a window that is shorter than that, the card holds the Brush button alone, and the Brush panel holds the two sliders. If the tool strip and the Brush button do not fit, the tool strip scrolls.
 - The pen paints. One finger turns the globe, and two fingers zoom it.
+- A tap of two fingers is undo, and a tap of three fingers is redo. The actions in the top row have an undo button and a redo button.
 
 The core crates have no UI dependency, so both platforms share them. The shell is egui on both platforms. The crate `vale-globe-proto` checked how well egui handles pen input and touch on iPad, and the section "Globe prototype" gives the results.
 
@@ -431,7 +452,7 @@ The app prototype is a vertical slice. It makes a runnable app early. It takes a
 
 The app opens on the globe workspace. The globe view and its navigation are in `vale-app`, and the globe draws the heightmap of `vale-terrain` as stepped tints with a graticule. An elevation panel edits the band limits and the ramp. A brush tool paints the heightmap, and a brush panel has the five modes, the radius in kilometers, the size lock, the hardness, the flow, the strength, and the flatten level. The size lock holds the radius as an angle on the sphere. The GPU texture holds six full faces of 8,192 pixels, which is 805 MB, and a copy of one face for the brush takes 134 MB more. A switch shows the world as a flat view. The flat view has one of the six projection presets, and it starts in the equirectangular projection. PROJ computes a mesh of the map with cells of one degree, and the GPU interpolates the place on the sphere between the corners. The flat view has its own camera, and it pans and zooms. It opens with the whole map on the canvas, and you can zoom out to a quarter of that size. At each zoom you can move each place of the map to the middle of the canvas, and the middle of the canvas does not leave the map. The brush stamps on the sphere there too, and the brush outline is the projected circle of the stamp. A second switch in the tool bar opens the flat map of one map frame, and the nine items below are about that flat map.
 
-On iPad, the globe workspace has the layout of the section "Pen and iPad". The flag `--layout pad` shows that layout on the desktop, and `--panel` opens one of its panels. The view switch changes between the globe and the flat view. In the flat view, the switch has a button that opens the list of the projections. In the compact layout, the workspace menu opens that list. In the flat view, the card of the view switch also has two buttons to the right of the switch. "Recenter" makes the place at the middle of the canvas the center of the projection. "Reset" puts the center of the projection back and shows the whole map. In the compact layout, the two buttons have a card below the top row. In the iPad layout, the highlight of a control is 2 points smaller than its touch area on each side, so the highlights of two controls do not touch. The Carve mode has the cell of the Line tool in the tool strip. The Atlas workspace and redo are in the layout, and they do nothing yet. The Layers panel holds the Height layer alone, and the Toolbox panel holds no tools. The flat map keeps the desktop layout on iPad.
+On iPad, the globe workspace has the layout of the section "Pen and iPad". The flag `--layout pad` shows that layout on the desktop, and `--panel` opens one of its panels. The view switch changes between the globe and the flat view. In the flat view, the switch has a button that opens the list of the projections. In the compact layout, the workspace menu opens that list. In the flat view, the card of the view switch also has two buttons to the right of the switch. "Recenter" makes the place at the middle of the canvas the center of the projection. "Reset" puts the center of the projection back and shows the whole map. In the compact layout, the two buttons have a card below the top row. In the iPad layout, the highlight of a control is 2 points smaller than its touch area on each side, so the highlights of two controls do not touch. The Carve mode has the cell of the Line tool in the tool strip. The Atlas workspace is in the layout, and it does nothing yet. The Layers panel holds the Height layer alone, and the Toolbox panel holds no tools. The flat map keeps the desktop layout on iPad.
 
 A card of that layout shows a blurred copy of the canvas below a dark fill. The globe goes into a texture of the size of the screen, and egui copies that texture to the screen. A second texture holds the canvas at a quarter of the size, and two shader passes blur it with a standard deviation of 20 points. Each card draws its part of the blurred texture through a paint callback, at 70 percent of the brightness, so that grey text has a contrast of 4.5 to 1 over a white canvas. The debug controls in the Toolbox panel show the frame time, and a checkbox there turns the blur off.
 
@@ -453,7 +474,7 @@ The fifth brush mode, Carve, reads the channel map. It lowers the ground in a va
 
 The prototype leaves out the following.
 
-- Project files. There is no GeoPackage, no save, and no undo.
+- Project files. There is no GeoPackage and no save. Undo and redo are for brush strokes only.
 - Linked sources, file watch, raster layers, SVG and Shapefile import, and georeferencing with extents or control points.
 - Rule-based styles, expressions, scale ranges, and all symbolizers other than a solid fill, a solid stroke, and a circle.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
@@ -493,7 +514,7 @@ The largest risk is the scope of the labeling engine. To contain it, the library
 | PROJ is hard to package on Windows. | Use the bundled build and add a Windows build to CI in phase 0. |
 | When you edit a linked file by hand, features lose identity. | Use element IDs first and geometry matching second, and report each lost match. |
 | Painting needs a fast, steady stroke, and a slow brush makes the tool useless. | Stamp on the GPU and repaint only the tiles under the brush. Measure the stroke delay in phase 1. |
-| One heightmap resolution does not fit both a world and a small region. | Store tiles in levels, so a region can hold finer tiles. This design is not done. |
+| One heightmap resolution does not fit both a world and a small region. | Each raster layer has one face size, high enough for regional maps. Finer tiles for a region, in levels, come after version 1. The tile key has a level field for them. |
 | egui gives no hover, no tilt, and only 120 pen samples per second on iPad. | The iPad test of the globe prototype passed for painting, pressure, and palm rejection. A UIKit gesture recognizer below egui reads hover, tilt, and the 240 Hz samples in `vale-app`. |
 | Reprojected rasters look soft. | Show the resolution of each source against each map frame, and support regional sources. |
 

@@ -136,17 +136,18 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(format!("Palms ignored: {}", globe.nav.palms));
     ui.separator();
 
-    // Temporary controls, until the app has the undo command.
-    ui.horizontal(|ui| {
-        let undo = ui.add_enabled(globe.can_undo(), egui::Button::new("Undo"));
-        if undo.clicked() {
-            globe.undo();
-        }
-        let test = egui::Button::new("Run stroke test");
-        if ui.add_enabled(!globe.busy(), test).clicked() {
-            globe.start_stroke_test(stroke_test::SECONDS);
-        }
-    });
+    const MB: f64 = (1 << 20) as f64;
+    ui.label(format!(
+        "Undo memory: {:.1} MB of {:.0} MB",
+        globe.map.undo_memory_bytes() as f64 / MB,
+        globe.map.undo_memory_limit() as f64 / MB,
+    ));
+    ui.separator();
+
+    let test = egui::Button::new("Run stroke test");
+    if ui.add_enabled(!globe.busy(), test).clicked() {
+        globe.start_stroke_test(stroke_test::SECONDS);
+    }
     if let Some(report) = &globe.test_report {
         ui.separator();
         ui.strong("Stroke test");
