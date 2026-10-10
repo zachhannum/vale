@@ -578,6 +578,9 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
     }
     let radius = theme::CARD_RADIUS.into();
     widgets::card(ctx, "pad-menu", rect, Order::Foreground, radius, |ui| {
+        // The menu covers the tool strip, so its fill is opaque.
+        ui.painter()
+            .rect_filled(rect, radius, theme::card().to_opaque());
         let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));

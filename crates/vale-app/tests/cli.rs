@@ -61,3 +61,17 @@ fn look_at_and_zoom() {
     let scale = doc.frame.view.unwrap().scale;
     assert!((scale / (4.0 * fit) - 1.0).abs() < 1e-12);
 }
+
+#[test]
+fn the_layout_and_the_panels_come_from_the_flags() {
+    use vale_app::ui::pad::Panel;
+    use vale_app::ui::{Layout, Workspace};
+    let args = Args::parse_from(["vale-app"]);
+    assert_eq!(args.layout, Layout::Desktop);
+    assert!(args.panel.is_empty());
+    let flags = ["--layout", "pad", "--panel", "brush", "--panel", "layers"];
+    let args = Args::parse_from(["vale-app"].into_iter().chain(flags));
+    assert_eq!(args.workspace, Workspace::Globe);
+    assert_eq!(args.layout, Layout::Pad);
+    assert_eq!(args.panel, vec![Panel::Brush, Panel::Layers]);
+}
