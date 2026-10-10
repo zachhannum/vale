@@ -224,14 +224,20 @@ The heightmap is a 16-bit greyscale cube map. Each of the six faces splits into 
 
 An equirectangular image is the wrong store. It spends most of its pixels near the poles, and a round brush becomes a wide ellipse there. On a cube map with equal-angle spacing, a pixel covers close to the same ground everywhere.
 
-A raster layer has one face size, which is the number of pixels along the edge of a face. The size is high enough that a regional map uses the same raster layer as the world map. You pick the face size when you add a raster layer. The app offers 4,096 and 8,192 pixels, and 8,192 is the default. Next to each size, the app shows the ground per pixel for the radius of the world. The Raster record stores the face size.
+A raster layer has one face size, which is the number of pixels along the edge of a face. The size is high enough that a regional map uses the same raster layer as the world map. You pick the face size when you add a raster layer. The app offers 4,096 and 8,192 pixels, and 8,192 is the default. The Raster record stores the face size.
+
+The app shows three values next to each size:
+
+- The ground per pixel at the equator, for the radius of the world.
+- The size of an equirectangular world map of equal detail, which is four times the face size by two times the face size.
+- The memory of a layer that is painted all over, before compression.
 
 These numbers are for an Earth-size world.
 
-| Face size | World map of equal detail | Ground per pixel | Pixels across a 1,000 km region |
-| --- | --- | --- | --- |
-| 4,096 | 16,384 × 8,192 | 2.4 km | 410 |
-| 8,192 | 32,768 × 16,384 | 1.2 km | 830 |
+| Face size | World map of equal detail | Ground per pixel | Pixels across a 1,000 km region | Memory when painted all over |
+| --- | --- | --- | --- | --- |
+| 4,096 | 16,384 × 8,192 | 2.4 km | 410 | 200 MB |
+| 8,192 | 32,768 × 16,384 | 1.2 km | 830 | 805 MB |
 
 You can change the face size of a raster layer later. The app then resamples each painted tile. For a smaller size, each new pixel is the mean of the pixels that it covers. For a larger size, the app interpolates between the pixels, which adds no detail. The change is one edit, so undo brings the old tiles back.
 
