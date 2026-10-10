@@ -229,8 +229,21 @@ pub fn ui_png(
     size: (f64, f64),
     pixel_ratio: f64,
 ) -> anyhow::Result<(image::RgbaImage, crate::ui::AppState)> {
+    ui_png_with(state, size, pixel_ratio, |_| Ok(()))
+}
+
+/// Renders the whole UI offscreen. `prepare` changes the state before the
+/// first frame. The globe has its renderer then, so its face size is final.
+#[cfg(not(target_os = "ios"))]
+pub fn ui_png_with(
+    state: crate::ui::AppState,
+    size: (f64, f64),
+    pixel_ratio: f64,
+    prepare: impl FnOnce(&mut crate::ui::AppState) -> anyhow::Result<()>,
+) -> anyhow::Result<(image::RgbaImage, crate::ui::AppState)> {
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut harness = ui_harness(state, size, pixel_ratio, setup);
+    prepare(harness.state_mut())?;
     harness.run_steps(4);
     let no_gpu = |e| {
         anyhow!(

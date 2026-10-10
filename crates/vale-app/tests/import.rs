@@ -1,13 +1,17 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use clap::Parser;
 use eframe::egui::{self, Pos2, Vec2};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+use vale_app::cli::{Args, apply_globe, apply_import};
 use vale_app::document::Document;
 use vale_app::globe::import::Imported;
+use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Globe, Tool};
 use vale_app::headless;
-use vale_app::ui::AppState;
+use vale_app::ui::{Action, AppState, draw};
 use vale_import::raster;
 use vale_terrain::{Equirect, FACES, Heightmap, TexelRect};
 
@@ -18,26 +22,71 @@ const FACE_SIZE: usize = 64;
 /// The longest time that an import can take.
 const LIMIT: Duration = Duration::from_secs(30);
 
-/// Writes a 16-bit PNG of `width` by `height` pixels. The levels are a smooth
-/// function of the direction that takes each value of the 16-bit range.
-fn write_png(name: &str, width: usize, height: usize) -> PathBuf {
+/// A smooth function of the direction that takes each value from -1 to 1.
+fn hills(d: [f64; 3]) -> f64 {
+    d[0] + 0.5 * d[1] * d[2]
+}
+
+/// The level of `hills` at a direction, over the whole 16-bit range.
+fn hill_level(d: [f64; 3]) -> f64 {
+    let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    (hills(d.map(|v| v / length)) + 1.0) * 0.5 * 65535.0
+}
+
+/// The levels of an equirectangular image, from a function of the longitude
+/// and the latitude of each pixel center in degrees.
+fn image_levels(width: usize, height: usize, level: impl Fn(f64, f64) -> u16) -> Vec<u16> {
     let mut levels = Vec::with_capacity(width * height);
     for j in 0..height {
-        let lat = (90.0 - (j as f64 + 0.5) * 180.0 / height as f64).to_radians();
+        let lat = 90.0 - (j as f64 + 0.5) * 180.0 / height as f64;
         for i in 0..width {
-            let lon = (-180.0 + (i as f64 + 0.5) * 360.0 / width as f64).to_radians();
-            let d = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
-            let hills = d[0] + 0.5 * d[1] * d[2];
-            levels.push(((hills + 1.0) * 0.5 * 65535.0).round() as u16);
+            levels.push(level(-180.0 + (i as f64 + 0.5) * 360.0 / width as f64, lat));
         }
     }
+    levels
+}
+
+/// The levels of `hills` in an equirectangular image.
+fn hill_levels(width: usize, height: usize) -> Vec<u16> {
+    image_levels(width, height, |lon, lat| {
+        let (lon, lat) = (lon.to_radians(), lat.to_radians());
+        hill_level([lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]).round() as u16
+    })
+}
+
+/// The path of a test file.
+fn test_path(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/app/test-import");
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(name);
+    dir.join(name)
+}
+
+/// Writes a 16-bit greyscale PNG.
+fn save_png(name: &str, width: usize, height: usize, levels: Vec<u16>) -> PathBuf {
+    let path = test_path(name);
     let image =
         image::ImageBuffer::<image::Luma<u16>, _>::from_raw(width as u32, height as u32, levels);
     image.unwrap().save(&path).unwrap();
     path
+}
+
+/// Writes a 16-bit greyscale TIFF.
+fn save_tiff(name: &str, width: usize, height: usize, levels: &[u16]) -> PathBuf {
+    use tiff::encoder::{TiffEncoder, colortype::Gray16};
+    let path = test_path(name);
+    let file = std::fs::File::create(&path).unwrap();
+    let mut encoder = TiffEncoder::new(std::io::BufWriter::new(file)).unwrap();
+    let (width, height) = (width as u32, height as u32);
+    encoder
+        .write_image::<Gray16>(width, height, levels)
+        .unwrap();
+    path
+}
+
+/// Writes a 16-bit PNG of `width` by `height` pixels with the levels of
+/// `hills`.
+fn write_png(name: &str, width: usize, height: usize) -> PathBuf {
+    save_png(name, width, height, hill_levels(width, height))
 }
 
 /// All texels of a heightmap, face by face.
@@ -193,8 +242,16 @@ fn a_second_import_fails_while_the_first_runs() {
     assert!(texels(&globe.map) == plain_import(&path, FACE_SIZE));
 }
 
-/// The face size of the GPU test.
+/// The face size of the GPU tests.
 const GPU_FACE_SIZE: usize = 256;
+
+/// One test at a time makes a wgpu device. Software adapters fail when two
+/// threads make devices at the same time.
+fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// A harness with the wgpu renderer and the brush tool. Each step renders,
 /// so each step runs the GPU work of the globe.
@@ -244,6 +301,7 @@ fn canvas_image(h: &mut Harness<'static, AppState>) -> image::RgbaImage {
 
 #[test]
 fn an_import_during_a_stroke_waits_for_the_stroke() {
+    let _gpu = one_gpu_test();
     let path = write_png("stroke.png", WIDTH, HEIGHT);
     let imported = plain_import(&path, GPU_FACE_SIZE);
     let mut h = gpu_harness();
@@ -297,5 +355,314 @@ fn an_import_during_a_stroke_waits_for_the_stroke() {
     assert!(
         image.as_raw() == after_import.as_raw(),
         "the render differs"
+    );
+}
+
+/// A state with no window, on the globe, with a small heightmap.
+fn state() -> AppState {
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    state.globe.set_face_size(FACE_SIZE);
+    state
+}
+
+/// The largest step between two texels that touch: inside the faces, and
+/// across the face edges.
+fn largest_steps(map: &Heightmap) -> (u16, u16) {
+    let n = map.face_size() as i64;
+    let (mut inside, mut across) = (0, 0);
+    for face in 0..FACES {
+        for a in 0..n {
+            for b in 0..n - 1 {
+                let along_x = map.get(face, b, a).abs_diff(map.get(face, b + 1, a));
+                let along_y = map.get(face, a, b).abs_diff(map.get(face, a, b + 1));
+                inside = inside.max(along_x).max(along_y);
+            }
+            // The texel outside the face is on the face next to it.
+            for (out, edge) in [(-1, 0), (n, n - 1)] {
+                let over_x = map.get(face, out, a).abs_diff(map.get(face, edge, a));
+                let over_y = map.get(face, a, out).abs_diff(map.get(face, a, edge));
+                across = across.max(over_x).max(over_y);
+            }
+        }
+    }
+    (inside, across)
+}
+
+/// The most levels between a texel and the function of the image. One 8-bit
+/// grey step is 257 levels.
+const ERROR_LIMIT: f64 = 8.0;
+
+#[test]
+fn a_16_bit_image_comes_in_with_no_loss_and_no_seam() {
+    let levels = hill_levels(WIDTH, HEIGHT);
+    let tiff = save_tiff("loss.tiff", WIDTH, HEIGHT, &levels);
+    let png = save_png("loss.png", WIDTH, HEIGHT, levels);
+    let mut maps = Vec::new();
+    for path in [png, tiff] {
+        let mut state = state();
+        state.run_action(Action::ImportHeightmap(path.clone()));
+        assert!(state.status.starts_with("Imported"), "{}", state.status);
+        let map = &state.globe.map;
+        let mut worst = 0.0f64;
+        for face in 0..FACES {
+            for y in 0..FACE_SIZE {
+                for x in 0..FACE_SIZE {
+                    let want = hill_level(map.texel_dir(face, x, y));
+                    let got = f64::from(map.get(face, x as i64, y as i64));
+                    worst = worst.max((got - want).abs());
+                }
+            }
+        }
+        assert!(worst <= ERROR_LIMIT, "{worst}");
+        let (inside, across) = largest_steps(map);
+        assert!(inside > 0 && across <= inside, "{across} > {inside}");
+        maps.push(texels(map));
+    }
+    assert!(maps[0] == maps[1], "the PNG and the TIFF differ");
+}
+
+#[test]
+fn an_image_of_one_level_gives_that_level_at_each_texel() {
+    const LEVEL: u16 = 12_345;
+    let levels = vec![LEVEL; WIDTH * HEIGHT];
+    let tiff = save_tiff("level.tiff", WIDTH, HEIGHT, &levels);
+    let png = save_png("level.png", WIDTH, HEIGHT, levels);
+    for path in [png, tiff] {
+        let mut state = state();
+        state.run_action(Action::ImportHeightmap(path));
+        assert!(texels(&state.globe.map).iter().all(|&l| l == LEVEL));
+    }
+}
+
+#[test]
+fn no_seam_shows_on_the_globe_after_an_import() {
+    const ZOOM: f64 = 15.0;
+    let _gpu = one_gpu_test();
+    let path = write_png("seam.png", WIDTH, HEIGHT);
+    let mut h = gpu_harness();
+    h.state_mut().run_action(Action::ImportHeightmap(path));
+    let globe = &mut h.state_mut().globe;
+    globe.preview.graticule = false;
+    globe.preview.greyscale = true;
+    settle(&mut h);
+    // The 8 corners and the middles of the 12 edges.
+    let mut places = Vec::new();
+    for x in [-1.0, 0.0, 1.0f64] {
+        for y in [-1.0, 0.0, 1.0f64] {
+            for z in [-1.0, 0.0, 1.0f64] {
+                if x.abs() + y.abs() + z.abs() >= 2.0 {
+                    places.push([x, y, z]);
+                }
+            }
+        }
+    }
+    assert_eq!(places.len(), 20);
+    let mut seen = [u8::MAX, 0];
+    for place in places {
+        let [x, y, z] = place;
+        let lat = z.atan2(x.hypot(y)).to_degrees();
+        let lon = y.atan2(x).to_degrees();
+        let globe = &mut h.state_mut().globe;
+        globe.view = GlobeView::centered(lon, lat);
+        globe.view.zoom = ZOOM;
+        let img = canvas_image(&mut h);
+        // The image is smooth, so a seam is a jump of more than one grey step
+        // in one pixel.
+        for py in 0..img.height() - 1 {
+            for px in 0..img.width() - 1 {
+                let v = img.get_pixel(px, py).0[0];
+                for other in [img.get_pixel(px + 1, py), img.get_pixel(px, py + 1)] {
+                    let step = v.abs_diff(other.0[0]);
+                    assert!(step <= 1, "{step} at {px}, {py}, place {place:?}");
+                }
+            }
+        }
+        let rect = h.state().globe.rect;
+        let middle = rect.center() - rect.min.ceil();
+        let grey = img.get_pixel(middle.x as u32, middle.y as u32).0[0];
+        let want = hill_level(place) / 65535.0 * 255.0;
+        assert!(
+            (f64::from(grey) - want).abs() <= 2.0,
+            "{grey}, {want}, {place:?}"
+        );
+        seen = [seen[0].min(grey), seen[1].max(grey)];
+    }
+    assert!(seen[1] - seen[0] > 60, "{seen:?}");
+}
+
+#[test]
+fn a_stroke_paints_on_the_imported_map() {
+    let _gpu = one_gpu_test();
+    let path = write_png("paint.png", WIDTH, HEIGHT);
+    let mut h = gpu_harness();
+    let empty = texels(&h.state().globe.map);
+    h.state_mut().run_action(Action::ImportHeightmap(path));
+    settle(&mut h);
+    let imported = texels(&h.state().globe.map);
+    assert!(imported != empty);
+    let c = h.state().globe.rect.center();
+    let under = h.state().globe.unproject(c).unwrap();
+    let before = h.state().globe.map.sample(under);
+    assert!(before < u16::MAX);
+
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 0.0));
+    button(&mut h, from, true);
+    h.step();
+    for i in 1..=8 {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 8.0)));
+        h.step();
+    }
+    button(&mut h, to, false);
+    settle(&mut h);
+    assert!(h.state().globe.map.sample(under) > before);
+
+    assert!(h.state_mut().globe.undo());
+    assert!(texels(&h.state().globe.map) == imported);
+    settle(&mut h);
+    assert!(h.state_mut().globe.undo());
+    assert!(texels(&h.state().globe.map) == empty);
+    assert!(!h.state().globe.can_undo());
+}
+
+fn desktop(state: AppState) -> Harness<'static, AppState> {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(2);
+    h
+}
+
+#[test]
+fn a_wrong_aspect_ratio_gives_a_warning() {
+    let mut h = desktop(state());
+    let path = write_png("ratio.png", 300, 200);
+    h.state_mut().run_action(Action::ImportHeightmap(path));
+    h.run_steps(2);
+    let s = h.state();
+    assert!(s.status.contains("twice as wide"), "{}", s.status);
+    assert!(s.status.contains("300 x 200"), "{}", s.status);
+    assert!(s.import_note.as_ref().unwrap().warning);
+    assert!(s.globe.map.allocated_tiles() > 0);
+    assert!(h.query_by_label_contains("twice as wide").is_some());
+
+    let path = write_png("ratio-good.png", WIDTH, HEIGHT);
+    h.state_mut().run_action(Action::ImportHeightmap(path));
+    h.run_steps(2);
+    let s = h.state();
+    assert_eq!(s.status, "Imported ratio-good.png (512 x 256).");
+    assert!(!s.import_note.as_ref().unwrap().warning);
+    assert!(h.query_by_label_contains("twice as wide").is_none());
+    assert!(
+        h.query_by_label_contains("Imported ratio-good.png")
+            .is_some()
+    );
+}
+
+#[test]
+fn a_file_that_is_not_an_image_gives_a_warning_and_no_change() {
+    let mut h = desktop(state());
+    let path = write_png("before-text.png", WIDTH, HEIGHT);
+    h.state_mut().run_action(Action::ImportHeightmap(path));
+    let before = texels(&h.state().globe.map);
+    assert!(h.state_mut().globe.undo());
+    assert!(!h.state().globe.can_undo());
+    let empty = texels(&h.state().globe.map);
+    assert!(empty != before);
+
+    let path = test_path("text.png");
+    std::fs::write(&path, "This file has no image.").unwrap();
+    h.state_mut().run_action(Action::ImportHeightmap(path));
+    h.run_steps(2);
+    let s = h.state();
+    assert!(
+        s.status.contains("is not a PNG or TIFF image"),
+        "{}",
+        s.status
+    );
+    assert!(s.import_note.as_ref().unwrap().warning);
+    assert!(texels(&s.globe.map) == empty);
+    assert!(!s.globe.can_undo());
+    assert!(
+        h.query_by_label_contains("is not a PNG or TIFF image")
+            .is_some()
+    );
+}
+
+fn args(list: &[&str]) -> Args {
+    let mut all = vec!["vale-app"];
+    all.extend_from_slice(list);
+    Args::try_parse_from(all).unwrap()
+}
+
+#[test]
+fn the_command_line_imports_a_heightmap() {
+    let path = write_png("cli.png", WIDTH, HEIGHT);
+    let args = args(&[
+        "--import-heightmap",
+        path.to_str().unwrap(),
+        "--face-size",
+        "64",
+    ]);
+    let mut state = AppState::new(Document::sample()).unwrap();
+    apply_globe(&args, &mut state.globe, 1024).unwrap();
+    apply_import(&args, &mut state, true).unwrap();
+    assert_eq!(state.globe.map.face_size(), 64);
+    assert!(state.globe.map.allocated_tiles() > 0);
+    assert_eq!(state.status, "Imported cli.png (512 x 256).");
+    assert!(!state.globe.busy());
+
+    // The window starts the import at its first frame.
+    let mut state = AppState::new(Document::sample()).unwrap();
+    apply_import(&args, &mut state, false).unwrap();
+    assert_eq!(state.actions, [Action::ImportHeightmap(path)]);
+    assert!(!state.globe.importing());
+}
+
+#[test]
+fn the_command_line_fails_for_a_missing_heightmap() {
+    let path = test_path("no-such-file.png");
+    let args = args(&["--import-heightmap", path.to_str().unwrap()]);
+    let mut state = state();
+    let error = apply_import(&args, &mut state, true).unwrap_err();
+    assert!(error.to_string().starts_with("cannot read "), "{error}");
+    assert!(!state.globe.can_undo());
+
+    let mut state = self::state();
+    apply_import(&self::args(&[]), &mut state, true).unwrap();
+    assert!(state.actions.is_empty() && state.status.is_empty());
+}
+
+#[test]
+fn the_screenshot_shows_the_imported_heightmap() {
+    const DARK: u16 = 8_000;
+    const BRIGHT: u16 = 56_000;
+    let _gpu = one_gpu_test();
+    let west_east = |lon: f64, _| if lon < 0.0 { DARK } else { BRIGHT };
+    let levels = image_levels(WIDTH, HEIGHT, west_east);
+    let path = save_png("west-east.png", WIDTH, HEIGHT, levels);
+    let args = args(&[
+        "--import-heightmap",
+        path.to_str().unwrap(),
+        "--look-at",
+        "0,0",
+    ]);
+    let mut state = state();
+    apply_globe(&args, &mut state.globe, FACE_SIZE).unwrap();
+    state.globe.preview.greyscale = true;
+    state.globe.preview.graticule = false;
+    let import = |state: &mut AppState| apply_import(&args, state, true);
+    let (img, state) = headless::ui_png_with(state, (1280.0, 800.0), 1.0, import).unwrap();
+    assert!(state.status.starts_with("Imported west-east.png"));
+    let center = state.globe.rect.center();
+    let grey = |dx: f32| f64::from(img.get_pixel((center.x + dx) as u32, center.y as u32).0[0]);
+    let want = |level: u16| f64::from(level) / 65535.0 * 255.0;
+    // The shade toward the limb takes a few grey steps.
+    let (west, east) = (grey(-100.0), grey(100.0));
+    assert!((west - want(DARK)).abs() <= 4.0, "{west}");
+    assert!(
+        (want(BRIGHT) - east) >= 0.0 && (want(BRIGHT) - east) <= 12.0,
+        "{east}"
     );
 }

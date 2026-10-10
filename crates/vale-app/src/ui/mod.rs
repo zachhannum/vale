@@ -1,6 +1,6 @@
 //! The UI: state, actions, and the draw function.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use vale_labeler::Fonts;
@@ -8,6 +8,7 @@ use vale_sphere::LonLat;
 use vale_store::LayerId;
 
 use crate::document::Document;
+use crate::globe::import::ImportResult;
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
@@ -26,6 +27,23 @@ pub enum Action {
     OpenFiles(Vec<PathBuf>),
     ExportDialog(ExportFormat),
     Export(PathBuf),
+    ImportHeightmapDialog,
+    /// Imports this equirectangular image into the heightmap of the globe.
+    ImportHeightmap(PathBuf),
+}
+
+/// The text of the last import of a heightmap.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Note {
+    pub text: String,
+    /// The import failed, or it changed the shape of the image.
+    pub warning: bool,
+}
+
+/// True if the extension of the file is that of a PNG or TIFF image.
+pub fn is_heightmap_path(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str());
+    ext.is_some_and(|e| ["png", "tif", "tiff"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -90,11 +108,13 @@ pub struct AppState {
     pub cursor_meters: Option<f64>,
     /// Last message, for example an import error.
     pub status: String,
+    /// The text of the last import of a heightmap.
+    pub import_note: Option<Note>,
     /// Requests that need the host (dialogs, files).
     pub actions: Vec<Action>,
     /// True: no timers, always `Quality::Final`.
     pub headless: bool,
-    /// False: the tool bar has no buttons that need a file dialog.
+    /// False: the tool bar has no buttons for GeoJSON files and for exports.
     pub file_buttons: bool,
     pub frames: u64,
 }
@@ -121,6 +141,7 @@ impl AppState {
             cursor_lonlat: None,
             cursor_meters: None,
             status: String::new(),
+            import_note: None,
             actions: Vec::new(),
             headless: false,
             file_buttons: true,
@@ -144,7 +165,31 @@ impl AppState {
         self.dirty = true;
     }
 
-    /// Runs `OpenFiles` and `Export`. The dialog actions belong to the host.
+    /// Moves the result of an import of a heightmap to the status text.
+    pub fn poll_import(&mut self) {
+        if let Some(result) = self.globe.take_import_result() {
+            self.note_import(result);
+        }
+    }
+
+    /// Shows the result of an import of a heightmap.
+    pub fn note_import(&mut self, result: ImportResult) {
+        let note = match result {
+            Ok(info) => Note {
+                text: info.message(),
+                warning: !info.two_to_one,
+            },
+            Err(text) => Note {
+                text,
+                warning: true,
+            },
+        };
+        self.status = note.text.clone();
+        self.import_note = Some(note);
+    }
+
+    /// Runs `OpenFiles`, `Export`, and `ImportHeightmap`. The dialog actions
+    /// belong to the host.
     pub fn run_action(&mut self, action: Action) {
         match action {
             Action::OpenFiles(paths) => {
@@ -173,7 +218,15 @@ impl AppState {
                 };
                 self.touch();
             }
-            Action::OpenDialog | Action::ExportDialog(_) => {}
+            Action::ImportHeightmap(path) => {
+                self.import_note = None;
+                self.globe.start_import(path);
+                if self.headless {
+                    self.globe.wait_import();
+                }
+                self.poll_import();
+            }
+            Action::OpenDialog | Action::ExportDialog(_) | Action::ImportHeightmapDialog => {}
         }
     }
 }
@@ -181,6 +234,7 @@ impl AppState {
 /// Draws the whole UI.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
+    state.poll_import();
     if state.layout == Layout::Pad && state.workspace == Workspace::Globe {
         pad::draw(ui, state);
         state.frames += 1;
