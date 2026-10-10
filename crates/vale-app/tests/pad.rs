@@ -537,15 +537,11 @@ fn tap_fingers(h: &mut Pad, count: u64) {
 /// of the middle before the first stroke and after each stroke.
 fn three_strokes(h: &mut Pad) -> [u16; 4] {
     let c = h.state().globe.rect.center();
-    let level = |h: &Pad| {
-        let globe = &h.state().globe;
-        globe.map.sample(globe.unproject(c).unwrap())
-    };
-    let mut levels = [level(h); 4];
+    let mut levels = [middle_level(h); 4];
     for i in 1..4 {
         drag(h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.5));
         settle(h);
-        levels[i] = level(h);
+        levels[i] = middle_level(h);
         assert!(levels[i] > levels[i - 1], "{levels:?}");
     }
     levels
@@ -564,19 +560,19 @@ fn a_tap_of_two_fingers_is_undo_and_a_tap_of_three_fingers_is_redo() {
     let mut h = gpu_pad(BOARDS[0]);
     let levels = three_strokes(&mut h);
     let view = h.state().globe.view;
-    for step in (0..3).rev() {
+    for level in levels[..3].iter().rev() {
         tap_fingers(&mut h, 2);
         settle(&mut h);
-        assert_eq!(middle_level(&h), levels[step], "undo {step}");
+        assert_eq!(middle_level(&h), *level, "undo");
     }
     assert!(!h.state().globe.can_undo());
     // One more tap does nothing.
     tap_fingers(&mut h, 2);
     assert_eq!(middle_level(&h), levels[0]);
-    for step in 1..4 {
+    for level in &levels[1..] {
         tap_fingers(&mut h, 3);
         settle(&mut h);
-        assert_eq!(middle_level(&h), levels[step], "redo {step}");
+        assert_eq!(middle_level(&h), *level, "redo");
     }
     assert!(!h.state().globe.can_redo());
     // A tap of one finger does nothing, and no tap moves the globe.
@@ -592,16 +588,16 @@ fn the_undo_button_and_the_redo_button_work() {
     assert!(control(&h, "Undo").is_none() && control(&h, "Redo").is_none());
     let levels = three_strokes(&mut h);
     assert!(control(&h, "Redo").is_none());
-    for step in (0..3).rev() {
+    for level in levels[..3].iter().rev() {
         tap(&mut h, "Undo");
         settle(&mut h);
-        assert_eq!(middle_level(&h), levels[step], "undo {step}");
+        assert_eq!(middle_level(&h), *level, "undo");
     }
     assert!(control(&h, "Undo").is_none());
-    for step in 1..4 {
+    for level in &levels[1..] {
         tap(&mut h, "Redo");
         settle(&mut h);
-        assert_eq!(middle_level(&h), levels[step], "redo {step}");
+        assert_eq!(middle_level(&h), *level, "redo");
     }
     assert!(control(&h, "Redo").is_none());
     // A new stroke removes the redo steps.
