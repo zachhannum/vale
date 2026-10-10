@@ -16,7 +16,7 @@ pub mod icons;
 pub mod theme;
 pub mod widgets;
 
-use geometry::{BrushCard, CELL, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
+use geometry::{BrushCard, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
 use icons::Icon;
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
 
@@ -151,8 +151,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         screen,
         bands: geometry::Bands::new(screen, ctx.content_rect()),
         workspace_width,
-        // In the flat view, the card has a button for the projection.
-        view_width: widgets::segments_width(ui, &VIEWS) + if flat { TOUCH } else { 0.0 },
+        // In the flat view, the card also has the button of the list of
+        // projections, a line, and the Recenter and Reset buttons.
+        view_width: widgets::segments_width(ui, &VIEWS)
+            + if flat { 3.0 * TOUCH + 9.0 + PAD } else { 0.0 },
         panel: state.pad.brush || state.pad.right.is_some(),
         sheet_offset: state.pad.sheet_offset,
     };
@@ -184,7 +186,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     readout(&ctx, ui, state, &rects);
     state.pad.center_rect = None;
-    if flat {
+    // With no view switch in the top row, the two buttons have their own card.
+    if flat && rects.view.is_none() {
         center_card(&ctx, state, &mut controls, &rects);
     }
     state.pad.projections_rect = None;
@@ -245,14 +248,24 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                     state.globe.world_view = WORLD_VIEWS[chosen];
                 }
                 if state.globe.world_view == WorldView::Flat {
+                    // From the right: Reset, Recenter, a line, and the
+                    // button of the list of projections.
                     let card = ui.max_rect();
-                    let min = pos2(card.right() - PAD - TOUCH, card.top() + PAD);
-                    let rect = Rect::from_min_size(min, vec2(TOUCH, TOUCH));
+                    let at = |right: f32| {
+                        let min = pos2(right - TOUCH, card.top() + PAD);
+                        Rect::from_min_size(min, vec2(TOUCH, TOUCH))
+                    };
+                    let reset = at(card.right() - PAD);
+                    let recenter = at(reset.left() - PAD);
+                    let divider = pos2(recenter.left() - 4.5, card.center().y);
+                    let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
+                    ui.painter().rect_filled(line, 0.0, theme::divider());
                     let open = state.pad.projections;
+                    let list = at(recenter.left() - 9.0);
                     let button = widgets::icon_button_at(
                         ui,
                         controls,
-                        rect,
+                        list,
                         PROJECTION,
                         Icon::Down,
                         open,
@@ -261,6 +274,7 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                     if button.clicked() {
                         state.pad.projections = !open;
                     }
+                    center_buttons(ui, state, controls, recenter, reset);
                 }
             },
         );
@@ -660,13 +674,31 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     );
 }
 
-/// The card of the center of the projection, on the canvas of the flat view
-/// below the top row.
+/// The Recenter and Reset buttons of the flat view, at the given places.
+fn center_buttons(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    recenter: Rect,
+    reset: Rect,
+) {
+    let flat = &mut state.globe.flat;
+    let can = flat.can_center_here();
+    if widgets::icon_button_at(ui, controls, recenter, RECENTER, Icon::Center, false, can).clicked()
+    {
+        flat.center_here();
+    }
+    let can = flat.can_reset();
+    if widgets::icon_button_at(ui, controls, reset, RESET, Icon::Reset, false, can).clicked() {
+        flat.reset();
+    }
+}
+
+/// The card of the Recenter and Reset buttons in the compact layout, below
+/// the top row.
 fn center_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let size = vec2(2.0 * CELL.0 + 2.0 * PAD, CELL.1 + 2.0 * PAD);
-    let middle = rects
-        .view
-        .map_or(rects.screen.center().x, |view| view.center().x);
+    let size = vec2(2.0 * TOUCH + 3.0 * PAD, ROW);
+    let middle = rects.screen.center().x;
     let mut rect = Rect::from_min_size(pos2(middle - size.x / 2.0, rects.tools.top()), size);
     // An open panel pushes the card to its right. With no room there, the
     // card does not show.
@@ -687,22 +719,11 @@ fn center_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
         Order::Middle,
         theme::CARD_RADIUS.into(),
         |ui| {
-            let layout = egui::Layout::left_to_right(egui::Align::Min);
-            let inner = egui::UiBuilder::new().max_rect(rect.shrink(PAD));
-            let mut ui = ui.new_child(inner.layout(layout));
-            let ui = &mut ui;
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            let flat = &mut state.globe.flat;
-            let can = flat.can_center_here();
-            if widgets::tool_cell(ui, controls, RECENTER, RECENTER, Icon::Center, false, can)
-                .clicked()
-            {
-                flat.center_here();
-            }
-            let can = flat.can_reset();
-            if widgets::tool_cell(ui, controls, RESET, RESET, Icon::Reset, false, can).clicked() {
-                flat.reset();
-            }
+            let at = |x: f32| {
+                let min = pos2(rect.left() + PAD + x, rect.top() + PAD);
+                Rect::from_min_size(min, vec2(TOUCH, TOUCH))
+            };
+            center_buttons(ui, state, controls, at(0.0), at(TOUCH + PAD));
         },
     );
 }

@@ -232,7 +232,7 @@ pub(super) fn canvas(
     match globe.world_view {
         WorldView::Globe => globe.nav.update(ui, rect, &resp, &mut globe.view, painting),
         WorldView::Flat => {
-            globe.flat.clamp(rect);
+            globe.flat.clamp();
             globe.nav.update(ui, rect, &resp, &mut globe.flat, painting);
         }
     }

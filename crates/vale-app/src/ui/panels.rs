@@ -68,7 +68,7 @@ fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
     flat.set_spec(ProjectionSpec { kind, ..spec });
     let button = ui.add_enabled(flat.can_center_here(), egui::Button::new(pad::RECENTER));
     let help = "Makes the place at the middle of the view the center of the projection. \
-                Zoom in and move the map first.";
+                Move the map first.";
     if button
         .on_hover_text(help)
         .on_disabled_hover_text(help)

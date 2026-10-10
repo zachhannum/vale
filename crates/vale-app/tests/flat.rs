@@ -309,8 +309,6 @@ fn the_tool_bar_picks_the_projection_of_the_flat_view() {
         h.state().globe.flat.spec().kind,
         ProjectionKind::Orthographic
     );
-    // At the smallest zoom, the map stays in the middle of the canvas.
-    h.state_mut().globe.flat.zoom = 8.0;
     h.state_mut().globe.flat.look_at(50.0, 40.0);
     h.get_by_label(RECENTER).click();
     h.run_steps(2);

@@ -203,23 +203,14 @@ impl FlatView {
         Some(lonlat_to_dir(lon, lat))
     }
 
-    /// Keeps the map on the canvas. In a direction where the map is smaller
-    /// than the canvas, the map stays in the middle.
-    pub fn clamp(&mut self, rect: Rect) {
+    /// Keeps the middle of the canvas inside the box around the map. Each
+    /// place of the map can thus come to the middle at each zoom.
+    pub fn clamp(&mut self) {
         self.zoom = self.zoom.clamp(ZOOM_MIN, ZOOM_MAX);
-        let s = self.scale(rect);
-        let limit = |center: f64, min: f64, max: f64, canvas: f32| {
-            let half = 0.5 * f64::from(canvas) / s;
-            if max - min <= 2.0 * half {
-                0.5 * (min + max)
-            } else {
-                center.clamp(min + half, max - half)
-            }
-        };
         let b = &self.bounds;
         self.center = Point::new(
-            limit(self.center.x, b.x0, b.x1, rect.width()),
-            limit(self.center.y, b.y0, b.y1, rect.height()),
+            self.center.x.clamp(b.x0, b.x1),
+            self.center.y.clamp(b.y0, b.y1),
         );
     }
 
@@ -264,7 +255,7 @@ impl Camera for FlatView {
             grabbed.x - f64::from(d.x) / s,
             grabbed.y + f64::from(d.y) / s,
         );
-        self.clamp(rect);
+        self.clamp();
     }
 }
 
@@ -351,25 +342,25 @@ mod tests {
     }
 
     #[test]
-    fn the_map_stays_on_the_canvas() {
+    fn each_place_of_the_map_comes_to_the_middle_at_each_zoom() {
+        let middle = rect().center();
+        for zoom in [ZOOM_MIN, 1.0, 4.0] {
+            let mut view = FlatView::new(DEFAULT_SPEC);
+            view.zoom = zoom;
+            let place = lonlat_to_dir(150.0, -70.0);
+            let from = view.project(rect(), place).unwrap();
+            view.gesture(rect(), from, middle, 1.0, 0.0);
+            let after = view.project(rect(), place).unwrap();
+            assert!((after - middle).length() < 0.01, "{zoom}: {after:?}");
+            assert!(view.can_center_here());
+        }
+        // The middle of the canvas does not leave the map.
         let mut view = FlatView::default();
-        let middle = Pos2::new(410.0, 320.0);
-        // The map is less high than the canvas, so it does not move up.
-        view.gesture(rect(), middle, Pos2::new(410.0, 100.0), 1.0, 0.0);
-        assert_eq!(view.center.y, 0.0);
-        // You zoom out past the whole map, and the map stays in the middle.
-        view.zoom_at(rect(), Pos2::new(100.0, 500.0), 0.1);
-        assert_eq!(view.zoom, ZOOM_MIN);
-        let west = view.project(rect(), lonlat_to_dir(-179.99, 0.0)).unwrap();
-        let east = view.project(rect(), lonlat_to_dir(179.99, 0.0)).unwrap();
-        assert!((east.x - west.x - 800.0 * ZOOM_MIN as f32).abs() < 0.5);
-        assert!(((west.x + east.x) / 2.0 - middle.x).abs() < 0.01);
-        assert!(!view.can_center_here());
-        // The pan stops at the edges of the map.
-        view.zoom = 4.0;
         view.gesture(rect(), middle, Pos2::new(9000.0, 9000.0), 1.0, 0.0);
         let corner = view.project(rect(), lonlat_to_dir(-179.99, 89.99)).unwrap();
-        assert!((corner - rect().left_top()).length() < 1.0, "{corner:?}");
+        assert!((corner - middle).length() < 1.0, "{corner:?}");
+        view.zoom_at(rect(), middle, 0.01);
+        assert_eq!(view.zoom, ZOOM_MIN);
     }
 
     #[test]

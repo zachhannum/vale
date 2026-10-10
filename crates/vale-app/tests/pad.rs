@@ -559,32 +559,50 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
 }
 
 #[test]
-fn a_card_on_the_flat_view_moves_the_center_of_the_projection_and_resets_it() {
+fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it() {
     for size in BOARDS {
         let mut h = pad(size);
-        assert_eq!(h.state().pad.center_rect, None);
         h.state_mut().globe.world_view = WorldView::Flat;
         h.run_steps(2);
-        // The card is below the top row, in the middle of the screen.
         let rects = h.state().pad.rects.unwrap();
-        let card = h.state().pad.center_rect.unwrap();
-        assert_eq!(card.center().x, size.0 / 2.0, "{size:?}");
-        assert_eq!(card.top(), rects.tools.top());
-        assert!(!card.intersects(rects.tools) && !card.intersects(rects.actions));
+        // The buttons are in the card of the view switch, to the right of
+        // the switch. With no switch in the top row, they have a card below
+        // the top row.
+        let card = match rects.view {
+            Some(view) => {
+                assert_eq!(h.state().pad.center_rect, None);
+                assert_eq!(view.center().x, size.0 / 2.0, "{size:?}");
+                assert!(view.right() + 12.0 <= rects.actions.left(), "{size:?}");
+                view
+            }
+            None => {
+                let card = h.state().pad.center_rect.unwrap();
+                assert_eq!(card.center().x, size.0 / 2.0, "{size:?}");
+                assert_eq!(card.top(), rects.tools.top());
+                assert!(!card.intersects(rects.tools));
+                card
+            }
+        };
         // The middle of the view is the center of the projection, and the
         // view shows the whole map, so the two actions are off.
         assert!(control(&h, RECENTER).is_none() && control(&h, RESET).is_none());
 
-        h.state_mut().globe.flat.zoom = 8.0;
-        h.state_mut().globe.flat.look_at(60.0, 20.0);
-        h.run_steps(2);
-        assert!(card.contains_rect(control(&h, RECENTER).unwrap()));
-        assert!(card.contains_rect(control(&h, RESET).unwrap()));
-        check_controls(&h, &format!("{size:?} with the center card"));
+        // A drag moves the map at the first zoom, with no zoom before it.
+        let canvas = h.state().globe.rect;
+        let from = pos2(canvas.center().x, canvas.bottom() - 120.0);
+        drag(&mut h, from, from + vec2(-60.0, 0.0), None);
+        let (recenter, reset) = (control(&h, RECENTER).unwrap(), control(&h, RESET).unwrap());
+        assert!(card.contains_rect(recenter) && card.contains_rect(reset));
+        assert_eq!(reset.left() - recenter.right(), 4.0);
+        if rects.view.is_some() {
+            let switch = control(&h, "Flat").unwrap();
+            assert!(recenter.left() > control(&h, "Projection").unwrap().right());
+            assert!(recenter.left() > switch.right() && recenter.top() == switch.top());
+        }
+        check_controls(&h, &format!("{size:?} with the center buttons"));
         tap(&mut h, RECENTER);
         let flat = &h.state().globe.flat;
-        assert!((flat.spec().lon0 - 60.0).abs() < 1e-6, "{size:?}");
-        assert_eq!(flat.zoom, 1.0);
+        assert!(flat.spec().lon0 > 1.0, "{size:?}: {:?}", flat.spec());
         assert!(control(&h, RECENTER).is_none());
 
         tap(&mut h, RESET);
@@ -592,18 +610,11 @@ fn a_card_on_the_flat_view_moves_the_center_of_the_projection_and_resets_it() {
         assert_eq!((flat.spec().lon0, flat.zoom), (0.0, 1.0));
         assert!(control(&h, RESET).is_none());
 
-        // The card does not cover an open panel.
-        if control(&h, "Brush settings").is_some() {
-            tap(&mut h, "Brush settings");
-            let brush = panel(&h, Panel::Brush).unwrap();
-            let card = h.state().pad.center_rect;
-            assert!(card.is_none_or(|card| !card.intersects(brush)), "{size:?}");
-        }
-
-        // The globe has no card.
+        // The globe has no buttons.
         h.state_mut().globe.world_view = WorldView::Globe;
         h.run_steps(2);
         assert_eq!(h.state().pad.center_rect, None);
+        assert!(control(&h, RECENTER).is_none() && control(&h, RESET).is_none());
     }
 }
 
