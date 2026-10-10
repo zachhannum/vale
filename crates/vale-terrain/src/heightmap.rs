@@ -361,6 +361,19 @@ impl Heightmap {
         }
     }
 
+    /// Replaces one whole face, row by row, and marks it as changed. In a
+    /// stroke, the old tiles go into the undo entry.
+    pub fn store_face(&mut self, face: usize, levels: &[u16]) {
+        let full = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: self.n,
+            y1: self.n,
+        };
+        self.store_rect(face, full, levels);
+        self.mark_dirty(face, full);
+    }
+
     /// The texels of a rectangle that can go past the face edges, row by row.
     fn read_past_edges(&self, face: usize, x0: i64, y0: i64, w: usize, h: usize) -> Vec<u16> {
         let n = self.n as i64;

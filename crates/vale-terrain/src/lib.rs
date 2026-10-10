@@ -9,6 +9,7 @@
 
 mod bands;
 mod cube;
+mod equirect;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod heightmap;
@@ -18,6 +19,7 @@ pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Ramp, Rgb, SEA_LEVEL};
 pub use cube::{
     ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, level_to_meters, meters_to_level, unwarp, warp,
 };
+pub use equirect::Equirect;
 #[cfg(feature = "gpu")]
 pub use gpu::{GROUP_STAMPS, GpuHeightmap, Readback, STAMP_SLOTS};
 pub use heightmap::{
