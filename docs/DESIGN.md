@@ -139,7 +139,8 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | --- | --- |
 | World | Radius, name, display units |
 | Source | Path to a linked file, extents, last known file hash |
-| Raster | Cube map tiles, unit, value range, ramp, band limits |
+| Raster | Face size, unit, value range, ramp, band limits |
+| Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Layer | Type (raster, points, lines, or polygons), attribute schema, link to a source, to a raster, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Style | Ordered rules of one layer, stored as JSON |
@@ -151,6 +152,8 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 QGIS opens the feature tables directly and ignores the extra tables. That gives interchange with no export step. The topography polygons are feature tables, so QGIS reads them too. The heightmap is not a standard table, and the app exports it as an equirectangular GeoTIFF.
 
 Each feature has a UUID in addition to the integer row ID. The UUID never changes, so overrides and styles survive an edit, a reload, or a new projection.
+
+The key of a raster tile is the raster, the level, the face, the column, and the row. The face is a number from 0 to 5. The column and the row count tiles of 256 pixels from the corner of the face. Level 0 has the face size of the raster, and the level is always 0 in version 1. A higher level is for finer tiles in a region, which come after version 1. The level field lets those tiles arrive with no change of the file format.
 
 Overrides belong to a map frame and not to the feature. A label that you move on the regional map stays where the engine put it on the world map.
 
@@ -221,7 +224,16 @@ The heightmap is a 16-bit greyscale cube map. Each of the six faces splits into 
 
 An equirectangular image is the wrong store. It spends most of its pixels near the poles, and a round brush becomes a wide ellipse there. On a cube map with equal-angle spacing, a pixel covers close to the same ground everywhere.
 
-A worked example gives the resolution. With faces of 8,192 pixels, the equator has 32,768 pixels. On an Earth-size world that is 1.2 km per pixel.
+A raster layer has one face size, which is the number of pixels along the edge of a face. The size is high enough that a regional map uses the same raster layer as the world map. You pick the face size when you add a raster layer. The app offers 4,096 and 8,192 pixels, and 8,192 is the default. Next to each size, the app shows the ground per pixel for the radius of the world. The Raster record stores the face size.
+
+These numbers are for an Earth-size world.
+
+| Face size | World map of equal detail | Ground per pixel | Pixels across a 1,000 km region |
+| --- | --- | --- | --- |
+| 4,096 | 16,384 × 8,192 | 2.4 km | 410 |
+| 8,192 | 32,768 × 16,384 | 1.2 km | 830 |
+
+You can change the face size of a raster layer later. The app then resamples each painted tile. For a smaller size, each new pixel is the mean of the pixels that it covers. For a larger size, the app interpolates between the pixels, which adds no detail. The change is one edit, so undo brings the old tiles back.
 
 ### Brush
 
@@ -489,7 +501,7 @@ The largest risk is the scope of the labeling engine. To contain it, the library
 | PROJ is hard to package on Windows. | Use the bundled build and add a Windows build to CI in phase 0. |
 | When you edit a linked file by hand, features lose identity. | Use element IDs first and geometry matching second, and report each lost match. |
 | Painting needs a fast, steady stroke, and a slow brush makes the tool useless. | Stamp on the GPU and repaint only the tiles under the brush. Measure the stroke delay in phase 1. |
-| One heightmap resolution does not fit both a world and a small region. | Store tiles in levels, so a region can hold finer tiles. This design is not done. |
+| One heightmap resolution does not fit both a world and a small region. | Each raster layer has one face size, high enough for regional maps. Finer tiles for a region, in levels, come after version 1. The tile key has a level field for them. |
 | egui gives no hover, no tilt, and only 120 pen samples per second on iPad. | The iPad test of the globe prototype passed for painting, pressure, and palm rejection. A UIKit gesture recognizer below egui reads hover, tilt, and the 240 Hz samples in `vale-app`. |
 | Reprojected rasters look soft. | Show the resolution of each source against each map frame, and support regional sources. |
 
