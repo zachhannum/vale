@@ -4,6 +4,9 @@
 //! to the sea. The cells that drain a large area are rivers. The channel map
 //! holds the distance from each of its texels to the nearest river, and the
 //! size of that river.
+//!
+//! A window is a square of small cells on a part of the sphere. It gives the
+//! same things at the scale of a near view.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -33,7 +36,23 @@ const CHANNEL_REACH: f64 = 255.0 / CHANNEL_SCALE;
 /// The number of smoothing passes over the river nodes.
 const SMOOTH_PASSES: usize = 2;
 
+/// The number of cells that a river cell of a window drains at least. A
+/// river cell of the full map drains about this number of cells when the map
+/// has `FLOW_SIZE` cells along one side of a face.
+pub const RIVER_MIN_CELLS: f64 = 62.0;
+
+/// The number of cells along one side of the window that `GpuHeightmap`
+/// holds.
+pub const WINDOW_CELLS: usize = 512;
+
+/// The channel texels at each side of a window where the distance to a river
+/// is not sure. A river outside the window can be nearer.
+pub const WINDOW_MARGIN: f64 = 8.0;
+
 const NONE: u32 = u32::MAX;
+
+/// The receiver of a cell whose water leaves the window.
+const OUT: u32 = u32::MAX - 1;
 
 /// The steps to the 8 neighbors of a cell. The first 4 share a side with it.
 const STEPS: [(i64, i64); 8] = [
@@ -99,16 +118,19 @@ fn neighbors(m: usize, i: usize) -> [u32; 8] {
     })
 }
 
-/// The solid angle of each cell of one face, in steradians, row by row.
-/// A fixed number from 0 to 1 for neighbor `k` of cell `i`.
-fn scatter(i: usize, k: usize) -> f64 {
-    let mut h = (i as u32).wrapping_mul(8).wrapping_add(k as u32);
+fn mix(mut h: u32) -> u32 {
     h = (h ^ (h >> 16)).wrapping_mul(0x7feb_352d);
     h = (h ^ (h >> 15)).wrapping_mul(0x846c_a68b);
-    h ^= h >> 16;
+    h ^ (h >> 16)
+}
+
+/// A fixed number from 0 to 1 for neighbor `k` of cell `i`.
+fn scatter(i: usize, k: usize) -> f64 {
+    let h = mix((i as u32).wrapping_mul(8).wrapping_add(k as u32));
     f64::from(h) / f64::from(u32::MAX)
 }
 
+/// The solid angle of each cell of one face, in steradians, row by row.
 fn solid_angles(m: usize) -> Vec<f64> {
     let flat: Vec<f64> = (0..m).map(|i| unwarp(center(m, i as i64))).collect();
     let step = |f: f64| (1.0 + f * f) * FRAC_PI_4 * 2.0 / m as f64;
@@ -202,6 +224,123 @@ impl CoarseHeights {
     }
 }
 
+/// The cells that the water flows on.
+trait Grid {
+    /// The 8 neighbors of a cell, in the order of `STEPS`. A neighbor past
+    /// the end of the grid is `NONE`.
+    fn neighbors(&self, i: usize) -> [u32; 8];
+    /// A fixed number from 0 to 1 for neighbor `k` of cell `i`.
+    fn scatter(&self, i: usize, k: usize) -> f64;
+    /// The solid angle of a cell, in steradians.
+    fn solid_angle(&self, i: usize) -> f64;
+}
+
+/// The cells of the six faces.
+struct CubeGrid {
+    m: usize,
+    solid: Vec<f64>,
+}
+
+impl Grid for CubeGrid {
+    fn neighbors(&self, i: usize) -> [u32; 8] {
+        neighbors(self.m, i)
+    }
+
+    fn scatter(&self, i: usize, k: usize) -> f64 {
+        scatter(i, k)
+    }
+
+    fn solid_angle(&self, i: usize) -> f64 {
+        self.solid[i % (self.m * self.m)]
+    }
+}
+
+/// The receiver of each land cell, and the solid angle that drains through
+/// it.
+///
+/// The flood fills each pit to the level of its rim, from the ways out to
+/// the land inside. Then each cell drains to a steep neighbor that is lower
+/// in the filled land. A way out is an ocean cell or the end of the grid.
+/// `inflow` gives water from outside the grid: a cell and a solid angle.
+fn drain(grid: &impl Grid, levels: &[u16], inflow: &[(usize, f64)]) -> (Vec<u32>, Vec<f32>) {
+    let count = levels.len();
+    let sea = sea();
+    let is_land = |i: usize| levels[i] >= sea;
+    let mut receiver = vec![NONE; count];
+    let lands = levels.iter().filter(|&&level| level >= sea).count();
+
+    // The heap gives the lowest cell first. Of two cells at one level, it
+    // gives first the cell that came in first. Thus a flat drains to the
+    // nearest way out.
+    let mut heap = BinaryHeap::new();
+    let mut pushes = 0u32;
+    let mut filled = levels.to_vec();
+    for i in (0..count).filter(|&i| is_land(i)) {
+        let near = grid.neighbors(i);
+        let out = near.iter().find(|&&j| j == NONE || !is_land(j as usize));
+        if let Some(&out) = out {
+            receiver[i] = if out == NONE { OUT } else { out };
+            heap.push(Reverse((levels[i], pushes, i as u32)));
+            pushes += 1;
+        }
+    }
+    // The land cells in the order that they leave the heap.
+    let mut order: Vec<u32> = Vec::with_capacity(lands);
+    let mut done = vec![false; count];
+    while let Some(Reverse((level, _, i))) = heap.pop() {
+        let i = i as usize;
+        let mut best = 0.0;
+        for (k, &j) in grid.neighbors(i).iter().enumerate() {
+            let past_end = j == NONE;
+            let j = j as usize;
+            if !past_end && is_land(j) && !done[j] {
+                // A cell that is not in the heap goes in. This cell takes
+                // its water if the cell finds no lower neighbor.
+                if receiver[j] == NONE {
+                    receiver[j] = i as u32;
+                    filled[j] = levels[j].max(level);
+                    heap.push(Reverse((filled[j], pushes, j as u32)));
+                    pushes += 1;
+                }
+                continue;
+            }
+            // The scatter lets a cell on an even slope or on a flat turn
+            // to one side, so that the streams join. Without it they run
+            // side by side. The ground past the end of the grid counts as
+            // a flat.
+            let below = if past_end { level } else { filled[j] };
+            let drop = f64::from(level) - f64::from(below) + 1.0;
+            let slope = if k < 4 { drop } else { drop * FRAC_1_SQRT_2 };
+            let score = slope * (0.75 + 0.5 * grid.scatter(i, k));
+            if score > best {
+                best = score;
+                receiver[i] = if past_end { OUT } else { j as u32 };
+            }
+        }
+        done[i] = true;
+        order.push(i as u32);
+    }
+
+    // Each receiver left the heap before its cells, so the reverse order
+    // goes downstream.
+    let mut area = vec![0.0f64; count];
+    for &i in &order {
+        area[i as usize] = grid.solid_angle(i as usize);
+    }
+    for &(i, solid) in inflow {
+        if done[i] {
+            area[i] += solid;
+        }
+    }
+    for &i in order.iter().rev() {
+        let to = receiver[i as usize];
+        if to != OUT && is_land(to as usize) {
+            area[to as usize] += area[i as usize];
+        }
+    }
+    (receiver, area.iter().map(|&area| area as f32).collect())
+}
+
 /// The path of the water from each land cell to the sea. A cell below sea
 /// level is ocean, and it has no flow.
 pub struct FlowMap {
@@ -213,91 +352,18 @@ pub struct FlowMap {
 }
 
 impl FlowMap {
-    /// Fills each pit to the level of its rim, from the coast to the land
-    /// inside. Then each cell drains to a steep neighbor that is lower
-    /// in the filled land. A world with no ocean or no land has no flow.
+    /// A world with no ocean or no land has no flow.
     pub fn new(heights: &CoarseHeights) -> FlowMap {
-        let m = heights.m;
-        let count = FACES * m * m;
-        let levels = &heights.levels;
-        let sea = sea();
-        let is_land = |i: usize| levels[i] >= sea;
-        let mut flow = FlowMap {
-            m,
-            receiver: vec![NONE; count],
-            area: vec![0.0; count],
+        let grid = CubeGrid {
+            m: heights.m,
+            solid: solid_angles(heights.m),
         };
-        let lands = levels.iter().filter(|&&level| level >= sea).count();
-        if lands == 0 || lands == count {
-            return flow;
+        let (receiver, area) = drain(&grid, &heights.levels, &[]);
+        FlowMap {
+            m: heights.m,
+            receiver,
+            area,
         }
-
-        // The heap gives the lowest cell first. Of two cells at one level,
-        // it gives first the cell that came in first. Thus a flat drains to
-        // the nearest way out.
-        let mut heap = BinaryHeap::new();
-        let mut pushes = 0u32;
-        let mut filled = levels.clone();
-        let receiver = &mut flow.receiver;
-        for i in (0..count).filter(|&i| is_land(i)) {
-            let near = neighbors(m, i);
-            if let Some(&ocean) = near.iter().find(|&&j| !is_land(j as usize)) {
-                receiver[i] = ocean;
-                heap.push(Reverse((levels[i], pushes, i as u32)));
-                pushes += 1;
-            }
-        }
-        // The land cells in the order that they leave the heap.
-        let mut order: Vec<u32> = Vec::with_capacity(lands);
-        let mut done = vec![false; count];
-        while let Some(Reverse((level, _, i))) = heap.pop() {
-            let i = i as usize;
-            let mut best = 0.0;
-            for (k, &j) in neighbors(m, i).iter().enumerate() {
-                let j = j as usize;
-                if is_land(j) && !done[j] {
-                    // A cell that is not in the heap goes in. This cell takes
-                    // its water if the cell finds no lower neighbor.
-                    if receiver[j] == NONE {
-                        receiver[j] = i as u32;
-                        filled[j] = levels[j].max(level);
-                        heap.push(Reverse((filled[j], pushes, j as u32)));
-                        pushes += 1;
-                    }
-                    continue;
-                }
-                // The scatter lets a cell on an even slope or on a flat turn
-                // to one side, so that the streams join. Without it they run
-                // side by side.
-                let drop = f64::from(level) - f64::from(filled[j]) + 1.0;
-                let slope = if k < 4 { drop } else { drop * FRAC_1_SQRT_2 };
-                let score = slope * (0.75 + 0.5 * scatter(i, k));
-                if score > best {
-                    best = score;
-                    receiver[i] = j as u32;
-                }
-            }
-            done[i] = true;
-            order.push(i as u32);
-        }
-
-        // Each receiver left the heap before its cells, so the reverse order
-        // goes downstream.
-        let solid = solid_angles(m);
-        let mut area = vec![0.0f64; count];
-        for &i in &order {
-            area[i as usize] = solid[i as usize % (m * m)];
-        }
-        for &i in order.iter().rev() {
-            let to = receiver[i as usize] as usize;
-            if is_land(to) {
-                area[to] += area[i as usize];
-            }
-        }
-        for (out, area) in flow.area.iter_mut().zip(area) {
-            *out = area as f32;
-        }
-        flow
     }
 
     fn index(&self, face: usize, x: usize, y: usize) -> usize {
@@ -323,40 +389,11 @@ impl FlowMap {
 
     /// The river cells as nodes, and the first ocean cell after each river.
     fn rivers(&self) -> Rivers {
-        let m = self.m;
-        let is_river = |i: usize| f64::from(self.area[i]) >= RIVER_MIN_AREA;
         let dir = |i: usize| {
-            let (face, x, y) = split(m, i);
-            cell_dir(m, face, x, y)
+            let (face, x, y) = split(self.m, i);
+            cell_dir(self.m, face, x, y)
         };
-        let mut rivers = Rivers::default();
-        // The node of each river cell.
-        let mut node = vec![NONE; self.area.len()];
-        for i in (0..self.area.len()).filter(|&i| is_river(i)) {
-            node[i] = rivers.cells.len() as u32;
-            rivers.cells.push(i as u32);
-            rivers.pos.push(dir(i));
-        }
-        let count = rivers.cells.len();
-        rivers.down = vec![NONE; count];
-        rivers.donor = vec![NONE; count];
-        for k in 0..count {
-            let to = self.receiver[rivers.cells[k] as usize] as usize;
-            if node[to] == NONE {
-                // The receiver is ocean. It gets a node that has no cell.
-                rivers.down[k] = rivers.pos.len() as u32;
-                rivers.pos.push(dir(to));
-                continue;
-            }
-            let down = node[to] as usize;
-            rivers.down[k] = down as u32;
-            let area = |k: usize| self.area[rivers.cells[k] as usize];
-            let donor = rivers.donor[down];
-            if donor == NONE || area(k) > area(donor as usize) {
-                rivers.donor[down] = k as u32;
-            }
-        }
-        rivers
+        Rivers::new(&self.receiver, &self.area, RIVER_MIN_AREA, dir, dir)
     }
 
     /// Draws each river into a channel map with 2 texels for each cell along
@@ -388,9 +425,65 @@ struct Rivers {
 }
 
 impl Rivers {
-    /// Moves each node toward the nodes before and after it. The first node
-    /// and the last node of a river stay in place.
+    /// Makes a node for each cell that drains `min_area` or more. `place`
+    /// gives the place of a cell. `outside` gives the place where the water
+    /// of a cell goes past the end of the grid.
+    fn new(
+        receiver: &[u32],
+        area: &[f32],
+        min_area: f64,
+        place: impl Fn(usize) -> V3,
+        outside: impl Fn(usize) -> V3,
+    ) -> Rivers {
+        let mut rivers = Rivers::default();
+        // The node of each river cell.
+        let mut node = vec![NONE; area.len()];
+        for i in (0..area.len()).filter(|&i| f64::from(area[i]) >= min_area) {
+            node[i] = rivers.cells.len() as u32;
+            rivers.cells.push(i as u32);
+            rivers.pos.push(place(i));
+        }
+        let count = rivers.cells.len();
+        rivers.down = vec![NONE; count];
+        rivers.donor = vec![NONE; count];
+        for k in 0..count {
+            let cell = rivers.cells[k] as usize;
+            let to = receiver[cell];
+            if to == OUT || node[to as usize] == NONE {
+                // The river ends here, in the ocean or at the end of the
+                // grid. The end gets a node that has no cell.
+                rivers.down[k] = rivers.pos.len() as u32;
+                rivers.pos.push(if to == OUT {
+                    outside(cell)
+                } else {
+                    place(to as usize)
+                });
+                continue;
+            }
+            let down = node[to as usize] as usize;
+            rivers.down[k] = down as u32;
+            let area = |k: usize| area[rivers.cells[k] as usize];
+            let donor = rivers.donor[down];
+            if donor == NONE || area(k) > area(donor as usize) {
+                rivers.donor[down] = k as u32;
+            }
+        }
+        rivers
+    }
+
+    /// Moves each node toward the nodes before and after it, on the sphere.
+    /// The first node and the last node of a river stay in place.
     fn smooth(&mut self) {
+        self.smooth_with(normalize);
+    }
+
+    /// The same as `smooth`, for nodes on a plane.
+    fn smooth_flat(&mut self) {
+        self.smooth_with(|sum| scale(sum, 0.25));
+    }
+
+    /// `fit` makes a node from the sum of 4 nodes.
+    fn smooth_with(&mut self, fit: impl Fn(V3) -> V3) {
         for _ in 0..SMOOTH_PASSES {
             let old = self.pos.clone();
             for k in 0..self.cells.len() {
@@ -398,15 +491,67 @@ impl Rivers {
                     continue;
                 }
                 let ends = add(old[self.down[k] as usize], old[self.donor[k] as usize]);
-                self.pos[k] = normalize(add(scale(old[k], 2.0), ends));
+                self.pos[k] = fit(add(scale(old[k], 2.0), ends));
             }
         }
     }
 }
 
 fn flow_byte(area: f64) -> u8 {
-    let octaves = (area / RIVER_MIN_AREA).log2();
-    (255.0 * octaves / RIVER_OCTAVES).round().clamp(1.0, 255.0) as u8
+    size_byte(area / RIVER_MIN_AREA)
+}
+
+/// The flow byte of a river that drains `ratio` times the smallest area of a
+/// river.
+fn size_byte(ratio: f64) -> u8 {
+    (255.0 * ratio.log2() / RIVER_OCTAVES)
+        .round()
+        .clamp(1.0, 255.0) as u8
+}
+
+/// Draws a straight part of a river from `a` to `b` into a square of channel
+/// texels with `size` texels along one side. A texel keeps the nearest river.
+fn draw_line(data: &mut [u8], size: usize, a: (f64, f64), b: (f64, f64), flow: u8) {
+    let ((ax, ay), (bx, by)) = (a, b);
+    let last = (size - 1) as f64;
+    let from = |a: f64, b: f64| (a.min(b) - CHANNEL_REACH).ceil().max(0.0);
+    let to = |a: f64, b: f64| (a.max(b) + CHANNEL_REACH).floor().min(last);
+    let (x0, x1, y0, y1) = (from(ax, bx), to(ax, bx), from(ay, by), to(ay, by));
+    if x0 > x1 || y0 > y1 {
+        return;
+    }
+    let (dx, dy) = (bx - ax, by - ay);
+    let length_sq = dx * dx + dy * dy;
+    for y in y0 as usize..=y1 as usize {
+        for x in x0 as usize..=x1 as usize {
+            let (px, py) = (x as f64 - ax, y as f64 - ay);
+            let t = if length_sq > 0.0 {
+                ((px * dx + py * dy) / length_sq).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let distance = (px - t * dx).hypot(py - t * dy);
+            let byte = (distance * CHANNEL_SCALE).round();
+            if byte >= 255.0 {
+                continue;
+            }
+            let byte = byte as u8;
+            let at = (y * size + x) * 2;
+            let old = &mut data[at..at + 2];
+            if byte < old[0] || (byte == old[0] && flow > old[1]) {
+                old.copy_from_slice(&[byte, flow]);
+            }
+        }
+    }
+}
+
+/// The blend of 4 values around a place. `tx` and `ty` are the place from
+/// the first value to the others, from 0 to 1. `stamp.wgsl` has the same
+/// steps.
+fn blend(values: [f64; 4], tx: f64, ty: f64) -> f64 {
+    let [a, b, c, d] = values;
+    let (top, bottom) = (a * (1.0 - tx) + b * tx, c * (1.0 - tx) + d * tx);
+    top * (1.0 - ty) + bottom * ty
 }
 
 /// The rivers as a texture. Each texel has two bytes. The first byte is the
@@ -467,10 +612,8 @@ impl ChannelMap {
         };
         let (a, b) = (at(x0, y0), at(x0 + 1.0, y0));
         let (c, d) = (at(x0, y0 + 1.0), at(x0 + 1.0, y0 + 1.0));
-        let blend =
-            |a: [u8; 2], b: [u8; 2], t: f64| f64::from(a[0]) * (1.0 - t) + f64::from(b[0]) * t;
-        let (top, bottom) = (blend(a, b, tx), blend(c, d, tx));
-        let distance = (top * (1.0 - ty) + bottom * ty) / CHANNEL_SCALE;
+        let distances = [a, b, c, d].map(|texel| f64::from(texel[0]));
+        let distance = blend(distances, tx, ty) / CHANNEL_SCALE;
         (distance, a[1].max(b[1]).max(c[1]).max(d[1]))
     }
 
@@ -506,35 +649,9 @@ impl ChannelMap {
             let (Some((ax, ay)), Some((bx, by))) = (project(a), project(b)) else {
                 continue;
             };
-            let from = |a: f64, b: f64| (a.min(b) - CHANNEL_REACH).ceil().max(0.0);
-            let to = |a: f64, b: f64| (a.max(b) + CHANNEL_REACH).floor().min(k - 1.0);
-            let (x0, x1, y0, y1) = (from(ax, bx), to(ax, bx), from(ay, by), to(ay, by));
-            if x0 > x1 || y0 > y1 {
-                continue;
-            }
-            let (dx, dy) = (bx - ax, by - ay);
-            let length_sq = dx * dx + dy * dy;
-            for y in y0 as usize..=y1 as usize {
-                for x in x0 as usize..=x1 as usize {
-                    let (px, py) = (x as f64 - ax, y as f64 - ay);
-                    let t = if length_sq > 0.0 {
-                        ((px * dx + py * dy) / length_sq).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    let distance = (px - t * dx).hypot(py - t * dy);
-                    let byte = (distance * CHANNEL_SCALE).round();
-                    if byte >= 255.0 {
-                        continue;
-                    }
-                    let byte = byte as u8;
-                    let at = ((face * self.size + y) * self.size + x) * 2;
-                    let old = &mut self.data[at..at + 2];
-                    if byte < old[0] || (byte == old[0] && flow > old[1]) {
-                        old.copy_from_slice(&[byte, flow]);
-                    }
-                }
-            }
+            let texels = self.size * self.size * 2;
+            let data = &mut self.data[face * texels..(face + 1) * texels];
+            draw_line(data, self.size, (ax, ay), (bx, by), flow);
         }
     }
 }
@@ -542,6 +659,365 @@ impl ChannelMap {
 /// The channel map of the rivers on `heights`.
 pub fn channel_map(heights: &CoarseHeights) -> ChannelMap {
     FlowMap::new(heights).channels()
+}
+
+/// A square of cells on the texel grid of one face. The grid continues past
+/// the face edges, as it does in `Heightmap::get`, so the window can cover a
+/// part of the next face. A cell is at a fixed place on the sphere: two
+/// windows on one face with one cell size share the cells where they overlap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Window {
+    /// The face that gives the texel grid.
+    pub face: usize,
+    /// The first texel of the window on that face. Each number is a multiple
+    /// of `cell`. It can be less than 0, and the window can end past the face
+    /// edge, by less than half a face.
+    pub x0: i64,
+    pub y0: i64,
+    /// The number of texels along one side of a cell, a power of two.
+    pub cell: usize,
+    /// The number of cells along one side of the window.
+    pub cells: usize,
+    /// The number of texels along one side of a face of the heightmap.
+    pub face_size: usize,
+}
+
+impl Window {
+    /// The window around a direction, on the face of that direction.
+    pub fn centered(d: V3, face_size: usize, cell: usize, cells: usize) -> Window {
+        assert!(cell.is_power_of_two() && cells > 0, "the window sizes");
+        let (face, a, b) = face_of(d);
+        let half = (cells / 2) as i64;
+        let first = |a: f64| {
+            let texel = (warp(a) + 1.0) * 0.5 * face_size as f64;
+            ((texel / cell as f64).floor() as i64 - half) * cell as i64
+        };
+        Window {
+            face,
+            x0: first(a),
+            y0: first(b),
+            cell,
+            cells,
+            face_size,
+        }
+    }
+
+    /// The equal-angle coordinate of a place along one axis. `p` is in cells
+    /// from the first cell, and `first` is `x0` or `y0`.
+    fn angle_at(&self, first: i64, p: f64) -> f64 {
+        (first as f64 + p * self.cell as f64) / self.face_size as f64 * 2.0 - 1.0
+    }
+
+    /// The direction of a place in the window. `u` and `v` are in cells, and
+    /// the center of the first cell is at 0.5.
+    pub fn dir(&self, u: f64, v: f64) -> V3 {
+        let flat = |first: i64, p: f64| unwarp(self.angle_at(first, p).clamp(-1.99, 1.99));
+        face_dir(self.face, flat(self.x0, u), flat(self.y0, v))
+    }
+
+    /// The direction of the center of a cell.
+    pub fn cell_dir(&self, x: usize, y: usize) -> V3 {
+        self.dir(x as f64 + 0.5, y as f64 + 0.5)
+    }
+
+    /// The place of a direction in cells. The inverse of `dir`. The place can
+    /// be outside the window. A direction too far from the face has no place.
+    pub fn place(&self, d: V3) -> Option<(f64, f64)> {
+        let axis = self.face / 2;
+        let sign = if self.face.is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        };
+        let depth = d[axis] * sign;
+        if depth <= 0.2 {
+            return None;
+        }
+        let cells = |a: f64, first: i64| {
+            let texel = (warp(a / depth) + 1.0) * 0.5 * self.face_size as f64;
+            (texel - first as f64) / self.cell as f64
+        };
+        Some((
+            cells(d[(axis + 1) % 3], self.x0),
+            cells(d[(axis + 2) % 3], self.y0),
+        ))
+    }
+
+    /// The cell that holds a direction.
+    pub fn cell_at(&self, d: V3) -> Option<(usize, usize)> {
+        let (u, v) = self.place(d)?;
+        let inside = |p: f64| p >= 0.0 && p < self.cells as f64;
+        (inside(u) && inside(v)).then_some((u as usize, v as usize))
+    }
+
+    /// The solid angle of a cell, in steradians.
+    pub fn cell_solid_angle(&self, x: usize, y: usize) -> f64 {
+        let flat = |first: i64, i: usize| unwarp(self.angle_at(first, i as f64 + 0.5));
+        let (fu, fv) = (flat(self.x0, x), flat(self.y0, y));
+        let step =
+            |f: f64| (1.0 + f * f) * FRAC_PI_4 * 2.0 * self.cell as f64 / self.face_size as f64;
+        let r = 1.0 + fu * fu + fv * fv;
+        step(fu) * step(fv) / (r * r.sqrt())
+    }
+
+    /// The number of channel texels along one side of the window.
+    pub fn channels(&self) -> usize {
+        2 * self.cells
+    }
+
+    /// The place of a heightmap texel of the window face in channel texels.
+    /// A texel center of the channels is at a whole number. The result is
+    /// exact.
+    pub fn channel_of_texel(&self, x: i64, y: i64) -> (f64, f64) {
+        let at = |x: i64, first: i64| ((x - first) as f64 + 0.5) * 2.0 / self.cell as f64 - 0.5;
+        (at(x, self.x0), at(y, self.y0))
+    }
+
+    /// The place of a direction in channel texels.
+    pub fn channel_of_dir(&self, d: V3) -> Option<(f64, f64)> {
+        let (u, v) = self.place(d)?;
+        Some((2.0 * u - 0.5, 2.0 * v - 0.5))
+    }
+
+    /// Whether a place in channel texels is far enough from the sides of the
+    /// window for a sure distance to the nearest river.
+    pub fn covers(&self, u: f64, v: f64) -> bool {
+        let last = (self.channels() - 1) as f64 - WINDOW_MARGIN;
+        u >= WINDOW_MARGIN && v >= WINDOW_MARGIN && u <= last && v <= last
+    }
+}
+
+impl Grid for Window {
+    fn neighbors(&self, i: usize) -> [u32; 8] {
+        let n = self.cells as i64;
+        let (x, y) = ((i % self.cells) as i64, (i / self.cells) as i64);
+        STEPS.map(|(dx, dy)| {
+            let (x, y) = (x + dx, y + dy);
+            if x < 0 || y < 0 || x >= n || y >= n {
+                return NONE;
+            }
+            (y * n + x) as u32
+        })
+    }
+
+    /// The key is the place of the cell on the face, so a cell has one
+    /// pattern in each window that holds it.
+    fn scatter(&self, i: usize, k: usize) -> f64 {
+        let cell = self.cell as i64;
+        let x = self.x0.div_euclid(cell) + (i % self.cells) as i64;
+        let y = self.y0.div_euclid(cell) + (i / self.cells) as i64;
+        let grid = (self.face as u32) << 8 | self.cell.trailing_zeros();
+        let key = mix(mix(mix(grid) ^ x as u32) ^ y as u32);
+        scatter(key as usize, k)
+    }
+
+    fn solid_angle(&self, i: usize) -> f64 {
+        self.cell_solid_angle(i % self.cells, i / self.cells)
+    }
+}
+
+/// The levels of the cells of a window.
+#[derive(Clone)]
+pub struct WindowHeights {
+    window: Window,
+    /// The cells in row order.
+    levels: Vec<u16>,
+}
+
+impl WindowHeights {
+    /// Reads the heightmap. A cell of more than one texel holds the mean of
+    /// 4 of its texels.
+    pub fn new(map: &Heightmap, window: Window) -> WindowHeights {
+        assert_eq!(map.face_size(), window.face_size, "the face size");
+        let cell = window.cell as i64;
+        let face = window.face;
+        let mut levels = Vec::with_capacity(window.cells * window.cells);
+        for cy in 0..window.cells as i64 {
+            for cx in 0..window.cells as i64 {
+                let (x, y) = (window.x0 + cx * cell, window.y0 + cy * cell);
+                levels.push(if cell == 1 {
+                    map.get(face, x, y)
+                } else {
+                    let (near, far) = (cell / 4, cell * 3 / 4);
+                    let at = |dx: i64, dy: i64| u32::from(map.get(face, x + dx, y + dy));
+                    let sum = at(near, near) + at(far, near) + at(near, far) + at(far, far);
+                    ((sum + 2) / 4) as u16
+                });
+            }
+        }
+        WindowHeights { window, levels }
+    }
+
+    /// `level` gives the level at the center of each cell.
+    pub fn from_fn(window: Window, level: impl Fn(V3) -> u16) -> WindowHeights {
+        let cells = 0..window.cells * window.cells;
+        let levels = cells.map(|i| level(window.cell_dir(i % window.cells, i / window.cells)));
+        WindowHeights {
+            window,
+            levels: levels.collect(),
+        }
+    }
+
+    pub fn window(&self) -> Window {
+        self.window
+    }
+
+    pub fn level(&self, x: usize, y: usize) -> u16 {
+        self.levels[y * self.window.cells + x]
+    }
+}
+
+/// The path of the water in a window. The water of a land cell at a side of
+/// the window can leave the window.
+struct WindowFlow {
+    window: Window,
+    receiver: Vec<u32>,
+    area: Vec<f32>,
+    /// The smallest area that a river cell drains, in steradians.
+    min_area: f64,
+}
+
+impl WindowFlow {
+    /// `global` gives the rivers that come into the window from outside.
+    fn new(heights: &WindowHeights, global: Option<&FlowMap>) -> WindowFlow {
+        let window = heights.window;
+        let mut inflow = Vec::new();
+        if let Some(global) = global {
+            let m = global.m;
+            // The window cell that holds the center of a cell of `global`.
+            let inside = |i: usize| {
+                let (face, x, y) = split(m, i);
+                let (x, y) = window.cell_at(cell_dir(m, face, x, y))?;
+                Some(y * window.cells + x)
+            };
+            // A river that comes in keeps the area that it drains outside.
+            for (i, &area) in global.area.iter().enumerate() {
+                let to = global.receiver[i];
+                if f64::from(area) < RIVER_MIN_AREA || to == NONE || inside(i).is_some() {
+                    continue;
+                }
+                if let Some(cell) = inside(to as usize) {
+                    inflow.push((cell, f64::from(area)));
+                }
+            }
+        }
+        let (receiver, area) = drain(&window, &heights.levels, &inflow);
+        let count = heights.levels.len();
+        let solid: f64 = (0..count).map(|i| window.solid_angle(i)).sum();
+        WindowFlow {
+            window,
+            receiver,
+            area,
+            min_area: RIVER_MIN_CELLS * solid / count as f64,
+        }
+    }
+
+    /// The river cells as nodes on the plane of the window, in cells.
+    fn rivers(&self) -> Rivers {
+        let cells = self.window.cells;
+        let place = |i: usize| [(i % cells) as f64 + 0.5, (i / cells) as f64 + 0.5, 0.0];
+        // The place one cell past each side that the cell is at.
+        let outside = |i: usize| {
+            let past = |c: usize| match c {
+                0 => -1.0,
+                c if c == cells - 1 => 1.0,
+                _ => 0.0,
+            };
+            let [x, y, _] = place(i);
+            [x + past(i % cells), y + past(i / cells), 0.0]
+        };
+        Rivers::new(&self.receiver, &self.area, self.min_area, place, outside)
+    }
+
+    fn channels(&self) -> ChannelWindow {
+        let size = self.window.channels();
+        let mut data = [255, 0].repeat(size * size);
+        let mut rivers = self.rivers();
+        rivers.smooth_flat();
+        // A cell is 2 channel texels wide.
+        let texel = |p: V3| (2.0 * p[0] - 0.5, 2.0 * p[1] - 0.5);
+        for (k, &cell) in rivers.cells.iter().enumerate() {
+            let flow = size_byte(f64::from(self.area[cell as usize]) / self.min_area);
+            let (a, b) = (rivers.pos[k], rivers.pos[rivers.down[k] as usize]);
+            draw_line(&mut data, size, texel(a), texel(b), flow);
+        }
+        ChannelWindow {
+            window: self.window,
+            data,
+        }
+    }
+}
+
+/// The rivers of a window as a texture, with 2 texels for each cell along
+/// one axis. A texel has the two bytes of a `ChannelMap` texel. The distance
+/// is in channel texels of the window.
+pub struct ChannelWindow {
+    window: Window,
+    data: Vec<u8>,
+}
+
+impl ChannelWindow {
+    pub fn window(&self) -> Window {
+        self.window
+    }
+
+    /// The number of texels along one side.
+    pub fn size(&self) -> usize {
+        self.window.channels()
+    }
+
+    /// The two bytes of each texel, in row order.
+    pub fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn texel(&self, x: usize, y: usize) -> [u8; 2] {
+        let at = (y * self.size() + x) * 2;
+        [self.data[at], self.data[at + 1]]
+    }
+
+    /// The distance to the nearest river in channel texels, and the size of
+    /// the river from 0 to 255. `u` and `v` are in channel texels, and a
+    /// texel center is at a whole number. Each result is a blend of the 4
+    /// texels around the place, so a small change of the place gives a small
+    /// change of the result. `stamp.wgsl` has the same steps.
+    pub fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+        let last = (self.size() - 1) as f64;
+        let (x0, y0) = (u.floor(), v.floor());
+        let (tx, ty) = (u - x0, v - y0);
+        let at =
+            |x: f64, y: f64| self.texel(x.clamp(0.0, last) as usize, y.clamp(0.0, last) as usize);
+        let texels = [
+            at(x0, y0),
+            at(x0 + 1.0, y0),
+            at(x0, y0 + 1.0),
+            at(x0 + 1.0, y0 + 1.0),
+        ];
+        let byte = |i: usize| blend(texels.map(|texel| f64::from(texel[i])), tx, ty);
+        (byte(0) / CHANNEL_SCALE, byte(1))
+    }
+
+    /// The same as `sample`, at a place that `Window::covers`.
+    pub fn lookup(&self, u: f64, v: f64) -> Option<(f64, f64)> {
+        self.window.covers(u, v).then(|| self.sample(u, v))
+    }
+
+    /// The same as `lookup`, at a direction.
+    pub fn at(&self, d: V3) -> Option<(f64, f64)> {
+        let (u, v) = self.window.channel_of_dir(d)?;
+        self.lookup(u, v)
+    }
+
+    pub fn has_rivers(&self) -> bool {
+        let texels = self.data.as_chunks::<2>().0;
+        texels.iter().any(|texel| texel[1] > 0)
+    }
+}
+
+/// The channels of the rivers in a window. A river of `global` that comes
+/// into the window keeps its size.
+pub fn window_channels(heights: &WindowHeights, global: &FlowMap) -> ChannelWindow {
+    WindowFlow::new(heights, Some(global)).channels()
 }
 
 #[cfg(test)]
@@ -914,6 +1390,264 @@ mod tests {
         }
         assert!(sources >= 1 && outlets >= 1);
         assert!(moved > count / 4, "{moved} of {count}");
+    }
+
+    /// One large slope down to a sea, with low hills on it.
+    fn slope_meters(d: V3) -> f64 {
+        let low = lonlat_to_dir(160.0, -20.0);
+        let along = d[0] * low[0] + d[1] * low[1] + d[2] * low[2];
+        -300.0
+            + 1300.0 * (1.0 - along)
+            + 60.0 * (40.0 * d[0]).sin() * (40.0 * d[1]).cos()
+            + 40.0 * (55.0 * d[2] + 20.0 * d[0]).sin()
+            + 10.0 * (300.0 * d[1]).sin() * (300.0 * d[2]).cos()
+    }
+
+    fn slope(d: V3) -> u16 {
+        meters_to_level(slope_meters(d))
+    }
+
+    /// A valley along the equator that goes down to the west, from face 2 to
+    /// face 0.
+    fn equator_valley(d: V3) -> u16 {
+        let (lon, lat) = dir_to_lonlat(d);
+        let across = (lat - 0.4).abs();
+        meters_to_level(if lon > 10.0 && lon < 80.0 && across < 3.0 {
+            100.0 + 20.0 * (lon - 10.0) + 300.0 * across
+        } else {
+            OCEAN
+        })
+    }
+
+    impl WindowFlow {
+        fn rivers_count(&self) -> usize {
+            let rivers = self.area.iter().filter(|&&a| f64::from(a) >= self.min_area);
+            rivers.count()
+        }
+    }
+
+    #[test]
+    fn window_place_is_the_inverse_of_the_cell_direction() {
+        let past_edges = Window {
+            face: 3,
+            x0: -40,
+            y0: 200,
+            cell: 4,
+            cells: 32,
+            face_size: 256,
+        };
+        let centered = Window::centered(lonlat_to_dir(44.0, 30.0), 1024, 2, 48);
+        assert_eq!((centered.face, centered.x0 % 2, centered.y0 % 2), (0, 0, 0));
+        assert_eq!(centered.cell_at(lonlat_to_dir(44.0, 30.0)), Some((24, 24)));
+        for window in [past_edges, centered] {
+            for y in 0..window.cells {
+                for x in 0..window.cells {
+                    let d = window.cell_dir(x, y);
+                    let (u, v) = window.place(d).expect("the cell has a place");
+                    assert!((u - x as f64 - 0.5).abs() < 1e-9, "{x} {y}: {u}");
+                    assert!((v - y as f64 - 0.5).abs() < 1e-9, "{x} {y}: {v}");
+                    assert_eq!(window.cell_at(d), Some((x, y)));
+                }
+            }
+            let behind = scale(window.cell_dir(0, 0), -1.0);
+            assert_eq!(window.place(behind), None);
+            // A texel of the heightmap, 5 and 7 texels from the first one.
+            let cell = window.cell as f64;
+            let d = window.dir(5.5 / cell, 7.5 / cell);
+            let (u, v) = window.channel_of_dir(d).expect("the texel has a place");
+            let exact = window.channel_of_texel(window.x0 + 5, window.y0 + 7);
+            assert!((u - exact.0).abs() < 1e-9 && (v - exact.1).abs() < 1e-9);
+        }
+
+        // A window on one full face has the cells of that face.
+        let m = 32;
+        let face = Window {
+            face: 4,
+            x0: 0,
+            y0: 0,
+            cell: 8,
+            cells: m,
+            face_size: 256,
+        };
+        let solid = solid_angles(m);
+        for (i, &solid) in solid.iter().enumerate() {
+            let (x, y) = (i % m, i / m);
+            assert!(angle(face.cell_dir(x, y), cell_dir(m, 4, x, y)) < 1e-12);
+            assert!((face.cell_solid_angle(x, y) - solid).abs() < 1e-12);
+        }
+        assert!(face.covers(8.0, 55.0) && !face.covers(7.9, 55.0));
+        assert!(!face.covers(8.0, 55.1));
+    }
+
+    #[test]
+    fn a_window_has_more_rivers_than_the_global_map() {
+        let m = 256;
+        let global = FlowMap::new(&CoarseHeights::from_fn(m, slope));
+        // A cell of the window is a quarter of a cell of the global map.
+        let window = Window::centered(lonlat_to_dir(10.0, 5.0), 1024, 1, 128);
+        let on_ground = cells(m).filter(|&(face, x, y)| {
+            global.is_river(face, x, y) && window.cell_at(cell_dir(m, face, x, y)).is_some()
+        });
+        let coarse = on_ground.count();
+        let flow = WindowFlow::new(&WindowHeights::from_fn(window, slope), Some(&global));
+        let fine = flow.rivers_count();
+        assert!(coarse > 10, "{coarse}");
+        assert!(fine > 5 * coarse, "{fine} {coarse}");
+    }
+
+    #[test]
+    fn a_window_with_no_sea_drains_to_its_border() {
+        let window = Window::centered(lonlat_to_dir(10.0, 5.0), 1024, 2, 64);
+        let land = |d: V3| meters_to_level(slope_meters(d) + 2000.0);
+        let heights = WindowHeights::from_fn(window, land);
+        assert!(heights.levels.iter().all(|&level| level >= sea()));
+        let flow = WindowFlow::new(&heights, None);
+        let cells = window.cells;
+        for start in 0..cells * cells {
+            let (mut i, mut steps) = (start, 0);
+            while flow.receiver[i] != OUT {
+                i = flow.receiver[i] as usize;
+                steps += 1;
+                assert!(steps <= cells * cells, "the receivers make a loop");
+            }
+            let (x, y) = (i % cells, i / cells);
+            assert!(x == 0 || y == 0 || x == cells - 1 || y == cells - 1);
+        }
+        assert!(flow.rivers_count() > 50);
+        assert!(flow.channels().has_rivers());
+    }
+
+    #[test]
+    fn a_river_keeps_its_size_when_it_enters_a_window() {
+        let global = FlowMap::new(&CoarseHeights::from_fn(64, equator_valley));
+        // The window is 2 cells of the global map wide, on the low part of
+        // the valley.
+        let window = Window::centered(lonlat_to_dir(20.0, 0.4), 8192, 2, 128);
+        let heights = WindowHeights::from_fn(window, equator_valley);
+        let alone = WindowFlow::new(&heights, None).channels();
+        let fed = window_channels(&heights, &global);
+        let size = fed.size();
+        let texels = |map: &ChannelWindow| {
+            let all = (0..size * size).map(|i| map.texel(i % size, i / size));
+            all.collect::<Vec<_>>()
+        };
+        let largest = |map: &ChannelWindow| texels(map).iter().map(|t| t[1]).max().unwrap();
+        assert!(largest(&alone) < 220, "{}", largest(&alone));
+        assert_eq!(largest(&fed), 255);
+        // The large river goes on to the side of the window.
+        let on_river = texels(&fed);
+        let on_river = on_river.iter().filter(|t| t[0] < 32 && t[1] >= 250);
+        assert!(on_river.count() > 100);
+    }
+
+    #[test]
+    fn a_cell_has_the_same_streams_in_two_windows() {
+        let first = Window::centered(lonlat_to_dir(10.0, 5.0), 1024, 2, 64);
+        let second = Window {
+            x0: first.x0 + 40,
+            y0: first.y0 + 24,
+            ..first
+        };
+        let flows = [first, second].map(|window| {
+            let flow = WindowFlow::new(&WindowHeights::from_fn(window, slope), None);
+            (window, flow)
+        });
+        // The receiver of a cell, as a place on the face in cells.
+        let receiver = |(window, flow): &(Window, WindowFlow), x: i64, y: i64| {
+            let (x0, y0) = (window.x0 / 2, window.y0 / 2);
+            let to = flow.receiver[((y - y0) * 64 + x - x0) as usize] as i64;
+            (to % 64 + x0, to / 64 + y0)
+        };
+        // The cells that are 10 cells or more from the sides of each window.
+        let (mut same, mut all) = (0, 0);
+        for y in second.y0 / 2 + 10..first.y0 / 2 + 54 {
+            for x in second.x0 / 2 + 10..first.x0 / 2 + 54 {
+                all += 1;
+                same += usize::from(receiver(&flows[0], x, y) == receiver(&flows[1], x, y));
+            }
+        }
+        assert!(all > 500);
+        eprintln!("the same receiver: {same} of {all}");
+        assert!(same * 100 >= all * 90, "{same} of {all}");
+    }
+
+    #[test]
+    fn a_window_past_a_face_edge_follows_the_land_of_the_next_face() {
+        let n = 256;
+        let mut map = Heightmap::new(n, meters_to_level(OCEAN));
+        for face in [0, 2] {
+            let levels: Vec<u16> = (0..n * n)
+                .map(|i| equator_valley(map.texel_dir(face, i % n, i / n)))
+                .collect();
+            let all = TexelRect {
+                x0: 0,
+                y0: 0,
+                x1: n,
+                y1: n,
+            };
+            map.store_rect(face, all, &levels);
+        }
+        // The faces meet at longitude 45.
+        let window = Window::centered(lonlat_to_dir(44.0, 0.4), n, 1, 64);
+        assert_eq!(window.face, 0);
+        assert!(window.x0 + 64 > n as i64 + 20);
+        let heights = WindowHeights::new(&map, window);
+        for y in 0..64 {
+            for x in 0..64 {
+                let d = window.cell_dir(x, y);
+                assert_eq!(heights.level(x, y), map.sample(d), "{x} {y}");
+            }
+        }
+        let level_at = |lon: f64, lat: f64| {
+            let (x, y) = window
+                .cell_at(lonlat_to_dir(lon, lat))
+                .expect("in the window");
+            assert!(x as i64 + window.x0 >= n as i64);
+            heights.level(x, y)
+        };
+        assert!(level_at(48.0, 0.4) >= sea() && level_at(48.0, 6.0) < sea());
+
+        // The river is in each column of texels, on both sides of the edge.
+        let channels = WindowFlow::new(&heights, None).channels();
+        let edge = 2 * (n - window.x0 as usize);
+        assert!(edge > 40 && edge < 100);
+        for x in 8..104 {
+            let nearest = (0..128).map(|y| channels.texel(x, y)[0]).min().unwrap();
+            assert!(nearest < 32, "column {x}: {nearest}");
+        }
+    }
+
+    /// Run with `--release --ignored --nocapture` for the time of a window
+    /// of `WINDOW_CELLS` cells on a face of 8192 texels.
+    #[test]
+    #[ignore]
+    fn window_time_at_the_full_size() {
+        let n = 8192;
+        let mut map = Heightmap::new(n, meters_to_level(OCEAN));
+        let land = TexelRect {
+            x0: 3000,
+            y0: 3000,
+            x1: 5400,
+            y1: 5400,
+        };
+        let levels: Vec<u16> = (0..2400 * 2400)
+            .map(|i| slope(map.texel_dir(0, 3000 + i % 2400, 3000 + i / 2400)))
+            .collect();
+        map.store_rect(0, land, &levels);
+        let global = FlowMap::new(&CoarseHeights::new(&map));
+        for cell in [1, 4] {
+            let window = Window::centered(map.texel_dir(0, 4200, 4200), n, cell, WINDOW_CELLS);
+            let start = std::time::Instant::now();
+            let heights = WindowHeights::new(&map, window);
+            let read = start.elapsed();
+            let start = std::time::Instant::now();
+            let channels = window_channels(&heights, &global);
+            eprintln!(
+                "cell {cell}: heights {read:?}, channels {:?}",
+                start.elapsed()
+            );
+            assert!(channels.has_rivers());
+        }
     }
 
     /// Run with `--release --ignored --nocapture` for the time of the flow

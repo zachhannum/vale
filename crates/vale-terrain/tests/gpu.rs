@@ -4,8 +4,9 @@ use std::sync::{Arc, OnceLock, mpsc};
 
 use vale_terrain::math::{V3, dot, lonlat_to_dir};
 use vale_terrain::{
-    ChannelMap, CoarseHeights, FACES, GROUP_STAMPS, GpuHeightmap, Heightmap, Mode, STAMP_SLOTS,
-    Stamp, StampPlan, TexelRect, channel_map,
+    ChannelMap, ChannelWindow, CoarseHeights, FACES, FlowMap, GROUP_STAMPS, GpuHeightmap,
+    Heightmap, Mode, STAMP_SLOTS, Stamp, StampPlan, TexelRect, WINDOW_CELLS, Window, WindowHeights,
+    channel_map, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -86,6 +87,9 @@ impl Gpu {
         }
         if let Some(channels) = cpu.channels() {
             map.upload_channels(&self.queue, channels);
+        }
+        if let Some(window) = cpu.window() {
+            map.upload_window(&self.queue, Some(window));
         }
         map
     }
@@ -586,6 +590,123 @@ fn upload_channels_reaches_the_shader() {
 
     map.upload_channels(&gpu.queue, &ChannelMap::empty(ChannelMap::size_for(n)));
     assert!(carve() == carved);
+}
+
+/// The face size of `window_land`. The window of a `GpuHeightmap` is half of
+/// a face wide at this size.
+const WINDOW_FACE: usize = 2 * WINDOW_CELLS;
+
+/// A heightmap with a slope and hills on faces 0 and 2, the channel map of
+/// its rivers, and a window with cells of one texel. The window is on face 0,
+/// and it covers a part of face 2. The faces meet at longitude 45.
+fn window_land() -> Heightmap {
+    type Land = (Vec<Vec<u16>>, Arc<ChannelMap>, Arc<ChannelWindow>);
+    static LAND: OnceLock<Land> = OnceLock::new();
+    let n = WINDOW_FACE;
+    let mut map = Heightmap::new(n, 0);
+    let (faces, channels, window) = LAND.get_or_init(|| {
+        let low = lonlat_to_dir(160.0, -20.0);
+        let face = |face: usize| -> Vec<u16> {
+            let texels = (0..n * n).map(|i| {
+                let d = map.texel_dir(face, i % n, i / n);
+                let slope = 31000.0 + 7000.0 * (1.0 - dot(d, low));
+                let hill = 300.0 * (40.0 * d[0]).sin() * (40.0 * d[1]).cos()
+                    + 200.0 * (55.0 * d[2] + 20.0 * d[0]).sin()
+                    + 20.0 * (300.0 * d[1]).sin() * (300.0 * d[2]).cos();
+                (slope + hill) as u16
+            });
+            texels.collect()
+        };
+        let faces = vec![face(0), face(2)];
+        let mut land = Heightmap::new(n, 0);
+        land.store_rect(0, full(n), &faces[0]);
+        land.store_rect(2, full(n), &faces[1]);
+        let flow = FlowMap::new(&CoarseHeights::new(&land));
+        let window = Window::centered(lonlat_to_dir(40.0, 3.0), n, 1, WINDOW_CELLS);
+        assert_eq!(window.face, 0);
+        assert!(window.x0 + WINDOW_CELLS as i64 > n as i64 + 150);
+        let window = window_channels(&WindowHeights::new(&land, window), &flow);
+        assert!(window.has_rivers());
+        (faces, Arc::new(flow.channels()), Arc::new(window))
+    });
+    map.store_rect(0, full(n), &faces[0]);
+    map.store_rect(2, full(n), &faces[1]);
+    map.set_channels(Some(channels.clone()));
+    map.set_window(Some(window.clone()));
+    map
+}
+
+/// Applies one carve stamp at each radius and hardness to `window_land`.
+/// Returns the largest difference between the GPU and the CPU.
+fn carve_in_window(lon: f64, lat: f64, face: usize) -> u16 {
+    let mut worst = 0;
+    for radius in [0.05, 0.08] {
+        for hardness in [0.0, 0.95] {
+            let mut cpu = window_land();
+            let mut without = window_land();
+            without.set_window(None);
+            let before = levels(&cpu);
+            let stamp = stamp(lonlat_to_dir(lon, lat), radius, hardness, Mode::Carve);
+            let plan = cpu.stamp_plan(&stamp);
+            let touched: Vec<usize> = (0..FACES).filter(|&f| plan.rects[f].is_some()).collect();
+            assert_eq!(touched, [face], "the stamp is on one face");
+            let difference = run(&mut cpu, &[stamp]).difference;
+            let after = levels(&cpu);
+            let changed = changes(&before, &after);
+            assert!(changed > 300, "radius {radius}: {changed} texels changed");
+            // The window gives the result, not the channel map.
+            without.stamp(&stamp);
+            assert!(changes(&after, &levels(&without)) > 300);
+            worst = worst.max(difference);
+        }
+    }
+    worst
+}
+
+#[test]
+fn gpu_carve_in_a_window_matches_cpu_for_one_stamp() {
+    let difference = carve_in_window(30.0, 3.0, 0);
+    eprintln!("carve in a window, largest difference: {difference}");
+    assert!(difference <= TOLERANCE, "{difference}");
+}
+
+#[test]
+fn gpu_carve_in_a_window_matches_cpu_past_a_face_edge() {
+    let difference = carve_in_window(53.0, 3.0, 2);
+    eprintln!("carve in a window past a face edge, largest difference: {difference}");
+    assert!(difference <= TOLERANCE, "{difference}");
+}
+
+/// A stroke from the face of the window to the next face.
+///
+/// The brush has no hard part, so each stamp has a different effect on a
+/// texel. On the next face, the place of a texel in the window has an error
+/// of about 0.0003 channel texels on the GPU. If many stamps have one effect
+/// on a texel, and that effect is that near to a half step, each of them
+/// rounds to the other side, and the differences add without a limit.
+#[test]
+fn gpu_carve_in_a_window_matches_cpu_for_a_stroke() {
+    let mut stamps = stroke((36.0, 2.0), (54.0, 5.0), 240, 0.05, Mode::Carve);
+    for stamp in &mut stamps {
+        stamp.hardness = 0.0;
+    }
+    let mut cpu = window_land();
+    let before = levels(&cpu);
+    let GroupRun {
+        groups, difference, ..
+    } = run_groups(&mut cpu, &stamps);
+    assert!(
+        groups.len() <= stamps.len() / GROUP_STAMPS + 2,
+        "{groups:?}"
+    );
+    let n = WINDOW_FACE * WINDOW_FACE;
+    let after = levels(&cpu);
+    for face in [0, 2] {
+        let changed = changes(&before[face * n..][..n], &after[face * n..][..n]);
+        assert!(changed > 500, "face {face}: {changed} texels changed");
+    }
+    eprintln!("carve stroke in a window, largest difference: {difference}");
+    assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
 }
 
 /// The result of the same stamps in groups and one at a time.

@@ -32,6 +32,12 @@ struct Group {
     sea: u32,
     // The number of texels along one side of a face of the channel map.
     channel_size: u32,
+    // 1 if the carve mode has a window, and 0 if not.
+    window_on: u32,
+    // The first texel, the face, and the cell size of the window.
+    window_origin: vec2<i32>,
+    window_face: u32,
+    window_cell: u32,
     stamps: array<Stamp, GROUP_STAMPS>,
 }
 
@@ -54,6 +60,11 @@ const CARVE = 4u;
 // the nearest river in channel texels, times 32. The green byte is the size
 // of that river, or 0 if no river is near.
 @group(0) @binding(6) var channels: texture_2d_array<u32>;
+// The channel texels of the window, with the same two bytes.
+@group(0) @binding(7) var window_channels: texture_2d<u32>;
+
+// The same number as `WINDOW_MARGIN` in `flow.rs`.
+const WINDOW_MARGIN = 8.0;
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -173,6 +184,64 @@ fn river_at(at: vec2<i32>) -> vec2<f32> {
     return vec2<f32>(distance, max(max(a.y, b.y), max(c0.y, d.y)));
 }
 
+// The arc tangent of each number.
+fn atan_any(t: f32) -> f32 {
+    if abs(t) <= 1.0 {
+        return atan_unit(t);
+    }
+    return sign(t) * (2.0 * PI_4 - atan_unit(1.0 / abs(t)));
+}
+
+// The distance from a texel to the nearest river of the window in channel
+// texels of the window, and the size of that river from 0 to 255. The third
+// number is 1 if the window covers the texel, and 0 if not. The steps are
+// those of `Window::channel_of_texel`, `Window::channel_of_dir`, and
+// `ChannelWindow::lookup`.
+fn window_river_at(at: vec2<i32>) -> vec3<f32> {
+    if group.window_on == 0u {
+        return vec3<f32>(0.0);
+    }
+    let cell = f32(group.window_cell);
+    var c: vec2<f32>;
+    if group.face == group.window_face {
+        // The difference of the whole numbers is exact.
+        c = (vec2<f32>(at - group.window_origin) + 0.5) * 2.0 / cell - 0.5;
+    } else {
+        // The direction of the texel, then its place on the face of the
+        // window. The texel grid of that face continues past its edges.
+        let axis = group.face / 2u;
+        var d: vec3<f32>;
+        d[axis] = 1.0 - 2.0 * f32(group.face % 2u);
+        d[(axis + 1u) % 3u] = flat_of(at.x);
+        d[(axis + 2u) % 3u] = flat_of(at.y);
+        let to = group.window_face / 2u;
+        let depth = d[to] * (1.0 - 2.0 * f32(group.window_face % 2u));
+        if depth <= 0.2 * length(d) {
+            return vec3<f32>(0.0);
+        }
+        let flat = vec2<f32>(d[(to + 1u) % 3u], d[(to + 2u) % 3u]) / depth;
+        let warp = vec2<f32>(atan_any(flat.x), atan_any(flat.y)) / PI_4;
+        let texel = (warp + 1.0) * 0.5 * f32(group.size);
+        c = (texel - vec2<f32>(group.window_origin)) * 2.0 / cell - 0.5;
+    }
+    let last = f32(textureDimensions(window_channels).x) - 1.0 - WINDOW_MARGIN;
+    if any(c < vec2<f32>(WINDOW_MARGIN)) || any(c > vec2<f32>(last)) {
+        return vec3<f32>(0.0);
+    }
+    let whole = floor(c);
+    let t = c - whole;
+    let p0 = vec2<i32>(whole);
+    let p1 = p0 + 1;
+    let a = vec2<f32>(textureLoad(window_channels, p0, 0).rg);
+    let b = vec2<f32>(textureLoad(window_channels, vec2<i32>(p1.x, p0.y), 0).rg);
+    let c0 = vec2<f32>(textureLoad(window_channels, vec2<i32>(p0.x, p1.y), 0).rg);
+    let d = vec2<f32>(textureLoad(window_channels, p1, 0).rg);
+    let top = a * (1.0 - t.x) + b * t.x;
+    let bottom = c0 * (1.0 - t.x) + d * t.x;
+    let both = top * (1.0 - t.y) + bottom * t.y;
+    return vec3<f32>(both.x / 32.0, both.y, 1.0);
+}
+
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     let at = vec2<i32>(floor(position.xy));
@@ -183,9 +252,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     // between two passes.
     var value = f32(textureLoad(before, at, 0).r);
     var changed = false;
+    // The distance to the river and its size. The window comes first. With
+    // no river near, the size is 0.
     var river = vec2<f32>(0.0);
     if group.mode == CARVE {
-        river = river_at(at);
+        let in_window = window_river_at(at);
+        if in_window.z > 0.0 {
+            river = in_window.xy;
+        } else {
+            river = river_at(at);
+        }
     }
     for (var i = 0u; i < group.count; i++) {
         let stamp = group.stamps[i];

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::bands::{Bands, SEA_LEVEL};
 use crate::cube::{FACES, face_dir, face_of, meters_to_level, unwarp, warp};
-use crate::flow::ChannelMap;
+use crate::flow::{ChannelMap, ChannelWindow};
 use crate::math::{V3, cross, normalize};
 
 /// The side of a tile, in texels.
@@ -122,6 +122,9 @@ pub struct Heightmap {
     undo_limit: usize,
     /// The rivers that the carve mode follows.
     channels: Option<Arc<ChannelMap>>,
+    /// The rivers of a part of the sphere at a small scale. The carve mode
+    /// follows them where the window has them.
+    window: Option<Arc<ChannelWindow>>,
     /// The band limits and the color ramp of the preview.
     pub bands: Bands,
 }
@@ -153,6 +156,7 @@ impl Heightmap {
             redo: VecDeque::new(),
             undo_limit: UNDO_MEMORY_LIMIT,
             channels: None,
+            window: None,
             bands: Bands::default(),
         };
         map.mark_all_dirty();
@@ -176,6 +180,16 @@ impl Heightmap {
 
     pub fn channels(&self) -> Option<&Arc<ChannelMap>> {
         self.channels.as_ref()
+    }
+
+    /// Sets the window of small rivers. The carve mode follows it on the
+    /// ground that `Window::covers`, and the channel map on the other ground.
+    pub fn set_window(&mut self, window: Option<Arc<ChannelWindow>>) {
+        self.window = window;
+    }
+
+    pub fn window(&self) -> Option<&Arc<ChannelWindow>> {
+        self.window.as_ref()
     }
 
     /// The face and the texels of each tile that holds memory.
@@ -615,6 +629,7 @@ impl Heightmap {
         };
         let old_at = |x: usize, y: usize| f64::from(before[y * bw + x]);
         let channels = self.channels.clone();
+        let window = self.window.clone();
         let sea = f64::from(meters_to_level(SEA_LEVEL));
         let channel_size = channels.as_ref().map_or(0.0, |c| c.size() as f64);
         let n = self.n as f64;
@@ -647,15 +662,29 @@ impl Heightmap {
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
                             Mode::Carve => {
-                                let Some(channels) = &channels else { continue };
-                                // The place of the texel in the channel map.
-                                let at = |x: usize| (x as f64 + 0.5) * channel_size / n - 0.5;
-                                let (distance, flow) = channels.sample(face, at(x), at(y));
-                                if flow == 0 {
+                                // The place of the texel in the window. On
+                                // the face of the window, the place is exact.
+                                let in_window = window.as_ref().and_then(|channels| {
+                                    let window = channels.window();
+                                    let (u, v) = if window.face == face {
+                                        window.channel_of_texel(x as i64, y as i64)
+                                    } else {
+                                        window.channel_of_dir(face_dir(face, fu, fv))?
+                                    };
+                                    channels.lookup(u, v)
+                                });
+                                let in_map = || {
+                                    // The place of the texel in the channel map.
+                                    let at = |x: usize| (x as f64 + 0.5) * channel_size / n - 0.5;
+                                    let (distance, flow) =
+                                        channels.as_ref()?.sample(face, at(x), at(y));
+                                    (flow > 0).then_some((distance, f64::from(flow)))
+                                };
+                                let Some((distance, flow)) = in_window.or_else(in_map) else {
                                     continue;
-                                }
+                                };
                                 // A large river has a wide and deep valley.
-                                let size = f64::from(flow) / 255.0;
+                                let size = flow / 255.0;
                                 let k = (distance / (1.5 + 4.5 * size)).clamp(0.0, 1.0);
                                 let profile = 1.0 - k * k * (3.0 - 2.0 * k);
                                 let depth =
@@ -707,7 +736,9 @@ fn save_tile(stroke: &mut Option<Saved>, index: usize, tile: &Option<Tile>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::{CoarseHeights, channel_map};
+    use crate::flow::{
+        CoarseHeights, FlowMap, Window, WindowHeights, channel_map, window_channels,
+    };
     use crate::math::{angle, dir_to_lonlat, lonlat_to_dir};
 
     fn raise(center: V3, radius: f64) -> Stamp {
@@ -1199,6 +1230,76 @@ mod tests {
         assert_eq!(channels.at(far.center).1, 0);
         assert!(map.stamp(&far) > 0);
         assert!(face_levels(&map) == after);
+    }
+
+    /// `valley` with a channel map of cells that are 4 texels wide, and a
+    /// window of `cells` cells of one texel around the river at longitude 0.
+    fn valley_with_window(cells: usize) -> Heightmap {
+        let mut map = valley();
+        let flow = FlowMap::new(&CoarseHeights::from_fn(64, |d| map.sample(d)));
+        map.set_channels(Some(Arc::new(flow.channels())));
+        let window = Window::centered(lonlat_to_dir(0.0, RIVER_LAT), 256, 1, cells);
+        let channels = window_channels(&WindowHeights::new(&map, window), &flow);
+        assert!(channels.has_rivers());
+        map.set_window(Some(Arc::new(channels)));
+        map
+    }
+
+    /// The number of texels across the river at longitude 0 that a carve
+    /// stroke along the river lowers by more than half of the largest change.
+    fn valley_width(map: &mut Heightmap) -> usize {
+        let before = face_levels(map);
+        for step in -2..=2 {
+            map.stamp(&carve(f64::from(step), RIVER_LAT, 0.1));
+        }
+        let after = face_levels(map);
+        let column = place(map, 0.0, RIVER_LAT) % 256;
+        let lowered: Vec<u16> = (0..256)
+            .map(|y| before[y * 256 + column] - after[y * 256 + column])
+            .collect();
+        let most = *lowered.iter().max().unwrap();
+        assert!(most > 500, "{most}");
+        lowered.iter().filter(|&&change| change > most / 2).count()
+    }
+
+    #[test]
+    fn carve_in_a_window_cuts_a_narrow_valley() {
+        let mut map = valley_with_window(96);
+        let narrow = valley_width(&mut map);
+        let mut map = valley_with_window(96);
+        map.set_window(None);
+        let wide = valley_width(&mut map);
+        assert!(narrow >= 1 && 3 * narrow <= wide, "{narrow} {wide}");
+    }
+
+    #[test]
+    fn carve_outside_the_window_uses_the_global_rivers() {
+        let mut with = valley_with_window(48);
+        let mut without = valley_with_window(48);
+        without.set_window(None);
+        // The first stamp is far from the window. The second stamp covers
+        // the window and the ground around it.
+        for stamp in [carve(-15.0, RIVER_LAT, 0.1), carve(0.0, RIVER_LAT, 0.3)] {
+            let before = face_levels(&with);
+            assert!(before == face_levels(&without));
+            with.stamp(&stamp);
+            without.stamp(&stamp);
+            let (a, b) = (face_levels(&with), face_levels(&without));
+            assert!(b != before);
+            let window = with.window().expect("the map has a window").window();
+            let mut inside = 0;
+            for (i, (a, b)) in a.iter().zip(&b).enumerate() {
+                let (u, v) = window.channel_of_texel((i % 256) as i64, (i / 256) as i64);
+                if window.covers(u, v) {
+                    inside += usize::from(a != b);
+                } else {
+                    assert_eq!(a, b, "texel {i}");
+                }
+            }
+            assert_eq!(inside > 100, stamp.radius > 0.2, "{inside}");
+            with.store_rect(0, face_rect(256), &before);
+            without.store_rect(0, face_rect(256), &before);
+        }
     }
 
     #[test]
