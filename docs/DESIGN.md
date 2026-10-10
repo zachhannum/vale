@@ -209,7 +209,7 @@ The app has two answers. A regional source with partial extents draws over the w
 
 ## Drawing on the globe
 
-The world view is a globe that you rotate, in the orthographic projection. You draw on it directly. All drawing tools work in sphere coordinates, so the same tools also work in a map frame of any projection. A switch shows the world as a flat map, and the same tools work there.
+The world view is a globe that you rotate, in the orthographic projection. You draw on it directly. All drawing tools work in sphere coordinates, so the same tools also work in a map frame of any projection. A switch shows the world as a flat map, and the same tools work there. The brush outline shows its true projected shape there, so you see the distortion of the flat map.
 
 This removes the main pain of the old workflow. You no longer paint on an equirectangular image, where shapes stretch toward the poles. You no longer paint in several projections and join the parts.
 
