@@ -595,9 +595,14 @@ fn reach(flow: u8) -> f64 {
     (widest + 1.5).min(CHANNEL_REACH)
 }
 
+/// The largest distance byte of a texel that is on a river, which is one
+/// channel texel.
+const ON_RIVER: u8 = CHANNEL_SCALE as u8;
+
 /// Draws a straight part of a river from `a` to `b` into a square of channel
 /// texels with `size` texels along one side. The part writes the texels in
-/// its reach. A texel keeps the nearest river that writes it.
+/// its reach. A texel on a river keeps the largest river that writes it. Each
+/// other texel keeps the nearest river.
 fn draw_line(data: &mut [u8], size: usize, a: (f64, f64), b: (f64, f64), flow: u8) {
     let ((ax, ay), (bx, by)) = (a, b);
     let last = (size - 1) as f64;
@@ -630,7 +635,16 @@ fn draw_line(data: &mut [u8], size: usize, a: (f64, f64), b: (f64, f64), flow: u
             let byte = byte as u8;
             let at = (y * size + x) * 2;
             let old = &mut data[at..at + 2];
-            if byte < old[0] || (byte == old[0] && flow > old[1]) {
+            // On a river, the largest river comes first. Thus a small stream
+            // next to a large river does not cut its line.
+            let key = |byte: u8, flow: u8| {
+                if byte <= ON_RIVER {
+                    (0, 255 - flow, byte)
+                } else {
+                    (1, byte, 255 - flow)
+                }
+            };
+            if key(byte, flow) < key(old[0], old[1]) {
                 old.copy_from_slice(&[byte, flow]);
             }
         }
