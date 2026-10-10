@@ -8,6 +8,11 @@ use vale_terrain::Mode;
 /// The number of strokes that the stats keep.
 pub const KEPT_STROKES: usize = 8;
 
+/// The number of frame times that the stats keep.
+pub const KEPT_FRAMES: usize = 240;
+/// The longest time between two frames that counts as a frame time.
+const IDLE_MS: f64 = 100.0;
+
 /// What the stroke delay covers.
 pub const DELAY_NOTE: &str = "The delay is the time from the frame that read the pen to the end \
      of the GPU work. The time from the pen to egui is not included. The time \
@@ -140,6 +145,10 @@ pub struct Stats {
     pub face_size: u32,
     /// The name and the backend of the GPU adapter.
     pub adapter: String,
+    /// The time from one frame to the next, in milliseconds, for the last
+    /// frames.
+    frames: VecDeque<f64>,
+    last_frame: Option<Instant>,
 }
 
 impl Stats {
@@ -215,6 +224,39 @@ impl Stats {
     pub fn worst_delay_ms(&self) -> Option<f64> {
         let with_samples = self.strokes.iter().filter(|s| s.delay_ms.count > 0);
         with_samples.map(|s| s.delay_ms.worst).reduce(f64::max)
+    }
+
+    /// Counts one frame of the UI. A time above `IDLE_MS` is a pause of the
+    /// UI and is not a frame time.
+    pub fn tick(&mut self, now: Instant) {
+        if let Some(last) = self.last_frame.replace(now) {
+            let ms = now.duration_since(last).as_secs_f64() * 1e3;
+            if ms < IDLE_MS {
+                self.frames.push_back(ms);
+            }
+            if self.frames.len() > KEPT_FRAMES {
+                self.frames.pop_front();
+            }
+        }
+    }
+
+    /// The mean and the worst frame time in milliseconds.
+    pub fn frame_time(&self) -> Option<(f64, f64)> {
+        let worst = self.frames.iter().copied().reduce(f64::max)?;
+        Some((
+            self.frames.iter().sum::<f64>() / self.frames.len() as f64,
+            worst,
+        ))
+    }
+
+    pub fn frame_time_line(&self) -> String {
+        match self.frame_time() {
+            Some((mean, worst)) => format!(
+                "Frame time of the last {} frames: mean {mean:.2} ms, worst {worst:.2} ms",
+                self.frames.len()
+            ),
+            None => "Frame time: no frames".to_string(),
+        }
     }
 
     pub fn gpu_line(&self) -> String {

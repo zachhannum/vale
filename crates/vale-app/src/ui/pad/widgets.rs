@@ -2,9 +2,12 @@
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Response, Sense, pos2, vec2};
 
+use eframe::egui_wgpu::wgpu;
+
 use super::geometry::{CELL, PAD, ROW, TOUCH};
 use super::icons::{self, Icon};
 use super::theme;
+use crate::globe::backdrop::card_shape;
 
 /// A control that a finger can hit, as the last frame drew it.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,8 +44,10 @@ fn fade(color: Color32, enabled: bool) -> Color32 {
 }
 
 /// A floating card. A touch on the card does not go to the canvas below it.
+/// `backdrop`: the card shows the blurred canvas, in a texture of this format.
 pub fn card(
     ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
     id: &str,
     rect: Rect,
     order: egui::Order,
@@ -58,7 +63,12 @@ pub fn card(
         .show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
             ui.painter().add(theme::shadow().as_shape(rect, radius));
-            ui.painter().rect_filled(rect, radius, theme::card());
+            if let Some(format) = backdrop {
+                let shape = card_shape(format, rect, radius, ctx.pixels_per_point());
+                ui.painter().add(shape);
+            }
+            ui.painter()
+                .rect_filled(rect, radius, theme::card(backdrop.is_some()));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
             ui.set_clip_rect(rect);

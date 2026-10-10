@@ -8,6 +8,7 @@ use eframe::egui_wgpu::{self, wgpu};
 
 use vale_terrain::{FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan, TexelRect};
 
+use super::backdrop::{Backdrop, Canvas};
 use super::preview::BandUniform;
 
 /// The time between two polls of the device while GPU work is in flight.
@@ -129,6 +130,12 @@ impl Resources {
             heights,
             _poller: Poller::new(device.clone(), busy.clone()),
         }
+    }
+
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 
@@ -311,6 +318,9 @@ pub struct GlobeCallback {
     pub face_size: u32,
     pub uniforms: Uniforms,
     pub link: Link,
+    /// `Some`: the globe goes into the canvas texture of the backdrop, and
+    /// the cards show a blurred copy of it.
+    pub backdrop: Option<Canvas>,
 }
 
 /// The commands of one `prepare` call that wait for a submit.
@@ -434,8 +444,8 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
-        _egui_encoder: &mut wgpu::CommandEncoder,
+        screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        egui_encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let stale = resources
@@ -485,6 +495,18 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         for (stroke, passes) in batch.passes {
             let _ = self.link.events.send(Event::Passes { stroke, passes });
         }
+        if let Some(canvas) = &self.backdrop {
+            let kept = resources.remove::<Backdrop>();
+            let mut backdrop = kept
+                .filter(|b| b.format == self.format)
+                .unwrap_or_else(|| Backdrop::new(device, self.format));
+            let res: &Resources = resources.get().expect("inserted above");
+            let size = screen_descriptor.size_in_pixels;
+            backdrop.render(device, queue, egui_encoder, size, canvas, |pass| {
+                res.draw(pass);
+            });
+            resources.insert(backdrop);
+        }
         Vec::new()
     }
 
@@ -494,11 +516,14 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         resources: &egui_wgpu::CallbackResources,
     ) {
-        let Some(res) = resources.get::<Resources>() else {
+        if self.backdrop.is_some() {
+            if let Some(backdrop) = resources.get::<Backdrop>() {
+                backdrop.blit(render_pass);
+            }
             return;
-        };
-        render_pass.set_pipeline(&res.pipeline);
-        render_pass.set_bind_group(0, &res.bind_group, &[]);
-        render_pass.draw(0..3, 0..1);
+        }
+        if let Some(res) = resources.get::<Resources>() {
+            res.draw(render_pass);
+        }
     }
 }

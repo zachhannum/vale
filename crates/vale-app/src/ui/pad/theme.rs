@@ -14,10 +14,11 @@ pub const CONTROL_RADIUS: f32 = 10.0;
 /// The opacity of a control that does nothing yet.
 pub const OFF: f32 = 0.35;
 
-/// The fill of a card. Egui has no blur, so the card is less clear than the
-/// card of the mockup.
-pub fn card() -> Color32 {
-    Color32::from_rgba_unmultiplied(26, 29, 33, 228)
+/// The fill of a card. `blur`: the card shows the blurred canvas below the
+/// fill. A card with no blur is less clear.
+pub fn card(blur: bool) -> Color32 {
+    let alpha = if blur { 184 } else { 228 };
+    Color32::from_rgba_unmultiplied(26, 29, 33, alpha)
 }
 
 /// The fill of a selected control.
