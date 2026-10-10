@@ -5,9 +5,11 @@
 
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
+use std::sync::Arc;
 
-use crate::bands::Bands;
-use crate::cube::{FACES, face_dir, face_of, unwarp, warp};
+use crate::bands::{Bands, SEA_LEVEL};
+use crate::cube::{FACES, face_dir, face_of, meters_to_level, unwarp, warp};
+use crate::flow::ChannelMap;
 use crate::math::{V3, cross, normalize};
 
 /// The side of a tile, in texels.
@@ -24,6 +26,9 @@ pub enum Mode {
     Lower,
     Smooth,
     Flatten,
+    /// Lowers the ground along the rivers of the channel map. Land does not
+    /// go below sea level.
+    Carve,
 }
 
 /// One touch of the brush on the sphere.
@@ -101,6 +106,8 @@ pub struct Heightmap {
     reset: bool,
     stroke: Option<Saved>,
     undo: Vec<Saved>,
+    /// The rivers that the carve mode follows.
+    channels: Option<Arc<ChannelMap>>,
     /// The band limits and the color ramp of the preview.
     pub bands: Bands,
 }
@@ -129,6 +136,7 @@ impl Heightmap {
             reset: true,
             stroke: None,
             undo: Vec::new(),
+            channels: None,
             bands: Bands::default(),
         };
         map.mark_all_dirty();
@@ -142,6 +150,16 @@ impl Heightmap {
     /// The level of each texel in a tile that has no memory.
     pub fn base(&self) -> u16 {
         self.base
+    }
+
+    /// Sets the rivers that the carve mode follows. With `None`, the carve
+    /// mode changes nothing.
+    pub fn set_channels(&mut self, channels: Option<Arc<ChannelMap>>) {
+        self.channels = channels;
+    }
+
+    pub fn channels(&self) -> Option<&Arc<ChannelMap>> {
+        self.channels.as_ref()
     }
 
     /// The face and the texels of each tile that holds memory.
@@ -527,6 +545,10 @@ impl Heightmap {
             Vec::new()
         };
         let old_at = |x: usize, y: usize| f64::from(before[y * bw + x]);
+        let channels = self.channels.clone();
+        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let channel_size = channels.as_ref().map_or(0.0, |c| c.size() as f64);
+        let n = self.n as f64;
         for ty in rect.y0 / t..=(rect.y1 - 1) / t {
             for tx in rect.x0 / t..=(rect.x1 - 1) / t {
                 let index = (face * self.per_side + ty) * self.per_side + tx;
@@ -555,6 +577,22 @@ impl Heightmap {
                             Mode::Raise => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
+                            Mode::Carve => {
+                                let Some(channels) = &channels else { continue };
+                                // The place of the texel in the channel map.
+                                let at = |x: usize| (x as f64 + 0.5) * channel_size / n - 0.5;
+                                let (distance, flow) = channels.sample(face, at(x), at(y));
+                                if flow == 0 {
+                                    continue;
+                                }
+                                // A large river has a wide and deep valley.
+                                let size = f64::from(flow) / 255.0;
+                                let k = (distance / (1.5 + 4.5 * size)).clamp(0.0, 1.0);
+                                let profile = 1.0 - k * k * (3.0 - 2.0 * k);
+                                let depth =
+                                    amount * stamp.strength * profile * (0.25 + 0.75 * size);
+                                (old - depth).round().max(old.min(sea))
+                            }
                             Mode::Smooth => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -600,7 +638,8 @@ fn save_tile(stroke: &mut Option<Saved>, index: usize, tile: &Option<Tile>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::{angle, lonlat_to_dir};
+    use crate::flow::{CoarseHeights, channel_map};
+    use crate::math::{angle, dir_to_lonlat, lonlat_to_dir};
 
     fn raise(center: V3, radius: f64) -> Stamp {
         Stamp {
@@ -977,6 +1016,129 @@ mod tests {
             }
         }
         assert_eq!(sum, 3970950523126258947);
+    }
+
+    /// The latitude of the river in `valley`.
+    const RIVER_LAT: f64 = 0.18;
+
+    /// Land on face 0 with a valley along the equator. The river in the
+    /// valley goes west to the sea at longitude -30. The map has the channel
+    /// map of its rivers.
+    fn valley() -> Heightmap {
+        let n = 256;
+        let mut map = Heightmap::new(n, meters_to_level(-1000.0));
+        let data: Vec<u16> = (0..n * n)
+            .map(|i| {
+                let (lon, lat) = dir_to_lonlat(map.texel_dir(0, i % n, i / n));
+                let across = (lat - RIVER_LAT).abs();
+                meters_to_level(if lon.abs() < 30.0 && across < 20.0 {
+                    200.0 + 20.0 * (lon + 30.0) + 60.0 * across
+                } else {
+                    -1000.0
+                })
+            })
+            .collect();
+        map.store_rect(0, face_rect(n), &data);
+        let channels = channel_map(&CoarseHeights::new(&map));
+        assert!(channels.has_rivers());
+        map.set_channels(Some(Arc::new(channels)));
+        map
+    }
+
+    fn face_rect(n: usize) -> TexelRect {
+        TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: n,
+            y1: n,
+        }
+    }
+
+    /// The levels of face 0, row by row.
+    fn face_levels(map: &Heightmap) -> Vec<u16> {
+        let mut levels = Vec::new();
+        map.read_rect(0, face_rect(map.face_size()), &mut levels);
+        levels
+    }
+
+    fn carve(lon: f64, lat: f64, radius: f64) -> Stamp {
+        Stamp {
+            mode: Mode::Carve,
+            ..raise(lonlat_to_dir(lon, lat), radius)
+        }
+    }
+
+    /// The place of the texel at a direction in the result of `face_levels`.
+    fn place(map: &Heightmap, lon: f64, lat: f64) -> usize {
+        let (face, a, b) = face_of(lonlat_to_dir(lon, lat));
+        assert_eq!(face, 0);
+        map.index(warp(b)) * map.face_size() + map.index(warp(a))
+    }
+
+    #[test]
+    fn carve_lowers_the_ground_along_a_river() {
+        let mut map = valley();
+        let before = face_levels(&map);
+        map.stamp(&carve(0.0, RIVER_LAT, 0.05));
+        let after = face_levels(&map);
+        assert!(after.iter().zip(&before).all(|(new, old)| new <= old));
+        let lowered = |lat: f64| {
+            let at = place(&map, 0.0, lat);
+            before[at] - after[at]
+        };
+        // The stamp lowers the ground by 1000 steps at most. The ground
+        // 2 degrees from the large river is in the brush, on a small river.
+        let (river, side) = (lowered(RIVER_LAT), lowered(RIVER_LAT + 2.0));
+        assert!(river > 600 && river <= 1000, "{river}");
+        assert!(side > 0 && side + 200 < river, "{side} {river}");
+    }
+
+    #[test]
+    fn carve_does_not_lower_land_below_sea_level() {
+        let mut map = valley();
+        let sea = meters_to_level(SEA_LEVEL);
+        let before = face_levels(&map);
+        // The river is about 1300 steps above the sea at this place.
+        for _ in 0..5 {
+            map.stamp(&carve(-28.0, RIVER_LAT, 0.05));
+        }
+        let after = face_levels(&map);
+        for (new, old) in after.iter().zip(&before) {
+            assert_eq!(*new >= sea, *old >= sea);
+        }
+        let at = place(&map, -28.0, RIVER_LAT);
+        assert!(before[at] > sea + 1000);
+        assert_eq!(after[at], sea);
+    }
+
+    #[test]
+    fn carve_leaves_the_sea_and_ground_far_from_a_river() {
+        let mut map = valley();
+        let sea = meters_to_level(SEA_LEVEL);
+        let before = face_levels(&map);
+        // The brush covers the mouth of the river and the sea next to it.
+        map.stamp(&carve(-30.0, RIVER_LAT, 0.05));
+        let after = face_levels(&map);
+        assert!(after != before);
+        for (new, old) in after.iter().zip(&before) {
+            assert!(*old >= sea || new == old);
+        }
+
+        // Near the north coast, the slope is too short for a river.
+        let far = carve(0.0, 19.0, 0.01);
+        let channels = map.channels().expect("the map has channels").clone();
+        assert_eq!(channels.at(far.center).1, 0);
+        assert!(map.stamp(&far) > 0);
+        assert!(face_levels(&map) == after);
+    }
+
+    #[test]
+    fn carve_without_channels_changes_nothing() {
+        let mut map = valley();
+        map.set_channels(None);
+        let before = face_levels(&map);
+        assert!(map.stamp(&carve(0.0, RIVER_LAT, 0.05)) > 0);
+        assert!(face_levels(&map) == before);
     }
 
     #[test]
