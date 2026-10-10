@@ -1,5 +1,15 @@
-// Draws the globe: one pass that reads the cube map and shows it in greyscale.
-// The face layout matches `cube.rs` of `vale-terrain`.
+// Draws the globe: one pass that reads the cube map and shows it as stepped
+// tints, as a smooth ramp, or in greyscale. The face layout matches `cube.rs`
+// of `vale-terrain`.
+
+struct Band {
+    // The color at the lower limit, then the lower limit, from 0 to 1.
+    bottom: vec4<f32>,
+    // The color at the upper limit, then the upper limit.
+    top: vec4<f32>,
+    // The color of the whole step.
+    solid: vec4<f32>,
+}
 
 struct Uniforms {
     // Rows of the world-to-view rotation.
@@ -8,9 +18,15 @@ struct Uniforms {
     rot2: vec4<f32>,
     // Center x and y and radius in pixels, then pixels per point.
     globe: vec4<f32>,
-    // Face size in texels, then the graticule step in radians.
+    // Face size in texels, the graticule step in radians, the preview mode,
+    // and the band count. A step of 0 hides the graticule.
     params: vec4<f32>,
+    // The bands, from the lowest to the highest.
+    bands: array<Band, 32>,
 }
+
+const MODE_GREYSCALE: i32 = 0;
+const MODE_SMOOTH: i32 = 2;
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var heights: texture_2d_array<u32>;
@@ -24,10 +40,57 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x, y, 0.0, 1.0);
 }
 
+fn load(face: i32, x: i32, y: i32) -> f32 {
+    return f32(textureLoad(heights, vec2<i32>(x, y), face, 0).r) / 65535.0;
+}
+
+// The flat face coordinate at the center of a texel. A texel past the face
+// gives the face edge.
+fn flat_at(i: i32) -> f32 {
+    let s = (f32(i) + 0.5) / u.params.x * 2.0 - 1.0;
+    return tan(clamp(s, -1.0, 1.0) * (PI / 4.0));
+}
+
+// The texel of the next face that touches a texel on a face edge. `x` or `y`
+// is one texel past the face.
+fn across(face: i32, x: i32, y: i32) -> f32 {
+    let n = i32(u.params.x);
+    let axis = face / 2;
+    // The point on the edge, next to the two texels.
+    var p: array<f32, 3>;
+    p[axis] = 1.0 - 2.0 * f32(face % 2);
+    p[(axis + 1) % 3] = flat_at(x);
+    p[(axis + 2) % 3] = flat_at(y);
+    var next = (axis + 1) % 3;
+    if y < 0 || y >= n {
+        next = (axis + 2) % 3;
+    }
+    var to = next * 2;
+    if p[next] < 0.0 {
+        to += 1;
+    }
+    let f = vec2<f32>(p[(next + 1) % 3], p[(next + 2) % 3]) / abs(p[next]);
+    let s = atan(f) * (4.0 / PI);
+    let i = vec2<i32>(floor((s * 0.5 + 0.5) * u.params.x));
+    let c = clamp(i, vec2<i32>(0), vec2<i32>(n - 1));
+    return load(to, c.x, c.y);
+}
+
+// The height of a texel, from 0 to 1. A texel one step past the face comes
+// from the next face, so the filter has no seam.
 fn texel(face: i32, x: i32, y: i32) -> f32 {
     let last = i32(u.params.x) - 1;
-    let p = vec2<i32>(clamp(x, 0, last), clamp(y, 0, last));
-    return f32(textureLoad(heights, p, face, 0).r) / 65535.0;
+    let cx = clamp(x, 0, last);
+    let cy = clamp(y, 0, last);
+    if x == cx && y == cy {
+        return load(face, x, y);
+    }
+    if x != cx && y != cy {
+        // Three faces meet at a cube corner, so no texel is there. The mean
+        // of the three corner texels is the same from each face.
+        return (load(face, cx, cy) + across(face, x, cy) + across(face, cx, y)) / 3.0;
+    }
+    return across(face, x, y);
 }
 
 // The height at a world direction, from 0 to 1, with bilinear filtering.
@@ -55,6 +118,29 @@ fn height(d: vec3<f32>) -> f32 {
     return mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y);
 }
 
+fn band_color(i: i32, h: f32, mode: i32) -> vec3<f32> {
+    let band = u.bands[i];
+    if mode != MODE_SMOOTH {
+        return band.solid.rgb;
+    }
+    let t = (h - band.bottom.a) / max(band.top.a - band.bottom.a, 1e-6);
+    return mix(band.bottom.rgb, band.top.rgb, clamp(t, 0.0, 1.0));
+}
+
+// The color of a height. `width` is the change of the height across one
+// pixel. It makes a band limit one pixel soft.
+fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
+    let w = max(width, 1e-6);
+    var color = band_color(0, h, mode);
+    let count = i32(u.params.w);
+    for (var i = 1; i < count; i++) {
+        // A height at the limit is in the upper band.
+        let over = clamp((h - u.bands[i].bottom.a) / w + 1.0, 0.0, 1.0);
+        color = mix(color, band_color(i, h, mode), over);
+    }
+    return color;
+}
+
 @fragment
 fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let radius = u.globe.z;
@@ -69,22 +155,30 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let v = vec3<f32>(p / max(r, 1e-6) * rr, sqrt(max(1.0 - rr * rr, 0.0)));
     let d = v.x * u.rot0.xyz + v.y * u.rot1.xyz + v.z * u.rot2.xyz;
 
-    var color = vec3<f32>(height(d));
+    let h = height(d);
+    let width = fwidth(h);
+    let mode = i32(u.params.z);
+    var color = vec3<f32>(h);
+    if mode != MODE_GREYSCALE {
+        color = tint(h, width, mode);
+    }
 
     // The angle that one pixel covers at this place on the globe.
     let px = 1.0 / (radius * max(v.z, 0.05));
 
     let grat = u.params.y;
-    let lat = asin(clamp(d.z, -1.0, 1.0));
-    let lon = atan2(d.y, d.x);
-    let dlat = abs(fract(lat / grat + 0.5) - 0.5) * grat;
-    let coslat = max(cos(lat), 1e-4);
-    let dlon = abs(fract(lon / grat + 0.5) - 0.5) * grat * coslat;
-    // Meridians stop near the poles, where they crowd together.
-    let keep = step(abs(lat), PI * 0.5 - grat * 0.5);
-    let line = max(1.0 - smoothstep(0.0, px * 1.5, dlat),
-                   keep * (1.0 - smoothstep(0.0, px * 1.5, dlon)));
-    color = mix(color, vec3<f32>(0.08, 0.12, 0.18), line * 0.22);
+    if grat > 0.0 {
+        let lat = asin(clamp(d.z, -1.0, 1.0));
+        let lon = atan2(d.y, d.x);
+        let dlat = abs(fract(lat / grat + 0.5) - 0.5) * grat;
+        let coslat = max(cos(lat), 1e-4);
+        let dlon = abs(fract(lon / grat + 0.5) - 0.5) * grat * coslat;
+        // Meridians stop near the poles, where they crowd together.
+        let keep = step(abs(lat), PI * 0.5 - grat * 0.5);
+        let line = max(1.0 - smoothstep(0.0, px * 1.5, dlat),
+                       keep * (1.0 - smoothstep(0.0, px * 1.5, dlon)));
+        color = mix(color, vec3<f32>(0.08, 0.12, 0.18), line * 0.22);
+    }
 
     // A little shade toward the limb, so the disk reads as a ball.
     color *= mix(0.80, 1.0, pow(v.z, 0.6));

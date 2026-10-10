@@ -13,6 +13,7 @@ pub mod brush;
 pub mod gpu;
 pub mod math;
 pub mod nav;
+pub mod preview;
 pub mod stats;
 pub mod stroke_test;
 pub mod view;
@@ -21,6 +22,7 @@ use brush::{Backlog, BrushSettings, Sample, Stroke, plan_texels};
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms};
 use math::V3;
 use nav::Nav;
+use preview::{Preview, band_uniforms};
 use stats::Stats;
 use stroke_test::StrokeTest;
 use view::GlobeView;
@@ -99,6 +101,7 @@ pub struct Globe {
     /// The format of the render target. `None`: no wgpu renderer draws the UI.
     pub format: Option<wgpu::TextureFormat>,
     pub tool: Tool,
+    pub preview: Preview,
     pub brush: BrushSettings,
     pub input: BrushInput,
     /// The next press on the globe picks the flatten level.
@@ -134,6 +137,7 @@ impl Globe {
             rect: Rect::ZERO,
             format: None,
             tool: Tool::default(),
+            preview: Preview::default(),
             brush: BrushSettings::default(),
             input: BrushInput::default(),
             pick_level: false,
@@ -150,9 +154,12 @@ impl Globe {
         }
     }
 
-    /// Replaces the heightmap with an empty one of this face size.
+    /// Replaces the heightmap with an empty one of this face size. The band
+    /// limits and the ramp stay.
     pub fn set_face_size(&mut self, face_size: usize) {
+        let bands = std::mem::take(&mut self.map.bands);
         self.map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
+        self.map.bands = bands;
         self.stats.face_size = face_size as u32;
         self.inputs.clear();
         self.backlog.clear();
@@ -408,13 +415,16 @@ impl Globe {
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
         let center = self.rect.center();
         let radius = self.view.radius(self.rect) as f32;
-        let graticule_degrees: f64 = if self.view.zoom < 3.0 {
+        let graticule_degrees: f64 = if !self.preview.graticule {
+            0.0
+        } else if self.view.zoom < 3.0 {
             15.0
         } else if self.view.zoom < 12.0 {
             5.0
         } else {
             1.0
         };
+        let (bands, band_count) = band_uniforms(&self.map.bands);
         Some(GlobeCallback {
             format,
             face_size: self.map.face_size() as u32,
@@ -429,9 +439,10 @@ impl Globe {
                 params: [
                     self.map.face_size() as f32,
                     graticule_degrees.to_radians() as f32,
-                    0.0,
-                    0.0,
+                    self.preview.mode(),
+                    band_count as f32,
                 ],
+                bands,
             },
             link: self.link.clone(),
         })
