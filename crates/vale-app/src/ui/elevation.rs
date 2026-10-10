@@ -62,28 +62,32 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::right("elevation")
         .default_size(210.0)
         .show(ui, |ui| {
-            let globe = &mut state.globe;
-            let (bands, preview) = (&mut globe.map.bands, &mut globe.preview);
             ui.heading("Elevation");
-            ui.checkbox(&mut preview.levels, "Levels");
-            ui.checkbox(&mut preview.graticule, "Graticule");
-            ui.separator();
-            limit_bar(ui, bands, preview);
-            selected_limit(ui, bands, preview);
-            ui.separator();
-            ui.label("Land colors");
-            ui.horizontal_wrapped(|ui| {
-                for color in &mut bands.ramp.land {
-                    ui.color_edit_button_srgb(color);
-                }
-            });
-            ui.label("Sea colors");
-            ui.horizontal_wrapped(|ui| {
-                for color in &mut bands.ramp.sea {
-                    ui.color_edit_button_srgb(color);
-                }
-            });
+            controls(ui, state);
         });
+}
+
+pub(super) fn controls(ui: &mut egui::Ui, state: &mut AppState) {
+    let globe = &mut state.globe;
+    let (bands, preview) = (&mut globe.map.bands, &mut globe.preview);
+    ui.checkbox(&mut preview.levels, "Levels");
+    ui.checkbox(&mut preview.graticule, "Graticule");
+    ui.separator();
+    limit_bar(ui, bands, preview);
+    selected_limit(ui, bands, preview);
+    ui.separator();
+    ui.label("Land colors");
+    ui.horizontal_wrapped(|ui| {
+        for color in &mut bands.ramp.land {
+            ui.color_edit_button_srgb(color);
+        }
+    });
+    ui.label("Sea colors");
+    ui.horizontal_wrapped(|ui| {
+        for color in &mut bands.ramp.sea {
+            ui.color_edit_button_srgb(color);
+        }
+    });
 }
 
 /// The bar with the bands and the limits. A tap on a free place adds a limit.

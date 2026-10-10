@@ -6,6 +6,7 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use super::{Action, AppState, ExportFormat, Workspace};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
+use crate::globe::brush::FLOW;
 use crate::globe::{Tool, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
@@ -50,45 +51,49 @@ pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
         .default_size(300.0)
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let globe = &mut state.globe;
                 ui.heading("Brush debug");
-                ui.label(globe.stats.gpu_line());
-                match globe.stats.last() {
-                    Some(stroke) => {
-                        ui.label(stroke.title());
-                        ui.label(stroke.delay_line());
-                        ui.label(stroke.frame_line());
-                        ui.label(stroke.stamps_line());
-                        ui.label(stroke.passes_line());
-                        ui.label(stroke.texels_line());
-                    }
-                    None => {
-                        ui.label("Stroke delay: no stroke");
-                    }
-                }
-                ui.label(globe.stats.worst_line());
-                ui.label(format!("Backlog: {} stamps", globe.stats.backlog));
-                ui.weak(stats::DELAY_NOTE);
-                ui.separator();
-
-                // Temporary controls, until the app has the undo command.
-                ui.horizontal(|ui| {
-                    let undo = ui.add_enabled(globe.can_undo(), egui::Button::new("Undo"));
-                    if undo.clicked() {
-                        globe.undo();
-                    }
-                    let test = egui::Button::new("Run stroke test");
-                    if ui.add_enabled(!globe.busy(), test).clicked() {
-                        globe.start_stroke_test(stroke_test::SECONDS);
-                    }
-                });
-                if let Some(report) = &globe.test_report {
-                    ui.separator();
-                    ui.strong("Stroke test");
-                    ui.label(report);
-                }
+                debug_controls(ui, state);
             });
         });
+}
+
+pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
+    let globe = &mut state.globe;
+    ui.label(globe.stats.gpu_line());
+    match globe.stats.last() {
+        Some(stroke) => {
+            ui.label(stroke.title());
+            ui.label(stroke.delay_line());
+            ui.label(stroke.frame_line());
+            ui.label(stroke.stamps_line());
+            ui.label(stroke.passes_line());
+            ui.label(stroke.texels_line());
+        }
+        None => {
+            ui.label("Stroke delay: no stroke");
+        }
+    }
+    ui.label(globe.stats.worst_line());
+    ui.label(format!("Backlog: {} stamps", globe.stats.backlog));
+    ui.weak(stats::DELAY_NOTE);
+    ui.separator();
+
+    // Temporary controls, until the app has the undo command.
+    ui.horizontal(|ui| {
+        let undo = ui.add_enabled(globe.can_undo(), egui::Button::new("Undo"));
+        if undo.clicked() {
+            globe.undo();
+        }
+        let test = egui::Button::new("Run stroke test");
+        if ui.add_enabled(!globe.busy(), test).clicked() {
+            globe.start_stroke_test(stroke_test::SECONDS);
+        }
+    });
+    if let Some(report) = &globe.test_report {
+        ui.separator();
+        ui.strong("Stroke test");
+        ui.label(report);
+    }
 }
 
 /// The controls of the brush. The panel is open in the brush tool.
@@ -102,15 +107,15 @@ pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Brush");
-                brush_controls(ui, state);
+                brush_modes(ui, &mut state.globe.brush.mode);
+                ui.add_space(6.0);
+                brush_size(ui, state);
+                brush_settings(ui, state);
             });
         });
 }
 
-fn brush_controls(ui: &mut egui::Ui, state: &mut AppState) {
-    let world_km = state.doc.project.world.radius_km;
-    let globe = &mut state.globe;
-    let globe_radius = globe.radius();
+fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
     ui.horizontal_wrapped(|ui| {
         for (mode, name) in [
             (Mode::Raise, "Raise"),
@@ -118,11 +123,15 @@ fn brush_controls(ui: &mut egui::Ui, state: &mut AppState) {
             (Mode::Smooth, "Smooth"),
             (Mode::Flatten, "Flatten"),
         ] {
-            ui.selectable_value(&mut globe.brush.mode, mode, name);
+            ui.selectable_value(current, mode, name);
         }
     });
-    ui.add_space(6.0);
+}
 
+fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
+    let world_km = state.doc.project.world.radius_km;
+    let globe = &mut state.globe;
+    let globe_radius = globe.radius();
     let mut km = globe.brush.radius_km(globe_radius, world_km);
     let range = globe.brush.radius_km_range(globe_radius, world_km);
     let slider = egui::Slider::new(&mut km, range)
@@ -133,12 +142,18 @@ fn brush_controls(ui: &mut egui::Ui, state: &mut AppState) {
     if ui.add(slider).changed() {
         globe.brush.set_radius_km(km, globe_radius, world_km);
     }
+    ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
+    ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
+}
+
+/// The lock of the size, the strength, and the flatten level.
+pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
+    let globe = &mut state.globe;
+    let globe_radius = globe.radius();
     let mut lock = globe.brush.lock.is_some();
     let lock_box = ui.checkbox(&mut lock, "Lock size");
     lock_box.on_hover_text("The brush keeps its size on the ground when you zoom.");
     globe.brush.set_lock(lock, globe_radius);
-
-    ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
     let strength = egui::Slider::new(&mut globe.brush.strength_m, 50.0..=6000.0)
         .logarithmic(true)
         .fixed_decimals(0)
@@ -326,7 +341,7 @@ fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-fn three_significant(v: f64) -> String {
+pub(super) fn three_significant(v: f64) -> String {
     if !v.is_finite() || v <= 0.0 {
         return "–".to_string();
     }
