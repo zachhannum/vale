@@ -29,6 +29,29 @@ egui_kittest.workspace = true
 image.workspace = true
 rfd.workspace = true
 
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSSet",
+    "NSEnumerator",
+    "NSValue",
+    "NSDate",
+    "NSProcessInfo",
+] }
+objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "UIResponder",
+    "UIView",
+    "UITouch",
+    "UIEvent",
+    "UIGestureRecognizer",
+    "UIGestureRecognizerSubclass",
+    "UIHoverGestureRecognizer",
+] }
+
 [[bin]]
 name = "vale-app"
 path = "src/main.rs"

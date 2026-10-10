@@ -272,6 +272,10 @@ You can import an equirectangular heightmap that you painted before. The app cop
 
 The drawing tools are designed for a pen: pressure, hover preview of the brush, and palm rejection. On desktop that is a graphics tablet. On iPad it is Apple Pencil.
 
+On iPad, winit 0.30 gives 120 pen samples per second, no hover, and no tilt. A UIKit gesture recognizer on the view of the app reads the pen below egui. It reads the coalesced touches (the extra pen samples that iOS collects in each frame, 240 per second), the tilt, and the hover. It sends them to the canvas, and it does not take the touches from winit. The canvas reads the pen from that recognizer, and egui handles the pen only on the panels. Fingers come through egui. While the pen is down, each other touch is a palm.
+
+The path of a stroke is a curve through the pen samples, so a fast stroke has no corners.
+
 iPad is an equal platform. The layout for iPad is its own design, with a full-screen canvas, floating panels, and touch-size controls. It is not the desktop layout made smaller.
 
 The layout has four places. The top row holds the workspace switch at the left, the view switch in the center, and the actions at the right. The left edge holds the tool strip, and below it a card with the Size slider, the Flow slider, and the Brush button. Layers and Toolbox open a panel in one shared place at the right, and Brush opens a panel next to the left edge. The bottom holds the position readout.
@@ -484,7 +488,7 @@ The largest risk is the scope of the labeling engine. To contain it, the library
 | When you edit a linked file by hand, features lose identity. | Use element IDs first and geometry matching second, and report each lost match. |
 | Painting needs a fast, steady stroke, and a slow brush makes the tool useless. | Stamp on the GPU and repaint only the tiles under the brush. Measure the stroke delay in phase 1. |
 | One heightmap resolution does not fit both a world and a small region. | Store tiles in levels, so a region can hold finer tiles. This design is not done. |
-| egui gives no hover, no tilt, and only 120 pen samples per second on iPad. | The iPad test of the globe prototype passed for painting, pressure, and palm rejection. Add a UIKit gesture recognizer below egui for hover, tilt, and the 240 Hz samples in phase 1. |
+| egui gives no hover, no tilt, and only 120 pen samples per second on iPad. | The iPad test of the globe prototype passed for painting, pressure, and palm rejection. A UIKit gesture recognizer below egui reads hover, tilt, and the 240 Hz samples in `vale-app`. |
 | Reprojected rasters look soft. | Show the resolution of each source against each map frame, and support regional sources. |
 
 Two questions are open, and five are decided.

@@ -12,6 +12,7 @@ use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow};
 use crate::globe::math::dir_to_lonlat;
 use crate::globe::nav::{Painting, on_canvas};
 use crate::globe::{Globe, Tool};
+use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
 
@@ -36,8 +37,28 @@ fn release(globe: &mut Globe) {
     }
 }
 
+/// Reads the hover events of the pen queue. A hover event can arrive after
+/// the pen comes down, so the pen does not hover while it is down.
+fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
+    let pen = &mut globe.pen;
+    for (pos, event) in events {
+        match event.phase {
+            PenPhase::Hover if !pen.down => {
+                pen.hover = Some(*pos);
+                pen.stats.hover(event);
+            }
+            PenPhase::Down | PenPhase::Up | PenPhase::Cancel | PenPhase::HoverEnd => {
+                pen.down = event.phase == PenPhase::Down;
+                pen.hover = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Reads the pen and the mouse for the brush. In the brush tool, a pen and
-/// the primary mouse button paint. A touch with a force is a pen.
+/// the primary mouse button paint. A touch with a force is a pen. With a pen
+/// queue, the pen comes from the queue and not from egui.
 fn brush_input(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -45,13 +66,25 @@ fn brush_input(
     globe: &mut Globe,
     now: Instant,
 ) -> Painting {
+    // The queue gives view points. A zoom of the UI changes the egui points.
+    let zoom = ui.ctx().zoom_factor();
+    let queue = globe.pen.queue.as_ref().map(|queue| queue.take());
+    let from_queue = queue.is_some();
+    let queue: Vec<(egui::Pos2, PenEvent)> = queue
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| (egui::pos2(e.pos[0] / zoom, e.pos[1] / zoom), e))
+        .collect();
+    hover_input(globe, &queue);
     if globe.tool != Tool::Brush || globe.format.is_none() {
         if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
             release(globe);
+            globe.pen.stats.up();
         }
         globe.input.pos = None;
         return Painting::default();
     }
+    let time = ui.input(|i| i.time);
     let radius = globe.brush.radius(globe.view.radius(rect));
     let sample = |globe: &mut Globe, pos: egui::Pos2, flow: f64| {
         let dir = globe.view.unproject(rect, pos);
@@ -62,6 +95,34 @@ fn brush_input(
             globe.pen_sample(Sample { dir, flow, radius }, now);
         }
     };
+    for (pos, event) in &queue {
+        let flow = pen_flow(event.force);
+        let tilt = event.altitude.zip(event.azimuth);
+        let ours = globe.input.pen == Some(QUEUE_PEN);
+        match event.phase {
+            PenPhase::Down => {
+                let free = globe.input.pen.is_none() && !globe.input.mouse;
+                if free && on_canvas(ui, rect, *pos) {
+                    globe.input.pen = Some(QUEUE_PEN);
+                    press(globe);
+                    sample(globe, *pos, flow);
+                    globe.pen.stats.sample(event.time, Some(event.force), tilt);
+                }
+            }
+            PenPhase::Move | PenPhase::Up if ours => {
+                sample(globe, *pos, flow);
+                globe.pen.stats.sample(event.time, Some(event.force), tilt);
+            }
+            _ => {}
+        }
+        if ours && matches!(event.phase, PenPhase::Up | PenPhase::Cancel) {
+            globe.input.pen = None;
+            globe.input.pos = None;
+            release(globe);
+            globe.pen.stats.up();
+        }
+    }
+
     let mut touched = false;
     let events = ui.input(|i| i.events.clone());
     for event in &events {
@@ -76,6 +137,9 @@ fn brush_input(
             continue;
         };
         touched = true;
+        if from_queue && force.is_some() {
+            continue;
+        }
         let flow = force.map_or(FIXED_FLOW, pen_flow);
         match phase {
             egui::TouchPhase::Start => {
@@ -84,11 +148,13 @@ fn brush_input(
                     globe.input.pen = Some(id.0);
                     press(globe);
                     sample(globe, *pos, flow);
+                    globe.pen.stats.sample(time, *force, None);
                 }
             }
             egui::TouchPhase::Move => {
                 if globe.input.pen == Some(id.0) {
                     sample(globe, *pos, flow);
+                    globe.pen.stats.sample(time, *force, None);
                 }
             }
             egui::TouchPhase::End | egui::TouchPhase::Cancel => {
@@ -96,6 +162,7 @@ fn brush_input(
                     globe.input.pen = None;
                     globe.input.pos = None;
                     release(globe);
+                    globe.pen.stats.up();
                 }
             }
         }
@@ -116,21 +183,25 @@ fn brush_input(
         Some(pos) if globe.input.mouse && down => {
             if moved {
                 sample(globe, pos, FIXED_FLOW);
+                globe.pen.stats.sample(time, None, None);
             }
         }
         _ if globe.input.mouse => {
             globe.input.mouse = false;
             release(globe);
+            globe.pen.stats.up();
         }
         Some(pos) if pressed && !shift && !touched && resp.contains_pointer() => {
             globe.input.mouse = true;
             press(globe);
             sample(globe, pos, FIXED_FLOW);
+            globe.pen.stats.sample(time, None, None);
         }
         _ => {}
     }
     if globe.input.pen.is_none() {
-        globe.input.pos = resp.hover_pos();
+        let hover = globe.pen.hover.filter(|pos| on_canvas(ui, rect, *pos));
+        globe.input.pos = resp.hover_pos().or(hover);
     }
     Painting {
         pen: true,
@@ -154,6 +225,7 @@ pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::
     globe.nav.update(ui, rect, &resp, &mut globe.view, painting);
     let cursor = resp
         .hover_pos()
+        .or(globe.input.pos)
         .and_then(|pos| globe.view.unproject(rect, pos));
     state.cursor_lonlat = cursor.map(|dir| dir_to_lonlat(dir).into());
     state.cursor_meters = cursor.map(|dir| level_to_meters(globe.map.sample(dir)));
