@@ -24,6 +24,10 @@ fn run() -> anyhow::Result<u8> {
     let new_state = |doc, face_size| -> anyhow::Result<AppState> {
         let mut state = AppState::new(doc)?;
         state.workspace = args.workspace;
+        state.set_layout(args.layout);
+        for panel in &args.panel {
+            state.pad.open(*panel);
+        }
         apply_globe(&args, &mut state.globe, face_size)?;
         Ok(state)
     };

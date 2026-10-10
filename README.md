@@ -66,7 +66,7 @@ cargo run --release -p vale-app -- --report
 cargo run --release -p vale-app -- --stroke-test --face-size 8192
 ```
 
-`--screenshot` draws the full UI in the globe workspace. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
+`--screenshot` draws the full UI in the globe workspace. With `--layout pad` it draws the iPad layout, and `--panel brush`, `--panel layers`, or `--panel toolbox` opens a panel of that layout. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
 
 | Argument | Meaning |
 | --- | --- |
@@ -93,7 +93,7 @@ scripts/app-ipad.sh
 
 The script builds the app, installs it on the iPad, and starts it. It prints four steps and then "Done". The first build takes a few minutes, because it makes PROJ for iOS. If the build fails, read the full log in `target/ios/vale-app/xcodebuild.log`.
 
-The app opens with the sample world. Drag with one finger to pan. Pinch with two fingers to zoom. The iPad app has no buttons to open or export files.
+The app opens on the globe of the sample world, in the iPad layout. Paint with Apple Pencil. Drag with one finger to turn the globe, and pinch with two fingers to zoom. The iPad app has no buttons to open or export files.
 
 To build for the iOS simulator on a Mac with Apple silicon, run these commands:
 

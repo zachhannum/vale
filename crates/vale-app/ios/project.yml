@@ -21,7 +21,6 @@ targets:
         # The app has no encryption of its own, so TestFlight does not ask about it.
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
-        UIRequiresFullScreen: true
         UIApplicationSupportsIndirectInputEvents: true
         CADisableMinimumFrameDurationOnPhone: true
         UISupportedInterfaceOrientations~ipad:

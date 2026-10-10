@@ -15,6 +15,10 @@ pub const FIXED_FLOW: f64 = 0.5;
 /// The multiplier from pen force to flow.
 pub const PRESSURE_GAIN: f64 = 2.0;
 /// The limits of the brush radius on screen, in points.
+/// The limits of the flow setting.
+pub const FLOW: std::ops::RangeInclusive<f64> = 0.01..=1.0;
+/// The limits of the strength setting, in meters.
+pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
 pub const SIZE_POINTS: std::ops::RangeInclusive<f32> = 4.0..=160.0;
 /// The most passes that the stamps of one frame cost. A smooth stamp costs
 /// one pass. A stamp of another mode costs one part in `GROUP_STAMPS` of a
@@ -32,6 +36,8 @@ pub struct BrushSettings {
     /// follows the zoom, and `size_points` sets it.
     pub lock: Option<f64>,
     pub hardness: f64,
+    /// The part of the input flow that the brush applies, from 0 to 1.
+    pub flow: f64,
     /// The height that one pass adds at full pressure, in meters, roughly.
     pub strength_m: f64,
     /// The target of the flatten mode. `None`: the level under the start of
@@ -46,6 +52,7 @@ impl Default for BrushSettings {
             size_points: 36.0,
             lock: None,
             hardness: 0.3,
+            flow: 1.0,
             strength_m: 1500.0,
             flatten_level: None,
         }
@@ -191,6 +198,7 @@ struct Tip<'a> {
 
 impl Tip<'_> {
     fn stamp(&self, center: V3, flow: f64) -> Stamp {
+        let flow = flow * self.brush.flow;
         let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
         Stamp {
             center,

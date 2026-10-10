@@ -8,7 +8,7 @@ use vale_sphere::LonLat;
 use vale_store::LayerId;
 
 use crate::document::Document;
-use crate::globe::Globe;
+use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
 
@@ -16,6 +16,7 @@ pub mod canvas;
 pub mod elevation;
 pub mod globe;
 pub mod inspector;
+pub mod pad;
 pub mod panels;
 
 /// A request that needs the host: a dialog or a file.
@@ -43,8 +44,29 @@ pub enum Workspace {
     Map,
 }
 
+/// The arrangement of the controls on the screen.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Layout {
+    /// Docked panels, for a mouse.
+    Desktop,
+    /// A full-screen canvas with floating cards, for a finger and a pen.
+    Pad,
+}
+
+impl Default for Layout {
+    fn default() -> Layout {
+        if cfg!(target_os = "ios") {
+            Layout::Pad
+        } else {
+            Layout::Desktop
+        }
+    }
+}
+
 pub struct AppState {
     pub workspace: Workspace,
+    pub layout: Layout,
+    pub pad: pad::PadState,
     pub globe: Globe,
     pub doc: Document,
     pub pipeline: Pipeline,
@@ -64,6 +86,8 @@ pub struct AppState {
     pub selection: Option<Selection>,
     pub selected_layer: Option<LayerId>,
     pub cursor_lonlat: Option<LonLat>,
+    /// The elevation of the heightmap under the cursor, in meters.
+    pub cursor_meters: Option<f64>,
     /// Last message, for example an import error.
     pub status: String,
     /// Requests that need the host (dialogs, files).
@@ -77,8 +101,10 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(doc: Document) -> anyhow::Result<Self> {
-        Ok(AppState {
+        let mut state = AppState {
             workspace: Workspace::default(),
+            layout: Layout::default(),
+            pad: pad::PadState::default(),
             globe: Globe::default(),
             doc,
             pipeline: Pipeline::new(),
@@ -93,12 +119,24 @@ impl AppState {
             selection: None,
             selected_layer: None,
             cursor_lonlat: None,
+            cursor_meters: None,
             status: String::new(),
             actions: Vec::new(),
             headless: false,
             file_buttons: true,
             frames: 0,
-        })
+        };
+        state.set_layout(Layout::default());
+        Ok(state)
+    }
+
+    /// Sets the layout. In the iPad layout the pen paints, so the brush is
+    /// the first tool.
+    pub fn set_layout(&mut self, layout: Layout) {
+        self.layout = layout;
+        if layout == Layout::Pad {
+            self.globe.tool = Tool::Brush;
+        }
     }
 
     /// Marks the map as needing a new compose.
@@ -142,6 +180,11 @@ impl AppState {
 
 /// Draws the whole UI.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+    if state.layout == Layout::Pad && state.workspace == Workspace::Globe {
+        pad::draw(ui, state);
+        state.frames += 1;
+        return;
+    }
     // Fill the whole viewport. The test harness (egui_kittest) wraps the UI in an
     // 8 point outer margin, which would show as a dark border in screenshots. In the
     // real window this rectangle equals the rectangle of `ui`, so it changes nothing.

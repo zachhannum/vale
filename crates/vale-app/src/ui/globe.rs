@@ -6,7 +6,7 @@ use eframe::egui;
 use eframe::egui_wgpu;
 
 use super::AppState;
-use vale_terrain::Mode;
+use vale_terrain::{Mode, level_to_meters};
 
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow};
 use crate::globe::math::dir_to_lonlat;
@@ -19,7 +19,7 @@ const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show(ui, |ui| canvas(ui, state));
+        .show(ui, |ui| canvas(ui, state, BACKGROUND));
 }
 
 /// Starts a stroke, or starts to pick the flatten level.
@@ -209,24 +209,26 @@ fn brush_input(
     }
 }
 
-fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
+/// Draws the globe in the free space of `ui` and reads its input.
+pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::Color32) {
     let now = Instant::now();
     let globe = &mut state.globe;
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
     globe.rect = rect;
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, BACKGROUND);
+    painter.rect_filled(rect, 0.0, background);
     if rect.width() < 8.0 || rect.height() < 8.0 {
         return;
     }
     let painting = brush_input(ui, rect, &resp, globe, now);
     globe.nav.update(ui, rect, &resp, &mut globe.view, painting);
-    state.cursor_lonlat = resp
+    let cursor = resp
         .hover_pos()
         .or(globe.input.pos)
-        .and_then(|pos| globe.view.unproject(rect, pos))
-        .map(|dir| dir_to_lonlat(dir).into());
+        .and_then(|pos| globe.view.unproject(rect, pos));
+    state.cursor_lonlat = cursor.map(|dir| dir_to_lonlat(dir).into());
+    state.cursor_meters = cursor.map(|dir| level_to_meters(globe.map.sample(dir)));
 
     let more = globe.advance(now);
     match globe.callback(ui.ctx().pixels_per_point()) {
