@@ -229,6 +229,8 @@ The brush is a circle on the sphere with a radius in kilometers and a soft edge.
 
 A pen sets the flow from pressure. A mouse uses a fixed flow. The brush size follows the zoom unless you lock it.
 
+One stroke is one undo step. The step holds only the tiles that the stroke changed. In phase 1, the steps are in memory, and they use 256 MB at most. If a new step goes over that limit, the oldest steps go. Phase 2 moves the steps into the undo log of the project file.
+
 ### Stepped preview
 
 While you paint, a shader shows the heightmap as stepped tints. It cuts the height at the band limits and colors each step from a ramp. This is the posterize and gradient overlay of the old workflow, live. A raster layer can also show as a smooth gradient or as plain greyscale.
@@ -290,6 +292,7 @@ These rules apply to the layout:
 - If the Brush panel and the right panel do not fit side by side, one panel shows at a time.
 - The two sliders are 140 points high. In a short window they become shorter, down to 110 points, which fits an iPad that is 744 points high. In a window that is shorter than that, the card holds the Brush button alone, and the Brush panel holds the two sliders. If the tool strip and the Brush button do not fit, the tool strip scrolls.
 - The pen paints. One finger turns the globe, and two fingers zoom it.
+- A tap of two fingers is undo, and a tap of three fingers is redo. The actions in the top row have an undo button and a redo button.
 
 The core crates have no UI dependency, so both platforms share them. The shell is egui on both platforms. The crate `vale-globe-proto` checked how well egui handles pen input and touch on iPad, and the section "Globe prototype" gives the results.
 
@@ -431,7 +434,7 @@ The app prototype is a vertical slice. It makes a runnable app early. It takes a
 
 The app opens on the globe workspace. The globe view and its navigation are in `vale-app`, and the globe draws the heightmap of `vale-terrain` as stepped tints with a graticule. An elevation panel edits the band limits and the ramp. A brush tool paints the heightmap, and a brush panel has the four modes, the radius in kilometers, the size lock, the hardness, the flow, the strength, and the flatten level. The size lock holds the radius as an angle on the sphere. The GPU texture holds six full faces of 8,192 pixels, which is 805 MB, and a copy of one face for the brush takes 134 MB more. A switch shows the world as a flat view. The flat view has one of the six projection presets, and it starts in the equirectangular projection. PROJ computes a mesh of the map with cells of one degree, and the GPU interpolates the place on the sphere between the corners. The flat view has its own camera, and it pans and zooms. It opens with the whole map on the canvas, and you can zoom out to a quarter of that size. At each zoom you can move each place of the map to the middle of the canvas, and the middle of the canvas does not leave the map. The brush stamps on the sphere there too, and the brush outline is the projected circle of the stamp. A second switch in the tool bar opens the flat map of one map frame, and the nine items below are about that flat map.
 
-On iPad, the globe workspace has the layout of the section "Pen and iPad". The flag `--layout pad` shows that layout on the desktop, and `--panel` opens one of its panels. The view switch changes between the globe and the flat view. In the flat view, the switch has a button that opens the list of the projections. In the compact layout, the workspace menu opens that list. In the flat view, the card of the view switch also has two buttons to the right of the switch. "Recenter" makes the place at the middle of the canvas the center of the projection. "Reset" puts the center of the projection back and shows the whole map. In the compact layout, the two buttons have a card below the top row. In the iPad layout, the highlight of a control is 2 points smaller than its touch area on each side, so the highlights of two controls do not touch. The Atlas workspace, the Line tool, and redo are in the layout, and they do nothing yet. The Layers panel holds the Height layer alone, and the Toolbox panel holds no tools. The flat map keeps the desktop layout on iPad.
+On iPad, the globe workspace has the layout of the section "Pen and iPad". The flag `--layout pad` shows that layout on the desktop, and `--panel` opens one of its panels. The view switch changes between the globe and the flat view. In the flat view, the switch has a button that opens the list of the projections. In the compact layout, the workspace menu opens that list. In the flat view, the card of the view switch also has two buttons to the right of the switch. "Recenter" makes the place at the middle of the canvas the center of the projection. "Reset" puts the center of the projection back and shows the whole map. In the compact layout, the two buttons have a card below the top row. In the iPad layout, the highlight of a control is 2 points smaller than its touch area on each side, so the highlights of two controls do not touch. The Atlas workspace and the Line tool are in the layout, and they do nothing yet. The Layers panel holds the Height layer alone, and the Toolbox panel holds no tools. The flat map keeps the desktop layout on iPad.
 
 A card of that layout shows a blurred copy of the canvas below a dark fill. The globe goes into a texture of the size of the screen, and egui copies that texture to the screen. A second texture holds the canvas at a quarter of the size, and two shader passes blur it with a standard deviation of 20 points. Each card draws its part of the blurred texture through a paint callback, at 70 percent of the brightness, so that grey text has a contrast of 4.5 to 1 over a white canvas. The debug controls in the Toolbox panel show the frame time, and a checkbox there turns the blur off.
 
@@ -449,7 +452,7 @@ The brush stamps in a wgpu shader of `vale-terrain`, one pass for each face that
 
 The prototype leaves out the following.
 
-- Project files. There is no GeoPackage, no save, and no undo.
+- Project files. There is no GeoPackage and no save. Undo and redo are for brush strokes only.
 - Linked sources, file watch, raster layers, SVG and Shapefile import, and georeferencing with extents or control points.
 - Rule-based styles, expressions, scale ranges, and all symbolizers other than a solid fill, a solid stroke, and a circle.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
