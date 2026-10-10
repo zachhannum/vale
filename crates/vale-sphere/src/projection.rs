@@ -28,6 +28,14 @@ impl fmt::Display for SphereError {
 
 impl std::error::Error for SphereError {}
 
+/// A grid of places and their projected points. The vertices go row by row.
+/// `None`: PROJ does not project the place.
+pub struct Mesh {
+    pub cols: usize,
+    pub rows: usize,
+    pub vertices: Vec<Option<(Point, LonLat)>>,
+}
+
 /// A projection on a sphere, with a frame and a clip rectangle. Not `Send`.
 pub struct Projection {
     spec: ProjectionSpec,
@@ -47,7 +55,9 @@ impl Projection {
         let pj = proj::Proj::new(&spec.proj_string(radius_m))
             .map_err(|e| SphereError::Proj(e.to_string()))?;
         let (frame, lat_min, lat_max) = match spec.kind {
-            ProjectionKind::EqualEarth => (Frame::Shift { lon0: spec.lon0 }, -90.0, 90.0),
+            ProjectionKind::Equirectangular | ProjectionKind::EqualEarth => {
+                (Frame::Shift { lon0: spec.lon0 }, -90.0, 90.0)
+            }
             ProjectionKind::Mercator => (Frame::Shift { lon0: spec.lon0 }, -85.0, 85.0),
             k => {
                 let lat_min = match k {
@@ -322,6 +332,37 @@ impl Projection {
         }
     }
 
+    /// A grid of places that covers the whole projection, for a GPU that
+    /// warps a raster. The cells are `step` degrees wide and high, or less.
+    pub fn mesh(&self, step: f64) -> Mesh {
+        let c = &self.clip;
+        let count = |min: f64, max: f64| ((max - min) / step).ceil().max(1.0) as usize + 1;
+        let (cols, rows) = (count(c.lon_min, c.lon_max), count(c.lat_min, c.lat_max));
+        let at = |i: usize, n: usize, min: f64, max: f64| {
+            // The last vertex is at the limit with no rounding error.
+            if i + 1 == n {
+                max
+            } else {
+                min + (max - min) * i as f64 / (n - 1) as f64
+            }
+        };
+        let mut vertices = Vec::with_capacity(cols * rows);
+        for row in 0..rows {
+            let lat = at(row, rows, c.lat_min, c.lat_max);
+            for col in 0..cols {
+                let place = self
+                    .frame
+                    .from_frame([at(col, cols, c.lon_min, c.lon_max), lat]);
+                vertices.push(self.forward_raw(place).map(|point| (point, place)));
+            }
+        }
+        Mesh {
+            cols,
+            rows,
+            vertices,
+        }
+    }
+
     /// The bounding box of the outline.
     pub fn bounds(&self) -> Rect {
         let pts = self.outline();
@@ -358,6 +399,29 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mesh_covers_the_projection() {
+        for kind in ProjectionKind::ALL {
+            let p = proj(kind, 30.0, 40.0);
+            let mesh = p.mesh(5.0);
+            assert_eq!(mesh.vertices.len(), mesh.cols * mesh.rows);
+            let bounds = p.bounds().inflate(1.0, 1.0);
+            let mut covered = Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for vertex in &mesh.vertices {
+                let (point, place) = vertex.unwrap_or_else(|| panic!("{kind:?}"));
+                assert!(bounds.contains(point), "{kind:?}: {point:?}");
+                covered = covered.union_pt(point);
+                // A place inside the edge projects to the same point.
+                if let Some(same) = p.forward(place) {
+                    assert!((same - point).hypot() < 1e-6 * p.radius_m(), "{kind:?}");
+                }
+            }
+            let all = p.bounds();
+            assert!((covered.width() - all.width()).abs() < 0.02 * all.width());
+            assert!((covered.height() - all.height()).abs() < 0.02 * all.height());
+        }
+    }
 
     const EE: f64 = 2.70663;
 
