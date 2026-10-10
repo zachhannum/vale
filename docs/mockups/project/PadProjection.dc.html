@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vale projection on iPad</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./vale.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+a{color:#45c4a8}
+</style>
+</helmet>
+<div class="app pad" style="height: 834px">
+<div class="sys" aria-hidden="true"><span>9:41&ensp;Fri Oct 9</span><svg viewBox="0 0 28 13" style="width: 26px; height: 12px" aria-hidden="true"><rect x=".5" y=".5" width="23" height="12" rx="3.5" fill="none" stroke="currentColor" opacity=".5"></rect><rect x="2" y="2" width="20" height="9" rx="2" fill="currentColor"></rect><rect x="25" y="4" width="2" height="5" rx="1" fill="currentColor" opacity=".5"></rect></svg></div>
+<nav class="seg card" aria-label="Workspace" style="left: 16px; top: 32px"><a href="PadDraw.dc.html">World</a><a class="on" href="PadMap.dc.html">Maps</a><a href="PadAtlas.dc.html">Atlas</a></nav><nav class="seg card" aria-label="Map mode" style="left: 50%; top: 32px; transform: translateX(-50%)"><a href="PadMap.dc.html">Layout</a><a class="on" href="PadProjection.dc.html">Projection</a><a href="PadLabels.dc.html">Labels</a><a href="PadData.dc.html">Data</a></nav><button class="card menu" aria-label="Map frame" aria-haspopup="menu" style="right: 241px; top: 32px">Vesperan<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"></path></svg></button><div class="card bar" role="toolbar" aria-label="Actions" style="right: 16px; top: 32px"><button class="tool" aria-label="Undo"><svg viewBox="0 0 24 24"><path d="M8 5L3 10l5 5M3 10h11a5.5 5.5 0 010 11h-3"></path></svg></button><button class="tool off" aria-label="Redo"><svg viewBox="0 0 24 24"><path d="M16 5l5 5-5 5M21 10H10a5.5 5.5 0 000 11h3"></path></svg></button><span class="div"></span><button class="tool" aria-label="Layers"><svg viewBox="0 0 24 24"><path d="M12 4l9 5-9 5-9-5zM3 14l9 5 9-5"></path></svg></button><button class="tool" aria-label="Toolbox"><svg viewBox="0 0 24 24"><path d="M4 9h16v10H4zM9 9V6h6v3M4 14h16"></path></svg></button></div><div class="sheet bare" style="position: absolute; left: 50%; top: 96px; width: 528px; max-width: none; transform: translateX(-50%)"><img class="lay" src="./plate-base.svg" alt="Map with distortion circles"><svg class="lay" viewBox="0 0 1500 2000"><g fill="#c2382b" fill-opacity=".14" stroke="#9c2415" stroke-width="3"><circle cx="420" cy="420" r="70.6"></circle><circle cx="760" cy="420" r="70.6"></circle><circle cx="1100" cy="420" r="70.6"></circle><circle cx="420" cy="820" r="70.1"></circle><circle cx="760" cy="820" r="70.1"></circle><circle cx="1100" cy="820" r="70.1"></circle><circle cx="420" cy="1220" r="70.1"></circle><circle cx="760" cy="1220" r="70.1"></circle><circle cx="1100" cy="1220" r="70.1"></circle><circle cx="420" cy="1620" r="70.6"></circle><circle cx="760" cy="1620" r="70.6"></circle><circle cx="1100" cy="1620" r="70.6"></circle></g></svg></div><section class="card panel" aria-label="Projection" style="left: 16px; top: 96px; width: 280px"><div class="ph"><span class="grow">Projection</span></div><div class="pb"><div class="row sel"><span style="flex: 1">Lambert conformal conic</span><span class="mute">0.5%</span></div><div class="row"><span style="flex: 1">Transverse Mercator</span><span class="mute">0.4%</span></div><div class="row"><span style="flex: 1">Albers equal-area conic</span><span class="mute">0.9%</span></div><div class="row"><span style="flex: 1">Azimuthal equal-area</span><span class="mute">0.3%</span></div><div class="row"><span style="flex: 1">Polar stereographic</span><span class="mute">6%</span></div><div class="row"><span style="flex: 1">Mercator</span><span class="warn">15%</span></div><div class="row"><span style="flex: 1">Orthographic</span></div><div class="row"><span style="flex: 1">Equal Earth</span></div><div class="row"><span style="flex: 1">Custom</span></div></div></section><section class="card panel" aria-label="Parameters" style="right: 16px; top: 96px"><div class="ph"><span class="grow">Parameters</span></div><div class="pb"><div class="row"><span class="lab">Center</span><input class="in mono" value="30.0°E" aria-label="Center, first"><input class="in mono" value="46.0°N" aria-label="Center, second"></div><div class="row"><span class="lab">Parallels</span><input class="in mono" value="41.3°N" aria-label="Parallels, first"><input class="in mono" value="50.7°N" aria-label="Parallels, second"></div><div class="row"><span class="lab">Rotation</span><input class="in mono" value="0.0°" aria-label="Rotation"></div><div class="row"><span class="grow">Fit parallels to the frame</span><span class="swt on" role="switch" aria-label="Fit parallels to the frame" aria-checked="true" tabindex="0"></span></div><h2>Distortion</h2><table class="t"><thead><tr><th></th><th>Scale</th><th>Area</th></tr></thead><tbody><tr><td>North</td><td class="mono">+0.4%</td><td class="mono">+0.8%</td></tr><tr><td>Center</td><td class="mono">−0.3%</td><td class="mono">−0.6%</td></tr><tr><td>South</td><td class="mono">+0.5%</td><td class="mono">+1.0%</td></tr></tbody></table><div class="row"><span class="grow">Tissot circles</span><span class="swt on" role="switch" aria-label="Tissot circles" aria-checked="true" tabindex="0"></span></div><h2>PROJ</h2><textarea class="in mono" rows="3" aria-label="PROJ string" style="width: 100%">+proj=lcc +lat_1=41.3 +lat_2=50.7 +lat_0=46 +lon_0=30 +R=4820000</textarea></div></section>
+<div class="home" aria-hidden="true"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1194,"height":834}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vale layer style in a map on iPad</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./vale.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+body{margin:0}
+a{color:#45c4a8}
+</style>
+</helmet>
+<div class="app pad" style="height: 834px">
+<div class="sys" aria-hidden="true"><span>9:41&ensp;Fri Oct 9</span><svg viewBox="0 0 28 13" style="width: 26px; height: 12px" aria-hidden="true"><rect x=".5" y=".5" width="23" height="12" rx="3.5" fill="none" stroke="currentColor" opacity=".5"></rect><rect x="2" y="2" width="20" height="9" rx="2" fill="currentColor"></rect><rect x="25" y="4" width="2" height="5" rx="1" fill="currentColor" opacity=".5"></rect></svg></div>
+<nav class="seg card" aria-label="Workspace" style="left: 16px; top: 32px"><a href="PadDraw.dc.html">World</a><a class="on" href="PadMap.dc.html">Maps</a><a href="PadAtlas.dc.html">Atlas</a></nav><nav class="seg card" aria-label="Map mode" style="left: 50%; top: 32px; transform: translateX(-50%)"><a class="on" href="PadMap.dc.html">Layout</a><a href="PadProjection.dc.html">Projection</a><a href="PadLabels.dc.html">Labels</a><a href="PadData.dc.html">Data</a></nav><button class="card menu" aria-label="Map frame" aria-haspopup="menu" style="right: 241px; top: 32px">Vesperan<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"></path></svg></button><div class="card bar" role="toolbar" aria-label="Actions" style="right: 16px; top: 32px"><button class="tool" aria-label="Undo"><svg viewBox="0 0 24 24"><path d="M8 5L3 10l5 5M3 10h11a5.5 5.5 0 010 11h-3"></path></svg></button><button class="tool off" aria-label="Redo"><svg viewBox="0 0 24 24"><path d="M16 5l5 5-5 5M21 10H10a5.5 5.5 0 000 11h3"></path></svg></button><span class="div"></span><button class="tool on" aria-label="Layers"><svg viewBox="0 0 24 24"><path d="M12 4l9 5-9 5-9-5zM3 14l9 5 9-5"></path></svg></button><button class="tool" aria-label="Toolbox"><svg viewBox="0 0 24 24"><path d="M4 9h16v10H4zM9 9V6h6v3M4 14h16"></path></svg></button></div><div class="sheet bare" style="position: absolute; left: 50%; top: 96px; width: 528px; max-width: none; transform: translateX(-50%)"><img class="lay" src="./plate-base.svg" alt="Map of Vesperan"><img class="lay" src="./plate-labels.svg" alt=""></div><div class="card ptools" role="toolbar" aria-label="Tools" style="left: 16px; top: 96px"><button class="tool on" aria-label="Select"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-2 6z"></path></svg><span>Select</span></button><button class="tool" aria-label="Pan"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"></path></svg><span>Move</span></button><button class="tool" aria-label="Place point"><svg viewBox="0 0 24 24"><path d="M12 21s-6-6-6-11a6 6 0 0112 0c0 5-6 11-6 11z"></path><circle cx="12" cy="10" r="2"></circle></svg><span>Point</span></button><button class="tool" aria-label="Edit vertices"><svg viewBox="0 0 24 24"><path d="M5 18l5-10 5 6 4-8"></path><circle cx="5" cy="18" r="1.5"></circle><circle cx="10" cy="8" r="1.5"></circle><circle cx="15" cy="14" r="1.5"></circle></svg><span>Vertex</span></button><button class="tool" aria-label="Edit labels"><svg viewBox="0 0 24 24"><path d="M6 6h12M12 6v13M9 19h6"></path></svg><span>Label</span></button></div><section class="card panel" aria-label="Topography" style="right: 16px; top: 96px; width: 320px"><div class="ph bk"><button class="tool" aria-label="Back to Layers"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"></path></svg></button><span class="grow">Topography</span><button class="tool" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"></path></svg></button></div><div class="pb"><div class="seg" role="group" aria-label="Style for"><button class="on">All maps</button><button>This map</button></div><h2>Style</h2><div class="row sel"><span class="grow">Land</span><span class="mono mute">elev_min &gt;= 0</span></div><div class="row"><span class="grow">Coastline</span><span class="mono mute">elev_min = 0</span></div><div class="row"><button class="btn sec" style="flex: 1">Add a rule</button></div><h2>Land</h2><div class="row"><span class="lab">Filter</span><input class="in mono" value="elev_min &gt;= 0" aria-label="Filter"></div><div class="seg" role="group" aria-label="Fill kind"><button class="on">Color</button><button>Pattern</button><button>Texture</button></div><div class="row"><span class="lab">Color by</span><input class="in mono" value="elev_min" aria-label="Color by"></div><div class="ramp" style="padding-top: 8px"><span><i style="background: #a2b291"></i>0</span><span><i style="background: #b2bf99"></i>100</span><span><i style="background: #c8ce9f"></i>200</span><span><i style="background: #e2dca6"></i>400</span><span><i style="background: #e9d49c"></i>700</span><span><i style="background: #dcb98b"></i>1,000</span><span><i style="background: #cc9a7b"></i>1,400</span><span><i style="background: #bd7f6e"></i>1,800</span></div></div></section>
+<div class="home" aria-hidden="true"></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1194,"height":834}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

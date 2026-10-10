@@ -139,12 +139,12 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | --- | --- |
 | World | Radius, name, display units |
 | Source | Path to a linked file, extents, last known file hash |
-| Heightmap | Cube map tiles, elevation range, band limits |
-| Layer | Geometry type, attribute schema, link to a source or to an in-app table |
+| Raster | Cube map tiles, unit, value range, ramp, band limits |
+| Layer | Type (raster, points, lines, or polygons), attribute schema, link to a source, to a raster, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
-| Style | Ordered rules, stored as JSON |
+| Style | Ordered rules of one layer, stored as JSON |
 | Label class | Text expression, font, placement rules, priority |
-| Map frame | Region, projection, scale, page size, style set, label classes |
+| Map frame | Region, projection, scale, page size, style overrides, label classes |
 | Override | One manual change, keyed by map frame, feature ID, and label class |
 | Atlas | Ordered list of map frames and page templates |
 
@@ -189,13 +189,13 @@ A scale bar is correct only where the projection keeps scale. The app measures t
 
 An imported file stays where it is, and the project stores a link to it plus its extents. You can then edit the file in Photoshop or Illustrator and keep the georeferencing.
 
-The import dialog has three ways to set extents.
+A linked file is a layer. You add it from the Layers panel, and the panel of the layer has three ways to set extents.
 
 - Full globe. This is the default, and it maps the file to longitude -180 to 180 and latitude -90 to 90.
 - Four numbers. You type the west, east, south, and north edges.
 - Two control points. You click two known places and type their coordinates.
 
-If a full-globe file is not twice as wide as it is tall, the dialog shows a warning. A wrong aspect ratio is the most common import error.
+If a full-globe file is not twice as wide as it is tall, the panel shows a warning. A wrong aspect ratio is the most common import error.
 
 The app watches each linked file. When the file changes on disk, the app reloads it and draws all map frames again. If the file is missing, the layer shows a broken-link state and keeps its styles and overrides.
 
@@ -209,11 +209,13 @@ The app has two answers. A regional source with partial extents draws over the w
 
 ## Drawing on the globe
 
-The world view is a globe that you rotate, in the orthographic projection. You draw on it directly. All drawing tools work in sphere coordinates, so the same tools also work in a map frame of any projection.
+The world view is a globe that you rotate, in the orthographic projection. You draw on it directly. All drawing tools work in sphere coordinates, so the same tools also work in a map frame of any projection. A switch shows the world as a flat map, and the same tools work there.
 
 This removes the main pain of the old workflow. You no longer paint on an equirectangular image, where shapes stretch toward the poles. You no longer paint in several projections and join the parts.
 
 ### Heightmap
+
+A heightmap is a raster layer of values with meters as its unit. A world can have other raster layers of values, for example precipitation. Each one has the same store, brush, and preview. A new world has no raster layer.
 
 The heightmap is a 16-bit greyscale cube map. Each of the six faces splits into tiles, and the project stores only the tiles that you painted.
 
@@ -229,13 +231,9 @@ A pen sets the flow from pressure. A mouse uses a fixed flow. The brush size fol
 
 ### Stepped preview
 
-While you paint, a shader shows the heightmap as stepped tints. It cuts the height at the band limits and colors each step from a ramp. This is the posterize and gradient overlay of the old workflow, live. One switch shows the plain greyscale. A second switch turns the steps off and shows the ramp as a smooth gradient.
+While you paint, a shader shows the heightmap as stepped tints. It cuts the height at the band limits and colors each step from a ramp. This is the posterize and gradient overlay of the old workflow, live. A raster layer can also show as a smooth gradient or as plain greyscale.
 
-Sea level is one band limit, and it stays at 0 m. The ramp has one list of colors for the bands below sea level and one list for the bands above. A band takes its color from its position in the order of the bands on its side of sea level, so close limits still get different colors.
-
-The shader filters the heightmap across the face edges. At a cube corner, where three faces meet, it uses the mean of the three corner texels.
-
-The band limits and the ramp belong to the heightmap record. The preview and the polygonize tool read the same limits, so the polygons match what you saw.
+The band limits and the ramp belong to the raster layer. The preview and the polygonize tool read the same limits, so the polygons match what you saw.
 
 ### Toolbox
 
@@ -245,7 +243,7 @@ Version 1 has six tools.
 
 | Tool | Input | Output |
 | --- | --- | --- |
-| Polygonize | Heightmap, band limits | Topography and Bathymetry polygons |
+| Polygonize | A raster layer, band limits | Polygons, one for each band |
 | Contour lines | Heightmap, interval | Lines with an elevation attribute |
 | Smooth | Lines or polygons | The same layer with smoother outlines |
 | Simplify | Lines or polygons | The same layer with fewer points |
@@ -258,7 +256,7 @@ All tools work on the sphere. They live in the core crates, so the command line 
 
 ### Polygonize
 
-The polygonize tool traces each band limit on each cube face, joins the outlines across face edges, and smooths them. It writes one Topography layer and one Bathymetry layer. Each polygon has an `elev_min` attribute, and a normal style rule colors it.
+The polygonize tool traces each band limit on each cube face, joins the outlines across face edges, and smooths them. It writes one polygon layer. It can also split the output at a value into two layers, for example Topography and Bathymetry at 0 m. Each polygon of a heightmap has an `elev_min` attribute, and a normal style rule colors it.
 
 The polygons are an output layer of the toolbox. When the heightmap changes, the layer shows that it is out of date, and you run the tool again. Map frames and export use the polygons and not the heightmap, so topography stays vector in PDF and SVG.
 
@@ -284,7 +282,7 @@ A style is an ordered list of rules. Each rule has a filter, a scale range, and 
 
 A filter is an expression on attributes, for example `population > 50000 and kind = 'city'`. Each symbolizer property can also be an expression, so the line width of a river can come from a `flow` attribute.
 
-Styles live in a project library. A map frame refers to a style, and it can override single properties without a copy of the full style.
+Each layer has one style. You edit it in the panel of the layer, from each workspace. The globe, the flat view, and each map frame draw the layer with that style. A map frame can override single properties without a copy of the full style.
 
 The symbolizers must give enough artistic range that the output does not look like a survey map.
 
@@ -334,7 +332,7 @@ Clean-room has a strict meaning here. The design comes from published research a
 
 ## Map frames and atlas export
 
-A map frame is a saved view of the world: a region, a projection, a scale, a page size, a style set, and label classes. An atlas is an ordered list of map frames with page templates.
+A map frame is a saved view of the world: a region, a projection, a scale, a page size, style overrides, and label classes. An atlas is an ordered list of map frames with page templates.
 
 A page template holds the map furniture (the items around the map). Version 1 has a title, a legend, a scale bar, graticule labels, a north arrow, and a locator map. The locator map is a small world map that marks the frame region, and the app generates it from the frame.
 
