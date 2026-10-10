@@ -309,8 +309,9 @@ fn drain(grid: &impl Grid, levels: &[u16], inflow: &[(usize, f64)]) -> (Vec<u32>
             // side by side. The ground past the end of the grid counts as
             // a flat.
             let below = if past_end { level } else { filled[j] };
-            let drop = f64::from(level) - f64::from(below) + 1.0;
-            let slope = if k < 4 { drop } else { drop * FRAC_1_SQRT_2 };
+            let drop = f64::from(level) - f64::from(below);
+            // On a flat, each lower neighbor counts the same.
+            let slope = 1.0 + if k < 4 { drop } else { drop * FRAC_1_SQRT_2 };
             let score = slope * (0.75 + 0.5 * grid.scatter(i, k));
             if score > best {
                 best = score;
