@@ -367,8 +367,8 @@ impl Globe {
                 }
                 Step::Failed(text) => {
                     // The faces that arrived go back out of the heightmap.
-                    if job.faces > 0 && self.map.end_stroke() {
-                        self.map.undo();
+                    if job.faces > 0 {
+                        self.map.cancel_stroke();
                     }
                     self.import = None;
                     self.import_result = Some(Err(text));
