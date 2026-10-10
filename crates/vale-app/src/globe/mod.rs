@@ -24,7 +24,7 @@ use crate::pen::Pen;
 use backdrop::Canvas;
 use brush::{Backlog, BrushSettings, Sample, Stroke, plan_texels};
 use flat::FlatView;
-use gpu::{Event, GlobeCallback, Link, Op, Uniforms};
+use gpu::{Event, GlobeCallback, Link, Op, Uniforms, Uploads};
 use math::V3;
 use nav::Nav;
 use preview::{Preview, band_uniforms};
@@ -133,6 +133,8 @@ pub struct Globe {
     pub blur: bool,
     /// The text of the last stroke test.
     pub test_report: Option<String>,
+    /// The changed texels that wait for the GPU.
+    pub uploads: Uploads,
     link: Link,
     events: mpsc::Receiver<Event>,
     /// Pen input that waits for the stroke before it.
@@ -170,6 +172,7 @@ impl Globe {
             debug: false,
             blur: true,
             test_report: None,
+            uploads: Uploads::default(),
             link,
             events,
             inputs: VecDeque::new(),
@@ -187,6 +190,7 @@ impl Globe {
         self.map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
         self.map.bands = bands;
         self.stats.face_size = face_size as u32;
+        self.uploads.clear();
         self.inputs.clear();
         self.backlog.clear();
         self.stroke = None;
@@ -254,9 +258,13 @@ impl Globe {
         }
     }
 
-    /// True while a stroke or a stroke test is not complete.
+    /// True while a stroke or a stroke test is not complete, or texels wait
+    /// for the GPU.
     pub fn busy(&self) -> bool {
-        self.stroke.is_some() || !self.inputs.is_empty() || self.test.is_some()
+        self.stroke.is_some()
+            || !self.inputs.is_empty()
+            || self.test.is_some()
+            || !self.uploads.is_empty()
     }
 
     pub fn can_undo(&self) -> bool {
@@ -298,7 +306,7 @@ impl Globe {
         self.read_events();
         // An undo or a redo goes to the GPU before the stamps of the next
         // stroke.
-        gpu::queue_changes(&mut self.map, &self.link);
+        gpu::queue_changes(&mut self.map, &self.link, &mut self.uploads);
         self.run_test(now, in_flight);
         self.read_inputs();
         self.send_stamps(now);
@@ -378,6 +386,11 @@ impl Globe {
                     if let Some(active) = &mut self.stroke {
                         // The stroke before this one still waits for its texels.
                         active.ended = true;
+                        break;
+                    }
+                    // A strip that waits has texels from before the stroke.
+                    // It must reach the GPU before the first stamp.
+                    if !self.uploads.is_empty() {
                         break;
                     }
                     self.strokes += 1;
@@ -481,7 +494,7 @@ impl Globe {
         backdrop: Option<Canvas>,
     ) -> Option<GlobeCallback> {
         let format = self.format?;
-        gpu::queue_changes(&mut self.map, &self.link);
+        gpu::queue_changes(&mut self.map, &self.link, &mut self.uploads);
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
         let center = self.rect.center();
         let radius = self.radius() as f32;

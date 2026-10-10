@@ -218,6 +218,10 @@ pub fn stroke_test(
     report.ok_or_else(|| anyhow!("the stroke test gave no numbers"))
 }
 
+/// The most frames that a screenshot waits for the globe.
+#[cfg(not(target_os = "ios"))]
+const UPLOAD_STEPS: usize = 10_000;
+
 /// Renders the whole UI offscreen. Returns the image and the state.
 #[cfg(not(target_os = "ios"))]
 pub fn ui_png(
@@ -228,8 +232,19 @@ pub fn ui_png(
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut harness = ui_harness(state, size, pixel_ratio, setup);
     harness.run_steps(4);
-    let image = harness.render().map_err(|e| {
-        anyhow!("cannot render the UI offscreen (no GPU adapter?): {e}. Use --map-only for a CPU render.")
-    })?;
+    let no_gpu = |e| {
+        anyhow!(
+            "cannot render the UI offscreen (no GPU adapter?): {e}. Use --map-only for a CPU render."
+        )
+    };
+    // The heightmap goes to the GPU in parts. Each render sends one part.
+    for _ in 0..UPLOAD_STEPS {
+        if !harness.state().globe.busy() {
+            break;
+        }
+        harness.step();
+        harness.render().map_err(no_gpu)?;
+    }
+    let image = harness.render().map_err(no_gpu)?;
     Ok((image, harness.into_state()))
 }
