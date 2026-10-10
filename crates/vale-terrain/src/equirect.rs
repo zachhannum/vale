@@ -435,5 +435,54 @@ mod tests {
         assert_eq!(map.allocated_tiles(), tiles);
         assert_eq!(map.take_dirty(), [Some(full); FACES]);
         assert!(!map.can_undo());
+
+        let imported = {
+            let mut other = Heightmap::with_tile_size(N, 16, 100);
+            other.import_equirect(&image(512, 256, hills));
+            all_texels(&other)
+        };
+        assert!(map.redo());
+        assert_eq!(all_texels(&map), imported);
+    }
+
+    #[test]
+    fn a_canceled_import_leaves_the_map_and_its_undo_steps() {
+        let mut map = Heightmap::with_tile_size(N, 16, 100);
+        map.begin_stroke();
+        map.set(2, 20, 20, 7);
+        map.end_stroke();
+        map.begin_stroke();
+        map.set(5, 63, 0, 60000);
+        map.end_stroke();
+        map.undo();
+        let before = all_texels(&map);
+        let tiles = map.allocated_tiles();
+
+        let src = image(512, 256, hills);
+        map.begin_stroke();
+        for face in 0..3 {
+            map.store_face(face, &src.face(face, N));
+        }
+        map.cancel_stroke();
+        assert_eq!(all_texels(&map), before);
+        assert_eq!(map.allocated_tiles(), tiles);
+        assert!(map.can_undo());
+        assert!(map.can_redo());
+        // The next undo is the step from before the import.
+        map.redo();
+        assert_eq!(map.get(5, 63, 0), 60000);
+    }
+
+    #[test]
+    fn an_import_over_tiles_above_the_undo_limit_has_no_undo_step() {
+        let mut map = Heightmap::with_tile_size(N, 16, 100);
+        map.import_equirect(&image(512, 256, hills));
+        assert!(map.can_undo());
+        // One tile of 16 by 16 texels is 512 bytes.
+        map.set_undo_memory_limit(1024);
+        let flat = image(8, 4, |_| 0.25);
+        map.import_equirect(&flat);
+        assert!(!map.can_undo());
+        assert_eq!(map.get(0, 0, 0), flat.sample([1.0, 0.0, 0.0]));
     }
 }

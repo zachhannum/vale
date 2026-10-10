@@ -431,6 +431,14 @@ impl Heightmap {
         }
     }
 
+    /// Ends the stroke and puts back the tiles from before it. The undo and
+    /// redo steps stay as they are.
+    pub fn cancel_stroke(&mut self) {
+        if let Some(mut saved) = self.stroke.take() {
+            self.swap(&mut saved);
+        }
+    }
+
     /// Adds an undo step. The redo steps are no longer valid.
     fn push_undo(&mut self, saved: Saved) {
         self.redo.clear();
