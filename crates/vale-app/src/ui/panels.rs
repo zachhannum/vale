@@ -3,11 +3,11 @@
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
-use super::{Action, AppState, ExportFormat, Workspace};
+use super::{Action, AppState, ExportFormat, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
 use crate::globe::brush::{FLOW, STRENGTH_M};
-use crate::globe::{Tool, stats, stroke_test};
+use crate::globe::{Tool, WorldView, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -21,6 +21,17 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
                 ui.selectable_value(&mut state.globe.tool, Tool::Brush, "Brush");
                 ui.separator();
+                let mut flat = state.globe.world_view == WorldView::Flat;
+                if ui.toggle_value(&mut flat, "Flat").changed() {
+                    state.globe.world_view = if flat {
+                        WorldView::Flat
+                    } else {
+                        WorldView::Globe
+                    };
+                }
+                if flat {
+                    flat_projection(ui, state);
+                }
                 ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
                 ui.toggle_value(&mut state.globe.preview.panel, "Elevation");
                 ui.toggle_value(&mut state.globe.debug, "Debug");
@@ -40,6 +51,40 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     });
+}
+
+/// The projection of the flat view.
+fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
+    let flat = &mut state.globe.flat;
+    let spec = flat.spec();
+    let mut kind = spec.kind;
+    egui::ComboBox::from_id_salt("flat-projection")
+        .selected_text(kind.name())
+        .show_ui(ui, |ui| {
+            for k in ProjectionKind::ALL {
+                ui.selectable_value(&mut kind, k, k.name());
+            }
+        });
+    flat.set_spec(ProjectionSpec { kind, ..spec });
+    let button = ui.add_enabled(flat.can_center_here(), egui::Button::new(pad::RECENTER));
+    let help = "Makes the place at the middle of the view the center of the projection. \
+                Move the map first.";
+    if button
+        .on_hover_text(help)
+        .on_disabled_hover_text(help)
+        .clicked()
+    {
+        flat.center_here();
+    }
+    let button = ui.add_enabled(flat.can_reset(), egui::Button::new(pad::RESET));
+    let help = "Puts the center of the projection back, and shows the whole map.";
+    if button
+        .on_hover_text(help)
+        .on_disabled_hover_text(help)
+        .clicked()
+    {
+        flat.reset();
+    }
 }
 
 /// The numbers of the brush on the GPU, and controls for a test of the brush.

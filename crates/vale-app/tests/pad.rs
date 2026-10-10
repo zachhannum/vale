@@ -4,11 +4,11 @@ use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
-use vale_app::globe::Tool;
 use vale_app::globe::view::GlobeView;
+use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
-use vale_app::ui::pad::{Panel, readout_text, theme};
+use vale_app::ui::pad::{Panel, RECENTER, RESET, readout_text, theme};
 use vale_app::ui::{AppState, Layout, Workspace, draw};
 use vale_terrain::Mode;
 
@@ -136,7 +136,8 @@ fn check_controls(h: &Pad, what: &str) {
     let screen = h.state().pad.rects.unwrap().screen;
     let controls = &h.state().pad.controls;
     assert!(controls.len() >= 8, "{what}: {} controls", controls.len());
-    let menu = h.state().pad.menu_rect;
+    let in_menu = h.state().pad.menu_rect.is_some();
+    let popup = in_menu || h.state().pad.projections_rect.is_some();
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -154,11 +155,17 @@ fn check_controls(h: &Pad, what: &str) {
         );
         for b in &controls[i + 1..] {
             assert_ne!(a.name, b.name, "{what}");
-            // The open menu covers the cards below it.
+            // The open menu and the open list of projections cover the
+            // cards below them.
             let row = |c: &vale_app::ui::pad::widgets::Control| {
-                ["World", "Globe", "Maps"].contains(&c.name.as_str())
+                let name = c.name.as_str();
+                let kind = vale_sphere::ProjectionKind::ALL
+                    .iter()
+                    .any(|k| k.name() == name);
+                let menu = ["World", "Globe", "Flat", "Maps"].contains(&name);
+                menu || kind || (in_menu && name == "Projection")
             };
-            let covered = menu.is_some() && row(a) != row(b);
+            let covered = popup && row(a) != row(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -493,6 +500,125 @@ fn the_pen_paints_on_the_canvas_and_a_panel_stays_open() {
 }
 
 #[test]
+fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Lower");
+    tap(&mut h, "Layers");
+    tap(&mut h, "Brush settings");
+    let panels = h.state().pad.panels.clone();
+    assert_eq!(panels.len(), 2);
+    for (name, view) in [("Flat", WorldView::Flat), ("Globe", WorldView::Globe)] {
+        tap(&mut h, name);
+        let s = h.state();
+        assert_eq!(s.globe.world_view, view);
+        assert_eq!(s.workspace, Workspace::Globe);
+        assert_eq!(
+            (s.globe.tool, s.globe.brush.mode),
+            (Tool::Brush, Mode::Lower)
+        );
+        assert_eq!(s.pad.panels, panels);
+    }
+}
+
+#[test]
+fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
+    use vale_sphere::ProjectionKind;
+    let mut h = pad(BOARDS[0]);
+    assert!(control(&h, "Projection").is_none());
+    tap(&mut h, "Lower");
+    tap(&mut h, "Flat");
+    // The card is wider by the button, and it stays in the middle.
+    let view = h.state().pad.rects.unwrap().view.unwrap();
+    assert_eq!(view.center().x, 597.0);
+    assert!(view.contains_rect(control(&h, "Projection").unwrap()));
+    assert!(control(&h, "Projection").unwrap().width() >= 44.0);
+
+    tap(&mut h, "Projection");
+    let list = h.state().pad.projections_rect.unwrap();
+    assert_eq!(list.top(), view.bottom() + 4.0);
+    for kind in ProjectionKind::ALL {
+        assert!(list.contains_rect(control(&h, kind.name()).unwrap()));
+    }
+    check_controls(&h, "with the projections");
+    tap(&mut h, "Equal Earth");
+    let s = h.state();
+    assert_eq!(s.globe.flat.spec().kind, ProjectionKind::EqualEarth);
+    assert!(!s.pad.projections && s.pad.projections_rect.is_none());
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Lower)
+    );
+
+    // A touch off the list closes it, and the globe has no list.
+    tap(&mut h, "Projection");
+    tap(&mut h, "Layers");
+    assert!(!h.state().pad.projections);
+    tap(&mut h, "Projection");
+    tap(&mut h, "Globe");
+    assert!(!h.state().pad.projections && control(&h, "Projection").is_none());
+}
+
+#[test]
+fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        h.state_mut().globe.world_view = WorldView::Flat;
+        h.run_steps(2);
+        let rects = h.state().pad.rects.unwrap();
+        // The buttons are in the card of the view switch, to the right of
+        // the switch. With no switch in the top row, they have a card below
+        // the top row.
+        let card = match rects.view {
+            Some(view) => {
+                assert_eq!(h.state().pad.center_rect, None);
+                assert_eq!(view.center().x, size.0 / 2.0, "{size:?}");
+                assert!(view.right() + 12.0 <= rects.actions.left(), "{size:?}");
+                view
+            }
+            None => {
+                let card = h.state().pad.center_rect.unwrap();
+                assert_eq!(card.center().x, size.0 / 2.0, "{size:?}");
+                assert_eq!(card.top(), rects.tools.top());
+                assert!(!card.intersects(rects.tools));
+                card
+            }
+        };
+        // The middle of the view is the center of the projection, and the
+        // view shows the whole map, so the two actions are off.
+        assert!(control(&h, RECENTER).is_none() && control(&h, RESET).is_none());
+
+        // A drag moves the map at the first zoom, with no zoom before it.
+        let canvas = h.state().globe.rect;
+        let from = pos2(canvas.center().x, canvas.bottom() - 120.0);
+        drag(&mut h, from, from + vec2(-60.0, 0.0), None);
+        let (recenter, reset) = (control(&h, RECENTER).unwrap(), control(&h, RESET).unwrap());
+        assert!(card.contains_rect(recenter) && card.contains_rect(reset));
+        assert_eq!(reset.left() - recenter.right(), 4.0);
+        if rects.view.is_some() {
+            let switch = control(&h, "Flat").unwrap();
+            assert!(recenter.left() > control(&h, "Projection").unwrap().right());
+            assert!(recenter.left() > switch.right() && recenter.top() == switch.top());
+        }
+        check_controls(&h, &format!("{size:?} with the center buttons"));
+        tap(&mut h, RECENTER);
+        let flat = &h.state().globe.flat;
+        assert!(flat.spec().lon0 > 1.0, "{size:?}: {:?}", flat.spec());
+        assert!(control(&h, RECENTER).is_none());
+
+        tap(&mut h, RESET);
+        let flat = &h.state().globe.flat;
+        assert_eq!((flat.spec().lon0, flat.zoom), (0.0, 1.0));
+        assert!(control(&h, RESET).is_none());
+
+        // The globe has no buttons.
+        h.state_mut().globe.world_view = WorldView::Globe;
+        h.run_steps(2);
+        assert_eq!(h.state().pad.center_rect, None);
+        assert!(control(&h, RECENTER).is_none() && control(&h, RESET).is_none());
+    }
+}
+
+#[test]
 fn the_top_row_and_the_panels_match_the_landscape_board() {
     let mut h = pad(BOARDS[0]);
     let r = h.state().pad.rects.unwrap();
@@ -502,8 +628,9 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(control(&h, "World").unwrap().min, pos2(20.0, 36.0));
     assert!(control(&h, "Maps").is_some());
     assert!(control(&h, "Workspace").is_none());
-    // Atlas and Flat do nothing yet, so they are not controls.
-    assert!(control(&h, "Atlas").is_none() && control(&h, "Flat").is_none());
+    // Atlas does nothing yet, so it is not a control.
+    assert!(control(&h, "Atlas").is_none());
+    assert!(r.view.unwrap().contains_rect(control(&h, "Flat").unwrap()));
     assert_eq!(r.view.unwrap().center(), pos2(597.0, 58.0));
     assert!(r.view.unwrap().contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(
@@ -604,8 +731,21 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         );
         let tops = ["World", "Globe", "Maps"].map(|name| control(&h, name).unwrap().top());
         assert_eq!(tops, [98.0, 146.0, 255.0]);
+        tap(&mut h, "Flat");
+        assert!(!h.state().pad.menu);
+        assert_eq!(h.state().globe.world_view, WorldView::Flat);
+        // In the flat view, the menu opens the list of the projections.
+        tap(&mut h, "Workspace");
+        tap(&mut h, "Projection");
+        assert!(!h.state().pad.menu);
+        assert_eq!(h.state().pad.projections_rect.unwrap().min, menu.min);
+        tap(&mut h, "Mercator");
+        let kind = h.state().globe.flat.spec().kind;
+        assert_eq!(kind, vale_sphere::ProjectionKind::Mercator);
+        tap(&mut h, "Workspace");
         tap(&mut h, "Globe");
         assert!(!h.state().pad.menu);
+        assert_eq!(h.state().globe.world_view, WorldView::Globe);
 
         // A panel is a sheet at the bottom, and one sheet shows at a time.
         tap(&mut h, "Layers");

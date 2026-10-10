@@ -4,12 +4,12 @@
 use std::collections::HashMap;
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
-use vale_sphere::LonLat;
+use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_terrain::Mode;
 
 use super::{AppState, Workspace, elevation, globe, panels};
-use crate::globe::Tool;
 use crate::globe::brush::{FLOW, STRENGTH_M};
+use crate::globe::{Tool, WorldView};
 
 pub mod geometry;
 pub mod icons;
@@ -47,6 +47,12 @@ pub struct PadState {
     pub right: Option<Panel>,
     /// The Layers panel shows the Height layer.
     pub layer: bool,
+    /// The list of the projections of the flat view is open.
+    pub projections: bool,
+    /// The list of the projections in the last frame.
+    pub projections_rect: Option<Rect>,
+    /// The card of the center of the projection in the last frame.
+    pub center_rect: Option<Rect>,
     /// The workspace menu is open.
     pub menu: bool,
     /// The distance that the sheet is pulled down from its open place.
@@ -103,6 +109,14 @@ impl PadState {
 
 const WORKSPACES: [&str; 3] = ["World", "Maps", "Atlas"];
 const VIEWS: [&str; 2] = ["Globe", "Flat"];
+/// The action that makes the place at the middle of the canvas the center of
+/// the projection of the flat view.
+pub const RECENTER: &str = "Recenter";
+/// The action that puts the center of the projection and the view back.
+pub const RESET: &str = "Reset";
+/// The control that opens the list of the projections.
+pub const PROJECTION: &str = "Projection";
+const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
 
 /// The text of the position readout.
 pub fn readout_text(lonlat: Option<LonLat>, meters: Option<f64>) -> String {
@@ -127,6 +141,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
 
     let class = WidthClass::of(screen.width());
+    let flat = state.globe.world_view == WorldView::Flat;
     let workspace_width = if class == WidthClass::Wide {
         widgets::segments_width(ui, &WORKSPACES)
     } else {
@@ -136,7 +151,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         screen,
         bands: geometry::Bands::new(screen, ctx.content_rect()),
         workspace_width,
-        view_width: widgets::segments_width(ui, &VIEWS),
+        // In the flat view, the card also has the button of the list of
+        // projections, a line, and the Recenter and Reset buttons.
+        view_width: widgets::segments_width(ui, &VIEWS)
+            + if flat { 3.0 * TOUCH + 9.0 + PAD } else { 0.0 },
         panel: state.pad.brush || state.pad.right.is_some(),
         sheet_offset: state.pad.sheet_offset,
     };
@@ -167,6 +185,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     readout(&ctx, ui, state, &rects);
+    state.pad.center_rect = None;
+    // With no view switch in the top row, the two buttons have their own card.
+    if flat && rects.view.is_none() {
+        center_card(&ctx, state, &mut controls, &rects);
+    }
+    state.pad.projections_rect = None;
+    if state.pad.projections && flat {
+        projections(&ctx, state, &mut controls, &rects);
+    } else {
+        state.pad.projections = false;
+    }
     if state.pad.menu && class != WidthClass::Wide {
         menu(&ctx, state, &mut controls, &rects);
     } else {
@@ -213,7 +242,40 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             Order::Middle,
             radius,
             |ui| {
-                widgets::segments(ui, controls, &[(VIEWS[0], true), (VIEWS[1], false)], 0);
+                let active = state.globe.world_view as usize;
+                let items = [(VIEWS[0], true), (VIEWS[1], true)];
+                if let Some(chosen) = widgets::segments(ui, controls, &items, active) {
+                    state.globe.world_view = WORLD_VIEWS[chosen];
+                }
+                if state.globe.world_view == WorldView::Flat {
+                    // From the right: Reset, Recenter, a line, and the
+                    // button of the list of projections.
+                    let card = ui.max_rect();
+                    let at = |right: f32| {
+                        let min = pos2(right - TOUCH, card.top() + PAD);
+                        Rect::from_min_size(min, vec2(TOUCH, TOUCH))
+                    };
+                    let reset = at(card.right() - PAD);
+                    let recenter = at(reset.left() - PAD);
+                    let divider = pos2(recenter.left() - 4.5, card.center().y);
+                    let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
+                    ui.painter().rect_filled(line, 0.0, theme::divider());
+                    let open = state.pad.projections;
+                    let list = at(recenter.left() - 9.0);
+                    let button = widgets::icon_button_at(
+                        ui,
+                        controls,
+                        list,
+                        PROJECTION,
+                        Icon::Down,
+                        open,
+                        true,
+                    );
+                    if button.clicked() {
+                        state.pad.projections = !open;
+                    }
+                    center_buttons(ui, state, controls, recenter, reset);
+                }
             },
         );
     }
@@ -542,7 +604,8 @@ fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     let size = vec2(ui.available_width(), PANEL_ROW);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect.expand2(vec2(8.0, 0.0)), 5.0, theme::raise());
+    let highlight = rect.expand2(vec2(8.0, -widgets::HIGHLIGHT_INSET));
+    painter.rect_filled(highlight, 5.0, theme::raise());
     let icon = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
     icons::paint(painter, icon, Icon::Raster, 18.0, theme::MUTE);
     let at = pos2(rect.left() + 28.0, rect.center().y);
@@ -611,9 +674,125 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     );
 }
 
+/// The Recenter and Reset buttons of the flat view, at the given places.
+fn center_buttons(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    recenter: Rect,
+    reset: Rect,
+) {
+    let flat = &mut state.globe.flat;
+    let can = flat.can_center_here();
+    if widgets::icon_button_at(ui, controls, recenter, RECENTER, Icon::Center, false, can).clicked()
+    {
+        flat.center_here();
+    }
+    let can = flat.can_reset();
+    if widgets::icon_button_at(ui, controls, reset, RESET, Icon::Reset, false, can).clicked() {
+        flat.reset();
+    }
+}
+
+/// The card of the Recenter and Reset buttons in the compact layout, below
+/// the top row.
+fn center_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let size = vec2(2.0 * TOUCH + 3.0 * PAD, ROW);
+    let middle = rects.screen.center().x;
+    let mut rect = Rect::from_min_size(pos2(middle - size.x / 2.0, rects.tools.top()), size);
+    // An open panel pushes the card to its right. With no room there, the
+    // card does not show.
+    let panels = &state.pad.panels;
+    let free = |rect: Rect| !panels.iter().any(|(_, panel)| panel.intersects(rect));
+    if let Some((_, panel)) = panels.iter().find(|(_, panel)| panel.intersects(rect)) {
+        rect = rect.translate(vec2(panel.right() + geometry::GAP - rect.left(), 0.0));
+        if !free(rect) || rect.right() > rects.screen.right() - geometry::GAP {
+            return;
+        }
+    }
+    state.pad.center_rect = Some(rect);
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-center",
+        rect,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            let at = |x: f32| {
+                let min = pos2(rect.left() + PAD + x, rect.top() + PAD);
+                Rect::from_min_size(min, vec2(TOUCH, TOUCH))
+            };
+            center_buttons(ui, state, controls, at(0.0), at(TOUCH + PAD));
+        },
+    );
+}
+
+/// The list of the projections of the flat view. It opens below the view
+/// switch, or in the place of the workspace menu.
+fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let rows = ProjectionKind::ALL.len() as f32;
+    let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 10.0);
+    let min = match rects.view {
+        Some(view) => pos2(view.center().x - size.x / 2.0, view.bottom() + PAD),
+        None => rects.menu,
+    };
+    let rect = Rect::from_min_size(min, size);
+    state.pad.projections_rect = Some(rect);
+    let pressed = ctx.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    let on_switch = |pos| rects.view.is_some_and(|view| view.contains(pos));
+    if pressed.is_some_and(|pos| !rect.contains(pos) && !on_switch(pos)) {
+        state.pad.projections = false;
+    }
+    let radius = theme::CARD_RADIUS.into();
+    widgets::card(
+        ctx,
+        None,
+        "pad-projections",
+        rect,
+        Order::Foreground,
+        radius,
+        |ui| {
+            // The list covers other cards, so its fill is opaque.
+            ui.painter()
+                .rect_filled(rect, radius, theme::card(false).to_opaque());
+            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            let ui = &mut ui;
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let spec = state.globe.flat.spec();
+            for kind in ProjectionKind::ALL {
+                let row = widgets::text_row(ui, controls, kind.name(), 0.0, false, true);
+                if kind == spec.kind {
+                    let tick = Rect::from_center_size(
+                        pos2(row.rect.right() - 14.0, row.rect.center().y),
+                        vec2(18.0, 18.0),
+                    );
+                    icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                }
+                if row.clicked() {
+                    state.globe.flat.set_spec(ProjectionSpec { kind, ..spec });
+                    state.pad.projections = false;
+                }
+            }
+        },
+    );
+}
+
 fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let compact = rects.class == WidthClass::Compact;
-    let rows = if compact { 5.0 } else { 3.0 };
+    let flat = state.globe.world_view == WorldView::Flat;
+    let rows = match (compact, flat) {
+        (true, true) => 6.0,
+        (true, false) => 5.0,
+        (false, _) => 3.0,
+    };
     let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 13.0 + 10.0);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.menu_rect = Some(rect);
@@ -647,16 +826,25 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
                 state.pad.menu = false;
             }
             if compact {
-                let globe = widgets::text_row(ui, controls, VIEWS[0], 16.0, false, true);
-                let tick = Rect::from_center_size(
-                    pos2(globe.rect.right() - 14.0, globe.rect.center().y),
-                    vec2(18.0, 18.0),
-                );
-                icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-                if globe.clicked() {
+                for (label, view) in VIEWS.into_iter().zip(WORLD_VIEWS) {
+                    let row = widgets::text_row(ui, controls, label, 16.0, false, true);
+                    if state.globe.world_view == view {
+                        let tick = Rect::from_center_size(
+                            pos2(row.rect.right() - 14.0, row.rect.center().y),
+                            vec2(18.0, 18.0),
+                        );
+                        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                    }
+                    if row.clicked() {
+                        state.globe.world_view = view;
+                        state.pad.menu = false;
+                    }
+                }
+                if flat && widgets::text_row(ui, controls, PROJECTION, 32.0, false, true).clicked()
+                {
+                    state.pad.projections = true;
                     state.pad.menu = false;
                 }
-                widgets::text_row(ui, controls, VIEWS[1], 16.0, false, false);
             }
             let (rule, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());

@@ -3,6 +3,7 @@
 /// The projections that the app offers.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ProjectionKind {
+    Equirectangular,
     EqualEarth,
     Mercator,
     LambertAzimuthal,
@@ -11,7 +12,8 @@ pub enum ProjectionKind {
 }
 
 impl ProjectionKind {
-    pub const ALL: [ProjectionKind; 5] = [
+    pub const ALL: [ProjectionKind; 6] = [
+        ProjectionKind::Equirectangular,
         ProjectionKind::EqualEarth,
         ProjectionKind::Mercator,
         ProjectionKind::LambertAzimuthal,
@@ -22,6 +24,7 @@ impl ProjectionKind {
     /// A name for people.
     pub fn name(self) -> &'static str {
         match self {
+            ProjectionKind::Equirectangular => "Equirectangular",
             ProjectionKind::EqualEarth => "Equal Earth",
             ProjectionKind::Mercator => "Mercator",
             ProjectionKind::LambertAzimuthal => "Lambert azimuthal",
@@ -33,6 +36,7 @@ impl ProjectionKind {
     /// A stable name for the command line.
     pub fn id(self) -> &'static str {
         match self {
+            ProjectionKind::Equirectangular => "equirectangular",
             ProjectionKind::EqualEarth => "equal-earth",
             ProjectionKind::Mercator => "mercator",
             ProjectionKind::LambertAzimuthal => "lambert-azimuthal",
@@ -49,6 +53,7 @@ impl ProjectionKind {
     /// The name in PROJ.
     pub fn proj_name(self) -> &'static str {
         match self {
+            ProjectionKind::Equirectangular => "eqc",
             ProjectionKind::EqualEarth => "eqearth",
             ProjectionKind::Mercator => "merc",
             ProjectionKind::LambertAzimuthal => "laea",

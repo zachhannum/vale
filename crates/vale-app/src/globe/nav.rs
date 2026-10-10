@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use eframe::egui::{self, Pos2, Rect, Vec2};
 
-use super::view::GlobeView;
+use super::view::Camera;
 
 /// The zoom factor of one point of wheel scroll, as an exponent.
 const WHEEL_ZOOM: f64 = 0.002;
@@ -125,7 +125,7 @@ impl Nav {
 
     /// Moves the view with the fingers. One finger rotates. Two fingers rotate,
     /// zoom, and twist, and the place under their middle stays there.
-    pub fn move_fingers(&mut self, view: &mut GlobeView, rect: Rect) {
+    pub fn move_fingers(&mut self, view: &mut impl Camera, rect: Rect) {
         let mut fingers = self.fingers.values();
         match (fingers.next(), fingers.next()) {
             (Some(a), None) => {
@@ -154,7 +154,13 @@ impl Nav {
     /// A drag with any button rotates. A drag with Shift twists about the middle
     /// of the canvas. The wheel zooms. On a trackpad, a scroll with two fingers
     /// rotates, a pinch zooms, and the rotate gesture twists.
-    fn pointer(&mut self, ui: &egui::Ui, rect: Rect, resp: &egui::Response, view: &mut GlobeView) {
+    fn pointer(
+        &mut self,
+        ui: &egui::Ui,
+        rect: Rect,
+        resp: &egui::Response,
+        view: &mut impl Camera,
+    ) {
         let (pos, pressed, down, shift, delta, scroll, pinch, rotation) = ui.input(|i| {
             (
                 i.pointer.latest_pos(),
@@ -213,7 +219,7 @@ impl Nav {
         ui: &egui::Ui,
         rect: Rect,
         resp: &egui::Response,
-        view: &mut GlobeView,
+        view: &mut impl Camera,
         painting: Painting,
     ) {
         self.painting = painting;
@@ -256,6 +262,7 @@ mod tests {
 
     use super::*;
     use crate::globe::math::angle;
+    use crate::globe::view::GlobeView;
 
     fn rect() -> Rect {
         Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0))

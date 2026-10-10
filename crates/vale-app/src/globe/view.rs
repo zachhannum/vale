@@ -7,6 +7,18 @@ use super::math::{Mat3, V3, cross, lonlat_to_dir, normalize};
 pub const ZOOM_MIN: f64 = 0.5;
 pub const ZOOM_MAX: f64 = 40.0;
 
+/// A view that the navigation moves.
+pub trait Camera {
+    /// One step of a drag, a pinch, and a twist together. The place under
+    /// `from` moves to `to`.
+    fn gesture(&mut self, rect: Rect, from: Pos2, to: Pos2, scale: f64, twist: f64);
+
+    /// Zooms and keeps the place under `at` there.
+    fn zoom_at(&mut self, rect: Rect, at: Pos2, scale: f64) {
+        self.gesture(rect, at, at, scale, 0.0);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlobeView {
     /// World to view. In view space, x is right, y is up, and z is to the eye.
@@ -63,10 +75,10 @@ impl GlobeView {
         let (v, on) = self.screen_to_view(rect, pos);
         on.then(|| self.rot.inv_mul_vec(v))
     }
+}
 
-    /// One step of a drag, a pinch, and a twist together. The point of the
-    /// globe under `from` moves to `to`.
-    pub fn gesture(&mut self, rect: Rect, from: Pos2, to: Pos2, scale: f64, twist: f64) {
+impl Camera for GlobeView {
+    fn gesture(&mut self, rect: Rect, from: Pos2, to: Pos2, scale: f64, twist: f64) {
         let (grab, _) = self.screen_to_view(rect, from);
         let world = self.rot.inv_mul_vec(grab);
         self.zoom = (self.zoom * scale).clamp(ZOOM_MIN, ZOOM_MAX);
@@ -76,11 +88,6 @@ impl GlobeView {
         let now = self.rot.mul_vec(world);
         let (target, _) = self.screen_to_view(rect, to);
         self.rot = Mat3::between(now, target).mul(&self.rot).orthonormalized();
-    }
-
-    /// Zooms and keeps the point under `at` in place.
-    pub fn zoom_at(&mut self, rect: Rect, at: Pos2, scale: f64) {
-        self.gesture(rect, at, at, scale, 0.0);
     }
 }
 

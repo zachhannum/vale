@@ -12,7 +12,7 @@ use crate::globe::backdrop::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow};
 use crate::globe::math::dir_to_lonlat;
 use crate::globe::nav::{Painting, on_canvas};
-use crate::globe::{Globe, Tool};
+use crate::globe::{Globe, Tool, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
@@ -86,9 +86,9 @@ fn brush_input(
         return Painting::default();
     }
     let time = ui.input(|i| i.time);
-    let radius = globe.brush.radius(globe.view.radius(rect));
+    let radius = globe.brush.radius(globe.radius());
     let sample = |globe: &mut Globe, pos: egui::Pos2, flow: f64| {
-        let dir = globe.view.unproject(rect, pos);
+        let dir = globe.unproject(pos);
         globe.input.pos = Some(pos);
         if globe.input.picking {
             globe.pick(dir);
@@ -229,11 +229,17 @@ pub(super) fn canvas(
         return;
     }
     let painting = brush_input(ui, rect, &resp, globe, now);
-    globe.nav.update(ui, rect, &resp, &mut globe.view, painting);
+    match globe.world_view {
+        WorldView::Globe => globe.nav.update(ui, rect, &resp, &mut globe.view, painting),
+        WorldView::Flat => {
+            globe.flat.clamp();
+            globe.nav.update(ui, rect, &resp, &mut globe.flat, painting);
+        }
+    }
     let cursor = resp
         .hover_pos()
         .or(globe.input.pos)
-        .and_then(|pos| globe.view.unproject(rect, pos));
+        .and_then(|pos| globe.unproject(pos));
     state.cursor_lonlat = cursor.map(|dir| dir_to_lonlat(dir).into());
     state.cursor_meters = cursor.map(|dir| level_to_meters(globe.map.sample(dir)));
 
@@ -258,10 +264,23 @@ pub(super) fn canvas(
         }
     }
     if let Some(pos) = globe.input.pos.filter(|_| globe.tool == Tool::Brush) {
-        let globe_radius = globe.view.radius(rect);
-        let radius = globe.brush.radius(globe_radius) * globe_radius;
+        let globe_radius = globe.radius();
+        let radius = globe.brush.radius(globe_radius);
         let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(170));
-        painter.circle_stroke(pos, radius as f32, stroke);
+        match globe.world_view {
+            WorldView::Globe => {
+                painter.circle_stroke(pos, (radius * globe_radius) as f32, stroke);
+            }
+            // The stamp is round on the sphere, so its outline is not round
+            // on the flat map.
+            WorldView::Flat => {
+                let (flat, center) = (&globe.flat, globe.flat.unproject(rect, pos));
+                let lines = center.map(|dir| flat.outline(rect, dir, radius));
+                for line in lines.unwrap_or_default() {
+                    painter.line(line, stroke);
+                }
+            }
+        }
     }
     if globe.nav.active() || more {
         ui.ctx().request_repaint();
