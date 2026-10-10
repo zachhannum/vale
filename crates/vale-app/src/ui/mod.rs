@@ -13,6 +13,7 @@ use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
 
 pub mod canvas;
+pub mod elevation;
 pub mod globe;
 pub mod inspector;
 pub mod panels;
@@ -152,6 +153,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             Workspace::Globe => {
                 panels::status(ui, state);
                 panels::brush_debug(ui, state);
+                panels::brush(ui, state);
+                elevation::draw(ui, state);
                 globe::draw(ui, state);
             }
             Workspace::Map => {

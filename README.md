@@ -18,14 +18,19 @@ The first build makes PROJ from source. It takes about one minute.
 cargo run --release -p vale-app
 ```
 
-The window opens on the globe workspace. The globe shows the heightmap of the world in greyscale. You can do these things.
+The window opens on the globe workspace. The globe shows the heightmap of the world as stepped elevation tints. You can do these things.
 
 - Drag the globe to rotate it. On a touch screen, use one finger.
 - Scroll the wheel to zoom. On a trackpad, scroll with two fingers to rotate, and pinch to zoom.
 - Hold Shift and drag to twist the globe about the middle of the view. On a trackpad, use the rotate gesture.
 - On a touch screen, pinch and twist with two fingers. The place under your fingers stays under your fingers.
 - Click "Brush" in the tool bar to paint the heightmap. A pen or the left mouse button paints. A finger, the other mouse buttons, and Shift with a drag move the globe.
-- Click "Debug" in the tool bar to open the brush debug panel. It has the brush mode, the brush size, and "Undo". It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
+- The brush panel opens with the brush tool. It has the four modes (raise, lower, smooth, and flatten), the radius in kilometers of the world, the hardness, and the strength. A pen sets the flow from its pressure, and the mouse paints with a fixed flow.
+- The brush keeps its size on screen when you zoom. Select "Lock size" to keep its size on the ground.
+- The flatten mode moves the ground to the level under the start of the stroke. To set a fixed level, click "Pick from globe", and then press on the globe.
+- Click "Greyscale" in the tool bar to show the plain heightmap.
+- Click "Elevation" in the tool bar to open the elevation panel. The bar shows the band limits, which are the elevations where the tints change. Tap a free place on the bar to add a limit. Drag a limit to move it. Tap a limit and click "Remove" to remove it. Sea level is a limit that stays. Clear "Levels" to show the color ramp with no steps. The land colors and the sea colors are separate.
+- Click "Debug" in the tool bar to open the brush debug panel. It has "Undo". It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
 
 In the window, each face of the heightmap has 8,192 pixels, and the GPU holds 940 MB for it. If the computer has no GPU, start the app with `--face-size 1024`.
 

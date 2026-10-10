@@ -6,7 +6,9 @@ use eframe::egui;
 use eframe::egui_wgpu;
 
 use super::AppState;
-use crate::globe::brush::{FIXED_FLOW, Sample, brush_radius, pen_flow};
+use vale_terrain::Mode;
+
+use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow};
 use crate::globe::math::dir_to_lonlat;
 use crate::globe::nav::{Painting, on_canvas};
 use crate::globe::{Globe, Tool};
@@ -17,6 +19,21 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ui, |ui| canvas(ui, state));
+}
+
+/// Starts a stroke, or starts to pick the flatten level.
+fn press(globe: &mut Globe) {
+    if globe.pick_level && globe.brush.mode == Mode::Flatten {
+        globe.input.picking = true;
+    } else {
+        globe.pen_down();
+    }
+}
+
+fn release(globe: &mut Globe) {
+    if !std::mem::take(&mut globe.input.picking) {
+        globe.pen_up();
+    }
 }
 
 /// Reads the pen and the mouse for the brush. In the brush tool, a pen and
@@ -30,16 +47,20 @@ fn brush_input(
 ) -> Painting {
     if globe.tool != Tool::Brush || globe.format.is_none() {
         if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
-            globe.pen_up();
+            release(globe);
         }
         globe.input.pos = None;
         return Painting::default();
     }
-    let radius = brush_radius(globe.brush.size_points, globe.view.radius(rect));
+    let radius = globe.brush.radius(globe.view.radius(rect));
     let sample = |globe: &mut Globe, pos: egui::Pos2, flow: f64| {
         let dir = globe.view.unproject(rect, pos);
         globe.input.pos = Some(pos);
-        globe.pen_sample(Sample { dir, flow, radius }, now);
+        if globe.input.picking {
+            globe.pick(dir);
+        } else {
+            globe.pen_sample(Sample { dir, flow, radius }, now);
+        }
     };
     let mut touched = false;
     let events = ui.input(|i| i.events.clone());
@@ -61,7 +82,7 @@ fn brush_input(
                 let free = globe.input.pen.is_none() && !globe.input.mouse;
                 if force.is_some() && free && on_canvas(ui, rect, *pos) {
                     globe.input.pen = Some(id.0);
-                    globe.pen_down();
+                    press(globe);
                     sample(globe, *pos, flow);
                 }
             }
@@ -74,7 +95,7 @@ fn brush_input(
                 if globe.input.pen == Some(id.0) {
                     globe.input.pen = None;
                     globe.input.pos = None;
-                    globe.pen_up();
+                    release(globe);
                 }
             }
         }
@@ -99,11 +120,11 @@ fn brush_input(
         }
         _ if globe.input.mouse => {
             globe.input.mouse = false;
-            globe.pen_up();
+            release(globe);
         }
         Some(pos) if pressed && !shift && !touched && resp.contains_pointer() => {
             globe.input.mouse = true;
-            globe.pen_down();
+            press(globe);
             sample(globe, pos, FIXED_FLOW);
         }
         _ => {}
@@ -152,7 +173,7 @@ fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
     }
     if let Some(pos) = globe.input.pos.filter(|_| globe.tool == Tool::Brush) {
         let globe_radius = globe.view.radius(rect);
-        let radius = brush_radius(globe.brush.size_points, globe_radius) * globe_radius;
+        let radius = globe.brush.radius(globe_radius) * globe_radius;
         let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(170));
         painter.circle_stroke(pos, radius as f32, stroke);
     }
