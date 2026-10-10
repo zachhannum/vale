@@ -156,16 +156,92 @@ pub struct Sample {
     pub radius: f64,
 }
 
+/// The most straight parts of one curve of a stroke.
+const CURVE_PARTS: f64 = 64.0;
+
+/// A place on the path of a stroke, and the flow there.
+type Point = (V3, f64);
+
 /// The state of one stroke between samples.
+///
+/// The path of the stroke is a curve, so a fast stroke has no corners. The
+/// curve goes from the middle of one pair of samples to the middle of the
+/// next pair, and the sample between them bends it. The path is half a
+/// sample behind the pen. `finish` draws the rest.
 #[derive(Default)]
 pub struct Stroke {
-    last: Option<(V3, f64)>,
-    /// The distance from the last sample to the next stamp, in radians.
+    /// The last sample.
+    last: Option<Point>,
+    /// The end of the path.
+    end: Option<Point>,
+    /// The distance from the end of the path to the next stamp, in radians.
     carry: f64,
+    /// The brush radius of the last sample, in radians.
+    radius: f64,
     level: Option<u16>,
 }
 
+/// The values that each stamp of one sample gets.
+struct Tip<'a> {
+    brush: &'a BrushSettings,
+    radius: f64,
+    spacing: f64,
+    level: u16,
+}
+
+impl Tip<'_> {
+    fn stamp(&self, center: V3, flow: f64) -> Stamp {
+        let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
+        Stamp {
+            center,
+            radius: self.radius,
+            hardness: self.brush.hardness,
+            flow: match self.brush.mode {
+                Mode::Raise | Mode::Lower => flow,
+                // These two modes move toward a target, so each stamp does less.
+                Mode::Smooth | Mode::Flatten => flow * 0.3,
+            },
+            mode: self.brush.mode,
+            level: self.level,
+            strength: self.brush.strength_m * STAMP_SPACING / span,
+        }
+    }
+}
+
+/// The place at `t` on the curve from `a` to `b` that `control` bends.
+fn curve(a: Point, control: Point, b: Point, t: f64) -> Point {
+    let (wa, wc, wb) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t), t * t);
+    let dir = add(add(scale(a.0, wa), scale(control.0, wc)), scale(b.0, wb));
+    (normalize(dir), a.1 * wa + control.1 * wc + b.1 * wb)
+}
+
 impl Stroke {
+    fn tip<'a>(&self, brush: &'a BrushSettings, face_size: usize, level: u16) -> Tip<'a> {
+        let texel = FRAC_PI_2 / face_size as f64;
+        Tip {
+            brush,
+            radius: self.radius,
+            spacing: (self.radius * STAMP_SPACING).max(texel * 0.5),
+            level,
+        }
+    }
+
+    /// Adds the stamps of a straight part of the path, from its end to `to`.
+    fn line_to(&mut self, tip: &Tip, to: Point, out: &mut Vec<Stamp>) {
+        let Some(from) = self.end.replace(to) else {
+            return;
+        };
+        let len = angle(from.0, to.0);
+        let mut at = 0.0;
+        while len - at >= self.carry {
+            at += self.carry;
+            let t = at / len;
+            out.push(tip.stamp(slerp(from.0, to.0, t), from.1 + (to.1 - from.1) * t));
+            self.carry = tip.spacing;
+        }
+        self.carry -= len - at;
+    }
+
     /// Adds the stamps of one sample to `out`. `level_at` gives the level of
     /// the heightmap at a place.
     pub fn add_sample(
@@ -177,52 +253,43 @@ impl Stroke {
         out: &mut Vec<Stamp>,
     ) {
         let Some(dir) = sample.dir else {
-            self.last = None;
+            self.finish(brush, face_size, out);
+            (self.last, self.end) = (None, None);
             return;
         };
-        let Sample { flow, radius, .. } = sample;
-        let texel = FRAC_PI_2 / face_size as f64;
-        let spacing = (radius * STAMP_SPACING).max(texel * 0.5);
         let level = match (self.level, brush.flatten_level) {
             (Some(level), _) | (None, Some(level)) => level,
             (None, None) => level_at(dir),
         };
         self.level = Some(level);
-        let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
-        let stamp_at = |center: V3, flow: f64| Stamp {
-            center,
-            radius,
-            hardness: brush.hardness,
-            flow: match brush.mode {
-                Mode::Raise | Mode::Lower => flow,
-                // These two modes move toward a target, so each stamp does less.
-                Mode::Smooth | Mode::Flatten => flow * 0.3,
-            },
-            mode: brush.mode,
-            level,
-            strength: brush.strength_m * STAMP_SPACING / span,
-        };
-        match self.last {
-            None => {
-                out.push(stamp_at(dir, flow));
-                self.carry = spacing;
-            }
-            Some((prev, prev_flow)) => {
-                let len = angle(prev, dir);
-                let mut at = 0.0;
-                while len - at >= self.carry {
-                    at += self.carry;
-                    let t = at / len;
-                    out.push(stamp_at(
-                        slerp(prev, dir, t),
-                        prev_flow + (flow - prev_flow) * t,
-                    ));
-                    self.carry = spacing;
+        self.radius = sample.radius;
+        let tip = self.tip(brush, face_size, level);
+        let point = (dir, sample.flow);
+        match (self.last.replace(point), self.end) {
+            (Some(last), Some(end)) => {
+                let middle = (normalize(add(last.0, dir)), (last.1 + sample.flow) * 0.5);
+                let len = angle(end.0, last.0) + angle(last.0, middle.0);
+                let parts = (len / tip.spacing).ceil().clamp(1.0, CURVE_PARTS);
+                for part in 1..=parts as u32 {
+                    let to = curve(end, last, middle, f64::from(part) / parts);
+                    self.line_to(&tip, to, out);
                 }
-                self.carry -= len - at;
+            }
+            _ => {
+                out.push(tip.stamp(dir, sample.flow));
+                self.carry = tip.spacing;
+                self.end = Some(point);
             }
         }
-        self.last = Some((dir, flow));
+    }
+
+    /// Adds the stamps from the end of the path to the last sample. Call it
+    /// when the pen goes up.
+    pub fn finish(&mut self, brush: &BrushSettings, face_size: usize, out: &mut Vec<Stamp>) {
+        if let (Some(last), Some(level)) = (self.last, self.level) {
+            let tip = self.tip(brush, face_size, level);
+            self.line_to(&tip, last, out);
+        }
     }
 }
 
@@ -311,9 +378,12 @@ mod tests {
         stroke.add_sample(&brush, 1024, sample(0.0, radius), |_| 7, &mut out);
         assert_eq!(out.len(), 1);
         stroke.add_sample(&brush, 1024, sample(arc * 0.45, radius), |_| 9, &mut out);
-        // 0.045 radians hold three steps, and 0.009 radians carry over.
-        assert_eq!(out.len(), 4);
+        // The path ends at the middle of the two samples, at 0.0225 radians.
+        assert_eq!(out.len(), 2);
         stroke.add_sample(&brush, 1024, sample(arc, radius), |_| 9, &mut out);
+        // The path ends at 0.0725 radians.
+        assert_eq!(out.len(), 7);
+        stroke.finish(&brush, 1024, &mut out);
         // The stamps are at each 0.012 radians of the whole arc: 8 steps.
         assert_eq!(out.len(), 9);
         for (i, stamp) in out.iter().enumerate() {
@@ -333,6 +403,7 @@ mod tests {
         stroke.add_sample(&brush, 256, sample(0.0, 1e-4), |_| 0, &mut out);
         let arc = (texel * 4.2).to_degrees();
         stroke.add_sample(&brush, 256, sample(arc, 1e-4), |_| 0, &mut out);
+        stroke.finish(&brush, 256, &mut out);
         // The arc holds eight steps of half a texel.
         assert_eq!(out.len(), 9);
     }
@@ -352,6 +423,7 @@ mod tests {
         stroke.add_sample(&brush, 1024, first, |_| 0, &mut out);
         let arc = 0.03_f64.to_degrees();
         stroke.add_sample(&brush, 1024, sample(arc, 0.1), |_| 0, &mut out);
+        stroke.finish(&brush, 1024, &mut out);
         assert_eq!(out.len(), 3);
         // The stamps are at 0.4 and 0.8 of the arc. The smooth mode uses 0.3
         // of the flow.
@@ -372,6 +444,41 @@ mod tests {
         stroke.add_sample(&brush, 1024, off, |_| 0, &mut out);
         stroke.add_sample(&brush, 1024, sample(40.0, 0.1), |_| 0, &mut out);
         assert_eq!(out.len(), 2);
+    }
+
+    /// The largest angle between two steps of the path of the stamps, in
+    /// radians.
+    fn sharpest_turn(stamps: &[Stamp]) -> f64 {
+        let turns = stamps.windows(3).map(|w| {
+            let a = add(w[1].center, scale(w[0].center, -1.0));
+            let b = add(w[2].center, scale(w[1].center, -1.0));
+            angle(a, b)
+        });
+        turns.fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn a_fast_curve_with_a_small_brush_has_no_corners() {
+        let brush = BrushSettings::default();
+        let mut stroke = Stroke::default();
+        let mut out = Vec::new();
+        // A circle of 0.1 radians from 12 samples: each sample turns the pen
+        // 30 degrees. The stamps are 0.00024 radians apart.
+        let radius = 0.002;
+        for i in 0..=12 {
+            let turn = f64::from(i) * std::f64::consts::TAU / 12.0;
+            let (lon, lat) = (0.1 * turn.cos(), 0.1 * turn.sin());
+            let at = Sample {
+                dir: Some(lonlat_to_dir(lon.to_degrees(), lat.to_degrees())),
+                flow: 1.0,
+                radius,
+            };
+            stroke.add_sample(&brush, 4096, at, |_| 0, &mut out);
+        }
+        stroke.finish(&brush, 4096, &mut out);
+        assert!(out.len() > 2000, "{}", out.len());
+        let turn = sharpest_turn(&out).to_degrees();
+        assert!(turn < 2.0, "the sharpest turn is {turn} degrees");
     }
 
     #[test]

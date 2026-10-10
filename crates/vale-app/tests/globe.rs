@@ -642,8 +642,9 @@ fn a_fast_stroke_of_a_small_brush_does_not_fall_behind() {
 
     let globe = &h.state().globe;
     let stroke = globe.stats.last().unwrap();
-    assert!(stroke.stamps.worst >= 300.0, "{}", stroke.stamps_line());
-    assert!(stroke.stamps.count <= 2, "{}", stroke.stamps_line());
+    // The move gives half of the stamps, and the release gives the other half.
+    assert!(stroke.stamps.worst >= 150.0, "{}", stroke.stamps_line());
+    assert!(stroke.stamps.count <= 3, "{}", stroke.stamps_line());
     // 32 stamps go in one pass on each face that they touch.
     let passes = stroke.passes.worst;
     assert!(
