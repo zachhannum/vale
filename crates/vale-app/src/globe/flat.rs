@@ -137,6 +137,24 @@ impl FlatView {
         }
     }
 
+    /// True if `reset` changes the projection or the view.
+    pub fn can_reset(&self) -> bool {
+        let spec = self.spec();
+        let moved = self.zoom != 1.0 || self.center != self.bounds.center();
+        spec.lon0 != 0.0 || spec.lat0 != 0.0 || moved
+    }
+
+    /// Puts the center of the projection back at 0 degrees east and 0 degrees
+    /// north, and shows the whole map.
+    pub fn reset(&mut self) {
+        let kind = self.spec().kind;
+        *self = FlatView::new(ProjectionSpec {
+            kind,
+            lon0: 0.0,
+            lat0: 0.0,
+        });
+    }
+
     /// Puts a place at the middle of the canvas. The place is in degrees.
     pub fn look_at(&mut self, lon: f64, lat: f64) {
         if let Some(point) = self.projection.forward([lon, lat]) {
@@ -377,6 +395,15 @@ mod tests {
         assert!((spec.lon0 - 60.0).abs() < 1e-6 && (spec.lat0 - 50.0).abs() < 1e-6);
         let middle = view.project(rect(), lonlat_to_dir(60.0, 50.0)).unwrap();
         assert!((middle - rect().center()).length() < 0.01);
+
+        // A reset keeps the projection and puts its center and the view back.
+        view.zoom = 3.0;
+        assert!(view.can_reset());
+        view.reset();
+        let spec = view.spec();
+        assert_eq!(spec.kind, ProjectionKind::Orthographic);
+        assert_eq!((spec.lon0, spec.lat0, view.zoom), (0.0, 0.0, 1.0));
+        assert!(!view.can_reset());
     }
 
     #[test]

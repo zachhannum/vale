@@ -16,7 +16,7 @@ pub mod icons;
 pub mod theme;
 pub mod widgets;
 
-use geometry::{BrushCard, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
+use geometry::{BrushCard, CELL, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
 use icons::Icon;
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
 
@@ -51,6 +51,8 @@ pub struct PadState {
     pub projections: bool,
     /// The list of the projections in the last frame.
     pub projections_rect: Option<Rect>,
+    /// The card of the center of the projection in the last frame.
+    pub center_rect: Option<Rect>,
     /// The workspace menu is open.
     pub menu: bool,
     /// The distance that the sheet is pulled down from its open place.
@@ -107,9 +109,11 @@ impl PadState {
 
 const WORKSPACES: [&str; 3] = ["World", "Maps", "Atlas"];
 const VIEWS: [&str; 2] = ["Globe", "Flat"];
-/// The action that makes the middle of the canvas the center of the
-/// projection.
-pub const CENTER_HERE: &str = "Center projection on view";
+/// The action that makes the place at the middle of the canvas the center of
+/// the projection of the flat view.
+pub const RECENTER: &str = "Recenter";
+/// The action that puts the center of the projection and the view back.
+pub const RESET: &str = "Reset";
 /// The control that opens the list of the projections.
 pub const PROJECTION: &str = "Projection";
 const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
@@ -179,6 +183,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     readout(&ctx, ui, state, &rects);
+    state.pad.center_rect = None;
+    if flat {
+        center_card(&ctx, state, &mut controls, &rects);
+    }
     state.pad.projections_rect = None;
     if state.pad.projections && flat {
         projections(&ctx, state, &mut controls, &rects);
@@ -652,11 +660,58 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     );
 }
 
+/// The card of the center of the projection, on the canvas of the flat view
+/// below the top row.
+fn center_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let size = vec2(2.0 * CELL.0 + 2.0 * PAD, CELL.1 + 2.0 * PAD);
+    let middle = rects
+        .view
+        .map_or(rects.screen.center().x, |view| view.center().x);
+    let mut rect = Rect::from_min_size(pos2(middle - size.x / 2.0, rects.tools.top()), size);
+    // An open panel pushes the card to its right. With no room there, the
+    // card does not show.
+    let panels = &state.pad.panels;
+    let free = |rect: Rect| !panels.iter().any(|(_, panel)| panel.intersects(rect));
+    if let Some((_, panel)) = panels.iter().find(|(_, panel)| panel.intersects(rect)) {
+        rect = rect.translate(vec2(panel.right() + geometry::GAP - rect.left(), 0.0));
+        if !free(rect) || rect.right() > rects.screen.right() - geometry::GAP {
+            return;
+        }
+    }
+    state.pad.center_rect = Some(rect);
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-center",
+        rect,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            let layout = egui::Layout::left_to_right(egui::Align::Min);
+            let inner = egui::UiBuilder::new().max_rect(rect.shrink(PAD));
+            let mut ui = ui.new_child(inner.layout(layout));
+            let ui = &mut ui;
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let flat = &mut state.globe.flat;
+            let can = flat.can_center_here();
+            if widgets::tool_cell(ui, controls, RECENTER, RECENTER, Icon::Center, false, can)
+                .clicked()
+            {
+                flat.center_here();
+            }
+            let can = flat.can_reset();
+            if widgets::tool_cell(ui, controls, RESET, RESET, Icon::Reset, false, can).clicked() {
+                flat.reset();
+            }
+        },
+    );
+}
+
 /// The list of the projections of the flat view. It opens below the view
 /// switch, or in the place of the workspace menu.
 fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let rows = ProjectionKind::ALL.len() as f32 + 1.0;
-    let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 13.0 + 10.0);
+    let rows = ProjectionKind::ALL.len() as f32;
+    let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 10.0);
     let min = match rects.view {
         Some(view) => pos2(view.center().x - size.x / 2.0, view.bottom() + PAD),
         None => rects.menu,
@@ -704,16 +759,6 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
                     state.globe.flat.set_spec(ProjectionSpec { kind, ..spec });
                     state.pad.projections = false;
                 }
-            }
-            // The action below the line is not a projection.
-            let (rule, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());
-            let line = Rect::from_center_size(rule.center(), vec2(rule.width(), 1.0));
-            ui.painter().rect_filled(line, 0.0, theme::raise());
-            let enabled = state.globe.flat.can_center_here();
-            if widgets::text_row(ui, controls, CENTER_HERE, 0.0, false, enabled).clicked() {
-                state.globe.flat.center_here();
-                state.pad.projections = false;
             }
         },
     );

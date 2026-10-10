@@ -22,6 +22,8 @@ pub enum Icon {
     Tick,
     Eye,
     Raster,
+    Center,
+    Reset,
 }
 
 impl Icon {
@@ -49,6 +51,10 @@ impl Icon {
             Icon::Tick => "M5 12l5 5 9-10",
             Icon::Eye => "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z",
             Icon::Raster => "M4 4h16v16H4zM4 12h16M12 4v16",
+            Icon::Center => "M12 3v5M12 16v5M3 12h5M16 12h5",
+            Icon::Reset => {
+                "M4 4v5h5M4.5 9c1.4-3 4.2-5 7.5-5 4.4 0 8 3.6 8 8s-3.6 8-8 8c-3.5 0-6.5-2.2-7.6-5.4"
+            }
         }
     }
 
@@ -285,6 +291,8 @@ mod tests {
             Icon::Tick,
             Icon::Eye,
             Icon::Raster,
+            Icon::Center,
+            Icon::Reset,
         ] {
             let lines = parse(icon.path());
             assert!(!lines.is_empty(), "{icon:?}");

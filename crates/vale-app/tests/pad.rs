@@ -8,7 +8,7 @@ use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
-use vale_app::ui::pad::{CENTER_HERE, Panel, readout_text, theme};
+use vale_app::ui::pad::{Panel, RECENTER, RESET, readout_text, theme};
 use vale_app::ui::{AppState, Layout, Workspace, draw};
 use vale_terrain::Mode;
 
@@ -163,7 +163,7 @@ fn check_controls(h: &Pad, what: &str) {
                     .iter()
                     .any(|k| k.name() == name);
                 let menu = ["World", "Globe", "Flat", "Maps"].contains(&name);
-                menu || kind || name == CENTER_HERE || (in_menu && name == "Projection")
+                menu || kind || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
@@ -549,26 +549,6 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
         (Tool::Brush, Mode::Lower)
     );
 
-    // At the smallest zoom that fills the canvas, the middle of the view is
-    // the center of the projection, so the action is off. A line keeps it
-    // apart from the projections.
-    tap(&mut h, "Projection");
-    assert!(control(&h, CENTER_HERE).is_none());
-    let list = h.state().pad.projections_rect.unwrap();
-    assert_eq!(list.height(), 10.0 + 7.0 * 48.0 + 13.0 + 10.0);
-    tap(&mut h, "Projection");
-    assert!(!h.state().pad.projections);
-
-    // The action moves the center of the projection to the middle.
-    // At the smallest zoom, the map stays in the middle of the canvas.
-    h.state_mut().globe.flat.zoom = 8.0;
-    h.state_mut().globe.flat.look_at(60.0, 0.0);
-    tap(&mut h, "Projection");
-    let row = control(&h, CENTER_HERE).unwrap();
-    assert!(row.top() >= control(&h, "Stereographic").unwrap().bottom() + 13.0);
-    tap(&mut h, CENTER_HERE);
-    assert!((h.state().globe.flat.spec().lon0 - 60.0).abs() < 1e-6);
-
     // A touch off the list closes it, and the globe has no list.
     tap(&mut h, "Projection");
     tap(&mut h, "Layers");
@@ -576,6 +556,55 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
     tap(&mut h, "Projection");
     tap(&mut h, "Globe");
     assert!(!h.state().pad.projections && control(&h, "Projection").is_none());
+}
+
+#[test]
+fn a_card_on_the_flat_view_moves_the_center_of_the_projection_and_resets_it() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        assert_eq!(h.state().pad.center_rect, None);
+        h.state_mut().globe.world_view = WorldView::Flat;
+        h.run_steps(2);
+        // The card is below the top row, in the middle of the screen.
+        let rects = h.state().pad.rects.unwrap();
+        let card = h.state().pad.center_rect.unwrap();
+        assert_eq!(card.center().x, size.0 / 2.0, "{size:?}");
+        assert_eq!(card.top(), rects.tools.top());
+        assert!(!card.intersects(rects.tools) && !card.intersects(rects.actions));
+        // The middle of the view is the center of the projection, and the
+        // view shows the whole map, so the two actions are off.
+        assert!(control(&h, RECENTER).is_none() && control(&h, RESET).is_none());
+
+        h.state_mut().globe.flat.zoom = 8.0;
+        h.state_mut().globe.flat.look_at(60.0, 20.0);
+        h.run_steps(2);
+        assert!(card.contains_rect(control(&h, RECENTER).unwrap()));
+        assert!(card.contains_rect(control(&h, RESET).unwrap()));
+        check_controls(&h, &format!("{size:?} with the center card"));
+        tap(&mut h, RECENTER);
+        let flat = &h.state().globe.flat;
+        assert!((flat.spec().lon0 - 60.0).abs() < 1e-6, "{size:?}");
+        assert_eq!(flat.zoom, 1.0);
+        assert!(control(&h, RECENTER).is_none());
+
+        tap(&mut h, RESET);
+        let flat = &h.state().globe.flat;
+        assert_eq!((flat.spec().lon0, flat.zoom), (0.0, 1.0));
+        assert!(control(&h, RESET).is_none());
+
+        // The card does not cover an open panel.
+        if control(&h, "Brush settings").is_some() {
+            tap(&mut h, "Brush settings");
+            let brush = panel(&h, Panel::Brush).unwrap();
+            let card = h.state().pad.center_rect;
+            assert!(card.is_none_or(|card| !card.intersects(brush)), "{size:?}");
+        }
+
+        // The globe has no card.
+        h.state_mut().globe.world_view = WorldView::Globe;
+        h.run_steps(2);
+        assert_eq!(h.state().pad.center_rect, None);
+    }
 }
 
 #[test]

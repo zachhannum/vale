@@ -3,7 +3,7 @@
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
-use super::{Action, AppState, ExportFormat, Workspace};
+use super::{Action, AppState, ExportFormat, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
 use crate::globe::brush::{FLOW, STRENGTH_M};
@@ -66,10 +66,7 @@ fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     flat.set_spec(ProjectionSpec { kind, ..spec });
-    let button = ui.add_enabled(
-        flat.can_center_here(),
-        egui::Button::new(super::pad::CENTER_HERE),
-    );
+    let button = ui.add_enabled(flat.can_center_here(), egui::Button::new(pad::RECENTER));
     let help = "Makes the place at the middle of the view the center of the projection. \
                 Zoom in and move the map first.";
     if button
@@ -78,6 +75,15 @@ fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
         .clicked()
     {
         flat.center_here();
+    }
+    let button = ui.add_enabled(flat.can_reset(), egui::Button::new(pad::RESET));
+    let help = "Puts the center of the projection back, and shows the whole map.";
+    if button
+        .on_hover_text(help)
+        .on_disabled_hover_text(help)
+        .clicked()
+    {
+        flat.reset();
     }
 }
 
