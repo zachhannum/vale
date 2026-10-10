@@ -296,6 +296,7 @@ impl ProtoApp {
             mode: brush.mode,
             level,
             strength: brush.strength_m * STAMP_SPACING / span,
+            valley: 1.0,
         };
         let start = Instant::now();
         match stroke.last {

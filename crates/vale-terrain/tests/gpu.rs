@@ -6,7 +6,7 @@ use vale_terrain::math::{V3, dot, lonlat_to_dir};
 use vale_terrain::{
     ChannelMap, ChannelWindow, CoarseHeights, FACES, FlowMap, GROUP_STAMPS, GpuHeightmap,
     Heightmap, Mode, STAMP_SLOTS, Stamp, StampPlan, TexelRect, WINDOW_CELLS, Window, WindowHeights,
-    channel_map, window_channels,
+    channel_map, window_channels, window_channels_with,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -221,6 +221,7 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         mode,
         level: 52000,
         strength: 3000.0,
+        valley: 1.0,
     }
 }
 
@@ -707,6 +708,63 @@ fn gpu_carve_in_a_window_matches_cpu_for_a_stroke() {
     }
     eprintln!("carve stroke in a window, largest difference: {difference}");
     assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
+}
+
+/// The number of texels of all faces that one stamp changes on the CPU, and
+/// the largest difference between the GPU and the CPU.
+fn carve_once(cpu: &mut Heightmap, stamp: Stamp) -> (usize, u16) {
+    let before = levels(cpu);
+    let difference = run(cpu, &[stamp]).difference;
+    (changes(&before, &levels(cpu)), difference)
+}
+
+/// Each land cell is a river, in the channel map and in the window.
+#[test]
+fn gpu_carve_matches_cpu_at_the_lowest_threshold() {
+    let edge = stamp(lonlat_to_dir(45.0, 0.0), 0.1, 0.5, Mode::Carve);
+    let mut cpu = river_land(256);
+    let (usual, _) = carve_once(&mut cpu, edge);
+    let mut cpu = river_land(256);
+    let flow = FlowMap::new(&CoarseHeights::new(&cpu));
+    cpu.set_channels(Some(Arc::new(flow.channels_with(1.0))));
+    let (changed, difference) = carve_once(&mut cpu, edge);
+    eprintln!("lowest threshold: {changed} texels changed, {usual} with the usual rivers");
+    assert!(changed > 2 * usual && changed > 1000, "{changed} {usual}");
+    assert!(difference <= TOLERANCE, "{difference}");
+
+    // A stamp on the face of the window, and a stamp on the next face.
+    for lon in [30.0, 53.0] {
+        let mut cpu = window_land();
+        let flow = FlowMap::new(&CoarseHeights::new(&cpu));
+        let window = cpu.window().expect("the land has a window").window();
+        let heights = WindowHeights::new(&cpu, window);
+        cpu.set_window(Some(Arc::new(window_channels_with(&heights, &flow, 1.0))));
+        let near = stamp(lonlat_to_dir(lon, 3.0), 0.05, 0.5, Mode::Carve);
+        let (changed, difference) = carve_once(&mut cpu, near);
+        eprintln!("lowest threshold in a window: {changed} texels changed");
+        assert!(changed > 2500, "longitude {lon}: {changed}");
+        assert!(difference <= TOLERANCE, "longitude {lon}: {difference}");
+    }
+}
+
+#[test]
+fn gpu_carve_matches_cpu_for_each_valley_width() {
+    let mut counts = Vec::new();
+    for valley in [0.4, 0.7, 1.0, 1.25] {
+        let mut cpu = river_land(256);
+        let stamp = Stamp {
+            valley,
+            ..stamp(lonlat_to_dir(45.0, 0.0), 0.1, 0.5, Mode::Carve)
+        };
+        let (changed, difference) = carve_once(&mut cpu, stamp);
+        assert!(difference <= TOLERANCE, "valley {valley}: {difference}");
+        counts.push(changed);
+    }
+    eprintln!("texels changed for each valley width: {counts:?}");
+    assert!(
+        counts[0] > 100 && counts.is_sorted_by(|a, b| a < b),
+        "{counts:?}"
+    );
 }
 
 /// The result of the same stamps in groups and one at a time.

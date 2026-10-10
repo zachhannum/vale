@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::bands::{Bands, SEA_LEVEL};
 use crate::cube::{FACES, face_dir, face_of, meters_to_level, unwarp, warp};
-use crate::flow::{ChannelMap, ChannelWindow};
+use crate::flow::{ChannelMap, ChannelWindow, VALLEY_MAX, VALLEY_MIN, VALLEY_WIDEST};
 use crate::math::{V3, cross, normalize};
 
 /// The side of a tile, in texels.
@@ -48,6 +48,9 @@ pub struct Stamp {
     pub level: u16,
     /// The largest change of the raise and lower modes, in 16-bit steps.
     pub strength: f64,
+    /// The width of the valleys of the carve mode, from `VALLEY_MIN` to
+    /// `VALLEY_MAX`. The valleys have their usual width at 1.
+    pub valley: f64,
 }
 
 /// A rectangle of texels on one face. `x1` and `y1` are exclusive.
@@ -611,7 +614,11 @@ impl Heightmap {
     pub fn stamp_plan(&self, stamp: &Stamp) -> StampPlan {
         let radius = stamp.radius.clamp(1e-6, MAX_BRUSH_RADIUS);
         StampPlan {
-            stamp: Stamp { radius, ..*stamp },
+            stamp: Stamp {
+                radius,
+                valley: stamp.valley.clamp(VALLEY_MIN, VALLEY_MAX),
+                ..*stamp
+            },
             rects: std::array::from_fn(|face| self.stamp_rect(face, stamp.center, radius)),
             reach: ((radius / (FRAC_PI_2 / self.n as f64)) * 0.25).max(1.0) as usize,
         }
@@ -706,7 +713,8 @@ impl Heightmap {
                                 };
                                 // A large river has a wide and deep valley.
                                 let size = flow / 255.0;
-                                let k = (distance / (1.5 + 4.5 * size)).clamp(0.0, 1.0);
+                                let width = ((1.5 + 4.5 * size) * stamp.valley).min(VALLEY_WIDEST);
+                                let k = (distance / width).clamp(0.0, 1.0);
                                 let profile = 1.0 - k * k * (3.0 - 2.0 * k);
                                 let depth =
                                     amount * stamp.strength * profile * (0.25 + 0.75 * size);
@@ -771,6 +779,7 @@ mod tests {
             mode: Mode::Raise,
             level: 0,
             strength: 1000.0,
+            valley: 1.0,
         }
     }
 
@@ -1321,6 +1330,55 @@ mod tests {
             with.store_rect(0, face_rect(256), &before);
             without.store_rect(0, face_rect(256), &before);
         }
+    }
+
+    #[test]
+    fn carve_at_the_lowest_threshold_lowers_all_the_land_under_the_brush() {
+        let mut map = valley();
+        let flow = FlowMap::new(&CoarseHeights::new(&map));
+        map.set_channels(Some(Arc::new(flow.channels_with(1.0))));
+        let sea = meters_to_level(SEA_LEVEL);
+        let before = face_levels(&map);
+        // The brush has full effect on all of its texels.
+        let stamp = carve(0.0, RIVER_LAT, 0.1);
+        map.stamp(&stamp);
+        let after = face_levels(&map);
+        let (mut land, mut least) = (0, u16::MAX);
+        for (i, (&old, &new)) in before.iter().zip(&after).enumerate() {
+            let d = map.texel_dir(0, i % 256, i / 256);
+            if angle(d, stamp.center) < 0.95 * stamp.radius && old > sea {
+                assert!(new < old, "texel {i}");
+                land += 1;
+                least = least.min(old - new);
+            }
+        }
+        assert!(land > 700, "{land}");
+        // The ground at the large river goes down the most.
+        let at = place(&map, 0.0, RIVER_LAT);
+        let river = before[at] - after[at];
+        assert!(river > 600 && river > 3 * least, "{river} {least}");
+    }
+
+    #[test]
+    fn a_wider_valley_changes_more_texels() {
+        let changed = |width: f64| {
+            let mut map = valley();
+            let before = face_levels(&map);
+            map.stamp(&Stamp {
+                valley: width,
+                ..carve(0.0, RIVER_LAT, 0.1)
+            });
+            let after = face_levels(&map);
+            let pairs = before.iter().zip(&after);
+            pairs.filter(|(old, new)| old != new).count()
+        };
+        let (narrow, usual, wide) = (changed(VALLEY_MIN), changed(1.0), changed(VALLEY_MAX));
+        assert!(narrow > 50, "{narrow}");
+        assert!(narrow < usual && usual < wide, "{narrow} {usual} {wide}");
+        assert!(3 * narrow < 2 * wide, "{narrow} {wide}");
+        // The factor stays in its limits.
+        assert_eq!(changed(0.0), narrow);
+        assert_eq!(changed(9.0), wide);
     }
 
     #[test]

@@ -212,6 +212,7 @@ impl Tip<'_> {
             mode: self.brush.mode,
             level: self.level,
             strength: self.brush.strength_m * STAMP_SPACING / span,
+            valley: 1.0,
         }
     }
 }
@@ -556,6 +557,7 @@ mod tests {
             mode,
             level: 0,
             strength: 1.0,
+            valley: 1.0,
         })
     }
 
