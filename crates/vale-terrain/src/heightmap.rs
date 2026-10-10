@@ -3,7 +3,7 @@
 //! Each face splits into square tiles. A tile takes memory from the first
 //! change of one of its texels. Each other tile reads as the base level.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 use crate::bands::Bands;
@@ -16,7 +16,8 @@ pub const TILE_SIZE: usize = 256;
 /// The largest brush radius, in radians. The face test in `stamp` needs it.
 pub const MAX_BRUSH_RADIUS: f64 = 0.3;
 
-const UNDO_DEPTH: usize = 8;
+/// The default limit of the memory of the undo and redo steps, in bytes.
+pub const UNDO_MEMORY_LIMIT: usize = 256 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -78,11 +79,20 @@ pub struct StampPlan {
 
 type Tile = Box<[u16]>;
 
-/// The base level and the tiles from before one stroke. A tile that had no
-/// memory is `None`.
+/// One undo or redo step: the base level and the tiles that one stroke
+/// changed. An undo step holds them from before the stroke, and a redo step
+/// holds them from after it. A tile that had no memory is `None`.
 struct Saved {
     base: u16,
     tiles: HashMap<usize, Option<Tile>>,
+}
+
+impl Saved {
+    /// The memory of the tiles, in bytes.
+    fn bytes(&self) -> usize {
+        let texels: usize = self.tiles.values().flatten().map(|tile| tile.len()).sum();
+        texels * size_of::<u16>()
+    }
 }
 
 pub struct Heightmap {
@@ -100,7 +110,11 @@ pub struct Heightmap {
     /// The base level or the full set of tiles is new.
     reset: bool,
     stroke: Option<Saved>,
-    undo: Vec<Saved>,
+    /// The undo steps, from the oldest to the newest.
+    undo: VecDeque<Saved>,
+    /// The redo steps. The last one is the next redo.
+    redo: VecDeque<Saved>,
+    undo_limit: usize,
     /// The band limits and the color ramp of the preview.
     pub bands: Bands,
 }
@@ -128,7 +142,9 @@ impl Heightmap {
             dirty: [None; FACES],
             reset: true,
             stroke: None,
-            undo: Vec::new(),
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
+            undo_limit: UNDO_MEMORY_LIMIT,
             bands: Bands::default(),
         };
         map.mark_all_dirty();
@@ -158,7 +174,8 @@ impl Heightmap {
         self.tiles.iter().flatten().count()
     }
 
-    /// The memory of the texels, in bytes. Undo copies are not included.
+    /// The memory of the texels, in bytes. The undo and redo steps are not
+    /// included.
     pub fn memory_bytes(&self) -> usize {
         self.allocated_tiles() * self.tile * self.tile * size_of::<u16>()
     }
@@ -206,8 +223,8 @@ impl Heightmap {
     }
 
     /// Returns `true` one time after the base level or the full set of tiles
-    /// changed. A new heightmap, `fill`, and the undo of a `fill` do this. A
-    /// reader then needs the base level and each tile again, so the call also
+    /// changed. A new heightmap, `fill`, and the undo or the redo of a `fill`
+    /// do this. A reader then needs the base level and each tile again, so the call also
     /// clears the changed rectangles.
     pub fn take_reset(&mut self) -> bool {
         if self.reset {
@@ -401,33 +418,85 @@ impl Heightmap {
         }
     }
 
+    /// Adds an undo step. The redo steps are no longer valid.
     fn push_undo(&mut self, saved: Saved) {
-        if self.undo.len() == UNDO_DEPTH {
-            self.undo.remove(0);
+        self.redo.clear();
+        self.undo.push_back(saved);
+        self.trim();
+    }
+
+    /// Removes steps until the memory is inside the limit. The oldest undo
+    /// steps go first. The redo steps go after them, and the next redo goes
+    /// last.
+    fn trim(&mut self) {
+        let mut bytes = self.undo_memory_bytes();
+        while bytes > self.undo_limit {
+            let Some(step) = self.undo.pop_front().or_else(|| self.redo.pop_front()) else {
+                break;
+            };
+            bytes -= step.bytes();
         }
-        self.undo.push(saved);
+    }
+
+    /// The memory of the undo and redo steps, in bytes.
+    pub fn undo_memory_bytes(&self) -> usize {
+        self.undo.iter().chain(&self.redo).map(Saved::bytes).sum()
+    }
+
+    /// The limit of the memory of the undo and redo steps, in bytes.
+    pub fn undo_memory_limit(&self) -> usize {
+        self.undo_limit
+    }
+
+    /// Sets the limit of the memory of the undo and redo steps. A step that
+    /// is larger than the limit is not kept.
+    pub fn set_undo_memory_limit(&mut self, bytes: usize) {
+        self.undo_limit = bytes;
+        self.trim();
     }
 
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
 
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
     /// Puts back the tiles from before the last stroke.
     pub fn undo(&mut self) -> bool {
-        let Some(saved) = self.undo.pop() else {
+        let Some(mut step) = self.undo.pop_back() else {
             return false;
         };
-        if saved.base != self.base {
-            self.base = saved.base;
+        self.swap(&mut step);
+        self.redo.push_back(step);
+        self.trim();
+        true
+    }
+
+    /// Puts back the tiles from after the last stroke that `undo` took away.
+    pub fn redo(&mut self) -> bool {
+        let Some(mut step) = self.redo.pop_back() else {
+            return false;
+        };
+        self.swap(&mut step);
+        self.undo.push_back(step);
+        self.trim();
+        true
+    }
+
+    /// Exchanges the base level and the tiles of a step with the heightmap.
+    fn swap(&mut self, step: &mut Saved) {
+        if step.base != self.base {
+            std::mem::swap(&mut self.base, &mut step.base);
             self.mark_all_dirty();
             self.reset = true;
         }
-        for (index, old) in saved.tiles {
-            self.tiles[index] = old;
+        for (&index, tile) in &mut step.tiles {
+            std::mem::swap(&mut self.tiles[index], tile);
             let (face, rect) = self.tile_rect(index);
             self.mark_dirty(face, rect);
         }
-        true
     }
 
     /// The texels of one face that a brush circle can touch.
@@ -989,5 +1058,157 @@ mod tests {
         assert!(map.undo());
         assert_eq!(map.get(3, 5, 6), 900);
         assert_eq!(map.get(3, 6, 6), 100);
+    }
+
+    #[test]
+    fn redo_puts_back_a_fill() {
+        let mut map = Heightmap::with_tile_size(64, 16, 100);
+        map.set(3, 5, 6, 900);
+        map.fill(300);
+        map.undo();
+        map.take_reset();
+        assert!(map.redo());
+        assert!(map.take_reset());
+        assert_eq!(map.allocated_tiles(), 0);
+        assert_eq!(map.get(3, 5, 6), 300);
+        assert!(map.undo());
+        assert_eq!(map.get(3, 5, 6), 900);
+    }
+
+    /// All texels of a heightmap with 64 texels on a face side.
+    fn texels(map: &Heightmap) -> Vec<u16> {
+        let all = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+        };
+        let mut out = Vec::new();
+        for face in 0..FACES {
+            map.read_rect(face, all, &mut out);
+        }
+        out
+    }
+
+    /// One stroke of one stamp.
+    fn stroke(map: &mut Heightmap, stamp: Stamp) -> bool {
+        map.begin_stroke();
+        map.stamp(&stamp);
+        map.end_stroke()
+    }
+
+    #[test]
+    fn undo_and_redo_work_for_each_mode() {
+        // The place is near a cube corner, so a stroke changes three faces.
+        let center = lonlat_to_dir(44.0, 34.0);
+        for mode in [Mode::Raise, Mode::Lower, Mode::Smooth, Mode::Flatten] {
+            let mut map = Heightmap::with_tile_size(64, 16, 20_000);
+            // A hill gives the smooth mode a slope.
+            assert!(stroke(&mut map, raise(center, 0.1)));
+            let before = texels(&map);
+            let stamp = Stamp {
+                mode,
+                level: 30_000,
+                ..raise(center, 0.25)
+            };
+            assert!(stroke(&mut map, stamp), "{mode:?}");
+            let after = texels(&map);
+            assert_ne!(before, after, "{mode:?}");
+            map.take_dirty();
+
+            assert!(map.undo() && map.can_redo(), "{mode:?}");
+            assert!(texels(&map) == before, "{mode:?}: undo");
+            assert!(map.take_dirty().iter().flatten().count() >= 3, "{mode:?}");
+            assert!(map.redo() && !map.can_redo(), "{mode:?}");
+            assert!(texels(&map) == after, "{mode:?}: redo");
+            assert!(map.take_dirty().iter().flatten().count() >= 3, "{mode:?}");
+            // Two steps go back to the empty heightmap.
+            assert!(map.undo() && map.undo() && !map.can_undo(), "{mode:?}");
+            assert_eq!(map.allocated_tiles(), 0, "{mode:?}");
+            assert!(map.redo() && map.redo() && !map.redo(), "{mode:?}");
+            assert!(texels(&map) == after, "{mode:?}: two redo steps");
+        }
+    }
+
+    #[test]
+    fn a_new_stroke_removes_the_redo_steps() {
+        let mut map = Heightmap::with_tile_size(64, 16, 0);
+        let center = lonlat_to_dir(10.0, 5.0);
+        stroke(&mut map, raise(center, 0.1));
+        stroke(&mut map, raise(center, 0.1));
+        map.undo();
+        // A stroke that changes nothing keeps the redo step.
+        map.begin_stroke();
+        assert!(!map.end_stroke());
+        assert!(map.can_redo());
+        stroke(&mut map, raise(center, 0.05));
+        assert!(!map.can_redo() && !map.redo());
+        assert_eq!(
+            map.undo_memory_bytes(),
+            map.undo.iter().map(Saved::bytes).sum()
+        );
+    }
+
+    #[test]
+    fn the_undo_steps_stay_inside_the_memory_limit() {
+        let tile = 16 * 16 * size_of::<u16>();
+        let mut map = Heightmap::with_tile_size(64, 16, 0);
+        assert_eq!(map.undo_memory_limit(), UNDO_MEMORY_LIMIT);
+        let center = lonlat_to_dir(10.0, 5.0);
+        // The first stroke gives memory to the tiles of the place.
+        stroke(&mut map, raise(center, 0.2));
+        let tiles = map.allocated_tiles();
+        assert!(tiles >= 2);
+        assert_eq!(map.undo_memory_bytes(), 0);
+        // The limit holds three steps of this stroke, and not four.
+        let limit = 3 * tiles * tile + tile;
+        map.set_undo_memory_limit(limit);
+        let strokes = 10;
+        for i in 0..strokes {
+            stroke(&mut map, raise(center, 0.2));
+            let bytes = map.undo_memory_bytes();
+            assert_eq!(bytes, (i + 1).min(3) * tiles * tile);
+            assert!(bytes <= limit);
+        }
+        let top = texels(&map);
+
+        // The newest steps are the ones that stay.
+        let mut undone = 0;
+        while map.undo() {
+            undone += 1;
+            assert!(map.undo_memory_bytes() <= limit);
+        }
+        assert_eq!(undone, 3);
+        assert!(texels(&map) != top);
+        let mut redone = 0;
+        while map.redo() {
+            redone += 1;
+            assert!(map.undo_memory_bytes() <= limit);
+        }
+        assert_eq!(redone, 3);
+        assert!(texels(&map) == top);
+
+        // A smaller limit removes steps at once.
+        map.set_undo_memory_limit(tiles * tile);
+        assert_eq!(map.undo_memory_bytes(), tiles * tile);
+        assert!(map.undo() && !map.undo());
+    }
+
+    #[test]
+    fn a_step_that_is_larger_than_the_limit_is_not_kept() {
+        let mut map = Heightmap::with_tile_size(64, 16, 0);
+        let center = lonlat_to_dir(10.0, 5.0);
+        stroke(&mut map, raise(center, 0.2));
+        map.set_undo_memory_limit(16 * 16 * size_of::<u16>());
+        // The undo step of the first stroke holds no tile. Its redo step
+        // holds all tiles of the stroke.
+        assert!(map.can_undo());
+        assert!(map.undo());
+        assert!(!map.can_redo());
+        assert_eq!(map.undo_memory_bytes(), 0);
+        stroke(&mut map, raise(center, 0.2));
+        assert!(stroke(&mut map, raise(center, 0.2)));
+        assert!(!map.can_undo());
+        assert_eq!(map.undo_memory_bytes(), 0);
     }
 }

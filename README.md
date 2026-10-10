@@ -28,12 +28,13 @@ The window opens on the globe workspace. The globe shows the heightmap of the wo
 - The brush panel opens with the brush tool. It has the four modes (raise, lower, smooth, and flatten), the radius in kilometers of the world, the hardness, and the strength. A pen sets the flow from its pressure, and the mouse paints with a fixed flow.
 - The brush keeps its size on screen when you zoom. Select "Lock size" to keep its size on the ground.
 - The flatten mode moves the ground to the level under the start of the stroke. To set a fixed level, click "Pick from globe", and then press on the globe.
+- Press Ctrl+Z to undo a stroke. Press Ctrl+Shift+Z or Ctrl+Y to redo it. On a Mac, use Command in place of Ctrl. On a touch screen, tap with two fingers to undo, and tap with three fingers to redo. The iPad layout also has an undo button and a redo button in the top row. A new stroke removes the strokes that you can redo. The undo steps use 256 MB of memory at most, and the oldest steps go first.
 - Click "Flat" in the tool bar to show the whole world as one flat map. Click it again to go back to the globe. The tool and the panels stay. A drag moves the map, and the wheel zooms. You can zoom out until the map has a quarter of the size of the canvas. At each zoom, you can move each place of the map to the middle of the canvas. The brush paints the same heightmap, and its outline shows the ground that the stamp covers. In the equirectangular projection, the outline is wide near a pole.
 - In the flat view, the list next to "Flat" sets the projection: equirectangular, Equal Earth, Mercator, Lambert azimuthal, orthographic, or stereographic. In the iPad layout, the button next to "Flat" opens the same list.
 - "Recenter" makes the place at the middle of the canvas the center of the projection. Move the map first. "Reset" puts the center of the projection back and shows the whole map. In the iPad layout, the two actions are buttons to the right of the view switch.
 - Click "Greyscale" in the tool bar to show the plain heightmap.
 - Click "Elevation" in the tool bar to open the elevation panel. The bar shows the band limits, which are the elevations where the tints change. Tap a free place on the bar to add a limit. Drag a limit to move it. Tap a limit and click "Remove" to remove it. Sea level is a limit that stays. Clear "Levels" to show the color ramp with no steps. The land colors and the sea colors are separate.
-- Click "Debug" in the tool bar to open the brush debug panel. It has "Undo". It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
+- Click "Debug" in the tool bar to open the brush debug panel. It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. It shows the memory of the undo steps. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
 
 In the window, each face of the heightmap has 8,192 pixels, and the GPU holds 940 MB for it. If the computer has no GPU, start the app with `--face-size 1024`.
 
@@ -138,7 +139,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 
 ## What the prototype leaves out
 
-- Project files. There is no save and no undo. When the window closes, the session ends.
+- Project files. There is no save. Undo and redo are for brush strokes only. When the window closes, the session ends.
 - Linked sources, file watch, raster layers, SVG and Shapefile import.
 - Rule-based styles. A layer has one fill, one stroke, and one circle symbol.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.

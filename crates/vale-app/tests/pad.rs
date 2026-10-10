@@ -499,6 +499,117 @@ fn the_pen_paints_on_the_canvas_and_a_panel_stays_open() {
     assert_eq!(h.state().pad.right, None);
 }
 
+/// A tap of `count` fingers near the middle of the canvas. The first finger
+/// is also the pointer. All fingers come down in one frame and go up in the
+/// next frame, so the tap is short.
+fn tap_fingers(h: &mut Pad, count: u64) {
+    let c = h.state().globe.rect.center();
+    for phase in [egui::TouchPhase::Start, egui::TouchPhase::End] {
+        let events = &mut h.input_mut().events;
+        for id in 1..=count {
+            let pos = c + vec2(60.0 * id as f32, 0.0);
+            events.push(egui::Event::Touch {
+                device_id: egui::TouchDeviceId(0),
+                id: egui::TouchId(id),
+                phase,
+                pos,
+                force: None,
+            });
+            if id == 1 {
+                events.push(egui::Event::PointerMoved(pos));
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: phase == egui::TouchPhase::Start,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+        }
+        if phase == egui::TouchPhase::End {
+            events.push(egui::Event::PointerGone);
+        }
+        h.step();
+    }
+    h.run_steps(3);
+}
+
+/// Paints three pen strokes over the middle of the canvas. Returns the level
+/// of the middle before the first stroke and after each stroke.
+fn three_strokes(h: &mut Pad) -> [u16; 4] {
+    let c = h.state().globe.rect.center();
+    let mut levels = [middle_level(h); 4];
+    for i in 1..4 {
+        drag(h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.5));
+        settle(h);
+        levels[i] = middle_level(h);
+        assert!(levels[i] > levels[i - 1], "{levels:?}");
+    }
+    levels
+}
+
+fn middle_level(h: &Pad) -> u16 {
+    let globe = &h.state().globe;
+    globe
+        .map
+        .sample(globe.unproject(globe.rect.center()).unwrap())
+}
+
+#[test]
+fn a_tap_of_two_fingers_is_undo_and_a_tap_of_three_fingers_is_redo() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_pad(BOARDS[0]);
+    let levels = three_strokes(&mut h);
+    let view = h.state().globe.view;
+    for level in levels[..3].iter().rev() {
+        tap_fingers(&mut h, 2);
+        settle(&mut h);
+        assert_eq!(middle_level(&h), *level, "undo");
+    }
+    assert!(!h.state().globe.can_undo());
+    // One more tap does nothing.
+    tap_fingers(&mut h, 2);
+    assert_eq!(middle_level(&h), levels[0]);
+    for level in &levels[1..] {
+        tap_fingers(&mut h, 3);
+        settle(&mut h);
+        assert_eq!(middle_level(&h), *level, "redo");
+    }
+    assert!(!h.state().globe.can_redo());
+    // A tap of one finger does nothing, and no tap moves the globe.
+    tap_fingers(&mut h, 1);
+    assert_eq!(middle_level(&h), levels[3]);
+    assert_eq!(h.state().globe.view, view);
+}
+
+#[test]
+fn the_undo_button_and_the_redo_button_work() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_pad(BOARDS[0]);
+    assert!(control(&h, "Undo").is_none() && control(&h, "Redo").is_none());
+    let levels = three_strokes(&mut h);
+    assert!(control(&h, "Redo").is_none());
+    for level in levels[..3].iter().rev() {
+        tap(&mut h, "Undo");
+        settle(&mut h);
+        assert_eq!(middle_level(&h), *level, "undo");
+    }
+    assert!(control(&h, "Undo").is_none());
+    for level in &levels[1..] {
+        tap(&mut h, "Redo");
+        settle(&mut h);
+        assert_eq!(middle_level(&h), *level, "redo");
+    }
+    assert!(control(&h, "Redo").is_none());
+    // A new stroke removes the redo steps.
+    tap(&mut h, "Undo");
+    settle(&mut h);
+    assert!(control(&h, "Redo").is_some());
+    let c = h.state().globe.rect.center();
+    drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.5));
+    settle(&mut h);
+    assert!(control(&h, "Redo").is_none());
+}
+
 #[test]
 fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
     let mut h = pad(BOARDS[0]);
