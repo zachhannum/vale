@@ -136,7 +136,8 @@ fn check_controls(h: &Pad, what: &str) {
     let screen = h.state().pad.rects.unwrap().screen;
     let controls = &h.state().pad.controls;
     assert!(controls.len() >= 8, "{what}: {} controls", controls.len());
-    let menu = h.state().pad.menu_rect;
+    let in_menu = h.state().pad.menu_rect.is_some();
+    let popup = in_menu || h.state().pad.projections_rect.is_some();
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -154,11 +155,17 @@ fn check_controls(h: &Pad, what: &str) {
         );
         for b in &controls[i + 1..] {
             assert_ne!(a.name, b.name, "{what}");
-            // The open menu covers the cards below it.
+            // The open menu and the open list of projections cover the
+            // cards below them.
             let row = |c: &vale_app::ui::pad::widgets::Control| {
-                ["World", "Globe", "Flat", "Maps"].contains(&c.name.as_str())
+                let name = c.name.as_str();
+                let kind = vale_sphere::ProjectionKind::ALL
+                    .iter()
+                    .any(|k| k.name() == name);
+                let menu = ["World", "Globe", "Flat", "Maps"].contains(&name);
+                menu || kind || name == "Center here" || (in_menu && name == "Projection")
             };
-            let covered = menu.is_some() && row(a) != row(b);
+            let covered = popup && row(a) != row(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -514,6 +521,52 @@ fn one_tap_switches_the_view_and_the_tool_and_the_panels_stay() {
 }
 
 #[test]
+fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
+    use vale_sphere::ProjectionKind;
+    let mut h = pad(BOARDS[0]);
+    assert!(control(&h, "Projection").is_none());
+    tap(&mut h, "Lower");
+    tap(&mut h, "Flat");
+    // The card is wider by the button, and it stays in the middle.
+    let view = h.state().pad.rects.unwrap().view.unwrap();
+    assert_eq!(view.center().x, 597.0);
+    assert!(view.contains_rect(control(&h, "Projection").unwrap()));
+    assert!(control(&h, "Projection").unwrap().width() >= 44.0);
+
+    tap(&mut h, "Projection");
+    let list = h.state().pad.projections_rect.unwrap();
+    assert_eq!(list.top(), view.bottom() + 4.0);
+    for kind in ProjectionKind::ALL {
+        assert!(list.contains_rect(control(&h, kind.name()).unwrap()));
+    }
+    check_controls(&h, "with the projections");
+    tap(&mut h, "Equal Earth");
+    let s = h.state();
+    assert_eq!(s.globe.flat.spec().kind, ProjectionKind::EqualEarth);
+    assert!(!s.pad.projections && s.pad.projections_rect.is_none());
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Lower)
+    );
+
+    // "Center here" moves the center of the projection to the middle.
+    // At the smallest zoom, the map stays in the middle of the canvas.
+    h.state_mut().globe.flat.zoom = 8.0;
+    h.state_mut().globe.flat.look_at(60.0, 0.0);
+    tap(&mut h, "Projection");
+    tap(&mut h, "Center here");
+    assert!((h.state().globe.flat.spec().lon0 - 60.0).abs() < 1e-6);
+
+    // A touch off the list closes it, and the globe has no list.
+    tap(&mut h, "Projection");
+    tap(&mut h, "Layers");
+    assert!(!h.state().pad.projections);
+    tap(&mut h, "Projection");
+    tap(&mut h, "Globe");
+    assert!(!h.state().pad.projections && control(&h, "Projection").is_none());
+}
+
+#[test]
 fn the_top_row_and_the_panels_match_the_landscape_board() {
     let mut h = pad(BOARDS[0]);
     let r = h.state().pad.rects.unwrap();
@@ -629,6 +682,14 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         tap(&mut h, "Flat");
         assert!(!h.state().pad.menu);
         assert_eq!(h.state().globe.world_view, WorldView::Flat);
+        // In the flat view, the menu opens the list of the projections.
+        tap(&mut h, "Workspace");
+        tap(&mut h, "Projection");
+        assert!(!h.state().pad.menu);
+        assert_eq!(h.state().pad.projections_rect.unwrap().min, menu.min);
+        tap(&mut h, "Mercator");
+        let kind = h.state().globe.flat.spec().kind;
+        assert_eq!(kind, vale_sphere::ProjectionKind::Mercator);
         tap(&mut h, "Workspace");
         tap(&mut h, "Globe");
         assert!(!h.state().pad.menu);

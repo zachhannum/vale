@@ -28,6 +28,12 @@ pub struct Args {
     /// The view of the world in the globe workspace.
     #[arg(long, value_enum, default_value_t)]
     pub view: WorldView,
+    /// The projection of the flat view: equirectangular, or an ID of --projection.
+    #[arg(long, value_name = "ID", default_value = "equirectangular")]
+    pub flat_projection: String,
+    /// Center of the projection of the flat view.
+    #[arg(long, value_name = "LON,LAT", allow_hyphen_values = true)]
+    pub flat_center: Option<String>,
     /// The arrangement of the controls. The iPad uses `pad`.
     #[arg(long, value_enum, default_value_t)]
     pub layout: Layout,
@@ -37,7 +43,7 @@ pub struct Args {
     /// GeoJSON files to open in place of the sample world.
     #[arg(value_name = "FILES")]
     pub files: Vec<PathBuf>,
-    /// equal-earth, mercator, lambert-azimuthal, orthographic, or stereographic.
+    /// equirectangular, equal-earth, mercator, lambert-azimuthal, orthographic, or stereographic.
     #[arg(long, value_name = "ID", default_value = "equal-earth")]
     pub projection: String,
     /// Center of the projection.
@@ -127,19 +133,7 @@ impl Args {
         };
         doc.set_radius_km(self.radius_km);
 
-        let kind = ProjectionKind::from_id(&self.projection).ok_or_else(|| {
-            let ids: Vec<&str> = ProjectionKind::ALL.iter().map(|k| k.id()).collect();
-            anyhow!(
-                "unknown projection `{}`; use one of {}",
-                self.projection,
-                ids.join(", ")
-            )
-        })?;
-        let [lon0, lat0] = match &self.center {
-            Some(c) => parse_pair(c)?,
-            None => [0.0, 0.0],
-        };
-        doc.set_projection(ProjectionSpec { kind, lon0, lat0 });
+        doc.set_projection(projection_spec(&self.projection, self.center.as_deref())?);
 
         for name in &self.hide {
             let id = doc
@@ -193,6 +187,27 @@ impl Args {
     }
 }
 
+/// The projection with this ID and this center.
+fn projection_spec(id: &str, center: Option<&str>) -> anyhow::Result<ProjectionSpec> {
+    let kind = ProjectionKind::from_id(id).ok_or_else(|| {
+        let ids: Vec<&str> = ProjectionKind::ALL.iter().map(|k| k.id()).collect();
+        anyhow!("unknown projection `{id}`; use one of {}", ids.join(", "))
+    })?;
+    let [lon0, lat0] = match center {
+        Some(c) => parse_pair(c)?,
+        None => [0.0, 0.0],
+    };
+    Ok(ProjectionSpec { kind, lon0, lat0 })
+}
+
+impl Args {
+    /// The projection of the flat view, from `--flat-projection` and
+    /// `--flat-center`.
+    pub fn flat_projection_spec(&self) -> anyhow::Result<ProjectionSpec> {
+        projection_spec(&self.flat_projection, self.flat_center.as_deref())
+    }
+}
+
 /// The limits of `--face-size`.
 const FACE_SIZES: std::ops::RangeInclusive<u32> = 16..=16384;
 
@@ -212,11 +227,12 @@ pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::
         globe.set_face_size(face_size);
     }
     globe.world_view = args.view;
+    globe.flat = FlatView::new(args.flat_projection_spec()?);
+    globe.flat.zoom = args.zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX);
     if let Some(spec) = &args.look_at {
         let [lon, lat] = parse_pair(spec)?;
-        globe.flat = FlatView::centered(lon, lat);
+        globe.flat.look_at(lon, lat);
     }
-    globe.flat.zoom = args.zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX);
     apply_globe_view(args, &mut globe.view)
 }
 

@@ -16,15 +16,16 @@ struct Uniforms {
     rot0: vec4<f32>,
     rot1: vec4<f32>,
     rot2: vec4<f32>,
-    // Center x and y and radius in pixels, then pixels per point. On the
-    // flat map, the radius is the size of one radian.
+    // Center x and y and radius in pixels, then pixels per point. In the
+    // flat view, the radius is the size of one unit of the projection.
     globe: vec4<f32>,
     // Face size in texels, the graticule step in radians, the preview mode,
     // and the band count. A step of 0 hides the graticule.
     params: vec4<f32>,
-    // 1 for the flat map, then the longitude and the latitude at the center,
-    // in radians.
+    // The point of the flat map at the center, in z and w.
     flat: vec4<f32>,
+    // The width and the height of the render target in pixels.
+    screen: vec4<f32>,
     // The bands, from the lowest to the highest.
     bands: array<Band, 32>,
 }
@@ -97,8 +98,9 @@ fn texel(face: i32, x: i32, y: i32) -> f32 {
     return across(face, x, y);
 }
 
-// The height at a world direction, from 0 to 1, with bilinear filtering.
-fn height(d: vec3<f32>) -> f32 {
+// The height at a world direction, from 0 to 1, with bilinear filtering. The
+// y and z parts are the change of the height across one texel.
+fn height(d: vec3<f32>) -> vec3<f32> {
     let a = abs(d);
     var axis = 2;
     if a.x >= a.y && a.x >= a.z {
@@ -119,7 +121,8 @@ fn height(d: vec3<f32>) -> f32 {
     let h10 = texel(face, i.x + 1, i.y);
     let h01 = texel(face, i.x, i.y + 1);
     let h11 = texel(face, i.x + 1, i.y + 1);
-    return mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y);
+    let slope = vec2<f32>(mix(h10 - h00, h11 - h01, t.y), mix(h01 - h00, h11 - h10, t.x));
+    return vec3<f32>(mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y), slope);
 }
 
 fn band_color(i: i32, h: f32, mode: i32) -> vec3<f32> {
@@ -145,63 +148,85 @@ fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
     return color;
 }
 
-@fragment
-fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let radius = u.globe.z;
-    let p = vec2<f32>(frag.x - u.globe.x, u.globe.y - frag.y) / radius;
-    let is_flat = u.flat.x > 0.5;
-    let r = length(p);
-    // One pixel of soft edge at the limb, or at a pole of the flat map.
-    var cover = clamp((1.0 - r) * radius + 0.5, 0.0, 1.0);
-    var v = vec3<f32>(0.0, 0.0, 1.0);
-    var d: vec3<f32>;
-    if is_flat {
-        let lon = u.flat.y + p.x;
-        let lat = u.flat.z + p.y;
-        cover = clamp((PI * 0.5 - abs(lat)) * radius + 0.5, 0.0, 1.0);
-        let c = clamp(lat, -PI * 0.5, PI * 0.5);
-        d = vec3<f32>(cos(c) * cos(lon), cos(c) * sin(lon), sin(c));
-    } else {
-        let rr = min(r, 1.0);
-        v = vec3<f32>(p / max(r, 1e-6) * rr, sqrt(max(1.0 - rr * rr, 0.0)));
-        d = v.x * u.rot0.xyz + v.y * u.rot1.xyz + v.z * u.rot2.xyz;
-    }
-    if cover <= 0.0 {
-        discard;
-    }
-
-    let h = height(d);
-    let width = fwidth(h);
+// The color of the ground in a world direction: the tint of the height, and
+// the graticule. `width` is the change of the height across one pixel.
+// `wlat` and `wlon` are the latitude and the longitude that one pixel covers
+// there.
+fn ground(h: f32, width: f32, d: vec3<f32>, wlat: f32, wlon: f32) -> vec3<f32> {
     let mode = i32(u.params.z);
     var color = vec3<f32>(h);
     if mode != MODE_GREYSCALE {
         color = tint(h, width, mode);
     }
-
-    // The angle that one pixel covers at this place on the globe.
-    let px = 1.0 / (radius * max(v.z, 0.05));
-
     let grat = u.params.y;
     if grat > 0.0 {
         let lat = asin(clamp(d.z, -1.0, 1.0));
         let lon = atan2(d.y, d.x);
         let dlat = abs(fract(lat / grat + 0.5) - 0.5) * grat;
-        // On the flat map, a meridian is as wide in longitude at each
-        // latitude, and the meridians do not crowd together.
-        var coslat = max(cos(lat), 1e-4);
-        var keep = step(abs(lat), PI * 0.5 - grat * 0.5);
-        if is_flat {
-            coslat = 1.0;
-            keep = 1.0;
-        }
-        let dlon = abs(fract(lon / grat + 0.5) - 0.5) * grat * coslat;
-        let line = max(1.0 - smoothstep(0.0, px * 1.5, dlat),
-                       keep * (1.0 - smoothstep(0.0, px * 1.5, dlon)));
+        let dlon = abs(fract(lon / grat + 0.5) - 0.5) * grat;
+        // Meridians stop near the poles, where they crowd together.
+        let keep = step(abs(lat), PI * 0.5 - grat * 0.5);
+        let line = max(1.0 - smoothstep(0.0, wlat * 1.5, dlat),
+                       keep * (1.0 - smoothstep(0.0, wlon * 1.5, dlon)));
         color = mix(color, vec3<f32>(0.08, 0.12, 0.18), line * 0.22);
     }
+    return color;
+}
+
+@fragment
+fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let radius = u.globe.z;
+    let p = vec2<f32>(frag.x - u.globe.x, u.globe.y - frag.y) / radius;
+    let r = length(p);
+    // One pixel of soft edge at the limb.
+    let cover = clamp((1.0 - r) * radius + 0.5, 0.0, 1.0);
+    if cover <= 0.0 {
+        discard;
+    }
+    let rr = min(r, 1.0);
+    let v = vec3<f32>(p / max(r, 1e-6) * rr, sqrt(max(1.0 - rr * rr, 0.0)));
+    let d = v.x * u.rot0.xyz + v.y * u.rot1.xyz + v.z * u.rot2.xyz;
+
+    // The angle that one pixel covers at this place on the globe.
+    let px = 1.0 / (radius * max(v.z, 0.05));
+    let coslat = max(sqrt(max(1.0 - d.z * d.z, 0.0)), 1e-4);
+    let h = height(d).x;
+    var color = ground(h, fwidth(h), d, px, px / coslat);
 
     // A little shade toward the limb, so the disk reads as a ball.
     color *= mix(0.80, 1.0, pow(v.z, 0.6));
 
     return vec4<f32>(color * cover, cover);
+}
+
+struct FlatVertex {
+    @builtin(position) position: vec4<f32>,
+    @location(0) dir: vec3<f32>,
+}
+
+// One corner of the mesh of the flat view: a point of the map, and the world
+// direction of the place there.
+@vertex
+fn vs_flat(@location(0) point: vec2<f32>, @location(1) dir: vec3<f32>) -> FlatVertex {
+    let offset = vec2<f32>(point.x - u.flat.z, u.flat.w - point.y);
+    let pixel = u.globe.xy + offset * u.globe.z;
+    let ndc = vec2<f32>(pixel.x / u.screen.x * 2.0 - 1.0, 1.0 - pixel.y / u.screen.y * 2.0);
+    return FlatVertex(vec4<f32>(ndc, 0.0, 1.0), dir);
+}
+
+@fragment
+fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
+    let d = normalize(in.dir);
+    let lat = asin(clamp(d.z, -1.0, 1.0));
+    // The longitude jumps at the 180 degree meridian. Its sine and its
+    // cosine do not, and they change by the same angle.
+    let east = normalize(vec2<f32>(d.x, d.y) + vec2<f32>(1e-9, 0.0));
+    let wlon = length(fwidth(east));
+    // A derivative of the height is wrong at an edge of a triangle of the
+    // mesh, so the width comes from the slope of the texels. A face has
+    // 2 / PI of its texels in one radian.
+    let h = height(d);
+    let angle = max(length(dpdx(d)), length(dpdy(d)));
+    let width = length(h.yz) * u.params.x * (2.0 / PI) * angle;
+    return vec4<f32>(ground(h.x, width, d, fwidth(lat), wlon), 1.0);
 }

@@ -29,6 +29,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         WorldView::Globe
                     };
                 }
+                if flat {
+                    flat_projection(ui, state);
+                }
                 ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
                 ui.toggle_value(&mut state.globe.preview.panel, "Elevation");
                 ui.toggle_value(&mut state.globe.debug, "Debug");
@@ -48,6 +51,24 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     });
+}
+
+/// The projection of the flat view.
+fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
+    let flat = &mut state.globe.flat;
+    let spec = flat.spec();
+    let mut kind = spec.kind;
+    egui::ComboBox::from_id_salt("flat-projection")
+        .selected_text(kind.name())
+        .show_ui(ui, |ui| {
+            for k in ProjectionKind::ALL {
+                ui.selectable_value(&mut kind, k, k.name());
+            }
+        });
+    flat.set_spec(ProjectionSpec { kind, ..spec });
+    if ui.button(super::pad::CENTER_HERE).clicked() {
+        flat.center_here();
+    }
 }
 
 /// The numbers of the brush on the GPU, and controls for a test of the brush.

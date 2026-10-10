@@ -274,8 +274,8 @@ pub(super) fn canvas(
             // The stamp is round on the sphere, so its outline is not round
             // on the flat map.
             WorldView::Flat => {
-                let center = globe.flat.unproject(rect, pos);
-                let lines = center.map(|dir| globe.flat.outline(rect, dir, radius));
+                let (flat, center) = (&globe.flat, globe.flat.unproject(rect, pos));
+                let lines = center.map(|dir| flat.outline(rect, dir, radius));
                 for line in lines.unwrap_or_default() {
                     painter.line(line, stroke);
                 }

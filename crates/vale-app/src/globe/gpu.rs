@@ -9,6 +9,7 @@ use eframe::egui_wgpu::{self, wgpu};
 use vale_terrain::{FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan, TexelRect};
 
 use super::backdrop::{Backdrop, Canvas};
+use super::flat::{FlatMesh, Vertex};
 use super::preview::BandUniform;
 
 /// The time between two polls of the device while GPU work is in flight.
@@ -22,13 +23,51 @@ pub struct Uniforms {
     pub globe: [f32; 4],
     pub params: [f32; 4],
     pub flat: [f32; 4],
+    pub screen: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
+}
+
+/// The mesh of the flat view on the GPU.
+struct GpuMesh {
+    spec: vale_sphere::ProjectionSpec,
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    count: u32,
+}
+
+impl GpuMesh {
+    fn new(device: &wgpu::Device, mesh: &FlatMesh) -> GpuMesh {
+        use wgpu::util::DeviceExt;
+        let buffer = |label, contents, usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage,
+            })
+        };
+        GpuMesh {
+            spec: mesh.spec,
+            vertices: buffer(
+                "flat vertices",
+                bytemuck::cast_slice(&mesh.vertices),
+                wgpu::BufferUsages::VERTEX,
+            ),
+            indices: buffer(
+                "flat indices",
+                bytemuck::cast_slice(&mesh.indices),
+                wgpu::BufferUsages::INDEX,
+            ),
+            count: mesh.indices.len() as u32,
+        }
+    }
 }
 
 struct Resources {
     face_size: u32,
     format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
+    flat_pipeline: wgpu::RenderPipeline,
+    mesh: Option<GpuMesh>,
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     heights: GpuHeightmap,
@@ -58,7 +97,7 @@ impl Resources {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -97,35 +136,45 @@ impl Resources {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("globe"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: size_of::<Vertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3],
+        };
+        let pipeline =
+            |label, vertex, fragment, buffers: &[Option<wgpu::VertexBufferLayout<'_>>]| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some(vertex),
+                        buffers,
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(fragment),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
         Resources {
             face_size,
             format,
-            pipeline,
+            flat_pipeline: pipeline("flat", "vs_flat", "fs_flat", &[Some(vertex_layout)]),
+            pipeline: pipeline("globe", "vs_main", "fs_main", &[]),
+            mesh: None,
             bind_group,
             uniform_buffer,
             heights,
@@ -133,10 +182,21 @@ impl Resources {
         }
     }
 
-    fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_pipeline(&self.pipeline);
+    /// Draws the globe, or the mesh of the flat view. `screen` is the size
+    /// of the render target in pixels.
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, flat: bool, screen: [u32; 2]) {
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        if !flat {
+            pass.set_pipeline(&self.pipeline);
+            pass.draw(0..3, 0..1);
+        } else if let Some(mesh) = &self.mesh {
+            // The shader places the mesh on the whole render target.
+            pass.set_viewport(0.0, 0.0, screen[0] as f32, screen[1] as f32, 0.0, 1.0);
+            pass.set_pipeline(&self.flat_pipeline);
+            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+            pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..mesh.count, 0, 0..1);
+        }
     }
 }
 
@@ -319,6 +379,8 @@ pub struct GlobeCallback {
     pub face_size: u32,
     pub uniforms: Uniforms,
     pub link: Link,
+    /// `Some`: the canvas shows the flat view with this mesh.
+    pub flat: Option<Arc<FlatMesh>>,
     /// `Some`: the globe goes into the canvas texture of the backdrop, and
     /// the cards show a blurred copy of it.
     pub backdrop: Option<Canvas>,
@@ -456,8 +518,19 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             let busy = &self.link.busy;
             resources.insert(Resources::new(device, self.format, self.face_size, busy));
         }
+        let size = screen_descriptor.size_in_pixels;
+        if let Some(mesh) = &self.flat {
+            let res: &mut Resources = resources.get_mut().expect("inserted above");
+            if res.mesh.as_ref().is_none_or(|m| m.spec != mesh.spec) {
+                res.mesh = Some(GpuMesh::new(device, mesh));
+            }
+        }
         let res: &Resources = resources.get().expect("inserted above");
-        queue.write_buffer(&res.uniform_buffer, 0, bytemuck::bytes_of(&self.uniforms));
+        let uniforms = Uniforms {
+            screen: [size[0] as f32, size[1] as f32, 0.0, 0.0],
+            ..self.uniforms
+        };
+        queue.write_buffer(&res.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
         let ops = std::mem::take(&mut *self.link.ops.lock().expect("no panic holds the lock"));
         let mut batch = Batch {
             device,
@@ -502,9 +575,9 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
                 .filter(|b| b.format == self.format)
                 .unwrap_or_else(|| Backdrop::new(device, self.format));
             let res: &Resources = resources.get().expect("inserted above");
-            let size = screen_descriptor.size_in_pixels;
+            let flat = self.flat.is_some();
             backdrop.render(device, queue, egui_encoder, size, canvas, |pass| {
-                res.draw(pass);
+                res.draw(pass, flat, size);
             });
             resources.insert(backdrop);
         }
@@ -513,7 +586,7 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
 
     fn paint(
         &self,
-        _info: eframe::egui::PaintCallbackInfo,
+        info: eframe::egui::PaintCallbackInfo,
         render_pass: &mut wgpu::RenderPass<'static>,
         resources: &egui_wgpu::CallbackResources,
     ) {
@@ -524,7 +597,7 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             return;
         }
         if let Some(res) = resources.get::<Resources>() {
-            res.draw(render_pass);
+            res.draw(render_pass, self.flat.is_some(), info.screen_size_px);
         }
     }
 }

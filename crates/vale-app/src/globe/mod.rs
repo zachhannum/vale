@@ -228,7 +228,8 @@ impl Globe {
     }
 
     /// The size of one radian on screen, in points. On the globe, this is
-    /// the radius of the globe. On the flat map, it is true along a meridian.
+    /// the radius of the globe. On the flat map, it is true where the
+    /// projection has its true scale.
     pub fn radius(&self) -> f64 {
         match self.world_view {
             WorldView::Globe => self.view.radius(self.rect),
@@ -474,11 +475,12 @@ impl Globe {
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
         let center = self.rect.center();
         let radius = self.radius() as f32;
-        let (zoom, flat) = match self.world_view {
-            WorldView::Globe => (self.view.zoom, [0.0; 4]),
+        let (zoom, flat, mesh) = match self.world_view {
+            WorldView::Globe => (self.view.zoom, [0.0; 4], None),
             WorldView::Flat => {
-                let flat = &self.flat;
-                (flat.zoom, [1.0, flat.lon as f32, flat.lat as f32, 0.0])
+                let center = self.flat.center;
+                let flat = [0.0, 0.0, center.x as f32, center.y as f32];
+                (self.flat.zoom, flat, Some(self.flat.mesh()))
             }
         };
         let graticule_degrees: f64 = if !self.preview.graticule {
@@ -509,8 +511,10 @@ impl Globe {
                     band_count as f32,
                 ],
                 flat,
+                screen: [0.0; 4],
                 bands,
             },
+            flat: mesh,
             link: self.link.clone(),
             backdrop,
         })

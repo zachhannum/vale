@@ -10,6 +10,7 @@ use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::ui::{AppState, draw};
+use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_terrain::{Mode, meters_to_level};
 
 type App = Harness<'static, AppState>;
@@ -206,7 +207,7 @@ fn a_stroke_across_the_180_degree_meridian_continues_at_the_other_edge() {
     let mut h = flat_harness();
     let before = canvas_image(&mut h);
     // The meridian is at the middle of the canvas, and the stroke crosses it.
-    h.state_mut().globe.flat = FlatView::centered(180.0, 0.0);
+    h.state_mut().globe.flat = FlatView::new(spec(ProjectionKind::Equirectangular, 180.0, 0.0));
     h.run_steps(2);
     stroke(&mut h, false);
     let globe = &h.state().globe;
@@ -229,44 +230,102 @@ fn a_stroke_across_the_180_degree_meridian_continues_at_the_other_edge() {
     assert_eq!(grey(&h, &after, middle), grey(&h, &before, middle));
 }
 
+fn spec(kind: ProjectionKind, lon0: f64, lat0: f64) -> ProjectionSpec {
+    ProjectionSpec { kind, lon0, lat0 }
+}
+
 /// Stamps one time at a place, and compares the ground that changed with the
-/// brush outline.
-fn check_outline(lon: f64, lat: f64) -> (f32, f32) {
-    let mut h = flat_harness();
+/// brush outline. Returns the width and the height of the outline.
+fn check_outline(h: &mut App, lon: f64, lat: f64) -> (f32, f32) {
+    let what = format!("{:?} at {lon} {lat}", h.state().globe.flat.spec().kind);
     h.state_mut().globe.brush.hardness = 1.0;
     h.run_steps(1);
     let globe = &h.state().globe;
-    let (rect, flat) = (globe.rect, globe.flat);
+    let rect = globe.rect;
     let center: V3 = lonlat_to_dir(lon, lat);
-    let pos = flat.project(rect, center);
+    let pos = globe.flat.project(rect, center).unwrap();
     let radius = globe.brush.radius(globe.radius());
-    mouse(&mut h, pos, true);
+    mouse(h, pos, true);
     h.step();
-    mouse(&mut h, pos, false);
+    mouse(h, pos, false);
     h.step();
-    settle(&mut h);
+    settle(h);
 
     let globe = &h.state().globe;
-    let base = globe.map.base();
+    let (flat, base) = (&globe.flat, globe.map.base());
     let center = flat.unproject(rect, pos).unwrap();
     let lines = flat.outline(rect, center, radius);
-    assert_eq!(lines.len(), 1);
+    assert_eq!(lines.len(), 1, "{what}");
     for point in &lines[0] {
         let inside = flat.unproject(rect, pos + (*point - pos) * 0.85).unwrap();
         let outside = flat.unproject(rect, pos + (*point - pos) * 1.15).unwrap();
-        assert!(globe.map.sample(inside) > base, "{lat}: inside {point:?}");
-        assert_eq!(globe.map.sample(outside), base, "{lat}: outside {point:?}");
+        assert!(globe.map.sample(inside) > base, "{what}: inside {point:?}");
+        assert_eq!(globe.map.sample(outside), base, "{what}: outside {point:?}");
     }
     let bounds = egui::Rect::from_points(&lines[0]);
     (bounds.width(), bounds.height())
 }
 
 #[test]
+fn each_projection_paints_at_the_place_under_the_pen() {
+    let _gpu = one_gpu_test();
+    for kind in ProjectionKind::ALL {
+        let mut h = flat_harness();
+        h.state_mut().globe.flat = FlatView::new(spec(kind, 20.0, 30.0));
+        let before = canvas_image(&mut h);
+        check_outline(&mut h, 40.0, 45.0);
+        // The picture shows the stamp at the same place.
+        let after = canvas_image(&mut h);
+        let globe = &h.state().globe;
+        let at = |lon, lat| {
+            globe
+                .flat
+                .project(globe.rect, lonlat_to_dir(lon, lat))
+                .unwrap()
+        };
+        let (stamp, far) = (at(40.0, 45.0), at(0.0, 10.0));
+        let (was, is) = (grey(&h, &before, stamp), grey(&h, &after, stamp));
+        assert!(is > was, "{kind:?}: {was} and {is}");
+        assert_eq!(grey(&h, &after, far), grey(&h, &before, far), "{kind:?}");
+    }
+}
+
+#[test]
+fn the_tool_bar_picks_the_projection_of_the_flat_view() {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+    h.run_steps(2);
+    assert!(h.query_by_role(egui::accesskit::Role::ComboBox).is_none());
+    h.get_by_label("Flat").click();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::ComboBox).click();
+    h.run_steps(2);
+    h.get_by_label("Orthographic").click();
+    h.run_steps(2);
+    assert_eq!(
+        h.state().globe.flat.spec().kind,
+        ProjectionKind::Orthographic
+    );
+    // At the smallest zoom, the map stays in the middle of the canvas.
+    h.state_mut().globe.flat.zoom = 8.0;
+    h.state_mut().globe.flat.look_at(50.0, 40.0);
+    h.get_by_label("Center here").click();
+    h.run_steps(2);
+    let spec = h.state().globe.flat.spec();
+    assert!(
+        (spec.lon0 - 50.0).abs() < 1e-6 && (spec.lat0 - 40.0).abs() < 1e-6,
+        "{spec:?}"
+    );
+}
+
+#[test]
 fn the_brush_outline_matches_the_ground_that_the_stamp_covers() {
     let _gpu = one_gpu_test();
-    let (w, h) = check_outline(30.0, 0.0);
+    let (w, h) = check_outline(&mut flat_harness(), 30.0, 0.0);
     assert!((w - 24.0).abs() < 0.5 && (h - 24.0).abs() < 0.5, "{w} {h}");
     // Near a pole the same stamp covers more longitude, so the outline is wide.
-    let (w, h) = check_outline(30.0, 70.0);
+    let (w, h) = check_outline(&mut flat_harness(), 30.0, 70.0);
     assert!(w > 2.5 * h && (h - 24.0).abs() < 0.5, "{w} {h}");
 }
