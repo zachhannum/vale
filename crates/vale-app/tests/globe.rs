@@ -8,6 +8,7 @@ use vale_app::globe::math::{V3, angle, lonlat_to_dir};
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{FACE_SIZE, Tool};
 use vale_app::headless;
+use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::ui::elevation::{BAR_LABEL, limit_y};
 use vale_app::ui::{AppState, Workspace, draw};
 use vale_terrain::meters_to_level;
@@ -1038,4 +1039,155 @@ fn no_seam_shows_at_a_face_edge_or_at_a_cube_corner() {
         }
         assert!(seen[1] - seen[0] > 60, "{seen:?}");
     }
+}
+
+fn pen_event(phase: PenPhase, pos: Pos2, time: f64) -> PenEvent {
+    let hovers = matches!(phase, PenPhase::Hover | PenPhase::HoverEnd);
+    PenEvent {
+        phase,
+        pos: [pos.x, pos.y],
+        force: if hovers { 0.0 } else { 0.5 },
+        altitude: Some(1.0),
+        azimuth: Some(2.0),
+        height: hovers.then_some(0.4),
+        time,
+    }
+}
+
+/// A harness in the brush tool, with a pen queue as on iPad.
+fn queue_harness() -> (Harness<'static, AppState>, PenQueue) {
+    let mut h = gpu_harness();
+    let queue = PenQueue::default();
+    h.state_mut().globe.pen.queue = Some(queue.clone());
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(1);
+    (h, queue)
+}
+
+#[test]
+fn the_debug_panel_shows_240_samples_per_second_for_a_pen_from_the_queue() {
+    let _gpu = one_gpu_test();
+    let (mut h, queue) = queue_harness();
+    h.state_mut().globe.debug = true;
+    h.run_steps(2);
+    assert!(h.query_by_label("Pen and timing").is_some());
+    assert!(h.query_by_label("Pen source: UIKit").is_some());
+    assert!(h.query_by_label("Last stroke: none").is_some());
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 0.0));
+    let view = h.state().globe.view;
+    let base = h.state().globe.map.base();
+    let under = place(&h, c);
+
+    // Each frame has two samples in the queue and one touch in egui, as on
+    // iPad at 120 frames per second.
+    let at = |i: u32| from.lerp(to, i as f32 / 40.0);
+    let time = |i: u32| 500.0 + f64::from(i) / 240.0;
+    queue.push([pen_event(PenPhase::Down, from, time(0))]);
+    first_touch(&mut h, egui::TouchPhase::Start, from, Some(0.5));
+    h.step();
+    for i in (1..40).step_by(2) {
+        queue.push([
+            pen_event(PenPhase::Move, at(i), time(i)),
+            pen_event(PenPhase::Move, at(i + 1), time(i + 1)),
+        ]);
+        first_touch(&mut h, egui::TouchPhase::Move, at(i + 1), Some(0.5));
+        h.step();
+    }
+    queue.push([pen_event(PenPhase::Up, to, time(41))]);
+    first_touch(&mut h, egui::TouchPhase::End, to, Some(0.5));
+    settle(&mut h);
+    h.run_steps(2);
+
+    let globe = &h.state().globe;
+    assert!((globe.pen.stats.rate().unwrap() - 240.0).abs() < 1e-6);
+    assert_eq!(globe.view, view);
+    assert!(globe.map.sample(under) > base);
+    // The touches in egui did not start a second stroke.
+    assert_eq!(globe.stats.last().unwrap().id, 1);
+    assert!(
+        h.query_by_label("Last stroke: 42 samples, 240 per second")
+            .is_some()
+    );
+    assert!(h.query_by_label("Pen force: 0.50").is_some());
+    assert!(h.query_by_label_contains("Tilt: 57°").is_some());
+}
+
+#[test]
+fn the_brush_circle_follows_a_pen_that_hovers() {
+    let _gpu = one_gpu_test();
+    let (mut h, queue) = queue_harness();
+    assert_eq!(h.state().globe.input.pos, None);
+    let c = h.state().globe.rect.center();
+    for (i, pos) in [c, c + Vec2::new(30.0, -20.0)].into_iter().enumerate() {
+        queue.push([pen_event(PenPhase::Hover, pos, i as f64)]);
+        h.step();
+        assert_eq!(h.state().globe.input.pos, Some(pos));
+    }
+    assert!(h.state().cursor_lonlat.is_some());
+    assert_eq!(
+        h.state().globe.pen.stats.hover_line(),
+        "Hover: seen, height 0.40"
+    );
+    // The view did not move, and no stroke started.
+    assert!(h.state().globe.stats.last().is_none());
+
+    // A pen above the tool bar has no circle.
+    queue.push([pen_event(PenPhase::Hover, Pos2::new(300.0, 10.0), 2.0)]);
+    h.step();
+    assert_eq!(h.state().globe.input.pos, None);
+    queue.push([pen_event(PenPhase::Hover, c, 3.0)]);
+    h.step();
+    assert_eq!(h.state().globe.input.pos, Some(c));
+    queue.push([pen_event(PenPhase::HoverEnd, c, 4.0)]);
+    h.step();
+    assert_eq!(h.state().globe.input.pos, None);
+}
+
+#[test]
+fn with_the_queue_a_finger_rotates_the_pen_paints_and_a_palm_does_nothing() {
+    let _gpu = one_gpu_test();
+    let (mut h, queue) = queue_harness();
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 20.0));
+
+    let grabbed = place(&h, from);
+    first_finger(&mut h, egui::TouchPhase::Start, from);
+    h.step();
+    first_finger(&mut h, egui::TouchPhase::Move, to);
+    h.step();
+    first_finger(&mut h, egui::TouchPhase::End, to);
+    h.run_steps(2);
+    assert!(off(&h, grabbed, to) < 0.05);
+    assert!(h.state().globe.stats.last().is_none());
+
+    let view = h.state().globe.view;
+    let base = h.state().globe.map.base();
+    let under = place(&h, c);
+    queue.push([pen_event(PenPhase::Down, from, 1.0)]);
+    first_touch(&mut h, egui::TouchPhase::Start, from, Some(0.5));
+    h.step();
+    // A palm comes down and moves.
+    let palm = c + Vec2::new(60.0, 90.0);
+    touch(&mut h, 7, egui::TouchPhase::Start, palm);
+    queue.push([pen_event(PenPhase::Move, c, 1.01)]);
+    first_touch(&mut h, egui::TouchPhase::Move, c, Some(0.5));
+    h.step();
+    touch(
+        &mut h,
+        7,
+        egui::TouchPhase::Move,
+        palm + Vec2::new(30.0, -50.0),
+    );
+    queue.push([pen_event(PenPhase::Up, to, 1.02)]);
+    first_touch(&mut h, egui::TouchPhase::End, to, Some(0.5));
+    h.step();
+    touch(&mut h, 7, egui::TouchPhase::End, palm);
+    settle(&mut h);
+
+    let globe = &h.state().globe;
+    assert_eq!(globe.view, view);
+    assert_eq!(globe.nav.palms, 1);
+    assert!(globe.map.sample(under) > base);
+    assert_eq!(globe.stats.last().unwrap().id, 1);
 }

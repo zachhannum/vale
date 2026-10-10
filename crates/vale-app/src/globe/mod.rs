@@ -18,6 +18,7 @@ pub mod stats;
 pub mod stroke_test;
 pub mod view;
 
+use crate::pen::Pen;
 use brush::{Backlog, BrushSettings, Sample, Stroke, plan_texels};
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms};
 use math::V3;
@@ -106,6 +107,7 @@ pub struct Globe {
     pub preview: Preview,
     pub brush: BrushSettings,
     pub input: BrushInput,
+    pub pen: Pen,
     /// The next press on the globe picks the flatten level.
     pub pick_level: bool,
     pub stats: Stats,
@@ -142,6 +144,7 @@ impl Globe {
             preview: Preview::default(),
             brush: BrushSettings::default(),
             input: BrushInput::default(),
+            pen: Pen::default(),
             pick_level: false,
             stats: Stats::new(face_size as u32),
             debug: false,

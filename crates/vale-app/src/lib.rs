@@ -7,6 +7,7 @@ pub mod furniture;
 pub mod globe;
 pub mod headless;
 pub mod labels;
+pub mod pen;
 pub mod pick;
 pub mod pipeline;
 pub mod ui;

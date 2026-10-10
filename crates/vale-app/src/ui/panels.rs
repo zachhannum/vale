@@ -71,6 +71,17 @@ pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.weak(stats::DELAY_NOTE);
                 ui.separator();
 
+                ui.heading("Pen and timing");
+                ui.label(globe.pen.source_line());
+                ui.label(globe.pen.stats.stroke_line());
+                ui.label(globe.pen.stats.force_line());
+                ui.label(globe.pen.stats.tilt_line());
+                ui.label(globe.pen.stats.hover_line());
+                let (pens, fingers) = globe.nav.counts();
+                ui.label(format!("Touches: {pens} pen, {fingers} finger"));
+                ui.label(format!("Palms ignored: {}", globe.nav.palms));
+                ui.separator();
+
                 // Temporary controls, until the app has the undo command.
                 ui.horizontal(|ui| {
                     let undo = ui.add_enabled(globe.can_undo(), egui::Button::new("Undo"));

@@ -46,6 +46,8 @@ pub struct Nav {
     /// The last scroll came from a trackpad and not from a wheel.
     trackpad: bool,
     painting: Painting,
+    /// The touches that were a palm.
+    pub palms: u32,
 }
 
 /// The angle from `a` to `b` in radians, from -π to π. Screen y points down,
@@ -71,6 +73,13 @@ impl Nav {
         !self.fingers.is_empty() || self.pen.is_some()
     }
 
+    /// The number of pens and the number of fingers that are down on the
+    /// canvas.
+    pub fn counts(&self) -> (usize, usize) {
+        let fingers = self.fingers.keys().filter(|id| Some(**id) != self.pen);
+        (usize::from(self.pen.is_some()), fingers.count())
+    }
+
     /// Records one touch event. A touch that starts off the canvas is not a finger
     /// of the globe. `pen` is true for a touch with a force. A pen that does not
     /// paint moves the globe as one finger does.
@@ -84,11 +93,15 @@ impl Nav {
     ) {
         match phase {
             egui::TouchPhase::Start => {
+                if on_canvas && self.pen.is_some() {
+                    self.palms += 1;
+                }
                 if !on_canvas || self.pen.is_some() {
                     return;
                 }
                 if pen {
                     self.pen = Some(id);
+                    self.palms += self.fingers.len() as u32;
                     self.fingers.clear();
                     if self.painting.pen {
                         return;
@@ -286,6 +299,9 @@ mod tests {
         nav.touch(3, Move, Pos2::new(600.0, 300.0), true, false);
         nav.move_fingers(&mut view, rect());
         assert_eq!(view.zoom, 1.0);
+        // The finger before the pen and the finger after it are palms.
+        assert_eq!(nav.palms, 2);
+        assert_eq!(nav.counts(), (1, 0));
         let after = view.project(rect(), place).unwrap();
         assert!((after - to).length() < 0.01, "{after:?}");
     }
