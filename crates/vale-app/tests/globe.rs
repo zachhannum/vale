@@ -1756,10 +1756,12 @@ fn carve_in_a_near_view_cuts_a_narrow_valley() {
         }
         assert!(new < old, "{new} over {old}");
         let (u, v) = w.channel_of_texel(x as i64, y as i64);
-        let (distance, size) = window.lookup(u, v).expect("the window covers the stroke");
-        // The valley of a river is this wide on each side, in channel texels.
-        let reach = 1.5 + 4.5 * size / 255.0;
-        assert!(distance < reach + 0.1, "{distance} from a river of {size}");
+        let (distance, _) = window.lookup(u, v).expect("the window covers the stroke");
+        // The texel is in the valley of a river.
+        assert!(
+            window.valley(u, v).unwrap() > 0.0,
+            "{distance} from a river"
+        );
         widest = widest.max(distance);
         cut += 1;
     }

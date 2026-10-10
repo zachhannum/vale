@@ -44,8 +44,8 @@ const MODE_SMOOTH: i32 = 2;
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var heights: texture_2d_array<u32>;
-// The channel map of `vale-terrain`: the distance to the nearest river, and
-// the size of that river.
+// The channel map of `vale-terrain`. The first two bytes of a texel are the
+// distance to the nearest river, and the size of that river.
 @group(0) @binding(2) var channels: texture_2d_array<u32>;
 // The channel window of `vale-terrain`, with the same two bytes.
 @group(0) @binding(3) var window_channels: texture_2d<u32>;
@@ -160,7 +160,7 @@ fn height(d: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y), slope);
 }
 
-// The two bytes of a texel of the channel map. A texel past the face gives
+// The first two bytes of a texel of the channel map. A texel past the face gives
 // the texel at the face edge.
 fn channel(face: i32, x: i32, y: i32) -> vec2<f32> {
     let last = i32(u.flat.y) - 1;

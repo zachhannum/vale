@@ -56,11 +56,11 @@ const CARVE = 4u;
 @group(0) @binding(3) var past_nu: texture_2d<u32>;
 @group(0) @binding(4) var past_pv: texture_2d<u32>;
 @group(0) @binding(5) var past_nv: texture_2d<u32>;
-// The channel map of all faces. The red byte of a texel is the distance to
-// the nearest river in channel texels, times 32. The green byte is the size
-// of that river, or 0 if no river is near.
+// The channel map of all faces. The third byte of a texel is the distance to
+// the river with the deepest valley there, in channel texels, times 32. The
+// fourth byte is the size of that river, or 0 if no river is near.
 @group(0) @binding(6) var channels: texture_2d_array<u32>;
-// The channel texels of the window, with the same two bytes.
+// The channel texels of the window, with the same bytes.
 @group(0) @binding(7) var window_channels: texture_2d<u32>;
 
 // The same number as `WINDOW_MARGIN` in `flow.rs`.
@@ -161,8 +161,9 @@ fn atan_unit(t: f32) -> f32 {
     return 4.0 * atan_series(quarter);
 }
 
-// The distance from a texel to the nearest river in channel texels, and the
-// size of that river. The steps are those of `ChannelMap::sample`.
+// The distance from a texel to the river with the deepest valley there, in
+// channel texels, and the size of that river. The steps are those of
+// `ChannelMap::valley`.
 fn river_at(at: vec2<i32>) -> vec2<f32> {
     let size = f32(group.channel_size);
     let c = (vec2<f32>(at) + 0.5) * size / f32(group.size) - 0.5;
@@ -172,16 +173,16 @@ fn river_at(at: vec2<i32>) -> vec2<f32> {
     let p0 = clamp(vec2<i32>(whole), vec2<i32>(0), last);
     let p1 = clamp(vec2<i32>(whole) + 1, vec2<i32>(0), last);
     let face = i32(group.face);
-    let a = vec2<f32>(textureLoad(channels, p0, face, 0).rg);
-    let b = vec2<f32>(textureLoad(channels, vec2<i32>(p1.x, p0.y), face, 0).rg);
-    let c0 = vec2<f32>(textureLoad(channels, vec2<i32>(p0.x, p1.y), face, 0).rg);
-    let d = vec2<f32>(textureLoad(channels, p1, face, 0).rg);
+    let a = vec2<f32>(textureLoad(channels, p0, face, 0).ba);
+    let b = vec2<f32>(textureLoad(channels, vec2<i32>(p1.x, p0.y), face, 0).ba);
+    let c0 = vec2<f32>(textureLoad(channels, vec2<i32>(p0.x, p1.y), face, 0).ba);
+    let d = vec2<f32>(textureLoad(channels, p1, face, 0).ba);
     // The products are exact when both sizes are powers of two. The builtin
     // `mix` can use other steps.
-    let top = a.x * (1.0 - t.x) + b.x * t.x;
-    let bottom = c0.x * (1.0 - t.x) + d.x * t.x;
-    let distance = (top * (1.0 - t.y) + bottom * t.y) / 32.0;
-    return vec2<f32>(distance, max(max(a.y, b.y), max(c0.y, d.y)));
+    let top = a * (1.0 - t.x) + b * t.x;
+    let bottom = c0 * (1.0 - t.x) + d * t.x;
+    let both = top * (1.0 - t.y) + bottom * t.y;
+    return vec2<f32>(both.x / 32.0, both.y);
 }
 
 // The arc tangent of each number.
@@ -192,11 +193,11 @@ fn atan_any(t: f32) -> f32 {
     return sign(t) * (2.0 * PI_4 - atan_unit(1.0 / abs(t)));
 }
 
-// The distance from a texel to the nearest river of the window in channel
-// texels of the window, and the size of that river from 0 to 255. The third
-// number is 1 if the window covers the texel, and 0 if not. The steps are
-// those of `Window::channel_of_texel`, `Window::channel_of_dir`, and
-// `ChannelWindow::lookup`.
+// The distance from a texel to the river of the window with the deepest
+// valley there, in channel texels of the window, and the size of that river
+// from 0 to 255. The third number is 1 if the window covers the texel, and 0
+// if not. The steps are those of `Window::channel_of_texel`,
+// `Window::channel_of_dir`, and `ChannelWindow::valley`.
 fn window_river_at(at: vec2<i32>) -> vec3<f32> {
     if group.window_on == 0u {
         return vec3<f32>(0.0);
@@ -232,10 +233,10 @@ fn window_river_at(at: vec2<i32>) -> vec3<f32> {
     let t = c - whole;
     let p0 = vec2<i32>(whole);
     let p1 = p0 + 1;
-    let a = vec2<f32>(textureLoad(window_channels, p0, 0).rg);
-    let b = vec2<f32>(textureLoad(window_channels, vec2<i32>(p1.x, p0.y), 0).rg);
-    let c0 = vec2<f32>(textureLoad(window_channels, vec2<i32>(p0.x, p1.y), 0).rg);
-    let d = vec2<f32>(textureLoad(window_channels, p1, 0).rg);
+    let a = vec2<f32>(textureLoad(window_channels, p0, 0).ba);
+    let b = vec2<f32>(textureLoad(window_channels, vec2<i32>(p1.x, p0.y), 0).ba);
+    let c0 = vec2<f32>(textureLoad(window_channels, vec2<i32>(p0.x, p1.y), 0).ba);
+    let d = vec2<f32>(textureLoad(window_channels, p1, 0).ba);
     let top = a * (1.0 - t.x) + b * t.x;
     let bottom = c0 * (1.0 - t.x) + d * t.x;
     let both = top * (1.0 - t.y) + bottom * t.y;

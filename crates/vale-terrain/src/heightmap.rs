@@ -692,24 +692,17 @@ impl Heightmap {
                                     } else {
                                         window.channel_of_dir(face_dir(face, fu, fv))?
                                     };
-                                    channels.lookup(u, v)
+                                    channels.valley(u, v)
                                 });
                                 let in_map = || {
                                     // The place of the texel in the channel map.
                                     let at = |x: usize| (x as f64 + 0.5) * channel_size / n - 0.5;
-                                    let (distance, flow) =
-                                        channels.as_ref()?.sample(face, at(x), at(y));
-                                    (flow > 0).then_some((distance, f64::from(flow)))
+                                    Some(channels.as_ref()?.valley(face, at(x), at(y)))
                                 };
-                                let Some((distance, flow)) = in_window.or_else(in_map) else {
+                                let Some(valley) = in_window.or_else(in_map) else {
                                     continue;
                                 };
-                                // A large river has a wide and deep valley.
-                                let size = flow / 255.0;
-                                let k = (distance / (1.5 + 4.5 * size)).clamp(0.0, 1.0);
-                                let profile = 1.0 - k * k * (3.0 - 2.0 * k);
-                                let depth =
-                                    amount * stamp.strength * profile * (0.25 + 0.75 * size);
+                                let depth = amount * stamp.strength * valley;
                                 (old - depth).round().max(old.min(sea))
                             }
                             Mode::Smooth => {

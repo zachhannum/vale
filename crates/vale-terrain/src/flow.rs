@@ -11,6 +11,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_4};
+use std::sync::LazyLock;
 
 use crate::bands::SEA_LEVEL;
 use crate::cube::{FACES, face_dir, face_of, meters_to_level, unwarp, warp};
@@ -405,7 +406,7 @@ impl FlowMap {
         rivers.smooth();
         for (k, &cell) in rivers.cells.iter().enumerate() {
             let flow = flow_byte(f64::from(self.area[cell as usize]));
-            map.draw(rivers.pos[k], rivers.pos[rivers.down[k] as usize], flow);
+            map.draw(rivers.curve(k), flow);
         }
         map
     }
@@ -496,6 +497,27 @@ impl Rivers {
             }
         }
     }
+
+    /// The start, the middle, and the end of the curve of a river node. The
+    /// curve goes from halfway to the node before it, to halfway to the node
+    /// after it, and it bends at the node. Thus a river has no sharp corner
+    /// at a node. A river starts at its first node. A river that ends, or
+    /// that goes into a larger river, ends at the node after it.
+    fn curve(&self, k: usize) -> [V3; 3] {
+        let half = |a: V3, b: V3| scale(add(a, b), 0.5);
+        let (at, down) = (self.pos[k], self.down[k] as usize);
+        let start = match self.donor[k] {
+            NONE => at,
+            donor => half(self.pos[donor as usize], at),
+        };
+        let joins = down < self.cells.len() && self.donor[down] as usize == k;
+        let end = if joins {
+            half(at, self.pos[down])
+        } else {
+            self.pos[down]
+        };
+        [start, half(half(start, end), at), end]
+    }
 }
 
 fn flow_byte(area: f64) -> u8 {
@@ -510,40 +532,107 @@ fn size_byte(ratio: f64) -> u8 {
         .clamp(1.0, 255.0) as u8
 }
 
-/// Draws a straight part of a river from `a` to `b` into a square of channel
-/// texels with `size` texels along one side. A texel keeps the nearest river.
-fn draw_line(data: &mut [u8], size: usize, a: (f64, f64), b: (f64, f64), flow: u8) {
-    let ((ax, ay), (bx, by)) = (a, b);
+/// The number of bytes in a channel texel.
+const TEXEL: usize = 4;
+
+/// A channel texel with no river near.
+const EMPTY: [u8; TEXEL] = [255, 0, 255, 0];
+
+/// The depth of the valley of a river at a place, from 0 to 1. `distance` is
+/// the distance to the river in channel texels. `flow` is the size of the
+/// river from 0 to 255. A large river has a wide and deep valley.
+/// `stamp.wgsl` has the same steps.
+pub fn valley_depth(distance: f64, flow: f64) -> f64 {
+    if flow <= 0.0 {
+        return 0.0;
+    }
+    let size = flow / 255.0;
+    let k = (distance / (1.5 + 4.5 * size)).clamp(0.0, 1.0);
+    (1.0 - k * k * (3.0 - 2.0 * k)) * (0.25 + 0.75 * size)
+}
+
+/// The depth of the valley for each size byte and each distance byte. The
+/// place of a pair is 256 times the size byte plus the distance byte.
+static DEPTHS: LazyLock<Vec<f32>> = LazyLock::new(|| {
+    let depth = |i: usize| valley_depth((i & 255) as f64 / CHANNEL_SCALE, (i >> 8) as f64);
+    (0..1 << 16).map(|i| depth(i) as f32).collect()
+});
+
+/// The depth of the valley at a place with the 4 bytes of a channel texel,
+/// after a blend.
+fn deepest(texel: [f64; TEXEL]) -> f64 {
+    valley_depth(texel[2] / CHANNEL_SCALE, texel[3])
+}
+
+/// The blend of the 4 bytes of 4 texels.
+fn blend_texels(texels: [[u8; TEXEL]; 4], tx: f64, ty: f64) -> [f64; TEXEL] {
+    std::array::from_fn(|i| blend(texels.map(|texel| f64::from(texel[i])), tx, ty))
+}
+
+/// Draws two straight parts of a river, through 3 points, into a square of
+/// channel texels with `size` texels along one side. The first two bytes of
+/// a texel keep the nearest river, for its line. The last two bytes keep the
+/// river with the deepest valley at the texel.
+fn draw_curve(data: &mut [u8], size: usize, points: [(f64, f64); 3], flow: u8) {
     let last = (size - 1) as f64;
-    let from = |a: f64, b: f64| (a.min(b) - CHANNEL_REACH).ceil().max(0.0);
-    let to = |a: f64, b: f64| (a.max(b) + CHANNEL_REACH).floor().min(last);
-    let (x0, x1, y0, y1) = (from(ax, bx), to(ax, bx), from(ay, by), to(ay, by));
+    let [xs, ys] = [0, 1].map(|axis| points.map(|p| if axis == 0 { p.0 } else { p.1 }));
+    let from = |c: [f64; 3]| (c[0].min(c[1]).min(c[2]) - CHANNEL_REACH).ceil().max(0.0);
+    let to = |c: [f64; 3]| (c[0].max(c[1]).max(c[2]) + CHANNEL_REACH).floor().min(last);
+    let (x0, x1, y0, y1) = (from(xs), to(xs), from(ys), to(ys));
     if x0 > x1 || y0 > y1 {
         return;
     }
-    let (dx, dy) = (bx - ax, by - ay);
-    let length_sq = dx * dx + dy * dy;
+    // The start of each straight part, its direction, and 1 divided by the
+    // square of its length.
+    let parts = [0, 1].map(|i| {
+        let ((ax, ay), (bx, by)) = (points[i], points[i + 1]);
+        let (dx, dy) = (bx - ax, by - ay);
+        let length_sq = dx * dx + dy * dy;
+        let inverse = if length_sq > 0.0 {
+            1.0 / length_sq
+        } else {
+            0.0
+        };
+        (ax, ay, dx, dy, inverse)
+    });
+    let depths = &*DEPTHS;
     for y in y0 as usize..=y1 as usize {
         for x in x0 as usize..=x1 as usize {
-            let (px, py) = (x as f64 - ax, y as f64 - ay);
-            let t = if length_sq > 0.0 {
-                ((px * dx + py * dy) / length_sq).clamp(0.0, 1.0)
-            } else {
-                0.0
+            let to_part = |(ax, ay, dx, dy, inverse): (f64, f64, f64, f64, f64)| {
+                let (px, py) = (x as f64 - ax, y as f64 - ay);
+                let t = ((px * dx + py * dy) * inverse).clamp(0.0, 1.0);
+                let (qx, qy) = (px - t * dx, py - t * dy);
+                qx * qx + qy * qy
             };
-            let distance = (px - t * dx).hypot(py - t * dy);
-            let byte = (distance * CHANNEL_SCALE).round();
+            let distance_sq = to_part(parts[0]).min(to_part(parts[1]));
+            if distance_sq >= CHANNEL_REACH * CHANNEL_REACH {
+                continue;
+            }
+            let byte = (distance_sq.sqrt() * CHANNEL_SCALE).round();
             if byte >= 255.0 {
                 continue;
             }
             let byte = byte as u8;
-            let at = (y * size + x) * 2;
-            let old = &mut data[at..at + 2];
+            let at = (y * size + x) * TEXEL;
+            let (old, deep) = data[at..at + TEXEL].split_at_mut(2);
             if byte < old[0] || (byte == old[0] && flow > old[1]) {
                 old.copy_from_slice(&[byte, flow]);
             }
+            // Where two valleys have one depth, the nearest river comes
+            // first.
+            let depth = |byte: u8, flow: u8| depths[usize::from(flow) << 8 | usize::from(byte)];
+            let (new, was) = (depth(byte, flow), depth(deep[0], deep[1]));
+            if new > was || (new == was && byte < deep[0]) {
+                deep.copy_from_slice(&[byte, flow]);
+            }
         }
     }
+}
+
+/// The same as `draw_curve`, for one straight part from `a` to `b`.
+#[cfg(test)]
+fn draw_line(data: &mut [u8], size: usize, a: (f64, f64), b: (f64, f64), flow: u8) {
+    draw_curve(data, size, [a, b, b], flow);
 }
 
 /// The blend of 4 values around a place. `tx` and `ty` are the place from
@@ -555,10 +644,12 @@ fn blend(values: [f64; 4], tx: f64, ty: f64) -> f64 {
     top * (1.0 - ty) + bottom * ty
 }
 
-/// The rivers as a texture. Each texel has two bytes. The first byte is the
-/// distance to the nearest river in channel texels, times `CHANNEL_SCALE`.
-/// The second byte is the size of that river from 1 to 255, or 0 if no river
-/// is near. A texel with no river near holds 255 and 0.
+/// The rivers as a texture. Each texel has two pairs of bytes. The first
+/// byte of a pair is the distance to a river in channel texels, times
+/// `CHANNEL_SCALE`. The second byte is the size of that river from 1 to 255,
+/// or 0 if no river is near. A pair with no river near holds 255 and 0. The
+/// first pair is the nearest river, for the lines of the rivers. The second
+/// pair is the river with the deepest valley at the texel.
 pub struct ChannelMap {
     size: usize,
     data: Vec<u8>,
@@ -570,7 +661,7 @@ impl ChannelMap {
         assert!(size > 0, "the size must not be zero");
         ChannelMap {
             size,
-            data: [255, 0].repeat(FACES * size * size),
+            data: EMPTY.repeat(FACES * size * size),
         }
     }
 
@@ -585,34 +676,59 @@ impl ChannelMap {
         self.size
     }
 
-    /// The two bytes of each texel, face by face, in row order.
+    /// The 4 bytes of each texel, face by face, in row order.
     pub fn bytes(&self) -> &[u8] {
         &self.data
     }
 
+    /// The pair of a texel for the lines of the rivers.
     pub fn texel(&self, face: usize, x: usize, y: usize) -> [u8; 2] {
-        let at = ((face * self.size + y) * self.size + x) * 2;
-        [self.data[at], self.data[at + 1]]
+        let [distance, flow, ..] = self.pairs(face, x, y);
+        [distance, flow]
     }
 
-    /// The distance to the nearest river in channel texels, and the size of
-    /// the river. `u` and `v` are in channel texels, and a texel center is at
-    /// a whole number. The distance is a blend of the 4 texels around the
-    /// place. The size is the largest of the 4. `stamp.wgsl` has the same
-    /// steps.
-    pub fn sample(&self, face: usize, u: f64, v: f64) -> (f64, u8) {
+    fn pairs(&self, face: usize, x: usize, y: usize) -> [u8; TEXEL] {
+        let at = ((face * self.size + y) * self.size + x) * TEXEL;
+        std::array::from_fn(|i| self.data[at + i])
+    }
+
+    /// The 4 texels around a place, and the place from the first texel to
+    /// the others.
+    fn around(&self, face: usize, u: f64, v: f64) -> ([[u8; TEXEL]; 4], f64, f64) {
         let last = (self.size - 1) as f64;
         let (x0, y0) = (u.floor(), v.floor());
-        let (tx, ty) = (u - x0, v - y0);
         let at = |x: f64, y: f64| {
-            self.texel(
+            self.pairs(
                 face,
                 x.clamp(0.0, last) as usize,
                 y.clamp(0.0, last) as usize,
             )
         };
-        let (a, b) = (at(x0, y0), at(x0 + 1.0, y0));
-        let (c, d) = (at(x0, y0 + 1.0), at(x0 + 1.0, y0 + 1.0));
+        let texels = [
+            at(x0, y0),
+            at(x0 + 1.0, y0),
+            at(x0, y0 + 1.0),
+            at(x0 + 1.0, y0 + 1.0),
+        ];
+        (texels, u - x0, v - y0)
+    }
+
+    /// The depth of the deepest valley at a place, from 0 to 1. `u` and `v`
+    /// are in channel texels, and a texel center is at a whole number. The
+    /// bytes are a blend of the 4 texels around the place, so a small change
+    /// of the place gives a small change of the depth. `stamp.wgsl` has the
+    /// same steps.
+    pub fn valley(&self, face: usize, u: f64, v: f64) -> f64 {
+        let (texels, tx, ty) = self.around(face, u, v);
+        deepest(blend_texels(texels, tx, ty))
+    }
+
+    /// The distance to the nearest river in channel texels, and the size of
+    /// the river. `u` and `v` are in channel texels, and a texel center is at
+    /// a whole number. The distance is a blend of the 4 texels around the
+    /// place. The size is the largest of the 4.
+    pub fn sample(&self, face: usize, u: f64, v: f64) -> (f64, u8) {
+        let ([a, b, c, d], tx, ty) = self.around(face, u, v);
         let distances = [a, b, c, d].map(|texel| f64::from(texel[0]));
         let distance = blend(distances, tx, ty) / CHANNEL_SCALE;
         (distance, a[1].max(b[1]).max(c[1]).max(d[1]))
@@ -626,17 +742,14 @@ impl ChannelMap {
     }
 
     pub fn has_rivers(&self) -> bool {
-        self.data
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .any(|texel| texel[1] > 0)
+        let texels = self.data.as_chunks::<TEXEL>().0;
+        texels.iter().any(|texel| texel[1] > 0)
     }
 
-    /// Draws one part of a river from `a` to `b` on each face that it is
-    /// near. On a face, the part is a straight line in the texel grid, and
-    /// the grid continues past the face edges.
-    fn draw(&mut self, a: V3, b: V3, flow: u8) {
+    /// Draws the curve of a river node on each face that it is near. On a
+    /// face, the curve is two straight lines in the texel grid, and the grid
+    /// continues past the face edges.
+    fn draw(&mut self, curve: [V3; 3], flow: u8) {
         let k = self.size as f64;
         for face in 0..FACES {
             let axis = face / 2;
@@ -647,12 +760,12 @@ impl ChannelMap {
                 // A place within reach of the face has more depth than this.
                 (depth > 0.2).then(|| (texel(d[(axis + 1) % 3]), texel(d[(axis + 2) % 3])))
             };
-            let (Some((ax, ay)), Some((bx, by))) = (project(a), project(b)) else {
+            let [Some(a), Some(b), Some(c)] = curve.map(project) else {
                 continue;
             };
-            let texels = self.size * self.size * 2;
+            let texels = self.size * self.size * TEXEL;
             let data = &mut self.data[face * texels..(face + 1) * texels];
-            draw_line(data, self.size, (ax, ay), (bx, by), flow);
+            draw_curve(data, self.size, [a, b, c], flow);
         }
     }
 }
@@ -932,15 +1045,14 @@ impl WindowFlow {
 
     fn channels(&self) -> ChannelWindow {
         let size = self.window.channels();
-        let mut data = [255, 0].repeat(size * size);
+        let mut data = EMPTY.repeat(size * size);
         let mut rivers = self.rivers();
         rivers.smooth_flat();
         // A cell is 2 channel texels wide.
         let texel = |p: V3| (2.0 * p[0] - 0.5, 2.0 * p[1] - 0.5);
         for (k, &cell) in rivers.cells.iter().enumerate() {
             let flow = size_byte(f64::from(self.area[cell as usize]) / self.min_area);
-            let (a, b) = (rivers.pos[k], rivers.pos[rivers.down[k] as usize]);
-            draw_line(&mut data, size, texel(a), texel(b), flow);
+            draw_curve(&mut data, size, rivers.curve(k).map(texel), flow);
         }
         ChannelWindow {
             window: self.window,
@@ -950,8 +1062,8 @@ impl WindowFlow {
 }
 
 /// The rivers of a window as a texture, with 2 texels for each cell along
-/// one axis. A texel has the two bytes of a `ChannelMap` texel. The distance
-/// is in channel texels of the window.
+/// one axis. A texel has the 4 bytes of a `ChannelMap` texel. The distances
+/// are in channel texels of the window.
 pub struct ChannelWindow {
     window: Window,
     data: Vec<u8>,
@@ -967,35 +1079,52 @@ impl ChannelWindow {
         self.window.channels()
     }
 
-    /// The two bytes of each texel, in row order.
+    /// The 4 bytes of each texel, in row order.
     pub fn bytes(&self) -> &[u8] {
         &self.data
     }
 
+    /// The pair of a texel for the lines of the rivers.
     pub fn texel(&self, x: usize, y: usize) -> [u8; 2] {
-        let at = (y * self.size() + x) * 2;
-        [self.data[at], self.data[at + 1]]
+        let [distance, flow, ..] = self.pairs(x, y);
+        [distance, flow]
     }
 
-    /// The distance to the nearest river in channel texels, and the size of
-    /// the river from 0 to 255. `u` and `v` are in channel texels, and a
-    /// texel center is at a whole number. Each result is a blend of the 4
-    /// texels around the place, so a small change of the place gives a small
-    /// change of the result. `stamp.wgsl` has the same steps.
-    pub fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+    fn pairs(&self, x: usize, y: usize) -> [u8; TEXEL] {
+        let at = (y * self.size() + x) * TEXEL;
+        std::array::from_fn(|i| self.data[at + i])
+    }
+
+    /// The blend of the 4 texels around a place.
+    fn around(&self, u: f64, v: f64) -> [f64; TEXEL] {
         let last = (self.size() - 1) as f64;
         let (x0, y0) = (u.floor(), v.floor());
-        let (tx, ty) = (u - x0, v - y0);
         let at =
-            |x: f64, y: f64| self.texel(x.clamp(0.0, last) as usize, y.clamp(0.0, last) as usize);
+            |x: f64, y: f64| self.pairs(x.clamp(0.0, last) as usize, y.clamp(0.0, last) as usize);
         let texels = [
             at(x0, y0),
             at(x0 + 1.0, y0),
             at(x0, y0 + 1.0),
             at(x0 + 1.0, y0 + 1.0),
         ];
-        let byte = |i: usize| blend(texels.map(|texel| f64::from(texel[i])), tx, ty);
-        (byte(0) / CHANNEL_SCALE, byte(1))
+        blend_texels(texels, u - x0, v - y0)
+    }
+
+    /// The depth of the deepest valley at a place that `Window::covers`,
+    /// from 0 to 1. `u` and `v` are in channel texels, and a texel center is
+    /// at a whole number. `stamp.wgsl` has the same steps.
+    pub fn valley(&self, u: f64, v: f64) -> Option<f64> {
+        self.window.covers(u, v).then(|| deepest(self.around(u, v)))
+    }
+
+    /// The distance to the nearest river in channel texels, and the size of
+    /// the river from 0 to 255. `u` and `v` are in channel texels, and a
+    /// texel center is at a whole number. Each result is a blend of the 4
+    /// texels around the place, so a small change of the place gives a small
+    /// change of the result.
+    pub fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+        let [distance, flow, ..] = self.around(u, v);
+        (distance / CHANNEL_SCALE, flow)
     }
 
     /// The same as `sample`, at a place that `Window::covers`.
@@ -1010,7 +1139,7 @@ impl ChannelWindow {
     }
 
     pub fn has_rivers(&self) -> bool {
-        let texels = self.data.as_chunks::<2>().0;
+        let texels = self.data.as_chunks::<TEXEL>().0;
         texels.iter().any(|texel| texel[1] > 0)
     }
 }
@@ -1356,6 +1485,81 @@ mod tests {
         assert_eq!(flow_byte(RIVER_MIN_AREA * 64.0), 128);
         assert_eq!(flow_byte(1.0e3), 255);
         assert!(channels.texel(0, 60, m)[1].abs_diff(flow_byte(area)) <= 3);
+    }
+
+    #[test]
+    fn a_curve_ends_where_the_next_curve_starts() {
+        let flow = FlowMap::new(&CoarseHeights::from_fn(64, lumpy));
+        let mut rivers = flow.rivers();
+        rivers.smooth();
+        let count = rivers.cells.len();
+        let (mut joined, mut bent) = (0, 0);
+        for k in 0..count {
+            let [start, middle, end] = rivers.curve(k);
+            let down = rivers.down[k] as usize;
+            if rivers.donor[k] == NONE {
+                assert_eq!(start, rivers.pos[k], "node {k}");
+            }
+            if down < count && rivers.donor[down] as usize == k {
+                assert_eq!(end, rivers.curve(down)[0], "node {k}");
+                joined += 1;
+            } else {
+                assert_eq!(end, rivers.pos[down], "node {k}");
+            }
+            // The middle is between the node and the straight line from the
+            // start to the end.
+            let chord = scale(add(start, end), 0.5);
+            let at = rivers.pos[k];
+            assert!(angle(middle, at) <= angle(chord, at) + 1e-12, "node {k}");
+            bent += usize::from(angle(chord, at) > 1e-4);
+        }
+        assert!(joined > 20 && bent > 5, "{joined} {bent}");
+    }
+
+    #[test]
+    fn a_stream_does_not_cut_the_valley_of_a_large_river() {
+        let size = 64;
+        let mut data = EMPTY.repeat(size * size);
+        // A stream goes along a large river, 3 texels from it.
+        draw_line(&mut data, size, (10.0, 30.0), (50.0, 30.0), 255);
+        draw_line(&mut data, size, (10.0, 33.0), (50.0, 33.0), 1);
+        let texel = |x: usize, y: usize| {
+            let at = (y * size + x) * TEXEL;
+            <[u8; TEXEL]>::try_from(&data[at..at + TEXEL]).unwrap()
+        };
+        let three = (3.0 * CHANNEL_SCALE) as u8;
+        // The line is that of the stream. The valley is that of the river.
+        assert_eq!(texel(30, 33), [0, 1, three, 255]);
+        let depth = |y: usize| deepest(texel(30, y).map(f64::from));
+        let alone = valley_depth(0.0, 1.0);
+        assert!(depth(33) > 1.9 * alone, "{} {alone}", depth(33));
+        // The valley goes up from the river on each texel row.
+        for y in 30..36 {
+            assert!(depth(y + 1) < depth(y), "row {y}");
+        }
+    }
+
+    #[test]
+    fn the_valley_depth_has_no_step() {
+        let flow = FlowMap::new(&CoarseHeights::from_fn(64, lumpy));
+        let window = Window::centered(lonlat_to_dir(10.0, 20.0), 1024, 1, 64);
+        let near = window_channels(&WindowHeights::from_fn(window, lumpy), &flow);
+        let map = flow.channels();
+        let (mut most, mut deepest) = (0.0_f64, 0.0_f64);
+        for row in 0..40 {
+            let v = 20.3 + 2.1 * row as f64;
+            let at = |i: usize| 16.0 + 0.125 * i as f64;
+            let on_map = (0..640).map(|i| map.valley(0, at(i), v));
+            let on_window = (0..640).map(|i| near.valley(at(i), v).unwrap());
+            for depths in [on_map.collect::<Vec<f64>>(), on_window.collect()] {
+                for pair in depths.windows(2) {
+                    most = most.max((pair[1] - pair[0]).abs());
+                    deepest = deepest.max(pair[0]);
+                }
+            }
+        }
+        eprintln!("most {most} deepest {deepest}");
+        assert!(deepest > 0.5 && most < 0.1, "{most} {deepest}");
     }
 
     #[test]

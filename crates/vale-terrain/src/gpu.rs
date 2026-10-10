@@ -30,7 +30,7 @@ const UNION_LIMIT: usize = 8;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Uint;
 
-const CHANNEL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Uint;
+const CHANNEL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uint;
 
 /// The row size of a texture copy to a buffer is a multiple of this number,
 /// in bytes.
@@ -416,7 +416,7 @@ impl GpuHeightmap {
     }
 
     /// The six faces of the channel map as an array of 2D layers. Each texel
-    /// holds the two bytes of a `ChannelMap` texel. A face has
+    /// holds the 4 bytes of a `ChannelMap` texel. A face has
     /// `ChannelMap::size_for` texels along one side.
     pub fn channels_view(&self) -> &wgpu::TextureView {
         &self.channels_view
@@ -433,7 +433,7 @@ impl GpuHeightmap {
             map.bytes(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(size.width * 2),
+                bytes_per_row: Some(size.width * 4),
                 rows_per_image: Some(size.height),
             },
             size,
@@ -441,7 +441,7 @@ impl GpuHeightmap {
     }
 
     /// The channel texels of the window, with `2 * WINDOW_CELLS` texels along
-    /// one side. Each texel holds the two bytes of a `ChannelWindow` texel.
+    /// one side. Each texel holds the 4 bytes of a `ChannelWindow` texel.
     pub fn window_view(&self) -> &wgpu::TextureView {
         &self.window_view
     }
@@ -462,7 +462,7 @@ impl GpuHeightmap {
                 channels.bytes(),
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(size.width * 2),
+                    bytes_per_row: Some(size.width * 4),
                     rows_per_image: Some(size.height),
                 },
                 size,
