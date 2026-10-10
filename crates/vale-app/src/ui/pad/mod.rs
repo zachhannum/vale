@@ -123,7 +123,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let screen = ctx.viewport_rect();
     ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
-        globe::canvas(ui, state, theme::CANVAS);
+        globe::canvas(ui, state, theme::CANVAS, true);
     });
 
     let class = WidthClass::of(screen.width());
@@ -181,6 +181,7 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
+        state.globe.backdrop(),
         "pad-workspace",
         rects.workspace,
         Order::Middle,
@@ -204,12 +205,21 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         },
     );
     if let Some(view) = rects.view {
-        widgets::card(ctx, "pad-view", view, Order::Middle, radius, |ui| {
-            widgets::segments(ui, controls, &[(VIEWS[0], true), (VIEWS[1], false)], 0);
-        });
+        widgets::card(
+            ctx,
+            state.globe.backdrop(),
+            "pad-view",
+            view,
+            Order::Middle,
+            radius,
+            |ui| {
+                widgets::segments(ui, controls, &[(VIEWS[0], true), (VIEWS[1], false)], 0);
+            },
+        );
     }
     widgets::card(
         ctx,
+        state.globe.backdrop(),
         "pad-actions",
         rects.actions,
         Order::Middle,
@@ -257,36 +267,46 @@ fn padded(ui: &mut egui::Ui) -> egui::Ui {
 
 fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, "pad-tools", rects.tools, Order::Middle, radius, |ui| {
-        let mut ui = padded(ui);
-        let mut cells = |ui: &mut egui::Ui| {
-            let globe = &mut state.globe;
-            for (name, icon, mode) in [
-                ("Raise", Icon::Raise, Mode::Raise),
-                ("Lower", Icon::Lower, Mode::Lower),
-                ("Smooth", Icon::Smooth, Mode::Smooth),
-                ("Flatten", Icon::Flatten, Mode::Flatten),
-            ] {
-                let active = globe.tool == Tool::Brush && globe.brush.mode == mode;
-                if widgets::tool_cell(ui, controls, name, name, icon, active, true).clicked() {
-                    globe.tool = Tool::Brush;
-                    globe.brush.mode = mode;
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-tools",
+        rects.tools,
+        Order::Middle,
+        radius,
+        |ui| {
+            let mut ui = padded(ui);
+            let mut cells = |ui: &mut egui::Ui| {
+                let globe = &mut state.globe;
+                for (name, icon, mode) in [
+                    ("Raise", Icon::Raise, Mode::Raise),
+                    ("Lower", Icon::Lower, Mode::Lower),
+                    ("Smooth", Icon::Smooth, Mode::Smooth),
+                    ("Flatten", Icon::Flatten, Mode::Flatten),
+                ] {
+                    let active = globe.tool == Tool::Brush && globe.brush.mode == mode;
+                    if widgets::tool_cell(ui, controls, name, name, icon, active, true).clicked() {
+                        globe.tool = Tool::Brush;
+                        globe.brush.mode = mode;
+                    }
                 }
+                widgets::tool_cell(ui, controls, "Line", "Line", Icon::Line, false, false);
+                let active = globe.tool == Tool::Navigate;
+                if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
+                    .clicked()
+                {
+                    globe.tool = Tool::Navigate;
+                }
+            };
+            if rects.tool_cells < TOOLS {
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(&mut ui, cells);
+            } else {
+                cells(&mut ui);
             }
-            widgets::tool_cell(ui, controls, "Line", "Line", Icon::Line, false, false);
-            let active = globe.tool == Tool::Navigate;
-            if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true).clicked() {
-                globe.tool = Tool::Navigate;
-            }
-        };
-        if rects.tool_cells < TOOLS {
-            egui::ScrollArea::vertical()
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .show(&mut ui, cells);
-        } else {
-            cells(&mut ui);
-        }
-    });
+        },
+    );
 }
 
 /// Shows a value as a slider with a logarithmic scale.
@@ -338,30 +358,38 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         return;
     };
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, "pad-brush-card", rect, Order::Middle, radius, |ui| {
-        let mut ui = padded(ui);
-        if let BrushCard::Full(height) = rects.brush_card {
-            size_slider(state, |fraction, text| {
-                widgets::vertical_slider(&mut ui, controls, "Size", height, fraction, text)
-            });
-            percent_slider(&mut state.globe.brush.flow, FLOW, |fraction, text| {
-                widgets::vertical_slider(&mut ui, controls, "Flow", height, fraction, text)
-            });
-        }
-        let open = state.pad.brush;
-        let button = widgets::tool_cell(
-            &mut ui,
-            controls,
-            "Brush settings",
-            "Brush",
-            Icon::Brush,
-            open,
-            true,
-        );
-        if button.clicked() {
-            state.pad.toggle(Panel::Brush, rects.one_panel);
-        }
-    });
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-brush-card",
+        rect,
+        Order::Middle,
+        radius,
+        |ui| {
+            let mut ui = padded(ui);
+            if let BrushCard::Full(height) = rects.brush_card {
+                size_slider(state, |fraction, text| {
+                    widgets::vertical_slider(&mut ui, controls, "Size", height, fraction, text)
+                });
+                percent_slider(&mut state.globe.brush.flow, FLOW, |fraction, text| {
+                    widgets::vertical_slider(&mut ui, controls, "Flow", height, fraction, text)
+                });
+            }
+            let open = state.pad.brush;
+            let button = widgets::tool_cell(
+                &mut ui,
+                controls,
+                "Brush settings",
+                "Brush",
+                Icon::Brush,
+                open,
+                true,
+            );
+            if button.clicked() {
+                state.pad.toggle(Panel::Brush, rects.one_panel);
+            }
+        },
+    );
 }
 
 fn show_panel(
@@ -403,56 +431,66 @@ fn show_panel(
     let sheet = rects.sheet.is_some();
     let id = if sheet { "pad-sheet" } else { key };
     state.pad.panels.push((panel, rect));
-    widgets::card(ctx, id, rect, Order::Middle, radius, |ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        if sheet {
-            let grabber =
-                Rect::from_center_size(pos2(rect.center().x, rect.top() + 8.5), vec2(36.0, 5.0));
-            ui.painter()
-                .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
-        }
-        let row = widgets::title_row(ui, controls, title, back, sheet);
-        if row.back {
-            state.pad.layer = false;
-        }
-        if row.close {
-            state.pad.close(panel);
-        }
-        if sheet {
-            sheet_drag(ui, &mut state.pad, &row.bar, rects.sheet_travel);
-            if state.pad.sheet_offset >= rects.sheet_travel {
-                return;
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        id,
+        rect,
+        Order::Middle,
+        radius,
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if sheet {
+                let grabber = Rect::from_center_size(
+                    pos2(rect.center().x, rect.top() + 8.5),
+                    vec2(36.0, 5.0),
+                );
+                ui.painter()
+                    .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
             }
-        }
-        let bottom = if sheet {
-            rect.bottom() - rects.bands.bottom
-        } else {
-            rect.bottom()
-        };
-        let most = (bottom - ui.cursor().top()).max(0.0);
-        let out = egui::ScrollArea::vertical()
-            .id_salt(key)
-            .max_height(most)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                let margin = egui::Margin {
-                    left: BODY_PAD as i8,
-                    right: BODY_PAD as i8,
-                    top: 0,
-                    bottom: 10,
-                };
-                egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    match panel {
-                        Panel::Brush => brush_body(ui, state, controls),
-                        Panel::Layers if layer => layer_body(ui, state),
-                        Panel::Layers => layers_body(ui, state, controls),
-                        Panel::Toolbox => toolbox_body(ui, state),
-                    }
+            let row = widgets::title_row(ui, controls, title, back, sheet);
+            if row.back {
+                state.pad.layer = false;
+            }
+            if row.close {
+                state.pad.close(panel);
+            }
+            if sheet {
+                sheet_drag(ui, &mut state.pad, &row.bar, rects.sheet_travel);
+                if state.pad.sheet_offset >= rects.sheet_travel {
+                    return;
+                }
+            }
+            let bottom = if sheet {
+                rect.bottom() - rects.bands.bottom
+            } else {
+                rect.bottom()
+            };
+            let most = (bottom - ui.cursor().top()).max(0.0);
+            let out = egui::ScrollArea::vertical()
+                .id_salt(key)
+                .max_height(most)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    let margin = egui::Margin {
+                        left: BODY_PAD as i8,
+                        right: BODY_PAD as i8,
+                        top: 0,
+                        bottom: 10,
+                    };
+                    egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        match panel {
+                            Panel::Brush => brush_body(ui, state, controls),
+                            Panel::Layers if layer => layer_body(ui, state),
+                            Panel::Layers => layers_body(ui, state, controls),
+                            Panel::Toolbox => toolbox_body(ui, state),
+                        }
+                    });
                 });
-            });
-        state.pad.heights.insert(key, ROW + out.content_size.y);
-    });
+            state.pad.heights.insert(key, ROW + out.content_size.y);
+        },
+    );
 }
 
 /// Moves the sheet with a drag on its title row. At the end of the drag, the
@@ -536,6 +574,10 @@ fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
     // Temporary controls, for the tests of the brush on the device.
     ui.checkbox(&mut state.globe.debug, "Debug");
     if state.globe.debug {
+        // The frame time needs a new frame at each refresh of the screen.
+        if !state.headless {
+            ui.ctx().request_repaint();
+        }
         panels::debug_controls(ui, state);
     }
 }
@@ -555,10 +597,18 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
         Rect::from_center_size(band.center(), size)
     };
     let radius = theme::CONTROL_RADIUS.into();
-    widgets::card(ctx, "pad-readout", rect, Order::Middle, radius, |ui| {
-        let at = rect.center() - galley.size() / 2.0;
-        ui.painter().galley(at, galley, theme::MUTE);
-    });
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-readout",
+        rect,
+        Order::Middle,
+        radius,
+        |ui| {
+            let at = rect.center() - galley.size() / 2.0;
+            ui.painter().galley(at, galley, theme::MUTE);
+        },
+    );
 }
 
 fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
@@ -577,38 +627,46 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
         state.pad.menu = false;
     }
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, "pad-menu", rect, Order::Foreground, radius, |ui| {
-        // The menu covers the tool strip, so its fill is opaque.
-        ui.painter()
-            .rect_filled(rect, radius, theme::card().to_opaque());
-        let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
-        let layout = egui::Layout::top_down(egui::Align::Min);
-        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-        let ui = &mut ui;
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        if widgets::text_row(ui, controls, WORKSPACES[0], 0.0, true, true).clicked() {
-            state.pad.menu = false;
-        }
-        if compact {
-            let globe = widgets::text_row(ui, controls, VIEWS[0], 16.0, false, true);
-            let tick = Rect::from_center_size(
-                pos2(globe.rect.right() - 14.0, globe.rect.center().y),
-                vec2(18.0, 18.0),
-            );
-            icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-            if globe.clicked() {
+    widgets::card(
+        ctx,
+        None,
+        "pad-menu",
+        rect,
+        Order::Foreground,
+        radius,
+        |ui| {
+            // The menu covers the tool strip, so its fill is opaque.
+            ui.painter()
+                .rect_filled(rect, radius, theme::card(false).to_opaque());
+            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            let ui = &mut ui;
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            if widgets::text_row(ui, controls, WORKSPACES[0], 0.0, true, true).clicked() {
                 state.pad.menu = false;
             }
-            widgets::text_row(ui, controls, VIEWS[1], 16.0, false, false);
-        }
-        let (rule, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());
-        let line = Rect::from_center_size(rule.center(), vec2(rule.width(), 1.0));
-        ui.painter().rect_filled(line, 0.0, theme::raise());
-        if widgets::text_row(ui, controls, WORKSPACES[1], 0.0, false, true).clicked() {
-            state.workspace = Workspace::Map;
-            state.pad.menu = false;
-        }
-        widgets::text_row(ui, controls, WORKSPACES[2], 0.0, false, false);
-    });
+            if compact {
+                let globe = widgets::text_row(ui, controls, VIEWS[0], 16.0, false, true);
+                let tick = Rect::from_center_size(
+                    pos2(globe.rect.right() - 14.0, globe.rect.center().y),
+                    vec2(18.0, 18.0),
+                );
+                icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                if globe.clicked() {
+                    state.pad.menu = false;
+                }
+                widgets::text_row(ui, controls, VIEWS[1], 16.0, false, false);
+            }
+            let (rule, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());
+            let line = Rect::from_center_size(rule.center(), vec2(rule.width(), 1.0));
+            ui.painter().rect_filled(line, 0.0, theme::raise());
+            if widgets::text_row(ui, controls, WORKSPACES[1], 0.0, false, true).clicked() {
+                state.workspace = Workspace::Map;
+                state.pad.menu = false;
+            }
+            widgets::text_row(ui, controls, WORKSPACES[2], 0.0, false, false);
+        },
+    );
 }

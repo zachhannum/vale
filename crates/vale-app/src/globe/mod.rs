@@ -9,6 +9,7 @@ use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 use vale_terrain::{FACES, Heightmap, TexelRect, meters_to_level};
 
+pub mod backdrop;
 pub mod brush;
 pub mod gpu;
 pub mod math;
@@ -19,6 +20,7 @@ pub mod stroke_test;
 pub mod view;
 
 use crate::pen::Pen;
+use backdrop::Canvas;
 use brush::{Backlog, BrushSettings, Sample, Stroke, plan_texels};
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms};
 use math::V3;
@@ -113,6 +115,8 @@ pub struct Globe {
     pub stats: Stats,
     /// The brush debug panel is open.
     pub debug: bool,
+    /// The cards of the iPad layout show the blurred canvas.
+    pub blur: bool,
     /// The text of the last stroke test.
     pub test_report: Option<String>,
     link: Link,
@@ -148,6 +152,7 @@ impl Globe {
             pick_level: false,
             stats: Stats::new(face_size as u32),
             debug: false,
+            blur: true,
             test_report: None,
             link,
             events,
@@ -184,6 +189,12 @@ impl Globe {
         if self.map.face_size() > limit {
             self.set_face_size(limit);
         }
+    }
+
+    /// The format of the blurred canvas behind a card. `None`: a card has a
+    /// plain fill.
+    pub fn backdrop(&self) -> Option<wgpu::TextureFormat> {
+        self.format.filter(|_| self.blur)
     }
 
     pub fn pen_down(&mut self) {
@@ -425,7 +436,11 @@ impl Globe {
     }
 
     /// The paint callback of this frame, or `None` with no wgpu renderer.
-    pub fn callback(&mut self, pixels_per_point: f32) -> Option<GlobeCallback> {
+    pub fn callback(
+        &mut self,
+        pixels_per_point: f32,
+        backdrop: Option<Canvas>,
+    ) -> Option<GlobeCallback> {
         let format = self.format?;
         gpu::queue_changes(&mut self.map, &self.link);
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
@@ -461,6 +476,7 @@ impl Globe {
                 bands,
             },
             link: self.link.clone(),
+            backdrop,
         })
     }
 }

@@ -8,6 +8,7 @@ use eframe::egui_wgpu;
 use super::AppState;
 use vale_terrain::{Mode, level_to_meters};
 
+use crate::globe::backdrop::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow};
 use crate::globe::math::dir_to_lonlat;
 use crate::globe::nav::{Painting, on_canvas};
@@ -19,7 +20,7 @@ const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show(ui, |ui| canvas(ui, state, BACKGROUND));
+        .show(ui, |ui| canvas(ui, state, BACKGROUND, false));
 }
 
 /// Starts a stroke, or starts to pick the flatten level.
@@ -209,8 +210,14 @@ fn brush_input(
     }
 }
 
-/// Draws the globe in the free space of `ui` and reads its input.
-pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::Color32) {
+/// Draws the globe in the free space of `ui` and reads its input. `cards`:
+/// floating cards cover the canvas, and they can show a blurred copy of it.
+pub(super) fn canvas(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    background: egui::Color32,
+    cards: bool,
+) {
     let now = Instant::now();
     let globe = &mut state.globe;
     let rect = ui.available_rect_before_wrap();
@@ -231,7 +238,12 @@ pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::
     state.cursor_meters = cursor.map(|dir| level_to_meters(globe.map.sample(dir)));
 
     let more = globe.advance(now);
-    match globe.callback(ui.ctx().pixels_per_point()) {
+    let pixels_per_point = ui.ctx().pixels_per_point();
+    let backdrop = (cards && globe.blur).then_some(Canvas {
+        background,
+        pixels_per_point,
+    });
+    match globe.callback(pixels_per_point, backdrop) {
         Some(callback) => {
             painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
         }

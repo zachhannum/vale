@@ -5,9 +5,10 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
 use vale_app::globe::Tool;
+use vale_app::globe::view::GlobeView;
 use vale_app::headless;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
-use vale_app::ui::pad::{Panel, readout_text};
+use vale_app::ui::pad::{Panel, readout_text, theme};
 use vale_app::ui::{AppState, Layout, Workspace, draw};
 use vale_terrain::Mode;
 
@@ -337,6 +338,120 @@ fn settle(h: &mut Pad) {
         }
     }
     panic!("the stroke did not end");
+}
+
+/// A harness with the Brush and Layers panels open, in greyscale, and with a
+/// globe that covers the screen. `level` gives the level at a longitude in
+/// degrees.
+fn blur_pad(level: impl Fn(f64) -> u16) -> Pad {
+    let mut h = gpu_pad(BOARDS[0]);
+    let state = h.state_mut();
+    state.pad.open(Panel::Brush);
+    state.pad.open(Panel::Layers);
+    let globe = &mut state.globe;
+    globe.preview.greyscale = true;
+    globe.preview.graticule = false;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.view.zoom = 3.0;
+    let n = globe.map.face_size();
+    for face in 0..6 {
+        for (x, y) in (0..n).flat_map(|y| (0..n).map(move |x| (x, y))) {
+            let d = globe.map.texel_dir(face, x, y);
+            let level = level(d[1].atan2(d[0]).to_degrees());
+            globe.map.set(face, x, y, level);
+        }
+    }
+    h.run_steps(3);
+    h
+}
+
+/// The red values of a row of pixels near the bottom of a card, inside its
+/// round corners. No control is there.
+fn card_row(image: &image::RgbaImage, card: Rect) -> Vec<i32> {
+    let y = card.bottom() as u32 - 3;
+    let (left, right) = (card.left() as u32 + 16, card.right() as u32 - 16);
+    let red = |x| i32::from(image.get_pixel(x, y).0[0]);
+    (left..right).map(red).collect()
+}
+
+fn difference(a: &[i32], b: &[i32]) -> i32 {
+    a.iter().zip(b).map(|(a, b)| (a - b).abs()).sum()
+}
+
+#[test]
+fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
+    let _gpu = one_gpu_test();
+    // Light and dark stripes along the meridians, each 20 degrees wide.
+    let mut h = blur_pad(|lon| match (lon / 20.0).floor().rem_euclid(2.0) {
+        0.0 => u16::MAX,
+        _ => 0,
+    });
+    let cards = cards(&h);
+    assert!(cards.len() >= 7);
+    let blurred = h.render().unwrap();
+    blurred.save("../../target/app/test-pad-blur.png").unwrap();
+    h.state_mut().globe.blur = false;
+    h.run_steps(2);
+    let plain = h.render().unwrap();
+    h.state_mut().globe.blur = true;
+    h.state_mut().globe.view = GlobeView::centered(10.0, 0.0);
+    h.state_mut().globe.view.zoom = 3.0;
+    h.run_steps(2);
+    let turned = h.render().unwrap();
+
+    for card in cards {
+        let row = card_row(&blurred, card);
+        let width = row.len() as i32;
+        // The edge of a stripe is soft below a card.
+        let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
+        assert!(step <= 4, "{card:?}: a step of {step}");
+        assert!(
+            difference(&row, &card_row(&plain, card)) > width * 2,
+            "{card:?}"
+        );
+        // A turn of half a stripe moves the stripes below the card.
+        assert!(
+            difference(&row, &card_row(&turned, card)) > width * 2,
+            "{card:?}"
+        );
+    }
+}
+
+/// The contrast ratio of two colors, as WCAG defines it.
+fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+    let luminance = |c: [u8; 3]| {
+        let linear = c.map(|v| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+    };
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+#[test]
+fn text_on_a_card_is_easy_to_read_over_a_white_canvas() {
+    let _gpu = one_gpu_test();
+    let mut h = blur_pad(|_| u16::MAX);
+    let image = h.render().unwrap();
+    let c = h.state().globe.rect.center();
+    let canvas = image.get_pixel(c.x as u32, c.y as u32).0;
+    assert!(canvas[..3].iter().all(|v| *v > 240), "{canvas:?}");
+    for card in cards(&h) {
+        let pixel = image.get_pixel(card.left() as u32 + 16, card.bottom() as u32 - 3);
+        let fill = [pixel.0[0], pixel.0[1], pixel.0[2]];
+        // The canvas shows through the card.
+        assert!(fill[0] > 55, "{card:?}: {fill:?}");
+        for text in [theme::TEXT, theme::MUTE] {
+            let ratio = contrast([text.r(), text.g(), text.b()], fill);
+            assert!(ratio >= 4.5, "{card:?}: {ratio:.2} for {text:?}");
+        }
+    }
 }
 
 #[test]

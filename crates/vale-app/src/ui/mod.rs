@@ -180,6 +180,7 @@ impl AppState {
 
 /// Draws the whole UI.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+    state.globe.stats.tick(std::time::Instant::now());
     if state.layout == Layout::Pad && state.workspace == Workspace::Globe {
         pad::draw(ui, state);
         state.frames += 1;
