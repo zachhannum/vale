@@ -7,7 +7,7 @@ use super::{Action, AppState, ExportFormat, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
 use crate::globe::brush::{FLOW, STRENGTH_M};
-use crate::globe::{Tool, WorldView, stats, stroke_test};
+use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -102,7 +102,20 @@ pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
+/// The state of the window of small rivers. `world_km` is the radius of
+/// the world.
+fn window_line(globe: &Globe, world_km: f64) -> String {
+    match globe.window() {
+        Some(channels) => {
+            let km = rivers::cell_angle(&channels.window()) * world_km;
+            format!("River window: cells of {} km", three_significant(km))
+        }
+        None => "River window: off".to_string(),
+    }
+}
+
 pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
+    let world_km = state.doc.project.world.radius_km;
     let globe = &mut state.globe;
     ui.label(globe.stats.gpu_line());
     ui.label(globe.stats.frame_time_line());
@@ -122,6 +135,7 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     }
     ui.label(globe.stats.worst_line());
     ui.label(format!("Backlog: {} stamps", globe.stats.backlog));
+    ui.label(window_line(globe, world_km));
     ui.weak(stats::DELAY_NOTE);
     ui.separator();
 

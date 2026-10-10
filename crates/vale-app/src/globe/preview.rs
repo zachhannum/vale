@@ -3,7 +3,7 @@
 use vale_terrain::{Bands, MAX_BANDS, Rgb, meters_to_level};
 
 /// How the globe shows the heightmap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Preview {
     /// Shows the plain heights and no colors.
     pub greyscale: bool,
@@ -12,6 +12,8 @@ pub struct Preview {
     pub graticule: bool,
     /// Draws the rivers over the colors.
     pub rivers: bool,
+    /// The factor of the width of a river line on screen.
+    pub river_width: f32,
     /// The elevation panel is open.
     pub panel: bool,
     /// The band limit that the panel edits, as an index into the limits.
@@ -25,6 +27,7 @@ impl Default for Preview {
             levels: true,
             graticule: true,
             rivers: true,
+            river_width: 1.0,
             panel: false,
             selected: None,
         }

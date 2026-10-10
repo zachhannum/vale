@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use eframe::egui_wgpu::{self, wgpu};
 
 use vale_terrain::{
-    ChannelMap, FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan, TexelRect,
+    ChannelMap, ChannelWindow, FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan,
+    TexelRect,
 };
 
 use super::backdrop::{Backdrop, Canvas};
@@ -26,6 +27,8 @@ pub struct Uniforms {
     pub params: [f32; 4],
     pub flat: [f32; 4],
     pub screen: [f32; 4],
+    pub window: [f32; 4],
+    pub rivers: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
 }
 
@@ -127,6 +130,16 @@ impl Resources {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -144,6 +157,10 @@ impl Resources {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(heights.channels_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(heights.window_view()),
                 },
             ],
         });
@@ -240,6 +257,9 @@ pub enum Op {
     },
     /// Writes the channel map of the rivers.
     Channels(Arc<ChannelMap>),
+    /// Writes the window of small rivers. `None`: the brush follows the
+    /// channel map only.
+    Window(Option<Arc<ChannelWindow>>),
 }
 
 /// A result of the GPU work. The UI reads the results at the next frame.
@@ -530,6 +550,12 @@ impl Batch<'_> {
                 // The stamps before the write follow the rivers before it.
                 self.submit();
                 self.heights.upload_channels(self.queue, &map);
+            }
+            Op::Window(window) => {
+                // A stamp in the encoder after this call follows the new
+                // window, so the stamps before it go first.
+                self.submit();
+                self.heights.upload_window(self.queue, window.as_deref());
             }
         }
     }

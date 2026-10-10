@@ -6,6 +6,9 @@ use vale_terrain::{Bands, ELEV_MAX, ELEV_MIN, Rgb};
 use super::AppState;
 use crate::globe::preview::Preview;
 
+/// The range of the factor of the width of a river line.
+pub const RIVER_WIDTH: std::ops::RangeInclusive<f32> = 0.25..=4.0;
+
 /// The name of the bar for a screen reader and for the tests.
 pub const BAR_LABEL: &str = "Band limits";
 
@@ -73,6 +76,8 @@ pub(super) fn controls(ui: &mut egui::Ui, state: &mut AppState) {
     ui.checkbox(&mut preview.levels, "Levels");
     ui.checkbox(&mut preview.graticule, "Graticule");
     ui.checkbox(&mut preview.rivers, "Rivers");
+    let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
+    ui.add_enabled(preview.rivers, width);
     ui.separator();
     limit_bar(ui, bands, preview);
     selected_limit(ui, bands, preview);
