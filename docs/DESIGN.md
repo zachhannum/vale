@@ -274,6 +274,19 @@ The drawing tools are designed for a pen: pressure, hover preview of the brush, 
 
 iPad is an equal platform. The layout for iPad is its own design, with a full-screen canvas, floating panels, and touch-size controls. It is not the desktop layout made smaller.
 
+The layout has four places. The top row holds the workspace switch at the left, the view switch in the center, and the actions at the right. The left edge holds the tool strip, and below it a card with the Size slider, the Flow slider, and the Brush button. Layers and Toolbox open a panel in one shared place at the right, and Brush opens a panel next to the left edge. The bottom holds the position readout.
+
+These rules apply to the layout:
+
+- Each control is at least 44 by 44 points.
+- No control is in the top 24 points or in the bottom 20 points, because the system uses those bands. If the safe area of the device is larger, the layout uses the safe area.
+- A panel stays open while you paint. Its close button closes it, and the button that opened it closes it.
+- At a width of 1,000 points or more, the workspace switch shows all workspaces. Below 1,000 points, it is one menu button.
+- Below 600 points, the view switch is in the workspace menu, and a panel is a sheet at the bottom. You can pull the sheet down to its title row. One sheet shows at a time.
+- If the Brush panel and the right panel do not fit side by side, one panel shows at a time.
+- The two sliders are 140 points high. In a short window they become shorter, down to 110 points, which fits an iPad that is 744 points high. In a window that is shorter than that, the card holds the Brush button alone, and the Brush panel holds the two sliders. If the tool strip and the Brush button do not fit, the tool strip scrolls.
+- The pen paints. One finger turns the globe, and two fingers zoom it.
+
 The core crates have no UI dependency, so both platforms share them. The shell is egui on both platforms. The crate `vale-globe-proto` checked how well egui handles pen input and touch on iPad, and the section "Globe prototype" gives the results.
 
 ## Styling model
@@ -412,7 +425,9 @@ The labeling prototype is done. The command `cargo run --release -p vale-labeler
 
 The app prototype is a vertical slice. It makes a runnable app early. It takes a thin part of phases 2, 4, 6, 8, and 9 at once. It differs from the design above in nine ways. The command `cargo run --release -p vale-app` opens the window. The command `cargo run --release -p vale-app -- --screenshot target/app/ui.png --size 1440x900 --report` draws the full UI to a PNG without a window.
 
-The app opens on the globe workspace. The globe view and its navigation are in `vale-app`, and the globe draws the heightmap of `vale-terrain` as stepped tints with a graticule. An elevation panel edits the band limits and the ramp. A brush tool paints the heightmap, and a brush panel has the four modes, the radius in kilometers, the size lock, the hardness, the strength, and the flatten level. The size lock holds the radius as an angle on the sphere. The GPU texture holds six full faces of 8,192 pixels, which is 805 MB, and a copy of one face for the brush takes 134 MB more. A switch in the tool bar opens the flat map, and the nine items below are about the flat map.
+The app opens on the globe workspace. The globe view and its navigation are in `vale-app`, and the globe draws the heightmap of `vale-terrain` as stepped tints with a graticule. An elevation panel edits the band limits and the ramp. A brush tool paints the heightmap, and a brush panel has the four modes, the radius in kilometers, the size lock, the hardness, the flow, the strength, and the flatten level. The size lock holds the radius as an angle on the sphere. The GPU texture holds six full faces of 8,192 pixels, which is 805 MB, and a copy of one face for the brush takes 134 MB more. A switch in the tool bar opens the flat map, and the nine items below are about the flat map.
+
+On iPad, the globe workspace has the layout of the section "Pen and iPad". The flag `--layout pad` shows that layout on the desktop, and `--panel` opens one of its panels. The view switch, the Atlas workspace, the Line tool, and redo are in the layout, and they do nothing yet. The Layers panel holds the Height layer alone, and the Toolbox panel holds no tools. The flat map keeps the desktop layout on iPad.
 
 The brush stamps in a wgpu shader of `vale-terrain`, one pass for each face that the stamp touches. Up to 32 raise, lower, or flatten stamps share one pass. A smooth stamp has its own pass, because it reads the texels around it. The pass writes only the rectangle under the brush. While you paint, the GPU texture is the working copy. At the end of a stroke the app reads the changed texels back into the heightmap of `vale-terrain`, which stays the document. The CPU stamp is the reference, and the tests of `vale-terrain` compare the two. The result of one stamp differs by at most 1 of the 65,536 levels, and by at most 2 in the smooth mode. Over a stroke of many raise or lower stamps, the tests allow a difference of 3. A debug panel shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work.
 

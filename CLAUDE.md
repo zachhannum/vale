@@ -22,6 +22,12 @@ This command renders the full UI to a PNG without a window:
 cargo run --release -p vale-app -- --screenshot target/app/ui.png --size 1440x900 --report
 ```
 
+This command renders the iPad layout of the globe workspace to a PNG:
+
+```sh
+cargo run --release -p vale-app -- --layout pad --panel layers --screenshot target/app/pad.png --size 1194x834
+```
+
 This command builds the app and starts it on a connected iPad:
 
 ```sh
