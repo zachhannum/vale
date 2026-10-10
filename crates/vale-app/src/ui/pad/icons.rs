@@ -8,7 +8,7 @@ pub enum Icon {
     Lower,
     Smooth,
     Flatten,
-    Line,
+    Carve,
     Move,
     Undo,
     Redo,
@@ -34,7 +34,7 @@ impl Icon {
             Icon::Lower => "M3 7c4 0 5 11 9 11s5-11 9-11",
             Icon::Smooth => "M3 12c3-4 6-4 9 0s6 4 9 0",
             Icon::Flatten => "M4 12h16",
-            Icon::Line => "M4 20l4-1 11-11-3-3L5 16z",
+            Icon::Carve => "M3 7c4 0 5 9 9 9s5-9 9-9M12 16v5",
             Icon::Move => {
                 "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3\
                  M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"
@@ -277,7 +277,7 @@ mod tests {
             Icon::Lower,
             Icon::Smooth,
             Icon::Flatten,
-            Icon::Line,
+            Icon::Carve,
             Icon::Move,
             Icon::Undo,
             Icon::Redo,

@@ -201,6 +201,7 @@ fn a_finger_hits_each_control_at_the_first_try() {
         ("Lower", Mode::Lower),
         ("Smooth", Mode::Smooth),
         ("Flatten", Mode::Flatten),
+        ("Carve", Mode::Carve),
         ("Raise", Mode::Raise),
     ] {
         tap(&mut h, name);

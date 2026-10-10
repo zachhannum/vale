@@ -180,6 +180,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
             (Mode::Lower, "Lower"),
             (Mode::Smooth, "Smooth"),
             (Mode::Flatten, "Flatten"),
+            (Mode::Carve, "Carve"),
         ] {
             ui.selectable_value(current, mode, name);
         }
