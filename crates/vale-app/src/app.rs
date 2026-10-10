@@ -107,6 +107,16 @@ pub fn run_window(
             if cfg!(target_os = "ios") {
                 apply_touch_style(&cc.egui_ctx);
             }
+            #[cfg(target_os = "ios")]
+            {
+                use eframe::wgpu::rwh::{HasWindowHandle as _, RawWindowHandle};
+                let handle = cc.window_handle().map(|handle| handle.as_raw());
+                if let Ok(RawWindowHandle::UiKit(handle)) = handle {
+                    let queue = crate::pen::PenQueue::default();
+                    app.state.globe.pen.queue = Some(queue.clone());
+                    crate::pen::uikit::install(handle.ui_view, cc.egui_ctx.clone(), queue);
+                }
+            }
             Ok(Box::new(app))
         }),
     )
