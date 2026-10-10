@@ -2,12 +2,12 @@
 //! and paint.
 
 use std::collections::VecDeque;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
-use vale_terrain::{FACES, Heightmap, TexelRect, meters_to_level};
+use vale_terrain::{ChannelMap, FACES, Heightmap, SEA_LEVEL, TexelRect, meters_to_level};
 
 pub mod backdrop;
 pub mod brush;
@@ -16,6 +16,7 @@ pub mod gpu;
 pub mod math;
 pub mod nav;
 pub mod preview;
+pub mod rivers;
 pub mod stats;
 pub mod stroke_test;
 pub mod view;
@@ -28,6 +29,7 @@ use gpu::{Event, GlobeCallback, Link, Op, Uniforms};
 use math::V3;
 use nav::Nav;
 use preview::{Preview, band_uniforms};
+use rivers::Rivers;
 use stats::Stats;
 use stroke_test::StrokeTest;
 use view::GlobeView;
@@ -141,6 +143,9 @@ pub struct Globe {
     backlog: Backlog,
     strokes: u64,
     test: Option<StrokeTest>,
+    rivers: Rivers,
+    /// The newest channel map that went to the GPU.
+    channels: Option<Arc<ChannelMap>>,
 }
 
 impl Default for Globe {
@@ -152,8 +157,11 @@ impl Default for Globe {
 impl Globe {
     pub fn with_face_size(face_size: usize) -> Globe {
         let (link, events) = Link::new();
+        let map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
         Globe {
-            map: Heightmap::new(face_size, meters_to_level(START_ELEVATION)),
+            rivers: Rivers::new(&map, false),
+            channels: None,
+            map,
             view: GlobeView::centered(15.0, 25.0),
             flat: FlatView::default(),
             world_view: WorldView::default(),
@@ -186,6 +194,8 @@ impl Globe {
         let bands = std::mem::take(&mut self.map.bands);
         self.map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
         self.map.bands = bands;
+        self.rivers = Rivers::new(&self.map, self.rivers.sync);
+        self.channels = None;
         self.stats.face_size = face_size as u32;
         self.inputs.clear();
         self.backlog.clear();
@@ -268,6 +278,42 @@ impl Globe {
         self.can_undo() && self.map.undo()
     }
 
+    /// True until the rivers of the last change of the heightmap arrive.
+    pub fn rivers_pending(&self) -> bool {
+        self.rivers.pending()
+    }
+
+    /// With `sync`, a change of the heightmap waits for its rivers. Without
+    /// it, a worker thread computes them.
+    pub fn set_rivers_sync(&mut self, sync: bool) {
+        self.rivers.sync = sync;
+    }
+
+    /// The newest channel map of the rivers that went to the GPU.
+    pub fn channels(&self) -> Option<&ChannelMap> {
+        self.channels.as_deref()
+    }
+
+    /// Moves the changes of the CPU heightmap to the GPU, and asks for their
+    /// rivers. Sends the rivers that arrived to the GPU.
+    fn queue_changes(&mut self) {
+        let changes = gpu::queue_changes(&mut self.map, &self.link);
+        if changes.reset {
+            self.rivers.rebuild(&self.map);
+        }
+        for &(face, rect) in changes.rects.iter().filter(|_| !changes.reset) {
+            self.rivers.update(&self.map, face, rect);
+        }
+        if changes.reset || !changes.rects.is_empty() {
+            self.rivers.request();
+        }
+        if let Some(channels) = self.rivers.poll() {
+            let face_size = self.map.face_size() as u32;
+            self.link.push(face_size, Op::Channels(channels.clone()));
+            self.channels = Some(channels);
+        }
+    }
+
     /// Starts the stroke test. A slow stroke is `seconds` long.
     pub fn start_stroke_test(&mut self, seconds: f64) {
         if self.format.is_some() && !self.busy() {
@@ -288,11 +334,11 @@ impl Globe {
         let in_flight = self.link.busy.any();
         self.read_events();
         // An undo goes to the GPU before the stamps of the next stroke.
-        gpu::queue_changes(&mut self.map, &self.link);
+        self.queue_changes();
         self.run_test(now, in_flight);
         self.read_inputs();
         self.send_stamps(now);
-        in_flight || self.busy()
+        in_flight || self.busy() || self.rivers.pending()
     }
 
     fn read_events(&mut self) {
@@ -314,9 +360,11 @@ impl Globe {
                         continue;
                     };
                     self.map.store_rect(face as usize, rect, &data);
+                    self.rivers.update(&self.map, face as usize, rect);
                     let left = active.reading.get_or_insert(1);
                     *left -= 1;
                     if *left == 0 {
+                        self.rivers.request();
                         self.map.end_stroke();
                         self.stroke = None;
                     }
@@ -471,18 +519,25 @@ impl Globe {
         backdrop: Option<Canvas>,
     ) -> Option<GlobeCallback> {
         let format = self.format?;
-        gpu::queue_changes(&mut self.map, &self.link);
+        self.queue_changes();
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
         let center = self.rect.center();
         let radius = self.radius() as f32;
-        let (zoom, flat, mesh) = match self.world_view {
-            WorldView::Globe => (self.view.zoom, [0.0; 4], None),
+        let (zoom, flat_center, mesh) = match self.world_view {
+            WorldView::Globe => (self.view.zoom, [0.0; 2], None),
             WorldView::Flat => {
                 let center = self.flat.center;
-                let flat = [0.0, 0.0, center.x as f32, center.y as f32];
-                (self.flat.zoom, flat, Some(self.flat.mesh()))
+                let center = [center.x as f32, center.y as f32];
+                (self.flat.zoom, center, Some(self.flat.mesh()))
             }
         };
+        let sea = f32::from(meters_to_level(SEA_LEVEL)) / 65535.0;
+        let rivers = self.preview.rivers && !self.preview.greyscale;
+        let channel_size = match rivers {
+            true => ChannelMap::size_for(self.map.face_size()) as f32,
+            false => 0.0,
+        };
+        let flat = [sea, channel_size, flat_center[0], flat_center[1]];
         let graticule_degrees: f64 = if !self.preview.graticule {
             0.0
         } else if zoom < 3.0 {

@@ -10,6 +10,8 @@ pub struct Preview {
     /// Cuts the colors at the band limits. Without it, the ramp is smooth.
     pub levels: bool,
     pub graticule: bool,
+    /// Draws the rivers over the colors.
+    pub rivers: bool,
     /// The elevation panel is open.
     pub panel: bool,
     /// The band limit that the panel edits, as an index into the limits.
@@ -22,6 +24,7 @@ impl Default for Preview {
             greyscale: false,
             levels: true,
             graticule: true,
+            rivers: true,
             panel: false,
             selected: None,
         }

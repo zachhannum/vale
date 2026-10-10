@@ -22,7 +22,9 @@ struct Uniforms {
     // Face size in texels, the graticule step in radians, the preview mode,
     // and the band count. A step of 0 hides the graticule.
     params: vec4<f32>,
-    // The point of the flat map at the center, in z and w.
+    // Sea level, from 0 to 1. The size of a face of the channel map in
+    // texels, or 0 to hide the rivers. The point of the flat map at the
+    // center, in z and w.
     flat: vec4<f32>,
     // The width and the height of the render target in pixels.
     screen: vec4<f32>,
@@ -35,8 +37,17 @@ const MODE_SMOOTH: i32 = 2;
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var heights: texture_2d_array<u32>;
+// The channel map of `vale-terrain`: the distance to the nearest river, and
+// the size of that river.
+@group(0) @binding(2) var channels: texture_2d_array<u32>;
 
 const PI: f32 = 3.14159265;
+const RIVER_COLOR: vec3<f32> = vec3<f32>(0.16, 0.36, 0.62);
+// The distance byte of the channel map for a distance of one channel texel.
+const CHANNEL_SCALE: f32 = 32.0;
+// The edge of a line is not farther from the river than this number of
+// channel texels. The channel map holds no distance past 255 / 32 texels.
+const CHANNEL_REACH: f32 = 7.5;
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -98,9 +109,14 @@ fn texel(face: i32, x: i32, y: i32) -> f32 {
     return across(face, x, y);
 }
 
-// The height at a world direction, from 0 to 1, with bilinear filtering. The
-// y and z parts are the change of the height across one texel.
-fn height(d: vec3<f32>) -> vec3<f32> {
+struct Place {
+    face: i32,
+    // The place on the face, from 0 to 1 along each axis.
+    at: vec2<f32>,
+}
+
+// The place of a world direction on its cube face.
+fn place(d: vec3<f32>) -> Place {
     let a = abs(d);
     var axis = 2;
     if a.x >= a.y && a.x >= a.z {
@@ -114,7 +130,15 @@ fn height(d: vec3<f32>) -> vec3<f32> {
     }
     let flat = vec2<f32>(d[(axis + 1) % 3], d[(axis + 2) % 3]) / a[axis];
     let s = atan(flat) * (4.0 / PI);
-    let f = (s * 0.5 + 0.5) * u.params.x - 0.5;
+    return Place(face, s * 0.5 + 0.5);
+}
+
+// The height at a world direction, from 0 to 1, with bilinear filtering. The
+// y and z parts are the change of the height across one texel.
+fn height(d: vec3<f32>) -> vec3<f32> {
+    let p = place(d);
+    let face = p.face;
+    let f = p.at * u.params.x - 0.5;
     let i = vec2<i32>(floor(f));
     let t = f - floor(f);
     let h00 = texel(face, i.x, i.y);
@@ -123,6 +147,41 @@ fn height(d: vec3<f32>) -> vec3<f32> {
     let h11 = texel(face, i.x + 1, i.y + 1);
     let slope = vec2<f32>(mix(h10 - h00, h11 - h01, t.y), mix(h01 - h00, h11 - h10, t.x));
     return vec3<f32>(mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y), slope);
+}
+
+// The two bytes of a texel of the channel map. A texel past the face gives
+// the texel at the face edge.
+fn channel(face: i32, x: i32, y: i32) -> vec2<f32> {
+    let last = i32(u.flat.y) - 1;
+    let c = clamp(vec2<i32>(x, y), vec2<i32>(0), vec2<i32>(last));
+    return vec2<f32>(textureLoad(channels, c, face, 0).rg);
+}
+
+// The part of a pixel that a river covers at a world direction, from 0 to 1.
+// `pixel` is the angle that one pixel covers there. The distance is a blend
+// of the 4 texels around the place, and the size of the river is the largest
+// of the 4, as in `stamp.wgsl` of `vale-terrain`.
+fn river(d: vec3<f32>, pixel: f32) -> f32 {
+    let p = place(d);
+    let f = p.at * u.flat.y - 0.5;
+    let i = vec2<i32>(floor(f));
+    let t = f - floor(f);
+    let c00 = channel(p.face, i.x, i.y);
+    let c10 = channel(p.face, i.x + 1, i.y);
+    let c01 = channel(p.face, i.x, i.y + 1);
+    let c11 = channel(p.face, i.x + 1, i.y + 1);
+    let flow = max(max(c00.y, c10.y), max(c01.y, c11.y));
+    if flow == 0.0 {
+        return 0.0;
+    }
+    let distance = mix(mix(c00.x, c10.x, t.x), mix(c01.x, c11.x, t.x), t.y) / CHANNEL_SCALE;
+    // The size of one channel texel in pixels.
+    let texel = PI / 2.0 / u.flat.y / pixel;
+    // Half of the width of the line in pixels. A large river has a wide
+    // line. A line that is thin against the texels has steps.
+    let half = max(0.6 + 1.4 * flow / 255.0, 0.7 * texel);
+    let edge = min(half + 0.5, CHANNEL_REACH * texel);
+    return clamp(edge - distance * texel, 0.0, 1.0);
 }
 
 fn band_color(i: i32, h: f32, mode: i32) -> vec3<f32> {
@@ -148,15 +207,20 @@ fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
     return color;
 }
 
-// The color of the ground in a world direction: the tint of the height, and
-// the graticule. `width` is the change of the height across one pixel.
-// `wlat` and `wlon` are the latitude and the longitude that one pixel covers
-// there.
-fn ground(h: f32, width: f32, d: vec3<f32>, wlat: f32, wlon: f32) -> vec3<f32> {
+// The color of the ground in a world direction: the tint of the height, the
+// rivers, and the graticule. `width` is the change of the height across one
+// pixel. `wlat` and `wlon` are the latitude and the longitude that one pixel
+// covers there. `pixel` is the angle that one pixel covers there.
+fn ground(h: f32, width: f32, d: vec3<f32>, wlat: f32, wlon: f32, pixel: f32) -> vec3<f32> {
     let mode = i32(u.params.z);
     var color = vec3<f32>(h);
     if mode != MODE_GREYSCALE {
         color = tint(h, width, mode);
+    }
+    if u.flat.y > 0.5 {
+        // A river stops at the coast.
+        let land = clamp((h - u.flat.x) / max(width, 1e-6) + 1.0, 0.0, 1.0);
+        color = mix(color, RIVER_COLOR, 0.9 * land * river(d, pixel));
     }
     let grat = u.params.y;
     if grat > 0.0 {
@@ -191,7 +255,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let px = 1.0 / (radius * max(v.z, 0.05));
     let coslat = max(sqrt(max(1.0 - d.z * d.z, 0.0)), 1e-4);
     let h = height(d).x;
-    var color = ground(h, fwidth(h), d, px, px / coslat);
+    var color = ground(h, fwidth(h), d, px, px / coslat, px);
 
     // A little shade toward the limb, so the disk reads as a ball.
     color *= mix(0.80, 1.0, pow(v.z, 0.6));
@@ -228,5 +292,5 @@ fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
     let h = height(d);
     let angle = max(length(dpdx(d)), length(dpdy(d)));
     let width = length(h.yz) * u.params.x * (2.0 / PI) * angle;
-    return vec4<f32>(ground(h.x, width, d, fwidth(lat), wlon), 1.0);
+    return vec4<f32>(ground(h.x, width, d, fwidth(lat), wlon, angle), 1.0);
 }

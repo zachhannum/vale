@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu::{self, wgpu};
 
-use vale_terrain::{FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan, TexelRect};
+use vale_terrain::{
+    ChannelMap, FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan, TexelRect,
+};
 
 use super::backdrop::{Backdrop, Canvas};
 use super::flat::{FlatMesh, Vertex};
@@ -115,6 +117,16 @@ impl Resources {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -128,6 +140,10 @@ impl Resources {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(heights.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(heights.channels_view()),
                 },
             ],
         });
@@ -222,6 +238,8 @@ pub enum Op {
         face: u32,
         rect: TexelRect,
     },
+    /// Writes the channel map of the rivers.
+    Channels(Arc<ChannelMap>),
 }
 
 /// A result of the GPU work. The UI reads the results at the next frame.
@@ -354,23 +372,33 @@ impl Link {
     }
 }
 
+/// The changes of the CPU heightmap that went to the queue.
+pub struct Changes {
+    /// The whole heightmap changed. `rects` has the texels that are not at
+    /// the base level.
+    pub reset: bool,
+    pub rects: Vec<(usize, TexelRect)>,
+}
+
 /// Moves the changes of the CPU heightmap to the queue.
-pub fn queue_changes(map: &mut Heightmap, link: &Link) {
+pub fn queue_changes(map: &mut Heightmap, link: &Link) -> Changes {
     let face_size = map.face_size() as u32;
     let mut rects: Vec<(usize, TexelRect)> = Vec::new();
-    if map.take_reset() {
+    let reset = map.take_reset();
+    if reset {
         link.push(face_size, Op::Reset(map.base()));
         rects.extend(map.allocated_rects());
     } else {
         let dirty = map.take_dirty().into_iter().enumerate();
         rects.extend(dirty.filter_map(|(face, rect)| Some((face, rect?))));
     }
-    for (face, rect) in rects {
+    for &(face, rect) in &rects {
         let mut data = Vec::new();
         map.read_rect(face, rect, &mut data);
         let face = face as u32;
         link.push(face_size, Op::Upload { face, rect, data });
     }
+    Changes { reset, rects }
 }
 
 /// One frame of the globe. egui calls it inside its own render pass.
@@ -497,6 +525,11 @@ impl Batch<'_> {
                 let (heights, device) = (self.heights, self.device);
                 let readback = heights.read_rect(device, self.encoder(), face, rect);
                 self.readbacks.push((stroke, face, rect, readback));
+            }
+            Op::Channels(map) => {
+                // The stamps before the write follow the rivers before it.
+                self.submit();
+                self.heights.upload_channels(self.queue, &map);
             }
         }
     }

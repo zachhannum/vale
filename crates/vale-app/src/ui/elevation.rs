@@ -72,6 +72,7 @@ pub(super) fn controls(ui: &mut egui::Ui, state: &mut AppState) {
     let (bands, preview) = (&mut globe.map.bands, &mut globe.preview);
     ui.checkbox(&mut preview.levels, "Levels");
     ui.checkbox(&mut preview.graticule, "Graticule");
+    ui.checkbox(&mut preview.rivers, "Rivers");
     ui.separator();
     limit_bar(ui, bands, preview);
     selected_limit(ui, bands, preview);

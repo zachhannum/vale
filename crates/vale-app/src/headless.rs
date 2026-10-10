@@ -146,6 +146,9 @@ pub fn ui_harness(
     setup: eframe::egui_wgpu::WgpuSetup,
 ) -> egui_kittest::Harness<'static, crate::ui::AppState> {
     state.headless = true;
+    // The rivers of a change show in the next frame, so an image does not
+    // depend on the time.
+    state.globe.set_rivers_sync(true);
     let render_state = egui_kittest::wgpu::create_render_state(
         setup,
         eframe::egui_wgpu::RendererOptions::PREDICTABLE,
@@ -198,6 +201,8 @@ pub fn stroke_test(
 ) -> anyhow::Result<String> {
     state.workspace = crate::ui::Workspace::Globe;
     let mut harness = ui_harness(state, size, pixel_ratio, hardware_setup());
+    // The app in a window computes the rivers on a worker thread.
+    harness.state_mut().globe.set_rivers_sync(false);
     let no_gpu = |e| anyhow!("cannot render the UI offscreen (no GPU adapter?): {e}");
     // The first frames set the size of the canvas and clear the heightmap.
     for _ in 0..3 {

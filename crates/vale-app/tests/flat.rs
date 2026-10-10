@@ -5,7 +5,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
 use vale_app::globe::flat::FlatView;
-use vale_app::globe::math::{V3, lonlat_to_dir};
+use vale_app::globe::math::{V3, angle, lonlat_to_dir};
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
@@ -334,4 +334,91 @@ fn the_brush_outline_matches_the_ground_that_the_stamp_covers() {
     // Near a pole the same stamp covers more longitude, so the outline is wide.
     let (w, h) = check_outline(&mut flat_harness(), 30.0, 70.0);
     assert!(w > 2.5 * h && (h - 24.0).abs() < 0.5, "{w} {h}");
+}
+
+/// A smooth value from -1 to 1 for each place, with no pattern.
+fn value_noise(p: V3) -> f64 {
+    let cell = p.map(f64::floor);
+    let corner = |dx: f64, dy: f64, dz: f64| {
+        let [x, y, z] = [cell[0] + dx, cell[1] + dy, cell[2] + dz].map(|v| v as i64 as u32);
+        let mut v =
+            x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663) ^ z.wrapping_mul(83_492_791);
+        v ^= v >> 13;
+        v = v.wrapping_mul(0x5bd1_e995);
+        f64::from((v ^ (v >> 15)) & 0xffff) / 32767.5 - 1.0
+    };
+    let [tx, ty, tz] = [0, 1, 2].map(|i| {
+        let t = p[i] - cell[i];
+        t * t * (3.0 - 2.0 * t)
+    });
+    let mix = |a: f64, b: f64, t: f64| a + (b - a) * t;
+    let plane = |dz: f64| {
+        let low = mix(corner(0.0, 0.0, dz), corner(1.0, 0.0, dz), tx);
+        let high = mix(corner(0.0, 1.0, dz), corner(1.0, 1.0, dz), tx);
+        mix(low, high, ty)
+    };
+    mix(plane(0.0), plane(1.0), tz)
+}
+
+/// Hills of 4 sizes, from -1 to 1. The largest hills are `1 / scale` radians
+/// wide.
+fn hills(d: V3, scale: f64) -> f64 {
+    let octave = |i: i32| value_noise(d.map(|v| v * scale * f64::from(1 << i))) / f64::from(1 << i);
+    (0..4).map(octave).sum::<f64>() / 1.875
+}
+
+/// The elevation of an island with hills around `center`, in meters. The
+/// coast is about 0.9 radians from the center.
+fn island(d: V3, center: V3) -> f64 {
+    let cone = 2600.0 * (1.0 - angle(d, center) / 0.9);
+    (cone + 900.0 * hills(d, 5.0)).max(-2500.0)
+}
+
+/// The number of pixels of the canvas that show a river on land.
+fn river_pixels(h: &App, img: &image::RgbaImage) -> usize {
+    let globe = &h.state().globe;
+    let land = meters_to_level(150.0);
+    let min = globe.rect.min.ceil();
+    let pixels = img.enumerate_pixels().filter(|(x, y, p)| {
+        let [r, g, b, _] = p.0.map(i32::from);
+        let pos = min + Vec2::new(*x as f32 + 0.5, *y as f32 + 0.5);
+        let on_land = globe
+            .unproject(pos)
+            .is_some_and(|dir| globe.map.sample(dir) >= land);
+        on_land && b > r + 60 && b > g + 30
+    });
+    pixels.count()
+}
+
+#[test]
+fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
+    let _gpu = one_gpu_test();
+    let mut h = flat_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.preview.greyscale = false;
+    globe.preview.panel = true;
+    // Without the brush panel, the canvas has more room.
+    globe.tool = Tool::Navigate;
+    globe.flat.zoom = 2.0;
+    let center = lonlat_to_dir(0.0, 0.0);
+    let n = globe.map.face_size();
+    for face in 0..6 {
+        for y in 0..n {
+            for x in 0..n {
+                let meters = island(globe.map.texel_dir(face, x, y), center);
+                globe.map.set(face, x, y, meters_to_level(meters));
+            }
+        }
+    }
+    let on = canvas_image(&mut h);
+    std::fs::create_dir_all("../../target/app").unwrap();
+    on.save("../../target/app/rivers-flat.png").unwrap();
+    let count = river_pixels(&h, &on);
+    assert!(count > 300, "{count}");
+
+    h.get_by_label("Rivers").click();
+    h.run_steps(2);
+    assert!(!h.state().globe.preview.rivers);
+    let off = canvas_image(&mut h);
+    assert_eq!(river_pixels(&h, &off), 0);
 }

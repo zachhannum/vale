@@ -11,7 +11,7 @@ use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::ui::elevation::{BAR_LABEL, limit_y};
 use vale_app::ui::{AppState, Workspace, draw};
-use vale_terrain::meters_to_level;
+use vale_terrain::{ChannelMap, CoarseHeights, Mode, channel_map, meters_to_level};
 
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
@@ -681,7 +681,6 @@ fn pen_stroke(h: &mut Harness<'static, AppState>) {
 
 #[test]
 fn the_four_modes_work_with_a_mouse_and_with_a_pen() {
-    use vale_terrain::{Mode, meters_to_level};
     let _gpu = one_gpu_test();
     for pen in [false, true] {
         let mut h = gpu_harness();
@@ -1210,4 +1209,271 @@ fn with_the_queue_a_finger_rotates_the_pen_paints_and_a_palm_does_nothing() {
     assert_eq!(globe.nav.palms, 1);
     assert!(globe.map.sample(under) > base);
     assert_eq!(globe.stats.last().unwrap().id, 1);
+}
+
+/// A smooth value from -1 to 1 for each place, with no pattern.
+fn value_noise(p: V3) -> f64 {
+    let cell = p.map(f64::floor);
+    let corner = |dx: f64, dy: f64, dz: f64| {
+        let [x, y, z] = [cell[0] + dx, cell[1] + dy, cell[2] + dz].map(|v| v as i64 as u32);
+        let mut v =
+            x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663) ^ z.wrapping_mul(83_492_791);
+        v ^= v >> 13;
+        v = v.wrapping_mul(0x5bd1_e995);
+        f64::from((v ^ (v >> 15)) & 0xffff) / 32767.5 - 1.0
+    };
+    let [tx, ty, tz] = [0, 1, 2].map(|i| {
+        let t = p[i] - cell[i];
+        t * t * (3.0 - 2.0 * t)
+    });
+    let mix = |a: f64, b: f64, t: f64| a + (b - a) * t;
+    let plane = |dz: f64| {
+        let low = mix(corner(0.0, 0.0, dz), corner(1.0, 0.0, dz), tx);
+        let high = mix(corner(0.0, 1.0, dz), corner(1.0, 1.0, dz), tx);
+        mix(low, high, ty)
+    };
+    mix(plane(0.0), plane(1.0), tz)
+}
+
+/// Hills of 4 sizes, from -1 to 1. The largest hills are `1 / scale` radians
+/// wide.
+fn hills(d: V3, scale: f64) -> f64 {
+    let octave = |i: i32| value_noise(d.map(|v| v * scale * f64::from(1 << i))) / f64::from(1 << i);
+    (0..4).map(octave).sum::<f64>() / 1.875
+}
+
+/// The elevation of an island with hills around `center`, in meters. The
+/// coast is about 0.9 radians from the center.
+fn island(d: V3, center: V3) -> f64 {
+    let cone = 2600.0 * (1.0 - angle(d, center) / 0.9);
+    (cone + 900.0 * hills(d, 5.0)).max(-2500.0)
+}
+
+/// Puts the island in the middle of the view of `centered(0, 0)`.
+fn set_island(map: &mut vale_terrain::Heightmap) {
+    let center = lonlat_to_dir(0.0, 0.0);
+    let n = map.face_size();
+    for face in 0..6 {
+        for y in 0..n {
+            for x in 0..n {
+                let meters = island(map.texel_dir(face, x, y), center);
+                map.set(face, x, y, meters_to_level(meters));
+            }
+        }
+    }
+}
+
+/// The number of pixels of the canvas that show a river on land.
+fn river_pixels(h: &Harness<'static, AppState>, img: &image::RgbaImage) -> usize {
+    let globe = &h.state().globe;
+    let land = meters_to_level(150.0);
+    let min = globe.rect.min.ceil();
+    let pixels = img.enumerate_pixels().filter(|(x, y, p)| {
+        let [r, g, b, _] = p.0.map(i32::from);
+        let pos = min + Vec2::new(*x as f32 + 0.5, *y as f32 + 0.5);
+        let on_land = globe
+            .unproject(pos)
+            .is_some_and(|dir| globe.map.sample(dir) >= land);
+        on_land && b > r + 60 && b > g + 30
+    });
+    pixels.count()
+}
+
+fn save(img: &image::RgbaImage, name: &str) {
+    std::fs::create_dir_all("../../target/app").unwrap();
+    img.save(format!("../../target/app/{name}.png")).unwrap();
+}
+
+#[test]
+fn rivers_show_on_the_globe_and_a_switch_hides_them() {
+    let _gpu = one_gpu_test();
+    let mut h = preview_harness();
+    set_island(&mut h.state_mut().globe.map);
+    let on = canvas_image(&mut h);
+    save(&on, "rivers-on");
+    assert!(h.state().globe.channels().unwrap().has_rivers());
+    let count = river_pixels(&h, &on);
+    assert!(count > 300, "{count}");
+
+    h.get_by_label("Rivers").click();
+    h.run_steps(2);
+    assert!(!h.state().globe.preview.rivers);
+    let off = canvas_image(&mut h);
+    save(&off, "rivers-off");
+    assert_eq!(river_pixels(&h, &off), 0);
+}
+
+#[test]
+fn the_flow_map_follows_each_stroke_and_each_undo() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.map.fill(meters_to_level(-100.0));
+    globe.tool = Tool::Brush;
+    globe.brush.strength_m = 4000.0;
+    globe.brush.size_points = 60.0;
+    h.run_steps(2);
+    assert!(!h.state().globe.channels().unwrap().has_rivers());
+
+    // The stroke makes a ridge above the sea. Its sides have a slope.
+    let c = mouse_stroke(&mut h);
+    settle(&mut h);
+    let globe = &h.state().globe;
+    assert!(globe.map.sample(place(&h, c)) > meters_to_level(0.0));
+    assert!(globe.channels().unwrap().has_rivers());
+
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(!h.state().globe.channels().unwrap().has_rivers());
+}
+
+/// Runs frames until the rivers of the last change are on the GPU.
+fn settle_rivers(h: &mut Harness<'static, AppState>) {
+    for _ in 0..4000 {
+        h.step();
+        if !h.state().globe.rivers_pending() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the rivers did not arrive");
+}
+
+#[test]
+fn painting_does_not_wait_for_the_flow_map() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.set_rivers_sync(false);
+    globe.view = GlobeView::centered(0.0, 0.0);
+    set_island(&mut globe.map);
+    globe.tool = Tool::Brush;
+    h.step();
+    settle_rivers(&mut h);
+    let rivers =
+        |h: &Harness<'static, AppState>| h.state().globe.channels().unwrap().bytes().to_vec();
+    let before = rivers(&h);
+    assert!(h.state().globe.channels().unwrap().has_rivers());
+
+    let c = mouse_stroke(&mut h);
+    let under = place(&h, c);
+    let level = h.state().globe.map.sample(under);
+    settle(&mut h);
+    // The stroke is complete, and its rivers are not.
+    let globe = &h.state().globe;
+    assert!(globe.map.sample(under) > level);
+    assert!(globe.can_undo());
+    assert!(globe.rivers_pending());
+    assert_eq!(rivers(&h), before);
+
+    settle_rivers(&mut h);
+    assert_ne!(rivers(&h), before);
+}
+
+#[test]
+fn carve_cuts_a_valley_along_a_river_and_stays_above_the_sea() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.preview.graticule = false;
+    set_island(&mut globe.map);
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Carve;
+    globe.brush.size_points = 80.0;
+    globe.brush.strength_m = 3000.0;
+    h.run_steps(2);
+    save(&canvas_image(&mut h), "carve-before");
+
+    let map = &h.state().globe.map;
+    let n = map.face_size();
+    let texels = || (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let levels = |map: &vale_terrain::Heightmap| -> Vec<u16> {
+        texels()
+            .map(|(face, x, y)| map.get(face, x as i64, y as i64))
+            .collect()
+    };
+    let before = levels(map);
+    // The rivers of the app are the rivers of the whole heightmap.
+    let channels = channel_map(&CoarseHeights::new(map));
+    assert!(channels.bytes() == h.state().globe.channels().unwrap().bytes());
+
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    save(&canvas_image(&mut h), "carve-after");
+    let after = levels(&h.state().globe.map);
+    let sea = meters_to_level(0.0);
+    let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / n as f64 - 0.5;
+    let (mut on_river, mut cut) = (0, 0);
+    for (i, (face, x, y)) in texels().enumerate() {
+        let (old, new) = (before[i], after[i]);
+        let (distance, flow) = channels.sample(face, at(x), at(y));
+        assert!(new <= old, "{new} over {old}");
+        assert!(new >= old.min(sea), "{new} under the sea from {old}");
+        // The valley of the largest river is 6 channel texels wide on each side.
+        if flow == 0 || distance > 6.1 {
+            assert_eq!(new, old, "far from a river, at {distance}");
+        }
+        if distance < 0.5 && flow > 0 && new < old {
+            on_river += 1;
+        }
+        if new + 20 < old {
+            cut += 1;
+        }
+    }
+    assert!(on_river > 50, "{on_river}");
+    assert!(cut > 200, "{cut}");
+}
+
+#[test]
+fn the_brush_panel_has_the_carve_mode() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    h.get_by_label("Carve").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Carve);
+}
+
+/// The elevation of a world with continents, in meters.
+fn continents(d: V3) -> f64 {
+    let wave = |a: f64, b: f64, c: f64, phase: f64| (a * d[0] + b * d[1] + c * d[2] + phase).sin();
+    let broad = wave(2.1, 1.3, -0.7, 0.4) + 0.8 * wave(-1.2, 2.6, 1.9, 2.0);
+    (1300.0 * broad + 1500.0 * hills(d, 6.0) - 300.0).max(-2500.0)
+}
+
+/// Writes images of both layouts with rivers, for a person to look at. The
+/// last image is near a cube edge.
+#[test]
+#[ignore]
+fn screenshots_with_rivers() {
+    use vale_app::ui::Layout;
+    let _gpu = one_gpu_test();
+    for (layout, size, zoom, name) in [
+        (Layout::Desktop, (1440.0, 900.0), 1.0, "rivers-desktop"),
+        (Layout::Pad, (1194.0, 834.0), 1.0, "rivers-pad"),
+        (Layout::Desktop, (1440.0, 900.0), 6.0, "rivers-zoom"),
+    ] {
+        let mut state = state();
+        state.set_layout(layout);
+        state.globe.tool = Tool::Brush;
+        state.globe.brush.mode = Mode::Carve;
+        if zoom > 1.0 {
+            state.globe.view = GlobeView::centered(45.0, 20.0);
+            state.globe.view.zoom = zoom;
+        }
+        let map = &mut state.globe.map;
+        let n = map.face_size();
+        for face in 0..6 {
+            for y in 0..n {
+                for x in 0..n {
+                    let meters = continents(map.texel_dir(face, x, y));
+                    map.set(face, x, y, meters_to_level(meters));
+                }
+            }
+        }
+        let (img, state) = headless::ui_png(state, size, 1.0).unwrap();
+        assert!(state.globe.channels().is_some_and(ChannelMap::has_rivers));
+        save(&img, name);
+    }
 }
