@@ -1211,3 +1211,75 @@ fn with_the_queue_a_finger_rotates_the_pen_paints_and_a_palm_does_nothing() {
     assert!(globe.map.sample(under) > base);
     assert_eq!(globe.stats.last().unwrap().id, 1);
 }
+
+#[test]
+fn the_keyboard_shortcuts_undo_and_redo_a_stroke_of_each_mode() {
+    use egui::{Key, Modifiers};
+    use vale_terrain::{Mode, meters_to_level};
+    let _gpu = one_gpu_test();
+    let redo_keys = [
+        (Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
+        (Modifiers::COMMAND, Key::Y),
+    ];
+    let modes = [Mode::Raise, Mode::Lower, Mode::Smooth, Mode::Flatten];
+    for (i, mode) in modes.into_iter().enumerate() {
+        let mut h = gpu_harness();
+        h.state_mut().globe.tool = Tool::Brush;
+        h.state_mut().globe.brush.flatten_level = Some(meters_to_level(3000.0));
+        h.run_steps(1);
+        let under = place(&h, h.state().globe.rect.center());
+        // A hill gives the smooth mode a slope.
+        mouse_stroke(&mut h);
+        settle(&mut h);
+        let before = (h.state().globe.map.sample(under), canvas_image(&mut h));
+        h.state_mut().globe.brush.mode = mode;
+        mouse_stroke(&mut h);
+        settle(&mut h);
+        let after = (h.state().globe.map.sample(under), canvas_image(&mut h));
+        assert_ne!(after.0, before.0, "{mode:?}");
+        assert!(!h.state().globe.can_redo(), "{mode:?}");
+
+        let check = |h: &mut Harness<'static, AppState>, want: &(u16, image::RgbaImage)| {
+            assert_eq!(h.state().globe.map.sample(under), want.0, "{mode:?}");
+            let image = canvas_image(h);
+            assert!(image.as_raw() == want.1.as_raw(), "{mode:?}: the render");
+        };
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.step();
+        check(&mut h, &before);
+        assert!(h.state().globe.can_undo() && h.state().globe.can_redo());
+        let (modifiers, key) = redo_keys[i % 2];
+        h.key_press_modifiers(modifiers, key);
+        h.step();
+        check(&mut h, &after);
+        assert!(!h.state().globe.can_redo(), "{mode:?}");
+
+        // Two steps go back to the empty world.
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.step();
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.step();
+        assert!(!h.state().globe.can_undo(), "{mode:?}");
+        assert_eq!(h.state().globe.map.allocated_tiles(), 0, "{mode:?}");
+    }
+}
+
+#[test]
+fn a_shortcut_does_nothing_during_a_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    let c = mouse_stroke(&mut h);
+    settle(&mut h);
+    let under = place(&h, c);
+    let painted = h.state().globe.map.sample(under);
+    button(&mut h, egui::PointerButton::Primary, c, true);
+    h.step();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.step();
+    assert!(h.state().globe.busy());
+    button(&mut h, egui::PointerButton::Primary, c, false);
+    settle(&mut h);
+    assert!(h.state().globe.map.sample(under) >= painted);
+    assert!(!h.state().globe.can_redo());
+}

@@ -299,7 +299,19 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             if undo.clicked() {
                 state.globe.undo();
             }
-            widgets::icon_button_at(ui, controls, at(step), "Redo", Icon::Redo, false, false);
+            let can_redo = state.globe.can_redo();
+            let redo = widgets::icon_button_at(
+                ui,
+                controls,
+                at(step),
+                "Redo",
+                Icon::Redo,
+                false,
+                can_redo,
+            );
+            if redo.clicked() {
+                state.globe.redo();
+            }
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
             ui.painter().rect_filled(line, 0.0, theme::divider());

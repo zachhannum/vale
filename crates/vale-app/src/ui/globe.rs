@@ -11,7 +11,7 @@ use vale_terrain::{Mode, level_to_meters};
 use crate::globe::backdrop::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow};
 use crate::globe::math::dir_to_lonlat;
-use crate::globe::nav::{Painting, on_canvas};
+use crate::globe::nav::{Painting, Tap, on_canvas};
 use crate::globe::{Globe, Tool, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 
@@ -210,6 +210,29 @@ fn brush_input(
     }
 }
 
+/// Reads the undo and redo commands. A tap of two fingers and Command+Z
+/// undo. A tap of three fingers, Shift+Command+Z, and Command+Y redo. On
+/// Windows and Linux, Ctrl is the Command key.
+fn history_input(ui: &egui::Ui, globe: &mut Globe) {
+    use egui::{Key, KeyboardShortcut, Modifiers};
+    let tap = globe.nav.take_tap();
+    let typing = ui.ctx().egui_wants_keyboard_input();
+    let key = |modifiers, key| {
+        let shortcut = KeyboardShortcut::new(modifiers, key);
+        !typing && ui.input_mut(|i| i.consume_shortcut(&shortcut))
+    };
+    // A shortcut without Shift also matches the keys with Shift, so the
+    // shortcut with Shift comes first.
+    let redo =
+        key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || key(Modifiers::COMMAND, Key::Y);
+    let undo = key(Modifiers::COMMAND, Key::Z);
+    if redo || tap == Some(Tap::Three) {
+        globe.redo();
+    } else if undo || tap == Some(Tap::Two) {
+        globe.undo();
+    }
+}
+
 /// Draws the globe in the free space of `ui` and reads its input. `cards`:
 /// floating cards cover the canvas, and they can show a blurred copy of it.
 pub(super) fn canvas(
@@ -236,6 +259,7 @@ pub(super) fn canvas(
             globe.nav.update(ui, rect, &resp, &mut globe.flat, painting);
         }
     }
+    history_input(ui, globe);
     let cursor = resp
         .hover_pos()
         .or(globe.input.pos)
