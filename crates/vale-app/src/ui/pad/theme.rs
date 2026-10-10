@@ -7,6 +7,8 @@ use super::geometry::TOUCH;
 pub const CANVAS: Color32 = Color32::from_rgb(15, 17, 19);
 pub const TEXT: Color32 = Color32::from_rgb(231, 233, 236);
 pub const MUTE: Color32 = Color32::from_rgb(174, 181, 190);
+/// The color of a text that warns.
+pub const WARN: Color32 = Color32::from_rgb(242, 184, 92);
 pub const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
 pub const CARD_RADIUS: f32 = 14.0;
 pub const SHEET_RADIUS: f32 = 18.0;

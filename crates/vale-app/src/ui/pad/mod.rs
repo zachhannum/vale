@@ -7,7 +7,7 @@ use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_terrain::Mode;
 
-use super::{AppState, Workspace, elevation, globe, panels};
+use super::{Action, AppState, Workspace, elevation, globe, panels};
 use crate::globe::brush::{FLOW, STRENGTH_M};
 use crate::globe::{Tool, WorldView};
 
@@ -19,6 +19,9 @@ pub mod widgets;
 use geometry::{BrushCard, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
 use icons::Icon;
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
+
+/// The name of the row that imports a heightmap.
+pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
 
 /// A panel that a button of the layout opens.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -556,7 +559,7 @@ fn show_panel(
                         ui.spacing_mut().item_spacing.y = 6.0;
                         match panel {
                             Panel::Brush => brush_body(ui, state, controls),
-                            Panel::Layers if layer => layer_body(ui, state),
+                            Panel::Layers if layer => layer_body(ui, state, controls),
                             Panel::Layers => layers_body(ui, state, controls),
                             Panel::Toolbox => toolbox_body(ui, state),
                         }
@@ -638,7 +641,28 @@ fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     }
 }
 
-fn layer_body(ui: &mut egui::Ui, state: &mut AppState) {
+/// The text of the import that runs, or of the last import, with its color.
+fn import_text(state: &AppState) -> Option<(String, egui::Color32)> {
+    if let Some(progress) = state.globe.import_progress() {
+        return Some((progress, theme::MUTE));
+    }
+    let note = state.import_note.as_ref()?;
+    let color = if note.warning {
+        theme::WARN
+    } else {
+        theme::MUTE
+    };
+    Some((note.text.clone(), color))
+}
+
+fn layer_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let enabled = !state.globe.busy();
+    if widgets::text_row(ui, controls, IMPORT_HEIGHTMAP, 0.0, false, enabled).clicked() {
+        state.actions.push(Action::ImportHeightmapDialog);
+    }
+    if let Some((text, color)) = import_text(state) {
+        ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
+    }
     ui.checkbox(&mut state.globe.preview.greyscale, "Greyscale");
     elevation::controls(ui, state);
 }
