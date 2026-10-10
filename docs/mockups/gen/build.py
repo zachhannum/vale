@@ -540,7 +540,7 @@ ipage('PadMap', 'Vale map on iPad', wswitch('Maps') + modes(MMODES, 'Layout', 'M
       + ''.join('<circle cx="%d" cy="%d" r="16"></circle>' % c for c in CORNERS) + '</g></svg></div>'
       + strip(PMTOOLS, 'Select')
       + panel('Frame', field('Name', 'Vesperan') + '<div class="row"><span class="lab">Projection</span><span>Conformal conic</span></div>' + field('Scale', '1:3,500,000', True)
-              + pick('Page', '12 × 16 in') + pick('Style', 'Tinted relief'), 'right: 16px; top: 96px'))
+              + pick('Page', '12 × 16 in'), 'right: 16px; top: 96px'))
 
 ipage('PadLabels', 'Vale labels on iPad',
       '<div class="view bare" style="position: absolute; inset: 0; max-width: none"><div style="position: absolute; left: -1300px; top: -1603px; width: 3000px; height: 4000px">'
