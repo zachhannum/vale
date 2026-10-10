@@ -17,6 +17,8 @@ pub const PRESSURE_GAIN: f64 = 2.0;
 /// The limits of the brush radius on screen, in points.
 /// The limits of the flow setting.
 pub const FLOW: std::ops::RangeInclusive<f64> = 0.01..=1.0;
+/// The limits of the strength setting, in meters.
+pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
 pub const SIZE_POINTS: std::ops::RangeInclusive<f32> = 4.0..=160.0;
 /// The most passes that the stamps of one frame cost. A smooth stamp costs
 /// one pass. A stamp of another mode costs one part in `GROUP_STAMPS` of a

@@ -6,7 +6,7 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use super::{Action, AppState, ExportFormat, Workspace};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::brush::FLOW;
+use crate::globe::brush::{FLOW, STRENGTH_M};
 use crate::globe::{Tool, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
@@ -144,9 +144,15 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     }
     ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
     ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
+    let strength = egui::Slider::new(&mut globe.brush.strength_m, STRENGTH_M)
+        .logarithmic(true)
+        .fixed_decimals(0)
+        .suffix(" m")
+        .text("Strength");
+    ui.add(strength);
 }
 
-/// The lock of the size, the strength, and the flatten level.
+/// The lock of the size and the flatten level.
 pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     let globe = &mut state.globe;
     let globe_radius = globe.radius();
@@ -154,12 +160,6 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     let lock_box = ui.checkbox(&mut lock, "Lock size");
     lock_box.on_hover_text("The brush keeps its size on the ground when you zoom.");
     globe.brush.set_lock(lock, globe_radius);
-    let strength = egui::Slider::new(&mut globe.brush.strength_m, 50.0..=6000.0)
-        .logarithmic(true)
-        .fixed_decimals(0)
-        .suffix(" m")
-        .text("Strength");
-    ui.add(strength);
 
     if globe.brush.mode != Mode::Flatten {
         globe.pick_level = false;

@@ -10,7 +10,8 @@ use crate::document::Document;
 use crate::globe::Globe;
 use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
 use crate::pipeline::Pipeline;
-use crate::ui::Workspace;
+use crate::ui::pad::Panel;
+use crate::ui::{Layout, Workspace};
 
 #[derive(Parser, Clone, Debug)]
 #[command(
@@ -22,6 +23,12 @@ pub struct Args {
     /// The workspace that the app opens.
     #[arg(long, value_enum, default_value_t)]
     pub workspace: Workspace,
+    /// The arrangement of the controls. The iPad uses `pad`.
+    #[arg(long, value_enum, default_value_t)]
+    pub layout: Layout,
+    /// With --layout pad: open this panel. You can give more than one.
+    #[arg(long, value_enum, value_name = "PANEL")]
+    pub panel: Vec<Panel>,
     /// GeoJSON files to open in place of the sample world.
     #[arg(value_name = "FILES")]
     pub files: Vec<PathBuf>,
