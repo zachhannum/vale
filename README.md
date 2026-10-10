@@ -25,7 +25,8 @@ The window opens on the globe workspace. The globe shows the heightmap of the wo
 - Hold Shift and drag to twist the globe about the middle of the view. On a trackpad, use the rotate gesture.
 - On a touch screen, pinch and twist with two fingers. The place under your fingers stays under your fingers.
 - Click "Brush" in the tool bar to paint the heightmap. A pen or the left mouse button paints. A finger, the other mouse buttons, and Shift with a drag move the globe.
-- The brush panel opens with the brush tool. It has the four modes (raise, lower, smooth, and flatten), the radius in kilometers of the world, the hardness, and the strength. A pen sets the flow from its pressure, and the mouse paints with a fixed flow.
+- The brush panel opens with the brush tool. It has the five modes (raise, lower, smooth, flatten, and carve), the radius in kilometers of the world, the hardness, and the strength. A pen sets the flow from its pressure, and the mouse paints with a fixed flow.
+- The globe and the flat view draw the rivers that the painted land implies, and the carve mode cuts valleys along them. A Rivers switch in the elevation controls hides the rivers.
 - The brush keeps its size on screen when you zoom. Select "Lock size" to keep its size on the ground.
 - The flatten mode moves the ground to the level under the start of the stroke. To set a fixed level, click "Pick from globe", and then press on the globe.
 - Click "Flat" in the tool bar to show the whole world as one flat map. Click it again to go back to the globe. The tool and the panels stay. A drag moves the map, and the wheel zooms. You can zoom out until the map has a quarter of the size of the canvas. At each zoom, you can move each place of the map to the middle of the canvas. The brush paints the same heightmap, and its outline shows the ground that the stamp covers. In the equirectangular projection, the outline is wide near a pole.
