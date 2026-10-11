@@ -36,6 +36,7 @@ fn run() -> anyhow::Result<u8> {
         for panel in &args.panel {
             state.pad.open(*panel);
         }
+        state.pad.more = args.more_tools;
         apply_globe(&args, &mut state.globe, face_size)?;
         if let Some(session) = &session
             && let Some(map) = session.load_map()?

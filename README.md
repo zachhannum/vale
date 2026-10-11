@@ -25,7 +25,7 @@ The window opens on the globe workspace. The globe shows the heightmap of the wo
 - Hold Shift and drag to twist the globe about the middle of the view. On a trackpad, use the rotate gesture.
 - On a touch screen, pinch and twist with two fingers. The place under your fingers stays under your fingers.
 - Click "Brush" in the tool bar to paint the heightmap. A pen or the left mouse button paints. A finger, the other mouse buttons, and Shift with a drag move the globe.
-- The brush panel opens with the brush tool. It has the six modes (raise, lower, smooth, flatten, carve, and erode), the radius in kilometers of the world, the hardness, and the strength. A pen sets the flow from its pressure, and the mouse paints with a fixed flow.
+- The brush panel opens with the brush tool. It has the seven modes (raise, lower, smooth, flatten, carve, erode, and weather), the radius in kilometers of the world, the hardness, and the strength. In the weather mode, an Angle slider sets the steepest slope that the brush leaves. A pen sets the flow from its pressure, and the mouse paints with a fixed flow.
 - The globe and the flat view draw the rivers that the painted land implies, and the carve mode cuts valleys along them. While you hold the brush, the erode mode cuts valleys that branch up toward the ridges. When you zoom in, the rivers and the valleys become finer. A Rivers switch in the elevation controls hides the rivers. A slider below it sets the width of the lines.
 - The brush keeps its size on screen when you zoom. Select "Lock size" to keep its size on the ground.
 - The flatten mode moves the ground to the level under the start of the stroke. To set a fixed level, click "Pick from globe", and then press on the globe.
@@ -80,7 +80,7 @@ cargo run --release -p vale-app -- --report
 cargo run --release -p vale-app -- --stroke-test --face-size 8192
 ```
 
-`--screenshot` draws the full UI in the globe workspace. With `--layout pad` it draws the iPad layout, and `--panel brush`, `--panel layers`, or `--panel toolbox` opens a panel of that layout. With `--view flat` it draws the flat view of the world, and `--flat-projection` and `--flat-center` set its projection. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
+`--screenshot` draws the full UI in the globe workspace. With `--layout pad` it draws the iPad layout. In that layout, `--panel brush`, `--panel layers`, or `--panel toolbox` opens a panel, and `--more-tools` opens the menu of the More cell. With `--view flat` it draws the flat view of the world, and `--flat-projection` and `--flat-center` set its projection. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
 
 | Argument | Meaning |
 | --- | --- |

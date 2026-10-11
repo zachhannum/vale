@@ -24,6 +24,11 @@ const SMOOTH_TOLERANCE: u16 = 2;
 /// stamps touch one texel, and the largest difference is 1.
 const ADD_STROKE_TOLERANCE: u16 = 3;
 
+/// The same for weather stamps. Each pair of texels moves a whole number of
+/// levels. The 32-bit weight of a pair can give one level more or less, and a
+/// texel is in four pairs.
+const WEATHER_TOLERANCE: u16 = 2;
+
 struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -223,6 +228,7 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         mode,
         level: 52000,
         strength: 3000.0,
+        talus: 0.0,
     }
 }
 
@@ -324,6 +330,85 @@ fn gpu_matches_cpu_for_a_stroke() {
     }
     assert!(most_batches > 1);
     eprintln!("stroke, largest difference for {MODES:?}: {worst:?}");
+}
+
+fn weather(center: V3, radius: f64, hardness: f64) -> Stamp {
+    Stamp {
+        talus: 40.0,
+        ..stamp(center, radius, hardness, Mode::Weather)
+    }
+}
+
+#[test]
+fn gpu_weather_matches_cpu_for_one_stamp() {
+    let places = [
+        ("face center", lonlat_to_dir(1.3, 0.7)),
+        ("face edge", lonlat_to_dir(45.0, 0.0)),
+        ("cube corner", lonlat_to_dir(45.0, 35.264)),
+        ("pole", lonlat_to_dir(0.0, 90.0)),
+    ];
+    let mut worst = 0;
+    for (place, center) in places {
+        for radius in [0.01, 0.06, 0.3] {
+            for hardness in [0.0, 0.5, 0.95] {
+                let mut cpu = hills(256);
+                let before = levels(&cpu);
+                let stamp = weather(center, radius, hardness);
+                let difference = run(&mut cpu, &[stamp]).difference;
+                assert!(levels(&cpu) != before, "{place}, radius {radius}");
+                assert!(
+                    difference <= WEATHER_TOLERANCE,
+                    "weather at the {place}, radius {radius}, hardness {hardness}: \
+                     the difference is {difference}"
+                );
+                worst = worst.max(difference);
+            }
+        }
+    }
+    eprintln!("one weather stamp, largest difference: {worst}");
+}
+
+/// A stroke of weather stamps that overlap, across a face edge and near a
+/// cube corner.
+fn weather_stroke(lat: f64, radius: f64, hardness: f64) -> Vec<Stamp> {
+    let count = STAMP_SLOTS as usize / 2;
+    (0..count)
+        .map(|i| {
+            let lon = 33.0 + 24.0 * i as f64 / count as f64;
+            weather(lonlat_to_dir(lon, lat), radius, hardness)
+        })
+        .collect()
+}
+
+#[test]
+fn gpu_weather_matches_cpu_for_a_stroke() {
+    let mut worst = 0;
+    for (lat, radius, hardness) in [(4.0, 0.07, 0.5), (35.0, 0.12, 0.0), (20.0, 0.03, 0.95)] {
+        let mut cpu = hills(256);
+        let difference = run(&mut cpu, &weather_stroke(lat, radius, hardness)).difference;
+        assert!(
+            difference <= WEATHER_TOLERANCE,
+            "weather stroke at latitude {lat}: the difference is {difference}"
+        );
+        worst = worst.max(difference);
+    }
+    eprintln!("weather stroke, largest difference: {worst}");
+}
+
+#[test]
+fn gpu_weather_keeps_the_sum_of_the_levels() {
+    let sum = |faces: &[Vec<u16>]| -> u64 { faces.iter().flatten().map(|&l| u64::from(l)).sum() };
+    let mut cpu = hills(256);
+    let before: Vec<Vec<u16>> = (0..FACES)
+        .map(|face| {
+            let mut old = Vec::new();
+            cpu.read_rect(face, full(256), &mut old);
+            old
+        })
+        .collect();
+    let faces = run(&mut cpu, &weather_stroke(35.0, 0.12, 0.0)).faces;
+    assert!(faces != before);
+    assert_eq!(sum(&faces), sum(&before));
 }
 
 /// On a large face, a small brush is a few texels wide. The angles are then
@@ -851,9 +936,10 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
 
 #[test]
 fn a_group_has_one_mode_and_no_smooth_stamp() {
-    use Mode::{Flatten, Lower, Raise, Smooth};
+    use Mode::{Flatten, Lower, Raise, Smooth, Weather};
     let modes = [
-        Raise, Raise, Smooth, Smooth, Flatten, Lower, Lower, Lower, Raise, Smooth, Flatten, Flatten,
+        Raise, Raise, Smooth, Smooth, Flatten, Lower, Lower, Lower, Raise, Smooth, Flatten,
+        Flatten, Weather, Weather,
     ];
     let stamps: Vec<Stamp> = modes
         .into_iter()
@@ -864,7 +950,7 @@ fn a_group_has_one_mode_and_no_smooth_stamp() {
     let GroupRun {
         groups, difference, ..
     } = run_groups(&mut cpu, &stamps);
-    assert_eq!(groups, [2, 1, 1, 1, 3, 1, 1, 2]);
+    assert_eq!(groups, [2, 1, 1, 1, 3, 1, 1, 2, 1, 1]);
     assert!(difference <= SMOOTH_TOLERANCE, "{difference}");
 }
 

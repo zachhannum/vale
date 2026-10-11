@@ -19,6 +19,7 @@ fn paint(map: &mut Heightmap, lon: f64, lat: f64, radius: f64) {
         mode: Mode::Raise,
         level: 0,
         strength: 9000.0,
+        talus: 0.0,
     });
     assert!(map.end_stroke());
 }
@@ -207,6 +208,7 @@ fn a_stroke_that_did_not_end_is_not_in_the_file() {
         mode: Mode::Raise,
         level: 0,
         strength: 9000.0,
+        talus: 0.0,
     });
     assert!(texels(&map) != first);
     drop(session);

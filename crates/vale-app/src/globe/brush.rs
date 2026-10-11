@@ -19,6 +19,9 @@ pub const PRESSURE_GAIN: f64 = 2.0;
 pub const FLOW: std::ops::RangeInclusive<f64> = 0.01..=1.0;
 /// The limits of the strength setting, in meters.
 pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
+/// The limits of the angle of the weather mode, in degrees. Painted land on
+/// a world of the size of the Earth has slopes of 3 degrees or less.
+pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
 pub const SIZE_POINTS: std::ops::RangeInclusive<f32> = 4.0..=160.0;
 /// The most passes that the stamps of one frame cost. A smooth stamp costs
 /// one pass. A stamp of another mode costs one part in `GROUP_STAMPS` of a
@@ -43,6 +46,8 @@ pub struct BrushSettings {
     /// The target of the flatten mode. `None`: the level under the start of
     /// the stroke.
     pub flatten_level: Option<u16>,
+    /// The steepest slope that the weather mode leaves, in degrees.
+    pub talus_deg: f64,
 }
 
 impl Default for BrushSettings {
@@ -55,6 +60,7 @@ impl Default for BrushSettings {
             flow: 1.0,
             strength_m: 1500.0,
             flatten_level: None,
+            talus_deg: 0.5,
         }
     }
 }
@@ -205,13 +211,15 @@ impl Tip<'_> {
             radius: self.radius,
             hardness: self.brush.hardness,
             flow: match self.brush.mode {
-                Mode::Raise | Mode::Lower | Mode::Carve | Mode::Erode => flow,
+                Mode::Raise | Mode::Lower | Mode::Carve | Mode::Erode | Mode::Weather => flow,
                 // These two modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten => flow * 0.3,
             },
             mode: self.brush.mode,
             level: self.level,
             strength: self.brush.strength_m * STAMP_SPACING / span,
+            // The globe sets the slope, which follows the size of the world.
+            talus: 0.0,
         }
     }
 }
@@ -310,7 +318,7 @@ pub fn plan_texels(plan: &StampPlan) -> u64 {
 /// The cost of a stamp, where `GROUP_STAMPS` is the cost of one pass.
 fn stamp_cost(plan: &StampPlan) -> usize {
     match plan.stamp.mode {
-        Mode::Smooth => GROUP_STAMPS,
+        Mode::Smooth | Mode::Weather => GROUP_STAMPS,
         Mode::Raise | Mode::Lower | Mode::Flatten | Mode::Carve | Mode::Erode => 1,
     }
 }
@@ -556,6 +564,7 @@ mod tests {
             mode,
             level: 0,
             strength: 1.0,
+            talus: 0.0,
         })
     }
 

@@ -1056,6 +1056,7 @@ mod tests {
             mode: Mode::Erode,
             level: 0,
             strength: 1000.0,
+            talus: 0.0,
         };
         map.begin_stroke();
         assert_eq!(map.stamp(&stamp), 0);

@@ -11,7 +11,7 @@ use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 use vale_terrain::{
     ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, TexelRect, Window,
-    WindowHeights, meters_to_level,
+    WindowHeights, meters_to_level, talus_levels,
 };
 
 pub mod backdrop;
@@ -179,6 +179,8 @@ pub struct Globe {
     pub tool: Tool,
     pub preview: Preview,
     pub brush: BrushSettings,
+    /// The radius of the world, in kilometers. Set by the canvas each frame.
+    pub world_km: f64,
     pub input: BrushInput,
     pub pen: Pen,
     /// The next press on the globe picks the flatten level.
@@ -242,6 +244,7 @@ impl Globe {
             tool: Tool::default(),
             preview: Preview::default(),
             brush: BrushSettings::default(),
+            world_km: 6371.0,
             input: BrushInput::default(),
             pen: Pen::default(),
             pick_level: false,
@@ -738,6 +741,11 @@ impl Globe {
                             erode.sample(&self.brush, sample);
                         } else {
                             let map = &self.map;
+                            let talus = talus_levels(
+                                self.brush.talus_deg,
+                                map.face_size(),
+                                self.world_km * 1000.0,
+                            );
                             let level_at = |dir: V3| map.sample(dir);
                             let mut stamps = Vec::new();
                             active.stroke.add_sample(
@@ -747,7 +755,8 @@ impl Globe {
                                 level_at,
                                 &mut stamps,
                             );
-                            for stamp in &stamps {
+                            for stamp in &mut stamps {
+                                stamp.talus = talus;
                                 self.backlog.push(map.stamp_plan(stamp), time);
                             }
                         }
@@ -757,11 +766,17 @@ impl Globe {
                     if let Some(active) = self.stroke.as_mut().filter(|a| !a.ended) {
                         active.ended = true;
                         let map = &self.map;
+                        let talus = talus_levels(
+                            self.brush.talus_deg,
+                            map.face_size(),
+                            self.world_km * 1000.0,
+                        );
                         let mut stamps = Vec::new();
                         active
                             .stroke
                             .finish(&self.brush, map.face_size(), &mut stamps);
-                        for stamp in &stamps {
+                        for stamp in &mut stamps {
+                            stamp.talus = talus;
                             let time = active.sampled.unwrap_or_else(Instant::now);
                             self.backlog.push(map.stamp_plan(stamp), time);
                         }

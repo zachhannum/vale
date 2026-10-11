@@ -1593,6 +1593,88 @@ fn the_brush_panel_has_the_erode_mode() {
     assert_eq!(h.state().globe.brush.mode, Mode::Erode);
 }
 
+#[test]
+fn the_brush_panel_has_the_weather_mode_and_its_angle_slider() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Raise);
+    assert!(h.query_all_by_label("Angle").next().is_none());
+    h.get_by_label("Weather").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Weather);
+    assert!(h.query_all_by_label("Angle").next().is_some());
+    assert_eq!(h.state().globe.brush.talus_deg, 0.5);
+}
+
+/// The level of each texel of the heightmap.
+fn map_levels(map: &vale_terrain::Heightmap) -> Vec<u16> {
+    let n = map.face_size();
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    texels
+        .map(|(face, x, y)| map.get(face, x as i64, y as i64))
+        .collect()
+}
+
+#[test]
+fn weather_lowers_a_steep_hill_and_one_undo_puts_it_back() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    // A texel of this world is 614 m wide, so the limit of 10 degrees is
+    // 108 m for each texel.
+    h.state_mut().doc.set_radius_km(100.0);
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Weather;
+    globe.brush.talus_deg = 10.0;
+    globe.brush.size_points = 40.0;
+    // A cone of 3,000 m with a side of 375 m for each texel.
+    let top = lonlat_to_dir(0.0, 0.0);
+    let n = globe.map.face_size();
+    for face in 0..6 {
+        for y in 0..n {
+            for x in 0..n {
+                let part = 1.0 - angle(globe.map.texel_dir(face, x, y), top) / 0.05;
+                if part > 0.0 {
+                    globe.map.set(face, x, y, meters_to_level(3000.0 * part));
+                }
+            }
+        }
+    }
+    h.run_steps(2);
+    let before = map_levels(&h.state().globe.map);
+    let peak = h.state().globe.map.sample(top);
+    let sum = |levels: &[u16]| levels.iter().map(|&l| i64::from(l)).sum::<i64>();
+
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.world_km, 100.0);
+    let after = map_levels(&globe.map);
+    let lowered = globe.map.sample(top);
+    assert!(lowered + 200 < peak, "{lowered} from {peak}");
+    let (down, up) = before
+        .iter()
+        .zip(&after)
+        .fold((0, 0), |(down, up), (b, a)| {
+            (down + usize::from(a < b), up + usize::from(a > b))
+        });
+    assert!(down > 50 && up > 50, "{down} down, {up} up");
+    // The ground moves, and its amount stays.
+    assert_eq!(sum(&after), sum(&before));
+    assert_eq!(globe.stats.last().unwrap().id, 1);
+    std::fs::create_dir_all("../../target/app").unwrap();
+    let frame = h.render().unwrap();
+    frame
+        .save("../../target/app/test-weather-panel.png")
+        .unwrap();
+
+    assert!(h.state_mut().globe.undo());
+    assert!(map_levels(&h.state().globe.map) == before);
+    assert!(!h.state().globe.can_undo());
+}
+
 /// The elevation of a world with continents, in meters.
 fn continents(d: V3) -> f64 {
     let wave = |a: f64, b: f64, c: f64, phase: f64| (a * d[0] + b * d[1] + c * d[2] + phase).sin();
