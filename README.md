@@ -58,13 +58,13 @@ cargo run --release -p vale-app -- path/to/file.geojson
 
 The file must use longitude and latitude. Vale copies the data into memory.
 
-This command keeps the world and the vector layers in a project file:
+This command keeps the world, the vector layers, and the heightmap in a project file:
 
 ```sh
 cargo run --release -p vale-app -- --project path/to/world.gpkg
 ```
 
-The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after each change. The file does not hold the heightmap or the styles. On iPad, the app keeps one project file in its container.
+The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after each change. A save after a brush stroke writes only the tiles that the stroke changed. The file does not hold the styles. On iPad, the app keeps one project file in its container.
 
 ## Headless use
 
@@ -88,10 +88,10 @@ cargo run --release -p vale-app -- --stroke-test --face-size 8192
 | `--projection <ID>` | `equal-earth`, `mercator`, `lambert-azimuthal`, `orthographic`, or `stereographic` |
 | `--center <LON,LAT>` | Center of the projection |
 | `--radius-km <KM>` | Radius of the world. The default is 6371. A project file that exists gives its own radius. |
-| `--project <GPKG>` | Project file for the world and the vector layers |
+| `--project <GPKG>` | Project file for the world, the vector layers, and the heightmap |
 | `--look-at <LON,LAT>` | Put this place at the middle of the view, on the globe and on the map |
 | `--zoom <F>` | Zoom factor on the fitted view, on the globe and on the map |
-| `--face-size <N>` | Pixels on one edge of a heightmap face. The default is 8192 in the window and 1024 without a window. |
+| `--face-size <N>` | Pixels on one edge of a heightmap face. The default is 8192 in the window and 1024 without a window. A project file that holds a heightmap gives its own face size. |
 | `--import-heightmap <FILE>` | Import this equirectangular PNG or TIFF heightmap into the globe |
 | `--size <WxH>` | Size in points. The default is 1280x800. |
 | `--pixel-ratio <F>` | Pixels per point of the output |
@@ -151,7 +151,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 
 ## What the prototype leaves out
 
-- The heightmap and the styles in the project file. Undo and redo are for brush strokes only. Without `--project`, the session ends when the window closes.
+- The styles in the project file. Undo and redo are for brush strokes only. Without `--project`, the session ends when the window closes.
 - Raster layers, SVG and Shapefile import, and the command Replace from file.
 - Rule-based styles. A layer has one fill, one stroke, and one circle symbol.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.

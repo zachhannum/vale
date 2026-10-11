@@ -31,6 +31,17 @@ pub extern "C" fn vale_app_main() {
     let result = ui::AppState::new(doc).and_then(|mut state| {
         state.file_buttons = false;
         state.globe.set_face_size(globe::WINDOW_FACE_SIZE);
+        // A session that cannot read its heightmap must not save over it.
+        let session = session.and_then(|session| match session.load_map() {
+            Ok(map) => {
+                map.into_iter().for_each(|map| state.globe.set_map(map));
+                Some(session)
+            }
+            Err(err) => {
+                eprintln!("vale-app: the heightmap of the project: {err}");
+                None
+            }
+        });
         app::run_window(state, (1280.0, 800.0), None, session)
     });
     if let Err(err) = result {

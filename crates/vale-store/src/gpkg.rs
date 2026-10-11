@@ -1,7 +1,8 @@
 //! The project file: a GeoPackage with extra `vale_` tables.
 //!
 //! Each vector layer is one GeoPackage feature table. The `vale_` tables hold
-//! the world, the layer order, and the attribute schema. They are in
+//! the world, the layer order, the attribute schema, the rasters, and the
+//! raster tiles. They are in
 //! `gpkg_contents` with the data type `vale`. GDAL, and thus QGIS, lists a
 //! table that is not in `gpkg_contents` as a layer, and it does not list a
 //! table with a data type that it does not know.
@@ -13,14 +14,18 @@ use std::path::Path;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
 
-use crate::{Feature, Geometry, GeometryKind, Layer, LayerId, LonLat, Project, Uuid, Value, World};
+use crate::tile::{self, TILE_SIZE};
+use crate::{
+    Feature, Geometry, GeometryKind, Layer, LayerId, LonLat, Project, Raster, RasterId, Rgb, Uuid,
+    Value, World,
+};
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -28,6 +33,8 @@ const APPLICATION_ID: i64 = 0x4750_4B47;
 const GPKG_VERSION: i64 = 10300;
 /// The row of the world sphere in `gpkg_spatial_ref_sys`.
 const WORLD_SRS: i32 = 100_000;
+/// The number of tiles that one step of a save or a load holds in memory.
+const TILE_BATCH: usize = 256;
 
 const WGS84: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4326"]]"#;
 
@@ -91,6 +98,37 @@ fn corrupt(what: impl Into<String>) -> StoreError {
     StoreError::Corrupt(what.into())
 }
 
+/// The key of one raster tile inside its raster.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TileKey {
+    /// Level 0 has the face size of the raster.
+    pub level: u8,
+    /// A number from 0 to 5.
+    pub face: u8,
+    /// The column and the row count tiles from the corner of the face.
+    pub column: u32,
+    pub row: u32,
+}
+
+/// The tiles of one raster that are not the same as in the file.
+pub struct TileChanges<'a> {
+    pub raster: RasterId,
+    /// The file must hold no tile of the raster other than `put`.
+    pub all: bool,
+    /// The tiles to write. Each one has `TILE_SIZE` by `TILE_SIZE` pixels,
+    /// row by row.
+    pub put: Vec<(TileKey, &'a [u16])>,
+    /// The tiles to remove.
+    pub delete: Vec<TileKey>,
+}
+
+/// The raster tile rows that a save changed.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SaveStats {
+    pub tiles_written: usize,
+    pub tiles_deleted: usize,
+}
+
 /// An open project file.
 pub struct ProjectFile {
     conn: Connection,
@@ -129,8 +167,20 @@ impl ProjectFile {
         Ok((ProjectFile { conn }, project))
     }
 
-    /// Writes the project in one transaction. Each feature keeps its UUID.
+    /// Writes the project in one transaction. Each feature keeps its UUID,
+    /// and each raster keeps its tiles.
     pub fn save(&mut self, project: &Project) -> Result<(), StoreError> {
+        self.save_tiles(project, &[]).map(|_| ())
+    }
+
+    /// Writes the project and the changed raster tiles in one transaction.
+    /// Each other tile stays as it is. A raster that is not in the project
+    /// loses its tiles, and so does a raster with a new face size.
+    pub fn save_tiles(
+        &mut self,
+        project: &Project,
+        changes: &[TileChanges],
+    ) -> Result<SaveStats, StoreError> {
         let tx = self.conn.transaction()?;
         clear(&tx)?;
         write_world(&tx, &project.world)?;
@@ -143,8 +193,61 @@ impl ProjectFile {
             let table = table_name(layer, &mut tables);
             write_layer(&tx, position, layer, &table)?;
         }
+        let mut stats = write_rasters(&tx, project)?;
+        for change in changes {
+            write_tiles(&tx, change, &mut stats)?;
+        }
         tx.commit()?;
-        Ok(())
+        Ok(stats)
+    }
+
+    /// Reads each tile of a raster, in key order. `tile` gets `TILE_SIZE` by
+    /// `TILE_SIZE` pixels, row by row.
+    pub fn load_tiles(
+        &self,
+        raster: &Raster,
+        mut tile: impl FnMut(TileKey, Vec<u16>),
+    ) -> Result<(), StoreError> {
+        let per_side = (raster.face_size as usize).div_ceil(TILE_SIZE) as u32;
+        let mut rows = self.conn.prepare(
+            "SELECT level, face, tile_column, tile_row, data FROM vale_raster_tile
+             WHERE raster_id = ?1 ORDER BY level, face, tile_row, tile_column",
+        )?;
+        let mut rows = rows.query([raster.id.0])?;
+        let mut batch: Vec<(TileKey, Vec<u8>)> = Vec::new();
+        loop {
+            let row = rows.next()?;
+            if let Some(r) = row {
+                let key: (i64, i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+                let inside = |n: i64, end: u32| (0..i64::from(end)).contains(&n);
+                let (level, face, column, tile_row) = key;
+                if level != 0
+                    || !inside(face, 6)
+                    || !inside(column, per_side)
+                    || !inside(tile_row, per_side)
+                {
+                    return Err(corrupt(format!("raster tile key {key:?}")));
+                }
+                let key = TileKey {
+                    level: 0,
+                    face: face as u8,
+                    column: column as u32,
+                    row: tile_row as u32,
+                };
+                batch.push((key, r.get(4)?));
+            }
+            if batch.len() == TILE_BATCH || row.is_none() {
+                let pixels = tile::parallel_map(&batch, |(_, blob)| tile::decode(blob));
+                for ((key, _), pixels) in batch.drain(..).zip(pixels) {
+                    let pixels = pixels
+                        .ok_or_else(|| corrupt(format!("the pixels of raster tile {key:?}")))?;
+                    tile(key, pixels);
+                }
+            }
+            if row.is_none() {
+                return Ok(());
+            }
+        }
     }
 }
 
@@ -269,6 +372,39 @@ fn v1(tx: &Transaction) -> rusqlite::Result<()> {
         [WGS84],
     )?;
     Ok(())
+}
+
+/// The raster tables.
+fn v2(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE vale_raster (
+           id INTEGER PRIMARY KEY,
+           position INTEGER NOT NULL,
+           name TEXT NOT NULL,
+           face_size INTEGER NOT NULL,
+           unit TEXT NOT NULL,
+           value_min REAL NOT NULL,
+           value_max REAL NOT NULL,
+           base INTEGER NOT NULL,
+           limits TEXT NOT NULL,
+           ramp_sea TEXT NOT NULL,
+           ramp_land TEXT NOT NULL);
+         CREATE TABLE vale_raster_tile (
+           raster_id INTEGER NOT NULL REFERENCES vale_raster(id),
+           level INTEGER NOT NULL,
+           face INTEGER NOT NULL CHECK (face BETWEEN 0 AND 5),
+           tile_column INTEGER NOT NULL,
+           tile_row INTEGER NOT NULL,
+           data BLOB NOT NULL,
+           PRIMARY KEY (raster_id, level, face, tile_column, tile_row));
+         INSERT INTO vale_meta (key, value) VALUES ('next_raster_id', '0');
+         INSERT INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_raster', 'vale', 'vale_raster'),
+                  ('vale_raster_tile', 'vale', 'vale_raster_tile');
+         INSERT INTO gpkg_extensions
+           SELECT table_name, NULL, 'vale_project', 'Records of the Vale app', 'read-write'
+           FROM gpkg_contents WHERE table_name IN ('vale_raster', 'vale_raster_tile');",
+    )
 }
 
 fn quote(identifier: &str) -> String {
@@ -541,6 +677,160 @@ fn write_layer(
     Ok(())
 }
 
+fn colors_text(colors: &[Rgb]) -> String {
+    let hex: Vec<String> = colors
+        .iter()
+        .map(|[r, g, b]| format!("{r:02x}{g:02x}{b:02x}"))
+        .collect();
+    hex.join(",")
+}
+
+fn parse_colors(text: &str) -> Option<Vec<Rgb>> {
+    let color = |hex: &str| {
+        let n = u32::from_str_radix(hex, 16).ok()?;
+        (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some([
+            (n >> 16) as u8,
+            (n >> 8) as u8,
+            n as u8,
+        ])
+    };
+    text.split(',')
+        .filter(|s| !s.is_empty())
+        .map(color)
+        .collect()
+}
+
+fn limits_text(limits: &[f64]) -> String {
+    let numbers: Vec<String> = limits.iter().map(f64::to_string).collect();
+    numbers.join(",")
+}
+
+fn parse_limits(text: &str) -> Option<Vec<f64>> {
+    let numbers = text.split(',').filter(|s| !s.is_empty());
+    numbers.map(|s| s.parse().ok()).collect()
+}
+
+/// Writes the raster records. The tiles of a raster stay, but not if the
+/// raster is no longer in the project or its face size is new.
+fn write_rasters(tx: &Transaction, project: &Project) -> Result<SaveStats, StoreError> {
+    let stored: Vec<(u32, u32)> = tx
+        .prepare("SELECT id, face_size FROM vale_raster")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut stats = SaveStats::default();
+    for (id, face_size) in stored {
+        let raster = project.raster(RasterId(id));
+        if raster.is_none_or(|r| r.face_size != face_size) {
+            stats.tiles_deleted +=
+                tx.execute("DELETE FROM vale_raster_tile WHERE raster_id = ?1", [id])?;
+        }
+        if raster.is_none() {
+            tx.execute("DELETE FROM vale_raster WHERE id = ?1", [id])?;
+        }
+    }
+    for (position, r) in project.rasters.iter().enumerate() {
+        // A replaced row is a deleted row, and the tiles refer to the row.
+        tx.execute(
+            "INSERT INTO vale_raster (id, position, name, face_size, unit, value_min,
+               value_max, base, limits, ramp_sea, ramp_land)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT (id) DO UPDATE SET
+               position = excluded.position, name = excluded.name,
+               face_size = excluded.face_size, unit = excluded.unit,
+               value_min = excluded.value_min, value_max = excluded.value_max,
+               base = excluded.base, limits = excluded.limits,
+               ramp_sea = excluded.ramp_sea, ramp_land = excluded.ramp_land",
+            params![
+                r.id.0,
+                position as i64,
+                r.name,
+                r.face_size,
+                r.unit,
+                r.value_min,
+                r.value_max,
+                r.base,
+                limits_text(&r.limits),
+                colors_text(&r.ramp_sea),
+                colors_text(&r.ramp_land),
+            ],
+        )?;
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('next_raster_id', ?1)",
+        [project.next_raster_id.to_string()],
+    )?;
+    Ok(stats)
+}
+
+fn write_tiles(
+    tx: &Transaction,
+    change: &TileChanges,
+    stats: &mut SaveStats,
+) -> Result<(), StoreError> {
+    let raster = change.raster.0;
+    if change.all {
+        stats.tiles_deleted += tx.execute(
+            "DELETE FROM vale_raster_tile WHERE raster_id = ?1",
+            [raster],
+        )?;
+    }
+    let mut delete = tx.prepare(
+        "DELETE FROM vale_raster_tile WHERE raster_id = ?1 AND level = ?2 AND face = ?3
+           AND tile_column = ?4 AND tile_row = ?5",
+    )?;
+    for key in &change.delete {
+        stats.tiles_deleted +=
+            delete.execute(params![raster, key.level, key.face, key.column, key.row])?;
+    }
+    let mut put = tx.prepare(
+        "INSERT INTO vale_raster_tile (raster_id, level, face, tile_column, tile_row, data)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT DO UPDATE SET data = excluded.data",
+    )?;
+    for batch in change.put.chunks(TILE_BATCH) {
+        let blobs = tile::parallel_map(batch, |(_, pixels)| tile::encode(pixels));
+        for ((key, _), blob) in batch.iter().zip(blobs) {
+            put.execute(params![
+                raster, key.level, key.face, key.column, key.row, blob
+            ])?;
+            stats.tiles_written += 1;
+        }
+    }
+    Ok(())
+}
+
+fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
+    let mut rows = conn.prepare(
+        "SELECT id, name, face_size, unit, value_min, value_max, base, limits, ramp_sea,
+           ramp_land
+         FROM vale_raster ORDER BY position, id",
+    )?;
+    let mut rows = rows.query([])?;
+    let mut rasters = Vec::new();
+    while let Some(r) = rows.next()? {
+        let name: String = r.get(1)?;
+        let bad = |what: &str| corrupt(format!("the {what} of raster {name:?}"));
+        let (face_size, base): (i64, i64) = (r.get(2)?, r.get(6)?);
+        let text = |i: usize| r.get::<_, String>(i);
+        rasters.push(Raster {
+            id: RasterId(r.get(0)?),
+            face_size: u32::try_from(face_size)
+                .ok()
+                .filter(|&n| n > 0)
+                .ok_or_else(|| bad("face size"))?,
+            unit: r.get(3)?,
+            value_min: r.get(4)?,
+            value_max: r.get(5)?,
+            base: u16::try_from(base).map_err(|_| bad("base"))?,
+            limits: parse_limits(&text(7)?).ok_or_else(|| bad("band limits"))?,
+            ramp_sea: parse_colors(&text(8)?).ok_or_else(|| bad("ramp"))?,
+            ramp_land: parse_colors(&text(9)?).ok_or_else(|| bad("ramp"))?,
+            name: name.clone(),
+        });
+    }
+    Ok(rasters)
+}
+
 fn load(conn: &Connection) -> Result<Project, StoreError> {
     use rusqlite::OptionalExtension;
     let world = conn
@@ -556,6 +846,10 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
     let next_id = next_id
         .parse()
         .map_err(|_| corrupt(format!("next layer ID {next_id:?}")))?;
+    let next_raster_id = meta(conn, "next_raster_id")?;
+    let next_raster_id = next_raster_id
+        .parse()
+        .map_err(|_| corrupt(format!("next raster ID {next_raster_id:?}")))?;
 
     let mut layers = Vec::new();
     let mut rows = conn
@@ -581,6 +875,8 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         world,
         layers,
         next_id,
+        rasters: load_rasters(conn)?,
+        next_raster_id,
     })
 }
 
@@ -978,7 +1274,14 @@ mod tests {
                  WHERE c.data_type = 'vale' AND e.extension_name = 'vale_project'
                  ORDER BY c.table_name"
             ),
-            ["vale_field", "vale_layer", "vale_meta", "vale_world"]
+            [
+                "vale_field",
+                "vale_layer",
+                "vale_meta",
+                "vale_raster",
+                "vale_raster_tile",
+                "vale_world"
+            ]
         );
         assert_eq!(
             strings(
@@ -1157,5 +1460,329 @@ mod tests {
             decode_geometry(&envelope, GeometryKind::Line),
             decode_geometry(&good, GeometryKind::Line)
         );
+    }
+
+    /// Ground that is different for each seed.
+    fn pixels(seed: usize) -> Vec<u16> {
+        (0..TILE_SIZE * TILE_SIZE)
+            .map(|i| (1000 * seed + 5 * (i % TILE_SIZE) + (i / TILE_SIZE) * (seed + 1)) as u16)
+            .collect()
+    }
+
+    fn key(face: u8, column: u32, row: u32) -> TileKey {
+        TileKey {
+            level: 0,
+            face,
+            column,
+            row,
+        }
+    }
+
+    /// A project with a heightmap and a second raster of another face size.
+    fn rasters() -> (Project, RasterId, RasterId) {
+        let mut project = sample();
+        let height = project.add_raster("Height".into(), 8192);
+        let rain = project.add_raster("Rain".into(), 1000);
+        *project.raster_mut(height).unwrap() = Raster {
+            id: height,
+            name: "Height".into(),
+            face_size: 8192,
+            unit: "m".into(),
+            value_min: -6000.0,
+            value_max: 6000.0,
+            base: 19114,
+            limits: vec![-4000.0, -0.1, 0.0, 1e-7, 1234.5678],
+            ramp_sea: vec![[0, 1, 2], [250, 128, 7]],
+            ramp_land: vec![[255, 255, 255]],
+        };
+        project.raster_mut(rain).unwrap().unit = "mm".into();
+        (project, height, rain)
+    }
+
+    fn put<'a>(
+        raster: RasterId,
+        tiles: &'a [(TileKey, Vec<u16>)],
+        delete: Vec<TileKey>,
+    ) -> TileChanges<'a> {
+        TileChanges {
+            raster,
+            all: false,
+            put: tiles.iter().map(|(key, p)| (*key, &p[..])).collect(),
+            delete,
+        }
+    }
+
+    fn tiles_of(file: &ProjectFile, raster: &Raster) -> Vec<(TileKey, Vec<u16>)> {
+        let mut tiles = Vec::new();
+        file.load_tiles(raster, |key, pixels| tiles.push((key, pixels)))
+            .unwrap();
+        tiles
+    }
+
+    #[test]
+    fn two_rasters_are_the_same_after_a_close_and_an_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, height, rain) = rasters();
+        // More tiles than one batch, and the same keys in both rasters.
+        let high: Vec<_> = (0..300u32)
+            .map(|i| {
+                (
+                    key((i % 6) as u8, 31 - i / 6 % 8, i / 48),
+                    pixels(i as usize),
+                )
+            })
+            .collect();
+        let wet = vec![
+            (key(0, 0, 0), pixels(7)),
+            (key(5, 3, 3), vec![u16::MAX; 65536]),
+        ];
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let changes = [put(height, &high, vec![]), put(rain, &wet, vec![])];
+        let stats = file.save_tiles(&project, &changes).unwrap();
+        assert_eq!((stats.tiles_written, stats.tiles_deleted), (302, 0));
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(loaded.rasters().len(), 2);
+        assert_eq!(loaded.raster(height).unwrap().face_size, 8192);
+        assert_eq!(loaded.raster(rain).unwrap().face_size, 1000);
+        let mut sorted = high.clone();
+        sorted.sort_by_key(|(k, _)| (k.face, k.row, k.column));
+        assert_eq!(tiles_of(&file, loaded.raster(height).unwrap()), sorted);
+        assert_eq!(tiles_of(&file, loaded.raster(rain).unwrap()), wet);
+
+        // A save of the project alone keeps the tiles.
+        let mut next = loaded.clone();
+        next.world.name = "Other".into();
+        next.raster_mut(rain).unwrap().limits = vec![5.0];
+        file.save(&next).unwrap();
+        assert_eq!(tiles_of(&file, next.raster(rain).unwrap()), wet);
+
+        // A raster that is removed loses its tiles, and the other keeps them.
+        next.remove_raster(height);
+        let stats = file.save_tiles(&next, &[]).unwrap();
+        assert_eq!((stats.tiles_written, stats.tiles_deleted), (0, 300));
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, next);
+        assert_eq!(tiles_of(&file, loaded.raster(rain).unwrap()), wet);
+        let id = next.add_raster("New".into(), 4096);
+        assert!(id > height && id > rain);
+
+        // The tiles of one face size are not the tiles of another.
+        next.raster_mut(rain).unwrap().face_size = 2000;
+        assert_eq!(file.save_tiles(&next, &[]).unwrap().tiles_deleted, 2);
+        assert_eq!(tiles_of(&file, next.raster(rain).unwrap()), []);
+    }
+
+    /// Each change of a tile row, from triggers on the tile table.
+    fn log_tile_rows(conn: &Connection) {
+        let trigger = |event: &str, row: &str| {
+            format!(
+                "CREATE TEMP TRIGGER log_{event} AFTER {event} ON main.vale_raster_tile BEGIN
+                   INSERT INTO tile_log VALUES ('{event} ' || {row}.raster_id || ' '
+                     || {row}.level || ' ' || {row}.face || ' ' || {row}.tile_column || ' '
+                     || {row}.tile_row);
+                 END;"
+            )
+        };
+        conn.execute_batch(&format!(
+            "CREATE TEMP TABLE tile_log (line TEXT); {} {} {}",
+            trigger("insert", "NEW"),
+            trigger("update", "NEW"),
+            trigger("delete", "OLD")
+        ))
+        .unwrap();
+    }
+
+    fn take_log(conn: &Connection) -> Vec<String> {
+        let lines = strings(conn, "SELECT line FROM tile_log ORDER BY rowid");
+        conn.execute("DELETE FROM tile_log", []).unwrap();
+        lines
+    }
+
+    #[test]
+    fn a_save_writes_only_the_changed_tiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, height, rain) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let painted: Vec<_> = (0..40u32)
+            .map(|i| (key(2, i % 8, i / 8), pixels(i as usize)))
+            .collect();
+        let wet = vec![(key(2, 1, 0), pixels(99))];
+        let changes = [put(height, &painted, vec![]), put(rain, &wet, vec![])];
+        file.save_tiles(&project, &changes).unwrap();
+        log_tile_rows(&file.conn);
+
+        // One stroke changes two tiles, makes one, and takes one away.
+        let stroke = vec![
+            (key(2, 1, 0), pixels(200)),
+            (key(2, 2, 0), pixels(201)),
+            (key(3, 0, 0), pixels(202)),
+        ];
+        let changes = [put(height, &stroke, vec![key(2, 7, 4), key(4, 9, 9)])];
+        let stats = file.save_tiles(&project, &changes).unwrap();
+        assert_eq!((stats.tiles_written, stats.tiles_deleted), (3, 1));
+        assert_eq!(
+            take_log(&file.conn),
+            [
+                "delete 0 0 2 7 4",
+                "update 0 0 2 1 0",
+                "update 0 0 2 2 0",
+                "insert 0 0 3 0 0"
+            ]
+        );
+
+        // A save with no changed tile writes no tile.
+        assert_eq!(
+            file.save_tiles(&project, &[]).unwrap(),
+            SaveStats::default()
+        );
+        assert_eq!(take_log(&file.conn), [] as [&str; 0]);
+
+        let mut expected: Vec<_> = painted
+            .into_iter()
+            .filter(|(k, _)| ![key(2, 7, 4), key(2, 1, 0), key(2, 2, 0)].contains(k))
+            .chain(stroke)
+            .collect();
+        expected.sort_by_key(|(k, _)| (k.face, k.row, k.column));
+        assert_eq!(tiles_of(&file, project.raster(height).unwrap()), expected);
+        assert_eq!(tiles_of(&file, project.raster(rain).unwrap()), wet);
+
+        // With `all`, the tiles of the raster are the tiles of the save.
+        let fill = vec![(key(0, 0, 0), pixels(1))];
+        let mut change = put(height, &fill, vec![]);
+        change.all = true;
+        let stats = file.save_tiles(&project, &[change]).unwrap();
+        assert_eq!((stats.tiles_written, stats.tiles_deleted), (1, 40));
+        assert_eq!(tiles_of(&file, project.raster(height).unwrap()), fill);
+        assert_eq!(tiles_of(&file, project.raster(rain).unwrap()), wet);
+    }
+
+    #[test]
+    fn an_empty_world_gives_a_small_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let id = project.add_raster("Height".into(), 8192);
+        let file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
+        drop(file);
+        let bytes = std::fs::metadata(path(&dir)).unwrap().len();
+        assert!(bytes < 128 * 1024, "{bytes} bytes");
+
+        // A tile of flat ground adds little.
+        let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();
+        let flat = vec![(key(0, 0, 0), vec![19114; 65536])];
+        file.save_tiles(&project, &[put(id, &flat, vec![])])
+            .unwrap();
+        drop(file);
+        let more = std::fs::metadata(path(&dir)).unwrap().len();
+        assert!(more - bytes <= 8192, "{} bytes", more - bytes);
+    }
+
+    #[test]
+    fn the_key_of_a_tile_has_a_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, height, _) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let tiles = vec![(key(0, 0, 0), pixels(1)), (key(5, 31, 31), pixels(2))];
+        file.save_tiles(&project, &[put(height, &tiles, vec![])])
+            .unwrap();
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT name FROM pragma_table_info('vale_raster_tile') WHERE pk > 0 ORDER BY pk"
+            ),
+            ["raster_id", "level", "face", "tile_column", "tile_row"]
+        );
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT DISTINCT CAST(level AS TEXT) FROM vale_raster_tile"
+            ),
+            ["0"]
+        );
+        assert!(
+            tiles_of(&file, project.raster(height).unwrap())
+                .iter()
+                .all(|(key, _)| key.level == 0)
+        );
+    }
+
+    #[test]
+    fn a_file_of_version_1_gets_the_raster_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = Connection::open(path(&dir)).unwrap();
+        let tx = conn.transaction().unwrap();
+        v1(&tx).unwrap();
+        tx.execute_batch(
+            "INSERT INTO vale_meta VALUES ('format_version', '1'), ('next_layer_id', '4');
+             INSERT INTO vale_world VALUES (1, 'Old', 1234.5);",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+
+        let (mut file, mut project) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(project.world.name, "Old");
+        assert_eq!(project.rasters(), []);
+        assert_eq!(format_version(&file.conn).unwrap(), 2);
+        let id = project.add_raster("Height".into(), 4096);
+        assert_eq!(id, RasterId(0));
+        let tiles = vec![(key(1, 2, 3), pixels(1))];
+        file.save_tiles(&project, &[put(id, &tiles, vec![])])
+            .unwrap();
+        drop(file);
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(tiles_of(&file, loaded.raster(id).unwrap()), tiles);
+    }
+
+    #[test]
+    fn a_damaged_tile_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, height, rain) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let tiles = vec![(key(1, 2, 3), pixels(1))];
+        let changes = [put(height, &tiles, vec![]), put(rain, &tiles, vec![])];
+        file.save_tiles(&project, &changes).unwrap();
+        let load = |file: &ProjectFile, id| {
+            file.load_tiles(project.raster(id).unwrap(), |_, _| {})
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(load(&file, height), Ok(()));
+
+        file.conn
+            .execute(
+                "UPDATE vale_raster_tile SET data = x'0102' WHERE raster_id = 0",
+                [],
+            )
+            .unwrap();
+        assert!(load(&file, height).unwrap_err().contains("pixels"));
+        // Column 4 is outside a face of 1,000 pixels.
+        file.conn
+            .execute(
+                "UPDATE vale_raster_tile SET tile_column = 4 WHERE raster_id = 1",
+                [],
+            )
+            .unwrap();
+        assert!(load(&file, rain).unwrap_err().contains("key"));
+        file.conn
+            .execute("UPDATE vale_raster_tile SET tile_column = 3, level = 1", [])
+            .unwrap();
+        assert!(load(&file, rain).unwrap_err().contains("key"));
+
+        file.conn
+            .execute(
+                "UPDATE vale_raster SET ramp_sea = '00ff0g' WHERE id = 0",
+                [],
+            )
+            .unwrap();
+        drop(file);
+        match ProjectFile::open(&path(&dir)) {
+            Err(StoreError::Corrupt(what)) => assert!(what.contains("ramp"), "{what}"),
+            other => panic!("{:?}", other.map(|x| x.1)),
+        }
     }
 }

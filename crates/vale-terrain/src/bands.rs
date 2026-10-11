@@ -99,6 +99,27 @@ impl Default for Bands {
 }
 
 impl Bands {
+    /// The bands of a saved copy. Returns `None` if `add` does not take a
+    /// limit, if sea level is not a limit, or if a side of the ramp is empty.
+    pub fn from_parts(limits: &[f64], ramp: Ramp) -> Option<Bands> {
+        if ramp.sea.is_empty() || ramp.land.is_empty() {
+            return None;
+        }
+        let mut bands = Bands {
+            limits: vec![SEA_LEVEL],
+            ramp,
+        };
+        let mut sea = false;
+        for &meters in limits {
+            if meters == SEA_LEVEL && !sea {
+                sea = true;
+            } else {
+                bands.add(meters)?;
+            }
+        }
+        sea.then_some(bands)
+    }
+
     /// The limits in meters, in ascending order. Sea level is one of them.
     pub fn limits(&self) -> &[f64] {
         &self.limits
@@ -419,5 +440,26 @@ mod tests {
         };
         assert_eq!(short.sea(0.3), [0, 0, 0]);
         assert_eq!(short.land(0.3), [1, 2, 3]);
+    }
+
+    #[test]
+    fn from_parts_gives_the_same_bands() {
+        let mut bands = Bands::default();
+        bands.add(123.5).unwrap();
+        bands.remove(0);
+        bands.ramp.land.push([9, 8, 7]);
+        let copy = Bands::from_parts(bands.limits(), bands.ramp.clone());
+        assert_eq!(copy, Some(bands));
+
+        let ramp = Ramp::default;
+        assert_eq!(Bands::from_parts(&[-100.0, 100.0], ramp()), None);
+        assert_eq!(Bands::from_parts(&[0.0, 0.0], ramp()), None);
+        assert_eq!(Bands::from_parts(&[0.0, 100.0, 100.5], ramp()), None);
+        assert_eq!(Bands::from_parts(&[0.0, f64::NAN], ramp()), None);
+        let empty = Ramp {
+            sea: vec![],
+            land: vec![[1, 2, 3]],
+        };
+        assert_eq!(Bands::from_parts(&[0.0], empty), None);
     }
 }
