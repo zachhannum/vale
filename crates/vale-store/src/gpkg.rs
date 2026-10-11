@@ -17,16 +17,16 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
-    Feature, Geometry, GeometryKind, Layer, LayerId, LonLat, Project, Raster, RasterId, Rgb, Uuid,
-    Value, World,
+    Feature, Geometry, GeometryKind, Layer, LayerId, LonLat, Project, Raster, RasterId, Rgb, Units,
+    Uuid, Value, World,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3, v4];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -599,6 +599,11 @@ fn clear(tx: &Transaction) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// The display units of the world.
+fn v4(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch("ALTER TABLE vale_world ADD COLUMN units TEXT NOT NULL DEFAULT 'metric';")
+}
+
 /// The world as a geographic coordinate system on a sphere.
 fn world_wkt(world: &World) -> String {
     let name = world.name.replace('"', "'");
@@ -612,8 +617,8 @@ fn world_wkt(world: &World) -> String {
 
 fn write_world(tx: &Transaction, world: &World) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO vale_world (id, name, radius_km) VALUES (1, ?1, ?2)",
-        params![world.name, world.radius_km],
+        "INSERT INTO vale_world (id, name, radius_km, units) VALUES (1, ?1, ?2, ?3)",
+        params![world.name, world.radius_km, world.units.id()],
     )?;
     tx.execute(
         "INSERT INTO gpkg_spatial_ref_sys VALUES (?1, ?2, 'NONE', ?2, ?3, NULL)",
@@ -1049,15 +1054,18 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
 
 fn load(conn: &Connection) -> Result<Project, StoreError> {
     use rusqlite::OptionalExtension;
-    let world = conn
-        .query_row("SELECT name, radius_km FROM vale_world", [], |r| {
-            Ok(World {
-                name: r.get(0)?,
-                radius_km: r.get(1)?,
-            })
+    let (name, radius_km, units) = conn
+        .query_row("SELECT name, radius_km, units FROM vale_world", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?))
         })
         .optional()?
         .ok_or_else(|| corrupt("no world record"))?;
+    let units = Units::from_id(&units).ok_or_else(|| corrupt(format!("units {units:?}")))?;
+    let world = World {
+        name,
+        radius_km,
+        units,
+    };
     let next_id = meta(conn, "next_layer_id")?;
     let next_id = next_id
         .parse()
@@ -1299,6 +1307,7 @@ mod tests {
         let mut p = Project::new(World {
             name: "Aerth \"the second\"".to_string(),
             radius_km: 4321.125,
+            units: Units::Imperial,
         });
         p.add_layer(
             "Places".into(),
@@ -1946,6 +1955,7 @@ mod tests {
         let (mut file, mut project) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(project.world.name, "Old");
         assert_eq!(project.rasters(), []);
+        assert_eq!(project.world.units, Units::Metric);
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
         let id = project.add_raster("Height".into(), 4096);
         assert_eq!(id, RasterId(0));
@@ -1956,6 +1966,43 @@ mod tests {
         let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded, project);
         assert_eq!(tiles_of(&file, loaded.raster(id).unwrap()), tiles);
+    }
+
+    #[test]
+    fn a_file_of_version_2_gets_metric_units() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = Connection::open(path(&dir)).unwrap();
+        let tx = conn.transaction().unwrap();
+        v1(&tx).unwrap();
+        v2(&tx).unwrap();
+        tx.execute_batch(
+            "INSERT INTO vale_meta VALUES ('format_version', '2'), ('next_layer_id', '0');
+             INSERT INTO vale_world VALUES (1, 'Old', 1234.5);",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+
+        let (mut file, mut project) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(project.world.units, Units::Metric);
+        assert_eq!(project.world.radius_km, 1234.5);
+        project.world.units = Units::Imperial;
+        file.save(&project).unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.world.units, Units::Imperial);
+    }
+
+    #[test]
+    fn unknown_units_are_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(ProjectFile::create(&path(&dir), &sample()).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute("UPDATE vale_world SET units = 'cubits'", [])
+            .unwrap();
+        drop(conn);
+        let error = ProjectFile::open(&path(&dir)).map(|_| ()).unwrap_err();
+        assert!(error.to_string().contains("cubits"), "{error}");
     }
 
     #[test]
@@ -2072,6 +2119,21 @@ mod tests {
         file.save_tiles(&project, &changes).unwrap();
         states.push(content(&file));
         (file, states)
+    }
+
+    #[test]
+    fn an_undo_puts_back_the_radius_and_the_units_of_the_world() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = sample();
+        let mut project = first.clone();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        project.world.radius_km = 200.0;
+        project.world.units = Units::Metric;
+        file.save(&project).unwrap();
+        assert!(file.undo().unwrap().is_some());
+        assert!(file.project() == &first);
+        assert!(file.redo().unwrap().is_some());
+        assert!(file.project() == &project);
     }
 
     #[test]

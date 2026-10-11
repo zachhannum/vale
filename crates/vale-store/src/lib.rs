@@ -189,11 +189,39 @@ pub struct Raster {
     pub ramp_land: Vec<Rgb>,
 }
 
-/// The world: a sphere with a name and a radius.
+/// The units in which the app shows a distance on the ground.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Units {
+    /// Kilometers and meters.
+    #[default]
+    Metric,
+    /// Miles and feet.
+    Imperial,
+}
+
+impl Units {
+    pub const ALL: [Units; 2] = [Units::Metric, Units::Imperial];
+
+    /// The name of the units in the project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            Units::Metric => "metric",
+            Units::Imperial => "imperial",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Units> {
+        Units::ALL.into_iter().find(|u| u.id() == id)
+    }
+}
+
+/// The world: a sphere with a name, a radius, and display units. The radius
+/// is in kilometers for each choice of units.
 #[derive(Clone, Debug, PartialEq)]
 pub struct World {
     pub name: String,
     pub radius_km: f64,
+    pub units: Units,
 }
 
 impl Default for World {
@@ -201,6 +229,7 @@ impl Default for World {
         World {
             name: "New world".to_string(),
             radius_km: 6371.0,
+            units: Units::Metric,
         }
     }
 }

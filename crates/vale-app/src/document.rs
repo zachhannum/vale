@@ -5,7 +5,7 @@ use std::path::Path;
 use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
 use vale_sphere::ProjectionSpec;
-use vale_store::{GeometryKind, Layer, LayerId, Project, World};
+use vale_store::{GeometryKind, Layer, LayerId, Project, Units, World};
 use vale_style::{Color, LayerStyle, MapStyle, Stroke};
 
 use crate::view::View;
@@ -66,6 +66,7 @@ impl Document {
         doc.project.world = World {
             name: "Earth (sample)".to_string(),
             radius_km: 6371.0,
+            units: Units::Metric,
         };
         let sources: [(&str, &str); 3] = [
             (
