@@ -40,6 +40,9 @@ pub struct Args {
     /// With --layout pad: open this panel. You can give more than one.
     #[arg(long, value_enum, value_name = "PANEL")]
     pub panel: Vec<Panel>,
+    /// With --layout pad: open the menu of the More cell.
+    #[arg(long)]
+    pub more_tools: bool,
     /// GeoJSON files to open in place of the sample world.
     #[arg(value_name = "FILES")]
     pub files: Vec<PathBuf>,

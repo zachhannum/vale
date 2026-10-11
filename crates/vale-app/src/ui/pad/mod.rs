@@ -8,7 +8,7 @@ use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_terrain::Mode;
 
 use super::{Action, AppState, Workspace, elevation, globe, panels};
-use crate::globe::brush::{FLOW, STRENGTH_M};
+use crate::globe::brush::{FLOW, STRENGTH_M, TALUS_DEG};
 use crate::globe::{Tool, WorldView};
 
 pub mod geometry;
@@ -19,6 +19,15 @@ pub mod widgets;
 use geometry::{BrushCard, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
 use icons::Icon;
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
+
+/// The control of the tool strip that opens the menu of the other modes.
+pub const MORE: &str = "More";
+/// The modes of the menu of the More cell.
+const MORE_MODES: [(&str, Icon, Mode); 3] = [
+    ("Carve", Icon::Carve, Mode::Carve),
+    ("Erode", Icon::Erode, Mode::Erode),
+    ("Weather", Icon::Weather, Mode::Weather),
+];
 
 /// The name of the row that imports a heightmap.
 pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
@@ -58,6 +67,8 @@ pub struct PadState {
     pub center_rect: Option<Rect>,
     /// The workspace menu is open.
     pub menu: bool,
+    /// The menu of the More cell is open.
+    pub more: bool,
     /// The distance that the sheet is pulled down from its open place.
     pub sheet_offset: f32,
     /// The controls of the last frame.
@@ -68,6 +79,10 @@ pub struct PadState {
     pub panels: Vec<(Panel, Rect)>,
     /// The workspace menu of the last frame.
     pub menu_rect: Option<Rect>,
+    /// The menu of the More cell in the last frame.
+    pub more_rect: Option<Rect>,
+    /// The More cell of this frame.
+    more_cell: Option<Rect>,
     /// The height of the contents of each panel, by the key of the panel.
     heights: HashMap<&'static str, f32>,
 }
@@ -203,6 +218,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         menu(&ctx, state, &mut controls, &rects);
     } else {
         state.pad.menu = false;
+    }
+    state.pad.more_rect = None;
+    if state.pad.more {
+        more_menu(&ctx, state, &mut controls, &rects);
     }
 
     state.pad.controls = controls;
@@ -360,8 +379,6 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     ("Lower", Icon::Lower, Mode::Lower),
                     ("Smooth", Icon::Smooth, Mode::Smooth),
                     ("Flatten", Icon::Flatten, Mode::Flatten),
-                    ("Carve", Icon::Carve, Mode::Carve),
-                    ("Erode", Icon::Erode, Mode::Erode),
                 ] {
                     let active = globe.tool == Tool::Brush && globe.brush.mode == mode;
                     if widgets::tool_cell(ui, controls, name, name, icon, active, true).clicked() {
@@ -369,6 +386,18 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         globe.brush.mode = mode;
                     }
                 }
+                // The cell shows the mode of the menu that the brush has.
+                let chosen = MORE_MODES
+                    .into_iter()
+                    .find(|(_, _, mode)| globe.tool == Tool::Brush && globe.brush.mode == *mode);
+                let (label, icon) =
+                    chosen.map_or((MORE, Icon::More), |(name, icon, _)| (name, icon));
+                let active = chosen.is_some();
+                let more = widgets::tool_cell(ui, controls, MORE, label, icon, active, true);
+                if more.clicked() {
+                    state.pad.more = !state.pad.more;
+                }
+                state.pad.more_cell = Some(more.rect);
                 let active = globe.tool == Tool::Navigate;
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()
@@ -611,6 +640,15 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     });
     if let Some(meters) = strength {
         brush.strength_m = meters;
+    }
+    if brush.mode == Mode::Weather {
+        let text = format!("{}°", panels::three_significant(brush.talus_deg));
+        let angle = log_slider(brush.talus_deg, TALUS_DEG, &text, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush angle", "Angle", fraction, text)
+        });
+        if let Some(degrees) = angle {
+            brush.talus_deg = degrees;
+        }
     }
     ui.spacing_mut().item_spacing.y = 6.0;
     panels::brush_settings(ui, state);
@@ -892,6 +930,68 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
                 state.pad.menu = false;
             }
             widgets::text_row(ui, controls, WORKSPACES[2], 0.0, false, false);
+        },
+    );
+}
+
+/// The menu of the More cell: the brush modes that have no cell in the tool
+/// strip. It opens at the right of the cell.
+fn more_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let Some(cell) = state.pad.more_cell else {
+        state.pad.more = false;
+        return;
+    };
+    let rows = MORE_MODES.len() as f32;
+    let size = vec2(geometry::MORE_WIDTH, 10.0 + rows * PANEL_ROW + 10.0);
+    let top = cell
+        .top()
+        .min(rects.panel_bottom - size.y)
+        .max(rects.tools.top());
+    let min = pos2(rects.tools.right() + geometry::GAP, top);
+    let rect = Rect::from_min_size(min, size);
+    state.pad.more_rect = Some(rect);
+    let pressed = ctx.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    if pressed.is_some_and(|pos| !rect.contains(pos) && !cell.contains(pos)) {
+        state.pad.more = false;
+    }
+    let radius = theme::CARD_RADIUS.into();
+    widgets::card(
+        ctx,
+        None,
+        "pad-more",
+        rect,
+        Order::Foreground,
+        radius,
+        |ui| {
+            // The menu covers the Brush panel, so its fill is opaque.
+            ui.painter()
+                .rect_filled(rect, radius, theme::card(false).to_opaque());
+            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            let ui = &mut ui;
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let globe = &mut state.globe;
+            for (name, _, mode) in MORE_MODES {
+                let row = widgets::text_row(ui, controls, name, 0.0, false, true);
+                if globe.tool == Tool::Brush && globe.brush.mode == mode {
+                    let tick = Rect::from_center_size(
+                        pos2(row.rect.right() - 14.0, row.rect.center().y),
+                        vec2(18.0, 18.0),
+                    );
+                    icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                }
+                if row.clicked() {
+                    globe.tool = Tool::Brush;
+                    globe.brush.mode = mode;
+                    state.pad.more = false;
+                }
+            }
         },
     );
 }

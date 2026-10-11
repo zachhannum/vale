@@ -6,7 +6,7 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use super::{Action, AppState, ExportFormat, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::brush::{FLOW, STRENGTH_M};
+use crate::globe::brush::{FLOW, STRENGTH_M, TALUS_DEG};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
@@ -202,6 +202,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
             (Mode::Flatten, "Flatten"),
             (Mode::Carve, "Carve"),
             (Mode::Erode, "Erode"),
+            (Mode::Weather, "Weather"),
         ] {
             ui.selectable_value(current, mode, name);
         }
@@ -230,6 +231,14 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         .suffix(" m")
         .text("Strength");
     ui.add(strength);
+    if globe.brush.mode == Mode::Weather {
+        let angle = egui::Slider::new(&mut globe.brush.talus_deg, TALUS_DEG)
+            .logarithmic(true)
+            .custom_formatter(|deg, _| three_significant(deg))
+            .suffix("°")
+            .text("Angle");
+        ui.add(angle);
+    }
 }
 
 /// The lock of the size and the flatten level.

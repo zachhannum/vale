@@ -19,6 +19,8 @@ pub const PRESSURE_GAIN: f64 = 2.0;
 pub const FLOW: std::ops::RangeInclusive<f64> = 0.01..=1.0;
 /// The limits of the strength setting, in meters.
 pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
+/// The limits of the angle of the weather mode, in degrees.
+pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.1..=60.0;
 pub const SIZE_POINTS: std::ops::RangeInclusive<f32> = 4.0..=160.0;
 /// The most passes that the stamps of one frame cost. A smooth stamp costs
 /// one pass. A stamp of another mode costs one part in `GROUP_STAMPS` of a
@@ -43,6 +45,8 @@ pub struct BrushSettings {
     /// The target of the flatten mode. `None`: the level under the start of
     /// the stroke.
     pub flatten_level: Option<u16>,
+    /// The steepest slope that the weather mode leaves, in degrees.
+    pub talus_deg: f64,
 }
 
 impl Default for BrushSettings {
@@ -55,6 +59,7 @@ impl Default for BrushSettings {
             flow: 1.0,
             strength_m: 1500.0,
             flatten_level: None,
+            talus_deg: 10.0,
         }
     }
 }
@@ -212,6 +217,7 @@ impl Tip<'_> {
             mode: self.brush.mode,
             level: self.level,
             strength: self.brush.strength_m * STAMP_SPACING / span,
+            // The globe sets the slope, which follows the size of the world.
             talus: 0.0,
         }
     }
