@@ -1,8 +1,12 @@
-//! In-memory project model: a world, its layers, and their features.
+//! The project model and its GeoPackage file: a world, its layers, and their features.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use uuid::Uuid;
+
+mod gpkg;
+
+pub use gpkg::{FORMAT_VERSION, ProjectFile, StoreError};
 
 /// A position as `[lon, lat]` in degrees.
 pub type LonLat = [f64; 2];
