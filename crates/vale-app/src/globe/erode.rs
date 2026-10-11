@@ -3,7 +3,61 @@
 
 use std::sync::{Arc, mpsc};
 
-use vale_terrain::{CoarseHeights, ErodeBrush, ErodeStep, Erosion, FlowMap, WindowHeights};
+use std::f64::consts::FRAC_PI_2;
+
+use vale_terrain::{
+    CoarseHeights, ERODE_WINDOW_CELLS, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, Window,
+    WindowHeights,
+};
+
+use super::math::V3;
+
+/// The radius of the brush of an uplift stroke is this number of cells or
+/// more, if the texels of the heightmap are small enough. With fewer cells,
+/// the valleys of the erosion are too wide for the range.
+const UPLIFT_RADIUS_CELLS: f64 = 16.0;
+
+/// A window moves when the brush of an uplift stroke is nearer to its side
+/// than this number of brush radii.
+const UPLIFT_WINDOW_ROOM: f64 = 3.0;
+
+/// The window of the cells of an uplift stroke around `center`, or `None`
+/// for the cells of the coarse copy. `radius` is the radius of the brush, in
+/// radians. The cell is the largest that keeps `UPLIFT_RADIUS_CELLS` cells
+/// in the radius.
+pub fn uplift_window(center: V3, radius: f64, face_size: usize) -> Option<Window> {
+    let n = face_size;
+    let texels = radius * n as f64 / FRAC_PI_2;
+    let global = n / CoarseHeights::size_for(n);
+    let mut cell = 1;
+    while cell < global && texels / (2 * cell) as f64 >= UPLIFT_RADIUS_CELLS {
+        cell *= 2;
+    }
+    if cell >= global {
+        return None;
+    }
+    let cells = ERODE_WINDOW_CELLS.min(n / cell);
+    let mut window = Window::centered(center, n, cell, cells);
+    // The window ends less than half a face past the face edge.
+    let step = cell as i64;
+    let past = (n as i64 / 2 - 1) / step * step;
+    let last = n as i64 + past - (cells * cell) as i64;
+    window.x0 = window.x0.clamp(-past, last);
+    window.y0 = window.y0.clamp(-past, last);
+    Some(window)
+}
+
+/// Whether a brush at `center` is too near to the side of the window of its
+/// uplift stroke, or outside the window.
+pub fn near_side(window: &Window, center: V3, radius: f64) -> bool {
+    let Some((u, v)) = window.place(center) else {
+        return true;
+    };
+    let cell = FRAC_PI_2 * window.cell as f64 / window.face_size as f64;
+    let room = UPLIFT_WINDOW_ROOM * radius / cell;
+    let cells = window.cells as f64;
+    u.min(v).min(cells - u).min(cells - v) < room
+}
 
 /// The cells that a stroke lowers.
 pub enum Ground {
@@ -27,11 +81,24 @@ impl Ground {
             Ground::Window { heights, global } => Erosion::window(heights, &FlowMap::new(global)),
         }
     }
+    /// The erosion of a stroke that goes on from `from` on this ground. If
+    /// both have the cells of a window, the cells of `from` keep their
+    /// heights.
+    fn moved(&self, from: &Erosion) -> Erosion {
+        match (self, from.grid()) {
+            (Ground::Window { heights, global }, ErodeGrid::Window(_)) => {
+                from.moved(heights, &FlowMap::new(global))
+            }
+            _ => self.erosion(),
+        }
+    }
 }
 
 /// One request, with the number of its stroke.
 enum Job {
     Begin(u64, Ground),
+    /// The stroke goes on with this ground.
+    Move(u64, Ground),
     /// The brushes, the rate, and the uplift of one step.
     Step(u64, Vec<ErodeBrush>, f64, f64),
 }
@@ -75,6 +142,11 @@ fn work(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>) {
     for job in jobs {
         match job {
             Job::Begin(stroke, ground) => erosion = Some((stroke, ground.erosion())),
+            Job::Move(stroke, ground) => {
+                if let Some((_, erosion)) = erosion.as_mut().filter(|(id, _)| *id == stroke) {
+                    *erosion = ground.moved(erosion);
+                }
+            }
             Job::Step(stroke, brushes, rate, uplift) => {
                 let Some((_, erosion)) = erosion.as_mut().filter(|(id, _)| *id == stroke) else {
                     continue;
@@ -135,6 +207,17 @@ impl Eroder {
             self.erosion = Some(ground.erosion());
         } else {
             self.send(Job::Begin(self.stroke, ground));
+        }
+    }
+
+    /// Gives the stroke new ground. The steps of the requests after this
+    /// call have the cells of that ground. If the old ground and the new
+    /// ground are windows, a cell of the old window keeps the height that
+    /// the stroke gave it.
+    pub fn move_to(&mut self, ground: Ground) {
+        match &mut self.erosion {
+            Some(erosion) => *erosion = ground.moved(erosion),
+            None => self.send(Job::Move(self.stroke, ground)),
         }
     }
 
@@ -278,6 +361,70 @@ mod tests {
         assert!(eroder.poll().unwrap().is_empty());
         eroder.request(brush(true), 1.0, 5000.0);
         assert!(!eroder.poll().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_window_of_an_uplift_stroke_follows_the_radius_of_the_brush() {
+        let center = lonlat_to_dir(10.0, 5.0);
+        let texel = FRAC_PI_2 / 8192.0;
+        for (radius, cell) in [(10.0, 1), (31.0, 1), (33.0, 2), (100.0, 4), (255.0, 8)] {
+            let window = uplift_window(center, radius * texel, 8192).unwrap();
+            assert_eq!((window.cell, window.cells), (cell, ERODE_WINDOW_CELLS));
+            let (u, v) = window.place(center).unwrap();
+            assert!((u - 512.0).abs() < 1.0 && (v - 512.0).abs() < 1.0);
+            assert!(!near_side(&window, center, radius * texel));
+            let side = window.cell_dir(2 * radius as usize / cell, 512);
+            assert!(near_side(&window, side, radius * texel));
+            assert!(near_side(
+                &window,
+                lonlat_to_dir(180.0, 0.0),
+                radius * texel
+            ));
+        }
+        // The cells of the coarse copy are small enough for a large brush.
+        assert!(uplift_window(center, 257.0 * texel, 8192).is_none());
+        // The window stays less than half a face past the edge of its face.
+        let corner = uplift_window(lonlat_to_dir(44.0, 34.0), 0.001, N).unwrap();
+        let (first, last) = (-(N as i64 / 2), (N + N / 2) as i64);
+        for x0 in [corner.x0, corner.y0] {
+            assert!(x0 > first && x0 + (corner.cells * corner.cell) as i64 <= last);
+        }
+    }
+
+    #[test]
+    fn a_stroke_that_moves_keeps_its_heights_in_the_new_window() {
+        let map = Heightmap::new(N, meters_to_level(-100.0));
+        let ground = |lon: f64| {
+            let window = uplift_window(lonlat_to_dir(lon, 0.0), 0.02, N).unwrap();
+            Ground::Window {
+                heights: WindowHeights::new(&map, window),
+                global: CoarseHeights::new(&map),
+            }
+        };
+        let at = |lon: f64| {
+            vec![ErodeBrush {
+                center: lonlat_to_dir(lon, 0.0),
+                radius: 0.02,
+                hardness: 0.5,
+                flow: 1.0,
+            }]
+        };
+        for sync in [true, false] {
+            let mut eroder = Eroder::new(sync);
+            eroder.begin(ground(0.0));
+            eroder.request(at(20.0), 1.0, 5000.0);
+            assert!(!wait(&mut eroder).is_empty());
+            // The hill at 20 degrees is in the new window, so a step
+            // without uplift lowers it there.
+            eroder.move_to(ground(30.0));
+            eroder.request(at(20.0), 1.0, 0.0);
+            let step = wait(&mut eroder);
+            assert!(!step.is_empty());
+            let ErodeGrid::Window(window) = step.grid() else {
+                panic!("the step has no window");
+            };
+            assert!(!near_side(&window, lonlat_to_dir(30.0, 0.0), 0.02));
+        }
     }
 
     #[test]

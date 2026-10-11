@@ -2421,6 +2421,63 @@ fn an_uplift_stroke_with_full_erosion_gives_about_the_height_of_a_raise_stroke()
     );
 }
 
+/// Writes images of ranges of three sizes on a world of the size of the
+/// Earth, for a person to look at. The views are 3,500 km, 1,000 km, and
+/// 350 km high.
+#[test]
+#[ignore]
+fn screenshots_of_uplift_ranges() {
+    let _gpu = one_gpu_test();
+    for (name, zoom, radius_km) in [
+        ("continent", 4.0, 150.0),
+        ("region", 14.0, 40.0),
+        ("near", 40.0, 12.0),
+    ] {
+        for erosion in [0, 50, 100] {
+            let mut state = state();
+            state.globe.set_face_size(vale_app::globe::WINDOW_FACE_SIZE);
+            let setup = egui_kittest::wgpu::default_wgpu_setup();
+            let mut h = headless::ui_harness(state, (1100.0, 800.0), 1.0, setup);
+            h.set_render_every_step(true);
+            let globe = &mut h.state_mut().globe;
+            globe.view = GlobeView::centered(0.0, 0.0);
+            globe.view.zoom = zoom;
+            globe.preview.graticule = false;
+            globe.tool = Tool::Brush;
+            globe.brush.mode = Mode::Uplift;
+            globe.brush.erosion = f64::from(erosion) / 100.0;
+            globe.brush.strength_m = 6000.0;
+            h.run_steps(4);
+            let globe = &mut h.state_mut().globe;
+            let (radius, world) = (globe.radius(), globe.world_km);
+            globe.brush.set_radius_km(radius_km, radius, world);
+            h.run_steps(2);
+            let rect = h.state().globe.rect;
+            let (c, half) = (rect.center(), 0.36 * rect.width());
+            let at =
+                |t: f32| c + Vec2::new(half * t, 0.2 * half * (2.5 * t).sin() + 0.1 * half * t);
+            let start = std::time::Instant::now();
+            button(&mut h, egui::PointerButton::Primary, at(-1.0), true);
+            h.step();
+            for i in 1..=120 {
+                h.event(egui::Event::PointerMoved(at(-1.0 + i as f32 / 60.0)));
+                h.step();
+            }
+            button(&mut h, egui::PointerButton::Primary, at(1.0), false);
+            h.step();
+            settle(&mut h);
+            let globe = &h.state().globe;
+            let km = globe.brush.radius_km(globe.radius(), globe.world_km);
+            let high = f64::from(rect.height()) / globe.radius() * globe.world_km;
+            eprintln!(
+                "{name} {erosion}: radius {km:.0} km, view {high:.0} km, {:?}",
+                start.elapsed()
+            );
+            save(&canvas_image(&mut h), &format!("range-{name}-{erosion}"));
+        }
+    }
+}
+
 /// Lifts the button at the end of the stroke that `uplift_part` began, after
 /// the rest of its moves. Returns the levels after the stroke.
 fn uplift_stroke_end(h: &mut Harness<'static, AppState>) -> Vec<u16> {

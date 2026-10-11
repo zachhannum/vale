@@ -31,7 +31,7 @@ pub mod view;
 use crate::pen::Pen;
 use backdrop::Canvas;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels};
-use erode::{Eroder, Ground};
+use erode::{Eroder, Ground, near_side, uplift_window};
 use flat::FlatView;
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms, Uploads};
 use import::{ImportResult, Job, Step};
@@ -150,6 +150,9 @@ struct Uplifting {
     stamps: Vec<Stamp>,
     /// The stamps of the step that is in work.
     asked: Vec<Stamp>,
+    /// The cells of the stroke after its first request. `Some(None)`: the
+    /// cells of the coarse copy.
+    cells: Option<Option<Window>>,
 }
 
 /// The stroke that the GPU works on.
@@ -725,10 +728,7 @@ impl Globe {
                         Eroding::default()
                     });
                     let eroding = self.brush.mode == Mode::Uplift && self.brush.erosion > 0.0;
-                    let uplift = eroding.then(|| {
-                        self.eroder.begin(self.erode_ground());
-                        Uplifting::default()
-                    });
+                    let uplift = eroding.then(Uplifting::default);
                     self.stroke = Some(Active {
                         id: self.strokes,
                         stroke: Stroke::default(),
@@ -879,6 +879,38 @@ impl Globe {
             return;
         }
         let stamps = std::mem::take(&mut uplift.stamps);
+        // The cells follow the size of the brush, and the window of the
+        // cells follows the pen.
+        let (first, last) = (stamps[0], stamps[stamps.len() - 1]);
+        let face_size = self.map.face_size();
+        let ground = |window: Option<Window>| {
+            let global = self.rivers.coarse().clone();
+            match window {
+                Some(window) => Ground::Window {
+                    heights: WindowHeights::new(&self.map, window),
+                    global,
+                },
+                None => Ground::Global {
+                    heights: global,
+                    face_size,
+                },
+            }
+        };
+        match uplift.cells {
+            None => {
+                let window = uplift_window(first.center, first.radius, face_size);
+                self.eroder.begin(ground(window));
+                uplift.cells = Some(window);
+            }
+            Some(Some(window)) if near_side(&window, last.center, last.radius) => {
+                let next = uplift_window(last.center, last.radius, face_size);
+                if next != Some(window) {
+                    self.eroder.move_to(ground(next));
+                    uplift.cells = Some(next);
+                }
+            }
+            Some(_) => {}
+        }
         let brushes = stamps.iter().map(|stamp| ErodeBrush {
             center: stamp.center,
             radius: stamp.radius,
