@@ -661,7 +661,7 @@ impl GpuHeightmap {
             let mut uniforms = Uniforms {
                 face: face as u32,
                 mode: match mode {
-                    Mode::Raise => 0,
+                    Mode::Raise | Mode::Uplift => 0,
                     Mode::Lower => 1,
                     Mode::Smooth => 2,
                     Mode::Flatten => 3,

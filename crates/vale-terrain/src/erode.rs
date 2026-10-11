@@ -309,15 +309,14 @@ impl Erosion {
         }
     }
 
-    /// The effect of the brushes at each cell.
-    fn weights(&self, brushes: &[ErodeBrush]) -> Weights {
+    /// Calls `visit` for each cell in the circle of each brush. It gives the
+    /// index of the brush, the row and the column of the cell, and the effect
+    /// of the brush there.
+    fn cells_under(&self, brushes: &[ErodeBrush], mut visit: impl FnMut(usize, usize, usize, f64)) {
         let side = self.side;
         let faces = self.faces();
         let global = matches!(self.cells, Cells::Global(_));
-        let mut weights = vec![0.0f32; self.heights.len()];
-        let mut spans = vec![None; faces.len() * side];
-        let mut hits = vec![false; brushes.len()];
-        for (brush, hit) in brushes.iter().zip(&mut hits) {
+        for (index, brush) in brushes.iter().enumerate() {
             let radius = brush.radius.clamp(1e-6, MAX_BRUSH_RADIUS);
             let hard = brush.hardness.clamp(0.0, 0.999);
             let (sin_radius, cos_radius) = radius.sin_cos();
@@ -351,27 +350,62 @@ impl Erosion {
                             continue;
                         }
                         let k = cos_angle.min(1.0).acos() / radius;
-                        let mut weight = falloff(k, hard) * brush.flow;
-                        if !global {
-                            let edge = x.min(y).min(side - 1 - x).min(side - 1 - y);
-                            weight *= edge.min(FADE) as f64 / FADE as f64;
-                        }
-                        if weight <= 0.0 {
-                            continue;
-                        }
-                        let cell = &mut weights[row * side + x];
-                        *cell = cell.max(weight as f32);
-                        let (first, last) = spans[row].unwrap_or((x, x));
-                        spans[row] = Some((first.min(x), last.max(x)));
-                        *hit = true;
+                        visit(index, row, x, falloff(k, hard) * brush.flow);
                     }
                 }
             }
         }
+    }
+
+    /// The effect of the brushes at each cell.
+    fn weights(&self, brushes: &[ErodeBrush]) -> Weights {
+        let side = self.side;
+        let global = matches!(self.cells, Cells::Global(_));
+        let mut weights = vec![0.0f32; self.heights.len()];
+        let mut spans = vec![None; self.faces().len() * side];
+        let mut hits = vec![false; brushes.len()];
+        self.cells_under(brushes, |brush, row, x, mut weight| {
+            if !global {
+                let y = row % side;
+                let edge = x.min(y).min(side - 1 - x).min(side - 1 - y);
+                weight *= edge.min(FADE) as f64 / FADE as f64;
+            }
+            if weight <= 0.0 {
+                return;
+            }
+            let cell = &mut weights[row * side + x];
+            *cell = cell.max(weight as f32);
+            let (first, last) = spans[row].unwrap_or((x, x));
+            spans[row] = Some((first.min(x), last.max(x)));
+            hits[brush] = true;
+        });
         Weights {
             cells: weights,
             spans,
             hits,
+        }
+    }
+
+    /// Raises the cells under the brushes, as raise stamps with this
+    /// strength raise the texels. The effects of the brushes add up. The
+    /// next step has no drop for a cell that only went up.
+    pub fn raise(&mut self, brushes: &[ErodeBrush], strength: f64) {
+        if strength.is_nan() || strength <= 0.0 {
+            return;
+        }
+        let side = self.side;
+        let mut rises = Vec::new();
+        self.cells_under(brushes, |_, row, x, weight| {
+            rises.push((row * side + x, weight * strength));
+        });
+        for (i, rise) in rises {
+            let height = (f64::from(self.heights[i]) + rise).min(65535.0) as f32;
+            self.heights[i] = height;
+            let level = height.round() as u16;
+            if level != self.levels[i] {
+                self.levels[i] = level;
+                self.stale = true;
+            }
         }
     }
 
@@ -1024,6 +1058,53 @@ mod tests {
             }
         }
         assert!(lowered[0] > 50 && lowered[2] > 50, "{lowered:?}");
+    }
+
+    #[test]
+    fn raise_lifts_the_cells_and_a_step_cuts_only_the_lifted_land() {
+        let m = 64;
+        let flat = CoarseHeights::from_fn(m, |_| meters_to_level(OCEAN));
+        let floor = meters_to_level(OCEAN);
+        let center = lonlat_to_dir(10.0, 5.0);
+        let brush = ErodeBrush {
+            center,
+            radius: 0.2,
+            hardness: 0.5,
+            flow: 0.5,
+        };
+        let (face, x, y) = cell_at(m, center);
+        let middle = (face * m + y) * m + x;
+        let run = || {
+            let mut erosion = Erosion::global(&flat, 1024);
+            // A raise without a strength changes nothing.
+            erosion.raise(&[brush], 0.0);
+            assert!(erosion.levels.iter().all(|&level| level == floor));
+            // The effects of two brushes add up: 2 times 0.5 times 4000.
+            erosion.raise(&[brush, brush], 4000.0);
+            assert_eq!(erosion.levels[middle], floor + 4000);
+            let lifted: Vec<bool> = erosion.levels.iter().map(|&l| l > floor).collect();
+            let hill = erosion.levels.clone();
+            for (i, _) in lifted.iter().enumerate().filter(|&(_, &lifted)| lifted) {
+                let dir = cell_dir(m, i / (m * m), i % m, i / m % m);
+                assert!(angle(dir, center) < 0.2);
+            }
+            assert!(lifted.iter().filter(|&&lifted| lifted).count() > 100);
+
+            // The rise is not a drop of the step, and no cell goes below the
+            // floor around the hill.
+            let step = erosion.step(&[brush], 4.0);
+            let mut cut = 0;
+            for (i, &drop) in step.drops().iter().enumerate() {
+                assert!(drop == 0 || lifted[i], "cell {i}");
+                assert!(hill[i] - drop >= floor, "cell {i}");
+                assert_eq!(erosion.levels[i], hill[i] - drop);
+                cut += usize::from(drop > 0);
+            }
+            assert!(cut > 50, "{cut}");
+            erosion.levels.clone()
+        };
+        // Two equal runs give equal levels.
+        assert!(run() == run());
     }
 
     #[test]
