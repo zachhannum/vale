@@ -138,7 +138,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | --- | --- |
 | World | Radius, name, display units |
 | Source | Name of the imported file, extents, and the pixels of an imported image |
-| Raster | Face size, unit, value range, ramp, band limits |
+| Raster | Face size, unit, value range, base level, ramp, band limits |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Layer | Type (raster, points, lines, or polygons), attribute schema, link to a source, to a raster, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
@@ -157,6 +157,12 @@ The world is a row in `gpkg_spatial_ref_sys`: a geographic coordinate system on 
 The file has a format version for the extra tables, in the table `vale_meta`. The store has one migration step for each version. When the app opens an older file, it runs the later steps in one transaction. The app does not open a file with a newer version.
 
 The key of a raster tile is the raster, the level, the face, the column, and the row. The face is a number from 0 to 5. The column and the row count tiles of 256 pixels from the corner of the face. Level 0 has the face size of the raster, and the level is always 0 in version 1. A higher level is for finer tiles in a region, which come after version 1. The level field lets those tiles arrive with no change of the file format.
+
+The base level of a raster is the pixel of each place that has no tile. A tile holds 256 by 256 pixels. A tile at the far side of a face can go past the face, and those pixels have the base level.
+
+The pixels of a tile are one compressed blob, and the compression loses nothing. The first byte of the blob gives the codec. Codec 1 takes the difference of each pixel from the pixel to its left. It then compresses the low bytes and the high bytes of the differences with deflate.
+
+A save writes the tiles that changed and removes the tiles that have no pixels now. The tiles and the Raster record go to the file in one transaction. If a raster gets a new face size, the save removes its old tiles.
 
 Overrides belong to a map frame and not to the feature. A label that you move on the regional map stays where the engine put it on the world map.
 
@@ -481,7 +487,7 @@ A step moves each cell to a weighted mean of its height and the new height of th
 
 1. The prototype is a vertical slice through phases 2, 4, 6, 8, and 9. It does not finish any of them.
 2. The map is drawn by `vello_cpu` on screen and in PNG files. The display list of `vale-render` exists, and the GPU Vello backend does not. The same pixels come out with and without a window, so tests need no GPU. The PDF export uses Krilla, and text in the PDF stays text.
-3. `vale-store` holds the project in memory, and it reads and writes the world and the vector layers as a GeoPackage file. One save writes all the vector layers again. There are no raster records and no undo log. In memory, a feature ID is its index in the layer. With `--project`, the app loads the project file at the start and saves half a second after each change. On iPad, the app uses one project file in its container. The file does not hold the heightmap or the styles.
+3. `vale-store` holds the project in memory, and it reads and writes the world, the vector layers, and the raster records as a GeoPackage file. One save writes all the vector layers again, and it writes only the raster tiles that changed. There is no undo log. A layer record has no raster type. In memory, a feature ID is its index in the layer. With `--project`, the app loads the project file at the start and saves half a second after each change. On iPad, the app uses one project file in its container. The file does not hold the styles. The heightmap of the app is the first raster of the project. The app makes that raster record at the first save, so each project of the prototype has one raster layer. A change of the heightmap waits for its save until the texels of the stroke are back from the GPU. When the app closes, a stroke that still waits for its texels does not go to the file. A project file that holds a heightmap gives its face size, and `--face-size` does not change it. If the device cannot hold a face of that size, the app shows an empty heightmap and does not save it, and the file keeps its tiles. The save runs on the UI thread.
 4. `vale-import` reads GeoJSON, and it reads PNG and TIFF images as 16-bit greyscale. It copies the data, and there is no command to replace a file.
 5. `vale-sphere` clips with one simple method: rotate, unwrap, and clip in a plane. A polygon that covers more than half of the sphere is not supported. A ring closes along the short longitude way. `geo` and `rstar` are not dependencies yet.
 6. `vale-style` has one fixed rule for each layer, with a solid fill, a solid stroke, a circle symbol, and one label class.
@@ -491,7 +497,7 @@ A step moves each cell to a weighted mean of its height and the new height of th
 
 The prototype leaves out the following.
 
-- The heightmap, the styles, and the map frame in the project file. Undo and redo are for brush strokes only.
+- The styles and the map frame in the project file. Undo and redo are for brush strokes only.
 - Raster layers, SVG and Shapefile import, the command Replace from file, and georeferencing with extents or control points.
 - Rule-based styles, expressions, scale ranges, and all symbolizers other than a solid fill, a solid stroke, and a circle.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).

@@ -688,8 +688,11 @@ fn colors_text(colors: &[Rgb]) -> String {
 fn parse_colors(text: &str) -> Option<Vec<Rgb>> {
     let color = |hex: &str| {
         let n = u32::from_str_radix(hex, 16).ok()?;
-        (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-            .then(|| [(n >> 16) as u8, (n >> 8) as u8, n as u8])
+        (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some([
+            (n >> 16) as u8,
+            (n >> 8) as u8,
+            n as u8,
+        ])
     };
     text.split(',')
         .filter(|s| !s.is_empty())

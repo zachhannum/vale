@@ -666,3 +666,50 @@ fn the_screenshot_shows_the_imported_heightmap() {
         "{east}"
     );
 }
+
+/// The app with a project file: an import goes to the file after it ends,
+/// and the next start shows the same globe.
+#[test]
+fn an_imported_heightmap_opens_again_from_the_project_file() {
+    use vale_app::session::{SAVE_DELAY, Session};
+
+    let png = write_png("project.png", WIDTH, HEIGHT);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&file, &mut doc).unwrap();
+    let mut globe = Globe::with_face_size(FACE_SIZE);
+    let start = Instant::now();
+    session.flush(&mut doc.project, &mut globe.map).unwrap();
+
+    // The file does not get a part of an import.
+    globe.start_import(png);
+    while globe.importing() && !globe.map.has_changes() {
+        globe.advance(Instant::now());
+    }
+    assert!(globe.busy() && globe.map.has_changes());
+    let mut tick = |globe: &mut Globe, now| {
+        let busy = globe.busy();
+        let tick = session.tick(&mut doc.project, &mut globe.map, busy, now);
+        (tick.unwrap(), session.last_save.tiles_written)
+    };
+    assert_eq!(tick(&mut globe, start), (Some(SAVE_DELAY), 0));
+    assert!(tick(&mut globe, start + SAVE_DELAY).0.is_some());
+    assert!(globe.map.has_changes());
+    run(&mut globe);
+    assert!(!globe.busy());
+    // A face of 64 texels is one tile of 256.
+    assert_eq!(tick(&mut globe, start + SAVE_DELAY), (None, FACES));
+    drop(session);
+
+    let mut doc = Document::sample();
+    let session = Session::open(&file, &mut doc).unwrap();
+    let mut next = Globe::with_face_size(1024);
+    next.map.bands.add(55.0).unwrap();
+    next.set_map(session.load_map().unwrap().unwrap());
+    assert_eq!(next.map.face_size(), FACE_SIZE);
+    assert_eq!(next.map.bands, globe.map.bands);
+    assert!(texels(&next.map) == texels(&globe.map), "the texels differ");
+    assert!(!next.busy() && !next.can_undo());
+    assert!(session.saves_map(&next.map));
+}

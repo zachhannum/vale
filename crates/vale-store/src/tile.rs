@@ -59,7 +59,7 @@ pub fn decode(blob: &[u8]) -> Option<Vec<u16>> {
 
 /// The pixel that predicts pixel `i`.
 fn before(pixels: &[u16], i: usize) -> u16 {
-    if i % TILE_SIZE > 0 {
+    if !i.is_multiple_of(TILE_SIZE) {
         pixels[i - 1]
     } else if i > 0 {
         pixels[i - TILE_SIZE]
