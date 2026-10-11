@@ -5,14 +5,14 @@
 //! drains through the cell and with the slope to the receiver. The cells are
 //! the cells of the coarse copy of the heightmap or the cells of a window.
 
-use std::f64::consts::SQRT_2;
+use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
-use crate::cube::{FACES, face_dir, face_of, unwarp, warp};
+use crate::cube::{FACES, face_dir, unwarp};
 use crate::flow::{
     CoarseHeights, CubeGrid, Drain, FlowMap, Grid, OUT, RIVER_MIN_AREA, Window, WindowHeights,
-    drain, sea, solid_angles,
+    cell_past_edge, drain, sea, solid_angles,
 };
-use crate::heightmap::{MAX_BRUSH_RADIUS, TexelRect};
+use crate::heightmap::{MAX_BRUSH_RADIUS, TexelRect, brush_rect, falloff};
 use crate::math::V3;
 
 /// The number of cells at each side of a window where the effect of the
@@ -61,8 +61,8 @@ impl ErodeStep {
         &self.drops
     }
 
-    /// The texels of each face that the step can change: the cells under the
-    /// brushes and one cell around them.
+    /// The texels of each face that the step can change: the circle of each
+    /// brush and one cell around it.
     pub fn rects(&self) -> [Option<TexelRect>; FACES] {
         self.rects
     }
@@ -70,6 +70,69 @@ impl ErodeStep {
     /// Whether no cell goes down.
     pub fn is_empty(&self) -> bool {
         self.rects.iter().all(Option::is_none)
+    }
+
+    /// The drop of a cell. `x` and `y` can be one cell past the end of the
+    /// grid. Past a face edge of the global grid, the cell is the nearest
+    /// cell of the face that is there. A cell past the side of a window has
+    /// no drop.
+    pub(crate) fn cell_drop(&self, face: usize, x: i64, y: i64) -> u16 {
+        match self.grid {
+            ErodeGrid::Global { size } => {
+                let m = size as i64;
+                let (face, x, y) = if x >= 0 && y >= 0 && x < m && y < m {
+                    (face, x as usize, y as usize)
+                } else {
+                    cell_past_edge(size, face, x, y)
+                };
+                self.drops[(face * size + y) * size + x]
+            }
+            ErodeGrid::Window(window) => {
+                let cells = window.cells as i64;
+                if x < 0 || y < 0 || x >= cells || y >= cells {
+                    return 0;
+                }
+                self.drops[y as usize * window.cells + x as usize]
+            }
+        }
+    }
+
+    /// The place of a texel on the cell grid, in cells. The center of the
+    /// first cell is at 0. The face has `n` texels along one side. A texel
+    /// too far from the face of a window has no place.
+    pub(crate) fn place(&self, n: usize, face: usize, x: usize, y: usize) -> Option<(f64, f64)> {
+        match self.grid {
+            ErodeGrid::Global { size } => {
+                let at = |x: usize| (x as f64 + 0.5) * size as f64 / n as f64 - 0.5;
+                Some((at(x), at(y)))
+            }
+            // On the face of the window, the place is exact.
+            ErodeGrid::Window(window) if window.face == face => {
+                let at = |x: usize, first: i64| {
+                    ((x as i64 - first) as f64 + 0.5) / window.cell as f64 - 0.5
+                };
+                Some((at(x, window.x0), at(y, window.y0)))
+            }
+            ErodeGrid::Window(window) => {
+                let flat = |x: usize| unwarp((x as f64 + 0.5) / n as f64 * 2.0 - 1.0);
+                let (u, v) = window.place(face_dir(face, flat(x), flat(y)))?;
+                Some((u - 0.5, v - 0.5))
+            }
+        }
+    }
+
+    /// The drop at a texel, in levels: the drops of the 4 cells around the
+    /// texel, in the ratio of its distances to their centers.
+    pub(crate) fn drop_at(&self, n: usize, face: usize, x: usize, y: usize) -> f64 {
+        let Some((u, v)) = self.place(n, face, x, y) else {
+            return 0.0;
+        };
+        let (i, j) = (u.floor(), v.floor());
+        let (tu, tv) = (u - i, v - j);
+        let cell = |du: i64, dv: i64| f64::from(self.cell_drop(face, i as i64 + du, j as i64 + dv));
+        let top = cell(0, 0) * (1.0 - tu) + cell(1, 0) * tu;
+        let bottom = cell(0, 1) * (1.0 - tu) + cell(1, 1) * tu;
+        top * (1.0 - tv) + bottom * tv
     }
 }
 
@@ -104,14 +167,14 @@ pub struct Erosion {
     stale: bool,
 }
 
-/// The effect of a brush at `k` radii from its center, from 0 to 1. The
-/// curve is the curve of `Heightmap::stamp`.
-fn falloff(k: f64, hard: f64) -> f64 {
-    if k <= hard {
-        return 1.0;
-    }
-    let k = (k - hard) / (1.0 - hard);
-    1.0 - k * k * (3.0 - 2.0 * k)
+/// The effect of the brushes of one step.
+struct Weights {
+    /// The effect at each cell.
+    cells: Vec<f32>,
+    /// The first and the last cell with an effect in each row.
+    spans: Vec<Option<(usize, usize)>>,
+    /// Whether each brush has an effect on a cell.
+    hits: Vec<bool>,
 }
 
 impl Erosion {
@@ -210,27 +273,15 @@ impl Erosion {
         }
     }
 
-    /// The direction of a place on the cell grid of a face. `u` and `v` are
-    /// in cells, and the center of the first cell is at 0.5.
-    fn dir(&self, face: usize, u: f64, v: f64) -> V3 {
-        match &self.cells {
-            Cells::Global(grid) => {
-                let flat = |p: f64| unwarp((p / grid.m as f64 * 2.0 - 1.0).clamp(-1.99, 1.99));
-                face_dir(face, flat(u), flat(v))
-            }
-            Cells::Window { window, .. } => window.dir(u, v),
-        }
-    }
-
-    /// The effect of the brushes at each cell, and the first and the last
-    /// cell with an effect in each row.
-    fn weights(&self, brushes: &[ErodeBrush]) -> (Vec<f32>, Vec<Option<(usize, usize)>>) {
+    /// The effect of the brushes at each cell.
+    fn weights(&self, brushes: &[ErodeBrush]) -> Weights {
         let side = self.side;
         let faces = self.faces();
         let global = matches!(self.cells, Cells::Global(_));
         let mut weights = vec![0.0f32; self.heights.len()];
         let mut spans = vec![None; faces.len() * side];
-        for brush in brushes {
+        let mut hits = vec![false; brushes.len()];
+        for (brush, hit) in brushes.iter().zip(&mut hits) {
             let radius = brush.radius.clamp(1e-6, MAX_BRUSH_RADIUS);
             let hard = brush.hardness.clamp(0.0, 0.999);
             let (sin_radius, cos_radius) = radius.sin_cos();
@@ -276,48 +327,33 @@ impl Erosion {
                         *cell = cell.max(weight as f32);
                         let (first, last) = spans[row].unwrap_or((x, x));
                         spans[row] = Some((first.min(x), last.max(x)));
+                        *hit = true;
                     }
                 }
             }
         }
-        (weights, spans)
+        Weights {
+            cells: weights,
+            spans,
+            hits,
+        }
     }
 
-    /// The texels of each face that hold the cells of `spans` and one cell
-    /// around them.
-    fn rects(&self, spans: &[Option<(usize, usize)>]) -> [Option<TexelRect>; FACES] {
+    /// The texels of each face that the cells under the brushes can change.
+    /// A texel takes the drops of the cells around it, so the circle of each
+    /// brush grows by the width of a cell and a half.
+    fn rects(&self, brushes: &[ErodeBrush], hits: &[bool]) -> [Option<TexelRect>; FACES] {
         let n = self.face_size;
-        let texel = |a: f64| {
-            let texel = (warp(a.clamp(-1.0, 1.0)) + 1.0) * 0.5 * n as f64;
-            (texel.max(0.0) as usize).min(n - 1)
+        let cell = match &self.cells {
+            Cells::Global(grid) => FRAC_PI_2 / grid.m as f64,
+            Cells::Window { window, .. } => FRAC_PI_2 * window.cell as f64 / n as f64,
         };
         let mut rects = [None; FACES];
-        for (row, span) in spans.iter().enumerate() {
-            let Some((first, last)) = *span else {
-                continue;
-            };
-            let face = self.faces().start + row / self.side;
-            let y = (row % self.side) as f64;
-            let (u0, u1) = (first as f64 - 1.0, last as f64 + 2.0);
-            let corners = [(u0, y - 1.0), (u1, y - 1.0), (u0, y + 2.0), (u1, y + 2.0)]
-                .map(|(u, v)| self.dir(face, u, v));
-            // A corner on another face counts as a point on the edge of this
-            // face. Thus a span that crosses the edge has its full part of
-            // each face.
-            for on in corners.map(|d| face_of(d).0) {
-                let axis = on / 2;
-                let sign = if on.is_multiple_of(2) { 1.0 } else { -1.0 };
-                for d in corners {
-                    let depth = (d[axis] * sign).max(0.02);
-                    let x = texel(d[(axis + 1) % 3] / depth);
-                    let y = texel(d[(axis + 2) % 3] / depth);
-                    let point = TexelRect {
-                        x0: x.saturating_sub(1),
-                        y0: y.saturating_sub(1),
-                        x1: (x + 2).min(n),
-                        y1: (y + 2).min(n),
-                    };
-                    rects[on] = Some(rects[on].map_or(point, |rect: TexelRect| rect.union(point)));
+        for (brush, _) in brushes.iter().zip(hits).filter(|&(_, &hit)| hit) {
+            let radius = brush.radius.clamp(1e-6, MAX_BRUSH_RADIUS) + 1.5 * cell;
+            for (face, rect) in rects.iter_mut().enumerate() {
+                if let Some(new) = brush_rect(n, face, brush.center, radius) {
+                    *rect = Some(rect.map_or(new, |rect: TexelRect| rect.union(new)));
                 }
             }
         }
@@ -343,7 +379,11 @@ impl Erosion {
         if rate.is_nan() || rate <= 0.0 {
             return step;
         }
-        let (weights, spans) = self.weights(brushes);
+        let Weights {
+            cells: weights,
+            spans,
+            hits,
+        } = self.weights(brushes);
         if spans.iter().all(Option::is_none) {
             return step;
         }
@@ -394,7 +434,7 @@ impl Erosion {
             }
         }
         if self.stale {
-            step.rects = self.rects(&spans);
+            step.rects = self.rects(brushes, &hits);
         }
         step
     }
@@ -406,6 +446,7 @@ mod tests {
     use crate::cube::meters_to_level;
     use crate::flow::tests::{OCEAN, equator_valley, from_cells, lumpy};
     use crate::flow::{FLOW_SIZE, cell_at, cell_dir};
+    use crate::heightmap::{Heightmap, Mode, Stamp};
     use crate::math::{angle, lonlat_to_dir, normalize};
 
     const _: fn() = || {
@@ -648,6 +689,249 @@ mod tests {
         // The river that comes in from the global map makes the drop larger.
         let (alone, fed) = (lowered(&dry), lowered(&global));
         assert!(alone > 0.0 && fed > 1.05 * alone, "{fed} {alone}");
+    }
+
+    /// A heightmap with `level` at each texel, in tiles of 64 texels.
+    fn map_of(n: usize, level: impl Fn(V3) -> u16) -> Heightmap {
+        let mut map = Heightmap::with_tile_size(n, 64, 0);
+        for face in 0..FACES {
+            let levels: Vec<u16> = (0..n * n)
+                .map(|i| level(map.texel_dir(face, i % n, i / n)))
+                .collect();
+            map.store_face(face, &levels);
+        }
+        map.take_dirty();
+        map
+    }
+
+    fn texels(map: &Heightmap) -> Vec<u16> {
+        let n = map.face_size();
+        let all = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: n,
+            y1: n,
+        };
+        let mut out = Vec::new();
+        for face in 0..FACES {
+            map.read_rect(face, all, &mut out);
+        }
+        out
+    }
+
+    /// A step on the global grid with a drop for each cell, on all texels.
+    fn step_of(m: usize, n: usize, drop: impl Fn(usize, V3) -> u16) -> ErodeStep {
+        let all = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: n,
+            y1: n,
+        };
+        let cells = 0..FACES * m * m;
+        let drops = cells.map(|i| drop(i, cell_dir(m, i / (m * m), i % m, i / m % m)));
+        ErodeStep {
+            grid: ErodeGrid::Global { size: m },
+            drops: drops.collect(),
+            rects: [Some(all); FACES],
+        }
+    }
+
+    /// The largest difference of the drops of two neighbor cells.
+    fn largest_cell_step(step: &ErodeStep, m: usize) -> f64 {
+        let grid = CubeGrid {
+            m,
+            solid: Vec::new(),
+        };
+        let mut largest = 0;
+        for (i, &drop) in step.drops().iter().enumerate() {
+            for j in grid.neighbors(i) {
+                largest = largest.max(drop.abs_diff(step.drops()[j as usize]));
+            }
+        }
+        f64::from(largest)
+    }
+
+    #[test]
+    fn erode_keeps_the_sea_floor_and_stops_land_at_sea_level() {
+        let n = 256;
+        let mut map = map_of(n, lumpy);
+        let before = texels(&map);
+        let mut erosion = Erosion::global(&CoarseHeights::from_fn(64, lumpy), n);
+        let brushes = brushes_on_all_sides();
+        let mut changed = 0;
+        for _ in 0..30 {
+            changed += map.erode(&erosion.step(&brushes, 100.0));
+        }
+        assert!(changed > 10_000, "{changed}");
+        let (sea, after) = (sea(), texels(&map));
+        let mut at_sea_level = 0;
+        for (&old, &new) in before.iter().zip(&after) {
+            if old < sea {
+                assert_eq!(new, old);
+            } else {
+                assert!(new >= sea && new <= old, "{old} {new}");
+                at_sea_level += usize::from(old > sea && new == sea);
+            }
+        }
+        assert!(at_sea_level > 1000, "{at_sea_level}");
+        assert!(map.take_dirty().iter().flatten().count() >= 3);
+    }
+
+    #[test]
+    fn the_drop_of_the_texels_has_no_cell_step() {
+        let (m, n) = (16, 256);
+        // The drops of two neighbor cells are far apart.
+        let step = step_of(m, n, |i, _| (i * 7919 % 1000) as u16);
+        let largest = largest_cell_step(&step, m);
+        assert!(largest > 900.0);
+        let mut map = Heightmap::new(n, 60_000);
+        assert!(map.erode(&step) > FACES * n * n * 9 / 10);
+        let drop = |face: usize, x: usize, y: usize| {
+            60_000.0 - f64::from(map.get(face, x as i64, y as i64))
+        };
+        // A cell is 16 texels wide, so a texel has a 16th of the cell step.
+        let limit = largest / (n / m) as f64 + 1.0;
+        let mut most: f64 = 0.0;
+        for face in 0..FACES {
+            for y in 0..n {
+                for x in 0..n - 1 {
+                    let along = (drop(face, x + 1, y) - drop(face, x, y)).abs();
+                    let across = (drop(face, y, x + 1) - drop(face, y, x)).abs();
+                    most = most.max(along).max(across);
+                }
+            }
+        }
+        assert!(most <= limit && most > 0.5 * limit, "{most} {limit}");
+        // The texel at a cell center has the drop of the cell.
+        assert_eq!(
+            step.drop_at(m, 2, 2, 4),
+            f64::from(step.drops()[(2 * m + 4) * m + 2])
+        );
+    }
+
+    #[test]
+    fn the_drop_of_the_texels_has_no_seam_at_a_face_edge() {
+        let (m, n) = (16, 256);
+        let width = (n / m) as f64;
+        let wave = |d: V3| 600.0 + 500.0 * (4.0 * d[0] + 1.0).sin() * (3.0 * d[1] - d[2]).cos();
+        let step = step_of(m, n, |_, d| wave(d) as u16);
+        let largest = largest_cell_step(&step, m);
+        assert!(largest > 50.0 && largest < 250.0, "{largest}");
+        let mut map = Heightmap::new(n, 60_000);
+        map.erode(&step);
+        let drop = |face: usize, x: i64, y: i64| 60_000.0 - f64::from(map.get(face, x, y));
+        let last = n as i64 - 1;
+        let (mut middle, mut end, mut corner): (f64, f64, f64) = (0.0, 0.0, 0.0);
+        for face in 0..FACES {
+            for i in 0..n as i64 {
+                // The texel pairs across the 4 edges of the face.
+                let pairs = [
+                    ((last, i), (last + 1, i)),
+                    ((0, i), (-1, i)),
+                    ((i, last), (i, last + 1)),
+                    ((i, 0), (i, -1)),
+                ];
+                for (a, b) in pairs {
+                    let seam = (drop(face, a.0, a.1) - drop(face, b.0, b.1)).abs();
+                    // The middle half of the edge.
+                    if (n as i64 / 4..3 * n as i64 / 4).contains(&i) {
+                        middle = middle.max(seam);
+                    } else {
+                        end = end.max(seam);
+                    }
+                }
+            }
+            // The 3 texels that meet at a cube corner.
+            for (x, y) in [(0, 0), (last, 0), (0, last), (last, last)] {
+                let (dx, dy) = (if x == 0 { -1 } else { 1 }, if y == 0 { -1 } else { 1 });
+                let here = drop(face, x, y);
+                for there in [drop(face, x + dx, y), drop(face, x, y + dy)] {
+                    corner = corner.max((here - there).abs());
+                }
+            }
+        }
+        // In the middle half of an edge, the cells of the two faces are in
+        // line, and the seam is as smooth as the inside of a face.
+        assert!(middle > 0.0 && middle <= largest / width + 1.0, "{middle}");
+        // Toward a corner, the cell past the edge can be half a cell to one
+        // side. Thus the seam can be larger by half a cell step.
+        assert!(end <= largest / width + largest / 2.0 + 1.0, "{end}");
+        // At a corner, the difference is one cell step at most.
+        assert!(corner <= largest + 1.0, "{corner}");
+    }
+
+    #[test]
+    fn erode_in_a_window_lowers_the_texels_of_two_faces() {
+        let n = 256;
+        let mut map = map_of(n, equator_valley);
+        let before = texels(&map);
+        // The faces meet at longitude 45.
+        let window = Window::centered(lonlat_to_dir(44.0, 0.4), n, 1, 64);
+        assert_eq!(window.face, 0);
+        let global = FlowMap::new(&CoarseHeights::from_fn(64, equator_valley));
+        let mut erosion = Erosion::window(&WindowHeights::new(&map, window), &global);
+        let brush = ErodeBrush {
+            center: lonlat_to_dir(45.0, 0.4),
+            radius: 0.05,
+            hardness: 0.5,
+            flow: 1.0,
+        };
+        let step = erosion.step(&[brush], 1.0);
+        assert!(map.erode(&step) > 100);
+        let dirty = map.take_dirty();
+        assert!(dirty[0].is_some() && dirty[2].is_some());
+        let after = texels(&map);
+        let mut lowered = [0; FACES];
+        for (i, (&old, &new)) in before.iter().zip(&after).enumerate() {
+            let (face, x, y) = (i / (n * n), i % n, i / n % n);
+            let cell = window.cell_at(map.texel_dir(face, x, y));
+            if face == 0 {
+                // A cell is one texel of the face of the window.
+                let drop = cell.map_or(0, |(x, y)| step.drops()[y * 64 + x]);
+                assert_eq!(old - new, drop, "{x} {y}");
+            }
+            if new != old {
+                assert!(cell.is_some(), "{face} {x} {y}");
+                lowered[face] += 1;
+            }
+        }
+        assert!(lowered[0] > 50 && lowered[2] > 50, "{lowered:?}");
+    }
+
+    #[test]
+    fn one_undo_puts_back_a_stroke_of_many_steps() {
+        let n = 256;
+        let mut map = map_of(n, lumpy);
+        let before = texels(&map);
+        let mut erosion = Erosion::global(&CoarseHeights::from_fn(64, lumpy), n);
+        let brushes = brushes_on_all_sides();
+        map.begin_stroke();
+        let mut changed = 0;
+        for _ in 0..5 {
+            changed += map.erode(&erosion.step(&brushes, 1.0));
+        }
+        assert!(changed > 1000, "{changed}");
+        assert!(map.end_stroke());
+        let after = texels(&map);
+        assert!(after != before);
+        assert!(map.undo() && !map.can_undo());
+        assert!(texels(&map) == before);
+        assert!(map.redo());
+        assert!(texels(&map) == after);
+
+        // A stamp of the erode mode changes nothing.
+        let stamp = Stamp {
+            center: [1.0, 0.0, 0.0],
+            radius: 0.2,
+            hardness: 0.5,
+            flow: 1.0,
+            mode: Mode::Erode,
+            level: 0,
+            strength: 1000.0,
+        };
+        map.begin_stroke();
+        assert_eq!(map.stamp(&stamp), 0);
+        assert!(!map.end_stroke());
     }
 
     /// Run with `--release --ignored --nocapture` for the time of one step

@@ -33,7 +33,8 @@ struct Group {
     sea: u32,
     // The number of texels along one side of a face of the channel map.
     channel_size: u32,
-    // 1 if the carve mode has a window, and 0 if not.
+    // 1 if the carve mode has a window, and 0 if not. In an erode pass, 1 if
+    // the cells of the step are the cells of a window.
     window_on: u32,
     // The first texel, the face, and the cell size of the window.
     window_origin: vec2<i32>,
@@ -41,6 +42,11 @@ struct Group {
     window_cell: u32,
     // The texel of the face at the first texel of the render target.
     origin: vec2<i32>,
+    // The number of cells of an erode pass along one side of a face.
+    cells: u32,
+    // The texels of the drop texture that hold the drops of an erode pass:
+    // x0, y0, x1, y1. The drop of each other cell is 0.
+    drop_rect: vec4<i32>,
     stamps: array<Stamp, GROUP_STAMPS>,
 }
 
@@ -50,6 +56,9 @@ const RAISE = 0u;
 const LOWER = 1u;
 const SMOOTH = 2u;
 const CARVE = 4u;
+// A pass of this mode has no stamps. It applies one step of the erode brush,
+// as `Heightmap::erode` does.
+const ERODE = 5u;
 
 @group(0) @binding(0) var<uniform> group: Group;
 // The channel map of all faces. The third byte of a texel is the distance to
@@ -58,6 +67,11 @@ const CARVE = 4u;
 @group(0) @binding(1) var channels: texture_2d_array<u32>;
 // The channel texels of the window, with the same bytes.
 @group(0) @binding(2) var window_channels: texture_2d<u32>;
+// The drops of an erode step on the cells of all faces. A face has one more
+// cell at each side, from the faces that are there.
+@group(0) @binding(3) var drops: texture_2d_array<u32>;
+// The drops of an erode step on the cells of a window.
+@group(0) @binding(4) var window_drops: texture_2d<u32>;
 
 // The same number as `WINDOW_MARGIN` in `flow.rs`.
 const WINDOW_MARGIN = 8.0;
@@ -184,6 +198,33 @@ fn atan_any(t: f32) -> f32 {
     return sign(t) * (2.0 * PI_4 - atan_unit(1.0 / abs(t)));
 }
 
+// The place of a texel in the window, in cells. The center of the first cell
+// is at 0.5. The third number is 1 if the texel has a place, and 0 if it is
+// too far from the face of the window. The steps are those of `Window::place`.
+fn window_place(at: vec2<i32>) -> vec3<f32> {
+    let cell = f32(group.window_cell);
+    if group.face == group.window_face {
+        // The difference of the whole numbers is exact.
+        return vec3<f32>((vec2<f32>(at - group.window_origin) + 0.5) / cell, 1.0);
+    }
+    // The direction of the texel, then its place on the face of the window.
+    // The texel grid of that face continues past its edges.
+    let axis = group.face / 2u;
+    var d: vec3<f32>;
+    d[axis] = 1.0 - 2.0 * f32(group.face % 2u);
+    d[(axis + 1u) % 3u] = flat_of(at.x);
+    d[(axis + 2u) % 3u] = flat_of(at.y);
+    let to = group.window_face / 2u;
+    let depth = d[to] * (1.0 - 2.0 * f32(group.window_face % 2u));
+    if depth <= 0.2 * length(d) {
+        return vec3<f32>(0.0);
+    }
+    let flat = vec2<f32>(d[(to + 1u) % 3u], d[(to + 2u) % 3u]) / depth;
+    let warp = vec2<f32>(atan_any(flat.x), atan_any(flat.y)) / PI_4;
+    let texel = (warp + 1.0) * 0.5 * f32(group.size);
+    return vec3<f32>((texel - vec2<f32>(group.window_origin)) / cell, 1.0);
+}
+
 // The distance from a texel to the river of the window with the deepest
 // valley there, in channel texels of the window, and the size of that river
 // from 0 to 255. The third number is 1 if the window covers the texel, and 0
@@ -193,29 +234,12 @@ fn window_river_at(at: vec2<i32>) -> vec3<f32> {
     if group.window_on == 0u {
         return vec3<f32>(0.0);
     }
-    let cell = f32(group.window_cell);
-    var c: vec2<f32>;
-    if group.face == group.window_face {
-        // The difference of the whole numbers is exact.
-        c = (vec2<f32>(at - group.window_origin) + 0.5) * 2.0 / cell - 0.5;
-    } else {
-        // The direction of the texel, then its place on the face of the
-        // window. The texel grid of that face continues past its edges.
-        let axis = group.face / 2u;
-        var d: vec3<f32>;
-        d[axis] = 1.0 - 2.0 * f32(group.face % 2u);
-        d[(axis + 1u) % 3u] = flat_of(at.x);
-        d[(axis + 2u) % 3u] = flat_of(at.y);
-        let to = group.window_face / 2u;
-        let depth = d[to] * (1.0 - 2.0 * f32(group.window_face % 2u));
-        if depth <= 0.2 * length(d) {
-            return vec3<f32>(0.0);
-        }
-        let flat = vec2<f32>(d[(to + 1u) % 3u], d[(to + 2u) % 3u]) / depth;
-        let warp = vec2<f32>(atan_any(flat.x), atan_any(flat.y)) / PI_4;
-        let texel = (warp + 1.0) * 0.5 * f32(group.size);
-        c = (texel - vec2<f32>(group.window_origin)) * 2.0 / cell - 0.5;
+    let place = window_place(at);
+    if place.z == 0.0 {
+        return vec3<f32>(0.0);
     }
+    // A cell is 2 channel texels wide.
+    let c = place.xy * 2.0 - 0.5;
     let last = f32(textureDimensions(window_channels).x) - 1.0 - WINDOW_MARGIN;
     if any(c < vec2<f32>(WINDOW_MARGIN)) || any(c > vec2<f32>(last)) {
         return vec3<f32>(0.0);
@@ -234,6 +258,43 @@ fn window_river_at(at: vec2<i32>) -> vec3<f32> {
     return vec3<f32>(both.x / 32.0, both.y, 1.0);
 }
 
+// The drop of a cell of an erode pass. The cell can be one place past the end
+// of the grid.
+fn cell_drop(cell: vec2<i32>) -> f32 {
+    if group.window_on == 0u {
+        let p = cell + 1;
+        if any(p < group.drop_rect.xy) || any(p >= group.drop_rect.zw) {
+            return 0.0;
+        }
+        return f32(textureLoad(drops, p, i32(group.face), 0).r);
+    }
+    if any(cell < group.drop_rect.xy) || any(cell >= group.drop_rect.zw) {
+        return 0.0;
+    }
+    return f32(textureLoad(window_drops, cell, 0).r);
+}
+
+// The drop of an erode pass at a texel, in levels. The steps are those of
+// `ErodeStep::drop_at`.
+fn drop_at(at: vec2<i32>) -> f32 {
+    var c: vec2<f32>;
+    if group.window_on == 0u {
+        c = (vec2<f32>(at) + 0.5) * f32(group.cells) / f32(group.size) - 0.5;
+    } else {
+        let place = window_place(at);
+        if place.z == 0.0 {
+            return 0.0;
+        }
+        c = place.xy - 0.5;
+    }
+    let whole = floor(c);
+    let t = c - whole;
+    let p = vec2<i32>(whole);
+    let top = cell_drop(p) * (1.0 - t.x) + cell_drop(p + vec2<i32>(1, 0)) * t.x;
+    let bottom = cell_drop(p + vec2<i32>(0, 1)) * (1.0 - t.x) + cell_drop(p + 1) * t.x;
+    return top * (1.0 - t.y) + bottom * t.y;
+}
+
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     let at = vec2<i32>(floor(position.xy)) + group.origin;
@@ -243,6 +304,11 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     // The level after each stamp is a whole number, as it is in the texture
     // between two passes.
     var value = f32(tile_level(i32(group.face), at));
+    if group.mode == ERODE {
+        // Land does not go below sea level, and the sea floor stays.
+        let drop = floor(drop_at(at) + 0.5);
+        value = max(value - drop, min(value, f32(group.sea)));
+    }
     // The distance to the river and its size. The window comes first. With
     // no river near, the size is 0.
     var river = vec2<f32>(0.0);

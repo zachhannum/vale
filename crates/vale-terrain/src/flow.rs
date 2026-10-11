@@ -91,7 +91,7 @@ pub(crate) fn cell_at(m: usize, d: V3) -> (usize, usize, usize) {
 
 /// The cell at a place that can be past the face edge. The cell grid
 /// continues past the edge, as the texel grid does in `Heightmap::get`.
-fn cell_past_edge(m: usize, face: usize, x: i64, y: i64) -> (usize, usize, usize) {
+pub(crate) fn cell_past_edge(m: usize, face: usize, x: i64, y: i64) -> (usize, usize, usize) {
     let flat = |i: i64| unwarp(center(m, i).clamp(-1.99, 1.99));
     cell_at(m, face_dir(face, flat(x), flat(y)))
 }

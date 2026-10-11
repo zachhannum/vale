@@ -74,6 +74,7 @@ fn mode_name(mode: Mode) -> &'static str {
         Mode::Smooth => "smooth",
         Mode::Flatten => "flatten",
         Mode::Carve => "carve",
+        Mode::Erode => "erode",
     }
 }
 
