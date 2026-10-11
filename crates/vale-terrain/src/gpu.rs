@@ -15,9 +15,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::bands::SEA_LEVEL;
 use crate::cube::{FACES, meters_to_level};
 use crate::erode::{ErodeGrid, ErodeStep};
-use crate::flow::{
-    ChannelMap, ChannelWindow, CoarseHeights, ERODE_WINDOW_CELLS, WINDOW_CELLS, Window,
-};
+use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
 use crate::heightmap::{Mode, StampPlan, TILE_SIZE, TexelRect};
 use crate::tiles::{Pool, TILES_WGSL};
 
@@ -300,7 +298,7 @@ impl GpuHeightmap {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
-        let window_drops = drop_texture("erode window drops", ERODE_WINDOW_CELLS, 1);
+        let window_drops = drop_texture("erode window drops", WINDOW_CELLS, 1);
         let window_drops_view = window_drops.create_view(&wgpu::TextureViewDescriptor::default());
 
         let uniform_size = size_of::<Uniforms>() as u32;
@@ -834,7 +832,7 @@ impl GpuHeightmap {
                 None
             }
             ErodeGrid::Window(window) => {
-                assert!(window.cells <= ERODE_WINDOW_CELLS, "the window size");
+                assert!(window.cells <= WINDOW_CELLS, "the window size");
                 assert_eq!(window.face_size, n, "the face size");
                 Some(window)
             }
