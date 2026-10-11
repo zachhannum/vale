@@ -139,9 +139,10 @@ impl Document {
                         .is_some_and(|x| x.kind == l.kind)
                 })
                 .count();
-            let id =
-                self.project
-                    .add_layer(l.name, l.kind, source.map(Path::to_path_buf), l.features);
+            let file = source
+                .and_then(Path::file_name)
+                .map(|n| n.to_string_lossy().into_owned());
+            let id = self.project.add_layer(l.name, l.kind, file, l.features);
             let style = {
                 let layer = self.project.layer(id).expect("layer was just added");
                 LayerStyle::default_for(layer.kind, ordinal, &layer.fields)

@@ -27,6 +27,9 @@ egui_kittest = { version = "0.36.2", features = ["wgpu"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = "0.17.2"
 tiff = "0.11.3"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+uuid = { version = "1.27.0", features = ["v4"] }
+tempfile = "3"
 vale-store = { path = "crates/vale-store", version = "0.1.0" }
 vale-style = { path = "crates/vale-style", version = "0.1.0" }
 vale-render = { path = "crates/vale-render", version = "0.1.0" }

@@ -1,7 +1,8 @@
 //! In-memory project model: a world, its layers, and their features.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+
+pub use uuid::Uuid;
 
 /// A position as `[lon, lat]` in degrees.
 pub type LonLat = [f64; 2];
@@ -64,6 +65,17 @@ impl GeometryKind {
             GeometryKind::Polygon => "polygon",
         }
     }
+
+    /// The kind with this lower-case name.
+    pub fn from_name(name: &str) -> Option<GeometryKind> {
+        [
+            GeometryKind::Point,
+            GeometryKind::Line,
+            GeometryKind::Polygon,
+        ]
+        .into_iter()
+        .find(|k| k.name() == name)
+    }
 }
 
 /// The geometry of one feature.
@@ -91,6 +103,31 @@ impl Geometry {
 pub struct Feature {
     pub geometry: Geometry,
     pub attributes: BTreeMap<String, Value>,
+    uuid: Uuid,
+}
+
+impl Feature {
+    /// A feature with a new UUID.
+    pub fn new(geometry: Geometry, attributes: BTreeMap<String, Value>) -> Feature {
+        Feature::with_uuid(Uuid::new_v4(), geometry, attributes)
+    }
+
+    pub(crate) fn with_uuid(
+        uuid: Uuid,
+        geometry: Geometry,
+        attributes: BTreeMap<String, Value>,
+    ) -> Feature {
+        Feature {
+            geometry,
+            attributes,
+            uuid,
+        }
+    }
+
+    /// The stable identity. An edit, a save, and a load keep it.
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
+    }
 }
 
 /// The identity of a layer. It is never reused.
@@ -103,7 +140,8 @@ pub struct Layer {
     pub id: LayerId,
     pub name: String,
     pub kind: GeometryKind,
-    pub source: Option<PathBuf>,
+    /// The name of the imported file.
+    pub source: Option<String>,
     /// Attribute names, sorted, no duplicates.
     pub fields: Vec<String>,
     /// A feature ID is its index here.
@@ -144,18 +182,26 @@ impl Project {
         }
     }
 
-    /// Adds a layer on top and returns its ID.
+    /// Adds a layer on top and returns its ID. Each feature gets each field
+    /// of the layer, with `Null` for a field that it did not have.
     pub fn add_layer(
         &mut self,
         name: String,
         kind: GeometryKind,
-        source: Option<PathBuf>,
-        features: Vec<Feature>,
+        source: Option<String>,
+        mut features: Vec<Feature>,
     ) -> LayerId {
         let id = LayerId(self.next_id);
         self.next_id += 1;
         let fields: BTreeSet<&String> = features.iter().flat_map(|f| f.attributes.keys()).collect();
-        let fields = fields.into_iter().cloned().collect();
+        let fields: Vec<String> = fields.into_iter().cloned().collect();
+        for f in &mut features {
+            for name in &fields {
+                if !f.attributes.contains_key(name) {
+                    f.attributes.insert(name.clone(), Value::Null);
+                }
+            }
+        }
         self.layers.push(Layer {
             id,
             name,
@@ -189,10 +235,10 @@ mod tests {
     use super::*;
 
     fn feature(keys: &[&str]) -> Feature {
-        Feature {
-            geometry: Geometry::Points(vec![[0.0, 0.0]]),
-            attributes: keys.iter().map(|k| (k.to_string(), Value::Null)).collect(),
-        }
+        Feature::new(
+            Geometry::Points(vec![[0.0, 0.0]]),
+            keys.iter().map(|k| (k.to_string(), Value::Null)).collect(),
+        )
     }
 
     #[test]
@@ -221,6 +267,9 @@ mod tests {
         assert!(b > a);
         assert_eq!(p.layer(a).unwrap().fields, vec!["alpha", "mid", "zeta"]);
         assert_eq!(p.layers().len(), 2);
+        let features = &p.layer(a).unwrap().features;
+        assert!(features.iter().all(|f| f.attributes.len() == 3));
+        assert_ne!(features[0].uuid(), features[1].uuid());
     }
 
     #[test]

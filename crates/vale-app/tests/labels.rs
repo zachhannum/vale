@@ -271,10 +271,7 @@ fn picking() {
 }
 
 fn feature(g: Geometry) -> Feature {
-    Feature {
-        geometry: g,
-        attributes: Default::default(),
-    }
+    Feature::new(g, Default::default())
 }
 
 fn pf(

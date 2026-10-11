@@ -1,6 +1,7 @@
 use clap::Parser;
 use kurbo::Point;
 use vale_app::cli::{Args, apply_view};
+use vale_app::document::Document;
 use vale_app::pipeline::Pipeline;
 use vale_sphere::ProjectionKind;
 
@@ -14,10 +15,15 @@ fn parse(args: &[&str]) -> Args {
 fn defaults() {
     let a = parse(&[]);
     assert_eq!(a.size().unwrap(), (1280.0, 800.0));
-    assert_eq!(
-        a.document().unwrap(),
-        vale_app::document::Document::sample()
-    );
+    // Each sample has new feature UUIDs, so the projects are not equal.
+    let (doc, sample) = (a.document().unwrap(), Document::sample());
+    assert_eq!(doc.frame, sample.frame);
+    assert_eq!(doc.project.world, sample.project.world);
+    let shape = |d: &Document| -> Vec<(String, usize)> {
+        let layers = d.project.layers().iter();
+        layers.map(|l| (l.name.clone(), l.features.len())).collect()
+    };
+    assert_eq!(shape(&doc), shape(&sample));
 }
 
 #[test]
