@@ -2,7 +2,7 @@
 //! and paint.
 
 use std::collections::VecDeque;
-use std::f64::consts::PI;
+use std::f64::consts::{FRAC_PI_2, PI};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
@@ -63,9 +63,9 @@ const ERODE_SECONDS: std::ops::RangeInclusive<f64> = 1.0 / 60.0..=0.25;
 /// The time that one erode step stands for in the sync mode, in seconds.
 const ERODE_SYNC_SECONDS: f64 = 1.0 / 30.0;
 
-/// The rate of the erode step of one uplift stamp, for an erosion setting
-/// of 1.
-const UPLIFT_ERODE_RATE: f64 = 8.0;
+/// The rate of the erode steps of one uplift stamp, for an erosion setting
+/// of 1 and a brush radius of 16 cells.
+const UPLIFT_ERODE_RATE: f64 = 12.0;
 
 /// An uplift stroke makes one weather stamp for this number of its stamps.
 const UPLIFT_WEATHER_EVERY: usize = 4;
@@ -150,9 +150,8 @@ struct Uplifting {
     stamps: Vec<Stamp>,
     /// The stamps of the step that is in work.
     asked: Vec<Stamp>,
-    /// The cells of the stroke after its first request. `Some(None)`: the
-    /// cells of the coarse copy.
-    cells: Option<Option<Window>>,
+    /// The window of the cells of the stroke, after its first request.
+    window: Option<Window>,
 }
 
 /// The stroke that the GPU works on.
@@ -883,30 +882,19 @@ impl Globe {
         // cells follows the pen.
         let (first, last) = (stamps[0], stamps[stamps.len() - 1]);
         let face_size = self.map.face_size();
-        let ground = |window: Option<Window>| {
-            let global = self.rivers.coarse().clone();
-            match window {
-                Some(window) => Ground::Window {
-                    heights: WindowHeights::new(&self.map, window),
-                    global,
-                },
-                None => Ground::Global {
-                    heights: global,
-                    face_size,
-                },
-            }
-        };
-        match uplift.cells {
+        match uplift.window {
             None => {
                 let window = uplift_window(first.center, first.radius, face_size);
-                self.eroder.begin(ground(window));
-                uplift.cells = Some(window);
+                let heights = WindowHeights::new(&self.map, window);
+                self.eroder.begin(Ground::Alone(heights));
+                uplift.window = Some(window);
             }
-            Some(Some(window)) if near_side(&window, last.center, last.radius) => {
+            Some(window) if near_side(&window, last.center, last.radius) => {
                 let next = uplift_window(last.center, last.radius, face_size);
-                if next != Some(window) {
-                    self.eroder.move_to(ground(next));
-                    uplift.cells = Some(next);
+                if next != window {
+                    let heights = WindowHeights::new(&self.map, next);
+                    self.eroder.move_to(Ground::Alone(heights));
+                    uplift.window = Some(next);
                 }
             }
             Some(_) => {}
@@ -917,7 +905,13 @@ impl Globe {
             hardness: stamp.hardness,
             flow: stamp.flow,
         });
-        let rate = erosion * UPLIFT_ERODE_RATE * stamps.len() as f64;
+        // A slope with no valley erodes less with smaller cells, so the
+        // rate grows with the number of cells in the radius.
+        let cells = uplift.window.map_or(1.0, |window| {
+            let cell = FRAC_PI_2 * window.cell as f64 / window.face_size as f64;
+            first.radius / cell
+        });
+        let rate = erosion * UPLIFT_ERODE_RATE * (cells / 16.0).sqrt() * stamps.len() as f64;
         self.eroder
             .request(brushes.collect(), rate, stamps[0].strength);
         uplift.asked = stamps;

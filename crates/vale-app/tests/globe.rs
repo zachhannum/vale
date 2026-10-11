@@ -2415,6 +2415,7 @@ fn an_uplift_stroke_with_full_erosion_gives_about_the_height_of_a_raise_stroke()
     // More strokes on the range do not add their heights.
     uplift_stroke(&mut h);
     let third = rise(&uplift_stroke(&mut h));
+    eprintln!("raise {raise}, once {once}, third {third}");
     assert!(
         third > 0.6 * raise && third < 1.4 * raise,
         "{third} {raise}"
