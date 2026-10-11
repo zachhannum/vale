@@ -3,7 +3,7 @@
 //! Each face splits into square tiles. A tile takes memory from the first
 //! change of one of its texels. Each other tile reads as the base level.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 use std::sync::Arc;
 
@@ -124,6 +124,10 @@ pub struct Heightmap {
     /// The redo steps. The last one is the next redo.
     redo: VecDeque<Saved>,
     undo_limit: usize,
+    /// The tiles that changed after the last `clear_changes`.
+    changed: BTreeSet<usize>,
+    /// The base level changed after the last `clear_changes`.
+    changed_all: bool,
     /// The rivers that the carve mode follows.
     channels: Option<Arc<ChannelMap>>,
     /// The rivers of a part of the sphere at a small scale. The carve mode
@@ -159,6 +163,8 @@ impl Heightmap {
             undo: VecDeque::new(),
             redo: VecDeque::new(),
             undo_limit: UNDO_MEMORY_LIMIT,
+            changed: BTreeSet::new(),
+            changed_all: false,
             channels: None,
             window: None,
             bands: Bands::default(),
@@ -203,6 +209,66 @@ impl Heightmap {
             .enumerate()
             .filter(|(_, tile)| tile.is_some())
             .map(|(index, _)| self.tile_rect(index))
+    }
+
+    /// The index of each tile that holds memory.
+    pub fn allocated(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.tiles.len()).filter(|&index| self.tiles[index].is_some())
+    }
+
+    /// The side of a tile, in texels.
+    pub fn tile_size(&self) -> usize {
+        self.tile
+    }
+
+    /// The face, the column, and the row of a tile.
+    pub fn tile_key(&self, index: usize) -> (usize, usize, usize) {
+        let side = self.per_side;
+        (index / (side * side), index % side, index / side % side)
+    }
+
+    /// The texels of a tile, row by row. A tile at the far side of a face
+    /// can go past the face, and those texels have the base level. `None`: the
+    /// tile holds no memory.
+    pub fn tile(&self, index: usize) -> Option<&[u16]> {
+        self.tiles[index].as_deref()
+    }
+
+    /// Sets the texels of one tile from a saved copy. The call makes no undo
+    /// step, and it does not mark the tile for a save.
+    pub fn load_tile(&mut self, face: usize, column: usize, row: usize, data: &[u16]) {
+        assert!(
+            face < FACES && column < self.per_side && row < self.per_side,
+            "the tile key"
+        );
+        assert_eq!(data.len(), self.tile * self.tile, "the data size");
+        let index = (face * self.per_side + row) * self.per_side + column;
+        self.tiles[index] = Some(data.into());
+        let (face, rect) = self.tile_rect(index);
+        self.mark_dirty(face, rect);
+    }
+
+    /// True if the texels changed after the last `clear_changes`.
+    pub fn has_changes(&self) -> bool {
+        self.changed_all || !self.changed.is_empty()
+    }
+
+    /// True if the base level changed after the last `clear_changes`. A saved
+    /// copy then needs each tile again.
+    pub fn changed_all(&self) -> bool {
+        self.changed_all
+    }
+
+    /// The index of each tile that changed after the last `clear_changes`. A
+    /// tile that lost its memory is one of them.
+    pub fn changed(&self) -> impl Iterator<Item = usize> + '_ {
+        self.changed.iter().copied()
+    }
+
+    /// Call this after a save of the changed tiles.
+    pub fn clear_changes(&mut self) {
+        self.changed.clear();
+        self.changed_all = false;
     }
 
     /// The number of tiles that hold memory.
@@ -278,10 +344,12 @@ impl Heightmap {
         for (index, tile) in self.tiles.iter_mut().enumerate() {
             if tile.is_some() {
                 saved.tiles.insert(index, tile.take());
+                self.changed.insert(index);
             }
         }
         self.stroke = None;
         if saved.base != level || !saved.tiles.is_empty() {
+            self.changed_all |= saved.base != level;
             self.base = level;
             self.push_undo(saved);
             self.mark_all_dirty();
@@ -328,7 +396,7 @@ impl Heightmap {
         let (index, offset) = (self.tile_index(face, x, y), self.offset(x, y));
         let (len, base) = (self.tile * self.tile, self.base);
         let tile = &mut self.tiles[index];
-        save_tile(&mut self.stroke, index, tile);
+        save_tile(&mut self.stroke, &mut self.changed, index, tile);
         tile.get_or_insert_with(|| vec![base; len].into())[offset] = level;
         self.mark_dirty(
             face,
@@ -388,7 +456,7 @@ impl Heightmap {
                 if same {
                     continue;
                 }
-                save_tile(&mut self.stroke, index, tile);
+                save_tile(&mut self.stroke, &mut self.changed, index, tile);
                 let tile = tile.get_or_insert_with(|| vec![base; t * t].into());
                 for (new, to) in rows {
                     tile[to].copy_from_slice(new);
@@ -548,9 +616,11 @@ impl Heightmap {
             std::mem::swap(&mut self.base, &mut step.base);
             self.mark_all_dirty();
             self.reset = true;
+            self.changed_all = true;
         }
         for (&index, tile) in &mut step.tiles {
             std::mem::swap(&mut self.tiles[index], tile);
+            self.changed.insert(index);
             let (face, rect) = self.tile_rect(index);
             self.mark_dirty(face, rect);
         }
@@ -675,7 +745,7 @@ impl Heightmap {
                             continue;
                         }
                         if !saved {
-                            save_tile(&mut self.stroke, index, tile);
+                            save_tile(&mut self.stroke, &mut self.changed, index, tile);
                             saved = true;
                         }
                         tile.get_or_insert_with(|| vec![base; t * t].into())[offset] = new;
@@ -715,7 +785,7 @@ impl Heightmap {
                                 continue;
                             }
                             if !saved {
-                                save_tile(&mut self.stroke, index, tile);
+                                save_tile(&mut self.stroke, &mut self.changed, index, tile);
                                 saved = true;
                             }
                             tile.get_or_insert_with(|| vec![base; t * t].into())[offset] = new;
@@ -804,8 +874,15 @@ pub(crate) fn brush_rect(n: usize, face: usize, center: V3, radius: f64) -> Opti
     })
 }
 
-/// Keeps a copy of a tile for undo, at the first change in a stroke.
-fn save_tile(stroke: &mut Option<Saved>, index: usize, tile: &Option<Tile>) {
+/// Call this before a change to a tile. It marks the tile for a save, and
+/// at the first change in a stroke it keeps a copy for undo.
+fn save_tile(
+    stroke: &mut Option<Saved>,
+    changed: &mut BTreeSet<usize>,
+    index: usize,
+    tile: &Option<Tile>,
+) {
+    changed.insert(index);
     if let Some(saved) = stroke {
         saved.tiles.entry(index).or_insert_with(|| tile.clone());
     }
@@ -1551,5 +1628,100 @@ mod tests {
         assert!(stroke(&mut map, raise(center, 0.2)));
         assert!(!map.can_undo());
         assert_eq!(map.undo_memory_bytes(), 0);
+    }
+
+    fn changed(map: &Heightmap) -> Vec<usize> {
+        map.changed().collect()
+    }
+
+    #[test]
+    fn a_stroke_marks_only_its_tiles_for_a_save() {
+        let mut map = Heightmap::with_tile_size(64, 16, 100);
+        assert!(!map.has_changes());
+        map.begin_stroke();
+        map.set(0, 3, 20, 7);
+        map.set(0, 4, 20, 7);
+        map.set(5, 63, 63, 7);
+        map.end_stroke();
+        // 4 tiles on a side: row 1 of face 0, and the last tile of face 5.
+        assert_eq!(changed(&map), [4, 95]);
+        assert_eq!(map.tile_key(4), (0, 0, 1));
+        assert_eq!(map.tile_key(95), (5, 3, 3));
+        assert!(!map.changed_all());
+        map.clear_changes();
+        assert!(!map.has_changes());
+
+        // A readback of texels that are the same marks nothing.
+        let rect = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+        };
+        let mut data = Vec::new();
+        map.read_rect(0, rect, &mut data);
+        map.store_rect(0, rect, &data);
+        assert!(!map.has_changes());
+        data[40 * 64 + 40] = 9;
+        map.begin_stroke();
+        map.store_rect(0, rect, &data);
+        assert_eq!(changed(&map), [10]);
+        map.clear_changes();
+
+        // A canceled stroke puts the old texels back, so its tile is saved again.
+        map.cancel_stroke();
+        assert_eq!(changed(&map), [10]);
+        assert_eq!(map.tile(10), None);
+        map.clear_changes();
+
+        // Undo takes the memory of a tile away, and redo gives it back.
+        assert!(map.undo());
+        assert_eq!(changed(&map), [4, 95]);
+        assert_eq!(map.tile(95), None);
+        map.clear_changes();
+        assert!(map.redo());
+        assert_eq!(changed(&map), [4, 95]);
+        assert_eq!(map.tile(95).unwrap()[255], 7);
+        assert_eq!(map.allocated().collect::<Vec<_>>(), [4, 95]);
+    }
+
+    #[test]
+    fn a_stamp_marks_the_tiles_that_it_changes() {
+        let mut map = Heightmap::new(1024, 1000);
+        let center = face_dir(2, 0.0, 0.0);
+        assert!(stroke(&mut map, raise(center, 0.01)));
+        let marked = changed(&map);
+        assert!(!marked.is_empty() && marked.len() <= 4, "{marked:?}");
+        assert_eq!(marked, map.allocated().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_new_base_level_marks_all_for_a_save() {
+        let mut map = Heightmap::with_tile_size(64, 16, 100);
+        map.set(1, 0, 0, 7);
+        map.clear_changes();
+        map.fill(100);
+        assert_eq!(changed(&map), [16]);
+        assert!(!map.changed_all());
+        map.fill(300);
+        assert!(map.changed_all());
+        map.clear_changes();
+        assert!(map.undo());
+        assert!(map.changed_all());
+    }
+
+    #[test]
+    fn a_loaded_tile_has_no_undo_step_and_no_mark() {
+        let mut map = Heightmap::with_tile_size(40, 16, 100);
+        map.take_reset();
+        let data: Vec<u16> = (0..256).collect();
+        map.load_tile(3, 2, 1, &data);
+        assert!(!map.has_changes() && !map.can_undo());
+        assert_eq!(map.tile(map.allocated().next().unwrap()), Some(&data[..]));
+        assert_eq!(map.tile_size(), 16);
+        assert_eq!(map.get(3, 33, 17), 17);
+        // The texels of the tile go to the GPU copy.
+        let rect = |x0, y0, x1, y1| TexelRect { x0, y0, x1, y1 };
+        assert_eq!(map.take_dirty()[3], Some(rect(32, 16, 40, 32)));
     }
 }
