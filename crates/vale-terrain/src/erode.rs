@@ -122,8 +122,10 @@ impl ErodeStep {
         }
     }
 
-    /// The drop at a texel, in levels: the drops of the 4 cells around the
-    /// texel, in the ratio of its distances to their centers.
+    /// The drop at a texel, in levels, from the drops of the 4 cells around
+    /// the texel. A line between the two opposite cells with the larger sum
+    /// splits the square of the 4 centers into two triangles. The drop is
+    /// linear on each triangle, so a diagonal channel has an even depth.
     pub(crate) fn drop_at(&self, n: usize, face: usize, x: usize, y: usize) -> f64 {
         let Some((u, v)) = self.place(n, face, x, y) else {
             return 0.0;
@@ -131,9 +133,18 @@ impl ErodeStep {
         let (i, j) = (u.floor(), v.floor());
         let (tu, tv) = (u - i, v - j);
         let cell = |du: i64, dv: i64| f64::from(self.cell_drop(face, i as i64 + du, j as i64 + dv));
-        let top = cell(0, 0) * (1.0 - tu) + cell(1, 0) * tu;
-        let bottom = cell(0, 1) * (1.0 - tu) + cell(1, 1) * tu;
-        top * (1.0 - tv) + bottom * tv
+        let (a, b, c, d) = (cell(0, 0), cell(1, 0), cell(0, 1), cell(1, 1));
+        if a + d >= b + c {
+            if tu >= tv {
+                a + (b - a) * tu + (d - b) * tv
+            } else {
+                a + (c - a) * tv + (d - c) * tu
+            }
+        } else if tu + tv <= 1.0 {
+            a + (b - a) * tu + (c - a) * tv
+        } else {
+            d + (c - d) * (1.0 - tu) + (b - d) * (1.0 - tv)
+        }
     }
 }
 
@@ -871,6 +882,25 @@ mod tests {
             step.drop_at(m, 2, 2, 4),
             f64::from(step.drops()[(2 * m + 4) * m + 2])
         );
+    }
+
+    #[test]
+    fn a_diagonal_channel_has_an_even_depth() {
+        let (m, n) = (16, 256);
+        // The cells of a diagonal of each face have a drop.
+        let step = step_of(m, n, |i, _| if i % m == i / m % m { 800 } else { 0 });
+        let width = n / m;
+        for face in 0..FACES {
+            // The texels on the diagonal, between the first and the last
+            // cell center.
+            for x in width / 2..n - width / 2 {
+                assert_eq!(step.drop_at(n, face, x, x), 800.0, "{face} {x}");
+            }
+        }
+        // The channel is one cell wide. A texel at the center of the next
+        // cell has the drop of half a texel.
+        let side = step.drop_at(n, 0, 5 * width + width / 2, 4 * width + width / 2);
+        assert_eq!(side, 800.0 * 0.5 / width as f64);
     }
 
     #[test]
