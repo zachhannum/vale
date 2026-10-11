@@ -5,7 +5,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
 use vale_app::globe::flat::FlatView;
-use vale_app::globe::math::{V3, lonlat_to_dir};
+use vale_app::globe::math::{V3, angle, lonlat_to_dir};
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
@@ -334,4 +334,166 @@ fn the_brush_outline_matches_the_ground_that_the_stamp_covers() {
     // Near a pole the same stamp covers more longitude, so the outline is wide.
     let (w, h) = check_outline(&mut flat_harness(), 30.0, 70.0);
     assert!(w > 2.5 * h && (h - 24.0).abs() < 0.5, "{w} {h}");
+}
+
+/// A smooth value from -1 to 1 for each place, with no pattern.
+fn value_noise(p: V3) -> f64 {
+    let cell = p.map(f64::floor);
+    let corner = |dx: f64, dy: f64, dz: f64| {
+        let [x, y, z] = [cell[0] + dx, cell[1] + dy, cell[2] + dz].map(|v| v as i64 as u32);
+        let mut v =
+            x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663) ^ z.wrapping_mul(83_492_791);
+        v ^= v >> 13;
+        v = v.wrapping_mul(0x5bd1_e995);
+        f64::from((v ^ (v >> 15)) & 0xffff) / 32767.5 - 1.0
+    };
+    let [tx, ty, tz] = [0, 1, 2].map(|i| {
+        let t = p[i] - cell[i];
+        t * t * (3.0 - 2.0 * t)
+    });
+    let mix = |a: f64, b: f64, t: f64| a + (b - a) * t;
+    let plane = |dz: f64| {
+        let low = mix(corner(0.0, 0.0, dz), corner(1.0, 0.0, dz), tx);
+        let high = mix(corner(0.0, 1.0, dz), corner(1.0, 1.0, dz), tx);
+        mix(low, high, ty)
+    };
+    mix(plane(0.0), plane(1.0), tz)
+}
+
+/// Hills of 4 sizes, from -1 to 1. The largest hills are `1 / scale` radians
+/// wide.
+fn hills(d: V3, scale: f64) -> f64 {
+    let octave = |i: i32| value_noise(d.map(|v| v * scale * f64::from(1 << i))) / f64::from(1 << i);
+    (0..4).map(octave).sum::<f64>() / 1.875
+}
+
+/// The elevation of an island with hills around `center`, in meters. The
+/// coast is about 0.9 radians from the center.
+fn island(d: V3, center: V3) -> f64 {
+    let cone = 2600.0 * (1.0 - angle(d, center) / 0.9);
+    (cone + 900.0 * hills(d, 5.0)).max(-2500.0)
+}
+
+/// The number of pixels of the canvas that show a river on land.
+fn river_pixels(h: &App, img: &image::RgbaImage) -> usize {
+    let globe = &h.state().globe;
+    let land = meters_to_level(150.0);
+    let min = globe.rect.min.ceil();
+    let pixels = img.enumerate_pixels().filter(|(x, y, p)| {
+        let [r, g, b, _] = p.0.map(i32::from);
+        let pos = min + Vec2::new(*x as f32 + 0.5, *y as f32 + 0.5);
+        let on_land = globe
+            .unproject(pos)
+            .is_some_and(|dir| globe.map.sample(dir) >= land);
+        on_land && b > r + 60 && b > g + 30
+    });
+    pixels.count()
+}
+
+#[test]
+fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
+    let _gpu = one_gpu_test();
+    let mut h = flat_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.preview.greyscale = false;
+    globe.preview.panel = true;
+    // Without the brush panel, the canvas has more room.
+    globe.tool = Tool::Navigate;
+    globe.flat.zoom = 2.0;
+    let center = lonlat_to_dir(0.0, 0.0);
+    let n = globe.map.face_size();
+    for face in 0..6 {
+        for y in 0..n {
+            for x in 0..n {
+                let meters = island(globe.map.texel_dir(face, x, y), center);
+                globe.map.set(face, x, y, meters_to_level(meters));
+            }
+        }
+    }
+    let on = canvas_image(&mut h);
+    std::fs::create_dir_all("../../target/app").unwrap();
+    on.save("../../target/app/rivers-flat.png").unwrap();
+    let count = river_pixels(&h, &on);
+    assert!(count > 300, "{count}");
+
+    h.get_by_label("Rivers").click();
+    h.run_steps(2);
+    assert!(!h.state().globe.preview.rivers);
+    let off = canvas_image(&mut h);
+    assert_eq!(river_pixels(&h, &off), 0);
+}
+
+/// Puts an island with small hills at longitude 0 and latitude 0, in the
+/// middle of face 0. The coast is about `radius` radians from the middle.
+fn set_small_island(map: &mut vale_terrain::Heightmap, radius: f64) {
+    let center = lonlat_to_dir(0.0, 0.0);
+    let n = map.face_size();
+    // The sea floor is at the base level from 1.4 times the radius.
+    let half = ((1.4 * radius / std::f64::consts::FRAC_PI_2 * n as f64) as usize).min(n / 2);
+    for y in n / 2 - half..n / 2 + half {
+        for x in n / 2 - half..n / 2 + half {
+            let d = map.texel_dir(0, x, y);
+            let slope = 1.0 - angle(d, center) / radius;
+            let cone = 2600.0 * slope * if slope < 0.0 { 4.0 } else { 1.0 };
+            let meters = cone + 900.0 * hills(d, 5.0 / radius);
+            if meters > -2500.0 {
+                map.set(0, x, y, meters_to_level(meters));
+            }
+        }
+    }
+}
+
+/// The part of the ground in the middle of the window that is nearer to a
+/// river than one channel texel of the channel map. The first number is for
+/// the rivers of the window, and the second number is for the rivers of the
+/// channel map. Each part goes up with the length of the rivers on that
+/// ground.
+fn river_parts(globe: &vale_app::globe::Globe) -> (f64, f64) {
+    let (window, channels) = (globe.window().unwrap(), globe.channels().unwrap());
+    let w = window.window();
+    // The size of a channel texel of the map in channel texels of the window.
+    let scale = (2 * w.face_size) as f64 / (channels.size() * w.cell) as f64;
+    let (mut fine, mut coarse, mut all) = (0, 0, 0);
+    for v in (64..window.size() - 64).step_by(2) {
+        for u in (64..window.size() - 64).step_by(2) {
+            all += 1;
+            let [distance, flow] = window.texel(u, v);
+            fine += usize::from(flow > 0 && f64::from(distance) <= 32.0 * scale);
+            let d = w.dir((u as f64 + 0.5) / 2.0, (v as f64 + 0.5) / 2.0);
+            let (distance, flow) = channels.at(d);
+            coarse += usize::from(flow > 0 && distance <= 1.0);
+        }
+    }
+    (fine as f64 / all as f64, coarse as f64 / all as f64)
+}
+
+#[test]
+fn zooming_in_gives_finer_rivers_in_the_flat_view() {
+    let _gpu = one_gpu_test();
+    let mut state = state();
+    let globe = &mut state.globe;
+    globe.set_face_size(1024);
+    globe.world_view = WorldView::Flat;
+    globe.preview.graticule = false;
+    globe.flat.zoom = 16.0;
+    set_small_island(&mut globe.map, 0.35);
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+
+    let globe = &h.state().globe;
+    let window = globe.window().expect("a near view has a window");
+    assert_eq!(window.window().cell, 1);
+    let (fine, coarse) = river_parts(globe);
+    assert!(coarse > 0.0 && fine > 1.5 * coarse, "{fine} and {coarse}");
+    let img = canvas_image(&mut h);
+    img.save("../../target/app/rivers-flat-near.png").unwrap();
+    let count = river_pixels(&h, &img);
+    assert!(count > 300, "{count}");
+
+    // A far view has the rivers of the channel map only.
+    h.state_mut().globe.flat.zoom = 2.0;
+    h.run_steps(2);
+    assert!(h.state().globe.window().is_none());
 }

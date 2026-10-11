@@ -5,9 +5,12 @@
 
 use std::f64::consts::FRAC_PI_4;
 use std::num::NonZeroU64;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::cube::FACES;
+use crate::bands::SEA_LEVEL;
+use crate::cube::{FACES, meters_to_level};
+use crate::flow::{ChannelMap, ChannelWindow, WINDOW_CELLS, Window};
 use crate::heightmap::{Mode, StampPlan, TexelRect};
 
 /// The number of face passes in one batch. One group of stamps takes one pass
@@ -26,6 +29,8 @@ pub const GROUP_STAMPS: usize = 32;
 const UNION_LIMIT: usize = 8;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Uint;
+
+const CHANNEL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uint;
 
 /// The row size of a texture copy to a buffer is a multiple of this number,
 /// in bytes.
@@ -95,7 +100,16 @@ struct Uniforms {
     reach: i32,
     size: i32,
     count: u32,
-    pad: [u32; 3],
+    /// The level of the sea.
+    sea: u32,
+    /// The number of texels along one side of a face of the channel map.
+    channel_size: u32,
+    /// 1 if the carve mode has a window, and 0 if not.
+    window_on: u32,
+    /// The first texel, the face, and the cell size of the window.
+    window_origin: [i32; 2],
+    window_face: u32,
+    window_cell: u32,
     stamps: [FaceStamp; GROUP_STAMPS],
 }
 
@@ -140,6 +154,16 @@ pub struct GpuHeightmap {
     /// A pass cannot read the face that it writes. Each pass reads a copy of
     /// its texels from this texture.
     scratch: wgpu::Texture,
+    /// The rivers that the carve mode follows, as the bytes of a
+    /// `ChannelMap`.
+    channels: wgpu::Texture,
+    channels_view: wgpu::TextureView,
+    /// The small rivers that the carve mode follows on a part of the sphere,
+    /// as the bytes of a `ChannelWindow`.
+    window_channels: wgpu::Texture,
+    window_view: wgpu::TextureView,
+    /// The place of the window, or `None` with no window.
+    window: Mutex<Option<Window>>,
     pipeline: wgpu::RenderPipeline,
     bind_groups: [wgpu::BindGroup; FACES],
     /// One slot of `slot_size` bytes for each pass of a batch.
@@ -171,7 +195,7 @@ fn texels(texture: &wgpu::Texture, x: usize, y: usize, z: u32) -> wgpu::TexelCop
 
 impl GpuHeightmap {
     /// Makes the texture, with `face_size` by `face_size` texels on each
-    /// face. The levels are not set.
+    /// face. The levels are not set. The channel map has no rivers.
     pub fn new(device: &wgpu::Device, face_size: u32) -> GpuHeightmap {
         let face_texture = |label, layers, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -215,6 +239,43 @@ impl GpuHeightmap {
             })
         });
         let scratch_view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
+        // A new texture holds zeros, and a river size of 0 is no river.
+        let channel_size = ChannelMap::size_for(face_size as usize) as u32;
+        let channels = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("channel map"),
+            size: wgpu::Extent3d {
+                width: channel_size,
+                height: channel_size,
+                depth_or_array_layers: FACES as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: CHANNEL_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let channels_view = channels.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+
+        let window_size = 2 * WINDOW_CELLS as u32;
+        let window_channels = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("channel window"),
+            size: wgpu::Extent3d {
+                width: window_size,
+                height: window_size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: CHANNEL_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let window_view = window_channels.create_view(&wgpu::TextureViewDescriptor::default());
 
         let uniform_size = size_of::<Uniforms>() as u32;
         let slot_size =
@@ -227,16 +288,17 @@ impl GpuHeightmap {
         });
         let uniform_size = NonZeroU64::new(u64::from(uniform_size));
 
-        let face_entry = |binding| wgpu::BindGroupLayoutEntry {
+        let texture_entry = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Uint,
-                view_dimension: wgpu::TextureViewDimension::D2,
+                view_dimension,
                 multisampled: false,
             },
             count: None,
         };
+        let face_entry = |binding| texture_entry(binding, wgpu::TextureViewDimension::D2);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stamp"),
             entries: &[
@@ -255,6 +317,8 @@ impl GpuHeightmap {
                 face_entry(3),
                 face_entry(4),
                 face_entry(5),
+                texture_entry(6, wgpu::TextureViewDimension::D2Array),
+                face_entry(7),
             ],
         });
         let face_view = |binding, view| wgpu::BindGroupEntry {
@@ -282,6 +346,8 @@ impl GpuHeightmap {
                     face_view(3, &faces[u + 1]),
                     face_view(4, &faces[v]),
                     face_view(5, &faces[v + 1]),
+                    face_view(6, &channels_view),
+                    face_view(7, &window_view),
                 ],
             })
         });
@@ -327,6 +393,11 @@ impl GpuHeightmap {
             view,
             faces,
             scratch,
+            channels,
+            channels_view,
+            window_channels,
+            window_view,
+            window: Mutex::new(None),
             pipeline,
             bind_groups,
             uniforms,
@@ -342,6 +413,63 @@ impl GpuHeightmap {
     /// The six faces as an array of 2D layers.
     pub fn view(&self) -> &wgpu::TextureView {
         &self.view
+    }
+
+    /// The six faces of the channel map as an array of 2D layers. Each texel
+    /// holds the 4 bytes of a `ChannelMap` texel. A face has
+    /// `ChannelMap::size_for` texels along one side.
+    pub fn channels_view(&self) -> &wgpu::TextureView {
+        &self.channels_view
+    }
+
+    /// Writes the channel map. The write runs at the next submit, before the
+    /// commands of each encoder in that submit. The size of the map comes
+    /// from `ChannelMap::size_for`.
+    pub fn upload_channels(&self, queue: &wgpu::Queue, map: &ChannelMap) {
+        let size = self.channels.size();
+        assert_eq!(map.size() as u32, size.width, "the channel map size");
+        queue.write_texture(
+            texels(&self.channels, 0, 0, 0),
+            map.bytes(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.width * 4),
+                rows_per_image: Some(size.height),
+            },
+            size,
+        );
+    }
+
+    /// The channel texels of the window, with `2 * WINDOW_CELLS` texels along
+    /// one side. Each texel holds the 4 bytes of a `ChannelWindow` texel.
+    pub fn window_view(&self) -> &wgpu::TextureView {
+        &self.window_view
+    }
+
+    /// Sets the window that the carve mode follows, or no window with `None`.
+    /// The window has `WINDOW_CELLS` cells along one side. The stamps that go
+    /// to an encoder after this call use the new window, and the texels go to
+    /// the GPU at the next submit. Thus submit each encoder that holds stamps
+    /// before this call.
+    pub fn upload_window(&self, queue: &wgpu::Queue, window: Option<&ChannelWindow>) {
+        if let Some(channels) = window {
+            let window = channels.window();
+            assert_eq!(window.cells, WINDOW_CELLS, "the window size");
+            assert_eq!(window.face_size as u32, self.face_size, "the face size");
+            let size = self.window_channels.size();
+            queue.write_texture(
+                texels(&self.window_channels, 0, 0, 0),
+                channels.bytes(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.width * 4),
+                    rows_per_image: Some(size.height),
+                },
+                size,
+            );
+        }
+        let window = window.map(ChannelWindow::window);
+        *self.window.lock().expect("no thread stops with the lock") = window;
     }
 
     /// Sets all texels to `level`.
@@ -471,6 +599,7 @@ impl GpuHeightmap {
         };
         // The faces go in rising order, as in `Heightmap::stamp`. A smooth
         // pass reads the new levels of the faces before it.
+        let window = *self.window.lock().expect("no thread stops with the lock");
         let touched = cover.rects.iter().enumerate();
         let touched = touched.filter_map(|(face, rect)| Some((face, (*rect)?)));
         for (slot, (face, rect)) in (first_slot..).zip(touched) {
@@ -482,10 +611,17 @@ impl GpuHeightmap {
                     Mode::Lower => 1,
                     Mode::Smooth => 2,
                     Mode::Flatten => 3,
+                    Mode::Carve => 4,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,
                 count: 0,
+                sea: u32::from(meters_to_level(SEA_LEVEL)),
+                channel_size: self.channels.width(),
+                window_on: u32::from(window.is_some()),
+                window_face: window.map_or(0, |w| w.face as u32),
+                window_origin: window.map_or([0; 2], |w| [w.x0 as i32, w.y0 as i32]),
+                window_cell: window.map_or(1, |w| w.cell as u32),
                 ..bytemuck::Zeroable::zeroed()
             };
             // A stamp with no rectangle on this face is not in the list.

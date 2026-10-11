@@ -7,7 +7,10 @@ use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu::{self, wgpu};
 
-use vale_terrain::{FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan, TexelRect};
+use vale_terrain::{
+    ChannelMap, ChannelWindow, FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan,
+    TexelRect,
+};
 
 use super::backdrop::{Backdrop, Canvas};
 use super::flat::{FlatMesh, Vertex};
@@ -28,6 +31,8 @@ pub struct Uniforms {
     pub params: [f32; 4],
     pub flat: [f32; 4],
     pub screen: [f32; 4],
+    pub window: [f32; 4],
+    pub rivers: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
 }
 
@@ -119,6 +124,26 @@ impl Resources {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -132,6 +157,14 @@ impl Resources {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(heights.view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(heights.channels_view()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(heights.window_view()),
                 },
             ],
         });
@@ -226,6 +259,11 @@ pub enum Op {
         face: u32,
         rect: TexelRect,
     },
+    /// Writes the channel map of the rivers.
+    Channels(Arc<ChannelMap>),
+    /// Writes the window of small rivers. `None`: the brush follows the
+    /// channel map only.
+    Window(Option<Arc<ChannelWindow>>),
 }
 
 /// A result of the GPU work. The UI reads the results at the next frame.
@@ -358,6 +396,14 @@ impl Link {
     }
 }
 
+/// The changes of the CPU heightmap that went to the queue.
+pub struct Changes {
+    /// The whole heightmap changed. `rects` has the texels that are not at
+    /// the base level.
+    pub reset: bool,
+    pub rects: Vec<(usize, TexelRect)>,
+}
+
 /// The changed texels of the CPU heightmap that wait for the GPU.
 pub struct Uploads {
     /// The strips of each face, in the order of the changes.
@@ -403,11 +449,12 @@ fn strips(rect: TexelRect, texels: usize) -> impl Iterator<Item = TexelRect> {
 /// Moves the changes of the CPU heightmap to the queue. One call sends the
 /// texels of one budget, and the other strips wait in `pending`. A strip gets
 /// its texels when the call sends it, so it has each change up to that time.
-pub fn queue_changes(map: &mut Heightmap, link: &Link, pending: &mut Uploads) {
+pub fn queue_changes(map: &mut Heightmap, link: &Link, pending: &mut Uploads) -> Changes {
     let face_size = map.face_size() as u32;
     let budget = pending.budget;
     let mut rects: Vec<(usize, TexelRect)> = Vec::new();
-    if map.take_reset() {
+    let reset = map.take_reset();
+    if reset {
         // The reset replaces each texel, so the strips before it are stale.
         pending.clear();
         link.push(face_size, Op::Reset(map.base()));
@@ -416,7 +463,7 @@ pub fn queue_changes(map: &mut Heightmap, link: &Link, pending: &mut Uploads) {
         let dirty = map.take_dirty().into_iter().enumerate();
         rects.extend(dirty.filter_map(|(face, rect)| Some((face, rect?))));
     }
-    for (face, rect) in rects {
+    for &(face, rect) in &rects {
         let cut = strips(rect, budget).map(|strip| (face, strip));
         pending.strips.extend(cut);
     }
@@ -433,6 +480,7 @@ pub fn queue_changes(map: &mut Heightmap, link: &Link, pending: &mut Uploads) {
         let face = face as u32;
         link.push(face_size, Op::Upload { face, rect, data });
     }
+    Changes { reset, rects }
 }
 
 /// One frame of the globe. egui calls it inside its own render pass.
@@ -559,6 +607,17 @@ impl Batch<'_> {
                 let (heights, device) = (self.heights, self.device);
                 let readback = heights.read_rect(device, self.encoder(), face, rect);
                 self.readbacks.push((stroke, face, rect, readback));
+            }
+            Op::Channels(map) => {
+                // The stamps before the write follow the rivers before it.
+                self.submit();
+                self.heights.upload_channels(self.queue, &map);
+            }
+            Op::Window(window) => {
+                // A stamp in the encoder after this call follows the new
+                // window, so the stamps before it go first.
+                self.submit();
+                self.heights.upload_window(self.queue, window.as_deref());
             }
         }
     }

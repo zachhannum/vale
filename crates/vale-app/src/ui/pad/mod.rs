@@ -360,6 +360,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     ("Lower", Icon::Lower, Mode::Lower),
                     ("Smooth", Icon::Smooth, Mode::Smooth),
                     ("Flatten", Icon::Flatten, Mode::Flatten),
+                    ("Carve", Icon::Carve, Mode::Carve),
                 ] {
                     let active = globe.tool == Tool::Brush && globe.brush.mode == mode;
                     if widgets::tool_cell(ui, controls, name, name, icon, active, true).clicked() {
@@ -367,7 +368,6 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         globe.brush.mode = mode;
                     }
                 }
-                widgets::tool_cell(ui, controls, "Line", "Line", Icon::Line, false, false);
                 let active = globe.tool == Tool::Navigate;
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()

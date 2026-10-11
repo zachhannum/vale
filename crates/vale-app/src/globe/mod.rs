@@ -2,13 +2,16 @@
 //! and paint.
 
 use std::collections::VecDeque;
+use std::f64::consts::PI;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
-use vale_terrain::{FACES, Heightmap, TexelRect, meters_to_level};
+use vale_terrain::{
+    ChannelMap, ChannelWindow, FACES, Heightmap, SEA_LEVEL, TexelRect, Window, meters_to_level,
+};
 
 pub mod backdrop;
 pub mod brush;
@@ -18,6 +21,7 @@ pub mod import;
 pub mod math;
 pub mod nav;
 pub mod preview;
+pub mod rivers;
 pub mod stats;
 pub mod stroke_test;
 pub mod view;
@@ -31,6 +35,7 @@ use import::{ImportResult, Job, Step};
 use math::V3;
 use nav::Nav;
 use preview::{Preview, band_uniforms};
+use rivers::{Rivers, choose_window};
 use stats::Stats;
 use stroke_test::StrokeTest;
 use view::GlobeView;
@@ -146,6 +151,13 @@ pub struct Globe {
     backlog: Backlog,
     strokes: u64,
     test: Option<StrokeTest>,
+    rivers: Rivers,
+    /// The newest channel map that went to the GPU.
+    channels: Option<Arc<ChannelMap>>,
+    /// The window of small rivers that the view asks for.
+    chosen: Option<Window>,
+    /// The newest window of small rivers that went to the GPU.
+    window: Option<Arc<ChannelWindow>>,
     /// The import that runs.
     import: Option<Job>,
     /// The result of the last import, until the UI takes it.
@@ -161,8 +173,13 @@ impl Default for Globe {
 impl Globe {
     pub fn with_face_size(face_size: usize) -> Globe {
         let (link, events) = Link::new();
+        let map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
         Globe {
-            map: Heightmap::new(face_size, meters_to_level(START_ELEVATION)),
+            rivers: Rivers::new(&map, false),
+            channels: None,
+            chosen: None,
+            window: None,
+            map,
             view: GlobeView::centered(15.0, 25.0),
             flat: FlatView::default(),
             world_view: WorldView::default(),
@@ -198,6 +215,10 @@ impl Globe {
         let bands = std::mem::take(&mut self.map.bands);
         self.map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
         self.map.bands = bands;
+        self.rivers = Rivers::new(&self.map, self.rivers.sync());
+        self.channels = None;
+        self.chosen = None;
+        self.window = None;
         self.stats.face_size = face_size as u32;
         self.uploads.clear();
         self.import = None;
@@ -295,6 +316,99 @@ impl Globe {
     /// Puts back the last stroke that `undo` took away.
     pub fn redo(&mut self) -> bool {
         self.can_redo() && self.map.redo()
+    }
+
+    /// True until the rivers of the last change of the heightmap arrive.
+    pub fn rivers_pending(&self) -> bool {
+        self.rivers.pending()
+    }
+
+    /// With `sync`, a change of the heightmap waits for its rivers. Without
+    /// it, a worker thread computes them.
+    pub fn set_rivers_sync(&mut self, sync: bool) {
+        self.rivers.set_sync(sync);
+    }
+
+    /// The newest channel map of the rivers that went to the GPU.
+    pub fn channels(&self) -> Option<&ChannelMap> {
+        self.channels.as_deref()
+    }
+
+    /// The newest window of small rivers that went to the GPU. A near view
+    /// has one. Its rivers come before the rivers of `channels` on the ground
+    /// that it covers.
+    pub fn window(&self) -> Option<&ChannelWindow> {
+        self.window.as_deref()
+    }
+
+    /// The angle that the canvas covers on the world along its larger side,
+    /// in radians.
+    fn span(&self) -> f64 {
+        let side = f64::from(self.rect.width().max(self.rect.height()));
+        let radius = self.radius();
+        match self.world_view {
+            // The canvas shows one half of the globe at most.
+            WorldView::Globe if side >= 2.0 * radius => PI,
+            WorldView::Globe => 2.0 * (side / (2.0 * radius)).asin(),
+            WorldView::Flat => side / radius,
+        }
+    }
+
+    /// The window of small rivers for the view of this frame.
+    fn view_window(&self) -> Option<Window> {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return None;
+        }
+        let middle = self.unproject(self.rect.center())?;
+        choose_window(middle, self.span(), self.map.face_size(), self.chosen)
+    }
+
+    /// Asks for the rivers of the heightmap as it is now.
+    fn request_rivers(&mut self) {
+        self.rivers.request();
+        if let Some(window) = self.chosen {
+            self.rivers.request_window(&self.map, window);
+        }
+    }
+
+    /// Moves the changes of the CPU heightmap to the GPU, and asks for their
+    /// rivers. Asks for the window of the view if the view left the last
+    /// one. Sends the rivers that arrived to the GPU.
+    fn queue_changes(&mut self) {
+        let changes = gpu::queue_changes(&mut self.map, &self.link, &mut self.uploads);
+        if changes.reset {
+            self.rivers.rebuild(&self.map);
+        }
+        for &(face, rect) in changes.rects.iter().filter(|_| !changes.reset) {
+            self.rivers.update(&self.map, face, rect);
+        }
+        if changes.reset || !changes.rects.is_empty() {
+            self.request_rivers();
+        }
+        let face_size = self.map.face_size() as u32;
+        let window = self.view_window();
+        if window != self.chosen {
+            self.chosen = window;
+            match window {
+                Some(window) => self.rivers.request_window(&self.map, window),
+                None => {
+                    self.rivers.drop_window();
+                    // The window on the GPU stays until the next one
+                    // arrives. A far view has no next one.
+                    if self.window.take().is_some() {
+                        self.link.push(face_size, Op::Window(None));
+                    }
+                }
+            }
+        }
+        if let Some(channels) = self.rivers.poll() {
+            self.link.push(face_size, Op::Channels(channels.clone()));
+            self.channels = Some(channels);
+        }
+        if let Some(window) = self.rivers.poll_window() {
+            self.link.push(face_size, Op::Window(Some(window.clone())));
+            self.window = Some(window);
+        }
     }
 
     /// Starts the import of an equirectangular image on a worker thread. The
@@ -400,11 +514,11 @@ impl Globe {
         self.pump_import(false);
         // An undo or a redo goes to the GPU before the stamps of the next
         // stroke.
-        gpu::queue_changes(&mut self.map, &self.link, &mut self.uploads);
+        self.queue_changes();
         self.run_test(now, in_flight);
         self.read_inputs();
         self.send_stamps(now);
-        in_flight || self.busy()
+        in_flight || self.busy() || self.rivers.pending()
     }
 
     fn read_events(&mut self) {
@@ -426,9 +540,11 @@ impl Globe {
                         continue;
                     };
                     self.map.store_rect(face as usize, rect, &data);
+                    self.rivers.update(&self.map, face as usize, rect);
                     let left = active.reading.get_or_insert(1);
                     *left -= 1;
                     if *left == 0 {
+                        self.request_rivers();
                         self.map.end_stroke();
                         self.stroke = None;
                     }
@@ -592,18 +708,31 @@ impl Globe {
         backdrop: Option<Canvas>,
     ) -> Option<GlobeCallback> {
         let format = self.format?;
-        gpu::queue_changes(&mut self.map, &self.link, &mut self.uploads);
+        self.queue_changes();
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
         let center = self.rect.center();
         let radius = self.radius() as f32;
-        let (zoom, flat, mesh) = match self.world_view {
-            WorldView::Globe => (self.view.zoom, [0.0; 4], None),
+        let (zoom, flat_center, mesh) = match self.world_view {
+            WorldView::Globe => (self.view.zoom, [0.0; 2], None),
             WorldView::Flat => {
                 let center = self.flat.center;
-                let flat = [0.0, 0.0, center.x as f32, center.y as f32];
-                (self.flat.zoom, flat, Some(self.flat.mesh()))
+                let center = [center.x as f32, center.y as f32];
+                (self.flat.zoom, center, Some(self.flat.mesh()))
             }
         };
+        let sea = f32::from(meters_to_level(SEA_LEVEL)) / 65535.0;
+        let rivers = self.preview.rivers && !self.preview.greyscale;
+        let channel_size = match rivers {
+            true => ChannelMap::size_for(self.map.face_size()) as f32,
+            false => 0.0,
+        };
+        let flat = [sea, channel_size, flat_center[0], flat_center[1]];
+        let (window, cell) = match self.window.as_deref().map(ChannelWindow::window) {
+            Some(w) => ([1.0, w.face as f32, w.x0 as f32, w.y0 as f32], w.cell),
+            None => ([0.0; 4], 1),
+        };
+        let window_size = (2 * vale_terrain::WINDOW_CELLS) as f32;
+        let rivers = [cell as f32, window_size, self.preview.river_width, 0.0];
         let graticule_degrees: f64 = if !self.preview.graticule {
             0.0
         } else if zoom < 3.0 {
@@ -633,6 +762,8 @@ impl Globe {
                 ],
                 flat,
                 screen: [0.0; 4],
+                window,
+                rivers,
                 bands,
             },
             flat: mesh,

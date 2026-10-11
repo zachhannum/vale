@@ -28,6 +28,16 @@ struct Group {
     reach: i32,
     size: i32,
     count: u32,
+    // The level of the sea.
+    sea: u32,
+    // The number of texels along one side of a face of the channel map.
+    channel_size: u32,
+    // 1 if the carve mode has a window, and 0 if not.
+    window_on: u32,
+    // The first texel, the face, and the cell size of the window.
+    window_origin: vec2<i32>,
+    window_face: u32,
+    window_cell: u32,
     stamps: array<Stamp, GROUP_STAMPS>,
 }
 
@@ -36,6 +46,7 @@ const PI_4 = 0.7853981633974483;
 const RAISE = 0u;
 const LOWER = 1u;
 const SMOOTH = 2u;
+const CARVE = 4u;
 
 @group(0) @binding(0) var<uniform> group: Group;
 // A copy of this face from before the pass.
@@ -45,6 +56,15 @@ const SMOOTH = 2u;
 @group(0) @binding(3) var past_nu: texture_2d<u32>;
 @group(0) @binding(4) var past_pv: texture_2d<u32>;
 @group(0) @binding(5) var past_nv: texture_2d<u32>;
+// The channel map of all faces. The third byte of a texel is the distance to
+// the river with the deepest valley there, in channel texels, times 32. The
+// fourth byte is the size of that river, or 0 if no river is near.
+@group(0) @binding(6) var channels: texture_2d_array<u32>;
+// The channel texels of the window, with the same bytes.
+@group(0) @binding(7) var window_channels: texture_2d<u32>;
+
+// The same number as `WINDOW_MARGIN` in `flow.rs`.
+const WINDOW_MARGIN = 8.0;
 
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -141,6 +161,88 @@ fn atan_unit(t: f32) -> f32 {
     return 4.0 * atan_series(quarter);
 }
 
+// The distance from a texel to the river with the deepest valley there, in
+// channel texels, and the size of that river. The steps are those of
+// `ChannelMap::valley`.
+fn river_at(at: vec2<i32>) -> vec2<f32> {
+    let size = f32(group.channel_size);
+    let c = (vec2<f32>(at) + 0.5) * size / f32(group.size) - 0.5;
+    let whole = floor(c);
+    let t = c - whole;
+    let last = vec2<i32>(i32(group.channel_size) - 1);
+    let p0 = clamp(vec2<i32>(whole), vec2<i32>(0), last);
+    let p1 = clamp(vec2<i32>(whole) + 1, vec2<i32>(0), last);
+    let face = i32(group.face);
+    let a = vec2<f32>(textureLoad(channels, p0, face, 0).ba);
+    let b = vec2<f32>(textureLoad(channels, vec2<i32>(p1.x, p0.y), face, 0).ba);
+    let c0 = vec2<f32>(textureLoad(channels, vec2<i32>(p0.x, p1.y), face, 0).ba);
+    let d = vec2<f32>(textureLoad(channels, p1, face, 0).ba);
+    // The products are exact when both sizes are powers of two. The builtin
+    // `mix` can use other steps.
+    let top = a * (1.0 - t.x) + b * t.x;
+    let bottom = c0 * (1.0 - t.x) + d * t.x;
+    let both = top * (1.0 - t.y) + bottom * t.y;
+    return vec2<f32>(both.x / 32.0, both.y);
+}
+
+// The arc tangent of each number.
+fn atan_any(t: f32) -> f32 {
+    if abs(t) <= 1.0 {
+        return atan_unit(t);
+    }
+    return sign(t) * (2.0 * PI_4 - atan_unit(1.0 / abs(t)));
+}
+
+// The distance from a texel to the river of the window with the deepest
+// valley there, in channel texels of the window, and the size of that river
+// from 0 to 255. The third number is 1 if the window covers the texel, and 0
+// if not. The steps are those of `Window::channel_of_texel`,
+// `Window::channel_of_dir`, and `ChannelWindow::valley`.
+fn window_river_at(at: vec2<i32>) -> vec3<f32> {
+    if group.window_on == 0u {
+        return vec3<f32>(0.0);
+    }
+    let cell = f32(group.window_cell);
+    var c: vec2<f32>;
+    if group.face == group.window_face {
+        // The difference of the whole numbers is exact.
+        c = (vec2<f32>(at - group.window_origin) + 0.5) * 2.0 / cell - 0.5;
+    } else {
+        // The direction of the texel, then its place on the face of the
+        // window. The texel grid of that face continues past its edges.
+        let axis = group.face / 2u;
+        var d: vec3<f32>;
+        d[axis] = 1.0 - 2.0 * f32(group.face % 2u);
+        d[(axis + 1u) % 3u] = flat_of(at.x);
+        d[(axis + 2u) % 3u] = flat_of(at.y);
+        let to = group.window_face / 2u;
+        let depth = d[to] * (1.0 - 2.0 * f32(group.window_face % 2u));
+        if depth <= 0.2 * length(d) {
+            return vec3<f32>(0.0);
+        }
+        let flat = vec2<f32>(d[(to + 1u) % 3u], d[(to + 2u) % 3u]) / depth;
+        let warp = vec2<f32>(atan_any(flat.x), atan_any(flat.y)) / PI_4;
+        let texel = (warp + 1.0) * 0.5 * f32(group.size);
+        c = (texel - vec2<f32>(group.window_origin)) * 2.0 / cell - 0.5;
+    }
+    let last = f32(textureDimensions(window_channels).x) - 1.0 - WINDOW_MARGIN;
+    if any(c < vec2<f32>(WINDOW_MARGIN)) || any(c > vec2<f32>(last)) {
+        return vec3<f32>(0.0);
+    }
+    let whole = floor(c);
+    let t = c - whole;
+    let p0 = vec2<i32>(whole);
+    let p1 = p0 + 1;
+    let a = vec2<f32>(textureLoad(window_channels, p0, 0).ba);
+    let b = vec2<f32>(textureLoad(window_channels, vec2<i32>(p1.x, p0.y), 0).ba);
+    let c0 = vec2<f32>(textureLoad(window_channels, vec2<i32>(p0.x, p1.y), 0).ba);
+    let d = vec2<f32>(textureLoad(window_channels, p1, 0).ba);
+    let top = a * (1.0 - t.x) + b * t.x;
+    let bottom = c0 * (1.0 - t.x) + d * t.x;
+    let both = top * (1.0 - t.y) + bottom * t.y;
+    return vec3<f32>(both.x / 32.0, both.y, 1.0);
+}
+
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     let at = vec2<i32>(floor(position.xy));
@@ -151,6 +253,17 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     // between two passes.
     var value = f32(textureLoad(before, at, 0).r);
     var changed = false;
+    // The distance to the river and its size. The window comes first. With
+    // no river near, the size is 0.
+    var river = vec2<f32>(0.0);
+    if group.mode == CARVE {
+        let in_window = window_river_at(at);
+        if in_window.z > 0.0 {
+            river = in_window.xy;
+        } else {
+            river = river_at(at);
+        }
+    }
     for (var i = 0u; i < group.count; i++) {
         let stamp = group.stamps[i];
         // `Heightmap::stamp` visits the texels of this rectangle only.
@@ -206,6 +319,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                     + old;
                 change = (sum - 9.0 * old) / 9.0 * min(amount, 1.0);
             }
+            case CARVE {
+                // A large river has a wide and deep valley. With no river
+                // near, the size is 0 and the level stays.
+                if river.y > 0.0 {
+                    let size = river.y / 255.0;
+                    let k = clamp(river.x / (1.5 + 4.5 * size), 0.0, 1.0);
+                    let profile = 1.0 - k * k * (3.0 - 2.0 * k);
+                    change = -amount * stamp.strength * profile * (0.25 + 0.75 * size);
+                }
+            }
             default {
                 change = (stamp.level - old) * min(amount, 1.0);
             }
@@ -213,6 +336,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         // Round half up, as Rust `round` does for a positive number. The old
         // level is a whole number, so the rounding of the change is enough.
         value = clamp(old + floor(change + 0.5), 0.0, 65535.0);
+        if group.mode == CARVE {
+            // Land does not go below sea level.
+            value = max(value, min(old, f32(group.sea)));
+        }
         changed = true;
     }
     if !changed {

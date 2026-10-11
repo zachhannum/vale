@@ -10,6 +10,7 @@
 mod bands;
 mod cube;
 mod equirect;
+mod flow;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod heightmap;
@@ -20,6 +21,11 @@ pub use cube::{
     ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, level_to_meters, meters_to_level, unwarp, warp,
 };
 pub use equirect::Equirect;
+pub use flow::{
+    CHANNEL_SCALE, ChannelMap, ChannelWindow, CoarseHeights, FLOW_SIZE, FlowMap, RIVER_MIN_AREA,
+    RIVER_MIN_CELLS, RIVER_OCTAVES, WINDOW_CELLS, WINDOW_MARGIN, Window, WindowHeights,
+    channel_map, window_channels,
+};
 #[cfg(feature = "gpu")]
 pub use gpu::{GROUP_STAMPS, GpuHeightmap, Readback, STAMP_SLOTS};
 pub use heightmap::{
