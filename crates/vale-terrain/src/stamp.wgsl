@@ -1,6 +1,7 @@
 // A group of brush stamps on one face of the cube map. The result is the same
 // as `Heightmap::stamp` for each stamp in order. `gpu.rs` fills the uniforms
-// and sets the order of the passes.
+// and sets the order of the passes. The source of `tiles.wgsl` comes before
+// this file, and each read of a level goes through its `tile_level`.
 
 struct Stamp {
     // The brush center on this face in texels: the whole part and the rest.
@@ -38,6 +39,8 @@ struct Group {
     window_origin: vec2<i32>,
     window_face: u32,
     window_cell: u32,
+    // The texel of the face at the first texel of the render target.
+    origin: vec2<i32>,
     stamps: array<Stamp, GROUP_STAMPS>,
 }
 
@@ -49,19 +52,12 @@ const SMOOTH = 2u;
 const CARVE = 4u;
 
 @group(0) @binding(0) var<uniform> group: Group;
-// A copy of this face from before the pass.
-@group(0) @binding(1) var before: texture_2d<u32>;
-// The faces past the +u, -u, +v, and -v edges of this face.
-@group(0) @binding(2) var past_pu: texture_2d<u32>;
-@group(0) @binding(3) var past_nu: texture_2d<u32>;
-@group(0) @binding(4) var past_pv: texture_2d<u32>;
-@group(0) @binding(5) var past_nv: texture_2d<u32>;
 // The channel map of all faces. The third byte of a texel is the distance to
 // the river with the deepest valley there, in channel texels, times 32. The
 // fourth byte is the size of that river, or 0 if no river is near.
-@group(0) @binding(6) var channels: texture_2d_array<u32>;
+@group(0) @binding(1) var channels: texture_2d_array<u32>;
 // The channel texels of the window, with the same bytes.
-@group(0) @binding(7) var window_channels: texture_2d<u32>;
+@group(0) @binding(2) var window_channels: texture_2d<u32>;
 
 // The same number as `WINDOW_MARGIN` in `flow.rs`.
 const WINDOW_MARGIN = 8.0;
@@ -102,21 +98,16 @@ fn level_past_edge(p: vec2<i32>) -> u32 {
     let warp = vec2<f32>(atan_unit(flat.x), atan_unit(flat.y)) / PI_4;
     let texel = floor((warp + 1.0) * 0.5 * f32(group.size));
     let at = clamp(vec2<i32>(texel), vec2<i32>(0), vec2<i32>(group.size - 1));
-    if to == (axis + 1u) % 3u {
-        if d[to] < 0.0 {
-            return textureLoad(past_nu, at, 0).r;
-        }
-        return textureLoad(past_pu, at, 0).r;
-    }
+    var face = 2 * i32(to);
     if d[to] < 0.0 {
-        return textureLoad(past_nv, at, 0).r;
+        face += 1;
     }
-    return textureLoad(past_pv, at, 0).r;
+    return tile_level(face, at);
 }
 
 fn level_before(p: vec2<i32>) -> f32 {
     if all(p >= vec2<i32>(0)) && all(p < vec2<i32>(group.size)) {
-        return f32(textureLoad(before, p, 0).r);
+        return f32(tile_level(i32(group.face), p));
     }
     return f32(level_past_edge(p));
 }
@@ -245,14 +236,13 @@ fn window_river_at(at: vec2<i32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
-    let at = vec2<i32>(floor(position.xy));
+    let at = vec2<i32>(floor(position.xy)) + group.origin;
     let n = f32(group.size);
     let theta = ((vec2<f32>(at) + 0.5) / n * 2.0 - 1.0) * PI_4;
     let cos_theta = cos_series(theta);
     // The level after each stamp is a whole number, as it is in the texture
     // between two passes.
-    var value = f32(textureLoad(before, at, 0).r);
-    var changed = false;
+    var value = f32(tile_level(i32(group.face), at));
     // The distance to the river and its size. The window comes first. With
     // no river near, the size is 0.
     var river = vec2<f32>(0.0);
@@ -340,10 +330,8 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
             // Land does not go below sea level.
             value = max(value, min(old, f32(group.sea)));
         }
-        changed = true;
     }
-    if !changed {
-        discard;
-    }
+    // A copy moves each texel of the rectangle to the tiles, so a texel with
+    // no change keeps its level here.
     return vec4<u32>(u32(value), 0u, 0u, 0u);
 }

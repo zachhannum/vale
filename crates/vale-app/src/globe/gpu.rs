@@ -9,7 +9,7 @@ use eframe::egui_wgpu::{self, wgpu};
 
 use vale_terrain::{
     ChannelMap, ChannelWindow, FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan,
-    TexelRect,
+    TILES_WGSL, TexelRect,
 };
 
 use super::backdrop::{Backdrop, Canvas};
@@ -92,7 +92,9 @@ impl Resources {
     ) -> Resources {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("globe"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("globe.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                format!("{TILES_WGSL}\n{}", include_str!("globe.wgsl")).into(),
+            ),
         });
         let heights = GpuHeightmap::new(device, face_size);
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -129,16 +131,6 @@ impl Resources {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -156,21 +148,17 @@ impl Resources {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(heights.view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
                     resource: wgpu::BindingResource::TextureView(heights.channels_view()),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 3,
+                    binding: 2,
                     resource: wgpu::BindingResource::TextureView(heights.window_view()),
                 },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("globe"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&layout), Some(heights.tiles_layout())],
             immediate_size: 0,
         });
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -223,6 +211,7 @@ impl Resources {
     /// of the render target in pixels.
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, flat: bool, screen: [u32; 2]) {
         pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(1, &self.heights.tiles(), &[]);
         if !flat {
             pass.set_pipeline(&self.pipeline);
             pass.draw(0..3, 0..1);
@@ -593,8 +582,10 @@ impl Batch<'_> {
     fn run(&mut self, op: Op) {
         match op {
             Op::Reset(level) => {
-                let heights = self.heights;
-                heights.clear(self.encoder(), level);
+                // The change runs before the commands of the next submit, so
+                // the commands before it go first.
+                self.submit();
+                self.heights.clear(self.queue, level);
             }
             Op::Upload { face, rect, data } => {
                 // The write runs before the commands of the next submit, so

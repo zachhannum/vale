@@ -38,7 +38,7 @@ The window opens on the globe workspace. The globe shows the heightmap of the wo
 - Click "Elevation" in the tool bar to open the elevation panel. The bar shows the band limits, which are the elevations where the tints change. Tap a free place on the bar to add a limit. Drag a limit to move it. Tap a limit and click "Remove" to remove it. Sea level is a limit that stays. Clear "Levels" to show the color ramp with no steps. The land colors and the sea colors are separate.
 - Click "Debug" in the tool bar to open the brush debug panel. It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. It shows the memory of the undo steps. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
 
-In the window, each face of the heightmap has 8,192 pixels, and the GPU holds 940 MB for it. After an import, the heightmap also holds 805 MB of main memory. If the computer has no GPU, start the app with `--face-size 1024`.
+In the window, each face of the heightmap has 8,192 pixels. The GPU and the main memory hold only the tiles that you painted. After an import, the heightmap holds 805 MB on the GPU and 805 MB of main memory. If the computer has no GPU, start the app with `--face-size 1024`.
 
 Click "Map" in the tool bar to open the flat map with the Natural Earth 110m sample world. You can do these things there.
 

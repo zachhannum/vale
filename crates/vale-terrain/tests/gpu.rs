@@ -5,8 +5,8 @@ use std::sync::{Arc, OnceLock, mpsc};
 use vale_terrain::math::{V3, dot, lonlat_to_dir};
 use vale_terrain::{
     ChannelMap, ChannelWindow, CoarseHeights, FACES, FlowMap, GROUP_STAMPS, GpuHeightmap,
-    Heightmap, Mode, STAMP_SLOTS, Stamp, StampPlan, TexelRect, WINDOW_CELLS, Window, WindowHeights,
-    channel_map, window_channels,
+    Heightmap, Mode, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TexelRect, WINDOW_CELLS, Window,
+    WindowHeights, channel_map, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -75,11 +75,13 @@ impl Gpu {
 
     /// A GPU heightmap with the texels and the channel map of `cpu`.
     fn copy_of(&self, cpu: &Heightmap) -> GpuHeightmap {
-        let map = GpuHeightmap::new(&self.device, cpu.face_size() as u32);
-        let mut enc = self.encoder();
-        map.clear(&mut enc, cpu.base());
-        // An upload runs before the commands of the submit that follows it.
-        self.submit(enc);
+        self.copy_with_tiles(cpu, TILE_SIZE)
+    }
+
+    /// The same as `copy_of`, with `tile` by `tile` texels in a GPU tile.
+    fn copy_with_tiles(&self, cpu: &Heightmap, tile: usize) -> GpuHeightmap {
+        let map = GpuHeightmap::with_tile_size(&self.device, cpu.face_size() as u32, tile);
+        map.clear(&self.queue, cpu.base());
         for (face, rect) in cpu.allocated_rects() {
             let mut data = Vec::new();
             cpu.read_rect(face, rect, &mut data);
@@ -230,9 +232,7 @@ fn upload_and_read_rect_round_trip() {
     let n = 256;
     let map = GpuHeightmap::new(&gpu.device, n as u32);
     assert_eq!(map.face_size(), 256);
-    let mut enc = gpu.encoder();
-    map.clear(&mut enc, 1234);
-    gpu.submit(enc);
+    map.clear(&gpu.queue, 1234);
     // The width is odd, so the rows of the readback have padding.
     let rect = TexelRect {
         x0: 17,
@@ -934,4 +934,192 @@ fn stamps_far_apart_are_not_one_group() {
     } = run_groups(&mut cpu, &stamps);
     assert_eq!(groups, [12]);
     assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
+}
+
+/// The memory of the table of the tiles, in bytes.
+fn table_bytes(n: usize) -> usize {
+    let per_side = n.div_ceil(TILE_SIZE);
+    FACES * per_side * per_side * 4
+}
+
+#[test]
+fn an_empty_world_takes_memory_for_the_table_only() {
+    let gpu = gpu();
+    for n in [4096, 8192] {
+        let map = GpuHeightmap::new(&gpu.device, n as u32);
+        map.clear(&gpu.queue, 30000);
+        assert_eq!(map.allocated_tiles(), 0);
+        assert_eq!(map.memory_bytes(), table_bytes(n), "face size {n}");
+        // Each texel reads as the base level.
+        let rect = TexelRect {
+            x0: n - 300,
+            y0: 100,
+            x1: n,
+            y1: 400,
+        };
+        for levels in gpu.read(&map, rect) {
+            assert!(levels.iter().all(|level| *level == 30000));
+        }
+    }
+}
+
+/// The same brush in texels takes the same memory at each face size.
+#[test]
+fn memory_grows_with_the_painted_tiles_and_not_with_the_face_size() {
+    let gpu = gpu();
+    let memory = |n: usize, stamps: usize| {
+        let mut cpu = Heightmap::new(n, 30000);
+        let map = gpu.copy_of(&cpu);
+        // A brush of 300 texels across, at a tile corner near the face center.
+        let radius = 150.0 * std::f64::consts::FRAC_PI_2 / n as f64;
+        let stamps: Vec<Stamp> = (0..stamps)
+            .map(|i| {
+                stamp(
+                    lonlat_to_dir(i as f64 * 2.0 * radius.to_degrees(), 0.0),
+                    radius,
+                    0.5,
+                    Mode::Raise,
+                )
+            })
+            .collect();
+        gpu.stamp(&map, &mut cpu, &stamps);
+        assert!(max_difference(&cpu, &gpu.read_all(&map)) <= TOLERANCE);
+        (map.allocated_tiles(), map.memory_bytes() - table_bytes(n))
+    };
+    let (tiles, small) = memory(4096, 1);
+    assert_eq!(tiles, 4);
+    assert_eq!(memory(8192, 1), (tiles, small));
+    // One layer of the pool and the render target of the brush.
+    let tile = TILE_SIZE * TILE_SIZE * 2;
+    assert_eq!(small, 64 * tile + 4 * tile);
+    // More stamps take more tiles, and the same number at each face size.
+    let (more_tiles, more) = memory(4096, 40);
+    assert!(more_tiles > 64 && more > small);
+    assert_eq!(memory(8192, 40), (more_tiles, more));
+    // The pool has at most two times the memory of its tiles, plus a layer.
+    assert!(more <= (2 * more_tiles + 64 + 4) * tile);
+}
+
+#[test]
+fn a_tile_at_the_base_level_gives_its_memory_back() {
+    let gpu = gpu();
+    let n = 1024;
+    let map = GpuHeightmap::new(&gpu.device, n as u32);
+    map.clear(&gpu.queue, 500);
+    let tile = TexelRect {
+        x0: 256,
+        y0: 512,
+        x1: 512,
+        y1: 768,
+    };
+    let part = TexelRect {
+        x0: 300,
+        y0: 600,
+        x1: 310,
+        y1: 610,
+    };
+    // The base level takes no tile.
+    map.upload(&gpu.queue, 2, part, &[500; 100]);
+    assert_eq!(map.allocated_tiles(), 0);
+    map.upload(&gpu.queue, 2, part, &[900; 100]);
+    assert_eq!(map.allocated_tiles(), 1);
+    let levels = &gpu.read(&map, tile)[2];
+    assert_eq!(levels.iter().filter(|level| **level == 900).count(), 100);
+    assert_eq!(
+        levels.iter().filter(|level| **level == 500).count(),
+        256 * 256 - 100
+    );
+    // A part of a tile at the base level keeps the tile.
+    map.upload(&gpu.queue, 2, part, &[500; 100]);
+    assert_eq!(map.allocated_tiles(), 1);
+    map.upload(&gpu.queue, 2, tile, &vec![500; 256 * 256]);
+    assert_eq!(map.allocated_tiles(), 0);
+    assert!(gpu.read(&map, tile)[2].iter().all(|level| *level == 500));
+    // The next tile takes the free slot.
+    map.upload(&gpu.queue, 4, part, &[700; 100]);
+    assert_eq!(map.allocated_tiles(), 1);
+    assert_eq!(map.memory_bytes(), table_bytes(n) + 64 * 256 * 256 * 2);
+    assert!(gpu.read(&map, part)[4].iter().all(|level| *level == 700));
+    map.clear(&gpu.queue, 100);
+    assert_eq!(map.memory_bytes(), table_bytes(n));
+    assert!(gpu.read(&map, tile)[4].iter().all(|level| *level == 100));
+}
+
+/// The stamps of each mode on small tiles, across tile edges, a face edge,
+/// and a cube corner. Some of the tiles under the stamps have no memory. The
+/// levels do not depend on the tile size, so a tile edge is no seam.
+#[test]
+fn small_tiles_give_the_same_levels_as_one_tile_for_each_face() {
+    let gpu = gpu();
+    for mode in MODES {
+        let stamps = [
+            stamp(lonlat_to_dir(3.0, 2.0), 0.2, 0.3, mode),
+            stamp(lonlat_to_dir(45.0, 1.0), 0.1, 0.5, mode),
+            stamp(lonlat_to_dir(44.0, 35.0), 0.15, 0.0, mode),
+            stamp(lonlat_to_dir(40.0, 20.0), 0.02, 0.9, mode),
+        ];
+        let mut faces = Vec::new();
+        let mut tiles = Vec::new();
+        for tile in [256, 32, 24] {
+            let mut cpu = hills(256);
+            // The base level of `hills` on a part of face 0 and on face 2.
+            let part = TexelRect {
+                x0: 0,
+                y0: 0,
+                x1: 100,
+                y1: 256,
+            };
+            cpu.store_rect(0, part, &[0; 100 * 256]);
+            set_face(&mut cpu, 2, 0);
+            let map = gpu.copy_with_tiles(&cpu, tile);
+            tiles.push(map.allocated_tiles());
+            gpu.stamp(&map, &mut cpu, &stamps);
+            let levels = gpu.read_all(&map);
+            let difference = max_difference(&cpu, &levels);
+            assert!(
+                difference <= tolerance(mode),
+                "{mode:?}, tile {tile}: {difference}"
+            );
+            faces.push(levels);
+        }
+        // 3 columns of 8 tiles on face 0 and all 64 tiles of face 2 start
+        // with no memory.
+        assert_eq!(tiles, [5, 6 * 64 - 24 - 64, 6 * 121 - 44 - 121]);
+        assert!(faces[1] == faces[0], "{mode:?}, tiles of 32 texels");
+        assert!(faces[2] == faces[0], "{mode:?}, tiles of 24 texels");
+    }
+}
+
+/// A smooth stamp on a bowl that crosses tile edges. The step from texel to
+/// texel changes by the same amount at a tile edge and inside a tile.
+#[test]
+fn smooth_leaves_no_seam_at_a_tile_edge() {
+    let gpu = gpu();
+    let n = 256;
+    let mut cpu = Heightmap::new(n, 20000);
+    let bowl: Vec<u16> = (0..n * n)
+        .map(|i| 20000 + 2 * (i % n).abs_diff(128).pow(2) as u16)
+        .collect();
+    cpu.store_rect(0, full(n), &bowl);
+    let map = gpu.copy_with_tiles(&cpu, 32);
+    let smooth = stamp(lonlat_to_dir(0.0, 0.0), 0.3, 1.0, Mode::Smooth);
+    gpu.stamp(&map, &mut cpu, &[smooth; 3]);
+    let levels = gpu.read_all(&map);
+    assert!(max_difference(&cpu, &levels) <= SMOOTH_TOLERANCE);
+    let row: Vec<i32> = (100..157)
+        .map(|x| i32::from(levels[0][128 * n + x]))
+        .collect();
+    assert!(
+        row.iter()
+            .zip(&bowl[128 * n + 100..])
+            .any(|(a, b)| *a != i32::from(*b))
+    );
+    for (i, three) in row.windows(3).enumerate() {
+        let bend = three[2] - 2 * three[1] + three[0];
+        assert!(
+            (bend - 4).abs() <= 3,
+            "x {}: the bend is {bend}: {row:?}",
+            101 + i
+        );
+    }
 }
