@@ -1,6 +1,9 @@
 // Draws the globe: one pass that reads the cube map and shows it as stepped
 // tints, as a smooth ramp, or in greyscale. The face layout matches `cube.rs`
 // of `vale-terrain`.
+//
+// The source of `tiles.wgsl` of `vale-terrain` comes before this file, and
+// each read of a level goes through its `tile_level`.
 
 struct Band {
     // The color at the lower limit, then the lower limit, from 0 to 1.
@@ -43,12 +46,11 @@ const MODE_GREYSCALE: i32 = 0;
 const MODE_SMOOTH: i32 = 2;
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var heights: texture_2d_array<u32>;
 // The channel map of `vale-terrain`. The first two bytes of a texel are the
 // distance to the nearest river, and the size of that river.
-@group(0) @binding(2) var channels: texture_2d_array<u32>;
+@group(0) @binding(1) var channels: texture_2d_array<u32>;
 // The channel window of `vale-terrain`, with the same two bytes.
-@group(0) @binding(3) var window_channels: texture_2d<u32>;
+@group(0) @binding(2) var window_channels: texture_2d<u32>;
 
 const PI: f32 = 3.14159265;
 const RIVER_COLOR: vec3<f32> = vec3<f32>(0.16, 0.36, 0.62);
@@ -68,7 +70,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 }
 
 fn load(face: i32, x: i32, y: i32) -> f32 {
-    return f32(textureLoad(heights, vec2<i32>(x, y), face, 0).r) / 65535.0;
+    return f32(tile_level(face, vec2<i32>(x, y))) / 65535.0;
 }
 
 // The flat face coordinate at the center of a texel. A texel past the face

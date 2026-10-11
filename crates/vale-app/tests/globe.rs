@@ -1043,6 +1043,91 @@ fn no_seam_shows_at_a_face_edge_or_at_a_cube_corner() {
     }
 }
 
+/// The largest step of the grey level from a pixel to the pixel next to it,
+/// and the range of the grey levels.
+fn largest_step(img: &image::RgbaImage) -> (u8, u8) {
+    let (mut step, mut seen) = (0, [u8::MAX, 0]);
+    for py in 0..img.height() - 1 {
+        for px in 0..img.width() - 1 {
+            let v = img.get_pixel(px, py).0[0];
+            seen = [seen[0].min(v), seen[1].max(v)];
+            for other in [img.get_pixel(px + 1, py), img.get_pixel(px, py + 1)] {
+                step = step.max(v.abs_diff(other.0[0]));
+            }
+        }
+    }
+    (step, seen[1] - seen[0])
+}
+
+/// The middle of face 0 is a corner of four tiles. The face +z has no tile.
+#[test]
+fn no_seam_shows_at_a_tile_edge_at_each_zoom() {
+    const N: usize = 2 * vale_terrain::TILE_SIZE;
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(N);
+    globe.preview.graticule = false;
+    globe.preview.greyscale = true;
+    // A slope from the south pole to the north pole. The face +z has the
+    // level of the north pole, which is the base level.
+    let slope = |z: f64| (32768.0 + 24000.0 * z.min(0.55)) as u16;
+    globe.map.fill(slope(1.0));
+    for face in [0, 1, 2, 3, 5] {
+        for y in 0..N {
+            for x in 0..N {
+                let level = slope(globe.map.texel_dir(face, x, y)[2]);
+                globe.map.set(face, x, y, level);
+            }
+        }
+    }
+    assert_eq!(globe.map.allocated_tiles(), 5 * 4);
+    // The whole globe, then the tile corner, then the edge of the face with
+    // no tile. The level is the same on the two sides of that edge.
+    for (lon, lat, zoom, range) in [
+        (0.0, 0.0, 1.0, 100),
+        (20.0, 30.0, 1.0, 70),
+        (0.0, 0.0, 8.0, 20),
+        (0.0, 0.0, 60.0, 2),
+        (0.0, 45.0, 8.0, 0),
+    ] {
+        let globe = &mut h.state_mut().globe;
+        globe.view = GlobeView::centered(lon, lat);
+        globe.view.zoom = zoom;
+        let img = canvas_image(&mut h);
+        // The part of the canvas that is well inside the edge of the globe.
+        let radius = h.state().globe.view.radius(h.state().globe.rect);
+        let half = ((0.6 * radius) as u32).min(img.width().min(img.height()) / 2 - 1);
+        let (x, y) = (img.width() / 2 - half, img.height() / 2 - half);
+        let img = image::imageops::crop_imm(&img, x, y, 2 * half, 2 * half).to_image();
+        let (step, seen) = largest_step(&img);
+        // The slope gives a step of 1 grey level at most.
+        assert!(step <= 2, "a step of {step} at {lon}, {lat}, zoom {zoom}");
+        assert!(
+            seen >= range,
+            "a range of {seen} at {lon}, {lat}, zoom {zoom}"
+        );
+    }
+    // Noise in the four tiles at the corner. A texel is many pixels wide, and
+    // the filter changes the height by one texel step over one texel at most.
+    let globe = &mut h.state_mut().globe;
+    for y in N / 2 - 8..N / 2 + 8 {
+        for x in N / 2 - 8..N / 2 + 8 {
+            globe.map.set(0, x, y, noise(0, x % 16, y % 16));
+        }
+    }
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.view.zoom = 480.0;
+    let img = canvas_image(&mut h);
+    let texel =
+        h.state().globe.view.radius(h.state().globe.rect) * std::f64::consts::FRAC_PI_2 / N as f64;
+    let limit = (3.0 * 255.0 / texel).ceil() as u8 + 1;
+    assert!(limit < 12, "{limit}");
+    let (step, seen) = largest_step(&img);
+    assert!(step <= limit, "a step of {step} in the noise");
+    assert!(seen > 60, "{seen}");
+}
+
 /// Sets each texel of some faces to noise.
 fn set_noise(h: &mut Harness<'static, AppState>, faces: &[usize], seed: usize) {
     let map = &mut h.state_mut().globe.map;
