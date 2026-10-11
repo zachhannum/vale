@@ -4,7 +4,7 @@
 //!
 //! With no features, the crate has no dependencies. It works in sphere
 //! directions and texels, and it knows nothing about the screen. The `gpu`
-//! feature adds a copy of the heightmap in a wgpu texture, and the same brush
+//! feature adds a copy of the heightmap in wgpu textures, and the same brush
 //! as a shader.
 
 mod bands;
@@ -15,6 +15,8 @@ mod flow;
 mod gpu;
 mod heightmap;
 pub mod math;
+#[cfg(feature = "gpu")]
+mod tiles;
 
 pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Ramp, Rgb, SEA_LEVEL};
 pub use cube::{
@@ -31,3 +33,5 @@ pub use gpu::{GROUP_STAMPS, GpuHeightmap, Readback, STAMP_SLOTS};
 pub use heightmap::{
     Heightmap, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT,
 };
+#[cfg(feature = "gpu")]
+pub use tiles::TILES_WGSL;

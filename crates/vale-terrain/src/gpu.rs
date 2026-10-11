@@ -1,7 +1,10 @@
-//! The heightmap in a wgpu texture, and the brush as a shader.
+//! The heightmap in wgpu textures, and the brush as a shader.
 //!
 //! `Heightmap::stamp` is the reference. `GpuHeightmap::stamp` gives the same
 //! levels to within the rounding of 32-bit numbers.
+//!
+//! The textures hold only the tiles that have a level other than the base
+//! level. `tiles.rs` has the pool of the tiles.
 
 use std::f64::consts::FRAC_PI_4;
 use std::num::NonZeroU64;
@@ -11,7 +14,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::bands::SEA_LEVEL;
 use crate::cube::{FACES, meters_to_level};
 use crate::flow::{ChannelMap, ChannelWindow, WINDOW_CELLS, Window};
-use crate::heightmap::{Mode, StampPlan, TexelRect};
+use crate::heightmap::{Mode, StampPlan, TILE_SIZE, TexelRect};
+use crate::tiles::{Pool, TILES_WGSL};
 
 /// The number of face passes in one batch. One group of stamps takes one pass
 /// for each face that it touches.
@@ -110,6 +114,9 @@ struct Uniforms {
     window_origin: [i32; 2],
     window_face: u32,
     window_cell: u32,
+    /// The texel of the face at the first texel of the render target.
+    origin: [i32; 2],
+    pad: [u32; 2],
     stamps: [FaceStamp; GROUP_STAMPS],
 }
 
@@ -145,15 +152,26 @@ impl Cover {
     }
 }
 
-/// The six faces of a heightmap in one texture, and the brush pipeline.
-pub struct GpuHeightmap {
-    face_size: u32,
+/// The render target of a pass. A pass cannot read the texture that it
+/// writes, so it writes here, and a copy moves the texels to the tiles.
+struct Scratch {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    faces: [wgpu::TextureView; FACES],
-    /// A pass cannot read the face that it writes. Each pass reads a copy of
-    /// its texels from this texture.
-    scratch: wgpu::Texture,
+    size: [usize; 2],
+}
+
+struct State {
+    pool: Pool,
+    scratch: Option<Scratch>,
+}
+
+/// The tiles of a heightmap in a pool of textures, and the brush pipeline.
+pub struct GpuHeightmap {
+    device: wgpu::Device,
+    face_size: u32,
+    tile: usize,
+    state: Mutex<State>,
+    tiles_layout: wgpu::BindGroupLayout,
     /// The rivers that the carve mode follows, as the bytes of a
     /// `ChannelMap`.
     channels: wgpu::Texture,
@@ -165,7 +183,7 @@ pub struct GpuHeightmap {
     /// The place of the window, or `None` with no window.
     window: Mutex<Option<Window>>,
     pipeline: wgpu::RenderPipeline,
-    bind_groups: [wgpu::BindGroup; FACES],
+    bind_group: wgpu::BindGroup,
     /// One slot of `slot_size` bytes for each pass of a batch.
     uniforms: wgpu::Buffer,
     slot_size: u32,
@@ -194,51 +212,17 @@ fn texels(texture: &wgpu::Texture, x: usize, y: usize, z: u32) -> wgpu::TexelCop
 }
 
 impl GpuHeightmap {
-    /// Makes the texture, with `face_size` by `face_size` texels on each
-    /// face. The levels are not set. The channel map has no rivers.
+    /// Makes a heightmap with `face_size` by `face_size` texels on each
+    /// face, all at level 0. No tile has memory. The channel map has no
+    /// rivers.
     pub fn new(device: &wgpu::Device, face_size: u32) -> GpuHeightmap {
-        let face_texture = |label, layers, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: face_size,
-                    height: face_size,
-                    depth_or_array_layers: layers,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: FORMAT,
-                usage,
-                view_formats: &[],
-            })
-        };
-        let texture = face_texture(
-            "heightmap",
-            FACES as u32,
-            wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-        );
-        let scratch = face_texture(
-            "heightmap scratch",
-            1,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
-        let faces: [wgpu::TextureView; FACES] = std::array::from_fn(|face| {
-            texture.create_view(&wgpu::TextureViewDescriptor {
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                base_array_layer: face as u32,
-                array_layer_count: Some(1),
-                ..Default::default()
-            })
-        });
-        let scratch_view = scratch.create_view(&wgpu::TextureViewDescriptor::default());
+        GpuHeightmap::with_tile_size(device, face_size, TILE_SIZE)
+    }
+
+    /// The same as `new`, with `tile` by `tile` texels in a tile.
+    pub fn with_tile_size(device: &wgpu::Device, face_size: u32, tile: usize) -> GpuHeightmap {
+        let pool = Pool::new(device, face_size as usize, tile);
+        let tiles_layout = pool.layout().clone();
         // A new texture holds zeros, and a river size of 0 is no river.
         let channel_size = ChannelMap::size_for(face_size as usize) as u32;
         let channels = device.create_texture(&wgpu::TextureDescriptor {
@@ -298,7 +282,6 @@ impl GpuHeightmap {
             },
             count: None,
         };
-        let face_entry = |binding| texture_entry(binding, wgpu::TextureViewDimension::D2);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stamp"),
             entries: &[
@@ -312,53 +295,42 @@ impl GpuHeightmap {
                     },
                     count: None,
                 },
-                face_entry(1),
-                face_entry(2),
-                face_entry(3),
-                face_entry(4),
-                face_entry(5),
-                texture_entry(6, wgpu::TextureViewDimension::D2Array),
-                face_entry(7),
+                texture_entry(1, wgpu::TextureViewDimension::D2Array),
+                texture_entry(2, wgpu::TextureViewDimension::D2),
             ],
         });
-        let face_view = |binding, view| wgpu::BindGroupEntry {
-            binding,
-            resource: wgpu::BindingResource::TextureView(view),
-        };
-        let bind_groups = std::array::from_fn(|face| {
-            // The faces past the +u, -u, +v, and -v edges. The opposite face
-            // is not in the list, and the pass does not read its own face.
-            let (u, v) = (2 * ((face / 2 + 1) % 3), 2 * ((face / 2 + 2) % 3));
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("stamp"),
-                layout: &layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &uniforms,
-                            offset: 0,
-                            size: uniform_size,
-                        }),
-                    },
-                    face_view(1, &scratch_view),
-                    face_view(2, &faces[u]),
-                    face_view(3, &faces[u + 1]),
-                    face_view(4, &faces[v]),
-                    face_view(5, &faces[v + 1]),
-                    face_view(6, &channels_view),
-                    face_view(7, &window_view),
-                ],
-            })
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stamp"),
+            layout: &layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &uniforms,
+                        offset: 0,
+                        size: uniform_size,
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&channels_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&window_view),
+                },
+            ],
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stamp"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("stamp.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                format!("{TILES_WGSL}\n{}", include_str!("stamp.wgsl")).into(),
+            ),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stamp"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&layout), Some(&tiles_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -388,18 +360,21 @@ impl GpuHeightmap {
         });
 
         GpuHeightmap {
+            device: device.clone(),
             face_size,
-            texture,
-            view,
-            faces,
-            scratch,
+            tile,
+            state: Mutex::new(State {
+                pool,
+                scratch: None,
+            }),
+            tiles_layout,
             channels,
             channels_view,
             window_channels,
             window_view,
             window: Mutex::new(None),
             pipeline,
-            bind_groups,
+            bind_group,
             uniforms,
             slot_size,
             used_slots: AtomicU32::new(0),
@@ -410,9 +385,33 @@ impl GpuHeightmap {
         self.face_size
     }
 
-    /// The six faces as an array of 2D layers.
-    pub fn view(&self) -> &wgpu::TextureView {
-        &self.view
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().expect("no thread stops with the lock")
+    }
+
+    /// The layout of the bind group that `tiles` returns.
+    pub fn tiles_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.tiles_layout
+    }
+
+    /// The table and the pool of the tiles, for bind group 1 of a shader
+    /// that starts with `TILES_WGSL`. A change of the tiles can make a new
+    /// bind group, so get it for each pass.
+    pub fn tiles(&self) -> wgpu::BindGroup {
+        self.state().pool.bind_group().clone()
+    }
+
+    /// The number of tiles that hold memory.
+    pub fn allocated_tiles(&self) -> usize {
+        self.state().pool.allocated_tiles()
+    }
+
+    /// The memory of the heightmap textures, in bytes: the table, the pool
+    /// of the tiles, and the render target of the brush.
+    pub fn memory_bytes(&self) -> usize {
+        let state = self.state();
+        let scratch = state.scratch.as_ref().map_or(0, |s| s.size[0] * s.size[1]);
+        state.pool.memory_bytes() + scratch * size_of::<u16>()
     }
 
     /// The six faces of the channel map as an array of 2D layers. Each texel
@@ -472,55 +471,56 @@ impl GpuHeightmap {
         *self.window.lock().expect("no thread stops with the lock") = window;
     }
 
-    /// Sets all texels to `level`.
-    pub fn clear(&self, enc: &mut wgpu::CommandEncoder, level: u16) {
-        for face in 0..FACES {
-            let color = wgpu::Color {
-                r: f64::from(level),
-                ..wgpu::Color::TRANSPARENT
-            };
-            self.face_pass(enc, face, wgpu::LoadOp::Clear(color));
-        }
-    }
-
-    fn face_pass<'a>(
-        &self,
-        enc: &'a mut wgpu::CommandEncoder,
-        face: usize,
-        load: wgpu::LoadOp<wgpu::Color>,
-    ) -> wgpu::RenderPass<'a> {
-        enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("heightmap face"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.faces[face],
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        })
+    /// Sets all texels to `level`, and takes the memory from each tile. The
+    /// change runs at the next submit, before the commands of each encoder in
+    /// that submit. Thus submit each encoder that holds stamps before this
+    /// call.
+    pub fn clear(&self, queue: &wgpu::Queue, level: u16) {
+        let mut state = self.state();
+        state.pool.clear(&self.device, queue, level);
+        state.scratch = None;
     }
 
     /// Writes the texels of a rectangle, row by row. The write runs at the
-    /// next submit, before the commands of each encoder in that submit.
+    /// next submit, before the commands of each encoder in that submit. Thus
+    /// submit each encoder that holds stamps before this call.
+    ///
+    /// A tile gets memory when it gets a level other than the base level. A
+    /// tile that gets the base level in each texel loses its memory.
     pub fn upload(&self, queue: &wgpu::Queue, face: u32, rect: TexelRect, data: &[u16]) {
-        let size = extent(rect);
-        queue.write_texture(
-            texels(&self.texture, rect.x0, rect.y0, face),
-            bytemuck::cast_slice(data),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(size.width * 2),
-                rows_per_image: Some(size.height),
-            },
-            size,
-        );
+        let pool = &mut self.state().pool;
+        let face = face as usize;
+        let width = rect.x1 - rect.x0;
+        let mut levels = Vec::new();
+        for (tx, ty, part) in pool.tiles_in(rect) {
+            levels.clear();
+            for y in part.y0..part.y1 {
+                let row = (y - rect.y0) * width;
+                levels.extend_from_slice(&data[row + part.x0 - rect.x0..row + part.x1 - rect.x0]);
+            }
+            let full = pool.is_full(tx, ty, part);
+            if levels.iter().all(|level| *level == pool.base()) {
+                if full {
+                    pool.release(queue, face, tx, ty);
+                    continue;
+                }
+                if pool.slot(face, tx, ty).is_none() {
+                    continue;
+                }
+            }
+            let slot = pool.ensure(&self.device, queue, face, tx, ty, !full);
+            let size = extent(part);
+            queue.write_texture(
+                pool.texels(slot, part.x0, part.y0),
+                bytemuck::cast_slice(&levels),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.width * 2),
+                    rows_per_image: Some(size.height),
+                },
+                size,
+            );
+        }
     }
 
     /// Starts a batch of stamps. Call it after each submit of an encoder
@@ -591,12 +591,7 @@ impl GpuHeightmap {
         self.used_slots
             .store(first_slot + cover.passes(), Ordering::Relaxed);
 
-        let n = self.face_size as usize;
-        // The smooth mode reads texels at this distance from the rectangle.
-        let grow = match mode {
-            Mode::Smooth => first.reach,
-            _ => 0,
-        };
+        let state = &mut *self.state();
         // The faces go in rising order, as in `Heightmap::stamp`. A smooth
         // pass reads the new levels of the faces before it.
         let window = *self.window.lock().expect("no thread stops with the lock");
@@ -622,6 +617,7 @@ impl GpuHeightmap {
                 window_face: window.map_or(0, |w| w.face as u32),
                 window_origin: window.map_or([0; 2], |w| [w.x0 as i32, w.y0 as i32]),
                 window_cell: window.map_or(1, |w| w.cell as u32),
+                origin: [rect.x0 as i32, rect.y0 as i32],
                 ..bytemuck::Zeroable::zeroed()
             };
             // A stamp with no rectangle on this face is not in the list.
@@ -639,25 +635,92 @@ impl GpuHeightmap {
                 u64::from(offset),
                 &bytemuck::bytes_of(&uniforms)[..used],
             );
-            let read = TexelRect {
-                x0: rect.x0.saturating_sub(grow),
-                y0: rect.y0.saturating_sub(grow),
-                x1: (rect.x1 + grow).min(n),
-                y1: (rect.y1 + grow).min(n),
-            };
-            enc.copy_texture_to_texture(
-                texels(&self.texture, read.x0, read.y0, face as u32),
-                texels(&self.scratch, read.x0, read.y0, 0),
-                extent(read),
-            );
+            // The pass reads each tile from the pool, so the tiles get
+            // their memory before it.
+            let tiles = state.pool.tiles_in(rect);
+            for &(tx, ty, _) in &tiles {
+                state.pool.ensure(&self.device, queue, face, tx, ty, true);
+            }
             let size = extent(rect);
-            let mut pass = self.face_pass(enc, face, wgpu::LoadOp::Load);
+            let scratch = self.scratch(&mut state.scratch, rect);
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stamp"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scratch.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_groups[face], &[offset]);
-            pass.set_scissor_rect(rect.x0 as u32, rect.y0 as u32, size.width, size.height);
+            pass.set_bind_group(0, &self.bind_group, &[offset]);
+            pass.set_bind_group(1, state.pool.bind_group(), &[]);
+            pass.set_scissor_rect(0, 0, size.width, size.height);
             pass.draw(0..3, 0..1);
+            drop(pass);
+            for (tx, ty, part) in tiles {
+                let slot = state.pool.slot(face, tx, ty).expect("the tile has memory");
+                enc.copy_texture_to_texture(
+                    texels(&scratch.texture, part.x0 - rect.x0, part.y0 - rect.y0, 0),
+                    state.pool.texels(slot, part.x0, part.y0),
+                    extent(part),
+                );
+            }
         }
         count
+    }
+
+    /// The render target for a rectangle of texels.
+    ///
+    /// A pass loads and stores each texel of its target on some GPUs, so the
+    /// target is not much larger than the rectangle. A target that is too
+    /// small or more than two times too large makes way for a new one.
+    fn scratch<'a>(&self, scratch: &'a mut Option<Scratch>, rect: TexelRect) -> &'a Scratch {
+        let need = [rect.x1 - rect.x0, rect.y1 - rect.y0];
+        let keep = scratch.as_ref().is_some_and(|scratch| {
+            let fits = need[0] <= scratch.size[0] && need[1] <= scratch.size[1];
+            let large = 2 * need[0] < scratch.size[0] && 2 * need[1] < scratch.size[1];
+            fits && !large
+        });
+        if !keep {
+            // A larger target keeps its other side, so a row of stamps and a
+            // column of stamps share one target.
+            let old = scratch.as_ref().map_or([0; 2], |scratch| scratch.size);
+            let grows = need[0] > old[0] || need[1] > old[1];
+            let size = [0, 1].map(|i| {
+                let side = need[i].next_multiple_of(self.tile);
+                if grows { side.max(old[i]) } else { side }
+            });
+            let size = size.map(|side| side.min(self.face_size as usize));
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("stamp target"),
+                size: wgpu::Extent3d {
+                    width: size[0] as u32,
+                    height: size[1] as u32,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            *scratch = Some(Scratch {
+                texture,
+                view,
+                size,
+            });
+        }
+        scratch.as_ref().expect("the target is set")
     }
 
     /// Adds a copy of a rectangle to `enc`, for a read on the CPU.
@@ -676,22 +739,33 @@ impl GpuHeightmap {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        enc.copy_texture_to_buffer(
-            texels(&self.texture, rect.x0, rect.y0, face),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row_bytes as u32),
-                    rows_per_image: None,
+        let pool = &self.state().pool;
+        let mut holes = Vec::new();
+        for (tx, ty, part) in pool.tiles_in(rect) {
+            let Some(slot) = pool.slot(face as usize, tx, ty) else {
+                holes.push(part);
+                continue;
+            };
+            let offset = (part.y0 - rect.y0) * row_bytes + (part.x0 - rect.x0) * 2;
+            enc.copy_texture_to_buffer(
+                pool.texels(slot, part.x0, part.y0),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: offset as u64,
+                        bytes_per_row: Some(row_bytes as u32),
+                        rows_per_image: None,
+                    },
                 },
-            },
-            extent(rect),
-        );
+                extent(part),
+            );
+        }
         Readback {
             buffer,
-            width,
+            rect,
             row_bytes,
+            base: pool.base(),
+            holes,
         }
     }
 }
@@ -699,8 +773,12 @@ impl GpuHeightmap {
 /// Texels on their way from the GPU.
 pub struct Readback {
     buffer: wgpu::Buffer,
-    width: usize,
+    rect: TexelRect,
     row_bytes: usize,
+    base: u16,
+    /// The parts of the rectangle in tiles that have no memory. The buffer
+    /// holds no level for them.
+    holes: Vec<TexelRect>,
 }
 
 impl Readback {
@@ -710,9 +788,12 @@ impl Readback {
     pub fn map(self, done: impl FnOnce(Vec<u16>) + Send + 'static) {
         let Readback {
             buffer,
-            width,
+            rect,
             row_bytes,
+            base,
+            holes,
         } = self;
+        let width = rect.x1 - rect.x0;
         let mapped = buffer.clone();
         buffer.map_async(wgpu::MapMode::Read, .., move |result| {
             if result.is_err() {
@@ -721,13 +802,19 @@ impl Readback {
             let Ok(bytes) = mapped.get_mapped_range(..) else {
                 return;
             };
-            let levels = bytes
+            let mut levels: Vec<u16> = bytes
                 .chunks(row_bytes)
                 .flat_map(|row| row[..width * 2].as_chunks::<2>().0)
                 .map(|pair| u16::from_le_bytes(*pair))
                 .collect();
             drop(bytes);
             mapped.unmap();
+            for hole in holes {
+                for y in hole.y0..hole.y1 {
+                    let row = (y - rect.y0) * width;
+                    levels[row + hole.x0 - rect.x0..row + hole.x1 - rect.x0].fill(base);
+                }
+            }
             done(levels);
         });
     }
