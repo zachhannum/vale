@@ -90,9 +90,10 @@ impl Session {
     /// Call this in each frame. It saves a change that is older than
     /// `SAVE_DELAY`. It returns the time to the save of a newer change.
     ///
-    /// The heightmap gets a raster record in the project. With `hold`, there
-    /// is no save: the heightmap waits for texels of a stroke, or a control
-    /// is held. The changes of one hold are one save, at the end of the hold.
+    /// A painted heightmap gets a raster record in the project. With `hold`,
+    /// there is no save: the heightmap waits for texels of a stroke, or a
+    /// control is held. The changes of one hold are one save, at the end of
+    /// the hold.
     pub fn tick(
         &mut self,
         project: &mut Project,
@@ -124,13 +125,6 @@ impl Session {
             return Ok(());
         }
         let saves_map = self.saves_map(map);
-        if saves_map && self.file.project().rasters().is_empty() {
-            // The record of the heightmap is not an edit, so it gets no undo
-            // step.
-            let mut base = self.file.project().clone();
-            sync_raster(&mut base, map);
-            self.file.save_base(&base)?;
-        }
         let changes = match project.rasters().first() {
             Some(raster) if saves_map => {
                 // The file has no tile of a raster that is new to it.
@@ -191,16 +185,22 @@ impl Session {
         if !self.saves_map(map) {
             return Ok(());
         }
-        let Some(raster) = self.file.project().rasters().first() else {
-            return Ok(());
-        };
-        load_record(map, raster);
+        // An undo of the first stroke leaves a project with no raster. The
+        // tiles of that stroke then leave the heightmap.
+        let raster = self.file.project().rasters().first();
+        if let Some(raster) = raster {
+            load_record(map, raster);
+        }
         for (id, key) in restored.tiles {
-            if id != raster.id {
+            if raster.is_some_and(|r| r.id != id) {
                 continue;
             }
             let (face, column, row) = (key.face as usize, key.column as usize, key.row as usize);
-            match self.file.load_tile(id, key)? {
+            let pixels = match raster {
+                Some(_) => self.file.load_tile(id, key)?,
+                None => None,
+            };
+            match pixels {
                 Some(pixels) => map.load_tile(face, column, row, &pixels),
                 None => map.clear_tile(face, column, row),
             }
@@ -242,10 +242,12 @@ fn load_record(map: &mut Heightmap, raster: &Raster) {
     }
 }
 
-/// Makes the first raster of the project the record of the heightmap.
+/// Makes the first raster of the project the record of the heightmap. A
+/// project with no raster gets one when the heightmap has a painted tile.
 fn sync_raster(project: &mut Project, map: &Heightmap) {
     let id = match project.rasters().first() {
         Some(raster) => raster.id,
+        None if map.allocated().next().is_none() => return,
         None => project.add_raster(HEIGHT_NAME.to_string(), map.face_size() as u32),
     };
     let raster = project.raster_mut(id).expect("the raster of the ID");
