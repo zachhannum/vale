@@ -143,7 +143,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 ## What the prototype leaves out
 
 - Project files. There is no save. Undo and redo are for brush strokes only. When the window closes, the session ends.
-- Linked sources, file watch, raster layers, SVG and Shapefile import.
+- Raster layers, SVG and Shapefile import, and the command Replace from file.
 - Rule-based styles. A layer has one fill, one stroke, and one circle symbol.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
 - More than one map frame, the atlas, page templates, SVG export, and graticule labels. The only map furniture is a scale bar.

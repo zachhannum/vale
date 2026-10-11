@@ -68,7 +68,6 @@ The app is one Rust workspace. Rust gives one language for the engine and the ap
 | Vector import | Pure-Rust readers for SVG, GeoJSON, Shapefile, and GeoPackage | No native dependency to package. |
 | Raster import | image, tiff, and psd crates | PNG, TIFF with 16-bit depth, and flattened PSD cover the usual tools. |
 | Raster reprojection | Own warp in a wgpu shader | PROJ computes a coarse mesh on the CPU, and the GPU interpolates and samples. |
-| File watch | notify crate | Detects changes to linked sources on all three platforms. |
 | Heightmap storage | Cube map (six square images that wrap the sphere) in 16-bit tiles | Pixel size stays close to uniform over the sphere, and no pole has a pinch. |
 | Heightmap painting | Own brush engine in wgpu shaders | The brush stamps into the cube map tiles, and the stepped preview is one shader pass. |
 
@@ -106,7 +105,7 @@ Data moves from left to right. The terrain crate is not in the diagram. It write
 | --- | --- |
 | store | Data model, GeoPackage read and write, undo log |
 | sphere | Spherical geometry, PROJ wrapper, graticule generation |
-| import | File readers, linked sources, file watch |
+| import | File readers, georeferencing |
 | terrain | Heightmap tiles, brush engine, heightmap tools |
 | style | Style rules, expressions, symbol generation |
 | labeler | Standalone labeling engine. It takes page-space geometry and returns placed text. |
@@ -138,7 +137,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Record | Content |
 | --- | --- |
 | World | Radius, name, display units |
-| Source | Path to a linked file, extents, last known file hash |
+| Source | Name of the imported file, extents, and the pixels of an imported image |
 | Raster | Face size, unit, value range, ramp, band limits |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Layer | Type (raster, points, lines, or polygons), attribute schema, link to a source, to a raster, or to an in-app table |
@@ -151,13 +150,21 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 
 QGIS opens the feature tables directly and ignores the extra tables. That gives interchange with no export step. The topography polygons are feature tables, so QGIS reads them too. The heightmap is not a standard table, and the app exports it as an equirectangular GeoTIFF.
 
-Each feature has a UUID in addition to the integer row ID. The UUID never changes, so overrides and styles survive an edit, a reload, or a new projection.
+Each feature has a UUID in addition to the integer row ID. The UUID never changes, so overrides and styles survive an edit, a replaced file, or a new projection.
 
 The key of a raster tile is the raster, the level, the face, the column, and the row. The face is a number from 0 to 5. The column and the row count tiles of 256 pixels from the corner of the face. Level 0 has the face size of the raster, and the level is always 0 in version 1. A higher level is for finer tiles in a region, which come after version 1. The level field lets those tiles arrive with no change of the file format.
 
 Overrides belong to a map frame and not to the feature. A label that you move on the regional map stays where the engine put it on the world map.
 
 Each edit is one SQLite transaction with an entry in an undo log table. Undo and redo then work across sessions, and a crash cannot leave a half-written project.
+
+The project file holds all the data of the project. The app does not edit the file in place. When you open a project, the app copies the file into its private storage and edits that working copy. Each edit is on disk in the working copy when the edit ends.
+
+The app saves without a command. It writes the working copy back as one whole file, in one atomic step. It does this when you close the project, when the app goes to the background, and every few minutes while there are changes. On Apple platforms, the write uses file coordination. A sync service such as iCloud Drive then sees only complete files.
+
+If the app stops before it writes back, the working copy keeps each edit, and the app writes it back at the next start.
+
+To move a project between devices, you move or sync the file. The app does not merge. If two devices change the same project, the app keeps both versions, and you pick one.
 
 ## World definition and projections
 
@@ -188,11 +195,11 @@ The sphere crate generates graticule lines on the sphere and sends them through 
 
 A scale bar is correct only where the projection keeps scale. The app measures the scale bar at the frame center and states that in the bar's properties.
 
-## Import and linked sources
+## Import
 
-An imported file stays where it is, and the project stores a link to it plus its extents. You can then edit the file in Photoshop or Illustrator and keep the georeferencing.
+An import copies the file into the project, and the project stores the extents with the copy. The project then opens complete on each device.
 
-A linked file is a layer. You add it from the Layers panel, and the panel of the layer has three ways to set extents.
+An imported file is a layer. You add it from the Layers panel, and the panel of the layer has three ways to set extents.
 
 - Full globe. This is the default, and it maps the file to longitude -180 to 180 and latitude -90 to 90.
 - Four numbers. You type the west, east, south, and north edges.
@@ -200,9 +207,9 @@ A linked file is a layer. You add it from the Layers panel, and the panel of the
 
 If a full-globe file is not twice as wide as it is tall, the panel shows a warning. A wrong aspect ratio is the most common import error.
 
-The app watches each linked file. When the file changes on disk, the app reloads it and draws all map frames again. If the file is missing, the layer shows a broken-link state and keeps its styles and overrides.
+After you edit the file in Photoshop or Illustrator, the command Replace from file on the layer loads the file again. The layer keeps its extents, styles, and overrides, and the app draws all map frames again.
 
-Stable identity is the hard part for linked vector files. For SVG, the app maps each layer by name and each feature by its element ID. If an element has no ID, the app matches features by geometry, and a large edit can then break the match. The app reports each lost match after a reload.
+Stable identity is the hard part when you replace a vector file. For SVG, the app maps each layer by name and each feature by its element ID. If an element has no ID, the app matches features by geometry, and a large edit can then break the match. The app reports each lost match after a replace.
 
 When the app reprojects a raster, the raster loses sharpness, so resolution matters. The rule is that the source needs at least as many pixels per kilometer as the output.
 
@@ -286,7 +293,7 @@ A freehand line tool draws rivers, borders, and roads on the globe. The app smoo
 
 ### Import
 
-You can import an equirectangular heightmap that you painted before. The app copies it into the cube map. It does not link to the file, because you continue the work in the app.
+You can import an equirectangular heightmap that you painted before. The app copies it into the cube map.
 
 ### Pen and iPad
 
@@ -400,7 +407,7 @@ The app has seven editing tools in version 1.
 - Line and polygon editing by vertex, with snapping and a smooth operation.
 - Label editing on the map: pin, move, select a candidate, exclude.
 
-Photoshop, Illustrator, and similar tools keep color artwork and textures. The linked-source design makes that round trip cheap.
+Photoshop, Illustrator, and similar tools keep color artwork and textures. The command Replace from file makes that round trip cheap.
 
 A full vector drawing tool set comes after version 1.
 
@@ -419,7 +426,7 @@ The labeling prototype came first, and it is done. The work after it has eleven 
 | 6 | Styling | Rule-based styles draw all symbolizers of version 1 on screen and in PDF. |
 | 7 | Labeling in the app | Labels come from attributes, polygon labels and fallbacks work, and manual changes stay. |
 | 8 | Atlas and export | An atlas of map frames exports as a multi-page PDF, SVG files, and raster files. |
-| 9 | Import and linked sources | Files from other tools come in as linked sources and reload when they change. |
+| 9 | Import | Files from other tools come in as layers, and a replaced file keeps its extents, styles, and overrides. |
 | 10 | Version 1 release | Version 1 is in the App Store and on the three desktop platforms. |
 
 From phase 1 on, a phase is done only when it works on desktop and on iPad.
@@ -467,7 +474,7 @@ The fifth brush mode, Carve, reads the channel map. It lowers the ground in a va
 1. The prototype is a vertical slice through phases 2, 4, 6, 8, and 9. It does not finish any of them.
 2. The map is drawn by `vello_cpu` on screen and in PNG files. The display list of `vale-render` exists, and the GPU Vello backend does not. The same pixels come out with and without a window, so tests need no GPU. The PDF export uses Krilla, and text in the PDF stays text.
 3. `vale-store` holds the project in memory. There is no GeoPackage file, no undo log, and no UUID. A feature ID is its index in the layer.
-4. `vale-import` reads GeoJSON, and it reads PNG and TIFF images as 16-bit greyscale. It copies the data. There are no linked sources and no file watch.
+4. `vale-import` reads GeoJSON, and it reads PNG and TIFF images as 16-bit greyscale. It copies the data, and there is no command to replace a file.
 5. `vale-sphere` clips with one simple method: rotate, unwrap, and clip in a plane. A polygon that covers more than half of the sphere is not supported. A ring closes along the short longitude way. `geo` and `rstar` are not dependencies yet.
 6. `vale-style` has one fixed rule for each layer, with a solid fill, a solid stroke, a circle symbol, and one label class.
 7. The map pipeline (query, clip, project, style, label, emit) lives in the library part of `vale-app`, in modules that do not use egui.
@@ -477,7 +484,7 @@ The fifth brush mode, Carve, reads the channel map. It lowers the ground in a va
 The prototype leaves out the following.
 
 - Project files. There is no GeoPackage and no save. Undo and redo are for brush strokes only.
-- Linked sources, file watch, raster layers, SVG and Shapefile import, and georeferencing with extents or control points.
+- Raster layers, SVG and Shapefile import, the command Replace from file, and georeferencing with extents or control points.
 - Rule-based styles, expressions, scale ranges, and all symbolizers other than a solid fill, a solid stroke, and a circle.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
 - More than one map frame, the atlas, page templates, map furniture other than a scale bar, graticule labels, SVG export, and tiled raster export.
@@ -514,18 +521,18 @@ The largest risk is the scope of the labeling engine. To contain it, the library
 | egui 0.36 and wgpu 30 are new, and Vello must keep the same wgpu version as eframe. | The map is a CPU-rendered texture today, so the app does not depend on that match. |
 | egui limits the panels and tables. | Keep all logic in the core crates. If a real limit appears, change the shell. |
 | PROJ is hard to package on Windows. | Use the bundled build and add a Windows build to CI in phase 0. |
-| When you edit a linked file by hand, features lose identity. | Use element IDs first and geometry matching second, and report each lost match. |
+| When you replace an imported vector file, features lose identity. | Use element IDs first and geometry matching second, and report each lost match. |
 | Painting needs a fast, steady stroke, and a slow brush makes the tool useless. | Stamp on the GPU and repaint only the tiles under the brush. Measure the stroke delay in phase 1. |
 | One heightmap resolution does not fit both a world and a small region. | Each raster layer has one face size, high enough for regional maps. Finer tiles for a region, in levels, come after version 1. The tile key has a level field for them. |
 | egui gives no hover, no tilt, and only 120 pen samples per second on iPad. | The iPad test of the globe prototype passed for painting, pressure, and palm rejection. A UIKit gesture recognizer below egui reads hover, tilt, and the 240 Hz samples in `vale-app`. |
 | Reprojected rasters look soft. | Show the resolution of each source against each map frame, and support regional sources. |
 
-Two questions are open, and five are decided.
+One question is open, and six are decided.
 
 - [x] Decided: heightmap painting on the globe, the toolbox, and freehand lines are in version 1. A full vector drawing tool set is not.
 - [x] Decided: the globe and the toolbox come before styling and labeling in the app. They are phases 1 and 3.
 - [x] Decided: the shell stays egui. The globe prototype ran on an iPad with Apple Pencil, and painting, pressure, and palm rejection work. Hover and the 240 Hz pen samples need a UIKit gesture recognizer below egui.
 - [x] Decided: the app and the labeler use a dual MIT and Apache-2.0 license.
 - [ ] Does export need CMYK for commercial print?
-- [ ] Is one project file correct, or do you want a folder that works well with version control?
+- [x] Decided: a project is one file and not a folder, and an import copies its data into that file. One file keeps the transactions, QGIS reads it directly, and it is one item on each platform. A folder gives only readable diffs in version control. A sync service can break a SQLite file that is open, so the app edits a working copy and writes the project back as a whole file.
 - [x] Decided: the app is named Vale, and the crates have more specific names.
