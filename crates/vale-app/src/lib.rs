@@ -14,6 +14,7 @@ pub mod pipeline;
 pub mod session;
 pub mod ui;
 pub mod view;
+pub mod world;
 
 /// The entry point that `ios/main.m` calls.
 #[cfg(target_os = "ios")]

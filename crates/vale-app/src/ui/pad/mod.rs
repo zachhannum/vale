@@ -10,6 +10,7 @@ use vale_terrain::Mode;
 use super::{Action, AppState, Workspace, elevation, globe, panels};
 use crate::globe::brush::{EROSION, FLOW, STRENGTH_M, TALUS_DEG};
 use crate::globe::{Tool, WorldView};
+use crate::world;
 
 pub mod geometry;
 pub mod icons;
@@ -434,16 +435,25 @@ fn log_slider(
     slider(&mut fraction, text).then(|| low * (fraction * span).exp())
 }
 
+/// The size of the brush on the ground, in the display units of the world.
+pub fn brush_size_text(state: &AppState) -> String {
+    let world = &state.doc.project.world;
+    let globe = &state.globe;
+    let km = globe.brush.radius_km(globe.radius(), world.radius_km);
+    world::distance(km, world.units)
+}
+
 /// Shows the size of the brush on the ground as a slider.
 fn size_slider(state: &mut AppState, slider: impl FnOnce(&mut f64, &str) -> bool) {
     let world_km = state.doc.project.world.radius_km;
-    let globe = &mut state.globe;
+    let globe = &state.globe;
     let globe_radius = globe.radius();
     let range = globe.brush.radius_km_range(globe_radius, world_km);
     let km = globe.brush.radius_km(globe_radius, world_km);
-    let text = format!("{} km", panels::three_significant(km));
+    let text = brush_size_text(state);
     if let Some(km) = log_slider(km, range, &text, slider) {
-        globe.brush.set_radius_km(km, globe_radius, world_km);
+        let brush = &mut state.globe.brush;
+        brush.set_radius_km(km, globe_radius, world_km);
     }
 }
 
@@ -649,7 +659,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         });
     }
     if matches!(brush.mode, Mode::Weather | Mode::Uplift) {
-        let text = format!("{}°", panels::three_significant(brush.talus_deg));
+        let text = format!("{}°", world::three_significant(brush.talus_deg));
         let angle = log_slider(brush.talus_deg, TALUS_DEG, &text, |fraction, text| {
             widgets::row_slider(ui, controls, "Brush angle", "Angle", fraction, text)
         });

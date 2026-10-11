@@ -6,6 +6,9 @@ use vale_labeler::{
     PointPosition, TextStyle, place_labels,
 };
 use vale_render::{Color, FillRule, GlyphRun, Item};
+use vale_store::Units;
+
+use crate::world;
 
 /// The largest of 1, 2, 5 times a power of ten that is at most `v`.
 pub fn nice(v: f64) -> f64 {
@@ -18,20 +21,22 @@ pub fn nice(v: f64) -> f64 {
 }
 
 /// The scale bar and the rectangle that it covers.
-pub fn scale_bar(page: Rect, km_per_point: f64, fonts: &mut Fonts) -> (Vec<Item>, Rect) {
+pub fn scale_bar(
+    page: Rect,
+    km_per_point: f64,
+    units: Units,
+    fonts: &mut Fonts,
+) -> (Vec<Item>, Rect) {
     if !(km_per_point.is_finite() && km_per_point > 0.0)
         || page.width() < 240.0
         || page.height() < 120.0
     {
         return (vec![], Rect::ZERO);
     }
-    let km = nice(140.0 * km_per_point);
-    let length = km / km_per_point;
-    let text = if km >= 1.0 {
-        format!("{} km", km.round() as i64)
-    } else {
-        format!("{} m", (km * 1000.0).round() as i64)
-    };
+    let (unit_km, symbol) = world::unit_for(140.0 * km_per_point, units);
+    let value = nice(140.0 * km_per_point / unit_km);
+    let length = value * unit_km / km_per_point;
+    let text = format!("{} {symbol}", value.round() as i64);
     let (x0, y) = (page.x0 + 22.0, page.y1 - 22.0);
     let x1 = x0 + length;
     let ink = Color::rgb(40, 40, 40);

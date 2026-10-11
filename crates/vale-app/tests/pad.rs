@@ -9,8 +9,12 @@ use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
-use vale_app::ui::pad::{IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, readout_text, theme};
+use vale_app::ui::pad::{
+    IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, brush_size_text, readout_text, theme,
+};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
+use vale_app::world::three_significant;
+use vale_store::Units;
 use vale_terrain::Mode;
 
 type Pad = Harness<'static, AppState>;
@@ -328,6 +332,46 @@ fn a_finger_hits_each_control_at_the_first_try() {
 
     tap(&mut h, "Maps");
     assert_eq!(h.state().workspace, Workspace::Map);
+}
+
+#[test]
+fn the_brush_size_uses_the_radius_and_the_units_of_the_world() {
+    let mut h = pad(BOARDS[0]);
+    let km = |h: &Pad| {
+        let globe = &h.state().globe;
+        let world_km = h.state().doc.project.world.radius_km;
+        globe.brush.radius_km(globe.radius(), world_km)
+    };
+    let earth = km(&h);
+    assert_eq!(
+        brush_size_text(h.state()),
+        format!("{} km", three_significant(earth))
+    );
+
+    // The brush covers the same angle on a small world, and thus less ground.
+    h.state_mut().doc.set_radius_km(200.0);
+    h.run_steps(2);
+    let small = km(&h);
+    assert!((small - earth * 200.0 / 6371.0).abs() < 1e-9);
+    assert_eq!(h.state().globe.world_km, 200.0);
+    assert_eq!(
+        brush_size_text(h.state()),
+        format!("{} km", three_significant(small))
+    );
+
+    // The slider reaches the same angles on each world.
+    let globe = &h.state().globe;
+    let range = globe.brush.radius_km_range(globe.radius(), 200.0);
+    let earth_range = globe.brush.radius_km_range(globe.radius(), 6371.0);
+    assert!((range.end() / earth_range.end() - 200.0 / 6371.0).abs() < 1e-12);
+
+    h.state_mut().doc.project.world.units = Units::Imperial;
+    h.run_steps(2);
+    let miles = small / 1.609_344;
+    assert_eq!(
+        brush_size_text(h.state()),
+        format!("{} mi", three_significant(miles))
+    );
 }
 
 /// True if the More cell has the active highlight.
