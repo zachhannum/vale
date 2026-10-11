@@ -502,6 +502,28 @@ impl Erosion {
         }
         step
     }
+
+    /// Lowers the cells under the brushes `count` times. The strengths of
+    /// the steps add up to `rate`. The result has the sum of the drops. Each
+    /// step computes the flow again, so the valleys of one step collect the
+    /// water of the next step.
+    pub fn steps(&mut self, brushes: &[ErodeBrush], rate: f64, count: usize) -> ErodeStep {
+        let count = count.max(1);
+        let mut sum = self.step(brushes, rate / count as f64);
+        for _ in 1..count {
+            let step = self.step(brushes, rate / count as f64);
+            for (sum, drop) in sum.drops.iter_mut().zip(&step.drops) {
+                *sum += drop;
+            }
+            for (sum, rect) in sum.rects.iter_mut().zip(step.rects) {
+                *sum = match (*sum, rect) {
+                    (Some(a), Some(b)) => Some(a.union(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+        }
+        sum
+    }
 }
 
 #[cfg(test)]
@@ -1105,6 +1127,41 @@ mod tests {
         };
         // Two equal runs give equal levels.
         assert!(run() == run());
+    }
+
+    #[test]
+    fn steps_give_the_sum_of_the_drops_of_each_step() {
+        let m = 128;
+        let flat = CoarseHeights::from_fn(m, |_| meters_to_level(OCEAN));
+        let brush = ErodeBrush {
+            center: lonlat_to_dir(10.0, 5.0),
+            radius: 0.2,
+            hardness: 0.5,
+            flow: 1.0,
+        };
+        let hill = || {
+            let mut erosion = Erosion::global(&flat, 1024);
+            erosion.raise(&[brush], 4000.0);
+            erosion
+        };
+        let mut together = hill();
+        let before = together.levels.clone();
+        let sum = together.steps(&[brush], 8.0, 4);
+        assert!(!sum.is_empty());
+        for (i, &drop) in sum.drops().iter().enumerate() {
+            assert_eq!(together.levels[i], before[i] - drop, "cell {i}");
+        }
+
+        let mut apart = hill();
+        for _ in 0..4 {
+            apart.step(&[brush], 2.0);
+        }
+        assert!(apart.levels == together.levels);
+
+        // The flow of a step follows the valleys of the step before it.
+        let mut one = hill();
+        one.step(&[brush], 8.0);
+        assert!(one.levels != together.levels);
     }
 
     #[test]
