@@ -79,7 +79,10 @@ impl eframe::App for ValeApp {
         }
 
         if let Some(session) = &mut self.session {
-            match session.tick(&self.state.doc.project, std::time::Instant::now()) {
+            let globe = &mut self.state.globe;
+            let busy = globe.busy();
+            let project = &mut self.state.doc.project;
+            match session.tick(project, &mut globe.map, busy, std::time::Instant::now()) {
                 Ok(Some(wait)) => ui.ctx().request_repaint_after(wait),
                 Ok(None) => {}
                 Err(e) => self.state.status = format!("The project did not save: {e}"),
@@ -97,9 +100,16 @@ impl eframe::App for ValeApp {
     }
 
     fn on_exit(&mut self) {
-        if let Some(session) = &mut self.session
-            && let Err(e) = session.flush(&self.state.doc.project)
-        {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        let globe = &mut self.state.globe;
+        // The file gets each stroke that ended, and no part of a stroke that
+        // still waits for its texels.
+        if globe.busy() {
+            globe.map.cancel_stroke();
+        }
+        if let Err(e) = session.flush(&mut self.state.doc.project, &mut globe.map) {
             eprintln!("vale-app: the project did not save: {e}");
         }
     }
@@ -152,6 +162,13 @@ pub fn run_window(
             let mut app = app;
             if let Some(render_state) = &cc.wgpu_render_state {
                 app.state.globe.attach(render_state);
+            }
+            if let Some(session) = &app.session
+                && !session.saves_map(&app.state.globe.map)
+            {
+                app.state.status = "This device cannot show the heightmap of the project. \
+                                    The project keeps it, and it does not save the painting."
+                    .to_string();
             }
             if cfg!(target_os = "ios") {
                 apply_touch_style(&cc.egui_ctx);

@@ -37,6 +37,11 @@ fn run() -> anyhow::Result<u8> {
             state.pad.open(*panel);
         }
         apply_globe(&args, &mut state.globe, face_size)?;
+        if let Some(session) = &session
+            && let Some(map) = session.load_map()?
+        {
+            state.globe.set_map(map);
+        }
         Ok(state)
     };
     if !headless_run {

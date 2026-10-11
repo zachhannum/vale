@@ -263,9 +263,16 @@ impl Globe {
     /// Replaces the heightmap with an empty one of this face size. The band
     /// limits and the ramp stay.
     pub fn set_face_size(&mut self, face_size: usize) {
-        let bands = std::mem::take(&mut self.map.bands);
-        self.map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
-        self.map.bands = bands;
+        let mut map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
+        map.bands = std::mem::take(&mut self.map.bands);
+        self.set_map(map);
+    }
+
+    /// Replaces the heightmap. A stroke or an import that runs ends with no
+    /// result.
+    pub fn set_map(&mut self, map: Heightmap) {
+        let face_size = map.face_size();
+        self.map = map;
         self.rivers = Rivers::new(&self.map, self.rivers.sync());
         self.eroder.cancel();
         self.channels = None;
