@@ -10,11 +10,13 @@ use std::time::Instant;
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 use vale_terrain::{
-    ChannelMap, ChannelWindow, FACES, Heightmap, SEA_LEVEL, TexelRect, Window, meters_to_level,
+    ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, TexelRect, Window,
+    WindowHeights, meters_to_level,
 };
 
 pub mod backdrop;
 pub mod brush;
+pub mod erode;
 pub mod flat;
 pub mod gpu;
 pub mod import;
@@ -28,11 +30,12 @@ pub mod view;
 
 use crate::pen::Pen;
 use backdrop::Canvas;
-use brush::{Backlog, BrushSettings, Sample, Stroke, plan_texels};
+use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels};
+use erode::{Eroder, Ground};
 use flat::FlatView;
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms, Uploads};
 use import::{ImportResult, Job, Step};
-use math::V3;
+use math::{V3, angle};
 use nav::Nav;
 use preview::{Preview, band_uniforms};
 use rivers::{Rivers, choose_window};
@@ -48,6 +51,17 @@ pub const WINDOW_FACE_SIZE: usize = 8192;
 
 /// The elevation of the empty world, in meters.
 const START_ELEVATION: f64 = -2500.0;
+
+/// The rate of an erode step of one second, for a strength of one meter.
+const ERODE_RATE: f64 = 0.01;
+
+/// The limits of the time that one erode step stands for, in seconds. A step
+/// of a slow worker stands for the time from the step before it, so the
+/// ground goes down at the same speed.
+const ERODE_SECONDS: std::ops::RangeInclusive<f64> = 1.0 / 60.0..=0.25;
+
+/// The time that one erode step stands for in the sync mode, in seconds.
+const ERODE_SYNC_SECONDS: f64 = 1.0 / 30.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
@@ -87,6 +101,39 @@ enum Input {
     Up,
 }
 
+/// The pen of an erode stroke. The stroke makes steps, and it makes no
+/// stamps.
+#[derive(Default)]
+struct Eroding {
+    /// The places of the pen after the last step.
+    brushes: Vec<ErodeBrush>,
+    /// The last place of the pen, or `None` off the world. A pen that holds
+    /// still makes steps there.
+    held: Option<ErodeBrush>,
+    /// The time of the last request for a step.
+    stepped: Option<Instant>,
+}
+
+impl Eroding {
+    /// Adds the place of one pen sample. A sample near the place before it
+    /// adds no place.
+    fn sample(&mut self, brush: &BrushSettings, sample: Sample) {
+        self.held = sample.dir.map(|center| ErodeBrush {
+            center,
+            radius: sample.radius,
+            hardness: brush.hardness,
+            flow: sample.flow * brush.flow,
+        });
+        let Some(new) = self.held else {
+            return;
+        };
+        let far = |last: &ErodeBrush| angle(last.center, new.center) >= new.radius * STAMP_SPACING;
+        if self.brushes.last().is_none_or(far) {
+            self.brushes.push(new);
+        }
+    }
+}
+
 /// The stroke that the GPU works on.
 struct Active {
     id: u64,
@@ -95,6 +142,8 @@ struct Active {
     touched: [Option<TexelRect>; FACES],
     /// The time of the last sample.
     sampled: Option<Instant>,
+    /// `Some`: the stroke is an erode stroke.
+    erode: Option<Eroding>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
     /// The number of rectangles that the GPU has not given back. `None`: the
@@ -152,6 +201,7 @@ pub struct Globe {
     strokes: u64,
     test: Option<StrokeTest>,
     rivers: Rivers,
+    eroder: Eroder,
     /// The newest channel map that went to the GPU.
     channels: Option<Arc<ChannelMap>>,
     /// The window of small rivers that the view asks for.
@@ -176,6 +226,7 @@ impl Globe {
         let map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
         Globe {
             rivers: Rivers::new(&map, false),
+            eroder: Eroder::new(false),
             channels: None,
             chosen: None,
             window: None,
@@ -216,6 +267,7 @@ impl Globe {
         self.map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
         self.map.bands = bands;
         self.rivers = Rivers::new(&self.map, self.rivers.sync());
+        self.eroder.cancel();
         self.channels = None;
         self.chosen = None;
         self.window = None;
@@ -323,10 +375,34 @@ impl Globe {
         self.rivers.pending()
     }
 
-    /// With `sync`, a change of the heightmap waits for its rivers. Without
-    /// it, a worker thread computes them.
+    /// With `sync`, a change of the heightmap waits for its rivers, and an
+    /// erode stroke waits for each step. Without it, worker threads compute
+    /// them.
     pub fn set_rivers_sync(&mut self, sync: bool) {
         self.rivers.set_sync(sync);
+        self.eroder.set_sync(sync);
+    }
+
+    /// True until each step that the erode stroke asked for arrives.
+    pub fn erode_pending(&self) -> bool {
+        self.eroder.pending()
+    }
+
+    /// The cells that an erode stroke lowers in the view of this frame: the
+    /// cells of the window of small rivers, or the cells of the global map
+    /// in a far view.
+    fn erode_ground(&self) -> Ground {
+        let global = self.rivers.coarse().clone();
+        match self.chosen {
+            Some(window) => Ground::Window {
+                heights: WindowHeights::new(&self.map, window),
+                global,
+            },
+            None => Ground::Global {
+                heights: global,
+                face_size: self.map.face_size(),
+            },
+        }
     }
 
     /// The newest channel map of the rivers that went to the GPU.
@@ -517,6 +593,7 @@ impl Globe {
         self.queue_changes();
         self.run_test(now, in_flight);
         self.read_inputs();
+        self.erode(now);
         self.send_stamps(now);
         in_flight || self.busy() || self.rivers.pending()
     }
@@ -612,30 +689,39 @@ impl Globe {
                     let points = self.brush.points(self.radius());
                     self.stats
                         .begin_stroke(self.strokes, self.brush.mode, points);
+                    let erode = (self.brush.mode == Mode::Erode).then(|| {
+                        self.eroder.begin(self.erode_ground());
+                        Eroding::default()
+                    });
                     self.stroke = Some(Active {
                         id: self.strokes,
                         stroke: Stroke::default(),
                         touched: [None; FACES],
                         sampled: None,
+                        erode,
                         ended: false,
                         reading: None,
                     });
                 }
                 Input::Sample(sample, time) => {
                     if let Some(active) = self.stroke.as_mut().filter(|a| !a.ended) {
-                        let map = &self.map;
-                        let level_at = |dir: V3| map.sample(dir);
-                        let mut stamps = Vec::new();
-                        active.stroke.add_sample(
-                            &self.brush,
-                            map.face_size(),
-                            sample,
-                            level_at,
-                            &mut stamps,
-                        );
                         active.sampled = Some(time);
-                        for stamp in &stamps {
-                            self.backlog.push(map.stamp_plan(stamp), time);
+                        if let Some(erode) = &mut active.erode {
+                            erode.sample(&self.brush, sample);
+                        } else {
+                            let map = &self.map;
+                            let level_at = |dir: V3| map.sample(dir);
+                            let mut stamps = Vec::new();
+                            active.stroke.add_sample(
+                                &self.brush,
+                                map.face_size(),
+                                sample,
+                                level_at,
+                                &mut stamps,
+                            );
+                            for stamp in &stamps {
+                                self.backlog.push(map.stamp_plan(stamp), time);
+                            }
                         }
                     }
                 }
@@ -658,8 +744,50 @@ impl Globe {
         }
     }
 
+    /// Sends the erode step that arrived to the GPU. Then asks for the next
+    /// step, with the places of the pen after the last one. A pen that holds
+    /// still makes a step at its place. One step is in work at a time.
+    fn erode(&mut self, now: Instant) {
+        let Some(active) = &mut self.stroke else {
+            return;
+        };
+        let Some(erode) = &mut active.erode else {
+            return;
+        };
+        if let Some(step) = self.eroder.poll().filter(|step| !step.is_empty()) {
+            for (touched, rect) in active.touched.iter_mut().zip(step.rects()) {
+                if let Some(rect) = rect {
+                    *touched = Some(union(*touched, rect));
+                }
+            }
+            let (face_size, stroke) = (self.map.face_size() as u32, active.id);
+            self.link.push(face_size, Op::Erode { stroke, step });
+        }
+        if self.eroder.pending() {
+            return;
+        }
+        let mut brushes = std::mem::take(&mut erode.brushes);
+        if brushes.is_empty() && !active.ended {
+            brushes.extend(erode.held);
+        }
+        if brushes.is_empty() {
+            return;
+        }
+        let seconds = match erode.stepped {
+            Some(last) if !self.rivers.sync() => {
+                let seconds = now.saturating_duration_since(last).as_secs_f64();
+                seconds.clamp(*ERODE_SECONDS.start(), *ERODE_SECONDS.end())
+            }
+            _ => ERODE_SYNC_SECONDS,
+        };
+        erode.stepped = Some(now);
+        let rate = self.brush.strength_m * ERODE_RATE * seconds;
+        self.eroder.request(brushes, rate);
+    }
+
     /// Sends the stamps of this frame to the GPU. After the last stamp of a
-    /// stroke, asks for the texels that the stroke changed.
+    /// stroke and the last step of an erode stroke, asks for the texels that
+    /// the stroke changed.
     fn send_stamps(&mut self, now: Instant) {
         let Some(active) = &mut self.stroke else {
             return;
@@ -684,6 +812,12 @@ impl Globe {
         }
         self.stats.backlog = self.backlog.len();
         if !active.ended || !self.backlog.is_empty() || active.reading.is_some() {
+            return;
+        }
+        // The readback follows the last step in the queue.
+        if let Some(erode) = &active.erode
+            && (!erode.brushes.is_empty() || self.eroder.pending())
+        {
             return;
         }
         let rects = active.touched.iter().enumerate();

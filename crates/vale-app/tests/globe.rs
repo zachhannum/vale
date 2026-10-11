@@ -1583,6 +1583,16 @@ fn the_brush_panel_has_the_carve_mode() {
     assert_eq!(h.state().globe.brush.mode, Mode::Carve);
 }
 
+#[test]
+fn the_brush_panel_has_the_erode_mode() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    h.get_by_label("Erode").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Erode);
+}
+
 /// The elevation of a world with continents, in meters.
 fn continents(d: V3) -> f64 {
     let wave = |a: f64, b: f64, c: f64, phase: f64| (a * d[0] + b * d[1] + c * d[2] + phase).sin();
@@ -1854,6 +1864,232 @@ fn carve_in_a_near_view_cuts_a_narrow_valley() {
     // The widest valley of the channel map is 6 of its channel texels wide
     // on each side.
     assert!(widest * 4.0 <= 6.0 * ratio, "{widest}");
+}
+
+/// A harness with the island in the middle of a far view, and the erode
+/// brush.
+fn erode_harness() -> Harness<'static, AppState> {
+    let mut h = gpu_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.preview.graticule = false;
+    set_island(&mut globe.map);
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Erode;
+    globe.brush.size_points = 80.0;
+    h.run_steps(2);
+    h
+}
+
+/// The level of each texel of the heightmap.
+fn all_levels(h: &Harness<'static, AppState>) -> Vec<u16> {
+    let map = &h.state().globe.map;
+    let n = map.face_size();
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    texels
+        .map(|(face, x, y)| map.get(face, x as i64, y as i64))
+        .collect()
+}
+
+/// The sum of the levels that the ground went down.
+fn lowered(before: &[u16], after: &[u16]) -> u64 {
+    let drops = before.iter().zip(after).map(|(&old, &new)| {
+        assert!(new <= old, "{new} over {old}");
+        u64::from(old - new)
+    });
+    drops.sum()
+}
+
+/// Holds the primary mouse button at one place for a number of frames. The
+/// mouse does not move.
+fn hold(h: &mut Harness<'static, AppState>, pos: Pos2, frames: usize) {
+    button(h, egui::PointerButton::Primary, pos, true);
+    h.run_steps(frames);
+    button(h, egui::PointerButton::Primary, pos, false);
+    h.step();
+    settle(h);
+}
+
+#[test]
+fn a_held_erode_brush_repeats_the_step() {
+    let _gpu = one_gpu_test();
+    let mut h = erode_harness();
+    let before = all_levels(&h);
+    let pos = h.state().globe.rect.center() + Vec2::new(60.0, 20.0);
+
+    hold(&mut h, pos, 5);
+    let short = lowered(&before, &all_levels(&h));
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+
+    hold(&mut h, pos, 20);
+    let long = lowered(&before, &all_levels(&h));
+    assert!(short > 0, "{short}");
+    assert!(long > 2 * short, "{long} after {short}");
+}
+
+#[test]
+fn erode_in_a_far_view_lowers_the_land_and_stays_above_the_sea() {
+    let _gpu = one_gpu_test();
+    let mut h = erode_harness();
+    save(&canvas_image(&mut h), "erode-before");
+    let before = all_levels(&h);
+    // A far view has no window, so the cells are the cells of the global map.
+    assert!(h.state().globe.window().is_none());
+
+    // The stroke goes from the land to the sea.
+    let c = h.state().globe.rect.center();
+    let reach = 0.88 * h.state().globe.radius() as f32;
+    let (from, to) = (c, c + Vec2::new(reach, 0.0));
+    assert!(h.state().globe.map.sample(place(&h, to)) < meters_to_level(0.0));
+    button(&mut h, egui::PointerButton::Primary, from, true);
+    h.step();
+    for i in 1..=40 {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 40.0)));
+        h.step();
+    }
+    button(&mut h, egui::PointerButton::Primary, to, false);
+    h.step();
+    settle(&mut h);
+    save(&canvas_image(&mut h), "erode-after");
+
+    let after = all_levels(&h);
+    let sea = meters_to_level(0.0);
+    let map = &h.state().globe.map;
+    let n = map.face_size();
+    let radius = h.state().globe.brush.radius(h.state().globe.radius());
+    let (a, b) = (place(&h, from), place(&h, to));
+    let (mut cut, mut deep) = (0, 0);
+    for (i, (&old, &new)) in before.iter().zip(&after).enumerate() {
+        assert!(new <= old, "{new} over {old}");
+        assert!(new >= old.min(sea), "{new} under the sea from {old}");
+        if new == old {
+            continue;
+        }
+        // The texel is under the brush at one place of the stroke, or one
+        // cell and a half from it.
+        let d = map.texel_dir(i / (n * n), i % n, i / n % n);
+        let near = (0..=40).any(|k| {
+            let at = vale_app::globe::brush::slerp(a, b, f64::from(k) / 40.0);
+            angle(d, at) < radius + 0.02
+        });
+        assert!(near, "far from the stroke");
+        cut += 1;
+        deep += usize::from(new + 100 < old);
+    }
+    assert!(cut > 5000, "{cut}");
+    assert!(deep > 2000, "{deep}");
+    // Some land is left.
+    let land = |levels: &[u16]| levels.iter().filter(|&&level| level > sea + 200).count();
+    assert!(land(&after) * 10 > land(&before) * 9);
+}
+
+#[test]
+fn erode_in_a_near_view_works_on_the_cells_of_the_window() {
+    const N: usize = 2048;
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(N, 0.2, 14.0);
+    let globe = &mut h.state_mut().globe;
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Erode;
+    globe.brush.size_points = 80.0;
+    globe.brush.strength_m = 3000.0;
+    h.run_steps(2);
+    let w = h.state().globe.window().unwrap().window();
+    assert_eq!(w.cell, 1);
+    // A cell of the global map is this number of texels wide.
+    let cell = N / CoarseHeights::size_for(N);
+    assert_eq!(cell, 4);
+
+    // The texels of face 0 around the stroke.
+    let texels = || (N / 4..3 * N / 4).flat_map(|y| (N / 4..3 * N / 4).map(move |x| (x, y)));
+    let levels = |map: &vale_terrain::Heightmap| -> Vec<i64> {
+        texels()
+            .map(|(x, y)| i64::from(map.get(0, x as i64, y as i64)))
+            .collect()
+    };
+    let before = levels(&h.state().globe.map);
+    let c = h.state().globe.rect.center();
+    hold(&mut h, c, 20);
+    let after = levels(&h.state().globe.map);
+
+    let side = N / 2;
+    let drop = |x: usize, y: usize| before[y * side + x] - after[y * side + x];
+    let (mut cut, mut bends) = (0, 0);
+    for (i, (x, y)) in texels().enumerate() {
+        assert!(after[i] <= before[i]);
+        cut += usize::from(after[i] < before[i]);
+        // These 3 texels are between the centers of 2 cells of the global
+        // map. The drops of the global cells give them drops on a straight
+        // line.
+        let (x, y) = (x - N / 4, y - N / 4);
+        if x % cell == 3 && y % cell == 3 && x + 1 < side {
+            let bend = drop(x - 1, y) - 2 * drop(x, y) + drop(x + 1, y);
+            bends += usize::from(bend.abs() > 8);
+        }
+    }
+    assert!(cut > 1000, "{cut}");
+    assert!(bends > 50, "{bends}");
+}
+
+#[test]
+fn painting_does_not_wait_for_an_erode_step() {
+    const N: usize = 2048;
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(N, 0.35, 1.0);
+    let globe = &mut h.state_mut().globe;
+    globe.set_rivers_sync(false);
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Erode;
+    h.step();
+    settle_rivers(&mut h);
+    let c = h.state().globe.rect.center() + Vec2::new(20.0, 0.0);
+    let under = place(&h, c);
+    let level = h.state().globe.map.sample(under);
+
+    button(&mut h, egui::PointerButton::Primary, c, true);
+    h.step();
+    // The frame is complete, and the step of its pen sample is not.
+    assert!(h.state().globe.erode_pending());
+    button(&mut h, egui::PointerButton::Primary, c, false);
+    // The stroke ends after its last step.
+    let mut frames = 0;
+    while h.state().globe.busy() {
+        h.step();
+        frames += 1;
+        assert!(frames < 4000, "the stroke did not end");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(frames > 2, "{frames}");
+    let globe = &h.state().globe;
+    assert!(!globe.erode_pending());
+    assert!(globe.map.sample(under) < level);
+    assert!(globe.can_undo());
+}
+
+#[test]
+fn one_undo_puts_back_the_ground_from_before_an_erode_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = erode_harness();
+    let before = (all_levels(&h), canvas_image(&mut h));
+    let c = h.state().globe.rect.center();
+    hold(&mut h, c + Vec2::new(40.0, 0.0), 30);
+    let eroded = (all_levels(&h), canvas_image(&mut h));
+    // Each of the 30 frames made one step.
+    assert!(lowered(&before.0, &eroded.0) > 100_000);
+    assert_eq!(h.state().globe.stats.last().unwrap().mode, Mode::Erode);
+    assert!(eroded.1.as_raw() != before.1.as_raw());
+
+    assert!(h.state_mut().globe.undo());
+    assert!(all_levels(&h) == before.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before.1.as_raw(), "the render");
+
+    assert!(h.state_mut().globe.redo());
+    assert!(all_levels(&h) == eroded.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == eroded.1.as_raw(), "the render");
 }
 
 #[test]

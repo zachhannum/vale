@@ -185,6 +185,12 @@ impl Rivers {
         }
     }
 
+    /// The coarse copy of the heightmap, with each change up to the last
+    /// `update`.
+    pub fn coarse(&self) -> &CoarseHeights {
+        &self.coarse
+    }
+
     /// Reads the whole heightmap again.
     pub fn rebuild(&mut self, map: &Heightmap) {
         self.coarse = CoarseHeights::new(map);
