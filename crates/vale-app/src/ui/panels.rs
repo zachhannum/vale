@@ -17,7 +17,8 @@ pub const WORLD_BUTTON: &str = "World…";
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
-        ui.horizontal(|ui| {
+        // In a narrow window, the buttons go to a second row.
+        ui.horizontal_wrapped(|ui| {
             ui.strong("Vale");
             ui.separator();
             ui.selectable_value(&mut state.workspace, Workspace::Globe, "Globe");
