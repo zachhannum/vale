@@ -254,6 +254,41 @@ impl Erosion {
         )
     }
 
+    /// An erosion of the cells of a window, for a stroke that leaves the
+    /// window of `self`. A cell that the window of `self` holds keeps the
+    /// height that the stroke gave it there. Each other cell has the height
+    /// of `heights`. `self` must be an erosion of a window.
+    pub fn moved(&self, heights: &WindowHeights, global: &FlowMap) -> Erosion {
+        let Cells::Window { window: old, .. } = &self.cells else {
+            panic!("the erosion has no window");
+        };
+        let (window, side) = (heights.window, self.side);
+        let mut kept: Vec<f32> = heights.levels.iter().map(|&l| f32::from(l)).collect();
+        let last = (side - 1) as f64;
+        for (i, height) in kept.iter_mut().enumerate() {
+            let dir = window.cell_dir(i % window.cells, i / window.cells);
+            let Some((u, v)) = old.place(dir) else {
+                continue;
+            };
+            let (u, v) = (u - 0.5, v - 0.5);
+            if u < 0.0 || v < 0.0 || u > last || v > last {
+                continue;
+            }
+            // The height between the centers of the 4 old cells around.
+            let (x, y) = ((u as usize).min(side - 2), (v as usize).min(side - 2));
+            let (tu, tv) = ((u - x as f64) as f32, (v - y as f64) as f32);
+            let at = |x: usize, y: usize| self.heights[y * side + x];
+            let top = at(x, y) * (1.0 - tu) + at(x + 1, y) * tu;
+            let bottom = at(x, y + 1) * (1.0 - tu) + at(x + 1, y + 1) * tu;
+            *height = top * (1.0 - tv) + bottom * tv;
+        }
+        let levels: Vec<u16> = kept.iter().map(|h| h.round() as u16).collect();
+        let heights = WindowHeights { window, levels };
+        let mut erosion = Erosion::window(&heights, global);
+        erosion.heights = kept;
+        erosion
+    }
+
     fn new(
         cells: Cells,
         side: usize,
@@ -280,7 +315,8 @@ impl Erosion {
         }
     }
 
-    fn grid(&self) -> ErodeGrid {
+    /// The cells of the erosion.
+    pub fn grid(&self) -> ErodeGrid {
         match &self.cells {
             Cells::Global(grid) => ErodeGrid::Global { size: grid.m },
             Cells::Window { window, .. } => ErodeGrid::Window(*window),
@@ -1127,6 +1163,65 @@ mod tests {
         };
         // Two equal runs give equal levels.
         assert!(run() == run());
+    }
+
+    #[test]
+    fn a_moved_erosion_keeps_the_heights_of_the_stroke() {
+        let n = 1024;
+        let floor = meters_to_level(OCEAN);
+        let global = FlowMap::new(&CoarseHeights::from_fn(64, |_| floor));
+        let ground = |window: Window| WindowHeights::from_fn(window, |_| floor);
+        // The window is near the edge of its face.
+        let first = Window::centered(lonlat_to_dir(38.0, 0.0), n, 1, 128);
+        let center = first.cell_dir(100, 64);
+        let brush = ErodeBrush {
+            center,
+            radius: 0.02,
+            hardness: 0.5,
+            flow: 1.0,
+        };
+        let mut erosion = Erosion::window(&ground(first), &global);
+        erosion.raise(&[brush], 4000.0);
+        erosion.steps(&[brush], 8.0, 4);
+
+        // The next window is 60 cells to the side on the same face.
+        let next = Window {
+            x0: first.x0 + 60,
+            ..first
+        };
+        let moved = erosion.moved(&ground(next), &global);
+        assert_eq!(moved.grid(), ErodeGrid::Window(next));
+        let mut hill = 0;
+        for y in 0..128 {
+            for x in 0..128 {
+                let new = moved.heights[y * 128 + x];
+                if x + 60 < 128 {
+                    assert_eq!(new, erosion.heights[y * 128 + x + 60], "{x} {y}");
+                    hill += usize::from(new > f32::from(floor) + 100.0);
+                } else {
+                    assert_eq!(new, f32::from(floor), "{x} {y}");
+                }
+                assert_eq!(moved.levels[y * 128 + x], new.round() as u16);
+            }
+        }
+        assert!(hill > 50, "{hill}");
+
+        // A window on the next face keeps the hill at its place on the
+        // sphere.
+        let far = Window::centered(lonlat_to_dir(50.0, 0.0), n, 1, 512);
+        assert!(far.face != first.face);
+        let moved = erosion.moved(&ground(far), &global);
+        let (x, y) = far.cell_at(center).unwrap();
+        let (old_x, old_y) = first.cell_at(center).unwrap();
+        let (new, old) = (
+            moved.heights[y * 512 + x],
+            erosion.heights[old_y * 128 + old_x],
+        );
+        assert!(old > f32::from(floor) + 1000.0);
+        assert!(
+            (new - old).abs() < 0.2 * (old - f32::from(floor)),
+            "{new} {old}"
+        );
     }
 
     #[test]

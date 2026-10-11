@@ -46,6 +46,9 @@ pub const RIVER_MIN_CELLS: f64 = 62.0;
 /// holds.
 pub const WINDOW_CELLS: usize = 512;
 
+/// The largest number of cells along one side of the window of an erosion.
+pub const ERODE_WINDOW_CELLS: usize = 1024;
+
 /// The channel texels at each side of a window where the distance to a river
 /// is not sure. A river outside the window can be nearer.
 pub const WINDOW_MARGIN: f64 = 8.0;
