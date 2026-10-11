@@ -8,7 +8,7 @@ use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_terrain::Mode;
 
 use super::{Action, AppState, Workspace, elevation, globe, panels};
-use crate::globe::brush::{FLOW, STRENGTH_M, TALUS_DEG};
+use crate::globe::brush::{EROSION, FLOW, STRENGTH_M, TALUS_DEG};
 use crate::globe::{Tool, WorldView};
 
 pub mod geometry;
@@ -23,10 +23,11 @@ use widgets::{BODY_PAD, Controls, PANEL_ROW};
 /// The control of the tool strip that opens the menu of the other modes.
 pub const MORE: &str = "More";
 /// The modes of the menu of the More cell.
-const MORE_MODES: [(&str, Icon, Mode); 3] = [
+const MORE_MODES: [(&str, Icon, Mode); 4] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Erode", Icon::Erode, Mode::Erode),
     ("Weather", Icon::Weather, Mode::Weather),
+    ("Uplift", Icon::Uplift, Mode::Uplift),
 ];
 
 /// The name of the row that imports a heightmap.
@@ -636,12 +637,18 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     });
     let text = format!("{:.0} m", brush.strength_m);
     let strength = log_slider(brush.strength_m, STRENGTH_M, &text, |fraction, text| {
-        widgets::row_slider(ui, controls, "Brush strength", "Strength", fraction, text)
+        let name = panels::strength_name(brush.mode);
+        widgets::row_slider(ui, controls, "Brush strength", name, fraction, text)
     });
     if let Some(meters) = strength {
         brush.strength_m = meters;
     }
-    if brush.mode == Mode::Weather {
+    if brush.mode == Mode::Uplift {
+        percent_slider(&mut brush.erosion, EROSION, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush erosion", "Erosion", fraction, text)
+        });
+    }
+    if matches!(brush.mode, Mode::Weather | Mode::Uplift) {
         let text = format!("{}°", panels::three_significant(brush.talus_deg));
         let angle = log_slider(brush.talus_deg, TALUS_DEG, &text, |fraction, text| {
             widgets::row_slider(ui, controls, "Brush angle", "Angle", fraction, text)

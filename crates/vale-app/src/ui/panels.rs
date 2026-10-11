@@ -6,7 +6,7 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use super::{Action, AppState, ExportFormat, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::brush::{FLOW, STRENGTH_M, TALUS_DEG};
+use crate::globe::brush::{EROSION, FLOW, STRENGTH_M, TALUS_DEG};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
@@ -203,10 +203,20 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
             (Mode::Carve, "Carve"),
             (Mode::Erode, "Erode"),
             (Mode::Weather, "Weather"),
+            (Mode::Uplift, "Uplift"),
         ] {
             ui.selectable_value(current, mode, name);
         }
     });
+}
+
+/// The name of the strength slider. In the uplift mode, the strength is the
+/// rate of the uplift.
+pub(super) fn strength_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Uplift => "Uplift",
+        _ => "Strength",
+    }
 }
 
 fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
@@ -229,9 +239,12 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         .logarithmic(true)
         .fixed_decimals(0)
         .suffix(" m")
-        .text("Strength");
+        .text(strength_name(globe.brush.mode));
     ui.add(strength);
-    if globe.brush.mode == Mode::Weather {
+    if globe.brush.mode == Mode::Uplift {
+        ui.add(egui::Slider::new(&mut globe.brush.erosion, EROSION).text("Erosion"));
+    }
+    if matches!(globe.brush.mode, Mode::Weather | Mode::Uplift) {
         let angle = egui::Slider::new(&mut globe.brush.talus_deg, TALUS_DEG)
             .logarithmic(true)
             .custom_formatter(|deg, _| three_significant(deg))

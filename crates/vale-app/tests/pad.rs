@@ -165,7 +165,7 @@ fn check_controls(h: &Pad, what: &str) {
                     .iter()
                     .any(|k| k.name() == name);
                 let menu = ["World", "Globe", "Flat", "Maps"].contains(&name);
-                let more = in_more && ["Carve", "Erode", "Weather"].contains(&name);
+                let more = in_more && ["Carve", "Erode", "Weather", "Uplift"].contains(&name);
                 menu || kind || more || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
@@ -191,7 +191,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         tap(&mut h, MORE);
         assert!(h.state().pad.more);
-        for name in [MORE, "Carve", "Erode", "Weather"] {
+        for name in [MORE, "Carve", "Erode", "Weather", "Uplift"] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, &format!("{size:?} with the More menu"));
@@ -348,6 +348,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
     assert_eq!(strip(&h), cells);
     assert!(!more_is_active(&h));
     for (name, mode) in [
+        ("Uplift", Mode::Uplift),
         ("Weather", Mode::Weather),
         ("Erode", Mode::Erode),
         ("Carve", Mode::Carve),
@@ -361,7 +362,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
         let menu = h.state().pad.more_rect.unwrap();
         let cell = control(&h, MORE).unwrap();
         assert_eq!(menu.left_top(), pos2(tools.right() + 12.0, cell.top()));
-        for row in ["Carve", "Erode", "Weather"] {
+        for row in ["Carve", "Erode", "Weather", "Uplift"] {
             assert!(menu.contains_rect(control(&h, row).unwrap()), "{row}");
         }
         assert_eq!(strip(&h), cells);
@@ -391,6 +392,32 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
     let rect = control(&h, "Brush angle").unwrap();
     drag(&mut h, rect.center(), rect.right_center(), None);
     assert!((h.state().globe.brush.talus_deg - 20.0).abs() < 1e-9);
+}
+
+#[test]
+fn the_brush_panel_has_the_two_sliders_of_the_uplift_mode() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush erosion").is_none());
+    tap(&mut h, MORE);
+    tap(&mut h, "Uplift");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Uplift)
+    );
+    assert!(more_is_active(&h));
+    // The strength slider sets the rate of the uplift.
+    let rect = control(&h, "Brush strength").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert!((h.state().globe.brush.strength_m - 6000.0).abs() < 1e-6);
+    let rect = control(&h, "Brush erosion").unwrap();
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    assert_eq!(h.state().globe.brush.erosion, 0.0);
+    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    assert_eq!(h.state().globe.brush.erosion, 1.0);
+    assert!(control(&h, "Brush angle").is_some());
+    check_controls(&h, "the Uplift mode");
 }
 
 #[test]

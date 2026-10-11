@@ -32,8 +32,8 @@ impl Ground {
 /// One request, with the number of its stroke.
 enum Job {
     Begin(u64, Ground),
-    /// The brushes and the rate of one step.
-    Step(u64, Vec<ErodeBrush>, f64),
+    /// The brushes, the rate, and the uplift of one step.
+    Step(u64, Vec<ErodeBrush>, f64, f64),
 }
 
 struct Done(u64, ErodeStep);
@@ -54,6 +54,13 @@ pub struct Eroder {
     waiting: usize,
 }
 
+/// Raises the cells under the brushes by `uplift` levels at full effect.
+/// Then lowers them one time.
+fn step(erosion: &mut Erosion, brushes: &[ErodeBrush], rate: f64, uplift: f64) -> ErodeStep {
+    erosion.raise(brushes, uplift);
+    erosion.step(brushes, rate)
+}
+
 /// Computes each job in the order of the requests until the sender is gone.
 /// The erosion keeps the heights of its stroke from one step to the next.
 fn work(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>) {
@@ -61,14 +68,12 @@ fn work(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>) {
     for job in jobs {
         match job {
             Job::Begin(stroke, ground) => erosion = Some((stroke, ground.erosion())),
-            Job::Step(stroke, brushes, rate) => {
+            Job::Step(stroke, brushes, rate, uplift) => {
                 let Some((_, erosion)) = erosion.as_mut().filter(|(id, _)| *id == stroke) else {
                     continue;
                 };
-                if done
-                    .send(Done(stroke, erosion.step(&brushes, rate)))
-                    .is_err()
-                {
+                let step = step(erosion, &brushes, rate, uplift);
+                if done.send(Done(stroke, step)).is_err() {
                     return;
                 }
             }
@@ -127,15 +132,16 @@ impl Eroder {
     }
 
     /// Asks for one step of the stroke. The step starts from the heights
-    /// that the step before it left.
-    pub fn request(&mut self, brushes: Vec<ErodeBrush>, rate: f64) {
+    /// that the step before it left. Before the step, each brush raises its
+    /// cells by `uplift` levels at full effect.
+    pub fn request(&mut self, brushes: Vec<ErodeBrush>, rate: f64, uplift: f64) {
         self.waiting += 1;
         match &mut self.erosion {
             Some(erosion) => {
-                let step = erosion.step(&brushes, rate);
+                let step = step(erosion, &brushes, rate, uplift);
                 let _ = self.done.send(Done(self.stroke, step));
             }
-            None => self.send(Job::Step(self.stroke, brushes, rate)),
+            None => self.send(Job::Step(self.stroke, brushes, rate, uplift)),
         }
     }
 
@@ -217,7 +223,7 @@ mod tests {
         assert!(!eroder.pending());
         assert!(eroder.poll().is_none());
         eroder.begin(global(&hill()));
-        eroder.request(brush(true), 1.0);
+        eroder.request(brush(true), 1.0, 0.0);
         // The request returns before the worker has the flow of the world.
         assert!(eroder.pending());
         assert!(eroder.poll().is_none());
@@ -227,7 +233,7 @@ mod tests {
         assert!(eroder.poll().is_none());
 
         // The second step starts from the heights that the first step left.
-        eroder.request(brush(true), 1.0);
+        eroder.request(brush(true), 1.0, 0.0);
         let second = wait(&mut eroder);
         assert!(!second.is_empty());
         assert!(first.drops() != second.drops());
@@ -238,7 +244,7 @@ mod tests {
         let map = hill();
         let mut eroder = Eroder::new(true);
         eroder.begin(global(&map));
-        eroder.request(brush(true), 1.0);
+        eroder.request(brush(true), 1.0, 0.0);
         assert!(eroder.pending());
         assert!(!eroder.poll().unwrap().is_empty());
         assert!(!eroder.pending());
@@ -249,10 +255,22 @@ mod tests {
             heights: WindowHeights::new(&map, window),
             global: CoarseHeights::new(&map),
         });
-        eroder.request(brush(true), 1.0);
+        eroder.request(brush(true), 1.0, 0.0);
         let step = eroder.poll().unwrap();
         assert!(!step.is_empty());
         assert_eq!(step.grid(), vale_terrain::ErodeGrid::Window(window));
+    }
+
+    #[test]
+    fn a_request_with_uplift_raises_the_cells_before_the_step() {
+        // The sea floor is flat, so a step without uplift lowers nothing.
+        let map = Heightmap::new(N, meters_to_level(-100.0));
+        let mut eroder = Eroder::new(true);
+        eroder.begin(global(&map));
+        eroder.request(brush(true), 1.0, 0.0);
+        assert!(eroder.poll().unwrap().is_empty());
+        eroder.request(brush(true), 1.0, 5000.0);
+        assert!(!eroder.poll().unwrap().is_empty());
     }
 
     #[test]
@@ -260,16 +278,16 @@ mod tests {
         let map = hill();
         let mut eroder = Eroder::new(false);
         eroder.begin(global(&map));
-        eroder.request(brush(true), 1.0);
+        eroder.request(brush(true), 1.0, 0.0);
         // The brush of the new stroke is on the sea, so its step is empty.
         eroder.begin(global(&map));
         assert!(!eroder.pending());
-        eroder.request(brush(false), 1.0);
+        eroder.request(brush(false), 1.0, 0.0);
         assert!(wait(&mut eroder).is_empty());
         assert!(!eroder.pending());
         assert!(eroder.poll().is_none());
 
-        eroder.request(brush(true), 1.0);
+        eroder.request(brush(true), 1.0, 0.0);
         eroder.cancel();
         assert!(!eroder.pending());
         // The worker ends the step after the wait.
