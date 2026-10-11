@@ -5,8 +5,13 @@ use std::collections::{BTreeMap, BTreeSet};
 pub use uuid::Uuid;
 
 mod gpkg;
+mod tile;
 
-pub use gpkg::{FORMAT_VERSION, ProjectFile, StoreError};
+pub use gpkg::{FORMAT_VERSION, ProjectFile, SaveStats, StoreError, TileChanges, TileKey};
+pub use tile::TILE_SIZE;
+
+/// A color as red, green, and blue.
+pub type Rgb = [u8; 3];
 
 /// A position as `[lon, lat]` in degrees.
 pub type LonLat = [f64; 2];
@@ -152,6 +157,34 @@ pub struct Layer {
     pub features: Vec<Feature>,
 }
 
+/// The identity of a raster. It is never reused.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RasterId(pub u32);
+
+/// The record of one raster layer: a cube map of 16-bit values. The project
+/// file holds its tiles, and the project in memory does not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Raster {
+    pub id: RasterId,
+    pub name: String,
+    /// The number of pixels along the edge of a face.
+    pub face_size: u32,
+    /// The unit of the values, for example `m`.
+    pub unit: String,
+    /// The value of pixel 0.
+    pub value_min: f64,
+    /// The value of pixel 65,535.
+    pub value_max: f64,
+    /// The pixel of each place that has no tile.
+    pub base: u16,
+    /// The band limits, as values in ascending order.
+    pub limits: Vec<f64>,
+    /// The colors of the ramp below sea level.
+    pub ramp_sea: Vec<Rgb>,
+    /// The colors of the ramp above sea level.
+    pub ramp_land: Vec<Rgb>,
+}
+
 /// The world: a sphere with a name and a radius.
 #[derive(Clone, Debug, PartialEq)]
 pub struct World {
@@ -174,6 +207,8 @@ pub struct Project {
     pub world: World,
     layers: Vec<Layer>,
     next_id: u32,
+    rasters: Vec<Raster>,
+    next_raster_id: u32,
 }
 
 impl Project {
@@ -183,7 +218,52 @@ impl Project {
             world,
             layers: Vec::new(),
             next_id: 0,
+            rasters: Vec::new(),
+            next_raster_id: 0,
         }
+    }
+
+    /// Adds a raster with no tiles and returns its ID. Its unit is empty, and
+    /// its range, its base, its band limits, and its ramp are zero or empty.
+    pub fn add_raster(&mut self, name: String, face_size: u32) -> RasterId {
+        let id = RasterId(self.next_raster_id);
+        self.next_raster_id += 1;
+        self.rasters.push(Raster {
+            id,
+            name,
+            face_size,
+            unit: String::new(),
+            value_min: 0.0,
+            value_max: 0.0,
+            base: 0,
+            limits: Vec::new(),
+            ramp_sea: Vec::new(),
+            ramp_land: Vec::new(),
+        });
+        id
+    }
+
+    /// The rasters in the order they were added.
+    pub fn rasters(&self) -> &[Raster] {
+        &self.rasters
+    }
+
+    /// The raster with this ID.
+    pub fn raster(&self, id: RasterId) -> Option<&Raster> {
+        self.rasters.iter().find(|r| r.id == id)
+    }
+
+    /// The raster with this ID. The ID must stay as it is. If the face size
+    /// changes, the next save removes the tiles of the old size.
+    pub fn raster_mut(&mut self, id: RasterId) -> Option<&mut Raster> {
+        self.rasters.iter_mut().find(|r| r.id == id)
+    }
+
+    /// Removes a raster. Its ID is not used again. The next save removes its
+    /// tiles from the file.
+    pub fn remove_raster(&mut self, id: RasterId) -> Option<Raster> {
+        let i = self.rasters.iter().position(|r| r.id == id)?;
+        Some(self.rasters.remove(i))
     }
 
     /// Adds a layer on top and returns its ID. Each feature gets each field

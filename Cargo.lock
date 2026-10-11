@@ -3893,6 +3893,7 @@ dependencies = [
 name = "vale-store"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "rusqlite",
  "tempfile",
  "uuid",
