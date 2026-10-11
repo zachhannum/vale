@@ -341,6 +341,14 @@ fn trim(tx: &Transaction, limit: u64) -> Result<(), StoreError> {
     }
 }
 
+/// Removes each step.
+pub(crate) fn clear(tx: &Transaction) -> Result<(), StoreError> {
+    tx.execute_batch(
+        "DELETE FROM vale_undo_record; DELETE FROM vale_undo_tile; DELETE FROM vale_undo_step;",
+    )?;
+    Ok(())
+}
+
 fn remove(tx: &Transaction, step: i64) -> Result<(), StoreError> {
     tx.execute("DELETE FROM vale_undo_record WHERE step_id = ?1", [step])?;
     tx.execute("DELETE FROM vale_undo_tile WHERE step_id = ?1", [step])?;

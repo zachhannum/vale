@@ -228,6 +228,17 @@ impl ProjectFile {
         Ok(stats)
     }
 
+    /// Writes the project in one transaction with no undo step, and removes
+    /// each step of the log. Each raster keeps its tiles.
+    pub fn save_base(&mut self, project: &Project) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        write_edit(&tx, None, project, &[], 0)?;
+        undo::clear(&tx)?;
+        tx.commit()?;
+        self.project = project.clone();
+        self.read_log()
+    }
+
     /// True if the log has a step to undo.
     pub fn can_undo(&self) -> bool {
         self.can_undo
@@ -2289,5 +2300,19 @@ mod tests {
         assert!(matches!(file.undo(), Err(StoreError::Corrupt(_))));
         // The undo that failed changed nothing.
         assert_eq!(content(&file), states[3]);
+    }
+
+    #[test]
+    fn a_base_save_makes_no_step_and_removes_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut file, states) = three_edits(&dir);
+        file.undo().unwrap();
+        let mut project = file.project().clone();
+        project.world.name = "Base".into();
+        file.save_base(&project).unwrap();
+        assert!(!file.can_undo() && !file.can_redo());
+        assert_eq!((steps(&file), file.undo_bytes()), (0, 0));
+        assert_eq!(content(&file).1, states[2].1);
+        assert_eq!(file.project().world.name, "Base");
     }
 }

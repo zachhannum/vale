@@ -124,6 +124,8 @@ pub struct Heightmap {
     /// The redo steps. The last one is the next redo.
     redo: VecDeque<Saved>,
     undo_limit: usize,
+    /// With `false`, no undo and redo steps are kept.
+    keep_steps: bool,
     /// The tiles that changed after the last `clear_changes`.
     changed: BTreeSet<usize>,
     /// The base level changed after the last `clear_changes`.
@@ -163,6 +165,7 @@ impl Heightmap {
             undo: VecDeque::new(),
             redo: VecDeque::new(),
             undo_limit: UNDO_MEMORY_LIMIT,
+            keep_steps: true,
             changed: BTreeSet::new(),
             changed_all: false,
             channels: None,
@@ -246,6 +249,30 @@ impl Heightmap {
         self.tiles[index] = Some(data.into());
         let (face, rect) = self.tile_rect(index);
         self.mark_dirty(face, rect);
+    }
+
+    /// Frees one tile, so that its texels have the base level. As with
+    /// `load_tile`, the call makes no undo step and no mark for a save.
+    pub fn clear_tile(&mut self, face: usize, column: usize, row: usize) {
+        assert!(
+            face < FACES && column < self.per_side && row < self.per_side,
+            "the tile key"
+        );
+        let index = (face * self.per_side + row) * self.per_side + column;
+        if self.tiles[index].take().is_some() {
+            let (face, rect) = self.tile_rect(index);
+            self.mark_dirty(face, rect);
+        }
+    }
+
+    /// Sets the base level from a saved copy. The call makes no undo step,
+    /// and it does not mark the heightmap for a save.
+    pub fn load_base(&mut self, level: u16) {
+        if self.base != level {
+            self.base = level;
+            self.mark_all_dirty();
+            self.reset = true;
+        }
     }
 
     /// True if the texels changed after the last `clear_changes`.
@@ -545,6 +572,9 @@ impl Heightmap {
 
     /// Adds an undo step. The redo steps are no longer valid.
     fn push_undo(&mut self, saved: Saved) {
+        if !self.keep_steps {
+            return;
+        }
         self.redo.clear();
         self.undo.push_back(saved);
         self.trim();
@@ -571,6 +601,17 @@ impl Heightmap {
     /// The limit of the memory of the undo and redo steps, in bytes.
     pub fn undo_memory_limit(&self) -> usize {
         self.undo_limit
+    }
+
+    /// With `false`, the heightmap keeps no undo and redo steps, and the
+    /// steps that it has go. Use this if a project file keeps the steps. A
+    /// stroke can still be cancelled.
+    pub fn set_undo_steps(&mut self, keep: bool) {
+        self.keep_steps = keep;
+        if !keep {
+            self.undo.clear();
+            self.redo.clear();
+        }
     }
 
     /// Sets the limit of the memory of the undo and redo steps. A step that
@@ -1723,5 +1764,50 @@ mod tests {
         // The texels of the tile go to the GPU copy.
         let rect = |x0, y0, x1, y1| TexelRect { x0, y0, x1, y1 };
         assert_eq!(map.take_dirty()[3], Some(rect(32, 16, 40, 32)));
+    }
+
+    #[test]
+    fn a_heightmap_can_keep_no_undo_steps() {
+        let mut map = Heightmap::with_tile_size(40, 16, 100);
+        let data: Vec<u16> = (0..256).collect();
+        let rect = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: 16,
+            y1: 16,
+        };
+        map.begin_stroke();
+        map.store_rect(0, rect, &data);
+        assert!(map.end_stroke() && map.can_undo());
+        map.set_undo_steps(false);
+        assert!(!map.can_undo());
+
+        // A stroke still ends as a change, and a cancel still works.
+        map.clear_changes();
+        map.begin_stroke();
+        map.store_rect(1, rect, &data);
+        assert!(map.end_stroke());
+        assert!(map.has_changes() && !map.can_undo() && map.undo_memory_bytes() == 0);
+        map.begin_stroke();
+        map.store_rect(2, rect, &data);
+        map.cancel_stroke();
+        assert_eq!(map.get(2, 5, 0), 100);
+    }
+
+    #[test]
+    fn a_cleared_tile_and_a_loaded_base_have_no_undo_step_and_no_mark() {
+        let mut map = Heightmap::with_tile_size(40, 16, 100);
+        let data: Vec<u16> = (0..256).collect();
+        map.load_tile(3, 2, 1, &data);
+        map.take_reset();
+        map.take_dirty();
+        map.clear_tile(3, 2, 1);
+        assert_eq!(map.get(3, 33, 17), 100);
+        assert_eq!(map.allocated().count(), 0);
+        assert!(map.take_dirty()[3].is_some());
+        map.load_base(7);
+        assert_eq!((map.base(), map.get(0, 0, 0)), (7, 7));
+        assert!(map.take_reset());
+        assert!(!map.has_changes() && !map.can_undo());
     }
 }
