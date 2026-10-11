@@ -289,13 +289,14 @@ impl ProtoApp {
             radius,
             hardness: brush.hardness,
             flow: match brush.mode {
-                Mode::Raise | Mode::Lower | Mode::Carve | Mode::Erode => flow,
+                Mode::Raise | Mode::Lower | Mode::Carve | Mode::Erode | Mode::Weather => flow,
                 // These two modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten => flow * 0.3,
             },
             mode: brush.mode,
             level,
             strength: brush.strength_m * STAMP_SPACING / span,
+            talus: 0.0,
         };
         let start = Instant::now();
         match stroke.last {

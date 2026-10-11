@@ -205,13 +205,14 @@ impl Tip<'_> {
             radius: self.radius,
             hardness: self.brush.hardness,
             flow: match self.brush.mode {
-                Mode::Raise | Mode::Lower | Mode::Carve | Mode::Erode => flow,
+                Mode::Raise | Mode::Lower | Mode::Carve | Mode::Erode | Mode::Weather => flow,
                 // These two modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten => flow * 0.3,
             },
             mode: self.brush.mode,
             level: self.level,
             strength: self.brush.strength_m * STAMP_SPACING / span,
+            talus: 0.0,
         }
     }
 }
@@ -310,7 +311,7 @@ pub fn plan_texels(plan: &StampPlan) -> u64 {
 /// The cost of a stamp, where `GROUP_STAMPS` is the cost of one pass.
 fn stamp_cost(plan: &StampPlan) -> usize {
     match plan.stamp.mode {
-        Mode::Smooth => GROUP_STAMPS,
+        Mode::Smooth | Mode::Weather => GROUP_STAMPS,
         Mode::Raise | Mode::Lower | Mode::Flatten | Mode::Carve | Mode::Erode => 1,
     }
 }
@@ -556,6 +557,7 @@ mod tests {
             mode,
             level: 0,
             strength: 1.0,
+            talus: 0.0,
         })
     }
 

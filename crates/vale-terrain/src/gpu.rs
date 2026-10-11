@@ -66,7 +66,8 @@ struct FaceStamp {
     flow: f32,
     strength: f32,
     level: f32,
-    pad: [u32; 3],
+    talus: f32,
+    pad: [u32; 2],
 }
 
 impl FaceStamp {
@@ -92,7 +93,8 @@ impl FaceStamp {
             flow: stamp.flow as f32,
             strength: stamp.strength as f32,
             level: f32::from(stamp.level),
-            pad: [0; 3],
+            talus: stamp.talus as f32,
+            pad: [0; 2],
         }
     }
 }
@@ -597,7 +599,8 @@ impl GpuHeightmap {
     /// for each face. Returns the number of stamps in the group. The result
     /// is the same as that of `stamp` for each one in order.
     ///
-    /// The stamps of a group have one mode. A smooth stamp is a group of one.
+    /// The stamps of a group have one mode. A smooth stamp or a weather stamp
+    /// is a group of one.
     /// A group has `GROUP_STAMPS` stamps at most, and it stops before a stamp
     /// that is far from the others.
     ///
@@ -618,10 +621,11 @@ impl GpuHeightmap {
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
             return same.count();
         }
-        // A smooth stamp reads the results of the stamp before it on the
-        // texels around each texel. The other modes read one texel.
+        // A smooth stamp or a weather stamp reads the results of the stamp
+        // before it on the texels around each texel. The other modes read one
+        // texel.
         let most = match mode {
-            Mode::Smooth => 1,
+            Mode::Smooth | Mode::Weather => 1,
             _ => GROUP_STAMPS,
         };
         // The values of each slot go to the GPU at the submit, so each pass
@@ -663,6 +667,7 @@ impl GpuHeightmap {
                     Mode::Flatten => 3,
                     Mode::Carve => 4,
                     Mode::Erode => 5,
+                    Mode::Weather => 6,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,

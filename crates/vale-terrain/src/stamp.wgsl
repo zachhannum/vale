@@ -18,6 +18,9 @@ struct Stamp {
     flow: f32,
     strength: f32,
     level: f32,
+    // The steepest slope that the weather mode leaves, in levels for each
+    // texel step. It is a multiple of 1/16.
+    talus: f32,
 }
 
 // The same number as `GROUP_STAMPS` in `gpu.rs`.
@@ -59,6 +62,7 @@ const CARVE = 4u;
 // A pass of this mode has no stamps. It applies one step of the erode brush,
 // as `Heightmap::erode` does.
 const ERODE = 5u;
+const WEATHER = 6u;
 
 @group(0) @binding(0) var<uniform> group: Group;
 // The channel map of all faces. The third byte of a texel is the distance to
@@ -314,12 +318,84 @@ fn drop_at(at: vec2<i32>) -> f32 {
     return drop;
 }
 
+// The effect of a stamp at a texel, from 0 to the flow of the stamp. It is 0
+// outside the rectangle of the stamp and outside the brush circle.
+fn amount_at(stamp: Stamp, p: vec2<i32>) -> f32 {
+    // `Heightmap::stamp` visits the texels of this rectangle only.
+    if any(p < stamp.rect.xy) || any(p >= stamp.rect.zw) {
+        return 0.0;
+    }
+    let n = f32(group.size);
+    let theta = ((vec2<f32>(p) + 0.5) / n * 2.0 - 1.0) * PI_4;
+    let cos_theta = cos_series(theta);
+    // The angle from the brush center to the texel along each face axis.
+    // The whole part of the center keeps the difference exact.
+    let step = (vec2<f32>(p - stamp.center) + 0.5 - stamp.center_rest) * (2.0 * PI_4 / n);
+    // The flat coordinates of the texel minus those of the center.
+    let d = sin_series(step) / (cos_theta * stamp.cos_center);
+    let flat = stamp.flat + d;
+    // The tangent of the angle between (1, center) and (1, texel), from
+    // the cross product and the dot product.
+    let twist = d.x * stamp.flat.y - d.y * stamp.flat.x;
+    let across = sqrt(twist * twist + dot(d, d));
+    let along = 1.0 + dot(flat, stamp.flat);
+    if across >= MAX_TANGENT * along {
+        return 0.0;
+    }
+    let angle = atan_series(across / along);
+    if angle >= stamp.radius {
+        return 0.0;
+    }
+    let k = angle / stamp.radius;
+    var weight = 1.0;
+    if k > stamp.hardness {
+        let t = (k - stamp.hardness) / (1.0 - stamp.hardness);
+        weight = 1.0 - t * t * (3.0 - 2.0 * t);
+    }
+    return weight * stamp.flow;
+}
+
+// The change of the level of a texel from one weather stamp. Each pair of
+// texels that are side by side moves a whole number of levels from the higher
+// texel to the lower one. The steps are those of `Heightmap::weather_face`.
+fn weather(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
+    // The texel, then its four neighbors. One call of `amount_at` in the
+    // source gives the same bits for a texel in each pass that reads it, so
+    // the two texels of a pair get the same flux.
+    var steps = array<vec2<i32>, 5>(
+        vec2<i32>(0, 0),
+        vec2<i32>(-1, 0),
+        vec2<i32>(1, 0),
+        vec2<i32>(0, -1),
+        vec2<i32>(0, 1),
+    );
+    var own = 0.0;
+    var change = 0.0;
+    for (var i = 0; i < 5; i++) {
+        let p = at + steps[i];
+        let amount = amount_at(stamp, p);
+        if i == 0 {
+            own = amount;
+            continue;
+        }
+        // A pair with a texel outside the rectangle has no weight. The
+        // rectangle is inside the face.
+        let weight = min(min(own, amount), 1.0);
+        if weight <= 0.0 {
+            continue;
+        }
+        let drop = old - f32(tile_level(i32(group.face), p));
+        let over = abs(drop) - stamp.talus;
+        if over > 0.0 {
+            change -= sign(drop) * floor(weight * over * 0.125);
+        }
+    }
+    return change;
+}
+
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     let at = vec2<i32>(floor(position.xy)) + group.origin;
-    let n = f32(group.size);
-    let theta = ((vec2<f32>(at) + 0.5) / n * 2.0 - 1.0) * PI_4;
-    let cos_theta = cos_series(theta);
     // The level after each stamp is a whole number, as it is in the texture
     // between two passes.
     var value = f32(tile_level(i32(group.face), at));
@@ -341,35 +417,17 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     }
     for (var i = 0u; i < group.count; i++) {
         let stamp = group.stamps[i];
-        // `Heightmap::stamp` visits the texels of this rectangle only.
-        if any(at < stamp.rect.xy) || any(at >= stamp.rect.zw) {
+        if group.mode == WEATHER {
+            // The change is a whole number, and the new level is between
+            // the old levels of the pair texels.
+            value += weather(stamp, at, value);
             continue;
         }
-        // The angle from the brush center to the texel along each face axis.
-        // The whole part of the center keeps the difference exact.
-        let step = (vec2<f32>(at - stamp.center) + 0.5 - stamp.center_rest) * (2.0 * PI_4 / n);
-        // The flat coordinates of the texel minus those of the center.
-        let d = sin_series(step) / (cos_theta * stamp.cos_center);
-        let flat = stamp.flat + d;
-        // The tangent of the angle between (1, center) and (1, texel), from
-        // the cross product and the dot product.
-        let twist = d.x * stamp.flat.y - d.y * stamp.flat.x;
-        let across = sqrt(twist * twist + dot(d, d));
-        let along = 1.0 + dot(flat, stamp.flat);
-        if across >= MAX_TANGENT * along {
+        // With no effect, each mode keeps the level.
+        let amount = amount_at(stamp, at);
+        if amount == 0.0 {
             continue;
         }
-        let angle = atan_series(across / along);
-        if angle >= stamp.radius {
-            continue;
-        }
-        let k = angle / stamp.radius;
-        var weight = 1.0;
-        if k > stamp.hardness {
-            let t = (k - stamp.hardness) / (1.0 - stamp.hardness);
-            weight = 1.0 - t * t * (3.0 - 2.0 * t);
-        }
-        let amount = weight * stamp.flow;
         let old = value;
         // The change of the level. A sum of the old level and a small change
         // has too few digits after the point for the rounding step.
