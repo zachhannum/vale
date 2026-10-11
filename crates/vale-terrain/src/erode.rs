@@ -122,29 +122,46 @@ impl ErodeStep {
         }
     }
 
-    /// The drop at a texel, in levels, from the drops of the 4 cells around
-    /// the texel. A line between the two opposite cells with the larger sum
-    /// splits the square of the 4 centers into two triangles. The drop is
-    /// linear on each triangle, so a diagonal channel has an even depth.
+    /// The drop at a texel, in levels. If a cell is one texel wide, the drop
+    /// is that of the 4 cells around the texel, in the ratio of its distances
+    /// to their centers. If a cell is wider, the drop is a smooth blend of
+    /// the 9 cells around the texel, with the weights of a quadratic
+    /// B-spline. That blend has no edge at a cell and no corner between two
+    /// cells, so a channel one cell wide has no row of dots.
     pub(crate) fn drop_at(&self, n: usize, face: usize, x: usize, y: usize) -> f64 {
         let Some((u, v)) = self.place(n, face, x, y) else {
             return 0.0;
         };
-        let (i, j) = (u.floor(), v.floor());
-        let (tu, tv) = (u - i, v - j);
-        let cell = |du: i64, dv: i64| f64::from(self.cell_drop(face, i as i64 + du, j as i64 + dv));
-        let (a, b, c, d) = (cell(0, 0), cell(1, 0), cell(0, 1), cell(1, 1));
-        if a + d >= b + c {
-            if tu >= tv {
-                a + (b - a) * tu + (d - b) * tv
-            } else {
-                a + (c - a) * tv + (d - c) * tu
-            }
-        } else if tu + tv <= 1.0 {
-            a + (b - a) * tu + (c - a) * tv
-        } else {
-            d + (c - d) * (1.0 - tu) + (b - d) * (1.0 - tv)
+        let wide = match self.grid {
+            ErodeGrid::Global { size } => size < n,
+            ErodeGrid::Window(window) => window.cell > 1,
+        };
+        if !wide {
+            let (i, j) = (u.floor(), v.floor());
+            let (tu, tv) = (u - i, v - j);
+            let cell =
+                |du: i64, dv: i64| f64::from(self.cell_drop(face, i as i64 + du, j as i64 + dv));
+            let top = cell(0, 0) * (1.0 - tu) + cell(1, 0) * tu;
+            let bottom = cell(0, 1) * (1.0 - tu) + cell(1, 1) * tu;
+            return top * (1.0 - tv) + bottom * tv;
         }
+        let (i, j) = ((u + 0.5).floor(), (v + 0.5).floor());
+        let weights = |t: f64| {
+            [
+                0.5 * (0.5 - t) * (0.5 - t),
+                0.75 - t * t,
+                0.5 * (0.5 + t) * (0.5 + t),
+            ]
+        };
+        let (wu, wv) = (weights(u - i), weights(v - j));
+        let mut drop = 0.0;
+        for (dv, wv) in wv.into_iter().enumerate() {
+            for (du, wu) in wu.into_iter().enumerate() {
+                let cell = self.cell_drop(face, i as i64 + du as i64 - 1, j as i64 + dv as i64 - 1);
+                drop += wu * wv * f64::from(cell);
+            }
+        }
+        drop
     }
 }
 
@@ -885,22 +902,39 @@ mod tests {
     }
 
     #[test]
-    fn a_diagonal_channel_has_an_even_depth() {
+    fn a_channel_one_cell_wide_has_no_dots_and_no_diamonds() {
         let (m, n) = (16, 256);
-        // The cells of a diagonal of each face have a drop.
-        let step = step_of(m, n, |i, _| if i % m == i / m % m { 800 } else { 0 });
         let width = n / m;
-        for face in 0..FACES {
-            // The texels on the diagonal, between the first and the last
-            // cell center.
-            for x in width / 2..n - width / 2 {
-                assert_eq!(step.drop_at(n, face, x, x), 800.0, "{face} {x}");
+        // The least and the most drop on the texels of the diagonal of face
+        // 0, between the centers of cells 3 and 12.
+        let range = |step: &ErodeStep| {
+            let on =
+                (3 * width + width / 2..12 * width + width / 2).map(|x| step.drop_at(n, 0, x, x));
+            on.fold((f64::MAX, f64::MIN), |(least, most), drop| {
+                (least.min(drop), most.max(drop))
+            })
+        };
+        // The cells of a diagonal of each face have a drop. With the blend
+        // of 4 cells, the least drop is half of the most.
+        let channel = step_of(m, n, |i, _| if i % m == i / m % m { 800 } else { 0 });
+        let (least, most) = range(&channel);
+        assert!(least > 0.8 * most && most > 400.0, "{least} {most}");
+        // The cells of a diagonal have no drop, and each other cell has one.
+        let ridge = step_of(m, n, |i, _| if i % m == i / m % m { 0 } else { 800 });
+        let (least, most) = range(&ridge);
+        assert!(800.0 - most > 0.8 * (800.0 - least), "{least} {most}");
+        // The slope of the drop has no jump from one texel to the next. With
+        // the blend of 4 cells, the slope changes by 100 at a cell center.
+        let limit = 2.0 * 800.0 / (width * width) as f64 * 1.01;
+        for step in [&channel, &ridge] {
+            for y in width..n - width {
+                for x in width..n - width - 2 {
+                    let at = |x: usize| step.drop_at(n, 0, x, y);
+                    let bend = at(x + 2) - 2.0 * at(x + 1) + at(x);
+                    assert!(bend.abs() <= limit, "{x} {y} {bend}");
+                }
             }
         }
-        // The channel is one cell wide. A texel at the center of the next
-        // cell has the drop of half a texel.
-        let side = step.drop_at(n, 0, 5 * width + width / 2, 4 * width + width / 2);
-        assert_eq!(side, 800.0 * 0.5 / width as f64);
     }
 
     #[test]

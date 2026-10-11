@@ -287,23 +287,31 @@ fn drop_at(at: vec2<i32>) -> f32 {
         }
         c = place.xy - 0.5;
     }
-    let whole = floor(c);
+    var wide = group.cells < u32(group.size);
+    if group.window_on != 0u {
+        wide = group.window_cell > 1u;
+    }
+    if !wide {
+        let whole = floor(c);
+        let t = c - whole;
+        let p = vec2<i32>(whole);
+        let top = cell_drop(p) * (1.0 - t.x) + cell_drop(p + vec2<i32>(1, 0)) * t.x;
+        let bottom = cell_drop(p + vec2<i32>(0, 1)) * (1.0 - t.x) + cell_drop(p + 1) * t.x;
+        return top * (1.0 - t.y) + bottom * t.y;
+    }
+    // The weights of a quadratic B-spline on the 9 cells around the texel.
+    let whole = floor(c + 0.5);
     let t = c - whole;
     let p = vec2<i32>(whole);
-    let d00 = cell_drop(p);
-    let d10 = cell_drop(p + vec2<i32>(1, 0));
-    let d01 = cell_drop(p + vec2<i32>(0, 1));
-    let d11 = cell_drop(p + 1);
-    if d00 + d11 >= d10 + d01 {
-        if t.x >= t.y {
-            return d00 + (d10 - d00) * t.x + (d11 - d10) * t.y;
+    let wx = array<f32, 3>(0.5 * (0.5 - t.x) * (0.5 - t.x), 0.75 - t.x * t.x, 0.5 * (0.5 + t.x) * (0.5 + t.x));
+    let wy = array<f32, 3>(0.5 * (0.5 - t.y) * (0.5 - t.y), 0.75 - t.y * t.y, 0.5 * (0.5 + t.y) * (0.5 + t.y));
+    var drop = 0.0;
+    for (var j = 0; j < 3; j++) {
+        for (var i = 0; i < 3; i++) {
+            drop += wx[i] * wy[j] * cell_drop(p + vec2<i32>(i - 1, j - 1));
         }
-        return d00 + (d01 - d00) * t.y + (d11 - d01) * t.x;
     }
-    if t.x + t.y <= 1.0 {
-        return d00 + (d10 - d00) * t.x + (d01 - d00) * t.y;
-    }
-    return d11 + (d01 - d11) * (1.0 - t.x) + (d10 - d11) * (1.0 - t.y);
+    return drop;
 }
 
 @fragment
