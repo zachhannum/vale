@@ -213,7 +213,8 @@ fn brush_input(
 /// Reads the undo and redo commands. A tap of two fingers and Command+Z
 /// undo. A tap of three fingers, Shift+Command+Z, and Command+Y redo. On
 /// Windows and Linux, Ctrl is the Command key.
-fn history_input(ui: &egui::Ui, globe: &mut Globe) {
+/// Returns `Some(true)` for a redo and `Some(false)` for an undo.
+fn history_input(ui: &egui::Ui, globe: &mut Globe) -> Option<bool> {
     use egui::{Key, KeyboardShortcut, Modifiers};
     let tap = globe.nav.take_tap();
     let typing = ui.ctx().egui_wants_keyboard_input();
@@ -227,9 +228,11 @@ fn history_input(ui: &egui::Ui, globe: &mut Globe) {
         key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || key(Modifiers::COMMAND, Key::Y);
     let undo = key(Modifiers::COMMAND, Key::Z);
     if redo || tap == Some(Tap::Three) {
-        globe.redo();
+        Some(true)
     } else if undo || tap == Some(Tap::Two) {
-        globe.undo();
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -259,7 +262,12 @@ pub(super) fn canvas(
             globe.nav.update(ui, rect, &resp, &mut globe.flat, painting);
         }
     }
-    history_input(ui, globe);
+    match history_input(ui, globe) {
+        Some(true) => state.redo(),
+        Some(false) => state.undo(),
+        None => {}
+    }
+    let globe = &mut state.globe;
     let cursor = resp
         .hover_pos()
         .or(globe.input.pos)

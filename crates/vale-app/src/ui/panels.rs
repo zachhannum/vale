@@ -121,6 +121,10 @@ fn window_line(globe: &Globe, world_km: f64) -> String {
 
 pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     let world_km = state.doc.project.world.radius_km;
+    // The undo log of the project file, if it has the strokes.
+    let session = state.session.as_ref();
+    let session = session.filter(|s| s.saves_map(&state.globe.map));
+    let log = session.map(|s| (s.undo_bytes(), s.undo_limit()));
     let globe = &mut state.globe;
     ui.label(globe.stats.gpu_line());
     ui.label(globe.stats.frame_time_line());
@@ -156,11 +160,18 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     ui.separator();
 
     const MB: f64 = (1 << 20) as f64;
-    ui.label(format!(
-        "Undo memory: {:.1} MB of {:.0} MB",
-        globe.map.undo_memory_bytes() as f64 / MB,
-        globe.map.undo_memory_limit() as f64 / MB,
-    ));
+    ui.label(match log {
+        Some((bytes, limit)) => format!(
+            "Undo log: {:.1} MB of {:.0} MB",
+            bytes as f64 / MB,
+            limit as f64 / MB
+        ),
+        None => format!(
+            "Undo memory: {:.1} MB of {:.0} MB",
+            globe.map.undo_memory_bytes() as f64 / MB,
+            globe.map.undo_memory_limit() as f64 / MB,
+        ),
+    });
     ui.separator();
 
     let test = egui::Button::new("Run stroke test");

@@ -1,6 +1,7 @@
 //! The UI: state, actions, and the draw function.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use vale_labeler::Fonts;
@@ -12,6 +13,7 @@ use crate::globe::import::ImportResult;
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
+use crate::session::Session;
 
 pub mod canvas;
 pub mod elevation;
@@ -117,6 +119,10 @@ pub struct AppState {
     /// False: the tool bar has no buttons for GeoJSON files and for exports.
     pub file_buttons: bool,
     pub frames: u64,
+    /// The open project file. `None`: the app saves nothing.
+    pub session: Option<Session>,
+    /// The edit count of the globe at the last save.
+    saved_edits: u64,
 }
 
 impl AppState {
@@ -146,6 +152,8 @@ impl AppState {
             headless: false,
             file_buttons: true,
             frames: 0,
+            session: None,
+            saved_edits: 0,
         };
         state.set_layout(Layout::default());
         Ok(state)
@@ -157,6 +165,107 @@ impl AppState {
         self.layout = layout;
         if layout == Layout::Pad {
             self.globe.tool = Tool::Brush;
+        }
+    }
+
+    /// True if the undo log of the project file has the edits. If not, the
+    /// heightmap keeps the strokes in memory.
+    fn file_log(&self) -> bool {
+        let session = self.session.as_ref();
+        session.is_some_and(|s| s.saves_map(&self.globe.map))
+    }
+
+    pub fn can_undo(&self) -> bool {
+        match &self.session {
+            Some(session) if self.file_log() => !self.globe.busy() && session.can_undo(),
+            _ => self.globe.can_undo(),
+        }
+    }
+
+    pub fn can_redo(&self) -> bool {
+        match &self.session {
+            Some(session) if self.file_log() => !self.globe.busy() && session.can_redo(),
+            _ => self.globe.can_redo(),
+        }
+    }
+
+    /// Puts back the world from before the last edit.
+    pub fn undo(&mut self) {
+        self.step(false);
+    }
+
+    /// Puts back the last edit that `undo` took away.
+    pub fn redo(&mut self) {
+        self.step(true);
+    }
+
+    fn step(&mut self, redo: bool) {
+        let able = if redo {
+            self.can_redo()
+        } else {
+            self.can_undo()
+        };
+        if !able {
+            return;
+        }
+        let file_log = self.file_log();
+        let Some(session) = self.session.as_mut().filter(|_| file_log) else {
+            if redo {
+                self.globe.redo();
+            } else {
+                self.globe.undo();
+            }
+            return;
+        };
+        let map = &mut self.globe.map;
+        let result = if redo {
+            session.redo(&mut self.doc, map)
+        } else {
+            session.undo(&mut self.doc, map)
+        };
+        match result {
+            Ok(_) => {
+                let gone = |id| self.doc.layer(id).is_none();
+                if self.selected_layer.is_some_and(gone) {
+                    self.selected_layer = None;
+                }
+                if self.selection.is_some_and(|s| gone(s.layer)) {
+                    self.selection = None;
+                }
+                // A layer can come back with other features under its ID.
+                self.pipeline = Pipeline::new();
+                self.touch();
+            }
+            Err(e) => {
+                let what = if redo { "redo" } else { "undo" };
+                self.status = format!("The {what} did not work: {e}");
+            }
+        }
+    }
+
+    /// Call this in each frame, after the changes of the frame. It saves the
+    /// project a short time after a change, and at once after a stroke or an
+    /// import. With `hold`, a control is held, and its changes wait. Returns
+    /// the time to the next save.
+    pub fn save_tick(&mut self, hold: bool, now: Instant) -> Option<Duration> {
+        self.globe.set_memory_undo(!self.file_log());
+        let session = self.session.as_mut()?;
+        let globe = &mut self.globe;
+        let project = &mut self.doc.project;
+        let result = if globe.edits() != self.saved_edits {
+            // The edit is one undo step, with no part of the next stroke.
+            self.saved_edits = globe.edits();
+            session.flush(project, &mut globe.map).map(|()| None)
+        } else {
+            let hold = hold || globe.busy();
+            session.tick(project, &mut globe.map, hold, now)
+        };
+        match result {
+            Ok(wait) => wait,
+            Err(e) => {
+                self.status = format!("The project did not save: {e}");
+                None
+            }
         }
     }
 

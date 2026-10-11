@@ -212,6 +212,8 @@ pub struct Globe {
     import: Option<Job>,
     /// The result of the last import, until the UI takes it.
     import_result: Option<ImportResult>,
+    edits: u64,
+    memory_undo: bool,
 }
 
 impl Default for Globe {
@@ -257,6 +259,8 @@ impl Globe {
             test: None,
             import: None,
             import_result: None,
+            edits: 0,
+            memory_undo: true,
         }
     }
 
@@ -273,6 +277,7 @@ impl Globe {
     pub fn set_map(&mut self, map: Heightmap) {
         let face_size = map.face_size();
         self.map = map;
+        self.map.set_undo_steps(self.memory_undo);
         self.rivers = Rivers::new(&self.map, self.rivers.sync());
         self.eroder.cancel();
         self.channels = None;
@@ -357,6 +362,20 @@ impl Globe {
             || self.test.is_some()
             || !self.uploads.is_empty()
             || self.import.is_some()
+    }
+
+    /// The count of the strokes and the imports that changed the heightmap.
+    pub fn edits(&self) -> u64 {
+        self.edits
+    }
+
+    /// With `false`, the heightmap keeps no undo and redo steps, because
+    /// the project file keeps them.
+    pub fn set_memory_undo(&mut self, on: bool) {
+        if self.memory_undo != on {
+            self.memory_undo = on;
+            self.map.set_undo_steps(on);
+        }
     }
 
     pub fn can_undo(&self) -> bool {
@@ -555,7 +574,7 @@ impl Globe {
                     self.map.store_face(face, &levels);
                     job.faces += 1;
                     if job.faces == FACES {
-                        self.map.end_stroke();
+                        self.edits += u64::from(self.map.end_stroke());
                         self.import_result = self.import.take().and_then(|job| job.info).map(Ok);
                     }
                     if !block {
@@ -593,8 +612,10 @@ impl Globe {
         // The count comes first. A result that arrives after this line makes
         // one more frame.
         let in_flight = self.link.busy.any();
-        self.read_events();
+        // An import starts in the frame after the end of a stroke, so that
+        // the stroke and the import are two edits.
         self.pump_import(false);
+        self.read_events();
         // An undo or a redo goes to the GPU before the stamps of the next
         // stroke.
         self.queue_changes();
@@ -629,7 +650,7 @@ impl Globe {
                     *left -= 1;
                     if *left == 0 {
                         self.request_rivers();
-                        self.map.end_stroke();
+                        self.edits += u64::from(self.map.end_stroke());
                         self.stroke = None;
                     }
                 }
