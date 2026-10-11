@@ -10,6 +10,8 @@ pub enum Icon {
     Flatten,
     Carve,
     Erode,
+    Weather,
+    More,
     Move,
     Undo,
     Redo,
@@ -37,6 +39,8 @@ impl Icon {
             Icon::Flatten => "M4 12h16",
             Icon::Carve => "M3 7c4 0 5 9 9 9s5-9 9-9M12 16v5",
             Icon::Erode => "M5 4c0 5 7 5 7 10v7M12 4v10M19 4c0 5-7 5-7 10",
+            Icon::Weather => "M3 18l5-10 3 6 4-9 6 13",
+            Icon::More => "",
             Icon::Move => {
                 "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3\
                  M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"
@@ -69,6 +73,11 @@ impl Icon {
                 (19.0, 8.0, 2.0, true),
             ],
             Icon::Eye => &[(12.0, 12.0, 3.0, false)],
+            Icon::More => &[
+                (5.0, 12.0, 1.5, true),
+                (12.0, 12.0, 1.5, true),
+                (19.0, 12.0, 1.5, true),
+            ],
             _ => &[],
         }
     }
@@ -273,6 +282,20 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_path_gives_no_lines() {
+        assert!(parse("").is_empty());
+        assert_eq!(
+            parse("M3 19l7-13 4 7 7 6"),
+            vec![vec![
+                pos2(3.0, 19.0),
+                pos2(10.0, 6.0),
+                pos2(14.0, 13.0),
+                pos2(21.0, 19.0)
+            ]]
+        );
+    }
+
+    #[test]
     fn each_icon_stays_in_its_box() {
         for icon in [
             Icon::Raise,
@@ -281,6 +304,8 @@ mod tests {
             Icon::Flatten,
             Icon::Carve,
             Icon::Erode,
+            Icon::Weather,
+            Icon::More,
             Icon::Move,
             Icon::Undo,
             Icon::Redo,
@@ -298,12 +323,17 @@ mod tests {
             Icon::Reset,
         ] {
             let lines = parse(icon.path());
-            assert!(!lines.is_empty(), "{icon:?}");
+            let circles = icon.circles();
+            assert!(!lines.is_empty() || !circles.is_empty(), "{icon:?}");
             for p in lines.iter().flatten() {
                 assert!(
                     (0.0..=24.0).contains(&p.x) && (0.0..=24.0).contains(&p.y),
                     "{icon:?} {p:?}"
                 );
+            }
+            for &(x, y, radius, _) in circles {
+                assert!(x - radius >= 0.0 && x + radius <= 24.0, "{icon:?}");
+                assert!(y - radius >= 0.0 && y + radius <= 24.0, "{icon:?}");
             }
         }
     }

@@ -8,7 +8,7 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 use std::sync::Arc;
 
 use crate::bands::{Bands, SEA_LEVEL};
-use crate::cube::{FACES, face_dir, face_of, meters_to_level, unwarp, warp};
+use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
 use crate::math::{V3, cross, normalize};
@@ -34,6 +34,9 @@ pub enum Mode {
     /// The mode of the erode brush. A stamp of this mode changes nothing.
     /// `Heightmap::erode` makes the change.
     Erode,
+    /// Moves ground from a texel to each lower neighbor where the slope
+    /// between them is more than `Stamp::talus`. The sum of the levels stays.
+    Weather,
 }
 
 /// One touch of the brush on the sphere.
@@ -52,6 +55,54 @@ pub struct Stamp {
     pub level: u16,
     /// The largest change of the raise and lower modes, in 16-bit steps.
     pub strength: f64,
+    /// The steepest slope that the weather mode leaves, in 16-bit steps for
+    /// each texel step. `talus_levels` gives it for an angle.
+    pub talus: f64,
+}
+
+/// The slope of an angle on a world, in 16-bit steps for each texel step.
+/// The texel step is the one at the center of a face.
+pub fn talus_levels(angle_deg: f64, face_size: usize, world_radius_m: f64) -> f64 {
+    let texel_m = world_radius_m * FRAC_PI_2 / face_size as f64;
+    angle_deg.to_radians().tan() * texel_m / ((ELEV_MAX - ELEV_MIN) / 65535.0)
+}
+
+/// The effect of one stamp at each place on one face.
+struct Falloff {
+    /// The brush center along the face axis and along the two face
+    /// coordinates.
+    center: [f64; 3],
+    radius: f64,
+    cos_radius: f64,
+    hardness: f64,
+    flow: f64,
+}
+
+impl Falloff {
+    fn new(face: usize, stamp: &Stamp) -> Falloff {
+        let axis = face / 2;
+        let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
+        let c = stamp.center;
+        Falloff {
+            center: [c[axis] * sign, c[(axis + 1) % 3], c[(axis + 2) % 3]],
+            radius: stamp.radius,
+            cos_radius: stamp.radius.cos(),
+            hardness: stamp.hardness.clamp(0.0, 0.999),
+            flow: stamp.flow,
+        }
+    }
+
+    /// The effect at a flat face coordinate, or `None` outside the brush
+    /// circle.
+    fn amount(&self, fu: f64, fv: f64) -> Option<f64> {
+        let [cn, cu, cv] = self.center;
+        let cos_angle = (cn + fu * cu + fv * cv) / (1.0 + fu * fu + fv * fv).sqrt();
+        if cos_angle <= self.cos_radius {
+            return None;
+        }
+        let k = cos_angle.min(1.0).acos() / self.radius;
+        Some(falloff(k, self.hardness) * self.flow)
+    }
 }
 
 /// A rectangle of texels on one face. `x1` and `y1` are exclusive.
@@ -629,8 +680,15 @@ impl Heightmap {
     /// The texels that a stamp can touch.
     pub fn stamp_plan(&self, stamp: &Stamp) -> StampPlan {
         let radius = stamp.radius.clamp(1e-6, MAX_BRUSH_RADIUS);
+        // The shader works with 32-bit numbers. A slope minus a multiple of
+        // 1/16 is exact there. No slope is more than 65535.
+        let talus = ((stamp.talus * 16.0).round() / 16.0).clamp(0.0, 65536.0);
         StampPlan {
-            stamp: Stamp { radius, ..*stamp },
+            stamp: Stamp {
+                radius,
+                talus,
+                ..*stamp
+            },
             rects: std::array::from_fn(|face| brush_rect(self.n, face, stamp.center, radius)),
             reach: ((radius / (FRAC_PI_2 / self.n as f64)) * 0.25).max(1.0) as usize,
         }
@@ -645,7 +703,10 @@ impl Heightmap {
         let mut visited = 0;
         for (face, rect) in plan.rects.into_iter().enumerate() {
             if let Some(rect) = rect {
-                visited += self.stamp_face(face, rect, &plan.stamp, plan.reach);
+                visited += match plan.stamp.mode {
+                    Mode::Weather => self.weather_face(face, rect, &plan.stamp),
+                    _ => self.stamp_face(face, rect, &plan.stamp, plan.reach),
+                };
                 self.mark_dirty(face, rect);
             }
         }
@@ -654,13 +715,7 @@ impl Heightmap {
 
     fn stamp_face(&mut self, face: usize, rect: TexelRect, stamp: &Stamp, reach: usize) -> usize {
         let (t, base) = (self.tile, self.base);
-        let radius = stamp.radius;
-        let axis = face / 2;
-        let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
-        let c = stamp.center;
-        let (cn, cu, cv) = (c[axis] * sign, c[(axis + 1) % 3], c[(axis + 2) % 3]);
-        let cos_radius = radius.cos();
-        let hard = stamp.hardness.clamp(0.0, 0.999);
+        let falloff = Falloff::new(face, stamp);
         // The smooth mode reads neighbors, so it needs the values from before.
         // Near a face edge, the neighbors are on the next face.
         let (bx, by) = (rect.x0 as i64 - reach as i64, rect.y0 as i64 - reach as i64);
@@ -685,12 +740,9 @@ impl Heightmap {
                     let fv = self.flat[y];
                     for x in rect.x0.max(tx * t)..rect.x1.min((tx + 1) * t) {
                         let fu = self.flat[x];
-                        let cos_angle = (cn + fu * cu + fv * cv) / (1.0 + fu * fu + fv * fv).sqrt();
-                        if cos_angle <= cos_radius {
+                        let Some(amount) = falloff.amount(fu, fv) else {
                             continue;
-                        }
-                        let k = cos_angle.min(1.0).acos() / radius;
-                        let amount = falloff(k, hard) * stamp.flow;
+                        };
                         let offset = (y - ty * t) * t + (x - tx * t);
                         let old_level = tile.as_ref().map_or(base, |tile| tile[offset]);
                         let old = f64::from(old_level);
@@ -722,6 +774,7 @@ impl Heightmap {
                                 let depth = amount * stamp.strength * valley;
                                 (old - depth).round().max(old.min(sea))
                             }
+                            Mode::Weather => unreachable!("`stamp` sends it to `weather_face`"),
                             Mode::Smooth => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -799,6 +852,59 @@ impl Heightmap {
             }
         }
         changed
+    }
+
+    /// Applies one weather stamp to one face. Each pair of texels that are
+    /// side by side in the rectangle moves a whole number of levels from the
+    /// higher texel to the lower one. All pairs read the levels from before
+    /// the stamp. No ground moves across a face edge.
+    fn weather_face(&mut self, face: usize, rect: TexelRect, stamp: &Stamp) -> usize {
+        let falloff = Falloff::new(face, stamp);
+        let (w, h) = (rect.x1 - rect.x0, rect.y1 - rect.y0);
+        // The effect at each texel, with a margin of one texel of zeros.
+        let row = w + 2;
+        let mut amounts = vec![0.0; row * (h + 2)];
+        for y in 0..h {
+            let fv = self.flat[rect.y0 + y];
+            for x in 0..w {
+                let amount = falloff.amount(self.flat[rect.x0 + x], fv);
+                amounts[(y + 1) * row + x + 1] = amount.unwrap_or(0.0);
+            }
+        }
+        let mut old = Vec::with_capacity(w * h);
+        self.read_rect(face, rect, &mut old);
+        for y in 0..h {
+            for x in 0..w {
+                let at = (y + 1) * row + x + 1;
+                let level = f64::from(old[y * w + x]);
+                let mut new = level;
+                // The neighbor in `amounts`, and its distance in `old`.
+                let across = w as isize;
+                let steps = [
+                    (at - 1, -1),
+                    (at + 1, 1),
+                    (at - row, -across),
+                    (at + row, across),
+                ];
+                for (near, step) in steps {
+                    // A pair with a texel outside the rectangle has no weight.
+                    let weight = amounts[at].min(amounts[near]).min(1.0);
+                    if weight <= 0.0 {
+                        continue;
+                    }
+                    let other = old[(y * w + x).wrapping_add_signed(step)];
+                    let drop = level - f64::from(other);
+                    let over = drop.abs() - stamp.talus;
+                    if over > 0.0 {
+                        new -= drop.signum() * (weight * over * 0.125).floor();
+                    }
+                }
+                // A texel loses at most half of each drop, so the new level
+                // is between the old levels of the pair texels.
+                self.set(face, rect.x0 + x, rect.y0 + y, new as u16);
+            }
+        }
+        w * h
     }
 }
 
@@ -905,6 +1011,7 @@ mod tests {
             mode: Mode::Raise,
             level: 0,
             strength: 1000.0,
+            talus: 0.0,
         }
     }
 
@@ -1519,7 +1626,14 @@ mod tests {
     fn undo_and_redo_work_for_each_mode() {
         // The place is near a cube corner, so a stroke changes three faces.
         let center = lonlat_to_dir(44.0, 34.0);
-        for mode in [Mode::Raise, Mode::Lower, Mode::Smooth, Mode::Flatten] {
+        let modes = [
+            Mode::Raise,
+            Mode::Lower,
+            Mode::Smooth,
+            Mode::Flatten,
+            Mode::Weather,
+        ];
+        for mode in modes {
             let mut map = Heightmap::with_tile_size(64, 16, 20_000);
             // A hill gives the smooth mode a slope.
             assert!(stroke(&mut map, raise(center, 0.1)));
@@ -1723,5 +1837,133 @@ mod tests {
         // The texels of the tile go to the GPU copy.
         let rect = |x0, y0, x1, y1| TexelRect { x0, y0, x1, y1 };
         assert_eq!(map.take_dirty()[3], Some(rect(32, 16, 40, 32)));
+    }
+
+    fn weather(center: V3, radius: f64, talus: f64) -> Stamp {
+        Stamp {
+            mode: Mode::Weather,
+            talus,
+            ..raise(center, radius)
+        }
+    }
+
+    /// The levels of all faces.
+    fn all_levels(map: &Heightmap) -> Vec<u16> {
+        let mut levels = Vec::new();
+        for face in 0..FACES {
+            map.read_rect(face, face_rect(map.face_size()), &mut levels);
+        }
+        levels
+    }
+
+    fn sum(levels: &[u16]) -> u64 {
+        levels.iter().map(|&level| u64::from(level)).sum()
+    }
+
+    #[test]
+    fn weather_moves_ground_to_the_lower_neighbors() {
+        let mut map = Heightmap::with_tile_size(64, 16, 1000);
+        map.set(0, 32, 32, 9000);
+        map.stamp(&weather(map.texel_dir(0, 32, 32), 0.2, 10.0));
+        // The drop is 8000 levels, and 10 levels of it stay. Each pair moves
+        // one eighth of the rest.
+        let moved = (8000 - 10) / 8;
+        assert_eq!(map.get(0, 32, 32), 9000 - 4 * moved);
+        for (x, y) in [(31, 32), (33, 32), (32, 31), (32, 33)] {
+            assert_eq!(map.get(0, x, y), 1000 + moved, "{x} {y}");
+        }
+        assert_eq!(map.get(0, 33, 33), 1000);
+    }
+
+    #[test]
+    fn weather_keeps_the_sum_of_the_levels() {
+        let mut map = Heightmap::with_tile_size(64, 16, 20_000);
+        // Four tiles meet at this texel.
+        map.stamp(&Stamp {
+            hardness: 0.2,
+            strength: 6000.0,
+            ..raise(map.texel_dir(0, 32, 32), 0.2)
+        });
+        let before = all_levels(&map);
+        for step in 0..5 {
+            map.stamp(&Stamp {
+                hardness: 0.3,
+                flow: 0.7,
+                ..weather(map.texel_dir(0, 30 + step, 33), 0.25, 20.0)
+            });
+        }
+        let after = all_levels(&map);
+        assert_eq!(sum(&after), sum(&before));
+        // The stamps change texels on each side of the tile edge.
+        let changed = |x: usize| (0..64).any(|y| after[y * 64 + x] != before[y * 64 + x]);
+        assert!(changed(31) && changed(32));
+    }
+
+    #[test]
+    fn weather_leaves_a_gentle_slope() {
+        let n = 64;
+        let mut map = Heightmap::with_tile_size(n, 16, 20_000);
+        // Face 0 is a ramp of 30 levels for each texel step.
+        let ramp: Vec<u16> = (0..n * n).map(|i| 20_000 + 30 * (i % n) as u16).collect();
+        map.store_rect(0, face_rect(n), &ramp);
+        let tiles = map.allocated_tiles();
+        map.begin_stroke();
+        for face in 0..2 {
+            let stamp = weather(face_dir(face, 0.0, 0.0), 0.25, 40.0);
+            assert!(map.stamp(&stamp) > 0);
+        }
+        assert!(!map.end_stroke());
+        assert!(face_levels(&map) == ramp);
+        assert_eq!(map.allocated_tiles(), tiles);
+    }
+
+    #[test]
+    fn one_angle_gives_one_slope_at_each_face_size() {
+        let world = 4000.0;
+        for n in [64, 128, 8192] {
+            let slope = talus_levels(15.0, n, world);
+            assert_eq!(talus_levels(15.0, 2 * n, world) * 2.0, slope);
+        }
+        // A world with a slope of 20 degrees to the north on face 0. Returns
+        // `true` if a weather stamp with the angle changes it.
+        let changes = |n: usize, angle: f64| {
+            let mut map = Heightmap::new(n, 0);
+            let ramp: Vec<u16> = (0..n * n)
+                .map(|i| {
+                    let (_, lat) = dir_to_lonlat(map.texel_dir(0, i % n, i / n));
+                    meters_to_level(20f64.to_radians().tan() * world * lat.to_radians())
+                })
+                .collect();
+            map.store_rect(0, face_rect(n), &ramp);
+            map.stamp(&Stamp {
+                hardness: 0.5,
+                ..weather(lonlat_to_dir(0.0, 0.0), 0.1, talus_levels(angle, n, world))
+            });
+            face_levels(&map) != ramp
+        };
+        for n in [64, 128] {
+            assert!(changes(n, 15.0), "{n}");
+            assert!(!changes(n, 25.0), "{n}");
+        }
+    }
+
+    /// Face 2 is high and face 0 is low, with a spike on face 0 at the
+    /// shared edge.
+    #[test]
+    fn weather_moves_no_ground_across_a_face_edge() {
+        let n = 64;
+        let mut map = Heightmap::with_tile_size(n, 16, 0);
+        map.store_rect(2, face_rect(n), &vec![10_000; n * n]);
+        map.set(0, n - 1, n / 2, 5000);
+        let before = all_levels(&map);
+        let stamp = weather(lonlat_to_dir(45.0, 0.0), 0.2, 1.0);
+        let plan = map.stamp_plan(&stamp);
+        assert!(plan.rects[0].is_some() && plan.rects[2].is_some());
+        map.stamp(&stamp);
+        let after = all_levels(&map);
+        let face = |levels: &[u16], face: usize| levels[face * n * n..(face + 1) * n * n].to_vec();
+        assert!(map.get(0, n as i64 - 1, n as i64 / 2) < 5000);
+        assert_eq!(sum(&face(&after, 0)), sum(&face(&before, 0)));
+        assert!(face(&after, 2) == face(&before, 2));
     }
 }

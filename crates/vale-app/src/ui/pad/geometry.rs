@@ -16,7 +16,7 @@ pub const TOUCH: f32 = 44.0;
 pub const ROW: f32 = TOUCH + 2.0 * PAD;
 /// The size of one cell of the tool strip.
 pub const CELL: (f32, f32) = (56.0, 52.0);
-pub const TOOLS: usize = 7;
+pub const TOOLS: usize = 6;
 /// The height of one of the two sliders at the left edge.
 pub const SLIDER: f32 = 140.0;
 /// Below this height, a slider at the left edge is too short to use.
@@ -24,6 +24,8 @@ pub const SLIDER_MIN: f32 = 110.0;
 pub const BRUSH_PANEL_WIDTH: f32 = 340.0;
 pub const RIGHT_PANEL_WIDTH: f32 = 320.0;
 pub const MENU_WIDTH: f32 = 240.0;
+/// The width of the menu of the More cell.
+pub const MORE_WIDTH: f32 = 180.0;
 pub const SHEET_HEIGHT: f32 = 400.0;
 pub const READOUT_HEIGHT: f32 = 32.0;
 /// The width of the actions bar: four buttons and a divider.
@@ -281,9 +283,9 @@ mod tests {
         assert_eq!(r.workspace, rect(16.0, 32.0, 230.0, 52.0));
         assert_eq!(r.view, Some(rect(527.0, 32.0, 140.0, 52.0)));
         assert_eq!(r.actions, rect(969.0, 32.0, 209.0, 52.0));
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 372.0));
-        assert_eq!(r.brush_card, BrushCard::Full(129.0));
-        assert_eq!(r.brush, Some(rect(16.0, 480.0, 64.0, 318.0)));
+        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
+        assert_eq!(r.brush_card, BrushCard::Full(140.0));
+        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
         assert_eq!(r.brush_panel, pos2(92.0, 96.0));
         assert_eq!(r.right_panel, pos2(858.0, 96.0));
         assert!(!r.one_panel);
@@ -299,7 +301,7 @@ mod tests {
         assert_eq!(r.view.unwrap().center().x, 417.0);
         assert_eq!(r.actions, rect(609.0, 32.0, 209.0, 52.0));
         assert_eq!(r.right_panel, pos2(498.0, 96.0));
-        assert_eq!(r.brush, Some(rect(16.0, 480.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
         assert!(!r.one_panel);
     }
 
@@ -309,8 +311,7 @@ mod tests {
         assert_eq!(r.class, WidthClass::Compact);
         assert_eq!(r.view, None);
         assert_eq!(r.menu, pos2(16.0, 88.0));
-        assert_eq!(r.brush_card, BrushCard::Full(114.0));
-        assert_eq!(r.brush, Some(rect(16.0, 480.0, 64.0, 288.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
         let readout = r.readout.unwrap();
         assert_eq!(
             (readout.left(), readout.top(), readout.bottom()),
@@ -326,29 +327,26 @@ mod tests {
         let r = layout(&input);
         assert_eq!(r.sheet, Some(rect(0.0, 434.0, 375.0, 400.0)));
         assert_eq!(r.readout, None);
-        // The strip scrolls above the sheet.
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 216.0));
-        assert_eq!(r.tool_cells, 4);
-        assert_eq!(r.brush_card, BrushCard::Button);
+        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
+        assert_eq!(r.brush_card, BrushCard::Hidden);
 
         input.sheet_offset = 1000.0;
         let r = layout(&input);
         let sheet = r.sheet.unwrap();
         // The title row is above the bottom band.
         assert_eq!(sheet.top(), 834.0 - 20.0 - 52.0);
-        assert_eq!((r.tool_cells, r.brush_card), (TOOLS, BrushCard::Button));
+        assert_eq!(r.brush_card, BrushCard::Full(131.0));
     }
 
     #[test]
     fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
         let card = |height: f32| layout(&board(1024.0, height)).brush_card;
-        assert_eq!(card(1024.0), BrushCard::Full(140.0));
-        assert_eq!(card(856.0), BrushCard::Full(140.0));
-        assert_eq!(card(834.0), BrushCard::Full(129.0));
-        assert_eq!(card(796.0), BrushCard::Full(110.0));
-        assert_eq!(card(795.0), BrushCard::Button);
-        assert_eq!(card(768.0), BrushCard::Button);
-        assert_eq!(card(744.0), BrushCard::Button);
+        assert_eq!(card(834.0), BrushCard::Full(140.0));
+        assert_eq!(card(804.0), BrushCard::Full(140.0));
+        assert_eq!(card(768.0), BrushCard::Full(122.0));
+        assert_eq!(card(744.0), BrushCard::Full(110.0));
+        assert_eq!(card(743.0), BrushCard::Button);
+        assert_eq!(card(600.0), BrushCard::Button);
     }
 
     #[test]

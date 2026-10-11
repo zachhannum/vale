@@ -2,13 +2,13 @@
 
 use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
-use vale_app::ui::pad::{IMPORT_HEIGHTMAP, Panel, RECENTER, RESET, readout_text, theme};
+use vale_app::ui::pad::{IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, readout_text, theme};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
 use vale_terrain::Mode;
 
@@ -110,6 +110,7 @@ fn cards(h: &Pad) -> Vec<Rect> {
     cards.extend(r.brush);
     cards.extend(pad.panels.iter().map(|(_, rect)| *rect));
     cards.extend(pad.menu_rect);
+    cards.extend(pad.more_rect);
     cards
 }
 
@@ -137,7 +138,8 @@ fn check_controls(h: &Pad, what: &str) {
     let controls = &h.state().pad.controls;
     assert!(controls.len() >= 8, "{what}: {} controls", controls.len());
     let in_menu = h.state().pad.menu_rect.is_some();
-    let popup = in_menu || h.state().pad.projections_rect.is_some();
+    let in_more = h.state().pad.more_rect.is_some();
+    let popup = in_menu || in_more || h.state().pad.projections_rect.is_some();
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -155,15 +157,16 @@ fn check_controls(h: &Pad, what: &str) {
         );
         for b in &controls[i + 1..] {
             assert_ne!(a.name, b.name, "{what}");
-            // The open menu and the open list of projections cover the
-            // cards below them.
+            // The open menu, the open list of projections, and the open menu
+            // of the More cell cover the cards below them.
             let row = |c: &vale_app::ui::pad::widgets::Control| {
                 let name = c.name.as_str();
                 let kind = vale_sphere::ProjectionKind::ALL
                     .iter()
                     .any(|k| k.name() == name);
                 let menu = ["World", "Globe", "Flat", "Maps"].contains(&name);
-                menu || kind || (in_menu && name == "Projection")
+                let more = in_more && ["Carve", "Erode", "Weather"].contains(&name);
+                menu || kind || more || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
@@ -186,6 +189,13 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             tap(&mut h, name);
             check_controls(&h, &format!("{size:?} after {name}"));
         }
+        tap(&mut h, MORE);
+        assert!(h.state().pad.more);
+        for name in [MORE, "Carve", "Erode", "Weather"] {
+            assert!(control(&h, name).is_some(), "{size:?}: {name}");
+        }
+        check_controls(&h, &format!("{size:?} with the More menu"));
+        tap(&mut h, MORE);
         if control(&h, "Workspace").is_some() {
             tap(&mut h, "Workspace");
             assert!(h.state().pad.menu);
@@ -275,14 +285,15 @@ fn a_finger_hits_each_control_at_the_first_try() {
         ("Lower", Mode::Lower),
         ("Smooth", Mode::Smooth),
         ("Flatten", Mode::Flatten),
-        ("Carve", Mode::Carve),
-        ("Erode", Mode::Erode),
         ("Raise", Mode::Raise),
     ] {
         tap(&mut h, name);
         assert_eq!(h.state().globe.tool, Tool::Brush);
         assert_eq!(h.state().globe.brush.mode, mode);
     }
+    tap(&mut h, MORE);
+    tap(&mut h, "Carve");
+    assert_eq!(h.state().globe.brush.mode, Mode::Carve);
     tap(&mut h, "Pan");
     assert_eq!(h.state().globe.tool, Tool::Navigate);
 
@@ -316,6 +327,101 @@ fn a_finger_hits_each_control_at_the_first_try() {
 
     tap(&mut h, "Maps");
     assert_eq!(h.state().workspace, Workspace::Map);
+}
+
+/// True if the More cell has the active highlight.
+fn more_is_active(h: &Pad) -> bool {
+    let cell = h.get_by_label(MORE);
+    cell.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+}
+
+#[test]
+fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
+    let mut h = pad(BOARDS[0]);
+    let tools = h.state().pad.rects.unwrap().tools;
+    let strip = |h: &Pad| -> Vec<String> {
+        let controls = h.state().pad.controls.iter();
+        let cells = controls.filter(|c| tools.contains_rect(c.rect));
+        cells.map(|c| c.name.clone()).collect()
+    };
+    let cells = ["Raise", "Lower", "Smooth", "Flatten", MORE, "Pan"];
+    assert_eq!(strip(&h), cells);
+    assert!(!more_is_active(&h));
+    for (name, mode) in [
+        ("Weather", Mode::Weather),
+        ("Erode", Mode::Erode),
+        ("Carve", Mode::Carve),
+    ] {
+        // A row of the menu also picks the brush tool.
+        tap(&mut h, "Pan");
+        assert!(!more_is_active(&h));
+        assert!(control(&h, name).is_none());
+        tap(&mut h, MORE);
+        assert!(h.state().pad.more);
+        let menu = h.state().pad.more_rect.unwrap();
+        let cell = control(&h, MORE).unwrap();
+        assert_eq!(menu.left_top(), pos2(tools.right() + 12.0, cell.top()));
+        for row in ["Carve", "Erode", "Weather"] {
+            assert!(menu.contains_rect(control(&h, row).unwrap()), "{row}");
+        }
+        assert_eq!(strip(&h), cells);
+
+        tap(&mut h, name);
+        let s = h.state();
+        assert_eq!((s.globe.tool, s.globe.brush.mode), (Tool::Brush, mode));
+        assert!(!s.pad.more && s.pad.more_rect.is_none());
+        assert!(control(&h, name).is_none());
+        assert!(more_is_active(&h));
+        assert_eq!(strip(&h), cells);
+    }
+    // The cell of another mode takes the highlight.
+    tap(&mut h, "Smooth");
+    assert!(!more_is_active(&h));
+
+    // The Brush panel has the angle in the Weather mode only.
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush angle").is_none());
+    tap(&mut h, MORE);
+    // The menu is in front of the Brush panel.
+    let menu = h.state().pad.more_rect.unwrap();
+    assert!(menu.intersects(panel(&h, Panel::Brush).unwrap()));
+    tap(&mut h, "Weather");
+    assert_eq!(h.state().globe.brush.mode, Mode::Weather);
+    assert!(h.state().pad.is_open(Panel::Brush));
+    let rect = control(&h, "Brush angle").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert!((h.state().globe.brush.talus_deg - 20.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_press_outside_the_more_menu_closes_it() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Lower");
+    tap(&mut h, MORE);
+    assert!(h.state().pad.more);
+    // A second tap on the cell closes the menu.
+    tap(&mut h, MORE);
+    assert!(!h.state().pad.more);
+
+    tap(&mut h, MORE);
+    let menu = h.state().pad.more_rect.unwrap();
+    let outside = menu.right_bottom() + vec2(40.0, 40.0);
+    touch(&mut h, egui::TouchPhase::Start, outside, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, outside, None);
+    h.run_steps(3);
+    let s = h.state();
+    assert!(!s.pad.more && s.pad.more_rect.is_none());
+    assert!(control(&h, "Weather").is_none());
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Lower)
+    );
+
+    // A tap on another control closes the menu too.
+    tap(&mut h, MORE);
+    tap(&mut h, "Layers");
+    assert!(!h.state().pad.more && h.state().pad.is_open(Panel::Layers));
 }
 
 #[test]
@@ -828,7 +934,7 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(lefts, [1082.0, 1130.0]);
     assert_eq!(
         r.tools,
-        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 372.0))
+        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 320.0))
     );
     assert_eq!(
         control(&h, "Raise").unwrap(),
@@ -836,11 +942,11 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     );
     assert_eq!(
         r.brush.unwrap(),
-        Rect::from_min_size(pos2(16.0, 480.0), vec2(64.0, 318.0))
+        Rect::from_min_size(pos2(16.0, 428.0), vec2(64.0, 340.0))
     );
     assert_eq!(
         control(&h, "Brush settings").unwrap().min,
-        pos2(20.0, 742.0)
+        pos2(20.0, 712.0)
     );
 
     tap(&mut h, "Layers");
@@ -993,23 +1099,31 @@ fn the_layout_follows_the_turn_of_the_ipad() {
 
 #[test]
 fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
-    // The sliders fit with less height.
-    let h = pad((1024.0, 800.0));
+    // 1024 by 768 is an iPad in landscape. The sliders fit with less height.
+    let h = pad((1024.0, 768.0));
     assert_eq!(
         h.state().pad.rects.unwrap().brush_card,
-        BrushCard::Full(112.0)
+        BrushCard::Full(122.0)
     );
-    check_controls(&h, "800 high");
+    check_controls(&h, "768 high");
 
-    // 1024 by 768 is an iPad in landscape.
-    let mut h = pad((1024.0, 768.0));
+    // The smallest iPad in landscape. The strip of six cells leaves room for
+    // the sliders.
+    let mut h = pad((1133.0, 744.0));
+    let rects = h.state().pad.rects.unwrap();
+    assert_eq!(rects.brush_card, BrushCard::Full(110.0));
+    assert_eq!(rects.tool_cells, 6);
+    tap(&mut h, MORE);
+    check_controls(&h, "744 high with the More menu");
+
+    let mut h = pad((1024.0, 700.0));
     assert_eq!(h.state().pad.rects.unwrap().brush_card, BrushCard::Button);
     assert!(control(&h, "Size").is_none() && control(&h, "Flow").is_none());
-    check_controls(&h, "768 high");
+    check_controls(&h, "700 high");
     // The Brush panel holds the two sliders.
     tap(&mut h, "Brush settings");
     assert!(control(&h, "Brush size").is_some() && control(&h, "Brush flow").is_some());
-    check_controls(&h, "768 high with the Brush panel");
+    check_controls(&h, "700 high with the Brush panel");
 }
 
 #[test]
@@ -1051,10 +1165,12 @@ fn the_readout_shows_the_place_and_the_elevation() {
 fn the_screenshots_show_the_boards() {
     let _gpu = one_gpu_test();
     std::fs::create_dir_all("../../target/app").unwrap();
-    // The name, the size, the open panels, and the state of the menu.
+    // The name, the size, the open panels, and the state of the menu. The
+    // shot "more" has the menu of the More cell in the Weather mode.
     type Shot = (&'static str, (f64, f64), &'static [Panel], bool);
-    let shots: [Shot; 5] = [
+    let shots: [Shot; 6] = [
         ("landscape", (1194.0, 834.0), &[], false),
+        ("more", (1194.0, 834.0), &[Panel::Brush], false),
         (
             "open",
             (1194.0, 834.0),
@@ -1071,6 +1187,11 @@ fn the_screenshots_show_the_boards() {
             state.pad.open(*panel);
         }
         state.pad.menu = menu;
+        if name == "more" {
+            state.pad.more = true;
+            state.globe.tool = Tool::Brush;
+            state.globe.brush.mode = Mode::Weather;
+        }
         let (image, state) = headless::ui_png(state, size, 1.0).unwrap();
         image
             .save(format!("../../target/app/test-pad-{name}.png"))
@@ -1081,5 +1202,6 @@ fn the_screenshots_show_the_boards() {
         let canvas = image.get_pixel(size.0 as u32 - 3, 300);
         assert_eq!(canvas.0, [15, 17, 19, 255], "{name}");
         assert_ne!(card.0, canvas.0, "{name}");
+        assert_eq!(state.pad.more_rect.is_some(), name == "more", "{name}");
     }
 }
