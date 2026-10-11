@@ -7,6 +7,7 @@ use vale_app::document::Document;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
+use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::{IMPORT_HEIGHTMAP, Panel, RECENTER, RESET, readout_text, theme};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
@@ -683,6 +684,81 @@ fn the_undo_button_and_the_redo_button_work() {
     let c = h.state().globe.rect.center();
     drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.5));
     settle(&mut h);
+    assert!(control(&h, "Redo").is_none());
+}
+
+/// A start of the app with a project file. The heightmap comes from the
+/// file, if the file has one.
+fn file_pad(path: &std::path::Path) -> Pad {
+    let mut state = state();
+    let session = Session::open(path, &mut state.doc).unwrap();
+    match session.load_map().unwrap() {
+        Some(map) => state.globe.set_map(map),
+        None => state.globe.set_face_size(256),
+    }
+    state.session = Some(session);
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let size = (f64::from(BOARDS[0].0), f64::from(BOARDS[0].1));
+    let mut h = headless::ui_harness(state, size, 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    h.state_mut().save_tick(false, std::time::Instant::now());
+    h
+}
+
+/// Runs frames with the save of the app until the brush is idle.
+fn settle_and_save(h: &mut Pad) {
+    for _ in 0..400 {
+        h.step();
+        h.state_mut().save_tick(false, std::time::Instant::now());
+        if !h.state().globe.busy() {
+            return;
+        }
+    }
+    panic!("the brush did not become idle");
+}
+
+/// The iPad test of the undo log: paint, stop the app with no exit call,
+/// start it, and undo.
+#[test]
+fn the_undo_button_works_after_the_app_stops_and_starts() {
+    let _gpu = one_gpu_test();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut h = file_pad(&path);
+    assert!(control(&h, "Undo").is_none());
+    let c = h.state().globe.rect.center();
+    let mut levels = [middle_level(&h); 3];
+    for i in 1..3 {
+        drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.5));
+        settle_and_save(&mut h);
+        levels[i] = middle_level(&h);
+        assert!(levels[i] > levels[i - 1], "{levels:?}");
+    }
+    // The file has the steps, and the heightmap has none in memory.
+    assert!(!h.state().globe.can_undo() && h.state().can_undo());
+    drop(h);
+
+    let mut h = file_pad(&path);
+    assert_eq!(middle_level(&h), levels[2]);
+    assert!(control(&h, "Redo").is_none());
+    // Each stroke is one step.
+    for level in levels[..2].iter().rev() {
+        tap(&mut h, "Undo");
+        settle_and_save(&mut h);
+        assert_eq!(middle_level(&h), *level, "undo");
+    }
+    assert!(control(&h, "Undo").is_none());
+    tap(&mut h, "Redo");
+    settle_and_save(&mut h);
+    assert_eq!(middle_level(&h), levels[1]);
+    drop(h);
+
+    let mut h = file_pad(&path);
+    assert_eq!(middle_level(&h), levels[1]);
+    tap(&mut h, "Redo");
+    settle_and_save(&mut h);
+    assert_eq!(middle_level(&h), levels[2]);
     assert!(control(&h, "Redo").is_none());
 }
 
