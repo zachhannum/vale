@@ -65,7 +65,7 @@ const ERODE_SYNC_SECONDS: f64 = 1.0 / 30.0;
 
 /// The rate of the erode step of one uplift stamp, for an erosion setting
 /// of 1.
-const UPLIFT_ERODE_RATE: f64 = 1.0;
+const UPLIFT_ERODE_RATE: f64 = 8.0;
 
 /// An uplift stroke makes one weather stamp for this number of its stamps.
 const UPLIFT_WEATHER_EVERY: usize = 4;

@@ -54,11 +54,18 @@ pub struct Eroder {
     waiting: usize,
 }
 
-/// Raises the cells under the brushes by `uplift` levels at full effect.
-/// Then lowers them one time.
+/// The number of steps that lower the cells after an uplift.
+const UPLIFT_STEPS: usize = 4;
+
+/// Without an uplift, lowers the cells under the brushes one time. With an
+/// uplift, raises those cells by `uplift` levels at full effect and then
+/// lowers them `UPLIFT_STEPS` times.
 fn step(erosion: &mut Erosion, brushes: &[ErodeBrush], rate: f64, uplift: f64) -> ErodeStep {
+    if uplift.is_nan() || uplift <= 0.0 {
+        return erosion.step(brushes, rate);
+    }
     erosion.raise(brushes, uplift);
-    erosion.step(brushes, rate)
+    erosion.steps(brushes, rate, UPLIFT_STEPS)
 }
 
 /// Computes each job in the order of the requests until the sender is gone.

@@ -22,6 +22,10 @@ pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
 /// The limits of the angle of the weather mode, in degrees. Painted land on
 /// a world of the size of the Earth has slopes of 3 degrees or less.
 pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
+/// The part that the erosion setting of 1 adds to the rise of an uplift
+/// stamp. With it, an uplift stroke gives a range of about the height of a
+/// raise stroke at each erosion setting.
+pub const UPLIFT_GAIN: f64 = 1.0;
 /// The limits of the erosion setting of the uplift mode.
 pub const EROSION: std::ops::RangeInclusive<f64> = 0.0..=1.0;
 pub const SIZE_POINTS: std::ops::RangeInclusive<f32> = 4.0..=160.0;
@@ -228,7 +232,11 @@ impl Tip<'_> {
             },
             mode: self.brush.mode,
             level: self.level,
-            strength: self.brush.strength_m * STAMP_SPACING / span,
+            strength: self.brush.strength_m * STAMP_SPACING / span
+                * match self.brush.mode {
+                    Mode::Uplift => 1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0),
+                    _ => 1.0,
+                },
             // The globe sets the slope, which follows the size of the world.
             talus: 0.0,
         }

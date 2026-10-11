@@ -2375,11 +2375,14 @@ fn uplift_raises_the_land_and_erodes_it_during_the_stroke() {
 
     let (mut up, mut cut, mut deep) = (0, 0, 0);
     for ((&old, &flat), &new) in before.iter().zip(&raised).zip(&eroded) {
-        // The erosion takes ground away from the raised land only.
-        assert!(old <= new && new <= flat, "{old} {new} {flat}");
+        // The uplift at this erosion is 1.5 times the rise of the raise
+        // mode. The erosion takes ground away from the raised land only.
+        // Each stamp rounds its rise to a whole level.
+        let most = old + (flat - old) / 2 * 3 + 40;
+        assert!(old <= new && new <= most, "{old} {new} {most}");
         up += usize::from(new > old + 1000);
-        cut += usize::from(new < flat);
-        deep += usize::from(new + 1000 < flat);
+        cut += usize::from(new + 80 < most);
+        deep += usize::from(new + 1000 < most);
     }
     assert!(up > 2000, "{up}");
     assert!(cut > 2000 && deep > 100, "{cut} {deep}");
@@ -2392,6 +2395,30 @@ fn uplift_raises_the_land_and_erodes_it_during_the_stroke() {
         (down + usize::from(b < a), up + usize::from(b > a))
     });
     assert!(down > 500 && up > 500, "{down} down, {up} up");
+}
+
+#[test]
+fn an_uplift_stroke_with_full_erosion_gives_about_the_height_of_a_raise_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = uplift_harness();
+    let before = all_levels(&h);
+    let floor = *before.iter().max().unwrap();
+    let rise = |levels: &[u16]| f64::from(*levels.iter().max().unwrap() - floor);
+
+    h.state_mut().globe.brush.erosion = 0.0;
+    let raise = rise(&uplift_stroke(&mut h));
+    undo_stroke(&mut h, &before);
+
+    h.state_mut().globe.brush.erosion = 1.0;
+    let once = rise(&uplift_stroke(&mut h));
+    assert!(once > 0.6 * raise && once < 1.4 * raise, "{once} {raise}");
+    // More strokes on the range do not add their heights.
+    uplift_stroke(&mut h);
+    let third = rise(&uplift_stroke(&mut h));
+    assert!(
+        third > 0.6 * raise && third < 1.4 * raise,
+        "{third} {raise}"
+    );
 }
 
 /// Lifts the button at the end of the stroke that `uplift_part` began, after
