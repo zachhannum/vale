@@ -361,6 +361,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     ("Smooth", Icon::Smooth, Mode::Smooth),
                     ("Flatten", Icon::Flatten, Mode::Flatten),
                     ("Carve", Icon::Carve, Mode::Carve),
+                    ("Erode", Icon::Erode, Mode::Erode),
                 ] {
                     let active = globe.tool == Tool::Brush && globe.brush.mode == mode;
                     if widgets::tool_cell(ui, controls, name, name, icon, active, true).clicked() {
