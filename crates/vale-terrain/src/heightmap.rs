@@ -688,11 +688,10 @@ impl Heightmap {
 
     /// Lowers the texels by the drops of one step of the erode brush. A texel
     /// takes the drops of the 4 cells around it, in the ratio of its
-    /// distances to their centers. Land does not go below sea level, and the
-    /// sea floor does not change. Returns the number of texels that changed.
+    /// distances to their centers. The lowest level is 0. Returns the number
+    /// of texels that changed.
     pub fn erode(&mut self, step: &ErodeStep) -> usize {
         let (t, base, n) = (self.tile, self.base, self.n);
-        let sea = meters_to_level(SEA_LEVEL);
         let mut changed = 0;
         for (face, rect) in step.rects().into_iter().enumerate() {
             let Some(rect) = rect else { continue };
@@ -711,7 +710,7 @@ impl Heightmap {
                             }
                             let offset = (y - ty * t) * t + (x - tx * t);
                             let old = tile.as_ref().map_or(base, |tile| tile[offset]);
-                            let new = (f64::from(old) - drop).max(f64::from(old.min(sea))) as u16;
+                            let new = (f64::from(old) - drop).max(0.0) as u16;
                             if new == old {
                                 continue;
                             }

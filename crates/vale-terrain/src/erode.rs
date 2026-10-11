@@ -1,7 +1,8 @@
 //! The erode brush.
 //!
-//! A step lowers each land cell under the brush toward the cell that takes
-//! its water. The rule is stream power: the change grows with the area that
+//! A step lowers each cell under the brush toward the cell that takes its
+//! water. The sea level has no effect: the water drains over the land and
+//! the sea floor to the lowest ground. The rule is stream power: the change grows with the area that
 //! drains through the cell and with the slope to the receiver. The cells are
 //! the cells of the coarse copy of the heightmap or the cells of a window.
 
@@ -10,7 +11,7 @@ use std::f64::consts::{FRAC_PI_2, SQRT_2};
 use crate::cube::{FACES, face_dir, unwarp};
 use crate::flow::{
     CoarseHeights, CubeGrid, Drain, FlowMap, Grid, OUT, RIVER_MIN_AREA, Window, WindowHeights,
-    cell_past_edge, drain, sea, solid_angles,
+    cell_past_edge, drain, solid_angles,
 };
 use crate::heightmap::{MAX_BRUSH_RADIUS, TexelRect, brush_rect, falloff};
 use crate::math::V3;
@@ -161,6 +162,9 @@ pub struct Erosion {
     heights: Vec<f32>,
     /// The heights as whole levels, after the last step.
     levels: Vec<u16>,
+    /// The water drains to the cells below this level. They are the cells at
+    /// the lowest level of the grid, and they do not change.
+    outlet: u16,
     /// The flow of the last step.
     flow: Option<Drain>,
     /// Whether `levels` changed after `flow`.
@@ -239,6 +243,10 @@ impl Erosion {
             min_area,
             heights: levels.iter().map(|&level| f32::from(level)).collect(),
             levels: levels.to_vec(),
+            outlet: levels
+                .iter()
+                .min()
+                .map_or(0, |&lowest| lowest.saturating_add(1)),
             flow: None,
             stale: true,
         }
@@ -261,8 +269,8 @@ impl Erosion {
 
     fn drain(&self) -> Drain {
         match &self.cells {
-            Cells::Global(grid) => drain(grid, &self.levels, &[]),
-            Cells::Window { window, inflow } => drain(window, &self.levels, inflow),
+            Cells::Global(grid) => drain(grid, &self.levels, &[], self.outlet),
+            Cells::Window { window, inflow } => drain(window, &self.levels, inflow, self.outlet),
         }
     }
 
@@ -360,16 +368,15 @@ impl Erosion {
         rects
     }
 
-    /// Lowers the land cells under the brushes one time. `rate` is the
+    /// Lowers the cells under the brushes one time. `rate` is the
     /// strength of the step. The step computes the flow from the heights
     /// that the step before it left.
     ///
     /// A cell with stream power `f` goes to the height `r + (h - r) / (1 + f)`,
     /// where `r` is the new height of its receiver. Thus a cell does not go
-    /// below its receiver at any rate. The receiver of a cell at the coast
-    /// is at sea level. A cell that is not above the new height of its
-    /// receiver does not change. Thus the floor of a pit stays until the rim
-    /// comes down to it.
+    /// below its receiver at any rate. A cell that is not above the new
+    /// height of its receiver does not change. Thus a flat sea floor stays,
+    /// and the floor of a pit stays until the rim comes down to it.
     pub fn step(&mut self, brushes: &[ErodeBrush], rate: f64) -> ErodeStep {
         let mut step = ErodeStep {
             grid: self.grid(),
@@ -392,7 +399,6 @@ impl Erosion {
             _ => self.drain(),
         };
         self.stale = false;
-        let sea = sea();
         // Each receiver has its new height before the cells above it.
         for &i in &flow.order {
             let i = i as usize;
@@ -401,11 +407,7 @@ impl Erosion {
                 continue;
             }
             let to = to as usize;
-            let below = if self.levels[to] < sea {
-                f32::from(sea)
-            } else {
-                self.heights[to]
-            };
+            let below = self.heights[to];
             let height = self.heights[i];
             if height <= below {
                 continue;
@@ -445,7 +447,7 @@ mod tests {
     use super::*;
     use crate::cube::meters_to_level;
     use crate::flow::tests::{OCEAN, equator_valley, from_cells, lumpy};
-    use crate::flow::{FLOW_SIZE, cell_at, cell_dir};
+    use crate::flow::{FLOW_SIZE, cell_at, cell_dir, sea};
     use crate::heightmap::{Heightmap, Mode, Stamp};
     use crate::math::{angle, lonlat_to_dir, normalize};
 
@@ -574,59 +576,116 @@ mod tests {
         let sea = sea();
         for rate in [0.01, 0.1, 1.0, 10.0, 1e3, 1e6] {
             let mut erosion = Erosion::global(&heights, 8192);
-            let mut lowered = 0;
+            let (mut land, mut sea_floor) = (0, 0);
             for _ in 0..4 {
                 let before = erosion.heights.clone();
                 let step = erosion.step(&brushes, rate);
-                lowered += step.drops().iter().filter(|&&drop| drop > 0).count();
+                for (&drop, &level) in step.drops().iter().zip(&heights.levels) {
+                    land += usize::from(drop > 0 && level >= sea);
+                    sea_floor += usize::from(drop > 0 && level < sea);
+                }
                 let flow = erosion.flow.as_ref().expect("a step ran");
                 for &i in &flow.order {
                     let (i, to) = (i as usize, flow.receiver[i as usize] as usize);
-                    let ocean = erosion.levels[to] < sea;
-                    let old = if ocean { f32::from(sea) } else { before[to] };
                     assert!(erosion.heights[i] <= before[i], "rate {rate}, cell {i}");
-                    if before[i] <= old {
+                    if before[i] <= before[to] {
                         continue;
                     }
-                    let new = if ocean {
-                        f32::from(sea)
-                    } else {
-                        erosion.heights[to]
-                    };
-                    assert!(erosion.heights[i] >= new, "rate {rate}, cell {i}");
-                    assert!(erosion.levels[i] >= erosion.levels[to].max(sea));
+                    assert!(
+                        erosion.heights[i] >= erosion.heights[to],
+                        "rate {rate}, cell {i}"
+                    );
+                    assert!(
+                        erosion.levels[i] >= erosion.levels[to],
+                        "rate {rate}, cell {i}"
+                    );
                 }
             }
-            assert!(lowered > 100, "rate {rate}: {lowered}");
+            assert!(
+                land > 100 && sea_floor > 100,
+                "rate {rate}: {land} {sea_floor}"
+            );
         }
     }
 
-    #[test]
-    fn the_sea_floor_and_the_sea_level_hold() {
-        let heights = CoarseHeights::from_fn(48, lumpy);
-        let brushes = brushes_on_all_sides();
-        let sea = sea();
-        let mut erosion = Erosion::global(&heights, 8192);
-        let mut at_sea_level = 0;
-        for _ in 0..40 {
-            let step = erosion.step(&brushes, 100.0);
-            assert!(!step.is_empty());
-            for (i, &old) in heights.levels.iter().enumerate() {
-                let new = erosion.levels[i];
-                if old < sea {
-                    assert_eq!((new, step.drops()[i]), (old, 0), "ocean cell {i}");
-                } else {
-                    assert!(new >= sea && new <= old, "land cell {i}");
-                    assert!(erosion.heights[i] >= f32::from(sea), "land cell {i}");
-                }
+    /// `strip` with a sea floor past the mouth of the valley. The floor goes
+    /// down from 290 m below the sea to 920 m below it. The other sea floor
+    /// is flat.
+    fn strip_with_a_shelf(m: usize) -> CoarseHeights {
+        from_cells(m, |face, x, y| {
+            let across = (y as f64 - 24.0).abs();
+            if face != 0 || x >= m - 8 || across > 3.4 {
+                return OCEAN;
             }
-            let coast = heights.levels.iter().zip(&erosion.levels);
-            at_sea_level = coast
-                .filter(|&(&old, &new)| old > sea && new == sea)
-                .count();
+            if x < 8 {
+                return -200.0 - 90.0 * (8 - x) as f64;
+            }
+            100.0 + 20.0 * x as f64 + 300.0 * across
+        })
+    }
+
+    #[test]
+    fn a_river_mouth_and_a_sloped_sea_floor_go_down() {
+        let m = 48;
+        let heights = strip_with_a_shelf(m);
+        let sea = sea();
+        let cell = |x: usize| 24 * m + x;
+        assert!(heights.levels[cell(8)] > sea && heights.levels[cell(7)] < sea);
+        let mut erosion = Erosion::global(&heights, 8192);
+        // The brush covers the mouth of the river, the sea floor that goes
+        // down from it, and a part of the flat sea floor.
+        let brush = ErodeBrush {
+            center: cell_dir(m, 0, 6, 24),
+            radius: 0.3,
+            hardness: 1.0,
+            flow: 1.0,
+        };
+        for _ in 0..5 {
+            assert!(!erosion.step(&[brush], 0.2).is_empty());
         }
-        // The erosion comes down to sea level and stops there.
-        assert!(at_sea_level > 100, "{at_sea_level}");
+        // The cell at the coast is under water, so the coast is at a new
+        // place.
+        assert!(erosion.levels[cell(8)] < sea, "{}", erosion.levels[cell(8)]);
+        // The valley goes on down the sea floor.
+        for x in 2..8 {
+            assert!(erosion.levels[cell(x)] < heights.levels[cell(x)], "{x}");
+        }
+        let flat = meters_to_level(OCEAN);
+        let mut under_the_brush = 0;
+        for (i, (&old, &new)) in heights.levels.iter().zip(&erosion.levels).enumerate() {
+            assert!(new >= flat && new <= old, "cell {i}");
+            if old == flat {
+                assert_eq!(new, old, "cell {i}");
+                let d = cell_dir(m, i / (m * m), i % m, i / m % m);
+                under_the_brush += usize::from(angle(d, brush.center) < 0.25);
+            }
+        }
+        assert!(under_the_brush > 100, "{under_the_brush}");
+    }
+
+    /// `lumpy`, moved down so that the low ground is at level 0.
+    fn deep(d: V3) -> u16 {
+        lumpy(d).saturating_sub(25_000)
+    }
+
+    #[test]
+    fn no_cell_goes_below_level_0() {
+        let heights = CoarseHeights::from_fn(48, deep);
+        let at_0 = heights.levels.iter().filter(|&&level| level == 0).count();
+        assert!(at_0 > 500, "{at_0}");
+        let brushes = brushes_on_all_sides();
+        let mut erosion = Erosion::global(&heights, 8192);
+        for _ in 0..10 {
+            let before = erosion.levels.clone();
+            let step = erosion.step(&brushes, 1e6);
+            for (i, (&old, &new)) in before.iter().zip(&erosion.levels).enumerate() {
+                assert_eq!(old - step.drops()[i], new, "cell {i}");
+                assert!(erosion.heights[i] >= 0.0, "cell {i}");
+            }
+        }
+        let to_0 = heights.levels.iter().zip(&erosion.levels);
+        let to_0 = to_0.filter(|&(&old, &new)| old > 0 && new == 0).count();
+        assert!(to_0 > 100, "{to_0}");
     }
 
     #[test]
@@ -752,29 +811,34 @@ mod tests {
     }
 
     #[test]
-    fn erode_keeps_the_sea_floor_and_stops_land_at_sea_level() {
+    fn erode_lowers_the_sea_floor_and_stops_at_level_0() {
         let n = 256;
-        let mut map = map_of(n, lumpy);
+        let mut map = map_of(n, deep);
         let before = texels(&map);
-        let mut erosion = Erosion::global(&CoarseHeights::from_fn(64, lumpy), n);
+        let sea = sea();
+        assert!(before.iter().all(|&level| level < sea));
+        let mut erosion = Erosion::global(&CoarseHeights::from_fn(64, deep), n);
         let brushes = brushes_on_all_sides();
         let mut changed = 0;
         for _ in 0..30 {
             changed += map.erode(&erosion.step(&brushes, 100.0));
         }
         assert!(changed > 10_000, "{changed}");
-        let (sea, after) = (sea(), texels(&map));
-        let mut at_sea_level = 0;
+        let after = texels(&map);
+        let mut to_0 = 0;
         for (&old, &new) in before.iter().zip(&after) {
-            if old < sea {
-                assert_eq!(new, old);
-            } else {
-                assert!(new >= sea && new <= old, "{old} {new}");
-                at_sea_level += usize::from(old > sea && new == sea);
-            }
+            // A level that goes below 0 comes back as a high level.
+            assert!(new <= old, "{old} {new}");
+            to_0 += usize::from(old > 0 && new == 0);
         }
-        assert!(at_sea_level > 1000, "{at_sea_level}");
+        assert!(to_0 > 1000, "{to_0}");
         assert!(map.take_dirty().iter().flatten().count() >= 3);
+
+        // A texel that is lower than its cell stops at 0.
+        let mut low = Heightmap::new(n, 3);
+        let step = step_of(16, n, |_, _| 500);
+        assert_eq!(low.erode(&step), FACES * n * n);
+        assert!(texels(&low).iter().all(|&level| level == 0));
     }
 
     #[test]

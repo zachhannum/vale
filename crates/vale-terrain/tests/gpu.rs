@@ -1205,6 +1205,26 @@ fn gpu_erode_matches_cpu_for_a_global_step() {
     assert!(map.erode(&gpu.queue, &mut gpu.encoder(), &step));
 }
 
+/// The ground under the brush is below sea level, and it goes down as the
+/// land does.
+#[test]
+fn gpu_erode_matches_cpu_below_sea_level() {
+    let mut cpu = window_land();
+    let sea = vale_terrain::meters_to_level(vale_terrain::SEA_LEVEL);
+    let before = levels(&cpu);
+    let mut erosion = Erosion::global(&CoarseHeights::new(&cpu), cpu.face_size());
+    let brush = erode_brush(125.0, -15.0, 0.1);
+    assert!(cpu.sample(brush.center) < sea);
+    let (difference, changed) = erode_run(&mut cpu, &mut erosion, &[brush], 3);
+    eprintln!("erode below sea level, largest difference: {difference}, {changed:?}");
+    let lowered = before.iter().zip(levels(&cpu));
+    let lowered = lowered
+        .filter(|&(&old, new)| old < sea && new < old)
+        .count();
+    assert!(lowered > 1000, "{lowered}");
+    assert!(difference <= TOLERANCE, "{difference}");
+}
+
 #[test]
 fn gpu_erode_in_a_window_matches_cpu() {
     let mut cpu = window_land();

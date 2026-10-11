@@ -881,7 +881,6 @@ impl GpuHeightmap {
                 face: face as u32,
                 mode: 5,
                 size: self.face_size as i32,
-                sea: u32::from(meters_to_level(SEA_LEVEL)),
                 window_on: u32::from(window.is_some()),
                 window_face: window.map_or(0, |w| w.face as u32),
                 window_origin: window.map_or([0; 2], |w| [w.x0 as i32, w.y0 as i32]),

@@ -305,9 +305,9 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     // between two passes.
     var value = f32(tile_level(i32(group.face), at));
     if group.mode == ERODE {
-        // Land does not go below sea level, and the sea floor stays.
+        // The lowest level is 0.
         let drop = floor(drop_at(at) + 0.5);
-        value = max(value - drop, min(value, f32(group.sea)));
+        value = max(value - drop, 0.0);
     }
     // The distance to the river and its size. The window comes first. With
     // no river near, the size is 0.

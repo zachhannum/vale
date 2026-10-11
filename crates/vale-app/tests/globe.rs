@@ -1930,7 +1930,7 @@ fn a_held_erode_brush_repeats_the_step() {
 }
 
 #[test]
-fn erode_in_a_far_view_lowers_the_land_and_stays_above_the_sea() {
+fn erode_in_a_far_view_lowers_the_land_and_the_sea_floor() {
     let _gpu = one_gpu_test();
     let mut h = erode_harness();
     save(&canvas_image(&mut h), "erode-before");
@@ -1960,10 +1960,11 @@ fn erode_in_a_far_view_lowers_the_land_and_stays_above_the_sea() {
     let n = map.face_size();
     let radius = h.state().globe.brush.radius(h.state().globe.radius());
     let (a, b) = (place(&h, from), place(&h, to));
-    let (mut cut, mut deep) = (0, 0);
+    let (mut cut, mut deep, mut drowned, mut sea_floor) = (0, 0, 0, 0);
     for (i, (&old, &new)) in before.iter().zip(&after).enumerate() {
         assert!(new <= old, "{new} over {old}");
-        assert!(new >= old.min(sea), "{new} under the sea from {old}");
+        drowned += usize::from(old >= sea && new < sea);
+        sea_floor += usize::from(old < sea && new < old);
         if new == old {
             continue;
         }
@@ -1980,6 +1981,8 @@ fn erode_in_a_far_view_lowers_the_land_and_stays_above_the_sea() {
     }
     assert!(cut > 5000, "{cut}");
     assert!(deep > 2000, "{deep}");
+    // The coast moves, and the sea floor goes down.
+    assert!(drowned > 100 && sea_floor > 1000, "{drowned} {sea_floor}");
     // Some land is left.
     let land = |levels: &[u16]| levels.iter().filter(|&&level| level > sea + 200).count();
     assert!(land(&after) * 10 > land(&before) * 9);

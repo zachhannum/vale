@@ -273,10 +273,10 @@ pub(crate) struct Drain {
 /// The flood fills each pit to the level of its rim, from the ways out to
 /// the land inside. Then each cell drains to a steep neighbor that is lower
 /// in the filled land. A way out is an ocean cell or the end of the grid.
-/// `inflow` gives water from outside the grid: a cell and a solid angle.
-pub(crate) fn drain(grid: &impl Grid, levels: &[u16], inflow: &[(usize, f64)]) -> Drain {
+/// `inflow` gives water from outside the grid: a cell and a solid angle. A
+/// cell below the level `sea` is ocean.
+pub(crate) fn drain(grid: &impl Grid, levels: &[u16], inflow: &[(usize, f64)], sea: u16) -> Drain {
     let count = levels.len();
-    let sea = sea();
     let is_land = |i: usize| levels[i] >= sea;
     let mut receiver = vec![NONE; count];
     let lands = levels.iter().filter(|&&level| level >= sea).count();
@@ -375,7 +375,7 @@ impl FlowMap {
             m: heights.m,
             solid: solid_angles(heights.m),
         };
-        let Drain { receiver, area, .. } = drain(&grid, &heights.levels, &[]);
+        let Drain { receiver, area, .. } = drain(&grid, &heights.levels, &[], sea());
         FlowMap {
             m: heights.m,
             receiver,
@@ -1045,7 +1045,7 @@ impl WindowFlow {
     fn new(heights: &WindowHeights, global: Option<&FlowMap>) -> WindowFlow {
         let window = heights.window;
         let inflow = global.map_or_else(Vec::new, |global| window.inflow(global));
-        let Drain { receiver, area, .. } = drain(&window, &heights.levels, &inflow);
+        let Drain { receiver, area, .. } = drain(&window, &heights.levels, &inflow, sea());
         WindowFlow {
             window,
             receiver,
