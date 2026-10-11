@@ -6,9 +6,13 @@ pub use uuid::Uuid;
 
 mod gpkg;
 mod tile;
+mod undo;
 
-pub use gpkg::{FORMAT_VERSION, ProjectFile, SaveStats, StoreError, TileChanges, TileKey};
+pub use gpkg::{
+    FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, TileChanges, TileKey,
+};
 pub use tile::TILE_SIZE;
+pub use undo::UNDO_LIMIT;
 
 /// A color as red, green, and blue.
 pub type Rgb = [u8; 3];
