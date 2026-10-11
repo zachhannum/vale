@@ -1,16 +1,24 @@
 use std::process::ExitCode;
 
+use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
 use vale_app::cli::{Args, apply_globe, apply_import, apply_view, parse_pair};
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
 use vale_app::pipeline::Pipeline;
+use vale_app::session::Session;
 use vale_app::ui::AppState;
 
 fn run() -> anyhow::Result<u8> {
     let args = Args::parse();
     let mut doc = args.document()?;
+    let session = match &args.project {
+        Some(path) => {
+            Some(Session::open(path, &mut doc).with_context(|| format!("{}", path.display()))?)
+        }
+        None => None,
+    };
     let size = args.size()?;
     let mut pipeline = Pipeline::new();
     apply_view(&args, &mut doc, &mut pipeline, size)?;
@@ -34,7 +42,7 @@ fn run() -> anyhow::Result<u8> {
     if !headless_run {
         let mut state = new_state(doc, WINDOW_FACE_SIZE)?;
         apply_import(&args, &mut state, false)?;
-        run_window(state, size, args.smoke_frames.map(u64::from))?;
+        run_window(state, size, args.smoke_frames.map(u64::from), session)?;
         return Ok(0);
     }
     if args.stroke_test {

@@ -43,6 +43,11 @@ pub struct Args {
     /// GeoJSON files to open in place of the sample world.
     #[arg(value_name = "FILES")]
     pub files: Vec<PathBuf>,
+    /// The project file. The world and the layers come from this file, and
+    /// the window saves each change to it. If no file is there, the app
+    /// makes it from the sample world or from FILES.
+    #[arg(long, value_name = "GPKG")]
+    pub project: Option<PathBuf>,
     /// equirectangular, equal-earth, mercator, lambert-azimuthal, orthographic, or stereographic.
     #[arg(long, value_name = "ID", default_value = "equal-earth")]
     pub projection: String,

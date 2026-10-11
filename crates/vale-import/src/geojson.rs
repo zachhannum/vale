@@ -47,10 +47,7 @@ pub fn read_str(name: &str, text: &str) -> Result<Imported, ImportError> {
                 GeometryKind::Line => 1,
                 GeometryKind::Point => 2,
             };
-            buckets[slot].push(Feature {
-                geometry: g,
-                attributes,
-            });
+            buckets[slot].push(Feature::new(g, attributes));
         }
         None => *skipped += 1,
     };

@@ -3,6 +3,7 @@
 use eframe::egui;
 
 use crate::files::PickQueue;
+use crate::session::Session;
 #[cfg(not(target_os = "ios"))]
 use crate::ui::ExportFormat;
 use crate::ui::{self, Action, AppState};
@@ -11,6 +12,7 @@ struct ValeApp {
     state: AppState,
     smoke_frames: Option<u64>,
     closing: bool,
+    session: Option<Session>,
     /// The files that the file picker of the system gave.
     picked: PickQueue,
     #[cfg(target_os = "ios")]
@@ -76,6 +78,14 @@ impl eframe::App for ValeApp {
             }
         }
 
+        if let Some(session) = &mut self.session {
+            match session.tick(&self.state.doc.project, std::time::Instant::now()) {
+                Ok(Some(wait)) => ui.ctx().request_repaint_after(wait),
+                Ok(None) => {}
+                Err(e) => self.state.status = format!("The project did not save: {e}"),
+            }
+        }
+
         if let Some(n) = self.smoke_frames {
             ui.ctx().request_repaint();
             if self.state.frames >= n && !self.closing {
@@ -83,6 +93,14 @@ impl eframe::App for ValeApp {
                 println!("smoke: {} frames", self.state.frames);
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
+        }
+    }
+
+    fn on_exit(&mut self) {
+        if let Some(session) = &mut self.session
+            && let Err(e) = session.flush(&self.state.doc.project)
+        {
+            eprintln!("vale-app: the project did not save: {e}");
         }
     }
 }
@@ -110,6 +128,7 @@ pub fn run_window(
     state: AppState,
     size: (f64, f64),
     smoke_frames: Option<u64>,
+    session: Option<Session>,
 ) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -121,6 +140,7 @@ pub fn run_window(
         state,
         smoke_frames,
         closing: false,
+        session,
         picked: PickQueue::default(),
         #[cfg(target_os = "ios")]
         picker: None,

@@ -31,6 +31,7 @@ rfd.workspace = true
 
 [dev-dependencies]
 tiff.workspace = true
+tempfile.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6.5"

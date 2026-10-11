@@ -148,9 +148,13 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Override | One manual change, keyed by map frame, feature ID, and label class |
 | Atlas | Ordered list of map frames and page templates |
 
-QGIS opens the feature tables directly and ignores the extra tables. That gives interchange with no export step. The topography polygons are feature tables, so QGIS reads them too. The heightmap is not a standard table, and the app exports it as an equirectangular GeoTIFF.
+QGIS opens the feature tables directly and ignores the extra tables. The extra tables have the prefix `vale_`. Each one has a row in `gpkg_contents` with the data type `vale`, and QGIS lists only the data types that it knows. That gives interchange with no export step. The topography polygons are feature tables, so QGIS reads them too. The heightmap is not a standard table, and the app exports it as an equirectangular GeoTIFF.
 
-Each feature has a UUID in addition to the integer row ID. The UUID never changes, so overrides and styles survive an edit, a replaced file, or a new projection.
+Each feature has a UUID in addition to the integer row ID. The UUID never changes, so overrides and styles survive an edit, a replaced file, or a new projection. The UUID is a text column of the feature table.
+
+The world is a row in `gpkg_spatial_ref_sys`: a geographic coordinate system on a sphere of the world radius. Each feature table uses it. Each attribute field is one column. A field with values of more than one type is a text column, and the first character of each value gives its type.
+
+The file has a format version for the extra tables, in the table `vale_meta`. The store has one migration step for each version. When the app opens an older file, it runs the later steps in one transaction. The app does not open a file with a newer version.
 
 The key of a raster tile is the raster, the level, the face, the column, and the row. The face is a number from 0 to 5. The column and the row count tiles of 256 pixels from the corner of the face. Level 0 has the face size of the raster, and the level is always 0 in version 1. A higher level is for finer tiles in a region, which come after version 1. The level field lets those tiles arrive with no change of the file format.
 
@@ -477,7 +481,7 @@ A step moves each cell to a weighted mean of its height and the new height of th
 
 1. The prototype is a vertical slice through phases 2, 4, 6, 8, and 9. It does not finish any of them.
 2. The map is drawn by `vello_cpu` on screen and in PNG files. The display list of `vale-render` exists, and the GPU Vello backend does not. The same pixels come out with and without a window, so tests need no GPU. The PDF export uses Krilla, and text in the PDF stays text.
-3. `vale-store` holds the project in memory. There is no GeoPackage file, no undo log, and no UUID. A feature ID is its index in the layer.
+3. `vale-store` holds the project in memory, and it reads and writes the world and the vector layers as a GeoPackage file. One save writes all the vector layers again. There are no raster records and no undo log. In memory, a feature ID is its index in the layer. With `--project`, the app loads the project file at the start and saves half a second after each change. On iPad, the app uses one project file in its container. The file does not hold the heightmap or the styles.
 4. `vale-import` reads GeoJSON, and it reads PNG and TIFF images as 16-bit greyscale. It copies the data, and there is no command to replace a file.
 5. `vale-sphere` clips with one simple method: rotate, unwrap, and clip in a plane. A polygon that covers more than half of the sphere is not supported. A ring closes along the short longitude way. `geo` and `rstar` are not dependencies yet.
 6. `vale-style` has one fixed rule for each layer, with a solid fill, a solid stroke, a circle symbol, and one label class.
@@ -487,7 +491,7 @@ A step moves each cell to a weighted mean of its height and the new height of th
 
 The prototype leaves out the following.
 
-- Project files. There is no GeoPackage and no save. Undo and redo are for brush strokes only.
+- The heightmap, the styles, and the map frame in the project file. Undo and redo are for brush strokes only.
 - Raster layers, SVG and Shapefile import, the command Replace from file, and georeferencing with extents or control points.
 - Rule-based styles, expressions, scale ranges, and all symbolizers other than a solid fill, a solid stroke, and a circle.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).

@@ -139,35 +139,66 @@ impl Document {
                         .is_some_and(|x| x.kind == l.kind)
                 })
                 .count();
-            let id =
-                self.project
-                    .add_layer(l.name, l.kind, source.map(Path::to_path_buf), l.features);
-            let style = {
-                let layer = self.project.layer(id).expect("layer was just added");
-                LayerStyle::default_for(layer.kind, ordinal, &layer.fields)
-            };
-            let new_rank = rank(l.kind);
-            let pos = self
-                .frame
-                .entries
-                .iter()
-                .rposition(|e| {
-                    self.project
-                        .layer(e.layer)
-                        .is_some_and(|x| rank(x.kind) <= new_rank)
-                })
-                .map_or(0, |i| i + 1);
-            self.frame.entries.insert(
-                pos,
-                LayerEntry {
-                    layer: id,
-                    visible: true,
-                    style,
-                },
-            );
+            let file = source
+                .and_then(Path::file_name)
+                .map(|n| n.to_string_lossy().into_owned());
+            let id = self.project.add_layer(l.name, l.kind, file, l.features);
+            self.add_entry(id, ordinal);
             ids.push(id);
         }
         ids
+    }
+
+    /// Adds an entry with the default style for a layer of the project. The
+    /// entry goes above the entries of its kind.
+    fn add_entry(&mut self, id: LayerId, ordinal: usize) {
+        let layer = self.project.layer(id).expect("the layer is in the project");
+        let style = LayerStyle::default_for(layer.kind, ordinal, &layer.fields);
+        let new_rank = rank(layer.kind);
+        let pos = self
+            .frame
+            .entries
+            .iter()
+            .rposition(|e| {
+                self.project
+                    .layer(e.layer)
+                    .is_some_and(|x| rank(x.kind) <= new_rank)
+            })
+            .map_or(0, |i| i + 1);
+        self.frame.entries.insert(
+            pos,
+            LayerEntry {
+                layer: id,
+                visible: true,
+                style,
+            },
+        );
+    }
+
+    /// Replaces the project. An entry stays if the new project has a layer
+    /// with its ID and its kind. Each other layer gets a new entry.
+    pub fn set_project(&mut self, project: Project) {
+        let old = std::mem::replace(&mut self.project, project);
+        if old.world.radius_km != self.project.world.radius_km {
+            self.frame.view = None;
+        }
+        let kind = |p: &Project, id| p.layer(id).map(|l| l.kind);
+        let new = &self.project;
+        self.frame
+            .entries
+            .retain(|e| kind(new, e.layer).is_some() && kind(new, e.layer) == kind(&old, e.layer));
+        let ids: Vec<LayerId> = self.project.layers().iter().map(|l| l.id).collect();
+        for id in ids {
+            if self.entry(id).is_none() {
+                let ordinal = self
+                    .frame
+                    .entries
+                    .iter()
+                    .filter(|e| kind(&self.project, e.layer) == kind(&self.project, id))
+                    .count();
+                self.add_entry(id, ordinal);
+            }
+        }
     }
 
     pub fn open_geojson(&mut self, path: &Path) -> Result<Vec<LayerId>, ImportError> {
