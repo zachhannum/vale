@@ -4,12 +4,16 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::World;
 
+use super::world_form::{self, WorldForm};
 use super::{Action, AppState, ExportFormat, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
 use crate::globe::brush::{EROSION, FLOW, STRENGTH_M, TALUS_DEG};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 use crate::world::{self, three_significant};
+
+/// The button of the tool bar that opens the properties of the world.
+pub const WORLD_BUTTON: &str = "World…";
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -18,6 +22,14 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             ui.separator();
             ui.selectable_value(&mut state.workspace, Workspace::Globe, "Globe");
             ui.selectable_value(&mut state.workspace, Workspace::Map, "Map");
+            ui.separator();
+            if ui.button(world_form::NEW_WORLD).clicked() {
+                state.world_form = Some(WorldForm::new_world());
+            }
+            if ui.button(WORLD_BUTTON).clicked() {
+                let form = WorldForm::properties(&state.doc.project.world);
+                state.world_form = Some(form);
+            }
             if state.workspace == Workspace::Globe {
                 ui.separator();
                 ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
@@ -330,24 +342,11 @@ pub fn left(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn world_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("World");
-    ui.add(
-        egui::TextEdit::singleline(&mut state.doc.project.world.name).desired_width(f32::INFINITY),
-    );
-    ui.horizontal(|ui| {
-        ui.label("Radius (km)");
-        let mut km = state.doc.project.world.radius_km;
-        if ui
-            .add(
-                egui::DragValue::new(&mut km)
-                    .speed(10.0)
-                    .range(100.0..=100000.0),
-            )
-            .changed()
-        {
-            state.doc.set_radius_km(km);
-            state.touch();
-        }
-    });
+    let world = &state.doc.project.world;
+    let symbol = world::large_unit(world.units).1;
+    let radius = world::radius_text(world.radius_km, world.units);
+    ui.label(&world.name);
+    ui.label(format!("Radius {radius} {symbol}"));
     ui.add_space(6.0);
 }
 

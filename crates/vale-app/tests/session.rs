@@ -491,7 +491,7 @@ fn a_new_world_removes_the_old_heightmap_from_the_file() {
     session.flush(&mut doc.project, &mut map).unwrap();
     assert!(session.last_save.tiles_written > 0);
 
-    // The app saves the new world at once, with the heightmap of the new globe.
+    // The app saves the new world at once, and the undo log starts again.
     let world = World {
         name: "Pebble".to_string(),
         radius_km: 200.0,
@@ -499,7 +499,8 @@ fn a_new_world_removes_the_old_heightmap_from_the_file() {
     };
     doc.set_project(Project::new(world.clone()));
     let mut map = Heightmap::new(1024, BASE);
-    session.flush(&mut doc.project, &mut map).unwrap();
+    session.new_world(&doc.project).unwrap();
+    assert!(!session.can_undo() && !session.can_redo());
     let (file, saved) = ProjectFile::open(&path).unwrap();
     assert_eq!(saved, Project::new(world));
     drop(file);

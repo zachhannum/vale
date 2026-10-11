@@ -20,17 +20,28 @@ pub mod world;
 #[cfg(target_os = "ios")]
 #[unsafe(no_mangle)]
 pub extern "C" fn vale_app_main() {
-    let mut doc = document::Document::sample();
     // `HOME` is the container of the app.
-    let session = std::env::var_os("HOME").and_then(|home| {
-        let path =
-            std::path::Path::new(&home).join("Library/Application Support/Vale/project.gpkg");
+    let path = std::env::var_os("HOME").map(|home| {
+        std::path::Path::new(&home).join("Library/Application Support/Vale/project.gpkg")
+    });
+    // With no project file, the app starts with an empty world and the form
+    // of a new world. The layers of a file take the styles of the sample.
+    let first_start = path.as_ref().is_some_and(|path| !path.exists());
+    let mut doc = if first_start {
+        document::Document::empty()
+    } else {
+        document::Document::sample()
+    };
+    let session = path.and_then(|path| {
         session::Session::open(&path, &mut doc)
             .inspect_err(|err| eprintln!("vale-app: {}: {err}", path.display()))
             .ok()
     });
     let result = ui::AppState::new(doc).and_then(|mut state| {
         state.file_buttons = false;
+        if first_start {
+            state.world_form = Some(ui::world_form::WorldForm::new_world());
+        }
         state.globe.set_face_size(globe::WINDOW_FACE_SIZE);
         // A session that cannot read its heightmap must not save over it.
         let session = session.and_then(|session| match session.load_map() {

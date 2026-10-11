@@ -80,4 +80,10 @@ fn the_layout_and_the_panels_come_from_the_flags() {
     assert_eq!(args.workspace, Workspace::Globe);
     assert_eq!(args.layout, Layout::Pad);
     assert_eq!(args.panel, vec![Panel::Brush, Panel::Layers]);
+    assert_eq!(args.world_form, None);
+    let args = Args::parse_from(["vale-app", "--world-form", "new"]);
+    assert_eq!(
+        args.world_form,
+        Some(vale_app::ui::world_form::FormMode::New)
+    );
 }

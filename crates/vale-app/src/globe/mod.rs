@@ -302,6 +302,15 @@ impl Globe {
         self.set_map(map);
     }
 
+    /// Makes the globe that of a new world: a heightmap with no painted tile
+    /// and no undo step, the first bands, and the first views.
+    pub fn clear(&mut self) {
+        let face_size = self.map.face_size();
+        self.set_map(Heightmap::new(face_size, meters_to_level(START_ELEVATION)));
+        self.view = GlobeView::centered(15.0, 25.0);
+        self.flat = FlatView::default();
+    }
+
     /// Replaces the heightmap. A stroke or an import that runs ends with no
     /// result.
     pub fn set_map(&mut self, map: Heightmap) {

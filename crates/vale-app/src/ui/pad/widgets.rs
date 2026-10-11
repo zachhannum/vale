@@ -418,3 +418,96 @@ pub fn text_row(
         .text(at, Align2::LEFT_CENTER, name, theme::body(), color);
     resp
 }
+
+/// The width of the name at the left of a text field.
+const FIELD_NAME: f32 = 104.0;
+
+/// A row of a panel with a name and a field for one line of text. The text
+/// has the warning color if it is not `valid`.
+pub fn text_field(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    text: &mut String,
+    valid: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let field = Rect::from_min_max(
+        pos2(rect.left() + FIELD_NAME, rect.center().y - TOUCH / 2.0),
+        pos2(rect.right(), rect.center().y + TOUCH / 2.0),
+    );
+    let painter = ui.painter();
+    let at = pos2(rect.left(), rect.center().y);
+    painter.text(at, Align2::LEFT_CENTER, name, theme::body(), theme::TEXT);
+    let back = field.shrink(HIGHLIGHT_INSET);
+    painter.rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+    let color = if valid { theme::TEXT } else { theme::WARN };
+    let edit = egui::TextEdit::singleline(text)
+        .id(ui.id().with(name))
+        .frame(egui::Frame::NONE)
+        .font(theme::body())
+        .text_color(color)
+        .vertical_align(egui::Align::Center);
+    let resp = ui.put(field.shrink2(vec2(12.0, 0.0)), edit);
+    controls.push(Control {
+        name: name.to_owned(),
+        rect: field,
+    });
+    resp
+}
+
+/// A row of a panel with choices of equal width. `active` is the choice that
+/// is on. Returns the choice that the user made.
+pub fn choice_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    labels: &[&str],
+    active: Option<usize>,
+) -> Option<usize> {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let width = row.width() / labels.len() as f32;
+    let mut chosen = None;
+    for (index, label) in labels.iter().enumerate() {
+        let min = pos2(row.left() + index as f32 * width, row.top());
+        let rect = Rect::from_min_size(min, vec2(width, PANEL_ROW));
+        let on = active == Some(index);
+        let resp = hit(ui, controls, rect, label, Sense::click(), true, Some(on));
+        fill(ui, rect, &resp, on);
+        let color = if on { theme::TEXT } else { theme::MUTE };
+        let at = rect.center();
+        ui.painter()
+            .text(at, Align2::CENTER_CENTER, *label, theme::body(), color);
+        if resp.clicked() && !on {
+            chosen = Some(index);
+        }
+    }
+    chosen
+}
+
+/// A row of a panel that is one button with its text in the middle.
+pub fn button_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    enabled: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let resp = hit(ui, controls, rect, name, Sense::click(), enabled, None);
+    let back = rect.shrink(HIGHLIGHT_INSET);
+    let color = if resp.is_pointer_button_down_on() {
+        theme::ACCENT
+    } else {
+        theme::ACCENT.gamma_multiply(0.8)
+    };
+    ui.painter()
+        .rect_filled(back, theme::CONTROL_RADIUS, fade(color, enabled));
+    let at = rect.center();
+    ui.painter().text(
+        at,
+        Align2::CENTER_CENTER,
+        name,
+        theme::body(),
+        theme::CANVAS,
+    );
+    resp
+}

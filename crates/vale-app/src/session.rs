@@ -141,6 +141,13 @@ impl Session {
         Ok(())
     }
 
+    /// Makes the file that of a new world: the project with no undo step, and
+    /// no tile of a raster that the project does not have.
+    pub fn new_world(&mut self, project: &Project) -> Result<(), StoreError> {
+        self.changed_at = None;
+        self.file.save_base(project)
+    }
+
     /// True if the file has an edit to undo, or a change waits for its save.
     pub fn can_undo(&self) -> bool {
         self.file.can_undo() || self.changed_at.is_some()

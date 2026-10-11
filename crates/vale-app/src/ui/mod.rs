@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
-use vale_store::LayerId;
+use vale_store::{LayerId, Project, World};
 
 use crate::document::Document;
 use crate::globe::import::ImportResult;
@@ -21,6 +21,7 @@ pub mod globe;
 pub mod inspector;
 pub mod pad;
 pub mod panels;
+pub mod world_form;
 
 /// A request that needs the host: a dialog or a file.
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +33,8 @@ pub enum Action {
     ImportHeightmapDialog,
     /// Imports this equirectangular image into the heightmap of the globe.
     ImportHeightmap(PathBuf),
+    /// Replaces the project with a new project of this world.
+    NewWorld(World),
 }
 
 /// The text of the last import of a heightmap.
@@ -112,6 +115,8 @@ pub struct AppState {
     pub status: String,
     /// The text of the last import of a heightmap.
     pub import_note: Option<Note>,
+    /// The open form of a new world or of the world of the project.
+    pub world_form: Option<world_form::WorldForm>,
     /// Requests that need the host (dialogs, files).
     pub actions: Vec<Action>,
     /// True: no timers, always `Quality::Final`.
@@ -148,6 +153,7 @@ impl AppState {
             cursor_meters: None,
             status: String::new(),
             import_note: None,
+            world_form: None,
             actions: Vec::new(),
             headless: false,
             file_buttons: true,
@@ -269,6 +275,17 @@ impl AppState {
         }
     }
 
+    /// True if the world has a raster layer. The heightmap is a raster layer
+    /// from its first painted tile.
+    pub fn has_raster(&self) -> bool {
+        !self.doc.project.rasters().is_empty() || self.globe.map.allocated().next().is_some()
+    }
+
+    /// True if a new world replaces a layer of this world.
+    pub fn has_content(&self) -> bool {
+        !self.doc.project.layers().is_empty() || self.has_raster()
+    }
+
     /// Marks the map as needing a new compose.
     pub fn touch(&mut self) {
         self.dirty = true;
@@ -297,8 +314,8 @@ impl AppState {
         self.import_note = Some(note);
     }
 
-    /// Runs `OpenFiles`, `Export`, and `ImportHeightmap`. The dialog actions
-    /// belong to the host.
+    /// Runs `OpenFiles`, `Export`, `ImportHeightmap`, and `NewWorld`. The
+    /// dialog actions belong to the host.
     pub fn run_action(&mut self, action: Action) {
         match action {
             Action::OpenFiles(paths) => {
@@ -334,6 +351,24 @@ impl AppState {
                     self.globe.wait_import();
                 }
                 self.poll_import();
+            }
+            Action::NewWorld(world) => {
+                self.status = format!("New world: {}", world.name);
+                self.doc.set_project(Project::new(world));
+                self.doc.frame.view = None;
+                self.globe.clear();
+                self.selection = None;
+                self.selected_layer = None;
+                self.import_note = None;
+                self.pad.layer = false;
+                // A layer of the next world can have the ID of an old layer.
+                self.pipeline = Pipeline::new();
+                if let Some(session) = &mut self.session
+                    && let Err(e) = session.new_world(&self.doc.project)
+                {
+                    self.status = format!("The project did not save: {e}");
+                }
+                self.touch();
             }
             Action::OpenDialog | Action::ExportDialog(_) | Action::ImportHeightmapDialog => {}
         }
@@ -372,5 +407,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             }
         }
     });
+    world_form::desktop(ui.ctx(), state);
     state.frames += 1;
 }

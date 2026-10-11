@@ -7,6 +7,7 @@ use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_terrain::Mode;
 
+use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Workspace, elevation, globe, panels};
 use crate::globe::brush::{EROSION, FLOW, STRENGTH_M, TALUS_DEG};
 use crate::globe::{Tool, WorldView};
@@ -31,6 +32,8 @@ const MORE_MODES: [(&str, Icon, Mode); 4] = [
     ("Uplift", Icon::Uplift, Mode::Uplift),
 ];
 
+/// The name of the row that opens the properties of the world.
+pub const WORLD_PROPERTIES: &str = "World properties";
 /// The name of the row that imports a heightmap.
 pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
 
@@ -225,6 +228,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.more {
         more_menu(&ctx, state, &mut controls, &rects);
     }
+    world_form::pad(&ctx, state, &mut controls, &rects);
 
     state.pad.controls = controls;
     state.pad.rects = Some(rects);
@@ -517,7 +521,7 @@ fn show_panel(
     rects: &Rects,
     panel: Panel,
 ) {
-    let layer = panel == Panel::Layers && state.pad.layer;
+    let layer = panel == Panel::Layers && state.pad.layer && state.has_raster();
     let (key, title, back) = match panel {
         Panel::Brush => (panel.key(), "Brush", None),
         Panel::Layers if layer => ("pad-layer", "Height", Some("Layers")),
@@ -672,6 +676,18 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
 }
 
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    if widgets::text_row(ui, controls, WORLD_PROPERTIES, 0.0, false, true).clicked() {
+        let form = WorldForm::properties(&state.doc.project.world);
+        state.world_form = Some(form);
+    }
+    if !state.has_raster() {
+        // The import makes the Height layer, and its panel shows the result.
+        let asked = state.actions.len();
+        import_row(ui, state, controls);
+        state.pad.layer = state.pad.layer || state.actions.len() > asked;
+        return;
+    }
     let size = vec2(ui.available_width(), PANEL_ROW);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter();
@@ -711,7 +727,8 @@ fn import_text(state: &AppState) -> Option<(String, egui::Color32)> {
     Some((note.text.clone(), color))
 }
 
-fn layer_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+/// The row that imports a heightmap, and the text of the import below it.
+fn import_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let enabled = !state.globe.busy();
     if widgets::text_row(ui, controls, IMPORT_HEIGHTMAP, 0.0, false, enabled).clicked() {
         state.actions.push(Action::ImportHeightmapDialog);
@@ -719,6 +736,10 @@ fn layer_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     if let Some((text, color)) = import_text(state) {
         ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
     }
+}
+
+fn layer_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    import_row(ui, state, controls);
     ui.checkbox(&mut state.globe.preview.greyscale, "Greyscale");
     elevation::controls(ui, state);
 }
