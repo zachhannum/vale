@@ -168,6 +168,10 @@ Overrides belong to a map frame and not to the feature. A label that you move on
 
 Each edit is one SQLite transaction with an entry in an undo log table. Undo and redo then work across sessions, and a crash cannot leave a half-written project.
 
+The log is three tables. A step is one edit. A step holds an image of each record and each raster tile that the edit changed, from before the edit. A record is the world, one raster, or one vector layer with its features. An image is one compressed blob. The image is empty if the record or the tile was not there. An undo swaps each image of the step with the record or the tile in the file, in one transaction. The step then holds the images from after the edit, and a redo swaps them back. A new edit removes the redo steps. An undo does not put back the next ID of a layer or of a raster, so an ID is not used again.
+
+The log has a size limit, which is 256 MB of images. If the log goes over the limit, the oldest undo steps go first. A step that is larger than the limit goes at once.
+
 The project file holds all the data of the project. The app does not edit the file in place. When you open a project, the app copies the file into its private storage and edits that working copy. Each edit is on disk in the working copy when the edit ends.
 
 The app saves without a command. It writes the working copy back as one whole file, in one atomic step. It does this when you close the project, when the app goes to the background, and every few minutes while there are changes. On Apple platforms, the write uses file coordination. A sync service such as iCloud Drive then sees only complete files.
@@ -264,7 +268,7 @@ The brush is a circle on the sphere with a radius in kilometers and a soft edge.
 
 A pen sets the flow from pressure. A mouse uses a fixed flow. The brush size follows the zoom unless you lock it.
 
-One stroke is one undo step. The step holds only the tiles that the stroke changed. In phase 1, the steps are in memory, and they use 256 MB at most. If a new step goes over that limit, the oldest steps go. Phase 2 moves the steps into the undo log of the project file.
+One stroke is one undo step. The step holds only the tiles that the stroke changed. With a project file, the step is in the undo log of the file. With no project file, the steps are in memory, and they use 256 MB at most. If a new step goes over that limit, the oldest steps go.
 
 ### Stepped preview
 
@@ -490,7 +494,7 @@ The seventh brush mode, Weather, limits the slope angle. A stamp compares each t
 
 1. The prototype is a vertical slice through phases 2, 4, 6, 8, and 9. It does not finish any of them.
 2. The map is drawn by `vello_cpu` on screen and in PNG files. The display list of `vale-render` exists, and the GPU Vello backend does not. The same pixels come out with and without a window, so tests need no GPU. The PDF export uses Krilla, and text in the PDF stays text.
-3. `vale-store` holds the project in memory, and it reads and writes the world, the vector layers, and the raster records as a GeoPackage file. One save writes all the vector layers again, and it writes only the raster tiles that changed. There is no undo log. A layer record has no raster type. In memory, a feature ID is its index in the layer. With `--project`, the app loads the project file at the start and saves half a second after each change. On iPad, the app uses one project file in its container. The file does not hold the styles. The heightmap of the app is the first raster of the project. The app makes that raster record at the first save, so each project of the prototype has one raster layer. A change of the heightmap waits for its save until the texels of the stroke are back from the GPU. When the app closes, a stroke that still waits for its texels does not go to the file. A project file that holds a heightmap gives its face size, and `--face-size` does not change it. If the device cannot hold a face of that size, the app shows an empty heightmap and does not save it, and the file keeps its tiles. The save runs on the UI thread.
+3. `vale-store` holds the project in memory, and it reads and writes the world, the vector layers, and the raster records as a GeoPackage file. One save writes all the vector layers again, and it writes only the raster tiles that changed. Each save that changes the file is one step of the undo log. A step holds a changed vector layer as a whole. A layer record has no raster type. In memory, a feature ID is its index in the layer. With `--project`, the app loads the project file at the start and saves half a second after a change. When a stroke or an import ends, the app saves at once, so each of them is one undo step. While you hold a control, the save waits, so one drag is one undo step. If the system stops the app, a change of a control that waits for its save is lost. On iPad, the app uses one project file in its container. The file does not hold the styles. The heightmap of the app is the first raster of the project. The app makes that raster record at the first save, which is not an undo step, so each project of the prototype has one raster layer. A change of the heightmap waits for its save until the texels of the stroke are back from the GPU. When the app closes, a stroke that still waits for its texels does not go to the file. A project file that holds a heightmap gives its face size, and `--face-size` does not change it. If the device cannot hold a face of that size, the app shows an empty heightmap and does not save it, and the file keeps its tiles. Undo and redo then use the steps in memory, for brush strokes only. An undo that brings back a removed layer gives it the default style. The save runs on the UI thread.
 4. `vale-import` reads GeoJSON, and it reads PNG and TIFF images as 16-bit greyscale. It copies the data, and there is no command to replace a file.
 5. `vale-sphere` clips with one simple method: rotate, unwrap, and clip in a plane. A polygon that covers more than half of the sphere is not supported. A ring closes along the short longitude way. `geo` and `rstar` are not dependencies yet.
 6. `vale-style` has one fixed rule for each layer, with a solid fill, a solid stroke, a circle symbol, and one label class.
@@ -500,7 +504,7 @@ The seventh brush mode, Weather, limits the slope angle. A stamp compares each t
 
 The prototype leaves out the following.
 
-- The styles and the map frame in the project file. Undo and redo are for brush strokes only.
+- The styles and the map frame in the project file. Undo and redo do not include the styles, the layer order of the map, or the map frame. With no project file, undo and redo are for brush strokes only.
 - Raster layers, SVG and Shapefile import, the command Replace from file, and georeferencing with extents or control points.
 - Rule-based styles, expressions, scale ranges, and all symbolizers other than a solid fill, a solid stroke, and a circle.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).

@@ -315,13 +315,13 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 Rect::from_min_size(min, vec2(TOUCH, TOUCH))
             };
             let step = TOUCH + PAD;
-            let can_undo = state.globe.can_undo();
+            let can_undo = state.can_undo();
             let undo =
                 widgets::icon_button_at(ui, controls, at(0.0), "Undo", Icon::Undo, false, can_undo);
             if undo.clicked() {
-                state.globe.undo();
+                state.undo();
             }
-            let can_redo = state.globe.can_redo();
+            let can_redo = state.can_redo();
             let redo = widgets::icon_button_at(
                 ui,
                 controls,
@@ -332,7 +332,7 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 can_redo,
             );
             if redo.clicked() {
-                state.globe.redo();
+                state.redo();
             }
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));

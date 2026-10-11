@@ -83,18 +83,172 @@ fn a_painted_world_opens_again_with_the_same_pixels() {
     let start = Instant::now();
     let tick = session.tick(&mut doc.project, &mut loaded, false, start);
     assert_eq!(tick.unwrap(), None);
+}
 
-    // Undo takes the tiles of the last stroke out of the file.
-    assert!(map.undo());
+/// A project file with a heightmap that keeps no undo steps in memory, as
+/// the app has it.
+fn start(path: &std::path::Path) -> (Session, Document, Heightmap) {
+    let mut doc = Document::sample();
+    let session = Session::open(path, &mut doc).unwrap();
+    let mut map = Heightmap::new(1024, BASE);
+    map.set_undo_steps(false);
+    (session, doc, map)
+}
+
+#[test]
+fn undo_works_after_a_close_and_an_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let (mut session, mut doc, mut map) = start(&path);
+    assert!(!session.can_undo());
+    paint(&mut map, 45.0, 35.3, 0.2);
     session.flush(&mut doc.project, &mut map).unwrap();
-    assert!(session.last_save.tiles_deleted > 0);
+    let first = texels(&map);
+    paint(&mut map, -100.0, 5.0, 0.05);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    let second = texels(&map);
+    assert!(first != second && !map.can_undo());
     drop(session);
-    let (_, _, loaded) = reopen(&path);
-    assert_eq!(loaded.allocated_tiles(), map.allocated_tiles());
-    assert!(
-        texels(&loaded) == texels(&map),
-        "the texels are not the same"
-    );
+
+    let (mut session, mut doc, mut map) = reopen(&path);
+    map.take_reset();
+    map.take_dirty();
+    assert!(session.can_undo() && !session.can_redo());
+    assert!(session.undo(&mut doc, &mut map).unwrap());
+    assert!(texels(&map) == first, "the texels are not the same");
+    // The GPU gets the tiles, and the file needs no save.
+    assert!(map.take_dirty().iter().any(Option::is_some));
+    assert!(!map.has_changes());
+    let tick = session.tick(&mut doc.project, &mut map, false, Instant::now());
+    assert_eq!(tick.unwrap(), None);
+    assert!(session.can_undo() && session.can_redo());
+    drop(session);
+
+    // The redo step is in the file too.
+    let (mut session, mut doc, mut map) = reopen(&path);
+    assert!(texels(&map) == first, "the texels are not the same");
+    assert!(session.redo(&mut doc, &mut map).unwrap());
+    assert!(texels(&map) == second, "the texels are not the same");
+    assert!(!session.can_redo());
+
+    // The undo of the first stroke frees its tiles. The record of the
+    // heightmap is not an edit.
+    assert!(session.undo(&mut doc, &mut map).unwrap());
+    assert!(session.undo(&mut doc, &mut map).unwrap());
+    assert_eq!(map.allocated_tiles(), 0);
+    assert!(texels(&map).iter().all(|&level| level == BASE));
+    assert!(!session.can_undo());
+    assert!(!session.undo(&mut doc, &mut map).unwrap());
+    assert_eq!(doc.project.rasters().len(), 1);
+
+    // A new stroke removes the redo steps.
+    assert!(session.can_redo());
+    paint(&mut map, 0.0, 90.0, 0.1);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    assert!(session.can_undo() && !session.can_redo());
+}
+
+#[test]
+fn brush_strokes_and_vector_edits_use_the_same_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let (mut session, mut doc, mut map) = start(&path);
+    let layers = doc.project.layers().to_vec();
+    let entries = doc.frame.entries.len();
+
+    paint(&mut map, 45.0, 35.3, 0.2);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    let painted = texels(&map);
+    let places = doc.project.layers()[2].id;
+    doc.remove_layer(places);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    paint(&mut map, -100.0, 5.0, 0.05);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    let last = texels(&map);
+    assert_eq!(doc.project.layers().len(), 2);
+
+    // The edits go back in the reverse order.
+    assert!(session.undo(&mut doc, &mut map).unwrap());
+    assert!(texels(&map) == painted, "the texels are not the same");
+    assert_eq!(doc.project.layers().len(), 2);
+    assert!(session.undo(&mut doc, &mut map).unwrap());
+    assert!(texels(&map) == painted, "the texels are not the same");
+    assert_eq!(doc.project.layers(), layers);
+    assert_eq!(doc.frame.entries.len(), entries);
+    assert!(session.undo(&mut doc, &mut map).unwrap());
+    assert_eq!(map.allocated_tiles(), 0);
+    assert_eq!(doc.project.layers(), layers);
+    assert!(!session.can_undo());
+
+    for _ in 0..3 {
+        assert!(session.redo(&mut doc, &mut map).unwrap());
+    }
+    assert!(texels(&map) == last, "the texels are not the same");
+    assert_eq!(doc.project.layers().len(), 2);
+    assert_eq!(doc.frame.entries.len(), entries - 1);
+    assert!(!session.can_redo());
+}
+
+/// The app stops while a stroke is open. The file has no part of it.
+#[test]
+fn a_stroke_that_did_not_end_is_not_in_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let (mut session, mut doc, mut map) = start(&path);
+    paint(&mut map, 45.0, 35.3, 0.2);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    let first = texels(&map);
+
+    map.begin_stroke();
+    map.stamp(&Stamp {
+        center: lonlat_to_dir(-100.0, 5.0),
+        radius: 0.05,
+        hardness: 0.3,
+        flow: 1.0,
+        mode: Mode::Raise,
+        level: 0,
+        strength: 9000.0,
+        talus: 0.0,
+    });
+    assert!(texels(&map) != first);
+    drop(session);
+
+    let (mut session, mut doc, mut map) = reopen(&path);
+    assert!(texels(&map) == first, "the texels are not the same");
+    assert!(session.undo(&mut doc, &mut map).unwrap());
+    assert!(!session.can_undo());
+}
+
+#[test]
+fn one_hold_of_a_control_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let (mut session, mut doc, mut map) = start(&path);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    let bands = map.bands.clone();
+    let stored = ProjectFile::open(&path).unwrap().1;
+
+    let start = Instant::now();
+    for i in 0..3 {
+        map.bands.ramp.land[0] = [i as u8 + 1, 2, 3];
+        let now = start + 2 * SAVE_DELAY * i;
+        let tick = session.tick(&mut doc.project, &mut map, true, now);
+        assert_eq!(tick.unwrap(), Some(SAVE_DELAY));
+    }
+    assert_eq!(ProjectFile::open(&path).unwrap().1, stored);
+    // The save comes at the end of the hold, with no delay.
+    doc.project.world.name = "Held".to_string();
+    let tick = session.tick(&mut doc.project, &mut map, false, start);
+    assert_eq!(tick.unwrap(), None);
+    assert_eq!(ProjectFile::open(&path).unwrap().1, doc.project);
+
+    assert!(session.undo(&mut doc, &mut map).unwrap());
+    assert_eq!(map.bands, bands);
+    assert_eq!(doc.project, stored);
+    assert!(!session.can_undo());
+    let tick = session.tick(&mut doc.project, &mut map, false, start + SAVE_DELAY);
+    assert_eq!(tick.unwrap(), None);
+    assert!(session.can_redo());
 }
 
 #[test]

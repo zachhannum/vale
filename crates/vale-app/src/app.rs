@@ -12,7 +12,6 @@ struct ValeApp {
     state: AppState,
     smoke_frames: Option<u64>,
     closing: bool,
-    session: Option<Session>,
     /// The files that the file picker of the system gave.
     picked: PickQueue,
     #[cfg(target_os = "ios")]
@@ -78,15 +77,10 @@ impl eframe::App for ValeApp {
             }
         }
 
-        if let Some(session) = &mut self.session {
-            let globe = &mut self.state.globe;
-            let busy = globe.busy();
-            let project = &mut self.state.doc.project;
-            match session.tick(project, &mut globe.map, busy, std::time::Instant::now()) {
-                Ok(Some(wait)) => ui.ctx().request_repaint_after(wait),
-                Ok(None) => {}
-                Err(e) => self.state.status = format!("The project did not save: {e}"),
-            }
+        // One drag of a control is one save, and thus one undo step.
+        let hold = ui.ctx().input(|i| i.pointer.any_down());
+        if let Some(wait) = self.state.save_tick(hold, std::time::Instant::now()) {
+            ui.ctx().request_repaint_after(wait);
         }
 
         if let Some(n) = self.smoke_frames {
@@ -100,7 +94,7 @@ impl eframe::App for ValeApp {
     }
 
     fn on_exit(&mut self) {
-        let Some(session) = &mut self.session else {
+        let Some(session) = &mut self.state.session else {
             return;
         };
         let globe = &mut self.state.globe;
@@ -146,11 +140,12 @@ pub fn run_window(
             .with_title("Vale"),
         ..Default::default()
     };
+    let mut state = state;
+    state.session = session;
     let app = ValeApp {
         state,
         smoke_frames,
         closing: false,
-        session,
         picked: PickQueue::default(),
         #[cfg(target_os = "ios")]
         picker: None,
@@ -163,7 +158,7 @@ pub fn run_window(
             if let Some(render_state) = &cc.wgpu_render_state {
                 app.state.globe.attach(render_state);
             }
-            if let Some(session) = &app.session
+            if let Some(session) = &app.state.session
                 && !session.saves_map(&app.state.globe.map)
             {
                 app.state.status = "This device cannot show the heightmap of the project. \

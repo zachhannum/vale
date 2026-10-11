@@ -2,7 +2,7 @@
 //!
 //! Each vector layer is one GeoPackage feature table. The `vale_` tables hold
 //! the world, the layer order, the attribute schema, the rasters, and the
-//! raster tiles. They are in
+//! raster tiles, and the undo log. They are in
 //! `gpkg_contents` with the data type `vale`. GDAL, and thus QGIS, lists a
 //! table that is not in `gpkg_contents` as a layer, and it does not list a
 //! table with a data type that it does not know.
@@ -15,17 +15,18 @@ use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
 
 use crate::tile::{self, TILE_SIZE};
+use crate::undo::{self, UNDO_LIMIT};
 use crate::{
     Feature, Geometry, GeometryKind, Layer, LayerId, LonLat, Project, Raster, RasterId, Rgb, Uuid,
     Value, World,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -94,7 +95,7 @@ impl From<std::io::Error> for StoreError {
     }
 }
 
-fn corrupt(what: impl Into<String>) -> StoreError {
+pub(crate) fn corrupt(what: impl Into<String>) -> StoreError {
     StoreError::Corrupt(what.into())
 }
 
@@ -129,9 +130,21 @@ pub struct SaveStats {
     pub tiles_deleted: usize,
 }
 
+/// The tiles that an undo or a redo changed in the file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Restored {
+    pub tiles: Vec<(RasterId, TileKey)>,
+}
+
 /// An open project file.
 pub struct ProjectFile {
     conn: Connection,
+    /// The project that the file holds.
+    project: Project,
+    undo_limit: u64,
+    can_undo: bool,
+    can_redo: bool,
+    undo_bytes: u64,
 }
 
 impl ProjectFile {
@@ -143,9 +156,33 @@ impl ProjectFile {
         }
         let mut conn = Connection::open(path)?;
         migrate(&mut conn, 0)?;
-        let mut file = ProjectFile { conn };
-        file.save(project)?;
+        let tx = conn.transaction()?;
+        write_edit(&tx, None, project, &[], 0)?;
+        tx.commit()?;
+        ProjectFile::with(conn, project.clone())
+    }
+
+    fn with(conn: Connection, project: Project) -> Result<ProjectFile, StoreError> {
+        let mut file = ProjectFile {
+            conn,
+            project,
+            undo_limit: UNDO_LIMIT,
+            can_undo: false,
+            can_redo: false,
+            undo_bytes: 0,
+        };
+        file.read_log()?;
         Ok(file)
+    }
+
+    fn read_log(&mut self) -> Result<(), StoreError> {
+        (self.can_undo, self.can_redo, self.undo_bytes) = undo::state(&self.conn)?;
+        Ok(())
+    }
+
+    /// The project that the file holds.
+    pub fn project(&self) -> &Project {
+        &self.project
     }
 
     /// Opens a project file and reads the project. A file of an older format
@@ -164,41 +201,123 @@ impl ProjectFile {
             migrate(&mut conn, version)?;
         }
         let project = load(&conn)?;
-        Ok((ProjectFile { conn }, project))
+        Ok((ProjectFile::with(conn, project.clone())?, project))
     }
 
-    /// Writes the project in one transaction. Each feature keeps its UUID,
-    /// and each raster keeps its tiles.
+    /// Writes the project as one edit. Each feature keeps its UUID, and each
+    /// raster keeps its tiles.
     pub fn save(&mut self, project: &Project) -> Result<(), StoreError> {
         self.save_tiles(project, &[]).map(|_| ())
     }
 
-    /// Writes the project and the changed raster tiles in one transaction.
-    /// Each other tile stays as it is. A raster that is not in the project
-    /// loses its tiles, and so does a raster with a new face size.
+    /// Writes the project and the changed raster tiles as one edit: one
+    /// transaction with one undo step. Each other tile stays as it is. A
+    /// raster that is not in the project loses its tiles, and so does a
+    /// raster with a new face size. An edit that changes nothing makes no
+    /// step. Any other edit removes the redo steps.
     pub fn save_tiles(
         &mut self,
         project: &Project,
         changes: &[TileChanges],
     ) -> Result<SaveStats, StoreError> {
         let tx = self.conn.transaction()?;
-        clear(&tx)?;
-        write_world(&tx, &project.world)?;
-        tx.execute(
-            "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('next_layer_id', ?1)",
-            [project.next_id.to_string()],
-        )?;
-        let mut tables = BTreeSet::new();
-        for (position, layer) in project.layers.iter().enumerate() {
-            let table = table_name(layer, &mut tables);
-            write_layer(&tx, position, layer, &table)?;
-        }
-        let mut stats = write_rasters(&tx, project)?;
-        for change in changes {
-            write_tiles(&tx, change, &mut stats)?;
-        }
+        let stats = write_edit(&tx, Some(&self.project), project, changes, self.undo_limit)?;
         tx.commit()?;
+        self.project = project.clone();
+        self.read_log()?;
         Ok(stats)
+    }
+
+    /// Writes the project in one transaction with no undo step, and removes
+    /// each step of the log. Each raster keeps its tiles.
+    pub fn save_base(&mut self, project: &Project) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        write_edit(&tx, None, project, &[], 0)?;
+        undo::clear(&tx)?;
+        tx.commit()?;
+        self.project = project.clone();
+        self.read_log()
+    }
+
+    /// True if the log has a step to undo.
+    pub fn can_undo(&self) -> bool {
+        self.can_undo
+    }
+
+    /// True if the log has a step to redo.
+    pub fn can_redo(&self) -> bool {
+        self.can_redo
+    }
+
+    /// Puts back the file from before the last edit, in one transaction.
+    /// `None`: the log has no step to undo.
+    pub fn undo(&mut self) -> Result<Option<Restored>, StoreError> {
+        self.step(false)
+    }
+
+    /// Puts back the edit that the last `undo` took away.
+    pub fn redo(&mut self) -> Result<Option<Restored>, StoreError> {
+        self.step(true)
+    }
+
+    fn step(&mut self, redo: bool) -> Result<Option<Restored>, StoreError> {
+        let tx = self.conn.transaction()?;
+        let Some(step) = undo::next(&tx, redo)? else {
+            return Ok(None);
+        };
+        let project = undo::swap_records(&tx, step, &self.project)?;
+        write_records(&tx, &project)?;
+        // A tile refers to the row of its raster.
+        write_rasters(&tx, &project)?;
+        let tiles = undo::swap_tiles(&tx, step)?;
+        remove_rasters(&tx, &project)?;
+        undo::moved(&tx, step, !redo, self.undo_limit)?;
+        tx.commit()?;
+        self.project = project;
+        self.read_log()?;
+        Ok(Some(Restored { tiles }))
+    }
+
+    /// The size of the undo log, in bytes of compressed images.
+    pub fn undo_bytes(&self) -> u64 {
+        self.undo_bytes
+    }
+
+    /// The limit of the size of the undo log, in bytes.
+    pub fn undo_limit(&self) -> u64 {
+        self.undo_limit
+    }
+
+    /// Sets the limit of the size of the undo log. The next edit, undo, or
+    /// redo removes the steps that are over the limit. A step that is larger
+    /// than the limit goes.
+    pub fn set_undo_limit(&mut self, bytes: u64) {
+        self.undo_limit = bytes;
+    }
+
+    /// Reads one tile of a raster. `None`: the file has no such tile.
+    pub fn load_tile(
+        &self,
+        raster: RasterId,
+        key: TileKey,
+    ) -> Result<Option<Vec<u16>>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let blob: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT data FROM vale_raster_tile WHERE raster_id = ?1 AND level = ?2
+                   AND face = ?3 AND tile_column = ?4 AND tile_row = ?5",
+                params![raster.0, key.level, key.face, key.column, key.row],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(blob) = blob else {
+            return Ok(None);
+        };
+        let pixels = tile::decode(&blob);
+        Ok(Some(pixels.ok_or_else(|| {
+            corrupt(format!("the pixels of raster tile {key:?}"))
+        })?))
     }
 
     /// Reads each tile of a raster, in key order. `tile` gets `TILE_SIZE` by
@@ -409,6 +528,55 @@ fn v2(tx: &Transaction) -> rusqlite::Result<()> {
 
 fn quote(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+/// Writes one edit. With `old`, the project that the file holds, the edit
+/// gets an undo step.
+fn write_edit(
+    tx: &Transaction,
+    old: Option<&Project>,
+    project: &Project,
+    changes: &[TileChanges],
+    undo_limit: u64,
+) -> Result<SaveStats, StoreError> {
+    let step = match old {
+        Some(old) => {
+            let step = undo::begin(tx)?;
+            undo::keep_records(tx, step, old, project)?;
+            Some(step)
+        }
+        None => None,
+    };
+    write_records(tx, project)?;
+    let mut stats = SaveStats {
+        tiles_deleted: remove_old_tiles(tx, project, step)?,
+        tiles_written: 0,
+    };
+    remove_rasters(tx, project)?;
+    write_rasters(tx, project)?;
+    for change in changes {
+        write_tiles(tx, change, step, &mut stats)?;
+    }
+    if let Some(step) = step {
+        undo::end(tx, step, undo_limit)?;
+    }
+    Ok(stats)
+}
+
+/// Writes the world and the vector layers.
+fn write_records(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    clear(tx)?;
+    write_world(tx, &project.world)?;
+    tx.execute(
+        "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('next_layer_id', ?1)",
+        [project.next_id.to_string()],
+    )?;
+    let mut tables = BTreeSet::new();
+    for (position, layer) in project.layers.iter().enumerate() {
+        let table = table_name(layer, &mut tables);
+        write_layer(tx, position, layer, &table)?;
+    }
+    Ok(())
 }
 
 /// Removes the world, the layer records, and the feature tables.
@@ -710,24 +878,47 @@ fn parse_limits(text: &str) -> Option<Vec<f64>> {
     numbers.map(|s| s.parse().ok()).collect()
 }
 
-/// Writes the raster records. The tiles of a raster stay, but not if the
-/// raster is no longer in the project or its face size is new.
-fn write_rasters(tx: &Transaction, project: &Project) -> Result<SaveStats, StoreError> {
+/// Removes the tiles of each raster that is no longer in the project or has
+/// a new face size. A step keeps their images. Returns the tile count.
+fn remove_old_tiles(
+    tx: &Transaction,
+    project: &Project,
+    step: Option<i64>,
+) -> Result<usize, StoreError> {
     let stored: Vec<(u32, u32)> = tx
         .prepare("SELECT id, face_size FROM vale_raster")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<Result<_, _>>()?;
-    let mut stats = SaveStats::default();
+    let mut removed = 0;
     for (id, face_size) in stored {
         let raster = project.raster(RasterId(id));
         if raster.is_none_or(|r| r.face_size != face_size) {
-            stats.tiles_deleted +=
-                tx.execute("DELETE FROM vale_raster_tile WHERE raster_id = ?1", [id])?;
+            if let Some(step) = step {
+                undo::keep_raster_tiles(tx, step, id)?;
+            }
+            removed += tx.execute("DELETE FROM vale_raster_tile WHERE raster_id = ?1", [id])?;
         }
-        if raster.is_none() {
+    }
+    Ok(removed)
+}
+
+/// Removes the record of each raster that is not in the project. Such a
+/// raster must have no tiles.
+fn remove_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    let stored: Vec<u32> = tx
+        .prepare("SELECT id FROM vale_raster")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for id in stored {
+        if project.raster(RasterId(id)).is_none() {
             tx.execute("DELETE FROM vale_raster WHERE id = ?1", [id])?;
         }
     }
+    Ok(())
+}
+
+/// Writes the raster records.
+fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     for (position, r) in project.rasters.iter().enumerate() {
         // A replaced row is a deleted row, and the tiles refer to the row.
         tx.execute(
@@ -759,16 +950,24 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<SaveStats, Store
         "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('next_raster_id', ?1)",
         [project.next_raster_id.to_string()],
     )?;
-    Ok(stats)
+    Ok(())
 }
 
+/// Writes the changed tiles of one raster. A step keeps the image of each
+/// tile from before the change. A tile with the pixels that the file holds
+/// is not a change.
 fn write_tiles(
     tx: &Transaction,
     change: &TileChanges,
+    step: Option<i64>,
     stats: &mut SaveStats,
 ) -> Result<(), StoreError> {
     let raster = change.raster.0;
+    let mut keep = tx.prepare(undo::KEEP_TILE)?;
     if change.all {
+        if let Some(step) = step {
+            undo::keep_raster_tiles(tx, step, raster)?;
+        }
         stats.tiles_deleted += tx.execute(
             "DELETE FROM vale_raster_tile WHERE raster_id = ?1",
             [raster],
@@ -778,10 +977,20 @@ fn write_tiles(
         "DELETE FROM vale_raster_tile WHERE raster_id = ?1 AND level = ?2 AND face = ?3
            AND tile_column = ?4 AND tile_row = ?5",
     )?;
+    let mut keep_old = tx.prepare(undo::KEEP_OLD_TILE)?;
     for key in &change.delete {
+        if let Some(step) = step {
+            keep_old.execute(params![
+                step, raster, key.level, key.face, key.column, key.row
+            ])?;
+        }
         stats.tiles_deleted +=
             delete.execute(params![raster, key.level, key.face, key.column, key.row])?;
     }
+    let mut same = tx.prepare(
+        "SELECT EXISTS (SELECT 1 FROM vale_raster_tile WHERE raster_id = ?1 AND level = ?2
+           AND face = ?3 AND tile_column = ?4 AND tile_row = ?5 AND data = ?6)",
+    )?;
     let mut put = tx.prepare(
         "INSERT INTO vale_raster_tile (raster_id, level, face, tile_column, tile_row, data)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -790,9 +999,16 @@ fn write_tiles(
     for batch in change.put.chunks(TILE_BATCH) {
         let blobs = tile::parallel_map(batch, |(_, pixels)| tile::encode(pixels));
         for ((key, _), blob) in batch.iter().zip(blobs) {
-            put.execute(params![
-                raster, key.level, key.face, key.column, key.row, blob
-            ])?;
+            let at = params![raster, key.level, key.face, key.column, key.row, blob];
+            if same.query_row(at, |r| r.get(0))? {
+                continue;
+            }
+            if let Some(step) = step {
+                keep.execute(params![
+                    step, raster, key.level, key.face, key.column, key.row
+                ])?;
+            }
+            put.execute(at)?;
             stats.tiles_written += 1;
         }
     }
@@ -940,7 +1156,7 @@ fn put_positions(out: &mut Vec<u8>, positions: &[LonLat]) {
 }
 
 /// A GeoPackage geometry: a header with no envelope, then little-endian WKB.
-fn encode_geometry(geometry: &Geometry) -> Vec<u8> {
+pub(crate) fn encode_geometry(geometry: &Geometry) -> Vec<u8> {
     let empty = match geometry {
         Geometry::Points(p) => p.is_empty(),
         Geometry::Lines(l) => l.is_empty(),
@@ -980,20 +1196,20 @@ fn encode_geometry(geometry: &Geometry) -> Vec<u8> {
 }
 
 /// Reads little-endian values from a blob.
-struct Reader<'a>(&'a [u8]);
+pub(crate) struct Reader<'a>(pub(crate) &'a [u8]);
 
 impl Reader<'_> {
-    fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
+    pub(crate) fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
         let (head, rest) = self.0.split_first_chunk::<N>()?;
         self.0 = rest;
         Some(*head)
     }
 
-    fn u32(&mut self) -> Option<u32> {
+    pub(crate) fn u32(&mut self) -> Option<u32> {
         self.take().map(u32::from_le_bytes)
     }
 
-    fn f64(&mut self) -> Option<f64> {
+    pub(crate) fn f64(&mut self) -> Option<f64> {
         self.take().map(f64::from_le_bytes)
     }
 
@@ -1015,7 +1231,7 @@ impl Reader<'_> {
 }
 
 /// `None` for a blob that is not a little-endian XY geometry of this kind.
-fn decode_geometry(blob: &[u8], kind: GeometryKind) -> Option<Geometry> {
+pub(crate) fn decode_geometry(blob: &[u8], kind: GeometryKind) -> Option<Geometry> {
     let mut r = Reader(blob);
     let [g, p, _version, flags] = r.take()?;
     (g == b'G' && p == b'P' && flags & 0x01 == 1).then_some(())?;
@@ -1280,6 +1496,9 @@ mod tests {
                 "vale_meta",
                 "vale_raster",
                 "vale_raster_tile",
+                "vale_undo_record",
+                "vale_undo_step",
+                "vale_undo_tile",
                 "vale_world"
             ]
         );
@@ -1727,7 +1946,7 @@ mod tests {
         let (mut file, mut project) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(project.world.name, "Old");
         assert_eq!(project.rasters(), []);
-        assert_eq!(format_version(&file.conn).unwrap(), 2);
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
         let id = project.add_raster("Height".into(), 4096);
         assert_eq!(id, RasterId(0));
         let tiles = vec![(key(1, 2, 3), pixels(1))];
@@ -1784,5 +2003,316 @@ mod tests {
             Err(StoreError::Corrupt(what)) => assert!(what.contains("ramp"), "{what}"),
             other => panic!("{:?}", other.map(|x| x.1)),
         }
+    }
+
+    /// Ground that does not compress.
+    fn noise(seed: u32) -> Vec<u16> {
+        let mut n = seed.wrapping_mul(2_654_435_761) | 1;
+        (0..TILE_SIZE * TILE_SIZE)
+            .map(|_| {
+                n = n.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (n >> 16) as u16
+            })
+            .collect()
+    }
+
+    /// The project and each tile of each raster of a file. The project has
+    /// no next IDs, because an undo does not put them back.
+    type Content = (Project, Vec<Vec<(TileKey, Vec<u16>)>>);
+
+    fn content(file: &ProjectFile) -> Content {
+        let mut project = file.project().clone();
+        (project.next_id, project.next_raster_id) = (0, 0);
+        let tiles = project.rasters().iter().map(|r| tiles_of(file, r));
+        (project.clone(), tiles.collect())
+    }
+
+    fn steps(file: &ProjectFile) -> i64 {
+        let count = "SELECT COUNT(*) FROM vale_undo_step";
+        file.conn.query_row(count, [], |r| r.get(0)).unwrap()
+    }
+
+    /// A file with three edits: a brush stroke, a vector edit, and an edit
+    /// of both with a new world name. Returns the content after the creation
+    /// and after each edit.
+    fn three_edits(dir: &tempfile::TempDir) -> (ProjectFile, Vec<Content>) {
+        let (mut project, height, rain) = rasters();
+        let mut file = ProjectFile::create(&path(dir), &project).unwrap();
+        let mut states = vec![content(&file)];
+
+        let stroke = vec![(key(0, 0, 0), pixels(1)), (key(2, 3, 4), pixels(2))];
+        let wet = vec![(key(5, 3, 3), pixels(3))];
+        let changes = [put(height, &stroke, vec![]), put(rain, &wet, vec![])];
+        file.save_tiles(&project, &changes).unwrap();
+        states.push(content(&file));
+
+        let places = project.layers()[0].id;
+        let rivers = project.layers()[1].id;
+        project.layers[0].features.remove(1);
+        project.layers[0].features[0].geometry = Geometry::Points(vec![[1.0, 2.0]]);
+        project.remove_layer(rivers);
+        project.add_layer(
+            "Towns".into(),
+            GeometryKind::Point,
+            None,
+            vec![Feature::new(
+                Geometry::Points(vec![[3.0, 4.0]]),
+                attributes(&[("name", text("Bree"))]),
+            )],
+        );
+        assert_eq!(project.layers()[0].id, places);
+        file.save(&project).unwrap();
+        states.push(content(&file));
+
+        project.world.name = "Third".into();
+        project.raster_mut(height).unwrap().base = 7;
+        project.layers.swap(0, 2);
+        let stroke = vec![(key(0, 0, 0), pixels(4)), (key(1, 1, 1), pixels(5))];
+        let changes = [put(height, &stroke, vec![key(2, 3, 4)])];
+        file.save_tiles(&project, &changes).unwrap();
+        states.push(content(&file));
+        (file, states)
+    }
+
+    #[test]
+    fn undo_works_after_a_close_and_an_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, states) = three_edits(&dir);
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(&loaded, file.project());
+        assert_eq!(content(&file), states[3]);
+        assert!(file.can_undo() && !file.can_redo());
+        for state in states[..3].iter().rev() {
+            assert!(file.undo().unwrap().is_some());
+            assert_eq!(&content(&file), state);
+        }
+        assert!(!file.can_undo() && file.can_redo());
+        assert_eq!(file.undo().unwrap(), None);
+        drop(file);
+
+        // The file holds the project from after the undo steps, and the redo
+        // steps are there too.
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(content(&file), states[0]);
+        assert!(!file.can_undo() && file.can_redo());
+        for state in &states[1..] {
+            assert!(file.redo().unwrap().is_some());
+            assert_eq!(&content(&file), state);
+        }
+        assert!(file.can_undo() && !file.can_redo());
+        assert_eq!(file.redo().unwrap(), None);
+        // Each feature keeps its UUID through an undo and a redo.
+        assert_eq!(content(&file), states[3]);
+    }
+
+    #[test]
+    fn brush_strokes_and_vector_edits_use_the_same_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut file, states) = three_edits(&dir);
+        let (height, rain) = (RasterId(0), RasterId(1));
+        // Each edit is one step of one table, in the order of the edits.
+        let rows = |file: &ProjectFile, table: &str| {
+            let sql = format!(
+                "SELECT group_concat(n, ' ') FROM (SELECT COUNT(t.step_id) AS n
+                 FROM vale_undo_step s LEFT JOIN {table} t ON t.step_id = s.id
+                 GROUP BY s.id ORDER BY s.id)"
+            );
+            strings(&file.conn, &sql).remove(0)
+        };
+        assert_eq!(rows(&file, "vale_undo_tile"), "3 0 3");
+        assert_eq!(rows(&file, "vale_undo_record"), "0 6 4");
+
+        // An undo names the tiles that it changed.
+        let restored = file.undo().unwrap().unwrap();
+        let tiles = [key(0, 0, 0), key(1, 1, 1), key(2, 3, 4)].map(|k| (height, k));
+        assert_eq!(restored.tiles, tiles);
+        assert_eq!(file.load_tile(height, key(1, 1, 1)).unwrap(), None);
+        assert_eq!(
+            file.load_tile(height, key(2, 3, 4)).unwrap(),
+            Some(pixels(2))
+        );
+        assert_eq!(file.undo().unwrap().unwrap().tiles, []);
+        let restored = file.undo().unwrap().unwrap();
+        assert_eq!(restored.tiles.len(), 3);
+        assert!(restored.tiles.contains(&(rain, key(5, 3, 3))));
+        assert_eq!(content(&file), states[0]);
+
+        // A new edit removes the redo steps, and a save with no change keeps
+        // them.
+        file.redo().unwrap();
+        assert_eq!(content(&file), states[1]);
+        file.save_tiles(
+            &states[1].0,
+            &[put(height, &[(key(0, 0, 0), pixels(1))], vec![])],
+        )
+        .unwrap();
+        file.save_tiles(&states[1].0, &[put(height, &[], vec![key(4, 4, 4)])])
+            .unwrap();
+        assert!(file.can_redo());
+        assert_eq!(steps(&file), 3);
+        let mut next = states[1].0.clone();
+        next.world.radius_km = 99.0;
+        file.save(&next).unwrap();
+        assert!(!file.can_redo());
+        assert_eq!(steps(&file), 2);
+        file.undo().unwrap();
+        assert_eq!(content(&file), states[1]);
+    }
+
+    #[test]
+    fn an_undo_puts_back_a_raster_and_its_tiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut file, states) = three_edits(&dir);
+        let (height, rain) = (RasterId(0), RasterId(1));
+        let mut project = states[3].0.clone();
+        project.remove_raster(height);
+        project.raster_mut(rain).unwrap().face_size = 2000;
+        let wet = vec![(key(0, 7, 7), pixels(8))];
+        file.save_tiles(&project, &[put(rain, &wet, vec![])])
+            .unwrap();
+        let after = content(&file);
+        assert_eq!(after.1, [wet]);
+
+        assert_eq!(file.undo().unwrap().unwrap().tiles.len(), 4);
+        assert_eq!(content(&file), states[3]);
+        file.redo().unwrap();
+        assert_eq!(content(&file), after);
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT DISTINCT CAST(raster_id AS TEXT) FROM vale_raster_tile"
+            ),
+            ["1"]
+        );
+
+        // An edit that replaces each tile of a raster.
+        let ground = pixels(9);
+        let all = TileChanges {
+            raster: rain,
+            all: true,
+            put: vec![(key(1, 0, 0), &ground[..])],
+            delete: vec![],
+        };
+        file.save_tiles(&project, &[all]).unwrap();
+        file.undo().unwrap();
+        assert_eq!(content(&file), after);
+    }
+
+    /// The files are copied while an edit is half in the file, as a stop of
+    /// the app leaves them.
+    #[test]
+    fn a_stop_in_the_middle_of_an_edit_leaves_the_file_from_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut file, states) = three_edits(&dir);
+        let before = std::fs::read(path(&dir)).unwrap();
+        // With a small page cache, SQLite writes pages to the file before
+        // the end of the transaction.
+        file.conn.execute_batch("PRAGMA cache_size = 4").unwrap();
+
+        let mut project = states[3].0.clone();
+        project.world.name = "Half".into();
+        project.remove_layer(project.layers()[0].id);
+        let stroke: Vec<_> = (0..40).map(|i| (key(3, i, 0), noise(i))).collect();
+        let tx = file.conn.transaction().unwrap();
+        let changes = [put(RasterId(0), &stroke, vec![key(0, 0, 0)])];
+        write_edit(&tx, Some(&file.project), &project, &changes, UNDO_LIMIT).unwrap();
+
+        let stopped = tempfile::tempdir().unwrap();
+        let journal = |dir: &tempfile::TempDir| dir.path().join("world.gpkg-journal");
+        std::fs::copy(path(&dir), path(&stopped)).unwrap();
+        std::fs::copy(journal(&dir), journal(&stopped)).unwrap();
+        assert_ne!(std::fs::read(path(&stopped)).unwrap(), before);
+        drop(tx);
+
+        for dir in [&stopped, &dir] {
+            let (mut file, _) = ProjectFile::open(&path(dir)).unwrap();
+            assert_eq!(content(&file), states[3]);
+            assert_eq!(steps(&file), 3);
+            file.undo().unwrap();
+            assert_eq!(content(&file), states[2]);
+        }
+    }
+
+    #[test]
+    fn the_undo_log_has_a_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, height, _) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert_eq!(file.undo_limit(), UNDO_LIMIT);
+        let stroke = |file: &mut ProjectFile, seed: u32| {
+            let tiles = vec![(key(0, 0, 0), noise(seed))];
+            file.save_tiles(&project, &[put(height, &tiles, vec![])])
+                .unwrap();
+        };
+        // The first stroke makes the tile, so its step holds no pixels.
+        let tile = 2 * (TILE_SIZE * TILE_SIZE) as u64;
+        for seed in 0..4 {
+            stroke(&mut file, seed);
+        }
+        assert_eq!(steps(&file), 4);
+        assert!(file.undo_bytes() > 3 * tile && file.undo_bytes() < 3 * tile + 4096);
+
+        // The oldest steps go.
+        file.set_undo_limit(2 * tile + 4096);
+        stroke(&mut file, 4);
+        assert_eq!(steps(&file), 2);
+        assert!(file.undo_bytes() <= file.undo_limit());
+        file.undo().unwrap();
+        file.undo().unwrap();
+        assert_eq!(
+            file.load_tile(height, key(0, 0, 0)).unwrap(),
+            Some(noise(2))
+        );
+        assert!(!file.can_undo());
+
+        // The undo steps go before the redo steps, and the next redo goes
+        // last.
+        file.redo().unwrap();
+        file.set_undo_limit(tile + 4096);
+        file.undo().unwrap();
+        assert_eq!(steps(&file), 1);
+        file.redo().unwrap();
+        assert_eq!(
+            file.load_tile(height, key(0, 0, 0)).unwrap(),
+            Some(noise(3))
+        );
+        assert!(!file.can_redo());
+
+        // A step that is larger than the limit goes.
+        file.set_undo_limit(100);
+        stroke(&mut file, 5);
+        assert_eq!((steps(&file), file.undo_bytes()), (0, 0));
+        assert!(!file.can_undo());
+    }
+
+    #[test]
+    fn a_damaged_undo_step_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut file, states) = three_edits(&dir);
+        file.conn
+            .execute(
+                "UPDATE vale_undo_record SET data = x'0102' WHERE kind = 'world'",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(file.undo(), Err(StoreError::Corrupt(_))));
+        // The undo that failed changed nothing.
+        assert_eq!(content(&file), states[3]);
+    }
+
+    #[test]
+    fn a_base_save_makes_no_step_and_removes_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut file, states) = three_edits(&dir);
+        file.undo().unwrap();
+        let mut project = file.project().clone();
+        project.world.name = "Base".into();
+        file.save_base(&project).unwrap();
+        assert!(!file.can_undo() && !file.can_redo());
+        assert_eq!((steps(&file), file.undo_bytes()), (0, 0));
+        assert_eq!(content(&file).1, states[2].1);
+        assert_eq!(file.project().world.name, "Base");
     }
 }

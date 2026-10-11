@@ -29,14 +29,14 @@ The window opens on the globe workspace. The globe shows the heightmap of the wo
 - The globe and the flat view draw the rivers that the painted land implies, and the carve mode cuts valleys along them. While you hold the brush, the erode mode cuts valleys that branch up toward the ridges. When you zoom in, the rivers and the valleys become finer. A Rivers switch in the elevation controls hides the rivers. A slider below it sets the width of the lines.
 - The brush keeps its size on screen when you zoom. Select "Lock size" to keep its size on the ground.
 - The flatten mode moves the ground to the level under the start of the stroke. To set a fixed level, click "Pick from globe", and then press on the globe.
-- Press Ctrl+Z to undo a stroke. Press Ctrl+Shift+Z or Ctrl+Y to redo it. On a Mac, use Command in place of Ctrl. On a touch screen, tap with two fingers to undo, and tap with three fingers to redo. The iPad layout also has an undo button and a redo button in the top row. A new stroke removes the strokes that you can redo. The undo steps use 256 MB of memory at most, and the oldest steps go first.
+- Press Ctrl+Z to undo a stroke. Press Ctrl+Shift+Z or Ctrl+Y to redo it. On a Mac, use Command in place of Ctrl. On a touch screen, tap with two fingers to undo, and tap with three fingers to redo. The iPad layout also has an undo button and a redo button in the top row. A new stroke removes the strokes that you can redo. The undo steps use 256 MB of memory at most, and the oldest steps go first. With `--project`, the steps are in the project file, and they use 256 MB of the file at most. Undo and redo then work after you close the app and open it again. They also include each change of the world, of the vector layers, and of the elevation bands.
 - Click "Flat" in the tool bar to show the whole world as one flat map. Click it again to go back to the globe. The tool and the panels stay. A drag moves the map, and the wheel zooms. You can zoom out until the map has a quarter of the size of the canvas. At each zoom, you can move each place of the map to the middle of the canvas. The brush paints the same heightmap, and its outline shows the ground that the stamp covers. In the equirectangular projection, the outline is wide near a pole.
 - In the flat view, the list next to "Flat" sets the projection: equirectangular, Equal Earth, Mercator, Lambert azimuthal, orthographic, or stereographic. In the iPad layout, the button next to "Flat" opens the same list.
 - "Recenter" makes the place at the middle of the canvas the center of the projection. Move the map first. "Reset" puts the center of the projection back and shows the whole map. In the iPad layout, the two actions are buttons to the right of the view switch.
 - Click "Greyscale" in the tool bar to show the plain heightmap.
 - Click "Import heightmap…" in the tool bar to replace the heightmap with an equirectangular image. You can also drop the image on the window. The image is a PNG or TIFF file, and 16-bit greyscale gives the best result. Black is -6,000 m, and white is 6,000 m. If the image is not twice as wide as it is tall, the status bar shows a warning. In the iPad layout, the button is in the panel of the Height layer. "Undo" puts the old heightmap back. If the old heightmap has more painted tiles than the undo memory of 256 MB holds, the import has no undo step.
 - Click "Elevation" in the tool bar to open the elevation panel. The bar shows the band limits, which are the elevations where the tints change. Tap a free place on the bar to add a limit. Drag a limit to move it. Tap a limit and click "Remove" to remove it. Sea level is a limit that stays. Clear "Levels" to show the color ramp with no steps. The land colors and the sea colors are separate.
-- Click "Debug" in the tool bar to open the brush debug panel. It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. It shows the memory of the undo steps. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
+- Click "Debug" in the tool bar to open the brush debug panel. It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. It shows the memory of the undo steps, or the size of the undo log of the project file. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
 
 In the window, each face of the heightmap has 8,192 pixels. The GPU and the main memory hold only the tiles that you painted. After an import, the heightmap holds 805 MB on the GPU and 805 MB of main memory. If the computer has no GPU, start the app with `--face-size 1024`.
 
@@ -64,7 +64,7 @@ This command keeps the world, the vector layers, and the heightmap in a project 
 cargo run --release -p vale-app -- --project path/to/world.gpkg
 ```
 
-The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after each change. A save after a brush stroke writes only the tiles that the stroke changed. The file does not hold the styles. On iPad, the app keeps one project file in its container.
+The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after a change, and at once after a brush stroke. Each save is one undo step. A save after a brush stroke writes only the tiles that the stroke changed. The file does not hold the styles. On iPad, the app keeps one project file in its container.
 
 ## Headless use
 
@@ -151,7 +151,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 
 ## What the prototype leaves out
 
-- The styles in the project file. Undo and redo are for brush strokes only. Without `--project`, the session ends when the window closes.
+- The styles in the project file. Without `--project`, undo and redo are for brush strokes only, and the session ends when the window closes.
 - Raster layers, SVG and Shapefile import, and the command Replace from file.
 - Rule-based styles. A layer has one fill, one stroke, and one circle symbol.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
