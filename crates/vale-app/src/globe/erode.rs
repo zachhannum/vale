@@ -87,7 +87,7 @@ impl Ground {
     /// cells of `from` keep their heights.
     fn moved(&self, from: &Erosion) -> Erosion {
         match (self, from.grid()) {
-            (Ground::Alone(heights), ErodeGrid::Window(_)) => from.moved(heights),
+            (Ground::Alone(heights), ErodeGrid::Window(_)) => from.moved(heights, None),
             _ => self.erosion(),
         }
     }
