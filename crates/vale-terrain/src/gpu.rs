@@ -1,7 +1,8 @@
 //! The heightmap in wgpu textures, and the brush as a shader.
 //!
 //! `Heightmap::stamp` is the reference. `GpuHeightmap::stamp` gives the same
-//! levels to within the rounding of 32-bit numbers.
+//! levels to within the rounding of 32-bit numbers. `Heightmap::erode` is the
+//! reference of `GpuHeightmap::erode` in the same way.
 //!
 //! The textures hold only the tiles that have a level other than the base
 //! level. `tiles.rs` has the pool of the tiles.
@@ -13,7 +14,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::bands::SEA_LEVEL;
 use crate::cube::{FACES, meters_to_level};
-use crate::flow::{ChannelMap, ChannelWindow, WINDOW_CELLS, Window};
+use crate::erode::{ErodeGrid, ErodeStep};
+use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
 use crate::heightmap::{Mode, StampPlan, TILE_SIZE, TexelRect};
 use crate::tiles::{Pool, TILES_WGSL};
 
@@ -108,7 +110,8 @@ struct Uniforms {
     sea: u32,
     /// The number of texels along one side of a face of the channel map.
     channel_size: u32,
-    /// 1 if the carve mode has a window, and 0 if not.
+    /// 1 if the carve mode has a window, and 0 if not. In an erode pass, 1
+    /// if the cells of the step are the cells of a window.
     window_on: u32,
     /// The first texel, the face, and the cell size of the window.
     window_origin: [i32; 2],
@@ -116,7 +119,12 @@ struct Uniforms {
     window_cell: u32,
     /// The texel of the face at the first texel of the render target.
     origin: [i32; 2],
-    pad: [u32; 2],
+    /// The number of cells of an erode pass along one side of a face.
+    cells: u32,
+    pad: u32,
+    /// The texels of the drop texture that hold the drops of an erode pass:
+    /// x0, y0, x1, y1. The drop of each other cell is 0.
+    drop_rect: [i32; 4],
     stamps: [FaceStamp; GROUP_STAMPS],
 }
 
@@ -182,6 +190,11 @@ pub struct GpuHeightmap {
     window_view: wgpu::TextureView,
     /// The place of the window, or `None` with no window.
     window: Mutex<Option<Window>>,
+    /// The drops of an erode step on the cells of `CoarseHeights`. Each face
+    /// has one more cell at each side, from the faces that are there.
+    drops: wgpu::Texture,
+    /// The drops of an erode step on the cells of a window.
+    window_drops: wgpu::Texture,
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     /// One slot of `slot_size` bytes for each pass of a batch.
@@ -261,6 +274,31 @@ impl GpuHeightmap {
         });
         let window_view = window_channels.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let drop_texture = |label, size: usize, layers: usize| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: size as u32,
+                    height: size as u32,
+                    depth_or_array_layers: layers as u32,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let cells = CoarseHeights::size_for(face_size as usize);
+        let drops = drop_texture("erode drops", cells + 2, FACES);
+        let drops_view = drops.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let window_drops = drop_texture("erode window drops", WINDOW_CELLS, 1);
+        let window_drops_view = window_drops.create_view(&wgpu::TextureViewDescriptor::default());
+
         let uniform_size = size_of::<Uniforms>() as u32;
         let slot_size =
             uniform_size.next_multiple_of(device.limits().min_uniform_buffer_offset_alignment);
@@ -297,6 +335,8 @@ impl GpuHeightmap {
                 },
                 texture_entry(1, wgpu::TextureViewDimension::D2Array),
                 texture_entry(2, wgpu::TextureViewDimension::D2),
+                texture_entry(3, wgpu::TextureViewDimension::D2Array),
+                texture_entry(4, wgpu::TextureViewDimension::D2),
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -318,6 +358,14 @@ impl GpuHeightmap {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&window_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&drops_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&window_drops_view),
                 },
             ],
         });
@@ -373,6 +421,8 @@ impl GpuHeightmap {
             window_channels,
             window_view,
             window: Mutex::new(None),
+            drops,
+            window_drops,
             pipeline,
             bind_group,
             uniforms,
@@ -563,6 +613,11 @@ impl GpuHeightmap {
             return 0;
         };
         let mode = first.stamp.mode;
+        if mode == Mode::Erode {
+            // These stamps change nothing, so they need no pass.
+            let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
+            return same.count();
+        }
         // A smooth stamp reads the results of the stamp before it on the
         // texels around each texel. The other modes read one texel.
         let most = match mode {
@@ -607,6 +662,7 @@ impl GpuHeightmap {
                     Mode::Smooth => 2,
                     Mode::Flatten => 3,
                     Mode::Carve => 4,
+                    Mode::Erode => 5,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,
@@ -635,46 +691,61 @@ impl GpuHeightmap {
                 u64::from(offset),
                 &bytemuck::bytes_of(&uniforms)[..used],
             );
-            // The pass reads each tile from the pool, so the tiles get
-            // their memory before it.
-            let tiles = state.pool.tiles_in(rect);
-            for &(tx, ty, _) in &tiles {
-                state.pool.ensure(&self.device, queue, face, tx, ty, true);
-            }
-            let size = extent(rect);
-            let scratch = self.scratch(&mut state.scratch, rect);
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stamp"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &scratch.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[offset]);
-            pass.set_bind_group(1, state.pool.bind_group(), &[]);
-            pass.set_scissor_rect(0, 0, size.width, size.height);
-            pass.draw(0..3, 0..1);
-            drop(pass);
-            for (tx, ty, part) in tiles {
-                let slot = state.pool.slot(face, tx, ty).expect("the tile has memory");
-                enc.copy_texture_to_texture(
-                    texels(&scratch.texture, part.x0 - rect.x0, part.y0 - rect.y0, 0),
-                    state.pool.texels(slot, part.x0, part.y0),
-                    extent(part),
-                );
-            }
+            self.pass(queue, enc, state, face, rect, offset);
         }
         count
+    }
+
+    /// Adds one pass to `enc` for a rectangle of one face, and the copies of
+    /// its result to the tiles. `offset` is the place of the uniforms of the
+    /// pass.
+    fn pass(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        state: &mut State,
+        face: usize,
+        rect: TexelRect,
+        offset: u32,
+    ) {
+        // The pass reads each tile from the pool, so the tiles get
+        // their memory before it.
+        let tiles = state.pool.tiles_in(rect);
+        for &(tx, ty, _) in &tiles {
+            state.pool.ensure(&self.device, queue, face, tx, ty, true);
+        }
+        let size = extent(rect);
+        let scratch = self.scratch(&mut state.scratch, rect);
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("stamp"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &scratch.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[offset]);
+        pass.set_bind_group(1, state.pool.bind_group(), &[]);
+        pass.set_scissor_rect(0, 0, size.width, size.height);
+        pass.draw(0..3, 0..1);
+        drop(pass);
+        for (tx, ty, part) in tiles {
+            let slot = state.pool.slot(face, tx, ty).expect("the tile has memory");
+            enc.copy_texture_to_texture(
+                texels(&scratch.texture, part.x0 - rect.x0, part.y0 - rect.y0, 0),
+                state.pool.texels(slot, part.x0, part.y0),
+                extent(part),
+            );
+        }
     }
 
     /// The render target for a rectangle of texels.
@@ -721,6 +792,140 @@ impl GpuHeightmap {
             });
         }
         scratch.as_ref().expect("the target is set")
+    }
+
+    /// Adds one step of the erode brush to `enc`, with one pass for each face
+    /// that the step can change. The result is that of `Heightmap::erode`.
+    /// The step comes from an `Erosion` with the same face size.
+    ///
+    /// The drops go to the GPU at the next submit, before the commands of
+    /// each encoder in that submit. Thus a submit holds one step at most.
+    /// A tile that the step can change gets memory.
+    ///
+    /// Returns `false` and adds nothing if the batch is full. Then submit
+    /// `enc`, call `begin_batch`, and add the step to a new encoder.
+    pub fn erode(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        step: &ErodeStep,
+    ) -> bool {
+        let rects = step.rects();
+        let first_slot = self.used_slots.load(Ordering::Relaxed);
+        let passes = rects.iter().flatten().count() as u32;
+        if passes > STAMP_SLOTS - first_slot {
+            return false;
+        }
+        self.used_slots
+            .store(first_slot + passes, Ordering::Relaxed);
+        let n = self.face_size as usize;
+        let state = &mut *self.state();
+        let grid = step.grid();
+        let window = match grid {
+            ErodeGrid::Global { size } => {
+                assert_eq!(size as u32 + 2, self.drops.width(), "the cell size");
+                None
+            }
+            ErodeGrid::Window(window) => {
+                assert!(window.cells <= WINDOW_CELLS, "the window size");
+                assert_eq!(window.face_size, n, "the face size");
+                Some(window)
+            }
+        };
+        // The cells of a window that go down, as a rectangle.
+        let window_cells = window.and_then(|window| {
+            let cells = window.cells;
+            let lowered = |i: usize| step.drops()[i] > 0;
+            let rows = |y: &usize| (0..cells).any(|x| lowered(y * cells + x));
+            let columns = |x: &usize| (0..cells).any(|y| lowered(y * cells + x));
+            let cells = TexelRect {
+                x0: (0..cells).find(columns)?,
+                y0: (0..cells).find(rows)?,
+                x1: (0..cells).rfind(columns)? + 1,
+                y1: (0..cells).rfind(rows)? + 1,
+            };
+            self.upload_drops(queue, &self.window_drops, 0, cells, |x, y| {
+                step.cell_drop(window.face, x, y)
+            });
+            Some(cells)
+        });
+        let touched = rects.iter().enumerate();
+        let touched = touched.filter_map(|(face, rect)| Some((face, (*rect)?)));
+        for (slot, (face, rect)) in (first_slot..).zip(touched) {
+            let cells = match grid {
+                ErodeGrid::Global { size } => {
+                    // The cells that the texels of the rectangle read, in
+                    // the texture. The cell one place past the face edge is
+                    // at 0 there.
+                    let first = |t: usize| ((2 * t + 1) * size + n) / (2 * n);
+                    let cells = TexelRect {
+                        x0: first(rect.x0),
+                        y0: first(rect.y0),
+                        x1: first(rect.x1 - 1) + 2,
+                        y1: first(rect.y1 - 1) + 2,
+                    };
+                    self.upload_drops(queue, &self.drops, face as u32, cells, |x, y| {
+                        step.cell_drop(face, x - 1, y - 1)
+                    });
+                    cells
+                }
+                ErodeGrid::Window(_) => window_cells.unwrap_or(TexelRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                }),
+            };
+            let offset = slot * self.slot_size;
+            let uniforms = Uniforms {
+                face: face as u32,
+                mode: 5,
+                size: self.face_size as i32,
+                window_on: u32::from(window.is_some()),
+                window_face: window.map_or(0, |w| w.face as u32),
+                window_origin: window.map_or([0; 2], |w| [w.x0 as i32, w.y0 as i32]),
+                window_cell: window.map_or(1, |w| w.cell as u32),
+                origin: [rect.x0 as i32, rect.y0 as i32],
+                drop_rect: [cells.x0, cells.y0, cells.x1, cells.y1].map(|c| c as i32),
+                cells: self.drops.width() - 2,
+                ..bytemuck::Zeroable::zeroed()
+            };
+            let used = size_of::<Uniforms>() - GROUP_STAMPS * size_of::<FaceStamp>();
+            queue.write_buffer(
+                &self.uniforms,
+                u64::from(offset),
+                &bytemuck::bytes_of(&uniforms)[..used],
+            );
+            self.pass(queue, enc, state, face, rect, offset);
+        }
+        true
+    }
+
+    /// Writes the drops of a rectangle of cells to one layer of a drop
+    /// texture. `drop` gives the drop of the cell at a texel of the texture.
+    fn upload_drops(
+        &self,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        layer: u32,
+        cells: TexelRect,
+        drop: impl Fn(i64, i64) -> u16,
+    ) {
+        let mut data = Vec::with_capacity(area(cells));
+        for y in cells.y0..cells.y1 {
+            data.extend((cells.x0..cells.x1).map(|x| drop(x as i64, y as i64)));
+        }
+        let size = extent(cells);
+        queue.write_texture(
+            texels(texture, cells.x0, cells.y0, layer),
+            bytemuck::cast_slice(&data),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.width * 2),
+                rows_per_image: Some(size.height),
+            },
+            size,
+        );
     }
 
     /// Adds a copy of a rectangle to `enc`, for a read on the CPU.

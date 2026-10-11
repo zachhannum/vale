@@ -4,9 +4,9 @@ use std::sync::{Arc, OnceLock, mpsc};
 
 use vale_terrain::math::{V3, dot, lonlat_to_dir};
 use vale_terrain::{
-    ChannelMap, ChannelWindow, CoarseHeights, FACES, FlowMap, GROUP_STAMPS, GpuHeightmap,
-    Heightmap, Mode, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TexelRect, WINDOW_CELLS, Window,
-    WindowHeights, channel_map, window_channels,
+    ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FlowMap, GROUP_STAMPS,
+    GpuHeightmap, Heightmap, Mode, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TexelRect,
+    WINDOW_CELLS, Window, WindowHeights, channel_map, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -1122,4 +1122,131 @@ fn smooth_leaves_no_seam_at_a_tile_edge() {
             101 + i
         );
     }
+}
+
+fn erode_brush(lon: f64, lat: f64, radius: f64) -> ErodeBrush {
+    ErodeBrush {
+        center: lonlat_to_dir(lon, lat),
+        radius,
+        hardness: 0.3,
+        flow: 0.8,
+    }
+}
+
+/// Applies steps of the erode brush to a copy of `cpu` on the GPU and to
+/// `cpu`, with one submit for each step. Returns the largest difference
+/// between a GPU texel and a CPU texel, and the number of texels that changed
+/// on each face.
+fn erode_run(
+    cpu: &mut Heightmap,
+    erosion: &mut Erosion,
+    brushes: &[ErodeBrush],
+    steps: usize,
+) -> (u16, [usize; FACES]) {
+    let gpu = gpu();
+    let map = gpu.copy_of(cpu);
+    let before = levels(cpu);
+    for _ in 0..steps {
+        let step = erosion.step(brushes, 1.0);
+        assert!(!step.is_empty());
+        let mut enc = gpu.encoder();
+        assert!(map.erode(&gpu.queue, &mut enc, &step));
+        gpu.submit(enc);
+        map.begin_batch();
+        assert!(cpu.erode(&step) > 0);
+    }
+    let difference = max_difference(cpu, &gpu.read_all(&map));
+    let (after, n) = (levels(cpu), cpu.face_size());
+    let changed = std::array::from_fn(|face| {
+        let texels = face * n * n..(face + 1) * n * n;
+        changes(&before[texels.clone()], &after[texels])
+    });
+    (difference, changed)
+}
+
+/// An erosion of a window on `window_land` with cells of 2 texels. The window
+/// is on face 0, and it covers a part of face 2.
+fn window_erosion(cpu: &Heightmap) -> Erosion {
+    let window = Window::centered(lonlat_to_dir(40.0, 3.0), WINDOW_FACE, 2, WINDOW_CELLS);
+    assert_eq!(window.face, 0);
+    let global = FlowMap::new(&CoarseHeights::new(cpu));
+    Erosion::window(&WindowHeights::new(cpu, window), &global)
+}
+
+/// A cell of the global grid is 2 texels wide, and the brushes are on both
+/// sides of a face edge. Thus the test covers the mix of the cells and the
+/// cells past the edge.
+#[test]
+fn gpu_erode_matches_cpu_for_a_global_step() {
+    let mut cpu = window_land();
+    let coarse = CoarseHeights::new(&cpu);
+    assert_eq!(2 * coarse.size(), cpu.face_size());
+    let mut erosion = Erosion::global(&coarse, cpu.face_size());
+    let brushes = [erode_brush(41.0, 3.0, 0.1), erode_brush(49.0, 6.0, 0.1)];
+    let (difference, changed) = erode_run(&mut cpu, &mut erosion, &brushes, 3);
+    eprintln!("erode on the global grid, largest difference: {difference}, {changed:?}");
+    assert!(changed[0] > 1000 && changed[2] > 1000, "{changed:?}");
+    assert!(difference <= TOLERANCE, "{difference}");
+
+    // A step with no free slot adds nothing.
+    let gpu = gpu();
+    let map = gpu.copy_of(&cpu);
+    let step = erosion.step(&brushes, 1.0);
+    let passes = step.rects().iter().flatten().count();
+    assert!(passes >= 2);
+    let mut enc = gpu.encoder();
+    let mut steps = 0;
+    while map.erode(&gpu.queue, &mut enc, &step) {
+        steps += 1;
+        assert!(steps * passes <= STAMP_SLOTS as usize);
+    }
+    assert_eq!(steps, STAMP_SLOTS as usize / passes);
+    map.begin_batch();
+    assert!(map.erode(&gpu.queue, &mut gpu.encoder(), &step));
+}
+
+/// The ground under the brush is below sea level, and it goes down as the
+/// land does.
+#[test]
+fn gpu_erode_matches_cpu_below_sea_level() {
+    let mut cpu = window_land();
+    let sea = vale_terrain::meters_to_level(vale_terrain::SEA_LEVEL);
+    let before = levels(&cpu);
+    let mut erosion = Erosion::global(&CoarseHeights::new(&cpu), cpu.face_size());
+    let brush = erode_brush(125.0, -15.0, 0.1);
+    assert!(cpu.sample(brush.center) < sea);
+    let (difference, changed) = erode_run(&mut cpu, &mut erosion, &[brush], 3);
+    eprintln!("erode below sea level, largest difference: {difference}, {changed:?}");
+    let lowered = before.iter().zip(levels(&cpu));
+    let lowered = lowered
+        .filter(|&(&old, new)| old < sea && new < old)
+        .count();
+    assert!(lowered > 1000, "{lowered}");
+    assert!(difference <= TOLERANCE, "{difference}");
+}
+
+#[test]
+fn gpu_erode_in_a_window_matches_cpu() {
+    let mut cpu = window_land();
+    let mut erosion = window_erosion(&cpu);
+    let (difference, changed) =
+        erode_run(&mut cpu, &mut erosion, &[erode_brush(30.0, 3.0, 0.05)], 3);
+    eprintln!("erode in a window, largest difference: {difference}, {changed:?}");
+    assert!(changed[0] > 1000, "{changed:?}");
+    assert_eq!(changed.iter().sum::<usize>(), changed[0]);
+    assert!(difference <= TOLERANCE, "{difference}");
+}
+
+/// On the next face, the place of a texel in the window has a small error on
+/// the GPU. The differences of the steps can add, so the test has one step.
+#[test]
+fn gpu_erode_in_a_window_matches_cpu_past_a_face_edge() {
+    let mut cpu = window_land();
+    let mut erosion = window_erosion(&cpu);
+    let (difference, changed) =
+        erode_run(&mut cpu, &mut erosion, &[erode_brush(53.0, 3.0, 0.05)], 1);
+    eprintln!("erode in a window past a face edge, largest difference: {difference}, {changed:?}");
+    assert!(changed[2] > 1000, "{changed:?}");
+    assert_eq!(changed.iter().sum::<usize>(), changed[2]);
+    assert!(difference <= TOLERANCE, "{difference}");
 }

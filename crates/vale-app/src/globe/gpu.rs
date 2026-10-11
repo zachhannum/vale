@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use eframe::egui_wgpu::{self, wgpu};
 
 use vale_terrain::{
-    ChannelMap, ChannelWindow, FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback, StampPlan,
-    TILES_WGSL, TexelRect,
+    ChannelMap, ChannelWindow, ErodeStep, FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback,
+    StampPlan, TILES_WGSL, TexelRect,
 };
 
 use super::backdrop::{Backdrop, Canvas};
@@ -242,6 +242,8 @@ pub enum Op {
         stroke: u64,
         time: Instant,
     },
+    /// One step of an erode stroke.
+    Erode { stroke: u64, step: Arc<ErodeStep> },
     /// Reads texels back for the CPU heightmap.
     Readback {
         stroke: u64,
@@ -547,6 +549,13 @@ impl Batch<'_> {
         }
     }
 
+    fn count_passes(&mut self, stroke: u64, passes: u32) {
+        match self.passes.iter_mut().find(|(id, _)| *id == stroke) {
+            Some((_, count)) => *count += passes,
+            None => self.passes.push((stroke, passes)),
+        }
+    }
+
     /// Adds stamps that follow one another in the queue, in groups. `samples`
     /// has the stroke and the sample time of each stamp.
     fn stamp_run(&mut self, plans: &[StampPlan], samples: &[(u64, Instant)]) {
@@ -569,11 +578,7 @@ impl Batch<'_> {
             let end = at + group;
             let touched = |face: &usize| plans[at..end].iter().any(|p| p.rects[*face].is_some());
             let passes = (0..FACES).filter(touched).count() as u32;
-            let stroke = samples[at].0;
-            match self.passes.iter_mut().find(|(id, _)| *id == stroke) {
-                Some((_, count)) => *count += passes,
-                None => self.passes.push((stroke, passes)),
-            }
+            self.count_passes(samples[at].0, passes);
             self.stamps.extend(&samples[at..end]);
             at = end;
         }
@@ -594,6 +599,18 @@ impl Batch<'_> {
                 self.heights.upload(self.queue, face, rect, &data);
             }
             Op::Stamp { plan, stroke, time } => self.stamp_run(&[*plan], &[(stroke, time)]),
+            Op::Erode { stroke, step } => {
+                // The drops of the step go to the GPU at the next submit,
+                // before the commands in the encoder. So the commands before
+                // the step go first, and a submit holds one step.
+                self.submit();
+                let (heights, queue) = (self.heights, self.queue);
+                heights.begin_batch();
+                let added = heights.erode(queue, self.encoder(), &step);
+                debug_assert!(added, "an empty batch takes one step");
+                let passes = step.rects().iter().flatten().count() as u32;
+                self.count_passes(stroke, passes);
+            }
             Op::Readback { stroke, face, rect } => {
                 let (heights, device) = (self.heights, self.device);
                 let readback = heights.read_rect(device, self.encoder(), face, rect);

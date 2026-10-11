@@ -50,10 +50,10 @@ pub const WINDOW_CELLS: usize = 512;
 /// is not sure. A river outside the window can be nearer.
 pub const WINDOW_MARGIN: f64 = 8.0;
 
-const NONE: u32 = u32::MAX;
+pub(crate) const NONE: u32 = u32::MAX;
 
 /// The receiver of a cell whose water leaves the window.
-const OUT: u32 = u32::MAX - 1;
+pub(crate) const OUT: u32 = u32::MAX - 1;
 
 /// The steps to the 8 neighbors of a cell. The first 4 share a side with it.
 const STEPS: [(i64, i64); 8] = [
@@ -67,7 +67,7 @@ const STEPS: [(i64, i64); 8] = [
     (-1, -1),
 ];
 
-fn sea() -> u16 {
+pub(crate) fn sea() -> u16 {
     meters_to_level(SEA_LEVEL)
 }
 
@@ -77,13 +77,13 @@ fn center(m: usize, i: i64) -> f64 {
     (i as f64 + 0.5) / m as f64 * 2.0 - 1.0
 }
 
-fn cell_dir(m: usize, face: usize, x: usize, y: usize) -> V3 {
+pub(crate) fn cell_dir(m: usize, face: usize, x: usize, y: usize) -> V3 {
     let flat = |i: usize| unwarp(center(m, i as i64));
     face_dir(face, flat(x), flat(y))
 }
 
 /// The cell that holds a direction.
-fn cell_at(m: usize, d: V3) -> (usize, usize, usize) {
+pub(crate) fn cell_at(m: usize, d: V3) -> (usize, usize, usize) {
     let (face, a, b) = face_of(d);
     let index = |a: f64| (((warp(a) + 1.0) * 0.5 * m as f64).floor().max(0.0) as usize).min(m - 1);
     (face, index(a), index(b))
@@ -91,7 +91,7 @@ fn cell_at(m: usize, d: V3) -> (usize, usize, usize) {
 
 /// The cell at a place that can be past the face edge. The cell grid
 /// continues past the edge, as the texel grid does in `Heightmap::get`.
-fn cell_past_edge(m: usize, face: usize, x: i64, y: i64) -> (usize, usize, usize) {
+pub(crate) fn cell_past_edge(m: usize, face: usize, x: i64, y: i64) -> (usize, usize, usize) {
     let flat = |i: i64| unwarp(center(m, i).clamp(-1.99, 1.99));
     cell_at(m, face_dir(face, flat(x), flat(y)))
 }
@@ -132,7 +132,7 @@ fn scatter(i: usize, k: usize) -> f64 {
 }
 
 /// The solid angle of each cell of one face, in steradians, row by row.
-fn solid_angles(m: usize) -> Vec<f64> {
+pub(crate) fn solid_angles(m: usize) -> Vec<f64> {
     let flat: Vec<f64> = (0..m).map(|i| unwarp(center(m, i as i64))).collect();
     let step = |f: f64| (1.0 + f * f) * FRAC_PI_4 * 2.0 / m as f64;
     let mut out = Vec::with_capacity(m * m);
@@ -149,9 +149,9 @@ fn solid_angles(m: usize) -> Vec<f64> {
 /// of some of its texels.
 #[derive(Clone)]
 pub struct CoarseHeights {
-    m: usize,
+    pub(crate) m: usize,
     /// The cells of all faces, face by face, in row order.
-    levels: Vec<u16>,
+    pub(crate) levels: Vec<u16>,
 }
 
 impl CoarseHeights {
@@ -226,7 +226,7 @@ impl CoarseHeights {
 }
 
 /// The cells that the water flows on.
-trait Grid {
+pub(crate) trait Grid {
     /// The 8 neighbors of a cell, in the order of `STEPS`. A neighbor past
     /// the end of the grid is `NONE`.
     fn neighbors(&self, i: usize) -> [u32; 8];
@@ -237,9 +237,9 @@ trait Grid {
 }
 
 /// The cells of the six faces.
-struct CubeGrid {
-    m: usize,
-    solid: Vec<f64>,
+pub(crate) struct CubeGrid {
+    pub(crate) m: usize,
+    pub(crate) solid: Vec<f64>,
 }
 
 impl Grid for CubeGrid {
@@ -256,16 +256,27 @@ impl Grid for CubeGrid {
     }
 }
 
+/// The flow of the water on a grid.
+pub(crate) struct Drain {
+    /// The cell that takes the water of each land cell.
+    pub(crate) receiver: Vec<u32>,
+    /// The solid angle that drains through each land cell, in steradians.
+    pub(crate) area: Vec<f32>,
+    /// The land cells. Each receiver is before the cells that it takes water
+    /// from.
+    pub(crate) order: Vec<u32>,
+}
+
 /// The receiver of each land cell, and the solid angle that drains through
 /// it.
 ///
 /// The flood fills each pit to the level of its rim, from the ways out to
 /// the land inside. Then each cell drains to a steep neighbor that is lower
 /// in the filled land. A way out is an ocean cell or the end of the grid.
-/// `inflow` gives water from outside the grid: a cell and a solid angle.
-fn drain(grid: &impl Grid, levels: &[u16], inflow: &[(usize, f64)]) -> (Vec<u32>, Vec<f32>) {
+/// `inflow` gives water from outside the grid: a cell and a solid angle. A
+/// cell below the level `sea` is ocean.
+pub(crate) fn drain(grid: &impl Grid, levels: &[u16], inflow: &[(usize, f64)], sea: u16) -> Drain {
     let count = levels.len();
-    let sea = sea();
     let is_land = |i: usize| levels[i] >= sea;
     let mut receiver = vec![NONE; count];
     let lands = levels.iter().filter(|&&level| level >= sea).count();
@@ -340,7 +351,11 @@ fn drain(grid: &impl Grid, levels: &[u16], inflow: &[(usize, f64)]) -> (Vec<u32>
             area[to as usize] += area[i as usize];
         }
     }
-    (receiver, area.iter().map(|&area| area as f32).collect())
+    Drain {
+        receiver,
+        area: area.iter().map(|&area| area as f32).collect(),
+        order,
+    }
 }
 
 /// The path of the water from each land cell to the sea. A cell below sea
@@ -360,7 +375,7 @@ impl FlowMap {
             m: heights.m,
             solid: solid_angles(heights.m),
         };
-        let (receiver, area) = drain(&grid, &heights.levels, &[]);
+        let Drain { receiver, area, .. } = drain(&grid, &heights.levels, &[], sea());
         FlowMap {
             m: heights.m,
             receiver,
@@ -818,7 +833,7 @@ impl Window {
 
     /// The equal-angle coordinate of a place along one axis. `p` is in cells
     /// from the first cell, and `first` is `x0` or `y0`.
-    fn angle_at(&self, first: i64, p: f64) -> f64 {
+    pub(crate) fn angle_at(&self, first: i64, p: f64) -> f64 {
         (first as f64 + p * self.cell as f64) / self.face_size as f64 * 2.0 - 1.0
     }
 
@@ -901,6 +916,40 @@ impl Window {
     }
 }
 
+impl Window {
+    /// The smallest area that a river cell of the window drains, in
+    /// steradians.
+    pub(crate) fn river_min_area(&self) -> f64 {
+        let count = self.cells * self.cells;
+        let solid: f64 = (0..count).map(|i| self.solid_angle(i)).sum();
+        RIVER_MIN_CELLS * solid / count as f64
+    }
+
+    /// The water of the rivers of `global` that come into the window: a cell
+    /// of the window and a solid angle.
+    pub(crate) fn inflow(&self, global: &FlowMap) -> Vec<(usize, f64)> {
+        let m = global.m;
+        // The window cell that holds the center of a cell of `global`.
+        let inside = |i: usize| {
+            let (face, x, y) = split(m, i);
+            let (x, y) = self.cell_at(cell_dir(m, face, x, y))?;
+            Some(y * self.cells + x)
+        };
+        let mut inflow = Vec::new();
+        // A river that comes in keeps the area that it drains outside.
+        for (i, &area) in global.area.iter().enumerate() {
+            let to = global.receiver[i];
+            if f64::from(area) < RIVER_MIN_AREA || to == NONE || inside(i).is_some() {
+                continue;
+            }
+            if let Some(cell) = inside(to as usize) {
+                inflow.push((cell, f64::from(area)));
+            }
+        }
+        inflow
+    }
+}
+
 impl Grid for Window {
     fn neighbors(&self, i: usize) -> [u32; 8] {
         let n = self.cells as i64;
@@ -933,9 +982,9 @@ impl Grid for Window {
 /// The levels of the cells of a window.
 #[derive(Clone)]
 pub struct WindowHeights {
-    window: Window,
+    pub(crate) window: Window,
     /// The cells in row order.
-    levels: Vec<u16>,
+    pub(crate) levels: Vec<u16>,
 }
 
 impl WindowHeights {
@@ -995,34 +1044,13 @@ impl WindowFlow {
     /// `global` gives the rivers that come into the window from outside.
     fn new(heights: &WindowHeights, global: Option<&FlowMap>) -> WindowFlow {
         let window = heights.window;
-        let mut inflow = Vec::new();
-        if let Some(global) = global {
-            let m = global.m;
-            // The window cell that holds the center of a cell of `global`.
-            let inside = |i: usize| {
-                let (face, x, y) = split(m, i);
-                let (x, y) = window.cell_at(cell_dir(m, face, x, y))?;
-                Some(y * window.cells + x)
-            };
-            // A river that comes in keeps the area that it drains outside.
-            for (i, &area) in global.area.iter().enumerate() {
-                let to = global.receiver[i];
-                if f64::from(area) < RIVER_MIN_AREA || to == NONE || inside(i).is_some() {
-                    continue;
-                }
-                if let Some(cell) = inside(to as usize) {
-                    inflow.push((cell, f64::from(area)));
-                }
-            }
-        }
-        let (receiver, area) = drain(&window, &heights.levels, &inflow);
-        let count = heights.levels.len();
-        let solid: f64 = (0..count).map(|i| window.solid_angle(i)).sum();
+        let inflow = global.map_or_else(Vec::new, |global| window.inflow(global));
+        let Drain { receiver, area, .. } = drain(&window, &heights.levels, &inflow, sea());
         WindowFlow {
             window,
             receiver,
             area,
-            min_area: RIVER_MIN_CELLS * solid / count as f64,
+            min_area: window.river_min_area(),
         }
     }
 
@@ -1151,15 +1179,18 @@ pub fn window_channels(heights: &WindowHeights, global: &FlowMap) -> ChannelWind
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::cube::level_to_meters;
     use crate::math::{angle, dir_to_lonlat, lonlat_to_dir};
 
-    const OCEAN: f64 = -1000.0;
+    pub(crate) const OCEAN: f64 = -1000.0;
 
     /// Heights from a function of the cell. The function gives meters.
-    fn from_cells(m: usize, meters: impl Fn(usize, usize, usize) -> f64) -> CoarseHeights {
+    pub(crate) fn from_cells(
+        m: usize,
+        meters: impl Fn(usize, usize, usize) -> f64,
+    ) -> CoarseHeights {
         CoarseHeights::from_fn(m, |d| {
             let (face, x, y) = cell_at(m, d);
             meters_to_level(meters(face, x, y))
@@ -1188,7 +1219,7 @@ mod tests {
     }
 
     /// Land with hills and pits on about a third of the sphere.
-    fn lumpy(d: V3) -> u16 {
+    pub(crate) fn lumpy(d: V3) -> u16 {
         let wave = |k: f64, p: f64| (k * d[0] + p).sin() * (k * d[1] - p).cos() * (k * d[2]).cos();
         let meters =
             -250.0 + 1800.0 * wave(3.0, 0.4) + 900.0 * wave(7.0, 1.3) + 400.0 * wave(17.0, 2.1);
@@ -1614,7 +1645,7 @@ mod tests {
 
     /// A valley along the equator that goes down to the west, from face 2 to
     /// face 0.
-    fn equator_valley(d: V3) -> u16 {
+    pub(crate) fn equator_valley(d: V3) -> u16 {
         let (lon, lat) = dir_to_lonlat(d);
         let across = (lat - 0.4).abs();
         meters_to_level(if lon > 10.0 && lon < 80.0 && across < 3.0 {

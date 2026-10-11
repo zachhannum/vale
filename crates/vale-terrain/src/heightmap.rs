@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::bands::{Bands, SEA_LEVEL};
 use crate::cube::{FACES, face_dir, face_of, meters_to_level, unwarp, warp};
+use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
 use crate::math::{V3, cross, normalize};
 
@@ -30,6 +31,9 @@ pub enum Mode {
     /// Lowers the ground along the rivers of the channel map. Land does not
     /// go below sea level.
     Carve,
+    /// The mode of the erode brush. A stamp of this mode changes nothing.
+    /// `Heightmap::erode` makes the change.
+    Erode,
 }
 
 /// One touch of the brush on the sphere.
@@ -287,7 +291,7 @@ impl Heightmap {
 
     /// The texel index for an equal-angle coordinate.
     fn index(&self, s: f64) -> usize {
-        (((s + 1.0) * 0.5 * self.n as f64).floor().max(0.0) as usize).min(self.n - 1)
+        texel_index(self.n, s)
     }
 
     fn texel(&self, face: usize, x: usize, y: usize) -> u16 {
@@ -552,73 +556,21 @@ impl Heightmap {
         }
     }
 
-    /// The texels of one face that a brush circle can touch.
-    fn stamp_rect(&self, face: usize, center: V3, radius: f64) -> Option<TexelRect> {
-        let axis = face / 2;
-        let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
-        let (ua, va) = ((axis + 1) % 3, (axis + 2) % 3);
-        // A face point is at most 54.74 degrees from the face center.
-        if center[axis] * sign < (0.9554 + radius).cos() {
-            return None;
-        }
-        // Two vectors that are square to the center and to each other.
-        let other = if center[2].abs() < 0.9 {
-            [0.0, 0.0, 1.0]
-        } else {
-            [1.0, 0.0, 0.0]
-        };
-        let e1 = normalize(cross(center, other));
-        let e2 = cross(center, e1);
-        let (sr, cr) = radius.sin_cos();
-        let (mut a0, mut a1, mut b0, mut b1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-        const SAMPLES: usize = 32;
-        for i in 0..=SAMPLES {
-            // The last sample is the center.
-            let p = if i == SAMPLES {
-                center
-            } else {
-                let (s, c) = (i as f64 / SAMPLES as f64 * TAU).sin_cos();
-                [
-                    center[0] * cr + (e1[0] * c + e2[0] * s) * sr,
-                    center[1] * cr + (e1[1] * c + e2[1] * s) * sr,
-                    center[2] * cr + (e1[2] * c + e2[2] * s) * sr,
-                ]
-            };
-            let depth = (p[axis] * sign).max(0.02);
-            let (a, b) = (p[ua] / depth, p[va] / depth);
-            a0 = a0.min(a);
-            a1 = a1.max(a);
-            b0 = b0.min(b);
-            b1 = b1.max(b);
-        }
-        // The samples cut the corners of the true outline, so add a margin.
-        let margin = 0.02 * (a1 - a0).max(b1 - b0);
-        let (a0, a1, b0, b1) = (a0 - margin, a1 + margin, b0 - margin, b1 + margin);
-        if a0 > 1.0 || a1 < -1.0 || b0 > 1.0 || b1 < -1.0 {
-            return None;
-        }
-        let lo = |a: f64| self.index(warp(a.clamp(-1.0, 1.0))).saturating_sub(1);
-        let hi = |a: f64| (self.index(warp(a.clamp(-1.0, 1.0))) + 2).min(self.n);
-        Some(TexelRect {
-            x0: lo(a0),
-            y0: lo(b0),
-            x1: hi(a1),
-            y1: hi(b1),
-        })
-    }
-
     /// The texels that a stamp can touch.
     pub fn stamp_plan(&self, stamp: &Stamp) -> StampPlan {
         let radius = stamp.radius.clamp(1e-6, MAX_BRUSH_RADIUS);
         StampPlan {
             stamp: Stamp { radius, ..*stamp },
-            rects: std::array::from_fn(|face| self.stamp_rect(face, stamp.center, radius)),
+            rects: std::array::from_fn(|face| brush_rect(self.n, face, stamp.center, radius)),
             reach: ((radius / (FRAC_PI_2 / self.n as f64)) * 0.25).max(1.0) as usize,
         }
     }
 
     /// Applies one stamp. Returns the number of texels that it visited.
     pub fn stamp(&mut self, stamp: &Stamp) -> usize {
+        if stamp.mode == Mode::Erode {
+            return 0;
+        }
         let plan = self.stamp_plan(stamp);
         let mut visited = 0;
         for (face, rect) in plan.rects.into_iter().enumerate() {
@@ -668,13 +620,7 @@ impl Heightmap {
                             continue;
                         }
                         let k = cos_angle.min(1.0).acos() / radius;
-                        let weight = if k <= hard {
-                            1.0
-                        } else {
-                            let k = (k - hard) / (1.0 - hard);
-                            1.0 - k * k * (3.0 - 2.0 * k)
-                        };
-                        let amount = weight * stamp.flow;
+                        let amount = falloff(k, hard) * stamp.flow;
                         let offset = (y - ty * t) * t + (x - tx * t);
                         let old_level = tile.as_ref().map_or(base, |tile| tile[offset]);
                         let old = f64::from(old_level);
@@ -682,6 +628,7 @@ impl Heightmap {
                             Mode::Raise => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
+                            Mode::Erode => continue,
                             Mode::Carve => {
                                 // The place of the texel in the window. On
                                 // the face of the window, the place is exact.
@@ -738,6 +685,123 @@ impl Heightmap {
         }
         (rect.x1 - rect.x0) * (rect.y1 - rect.y0)
     }
+
+    /// Lowers the texels by the drops of one step of the erode brush. A texel
+    /// takes the drops of the 4 cells around it, in the ratio of its
+    /// distances to their centers. The lowest level is 0. Returns the number
+    /// of texels that changed.
+    pub fn erode(&mut self, step: &ErodeStep) -> usize {
+        let (t, base, n) = (self.tile, self.base, self.n);
+        let mut changed = 0;
+        for (face, rect) in step.rects().into_iter().enumerate() {
+            let Some(rect) = rect else { continue };
+            assert!(rect.x1 <= n && rect.y1 <= n, "the face size");
+            let before = changed;
+            for ty in rect.y0 / t..=(rect.y1 - 1) / t {
+                for tx in rect.x0 / t..=(rect.x1 - 1) / t {
+                    let index = (face * self.per_side + ty) * self.per_side + tx;
+                    let tile = &mut self.tiles[index];
+                    let mut saved = false;
+                    for y in rect.y0.max(ty * t)..rect.y1.min((ty + 1) * t) {
+                        for x in rect.x0.max(tx * t)..rect.x1.min((tx + 1) * t) {
+                            let drop = step.drop_at(n, face, x, y).round();
+                            if drop <= 0.0 {
+                                continue;
+                            }
+                            let offset = (y - ty * t) * t + (x - tx * t);
+                            let old = tile.as_ref().map_or(base, |tile| tile[offset]);
+                            let new = (f64::from(old) - drop).max(0.0) as u16;
+                            if new == old {
+                                continue;
+                            }
+                            if !saved {
+                                save_tile(&mut self.stroke, index, tile);
+                                saved = true;
+                            }
+                            tile.get_or_insert_with(|| vec![base; t * t].into())[offset] = new;
+                            changed += 1;
+                        }
+                    }
+                }
+            }
+            if changed > before {
+                self.mark_dirty(face, rect);
+            }
+        }
+        changed
+    }
+}
+
+/// The texel index for an equal-angle coordinate, on a face with `n` texels
+/// along one side.
+fn texel_index(n: usize, s: f64) -> usize {
+    (((s + 1.0) * 0.5 * n as f64).floor().max(0.0) as usize).min(n - 1)
+}
+
+/// The effect of a brush at `k` radii from its center, from 0 to 1. `hard`
+/// is the part of the radius with full effect.
+pub(crate) fn falloff(k: f64, hard: f64) -> f64 {
+    if k <= hard {
+        return 1.0;
+    }
+    let k = (k - hard) / (1.0 - hard);
+    1.0 - k * k * (3.0 - 2.0 * k)
+}
+
+/// The texels of one face that a brush circle can touch. The face has `n`
+/// texels along one side.
+pub(crate) fn brush_rect(n: usize, face: usize, center: V3, radius: f64) -> Option<TexelRect> {
+    let axis = face / 2;
+    let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
+    let (ua, va) = ((axis + 1) % 3, (axis + 2) % 3);
+    // A face point is at most 54.74 degrees from the face center.
+    if center[axis] * sign < (0.9554 + radius).cos() {
+        return None;
+    }
+    // Two vectors that are square to the center and to each other.
+    let other = if center[2].abs() < 0.9 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let e1 = normalize(cross(center, other));
+    let e2 = cross(center, e1);
+    let (sr, cr) = radius.sin_cos();
+    let (mut a0, mut a1, mut b0, mut b1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    const SAMPLES: usize = 32;
+    for i in 0..=SAMPLES {
+        // The last sample is the center.
+        let p = if i == SAMPLES {
+            center
+        } else {
+            let (s, c) = (i as f64 / SAMPLES as f64 * TAU).sin_cos();
+            [
+                center[0] * cr + (e1[0] * c + e2[0] * s) * sr,
+                center[1] * cr + (e1[1] * c + e2[1] * s) * sr,
+                center[2] * cr + (e1[2] * c + e2[2] * s) * sr,
+            ]
+        };
+        let depth = (p[axis] * sign).max(0.02);
+        let (a, b) = (p[ua] / depth, p[va] / depth);
+        a0 = a0.min(a);
+        a1 = a1.max(a);
+        b0 = b0.min(b);
+        b1 = b1.max(b);
+    }
+    // The samples cut the corners of the true outline, so add a margin.
+    let margin = 0.02 * (a1 - a0).max(b1 - b0);
+    let (a0, a1, b0, b1) = (a0 - margin, a1 + margin, b0 - margin, b1 + margin);
+    if a0 > 1.0 || a1 < -1.0 || b0 > 1.0 || b1 < -1.0 {
+        return None;
+    }
+    let lo = |a: f64| texel_index(n, warp(a.clamp(-1.0, 1.0))).saturating_sub(1);
+    let hi = |a: f64| (texel_index(n, warp(a.clamp(-1.0, 1.0))) + 2).min(n);
+    Some(TexelRect {
+        x0: lo(a0),
+        y0: lo(b0),
+        x1: hi(a1),
+        y1: hi(b1),
+    })
 }
 
 /// Keeps a copy of a tile for undo, at the first change in a stroke.
@@ -834,7 +898,7 @@ mod tests {
                 let center = lonlat_to_dir(f64::from(lon) + 3.0, f64::from(lat));
                 for radius in radii {
                     for face in 0..FACES {
-                        let rect = map.stamp_rect(face, center, radius);
+                        let rect = brush_rect(map.face_size(), face, center, radius);
                         for y in 0..n {
                             for x in 0..n {
                                 if angle(map.texel_dir(face, x, y), center) >= radius {

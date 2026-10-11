@@ -205,7 +205,7 @@ impl Tip<'_> {
             radius: self.radius,
             hardness: self.brush.hardness,
             flow: match self.brush.mode {
-                Mode::Raise | Mode::Lower | Mode::Carve => flow,
+                Mode::Raise | Mode::Lower | Mode::Carve | Mode::Erode => flow,
                 // These two modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten => flow * 0.3,
             },
@@ -311,7 +311,7 @@ pub fn plan_texels(plan: &StampPlan) -> u64 {
 fn stamp_cost(plan: &StampPlan) -> usize {
     match plan.stamp.mode {
         Mode::Smooth => GROUP_STAMPS,
-        Mode::Raise | Mode::Lower | Mode::Flatten | Mode::Carve => 1,
+        Mode::Raise | Mode::Lower | Mode::Flatten | Mode::Carve | Mode::Erode => 1,
     }
 }
 

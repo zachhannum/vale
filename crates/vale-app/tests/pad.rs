@@ -276,6 +276,7 @@ fn a_finger_hits_each_control_at_the_first_try() {
         ("Smooth", Mode::Smooth),
         ("Flatten", Mode::Flatten),
         ("Carve", Mode::Carve),
+        ("Erode", Mode::Erode),
         ("Raise", Mode::Raise),
     ] {
         tap(&mut h, name);
@@ -827,7 +828,7 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(lefts, [1082.0, 1130.0]);
     assert_eq!(
         r.tools,
-        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 320.0))
+        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 372.0))
     );
     assert_eq!(
         control(&h, "Raise").unwrap(),
@@ -835,11 +836,11 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     );
     assert_eq!(
         r.brush.unwrap(),
-        Rect::from_min_size(pos2(16.0, 428.0), vec2(64.0, 340.0))
+        Rect::from_min_size(pos2(16.0, 480.0), vec2(64.0, 318.0))
     );
     assert_eq!(
         control(&h, "Brush settings").unwrap().min,
-        pos2(20.0, 712.0)
+        pos2(20.0, 742.0)
     );
 
     tap(&mut h, "Layers");
@@ -992,22 +993,23 @@ fn the_layout_follows_the_turn_of_the_ipad() {
 
 #[test]
 fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
-    // 1024 by 768 is an iPad in landscape. The sliders fit with less height.
-    let h = pad((1024.0, 768.0));
+    // The sliders fit with less height.
+    let h = pad((1024.0, 800.0));
     assert_eq!(
         h.state().pad.rects.unwrap().brush_card,
-        BrushCard::Full(122.0)
+        BrushCard::Full(112.0)
     );
-    check_controls(&h, "768 high");
+    check_controls(&h, "800 high");
 
-    let mut h = pad((1024.0, 700.0));
+    // 1024 by 768 is an iPad in landscape.
+    let mut h = pad((1024.0, 768.0));
     assert_eq!(h.state().pad.rects.unwrap().brush_card, BrushCard::Button);
     assert!(control(&h, "Size").is_none() && control(&h, "Flow").is_none());
-    check_controls(&h, "700 high");
+    check_controls(&h, "768 high");
     // The Brush panel holds the two sliders.
     tap(&mut h, "Brush settings");
     assert!(control(&h, "Brush size").is_some() && control(&h, "Brush flow").is_some());
-    check_controls(&h, "700 high with the Brush panel");
+    check_controls(&h, "768 high with the Brush panel");
 }
 
 #[test]
