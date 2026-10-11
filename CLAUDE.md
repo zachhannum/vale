@@ -41,7 +41,7 @@ cargo run --release -p vale-globe-proto
 scripts/globe-proto-ipad.sh
 ```
 
-The app prototype leaves out project files, linked sources, rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
+The app prototype leaves out project files, rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
 
 The current phase is phase 0, the iPad test loop and CI. When each PR arrives on the iPad through TestFlight, and CI builds all four platforms, the phase is done.
 
