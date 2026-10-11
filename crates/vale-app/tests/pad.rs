@@ -390,7 +390,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
     assert!(h.state().pad.is_open(Panel::Brush));
     let rect = control(&h, "Brush angle").unwrap();
     drag(&mut h, rect.center(), rect.right_center(), None);
-    assert!((h.state().globe.brush.talus_deg - 60.0).abs() < 1e-9);
+    assert!((h.state().globe.brush.talus_deg - 20.0).abs() < 1e-9);
 }
 
 #[test]

@@ -1604,7 +1604,7 @@ fn the_brush_panel_has_the_weather_mode_and_its_angle_slider() {
     h.run_steps(2);
     assert_eq!(h.state().globe.brush.mode, Mode::Weather);
     assert!(h.query_all_by_label("Angle").next().is_some());
-    assert_eq!(h.state().globe.brush.talus_deg, 10.0);
+    assert_eq!(h.state().globe.brush.talus_deg, 0.5);
 }
 
 /// The level of each texel of the heightmap.
@@ -1627,6 +1627,7 @@ fn weather_lowers_a_steep_hill_and_one_undo_puts_it_back() {
     globe.view = GlobeView::centered(0.0, 0.0);
     globe.tool = Tool::Brush;
     globe.brush.mode = Mode::Weather;
+    globe.brush.talus_deg = 10.0;
     globe.brush.size_points = 40.0;
     // A cone of 3,000 m with a side of 375 m for each texel.
     let top = lonlat_to_dir(0.0, 0.0);
