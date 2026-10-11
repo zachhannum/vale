@@ -37,6 +37,9 @@ pub enum Mode {
     /// Moves ground from a texel to each lower neighbor where the slope
     /// between them is more than `Stamp::talus`. The sum of the levels stays.
     Weather,
+    /// Raises the ground as `Raise` does. The app also runs erode steps and
+    /// weather stamps under the brush.
+    Uplift,
 }
 
 /// One touch of the brush on the sphere.
@@ -788,7 +791,7 @@ impl Heightmap {
                         let old_level = tile.as_ref().map_or(base, |tile| tile[offset]);
                         let old = f64::from(old_level);
                         let new = match stamp.mode {
-                            Mode::Raise => old + amount * stamp.strength,
+                            Mode::Raise | Mode::Uplift => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
                             Mode::Erode => continue,
@@ -1664,6 +1667,27 @@ mod tests {
     }
 
     #[test]
+    fn an_uplift_stamp_gives_the_levels_of_a_raise_stamp() {
+        let center = lonlat_to_dir(44.0, 34.0);
+        let mut raised = Heightmap::new(64, 20_000);
+        let mut lifted = Heightmap::new(64, 20_000);
+        for flow in [1.0, 0.3] {
+            let stamp = Stamp {
+                flow,
+                hardness: 0.3,
+                ..raise(center, 0.2)
+            };
+            assert!(stroke(&mut raised, stamp));
+            let stamp = Stamp {
+                mode: Mode::Uplift,
+                ..stamp
+            };
+            assert!(stroke(&mut lifted, stamp));
+        }
+        assert!(texels(&raised) == texels(&lifted));
+    }
+
+    #[test]
     fn undo_and_redo_work_for_each_mode() {
         // The place is near a cube corner, so a stroke changes three faces.
         let center = lonlat_to_dir(44.0, 34.0);
@@ -1673,6 +1697,7 @@ mod tests {
             Mode::Smooth,
             Mode::Flatten,
             Mode::Weather,
+            Mode::Uplift,
         ];
         for mode in modes {
             let mut map = Heightmap::with_tile_size(64, 16, 20_000);

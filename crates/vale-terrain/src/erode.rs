@@ -10,8 +10,8 @@ use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
 use crate::cube::{FACES, face_dir, unwarp};
 use crate::flow::{
-    CoarseHeights, CubeGrid, Drain, FlowMap, Grid, OUT, RIVER_MIN_AREA, Window, WindowHeights,
-    cell_past_edge, drain, solid_angles,
+    CoarseHeights, CubeGrid, Drain, FlowMap, Grid, NONE, OUT, RIVER_MIN_AREA, RIVER_MIN_CELLS,
+    STEPS, Window, WindowHeights, cell_past_edge, drain, solid_angles,
 };
 use crate::heightmap::{MAX_BRUSH_RADIUS, TexelRect, brush_rect, falloff};
 use crate::math::V3;
@@ -19,6 +19,10 @@ use crate::math::V3;
 /// The number of cells at each side of a window where the effect of the
 /// brush goes down to 0.
 const FADE: usize = 4;
+
+/// The smallest number of cells between the cells of the brushes and the
+/// side of the rectangle that gives the flow of a step of `Erosion::steps`.
+const NEAR_ROOM: usize = 8;
 
 /// One touch of the erode brush on the sphere.
 #[derive(Clone, Copy, Debug)]
@@ -171,7 +175,70 @@ enum Cells {
         window: Window,
         /// The water of the global rivers that come into the window.
         inflow: Vec<(usize, f64)>,
+        /// The solid angle of each cell, in steradians.
+        solid: Vec<f64>,
     },
+}
+
+/// The cells of a window with the solid angle of each cell. A step asks for
+/// each solid angle, and the window computes it with tangents.
+struct WindowGrid<'a> {
+    window: &'a Window,
+    solid: &'a [f64],
+}
+
+/// A rectangle of the cells of a window. The water leaves it at its sides.
+struct BoxGrid<'a> {
+    window: &'a Window,
+    solid: &'a [f64],
+    /// The first cell of the rectangle in the window, and its width.
+    x0: usize,
+    y0: usize,
+    width: usize,
+    height: usize,
+}
+
+impl BoxGrid<'_> {
+    /// The index of a cell of the rectangle in the window.
+    fn cell(&self, i: usize) -> usize {
+        (self.y0 + i / self.width) * self.window.cells + self.x0 + i % self.width
+    }
+}
+
+impl Grid for BoxGrid<'_> {
+    fn neighbors(&self, i: usize) -> [u32; 8] {
+        let (w, h) = (self.width as i64, self.height as i64);
+        let (x, y) = ((i % self.width) as i64, (i / self.width) as i64);
+        STEPS.map(|(dx, dy)| {
+            let (x, y) = (x + dx, y + dy);
+            if x < 0 || y < 0 || x >= w || y >= h {
+                return NONE;
+            }
+            (y * w + x) as u32
+        })
+    }
+
+    fn scatter(&self, i: usize, k: usize) -> f64 {
+        self.window.scatter(self.cell(i), k)
+    }
+
+    fn solid_angle(&self, i: usize) -> f64 {
+        self.solid[self.cell(i)]
+    }
+}
+
+impl Grid for WindowGrid<'_> {
+    fn neighbors(&self, i: usize) -> [u32; 8] {
+        self.window.neighbors(i)
+    }
+
+    fn scatter(&self, i: usize, k: usize) -> f64 {
+        self.window.scatter(i, k)
+    }
+
+    fn solid_angle(&self, i: usize) -> f64 {
+        self.solid[i]
+    }
 }
 
 /// The cells of one stroke of the erode brush. The heights are fractions of
@@ -234,24 +301,83 @@ impl Erosion {
     /// An erosion of the cells of a window. `global` gives the rivers that
     /// come into the window from outside.
     pub fn window(heights: &WindowHeights, global: &FlowMap) -> Erosion {
+        Erosion::of_window(heights, heights.window.inflow(global))
+    }
+
+    /// An erosion of the cells of a window that no river comes into from
+    /// outside.
+    pub fn window_alone(heights: &WindowHeights) -> Erosion {
+        Erosion::of_window(heights, Vec::new())
+    }
+
+    fn of_window(heights: &WindowHeights, inflow: Vec<(usize, f64)>) -> Erosion {
         let window = heights.window;
         let flat = |first: i64| {
             let cells = 0..window.cells;
             let flat = cells.map(|i| unwarp(window.angle_at(first, i as f64 + 0.5)));
             flat.collect::<Vec<f64>>()
         };
+        let (flat_u, flat_v) = (flat(window.x0), flat(window.y0));
+        // The steps of `Window::cell_solid_angle`.
+        let step =
+            |f: f64| (1.0 + f * f) * FRAC_PI_2 * window.cell as f64 / window.face_size as f64;
+        let mut solid = Vec::with_capacity(window.cells * window.cells);
+        for &fv in &flat_v {
+            for &fu in &flat_u {
+                let r = 1.0 + fu * fu + fv * fv;
+                solid.push(step(fu) * step(fv) / (r * r.sqrt()));
+            }
+        }
+        let min_area = RIVER_MIN_CELLS * solid.iter().sum::<f64>() / solid.len() as f64;
         let cells = Cells::Window {
             window,
-            inflow: window.inflow(global),
+            inflow,
+            solid,
         };
         Erosion::new(
             cells,
             window.cells,
             window.face_size,
-            [flat(window.x0), flat(window.y0)],
-            window.river_min_area(),
+            [flat_u, flat_v],
+            min_area,
             &heights.levels,
         )
+    }
+
+    /// An erosion of the cells of a window, for a stroke that leaves the
+    /// window of `self`. A cell that the window of `self` holds keeps the
+    /// height that the stroke gave it there. Each other cell has the height
+    /// of `heights`. No river comes into the new window from outside. `self`
+    /// must be an erosion of a window.
+    pub fn moved(&self, heights: &WindowHeights) -> Erosion {
+        let Cells::Window { window: old, .. } = &self.cells else {
+            panic!("the erosion has no window");
+        };
+        let (window, side) = (heights.window, self.side);
+        let mut kept: Vec<f32> = heights.levels.iter().map(|&l| f32::from(l)).collect();
+        let last = (side - 1) as f64;
+        for (i, height) in kept.iter_mut().enumerate() {
+            let dir = window.cell_dir(i % window.cells, i / window.cells);
+            let Some((u, v)) = old.place(dir) else {
+                continue;
+            };
+            let (u, v) = (u - 0.5, v - 0.5);
+            if u < 0.0 || v < 0.0 || u > last || v > last {
+                continue;
+            }
+            // The height between the centers of the 4 old cells around.
+            let (x, y) = ((u as usize).min(side - 2), (v as usize).min(side - 2));
+            let (tu, tv) = ((u - x as f64) as f32, (v - y as f64) as f32);
+            let at = |x: usize, y: usize| self.heights[y * side + x];
+            let top = at(x, y) * (1.0 - tu) + at(x + 1, y) * tu;
+            let bottom = at(x, y + 1) * (1.0 - tu) + at(x + 1, y + 1) * tu;
+            *height = top * (1.0 - tv) + bottom * tv;
+        }
+        let levels: Vec<u16> = kept.iter().map(|h| h.round() as u16).collect();
+        let heights = WindowHeights { window, levels };
+        let mut erosion = Erosion::window_alone(&heights);
+        erosion.heights = kept;
+        erosion
     }
 
     fn new(
@@ -280,7 +406,8 @@ impl Erosion {
         }
     }
 
-    fn grid(&self) -> ErodeGrid {
+    /// The cells of the erosion.
+    pub fn grid(&self) -> ErodeGrid {
         match &self.cells {
             Cells::Global(grid) => ErodeGrid::Global { size: grid.m },
             Cells::Window { window, .. } => ErodeGrid::Window(*window),
@@ -298,7 +425,16 @@ impl Erosion {
     fn drain(&self) -> Drain {
         match &self.cells {
             Cells::Global(grid) => drain(grid, &self.levels, &[], self.outlet),
-            Cells::Window { window, inflow } => drain(window, &self.levels, inflow, self.outlet),
+            Cells::Window {
+                window,
+                inflow,
+                solid,
+            } => drain(
+                &WindowGrid { window, solid },
+                &self.levels,
+                inflow,
+                self.outlet,
+            ),
         }
     }
 
@@ -309,15 +445,14 @@ impl Erosion {
         }
     }
 
-    /// The effect of the brushes at each cell.
-    fn weights(&self, brushes: &[ErodeBrush]) -> Weights {
+    /// Calls `visit` for each cell in the circle of each brush. It gives the
+    /// index of the brush, the row and the column of the cell, and the effect
+    /// of the brush there.
+    fn cells_under(&self, brushes: &[ErodeBrush], mut visit: impl FnMut(usize, usize, usize, f64)) {
         let side = self.side;
         let faces = self.faces();
         let global = matches!(self.cells, Cells::Global(_));
-        let mut weights = vec![0.0f32; self.heights.len()];
-        let mut spans = vec![None; faces.len() * side];
-        let mut hits = vec![false; brushes.len()];
-        for (brush, hit) in brushes.iter().zip(&mut hits) {
+        for (index, brush) in brushes.iter().enumerate() {
             let radius = brush.radius.clamp(1e-6, MAX_BRUSH_RADIUS);
             let hard = brush.hardness.clamp(0.0, 0.999);
             let (sin_radius, cos_radius) = radius.sin_cos();
@@ -351,27 +486,62 @@ impl Erosion {
                             continue;
                         }
                         let k = cos_angle.min(1.0).acos() / radius;
-                        let mut weight = falloff(k, hard) * brush.flow;
-                        if !global {
-                            let edge = x.min(y).min(side - 1 - x).min(side - 1 - y);
-                            weight *= edge.min(FADE) as f64 / FADE as f64;
-                        }
-                        if weight <= 0.0 {
-                            continue;
-                        }
-                        let cell = &mut weights[row * side + x];
-                        *cell = cell.max(weight as f32);
-                        let (first, last) = spans[row].unwrap_or((x, x));
-                        spans[row] = Some((first.min(x), last.max(x)));
-                        *hit = true;
+                        visit(index, row, x, falloff(k, hard) * brush.flow);
                     }
                 }
             }
         }
+    }
+
+    /// The effect of the brushes at each cell.
+    fn weights(&self, brushes: &[ErodeBrush]) -> Weights {
+        let side = self.side;
+        let global = matches!(self.cells, Cells::Global(_));
+        let mut weights = vec![0.0f32; self.heights.len()];
+        let mut spans = vec![None; self.faces().len() * side];
+        let mut hits = vec![false; brushes.len()];
+        self.cells_under(brushes, |brush, row, x, mut weight| {
+            if !global {
+                let y = row % side;
+                let edge = x.min(y).min(side - 1 - x).min(side - 1 - y);
+                weight *= edge.min(FADE) as f64 / FADE as f64;
+            }
+            if weight <= 0.0 {
+                return;
+            }
+            let cell = &mut weights[row * side + x];
+            *cell = cell.max(weight as f32);
+            let (first, last) = spans[row].unwrap_or((x, x));
+            spans[row] = Some((first.min(x), last.max(x)));
+            hits[brush] = true;
+        });
         Weights {
             cells: weights,
             spans,
             hits,
+        }
+    }
+
+    /// Raises the cells under the brushes, as raise stamps with this
+    /// strength raise the texels. The effects of the brushes add up. The
+    /// next step has no drop for a cell that only went up.
+    pub fn raise(&mut self, brushes: &[ErodeBrush], strength: f64) {
+        if strength.is_nan() || strength <= 0.0 {
+            return;
+        }
+        let side = self.side;
+        let mut rises = Vec::new();
+        self.cells_under(brushes, |_, row, x, weight| {
+            rises.push((row * side + x, weight * strength));
+        });
+        for (i, rise) in rises {
+            let height = (f64::from(self.heights[i]) + rise).min(65535.0) as f32;
+            self.heights[i] = height;
+            let level = height.round() as u16;
+            if level != self.levels[i] {
+                self.levels[i] = level;
+                self.stale = true;
+            }
         }
     }
 
@@ -406,6 +576,37 @@ impl Erosion {
     /// height of its receiver does not change. Thus a flat sea floor stays,
     /// and the floor of a pit stays until the rim comes down to it.
     pub fn step(&mut self, brushes: &[ErodeBrush], rate: f64) -> ErodeStep {
+        self.step_on(brushes, rate, false)
+    }
+
+    /// The rectangle of window cells around the cells of `spans`: the first
+    /// cell and the size. The room at each side is a quarter of the larger
+    /// side of the cells, and `NEAR_ROOM` cells at least.
+    fn near(&self, spans: &[Option<(usize, usize)>]) -> (usize, usize, usize, usize) {
+        let rows = || {
+            spans
+                .iter()
+                .enumerate()
+                .filter_map(|(y, span)| Some((y, (*span)?)))
+        };
+        let (mut x0, mut x1, mut y0, mut y1) = (usize::MAX, 0, usize::MAX, 0);
+        for (y, (first, last)) in rows() {
+            (x0, x1) = (x0.min(first), x1.max(last));
+            (y0, y1) = (y0.min(y), y1.max(y));
+        }
+        let room = ((x1 - x0).max(y1 - y0) / 4).max(NEAR_ROOM);
+        let last = self.side - 1;
+        let (x0, y0) = (x0.saturating_sub(room), y0.saturating_sub(room));
+        let (x1, y1) = ((x1 + room).min(last), (y1 + room).min(last));
+        (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+    }
+
+    /// One step. If `near` is true and the cells are those of a window, the
+    /// flow is that of the cells near the brushes only: the water leaves at
+    /// the sides of a rectangle around them, and no water comes in. Thus the
+    /// time of the step follows the size of the brushes, and not the size of
+    /// the window.
+    fn step_on(&mut self, brushes: &[ErodeBrush], rate: f64, near: bool) -> ErodeStep {
         let mut step = ErodeStep {
             grid: self.grid(),
             drops: vec![0; self.heights.len()],
@@ -422,19 +623,49 @@ impl Erosion {
         if spans.iter().all(Option::is_none) {
             return step;
         }
-        let flow = match self.flow.take() {
-            Some(flow) if !self.stale => flow,
-            _ => self.drain(),
+        // The flow, and the index in the grid of each cell of the flow.
+        let (flow, place) = match &self.cells {
+            Cells::Window { window, solid, .. } if near => {
+                let (x0, y0, width, height) = self.near(&spans);
+                let grid = BoxGrid {
+                    window,
+                    solid,
+                    x0,
+                    y0,
+                    width,
+                    height,
+                };
+                let rows = (y0..y0 + height).map(|y| y * self.side + x0);
+                let levels: Vec<u16> = rows
+                    .flat_map(|first| &self.levels[first..first + width])
+                    .copied()
+                    .collect();
+                let flow = drain(&grid, &levels, &[], self.outlet);
+                self.flow = None;
+                (flow, Some((x0, y0, width)))
+            }
+            _ => {
+                let flow = match self.flow.take() {
+                    Some(flow) if !self.stale => flow,
+                    _ => self.drain(),
+                };
+                (flow, None)
+            }
         };
         self.stale = false;
+        let side = self.side;
+        let cell = |i: u32| match place {
+            Some((x0, y0, width)) => (y0 + i as usize / width) * side + x0 + i as usize % width,
+            None => i as usize,
+        };
         // Each receiver has its new height before the cells above it.
-        for &i in &flow.order {
-            let i = i as usize;
-            let to = flow.receiver[i];
+        for &at in &flow.order {
+            let i = cell(at);
+            let to = flow.receiver[at as usize];
             if weights[i] <= 0.0 || to == OUT {
                 continue;
             }
-            let to = to as usize;
+            let to = cell(to);
             let below = self.heights[to];
             let height = self.heights[i];
             if height <= below {
@@ -442,12 +673,14 @@ impl Erosion {
             }
             let diagonal = !self.neighbors(i)[..4].contains(&(to as u32));
             let length = if diagonal { SQRT_2 } else { 1.0 };
-            let area = f64::from(flow.area[i]) / self.min_area;
+            let area = f64::from(flow.area[at as usize]) / self.min_area;
             let power = rate * f64::from(weights[i]) * area.sqrt() / length;
             let new = f64::from(below) + f64::from(height - below) / (1.0 + power);
             self.heights[i] = (new as f32).clamp(below, height);
         }
-        self.flow = Some(flow);
+        if place.is_none() {
+            self.flow = Some(flow);
+        }
 
         // A cell goes down by whole levels. The rest stays in `heights`.
         for (row, span) in spans.iter().enumerate() {
@@ -467,6 +700,29 @@ impl Erosion {
             step.rects = self.rects(brushes, &hits);
         }
         step
+    }
+
+    /// Lowers the cells under the brushes `count` times. The strengths of
+    /// the steps add up to `rate`. The result has the sum of the drops. Each
+    /// step computes the flow again, so the valleys of one step collect the
+    /// water of the next step. In a window, the flow is that of the cells
+    /// near the brushes only.
+    pub fn steps(&mut self, brushes: &[ErodeBrush], rate: f64, count: usize) -> ErodeStep {
+        let count = count.max(1);
+        let mut sum = self.step_on(brushes, rate / count as f64, true);
+        for _ in 1..count {
+            let step = self.step_on(brushes, rate / count as f64, true);
+            for (sum, drop) in sum.drops.iter_mut().zip(&step.drops) {
+                *sum += drop;
+            }
+            for (sum, rect) in sum.rects.iter_mut().zip(step.rects) {
+                *sum = match (*sum, rect) {
+                    (Some(a), Some(b)) => Some(a.union(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+        }
+        sum
     }
 }
 
@@ -1024,6 +1280,166 @@ mod tests {
             }
         }
         assert!(lowered[0] > 50 && lowered[2] > 50, "{lowered:?}");
+    }
+
+    #[test]
+    fn raise_lifts_the_cells_and_a_step_cuts_only_the_lifted_land() {
+        let m = 64;
+        let flat = CoarseHeights::from_fn(m, |_| meters_to_level(OCEAN));
+        let floor = meters_to_level(OCEAN);
+        let center = lonlat_to_dir(10.0, 5.0);
+        let brush = ErodeBrush {
+            center,
+            radius: 0.2,
+            hardness: 0.5,
+            flow: 0.5,
+        };
+        let (face, x, y) = cell_at(m, center);
+        let middle = (face * m + y) * m + x;
+        let run = || {
+            let mut erosion = Erosion::global(&flat, 1024);
+            // A raise without a strength changes nothing.
+            erosion.raise(&[brush], 0.0);
+            assert!(erosion.levels.iter().all(|&level| level == floor));
+            // The effects of two brushes add up: 2 times 0.5 times 4000.
+            erosion.raise(&[brush, brush], 4000.0);
+            assert_eq!(erosion.levels[middle], floor + 4000);
+            let lifted: Vec<bool> = erosion.levels.iter().map(|&l| l > floor).collect();
+            let hill = erosion.levels.clone();
+            for (i, _) in lifted.iter().enumerate().filter(|&(_, &lifted)| lifted) {
+                let dir = cell_dir(m, i / (m * m), i % m, i / m % m);
+                assert!(angle(dir, center) < 0.2);
+            }
+            assert!(lifted.iter().filter(|&&lifted| lifted).count() > 100);
+
+            // The rise is not a drop of the step, and no cell goes below the
+            // floor around the hill.
+            let step = erosion.step(&[brush], 4.0);
+            let mut cut = 0;
+            for (i, &drop) in step.drops().iter().enumerate() {
+                assert!(drop == 0 || lifted[i], "cell {i}");
+                assert!(hill[i] - drop >= floor, "cell {i}");
+                assert_eq!(erosion.levels[i], hill[i] - drop);
+                cut += usize::from(drop > 0);
+            }
+            assert!(cut > 50, "{cut}");
+            erosion.levels.clone()
+        };
+        // Two equal runs give equal levels.
+        assert!(run() == run());
+    }
+
+    #[test]
+    fn a_moved_erosion_keeps_the_heights_of_the_stroke() {
+        let n = 1024;
+        let floor = meters_to_level(OCEAN);
+        let ground = |window: Window| WindowHeights::from_fn(window, |_| floor);
+        // The window is near the edge of its face.
+        let first = Window::centered(lonlat_to_dir(38.0, 0.0), n, 1, 128);
+        let center = first.cell_dir(100, 64);
+        let brush = ErodeBrush {
+            center,
+            radius: 0.02,
+            hardness: 0.5,
+            flow: 1.0,
+        };
+        let mut erosion = Erosion::window_alone(&ground(first));
+        erosion.raise(&[brush], 4000.0);
+        erosion.steps(&[brush], 8.0, 4);
+
+        // The next window is 60 cells to the side on the same face.
+        let next = Window {
+            x0: first.x0 + 60,
+            ..first
+        };
+        let moved = erosion.moved(&ground(next));
+        assert_eq!(moved.grid(), ErodeGrid::Window(next));
+        let mut hill = 0;
+        for y in 0..128 {
+            for x in 0..128 {
+                let new = moved.heights[y * 128 + x];
+                if x + 60 < 128 {
+                    assert_eq!(new, erosion.heights[y * 128 + x + 60], "{x} {y}");
+                    hill += usize::from(new > f32::from(floor) + 100.0);
+                } else {
+                    assert_eq!(new, f32::from(floor), "{x} {y}");
+                }
+                assert_eq!(moved.levels[y * 128 + x], new.round() as u16);
+            }
+        }
+        assert!(hill > 50, "{hill}");
+
+        // A window on the next face keeps the hill at its place on the
+        // sphere.
+        let far = Window::centered(lonlat_to_dir(50.0, 0.0), n, 1, 512);
+        assert!(far.face != first.face);
+        let moved = erosion.moved(&ground(far));
+        let (x, y) = far.cell_at(center).unwrap();
+        let (old_x, old_y) = first.cell_at(center).unwrap();
+        let (new, old) = (
+            moved.heights[y * 512 + x],
+            erosion.heights[old_y * 128 + old_x],
+        );
+        assert!(old > f32::from(floor) + 1000.0);
+        assert!(
+            (new - old).abs() < 0.2 * (old - f32::from(floor)),
+            "{new} {old}"
+        );
+    }
+
+    #[test]
+    fn steps_give_the_sum_of_the_drops_of_each_step() {
+        let m = 128;
+        let flat = CoarseHeights::from_fn(m, |_| meters_to_level(OCEAN));
+        let brush = ErodeBrush {
+            center: lonlat_to_dir(10.0, 5.0),
+            radius: 0.2,
+            hardness: 0.5,
+            flow: 1.0,
+        };
+        let hill = || {
+            let mut erosion = Erosion::global(&flat, 1024);
+            erosion.raise(&[brush], 4000.0);
+            erosion
+        };
+        let mut together = hill();
+        let before = together.levels.clone();
+        let sum = together.steps(&[brush], 8.0, 4);
+        assert!(!sum.is_empty());
+        for (i, &drop) in sum.drops().iter().enumerate() {
+            assert_eq!(together.levels[i], before[i] - drop, "cell {i}");
+        }
+
+        let mut apart = hill();
+        for _ in 0..4 {
+            apart.step(&[brush], 2.0);
+        }
+        assert!(apart.levels == together.levels);
+
+        // In a window, the flow of the steps is that of the cells near the
+        // brush, and the cells far from the brush do not change.
+        let window = Window::centered(brush.center, 1024, 1, 512);
+        let ground = WindowHeights::from_fn(window, lumpy);
+        let small = ErodeBrush {
+            radius: 0.03,
+            ..brush
+        };
+        let mut near = Erosion::window_alone(&ground);
+        near.raise(&[small], 4000.0);
+        let before = near.levels.clone();
+        let sum = near.steps(&[small], 8.0, 4);
+        let lowered = sum.drops().iter().filter(|&&drop| drop > 0).count();
+        assert!(lowered > 100, "{lowered}");
+        for (i, &drop) in sum.drops().iter().enumerate() {
+            assert_eq!(near.levels[i], before[i] - drop, "cell {i}");
+            let dir = window.cell_dir(i % 512, i / 512);
+            assert!(drop == 0 || angle(dir, small.center) < 0.03, "cell {i}");
+        }
+
+        // The flow of a step follows the valleys of the step before it.
+        let mut one = hill();
+        one.step(&[brush], 8.0);
+        assert!(one.levels != together.levels);
     }
 
     #[test]

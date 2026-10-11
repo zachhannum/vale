@@ -2263,3 +2263,367 @@ fn screenshots_with_a_river_window() {
     assert!(h.state().globe.rivers_pending());
     save(&h.render().unwrap(), "rivers-window-replaced");
 }
+
+#[test]
+fn the_brush_panel_has_the_uplift_mode_and_its_two_sliders() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert_eq!(h.query_all_by_label("Uplift").count(), 1);
+    assert!(h.query_all_by_label("Erosion").next().is_none());
+    assert!(h.query_all_by_label("Strength").next().is_some());
+    h.get_by_label("Uplift").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Uplift);
+    // The mode and the slider of the rate of the uplift.
+    assert!(h.query_all_by_label("Uplift").count() > 1);
+    assert!(h.query_all_by_label("Strength").next().is_none());
+    assert!(h.query_all_by_label("Erosion").next().is_some());
+    assert_eq!(h.state().globe.brush.erosion, 0.5);
+}
+
+/// A harness with the empty world in a far view, and the uplift brush.
+fn uplift_harness() -> Harness<'static, AppState> {
+    let mut h = gpu_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.preview.graticule = false;
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Uplift;
+    globe.brush.size_points = 40.0;
+    globe.brush.strength_m = 3000.0;
+    h.run_steps(2);
+    h
+}
+
+/// The two ends of the stroke of the uplift tests.
+fn uplift_ends(h: &Harness<'static, AppState>) -> (Pos2, Pos2) {
+    let c = h.state().globe.rect.center();
+    (c - Vec2::new(90.0, 20.0), c + Vec2::new(90.0, 20.0))
+}
+
+/// Presses the primary mouse button and moves it along the first part of the
+/// stroke of the uplift tests. The button stays down.
+fn uplift_part(h: &mut Harness<'static, AppState>, moves: usize) {
+    // The width of the brush panel follows the mode, and the canvas follows
+    // the panel.
+    h.run_steps(2);
+    let (from, to) = uplift_ends(h);
+    button(h, egui::PointerButton::Primary, from, true);
+    h.step();
+    for i in 1..=moves {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 24.0)));
+        h.step();
+    }
+}
+
+/// The frame with the pointer, cut to the canvas of the globe. The pointer
+/// stays where it is, so a stroke continues.
+fn canvas_with_pointer(h: &mut Harness<'static, AppState>) -> image::RgbaImage {
+    let rect = h.state().globe.rect;
+    let (x, y) = (rect.min.x.ceil() as u32, rect.min.y.ceil() as u32);
+    let (w, h_) = (rect.width().floor() as u32, rect.height().floor() as u32);
+    let frame = h.render().unwrap();
+    image::imageops::crop_imm(&frame, x, y, w - 1, h_ - 1).to_image()
+}
+
+/// Paints the stroke of the uplift tests. Returns the levels after it.
+fn uplift_stroke(h: &mut Harness<'static, AppState>) -> Vec<u16> {
+    uplift_part(h, 24);
+    let (_, to) = uplift_ends(h);
+    button(h, egui::PointerButton::Primary, to, false);
+    h.step();
+    settle(h);
+    all_levels(h)
+}
+
+/// Takes the last stroke away.
+fn undo_stroke(h: &mut Harness<'static, AppState>, before: &[u16]) {
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(h) == before);
+    assert!(!h.state().globe.can_undo());
+}
+
+#[test]
+fn uplift_raises_the_land_and_erodes_it_during_the_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = uplift_harness();
+    let before = all_levels(&h);
+
+    // Without erosion, the stroke raises the land as the raise mode does.
+    h.state_mut().globe.brush.erosion = 0.0;
+    uplift_part(&mut h, 12);
+    let raise_part = canvas_with_pointer(&mut h);
+    let raised = uplift_stroke_end(&mut h);
+    undo_stroke(&mut h, &before);
+
+    // The angle of 20 degrees is steeper than each slope of the range, so
+    // the weather stamps change nothing.
+    h.state_mut().globe.brush.erosion = 0.5;
+    h.state_mut().globe.brush.talus_deg = 20.0;
+    uplift_part(&mut h, 12);
+    // The pen is down, and the ground on the screen has valleys.
+    assert!(h.state().globe.busy());
+    let eroded_part = canvas_with_pointer(&mut h);
+    assert_eq!(eroded_part.dimensions(), raise_part.dimensions());
+    assert!(eroded_part.as_raw() != raise_part.as_raw());
+    let eroded = uplift_stroke_end(&mut h);
+    save(&canvas_image(&mut h), "uplift-after");
+    assert_eq!(h.state().globe.stats.last().unwrap().mode, Mode::Uplift);
+    undo_stroke(&mut h, &before);
+
+    let (mut up, mut cut, mut deep) = (0, 0, 0);
+    for ((&old, &flat), &new) in before.iter().zip(&raised).zip(&eroded) {
+        // The uplift at this erosion is 1.5 times the rise of the raise
+        // mode. The erosion takes ground away from the raised land only.
+        // Each stamp rounds its rise to a whole level.
+        let most = old + (flat - old) / 2 * 3 + 40;
+        assert!(old <= new && new <= most, "{old} {new} {most}");
+        up += usize::from(new > old + 1000);
+        cut += usize::from(new + 80 < most);
+        deep += usize::from(new + 1000 < most);
+    }
+    assert!(up > 2000, "{up}");
+    assert!(cut > 2000 && deep > 100, "{cut} {deep}");
+
+    // With a small angle, the weather stamps move ground down the slopes.
+    h.state_mut().globe.brush.talus_deg = 0.05;
+    let weathered = uplift_stroke(&mut h);
+    let pairs = eroded.iter().zip(&weathered);
+    let (down, up) = pairs.fold((0, 0), |(down, up), (a, b)| {
+        (down + usize::from(b < a), up + usize::from(b > a))
+    });
+    assert!(down > 500 && up > 500, "{down} down, {up} up");
+}
+
+#[test]
+fn an_uplift_stroke_with_full_erosion_gives_about_the_height_of_a_raise_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = uplift_harness();
+    let before = all_levels(&h);
+    let floor = *before.iter().max().unwrap();
+    let rise = |levels: &[u16]| f64::from(*levels.iter().max().unwrap() - floor);
+
+    h.state_mut().globe.brush.erosion = 0.0;
+    let raise = rise(&uplift_stroke(&mut h));
+    undo_stroke(&mut h, &before);
+
+    h.state_mut().globe.brush.erosion = 1.0;
+    let once = rise(&uplift_stroke(&mut h));
+    assert!(once > 0.6 * raise && once < 1.4 * raise, "{once} {raise}");
+    // More strokes on the range do not add their heights.
+    uplift_stroke(&mut h);
+    let third = rise(&uplift_stroke(&mut h));
+    eprintln!("raise {raise}, once {once}, third {third}");
+    assert!(
+        third > 0.6 * raise && third < 1.4 * raise,
+        "{third} {raise}"
+    );
+}
+
+/// Writes images of ranges of three sizes on a world of the size of the
+/// Earth, for a person to look at. The views are 3,500 km, 1,000 km, and
+/// 350 km high.
+#[test]
+#[ignore]
+fn screenshots_of_uplift_ranges() {
+    let _gpu = one_gpu_test();
+    for (name, zoom, radius_km) in [
+        ("continent", 4.0, 150.0),
+        ("region", 14.0, 40.0),
+        ("near", 40.0, 12.0),
+    ] {
+        for erosion in [0, 50, 100] {
+            let mut state = state();
+            state.globe.set_face_size(vale_app::globe::WINDOW_FACE_SIZE);
+            let setup = egui_kittest::wgpu::default_wgpu_setup();
+            let mut h = headless::ui_harness(state, (1100.0, 800.0), 1.0, setup);
+            h.set_render_every_step(true);
+            let globe = &mut h.state_mut().globe;
+            globe.view = GlobeView::centered(0.0, 0.0);
+            globe.view.zoom = zoom;
+            globe.preview.graticule = false;
+            globe.tool = Tool::Brush;
+            globe.brush.mode = Mode::Uplift;
+            globe.brush.erosion = f64::from(erosion) / 100.0;
+            globe.brush.strength_m = 6000.0;
+            h.run_steps(4);
+            let globe = &mut h.state_mut().globe;
+            let (radius, world) = (globe.radius(), globe.world_km);
+            globe.brush.set_radius_km(radius_km, radius, world);
+            h.run_steps(2);
+            let rect = h.state().globe.rect;
+            let (c, half) = (rect.center(), 0.36 * rect.width());
+            let at =
+                |t: f32| c + Vec2::new(half * t, 0.2 * half * (2.5 * t).sin() + 0.1 * half * t);
+            let start = std::time::Instant::now();
+            button(&mut h, egui::PointerButton::Primary, at(-1.0), true);
+            h.step();
+            for i in 1..=120 {
+                h.event(egui::Event::PointerMoved(at(-1.0 + i as f32 / 60.0)));
+                h.step();
+            }
+            button(&mut h, egui::PointerButton::Primary, at(1.0), false);
+            h.step();
+            settle(&mut h);
+            let globe = &h.state().globe;
+            let km = globe.brush.radius_km(globe.radius(), globe.world_km);
+            let high = f64::from(rect.height()) / globe.radius() * globe.world_km;
+            eprintln!(
+                "{name} {erosion}: radius {km:.0} km, view {high:.0} km, {:?}",
+                start.elapsed()
+            );
+            save(&canvas_image(&mut h), &format!("range-{name}-{erosion}"));
+        }
+    }
+}
+
+/// Lifts the button at the end of the stroke that `uplift_part` began, after
+/// the rest of its moves. Returns the levels after the stroke.
+fn uplift_stroke_end(h: &mut Harness<'static, AppState>) -> Vec<u16> {
+    let (from, to) = uplift_ends(h);
+    for i in 13..=24 {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 24.0)));
+        h.step();
+    }
+    button(h, egui::PointerButton::Primary, to, false);
+    h.step();
+    settle(h);
+    all_levels(h)
+}
+
+/// Paints a stroke along the equator with the pen of the globe. The places
+/// of the stroke do not follow the layout of the window. Returns the levels
+/// after it.
+fn pen_stroke_on_the_equator(h: &mut Harness<'static, AppState>) -> Vec<u16> {
+    h.state_mut().globe.pen_down();
+    for i in 0..=24 {
+        let sample = vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(f64::from(i) - 12.0, 0.0)),
+            flow: 0.5,
+            radius: 0.06,
+        };
+        let globe = &mut h.state_mut().globe;
+        globe.pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    h.step();
+    settle(h);
+    all_levels(h)
+}
+
+#[test]
+fn with_the_erosion_at_zero_uplift_gives_the_result_of_raise() {
+    let _gpu = one_gpu_test();
+    let mut h = uplift_harness();
+    let before = all_levels(&h);
+    h.state_mut().globe.brush.mode = Mode::Raise;
+    let raised = pen_stroke_on_the_equator(&mut h);
+    assert!(raised != before);
+    undo_stroke(&mut h, &before);
+
+    let brush = &mut h.state_mut().globe.brush;
+    brush.mode = Mode::Uplift;
+    brush.erosion = 0.0;
+    brush.talus_deg = 0.02;
+    assert!(pen_stroke_on_the_equator(&mut h) == raised);
+    undo_stroke(&mut h, &before);
+
+    h.state_mut().globe.brush.erosion = 0.5;
+    assert!(pen_stroke_on_the_equator(&mut h) != raised);
+}
+
+#[test]
+fn two_equal_uplift_strokes_on_equal_ground_give_equal_results() {
+    let _gpu = one_gpu_test();
+    let mut h = uplift_harness();
+    let before = all_levels(&h);
+    let first = uplift_stroke(&mut h);
+    assert!(first != before);
+    undo_stroke(&mut h, &before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // A second harness starts from the same ground.
+    drop(h);
+    let mut h = uplift_harness();
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+}
+
+#[test]
+fn painting_does_not_wait_for_an_uplift_erosion_step() {
+    const N: usize = 2048;
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(N, 0.35, 1.0);
+    let globe = &mut h.state_mut().globe;
+    globe.set_rivers_sync(false);
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Uplift;
+    h.step();
+    settle_rivers(&mut h);
+    let c = h.state().globe.rect.center() + Vec2::new(20.0, 0.0);
+    let under = place(&h, c);
+    let level = h.state().globe.map.sample(under);
+
+    button(&mut h, egui::PointerButton::Primary, c, true);
+    h.step();
+    // The frame is complete, and the step of its stamp is not.
+    assert!(h.state().globe.erode_pending());
+    button(&mut h, egui::PointerButton::Primary, c, false);
+    // The stroke ends after its last step.
+    let mut frames = 0;
+    while h.state().globe.busy() {
+        h.step();
+        frames += 1;
+        assert!(frames < 4000, "the stroke did not end");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(frames > 2, "{frames}");
+    let globe = &h.state().globe;
+    assert!(!globe.erode_pending());
+    assert!(globe.map.sample(under) > level);
+    assert!(globe.can_undo());
+}
+
+#[test]
+fn one_undo_puts_back_the_ground_from_before_an_uplift_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = uplift_harness();
+    let before = (all_levels(&h), canvas_image(&mut h));
+    let lifted = (uplift_stroke(&mut h), canvas_image(&mut h));
+    assert!(lifted.0 != before.0);
+    assert!(lifted.1.as_raw() != before.1.as_raw());
+    // The stamps, the erode steps, and the weather stamps are one stroke.
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 1);
+
+    assert!(h.state_mut().globe.undo());
+    assert!(all_levels(&h) == before.0);
+    assert!(!h.state().globe.can_undo());
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before.1.as_raw(), "the render");
+
+    assert!(h.state_mut().globe.redo());
+    assert!(all_levels(&h) == lifted.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == lifted.1.as_raw(), "the render");
+}
+
+/// Writes images of a range from uplift strokes, for a person to look at.
+#[test]
+#[ignore]
+fn screenshots_of_uplift() {
+    let _gpu = one_gpu_test();
+    for (name, erosion) in [("none", 0.0), ("half", 0.5), ("full", 1.0)] {
+        let mut h = uplift_harness();
+        let globe = &mut h.state_mut().globe;
+        globe.brush.erosion = erosion;
+        globe.brush.strength_m = 6000.0;
+        globe.view.zoom = 2.0;
+        for _ in 0..3 {
+            uplift_stroke(&mut h);
+        }
+        save(&canvas_image(&mut h), &format!("uplift-{name}"));
+    }
+}

@@ -22,6 +22,12 @@ pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
 /// The limits of the angle of the weather mode, in degrees. Painted land on
 /// a world of the size of the Earth has slopes of 3 degrees or less.
 pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
+/// The part that the erosion setting of 1 adds to the rise of an uplift
+/// stamp. With it, an uplift stroke gives a range of about the height of a
+/// raise stroke at each erosion setting.
+pub const UPLIFT_GAIN: f64 = 1.0;
+/// The limits of the erosion setting of the uplift mode.
+pub const EROSION: std::ops::RangeInclusive<f64> = 0.0..=1.0;
 pub const SIZE_POINTS: std::ops::RangeInclusive<f32> = 4.0..=160.0;
 /// The most passes that the stamps of one frame cost. A smooth stamp costs
 /// one pass. A stamp of another mode costs one part in `GROUP_STAMPS` of a
@@ -48,6 +54,9 @@ pub struct BrushSettings {
     pub flatten_level: Option<u16>,
     /// The steepest slope that the weather mode leaves, in degrees.
     pub talus_deg: f64,
+    /// The strength of the erosion of the uplift mode, from 0 to 1. At 0,
+    /// the mode gives the result of the raise mode.
+    pub erosion: f64,
 }
 
 impl Default for BrushSettings {
@@ -61,6 +70,7 @@ impl Default for BrushSettings {
             strength_m: 1500.0,
             flatten_level: None,
             talus_deg: 0.5,
+            erosion: 0.5,
         }
     }
 }
@@ -211,13 +221,22 @@ impl Tip<'_> {
             radius: self.radius,
             hardness: self.brush.hardness,
             flow: match self.brush.mode {
-                Mode::Raise | Mode::Lower | Mode::Carve | Mode::Erode | Mode::Weather => flow,
+                Mode::Raise
+                | Mode::Lower
+                | Mode::Carve
+                | Mode::Erode
+                | Mode::Weather
+                | Mode::Uplift => flow,
                 // These two modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten => flow * 0.3,
             },
             mode: self.brush.mode,
             level: self.level,
-            strength: self.brush.strength_m * STAMP_SPACING / span,
+            strength: self.brush.strength_m * STAMP_SPACING / span
+                * match self.brush.mode {
+                    Mode::Uplift => 1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0),
+                    _ => 1.0,
+                },
             // The globe sets the slope, which follows the size of the world.
             talus: 0.0,
         }
@@ -319,7 +338,7 @@ pub fn plan_texels(plan: &StampPlan) -> u64 {
 fn stamp_cost(plan: &StampPlan) -> usize {
     match plan.stamp.mode {
         Mode::Smooth | Mode::Weather => GROUP_STAMPS,
-        Mode::Raise | Mode::Lower | Mode::Flatten | Mode::Carve | Mode::Erode => 1,
+        Mode::Raise | Mode::Lower | Mode::Flatten | Mode::Carve | Mode::Erode | Mode::Uplift => 1,
     }
 }
 

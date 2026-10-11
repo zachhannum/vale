@@ -2,7 +2,7 @@
 //! and paint.
 
 use std::collections::VecDeque;
-use std::f64::consts::PI;
+use std::f64::consts::{FRAC_PI_2, PI};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
@@ -10,8 +10,8 @@ use std::time::Instant;
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 use vale_terrain::{
-    ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, TexelRect, Window,
-    WindowHeights, meters_to_level, talus_levels,
+    ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, Stamp, TexelRect,
+    Window, WindowHeights, meters_to_level, talus_levels,
 };
 
 pub mod backdrop;
@@ -31,7 +31,7 @@ pub mod view;
 use crate::pen::Pen;
 use backdrop::Canvas;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels};
-use erode::{Eroder, Ground};
+use erode::{Eroder, Ground, near_side, uplift_window};
 use flat::FlatView;
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms, Uploads};
 use import::{ImportResult, Job, Step};
@@ -62,6 +62,13 @@ const ERODE_SECONDS: std::ops::RangeInclusive<f64> = 1.0 / 60.0..=0.25;
 
 /// The time that one erode step stands for in the sync mode, in seconds.
 const ERODE_SYNC_SECONDS: f64 = 1.0 / 30.0;
+
+/// The rate of the erode steps of one uplift stamp, for an erosion setting
+/// of 1 and a brush radius of 16 cells.
+const UPLIFT_ERODE_RATE: f64 = 12.0;
+
+/// An uplift stroke makes one weather stamp for this number of its stamps.
+const UPLIFT_WEATHER_EVERY: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
@@ -134,6 +141,19 @@ impl Eroding {
     }
 }
 
+/// The erosion of an uplift stroke. The stamps of the stroke raise the
+/// ground. Each step erodes the ground under the stamps after the step
+/// before it.
+#[derive(Default)]
+struct Uplifting {
+    /// The stamps after the last request for a step.
+    stamps: Vec<Stamp>,
+    /// The stamps of the step that is in work.
+    asked: Vec<Stamp>,
+    /// The window of the cells of the stroke, after its first request.
+    window: Option<Window>,
+}
+
 /// The stroke that the GPU works on.
 struct Active {
     id: u64,
@@ -144,6 +164,8 @@ struct Active {
     sampled: Option<Instant>,
     /// `Some`: the stroke is an erode stroke.
     erode: Option<Eroding>,
+    /// `Some`: the stroke is an uplift stroke with erosion.
+    uplift: Option<Uplifting>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
     /// The number of rectangles that the GPU has not given back. `None`: the
@@ -625,6 +647,7 @@ impl Globe {
         self.run_test(now, in_flight);
         self.read_inputs();
         self.erode(now);
+        self.uplift(now);
         self.send_stamps(now);
         in_flight || self.busy() || self.rivers.pending()
     }
@@ -724,12 +747,15 @@ impl Globe {
                         self.eroder.begin(self.erode_ground());
                         Eroding::default()
                     });
+                    let eroding = self.brush.mode == Mode::Uplift && self.brush.erosion > 0.0;
+                    let uplift = eroding.then(Uplifting::default);
                     self.stroke = Some(Active {
                         id: self.strokes,
                         stroke: Stroke::default(),
                         touched: [None; FACES],
                         sampled: None,
                         erode,
+                        uplift,
                         ended: false,
                         reading: None,
                     });
@@ -759,6 +785,9 @@ impl Globe {
                                 stamp.talus = talus;
                                 self.backlog.push(map.stamp_plan(stamp), time);
                             }
+                            if let Some(uplift) = &mut active.uplift {
+                                uplift.stamps.extend(stamps);
+                            }
                         }
                     }
                 }
@@ -779,6 +808,9 @@ impl Globe {
                             stamp.talus = talus;
                             let time = active.sampled.unwrap_or_else(Instant::now);
                             self.backlog.push(map.stamp_plan(stamp), time);
+                        }
+                        if let Some(uplift) = &mut active.uplift {
+                            uplift.stamps.extend(stamps);
                         }
                     }
                 }
@@ -825,11 +857,89 @@ impl Globe {
         };
         erode.stepped = Some(now);
         let rate = self.brush.strength_m * ERODE_RATE * seconds;
-        self.eroder.request(brushes, rate);
+        self.eroder.request(brushes, rate, 0.0);
+    }
+
+    /// Sends the erode step of an uplift stroke that arrived to the GPU, and
+    /// then weather stamps on the ground of that step. Then asks for the
+    /// next step, with the stamps after the last one. One step is in work at
+    /// a time.
+    ///
+    /// The rate of a step grows with the number of its stamps. Thus the
+    /// erosion follows the uplift, and not the speed of the worker.
+    fn uplift(&mut self, now: Instant) {
+        let Some(active) = &mut self.stroke else {
+            return;
+        };
+        let Some(uplift) = &mut active.uplift else {
+            return;
+        };
+        let erosion = self.brush.erosion.clamp(0.0, 1.0);
+        if let Some(step) = self.eroder.poll() {
+            if !step.is_empty() {
+                for (touched, rect) in active.touched.iter_mut().zip(step.rects()) {
+                    if let Some(rect) = rect {
+                        *touched = Some(union(*touched, rect));
+                    }
+                }
+                let (face_size, stroke) = (self.map.face_size() as u32, active.id);
+                self.link.push(face_size, Op::Erode { stroke, step });
+            }
+            let stamps = std::mem::take(&mut uplift.asked);
+            for stamp in stamps.iter().step_by(UPLIFT_WEATHER_EVERY) {
+                let stamp = Stamp {
+                    mode: Mode::Weather,
+                    flow: stamp.flow * erosion,
+                    ..*stamp
+                };
+                self.backlog.push(self.map.stamp_plan(&stamp), now);
+            }
+        }
+        if self.eroder.pending() || uplift.stamps.is_empty() {
+            return;
+        }
+        let stamps = std::mem::take(&mut uplift.stamps);
+        // The cells follow the size of the brush, and the window of the
+        // cells follows the pen.
+        let (first, last) = (stamps[0], stamps[stamps.len() - 1]);
+        let face_size = self.map.face_size();
+        match uplift.window {
+            None => {
+                let window = uplift_window(first.center, first.radius, face_size);
+                let heights = WindowHeights::new(&self.map, window);
+                self.eroder.begin(Ground::Alone(heights));
+                uplift.window = Some(window);
+            }
+            Some(window) if near_side(&window, last.center, last.radius) => {
+                let next = uplift_window(last.center, last.radius, face_size);
+                if next != window {
+                    let heights = WindowHeights::new(&self.map, next);
+                    self.eroder.move_to(Ground::Alone(heights));
+                    uplift.window = Some(next);
+                }
+            }
+            Some(_) => {}
+        }
+        let brushes = stamps.iter().map(|stamp| ErodeBrush {
+            center: stamp.center,
+            radius: stamp.radius,
+            hardness: stamp.hardness,
+            flow: stamp.flow,
+        });
+        // A slope with no valley erodes less with smaller cells, so the
+        // rate grows with the number of cells in the radius.
+        let cells = uplift.window.map_or(1.0, |window| {
+            let cell = FRAC_PI_2 * window.cell as f64 / window.face_size as f64;
+            first.radius / cell
+        });
+        let rate = erosion * UPLIFT_ERODE_RATE * (cells / 16.0).sqrt() * stamps.len() as f64;
+        self.eroder
+            .request(brushes.collect(), rate, stamps[0].strength);
+        uplift.asked = stamps;
     }
 
     /// Sends the stamps of this frame to the GPU. After the last stamp of a
-    /// stroke and the last step of an erode stroke, asks for the texels that
+    /// stroke and the last step of an erode stroke or of an uplift stroke, asks for the texels that
     /// the stroke changed.
     fn send_stamps(&mut self, now: Instant) {
         let Some(active) = &mut self.stroke else {
@@ -860,6 +970,11 @@ impl Globe {
         // The readback follows the last step in the queue.
         if let Some(erode) = &active.erode
             && (!erode.brushes.is_empty() || self.eroder.pending())
+        {
+            return;
+        }
+        if let Some(uplift) = &active.uplift
+            && (!uplift.stamps.is_empty() || self.eroder.pending())
         {
             return;
         }

@@ -11,6 +11,7 @@ pub enum Icon {
     Carve,
     Erode,
     Weather,
+    Uplift,
     More,
     Move,
     Undo,
@@ -40,6 +41,7 @@ impl Icon {
             Icon::Carve => "M3 7c4 0 5 9 9 9s5-9 9-9M12 16v5",
             Icon::Erode => "M5 4c0 5 7 5 7 10v7M12 4v10M19 4c0 5-7 5-7 10",
             Icon::Weather => "M3 18l5-10 3 6 4-9 6 13",
+            Icon::Uplift => "M3 20l6-8 4 5 3-4 5 7M12 9v-6M9 6l3-3 3 3",
             Icon::More => "",
             Icon::Move => {
                 "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3\
@@ -305,6 +307,7 @@ mod tests {
             Icon::Carve,
             Icon::Erode,
             Icon::Weather,
+            Icon::Uplift,
             Icon::More,
             Icon::Move,
             Icon::Undo,

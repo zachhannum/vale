@@ -56,7 +56,7 @@ pub(crate) const NONE: u32 = u32::MAX;
 pub(crate) const OUT: u32 = u32::MAX - 1;
 
 /// The steps to the 8 neighbors of a cell. The first 4 share a side with it.
-const STEPS: [(i64, i64); 8] = [
+pub(crate) const STEPS: [(i64, i64); 8] = [
     (1, 0),
     (-1, 0),
     (0, 1),

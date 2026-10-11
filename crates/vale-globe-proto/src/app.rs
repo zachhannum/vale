@@ -289,7 +289,12 @@ impl ProtoApp {
             radius,
             hardness: brush.hardness,
             flow: match brush.mode {
-                Mode::Raise | Mode::Lower | Mode::Carve | Mode::Erode | Mode::Weather => flow,
+                Mode::Raise
+                | Mode::Lower
+                | Mode::Carve
+                | Mode::Erode
+                | Mode::Weather
+                | Mode::Uplift => flow,
                 // These two modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten => flow * 0.3,
             },
