@@ -4,7 +4,7 @@ use vale_app::document::Document;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
 use vale_store::{Project, ProjectFile, Units, World};
 use vale_terrain::math::lonlat_to_dir;
-use vale_terrain::{FACES, Heightmap, Mode, Stamp, TexelRect, meters_to_level};
+use vale_terrain::{FACES, Heightmap, Limits, Mode, Stamp, TexelRect, meters_to_level};
 
 const BASE: u16 = 19114;
 
@@ -22,6 +22,7 @@ fn paint(map: &mut Heightmap, lon: f64, lat: f64, radius: f64) {
         talus: 0.0,
         scale: 0.0,
         seed: 0,
+        limits: Limits::default(),
     });
     assert!(map.end_stroke());
 }
@@ -213,6 +214,7 @@ fn a_stroke_that_did_not_end_is_not_in_the_file() {
         talus: 0.0,
         scale: 0.0,
         seed: 0,
+        limits: Limits::default(),
     });
     assert!(texels(&map) != first);
     drop(session);

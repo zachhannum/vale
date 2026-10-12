@@ -5,7 +5,8 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, talus_levels,
+    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan,
+    talus_levels,
 };
 
 use super::math::{V3, add, angle, normalize, scale};
@@ -259,6 +260,7 @@ impl Tip<'_> {
             talus: 0.0,
             scale: 0.0,
             seed: 0,
+            limits: Limits::default(),
         }
     }
 }
@@ -644,6 +646,7 @@ mod tests {
             talus: 0.0,
             scale: 0.0,
             seed: 0,
+            limits: Limits::default(),
         })
     }
 

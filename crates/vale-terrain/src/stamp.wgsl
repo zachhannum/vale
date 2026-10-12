@@ -51,6 +51,9 @@ struct Group {
     origin: vec2<i32>,
     // The number of cells of an erode pass along one side of a face.
     cells: u32,
+    // The limits of the stamps of the group or of the erode pass. The low 16
+    // bits are the floor, and the high 16 bits are the ceiling.
+    limits: u32,
     // The texels of the drop texture that hold the drops of an erode pass:
     // x0, y0, x1, y1. The drop of each other cell is 0.
     drop_rect: vec4<i32>,
@@ -491,9 +494,21 @@ fn warp_level(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
     return floor(level_between(source) + 0.5);
 }
 
+// The level of a texel after a change from `old` to `next`. The steps are
+// those of `Limits::apply`.
+fn limited(old: f32, next: f32) -> f32 {
+    let low = f32(group.limits & 0xffffu);
+    let high = f32(group.limits >> 16u);
+    if next < old {
+        return max(next, min(old, low));
+    }
+    return min(next, max(old, high));
+}
+
 // The change of the level of a texel from one weather stamp. Each pair of
 // texels that are side by side moves a whole number of levels from the higher
-// texel to the lower one. The steps are those of `Heightmap::weather_face`.
+// texel to the lower one. The limits bound the move. The steps are those of
+// `Heightmap::weather_face`.
 fn weather(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
     // The texel, then its four neighbors. One call of `amount_at` in the
     // source gives the same bits for a texel in each pass that reads it, so
@@ -505,6 +520,8 @@ fn weather(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
         vec2<i32>(0, -1),
         vec2<i32>(0, 1),
     );
+    let low = f32(group.limits & 0xffffu);
+    let high = f32(group.limits >> 16u);
     var own = 0.0;
     var change = 0.0;
     for (var i = 0; i < 5; i++) {
@@ -520,10 +537,15 @@ fn weather(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
         if weight <= 0.0 {
             continue;
         }
-        let drop = old - f32(tile_level(i32(group.face), p));
+        let other = f32(tile_level(i32(group.face), p));
+        let drop = old - other;
         let over = abs(drop) - stamp.talus;
         if over > 0.0 {
-            change -= sign(drop) * floor(weight * over * 0.125);
+            // The steps are those of `Limits::pair_room`.
+            let down = max(max(old, other) - low, 0.0);
+            let up = max(high - min(old, other), 0.0);
+            let room = floor(min(down, up) * 0.25);
+            change -= sign(drop) * min(floor(weight * over * 0.125), room);
         }
     }
     return change;
@@ -536,9 +558,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     // between two passes.
     var value = f32(tile_level(i32(group.face), at));
     if group.mode == ERODE {
-        // The lowest level is 0.
+        // The lowest level is 0. A texel above the floor does not go below
+        // it, and a texel at or below the floor stays.
         let drop = floor(drop_at(at) + 0.5);
-        value = max(value - drop, 0.0);
+        value = max(value - drop, min(value, f32(group.limits & 0xffffu)));
     }
     // The distance to the river and its size. The window comes first. With
     // no river near, the size is 0.
@@ -560,7 +583,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
             continue;
         }
         if group.mode == WARP {
-            value = warp_level(stamp, at, value);
+            value = limited(value, warp_level(stamp, at, value));
             continue;
         }
         // With no effect, each mode keeps the level.
@@ -613,6 +636,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
             // Land does not go below sea level.
             value = max(value, min(old, f32(group.sea)));
         }
+        value = limited(old, value);
     }
     // A copy moves each texel of the rectangle to the tiles, so a texel with
     // no change keeps its level here.
