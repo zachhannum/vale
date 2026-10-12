@@ -151,6 +151,9 @@ fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
     }
 }
 
+/// The rows of the menu of the More cell.
+const MORE_ROWS: [&str; 7] = ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp", "Ocean ridge"];
+
 /// Makes sure that a finger can hit each control of the frame.
 fn check_controls(h: &Pad, what: &str) {
     let screen = h.state().pad.rects.unwrap().screen;
@@ -184,8 +187,7 @@ fn check_controls(h: &Pad, what: &str) {
                     .iter()
                     .any(|k| k.name() == name);
                 let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
-                let more = in_more
-                    && ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"].contains(&name);
+                let more = in_more && MORE_ROWS.contains(&name);
                 menu || kind || more || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
@@ -211,7 +213,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         tap(&mut h, MORE);
         assert!(h.state().pad.more);
-        for name in [MORE, "Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"] {
+        for name in MORE_ROWS {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, &format!("{size:?} with the More menu"));
@@ -519,6 +521,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
     assert_eq!(strip(&h), cells);
     assert!(!more_is_active(&h));
     for (name, mode) in [
+        ("Ocean ridge", Mode::OceanRidge),
         ("Warp", Mode::Warp),
         ("Uplift", Mode::Uplift),
         ("Weather", Mode::Weather),
@@ -535,7 +538,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
         let menu = h.state().pad.more_rect.unwrap();
         let cell = control(&h, MORE).unwrap();
         assert_eq!(menu.left_top(), pos2(tools.right() + 12.0, cell.top()));
-        for row in ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"] {
+        for row in MORE_ROWS {
             assert!(menu.contains_rect(control(&h, row).unwrap()), "{row}");
         }
         assert_eq!(strip(&h), cells);
@@ -735,6 +738,137 @@ fn the_brush_panel_has_the_two_sliders_of_the_warp_mode() {
     assert_eq!(h.state().globe.world_seed, 999);
     assert!(control(&h, "Brush angle").is_none());
     check_controls(&h, "the Warp mode");
+}
+
+/// The rows of the ocean ridge mode in the brush panel.
+const RIDGE_ROWS: [&str; 5] = [
+    "Brush crest",
+    "Brush segment",
+    "Brush offset",
+    "Brush roughness",
+    "Brush valley",
+];
+
+#[test]
+fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    for row in RIDGE_ROWS {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    assert!(control(&h, "Brush hardness").is_some());
+    tap(&mut h, MORE);
+    tap(&mut h, "Ocean ridge");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::OceanRidge)
+    );
+    assert!(more_is_active(&h));
+    let brush = s.globe.brush;
+    assert_eq!(
+        (brush.ridge_crest_m, brush.ridge_segment_km),
+        (-2500.0, 400.0)
+    );
+    assert_eq!(
+        (
+            brush.ridge_offset_km,
+            brush.ridge_roughness_m,
+            brush.ridge_valley_m
+        ),
+        (100.0, 150.0, 300.0)
+    );
+    // The size and the flow stay. The mode has no hardness and no strength.
+    for row in ["Brush size", "Brush flow"] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    for row in ["Brush hardness", "Brush strength", "Brush seed"] {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    // Each slider sets its value from one end of its range to the other.
+    let ends = [(-6000.0, 6000.0), (50.0, 2000.0), (0.0, 500.0)];
+    let ends = ends.into_iter().chain([(0.0, 1000.0), (0.0, 2000.0)]);
+    for (i, (row, (low, high))) in RIDGE_ROWS.into_iter().zip(ends).enumerate() {
+        let value = |h: &Pad| {
+            let b = h.state().globe.brush;
+            let values = [b.ridge_crest_m, b.ridge_segment_km, b.ridge_offset_km];
+            values
+                .into_iter()
+                .chain([b.ridge_roughness_m, b.ridge_valley_m])
+                .nth(i)
+        };
+        let rect = control(&h, row).unwrap();
+        drag(&mut h, rect.center(), rect.left_center(), None);
+        assert!((value(&h).unwrap() - low).abs() < 1e-6, "{row}");
+        drag(&mut h, rect.left_center(), rect.right_center(), None);
+        assert!((value(&h).unwrap() - high).abs() < 1e-6, "{row}");
+    }
+    // The crest moves in steps of 50 m.
+    let rect = control(&h, "Brush crest").unwrap();
+    let part = rect.left_center().lerp(rect.right_center(), 0.37);
+    drag(&mut h, rect.right_center(), part, None);
+    let crest = h.state().globe.brush.ridge_crest_m;
+    assert!(
+        crest > -6000.0 && crest < 6000.0 && crest % 50.0 == 0.0,
+        "{crest}"
+    );
+    check_controls(&h, "the Ocean ridge mode");
+}
+
+#[test]
+fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
+    let mut h = pad((1133.0, 744.0));
+    tap(&mut h, MORE);
+    assert!(h.state().pad.more);
+    let menu = h.state().pad.more_rect.unwrap();
+    let screen = h.state().pad.rects.unwrap().screen;
+    assert!(screen.contains_rect(menu), "{menu:?}");
+    for row in MORE_ROWS {
+        assert!(menu.contains_rect(control(&h, row).unwrap()), "{row}");
+    }
+    check_controls(&h, "744 high with the More menu");
+    tap(&mut h, "Ocean ridge");
+    tap(&mut h, "Brush settings");
+    // Each row of the panel shows, also with the two limits on.
+    tap(&mut h, "Brush floor");
+    tap(&mut h, "Brush ceiling");
+    let brush = h.state().globe.brush;
+    assert!(brush.floor_on && brush.ceiling_on);
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    let levels = ["Brush floor level", "Brush ceiling level"];
+    for row in ["Brush size", "Brush flow"]
+        .into_iter()
+        .chain(RIDGE_ROWS)
+        .chain(levels)
+    {
+        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+    }
+    check_controls(&h, "744 high with the Ocean ridge panel");
+}
+
+/// Writes an image of the brush panel in the ocean ridge mode, for a person
+/// to look at.
+#[test]
+#[ignore]
+fn screenshot_of_the_ocean_ridge_panel() {
+    let state = state();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = vale_app::headless::ui_harness(state, (1194.0, 834.0), 2.0, setup);
+    h.run_steps(3);
+    tap(&mut h, "Brush settings");
+    tap(&mut h, MORE);
+    h.render()
+        .unwrap()
+        .save("../../target/app/ocean-ridge-more.png")
+        .unwrap();
+    tap(&mut h, "Ocean ridge");
+    tap(&mut h, "Brush floor");
+    h.render()
+        .unwrap()
+        .save("../../target/app/ocean-ridge-panel.png")
+        .unwrap();
 }
 
 #[test]

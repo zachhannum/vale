@@ -3078,6 +3078,257 @@ fn one_undo_puts_back_the_ground_from_before_a_warp_stroke() {
     assert!(image.as_raw() == warped.1.as_raw(), "the render");
 }
 
+/// A harness in the ocean ridge mode on the empty world, with a crest above
+/// the ground.
+fn ridge_harness(seed: u32) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    let state = h.state_mut();
+    state.doc.project.world.seed = seed;
+    let brush = &mut state.globe.brush;
+    brush.mode = Mode::OceanRidge;
+    brush.ridge_crest_m = -500.0;
+    h.run_steps(2);
+    h
+}
+
+#[test]
+fn an_ocean_ridge_shows_on_the_globe_while_you_paint() {
+    let _gpu = one_gpu_test();
+    let mut h = ridge_harness(7);
+    let before = all_levels(&h);
+    // The same part of a stroke with a crest below the ground, which
+    // changes nothing.
+    h.state_mut().globe.brush.ridge_crest_m = vale_terrain::ELEV_MIN;
+    uplift_part(&mut h, 12);
+    let flat = canvas_with_pointer(&mut h);
+    assert!(uplift_stroke_end(&mut h) == before);
+
+    h.state_mut().globe.brush.ridge_crest_m = -500.0;
+    uplift_part(&mut h, 12);
+    // The button is down, and the heightmap of the document has no ridge.
+    assert!(h.state().globe.busy());
+    assert!(all_levels(&h) == before);
+    let part = canvas_with_pointer(&mut h);
+    assert_eq!(part.dimensions(), flat.dimensions());
+    let changed = part.pixels().zip(flat.pixels()).filter(|(a, b)| a != b);
+    let changed = changed.count();
+    assert!(changed > 2000, "{changed}");
+    let ridge = uplift_stroke_end(&mut h);
+    assert!(ridge != before);
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 2);
+}
+
+/// The samples of the ocean ridge stroke of the pen: a line with a bend
+/// across a face edge.
+fn ridge_samples() -> Vec<vale_app::globe::brush::Sample> {
+    let places = (0..=30).map(|i| {
+        let t = f64::from(i);
+        (20.0 + 2.0 * t, (t - 15.0).abs() * 1.2 - 9.0)
+    });
+    places
+        .map(|(lon, lat)| vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(lon, lat)),
+            flow: 0.5,
+            radius: 0.1,
+        })
+        .collect()
+}
+
+#[test]
+fn an_ocean_ridge_stroke_gives_the_levels_of_the_cpu_ridge() {
+    use vale_app::globe::brush::Stroke;
+    use vale_terrain::{Heightmap, RidgeLine};
+    let _gpu = one_gpu_test();
+    let mut h = ridge_harness(7);
+    let before = all_levels(&h);
+    h.state_mut().globe.pen_down();
+    for sample in ridge_samples() {
+        let globe = &mut h.state_mut().globe;
+        globe.pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    h.step();
+    settle(&mut h);
+    let app = all_levels(&h);
+
+    // The same line on the CPU.
+    let globe = &h.state().globe;
+    let (brush, n) = (globe.brush, globe.map.face_size());
+    let mut stamps = Vec::new();
+    let mut stroke = Stroke::default();
+    for sample in ridge_samples() {
+        stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+    }
+    stroke.finish(&brush, n, &mut stamps);
+    let spec = brush.ridge_spec(0.1, globe.world_km, globe.world_seed);
+    assert_eq!(spec.seed, 7);
+    let mut line = RidgeLine::new(spec, n);
+    for stamp in &stamps {
+        // The flow of a mouse gives the full height.
+        assert_eq!(stamp.flow, 1.0);
+        line.push(stamp.center, stamp.flow);
+    }
+    assert!(line.len() > 20, "{}", line.len());
+    let mut cpu = Heightmap::new(n, globe.map.base());
+    cpu.begin_stroke();
+    let mut from = 0;
+    while from < line.len() {
+        let plan = line.plan(from);
+        cpu.ridge(&plan);
+        from = plan.end;
+    }
+    cpu.end_stroke();
+
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let cpu: Vec<u16> = texels
+        .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
+        .collect();
+    let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
+    assert!(changed > 2000, "{changed}");
+    // The line is on two faces.
+    let on_face = |face: usize| cpu[face * n * n..][..n * n] != before[face * n * n..][..n * n];
+    assert!((0..6).filter(|face| on_face(*face)).count() >= 2);
+    let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
+    assert!(worst.unwrap() <= 2, "{worst:?}");
+    // The top is near the Crest setting. The fine ridges go above it by
+    // the Roughness setting at most.
+    let crest = meters_to_level(-500.0);
+    let rough = (spec.roughness.ceil() as u16) + 2;
+    let top = *app.iter().max().unwrap();
+    assert!(
+        top <= crest + rough && top + 400 > crest,
+        "{top} of {crest}"
+    );
+}
+
+#[test]
+fn two_equal_ocean_ridge_strokes_with_the_same_seed_give_equal_results() {
+    let _gpu = one_gpu_test();
+    let mut h = ridge_harness(7);
+    assert_eq!(h.state().globe.world_seed, 7);
+    let before = all_levels(&h);
+    let first = uplift_stroke(&mut h);
+    assert!(first != before);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // A second harness starts from the same ground.
+    drop(h);
+    let mut h = ridge_harness(7);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // Another seed gives another result.
+    drop(h);
+    let mut h = ridge_harness(8);
+    assert!(all_levels(&h) == before);
+    let other = uplift_stroke(&mut h);
+    assert!(other != before && other != first);
+}
+
+#[test]
+fn one_undo_puts_back_the_ground_from_before_an_ocean_ridge_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = ridge_harness(7);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    let ridge = (uplift_stroke(&mut h), canvas_image(&mut h));
+    assert!(ridge.0 != before.0);
+    assert!(ridge.1.as_raw() != before.1.as_raw());
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 1);
+
+    assert!(h.state_mut().globe.undo());
+    assert!(all_levels(&h) == before.0);
+    assert!(!h.state().globe.can_undo());
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before.1.as_raw(), "the render");
+
+    assert!(h.state_mut().globe.redo());
+    assert!(all_levels(&h) == ridge.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == ridge.1.as_raw(), "the render");
+}
+
+/// Writes an image of an ocean ridge on the empty world, for a person to
+/// look at. The stroke is 8,000 km long with a bend, and the rise is 2,000 km
+/// wide.
+#[test]
+#[ignore]
+fn screenshot_of_an_ocean_ridge() {
+    let _gpu = one_gpu_test();
+    let mut state = state();
+    state.globe.set_face_size(2048);
+    state.doc.project.world.seed = 7;
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1400.0, 1000.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.view.zoom = 1.6;
+    globe.preview.graticule = false;
+    globe.brush.mode = Mode::OceanRidge;
+    globe.brush.ridge_crest_m = RIDGE_SHOT_CREST_M;
+    h.run_steps(2);
+    let world_km = h.state().globe.world_km;
+    h.state_mut().globe.pen_down();
+    // 72 degrees of a great circle are 8,000 km on a world of 6,371 km.
+    for i in 0..=72 {
+        let t = f64::from(i) / 72.0;
+        let lon = -36.0 + 72.0 * t;
+        let lat = 14.0 * (std::f64::consts::PI * (t - 0.5)).sin();
+        let sample = vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(lon, lat)),
+            flow: 0.5,
+            radius: 1000.0 / world_km,
+        };
+        let globe = &mut h.state_mut().globe;
+        globe.pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    h.step();
+    settle(&mut h);
+    save(&canvas_image(&mut h), "ocean-ridge");
+    h.state_mut().globe.view.zoom = 4.0;
+    save(&canvas_image(&mut h), "ocean-ridge-near");
+    h.state_mut().globe.preview.greyscale = true;
+    save(&canvas_image(&mut h), "ocean-ridge-near-grey");
+}
+
+/// The crest of the ridge of the screenshot, in meters.
+const RIDGE_SHOT_CREST_M: f64 = 500.0;
+
+#[test]
+fn the_brush_panel_has_the_ocean_ridge_mode_and_its_sliders() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    const SLIDERS: [&str; 5] = ["Crest", "Segment", "Offset", "Roughness", "Valley"];
+    for name in SLIDERS {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    h.get_by_label("Ocean ridge").click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::OceanRidge);
+    assert_eq!(
+        (brush.ridge_crest_m, brush.ridge_segment_km),
+        (-2500.0, 400.0)
+    );
+    for name in SLIDERS
+        .into_iter()
+        .chain(["Radius", "Flow", "Floor", "Ceiling"])
+    {
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+    for name in ["Hardness", "Strength", "Seed"] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+}
+
 /// Writes an image of a ridge after warp strokes, for a person to look at.
 #[test]
 #[ignore]

@@ -10,8 +10,8 @@ use std::time::Instant;
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 use vale_terrain::{
-    ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, Stamp, TexelRect,
-    Window, WindowHeights, meters_to_level,
+    ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, RidgeLine, SEA_LEVEL, Stamp,
+    TexelRect, Window, WindowHeights, meters_to_level,
 };
 
 pub mod backdrop;
@@ -162,6 +162,22 @@ struct Uplifting {
     window: Option<Window>,
 }
 
+/// The line of an ocean ridge stroke. The stamps of the stroke are the
+/// points of the line, and they do not go to the GPU.
+struct Ridging {
+    line: RidgeLine,
+    /// The number of points of the line that the plans cover.
+    sent: usize,
+}
+
+impl Ridging {
+    fn extend(&mut self, stamps: &[Stamp]) {
+        for stamp in stamps {
+            self.line.push(stamp.center, stamp.flow);
+        }
+    }
+}
+
 /// The stroke that the GPU works on.
 struct Active {
     id: u64,
@@ -174,6 +190,8 @@ struct Active {
     erode: Option<Eroding>,
     /// `Some`: the stroke is an uplift stroke with erosion.
     uplift: Option<Uplifting>,
+    /// `Some`: the stroke is an ocean ridge stroke.
+    ridge: Option<Ridging>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
     /// The number of rectangles that the GPU has not given back. `None`: the
@@ -769,6 +787,7 @@ impl Globe {
         self.read_inputs();
         self.erode(now);
         self.uplift(now);
+        self.ridge(now);
         self.send_stamps(now);
         in_flight || self.busy() || self.rivers.pending() || self.export.is_some()
     }
@@ -874,12 +893,20 @@ impl Globe {
                         sampled: None,
                         erode,
                         uplift,
+                        ridge: None,
                         ended: false,
                         reading: None,
                     });
                 }
                 Input::Sample(sample, time) => {
                     if let Some(active) = self.stroke.as_mut().filter(|a| !a.ended) {
+                        // The first sample gives the radius of the ridge.
+                        if active.sampled.is_none() && self.brush.mode == Mode::OceanRidge {
+                            let (km, seed) = (self.world_km, self.world_seed);
+                            let spec = self.brush.ridge_spec(sample.radius, km, seed);
+                            let line = RidgeLine::new(spec, self.map.face_size());
+                            active.ridge = Some(Ridging { line, sent: 0 });
+                        }
                         active.sampled = Some(time);
                         if let Some(erode) = &mut active.erode {
                             erode.sample(&self.brush, sample);
@@ -894,6 +921,10 @@ impl Globe {
                                 level_at,
                                 &mut stamps,
                             );
+                            if let Some(ridge) = &mut active.ridge {
+                                ridge.extend(&stamps);
+                                stamps.clear();
+                            }
                             for stamp in &mut stamps {
                                 set_world(
                                     stamp,
@@ -918,6 +949,10 @@ impl Globe {
                         active
                             .stroke
                             .finish(&self.brush, map.face_size(), &mut stamps);
+                        if let Some(ridge) = &mut active.ridge {
+                            ridge.extend(&stamps);
+                            stamps.clear();
+                        }
                         for stamp in &mut stamps {
                             set_world(
                                 stamp,
@@ -1082,6 +1117,45 @@ impl Globe {
         uplift.asked = stamps;
     }
 
+    /// Sends the ocean ridge of the new points of the line to the GPU. Each
+    /// plan goes with the ground from before the stroke, which the
+    /// heightmap holds until the texels of the stroke come back.
+    fn ridge(&mut self, now: Instant) {
+        let Some(active) = &mut self.stroke else {
+            return;
+        };
+        let Some(ridge) = &mut active.ridge else {
+            return;
+        };
+        let face_size = self.map.face_size() as u32;
+        let time = active.sampled.unwrap_or(now);
+        while ridge.sent < ridge.line.len() {
+            let plan = ridge.line.plan(ridge.sent);
+            ridge.sent = plan.end;
+            let mut ground = Vec::new();
+            for (face, rect) in plan.rects.iter().enumerate() {
+                let Some(rect) = *rect else { continue };
+                active.touched[face] = Some(union(active.touched[face], rect));
+                let mut data = Vec::new();
+                self.map.read_rect(face, rect, &mut data);
+                ground.push((face as u32, rect, data));
+            }
+            if ground.is_empty() {
+                continue;
+            }
+            let texels = ground.iter().map(|(_, _, data)| data.len() as u64).sum();
+            self.stats.stamps(active.id, 1, texels);
+            let (plan, stroke) = (Box::new(plan), active.id);
+            let op = Op::Ridge {
+                plan,
+                ground,
+                stroke,
+                time,
+            };
+            self.link.push(face_size, op);
+        }
+    }
+
     /// Sends the stamps of this frame to the GPU. After the last stamp of a
     /// stroke and the last step of an erode stroke or of an uplift stroke, asks for the texels that
     /// the stroke changed.
@@ -1119,6 +1193,11 @@ impl Globe {
         }
         if let Some(uplift) = &active.uplift
             && (!uplift.stamps.is_empty() || self.eroder.pending())
+        {
+            return;
+        }
+        if let Some(ridge) = &active.ridge
+            && ridge.sent < ridge.line.len()
         {
             return;
         }

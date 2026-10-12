@@ -9,7 +9,7 @@ use eframe::egui_wgpu::{self, wgpu};
 
 use vale_terrain::{
     ChannelMap, ChannelWindow, ErodeStep, FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback,
-    StampPlan, TILES_WGSL, TexelRect,
+    RidgePlan, StampPlan, TILES_WGSL, TexelRect,
 };
 
 use super::backdrop::{Backdrop, Canvas};
@@ -244,6 +244,15 @@ pub enum Op {
     },
     /// One step of an erode stroke.
     Erode { stroke: u64, step: Arc<ErodeStep> },
+    /// The ocean ridge of the new points of a stroke. `ground` has the
+    /// texels from before the stroke for each rectangle of the plan. `time`
+    /// is the frame that read the last pen sample.
+    Ridge {
+        plan: Box<RidgePlan>,
+        ground: Vec<(u32, TexelRect, Vec<u16>)>,
+        stroke: u64,
+        time: Instant,
+    },
     /// Reads texels back for the CPU heightmap.
     Readback {
         stroke: u64,
@@ -610,6 +619,27 @@ impl Batch<'_> {
                 debug_assert!(added, "an empty batch takes one step");
                 let passes = step.rects().iter().flatten().count() as u32;
                 self.count_passes(stroke, passes);
+            }
+            Op::Ridge {
+                plan,
+                ground,
+                stroke,
+                time,
+            } => {
+                // The pass reads the ground that the writes give. A write
+                // runs before the commands of the next submit, so the
+                // commands before it go first, and a submit holds one plan.
+                self.submit();
+                let (heights, queue) = (self.heights, self.queue);
+                for (face, rect, data) in &ground {
+                    heights.upload(queue, *face, *rect, data);
+                }
+                heights.begin_batch();
+                let added = heights.ridge(queue, self.encoder(), &plan);
+                debug_assert!(added, "an empty batch takes one plan");
+                let passes = plan.rects.iter().flatten().count() as u32;
+                self.count_passes(stroke, passes);
+                self.stamps.push((stroke, time));
             }
             Op::Readback { stroke, face, rect } => {
                 let (heights, device) = (self.heights, self.device);
