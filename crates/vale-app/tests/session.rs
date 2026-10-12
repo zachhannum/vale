@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use vale_app::document::Document;
-use vale_app::session::{SAVE_DELAY, Session};
-use vale_store::ProjectFile;
+use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
+use vale_store::{Project, ProjectFile, Units, World};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{FACES, Heightmap, Mode, Stamp, TexelRect, meters_to_level};
 
@@ -131,15 +131,15 @@ fn undo_works_after_a_close_and_an_open() {
     assert!(texels(&map) == second, "the texels are not the same");
     assert!(!session.can_redo());
 
-    // The undo of the first stroke frees its tiles. The record of the
-    // heightmap is not an edit.
+    // The undo of the first stroke frees its tiles, and the world has no
+    // raster layer again.
     assert!(session.undo(&mut doc, &mut map).unwrap());
     assert!(session.undo(&mut doc, &mut map).unwrap());
     assert_eq!(map.allocated_tiles(), 0);
     assert!(texels(&map).iter().all(|&level| level == BASE));
     assert!(!session.can_undo());
     assert!(!session.undo(&mut doc, &mut map).unwrap());
-    assert_eq!(doc.project.rasters().len(), 1);
+    assert_eq!(doc.project.rasters(), []);
 
     // A new stroke removes the redo steps.
     assert!(session.can_redo());
@@ -224,6 +224,8 @@ fn one_hold_of_a_control_is_one_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let (mut session, mut doc, mut map) = start(&path);
+    // The file holds the band limits and the ramp of a painted heightmap.
+    paint(&mut map, 45.0, 35.3, 0.2);
     session.flush(&mut doc.project, &mut map).unwrap();
     let bands = map.bands.clone();
     let stored = ProjectFile::open(&path).unwrap().1;
@@ -245,10 +247,12 @@ fn one_hold_of_a_control_is_one_undo_step() {
     assert!(session.undo(&mut doc, &mut map).unwrap());
     assert_eq!(map.bands, bands);
     assert_eq!(doc.project, stored);
-    assert!(!session.can_undo());
     let tick = session.tick(&mut doc.project, &mut map, false, start + SAVE_DELAY);
     assert_eq!(tick.unwrap(), None);
     assert!(session.can_redo());
+    // The step before the hold is the stroke.
+    assert!(session.undo(&mut doc, &mut map).unwrap());
+    assert!(!session.can_undo());
 }
 
 #[test]
@@ -347,9 +351,7 @@ fn a_world_is_the_same_after_a_close_and_an_open() {
     let mut session = Session::open(&path, &mut doc).unwrap();
     let mut map = Heightmap::new(1024, BASE);
     let start = Instant::now();
-    // The first frame makes the record of the heightmap.
     session.flush(&mut doc.project, &mut map).unwrap();
-    assert_eq!(doc.project.rasters().len(), 1);
     let mut tick = |doc: &mut Document, now| {
         session
             .tick(&mut doc.project, &mut map, false, now)
@@ -382,7 +384,8 @@ fn a_world_is_the_same_after_a_close_and_an_open() {
     // The exit saves a change that is newer than the delay.
     next.project.world.name = "Last".to_string();
     let now = Instant::now();
-    let mut map = session.load_map().unwrap().unwrap();
+    assert!(session.load_map().unwrap().is_none());
+    let mut map = Heightmap::new(1024, BASE);
     let project = &mut next.project;
     assert!(
         session
@@ -412,4 +415,107 @@ fn a_new_layer_of_the_file_gets_an_entry() {
     };
     assert_eq!(names(&empty), ["Land", "Rivers", "Places"]);
     assert_eq!(names(&empty), names(&doc));
+}
+
+#[test]
+fn a_new_world_has_no_raster_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut map = Heightmap::new(1024, BASE);
+
+    // A save of a world with no painted tile adds no raster.
+    doc.project.world.name = "Aerth".to_string();
+    let now = Instant::now();
+    assert!(
+        session
+            .tick(&mut doc.project, &mut map, false, now)
+            .unwrap()
+            .is_some()
+    );
+    session.flush(&mut doc.project, &mut map).unwrap();
+    assert_eq!(doc.project.rasters(), []);
+    drop(session);
+    let (file, saved) = ProjectFile::open(&path).unwrap();
+    assert_eq!(saved.world.name, "Aerth");
+    assert_eq!(saved.rasters(), []);
+    drop(file);
+
+    // The first stroke adds the heightmap as a raster.
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    assert!(session.load_map().unwrap().is_none());
+    paint(&mut map, 10.0, 20.0, 0.1);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    assert_eq!(doc.project.rasters().len(), 1);
+    assert_eq!(doc.project.rasters()[0].name, "Height");
+    drop(session);
+    let (_, _, loaded) = reopen(&path);
+    assert!(texels(&loaded) == texels(&map));
+}
+
+#[test]
+fn a_new_radius_keeps_each_longitude_and_latitude() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut map = Heightmap::new(1024, BASE);
+    paint(&mut map, 10.0, 20.0, 0.1);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    let layers = doc.project.layers().to_vec();
+    let before = texels(&map);
+
+    doc.set_radius_km(200.0);
+    doc.project.world.units = Units::Imperial;
+    assert_eq!(doc.project.layers(), layers);
+    session.flush(&mut doc.project, &mut map).unwrap();
+    drop(session);
+
+    let (_, next, loaded) = reopen(&path);
+    assert_eq!(next.project.world.radius_km, 200.0);
+    assert_eq!(next.project.world.units, Units::Imperial);
+    assert_eq!(next.project.layers(), layers);
+    assert!(texels(&loaded) == before);
+}
+
+#[test]
+fn a_new_project_file_has_the_name_of_its_world_and_a_free_path() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(latest_project(dir.path()), None);
+    let first = new_project_path(dir.path(), " Pebble ");
+    assert_eq!(first, dir.path().join("Pebble.gpkg"));
+    std::fs::write(&first, b"").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), b"").unwrap();
+    assert_eq!(latest_project(dir.path()), Some(first));
+    let second = new_project_path(dir.path(), "Pebble");
+    assert_eq!(second, dir.path().join("Pebble 2.gpkg"));
+    let odd = new_project_path(dir.path(), "a/b: c");
+    assert_eq!(odd, dir.path().join("a_b_ c.gpkg"));
+    assert_eq!(
+        new_project_path(dir.path(), ""),
+        dir.path().join("World.gpkg")
+    );
+}
+
+#[test]
+fn the_list_of_the_worlds_has_a_name_for_each_file() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(worlds(dir.path()).is_empty());
+    let world = |name: &str| World {
+        name: name.to_string(),
+        ..World::default()
+    };
+    for (file, name) in [("b", "Pebble"), ("a", "Aerth"), ("c", "Pebble")] {
+        let path = dir.path().join(format!("{file}.gpkg"));
+        drop(ProjectFile::create(&path, &Project::new(world(name))).unwrap());
+    }
+    std::fs::write(dir.path().join("broken.gpkg"), b"no").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), b"").unwrap();
+    let list = worlds(dir.path());
+    let names: Vec<&str> = list.iter().map(|world| world.name.as_str()).collect();
+    // Two worlds with one name show the names of their files.
+    assert_eq!(names, ["Aerth", "b", "broken", "c"]);
+    assert_eq!(list[0].path, dir.path().join("a.gpkg"));
 }

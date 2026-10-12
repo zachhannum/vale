@@ -9,6 +9,7 @@ use vale_app::headless;
 use vale_app::pipeline::Pipeline;
 use vale_app::session::Session;
 use vale_app::ui::AppState;
+use vale_app::ui::world_form::WorldForm;
 
 fn run() -> anyhow::Result<u8> {
     let args = Args::parse();
@@ -31,12 +32,22 @@ fn run() -> anyhow::Result<u8> {
         || args.stroke_test;
     let new_state = |doc, face_size| -> anyhow::Result<AppState> {
         let mut state = AppState::new(doc)?;
+        // A new world gets a file next to the project file.
+        state.projects = args.project.as_ref().map(|path| match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+            _ => ".".into(),
+        });
         state.workspace = args.workspace;
         state.set_layout(args.layout);
         for panel in &args.panel {
             state.pad.open(*panel);
         }
         state.pad.more = args.more_tools;
+        let world = &state.doc.project.world;
+        state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
+        if args.worlds_menu {
+            vale_app::ui::pad::toggle_worlds(&mut state);
+        }
         apply_globe(&args, &mut state.globe, face_size)?;
         if let Some(session) = &session
             && let Some(map) = session.load_map()?

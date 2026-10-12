@@ -537,7 +537,8 @@ impl Pipeline {
         let km_per_point = 1.0 / (view.scale * local) / 1000.0;
 
         // 7 to 9: scale bar, labels.
-        let (bar_items, bar_rect) = furniture::scale_bar(page, km_per_point, fonts);
+        let (bar_items, bar_rect) =
+            furniture::scale_bar(page, km_per_point, doc.project.world.units, fonts);
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {
             let (items, summary) = labels::place(&page_layers, page, fonts, quality, &[bar_rect]);

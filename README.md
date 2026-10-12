@@ -25,7 +25,7 @@ The window opens on the globe workspace. The globe shows the heightmap of the wo
 - Hold Shift and drag to twist the globe about the middle of the view. On a trackpad, use the rotate gesture.
 - On a touch screen, pinch and twist with two fingers. The place under your fingers stays under your fingers.
 - Click "Brush" in the tool bar to paint the heightmap. A pen or the left mouse button paints. A finger, the other mouse buttons, and Shift with a drag move the globe.
-- The brush panel opens with the brush tool. It has the eight modes (raise, lower, smooth, flatten, carve, erode, weather, and uplift), the radius in kilometers of the world, the hardness, and the strength. In the weather mode, an Angle slider sets the steepest slope that the brush leaves. The uplift mode raises the land and cuts valleys into it while you paint. In that mode, the Uplift slider sets the rate of the rise, and the Erosion slider sets the strength of the valleys. A pen sets the flow from its pressure, and the mouse paints with a fixed flow.
+- The brush panel opens with the brush tool. It has the eight modes (raise, lower, smooth, flatten, carve, erode, weather, and uplift), the radius on the ground in the display units of the world, the hardness, and the strength. In the weather mode, an Angle slider sets the steepest slope that the brush leaves. The uplift mode raises the land and cuts valleys into it while you paint. In that mode, the Uplift slider sets the rate of the rise, and the Erosion slider sets the strength of the valleys. A pen sets the flow from its pressure, and the mouse paints with a fixed flow.
 - The globe and the flat view draw the rivers that the painted land implies, and the carve mode cuts valleys along them. While you hold the brush, the erode mode cuts valleys that branch up toward the ridges. When you zoom in, the rivers and the valleys become finer. A smaller erode brush also cuts finer valleys. A Rivers switch in the elevation controls hides the rivers. A slider below it sets the width of the lines.
 - The brush keeps its size on screen when you zoom. Select "Lock size" to keep its size on the ground.
 - The flatten mode moves the ground to the level under the start of the stroke. To set a fixed level, click "Pick from globe", and then press on the globe.
@@ -33,8 +33,9 @@ The window opens on the globe workspace. The globe shows the heightmap of the wo
 - Click "Flat" in the tool bar to show the whole world as one flat map. Click it again to go back to the globe. The tool and the panels stay. A drag moves the map, and the wheel zooms. You can zoom out until the map has a quarter of the size of the canvas. At each zoom, you can move each place of the map to the middle of the canvas. The brush paints the same heightmap, and its outline shows the ground that the stamp covers. In the equirectangular projection, the outline is wide near a pole.
 - In the flat view, the list next to "Flat" sets the projection: equirectangular, Equal Earth, Mercator, Lambert azimuthal, orthographic, or stereographic. In the iPad layout, the button next to "Flat" opens the same list.
 - "Recenter" makes the place at the middle of the canvas the center of the projection. Move the map first. "Reset" puts the center of the projection back and shows the whole map. In the iPad layout, the two actions are buttons to the right of the view switch.
+- Click "New world…" in the tool bar to make a world from a name, a radius, and display units. The radius is that of Earth, Mars, or the Moon, or a value that you type. With `--project`, the new world is a new project file in the folder of the project file, and the app opens it. The file of the old world stays. With no project file, the new world has no file. Click "World…" to change the name, the radius, or the units of the world.
 - Click "Greyscale" in the tool bar to show the plain heightmap.
-- Click "Import heightmap…" in the tool bar to replace the heightmap with an equirectangular image. You can also drop the image on the window. The image is a PNG or TIFF file, and 16-bit greyscale gives the best result. Black is -6,000 m, and white is 6,000 m. If the image is not twice as wide as it is tall, the status bar shows a warning. In the iPad layout, the button is in the panel of the Height layer. "Undo" puts the old heightmap back. If the old heightmap has more painted tiles than the undo memory of 256 MB holds, the import has no undo step.
+- Click "Import heightmap…" in the tool bar to replace the heightmap with an equirectangular image. You can also drop the image on the window. The image is a PNG or TIFF file, and 16-bit greyscale gives the best result. Black is -6,000 m, and white is 6,000 m. If the image is not twice as wide as it is tall, the status bar shows a warning. In the iPad layout, the button is in the Layers panel, or in the panel of the Height layer if the world has one. "Undo" puts the old heightmap back. If the old heightmap has more painted tiles than the undo memory of 256 MB holds, the import has no undo step.
 - Click "Elevation" in the tool bar to open the elevation panel. The bar shows the band limits, which are the elevations where the tints change. Tap a free place on the bar to add a limit. Drag a limit to move it. Tap a limit and click "Remove" to remove it. Sea level is a limit that stays. Clear "Levels" to show the color ramp with no steps. The land colors and the sea colors are separate.
 - Click "Debug" in the tool bar to open the brush debug panel. It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. It shows the memory of the undo steps, or the size of the undo log of the project file. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
 
@@ -44,7 +45,7 @@ Click "Map" in the tool bar to open the flat map with the Natural Earth 110m sam
 
 - Drag the map to pan. Scroll or pinch to zoom. On a touch screen, two fingers pan and zoom.
 - Double-click the map to move the center of the projection there.
-- Use the left panel to set the world radius, the projection, and its center.
+- Use the left panel to set the projection and its center.
 - Tick a layer to show it. Click "Edit" on a layer to select it. The inspector then shows its style.
 - Click a feature to see its attributes. The inspector lists the labels that did not fit.
 - Open a GeoJSON file with the button, or drop a GeoJSON file on the window.
@@ -64,7 +65,7 @@ This command keeps the world, the vector layers, and the heightmap in a project 
 cargo run --release -p vale-app -- --project path/to/world.gpkg
 ```
 
-The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after a change, and at once after a brush stroke. Each save is one undo step. A save after a brush stroke writes only the tiles that the stroke changed. The file does not hold the styles. On iPad, the app keeps one project file in its container.
+The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after a change, and at once after a brush stroke. Each save is one undo step. A save after a brush stroke writes only the tiles that the stroke changed. The file does not hold the styles. On iPad, each world is one project file in the container of the app. The app opens the file with the newest change.
 
 ## Headless use
 
@@ -80,7 +81,7 @@ cargo run --release -p vale-app -- --report
 cargo run --release -p vale-app -- --stroke-test --face-size 8192
 ```
 
-`--screenshot` draws the full UI in the globe workspace. With `--layout pad` it draws the iPad layout. In that layout, `--panel brush`, `--panel layers`, or `--panel toolbox` opens a panel, and `--more-tools` opens the menu of the More cell. With `--view flat` it draws the flat view of the world, and `--flat-projection` and `--flat-center` set its projection. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
+`--screenshot` draws the full UI in the globe workspace. With `--layout pad` it draws the iPad layout. In that layout, `--panel brush`, `--panel layers`, or `--panel toolbox` opens a panel, `--more-tools` opens the menu of the More cell, and `--worlds-menu` opens the menu of the worlds. `--world-form new` or `--world-form properties` opens the form of the world. With `--view flat` it draws the flat view of the world, and `--flat-projection` and `--flat-center` set its projection. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
 
 | Argument | Meaning |
 | --- | --- |
@@ -109,7 +110,7 @@ scripts/app-ipad.sh
 
 The script builds the app, installs it on the iPad, and starts it. It prints four steps and then "Done". The first build takes a few minutes, because it makes PROJ for iOS. If the build fails, read the full log in `target/ios/vale-app/xcodebuild.log`.
 
-The app opens on the globe of the sample world, in the iPad layout. Paint with Apple Pencil. Drag with one finger to turn the globe, and pinch with two fingers to zoom. To import a heightmap, tap the layers button, open the Height layer, and tap "Import heightmap…". The file picker of the Files app opens. The iPad app has no other buttons to open or export files.
+At the first start, the app opens on an empty globe, in the iPad layout, with the form of a new world. Set the name, the radius, and the units, and tap "Create world". Paint with Apple Pencil. Drag with one finger to turn the globe, and pinch with two fingers to zoom. To import a heightmap, tap the layers button and tap "Import heightmap…". The file picker of the Files app opens. After the first stroke or import, the row is in the panel of the Height layer. The globe button at the top left opens the menu of the worlds. Tap a world to open it. Tap "New world…" to make a world, which is a new project file. In the form, the slider sets the radius, and it stops at the marks of the Moon, Mars, and Earth. Tap the value above the slider to type a radius. The file of the old world stays. Tap "World properties" to change the name, the radius, or the units of the open world. In a narrow window, the menu of the workspaces has the row "Worlds…". The iPad app has no other buttons to open or export files.
 
 To build for the iOS simulator on a Mac with Apple silicon, run these commands:
 

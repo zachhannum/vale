@@ -2,20 +2,35 @@
 
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
+use vale_store::World;
 
+use super::world_form::{self, WorldForm};
 use super::{Action, AppState, ExportFormat, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
 use crate::globe::brush::{EROSION, FLOW, STRENGTH_M, TALUS_DEG};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
+use crate::world::{self, three_significant};
+
+/// The button of the tool bar that opens the properties of the world.
+pub const WORLD_BUTTON: &str = "World…";
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
-        ui.horizontal(|ui| {
+        // In a narrow window, the buttons go to a second row.
+        ui.horizontal_wrapped(|ui| {
             ui.strong("Vale");
             ui.separator();
             ui.selectable_value(&mut state.workspace, Workspace::Globe, "Globe");
             ui.selectable_value(&mut state.workspace, Workspace::Map, "Map");
+            ui.separator();
+            if ui.button(world_form::NEW_WORLD).clicked() {
+                state.world_form = Some(WorldForm::new_world());
+            }
+            if ui.button(WORLD_BUTTON).clicked() {
+                let form = WorldForm::properties(&state.doc.project.world);
+                state.world_form = Some(form);
+            }
             if state.workspace == Workspace::Globe {
                 ui.separator();
                 ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
@@ -107,20 +122,20 @@ pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-/// The state of the window of small rivers. `world_km` is the radius of
-/// the world.
-fn window_line(globe: &Globe, world_km: f64) -> String {
+/// The state of the window of small rivers.
+fn window_line(globe: &Globe, world: &World) -> String {
     match globe.window() {
         Some(channels) => {
-            let km = rivers::cell_angle(&channels.window()) * world_km;
-            format!("River window: cells of {} km", three_significant(km))
+            let km = rivers::cell_angle(&channels.window()) * world.radius_km;
+            let size = world::distance(km, world.units);
+            format!("River window: cells of {size}")
         }
         None => "River window: off".to_string(),
     }
 }
 
 pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
-    let world_km = state.doc.project.world.radius_km;
+    let world = &state.doc.project.world;
     // The undo log of the project file, if it has the strokes.
     let session = state.session.as_ref();
     let session = session.filter(|s| s.saves_map(&state.globe.map));
@@ -144,7 +159,7 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     }
     ui.label(globe.stats.worst_line());
     ui.label(format!("Backlog: {} stamps", globe.stats.backlog));
-    ui.label(window_line(globe, world_km));
+    ui.label(window_line(globe, world));
     ui.weak(stats::DELAY_NOTE);
     ui.separator();
 
@@ -232,17 +247,21 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
 
 fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     let world_km = state.doc.project.world.radius_km;
+    let (unit_km, symbol) = world::large_unit(state.doc.project.world.units);
     let globe = &mut state.globe;
     let globe_radius = globe.radius();
-    let mut km = globe.brush.radius_km(globe_radius, world_km);
+    let mut size = globe.brush.radius_km(globe_radius, world_km) / unit_km;
     let range = globe.brush.radius_km_range(globe_radius, world_km);
-    let slider = egui::Slider::new(&mut km, range)
+    let range = range.start() / unit_km..=range.end() / unit_km;
+    let slider = egui::Slider::new(&mut size, range)
         .logarithmic(true)
-        .custom_formatter(|km, _| three_significant(km))
-        .suffix(" km")
+        .custom_formatter(|size, _| three_significant(size))
+        .suffix(format!(" {symbol}"))
         .text("Radius");
     if ui.add(slider).changed() {
-        globe.brush.set_radius_km(km, globe_radius, world_km);
+        globe
+            .brush
+            .set_radius_km(size * unit_km, globe_radius, world_km);
     }
     ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
     ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
@@ -324,24 +343,11 @@ pub fn left(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn world_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("World");
-    ui.add(
-        egui::TextEdit::singleline(&mut state.doc.project.world.name).desired_width(f32::INFINITY),
-    );
-    ui.horizontal(|ui| {
-        ui.label("Radius (km)");
-        let mut km = state.doc.project.world.radius_km;
-        if ui
-            .add(
-                egui::DragValue::new(&mut km)
-                    .speed(10.0)
-                    .range(100.0..=100000.0),
-            )
-            .changed()
-        {
-            state.doc.set_radius_km(km);
-            state.touch();
-        }
-    });
+    let world = &state.doc.project.world;
+    let symbol = world::large_unit(world.units).1;
+    let radius = world::radius_text(world.radius_km, world.units);
+    ui.label(&world.name);
+    ui.label(format!("Radius {radius} {symbol}"));
     ui.add_space(6.0);
 }
 
@@ -454,14 +460,6 @@ fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-pub(super) fn three_significant(v: f64) -> String {
-    if !v.is_finite() || v <= 0.0 {
-        return "–".to_string();
-    }
-    let digits = 2 - v.log10().floor() as i32;
-    format!("{:.*}", digits.max(0) as usize, v)
-}
-
 pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -473,7 +471,8 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
             if let Some(c) = &state.composed
                 && state.workspace == Workspace::Map
             {
-                ui.label(format!("1 pt = {} km", three_significant(c.km_per_point)));
+                let units = state.doc.project.world.units;
+                ui.label(format!("1 pt = {}", world::distance(c.km_per_point, units)));
                 ui.separator();
                 ui.label(format!(
                     "labels: {} placed, {} unplaced",

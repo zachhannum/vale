@@ -2,7 +2,7 @@
 //! heightmap a short time after a change. Each save is one step of the undo
 //! log of the file.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use vale_store::{
@@ -21,8 +21,82 @@ const HEIGHT_NAME: &str = "Height";
 /// The largest face size of a heightmap that the app loads.
 const MAX_FACE_SIZE: u32 = 16384;
 
+/// The extension of a project file.
+const EXTENSION: &str = "gpkg";
+
+/// The path of a new project file in `dir` for a world with this name. No
+/// file is at the path.
+pub fn new_project_path(dir: &Path, name: &str) -> PathBuf {
+    let stem: String = name
+        .trim()
+        .chars()
+        .map(|c| match c {
+            c if c.is_alphanumeric() || " -_".contains(c) => c,
+            _ => '_',
+        })
+        .collect();
+    let stem = if stem.is_empty() { "World" } else { &stem };
+    let mut path = dir.join(format!("{stem}.{EXTENSION}"));
+    let mut number = 2;
+    while path.exists() {
+        path = dir.join(format!("{stem} {number}.{EXTENSION}"));
+        number += 1;
+    }
+    path
+}
+
+/// The project files in `dir`, each with the time of its last change.
+fn project_files(dir: &Path) -> Vec<(std::time::SystemTime, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let files = entries.filter_map(|entry| {
+        let path = entry.ok()?.path();
+        let project = path.extension().is_some_and(|e| e == EXTENSION);
+        let changed = path.metadata().ok()?.modified().ok()?;
+        project.then_some((changed, path))
+    });
+    files.collect()
+}
+
+/// The project file in `dir` with the newest change.
+pub fn latest_project(dir: &Path) -> Option<PathBuf> {
+    project_files(dir).into_iter().max().map(|(_, path)| path)
+}
+
+/// A project file and the name of its world.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldFile {
+    pub path: PathBuf,
+    pub name: String,
+}
+
+/// The worlds of the project files in `dir`, in the order of their names.
+/// A file has the name of the file in place of the name of its world if it
+/// does not give its world, or if another file has a world of that name.
+pub fn worlds(dir: &Path) -> Vec<WorldFile> {
+    let stem = |path: &Path| {
+        let stem = path.file_stem().unwrap_or_default();
+        stem.to_string_lossy().into_owned()
+    };
+    let files = project_files(dir).into_iter().map(|(_, path)| {
+        let name = ProjectFile::world_name(&path).unwrap_or_else(|_| stem(&path));
+        WorldFile { path, name }
+    });
+    let mut worlds: Vec<WorldFile> = files.collect();
+    let names: Vec<String> = worlds.iter().map(|world| world.name.clone()).collect();
+    for world in &mut worlds {
+        if names.iter().filter(|name| **name == world.name).count() > 1 {
+            world.name = stem(&world.path);
+        }
+    }
+    worlds.sort_by_cached_key(|world| (world.name.to_lowercase(), world.path.clone()));
+    worlds
+}
+
 pub struct Session {
     file: ProjectFile,
+    path: PathBuf,
     /// The time of the first change that the file does not hold.
     changed_at: Option<Instant>,
     /// The last `tick` had `hold`.
@@ -47,10 +121,16 @@ impl Session {
         };
         Ok(Session {
             file,
+            path: path.to_path_buf(),
             changed_at: None,
             held: false,
             last_save: SaveStats::default(),
         })
+    }
+
+    /// The path of the project file.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// The heightmap of the file, with the face size, the base level, the
@@ -90,9 +170,10 @@ impl Session {
     /// Call this in each frame. It saves a change that is older than
     /// `SAVE_DELAY`. It returns the time to the save of a newer change.
     ///
-    /// The heightmap gets a raster record in the project. With `hold`, there
-    /// is no save: the heightmap waits for texels of a stroke, or a control
-    /// is held. The changes of one hold are one save, at the end of the hold.
+    /// A painted heightmap gets a raster record in the project. With `hold`,
+    /// there is no save: the heightmap waits for texels of a stroke, or a
+    /// control is held. The changes of one hold are one save, at the end of
+    /// the hold.
     pub fn tick(
         &mut self,
         project: &mut Project,
@@ -124,13 +205,6 @@ impl Session {
             return Ok(());
         }
         let saves_map = self.saves_map(map);
-        if saves_map && self.file.project().rasters().is_empty() {
-            // The record of the heightmap is not an edit, so it gets no undo
-            // step.
-            let mut base = self.file.project().clone();
-            sync_raster(&mut base, map);
-            self.file.save_base(&base)?;
-        }
         let changes = match project.rasters().first() {
             Some(raster) if saves_map => {
                 // The file has no tile of a raster that is new to it.
@@ -191,16 +265,22 @@ impl Session {
         if !self.saves_map(map) {
             return Ok(());
         }
-        let Some(raster) = self.file.project().rasters().first() else {
-            return Ok(());
-        };
-        load_record(map, raster);
+        // An undo of the first stroke leaves a project with no raster. The
+        // tiles of that stroke then leave the heightmap.
+        let raster = self.file.project().rasters().first();
+        if let Some(raster) = raster {
+            load_record(map, raster);
+        }
         for (id, key) in restored.tiles {
-            if id != raster.id {
+            if raster.is_some_and(|r| r.id != id) {
                 continue;
             }
             let (face, column, row) = (key.face as usize, key.column as usize, key.row as usize);
-            match self.file.load_tile(id, key)? {
+            let pixels = match raster {
+                Some(_) => self.file.load_tile(id, key)?,
+                None => None,
+            };
+            match pixels {
                 Some(pixels) => map.load_tile(face, column, row, &pixels),
                 None => map.clear_tile(face, column, row),
             }
@@ -242,10 +322,12 @@ fn load_record(map: &mut Heightmap, raster: &Raster) {
     }
 }
 
-/// Makes the first raster of the project the record of the heightmap.
+/// Makes the first raster of the project the record of the heightmap. A
+/// project with no raster gets one when the heightmap has a painted tile.
 fn sync_raster(project: &mut Project, map: &Heightmap) {
     let id = match project.rasters().first() {
         Some(raster) => raster.id,
+        None if map.allocated().next().is_none() => return,
         None => project.add_raster(HEIGHT_NAME.to_string(), map.face_size() as u32),
     };
     let raster = project.raster_mut(id).expect("the raster of the ID");

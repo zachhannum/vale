@@ -194,6 +194,10 @@ pub struct Globe {
     /// The heightmap of the document. During a stroke, the GPU texture is
     /// ahead of it. The texels come back when the stroke ends.
     pub map: Heightmap,
+    /// The face size of the heightmap of a new world.
+    new_face_size: usize,
+    /// The largest face size that the device can show.
+    max_face_size: usize,
     pub view: GlobeView,
     pub flat: FlatView,
     /// The view that the canvas shows.
@@ -262,6 +266,8 @@ impl Globe {
             chosen: None,
             window: None,
             map,
+            new_face_size: face_size,
+            max_face_size: usize::MAX,
             view: GlobeView::centered(15.0, 25.0),
             flat: FlatView::default(),
             world_view: WorldView::default(),
@@ -295,11 +301,37 @@ impl Globe {
     }
 
     /// Replaces the heightmap with an empty one of this face size. The band
-    /// limits and the ramp stay.
+    /// limits and the ramp stay. A new world also gets this face size.
     pub fn set_face_size(&mut self, face_size: usize) {
+        self.new_face_size = face_size;
         let mut map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
         map.bands = std::mem::take(&mut self.map.bands);
         self.set_map(map);
+    }
+
+    /// Makes the globe that of a new world: a heightmap with no painted tile
+    /// and no undo step, the first bands, and the first views. The face size
+    /// is that of `set_face_size`, and not that of the heightmap of a file.
+    pub fn clear(&mut self) {
+        let face_size = self.new_face_size;
+        self.set_map(Heightmap::new(face_size, meters_to_level(START_ELEVATION)));
+        self.view = GlobeView::centered(15.0, 25.0);
+        self.flat = FlatView::default();
+    }
+
+    /// Makes the globe that of a world from a file. `None`: the world has
+    /// no heightmap. Returns `false` if the device cannot show the heightmap.
+    /// The globe then shows an empty heightmap of another face size.
+    pub fn open_map(&mut self, map: Option<Heightmap>) -> bool {
+        self.clear();
+        match map {
+            Some(map) if map.face_size() > self.max_face_size => false,
+            Some(map) => {
+                self.set_map(map);
+                true
+            }
+            None => true,
+        }
     }
 
     /// Replaces the heightmap. A stroke or an import that runs ends with no
@@ -335,6 +367,8 @@ impl Globe {
         if self.map.face_size() > limit {
             self.set_face_size(limit);
         }
+        self.new_face_size = self.new_face_size.min(limit);
+        self.max_face_size = limit;
     }
 
     /// The format of the blurred canvas behind a card. `None`: a card has a

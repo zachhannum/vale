@@ -14,7 +14,9 @@ use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::gpkg::{Reader, StoreError, TileKey, corrupt, decode_geometry, encode_geometry};
-use crate::{Feature, GeometryKind, Layer, LayerId, Project, Raster, RasterId, Uuid, Value, World};
+use crate::{
+    Feature, GeometryKind, Layer, LayerId, Project, Raster, RasterId, Units, Uuid, Value, World,
+};
 
 /// The default limit of the size of the log, in bytes of compressed images.
 pub const UNDO_LIMIT: u64 = 256 << 20;
@@ -423,12 +425,19 @@ fn count(r: &mut Reader) -> Option<usize> {
 fn put_world(out: &mut Vec<u8>, world: &World) {
     put_bytes(out, world.name.as_bytes());
     put_f64(out, world.radius_km);
+    put_bytes(out, world.units.id().as_bytes());
 }
 
+/// An image from format version 3 ends after the radius, and its world has
+/// metric units.
 fn world(r: &mut Reader) -> Option<World> {
     Some(World {
         name: string(r)?,
         radius_km: r.f64()?,
+        units: match r.0.is_empty() {
+            true => Units::Metric,
+            false => Units::from_id(&string(r)?)?,
+        },
     })
 }
 

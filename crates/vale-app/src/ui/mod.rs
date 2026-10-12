@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
-use vale_store::LayerId;
+use vale_store::{LayerId, Project, World};
 
 use crate::document::Document;
 use crate::globe::import::ImportResult;
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
-use crate::session::Session;
+use crate::session::{self, Session};
 
 pub mod canvas;
 pub mod elevation;
@@ -21,6 +21,7 @@ pub mod globe;
 pub mod inspector;
 pub mod pad;
 pub mod panels;
+pub mod world_form;
 
 /// A request that needs the host: a dialog or a file.
 #[derive(Clone, Debug, PartialEq)]
@@ -32,6 +33,11 @@ pub enum Action {
     ImportHeightmapDialog,
     /// Imports this equirectangular image into the heightmap of the globe.
     ImportHeightmap(PathBuf),
+    /// Makes a project of this world and opens it. With a folder of
+    /// projects, the project is a new file there.
+    NewWorld(World),
+    /// Opens the world of this project file.
+    OpenWorld(PathBuf),
 }
 
 /// The text of the last import of a heightmap.
@@ -112,6 +118,8 @@ pub struct AppState {
     pub status: String,
     /// The text of the last import of a heightmap.
     pub import_note: Option<Note>,
+    /// The open form of a new world or of the world of the project.
+    pub world_form: Option<world_form::WorldForm>,
     /// Requests that need the host (dialogs, files).
     pub actions: Vec<Action>,
     /// True: no timers, always `Quality::Final`.
@@ -121,6 +129,9 @@ pub struct AppState {
     pub frames: u64,
     /// The open project file. `None`: the app saves nothing.
     pub session: Option<Session>,
+    /// The folder that gets the project file of a new world. `None`: a new
+    /// world has no file.
+    pub projects: Option<PathBuf>,
     /// The edit count of the globe at the last save.
     saved_edits: u64,
 }
@@ -148,11 +159,13 @@ impl AppState {
             cursor_meters: None,
             status: String::new(),
             import_note: None,
+            world_form: None,
             actions: Vec::new(),
             headless: false,
             file_buttons: true,
             frames: 0,
             session: None,
+            projects: None,
             saved_edits: 0,
         };
         state.set_layout(Layout::default());
@@ -269,6 +282,95 @@ impl AppState {
         }
     }
 
+    /// True if the world has a raster layer. The heightmap is a raster layer
+    /// from its first painted tile.
+    pub fn has_raster(&self) -> bool {
+        !self.doc.project.rasters().is_empty() || self.globe.map.allocated().next().is_some()
+    }
+
+    /// Saves each change that waits to the project file. Returns `false`
+    /// if the save failed. The world then stays open.
+    fn save_now(&mut self) -> bool {
+        let Some(session) = &mut self.session else {
+            return true;
+        };
+        if self.globe.busy() {
+            self.globe.map.cancel_stroke();
+        }
+        match session.flush(&mut self.doc.project, &mut self.globe.map) {
+            Ok(()) => true,
+            Err(e) => {
+                self.status = format!("The project did not save, so the world stays open: {e}");
+                false
+            }
+        }
+    }
+
+    /// Takes away the state of the UI that belongs to the last world.
+    fn start_world(&mut self) {
+        self.doc.frame.view = None;
+        self.saved_edits = self.globe.edits();
+        self.selection = None;
+        self.selected_layer = None;
+        self.import_note = None;
+        self.pad.layer = false;
+        // A layer of the next world can have the ID of an old layer.
+        self.pipeline = Pipeline::new();
+        self.touch();
+    }
+
+    /// Opens a new project of this world. The file of the old world gets
+    /// each change that waits, and then it stays as it is.
+    fn new_world(&mut self, world: World) {
+        if !self.save_now() {
+            return;
+        }
+        self.session = None;
+        self.status = format!("New world: {}", world.name);
+        let path = self
+            .projects
+            .as_ref()
+            .map(|dir| session::new_project_path(dir, &world.name));
+        self.doc.set_project(Project::new(world));
+        self.globe.clear();
+        self.start_world();
+        if let Some(path) = path {
+            match Session::open(&path, &mut self.doc) {
+                Ok(session) => self.session = Some(session),
+                Err(e) => self.status = format!("The new world has no file: {e}"),
+            }
+        }
+    }
+
+    /// Opens the world of a project file. The file of the old world gets
+    /// each change that waits. If the file does not open, the old world
+    /// stays open.
+    fn open_world(&mut self, path: &Path) {
+        let open = self.session.as_ref().is_some_and(|s| s.path() == path);
+        if open || !self.save_now() {
+            return;
+        }
+        let mut doc = self.doc.clone();
+        let opened = Session::open(path, &mut doc)
+            .and_then(|session| session.load_map().map(|map| (session, map)));
+        let (session, map) = match opened {
+            Ok(opened) => opened,
+            Err(e) => {
+                self.status = format!("The world did not open: {e}");
+                return;
+            }
+        };
+        self.doc = doc;
+        self.status = format!("Opened {}", self.doc.project.world.name);
+        if !self.globe.open_map(map) {
+            self.status = "This device cannot show the heightmap of the project. \
+                           The project keeps it, and it does not save the painting."
+                .to_string();
+        }
+        self.session = Some(session);
+        self.start_world();
+    }
+
     /// Marks the map as needing a new compose.
     pub fn touch(&mut self) {
         self.dirty = true;
@@ -297,8 +399,8 @@ impl AppState {
         self.import_note = Some(note);
     }
 
-    /// Runs `OpenFiles`, `Export`, and `ImportHeightmap`. The dialog actions
-    /// belong to the host.
+    /// Runs `OpenFiles`, `Export`, `ImportHeightmap`, and `NewWorld`. The
+    /// dialog actions belong to the host.
     pub fn run_action(&mut self, action: Action) {
         match action {
             Action::OpenFiles(paths) => {
@@ -335,6 +437,8 @@ impl AppState {
                 }
                 self.poll_import();
             }
+            Action::NewWorld(world) => self.new_world(world),
+            Action::OpenWorld(path) => self.open_world(&path),
             Action::OpenDialog | Action::ExportDialog(_) | Action::ImportHeightmapDialog => {}
         }
     }
@@ -372,5 +476,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             }
         }
     });
+    world_form::desktop(ui.ctx(), state);
     state.frames += 1;
 }

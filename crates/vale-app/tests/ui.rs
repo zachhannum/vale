@@ -6,8 +6,13 @@ use egui_kittest::kittest::Queryable;
 use kurbo::Point;
 use vale_app::document::Document;
 use vale_app::headless;
+use vale_app::session::Session;
+use vale_app::ui::panels::WORLD_BUTTON;
+use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{Action, AppState, ExportFormat, Workspace, draw, is_heightmap_path};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
+use vale_store::{Project, ProjectFile, Units, World};
+use vale_terrain::Heightmap;
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 
@@ -376,4 +381,176 @@ fn full_ui_renders_offscreen() {
     assert_ne!(panel, mid);
     let colors: std::collections::HashSet<_> = img.pixels().map(|p| p.0).collect();
     assert!(colors.len() > 50, "{}", colors.len());
+}
+
+#[test]
+fn a_new_world_starts_from_a_name_a_radius_and_units() {
+    let mut state = state_with(Document::sample());
+    state.globe.map.set(0, 0, 0, 40000);
+    assert!(state.has_raster());
+    let world = World {
+        name: "Aerth".to_string(),
+        radius_km: 1737.4,
+        units: Units::Imperial,
+    };
+    state.run_action(Action::NewWorld(world.clone()));
+    assert_eq!(state.doc.project.world, world);
+    assert!(state.doc.project.layers().is_empty());
+    assert!(state.doc.frame.entries.is_empty());
+    assert!(state.doc.project.rasters().is_empty());
+    assert!(state.globe.map.allocated().next().is_none());
+    assert!(!state.has_raster() && !state.globe.can_undo());
+    assert!(state.session.is_none());
+}
+
+#[test]
+fn a_new_world_is_a_new_file_and_the_old_file_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("Earth.gpkg");
+    let mut state = state_with(Document::sample());
+    state.session = Some(Session::open(&old, &mut state.doc).unwrap());
+    state.projects = Some(dir.path().to_path_buf());
+    // The heightmap of the file has its own face size.
+    state.globe.set_face_size(512);
+    let base = state.globe.map.base();
+    state.globe.set_map(Heightmap::new(1024, base));
+    state.globe.map.set(0, 0, 0, 40000);
+    let layers = state.doc.project.layers().to_vec();
+
+    let world = World {
+        name: "Pebble".to_string(),
+        radius_km: 200.0,
+        units: Units::Metric,
+    };
+    state.run_action(Action::NewWorld(world.clone()));
+    assert!(state.session.is_some() && !state.can_undo());
+    assert_eq!(state.globe.map.face_size(), 512);
+    let new = dir.path().join("Pebble.gpkg");
+    let (_, project) = ProjectFile::open(&new).unwrap();
+    assert_eq!(project, Project::new(world.clone()));
+
+    // The old file has the old world, with the stroke that waited.
+    let (_, project) = ProjectFile::open(&old).unwrap();
+    assert_eq!(project.world.name, "Earth (sample)");
+    assert_eq!(project.layers(), layers);
+    assert_eq!(project.rasters().len(), 1);
+    assert_eq!(project.rasters()[0].face_size, 1024);
+
+    // A stroke on the new world goes to the new file only.
+    state.globe.map.set(1, 0, 0, 40000);
+    state.run_action(Action::NewWorld(world));
+    assert!(dir.path().join("Pebble 2.gpkg").exists());
+    let (_, project) = ProjectFile::open(&new).unwrap();
+    assert_eq!(project.rasters()[0].face_size, 512);
+    let (_, project) = ProjectFile::open(&old).unwrap();
+    assert_eq!(project.rasters().len(), 1);
+}
+
+#[test]
+fn the_new_world_form_makes_a_world_from_a_preset() {
+    let mut h = harness();
+    h.state_mut().workspace = Workspace::Globe;
+    h.run_steps(2);
+    h.get_by_label(NEW_WORLD).click();
+    h.run_steps(2);
+    let form = h.state().world_form.clone().unwrap();
+    assert_eq!(form.mode, FormMode::New);
+    assert_eq!(
+        (form.name.as_str(), form.radius.as_str()),
+        ("New world", "6371")
+    );
+    assert_eq!(form.preset(), Some(0));
+
+    h.get_by_label("Mars").click();
+    h.run_steps(2);
+    h.get_by_label("Miles").click();
+    h.run_steps(2);
+    let form = h.state().world_form.as_ref().unwrap();
+    assert_eq!(
+        (form.radius.as_str(), form.radius_km()),
+        ("2106.1", Some(3389.5))
+    );
+    // The world of the project stays until the form makes the new one.
+    assert_eq!(h.state().doc.project.world.radius_km, 6371.0);
+
+    h.get_by_label(CREATE).click();
+    h.run_steps(2);
+    assert!(h.state().world_form.is_none());
+    let world = World {
+        name: "New world".to_string(),
+        radius_km: 3389.5,
+        units: Units::Imperial,
+    };
+    assert_eq!(h.state().actions, [Action::NewWorld(world)]);
+}
+
+#[test]
+fn the_form_does_not_make_a_world_from_a_wrong_radius_or_an_empty_name() {
+    let mut form = WorldForm::new_world();
+    assert!(form.world().is_some());
+    for (text, km) in [
+        ("99", None),
+        ("100", Some(100.0)),
+        ("abc", None),
+        ("100001", None),
+    ] {
+        form.radius = text.to_string();
+        form.radius_changed();
+        assert_eq!(form.radius_km(), km, "{text}");
+        assert_eq!(form.world().map(|w| w.radius_km), km, "{text}");
+    }
+    form.set_radius_km(200.0);
+    form.name = "  ".to_string();
+    assert_eq!(form.world(), None);
+
+    let mut h = harness();
+    form.name = "Aerth".to_string();
+    form.radius = "x".to_string();
+    form.radius_changed();
+    h.state_mut().world_form = Some(form);
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("From 100 to 100000 km").is_some());
+    h.get_by_label(CREATE).click();
+    h.run_steps(2);
+    assert!(h.state().actions.is_empty() && h.state().world_form.is_some());
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+    assert!(h.state().world_form.is_none());
+}
+
+#[test]
+fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
+    let mut h = harness();
+    h.run_steps(3);
+    let layers = h.state().doc.project.layers().to_vec();
+    let scale = h.state().composed.as_ref().unwrap().km_per_point;
+    h.get_by_label(WORLD_BUTTON).click();
+    h.run_steps(2);
+    assert_eq!(
+        h.state().world_form.as_ref().unwrap().mode,
+        FormMode::Properties
+    );
+
+    h.get_by_label("Moon").click();
+    h.run_steps(2);
+    h.get_by_label("Miles").click();
+    h.run_steps(3);
+    let state = h.state();
+    let world = &state.doc.project.world;
+    assert_eq!((world.radius_km, world.units), (1737.4, Units::Imperial));
+    assert_eq!(world.name, "Earth (sample)");
+    // Each feature keeps its longitude and its latitude, and the picture stays.
+    assert_eq!(state.doc.project.layers(), layers);
+    let small = state.composed.as_ref().unwrap().km_per_point;
+    assert!((small / scale - 1737.4 / 6371.0).abs() < 1e-9);
+    assert!(h.query_by_label_contains("Radius 1079.6 mi").is_some());
+
+    let form = h.state_mut().world_form.as_mut().unwrap();
+    form.name = "Luna".to_string();
+    h.run_steps(2);
+    assert_eq!(h.state().doc.project.world.name, "Luna");
+    h.get_by_label("Close").click();
+    h.run_steps(2);
+    assert!(h.state().world_form.is_none());
+    assert_eq!(h.state().doc.project.world.radius_km, 1737.4);
 }

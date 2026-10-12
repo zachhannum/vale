@@ -9,9 +9,16 @@ use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
-use vale_app::ui::pad::{IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, readout_text, theme};
+use vale_app::ui::pad::widgets::SLIDER_INSET;
+use vale_app::ui::pad::{
+    IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
+    brush_size_text, readout_text, theme,
+};
+use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
-use vale_terrain::Mode;
+use vale_app::world::{radius_fraction, three_significant};
+use vale_store::{Units, World};
+use vale_terrain::{Mode, meters_to_level};
 
 type Pad = Harness<'static, AppState>;
 
@@ -39,6 +46,16 @@ fn pad((width, height): (f32, f32)) -> Pad {
         .with_pixels_per_point(1.0)
         .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
     h.run_steps(3);
+    h
+}
+
+/// The layout of a world with a painted heightmap, which is a raster layer.
+fn painted_pad(size: (f32, f32)) -> Pad {
+    let mut h = pad(size);
+    let globe = &mut h.state_mut().globe;
+    globe.map.set(0, 0, 0, meters_to_level(100.0));
+    assert!(h.state().has_raster());
+    h.run_steps(2);
     h
 }
 
@@ -165,7 +182,7 @@ fn check_controls(h: &Pad, what: &str) {
                 let kind = vale_sphere::ProjectionKind::ALL
                     .iter()
                     .any(|k| k.name() == name);
-                let menu = ["World", "Globe", "Flat", "Maps"].contains(&name);
+                let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
                 let more = in_more && ["Carve", "Erode", "Weather", "Uplift"].contains(&name);
                 menu || kind || more || (in_menu && name == "Projection")
             };
@@ -179,7 +196,7 @@ fn check_controls(h: &Pad, what: &str) {
 #[test]
 fn each_control_is_large_and_is_outside_the_system_bands() {
     for size in BOARDS {
-        let mut h = pad(size);
+        let mut h = painted_pad(size);
         check_controls(&h, &format!("{size:?}"));
         for name in ["Layers", "Open Height", "Toolbox", "Brush settings"] {
             if control(&h, name).is_none() {
@@ -219,7 +236,7 @@ fn heightmap_file(name: &str, width: u32, height: u32) -> std::path::PathBuf {
 #[test]
 fn the_height_panel_asks_for_a_heightmap_file() {
     for size in BOARDS {
-        let mut h = pad(size);
+        let mut h = painted_pad(size);
         // iOS has no file dialog of the desktop.
         h.state_mut().file_buttons = false;
         tap(&mut h, "Layers");
@@ -236,9 +253,16 @@ fn the_height_panel_asks_for_a_heightmap_file() {
 fn the_height_panel_shows_the_warning_of_a_wrong_aspect_ratio() {
     let path = heightmap_file("pad-ratio.png", 300, 200);
     for size in BOARDS {
+        // A world with no raster layer has the import row in the Layers
+        // panel. The import makes the Height layer and opens its panel.
         let mut h = pad(size);
         tap(&mut h, "Layers");
-        tap(&mut h, "Open Height");
+        assert!(control(&h, "Open Height").is_none());
+        tap(&mut h, IMPORT_HEIGHTMAP);
+        assert_eq!(
+            h.state_mut().actions.pop(),
+            Some(Action::ImportHeightmapDialog)
+        );
         assert!(h.query_by_label_contains("twice as wide").is_none());
         h.state_mut()
             .run_action(Action::ImportHeightmap(path.clone()));
@@ -255,7 +279,7 @@ fn the_height_panel_shows_the_warning_of_a_wrong_aspect_ratio() {
 #[test]
 fn the_import_row_is_off_while_an_import_runs() {
     let path = heightmap_file("pad-busy.png", 512, 256);
-    let mut h = pad(BOARDS[0]);
+    let mut h = painted_pad(BOARDS[0]);
     tap(&mut h, "Layers");
     tap(&mut h, "Open Height");
     assert!(control(&h, IMPORT_HEIGHTMAP).is_some());
@@ -328,6 +352,46 @@ fn a_finger_hits_each_control_at_the_first_try() {
 
     tap(&mut h, "Maps");
     assert_eq!(h.state().workspace, Workspace::Map);
+}
+
+#[test]
+fn the_brush_size_uses_the_radius_and_the_units_of_the_world() {
+    let mut h = pad(BOARDS[0]);
+    let km = |h: &Pad| {
+        let globe = &h.state().globe;
+        let world_km = h.state().doc.project.world.radius_km;
+        globe.brush.radius_km(globe.radius(), world_km)
+    };
+    let earth = km(&h);
+    assert_eq!(
+        brush_size_text(h.state()),
+        format!("{} km", three_significant(earth))
+    );
+
+    // The brush covers the same angle on a small world, and thus less ground.
+    h.state_mut().doc.set_radius_km(200.0);
+    h.run_steps(2);
+    let small = km(&h);
+    assert!((small - earth * 200.0 / 6371.0).abs() < 1e-9);
+    assert_eq!(h.state().globe.world_km, 200.0);
+    assert_eq!(
+        brush_size_text(h.state()),
+        format!("{} km", three_significant(small))
+    );
+
+    // The slider reaches the same angles on each world.
+    let globe = &h.state().globe;
+    let range = globe.brush.radius_km_range(globe.radius(), 200.0);
+    let earth_range = globe.brush.radius_km_range(globe.radius(), 6371.0);
+    assert!((range.end() / earth_range.end() - 200.0 / 6371.0).abs() < 1e-12);
+
+    h.state_mut().doc.project.world.units = Units::Imperial;
+    h.run_steps(2);
+    let miles = small / 1.609_344;
+    assert_eq!(
+        brush_size_text(h.state()),
+        format!("{} mi", three_significant(miles))
+    );
 }
 
 /// True if the More cell has the active highlight.
@@ -765,6 +829,28 @@ fn middle_level(h: &Pad) -> u16 {
 }
 
 #[test]
+fn a_new_world_has_an_empty_heightmap_on_the_gpu() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_pad(BOARDS[0]);
+    let levels = three_strokes(&mut h);
+    assert!(h.state().has_raster() && h.state().globe.can_undo());
+
+    h.state_mut().run_action(Action::NewWorld(World::default()));
+    h.run_steps(3);
+    assert!(!h.state().has_raster() && !h.state().globe.can_undo());
+    assert_eq!(middle_level(&h), levels[0]);
+    // A stroke starts from the base level and not from the old ground.
+    let c = h.state().globe.rect.center();
+    drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.5));
+    settle(&mut h);
+    let level = middle_level(&h);
+    assert!(
+        levels[0] < level && level < levels[2],
+        "{level} of {levels:?}"
+    );
+}
+
+#[test]
 fn a_tap_of_two_fingers_is_undo_and_a_tap_of_three_fingers_is_redo() {
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[0]);
@@ -1021,7 +1107,9 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(r.class, WidthClass::Wide);
     assert_eq!(r.workspace.min, pos2(16.0, 32.0));
     assert_eq!(r.workspace.height(), 52.0);
-    assert_eq!(control(&h, "World").unwrap().min, pos2(20.0, 36.0));
+    // The Worlds button and a line are at the left of the workspaces.
+    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(20.0, 36.0));
+    assert_eq!(control(&h, "World").unwrap().min, pos2(73.0, 36.0));
     assert!(control(&h, "Maps").is_some());
     assert!(control(&h, "Workspace").is_none());
     // Atlas does nothing yet, so it is not a control.
@@ -1076,7 +1164,9 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
     let r = h.state().pad.rects.unwrap();
     assert_eq!(r.class, WidthClass::Medium);
     assert!(control(&h, "World").is_none());
-    assert_eq!(control(&h, "Workspace").unwrap(), r.workspace);
+    assert_eq!(control(&h, WORLDS).unwrap().min, pos2(20.0, 36.0));
+    let button = control(&h, "Workspace").unwrap();
+    assert_eq!((button.left(), button.right()), (69.0, r.workspace.right()));
     assert_eq!(
         (r.workspace.min, r.workspace.height()),
         (pos2(16.0, 32.0), 52.0)
@@ -1123,7 +1213,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 273.0))
+            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 334.0))
         );
         let tops = ["World", "Globe", "Maps"].map(|name| control(&h, name).unwrap().top());
         assert_eq!(tops, [98.0, 146.0, 255.0]);
@@ -1155,7 +1245,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
 
 #[test]
 fn you_pull_the_sheet_down_to_its_title_row() {
-    let mut h = pad(BOARDS[3]);
+    let mut h = painted_pad(BOARDS[3]);
     tap(&mut h, "Layers");
     assert!(control(&h, "Open Height").is_some());
     let bar = pos2(150.0, 460.0);
@@ -1307,4 +1397,264 @@ fn the_screenshots_show_the_boards() {
         assert_ne!(card.0, canvas.0, "{name}");
         assert_eq!(state.pad.more_rect.is_some(), name == "more", "{name}");
     }
+}
+
+/// Types text into the field that has the focus, in place of its text.
+fn type_text(h: &mut Pad, name: &str, text: &str) {
+    tap(h, name);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text(text.to_owned()));
+    h.run_steps(2);
+}
+
+/// Opens the menu of the worlds.
+fn open_worlds(h: &mut Pad) {
+    if h.state().pad.rects.unwrap().class == WidthClass::Compact {
+        tap(h, "Workspace");
+        tap(h, WORLDS_ROW);
+    } else {
+        tap(h, WORLDS);
+    }
+    assert!(h.state().pad.worlds.is_some() && !h.state().pad.menu);
+}
+
+#[test]
+fn the_menu_of_the_worlds_opens_another_world() {
+    for size in BOARDS {
+        let dir = tempfile::tempdir().unwrap();
+        let earth = dir.path().join("Earth.gpkg");
+        let mut h = painted_pad(size);
+        let state = h.state_mut();
+        state.projects = Some(dir.path().to_path_buf());
+        state.session = Some(Session::open(&earth, &mut state.doc).unwrap());
+        let layers = state.doc.project.layers().len();
+        let world = World {
+            name: "Pebble".to_string(),
+            radius_km: 200.0,
+            units: Units::Metric,
+        };
+        state.run_action(Action::NewWorld(world));
+        assert!(!state.has_raster());
+        h.run_steps(2);
+
+        // The menu lists the two worlds, and the open world is not a new row.
+        open_worlds(&mut h);
+        let menu = h.state().pad.worlds_rect.unwrap();
+        let screen = h.state().pad.rects.unwrap().screen;
+        assert!(
+            screen.shrink(16.0).contains_rect(menu),
+            "{size:?}: {menu:?}"
+        );
+        let rows = ["Earth (sample)", "Pebble", NEW_WORLD, WORLD_PROPERTIES];
+        let tops = rows.map(|name| {
+            let row = control(&h, name).unwrap_or_else(|| panic!("{size:?}: no {name}"));
+            assert!(menu.contains_rect(row) && row.height() >= 44.0, "{name}");
+            row.top()
+        });
+        assert!(tops.is_sorted(), "{size:?}: {tops:?}");
+
+        tap(&mut h, "Earth (sample)");
+        assert!(h.state().pad.worlds.is_none());
+        let actions = std::mem::take(&mut h.state_mut().actions);
+        assert_eq!(actions, [Action::OpenWorld(earth.clone())]);
+        h.state_mut().run_action(actions[0].clone());
+        h.run_steps(2);
+        let state = h.state();
+        assert_eq!(state.doc.project.world.name, "Earth (sample)");
+        assert_eq!(state.doc.project.layers().len(), layers);
+        assert!(state.has_raster(), "{size:?}");
+        assert_eq!(state.session.as_ref().unwrap().path(), earth);
+
+        // A touch off the menu closes it.
+        open_worlds(&mut h);
+        let off = h.state().globe.rect.right_bottom() - vec2(30.0, 120.0);
+        touch(&mut h, egui::TouchPhase::Start, off, None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, off, None);
+        h.run_steps(2);
+        assert!(h.state().pad.worlds.is_none(), "{size:?}");
+    }
+}
+
+#[test]
+fn the_world_form_makes_a_new_world_with_a_small_radius() {
+    for size in BOARDS {
+        let mut h = painted_pad(size);
+        let earth = brush_size_text(h.state());
+        open_worlds(&mut h);
+        tap(&mut h, WORLD_PROPERTIES);
+        assert!(h.state().pad.worlds.is_none());
+        let form = h.state().world_form.clone().unwrap();
+        assert_eq!(form.mode, FormMode::Properties);
+        assert_eq!(
+            (form.name.as_str(), form.radius.as_str()),
+            ("Earth (sample)", "6371")
+        );
+        check_form(&h, &format!("{size:?} properties"));
+
+        tap(&mut h, "Close World");
+        assert!(h.state().world_form.is_none());
+        open_worlds(&mut h);
+        tap(&mut h, NEW_WORLD);
+        assert_eq!(h.state().world_form.as_ref().unwrap().mode, FormMode::New);
+        check_form(&h, &format!("{size:?} new"));
+        tap_radius(&mut h, 1737.4);
+        assert_eq!(h.state().world_form.as_ref().unwrap().radius, "1737.4");
+        type_text(&mut h, NAME, "Pebble");
+        type_text(&mut h, "Radius (km)", "200");
+        let form = h.state().world_form.as_ref().unwrap();
+        assert_eq!(form.radius_km(), Some(200.0), "{size:?}: {:?}", form.radius);
+        assert_eq!(form.preset(), None);
+
+        tap(&mut h, CREATE);
+        assert!(h.state().world_form.is_none());
+        let world = World {
+            name: "Pebble".to_string(),
+            radius_km: 200.0,
+            units: Units::Metric,
+        };
+        let actions = std::mem::take(&mut h.state_mut().actions);
+        assert_eq!(actions, [Action::NewWorld(world.clone())]);
+        h.state_mut().run_action(actions[0].clone());
+        h.run_steps(2);
+
+        let state = h.state();
+        assert_eq!(state.doc.project.world, world);
+        assert!(state.doc.project.layers().is_empty());
+        assert!(state.doc.project.rasters().is_empty());
+        assert!(!state.has_raster() && !state.globe.can_undo());
+        // The brush has the same size on the screen, and less ground under it.
+        let km = state.globe.brush.radius_km(state.globe.radius(), 200.0);
+        assert_eq!(
+            brush_size_text(state),
+            format!("{} km", three_significant(km))
+        );
+        assert_ne!(brush_size_text(state), earth);
+        assert_eq!(state.globe.world_km, 200.0);
+
+        // The menu of the worlds also opens the form of a new world, and
+        // the first form of an app with no project does not close.
+        open_worlds(&mut h);
+        tap(&mut h, NEW_WORLD);
+        let form = h.state_mut().world_form.as_mut().unwrap();
+        assert_eq!(form.mode, FormMode::New);
+        form.required = true;
+        h.run_steps(2);
+        tap(&mut h, "Close New world");
+        assert!(h.state().world_form.is_some(), "{size:?}");
+        tap(&mut h, CREATE);
+        assert_eq!(h.state().actions.len(), 1, "{size:?}");
+    }
+}
+
+/// A tap on the radius slider of the open form at the place of this radius.
+fn tap_radius(h: &mut Pad, km: f64) {
+    let slider = control(h, RADIUS_SLIDER).unwrap();
+    let (left, width) = (
+        slider.left() + SLIDER_INSET,
+        slider.width() - 2.0 * SLIDER_INSET,
+    );
+    let pos = pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
+    touch(h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+}
+
+#[test]
+fn the_radius_slider_snaps_to_the_known_radii() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        h.state_mut().world_form = Some(WorldForm::new_world());
+        h.run_steps(2);
+        check_form(&h, &format!("{size:?} slider"));
+        let slider = control(&h, RADIUS_SLIDER).unwrap();
+        let (left, width) = (
+            slider.left() + SLIDER_INSET,
+            slider.width() - 2.0 * SLIDER_INSET,
+        );
+        let at = |km: f64| pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
+        let radius = |h: &Pad| h.state().world_form.as_ref().unwrap().radius_km().unwrap();
+
+        // A drag to a place near Mars gives the radius of Mars.
+        drag(&mut h, at(6371.0), at(3389.5) + vec2(3.0, 0.0), None);
+        assert_eq!(radius(&h), 3389.5, "{size:?}");
+        let form = h.state().world_form.as_ref().unwrap();
+        assert_eq!((form.radius.as_str(), form.preset()), ("3389.5", Some(1)));
+        // A place off the presets gives a round value.
+        drag(&mut h, at(3389.5), at(12_000.0), None);
+        let km = radius(&h);
+        assert!(10_000.0 < km && km < 14_000.0, "{size:?}: {km}");
+        assert_eq!(three_significant(km).parse::<f64>().unwrap(), km);
+        assert_eq!(h.state().world_form.as_ref().unwrap().preset(), None);
+        // The end of the slider is its upper limit.
+        drag(
+            &mut h,
+            at(12_000.0),
+            pos2(slider.right(), slider.center().y),
+            None,
+        );
+        assert_eq!(radius(&h), 20_000.0);
+        tap_radius(&mut h, 1737.4);
+        assert_eq!(radius(&h), 1737.4);
+        // A typed value can be outside the limits of the slider.
+        type_text(&mut h, "Radius (km)", "250");
+        assert_eq!(radius(&h), 250.0, "{size:?}");
+    }
+}
+
+/// Makes sure that the open form holds each control of the frame, and that
+/// a finger can hit each one.
+fn check_form(h: &Pad, what: &str) {
+    let screen = h.state().pad.rects.unwrap().screen;
+    let controls = &h.state().pad.controls;
+    assert!(controls.len() >= 6, "{what}: {} controls", controls.len());
+    for (i, a) in controls.iter().enumerate() {
+        let (name, rect) = (&a.name, a.rect);
+        assert!(
+            rect.width() >= 44.0 && rect.height() >= 44.0,
+            "{what}: {name} is {rect:?}"
+        );
+        assert!(rect.top() >= BANDS.0, "{what}: {name}");
+        assert!(rect.bottom() <= screen.bottom() - BANDS.1, "{what}: {name}");
+        assert!(
+            rect.left() >= 0.0 && rect.right() <= screen.right(),
+            "{what}: {name}"
+        );
+        for b in &controls[i + 1..] {
+            assert_ne!(a.name, b.name, "{what}");
+            let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
+            assert!(free, "{what}: {name} and {} overlap", b.name);
+        }
+    }
+}
+
+#[test]
+fn the_properties_of_the_world_apply_at_once_and_a_touch_does_not_reach_the_canvas() {
+    let mut h = pad(BOARDS[0]);
+    h.state_mut().world_form = Some(WorldForm::properties(&World::default()));
+    h.run_steps(2);
+    let view = h.state().globe.view;
+    let layers = h.state().doc.project.layers().to_vec();
+    drag(&mut h, pos2(900.0, 600.0), pos2(700.0, 500.0), None);
+    assert!(h.state().globe.view == view);
+
+    tap_radius(&mut h, 3389.5);
+    tap(&mut h, "Miles");
+    let world = &h.state().doc.project.world;
+    assert_eq!((world.radius_km, world.units), (3389.5, Units::Imperial));
+    assert_eq!(h.state().world_form.as_ref().unwrap().radius, "2106.1");
+    // The change of the units keeps the radius.
+    tap(&mut h, "Kilometers");
+    assert_eq!(h.state().doc.project.world.radius_km, 3389.5);
+    // A radius that is too small does not go to the world.
+    type_text(&mut h, "Radius (km)", "5");
+    assert_eq!(h.state().doc.project.world.radius_km, 3389.5);
+    assert!(h.query_by_label_contains("From 100 to 100000 km").is_some());
+    type_text(&mut h, "Radius (km)", "500");
+    assert_eq!(h.state().doc.project.world.radius_km, 500.0);
+    assert_eq!(h.state().doc.project.layers(), layers);
+    tap(&mut h, "Close World");
+    assert!(h.state().world_form.is_none());
 }

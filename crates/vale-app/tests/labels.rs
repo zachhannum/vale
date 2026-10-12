@@ -1,12 +1,12 @@
 use clap::Parser;
-use kurbo::{Point, Rect};
+use kurbo::{Point, Rect, Shape};
 use vale_app::cli::{Args, apply_view};
 use vale_app::document::{Document, LayerEntry};
 use vale_app::furniture::{nice, scale_bar};
 use vale_app::pick::pick;
 use vale_app::pipeline::{Composed, PageFeature, PageLayer, Pipeline, Quality, Selection, fonts};
 use vale_render::Item;
-use vale_store::{Feature, Geometry, GeometryKind, LayerId, Value};
+use vale_store::{Feature, Geometry, GeometryKind, LayerId, Units, Value};
 use vale_style::LayerStyle;
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
@@ -167,7 +167,7 @@ fn scale_bar_world() {
     let c = compose(&doc);
     let page = Rect::new(0.0, 0.0, SIZE.0, SIZE.1);
     let mut f = fonts().unwrap();
-    let (items, rect) = scale_bar(page, c.km_per_point, &mut f);
+    let (items, rect) = scale_bar(page, c.km_per_point, Units::Metric, &mut f);
     assert!(!items.is_empty());
     assert!(page.contains_rect(rect));
     let text = items
@@ -197,7 +197,7 @@ fn scale_bar_world() {
         }
     }
 
-    let (items, _) = scale_bar(page, 0.004, &mut f);
+    let (items, _) = scale_bar(page, 0.004, Units::Metric, &mut f);
     let text = items
         .iter()
         .find_map(|i| match i {
@@ -206,7 +206,12 @@ fn scale_bar_world() {
         })
         .unwrap();
     assert!(text.ends_with(" m") && !text.ends_with(" km"), "{text}");
-    let (items, rect) = scale_bar(Rect::new(0.0, 0.0, 200.0, 100.0), 10.0, &mut f);
+    let (items, rect) = scale_bar(
+        Rect::new(0.0, 0.0, 200.0, 100.0),
+        10.0,
+        Units::Metric,
+        &mut f,
+    );
     assert!(items.is_empty());
     assert_eq!(rect, Rect::ZERO);
 }
@@ -228,6 +233,38 @@ fn scale_bar_follows_radius() {
             .unwrap()
     };
     assert!(bar(&b) < bar(&a));
+}
+
+#[test]
+fn the_scale_bar_uses_the_display_units() {
+    let mut doc = Document::sample();
+    doc.project.world.units = Units::Imperial;
+    let c = compose(&doc);
+    let text = texts(&c).into_iter().find(|t| t.ends_with(" mi")).unwrap();
+    let miles: f64 = text.trim_end_matches(" mi").parse().unwrap();
+    assert_eq!(nice(miles), miles);
+    assert!(texts(&c).iter().all(|t| !t.ends_with(" km")));
+
+    // The bar is as long on the page as its distance on the ground.
+    let page = Rect::new(0.0, 0.0, SIZE.0, SIZE.1);
+    let mut f = fonts().unwrap();
+    let (items, _) = scale_bar(page, c.km_per_point, Units::Imperial, &mut f);
+    let length = items
+        .iter()
+        .find_map(|i| match i {
+            Item::Stroke { path, .. } => Some(path.bounding_box().width()),
+            _ => None,
+        })
+        .unwrap();
+    let km = miles * 1.609_344;
+    assert!((length * c.km_per_point - km).abs() < km * 1e-9);
+
+    let (items, _) = scale_bar(page, 0.0004, Units::Imperial, &mut f);
+    let text = items.iter().find_map(|i| match i {
+        Item::Glyphs(g) => Some(g.text.clone()),
+        _ => None,
+    });
+    assert_eq!(text.as_deref(), Some("100 ft"));
 }
 
 #[test]

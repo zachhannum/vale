@@ -5,10 +5,11 @@ use std::path::Path;
 use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
 use vale_sphere::ProjectionSpec;
-use vale_store::{GeometryKind, Layer, LayerId, Project, World};
+use vale_store::{GeometryKind, Layer, LayerId, Project, Units, World};
 use vale_style::{Color, LayerStyle, MapStyle, Stroke};
 
 use crate::view::View;
+use crate::world;
 
 /// One layer in the drawing order.
 #[derive(Clone, Debug, PartialEq)]
@@ -66,6 +67,7 @@ impl Document {
         doc.project.world = World {
             name: "Earth (sample)".to_string(),
             radius_km: 6371.0,
+            units: Units::Metric,
         };
         let sources: [(&str, &str); 3] = [
             (
@@ -244,9 +246,9 @@ impl Document {
         self.project.layer(id)
     }
 
-    /// Clamps to 100..=100000 and rescales the view so the map looks the same.
+    /// Clamps to `world::RADIUS_KM` and rescales the view so the map looks the same.
     pub fn set_radius_km(&mut self, km: f64) {
-        let new = km.clamp(100.0, 100_000.0);
+        let new = km.clamp(*world::RADIUS_KM.start(), *world::RADIUS_KM.end());
         let old = self.project.world.radius_km;
         if let Some(v) = &mut self.frame.view {
             v.center = kurbo::Point::new(v.center.x * new / old, v.center.y * new / old);

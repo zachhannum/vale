@@ -13,6 +13,7 @@ use crate::globe::flat::{self, FlatView};
 use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
 use crate::pipeline::Pipeline;
 use crate::ui::pad::Panel;
+use crate::ui::world_form::FormMode;
 use crate::ui::{Action, AppState, Layout, Workspace};
 
 #[derive(Parser, Clone, Debug)]
@@ -43,6 +44,12 @@ pub struct Args {
     /// With --layout pad: open the menu of the More cell.
     #[arg(long)]
     pub more_tools: bool,
+    /// With --layout pad: open the menu of the worlds.
+    #[arg(long)]
+    pub worlds_menu: bool,
+    /// Open the form of a new world or of the world of the project.
+    #[arg(long, value_enum, value_name = "FORM")]
+    pub world_form: Option<FormMode>,
     /// GeoJSON files to open in place of the sample world.
     #[arg(value_name = "FILES")]
     pub files: Vec<PathBuf>,
