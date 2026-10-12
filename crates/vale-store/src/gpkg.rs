@@ -204,6 +204,15 @@ impl ProjectFile {
         Ok((ProjectFile::with(conn, project.clone())?, project))
     }
 
+    /// The name of the world of a project file. The call does not change
+    /// the file.
+    pub fn world_name(path: &Path) -> Result<String, StoreError> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(path, flags)?;
+        format_version(&conn)?;
+        Ok(conn.query_row("SELECT name FROM vale_world", [], |r| r.get(0))?)
+    }
+
     /// Writes the project as one edit. Each feature keeps its UUID, and each
     /// raster keeps its tiles.
     pub fn save(&mut self, project: &Project) -> Result<(), StoreError> {
@@ -1983,6 +1992,8 @@ mod tests {
         tx.commit().unwrap();
         drop(conn);
 
+        // The name of the world comes from a file of an older version.
+        assert_eq!(ProjectFile::world_name(&path(&dir)).unwrap(), "Old");
         let (mut file, mut project) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(project.world.units, Units::Metric);
         assert_eq!(project.world.radius_km, 1234.5);

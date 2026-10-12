@@ -36,6 +36,8 @@ pub enum Action {
     /// Makes a project of this world and opens it. With a folder of
     /// projects, the project is a new file there.
     NewWorld(World),
+    /// Opens the world of this project file.
+    OpenWorld(PathBuf),
 }
 
 /// The text of the last import of a heightmap.
@@ -286,17 +288,42 @@ impl AppState {
         !self.doc.project.rasters().is_empty() || self.globe.map.allocated().next().is_some()
     }
 
+    /// Saves each change that waits to the project file. Returns `false`
+    /// if the save failed. The world then stays open.
+    fn save_now(&mut self) -> bool {
+        let Some(session) = &mut self.session else {
+            return true;
+        };
+        if self.globe.busy() {
+            self.globe.map.cancel_stroke();
+        }
+        match session.flush(&mut self.doc.project, &mut self.globe.map) {
+            Ok(()) => true,
+            Err(e) => {
+                self.status = format!("The project did not save, so the world stays open: {e}");
+                false
+            }
+        }
+    }
+
+    /// Takes away the state of the UI that belongs to the last world.
+    fn start_world(&mut self) {
+        self.doc.frame.view = None;
+        self.saved_edits = self.globe.edits();
+        self.selection = None;
+        self.selected_layer = None;
+        self.import_note = None;
+        self.pad.layer = false;
+        // A layer of the next world can have the ID of an old layer.
+        self.pipeline = Pipeline::new();
+        self.touch();
+    }
+
     /// Opens a new project of this world. The file of the old world gets
     /// each change that waits, and then it stays as it is.
     fn new_world(&mut self, world: World) {
-        if let Some(session) = &mut self.session {
-            if self.globe.busy() {
-                self.globe.map.cancel_stroke();
-            }
-            if let Err(e) = session.flush(&mut self.doc.project, &mut self.globe.map) {
-                self.status = format!("The project did not save, so the world stays open: {e}");
-                return;
-            }
+        if !self.save_now() {
+            return;
         }
         self.session = None;
         self.status = format!("New world: {}", world.name);
@@ -305,22 +332,43 @@ impl AppState {
             .as_ref()
             .map(|dir| session::new_project_path(dir, &world.name));
         self.doc.set_project(Project::new(world));
-        self.doc.frame.view = None;
         self.globe.clear();
-        self.saved_edits = self.globe.edits();
-        self.selection = None;
-        self.selected_layer = None;
-        self.import_note = None;
-        self.pad.layer = false;
-        // A layer of the next world can have the ID of an old layer.
-        self.pipeline = Pipeline::new();
+        self.start_world();
         if let Some(path) = path {
             match Session::open(&path, &mut self.doc) {
                 Ok(session) => self.session = Some(session),
                 Err(e) => self.status = format!("The new world has no file: {e}"),
             }
         }
-        self.touch();
+    }
+
+    /// Opens the world of a project file. The file of the old world gets
+    /// each change that waits. If the file does not open, the old world
+    /// stays open.
+    fn open_world(&mut self, path: &Path) {
+        let open = self.session.as_ref().is_some_and(|s| s.path() == path);
+        if open || !self.save_now() {
+            return;
+        }
+        let mut doc = self.doc.clone();
+        let opened = Session::open(path, &mut doc)
+            .and_then(|session| session.load_map().map(|map| (session, map)));
+        let (session, map) = match opened {
+            Ok(opened) => opened,
+            Err(e) => {
+                self.status = format!("The world did not open: {e}");
+                return;
+            }
+        };
+        self.doc = doc;
+        self.status = format!("Opened {}", self.doc.project.world.name);
+        if !self.globe.open_map(map) {
+            self.status = "This device cannot show the heightmap of the project. \
+                           The project keeps it, and it does not save the painting."
+                .to_string();
+        }
+        self.session = Some(session);
+        self.start_world();
     }
 
     /// Marks the map as needing a new compose.
@@ -390,6 +438,7 @@ impl AppState {
                 self.poll_import();
             }
             Action::NewWorld(world) => self.new_world(world),
+            Action::OpenWorld(path) => self.open_world(&path),
             Action::OpenDialog | Action::ExportDialog(_) | Action::ImportHeightmapDialog => {}
         }
     }

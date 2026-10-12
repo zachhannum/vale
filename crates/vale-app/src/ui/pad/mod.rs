@@ -11,6 +11,7 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Workspace, elevation, globe, panels};
 use crate::globe::brush::{EROSION, FLOW, STRENGTH_M, TALUS_DEG};
 use crate::globe::{Tool, WorldView};
+use crate::session::{WorldFile, worlds};
 use crate::world;
 
 pub mod geometry;
@@ -34,6 +35,14 @@ const MORE_MODES: [(&str, Icon, Mode); 4] = [
 
 /// The name of the row that opens the properties of the world.
 pub const WORLD_PROPERTIES: &str = "World properties";
+/// The button that opens the menu of the worlds.
+pub const WORLDS: &str = "Worlds";
+/// The row of the workspace menu that opens the menu of the worlds.
+pub const WORLDS_ROW: &str = "Worlds…";
+/// The width that the Worlds button and its line add to the workspace card.
+const WORLDS_LEAD: f32 = TOUCH + 9.0;
+/// The largest number of worlds that the menu shows with no scroll.
+const WORLD_ROWS: usize = 6;
 /// The name of the row that imports a heightmap.
 pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
 
@@ -72,6 +81,10 @@ pub struct PadState {
     pub center_rect: Option<Rect>,
     /// The workspace menu is open.
     pub menu: bool,
+    /// The worlds of the open menu of the worlds. `None`: the menu is closed.
+    pub worlds: Option<Vec<WorldFile>>,
+    /// The menu of the worlds in the last frame.
+    pub worlds_rect: Option<Rect>,
     /// The menu of the More cell is open.
     pub more: bool,
     /// The distance that the sheet is pulled down from its open place.
@@ -165,10 +178,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     let class = WidthClass::of(screen.width());
     let flat = state.globe.world_view == WorldView::Flat;
-    let workspace_width = if class == WidthClass::Wide {
-        widgets::segments_width(ui, &WORKSPACES)
-    } else {
-        widgets::menu_button_width(ui, WORKSPACES[0])
+    // The compact layout has no room for the Worlds button, so the
+    // workspace menu has a row for it.
+    let workspace_width = match class {
+        WidthClass::Wide => WORLDS_LEAD + widgets::segments_width(ui, &WORKSPACES),
+        WidthClass::Medium => WORLDS_LEAD + widgets::menu_button_width(ui, WORKSPACES[0]),
+        WidthClass::Compact => widgets::menu_button_width(ui, WORKSPACES[0]),
     };
     let mut input = Input {
         screen,
@@ -228,6 +243,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.pad.more {
         more_menu(&ctx, state, &mut controls, &rects);
     }
+    state.pad.worlds_rect = None;
+    if state.pad.worlds.is_some() {
+        worlds_menu(&ctx, state, &mut controls, &rects);
+    }
     world_form::pad(&ctx, state, &mut controls, &rects);
 
     state.pad.controls = controls;
@@ -244,6 +263,22 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         Order::Middle,
         radius,
         |ui| {
+            let card = ui.max_rect();
+            let mut rest = card;
+            if rects.class != WidthClass::Compact {
+                let button = Rect::from_min_size(card.min + vec2(PAD, PAD), vec2(TOUCH, TOUCH));
+                let open = state.pad.worlds.is_some();
+                let worlds =
+                    widgets::icon_button_at(ui, controls, button, WORLDS, Icon::World, open, true);
+                if worlds.clicked() {
+                    toggle_worlds(state);
+                }
+                let divider = pos2(button.right() + 4.5, card.center().y);
+                let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
+                ui.painter().rect_filled(line, 0.0, theme::divider());
+                rest.min.x += WORLDS_LEAD;
+            }
+            let ui = &ui.new_child(egui::UiBuilder::new().max_rect(rest));
             if rects.class == WidthClass::Wide {
                 let items = [
                     (WORKSPACES[0], true),
@@ -257,6 +292,7 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 let open = state.pad.menu;
                 if widgets::menu_button(ui, controls, "Workspace", WORKSPACES[0], open).clicked() {
                     state.pad.menu = !open;
+                    state.pad.worlds = None;
                 }
             }
         },
@@ -677,13 +713,6 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
 
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    if widgets::text_row(ui, controls, WORLD_PROPERTIES, 0.0, false, true).clicked() {
-        let form = WorldForm::properties(&state.doc.project.world);
-        state.world_form = Some(form);
-    }
-    if widgets::text_row(ui, controls, world_form::NEW_WORLD, 0.0, false, true).clicked() {
-        state.world_form = Some(WorldForm::new_world());
-    }
     if !state.has_raster() {
         // The import makes the Height layer, and its panel shows the result.
         let asked = state.actions.len();
@@ -905,11 +934,13 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
     let compact = rects.class == WidthClass::Compact;
     let flat = state.globe.world_view == WorldView::Flat;
     let rows = match (compact, flat) {
-        (true, true) => 6.0,
-        (true, false) => 5.0,
+        (true, true) => 7.0,
+        (true, false) => 6.0,
         (false, _) => 3.0,
     };
-    let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 13.0 + 10.0);
+    let rules = if compact { 2.0 } else { 1.0 };
+    let height = 10.0 + rows * PANEL_ROW + rules * 13.0 + 10.0;
+    let size = vec2(geometry::MENU_WIDTH, height);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.menu_rect = Some(rect);
     let pressed = ctx.input(|i| {
@@ -962,17 +993,130 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
                     state.pad.menu = false;
                 }
             }
-            let (rule, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());
-            let line = Rect::from_center_size(rule.center(), vec2(rule.width(), 1.0));
-            ui.painter().rect_filled(line, 0.0, theme::raise());
+            rule(ui);
             if widgets::text_row(ui, controls, WORKSPACES[1], 0.0, false, true).clicked() {
                 state.workspace = Workspace::Map;
                 state.pad.menu = false;
             }
             widgets::text_row(ui, controls, WORKSPACES[2], 0.0, false, false);
+            if compact {
+                rule(ui);
+                if widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {
+                    state.pad.menu = false;
+                    toggle_worlds(state);
+                }
+            }
         },
     );
+}
+
+/// A line between two groups of rows of a menu.
+fn rule(ui: &mut egui::Ui) {
+    let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());
+    let line = Rect::from_center_size(rule.center(), vec2(rule.width(), 1.0));
+    ui.painter().rect_filled(line, 0.0, theme::raise());
+}
+
+/// Opens or closes the menu of the worlds. The menu shows the worlds that
+/// the folder of the projects has at this time.
+pub fn toggle_worlds(state: &mut AppState) {
+    state.pad.worlds = match state.pad.worlds {
+        Some(_) => None,
+        None => Some(state.projects.as_deref().map(worlds).unwrap_or_default()),
+    };
+    state.pad.menu = false;
+}
+
+/// The name of a world in a row of a menu, at the length that the row holds.
+fn row_name(name: &str) -> String {
+    const LENGTH: usize = 26;
+    if name.chars().count() <= LENGTH {
+        return name.to_string();
+    }
+    let start: String = name.chars().take(LENGTH - 1).collect();
+    format!("{}…", start.trim_end())
+}
+
+/// The menu of the worlds: the worlds of the folder of the projects, and the
+/// rows that make a world and that open the properties of the open world.
+/// The open world has a tick.
+fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let Some(list) = state.pad.worlds.take() else {
+        return;
+    };
+    let shown = list.len().min(WORLD_ROWS) as f32 * PANEL_ROW;
+    let rule_height = if list.is_empty() { 0.0 } else { 13.0 };
+    let width = geometry::WORLDS_WIDTH.min(rects.screen.width() - 2.0 * geometry::MARGIN);
+    let size = vec2(width, 10.0 + shown + rule_height + 2.0 * PANEL_ROW + 10.0);
+    let rect = Rect::from_min_size(rects.menu, size);
+    state.pad.worlds_rect = Some(rect);
+    let pressed = ctx.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    let mut open =
+        !pressed.is_some_and(|pos| !rect.contains(pos) && !rects.workspace.contains(pos));
+    let current = state.session.as_ref().map(|s| s.path().to_path_buf());
+    let radius = theme::CARD_RADIUS.into();
+    widgets::card(
+        ctx,
+        None,
+        "pad-worlds",
+        rect,
+        Order::Foreground,
+        radius,
+        |ui| {
+            // The menu covers the tool strip, so its fill is opaque.
+            ui.painter()
+                .rect_filled(rect, radius, theme::card(false).to_opaque());
+            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            let ui = &mut ui;
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let mut rows = |ui: &mut egui::Ui| {
+                for world in &list {
+                    let name = row_name(&world.name);
+                    let row = widgets::text_row(ui, controls, &name, 0.0, false, true);
+                    if current.as_ref() == Some(&world.path) {
+                        let tick = Rect::from_center_size(
+                            pos2(row.rect.right() - 14.0, row.rect.center().y),
+                            vec2(18.0, 18.0),
+                        );
+                        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                    }
+                    if row.clicked() {
+                        state.actions.push(Action::OpenWorld(world.path.clone()));
+                        open = false;
+                    }
+                }
+            };
+            if list.len() > WORLD_ROWS {
+                egui::ScrollArea::vertical()
+                    .max_height(shown)
+                    .show(ui, |ui| {
+                        ui.set_width(inner.width());
+                        rows(ui)
+                    });
+            } else {
+                rows(ui);
+            }
+            if !list.is_empty() {
+                rule(ui);
+            }
+            if widgets::text_row(ui, controls, world_form::NEW_WORLD, 0.0, false, true).clicked() {
+                state.world_form = Some(WorldForm::new_world());
+                open = false;
+            }
+            if widgets::text_row(ui, controls, WORLD_PROPERTIES, 0.0, false, true).clicked() {
+                state.world_form = Some(WorldForm::properties(&state.doc.project.world));
+                open = false;
+            }
+        },
+    );
+    state.pad.worlds = open.then_some(list);
 }
 
 /// The menu of the More cell: the brush modes that have no cell in the tool

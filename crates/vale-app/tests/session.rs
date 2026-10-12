@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use vale_app::document::Document;
-use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path};
-use vale_store::{ProjectFile, Units};
+use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
+use vale_store::{Project, ProjectFile, Units, World};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{FACES, Heightmap, Mode, Stamp, TexelRect, meters_to_level};
 
@@ -497,4 +497,25 @@ fn a_new_project_file_has_the_name_of_its_world_and_a_free_path() {
         new_project_path(dir.path(), ""),
         dir.path().join("World.gpkg")
     );
+}
+
+#[test]
+fn the_list_of_the_worlds_has_a_name_for_each_file() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(worlds(dir.path()).is_empty());
+    let world = |name: &str| World {
+        name: name.to_string(),
+        ..World::default()
+    };
+    for (file, name) in [("b", "Pebble"), ("a", "Aerth"), ("c", "Pebble")] {
+        let path = dir.path().join(format!("{file}.gpkg"));
+        drop(ProjectFile::create(&path, &Project::new(world(name))).unwrap());
+    }
+    std::fs::write(dir.path().join("broken.gpkg"), b"no").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), b"").unwrap();
+    let list = worlds(dir.path());
+    let names: Vec<&str> = list.iter().map(|world| world.name.as_str()).collect();
+    // Two worlds with one name show the names of their files.
+    assert_eq!(names, ["Aerth", "b", "broken", "c"]);
+    assert_eq!(list[0].path, dir.path().join("a.gpkg"));
 }

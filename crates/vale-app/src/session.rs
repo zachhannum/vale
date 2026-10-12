@@ -45,19 +45,58 @@ pub fn new_project_path(dir: &Path, name: &str) -> PathBuf {
     path
 }
 
-/// The project file in `dir` with the newest change.
-pub fn latest_project(dir: &Path) -> Option<PathBuf> {
-    let files = std::fs::read_dir(dir).ok()?.filter_map(|entry| {
+/// The project files in `dir`, each with the time of its last change.
+fn project_files(dir: &Path) -> Vec<(std::time::SystemTime, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let files = entries.filter_map(|entry| {
         let path = entry.ok()?.path();
         let project = path.extension().is_some_and(|e| e == EXTENSION);
         let changed = path.metadata().ok()?.modified().ok()?;
         project.then_some((changed, path))
     });
-    files.max().map(|(_, path)| path)
+    files.collect()
+}
+
+/// The project file in `dir` with the newest change.
+pub fn latest_project(dir: &Path) -> Option<PathBuf> {
+    project_files(dir).into_iter().max().map(|(_, path)| path)
+}
+
+/// A project file and the name of its world.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldFile {
+    pub path: PathBuf,
+    pub name: String,
+}
+
+/// The worlds of the project files in `dir`, in the order of their names.
+/// A file has the name of the file in place of the name of its world if it
+/// does not give its world, or if another file has a world of that name.
+pub fn worlds(dir: &Path) -> Vec<WorldFile> {
+    let stem = |path: &Path| {
+        let stem = path.file_stem().unwrap_or_default();
+        stem.to_string_lossy().into_owned()
+    };
+    let files = project_files(dir).into_iter().map(|(_, path)| {
+        let name = ProjectFile::world_name(&path).unwrap_or_else(|_| stem(&path));
+        WorldFile { path, name }
+    });
+    let mut worlds: Vec<WorldFile> = files.collect();
+    let names: Vec<String> = worlds.iter().map(|world| world.name.clone()).collect();
+    for world in &mut worlds {
+        if names.iter().filter(|name| **name == world.name).count() > 1 {
+            world.name = stem(&world.path);
+        }
+    }
+    worlds.sort_by_cached_key(|world| (world.name.to_lowercase(), world.path.clone()));
+    worlds
 }
 
 pub struct Session {
     file: ProjectFile,
+    path: PathBuf,
     /// The time of the first change that the file does not hold.
     changed_at: Option<Instant>,
     /// The last `tick` had `hold`.
@@ -82,10 +121,16 @@ impl Session {
         };
         Ok(Session {
             file,
+            path: path.to_path_buf(),
             changed_at: None,
             held: false,
             last_save: SaveStats::default(),
         })
+    }
+
+    /// The path of the project file.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// The heightmap of the file, with the face size, the base level, the

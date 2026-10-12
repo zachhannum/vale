@@ -24,6 +24,8 @@ pub const SLIDER_MIN: f32 = 110.0;
 pub const BRUSH_PANEL_WIDTH: f32 = 340.0;
 pub const RIGHT_PANEL_WIDTH: f32 = 320.0;
 pub const MENU_WIDTH: f32 = 240.0;
+/// The width of the menu of the worlds.
+pub const WORLDS_WIDTH: f32 = 300.0;
 /// The width of the menu of the More cell.
 pub const MORE_WIDTH: f32 = 180.0;
 pub const SHEET_HEIGHT: f32 = 400.0;
