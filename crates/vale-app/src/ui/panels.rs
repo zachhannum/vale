@@ -8,7 +8,7 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, ExportFormat, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::brush::{EROSION, FLOW, SCALE_KM, STRENGTH_M, TALUS_DEG, WARP_KM};
+use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 use crate::world::{self, three_significant};
 
@@ -278,6 +278,10 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
                 .text(name);
             ui.add(slider);
         }
+        // The seed is a property of the world, so each brush gets the same
+        // noise field.
+        let seed = &mut state.doc.project.world.seed;
+        ui.add(egui::Slider::new(seed, SEED).text("Seed"));
     } else {
         let strength = egui::Slider::new(&mut globe.brush.strength_m, STRENGTH_M)
             .logarithmic(true)

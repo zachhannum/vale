@@ -9,7 +9,7 @@ use vale_terrain::Mode;
 
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Workspace, elevation, globe, panels};
-use crate::globe::brush::{EROSION, FLOW, SCALE_KM, STRENGTH_M, TALUS_DEG, WARP_KM};
+use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds};
 use crate::world;
@@ -700,6 +700,13 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         });
         if let Some(km) = scale {
             brush.scale_km = km;
+        }
+        let seed = &mut state.doc.project.world.seed;
+        let high = f64::from(*SEED.end());
+        let mut fraction = (f64::from(*seed) / high).min(1.0);
+        let text = seed.to_string();
+        if widgets::row_slider(ui, controls, "Brush seed", "Seed", &mut fraction, &text) {
+            *seed = (fraction * high).round() as u32;
         }
     } else {
         let text = format!("{:.0} m", brush.strength_m);

@@ -515,6 +515,12 @@ fn the_brush_panel_has_the_two_sliders_of_the_warp_mode() {
     assert!((h.state().globe.brush.scale_km - 5.0).abs() < 1e-9);
     drag(&mut h, rect.left_center(), rect.right_center(), None);
     assert!((h.state().globe.brush.scale_km - 2000.0).abs() < 1e-6);
+    // The seed slider sets the seed of the world.
+    assert_eq!(h.state().doc.project.world.seed, 0);
+    let rect = control(&h, "Brush seed").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert_eq!(h.state().doc.project.world.seed, 999);
+    assert_eq!(h.state().globe.world_seed, 999);
     assert!(control(&h, "Brush angle").is_none());
     check_controls(&h, "the Warp mode");
 }

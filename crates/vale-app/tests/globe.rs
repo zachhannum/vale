@@ -1620,6 +1620,7 @@ fn the_brush_panel_has_the_warp_mode_and_its_two_sliders() {
     assert_eq!((brush.warp_km, brush.scale_km), (50.0, 200.0));
     assert!(h.query_all_by_label("Strength").next().is_some());
     assert!(h.query_all_by_label("Scale").next().is_some());
+    assert!(h.query_all_by_label("Seed").next().is_some());
 }
 
 /// The level of each texel of the heightmap.

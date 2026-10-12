@@ -28,6 +28,8 @@ pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
 pub const WARP_KM: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the scale of the warp mode, in kilometers.
 pub const SCALE_KM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
+/// The limits of the seed slider of the warp mode.
+pub const SEED: std::ops::RangeInclusive<u32> = 0..=999;
 /// The part that the erosion setting of 1 adds to the rise of an uplift
 /// stamp. With it, an uplift stroke gives a range of about the height of a
 /// raise stroke at each erosion setting.
