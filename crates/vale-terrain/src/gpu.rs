@@ -67,7 +67,8 @@ struct FaceStamp {
     strength: f32,
     level: f32,
     talus: f32,
-    pad: [u32; 2],
+    scale: f32,
+    seed: u32,
 }
 
 impl FaceStamp {
@@ -94,7 +95,8 @@ impl FaceStamp {
             strength: stamp.strength as f32,
             level: f32::from(stamp.level),
             talus: stamp.talus as f32,
-            pad: [0; 2],
+            scale: stamp.scale as f32,
+            seed: stamp.seed,
         }
     }
 }
@@ -170,9 +172,14 @@ struct Scratch {
     size: [usize; 2],
 }
 
+/// The largest number of faces that one brush circle touches.
+const BRUSH_FACES: usize = 3;
+
 struct State {
     pool: Pool,
-    scratch: Option<Scratch>,
+    /// A warp stamp draws each face that it touches to its own target. Each
+    /// other pass uses the first target.
+    scratch: [Option<Scratch>; BRUSH_FACES],
 }
 
 /// The tiles of a heightmap in a pool of textures, and the brush pipeline.
@@ -415,7 +422,7 @@ impl GpuHeightmap {
             tile,
             state: Mutex::new(State {
                 pool,
-                scratch: None,
+                scratch: [const { None }; BRUSH_FACES],
             }),
             tiles_layout,
             channels,
@@ -462,7 +469,8 @@ impl GpuHeightmap {
     /// of the tiles, and the render target of the brush.
     pub fn memory_bytes(&self) -> usize {
         let state = self.state();
-        let scratch = state.scratch.as_ref().map_or(0, |s| s.size[0] * s.size[1]);
+        let scratch = state.scratch.iter().flatten();
+        let scratch: usize = scratch.map(|s| s.size[0] * s.size[1]).sum();
         state.pool.memory_bytes() + scratch * size_of::<u16>()
     }
 
@@ -530,7 +538,7 @@ impl GpuHeightmap {
     pub fn clear(&self, queue: &wgpu::Queue, level: u16) {
         let mut state = self.state();
         state.pool.clear(&self.device, queue, level);
-        state.scratch = None;
+        state.scratch = [const { None }; BRUSH_FACES];
     }
 
     /// Writes the texels of a rectangle, row by row. The write runs at the
@@ -599,8 +607,8 @@ impl GpuHeightmap {
     /// for each face. Returns the number of stamps in the group. The result
     /// is the same as that of `stamp` for each one in order.
     ///
-    /// The stamps of a group have one mode. A smooth stamp or a weather stamp
-    /// is a group of one.
+    /// The stamps of a group have one mode. A smooth stamp, a weather stamp,
+    /// or a warp stamp is a group of one.
     /// A group has `GROUP_STAMPS` stamps at most, and it stops before a stamp
     /// that is far from the others.
     ///
@@ -621,11 +629,11 @@ impl GpuHeightmap {
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
             return same.count();
         }
-        // A smooth stamp or a weather stamp reads the results of the stamp
-        // before it on the texels around each texel. The other modes read one
+        // A smooth stamp, a weather stamp, or a warp stamp reads the results
+        // of the stamp before it on other texels. The other modes read one
         // texel.
         let most = match mode {
-            Mode::Smooth | Mode::Weather => 1,
+            Mode::Smooth | Mode::Weather | Mode::Warp => 1,
             _ => GROUP_STAMPS,
         };
         // The values of each slot go to the GPU at the submit, so each pass
@@ -656,7 +664,17 @@ impl GpuHeightmap {
         let window = *self.window.lock().expect("no thread stops with the lock");
         let touched = cover.rects.iter().enumerate();
         let touched = touched.filter_map(|(face, rect)| Some((face, (*rect)?)));
-        for (slot, (face, rect)) in (first_slot..).zip(touched) {
+        let touched: Vec<_> = touched.collect();
+        // A warp pass reads the levels from before the stamp on each face.
+        // Thus all passes come before the first copy, and each tile has its
+        // memory before the first pass.
+        let copy_last = mode == Mode::Warp;
+        if copy_last {
+            for &(face, rect) in &touched {
+                self.ensure(queue, state, face, rect);
+            }
+        }
+        for (slot, (i, &(face, rect))) in (first_slot..).zip(touched.iter().enumerate()) {
             let offset = slot * self.slot_size;
             let mut uniforms = Uniforms {
                 face: face as u32,
@@ -668,6 +686,7 @@ impl GpuHeightmap {
                     Mode::Carve => 4,
                     Mode::Erode => 5,
                     Mode::Weather => 6,
+                    Mode::Warp => 7,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,
@@ -696,7 +715,16 @@ impl GpuHeightmap {
                 u64::from(offset),
                 &bytemuck::bytes_of(&uniforms)[..used],
             );
-            self.pass(queue, enc, state, face, rect, offset);
+            if copy_last {
+                self.draw(enc, state, i, rect, offset);
+            } else {
+                self.pass(queue, enc, state, face, rect, offset);
+            }
+        }
+        if copy_last {
+            for (i, &(face, rect)) in touched.iter().enumerate() {
+                self.copy(enc, state, i, face, rect);
+            }
         }
         count
     }
@@ -713,14 +741,32 @@ impl GpuHeightmap {
         rect: TexelRect,
         offset: u32,
     ) {
-        // The pass reads each tile from the pool, so the tiles get
-        // their memory before it.
-        let tiles = state.pool.tiles_in(rect);
-        for &(tx, ty, _) in &tiles {
+        self.ensure(queue, state, face, rect);
+        self.draw(enc, state, 0, rect, offset);
+        self.copy(enc, state, 0, face, rect);
+    }
+
+    /// Gives memory to each tile of a rectangle. A pass reads each tile from
+    /// the pool, and a copy writes each tile.
+    fn ensure(&self, queue: &wgpu::Queue, state: &mut State, face: usize, rect: TexelRect) {
+        for (tx, ty, _) in state.pool.tiles_in(rect) {
             state.pool.ensure(&self.device, queue, face, tx, ty, true);
         }
+    }
+
+    /// Adds one pass to `enc` that draws a rectangle of one face to the
+    /// render target `target`. `offset` is the place of the uniforms of the
+    /// pass.
+    fn draw(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        state: &mut State,
+        target: usize,
+        rect: TexelRect,
+        offset: u32,
+    ) {
         let size = extent(rect);
-        let scratch = self.scratch(&mut state.scratch, rect);
+        let scratch = self.scratch(&mut state.scratch[target], rect);
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stamp"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -742,8 +788,20 @@ impl GpuHeightmap {
         pass.set_bind_group(1, state.pool.bind_group(), &[]);
         pass.set_scissor_rect(0, 0, size.width, size.height);
         pass.draw(0..3, 0..1);
-        drop(pass);
-        for (tx, ty, part) in tiles {
+    }
+
+    /// Adds the copies of a rectangle from the render target `target` to the
+    /// tiles of one face.
+    fn copy(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        state: &State,
+        target: usize,
+        face: usize,
+        rect: TexelRect,
+    ) {
+        let scratch = state.scratch[target].as_ref().expect("a pass drew it");
+        for (tx, ty, part) in state.pool.tiles_in(rect) {
             let slot = state.pool.slot(face, tx, ty).expect("the tile has memory");
             enc.copy_texture_to_texture(
                 texels(&scratch.texture, part.x0 - rect.x0, part.y0 - rect.y0, 0),

@@ -1844,6 +1844,8 @@ mod tests {
             level: 0,
             strength: 1000.0,
             talus: 0.0,
+            scale: 0.1,
+            seed: 1,
         };
         map.begin_stroke();
         assert_eq!(map.stamp(&stamp), 0);

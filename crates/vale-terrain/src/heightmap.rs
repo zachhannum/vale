@@ -11,7 +11,7 @@ use crate::bands::{Bands, SEA_LEVEL};
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
-use crate::math::{V3, cross, normalize};
+use crate::math::{V3, add, cross, dot, length, normalize, scale};
 
 /// The side of a tile, in texels.
 pub const TILE_SIZE: usize = 256;
@@ -40,6 +40,11 @@ pub enum Mode {
     /// Raises the ground as `Raise` does. The app also runs erode steps and
     /// weather stamps under the brush.
     Uplift,
+    /// Moves the ground sideways. Each texel takes the level of the ground at
+    /// an offset place, and a noise of the direction of the texel gives the
+    /// offset. Each new level is between the lowest level and the highest
+    /// level under the brush.
+    Warp,
 }
 
 /// One touch of the brush on the sphere.
@@ -56,12 +61,22 @@ pub struct Stamp {
     pub mode: Mode,
     /// The target of the flatten mode.
     pub level: u16,
-    /// The largest change of the raise and lower modes, in 16-bit steps.
+    /// The largest change of the raise and lower modes, in 16-bit steps. In
+    /// the warp mode, the largest offset as an angle, in radians.
     pub strength: f64,
     /// The steepest slope that the weather mode leaves, in 16-bit steps for
     /// each texel step. `talus_levels` gives it for an angle.
     pub talus: f64,
+    /// The size of the features of the noise of the warp mode as an angle, in
+    /// radians.
+    pub scale: f64,
+    /// The seed of the noise of the warp mode.
+    pub seed: u32,
 }
+
+/// The offset of the warp mode is zero at this number of texel steps from
+/// the brush edge. Each texel that a warp stamp reads is then in the brush.
+const WARP_MARGIN: f64 = 3.0;
 
 /// The slope of an angle on a world, in 16-bit steps for each texel step.
 /// The texel step is the one at the center of a face.
@@ -727,10 +742,21 @@ impl Heightmap {
         // The shader works with 32-bit numbers. A slope minus a multiple of
         // 1/16 is exact there. No slope is more than 65535.
         let talus = ((stamp.talus * 16.0).round() / 16.0).clamp(0.0, 65536.0);
+        let step = FRAC_PI_2 / self.n as f64;
+        let (strength, scale) = if stamp.mode == Mode::Warp {
+            // The noise changes too fast for the texels below 2 texel steps.
+            // The shader gets the same 32-bit feature size.
+            let scale = stamp.scale.max(2.0 * step) as f32;
+            (stamp.strength.clamp(0.0, radius), f64::from(scale))
+        } else {
+            (stamp.strength, stamp.scale)
+        };
         StampPlan {
             stamp: Stamp {
                 radius,
                 talus,
+                strength,
+                scale,
                 ..*stamp
             },
             rects: std::array::from_fn(|face| brush_rect(self.n, face, stamp.center, radius)),
@@ -744,6 +770,9 @@ impl Heightmap {
             return 0;
         }
         let plan = self.stamp_plan(stamp);
+        if stamp.mode == Mode::Warp {
+            return self.warp_stamp(&plan);
+        }
         let mut visited = 0;
         for (face, rect) in plan.rects.into_iter().enumerate() {
             if let Some(rect) = rect {
@@ -819,6 +848,7 @@ impl Heightmap {
                                 (old - depth).round().max(old.min(sea))
                             }
                             Mode::Weather => unreachable!("`stamp` sends it to `weather_face`"),
+                            Mode::Warp => unreachable!("`stamp` sends it to `warp_stamp`"),
                             Mode::Smooth => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -950,6 +980,137 @@ impl Heightmap {
         }
         w * h
     }
+
+    /// Applies one warp stamp. Each face reads the levels from before the
+    /// stamp. Returns the number of texels that it visited.
+    fn warp_stamp(&mut self, plan: &StampPlan) -> usize {
+        let faces = plan.rects.iter().enumerate();
+        let faces = faces.filter_map(|(face, rect)| Some((face, (*rect)?)));
+        let new: Vec<_> = faces
+            .map(|(face, rect)| (face, rect, self.warp_face(face, rect, &plan.stamp)))
+            .collect();
+        let mut visited = 0;
+        for (face, rect, levels) in new {
+            let w = rect.x1 - rect.x0;
+            for (i, level) in levels.into_iter().enumerate() {
+                self.set(face, rect.x0 + i % w, rect.y0 + i / w, level);
+            }
+            visited += w * (rect.y1 - rect.y0);
+        }
+        visited
+    }
+
+    /// The levels of a rectangle of one face after one warp stamp, row by
+    /// row.
+    fn warp_face(&self, face: usize, rect: TexelRect, stamp: &Stamp) -> Vec<u16> {
+        let mut levels = Vec::with_capacity((rect.x1 - rect.x0) * (rect.y1 - rect.y0));
+        for y in rect.y0..rect.y1 {
+            for x in rect.x0..rect.x1 {
+                let p = self.texel_dir(face, x, y);
+                let offset = warp_offset(stamp, self.n, p);
+                levels.push(if offset == [0.0; 3] {
+                    self.texel(face, x, y)
+                } else {
+                    self.level_between(normalize(add(p, offset)), true).round() as u16
+                });
+            }
+        }
+        levels
+    }
+
+    /// The level at a direction, from the 4 texels around it on its face in
+    /// the ratio of the distances to their centers. If `past` is true, the
+    /// texel grid continues past the face edges, and the level of a texel
+    /// there comes from this function without `past`. If not, the texels at
+    /// the face edge continue.
+    fn level_between(&self, d: V3, past: bool) -> f64 {
+        let (face, a, b) = face_of(d);
+        let n = self.n as i64;
+        let at = |a: f64| (warp(a) + 1.0) * 0.5 * n as f64 - 0.5;
+        let (x, y) = (at(a), at(b));
+        let (x0, y0) = (x.floor(), y.floor());
+        let (tx, ty) = (x - x0, y - y0);
+        let level = |i: i64, j: i64| {
+            let (x, y) = (x0 as i64 + i, y0 as i64 + j);
+            let on_face = (x.clamp(0, n - 1), y.clamp(0, n - 1));
+            if past && (x, y) != on_face {
+                let flat =
+                    |i: i64| unwarp(((i as f64 + 0.5) / n as f64 * 2.0 - 1.0).clamp(-1.99, 1.99));
+                self.level_between(face_dir(face, flat(x), flat(y)), false)
+            } else {
+                f64::from(self.texel(face, on_face.0 as usize, on_face.1 as usize))
+            }
+        };
+        // With 4 equal levels, each step gives that level.
+        let top = level(0, 0) + (level(1, 0) - level(0, 0)) * tx;
+        let bottom = level(0, 1) + (level(1, 1) - level(0, 1)) * tx;
+        top + (bottom - top) * ty
+    }
+}
+
+/// A hash of a lattice point. The shader has the same steps on 32-bit whole
+/// numbers, so it gives the same bits.
+fn hash(ix: u32, iy: u32, iz: u32, seed: u32) -> u32 {
+    let mut h = seed
+        ^ 0x9e37_79b9
+        ^ ix.wrapping_mul(0x8da6_b343)
+        ^ iy.wrapping_mul(0xd816_3841)
+        ^ iz.wrapping_mul(0xcb1a_b31f);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb_352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846c_a68b);
+    h ^ (h >> 16)
+}
+
+/// A noise vector at a point, with each part from -1 to 1. Each lattice
+/// point with whole coordinates has a vector from `hash`, and the noise
+/// changes smoothly between the 8 lattice points around the point.
+fn noise3(p: V3, seed: u32) -> V3 {
+    let cell = p.map(f64::floor);
+    let [ix, iy, iz] = cell.map(|c| c as i32 as u32);
+    let [tx, ty, tz] = [0, 1, 2].map(|k| {
+        let t = p[k] - cell[k];
+        t * t * (3.0 - 2.0 * t)
+    });
+    let corner = |dx: u32, dy: u32, dz: u32| {
+        let h = hash(
+            ix.wrapping_add(dx),
+            iy.wrapping_add(dy),
+            iz.wrapping_add(dz),
+            seed,
+        );
+        // Three numbers of 10 bits each.
+        [h, h >> 10, h >> 20].map(|k| (f64::from(k & 1023) - 511.5) / 511.5)
+    };
+    let between = |a: V3, b: V3, t: f64| add(a, scale(add(b, scale(a, -1.0)), t));
+    let along_x = |dy: u32, dz: u32| between(corner(0, dy, dz), corner(1, dy, dz), tx);
+    let along_y = |dz: u32| between(along_x(0, dz), along_x(1, dz), ty);
+    between(along_y(0), along_y(1), tz)
+}
+
+/// The offset of a warp stamp at a unit direction, on a face with `n` texels
+/// along one side. The offset is square to the direction. Its length is the
+/// angle in radians, and it is no more than the strength times the effect of
+/// the brush. The offset is zero outside the brush and near the brush edge,
+/// so the offset place is in the brush.
+fn warp_offset(stamp: &Stamp, n: usize, p: V3) -> V3 {
+    let cos_angle = dot(stamp.center, p);
+    if cos_angle <= stamp.radius.cos() {
+        return [0.0; 3];
+    }
+    let angle = cos_angle.min(1.0).acos();
+    let hard = stamp.hardness.clamp(0.0, 0.999);
+    let amount = falloff(angle / stamp.radius, hard) * stamp.flow;
+    let margin = WARP_MARGIN * FRAC_PI_2 / n as f64;
+    let len = (stamp.strength * amount).min(stamp.radius - angle - margin);
+    if len <= 0.0 {
+        return [0.0; 3];
+    }
+    let v = noise3(p.map(|c| c / stamp.scale), stamp.seed);
+    // The part of the noise vector along the ground.
+    let t = add(v, scale(p, -dot(v, p)));
+    scale(t, len / length(t).max(1.0))
 }
 
 /// The texel index for an equal-angle coordinate, on a face with `n` texels
@@ -1056,6 +1217,8 @@ mod tests {
             level: 0,
             strength: 1000.0,
             talus: 0.0,
+            scale: 0.1,
+            seed: 1,
         }
     }
 
@@ -1698,6 +1861,7 @@ mod tests {
             Mode::Flatten,
             Mode::Weather,
             Mode::Uplift,
+            Mode::Warp,
         ];
         for mode in modes {
             let mut map = Heightmap::with_tile_size(64, 16, 20_000);
@@ -2076,5 +2240,393 @@ mod tests {
         assert!(map.get(0, n as i64 - 1, n as i64 / 2) < 5000);
         assert_eq!(sum(&face(&after, 0)), sum(&face(&before, 0)));
         assert!(face(&after, 2) == face(&before, 2));
+    }
+
+    fn warp_stamp(center: V3, radius: f64) -> Stamp {
+        Stamp {
+            mode: Mode::Warp,
+            hardness: 0.5,
+            strength: 0.5 * radius,
+            scale: 0.5 * radius,
+            seed: 7,
+            ..raise(center, radius)
+        }
+    }
+
+    /// A level that is a smooth function of the direction.
+    fn smooth_level(d: V3) -> f64 {
+        let hill = 9000.0 * (3.0 * d[0] + 1.0).sin() * (2.0 * d[1]).cos();
+        30000.0 + hill + 6000.0 * (4.0 * d[2] + d[0]).sin()
+    }
+
+    /// Ground with the levels of `level` on each face.
+    fn ground(n: usize, level: impl Fn(usize, usize, usize, V3) -> u16) -> Heightmap {
+        let mut map = Heightmap::new(n, 0);
+        for face in 0..FACES {
+            let levels: Vec<u16> = (0..n * n)
+                .map(|i| level(face, i % n, i / n, map.texel_dir(face, i % n, i / n)))
+                .collect();
+            map.store_rect(face, face_rect(n), &levels);
+        }
+        map
+    }
+
+    /// Ground with no step at a face edge.
+    fn smooth_ground(n: usize) -> Heightmap {
+        ground(n, |_, _, _, d| smooth_level(d).round() as u16)
+    }
+
+    /// Ground with a level for each texel that has no relation to the levels
+    /// of the texels around it.
+    fn rough_ground(n: usize) -> Heightmap {
+        ground(n, |face, x, y, _| {
+            (hash(face as u32, x as u32, y as u32, 3) >> 16) as u16
+        })
+    }
+
+    /// A face center, a face edge, a cube corner, and a pole.
+    fn warp_places() -> [(&'static str, V3); 4] {
+        [
+            ("face center", lonlat_to_dir(1.3, 0.7)),
+            ("face edge", lonlat_to_dir(45.0, 0.0)),
+            ("cube corner", lonlat_to_dir(45.0, 35.264)),
+            ("pole", lonlat_to_dir(0.0, 90.0)),
+        ]
+    }
+
+    /// The texels of the rectangles of a stamp.
+    fn plan_texels(plan: &StampPlan) -> Vec<(usize, usize, usize)> {
+        let mut texels = Vec::new();
+        for (face, rect) in plan.rects.iter().enumerate() {
+            let Some(rect) = rect else { continue };
+            for y in rect.y0..rect.y1 {
+                texels.extend((rect.x0..rect.x1).map(|x| (face, x, y)));
+            }
+        }
+        texels
+    }
+
+    fn difference(a: V3, b: V3) -> f64 {
+        length(add(a, scale(b, -1.0)))
+    }
+
+    #[test]
+    fn hash_and_noise_results_do_not_change() {
+        assert_eq!(hash(0, 0, 0, 0), 0x1fce552);
+        assert_eq!(hash(1, 2, 3, 4), 0x752b3909);
+        assert_eq!(hash(-5i32 as u32, 7, -1i32 as u32, 99), 0xd66cffde);
+        let noise = noise3([0.3, -1.6, 2.25], 7);
+        let expected = [0.320083100684262, 0.03464712805474082, -0.02267717693059611];
+        assert!(difference(noise, expected) < 1e-12, "{noise:?}");
+        // At a lattice point, the noise is the vector of that point.
+        let h = hash(-2i32 as u32, 5, -7i32 as u32, 7);
+        let corner = [h, h >> 10, h >> 20].map(|k| (f64::from(k & 1023) - 511.5) / 511.5);
+        assert!(difference(noise3([-2.0, 5.0, -7.0], 7), corner) < 1e-12);
+        // The noise has no step at a lattice plane, also at zero.
+        for k in 0..3 {
+            for plane in [0.0, -3.0, 5.0] {
+                let mut p = [0.4, -3.7, 12.1];
+                p[k] = plane - 1e-9;
+                let below = noise3(p, 7);
+                p[k] = plane + 1e-9;
+                assert!(difference(noise3(p, 7), below) < 1e-6, "{k} {plane}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_warped_level_is_the_ground_at_the_offset_place() {
+        let n = 256;
+        let step = FRAC_PI_2 / n as f64;
+        for (place, center) in warp_places() {
+            let mut map = smooth_ground(n);
+            let stamp = warp_stamp(center, 0.2);
+            let plan = map.stamp_plan(&stamp);
+            map.stamp(&stamp);
+            let mut moved = 0;
+            for (face, x, y) in plan_texels(&plan) {
+                let p = map.texel_dir(face, x, y);
+                let offset = warp_offset(&plan.stamp, n, p);
+                let expected = smooth_level(normalize(add(p, offset)));
+                let level = f64::from(map.get(face, x as i64, y as i64));
+                // The ground has whole levels, and it bends between the
+                // texel centers. The largest error on this ground is 1.3.
+                assert!(
+                    (level - expected).abs() < 2.0,
+                    "{place}: {level} at {face} {x} {y}, and not {expected}"
+                );
+                moved += usize::from(length(offset) > 2.0 * step);
+            }
+            assert!(moved > 1000, "{place}: {moved}");
+        }
+    }
+
+    #[test]
+    fn the_warp_offset_follows_the_strength_and_the_scale() {
+        let n = 256;
+        let map = Heightmap::new(n, 0);
+        let center = lonlat_to_dir(44.0, 30.0);
+        let stamp = Stamp {
+            hardness: 1.0,
+            strength: 0.02,
+            ..warp_stamp(center, 0.2)
+        };
+        let plan = map.stamp_plan(&stamp);
+        let twice = map.stamp_plan(&Stamp {
+            strength: 0.04,
+            ..stamp
+        });
+        let mut largest = 0.0f64;
+        for (face, x, y) in plan_texels(&plan) {
+            let p = map.texel_dir(face, x, y);
+            let offset = warp_offset(&plan.stamp, n, p);
+            assert!(dot(offset, p).abs() < 1e-12);
+            largest = largest.max(length(offset));
+            // The limit near the brush edge does not act here.
+            if angle(p, center) < 0.1 {
+                let double = warp_offset(&twice.stamp, n, p);
+                assert!(difference(double, scale(offset, 2.0)) < 1e-12);
+            }
+        }
+        assert!(largest <= 0.02 + 1e-12 && largest > 0.9 * 0.02, "{largest}");
+
+        // Places on all parts of the sphere.
+        let places = (0..20_000).map(|i| (0.37 * f64::from(i), 0.009 * f64::from(i) - 90.0));
+        let at = |p: V3| noise3(p.map(|c| c / stamp.scale), stamp.seed);
+        // With the full effect of the brush, the mean offset is 0.47 of the
+        // strength.
+        let along = |p: V3| length(add(at(p), scale(p, -dot(at(p), p)))).min(1.0);
+        let offsets = places
+            .clone()
+            .map(|(lon, lat)| along(lonlat_to_dir(lon, lat)));
+        let mean = offsets.sum::<f64>() / 20_000.0;
+        assert!((0.42..0.52).contains(&mean), "{mean}");
+        // The mean change of the noise between two places that are `apart`
+        // radians from each other.
+        let change = |apart: f64| {
+            let pairs = places.clone().map(|(lon, lat)| {
+                let (p, q) = (
+                    lonlat_to_dir(lon, lat),
+                    lonlat_to_dir(lon, lat + apart.to_degrees()),
+                );
+                difference(at(p), at(q))
+            });
+            pairs.sum::<f64>() / 20_000.0
+        };
+        let (near, far) = (change(stamp.scale / 8.0), change(4.0 * stamp.scale));
+        assert!(near < 0.25 * far, "{near} {far}");
+    }
+
+    #[test]
+    fn the_warp_plan_limits_the_strength_and_the_scale() {
+        let map = Heightmap::new(256, 0);
+        let stamp = Stamp {
+            strength: 5.0,
+            scale: 0.0,
+            ..warp_stamp(lonlat_to_dir(10.0, 5.0), 0.1)
+        };
+        let plan = map.stamp_plan(&stamp).stamp;
+        assert_eq!(plan.strength, 0.1);
+        let texel_steps = plan.scale / (FRAC_PI_2 / 256.0);
+        assert!((texel_steps - 2.0).abs() < 1e-6, "{texel_steps}");
+        // The other modes keep the strength.
+        let raise = Stamp {
+            mode: Mode::Raise,
+            ..stamp
+        };
+        assert_eq!(map.stamp_plan(&raise).stamp.strength, 5.0);
+    }
+
+    #[test]
+    fn the_warp_offset_is_zero_at_the_brush_edge() {
+        let n = 256;
+        let margin = WARP_MARGIN * FRAC_PI_2 / n as f64;
+        for (place, center) in warp_places() {
+            let mut map = smooth_ground(n);
+            let before = all_levels(&map);
+            // The strength is more than the limit near the brush edge.
+            let stamp = Stamp {
+                strength: 0.2,
+                hardness: 0.95,
+                ..warp_stamp(center, 0.2)
+            };
+            let plan = map.stamp_plan(&stamp);
+            map.stamp(&stamp);
+            let after = all_levels(&map);
+            let mut near_edge = 0;
+            for (face, x, y) in plan_texels(&plan) {
+                let p = map.texel_dir(face, x, y);
+                let limit = (0.2 - angle(p, center) - margin).max(0.0);
+                let offset = length(warp_offset(&plan.stamp, n, p));
+                assert!(offset <= limit + 1e-9, "{place}: {offset} {limit}");
+                near_edge += usize::from(limit < 0.02 && offset > 0.0);
+                if limit == 0.0 {
+                    let i = (face * n + y) * n + x;
+                    assert_eq!(after[i], before[i], "{place}: {face} {x} {y}");
+                }
+            }
+            assert!(near_edge > 100, "{place}: {near_edge}");
+            assert!(after != before, "{place}");
+        }
+    }
+
+    #[test]
+    fn warp_leaves_flat_ground_flat() {
+        let mut map = Heightmap::new(256, 30000);
+        map.begin_stroke();
+        for (_, center) in warp_places() {
+            for radius in [0.06, 0.3] {
+                let stamp = Stamp {
+                    strength: radius,
+                    ..warp_stamp(center, radius)
+                };
+                assert!(map.stamp(&stamp) > 0);
+            }
+        }
+        assert!(!map.end_stroke());
+        assert_eq!(map.allocated_tiles(), 0);
+        assert!(!map.has_changes());
+    }
+
+    #[test]
+    fn a_warped_level_is_between_the_levels_under_the_brush() {
+        let n = 128;
+        for (place, center) in warp_places() {
+            for radius in [0.01, 0.06, 0.3] {
+                for hardness in [0.0, 0.5, 0.95] {
+                    let name = format!("{place}, radius {radius}, hardness {hardness}");
+                    let mut map = rough_ground(n);
+                    let before = all_levels(&map);
+                    let stamp = Stamp {
+                        strength: radius,
+                        hardness,
+                        ..warp_stamp(center, radius)
+                    };
+                    let plan = map.stamp_plan(&stamp);
+                    // The texels under the brush.
+                    let mut under = vec![false; before.len()];
+                    for (face, x, y) in plan_texels(&plan) {
+                        let falloff = Falloff::new(face, &plan.stamp);
+                        let amount = falloff.amount(map.flat[x], map.flat[y]);
+                        under[(face * n + y) * n + x] = amount.is_some();
+                    }
+                    let old = || before.iter().zip(&under).filter(|(_, under)| **under);
+                    let lo = old().map(|(level, _)| *level).min();
+                    let hi = old().map(|(level, _)| *level).max();
+                    map.stamp(&stamp);
+                    let after = all_levels(&map);
+                    for (i, &level) in after.iter().enumerate() {
+                        if under[i] {
+                            assert!(lo <= Some(level) && Some(level) <= hi, "{name}");
+                        } else {
+                            assert_eq!(level, before[i], "{name}");
+                        }
+                    }
+                    // A brush of 3 texel steps has no offset.
+                    assert_eq!(after != before, radius > 0.05, "{name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_seed_sets_the_warp() {
+        let warped = |seed: u32| {
+            let mut map = smooth_ground(64);
+            map.stamp(&Stamp {
+                seed,
+                ..warp_stamp(lonlat_to_dir(44.0, 34.0), 0.25)
+            });
+            all_levels(&map)
+        };
+        assert!(warped(7) == warped(7));
+        assert!(warped(7) != warped(8));
+    }
+
+    /// Each face reads the levels from before the stamp, so the stamp on a
+    /// copy of the ground gives the same levels.
+    #[test]
+    fn a_warp_stamp_reads_no_level_that_it_wrote() {
+        let n = 64;
+        let mut map = smooth_ground(n);
+        let old = smooth_ground(n);
+        let stamp = Stamp {
+            strength: 0.3,
+            ..warp_stamp(lonlat_to_dir(45.0, 35.264), 0.3)
+        };
+        let plan = map.stamp_plan(&stamp);
+        map.stamp(&stamp);
+        let mut faces = 0;
+        for (face, rect) in plan.rects.into_iter().enumerate() {
+            let Some(rect) = rect else { continue };
+            let mut new = Vec::new();
+            map.read_rect(face, rect, &mut new);
+            assert!(new == old.warp_face(face, rect, &plan.stamp), "{face}");
+            faces += 1;
+        }
+        assert_eq!(faces, 3);
+    }
+
+    /// Checks the levels along lines of texels that cross the +u edge of an
+    /// even face at a right angle, `m` texels along the edge. The jump at
+    /// the edge is not much larger than the jumps on each side.
+    fn assert_no_seam(map: &Heightmap, face: usize, m: usize) {
+        let (n, k) = (map.face_size(), 12);
+        let next = 2 * ((face / 2 + 1) % 3);
+        let near = (n - k..n).map(|x| (face, x, m));
+        let far = (0..k).map(|i| (next, m, n - 1 - i));
+        let levels: Vec<i32> = near
+            .chain(far)
+            .map(|(face, x, y)| i32::from(map.get(face, x as i64, y as i64)))
+            .collect();
+        let jumps: Vec<i32> = levels.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+        let at_edge = jumps[k - 1];
+        let inside = jumps.iter().enumerate().filter(|(i, _)| *i != k - 1);
+        let inside = inside.map(|(_, jump)| *jump).max().unwrap();
+        assert!(
+            2 * at_edge <= 3 * inside + 4,
+            "face {face}, line {m}: the jump at the edge is {at_edge}, and the largest jump \
+             inside is {inside}: {levels:?}"
+        );
+    }
+
+    #[test]
+    fn warp_leaves_no_seam_at_a_face_edge() {
+        let n = 256;
+        let mut map = smooth_ground(n);
+        let before = all_levels(&map);
+        // Face 0 and face 2 meet at longitude 45.
+        for i in 0..16 {
+            map.stamp(&Stamp {
+                seed: i,
+                ..warp_stamp(lonlat_to_dir(41.0 + 0.5 * f64::from(i), 2.0), 0.15)
+            });
+        }
+        let after = all_levels(&map);
+        for m in (118..150).step_by(4) {
+            // The texels at the edge, on each face.
+            let changed = [(m + 1) * n - 1, (2 * n + n - 1) * n + m].map(|i| after[i] != before[i]);
+            assert!(changed[0] && changed[1], "{m}");
+            assert_no_seam(&map, 0, m);
+        }
+    }
+
+    #[test]
+    fn warp_leaves_no_seam_at_a_cube_corner() {
+        let n = 256;
+        let mut map = smooth_ground(n);
+        // Faces 0, 2, and 4 meet at this corner.
+        let corner = lonlat_to_dir(45.0, 35.264);
+        for seed in 0..4 {
+            map.stamp(&Stamp {
+                seed,
+                ..warp_stamp(corner, 0.2)
+            });
+        }
+        for face in [0, 2, 4] {
+            for m in [236, 243, 249] {
+                assert_no_seam(&map, face, m);
+            }
+        }
     }
 }

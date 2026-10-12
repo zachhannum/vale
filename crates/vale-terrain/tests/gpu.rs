@@ -229,6 +229,8 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         level: 52000,
         strength: 3000.0,
         talus: 0.0,
+        scale: 0.1,
+        seed: 1,
     }
 }
 
@@ -1352,4 +1354,284 @@ fn gpu_erode_in_a_window_matches_cpu_past_a_face_edge() {
     assert!(changed[2] > 1000, "{changed:?}");
     assert_eq!(changed.iter().sum::<usize>(), changed[2]);
     assert!(difference <= TOLERANCE, "{difference}");
+}
+
+/// The same for one warp stamp. The shader finds the offset place with
+/// 32-bit numbers, so a level near a half step can round to the other side.
+/// The largest difference in the tests of this file is 1.
+const WARP_TOLERANCE: u16 = 1;
+
+/// The same for a stroke of warp stamps. Each stamp reads the results of the
+/// stamps before it, so a difference of one step can grow to two. The
+/// largest difference in the strokes of this file is 1.
+const WARP_STROKE_TOLERANCE: u16 = 2;
+
+fn warp(center: V3, radius: f64, hardness: f64) -> Stamp {
+    Stamp {
+        strength: 0.5 * radius,
+        scale: 0.5 * radius,
+        seed: 7,
+        ..stamp(center, radius, hardness, Mode::Warp)
+    }
+}
+
+/// A heightmap with a level for each texel from `level`.
+fn ground(n: usize, mut level: impl FnMut(V3) -> u16) -> Heightmap {
+    let mut map = Heightmap::new(n, 0);
+    for face in 0..FACES {
+        let mut data = Vec::with_capacity(n * n);
+        for y in 0..n {
+            data.extend((0..n).map(|x| level(map.texel_dir(face, x, y))));
+        }
+        map.store_rect(face, full(n), &data);
+    }
+    map
+}
+
+/// Ground that is a smooth function of the direction, so it has no step at
+/// a face edge. The steepest slope is 55000 levels for each radian.
+fn smooth_ground(n: usize) -> Heightmap {
+    ground(n, |d| {
+        let hill = 9000.0 * (3.0 * d[0] + 1.0).sin() * (2.0 * d[1]).cos();
+        (30000.0 + hill + 6000.0 * (4.0 * d[2] + d[0]).sin()).round() as u16
+    })
+}
+
+/// Ground with a level for each texel that has no relation to the levels of
+/// the texels around it.
+fn rough_ground(n: usize) -> Heightmap {
+    let mut state = 12345u32;
+    ground(n, |_| {
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        (state >> 16) as u16
+    })
+}
+
+/// A face center, a face edge, a cube corner, and a pole.
+const WARP_PLACES: [(&str, f64, f64); 4] = [
+    ("face center", 1.3, 0.7),
+    ("face edge", 45.0, 0.0),
+    ("cube corner", 45.0, 35.264),
+    ("pole", 0.0, 90.0),
+];
+
+#[test]
+fn gpu_warp_matches_cpu_for_one_stamp() {
+    let mut worst = 0;
+    for (place, lon, lat) in WARP_PLACES {
+        // A brush of 3 texel steps has no offset, so the small brush gets a
+        // large face.
+        for (n, radius) in [(1024, 0.01), (256, 0.06), (256, 0.3)] {
+            for hardness in [0.0, 0.5, 0.95] {
+                let mut cpu = smooth_ground(n);
+                let before = levels(&cpu);
+                let stamp = warp(lonlat_to_dir(lon, lat), radius, hardness);
+                let difference = run(&mut cpu, &[stamp]).difference;
+                assert!(levels(&cpu) != before, "{place}, radius {radius}");
+                assert!(
+                    difference <= WARP_TOLERANCE,
+                    "warp at the {place}, radius {radius}, hardness {hardness}: \
+                     the difference is {difference}"
+                );
+                worst = worst.max(difference);
+            }
+        }
+    }
+    eprintln!("one warp stamp, largest difference: {worst}");
+}
+
+/// A stroke of warp stamps that overlap, across a face edge and near a cube
+/// corner. Each stamp has its own seed.
+fn warp_stroke(lat: f64, radius: f64, hardness: f64) -> Vec<Stamp> {
+    let count = 64;
+    (0..count)
+        .map(|i| {
+            let lon = 33.0 + 24.0 * f64::from(i) / f64::from(count);
+            Stamp {
+                seed: i,
+                ..warp(lonlat_to_dir(lon, lat), radius, hardness)
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn gpu_warp_matches_cpu_for_a_stroke() {
+    let mut worst = 0;
+    for (lat, radius, hardness) in [(4.0, 0.07, 0.5), (35.0, 0.12, 0.0), (20.0, 0.05, 0.95)] {
+        let mut cpu = smooth_ground(256);
+        let before = levels(&cpu);
+        let difference = run(&mut cpu, &warp_stroke(lat, radius, hardness)).difference;
+        assert!(changes(&before, &levels(&cpu)) > 300, "latitude {lat}");
+        assert!(
+            difference <= WARP_STROKE_TOLERANCE,
+            "warp stroke at latitude {lat}: the difference is {difference}"
+        );
+        worst = worst.max(difference);
+    }
+    eprintln!("warp stroke, largest difference: {worst}");
+}
+
+/// On a large face, the place of a texel needs most of the digits of a
+/// 32-bit number.
+#[test]
+fn gpu_warp_matches_cpu_on_a_large_face() {
+    let mut cpu = smooth_ground(2048);
+    let mut stamps = Vec::new();
+    for (i, radius) in [0.004, 0.011, 0.05].into_iter().enumerate() {
+        for step in 0..6 {
+            let lon = 44.9 + 0.03 * f64::from(step);
+            let center = lonlat_to_dir(lon, 0.3 * i as f64 + 0.01 * f64::from(step));
+            stamps.push(warp(center, radius, 0.5));
+        }
+    }
+    // A large brush at a cube corner.
+    stamps.push(warp(lonlat_to_dir(44.0, 34.0), 0.3, 0.5));
+    let before = levels(&cpu);
+    let difference = run(&mut cpu, &stamps).difference;
+    assert!(changes(&before, &levels(&cpu)) > 100_000);
+    eprintln!("warp on a large face, largest difference: {difference}");
+    assert!(difference <= WARP_STROKE_TOLERANCE, "{difference}");
+}
+
+#[test]
+fn gpu_warp_leaves_flat_ground_flat() {
+    let n = 256;
+    let mut cpu = Heightmap::new(n, 30000);
+    let mut stamps = warp_stroke(35.0, 0.12, 0.5);
+    for (_, lon, lat) in WARP_PLACES {
+        stamps.push(Stamp {
+            strength: 0.3,
+            ..warp(lonlat_to_dir(lon, lat), 0.3, 0.5)
+        });
+    }
+    let faces = run(&mut cpu, &stamps).faces;
+    assert_eq!(faces.len(), FACES);
+    for levels in faces {
+        assert!(levels == vec![30000; n * n]);
+    }
+}
+
+#[test]
+fn gpu_warped_level_is_between_the_levels_under_the_brush() {
+    let n = 256;
+    for (place, lon, lat) in WARP_PLACES {
+        for radius in [0.06, 0.3] {
+            for hardness in [0.0, 0.5, 0.95] {
+                let name = format!("{place}, radius {radius}, hardness {hardness}");
+                let mut cpu = rough_ground(n);
+                let before = levels(&cpu);
+                let center = lonlat_to_dir(lon, lat);
+                let stamp = Stamp {
+                    strength: radius,
+                    ..warp(center, radius, hardness)
+                };
+                // The texels under the brush.
+                let mut under = Vec::with_capacity(before.len());
+                for face in 0..FACES {
+                    for i in 0..n * n {
+                        let dir = cpu.texel_dir(face, i % n, i / n);
+                        under.push(dot(center, dir) > radius.cos());
+                    }
+                }
+                let old = || before.iter().zip(&under).filter(|(_, under)| **under);
+                let lo = old().map(|(level, _)| *level).min().unwrap();
+                let hi = old().map(|(level, _)| *level).max().unwrap();
+                let after = run(&mut cpu, &[stamp]).faces.concat();
+                assert!(changes(&before, &after) > 100, "{name}");
+                for (i, &level) in after.iter().enumerate() {
+                    if under[i] {
+                        assert!(lo <= level && level <= hi, "{name}");
+                    } else {
+                        assert_eq!(level, before[i], "{name}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Warps smooth ground, then checks lines across the edges of the even faces
+/// in `edges`, `m` texels along each edge.
+fn warp_and_check(stamps: &[Stamp], edges: &[usize], lines: &[usize]) {
+    let n = 256;
+    let mut cpu = smooth_ground(n);
+    let before = levels(&cpu);
+    let Run {
+        faces, difference, ..
+    } = run(&mut cpu, stamps);
+    for &face in edges {
+        for &m in lines {
+            let line = line_across_edge(n, face, m, 12);
+            let on_gpu: Vec<i32> = line
+                .iter()
+                .map(|&(face, x, y)| i32::from(faces[face][y * n + x]))
+                .collect();
+            let on_cpu: Vec<i32> = line
+                .iter()
+                .map(|&(face, x, y)| i32::from(cpu.get(face, x as i64, y as i64)))
+                .collect();
+            let old = line
+                .iter()
+                .map(|&(face, x, y)| i32::from(before[(face * n + y) * n + x]));
+            // The stamps changed most texels of the line.
+            let changed = old.zip(&on_cpu).filter(|(old, new)| old != *new).count();
+            assert!(changed > 12, "edge of face {face}, line {m}: {changed}");
+            assert_no_seam(&format!("CPU, edge of face {face}"), &on_cpu, false);
+            assert_no_seam(&format!("GPU, edge of face {face}"), &on_gpu, false);
+        }
+    }
+    assert!(
+        difference <= WARP_STROKE_TOLERANCE,
+        "the difference is {difference}"
+    );
+}
+
+#[test]
+fn warp_leaves_no_seam_at_a_face_edge() {
+    // Face 0 and face 2 meet at longitude 45.
+    let stamps: Vec<Stamp> = (0..16)
+        .map(|i| Stamp {
+            seed: i,
+            ..warp(lonlat_to_dir(41.0 + 0.5 * f64::from(i), 2.0), 0.15, 0.5)
+        })
+        .collect();
+    warp_and_check(&stamps, &[0], &[118, 126, 134, 142]);
+}
+
+#[test]
+fn warp_leaves_no_seam_at_a_cube_corner() {
+    // Faces 0, 2, and 4 meet at this corner.
+    let corner = lonlat_to_dir(45.0, 35.264);
+    let stamps: Vec<Stamp> = (0..4)
+        .map(|seed| Stamp {
+            seed,
+            ..warp(corner, 0.2, 0.5)
+        })
+        .collect();
+    warp_and_check(&stamps, &[0, 2, 4], &[236, 243, 249]);
+}
+
+/// At a cube corner, each of three faces takes levels from the other two.
+/// The CPU reads the levels from before the stamp on each face.
+#[test]
+fn gpu_warp_reads_no_level_that_it_wrote() {
+    let n = 256;
+    let mut cpu = smooth_ground(n);
+    let before = levels(&cpu);
+    let stamp = Stamp {
+        strength: 0.3,
+        ..warp(lonlat_to_dir(45.0, 35.264), 0.3, 0.5)
+    };
+    let difference = run(&mut cpu, &[stamp]).difference;
+    let after = levels(&cpu);
+    for face in [0, 2, 4] {
+        let texels = face * n * n..(face + 1) * n * n;
+        let changed = changes(&before[texels.clone()], &after[texels]);
+        assert!(changed > 1000, "face {face}: {changed}");
+    }
+    assert!(
+        difference <= WARP_TOLERANCE,
+        "the difference is {difference}"
+    );
 }
