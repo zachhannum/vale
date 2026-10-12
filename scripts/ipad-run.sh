@@ -8,6 +8,8 @@
 #   BUNDLE_ID  The bundle identifier of the app.
 #   NAME       The name of the app on the iPad.
 # Set DEVELOPMENT_TEAM to use a different Apple developer team.
+# Set VALE_NO_ICLOUD=1 to build with no iCloud entitlement. A free Apple
+# developer team cannot sign that entitlement.
 set -eu
 
 [ $# -eq 4 ] || { echo "Usage: $0 CRATE PROJECT BUNDLE_ID NAME" >&2; exit 2; }
@@ -69,10 +71,14 @@ cd "$ios"
 xcodegen generate --quiet
 mkdir -p "$out"
 log="$out/xcodebuild.log"
+# iPadOS reads the iCloud Drive folder of the app again only when the build
+# number changes.
+set -- CURRENT_PROJECT_VERSION="$(date +%Y%m%d%H%M)"
+[ -z "${VALE_NO_ICLOUD:-}" ] || set -- "$@" CODE_SIGN_ENTITLEMENTS=
 if ! xcodebuild -project "$project.xcodeproj" -scheme "$project" \
     -configuration Release -destination "id=$udid" -derivedDataPath "$derived" \
     -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
-    DEVELOPMENT_TEAM="$team" build >"$log" 2>&1; then
+    DEVELOPMENT_TEAM="$team" "$@" build >"$log" 2>&1; then
     grep -E "error:|error\[|^env: |is not installed|Developer Mode|nonzero exit code" "$log" | sort -u | head -20 >&2
     if grep -q "Developer Mode disabled" "$log"; then
         fail "Developer Mode is off on the iPad. On the iPad, open Settings, then Privacy & Security, then Developer Mode. Turn it on, tap Restart, and after the restart tap Turn On. Then run this script again."

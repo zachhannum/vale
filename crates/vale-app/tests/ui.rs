@@ -6,6 +6,7 @@ use egui_kittest::kittest::Queryable;
 use kurbo::Point;
 use vale_app::document::Document;
 use vale_app::headless;
+use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::panels::WORLD_BUTTON;
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
@@ -410,7 +411,7 @@ fn a_new_world_is_a_new_file_and_the_old_file_stays() {
     let old = dir.path().join("Earth.gpkg");
     let mut state = state_with(Document::sample());
     state.session = Some(Session::open(&old, &mut state.doc).unwrap());
-    state.projects = Some(dir.path().to_path_buf());
+    state.projects = Locations::single(dir.path());
     // The heightmap of the file has its own face size.
     state.globe.set_face_size(512);
     let base = state.globe.map.base();

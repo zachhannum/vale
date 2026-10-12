@@ -9,6 +9,7 @@ use vale_app::document::Document;
 use vale_app::globe::WorldView;
 use vale_app::globe::view::GlobeView;
 use vale_app::projects;
+use vale_app::projects::Locations;
 use vale_app::resume::Resume;
 use vale_app::session::{SAVE_DELAY, new_project_path};
 use vale_app::ui::browser::Dialog;
@@ -31,7 +32,7 @@ fn app(dir: &Path, layout: Layout) -> App {
     state.headless = true;
     state.set_layout(layout);
     state.globe.set_face_size(256);
-    state.projects = Some(dir.to_path_buf());
+    state.projects = Locations::single(dir);
     state.show_projects();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1194.0, 834.0))
