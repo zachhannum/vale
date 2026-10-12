@@ -72,6 +72,9 @@ const ERODE = 5u;
 const WEATHER = 6u;
 const WARP = 7u;
 const RIDGE = 8u;
+// A pass of this mode has no stamps. It lays the ocean ridge of `ridge`, as
+// `Heightmap::ridge` does.
+const OCEAN_RIDGE = 9u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -88,6 +91,47 @@ const WARP_MARGIN = 3.0;
 @group(0) @binding(3) var drops: texture_2d_array<u32>;
 // The drops of an erode step on the cells of a window.
 @group(0) @binding(4) var window_drops: texture_2d<u32>;
+
+// One piece of the line of an ocean ridge. The numbers are those of
+// `RidgeSegment::to_f32`.
+struct RidgeSegment {
+    n: vec3<f32>,
+    // The distance along the line at the start of the piece, from the place
+    // of the cell.
+    rest: f32,
+    m0: vec3<f32>,
+    len: f32,
+    m1: vec3<f32>,
+    q0: f32,
+    q1: f32,
+    // 1 for a round cap at the start, plus 2 for a round cap at the end.
+    caps: f32,
+    cell: f32,
+    unused: f32,
+}
+
+// The same number as `RIDGE_SEGMENTS` in `ridge.rs`.
+const RIDGE_SEGMENTS = 128;
+
+// The settings and the segments of a ridge pass.
+struct RidgeLine {
+    radius: f32,
+    // The mean length of a crest segment.
+    segment: f32,
+    shift: f32,
+    roughness: f32,
+    valley: f32,
+    crest: f32,
+    // The texel step at the center of a face, and the sine of the reach.
+    texel: f32,
+    sin_reach: f32,
+    seed: u32,
+    count: u32,
+    unused: vec2<u32>,
+    segments: array<RidgeSegment, RIDGE_SEGMENTS>,
+}
+
+@group(0) @binding(5) var<uniform> ridge: RidgeLine;
 
 // The same number as `WINDOW_MARGIN` in `flow.rs`.
 const WINDOW_MARGIN = 8.0;
@@ -502,6 +546,158 @@ fn warp_level(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
     return floor(level_between(source) + 0.5);
 }
 
+// The place of a direction on the line of a ridge. `cell` and `rest` give the
+// distance along the line: the number of a multiple of the segment length,
+// and the distance from that multiple.
+struct RidgePoint {
+    on: bool,
+    cell: f32,
+    rest: f32,
+    across: f32,
+    // The square of the distance past the end of the line.
+    past2: f32,
+    flow: f32,
+}
+
+// The arc sine of a number below 0.3.
+fn asin_small(x: f32) -> f32 {
+    return atan_series(x / sqrt(1.0 - x * x));
+}
+
+// The angle between two unit vectors, or more than the reach if they are far
+// apart.
+fn angle_to(p: vec3<f32>, q: vec3<f32>) -> f32 {
+    return 2.0 * asin_small(min(0.5 * length(p - q), 0.3));
+}
+
+// The place of a unit direction on the line. The steps are those of
+// `RidgePlan::place`. The pool holds the ground from before the stroke, so a
+// texel far from the new part of the line has no own case.
+fn ridge_place(p: vec3<f32>) -> RidgePoint {
+    let reach = 1.5 * ridge.radius;
+    var best = RidgePoint(false, 0.0, 0.0, 0.0, 0.0, 0.0);
+    var best_distance = reach;
+    for (var i = 0u; i < ridge.count; i++) {
+        let s = ridge.segments[i];
+        let side = dot(p, s.n);
+        if abs(side) >= ridge.sin_reach {
+            continue;
+        }
+        let across = asin_small(side);
+        // The distance to the nearest point of the segment.
+        let a = normalize(cross(s.m0, s.n));
+        let b = normalize(cross(s.m1, s.n));
+        var nearest = abs(across);
+        if dot(p, cross(s.n, a)) < 0.0 {
+            nearest = angle_to(p, a);
+        } else if dot(p, cross(s.n, b)) > 0.0 {
+            nearest = angle_to(p, b);
+        }
+        if nearest >= reach {
+            continue;
+        }
+        let da = dot(p, s.m0);
+        let db = -dot(p, s.m1);
+        let caps = u32(s.caps);
+        var along = 0.0;
+        var distance = nearest;
+        if (caps & 1u) != 0u && da < 0.0 {
+            along = 0.0;
+        } else if (caps & 2u) != 0u && db < 0.0 {
+            along = 1.0;
+        } else if da >= 0.0 && db >= 0.0 {
+            if da + db > 0.0 {
+                along = da / (da + db);
+            }
+            distance = max(abs(across), nearest * nearest / reach);
+        } else {
+            continue;
+        }
+        if distance < best_distance {
+            best_distance = distance;
+            // The numbers stay small, so the distance from the boundary of
+            // the crest segment keeps its digits.
+            let local = s.rest + along * s.len;
+            let cells = floor(local / ridge.segment + 0.5);
+            best = RidgePoint(
+                true,
+                s.cell + cells,
+                local - cells * ridge.segment,
+                across,
+                max(distance * distance - across * across, 0.0),
+                s.q0 + (s.q1 - s.q0) * along,
+            );
+        }
+    }
+    return best;
+}
+
+// A number from 0 to 1 from the low 24 bits of a hash.
+fn unit(h: u32) -> f32 {
+    return f32(h & 0xffffffu) / 16777216.0;
+}
+
+// The builtin `smoothstep` can use other steps.
+fn smooth_between(low: f32, high: f32, x: f32) -> f32 {
+    let t = clamp((x - low) / (high - low), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// A distance with a round start in place of the sharp point of a square
+// root at zero.
+fn ridge_round(d: f32, e: f32) -> f32 {
+    return d * d / (sqrt(d * d + e * e) + e);
+}
+
+// The level of a texel on the ridge. `old` is its level from before the
+// stroke. The steps are those of `RidgePlan::level`, without the limits.
+fn ridge_level(at: RidgePoint, old: f32) -> f32 {
+    let r = ridge.radius;
+    let t = ridge.texel;
+    let seed = ridge.seed;
+    let half = max(0.06 * r, 2.0 * t);
+    // A cell below zero has the bits of its whole number, as in Rust.
+    let i = u32(i32(at.cell));
+    let s = at.rest - (0.6 * unit(hash(vec3<u32>(i, 0u, 0u), seed)) - 0.3) * ridge.segment;
+    var k = i;
+    if s < 0.0 {
+        k = i - 1u;
+    }
+    let shift_before = ridge.shift * (2.0 * unit(hash(vec3<u32>(i - 1u, 1u, 0u), seed)) - 1.0);
+    let shift_after = ridge.shift * (2.0 * unit(hash(vec3<u32>(i, 1u, 0u), seed)) - 1.0);
+    let shift = shift_before + (shift_after - shift_before) * smooth_between(-half, half, s);
+    let crack_mask = 1.0 - smooth_between(0.0, half, abs(s));
+    let from_crest2 = (at.across - shift) * (at.across - shift) + at.past2;
+    let from_crest = sqrt(from_crest2);
+    let from_line = sqrt(at.across * at.across + at.past2);
+    let valley_width = max(0.08 * r, 2.0 * t);
+    var top = 0.0;
+    if ridge.valley > 0.0 {
+        top = valley_width;
+    }
+    let e = 2.0 * t;
+    let drop = ridge_round(max(from_crest - top, 0.0), e) / ridge_round(r - top, e);
+    let w = max(1.0 - sqrt(drop), 0.0);
+    let lift = max(ridge.crest - old, 0.0);
+    let low = min(lift / (ridge.roughness + ridge.valley + 1.0), 1.0);
+    let rise = lift * w;
+    let valley = ridge.valley * low * (1.0 - smooth_between(0.0, valley_width, from_crest));
+    let wavelength = max(0.08 * r, 4.0 * t) * (1.0 + 0.5 * unit(hash(vec3<u32>(k, 2u, 0u), seed)));
+    let y = from_crest / wavelength;
+    let whole = floor(y);
+    let f = y - whole;
+    let j = u32(i32(whole));
+    let value_before = unit(hash(vec3<u32>(j, k, 3u), seed)) - 0.5;
+    let value_after = unit(hash(vec3<u32>(j + 1u, k, 3u), seed)) - 0.5;
+    let wave = value_before + (value_after - value_before) * (f * f * (3.0 - 2.0 * f));
+    let fade = 1.0 - smooth_between(0.5, 0.9, from_crest / r);
+    let hills = ridge.roughness * low * wave * fade * (1.0 - crack_mask);
+    let crack = 0.3 * lift * crack_mask * (1.0 - smooth_between(r, 1.5 * r, from_line));
+    let q = at.flow;
+    let change = max(q * (rise + hills - valley), 0.0) - q * crack;
+    return clamp(old + floor(change + 0.5), 0.0, 65535.0);
+}
+
 // The level of a texel after a change from `old` to `next`. The steps are
 // those of `Limits::apply`.
 fn limited(old: f32, next: f32) -> f32 {
@@ -570,6 +766,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         // it, and a texel at or below the floor stays.
         let drop = floor(drop_at(at) + 0.5);
         value = max(value - drop, min(value, f32(group.limits & 0xffffu)));
+    }
+    if group.mode == OCEAN_RIDGE {
+        let point = ridge_place(normalize(texel_dir(group.face, at)));
+        if point.on {
+            value = limited(value, ridge_level(point, value));
+        }
+        return vec4<u32>(u32(value), 0u, 0u, 0u);
     }
     // The distance to the river and its size. The window comes first. With
     // no river near, the size is 0.
