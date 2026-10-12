@@ -4,12 +4,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime};
 
 use eframe::egui::{self, Id, Modal, Sense, Vec2, vec2};
 
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Layout, pad};
-use crate::files::Files;
+use crate::files::{Availability, Files, Version};
 use crate::projects::{self, Entry, Locations};
 
 /// The edge of the picture of a project, in points.
@@ -50,6 +51,86 @@ pub enum Dialog {
         path: PathBuf,
         error: String,
     },
+    /// The versions of a file that two devices changed.
+    Versions {
+        path: PathBuf,
+        name: String,
+        /// The time of the version of this device.
+        modified: Option<SystemTime>,
+        others: Vec<Version>,
+    },
+}
+
+/// The title of the dialog with the versions of a file.
+pub const VERSIONS_TITLE: &str = "Pick a version";
+pub const VERSIONS_TEXT: &str =
+    "Two devices changed this world. Pick the version to keep. The other versions go away.";
+
+/// The name of the button that keeps a version.
+pub fn keep_name(device: &str, modified: Option<SystemTime>) -> String {
+    match modified {
+        Some(time) => format!("Keep {device}, {}", projects::time_text(time)),
+        None => format!("Keep {device}"),
+    }
+}
+
+/// The name of this device in the list of the versions.
+pub fn this_device(pad: bool) -> &'static str {
+    if pad { "this iPad" } else { "this computer" }
+}
+
+/// The buttons of the dialog with the versions: the name, and the version
+/// that the button keeps.
+pub fn version_buttons(
+    modified: Option<SystemTime>,
+    others: &[Version],
+    pad: bool,
+) -> Vec<(String, Option<usize>)> {
+    let mut buttons = vec![(keep_name(this_device(pad), modified), None)];
+    let other = |(index, version): (usize, &Version)| {
+        (keep_name(&version.device, version.modified), Some(index))
+    };
+    buttons.extend(others.iter().enumerate().map(other));
+    buttons
+}
+
+/// The line below the name of a project, and `true` if the line is a
+/// warning. `pad`: the device is an iPad.
+pub fn info_line(entry: &Entry, pad: bool, locations: bool) -> (String, bool) {
+    let (text, warning) = match (&entry.error, entry.availability) {
+        (Some(_), _) => return ("Cannot read the file".to_string(), true),
+        (None, Availability::InCloud) => ("Not downloaded".to_string(), false),
+        (None, Availability::Downloading) => ("Downloading…".to_string(), false),
+        (None, Availability::Here) if !entry.conflicts.is_empty() => {
+            (format!("{} versions", entry.conflicts.len() + 1), true)
+        }
+        (None, Availability::Here) => {
+            let date = entry.modified.map(projects::date_text);
+            (date.unwrap_or_default(), false)
+        }
+    };
+    let text = match (locations, text.is_empty()) {
+        (false, _) => text,
+        (true, true) => entry.location.label(pad).to_string(),
+        (true, false) => format!("{} · {text}", entry.location.label(pad)),
+    };
+    (text, warning)
+}
+
+/// Acts on a tap on a project that the app can read.
+pub fn open_entry(state: &mut AppState, entry: &Entry) {
+    if entry.availability != Availability::Here {
+        state.actions.push(Action::Download(entry.path.clone()));
+    } else if !entry.conflicts.is_empty() {
+        state.browser.dialog = Some(Dialog::Versions {
+            path: entry.path.clone(),
+            name: entry.name.clone(),
+            modified: entry.modified,
+            others: entry.conflicts.clone(),
+        });
+    } else {
+        state.actions.push(Action::OpenWorld(entry.path.clone()));
+    }
 }
 
 /// The open menu of the actions of one project, in the iPad layout.
@@ -68,6 +149,10 @@ pub struct BrowserState {
     /// The pictures of the entries that the screen showed.
     textures: HashMap<PathBuf, egui::TextureHandle>,
     pub dialog: Option<Dialog>,
+    /// The project that opens after its download.
+    pub pending: Option<PathBuf>,
+    /// The time of the last read of the folders while a download runs.
+    pub polled: Option<Instant>,
 }
 
 impl BrowserState {
@@ -208,23 +293,28 @@ fn card(ui: &mut egui::Ui, state: &mut AppState, entry: &Entry) {
             ui.painter().rect_stroke(rect, 8.0, stroke, kind);
         }
         if picture.clicked() {
-            state.actions.push(Action::OpenWorld(entry.path.clone()));
+            open_entry(state, entry);
         }
 
         ui.strong(&entry.name);
-        match (&entry.error, entry.modified) {
-            (Some(error), _) => {
-                let details = ui.link("Cannot read the file");
-                if details.clicked() {
+        let locations = state.projects.available().len() > 1;
+        let (line, warning) = info_line(entry, false, locations);
+        match &entry.error {
+            Some(error) => {
+                if ui.link(line).clicked() {
                     state
                         .browser
                         .show_problem(entry.path.clone(), error.clone());
                 }
-                details
             }
-            (None, Some(time)) => ui.weak(projects::date_text(time)),
-            (None, None) => ui.weak(""),
-        };
+            None if warning => {
+                ui.colored_label(ui.visuals().warn_fg_color, line);
+            }
+            None => {
+                ui.weak(line);
+            }
+        }
+        let readable = readable && entry.availability == Availability::Here;
         ui.horizontal(|ui| {
             ui.spacing_mut().button_padding.x = 6.0;
             let (path, name) = (entry.path.clone(), entry.name.clone());
@@ -270,6 +360,29 @@ pub fn dialogs(ui: &mut egui::Ui, state: &mut AppState) {
                         action = Some(Action::OpenWorld(path.clone()));
                     }
                 });
+            });
+            close |= modal.should_close();
+        }
+        Dialog::Versions {
+            path,
+            name,
+            modified,
+            others,
+        } => {
+            let modal = Modal::new(Id::new("project_versions")).show(&ctx, |ui| {
+                ui.set_width(360.0);
+                ui.heading(format!("{VERSIONS_TITLE}: {name}"));
+                ui.label(VERSIONS_TEXT);
+                ui.add_space(8.0);
+                for (text, keep) in version_buttons(*modified, others, false) {
+                    if ui.button(text).clicked() {
+                        action = Some(Action::KeepVersion(path.clone(), keep));
+                    }
+                }
+                ui.add_space(8.0);
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
             });
             close |= modal.should_close();
         }

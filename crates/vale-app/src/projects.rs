@@ -208,6 +208,12 @@ fn placeholder_target(path: &Path) -> Option<PathBuf> {
     (target.extension().is_some_and(|e| e == EXTENSION)).then_some(target)
 }
 
+/// The placeholder of iCloud Drive for a project file.
+fn placeholder_of(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    Some(path.with_file_name(format!(".{name}.{PLACEHOLDER}")))
+}
+
 /// The project files and the placeholders of a folder. A placeholder of a
 /// file that is in the folder is not in the list.
 fn project_paths(dir: &Path) -> Vec<PathBuf> {
@@ -410,6 +416,12 @@ pub fn copy(path: &Path) -> Result<PathBuf, StoreError> {
 
 /// Removes a project file. The file must not be open.
 pub fn delete(path: &Path) -> Result<(), StoreError> {
+    if !path.exists()
+        && let Some(placeholder) = placeholder_of(path).filter(|p| p.exists())
+    {
+        std::fs::remove_file(placeholder)?;
+        return Ok(());
+    }
     std::fs::remove_file(path)?;
     let mut journal = path.as_os_str().to_owned();
     journal.push("-journal");
@@ -434,6 +446,16 @@ pub fn date_text(time: SystemTime) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// The date and the time of a time as `YYYY-MM-DD HH:MM`, in UTC.
+pub fn time_text(time: SystemTime) -> String {
+    let secs = time
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+    let (hour, minute) = (secs / 3600 % 24, secs / 60 % 60);
+    format!("{} {hour:02}:{minute:02}", date_text(time))
 }
 
 /// The recent list of the folder: the paths of the projects that the app
@@ -514,6 +536,7 @@ mod tests {
         assert_eq!(date_text(at(951_782_400)), "2000-02-29");
         assert_eq!(date_text(at(1_791_763_199)), "2026-10-11");
         assert_eq!(date_text(at(1_791_763_200)), "2026-10-12");
+        assert_eq!(time_text(at(1_791_763_199)), "2026-10-11 23:59");
     }
 
     #[test]

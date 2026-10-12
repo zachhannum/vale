@@ -9,7 +9,7 @@ use vale_sphere::LonLat;
 use vale_store::{LayerId, Project, StoreError, World};
 
 use crate::document::Document;
-use crate::files::{Files, PlainFiles};
+use crate::files::{Availability, Files, PlainFiles};
 use crate::globe::import::ImportResult;
 use crate::globe::{Globe, Tool};
 use crate::headless;
@@ -53,7 +53,16 @@ pub enum Action {
     ShowProjects,
     /// Saves each change that waits.
     Save,
+    /// Gets this project file from iCloud Drive, and then opens its world.
+    Download(PathBuf),
+    /// Keeps one version of a project file that two devices changed. The
+    /// number is an index into the other versions. `None` keeps the version
+    /// of this device.
+    KeepVersion(PathBuf, Option<usize>),
 }
+
+/// The time between two reads of the projects folders while a download runs.
+pub const DOWNLOAD_POLL: Duration = Duration::from_secs(1);
 
 /// The state of the save of the open project.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -573,6 +582,35 @@ impl AppState {
         self.reload_projects();
     }
 
+    /// Reads the projects folders again while a download runs, one time
+    /// each second. It opens the world that waits for its download. Returns
+    /// `true` while a download runs.
+    pub fn poll_downloads(&mut self, now: Instant) -> bool {
+        let downloading = |entry: &projects::Entry| entry.availability == Availability::Downloading;
+        if self.browser.pending.is_none() && !self.browser.entries.iter().any(downloading) {
+            self.browser.polled = None;
+            return false;
+        }
+        let polled = self.browser.polled;
+        if polled.is_some_and(|at| now.duration_since(at) < DOWNLOAD_POLL) {
+            return true;
+        }
+        self.browser.polled = Some(now);
+        self.reload_projects();
+        if let Some(path) = self.browser.pending.clone() {
+            let entry = self.browser.entries.iter().find(|e| e.path == path);
+            match entry.map(|entry| entry.availability) {
+                Some(Availability::Here) => {
+                    self.browser.pending = None;
+                    self.actions.push(Action::OpenWorld(path));
+                }
+                Some(_) => {}
+                None => self.browser.pending = None,
+            }
+        }
+        true
+    }
+
     /// Reads the projects folders again.
     pub fn reload_projects(&mut self) {
         self.browser.reload(&self.projects, self.files.as_ref());
@@ -734,6 +772,19 @@ impl AppState {
             }
             Action::ShowProjects => self.show_projects(),
             Action::Save => self.save(Instant::now()),
+            Action::Download(path) => {
+                match self.files.start_download(&path) {
+                    Ok(()) => self.browser.pending = Some(path),
+                    Err(e) => self.status = format!("The download did not start: {e}"),
+                }
+                self.reload_projects();
+            }
+            Action::KeepVersion(path, keep) => {
+                if let Err(e) = self.files.resolve(&path, keep) {
+                    self.status = format!("The app did not keep the version: {e}");
+                }
+                self.reload_projects();
+            }
             Action::OpenDialog
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog
@@ -747,6 +798,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
     if state.screen == Screen::Browser {
+        if state.poll_downloads(Instant::now()) {
+            ui.ctx().request_repaint_after(DOWNLOAD_POLL);
+        }
         browser::draw(ui, state);
         state.frames += 1;
         return;
