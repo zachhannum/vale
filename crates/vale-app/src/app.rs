@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use eframe::egui;
 
-use crate::files::PickQueue;
+use crate::files::{ExportQueue, PickQueue};
 #[cfg(not(target_os = "ios"))]
 use crate::session::EXTENSION;
 use crate::session::Session;
@@ -20,6 +20,10 @@ struct ValeApp {
     closing: bool,
     /// The files that the file picker of the system gave.
     picked: PickQueue,
+    /// The ends of the hand-offs of export files to the Files app.
+    exports: ExportQueue,
+    /// The export file that the Files app shows.
+    sharing: Option<std::path::PathBuf>,
     #[cfg(target_os = "ios")]
     picker: Option<crate::files::uikit::Picker>,
     #[cfg(target_os = "ios")]
@@ -48,6 +52,32 @@ impl eframe::App for ValeApp {
             state.run_action(Action::ImportHeightmap(path));
         }
 
+        for event in self.exports.take() {
+            if let Some(path) = self.sharing.take() {
+                state.end_share(event, &path);
+            }
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let waits = if self.sharing.is_none() {
+                state.share.take()
+            } else {
+                None
+            };
+            if let Some(path) = waits {
+                match &self.picker {
+                    Some(picker) if picker.export_file(&path) => self.sharing = Some(path),
+                    // Another picker shows. A later frame asks again.
+                    Some(_) => {
+                        state.share = Some(path);
+                        let wait = std::time::Duration::from_millis(500);
+                        ui.ctx().request_repaint_after(wait);
+                    }
+                    None => state.end_share(crate::files::ExportEvent::Cancelled, &path),
+                }
+            }
+        }
+
         for action in std::mem::take(&mut state.actions) {
             match action {
                 #[cfg(target_os = "ios")]
@@ -56,9 +86,11 @@ impl eframe::App for ValeApp {
                         picker.pick_heightmap();
                     }
                 }
-                // The hand-off of the file to the Files app is not there yet.
+                // The export goes to a temporary file. The Files app moves it
+                // after the export is complete.
                 #[cfg(target_os = "ios")]
-                Action::ExportHeightmapDialog => {
+                Action::ExportHeightmapDialog if self.sharing.is_none() => {
+                    crate::files::clear_exports();
                     let path = crate::files::export_dir().join(state.export_name());
                     state.run_action(Action::ExportHeightmap(path));
                 }
@@ -185,6 +217,8 @@ pub fn run_window(
         smoke_frames,
         closing: false,
         picked: PickQueue::default(),
+        exports: ExportQueue::default(),
+        sharing: None,
         #[cfg(target_os = "ios")]
         picker: None,
         #[cfg(target_os = "ios")]
@@ -225,9 +259,10 @@ pub fn run_window(
                     app.state.borrow_mut().globe.pen.queue = Some(queue.clone());
                     crate::pen::uikit::install(handle.ui_view, cc.egui_ctx.clone(), queue);
                     let (picked, ctx) = (app.picked.clone(), cc.egui_ctx.clone());
+                    let exports = app.exports.clone();
                     app.picker = handle.ui_view_controller.and_then(|controller| {
-                        let wake = Box::new(move || ctx.request_repaint());
-                        crate::files::uikit::Picker::new(controller, picked, wake)
+                        let wake = move || ctx.request_repaint();
+                        crate::files::uikit::Picker::new(controller, picked, exports, wake)
                     });
                 }
                 let shared = app.state.clone();

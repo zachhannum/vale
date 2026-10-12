@@ -25,6 +25,7 @@ pub mod world;
 #[unsafe(no_mangle)]
 pub extern "C" fn vale_app_main() {
     // The layers of a file take the styles of the sample.
+    files::clear_exports();
     let result = ui::AppState::new(document::Document::sample()).and_then(|mut state| {
         state.file_buttons = false;
         state.share_exports = true;

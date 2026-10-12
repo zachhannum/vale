@@ -9,7 +9,8 @@ use vale_sphere::LonLat;
 use vale_store::{LayerId, Project, StoreError, World};
 
 use crate::document::Document;
-use crate::globe::import::ImportResult;
+use crate::files::ExportEvent;
+use crate::globe::import::{ImportResult, file_name};
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
@@ -715,6 +716,24 @@ impl AppState {
         };
         self.status = note.text.clone();
         self.export_note = Some(note);
+    }
+
+    /// Ends the hand-off of the export file `path` to the Files app. A
+    /// cancelled hand-off removes the file and the text of the export.
+    pub fn end_share(&mut self, event: ExportEvent, path: &Path) {
+        match event {
+            ExportEvent::Saved => {
+                let text = format!("Saved {} to Files", file_name(path));
+                self.status = text.clone();
+                let warning = false;
+                self.export_note = Some(Note { text, warning });
+            }
+            ExportEvent::Cancelled => {
+                let _ = std::fs::remove_file(path);
+                self.export_note = None;
+                self.status.clear();
+            }
+        }
     }
 
     /// The file name of an export of the heightmap, from the name of the

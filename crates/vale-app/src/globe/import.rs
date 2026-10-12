@@ -49,7 +49,7 @@ enum Msg {
 }
 
 /// The file name of a path, with the extension.
-pub(super) fn file_name(path: &Path) -> String {
+pub(crate) fn file_name(path: &Path) -> String {
     let name = path.file_name().unwrap_or(path.as_os_str());
     name.to_string_lossy().into_owned()
 }

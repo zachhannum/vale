@@ -5,8 +5,10 @@ use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 use vale_app::cli::{Args, export_heightmap};
 use vale_app::document::Document;
+use vale_app::files::ExportEvent;
 use vale_app::session::Session;
-use vale_app::ui::{Action, AppState};
+use vale_app::ui::panels::EXPORT_GEOTIFF;
+use vale_app::ui::{Action, AppState, Workspace, draw};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{EquirectGrid, Heightmap, Limits, Mode, Stamp};
 
@@ -241,4 +243,94 @@ fn the_export_file_has_the_name_of_the_world() {
     assert_eq!(name(""), "heightmap.tif");
     let dir: PathBuf = vale_app::files::export_dir();
     assert!(dir.ends_with("vale-export"));
+}
+
+#[test]
+fn the_end_of_the_hand_off_to_the_files_app_sets_the_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("Terra.tif");
+    let mut state = state();
+    state.share_exports = true;
+    let export = |state: &mut AppState| -> PathBuf {
+        state.run_action(Action::ExportHeightmap(out.clone()));
+        assert_eq!(
+            state.export_note.as_ref().unwrap().text,
+            "Exported Terra.tif (256 x 128)"
+        );
+        state.share.take().unwrap()
+    };
+
+    let path = export(&mut state);
+    state.end_share(ExportEvent::Saved, &path);
+    let note = state.export_note.clone().unwrap();
+    assert_eq!(note.text, "Saved Terra.tif to Files");
+    assert!(!note.warning);
+    assert_eq!(state.status, note.text);
+
+    // A cancelled hand-off leaves no file and no text.
+    let path = export(&mut state);
+    assert!(path.is_file());
+    state.end_share(ExportEvent::Cancelled, &path);
+    assert!(!path.exists());
+    assert_eq!(state.export_note, None);
+    assert_eq!(state.status, "");
+    assert!(state.can_export());
+}
+
+fn desktop(mut state: AppState) -> egui_kittest::Harness<'static, AppState> {
+    state.workspace = Workspace::Globe;
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(eframe::egui::vec2(1280.0, 800.0))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(2);
+    h
+}
+
+#[test]
+fn the_tool_bar_has_a_button_that_exports_the_heightmap() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    for file_buttons in [true, false] {
+        let mut state = state();
+        state.file_buttons = file_buttons;
+        let mut h = desktop(state);
+        let button = h.get_by_label(EXPORT_GEOTIFF);
+        assert!(!button.accesskit_node().is_disabled());
+        // The button is after the import button.
+        let import = h.get_by_label("Import heightmap…").rect();
+        assert!(button.rect().left() > import.right());
+        button.click();
+        h.run_steps(1);
+        let actions = &h.state().actions;
+        assert_eq!(actions, &[Action::ExportHeightmapDialog], "{file_buttons}");
+    }
+}
+
+#[test]
+fn the_export_button_is_off_for_a_world_with_no_raster_layer() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    let mut h = desktop(state);
+    let button = h.get_by_label(EXPORT_GEOTIFF);
+    assert!(button.accesskit_node().is_disabled());
+    button.click();
+    h.run_steps(1);
+    assert!(h.state().actions.is_empty());
+    assert!(
+        !h.get_by_label("Import heightmap…")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
+fn the_status_bar_shows_the_text_of_an_export() {
+    use egui_kittest::kittest::Queryable;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = desktop(state());
+    let out = dir.path().join("Terra.tif");
+    h.state_mut().run_action(Action::ExportHeightmap(out));
+    h.run_steps(2);
+    assert!(h.query_by_label("Exported Terra.tif (256 x 128)").is_some());
 }
