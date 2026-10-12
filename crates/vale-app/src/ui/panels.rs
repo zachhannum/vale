@@ -266,6 +266,7 @@ pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
                 brush_modes(ui, &mut state.globe.brush.mode);
                 ui.add_space(6.0);
                 brush_size(ui, state);
+                brush_limits(ui, state);
                 brush_settings(ui, state);
             });
         });
@@ -352,6 +353,26 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .suffix("°")
             .text("Angle");
         ui.add(angle);
+    }
+}
+
+/// The floor and the ceiling of the brush. Each one has a checkbox and an
+/// elevation.
+fn brush_limits(ui: &mut egui::Ui, state: &mut AppState) {
+    let brush = &mut state.globe.brush;
+    for (name, on, meters) in [
+        ("Floor", &mut brush.floor_on, &mut brush.floor_m),
+        ("Ceiling", &mut brush.ceiling_on, &mut brush.ceiling_m),
+    ] {
+        ui.horizontal(|ui| {
+            ui.checkbox(on, name);
+            let value = egui::DragValue::new(meters)
+                .speed(10.0)
+                .range(ELEV_MIN..=ELEV_MAX)
+                .fixed_decimals(0)
+                .suffix(" m");
+            ui.add_enabled(*on, value);
+        });
     }
 }
 

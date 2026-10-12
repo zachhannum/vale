@@ -78,7 +78,8 @@ pub fn card(
 }
 
 /// Makes a rectangle a control. `selected` is the state of a control that
-/// stays on. A control that is not enabled takes no touch.
+/// stays on. A control that is not enabled takes no touch. A control is not
+/// in the list while a scroll area cuts it to less than the touch size.
 fn hit(
     ui: &egui::Ui,
     controls: &mut Controls,
@@ -94,8 +95,11 @@ fn hit(
         Some(on) => egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name),
         None => egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name),
     });
+    let whole = rect;
     let rect = rect.intersect(ui.clip_rect());
-    if enabled && rect.is_positive() {
+    let cut = |whole: f32, part: f32| part < TOUCH.min(whole);
+    let cut = cut(whole.width(), rect.width()) || cut(whole.height(), rect.height());
+    if enabled && rect.is_positive() && !cut {
         controls.push(Control {
             name: name.to_owned(),
             rect,
@@ -295,7 +299,8 @@ pub fn vertical_slider(
 }
 
 /// A slider in a row of a panel: the name, the track, and the value.
-/// `label` is the name on screen. Returns true if the user moved it.
+/// `label` is the name on screen. Returns true if the user moved it. A drag
+/// that starts up or down scrolls the panel and does not move the slider.
 pub fn row_slider(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -318,8 +323,17 @@ pub fn row_slider(
     let left = rect.left() + 72.0 + THUMB / 2.0;
     let right = rect.right() - 56.0 - THUMB / 2.0;
     let before = *fraction;
-    if let Some(pos) = resp.interact_pointer_pos()
-        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
+    let scroll_id = resp.id.with("scroll");
+    if resp.drag_started() {
+        let pointer = ui.input(|i| i.pointer.press_origin().zip(i.pointer.interact_pos()));
+        let moved = pointer.map_or(egui::Vec2::ZERO, |(from, to)| to - from);
+        let scroll = moved.y.abs() > moved.x.abs();
+        ui.data_mut(|data| data.insert_temp(scroll_id, scroll));
+    }
+    if resp.dragged() && ui.data(|data| data.get_temp(scroll_id)) == Some(true) {
+        ui.scroll_with_delta(vec2(0.0, resp.drag_delta().y));
+    } else if let Some(pos) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked())
     {
         *fraction = f64::from((pos.x - left) / (right - left)).clamp(0.0, 1.0);
     }
@@ -334,6 +348,47 @@ pub fn row_slider(
     let at = pos2(rect.right(), y);
     painter.text(at, Align2::RIGHT_CENTER, value, theme::mono(), theme::MUTE);
     *fraction != before
+}
+
+/// The size of the track of a switch.
+const SWITCH: egui::Vec2 = vec2(50.0, 30.0);
+
+/// A switch in a row of a panel: the name at the left, and the track with
+/// its thumb at the right. `label` is the name on screen. A tap on the row
+/// changes `on`. Returns true if the user changed it.
+pub fn switch_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    on: &mut bool,
+) -> bool {
+    let size = vec2(ui.available_width(), PANEL_ROW);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(*on));
+    let changed = resp.clicked();
+    if changed {
+        *on = !*on;
+    }
+    let y = rect.center().y;
+    let track = Rect::from_min_size(pos2(rect.right() - SWITCH.x, y - SWITCH.y / 2.0), SWITCH);
+    let reach = (SWITCH.x - SWITCH.y) / 2.0;
+    let (color, x) = match *on {
+        true => (theme::ACCENT, track.center().x + reach),
+        false => (theme::raise(), track.center().x - reach),
+    };
+    let painter = ui.painter();
+    painter.rect_filled(track, SWITCH.y / 2.0, theme::track());
+    painter.rect_filled(track, SWITCH.y / 2.0, color);
+    painter.circle_filled(
+        pos2(x, y + 1.0),
+        THUMB / 2.0 + 1.0,
+        Color32::from_black_alpha(70),
+    );
+    painter.circle_filled(pos2(x, y), THUMB / 2.0, theme::TEXT);
+    let at = pos2(rect.left(), y);
+    painter.text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    changed
 }
 
 /// What the user did on the title row of a panel.
