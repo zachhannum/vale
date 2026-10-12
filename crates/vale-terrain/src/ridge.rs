@@ -1,0 +1,1208 @@
+//! The ocean ridge brush.
+//!
+//! The brush works on the whole line of a stroke. Each texel near the line
+//! gets a place: the distance along the line and the distance across it. The
+//! new level is a function of that place and of the level from before the
+//! stroke, so a texel takes the ridge one time for each stroke.
+
+use std::f64::consts::FRAC_PI_2;
+use std::ops::Range;
+
+use crate::cube::FACES;
+use crate::heightmap::{Limits, MAX_BRUSH_RADIUS, TexelRect, brush_rect, hash};
+use crate::math::{V3, add, angle, cross, dot, length, normalize, scale};
+
+/// The largest number of segments in one plan.
+pub const RIDGE_SEGMENTS: usize = 128;
+
+/// The distance between two points of the line that the app makes, as a part
+/// of the brush radius.
+pub const RIDGE_SPACING: f64 = 0.25;
+
+/// The largest number of new segments in one plan. The other segments of the
+/// plan are the ones near them.
+const NEW_SEGMENTS: usize = RIDGE_SEGMENTS / 2;
+
+/// The ridge changes no ground farther from the line than this number of
+/// brush radii.
+const REACH: f64 = 1.5;
+
+/// The cosine of the sharpest turn that has a miter. At a sharper turn, each
+/// of the two segments ends with a round cap.
+const SHARP_TURN: f64 = -0.5;
+
+/// The settings of an ocean ridge stroke.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ridge {
+    /// The brush radius as an angle, in radians. The rise ends at this
+    /// distance from the crest.
+    pub radius: f64,
+    /// The level of the crest.
+    pub crest: u16,
+    /// The mean length of a segment of the crest as an angle, in radians.
+    pub segment: f64,
+    /// The largest shift of a segment across the line as an angle, in
+    /// radians.
+    pub offset: f64,
+    /// The height of the fine ridges, in 16-bit steps.
+    pub roughness: f64,
+    /// The depth of the valley along the crest, in 16-bit steps.
+    pub valley: f64,
+    /// The seed of the pattern.
+    pub seed: u32,
+    pub limits: Limits,
+}
+
+/// One piece of the line between two points, as the shader gets it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RidgeSegment {
+    /// The normal of the great circle of the piece. It points to the left of
+    /// the direction of the line.
+    pub n: V3,
+    /// The distance along the line at the start of the piece, in radians.
+    pub u0: f64,
+    /// The normal of the plane that divides this piece from the piece before
+    /// it. It points along the line. At a cap, it is the tangent of the
+    /// piece.
+    pub m0: V3,
+    /// The length of the piece, in radians.
+    pub len: f64,
+    /// As `m0`, for the plane at the end of the piece.
+    pub m1: V3,
+    /// The flow at the start and at the end of the piece.
+    pub q0: f64,
+    pub q1: f64,
+    /// The piece has a round cap at its start.
+    pub first: bool,
+    /// The piece has a round cap at its end.
+    pub last: bool,
+}
+
+impl RidgeSegment {
+    /// The segment as 4 vectors of 4 numbers: `n` and `u0`, `m0` and `len`,
+    /// `m1` and `q0`, then `q1`, the caps, and 2 zeros. The caps are 1 for
+    /// `first` plus 2 for `last`.
+    pub fn to_f32(&self) -> [f32; 16] {
+        let caps = f64::from(u8::from(self.first) + 2 * u8::from(self.last));
+        let [n, m0, m1] = [self.n, self.m0, self.m1];
+        [
+            n[0], n[1], n[2], self.u0, m0[0], m0[1], m0[2], self.len, m1[0], m1[1], m1[2], self.q0,
+            self.q1, caps, 0.0, 0.0,
+        ]
+        .map(|v| v as f32)
+    }
+
+    /// The two ends of the piece.
+    fn ends(&self) -> (V3, V3) {
+        (
+            normalize(cross(self.m0, self.n)),
+            normalize(cross(self.m1, self.n)),
+        )
+    }
+}
+
+/// The place of a direction on the line of a stroke.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RidgePoint {
+    /// The distance along the line, in radians.
+    pub u: f64,
+    /// The distance across the line, in radians. It is positive on the left.
+    pub across: f64,
+    /// The distance past the end of the line, in radians. Along the line, it
+    /// is zero. On the outer side of a sharp turn, it grows with the distance
+    /// from the corner.
+    pub past: f64,
+    /// The flow, from 0 to 1.
+    pub flow: f64,
+}
+
+/// What a plan does with a texel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum RidgePlace {
+    /// The texel is not near the new part of the line. Its level stays.
+    Far,
+    /// The ridge does not reach the texel. It gets the level from before
+    /// the stroke.
+    Off,
+    On(RidgePoint),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LinePoint {
+    dir: V3,
+    flow: f64,
+    /// The distance along the line, in radians.
+    u: f64,
+}
+
+/// The line of one ocean ridge stroke.
+#[derive(Clone, Debug)]
+pub struct RidgeLine {
+    spec: Ridge,
+    face_size: usize,
+    points: Vec<LinePoint>,
+}
+
+/// The part of the heightmap that changes after new points of a line, and
+/// the segments that give the levels there.
+#[derive(Clone, Debug)]
+pub struct RidgePlan {
+    /// The settings, inside their limits.
+    pub ridge: Ridge,
+    /// The number of texels along one side of a face.
+    pub face_size: usize,
+    /// The rectangle of each face that holds the texels that can change.
+    pub rects: [Option<TexelRect>; FACES],
+    /// The new segments, the segment before them, and the nearest other
+    /// segments, in the order of the line. There are `RIDGE_SEGMENTS` at
+    /// most.
+    pub segments: Vec<RidgeSegment>,
+    /// The new segments and the segment before them, as a range of
+    /// `segments`. Only a texel closer to one of them than 1.5 brush radii
+    /// changes.
+    pub tail: Range<usize>,
+    /// The number of points of the line that the plan covers. If it is less
+    /// than the length of the line, make the next plan from it.
+    pub end: usize,
+}
+
+impl RidgeLine {
+    /// Starts a line with no points on a heightmap with `face_size` texels
+    /// along one side of a face. The settings go inside their limits.
+    pub fn new(spec: Ridge, face_size: usize) -> RidgeLine {
+        let step = FRAC_PI_2 / face_size as f64;
+        let radius = spec.radius.max(4.0 * step).min(MAX_BRUSH_RADIUS / REACH);
+        let spec = Ridge {
+            radius,
+            segment: spec.segment.max(10.0 * crack_half_width(radius, step)),
+            offset: spec.offset.clamp(0.0, 0.5 * radius),
+            roughness: spec.roughness.max(0.0),
+            valley: spec.valley.max(0.0),
+            ..spec
+        };
+        RidgeLine {
+            spec,
+            face_size,
+            points: Vec::new(),
+        }
+    }
+
+    /// The settings, inside their limits.
+    pub fn spec(&self) -> Ridge {
+        self.spec
+    }
+
+    /// Adds a point with a flow from 0 to 1. A point closer to the last
+    /// point than a quarter of a texel step is not added.
+    pub fn push(&mut self, dir: V3, flow: f64) {
+        let dir = normalize(dir);
+        let u = match self.points.last() {
+            Some(last) => {
+                let len = angle(last.dir, dir);
+                if len < 0.25 * FRAC_PI_2 / self.face_size as f64 {
+                    return;
+                }
+                last.u + len
+            }
+            None => 0.0,
+        };
+        let flow = flow.clamp(0.0, 1.0);
+        self.points.push(LinePoint { dir, flow, u });
+    }
+
+    /// The number of points.
+    pub fn len(&self) -> usize {
+        self.points.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+
+    fn normal(&self, j: usize) -> V3 {
+        normalize(cross(self.points[j].dir, self.points[j + 1].dir))
+    }
+
+    /// The segment from point `j` to the point after it.
+    fn segment(&self, j: usize) -> RidgeSegment {
+        let (a, b) = (self.points[j], self.points[j + 1]);
+        let n = self.normal(j);
+        // The direction of the line at each end.
+        let (t0, t1) = (cross(n, a.dir), cross(n, b.dir));
+        let before = j.checked_sub(1).map(|i| cross(self.normal(i), a.dir));
+        let after = (j + 2 < self.points.len()).then(|| cross(self.normal(j + 1), b.dir));
+        let (m0, first) = match before {
+            Some(t) if dot(t, t0) >= SHARP_TURN => (normalize(add(t, t0)), false),
+            _ => (t0, true),
+        };
+        let (m1, last) = match after {
+            Some(t) if dot(t1, t) >= SHARP_TURN => (normalize(add(t1, t)), false),
+            _ => (t1, true),
+        };
+        RidgeSegment {
+            n,
+            u0: a.u,
+            m0,
+            len: b.u - a.u,
+            m1,
+            q0: a.flow,
+            q1: b.flow,
+            first,
+            last,
+        }
+    }
+
+    /// The distance from a direction to the segment from point `j`, in
+    /// radians.
+    fn distance(&self, j: usize, p: V3) -> f64 {
+        let (a, b) = (self.points[j].dir, self.points[j + 1].dir);
+        let n = self.normal(j);
+        if dot(p, cross(n, a)) < 0.0 {
+            angle(p, a)
+        } else if dot(p, cross(n, b)) > 0.0 {
+            angle(p, b)
+        } else {
+            dot(p, n).clamp(-1.0, 1.0).asin().abs()
+        }
+    }
+
+    /// The plan for the points from `from` on. `from` is the number of
+    /// points that the plans before this one covered: zero, or the `end` of
+    /// the last plan. The segment before the new points is in the plan,
+    /// because a new point changes the end of that segment. A plan covers
+    /// half of `RIDGE_SEGMENTS` new segments at most.
+    pub fn plan(&self, from: usize) -> RidgePlan {
+        let n = self.face_size;
+        let radius = self.spec.radius;
+        let reach = REACH * radius;
+        let count = self.points.len().saturating_sub(1);
+        let start = from.saturating_sub(2).min(count);
+        let stop = (start + NEW_SEGMENTS).min(count);
+        // Places on the new part of the line, with no more than the spacing
+        // between two of them.
+        let mut samples = Vec::new();
+        for j in start..stop {
+            let (a, b) = (self.points[j], self.points[j + 1]);
+            let len = b.u - a.u;
+            let steps = (len / (RIDGE_SPACING * radius)).ceil().max(1.0) as usize;
+            let tangent = cross(self.normal(j), a.dir);
+            samples.extend((0..steps).map(|i| {
+                let (sin, cos) = (len * i as f64 / steps as f64).sin_cos();
+                add(scale(a.dir, cos), scale(tangent, sin))
+            }));
+        }
+        if stop > start {
+            samples.push(self.points[stop].dir);
+        }
+        let rects = std::array::from_fn(|face| {
+            let rects = samples.iter();
+            let rects = rects.filter_map(|&s| brush_rect(n, face, s, 1.02 * reach));
+            rects.reduce(TexelRect::union)
+        });
+        // The other segments near the new part, the nearest first.
+        let mut others: Vec<(f64, usize)> = (0..start)
+            .chain(stop..count)
+            .filter_map(|j| {
+                let distances = samples.iter().map(|&s| self.distance(j, s));
+                let nearest = distances.fold(f64::MAX, f64::min);
+                (nearest < 3.0 * reach).then_some((nearest, j))
+            })
+            .collect();
+        others.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        others.truncate(RIDGE_SEGMENTS - (stop - start));
+        let mut indices: Vec<usize> = others.into_iter().map(|(_, j)| j).collect();
+        indices.extend(start..stop);
+        indices.sort_unstable();
+        let tail = indices.iter().position(|&j| j == start).unwrap_or(0);
+        RidgePlan {
+            ridge: self.spec,
+            face_size: n,
+            rects,
+            segments: indices.into_iter().map(|j| self.segment(j)).collect(),
+            tail: tail..tail + (stop - start),
+            end: if stop < count {
+                stop + 1
+            } else {
+                self.points.len()
+            },
+        }
+    }
+}
+
+impl RidgePlan {
+    /// The texel step at the center of a face, in radians.
+    fn step(&self) -> f64 {
+        FRAC_PI_2 / self.face_size as f64
+    }
+
+    /// The place of a unit direction on the line. The segment with the
+    /// smallest distance to the direction gives the place. With two equal
+    /// distances, the first segment gives it.
+    pub(crate) fn place(&self, p: V3) -> RidgePlace {
+        let reach = REACH * self.ridge.radius;
+        let sin_reach = reach.sin();
+        let mut near = false;
+        let mut best = None;
+        let mut best_distance = reach;
+        for (i, s) in self.segments.iter().enumerate() {
+            let side = dot(p, s.n);
+            if side.abs() >= sin_reach {
+                continue;
+            }
+            let across = side.asin();
+            // The distance to the nearest point of the segment.
+            let (a, b) = s.ends();
+            let to = |end: V3| 2.0 * (0.5 * length(add(p, scale(end, -1.0)))).min(1.0).asin();
+            let nearest = if dot(p, cross(s.n, a)) < 0.0 {
+                to(a)
+            } else if dot(p, cross(s.n, b)) > 0.0 {
+                to(b)
+            } else {
+                across.abs()
+            };
+            if nearest >= reach {
+                continue;
+            }
+            near |= self.tail.contains(&i);
+            let (da, db) = (dot(p, s.m0), -dot(p, s.m1));
+            // The part of the segment before the direction, and the
+            // distance to the line. At a miter, the distance is the one to
+            // the great circle. At the reach, it becomes the distance to the
+            // corner, so the outer side of a turn has an end.
+            let (along, distance) = if s.first && da < 0.0 {
+                (0.0, nearest)
+            } else if s.last && db < 0.0 {
+                (1.0, nearest)
+            } else if da >= 0.0 && db >= 0.0 {
+                let along = if da + db > 0.0 { da / (da + db) } else { 0.0 };
+                (along, across.abs().max(nearest * nearest / reach))
+            } else {
+                continue;
+            };
+            if distance < best_distance {
+                best_distance = distance;
+                best = Some(RidgePoint {
+                    u: s.u0 + along * s.len,
+                    across,
+                    past: (distance * distance - across * across).max(0.0).sqrt(),
+                    flow: s.q0 + (s.q1 - s.q0) * along,
+                });
+            }
+        }
+        match best {
+            _ if !near => RidgePlace::Far,
+            Some(point) => RidgePlace::On(point),
+            None => RidgePlace::Off,
+        }
+    }
+
+    /// The level of a texel on the ridge. `start` is its level from before
+    /// the stroke.
+    pub(crate) fn level(&self, start: u16, at: RidgePoint) -> u16 {
+        let spec = &self.ridge;
+        let (r, t, seed) = (spec.radius, self.step(), spec.seed);
+        let old = f64::from(start);
+        // The crest has a boundary near each multiple of the segment length.
+        // `s` is the distance from the nearest boundary, and `k` is the
+        // number of the crest segment.
+        let half = crack_half_width(r, t);
+        let cell = (at.u / spec.segment + 0.5).floor();
+        let i = cell as i32 as u32;
+        let boundary = (cell + 0.6 * unit(hash(i, 0, 0, seed)) - 0.3) * spec.segment;
+        let s = at.u - boundary;
+        let k = if s < 0.0 { i.wrapping_sub(1) } else { i };
+        let shift_of = |k: u32| spec.offset * (2.0 * unit(hash(k, 1, 0, seed)) - 1.0);
+        let shift = mix(
+            shift_of(i.wrapping_sub(1)),
+            shift_of(i),
+            smoothstep(-half, half, s),
+        );
+        let crack_mask = 1.0 - smoothstep(0.0, half, s.abs());
+        // The distance from the crest of the segment and from the line.
+        let past2 = at.past * at.past;
+        let from_crest2 = (at.across - shift) * (at.across - shift) + past2;
+        let from_crest = from_crest2.sqrt();
+        let from_line = (at.across * at.across + past2).sqrt();
+        // A square root has a sharp point at zero. `round` makes it round,
+        // and the ratio keeps the end of the rise at the radius.
+        let e = 2.0 * t;
+        let round = |d2: f64| (d2 + e * e).sqrt() - e;
+        let w = (1.0 - (round(from_crest2) / round(r * r)).sqrt()).max(0.0);
+        let lift = (f64::from(spec.crest) - old).max(0.0);
+        // Ground at the crest level gets no fine ridges and no valley.
+        let low = (lift / (spec.roughness + spec.valley + 1.0)).min(1.0);
+        let rise = lift * w;
+        let valley_width = (0.08 * r).max(2.0 * t);
+        let valley = spec.valley * low * (1.0 - smoothstep(0.0, valley_width, from_crest));
+        // The fine ridges: a value at each multiple of `wavelength` from the
+        // crest, and a smooth change between two of them.
+        let wavelength = (0.08 * r).max(4.0 * t) * (1.0 + 0.5 * unit(hash(k, 2, 0, seed)));
+        let y = from_crest / wavelength;
+        let j = y.floor();
+        let f = y - j;
+        let value = |j: u32| unit(hash(j, k, 3, seed)) - 0.5;
+        let j = j as i32 as u32;
+        let wave = mix(value(j), value(j.wrapping_add(1)), f * f * (3.0 - 2.0 * f));
+        let fade = 1.0 - smoothstep(0.5, 0.9, from_crest / r);
+        let hills = spec.roughness * low * wave * fade * (1.0 - crack_mask);
+        let crack = 0.3 * lift * crack_mask * (1.0 - smoothstep(r, REACH * r, from_line));
+        let q = at.flow;
+        let new = old.max(old + q * (rise + hills - valley)) - q * crack;
+        let new = (new + 0.5).floor().clamp(0.0, 65535.0);
+        spec.limits.apply(old, new) as u16
+    }
+}
+
+/// Half of the width of a crack, in radians. A crack is 4 texel steps wide
+/// or more.
+fn crack_half_width(radius: f64, step: f64) -> f64 {
+    (0.06 * radius).max(2.0 * step)
+}
+
+/// A number from 0 to 1 from the low 24 bits of a hash. It is exact as a
+/// 32-bit number.
+fn unit(h: u32) -> f64 {
+    f64::from(h & 0xff_ffff) / f64::from(1u32 << 24)
+}
+
+fn mix(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t
+}
+
+fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::heightmap::Heightmap;
+    use crate::math::lonlat_to_dir;
+
+    const START: u16 = 10000;
+    const CREST: u16 = 30000;
+    /// The face size of the tests of the formula. The texel step is small,
+    /// so the round parts of the formula are small.
+    const FINE: usize = 4096;
+
+    fn spec() -> Ridge {
+        Ridge {
+            radius: 0.1,
+            crest: CREST,
+            segment: 0.1,
+            offset: 0.0,
+            roughness: 0.0,
+            valley: 0.0,
+            seed: 7,
+            limits: Limits::default(),
+        }
+    }
+
+    /// A plan with no segments, for the formula.
+    fn shape(spec: Ridge, n: usize) -> RidgePlan {
+        RidgeLine::new(spec, n).plan(0)
+    }
+
+    fn at(u: f64, across: f64) -> RidgePoint {
+        RidgePoint {
+            u,
+            across,
+            past: 0.0,
+            flow: 1.0,
+        }
+    }
+
+    fn level(plan: &RidgePlan, u: f64, across: f64) -> f64 {
+        f64::from(plan.level(START, at(u, across)))
+    }
+
+    /// The centers of the cracks from 0 to `len` along the line. A crack
+    /// lowers the ground near the reach on one side of the line or on the
+    /// two sides.
+    fn cracks(plan: &RidgePlan, len: f64) -> Vec<f64> {
+        let far = 1.45 * plan.ridge.radius;
+        let step = 0.25 * plan.step();
+        let mut centers = Vec::new();
+        let mut run: Option<f64> = None;
+        for i in 0..(len / step) as usize {
+            let u = i as f64 * step;
+            let low = level(plan, u, far).min(level(plan, u, -far)) < f64::from(START);
+            match (low, run) {
+                (true, None) => run = Some(u),
+                (false, Some(from)) => {
+                    // A crack that starts before the line has no center.
+                    if from > 0.0 {
+                        centers.push(0.5 * (from + u - step));
+                    }
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+        centers
+    }
+
+    /// Places in the middle part of each crest segment.
+    fn segment_places(plan: &RidgePlan, len: f64) -> Vec<(f64, f64)> {
+        let cracks = cracks(plan, len);
+        let pairs = cracks.windows(2);
+        pairs
+            .map(|w| (mix(w[0], w[1], 1.0 / 3.0), mix(w[0], w[1], 2.0 / 3.0)))
+            .collect()
+    }
+
+    #[test]
+    fn the_rise_follows_the_square_root_and_ends_at_the_radius() {
+        let plan = shape(spec(), FINE);
+        let (r, lift) = (plan.ridge.radius, f64::from(CREST - START));
+        let u = segment_places(&plan, 1.0)[0].0;
+        assert_eq!(level(&plan, u, 0.0), f64::from(CREST));
+        let mut last = f64::from(CREST);
+        for i in 1..=200 {
+            let across = r * f64::from(i) / 200.0;
+            for side in [-1.0, 1.0] {
+                let drop = (f64::from(CREST) - level(&plan, u, side * across)) / lift;
+                assert!((drop - (across / r).sqrt()).abs() < 0.05, "{i}: {drop}");
+            }
+            let new = level(&plan, u, across);
+            assert!(new <= last, "{i}");
+            last = new;
+        }
+        assert!(level(&plan, u, 0.97 * r) > f64::from(START));
+        for across in [r, 1.2 * r, -r, -1.49 * r] {
+            assert_eq!(level(&plan, u, across), f64::from(START), "{across}");
+        }
+    }
+
+    #[test]
+    fn the_flow_scales_the_rise() {
+        let plan = shape(spec(), FINE);
+        let u = segment_places(&plan, 1.0)[0].0;
+        let lift = f64::from(CREST - START);
+        for across in [0.0, 0.01, 0.03, 0.08] {
+            let rise = |flow: f64| {
+                let point = RidgePoint {
+                    flow,
+                    ..at(u, across)
+                };
+                f64::from(plan.level(START, point)) - f64::from(START)
+            };
+            assert!((rise(0.5) - 0.5 * rise(1.0)).abs() <= 1.0, "{across}");
+            assert_eq!(rise(0.0), 0.0);
+        }
+        let half = RidgePoint {
+            flow: 0.5,
+            ..at(u, 0.0)
+        };
+        assert_eq!(
+            f64::from(plan.level(START, half)),
+            f64::from(START) + 0.5 * lift
+        );
+    }
+
+    #[test]
+    fn the_ridge_gives_the_higher_of_the_ground_and_the_cross_section() {
+        let rough = Ridge {
+            offset: 0.03,
+            roughness: 2000.0,
+            valley: 3000.0,
+            ..spec()
+        };
+        let plan = shape(rough, FINE);
+        let r = plan.ridge.radius;
+        let places = segment_places(&plan, 3.0);
+        assert!(places.len() > 10);
+        let top = f64::from(CREST) + rough.roughness;
+        for i in 0..=600 {
+            let across = r * (f64::from(i) / 200.0 - 1.5);
+            // Ground at the crest level or above it does not change, also
+            // in a crack.
+            for u in [0.0, 0.31, 0.77, 1.9, places[3].0] {
+                for start in [CREST, CREST + 1, CREST + 5000] {
+                    assert_eq!(plan.level(start, at(u, across)), start, "{u} {across}");
+                }
+                assert!(level(&plan, u, across) <= top);
+            }
+            // Away from a crack, the ground does not go down.
+            for &(u, _) in &places {
+                assert!(level(&plan, u, across) >= f64::from(START), "{u} {across}");
+                // Ground a small distance below the crest does not go
+                // above the crest by the full height of the fine ridges.
+                let near = plan.level(CREST - 10, at(u, across));
+                assert!((CREST - 10..=CREST + 10).contains(&near), "{u} {across}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_segment_of_the_crest_has_its_own_shift() {
+        let stairs = Ridge {
+            offset: 0.04,
+            ..spec()
+        };
+        let plan = shape(stairs, FINE);
+        let (r, len) = (plan.ridge.radius, 100.0 * stairs.segment);
+        // The mean distance between two cracks is the segment length.
+        let cracks = cracks(&plan, len);
+        let mean = (cracks[cracks.len() - 1] - cracks[0]) / (cracks.len() - 1) as f64;
+        assert!((mean / stairs.segment - 1.0).abs() < 0.02, "{mean}");
+        for w in cracks.windows(2) {
+            assert!(w[1] - w[0] > 0.39 * stairs.segment);
+        }
+        // The place of the crest is the same along a segment, and it is no
+        // farther from the line than the offset.
+        let step = r / 500.0;
+        let crest_at = |u: f64| {
+            let places = (-500..=500).map(|i| f64::from(i) * step);
+            let highest = places.max_by(|a, b| level(&plan, u, *a).total_cmp(&level(&plan, u, *b)));
+            highest.unwrap()
+        };
+        let places = segment_places(&plan, len);
+        let shifts: Vec<f64> = places.iter().map(|&(u, _)| crest_at(u)).collect();
+        for (&(_, u), &shift) in places.iter().zip(&shifts) {
+            assert!(level(&plan, u, shift) > f64::from(CREST) - 300.0);
+            assert!((crest_at(u) - shift).abs() <= step);
+            assert!(shift.abs() <= stairs.offset + step, "{shift}");
+        }
+        let highest = shifts.iter().copied().fold(f64::MIN, f64::max);
+        let lowest = shifts.iter().copied().fold(f64::MAX, f64::min);
+        assert!(highest > 0.8 * stairs.offset && lowest < -0.8 * stairs.offset);
+        for w in shifts.windows(2) {
+            assert!((w[1] - w[0]).abs() > step);
+        }
+        // An offset above half of the radius has the effect of that half.
+        let wide = RidgeLine::new(
+            Ridge {
+                offset: 1.0,
+                ..spec()
+            },
+            FINE,
+        );
+        assert_eq!(wide.spec().offset, 0.5 * r);
+    }
+
+    #[test]
+    fn a_crack_is_at_each_boundary_and_continues_past_the_rise() {
+        let plan = shape(spec(), FINE);
+        let r = plan.ridge.radius;
+        let half = crack_half_width(r, plan.step());
+        let cracks = cracks(&plan, 2.0);
+        assert!(cracks.len() > 10);
+        for &u in &cracks {
+            for across in [0.0, 0.3 * r, -0.7 * r] {
+                let center = level(&plan, u, across);
+                assert!(
+                    center < level(&plan, u - 2.0 * half, across),
+                    "{u} {across}"
+                );
+                assert!(
+                    center < level(&plan, u + 2.0 * half, across),
+                    "{u} {across}"
+                );
+            }
+            for side in [-1.0, 1.0] {
+                assert!(level(&plan, u, side * 1.25 * r) < f64::from(START) - 100.0);
+                assert_eq!(level(&plan, u, side * 1.5 * r), f64::from(START));
+            }
+        }
+    }
+
+    #[test]
+    fn a_crack_is_4_texels_wide_at_a_small_radius() {
+        let step = FRAC_PI_2 / FINE as f64;
+        let small = Ridge {
+            radius: 20.0 * step,
+            segment: 0.0,
+            ..spec()
+        };
+        let plan = shape(small, FINE);
+        let across = 1.05 * plan.ridge.radius;
+        let fine = step / 32.0;
+        let mut widths = Vec::new();
+        let mut run = 0;
+        for i in 0..(200.0 * step / fine) as usize {
+            if level(&plan, i as f64 * fine, across) < f64::from(START) {
+                run += 1;
+            } else if run > 0 {
+                widths.push(f64::from(run) * fine / step);
+                run = 0;
+            }
+        }
+        assert!(widths.len() > 5);
+        // The outer part of each side is less than half a level deep.
+        // The first crack can start before the line.
+        for width in &widths[1..] {
+            assert!((3.9..=4.0).contains(width), "{widths:?}");
+        }
+    }
+
+    /// The change that the fine ridges make at places across a segment.
+    fn hills(rough: &RidgePlan, smooth: &RidgePlan, u: f64, places: &[f64]) -> Vec<f64> {
+        let hills = places.iter();
+        hills
+            .map(|&across| level(rough, u, across) - level(smooth, u, across))
+            .collect()
+    }
+
+    #[test]
+    fn fine_ridges_run_along_a_segment_and_break_at_a_crack() {
+        let rough = Ridge {
+            roughness: 2000.0,
+            ..spec()
+        };
+        let (rough, smooth) = (shape(rough, FINE), shape(spec(), FINE));
+        let r = rough.ridge.radius;
+        let inside: Vec<f64> = (-180..=180).map(|i| r * f64::from(i) / 200.0).collect();
+        let outside: Vec<f64> = (180..=300).map(|i| r * f64::from(i) / 200.0).collect();
+        let places = segment_places(&rough, 2.0);
+        let mut last = Vec::new();
+        for &(u0, u1) in &places {
+            let pattern = hills(&rough, &smooth, u0, &inside);
+            let highest = pattern.iter().copied().fold(f64::MIN, f64::max);
+            let lowest = pattern.iter().copied().fold(f64::MAX, f64::min);
+            assert!(highest - lowest > 200.0, "{u0}");
+            assert!(highest <= 1000.0 && lowest >= -1000.0, "{u0}");
+            assert!(pattern == hills(&rough, &smooth, u1, &inside), "{u0}");
+            assert!(pattern != last, "{u0}");
+            for hill in hills(&rough, &smooth, u0, &outside) {
+                assert_eq!(hill, 0.0);
+            }
+            last = pattern;
+        }
+        // A roughness of zero gives no fine ridges, and a crack has none.
+        for u in cracks(&rough, 2.0) {
+            let hills = hills(&rough, &smooth, u, &inside);
+            assert!(hills.iter().all(|h| h.abs() <= 2.0));
+        }
+    }
+
+    #[test]
+    fn a_fine_ridge_is_4_texels_wide_at_a_small_radius() {
+        let step = FRAC_PI_2 / FINE as f64;
+        let small = Ridge {
+            radius: 40.0 * step,
+            segment: 0.0,
+            roughness: 4000.0,
+            ..spec()
+        };
+        let (rough, smooth) = (
+            shape(small, FINE),
+            shape(
+                Ridge {
+                    roughness: 0.0,
+                    ..small
+                },
+                FINE,
+            ),
+        );
+        // The fine ridges have their full height up to half of the radius.
+        let fine = step / 32.0;
+        let places: Vec<f64> = (0..=640).map(|i| f64::from(i) * fine).collect();
+        let mut distances = Vec::new();
+        for (u, _) in segment_places(&rough, 2000.0 * step) {
+            let pattern = hills(&rough, &smooth, u, &places);
+            // The places where the pattern turns from up to down or back.
+            // A turn of less than 400 levels does not count.
+            let mut turns = Vec::new();
+            let (mut end, mut up) = (0, None);
+            for (i, &hill) in pattern.iter().enumerate() {
+                let change = hill - pattern[end];
+                match up {
+                    None if change.abs() > 400.0 => up = Some(change > 0.0),
+                    None => continue,
+                    Some(up) if (change > 0.0) == up => {}
+                    Some(now) if change.abs() > 400.0 => {
+                        turns.push(end);
+                        up = Some(!now);
+                    }
+                    Some(_) => continue,
+                }
+                end = i;
+            }
+            distances.extend(turns.windows(2).map(|w| (w[1] - w[0]) as f64 * fine / step));
+        }
+        assert!(distances.len() > 5);
+        assert!(distances.iter().all(|d| *d >= 3.9), "{distances:?}");
+    }
+
+    #[test]
+    fn the_valley_lowers_the_crest() {
+        let r = spec().radius;
+        let places: Vec<f64> = (-200..=200).map(|i| r * f64::from(i) / 200.0).collect();
+        let highest = |plan: &RidgePlan, u: f64| {
+            let levels = places.iter().map(|&across| level(plan, u, across));
+            levels.fold(f64::MIN, f64::max)
+        };
+        let none = shape(spec(), FINE);
+        let shallow = shape(
+            Ridge {
+                valley: 3000.0,
+                ..spec()
+            },
+            FINE,
+        );
+        let deep = shape(
+            Ridge {
+                valley: 8000.0,
+                ..spec()
+            },
+            FINE,
+        );
+        for (u, _) in segment_places(&none, 2.0) {
+            assert_eq!(level(&none, u, 0.0), f64::from(CREST));
+            assert_eq!(highest(&none, u), f64::from(CREST));
+            assert_eq!(level(&shallow, u, 0.0), f64::from(CREST) - 3000.0);
+            assert_eq!(level(&deep, u, 0.0), f64::from(CREST) - 8000.0);
+            // The sides of a deep valley are higher than its floor.
+            assert!(highest(&deep, u) > level(&deep, u, 0.0) + 1000.0);
+        }
+    }
+
+    #[test]
+    fn a_segment_goes_to_the_shader_as_16_numbers() {
+        let mut line = RidgeLine::new(spec(), 128);
+        for lon in [0.0, 3.0, 6.0] {
+            line.push(lonlat_to_dir(lon, 0.0), 0.5);
+        }
+        let plan = line.plan(0);
+        assert_eq!(
+            (plan.segments.len(), plan.tail.clone(), plan.end),
+            (2, 0..2, 3)
+        );
+        let (first, second) = (plan.segments[0], plan.segments[1]);
+        assert!(first.first && !first.last && !second.first && second.last);
+        let len = 3f64.to_radians() as f32;
+        let numbers = second.to_f32();
+        assert!((numbers[2] - 1.0).abs() < 1e-6 && (numbers[3] - len).abs() < 1e-6);
+        assert!((numbers[7] - len).abs() < 1e-6);
+        assert_eq!(numbers[11..], [0.5, 0.5, 2.0, 0.0, 0.0]);
+        assert_eq!(first.to_f32()[13], 1.0);
+        // The plane at the shared point is the same for the two segments.
+        assert!(length(add(first.m1, scale(second.m0, -1.0))) < 1e-12);
+    }
+
+    fn on(plan: &RidgePlan, p: V3) -> RidgePoint {
+        match plan.place(p) {
+            RidgePlace::On(point) => point,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_place_has_the_distances_along_and_across_the_line() {
+        let mut line = RidgeLine::new(spec(), 128);
+        for i in 0..=10 {
+            line.push(lonlat_to_dir(3.0 * f64::from(i), 0.0), f64::from(i) / 10.0);
+        }
+        // A point with no distance from the last point is not added.
+        line.push(lonlat_to_dir(30.0, 0.0), 1.0);
+        assert_eq!(line.len(), 11);
+        let plan = line.plan(0);
+        let point = on(&plan, lonlat_to_dir(10.0, 3.0));
+        assert!((point.u - 10f64.to_radians()).abs() < 1e-4, "{point:?}");
+        assert!((point.across - 3f64.to_radians()).abs() < 1e-12);
+        assert!((point.flow - 1.0 / 3.0).abs() < 1e-3);
+        assert_eq!(point.past, 0.0);
+        // The left of the line is positive.
+        assert!(on(&plan, lonlat_to_dir(20.0, -2.0)).across < 0.0);
+        // Past an end, the place is the end.
+        for (lon, lat, u) in [(-2.0, 1.0, 0.0), (33.0, -1.0, 30f64.to_radians())] {
+            let p = lonlat_to_dir(lon, lat);
+            let point = on(&plan, p);
+            let end = lonlat_to_dir(if u == 0.0 { 0.0 } else { 30.0 }, 0.0);
+            assert!((point.u - u).abs() < 1e-12);
+            assert!((point.across - lat.to_radians()).abs() < 1e-12);
+            assert!((point.across.hypot(point.past) - angle(p, end)).abs() < 1e-9);
+        }
+        assert_eq!(plan.place(lonlat_to_dir(10.0, 9.0)), RidgePlace::Far);
+        assert_eq!(plan.place(lonlat_to_dir(-9.0, 0.0)), RidgePlace::Far);
+        // The plan of the last point changes no texel at the start.
+        let last = line.plan(10);
+        assert_eq!((last.segments.len(), last.tail.clone()), (10, 8..10));
+        assert_eq!(last.place(lonlat_to_dir(10.0, 3.0)), RidgePlace::Far);
+        assert_eq!(
+            on(&last, lonlat_to_dir(29.0, 3.0)),
+            on(&plan, lonlat_to_dir(29.0, 3.0))
+        );
+    }
+
+    #[test]
+    fn a_place_has_no_step_at_a_turn_and_at_an_end() {
+        // The line turns by 60 degrees at the middle point.
+        let corner = lonlat_to_dir(0.0, 0.0);
+        let mut line = RidgeLine::new(spec(), 128);
+        let dirs = path(&[(-9.0, 0.0), (0.0, 0.0), (4.5, 7.8)], 0.05);
+        for &dir in &dirs {
+            line.push(dir, 1.0);
+        }
+        let plan = line.plan(0);
+        for center in [corner, dirs[0], dirs[dirs.len() - 1]] {
+            let e1 = normalize(cross(center, [0.0, 0.0, 1.0]));
+            let e2 = cross(center, e1);
+            let around = |i: usize| {
+                let (sin, cos) = (i as f64 / 720.0 * std::f64::consts::TAU).sin_cos();
+                let side = add(scale(e1, cos), scale(e2, sin));
+                on(&plan, normalize(add(center, scale(side, 0.05))))
+            };
+            for i in 0..720 {
+                let (a, b) = (around(i), around(i + 1));
+                let distance = |p: RidgePoint| p.across.hypot(p.past);
+                assert!((a.u - b.u).abs() < 3e-3, "{i}: {a:?} {b:?}");
+                assert!((a.across - b.across).abs() < 1e-3, "{i}: {a:?} {b:?}");
+                assert!((distance(a) - distance(b)).abs() < 1e-3, "{i}: {a:?} {b:?}");
+            }
+        }
+    }
+
+    /// Points along the great circles between places, each in degrees of
+    /// longitude and latitude, with `spacing` radians between two points.
+    fn path(places: &[(f64, f64)], spacing: f64) -> Vec<V3> {
+        let mut dirs = vec![lonlat_to_dir(places[0].0, places[0].1)];
+        for w in places.windows(2) {
+            let (a, b) = (lonlat_to_dir(w[0].0, w[0].1), lonlat_to_dir(w[1].0, w[1].1));
+            let steps = (angle(a, b) / spacing).ceil() as usize;
+            let tangent = cross(normalize(cross(a, b)), a);
+            dirs.extend((1..=steps).map(|i| {
+                let (sin, cos) = (angle(a, b) * i as f64 / steps as f64).sin_cos();
+                add(scale(a, cos), scale(tangent, sin))
+            }));
+        }
+        dirs
+    }
+
+    /// Ground with slopes below the crest level.
+    fn ground(n: usize) -> Heightmap {
+        let mut map = Heightmap::new(n, 0);
+        let face = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: n,
+            y1: n,
+        };
+        for f in 0..FACES {
+            let levels: Vec<u16> = (0..n * n)
+                .map(|i| {
+                    let d = map.texel_dir(f, i % n, i / n);
+                    let level = 3000.0 * (9.0 * d[0] + 4.0 * d[1]).sin() * (7.0 * d[2]).cos();
+                    (f64::from(START) + level) as u16
+                })
+                .collect();
+            map.store_rect(f, face, &levels);
+        }
+        map
+    }
+
+    fn levels(map: &Heightmap) -> Vec<u16> {
+        let n = map.face_size();
+        let mut out = Vec::new();
+        for face in 0..FACES {
+            let rect = TexelRect {
+                x0: 0,
+                y0: 0,
+                x1: n,
+                y1: n,
+            };
+            map.read_rect(face, rect, &mut out);
+        }
+        out
+    }
+
+    /// Starts a stroke and lays a ridge point by point, as the app does.
+    /// The flow changes along the line.
+    fn lay(map: &mut Heightmap, spec: Ridge, dirs: &[V3]) -> RidgeLine {
+        let mut line = RidgeLine::new(spec, map.face_size());
+        map.begin_stroke();
+        for (i, &dir) in dirs.iter().enumerate() {
+            let from = line.len();
+            line.push(dir, 0.6 + 0.4 * (i as f64 * 0.3).sin());
+            map.ridge(&line.plan(from));
+        }
+        line
+    }
+
+    /// The levels after a stroke, from the place of each texel on the full
+    /// line.
+    fn expected(start: &Heightmap, line: &RidgeLine) -> Vec<u16> {
+        let n = start.face_size();
+        let plan = line.plan(0);
+        assert_eq!(plan.end, line.len());
+        let mut out = levels(start);
+        for (i, level) in out.iter_mut().enumerate() {
+            let p = start.texel_dir(i / (n * n), i % n, i / n % n);
+            if let RidgePlace::On(point) = plan.place(p) {
+                *level = plan.level(*level, point);
+            }
+        }
+        out
+    }
+
+    fn full() -> Ridge {
+        Ridge {
+            offset: 0.04,
+            roughness: 1500.0,
+            valley: 1000.0,
+            segment: 0.08,
+            ..spec()
+        }
+    }
+
+    /// Strokes that cross their own line, turn back, and go over a face
+    /// edge, a cube corner, and a pole.
+    fn strokes() -> Vec<(&'static str, Vec<V3>)> {
+        let spacing = RIDGE_SPACING * spec().radius;
+        let stroke = |places: &[(f64, f64)]| path(places, spacing);
+        vec![
+            (
+                "cross",
+                stroke(&[(-10.0, -5.0), (10.0, 5.0), (10.0, -5.0), (-10.0, 5.0)]),
+            ),
+            ("turn", stroke(&[(-10.0, 0.0), (10.0, 0.0), (-10.0, 3.0)])),
+            ("back", stroke(&[(-10.0, 20.0), (5.0, 20.0), (-10.0, 20.0)])),
+            (
+                "curve",
+                stroke(&[(100.0, -9.0), (108.0, -4.0), (112.0, 4.0), (110.0, 14.0)]),
+            ),
+            ("face edge", stroke(&[(36.0, -6.0), (54.0, 10.0)])),
+            ("cube corner", stroke(&[(36.0, 28.0), (54.0, 42.0)])),
+            ("pole", stroke(&[(20.0, 80.0), (200.0, 80.0)])),
+        ]
+    }
+
+    #[test]
+    fn a_stroke_in_steps_gives_the_levels_of_the_full_line() {
+        let n = 128;
+        let start = ground(n);
+        for (name, dirs) in strokes() {
+            let mut map = ground(n);
+            let line = lay(&mut map, full(), &dirs);
+            assert!(line.len() > 10 && line.len() <= RIDGE_SEGMENTS, "{name}");
+            let after = levels(&map);
+            let want = expected(&start, &line);
+            let before = levels(&start);
+            let wrong: Vec<_> = (0..after.len())
+                .filter(|&i| after[i] != want[i])
+                .map(|i| (i / (n * n), i % n, i / n % n, before[i], after[i], want[i]))
+                .collect();
+            assert!(
+                wrong.is_empty(),
+                "{name}: {} {:?}",
+                wrong.len(),
+                &wrong[..wrong.len().min(12)]
+            );
+            assert!(after != levels(&start), "{name}");
+            // No texel is above the crest by more than the fine ridges.
+            let top = f64::from(CREST) + full().roughness;
+            assert!(after.iter().all(|l| f64::from(*l) <= top), "{name}");
+            // A second pass over the line changes nothing.
+            assert_eq!(map.ridge(&line.plan(0)), 0, "{name}");
+            for from in [1, line.len() / 2, line.len()] {
+                assert_eq!(map.ridge(&line.plan(from)), 0, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_line_goes_in_more_than_one_plan() {
+        let n = 128;
+        let dirs = path(
+            &[(-60.0, -20.0), (0.0, 20.0), (60.0, -20.0), (120.0, 20.0)],
+            0.01,
+        );
+        let mut in_steps = ground(n);
+        let line = lay(&mut in_steps, full(), &dirs);
+        assert!(line.len() > 2 * RIDGE_SEGMENTS);
+        let mut in_plans = ground(n);
+        in_plans.begin_stroke();
+        let (mut from, mut plans) = (0, 0);
+        while from < line.len() {
+            let plan = line.plan(from);
+            assert!(plan.segments.len() <= RIDGE_SEGMENTS && plan.end > from);
+            in_plans.ridge(&plan);
+            from = plan.end;
+            plans += 1;
+        }
+        assert!(plans >= 3);
+        assert!(levels(&in_steps) == levels(&in_plans));
+    }
+
+    #[test]
+    fn the_ground_far_from_the_line_does_not_change() {
+        let n = 128;
+        let wide = Ridge {
+            offset: 1.0,
+            ..full()
+        };
+        for (name, dirs) in strokes() {
+            let (start, mut map) = (ground(n), ground(n));
+            let line = lay(&mut map, wide, &dirs);
+            let reach = REACH * line.spec().radius;
+            let (before, after) = (levels(&start), levels(&map));
+            let mut farthest: f64 = 0.0;
+            for i in (0..after.len()).filter(|&i| after[i] != before[i]) {
+                let p = map.texel_dir(i / (n * n), i % n, i / n % n);
+                let distances = (0..line.len() - 1).map(|j| line.distance(j, p));
+                farthest = farthest.max(distances.fold(f64::MAX, f64::min));
+            }
+            assert!(farthest < reach, "{name}: {farthest}");
+            assert!(farthest > 0.8 * reach, "{name}: {farthest}");
+        }
+    }
+
+    #[test]
+    fn the_seed_sets_the_pattern() {
+        let dirs = path(&[(-10.0, -5.0), (10.0, 5.0)], 0.025);
+        let laid = |seed: u32| {
+            let mut map = ground(128);
+            lay(&mut map, Ridge { seed, ..full() }, &dirs);
+            levels(&map)
+        };
+        assert!(laid(7) == laid(7));
+        assert!(laid(7) != laid(8));
+    }
+
+    #[test]
+    fn the_floor_and_the_ceiling_apply_to_a_ridge() {
+        let dirs = path(&[(-10.0, -5.0), (10.0, 5.0)], 0.025);
+        let laid = |limits: Limits| {
+            let mut map = Heightmap::new(128, START);
+            lay(&mut map, Ridge { limits, ..full() }, &dirs);
+            levels(&map)
+        };
+        let free = laid(Limits::default());
+        assert!(free.iter().any(|l| *l < START) && free.iter().any(|l| *l > 25000));
+        let floor = laid(Limits {
+            floor: START,
+            ceiling: 65535,
+        });
+        assert!(floor.iter().all(|l| *l >= START));
+        assert!(floor.iter().zip(&free).all(|(a, b)| a == b || *b < START));
+        let ceiling = laid(Limits {
+            floor: 0,
+            ceiling: 20000,
+        });
+        assert_eq!(ceiling.iter().max(), Some(&20000));
+        assert!(ceiling.iter().zip(&free).all(|(a, b)| a == b || *b > 20000));
+    }
+
+    #[test]
+    fn one_undo_step_puts_back_the_ground_from_before_a_ridge() {
+        let dirs = path(&[(30.0, -5.0), (60.0, 5.0)], 0.025);
+        let mut map = ground(128);
+        let before = levels(&map);
+        lay(&mut map, full(), &dirs);
+        assert!(map.end_stroke());
+        let after = levels(&map);
+        assert!(after != before);
+        assert!(map.undo());
+        assert!(levels(&map) == before);
+        assert!(!map.can_undo());
+        assert!(map.redo());
+        assert!(levels(&map) == after);
+        // A cancelled stroke also puts back the ground.
+        let mut map = ground(128);
+        lay(&mut map, full(), &dirs);
+        map.cancel_stroke();
+        assert!(levels(&map) == before);
+    }
+}
