@@ -51,6 +51,48 @@ pub enum Mode {
     Warp,
 }
 
+/// The elevation limits of a stamp, in 16-bit steps. A change does not move
+/// a texel across a limit. A texel past a limit can move toward it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// A texel above this level does not go below it. A texel at or below it
+    /// does not go down.
+    pub floor: u16,
+    /// A texel below this level does not go above it. A texel at or above it
+    /// does not go up.
+    pub ceiling: u16,
+}
+
+impl Default for Limits {
+    /// Limits with no effect.
+    fn default() -> Limits {
+        Limits {
+            floor: 0,
+            ceiling: 65535,
+        }
+    }
+}
+
+impl Limits {
+    /// The level of a texel after a change from `old` to `new`.
+    pub fn apply(self, old: f64, new: f64) -> f64 {
+        if new < old {
+            new.max(old.min(f64::from(self.floor)))
+        } else {
+            new.min(old.max(f64::from(self.ceiling)))
+        }
+    }
+
+    /// The largest number of levels that one pair of a weather stamp moves
+    /// from a texel at `high` to a texel at `low`. A texel is in 4 pairs at
+    /// most, so the sum of its moves does not cross a limit.
+    fn pair_room(self, high: f64, low: f64) -> f64 {
+        let down = (high - f64::from(self.floor)).max(0.0);
+        let up = (f64::from(self.ceiling) - low).max(0.0);
+        (down.min(up) * 0.25).floor()
+    }
+}
+
 /// One touch of the brush on the sphere.
 #[derive(Clone, Copy, Debug)]
 pub struct Stamp {
@@ -76,6 +118,7 @@ pub struct Stamp {
     pub scale: f64,
     /// The seed of the noise of the warp mode.
     pub seed: u32,
+    pub limits: Limits,
 }
 
 /// The offset of the warp mode is zero at this number of texel steps from
@@ -894,7 +937,8 @@ impl Heightmap {
                                 old + (mean - old) * amount.min(1.0)
                             }
                         };
-                        let new = new.round().clamp(0.0, 65535.0) as u16;
+                        let new = new.round().clamp(0.0, 65535.0);
+                        let new = stamp.limits.apply(old, new) as u16;
                         if new == old_level {
                             continue;
                         }
@@ -912,10 +956,12 @@ impl Heightmap {
 
     /// Lowers the texels by the drops of one step of the erode brush. A texel
     /// takes the drops of the 4 cells around it, in the ratio of its
-    /// distances to their centers. The lowest level is 0. Returns the number
-    /// of texels that changed.
+    /// distances to their centers. The lowest level is 0. A texel above the
+    /// floor of the step does not go below it, and a texel at or below the
+    /// floor stays. Returns the number of texels that changed.
     pub fn erode(&mut self, step: &ErodeStep) -> usize {
         let (t, base, n) = (self.tile, self.base, self.n);
+        let floor = step.limits().floor;
         let mut changed = 0;
         for (face, rect) in step.rects().into_iter().enumerate() {
             let Some(rect) = rect else { continue };
@@ -934,7 +980,7 @@ impl Heightmap {
                             }
                             let offset = (y - ty * t) * t + (x - tx * t);
                             let old = tile.as_ref().map_or(base, |tile| tile[offset]);
-                            let new = (f64::from(old) - drop).max(0.0) as u16;
+                            let new = (f64::from(old) - drop).max(f64::from(old.min(floor))) as u16;
                             if new == old {
                                 continue;
                             }
@@ -958,7 +1004,9 @@ impl Heightmap {
     /// Applies one weather stamp to one face. Each pair of texels that are
     /// side by side in the rectangle moves a whole number of levels from the
     /// higher texel to the lower one. All pairs read the levels from before
-    /// the stamp. No ground moves across a face edge.
+    /// the stamp. No ground moves across a face edge. A pair moves a quarter
+    /// at most of the room from the higher texel down to the floor, and of
+    /// the room from the lower texel up to the ceiling.
     fn weather_face(&mut self, face: usize, rect: TexelRect, stamp: &Stamp) -> usize {
         let falloff = Falloff::new(face, stamp);
         let (w, h) = (rect.x1 - rect.x0, rect.y1 - rect.y0);
@@ -993,11 +1041,12 @@ impl Heightmap {
                     if weight <= 0.0 {
                         continue;
                     }
-                    let other = old[(y * w + x).wrapping_add_signed(step)];
-                    let drop = level - f64::from(other);
+                    let other = f64::from(old[(y * w + x).wrapping_add_signed(step)]);
+                    let drop = level - other;
                     let over = drop.abs() - stamp.talus;
                     if over > 0.0 {
-                        new -= drop.signum() * (weight * over * 0.125).floor();
+                        let room = stamp.limits.pair_room(level.max(other), level.min(other));
+                        new -= drop.signum() * (weight * over * 0.125).floor().min(room);
                     }
                 }
                 // A texel loses at most half of each drop, so the new level
@@ -1035,10 +1084,12 @@ impl Heightmap {
             for x in rect.x0..rect.x1 {
                 let p = self.texel_dir(face, x, y);
                 let offset = warp_offset(stamp, self.n, p);
+                let old = self.texel(face, x, y);
                 levels.push(if offset == [0.0; 3] {
-                    self.texel(face, x, y)
+                    old
                 } else {
-                    self.level_between(normalize(add(p, offset)), true).round() as u16
+                    let new = self.level_between(normalize(add(p, offset)), true).round();
+                    stamp.limits.apply(f64::from(old), new) as u16
                 });
             }
         }
@@ -1246,6 +1297,7 @@ mod tests {
             talus: 0.0,
             scale: 0.1,
             seed: 1,
+            limits: Limits::default(),
         }
     }
 
@@ -2759,6 +2811,199 @@ mod tests {
         for face in [0, 2, 4] {
             for m in [236, 243, 249] {
                 assert_no_seam(&map, face, m);
+            }
+        }
+    }
+
+    /// Smooth ground with a different bump on each texel, so each mode moves
+    /// each texel under the brush.
+    fn bumpy_ground(n: usize) -> Heightmap {
+        ground(n, |face, x, y, d| {
+            let bump = hash(face as u32, x as u32, y as u32, 3) >> 20;
+            (smooth_level(d) + f64::from(bump)).round() as u16
+        })
+    }
+
+    /// The levels of bumpy ground before and after 3 stamps of a mode at a
+    /// cube corner. `limits` gets the level at the brush center and gives
+    /// the limits of the stamps.
+    fn limited_run(
+        mode: Mode,
+        level: u16,
+        limits: impl Fn(u16) -> Limits,
+    ) -> (Limits, Vec<u16>, Vec<u16>) {
+        let mut map = bumpy_ground(64);
+        let center = lonlat_to_dir(44.0, 34.0);
+        let limits = limits(map.sample(center));
+        let stamp = match mode {
+            Mode::Weather => weather(center, 0.25, 20.0),
+            Mode::Warp => warp_stamp(center, 0.25),
+            _ => raise(center, 0.25),
+        };
+        let stamp = Stamp {
+            mode,
+            level,
+            limits,
+            ..stamp
+        };
+        let before = all_levels(&map);
+        for _ in 0..3 {
+            map.stamp(&stamp);
+        }
+        (limits, before, all_levels(&map))
+    }
+
+    /// Asserts that no texel went from above the floor to below it, and that
+    /// no texel at or below the floor went down. The ceiling has the same
+    /// rule for the other direction.
+    fn assert_inside(limits: Limits, before: &[u16], after: &[u16], name: &str) {
+        for (new, old) in after.iter().zip(before) {
+            assert!(*new >= (*old).min(limits.floor), "{name}: {old} {new}");
+            assert!(*new <= (*old).max(limits.ceiling), "{name}: {old} {new}");
+        }
+    }
+
+    /// Asserts that the limits of a run of `limited_run` hold and that they
+    /// change its result.
+    fn assert_limits_bind(mode: Mode, level: u16, limits: impl Fn(u16) -> Limits) {
+        let name = format!("{mode:?}");
+        let (limits, before, after) = limited_run(mode, level, limits);
+        assert_inside(limits, &before, &after, &name);
+        assert_ne!(after, before, "{name}");
+        let (_, _, free) = limited_run(mode, level, |_| Limits::default());
+        assert_ne!(after, free, "{name}");
+    }
+
+    #[test]
+    fn a_floor_stops_each_mode_that_lowers() {
+        let modes = [
+            Mode::Lower,
+            Mode::Smooth,
+            Mode::Flatten,
+            Mode::Weather,
+            Mode::Warp,
+        ];
+        for mode in modes {
+            // The flatten mode goes down to level 0.
+            assert_limits_bind(mode, 0, |floor| Limits {
+                floor,
+                ..Limits::default()
+            });
+        }
+
+        let limits = Limits {
+            floor: meters_to_level(SEA_LEVEL) + 500,
+            ..Limits::default()
+        };
+        let mut map = valley();
+        let before = face_levels(&map);
+        // The river is about 1300 steps above the sea at this place.
+        for _ in 0..5 {
+            map.stamp(&Stamp {
+                limits,
+                ..carve(-28.0, RIVER_LAT, 0.05)
+            });
+        }
+        let after = face_levels(&map);
+        assert_inside(limits, &before, &after, "Carve");
+        let at = place(&map, -28.0, RIVER_LAT);
+        assert!(before[at] > limits.floor + 500);
+        assert_eq!(after[at], limits.floor);
+    }
+
+    #[test]
+    fn a_ceiling_stops_each_mode_that_raises() {
+        let modes = [
+            Mode::Raise,
+            Mode::Uplift,
+            Mode::Ridge,
+            Mode::Smooth,
+            Mode::Flatten,
+            Mode::Weather,
+            Mode::Warp,
+        ];
+        for mode in modes {
+            // The flatten mode goes up to the highest level.
+            assert_limits_bind(mode, 65535, |ceiling| Limits {
+                ceiling,
+                ..Limits::default()
+            });
+        }
+    }
+
+    #[test]
+    fn ground_past_a_limit_can_come_back() {
+        let center = lonlat_to_dir(10.0, 5.0);
+        let moved = |mode: Mode, limits: Limits| {
+            let mut map = Heightmap::new(64, 20_000);
+            map.stamp(&Stamp {
+                mode,
+                limits,
+                ..raise(center, 0.1)
+            });
+            map.sample(center)
+        };
+        let floor = Limits {
+            floor: 30_000,
+            ..Limits::default()
+        };
+        assert_eq!(moved(Mode::Raise, floor), 21_000);
+        assert_eq!(moved(Mode::Lower, floor), 20_000);
+        let ceiling = Limits {
+            ceiling: 10_000,
+            ..Limits::default()
+        };
+        assert_eq!(moved(Mode::Lower, ceiling), 19_000);
+        assert_eq!(moved(Mode::Raise, ceiling), 20_000);
+    }
+
+    #[test]
+    fn weather_with_limits_keeps_the_sum_of_the_levels() {
+        // The hill goes from level 20000 up to level 26000.
+        let limits = Limits {
+            floor: 21_000,
+            ceiling: 24_000,
+        };
+        let run = |limits: Limits| {
+            let mut map = Heightmap::with_tile_size(64, 16, 20_000);
+            map.stamp(&Stamp {
+                hardness: 0.2,
+                strength: 6000.0,
+                ..raise(map.texel_dir(0, 32, 32), 0.2)
+            });
+            let before = all_levels(&map);
+            for step in 0..5 {
+                map.stamp(&Stamp {
+                    hardness: 0.3,
+                    flow: 0.7,
+                    limits,
+                    ..weather(map.texel_dir(0, 30 + step, 33), 0.25, 20.0)
+                });
+            }
+            (before, all_levels(&map))
+        };
+        let (before, after) = run(limits);
+        assert_eq!(sum(&after), sum(&before));
+        assert_inside(limits, &before, &after, "Weather");
+        assert_ne!(after, before);
+        assert_ne!(after, run(Limits::default()).1);
+    }
+
+    #[test]
+    fn limits_at_the_extreme_levels_change_nothing() {
+        let limits = Limits {
+            floor: 0,
+            ceiling: 65535,
+        };
+        assert_eq!(limits, Limits::default());
+        let levels = [0.0, 1.0, 7.0, 20_000.0, 65_528.0, 65_534.0, 65_535.0];
+        for old in levels {
+            for new in levels {
+                assert_eq!(limits.apply(old, new), new, "{old} {new}");
+                // A weather pair moves one eighth of the drop at most.
+                let (high, low) = (f64::max(old, new), f64::min(old, new));
+                let most = ((high - low) * 0.125).floor();
+                assert!(limits.pair_room(high, low) >= most, "{old} {new}");
             }
         }
     }

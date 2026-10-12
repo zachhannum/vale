@@ -5,8 +5,8 @@ use std::sync::{Arc, OnceLock, mpsc};
 use vale_terrain::math::{V3, dot, lonlat_to_dir};
 use vale_terrain::{
     ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FlowMap, GROUP_STAMPS,
-    GpuHeightmap, Heightmap, Mode, OuterFlow, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TexelRect,
-    WINDOW_CELLS, Window, WindowHeights, channel_map, window_channels,
+    GpuHeightmap, Heightmap, Limits, Mode, OuterFlow, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE,
+    TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -231,6 +231,7 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         talus: 0.0,
         scale: 0.1,
         seed: 1,
+        limits: Limits::default(),
     }
 }
 
@@ -1710,4 +1711,277 @@ fn gpu_warp_reads_no_level_that_it_wrote() {
         difference <= WARP_TOLERANCE,
         "the difference is {difference}"
     );
+}
+
+/// Asserts that no level went from above the floor to below it, and that no
+/// level at or below the floor went down. The ceiling has the same rule for
+/// the other direction.
+fn assert_inside(limits: Limits, before: &[u16], after: &[u16], name: &str) {
+    for (new, old) in after.iter().zip(before) {
+        assert!(*new >= (*old).min(limits.floor), "{name}: {old} {new}");
+        assert!(*new <= (*old).max(limits.ceiling), "{name}: {old} {new}");
+    }
+}
+
+/// Applies the stamps with the limits to the ground of `ground`, on the GPU
+/// and on the CPU. The limits must hold on both, and they must change the
+/// result of the CPU.
+fn run_with_limits(
+    ground: impl Fn() -> Heightmap,
+    stamps: &[Stamp],
+    limits: Limits,
+    name: &str,
+) -> Run {
+    let mut free = ground();
+    for stamp in stamps {
+        free.stamp(stamp);
+    }
+    let limited: Vec<Stamp> = stamps
+        .iter()
+        .map(|&stamp| Stamp { limits, ..stamp })
+        .collect();
+    let mut cpu = ground();
+    let before = levels(&cpu);
+    let run = run(&mut cpu, &limited);
+    let after = levels(&cpu);
+    assert!(after != levels(&free), "{name}: the limits change nothing");
+    assert_inside(limits, &before, &after, name);
+    assert_inside(limits, &before, &run.faces.concat(), name);
+    run
+}
+
+/// Limits inside the range of the levels of `hills`.
+const HILL_LIMITS: Limits = Limits {
+    floor: 28_000,
+    ceiling: 36_000,
+};
+
+#[test]
+fn gpu_matches_cpu_with_limits_for_a_stroke() {
+    let mut worst = [0; 4];
+    for (m, mode) in MODES.into_iter().enumerate() {
+        for (lat, radius, hardness) in [(4.0, 0.07, 0.5), (35.0, 0.12, 0.0)] {
+            let count = STAMP_SLOTS as usize / 2;
+            let stamps: Vec<Stamp> = (0..count)
+                .map(|i| {
+                    let lon = 33.0 + 24.0 * i as f64 / count as f64;
+                    stamp(lonlat_to_dir(lon, lat), radius, hardness, mode)
+                })
+                .collect();
+            let name = format!("{mode:?} stroke at latitude {lat}");
+            let difference = run_with_limits(|| hills(256), &stamps, HILL_LIMITS, &name).difference;
+            assert!(
+                difference <= tolerance(mode),
+                "{name}: the difference is {difference}"
+            );
+            worst[m] = worst[m].max(difference);
+        }
+    }
+    eprintln!("stroke with limits, largest difference for {MODES:?}: {worst:?}");
+}
+
+#[test]
+fn gpu_weather_with_limits_matches_cpu_and_keeps_the_sum() {
+    let sum = |levels: &[u16]| -> u64 { levels.iter().map(|&l| u64::from(l)).sum() };
+    let before = levels(&hills(256));
+    let mut worst = 0;
+    for (lat, radius, hardness) in [(4.0, 0.07, 0.5), (35.0, 0.12, 0.0)] {
+        let stamps = weather_stroke(lat, radius, hardness);
+        let name = format!("weather stroke at latitude {lat}");
+        let Run {
+            faces, difference, ..
+        } = run_with_limits(|| hills(256), &stamps, HILL_LIMITS, &name);
+        assert!(
+            difference <= WEATHER_TOLERANCE,
+            "{name}: the difference is {difference}"
+        );
+        assert_eq!(sum(&faces.concat()), sum(&before), "{name}");
+        worst = worst.max(difference);
+    }
+    eprintln!("weather stroke with limits, largest difference: {worst}");
+}
+
+/// The floor is in the middle of the largest drop of the stamps with no
+/// limits, so it stops the texel with that drop.
+fn floor_in_the_largest_drop(before: &[u16], after: &[u16]) -> Limits {
+    let drops = before.iter().zip(after);
+    let (old, new) = drops
+        .max_by_key(|&(old, new)| old.saturating_sub(*new))
+        .expect("the map has texels");
+    assert!(old - new >= 2, "the largest drop is {}", old - new);
+    Limits {
+        floor: old - (old - new) / 2,
+        ..Limits::default()
+    }
+}
+
+#[test]
+fn gpu_ridge_with_a_ceiling_matches_cpu() {
+    let before = levels(&river_land(256));
+    let stamps = stroke((31.0, 2.0), (59.0, 5.0), 240, 0.05, Mode::Ridge);
+    let mut free = river_land(256);
+    for stamp in &stamps {
+        free.stamp(stamp);
+    }
+    // The ceiling is in the middle of the largest rise of the stamps with no
+    // limits, so it stops the texel with that rise.
+    let rises = before.iter().zip(levels(&free));
+    let (old, new) = rises
+        .max_by_key(|&(old, new)| new - old)
+        .expect("the map has texels");
+    assert!(new - old >= 2, "the largest rise is {}", new - old);
+    let limits = Limits {
+        ceiling: old + (new - old) / 2,
+        ..Limits::default()
+    };
+    let stroke = run_with_limits(|| river_land(256), &stamps, limits, "stroke");
+    assert!(
+        stroke.difference <= ADD_STROKE_TOLERANCE,
+        "{}",
+        stroke.difference
+    );
+    let after = stroke.faces.concat();
+    let at_ceiling = after.iter().zip(&before);
+    let at_ceiling =
+        at_ceiling.filter(|&(new, old)| *old < limits.ceiling && *new == limits.ceiling);
+    assert!(at_ceiling.count() > 0);
+}
+
+#[test]
+fn gpu_carve_with_limits_matches_cpu() {
+    let before = levels(&river_land(256));
+    let carved = |stamps: &[Stamp]| {
+        let mut free = river_land(256);
+        for stamp in stamps {
+            free.stamp(stamp);
+        }
+        floor_in_the_largest_drop(&before, &levels(&free))
+    };
+
+    let stamps = [stamp(lonlat_to_dir(45.0, 35.264), 0.3, 0.0, Mode::Carve)];
+    let one = run_with_limits(|| river_land(256), &stamps, carved(&stamps), "one stamp");
+    assert!(one.difference <= TOLERANCE, "{}", one.difference);
+
+    // Many stamps touch each texel, so the ground at some rivers goes down
+    // to the floor.
+    let stamps = stroke((31.0, 2.0), (59.0, 5.0), 240, 0.05, Mode::Carve);
+    let limits = carved(&stamps);
+    let stroke = run_with_limits(|| river_land(256), &stamps, limits, "stroke");
+    assert!(
+        stroke.difference <= ADD_STROKE_TOLERANCE,
+        "{}",
+        stroke.difference
+    );
+    let after = stroke.faces.concat();
+    let at_floor = after.iter().zip(&before);
+    let at_floor = at_floor.filter(|&(new, old)| *old > limits.floor && *new == limits.floor);
+    assert!(at_floor.count() > 20);
+    eprintln!(
+        "carve with a floor, largest differences: {} {}",
+        one.difference, stroke.difference
+    );
+}
+
+#[test]
+fn gpu_warp_with_limits_matches_cpu() {
+    // The limits are on each side of the level at the brush center.
+    let around = |lon: f64, lat: f64| {
+        let middle = smooth_ground(256).sample(lonlat_to_dir(lon, lat));
+        Limits {
+            floor: middle - 800,
+            ceiling: middle + 800,
+        }
+    };
+    let mut worst = 0;
+    for (place, lon, lat) in WARP_PLACES {
+        let stamps = [warp(lonlat_to_dir(lon, lat), 0.3, 0.5)];
+        let name = format!("warp at the {place}");
+        let run = run_with_limits(|| smooth_ground(256), &stamps, around(lon, lat), &name);
+        assert!(
+            run.difference <= WARP_TOLERANCE,
+            "{name}: the difference is {}",
+            run.difference
+        );
+        worst = worst.max(run.difference);
+    }
+    let stamps = warp_stroke(35.0, 0.12, 0.0);
+    let limits = around(45.0, 35.0);
+    let stroke = run_with_limits(|| smooth_ground(256), &stamps, limits, "warp stroke");
+    assert!(
+        stroke.difference <= WARP_STROKE_TOLERANCE,
+        "warp stroke: the difference is {}",
+        stroke.difference
+    );
+    eprintln!(
+        "warp with limits, largest differences: {worst} {}",
+        stroke.difference
+    );
+}
+
+#[test]
+fn gpu_erode_with_a_floor_matches_cpu() {
+    let brushes = [erode_brush(41.0, 3.0, 0.1), erode_brush(49.0, 6.0, 0.1)];
+    let erosion = |cpu: &Heightmap| Erosion::global(&CoarseHeights::new(cpu), cpu.face_size());
+    let before = levels(&window_land());
+    let mut free = window_land();
+    let mut free_erosion = erosion(&free);
+    for _ in 0..3 {
+        free.erode(&free_erosion.step(&brushes, 1.0));
+    }
+    let free = levels(&free);
+    let limits = floor_in_the_largest_drop(&before, &free);
+
+    let mut cpu = window_land();
+    let mut erosion = erosion(&cpu);
+    erosion.set_limits(limits);
+    let (difference, changed) = erode_run(&mut cpu, &mut erosion, &brushes, 3);
+    eprintln!("erode with a floor, largest difference: {difference}, {changed:?}");
+    assert!(changed[0] > 1000 && changed[2] > 1000, "{changed:?}");
+    assert!(difference <= TOLERANCE, "{difference}");
+    let after = levels(&cpu);
+    assert_inside(limits, &before, &after, "erode");
+    let stopped = before.iter().zip(&after).zip(&free);
+    let stopped = stopped.filter(|&((old, new), free)| {
+        *old > limits.floor && *new == limits.floor && *free < limits.floor
+    });
+    assert!(stopped.count() > 20);
+}
+
+/// A change of the limits ends a group. With one pair of limits for all
+/// stamps, the GPU result is far from the CPU result.
+#[test]
+fn a_group_has_one_pair_of_limits() {
+    let center = lonlat_to_dir(44.0, 34.0);
+    let low = Limits {
+        ceiling: hills(256).sample(center) + 1000,
+        ..Limits::default()
+    };
+    let free = Limits::default();
+    let stamps_of = |limits: [Limits; 6]| -> Vec<Stamp> {
+        let stamps = limits.into_iter().enumerate().map(|(i, limits)| Stamp {
+            limits,
+            ..stamp(
+                lonlat_to_dir(44.0 + 0.1 * i as f64, 34.0),
+                0.05,
+                0.5,
+                Mode::Raise,
+            )
+        });
+        stamps.collect()
+    };
+    let stamped = |limits: [Limits; 6]| {
+        let mut cpu = hills(256);
+        for stamp in stamps_of(limits) {
+            cpu.stamp(&stamp);
+        }
+        levels(&cpu)
+    };
+    let mut cpu = hills(256);
+    let GroupRun {
+        groups, difference, ..
+    } = run_groups(&mut cpu, &stamps_of([low, low, free, free, free, low]));
+    assert_eq!(groups, [2, 3, 1]);
+    assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
+    let after = levels(&cpu);
+    assert!(after != stamped([low; 6]) && after != stamped([free; 6]));
 }

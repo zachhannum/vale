@@ -488,6 +488,112 @@ fn the_brush_panel_has_the_two_sliders_of_the_uplift_mode() {
     check_controls(&h, "the Uplift mode");
 }
 
+/// Whether the switch with this name is on.
+fn switch_is_on(h: &Pad, name: &str) -> bool {
+    let switch = h.get_by_label(name);
+    switch.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+}
+
+#[test]
+fn the_brush_panel_has_the_floor_and_the_ceiling() {
+    const SWITCHES: [&str; 2] = ["Brush floor", "Brush ceiling"];
+    const LEVELS: [&str; 2] = ["Brush floor level", "Brush ceiling level"];
+    for mode in [None, Some("Erode"), Some("Uplift"), Some("Warp")] {
+        let mut h = pad(BOARDS[0]);
+        tap(&mut h, "Brush settings");
+        if let Some(mode) = mode {
+            tap(&mut h, MORE);
+            tap(&mut h, mode);
+        }
+        let what = format!("{mode:?}");
+        // Both switches are off at the start, and no level shows.
+        let brush = h.state().globe.brush;
+        assert!(!brush.floor_on && !brush.ceiling_on, "{what}");
+        assert_eq!((brush.floor_m, brush.ceiling_m), (0.0, 1000.0), "{what}");
+        for (switch, level) in SWITCHES.iter().zip(LEVELS) {
+            assert!(!switch_is_on(&h, switch), "{what}: {switch}");
+            assert!(control(&h, level).is_none(), "{what}: {level}");
+        }
+        check_controls(&h, &format!("{what} with the limits off"));
+
+        // The floor goes on alone, and its level shows.
+        tap(&mut h, SWITCHES[0]);
+        let brush = h.state().globe.brush;
+        assert!(brush.floor_on && !brush.ceiling_on, "{what}");
+        assert!(switch_is_on(&h, SWITCHES[0]) && !switch_is_on(&h, SWITCHES[1]));
+        assert!(control(&h, LEVELS[0]).is_some() && control(&h, LEVELS[1]).is_none());
+        // The switch and its level are two rows of the panel, and the track
+        // of the level is as wide as the track of the size.
+        let (switch, level) = (control(&h, SWITCHES[0]), control(&h, LEVELS[0]));
+        let (switch, level) = (switch.unwrap(), level.unwrap());
+        let size = control(&h, "Brush size").unwrap();
+        assert_eq!(level.top(), switch.bottom(), "{what}");
+        assert_eq!(switch.x_range(), size.x_range(), "{what}");
+        assert_eq!(level.x_range(), size.x_range(), "{what}");
+
+        tap(&mut h, SWITCHES[1]);
+        let brush = h.state().globe.brush;
+        assert!(brush.floor_on && brush.ceiling_on, "{what}");
+        check_controls(&h, &format!("{what} with the limits on"));
+
+        // A drag on a level sets the meters, in steps of 50 m.
+        let rect = control(&h, LEVELS[0]).unwrap();
+        drag(&mut h, rect.center(), rect.left_center(), None);
+        assert_eq!(h.state().globe.brush.floor_m, -6000.0, "{what}");
+        let to = rect.center() + vec2(-17.0, 0.0);
+        drag(&mut h, rect.left_center(), to, None);
+        let floor = h.state().globe.brush.floor_m;
+        assert!(floor < 0.0 && floor > -3000.0, "{what}: {floor}");
+        assert_eq!(floor % 50.0, 0.0, "{what}: {floor}");
+        let rect = control(&h, LEVELS[1]).unwrap();
+        drag(&mut h, rect.center(), rect.right_center(), None);
+        assert_eq!(h.state().globe.brush.ceiling_m, 6000.0, "{what}");
+        // The floor can be above the ceiling.
+        drag(&mut h, rect.right_center(), rect.left_center(), None);
+        let brush = h.state().globe.brush;
+        assert_eq!(brush.ceiling_m, -6000.0, "{what}");
+        assert!(brush.floor_m > brush.ceiling_m, "{what}");
+        let limits = brush.limits();
+        assert_eq!(limits.floor, meters_to_level(floor), "{what}");
+        assert_eq!(limits.ceiling, 0, "{what}");
+
+        // A tap turns a limit off, and its level keeps its meters.
+        tap(&mut h, SWITCHES[0]);
+        let brush = h.state().globe.brush;
+        assert!(!brush.floor_on && brush.ceiling_on, "{what}");
+        assert_eq!(brush.floor_m, floor, "{what}");
+        assert!(control(&h, LEVELS[0]).is_none() && control(&h, LEVELS[1]).is_some());
+        assert_eq!(brush.limits().floor, 0, "{what}");
+    }
+
+    // The mode with the most rows, with both levels, on each board.
+    for size in BOARDS {
+        let mut h = pad(size);
+        let brush = &mut h.state_mut().globe.brush;
+        (brush.mode, brush.floor_on, brush.ceiling_on) = (Mode::Uplift, true, true);
+        tap(&mut h, "Brush settings");
+        h.run_steps(2);
+        check_controls(&h, &format!("{size:?} with the limits on"));
+        let shown = |h: &Pad| {
+            let names = SWITCHES.iter().chain(&LEVELS);
+            names.filter(|name| control(h, name).is_some()).count()
+        };
+        if h.state().pad.rects.unwrap().sheet.is_some() {
+            // The sheet is too short for the rows. A finger that moves up
+            // on a slider scrolls the rows and does not move the slider.
+            assert_eq!(shown(&h), 0, "{size:?}");
+            let brush = h.state().globe.brush;
+            let from = control(&h, "Brush angle").unwrap().center();
+            drag(&mut h, from, from - vec2(4.0, 260.0), None);
+            assert_eq!(h.state().globe.brush, brush, "{size:?}");
+            check_controls(&h, &format!("{size:?} after the scroll"));
+        }
+        assert_eq!(shown(&h), 4, "{size:?}");
+        tap(&mut h, SWITCHES[1]);
+        assert!(!h.state().globe.brush.ceiling_on, "{size:?}");
+    }
+}
+
 #[test]
 fn the_brush_panel_has_the_two_sliders_of_the_warp_mode() {
     let mut h = pad(BOARDS[0]);

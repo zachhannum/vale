@@ -1,23 +1,27 @@
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::cli::Args;
 use vale_app::document::Document;
+use vale_app::globe::WorldView;
+use vale_app::globe::view::GlobeView;
 use vale_app::projects;
-use vale_app::session::new_project_path;
+use vale_app::resume::Resume;
+use vale_app::session::{SAVE_DELAY, new_project_path};
 use vale_app::ui::browser::Dialog;
-use vale_app::ui::pad::WORLDS;
 use vale_app::ui::pad::browser as pad_browser;
 use vale_app::ui::pad::geometry::TOUCH;
+use vale_app::ui::pad::{SAVE, WORLDS};
 use vale_app::ui::panels::{ALL_WORLDS, FILE_MENU};
 use vale_app::ui::world_form::{CREATE, NEW_WORLD};
-use vale_app::ui::{Action, AppState, Layout, Screen, draw};
+use vale_app::ui::{Action, AppState, Layout, SAVE_MARK_TIME, SaveMark, Screen, draw};
+use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{Project, ProjectFile, World};
 use vale_terrain::math::lonlat_to_dir;
-use vale_terrain::{Heightmap, Mode, Stamp};
+use vale_terrain::{Heightmap, Limits, Mode, Stamp};
 
 type App = Harness<'static, AppState>;
 
@@ -174,6 +178,7 @@ fn paint(map: &mut Heightmap) {
         talus: 0.0,
         scale: 0.0,
         seed: 0,
+        limits: Limits::default(),
     });
     assert!(map.end_stroke());
 }
@@ -437,4 +442,164 @@ fn the_window_starts_on_the_start_screen_with_no_project() {
     assert_eq!(folder(&["--projects-dir", "worlds"]), Some("worlds".into()));
     assert_eq!(folder(&["--project", "dir/a.gpkg"]), Some("dir".into()));
     assert_eq!(folder(&["land.geojson"]), None);
+}
+
+/// The app as a new start in the projects folder shows it.
+fn start(dir: &Path, layout: Layout) -> App {
+    let mut h = app(dir, layout);
+    h.state_mut().restore();
+    run(&mut h);
+    h
+}
+
+#[test]
+fn the_app_opens_at_the_last_project_and_the_last_view() {
+    let dir = tempfile::tempdir().unwrap();
+    create(dir.path(), "Aurelia");
+    let path = create(dir.path(), "Borea");
+    let mut h = start(dir.path(), Layout::Pad);
+    assert_eq!(h.state().screen, Screen::Browser, "the first start");
+
+    click(&mut h, "Open Borea");
+    let mut view = GlobeView::centered(-120.0, 35.0);
+    view.zoom = 6.5;
+    let spec = ProjectionSpec {
+        kind: ProjectionKind::Mercator,
+        lon0: 30.0,
+        lat0: 0.0,
+    };
+    let globe = &mut h.state_mut().globe;
+    globe.view = view;
+    globe.world_view = WorldView::Flat;
+    globe.flat.set_spec(spec);
+    globe.flat.zoom = 3.0;
+    let center = globe.flat.center;
+    // The system stops the app with no exit call.
+    h.state_mut().save_tick(false, Instant::now());
+    drop(h);
+
+    let mut h = start(dir.path(), Layout::Pad);
+    assert_eq!(h.state().screen, Screen::Editor);
+    assert_eq!(open_path(&h), path);
+    let globe = &h.state().globe;
+    assert_eq!(globe.view, view);
+    assert_eq!(globe.world_view, WorldView::Flat);
+    assert_eq!(globe.flat.spec(), spec);
+    assert_eq!((globe.flat.center, globe.flat.zoom), (center, 3.0));
+
+    // The last run ended on the start screen.
+    all_worlds(&mut h);
+    h.state_mut()
+        .save_tick(false, Instant::now() + Duration::from_secs(2));
+    drop(h);
+    let h = start(dir.path(), Layout::Pad);
+    assert_eq!(h.state().screen, Screen::Browser);
+
+    // The file of the last project is not there.
+    let mut h = h;
+    click(&mut h, "Open Borea");
+    h.state_mut().save_tick(false, Instant::now());
+    drop(h);
+    std::fs::remove_file(&path).unwrap();
+    let h = start(dir.path(), Layout::Pad);
+    assert_eq!(h.state().screen, Screen::Browser);
+}
+
+#[test]
+fn a_view_that_moves_goes_to_the_file_one_time_in_a_second() {
+    let dir = tempfile::tempdir().unwrap();
+    create(dir.path(), "Borea");
+    let mut h = start(dir.path(), Layout::Pad);
+    click(&mut h, "Open Borea");
+    let now = Instant::now();
+    let zoom = |dir: &Path| Resume::read(dir).unwrap().view.unwrap().globe.zoom;
+    h.state_mut().save_tick(false, now);
+    assert_eq!(zoom(dir.path()), 1.0);
+
+    // A held gesture waits, and a change soon after a write waits.
+    h.state_mut().globe.view.zoom = 2.0;
+    assert_eq!(h.state_mut().save_tick(true, now), None);
+    let wait = h
+        .state_mut()
+        .save_tick(false, now + Duration::from_millis(400));
+    assert_eq!(wait, Some(Duration::from_millis(600)));
+    assert_eq!(zoom(dir.path()), 1.0);
+    h.state_mut().save_tick(false, now + Duration::from_secs(1));
+    assert_eq!(zoom(dir.path()), 2.0);
+}
+
+#[test]
+fn a_change_that_waits_is_in_the_file_when_the_app_goes_to_the_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = create(dir.path(), "Borea");
+    let mut h = start(dir.path(), Layout::Pad);
+    click(&mut h, "Open Borea");
+    let now = Instant::now();
+
+    // A control is held, so its change waits for its save.
+    h.state_mut().doc.project.world.name = "Cassia".to_string();
+    h.state_mut().globe.view.zoom = 4.0;
+    assert!(h.state_mut().save_tick(true, now).is_some());
+    assert_eq!(vale_store::summary(&path).unwrap().name, "Borea");
+
+    h.state_mut().save_waiting().unwrap();
+    // The system stops the app with no exit call.
+    drop(h);
+    assert_eq!(vale_store::summary(&path).unwrap().name, "Cassia");
+    let h = start(dir.path(), Layout::Pad);
+    assert_eq!(open_path(&h), path);
+    assert_eq!(h.state().globe.view.zoom, 4.0);
+}
+
+#[test]
+fn the_save_command_saves_a_change_that_waits_in_both_layouts() {
+    for layout in [Layout::Pad, Layout::Desktop] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = create(dir.path(), "Borea");
+        let mut h = start(dir.path(), layout);
+        assert_eq!(h.state().save_mark(Instant::now()), None, "no open project");
+        click(&mut h, "Open Borea");
+        assert_eq!(h.state().save_mark(Instant::now()), Some(SaveMark::Saved));
+
+        h.state_mut().doc.project.world.name = "Cassia".to_string();
+        let now = Instant::now();
+        assert!(h.state_mut().save_tick(false, now).is_some());
+        assert_eq!(h.state().save_mark(now), Some(SaveMark::Saving));
+        assert_eq!(vale_store::summary(&path).unwrap().name, "Borea");
+
+        match layout {
+            Layout::Desktop => click(&mut h, FILE_MENU),
+            Layout::Pad => click(&mut h, WORLDS),
+        }
+        // The desktop row also has the text of its shortcut.
+        h.get_by_label_contains(SAVE).click();
+        run(&mut h);
+        assert_eq!(vale_store::summary(&path).unwrap().name, "Cassia");
+        assert_eq!(h.state().status, "Saved Cassia");
+        // The mark turns for a short time, and then it is a tick.
+        let now = Instant::now();
+        assert_eq!(h.state().save_mark(now), Some(SaveMark::Saving));
+        let later = now + SAVE_MARK_TIME;
+        assert_eq!(h.state().save_mark(later), Some(SaveMark::Saved));
+    }
+}
+
+#[test]
+fn the_save_mark_turns_after_an_automatic_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = create(dir.path(), "Borea");
+    let mut h = start(dir.path(), Layout::Pad);
+    click(&mut h, "Open Borea");
+    let now = Instant::now();
+    h.state_mut().doc.project.world.name = "Cassia".to_string();
+    h.state_mut().save_tick(false, now);
+    let saved = now + SAVE_DELAY;
+    // The tick asks for a frame at the end of the turn of the mark.
+    assert_eq!(h.state_mut().save_tick(false, saved), Some(SAVE_MARK_TIME));
+    assert_eq!(vale_store::summary(&path).unwrap().name, "Cassia");
+    assert_eq!(h.state().save_mark(saved), Some(SaveMark::Saving));
+    assert_eq!(
+        h.state().save_mark(saved + SAVE_MARK_TIME),
+        Some(SaveMark::Saved)
+    );
 }

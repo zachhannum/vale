@@ -6,8 +6,8 @@ use std::sync::{Arc, mpsc};
 use std::f64::consts::FRAC_PI_2;
 
 use vale_terrain::{
-    CoarseHeights, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, OuterFlow, WINDOW_CELLS,
-    Window, WindowHeights,
+    CoarseHeights, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, Limits, OuterFlow,
+    WINDOW_CELLS, Window, WindowHeights,
 };
 
 use super::math::V3;
@@ -163,8 +163,8 @@ enum Job {
     Begin(u64, Ground),
     /// The stroke goes on with this ground.
     Move(u64, Ground),
-    /// The brushes, the rate, and the uplift of one step.
-    Step(u64, Vec<ErodeBrush>, f64, f64),
+    /// The brushes, the rate, the uplift, and the limits of one step.
+    Step(u64, Vec<ErodeBrush>, f64, f64, Limits),
 }
 
 struct Done(u64, ErodeStep);
@@ -190,8 +190,15 @@ const UPLIFT_STEPS: usize = 4;
 
 /// Without an uplift, lowers the cells under the brushes one time. With an
 /// uplift, raises those cells by `uplift` levels at full effect and then
-/// lowers them `UPLIFT_STEPS` times.
-fn step(erosion: &mut Erosion, brushes: &[ErodeBrush], rate: f64, uplift: f64) -> ErodeStep {
+/// lowers them `UPLIFT_STEPS` times. The cells and the step keep `limits`.
+fn step(
+    erosion: &mut Erosion,
+    brushes: &[ErodeBrush],
+    rate: f64,
+    uplift: f64,
+    limits: Limits,
+) -> ErodeStep {
+    erosion.set_limits(limits);
     if uplift.is_nan() || uplift <= 0.0 {
         return erosion.step(brushes, rate);
     }
@@ -211,11 +218,11 @@ fn work(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>) {
                     ground.move_work(work);
                 }
             }
-            Job::Step(stroke, brushes, rate, uplift) => {
+            Job::Step(stroke, brushes, rate, uplift, limits) => {
                 let Some((_, work)) = work.as_mut().filter(|(id, _)| *id == stroke) else {
                     continue;
                 };
-                let step = step(&mut work.erosion, &brushes, rate, uplift);
+                let step = step(&mut work.erosion, &brushes, rate, uplift, limits);
                 if done.send(Done(stroke, step)).is_err() {
                     return;
                 }
@@ -288,15 +295,16 @@ impl Eroder {
 
     /// Asks for one step of the stroke. The step starts from the heights
     /// that the step before it left. Before the step, each brush raises its
-    /// cells by `uplift` levels at full effect.
-    pub fn request(&mut self, brushes: Vec<ErodeBrush>, rate: f64, uplift: f64) {
+    /// cells by `uplift` levels at full effect. The uplift and the step do
+    /// not move a cell across a limit.
+    pub fn request(&mut self, brushes: Vec<ErodeBrush>, rate: f64, uplift: f64, limits: Limits) {
         self.waiting += 1;
         match &mut self.work {
             Some(work) => {
-                let step = step(&mut work.erosion, &brushes, rate, uplift);
+                let step = step(&mut work.erosion, &brushes, rate, uplift, limits);
                 let _ = self.done.send(Done(self.stroke, step));
             }
-            None => self.send(Job::Step(self.stroke, brushes, rate, uplift)),
+            None => self.send(Job::Step(self.stroke, brushes, rate, uplift, limits)),
         }
     }
 
@@ -378,7 +386,7 @@ mod tests {
         assert!(!eroder.pending());
         assert!(eroder.poll().is_none());
         eroder.begin(global(&hill()));
-        eroder.request(brush(true), 1.0, 0.0);
+        eroder.request(brush(true), 1.0, 0.0, Limits::default());
         // The request returns before the worker has the flow of the world.
         assert!(eroder.pending());
         assert!(eroder.poll().is_none());
@@ -388,7 +396,7 @@ mod tests {
         assert!(eroder.poll().is_none());
 
         // The second step starts from the heights that the first step left.
-        eroder.request(brush(true), 1.0, 0.0);
+        eroder.request(brush(true), 1.0, 0.0, Limits::default());
         let second = wait(&mut eroder);
         assert!(!second.is_empty());
         assert!(first.drops() != second.drops());
@@ -399,7 +407,7 @@ mod tests {
         let map = hill();
         let mut eroder = Eroder::new(true);
         eroder.begin(global(&map));
-        eroder.request(brush(true), 1.0, 0.0);
+        eroder.request(brush(true), 1.0, 0.0, Limits::default());
         assert!(eroder.pending());
         assert!(!eroder.poll().unwrap().is_empty());
         assert!(!eroder.pending());
@@ -410,7 +418,7 @@ mod tests {
             heights: WindowHeights::new(&map, window),
             global: CoarseHeights::new(&map),
         });
-        eroder.request(brush(true), 1.0, 0.0);
+        eroder.request(brush(true), 1.0, 0.0, Limits::default());
         let step = eroder.poll().unwrap();
         assert!(!step.is_empty());
         assert_eq!(step.grid(), vale_terrain::ErodeGrid::Window(window));
@@ -422,9 +430,9 @@ mod tests {
         let map = Heightmap::new(N, meters_to_level(-100.0));
         let mut eroder = Eroder::new(true);
         eroder.begin(global(&map));
-        eroder.request(brush(true), 1.0, 0.0);
+        eroder.request(brush(true), 1.0, 0.0, Limits::default());
         assert!(eroder.poll().unwrap().is_empty());
-        eroder.request(brush(true), 1.0, 5000.0);
+        eroder.request(brush(true), 1.0, 5000.0, Limits::default());
         assert!(!eroder.poll().unwrap().is_empty());
     }
 
@@ -480,12 +488,12 @@ mod tests {
         for sync in [true, false] {
             let mut eroder = Eroder::new(sync);
             eroder.begin(ground(0.0));
-            eroder.request(at(8.0), 1.0, 5000.0);
+            eroder.request(at(8.0), 1.0, 5000.0, Limits::default());
             assert!(!wait(&mut eroder).is_empty());
             // The hill at 8 degrees is in the new window, so a step without
             // uplift lowers it there.
             eroder.move_to(ground(15.0));
-            eroder.request(at(8.0), 1.0, 0.0);
+            eroder.request(at(8.0), 1.0, 0.0, Limits::default());
             let step = wait(&mut eroder);
             assert!(!step.is_empty());
             let ErodeGrid::Window(window) = step.grid() else {
@@ -556,7 +564,7 @@ mod tests {
             // The first step of a stroke in the second window.
             let mut eroder = Eroder::new(sync);
             eroder.begin(nested(34.0, view));
-            eroder.request(at(30.0), 1.0, 0.0);
+            eroder.request(at(30.0), 1.0, 0.0, Limits::default());
             let fresh = sum(&wait(&mut eroder));
 
             // A stroke that moves from the first window to the second one.
@@ -565,15 +573,15 @@ mod tests {
             // ground near the high side of the window.
             let mut moved = |ground: Ground| {
                 eroder.begin(nested(30.0, view));
-                eroder.request(at(30.0), 1.0e6, 0.0);
+                eroder.request(at(30.0), 1.0e6, 0.0, Limits::default());
                 let first = wait(&mut eroder);
                 assert!(!first.is_empty());
                 assert_eq!(first.grid(), grid(30.0));
                 eroder.move_to(ground);
-                eroder.request(at(30.0), 1.0, 0.0);
+                eroder.request(at(30.0), 1.0, 0.0, Limits::default());
                 let again = wait(&mut eroder);
                 assert_eq!(again.grid(), grid(34.0));
-                eroder.request(at(18.0), 0.02, 0.0);
+                eroder.request(at(18.0), 0.02, 0.0, Limits::default());
                 (sum(&again), sum(&wait(&mut eroder)))
             };
             let (again, wet) = moved(Ground::Follow(heights(34.0)));
@@ -657,20 +665,53 @@ mod tests {
         let map = hill();
         let mut eroder = Eroder::new(false);
         eroder.begin(global(&map));
-        eroder.request(brush(true), 1.0, 0.0);
+        eroder.request(brush(true), 1.0, 0.0, Limits::default());
         // The brush of the new stroke is on the sea, so its step is empty.
         eroder.begin(global(&map));
         assert!(!eroder.pending());
-        eroder.request(brush(false), 1.0, 0.0);
+        eroder.request(brush(false), 1.0, 0.0, Limits::default());
         assert!(wait(&mut eroder).is_empty());
         assert!(!eroder.pending());
         assert!(eroder.poll().is_none());
 
-        eroder.request(brush(true), 1.0, 0.0);
+        eroder.request(brush(true), 1.0, 0.0, Limits::default());
         eroder.cancel();
         assert!(!eroder.pending());
         // The worker ends the step after the wait.
         std::thread::sleep(Duration::from_millis(300));
         assert!(eroder.poll().is_none());
+    }
+
+    #[test]
+    fn each_step_has_the_limits_of_its_request() {
+        let map = hill();
+        let limits = Limits {
+            floor: meters_to_level(0.0),
+            ceiling: meters_to_level(2000.0),
+        };
+        let window = |lon: f64| {
+            let window = brush_window(lonlat_to_dir(lon, 0.0), 0.1, N);
+            WindowHeights::new(&map, window)
+        };
+        for sync in [true, false] {
+            let mut eroder = Eroder::new(sync);
+            eroder.begin(Ground::Alone(window(20.0)));
+            eroder.request(brush(true), 1.0, 0.0, limits);
+            assert_eq!(wait(&mut eroder).limits(), limits);
+            // The stroke keeps its cells in a new window.
+            eroder.move_to(Ground::Alone(window(22.0)));
+            eroder.request(brush(true), 1.0, 0.0, limits);
+            assert_eq!(wait(&mut eroder).limits(), limits);
+            // The stroke gets new cells.
+            eroder.move_to(global(&map));
+            eroder.request(brush(true), 1.0, 0.0, limits);
+            assert_eq!(wait(&mut eroder).limits(), limits);
+            // A new stroke has the limits of its own requests.
+            eroder.begin(global(&map));
+            eroder.request(brush(true), 1.0, 0.0, Limits::default());
+            assert_eq!(wait(&mut eroder).limits(), Limits::default());
+            eroder.request(brush(true), 1.0, 0.0, limits);
+            assert_eq!(wait(&mut eroder).limits(), limits);
+        }
     }
 }

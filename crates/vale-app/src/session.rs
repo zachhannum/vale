@@ -108,6 +108,8 @@ pub struct Session {
     held: bool,
     /// The tile rows that the last save changed.
     pub last_save: SaveStats,
+    /// The count of the saves that changed the file.
+    saves: u64,
 }
 
 impl Session {
@@ -132,6 +134,7 @@ impl Session {
             changed_at: None,
             held: false,
             last_save: SaveStats::default(),
+            saves: 0,
         })
     }
 
@@ -236,11 +239,22 @@ impl Session {
             _ => Vec::new(),
         };
         self.last_save = self.file.save_tiles(project, &changes)?;
+        self.saves += 1;
         self.thumbnail_stale = true;
         if saves_map {
             map.clear_changes();
         }
         Ok(())
+    }
+
+    /// The count of the saves that changed the file.
+    pub fn saves(&self) -> u64 {
+        self.saves
+    }
+
+    /// True if a change waits for its save.
+    pub fn waits(&self) -> bool {
+        self.changed_at.is_some()
     }
 
     /// True if the file has an edit to undo, or a change waits for its save.

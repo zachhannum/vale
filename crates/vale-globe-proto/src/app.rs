@@ -7,7 +7,8 @@ use eframe::egui::{self, Color32, Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 
 use vale_terrain::{
-    ELEV_MAX, ELEV_MIN, Heightmap, MAX_BRUSH_RADIUS, Mode, Stamp, level_to_meters, meters_to_level,
+    ELEV_MAX, ELEV_MIN, Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, level_to_meters,
+    meters_to_level,
 };
 
 use crate::gpu::{GlobeCallback, MAX_BANDS, Uniforms, Upload, UploadQueue};
@@ -306,6 +307,7 @@ impl ProtoApp {
             talus: 0.0,
             scale: 0.0,
             seed: 0,
+            limits: Limits::default(),
         };
         let start = Instant::now();
         match stroke.last {

@@ -14,6 +14,7 @@ use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
 use crate::projects;
+use crate::resume::{self, Resume};
 use crate::session::{self, Session};
 
 pub mod browser;
@@ -49,7 +50,25 @@ pub enum Action {
     DeleteProject(PathBuf),
     /// Closes the open project and shows the start screen.
     ShowProjects,
+    /// Saves each change that waits.
+    Save,
 }
+
+/// The state of the save of the open project.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SaveMark {
+    /// A change waits for its save, or a save ended a moment ago.
+    Saving,
+    /// The file holds each change.
+    Saved,
+    /// The last save failed.
+    Failed,
+}
+
+/// The time that the save mark turns after a save.
+pub const SAVE_MARK_TIME: Duration = Duration::from_millis(900);
+/// The shortest time between two writes of the state for the next start.
+const RESUME_DELAY: Duration = Duration::from_secs(1);
 
 /// What the window shows.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -158,6 +177,14 @@ pub struct AppState {
     pub projects: Option<PathBuf>,
     /// The edit count of the globe at the last save.
     saved_edits: u64,
+    /// The time of the last save, for the save mark.
+    saved_at: Option<Instant>,
+    /// The last save failed.
+    save_failed: bool,
+    /// The state for the next start that the projects folder holds.
+    resume: Option<Resume>,
+    /// The time of the last write of the state for the next start.
+    resume_at: Option<Instant>,
 }
 
 impl AppState {
@@ -193,6 +220,10 @@ impl AppState {
             session: None,
             projects: None,
             saved_edits: 0,
+            saved_at: None,
+            save_failed: false,
+            resume: None,
+            resume_at: None,
         };
         state.set_layout(Layout::default());
         Ok(state)
@@ -284,17 +315,19 @@ impl AppState {
 
     /// Call this in each frame, after the changes of the frame. It saves the
     /// project a short time after a change, and at once after a stroke or an
-    /// import. With `hold`, a control is held, and its changes wait. Returns
-    /// the time to the next save.
+    /// import. With `hold`, a control is held, and its changes wait. It also
+    /// writes the state for the next start. Returns the time to the next
+    /// save.
     pub fn save_tick(&mut self, hold: bool, now: Instant) -> Option<Duration> {
         self.globe.set_memory_undo(!self.file_log());
+        let resume_wait = self.resume_tick(hold, now);
         let session = self.session.as_mut()?;
+        let saves = session.saves();
         let globe = &mut self.globe;
         let project = &mut self.doc.project;
         let result = if globe.edits() != self.saved_edits {
             // The edit is one undo step, with no part of the next stroke.
             self.saved_edits = globe.edits();
-            // The system can stop the app with no call of `close_project`.
             let saved = session.flush(project, &mut globe.map);
             let saved = saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view));
             saved.map(|()| None)
@@ -302,12 +335,148 @@ impl AppState {
             let hold = hold || globe.busy();
             session.tick(project, &mut globe.map, hold, now)
         };
-        match result {
+        if session.saves() != saves {
+            self.saved_at = Some(now);
+        }
+        self.save_failed = result.is_err();
+        let wait = match result {
             Ok(wait) => wait,
             Err(e) => {
                 self.status = format!("The project did not save: {e}");
                 None
             }
+        };
+        // The save mark turns for a short time after a save.
+        let mark_wait = self
+            .saved_at
+            .and_then(|at| SAVE_MARK_TIME.checked_sub(now.saturating_duration_since(at)));
+        [wait, resume_wait, mark_wait].into_iter().flatten().min()
+    }
+
+    /// The state of the save, for the save mark. `None`: no project file is
+    /// open.
+    pub fn save_mark(&self, now: Instant) -> Option<SaveMark> {
+        let session = self.session.as_ref()?;
+        let turns = |at: Instant| now.saturating_duration_since(at) < SAVE_MARK_TIME;
+        Some(if self.save_failed {
+            SaveMark::Failed
+        } else if session.waits() || self.saved_at.is_some_and(turns) {
+            SaveMark::Saving
+        } else {
+            SaveMark::Saved
+        })
+    }
+
+    /// Saves each change that waits and the state for the next start. A
+    /// stroke that still waits for its texels stays open, and it saves at
+    /// its end. The app calls this when it goes to the background.
+    pub fn save_waiting(&mut self) -> Result<(), StoreError> {
+        self.save_resume();
+        let Some(session) = &mut self.session else {
+            return Ok(());
+        };
+        let globe = &mut self.globe;
+        if globe.busy() {
+            return Ok(());
+        }
+        self.saved_edits = globe.edits();
+        let saved = session.flush(&mut self.doc.project, &mut globe.map);
+        let saved = saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view));
+        self.save_failed = saved.is_err();
+        saved
+    }
+
+    /// The save command. The app saves with no command, so the command
+    /// saves only a change that still waits.
+    pub fn save(&mut self, now: Instant) {
+        if self.session.is_none() {
+            return;
+        }
+        match self.save_waiting() {
+            Ok(()) => {
+                self.saved_at = Some(now);
+                self.status = format!("Saved {}", self.doc.project.world.name);
+            }
+            Err(e) => self.status = format!("The project did not save: {e}"),
+        }
+    }
+
+    /// The state that the next start puts back.
+    fn resume_now(&self) -> Resume {
+        let session = self
+            .session
+            .as_ref()
+            .filter(|_| self.screen == Screen::Editor);
+        let Some(session) = session else {
+            return Resume::START_SCREEN;
+        };
+        let path = session.path();
+        let globe = &self.globe;
+        Resume {
+            project: Some(std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())),
+            view: Some(resume::View {
+                workspace: self.workspace,
+                world_view: globe.world_view,
+                globe: globe.view,
+                flat_spec: globe.flat.spec(),
+                flat_center: globe.flat.center,
+                flat_zoom: globe.flat.zoom,
+            }),
+        }
+    }
+
+    /// Writes the state for the next start to the projects folder, if the
+    /// folder does not hold it.
+    pub fn save_resume(&mut self) {
+        let Some(dir) = &self.projects else {
+            return;
+        };
+        let resume = self.resume_now();
+        if self.resume.as_ref() != Some(&resume) {
+            // The state is a convenience, so its error has no message.
+            let _ = resume.write(dir);
+            self.resume = Some(resume);
+        }
+    }
+
+    /// Writes a change of the state for the next start, one time in
+    /// `RESUME_DELAY` at most. With `hold`, a gesture moves the view, and the
+    /// write waits. Returns the time to the write.
+    fn resume_tick(&mut self, hold: bool, now: Instant) -> Option<Duration> {
+        if hold || self.projects.is_none() || self.resume.as_ref() == Some(&self.resume_now()) {
+            return None;
+        }
+        let age = self.resume_at.map(|at| now.saturating_duration_since(at));
+        if let Some(wait) = age.and_then(|age| RESUME_DELAY.checked_sub(age))
+            && !wait.is_zero()
+        {
+            return Some(wait);
+        }
+        self.resume_at = Some(now);
+        self.save_resume();
+        None
+    }
+
+    /// Opens the project of the last run in the projects folder, at its last
+    /// view. Call this one time, at the start.
+    pub fn restore(&mut self) {
+        let Some(resume) = self.projects.as_deref().and_then(Resume::read) else {
+            return;
+        };
+        self.resume = Some(resume.clone());
+        let Some(path) = resume.project.filter(|path| path.is_file()) else {
+            return;
+        };
+        self.open_world(&path);
+        let open = self.session.as_ref().is_some_and(|s| s.path() == path);
+        if let (true, Some(view)) = (open, resume.view) {
+            self.workspace = view.workspace;
+            let globe = &mut self.globe;
+            globe.world_view = view.world_view;
+            globe.view = view.globe;
+            globe.flat.set_spec(view.flat_spec);
+            globe.flat.center = view.flat_center;
+            globe.flat.zoom = view.flat_zoom;
         }
     }
 
@@ -555,6 +724,7 @@ impl AppState {
                 self.browser.reload(self.projects.as_deref());
             }
             Action::ShowProjects => self.show_projects(),
+            Action::Save => self.save(Instant::now()),
             Action::OpenDialog
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog

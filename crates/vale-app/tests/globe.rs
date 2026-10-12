@@ -12,8 +12,8 @@ use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::ui::elevation::{BAR_LABEL, limit_y};
 use vale_app::ui::{AppState, Workspace, draw};
 use vale_terrain::{
-    ChannelMap, CoarseHeights, FlowMap, Mode, WindowHeights, channel_map, meters_to_level,
-    window_channels,
+    ChannelMap, CoarseHeights, FlowMap, Limits, Mode, WindowHeights, channel_map, level_to_meters,
+    meters_to_level, window_channels,
 };
 
 fn state() -> AppState {
@@ -1754,6 +1754,62 @@ fn the_brush_panel_has_the_warp_mode_and_its_two_sliders() {
     assert!(h.query_all_by_label("Seed").next().is_some());
 }
 
+#[test]
+fn the_brush_panel_has_the_floor_and_the_ceiling() {
+    use egui::accesskit::Role;
+    for mode in ["Raise", "Erode", "Warp"] {
+        let mut h = harness();
+        h.state_mut().globe.tool = Tool::Brush;
+        h.run_steps(2);
+        h.get_by_label(mode).click();
+        h.run_steps(2);
+        // The elevations that take no input.
+        let off = |h: &Harness<'static, AppState>| {
+            let values = h.query_all_by_role(Role::SpinButton);
+            values.filter(|v| v.accesskit_node().is_disabled()).count()
+        };
+        // Both limits are off at the start.
+        let brush = h.state().globe.brush;
+        assert!(!brush.floor_on && !brush.ceiling_on, "{mode}");
+        assert_eq!((brush.floor_m, brush.ceiling_m), (0.0, 1000.0), "{mode}");
+        assert_eq!(brush.limits(), Limits::default(), "{mode}");
+        assert_eq!(off(&h), 2, "{mode}");
+
+        h.get_by_label("Floor").click();
+        h.run_steps(2);
+        let brush = h.state().globe.brush;
+        assert!(brush.floor_on && !brush.ceiling_on, "{mode}");
+        assert_eq!(off(&h), 1, "{mode}");
+        h.get_by_label("Ceiling").click();
+        h.run_steps(2);
+        let brush = h.state().globe.brush;
+        assert!(brush.floor_on && brush.ceiling_on, "{mode}");
+        assert_eq!(off(&h), 0, "{mode}");
+        let (floor, ceiling) = (meters_to_level(0.0), meters_to_level(1000.0));
+        assert_eq!(brush.limits(), Limits { floor, ceiling }, "{mode}");
+
+        // A drag on the elevation of the ceiling changes it.
+        let pos = {
+            let values = h.query_all_by_role(Role::SpinButton);
+            let mut value = values.filter(|v| v.accesskit_node().numeric_value() == Some(1000.0));
+            value.next_back().unwrap().rect().center()
+        };
+        button(&mut h, egui::PointerButton::Primary, pos, true);
+        h.step();
+        for i in 1..=5 {
+            let moved = pos + Vec2::new(8.0 * i as f32, 0.0);
+            h.event(egui::Event::PointerMoved(moved));
+            h.step();
+        }
+        let to = pos + Vec2::new(40.0, 0.0);
+        button(&mut h, egui::PointerButton::Primary, to, false);
+        h.run_steps(2);
+        let brush = h.state().globe.brush;
+        assert!(brush.ceiling_m > 1000.0, "{mode}: {}", brush.ceiling_m);
+        assert_eq!(brush.floor_m, 0.0, "{mode}");
+    }
+}
+
 /// The level of each texel of the heightmap.
 fn map_levels(map: &vale_terrain::Heightmap) -> Vec<u16> {
     let n = map.face_size();
@@ -2217,6 +2273,57 @@ fn erode_in_a_far_view_lowers_the_land_and_the_sea_floor() {
     assert!(land(&after) * 10 > land(&before) * 9);
 }
 
+/// Paints an erode stroke from the land of the island to the sea.
+fn erode_to_the_sea(h: &mut Harness<'static, AppState>) {
+    let c = h.state().globe.rect.center();
+    let reach = 0.88 * h.state().globe.radius() as f32;
+    let (from, to) = (c, c + Vec2::new(reach, 0.0));
+    button(h, egui::PointerButton::Primary, from, true);
+    h.step();
+    for i in 1..=40 {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 40.0)));
+        h.step();
+    }
+    button(h, egui::PointerButton::Primary, to, false);
+    h.step();
+    settle(h);
+}
+
+#[test]
+fn an_erode_stroke_with_a_floor_keeps_the_land_above_the_sea() {
+    let _gpu = one_gpu_test();
+    let mut h = erode_harness();
+    let before = all_levels(&h);
+    let sea = meters_to_level(0.0);
+
+    // Without the floor, the stroke moves land below the sea and lowers
+    // the sea floor.
+    erode_to_the_sea(&mut h);
+    let free = all_levels(&h);
+    let pairs = || before.iter().zip(&free);
+    let drowned = pairs().filter(|&(&old, &new)| old > sea && new < sea);
+    let sea_floor = pairs().filter(|&(&old, &new)| old <= sea && new < old);
+    let (drowned, sea_floor) = (drowned.count(), sea_floor.count());
+    assert!(drowned > 100 && sea_floor > 1000, "{drowned} {sea_floor}");
+    undo_stroke(&mut h, &before);
+
+    let brush = &mut h.state_mut().globe.brush;
+    (brush.floor_on, brush.floor_m) = (true, 0.0);
+    assert_eq!(brush.limits().floor, sea);
+    erode_to_the_sea(&mut h);
+    let after = all_levels(&h);
+    let (mut cut, mut at_floor) = (0, 0);
+    for (&old, &new) in before.iter().zip(&after) {
+        assert!(new <= old, "{new} over {old}");
+        // Land stays at the floor or above it, and the sea floor stays.
+        assert!(new >= old.min(sea), "{new} from {old}");
+        cut += usize::from(new < old);
+        at_floor += usize::from(old > sea && new == sea);
+    }
+    assert!(cut > 5000, "{cut}");
+    assert!(at_floor > 20, "{at_floor}");
+}
+
 #[test]
 fn erode_in_a_near_view_works_on_the_cells_of_the_window() {
     const N: usize = 2048;
@@ -2660,6 +2767,38 @@ fn uplift_raises_the_land_and_erodes_it_during_the_stroke() {
         (down + usize::from(b < a), up + usize::from(b > a))
     });
     assert!(down > 500 && up > 500, "{down} down, {up} up");
+}
+
+#[test]
+fn an_uplift_stroke_with_a_ceiling_gives_a_plateau() {
+    let _gpu = one_gpu_test();
+    let mut h = uplift_harness();
+    let before = all_levels(&h);
+    let start = *before.iter().max().unwrap();
+
+    // Without the ceiling, the range is much higher than the ceiling.
+    let free = uplift_stroke(&mut h);
+    let top = *free.iter().max().unwrap();
+    assert!(top > start + 2000, "{top} from {start}");
+    undo_stroke(&mut h, &before);
+
+    let brush = &mut h.state_mut().globe.brush;
+    brush.ceiling_on = true;
+    brush.ceiling_m = level_to_meters(start + (top - start) / 3).round();
+    let ceiling = brush.limits().ceiling;
+    assert!(start + 500 < ceiling && ceiling + 500 < top, "{ceiling}");
+    assert!(free.iter().filter(|&&level| level > ceiling).count() > 1000);
+
+    let after = uplift_stroke(&mut h);
+    let (mut up, mut plateau) = (0, 0);
+    for (&old, &new) in before.iter().zip(&after) {
+        assert!(old < ceiling);
+        assert!(new <= ceiling, "{new} over the ceiling {ceiling}");
+        up += usize::from(new > old);
+        plateau += usize::from(new == ceiling);
+    }
+    assert!(up > 2000, "{up}");
+    assert!(plateau > 500, "{plateau}");
 }
 
 #[test]
