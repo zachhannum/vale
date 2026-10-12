@@ -8,7 +8,7 @@
 use std::f64::consts::FRAC_PI_2;
 use std::ops::Range;
 
-use crate::cube::FACES;
+use crate::cube::{FACES, face_dir, unwarp};
 use crate::heightmap::{Limits, MAX_BRUSH_RADIUS, TexelRect, brush_rect, hash};
 use crate::math::{V3, add, angle, cross, dot, length, normalize, scale};
 
@@ -19,9 +19,10 @@ pub const RIDGE_SEGMENTS: usize = 128;
 /// of the brush radius.
 pub const RIDGE_SPACING: f64 = 0.25;
 
-/// The largest number of new segments in one plan. The other segments of the
-/// plan are the ones near them.
-const NEW_SEGMENTS: usize = RIDGE_SEGMENTS / 2;
+/// The largest number of new segments in one plan. With the spacing of the
+/// app, they are 4 brush radii of line, so the rectangles of a plan stay
+/// small.
+const NEW_SEGMENTS: usize = 16;
 
 /// The ridge changes no ground farther from the line than this number of
 /// brush radii.
@@ -276,15 +277,36 @@ impl RidgeLine {
     /// The plan for the points from `from` on. `from` is the number of
     /// points that the plans before this one covered: zero, or the `end` of
     /// the last plan. The segment before the new points is in the plan,
-    /// because a new point changes the end of that segment. A plan covers
-    /// half of `RIDGE_SEGMENTS` new segments at most.
+    /// because a new point changes the end of that segment. A plan covers 16
+    /// new segments at most.
+    ///
+    /// The plan holds each segment that can reach a texel of its rectangles.
+    /// If these are more than `RIDGE_SEGMENTS`, the plan holds the nearest
+    /// ones. `GpuHeightmap::ridge` can then lose parts of the ridge of the
+    /// segments that are not in the plan.
     pub fn plan(&self, from: usize) -> RidgePlan {
+        let count = self.points.len().saturating_sub(1);
+        let start = from.saturating_sub(2).min(count);
+        self.plan_of(start, (start + NEW_SEGMENTS).min(count))
+    }
+
+    /// The difference between the two smallest distances from a unit
+    /// direction to the segments of the line, in radians. With less than two
+    /// segments near the direction, it is `f64::MAX`. Where it is near zero,
+    /// the 32-bit numbers of the shader can give the place on the other
+    /// segment. The tests of the shader use it.
+    #[doc(hidden)]
+    pub fn margin(&self, p: V3) -> f64 {
+        let count = self.points.len().saturating_sub(1);
+        self.plan_of(0, count).pick(p).1
+    }
+
+    /// The plan with the segments from `start` to `stop` as its new part.
+    fn plan_of(&self, start: usize, stop: usize) -> RidgePlan {
+        let count = self.points.len().saturating_sub(1);
         let n = self.face_size;
         let radius = self.spec.radius;
         let reach = REACH * radius;
-        let count = self.points.len().saturating_sub(1);
-        let start = from.saturating_sub(2).min(count);
-        let stop = (start + NEW_SEGMENTS).min(count);
         // Places on the new part of the line, with no more than the spacing
         // between two of them.
         let mut samples = Vec::new();
@@ -306,17 +328,43 @@ impl RidgeLine {
             let rects = rects.filter_map(|&s| brush_rect(n, face, s, 1.02 * reach));
             rects.reduce(TexelRect::union)
         });
-        // The other segments near the new part, the nearest first.
+        // A circle around each rectangle: its center and its radius. The
+        // sides of a rectangle are great circles, so the corner that is
+        // farthest from the center gives the radius.
+        let circles: Vec<(V3, f64)> = rects
+            .iter()
+            .enumerate()
+            .filter_map(|(face, rect): (usize, &Option<TexelRect>)| {
+                let rect = (*rect)?;
+                let flat = |x: usize| unwarp(x as f64 / n as f64 * 2.0 - 1.0);
+                let corners = [
+                    (rect.x0, rect.y0),
+                    (rect.x1, rect.y0),
+                    (rect.x0, rect.y1),
+                    (rect.x1, rect.y1),
+                ]
+                .map(|(x, y)| face_dir(face, flat(x), flat(y)));
+                let center = normalize(corners.into_iter().fold([0.0; 3], add));
+                let radius = corners
+                    .map(|c| angle(center, c))
+                    .into_iter()
+                    .fold(0.0, f64::max);
+                Some((center, radius))
+            })
+            .collect();
+        // The other segments that can reach a texel of a rectangle, the
+        // nearest to the new part first.
         let mut others: Vec<(f64, usize)> = (0..start)
             .chain(stop..count)
             .filter_map(|j| {
+                let mut circles = circles.iter();
+                let reaches = circles.any(|&(c, r)| self.distance(j, c) < r + 1.01 * reach);
                 let distances = samples.iter().map(|&s| self.distance(j, s));
-                let nearest = distances.fold(f64::MAX, f64::min);
-                (nearest < 4.0 * reach).then_some((nearest, j))
+                reaches.then(|| (distances.fold(f64::MAX, f64::min), j))
             })
             .collect();
         others.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        others.truncate(RIDGE_SEGMENTS - (stop - start));
+        others.truncate(RIDGE_SEGMENTS.saturating_sub(stop - start));
         let mut indices: Vec<usize> = others.into_iter().map(|(_, j)| j).collect();
         indices.extend(start..stop);
         indices.sort_unstable();
@@ -349,17 +397,7 @@ impl RidgePlan {
         self.pick(p).0
     }
 
-    /// The difference between the two smallest distances from a unit
-    /// direction to the segments of the plan, in radians. With less than two
-    /// segments near the direction, it is `f64::MAX`. Where it is near zero,
-    /// the 32-bit numbers of the shader can give the place on the other
-    /// segment. The tests of the shader use it.
-    #[doc(hidden)]
-    pub fn margin(&self, p: V3) -> f64 {
-        self.pick(p).1
-    }
-
-    /// The place of a direction, and the result of `margin`.
+    /// The place of a direction, and the result of `RidgeLine::margin`.
     fn pick(&self, p: V3) -> (RidgePlace, f64) {
         let reach = REACH * self.ridge.radius;
         let sin_reach = reach.sin();
@@ -982,7 +1020,7 @@ mod tests {
         assert_eq!(plan.place(lonlat_to_dir(-9.0, 0.0)), RidgePlace::Far);
         // The plan of the last point changes no texel at the start.
         let last = line.plan(10);
-        assert_eq!((last.segments.len(), last.tail.clone()), (10, 8..10));
+        assert!(last.segments.len() >= 5 && last.tail.len() == 2);
         assert_eq!(last.place(lonlat_to_dir(10.0, 3.0)), RidgePlace::Far);
         assert_eq!(
             on(&last, lonlat_to_dir(29.0, 3.0)),
@@ -1088,8 +1126,7 @@ mod tests {
     /// line.
     fn expected(start: &Heightmap, line: &RidgeLine) -> Vec<u16> {
         let n = start.face_size();
-        let plan = line.plan(0);
-        assert_eq!(plan.end, line.len());
+        let plan = line.plan_of(0, line.len() - 1);
         let mut out = levels(start);
         for (i, level) in out.iter_mut().enumerate() {
             let p = start.texel_dir(i / (n * n), i % n, i / n % n);
