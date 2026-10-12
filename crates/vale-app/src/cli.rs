@@ -9,10 +9,12 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use crate::document::Document;
 use crate::globe::Globe;
 use crate::globe::WorldView;
+use crate::globe::export::{Exported, write_heightmap};
 use crate::globe::flat::{self, FlatView};
 use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
 use crate::pipeline::Pipeline;
 use crate::projects;
+use crate::session::Session;
 use crate::ui::pad::Panel;
 use crate::ui::world_form::FormMode;
 use crate::ui::{Action, AppState, Layout, Workspace};
@@ -120,6 +122,10 @@ pub struct Args {
     /// Import this equirectangular PNG or TIFF heightmap into the globe.
     #[arg(long, value_name = "FILE")]
     pub import_heightmap: Option<PathBuf>,
+    /// Headless: export the heightmap of the project to a GeoTIFF file and
+    /// exit.
+    #[arg(long, value_name = "FILE", requires = "project")]
+    pub export_heightmap: Option<PathBuf>,
     /// Headless: paint a fixed stroke on the globe, print the stroke delay,
     /// and exit.
     #[arg(long)]
@@ -304,6 +310,28 @@ pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Re
         None => bail!("the import of {} did not end", path.display()),
     }
     Ok(())
+}
+
+/// Runs `--export-heightmap`. The call needs no window and no GPU. `None`:
+/// the run has no such flag.
+pub fn export_heightmap(args: &Args) -> anyhow::Result<Option<Exported>> {
+    let (Some(out), Some(path)) = (&args.export_heightmap, &args.project) else {
+        return Ok(None);
+    };
+    // `Session::open` makes a file that is not there.
+    if !path.is_file() {
+        bail!("the project file {} does not exist", path.display());
+    }
+    let mut doc = Document::empty();
+    let session = Session::open(path, &mut doc).with_context(|| format!("{}", path.display()))?;
+    let map = session
+        .load_map()
+        .with_context(|| format!("{}", path.display()))?
+        .ok_or_else(|| anyhow!("the world of {} has no raster layer", path.display()))?;
+    let project = &doc.project;
+    let raster = project.rasters().first();
+    let done = write_heightmap(&map, &project.world, raster, out, &|_| {});
+    done.map(Some).map_err(|text| anyhow!("{text}"))
 }
 
 /// Applies `--zoom` and `--look-at` to the view of the document.

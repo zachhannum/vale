@@ -26,17 +26,20 @@ const MAX_FACE_SIZE: u32 = 16384;
 /// The extension of a project file.
 pub const EXTENSION: &str = "gpkg";
 
+/// The name of a world in a form that is safe as a file name. An empty name
+/// gives an empty text.
+pub fn file_stem(name: &str) -> String {
+    let safe = |c: char| match c {
+        c if c.is_alphanumeric() || " -_".contains(c) => c,
+        _ => '_',
+    };
+    name.trim().chars().map(safe).collect()
+}
+
 /// The path of a new project file in `dir` for a world with this name. No
 /// file is at the path.
 pub fn new_project_path(dir: &Path, name: &str) -> PathBuf {
-    let stem: String = name
-        .trim()
-        .chars()
-        .map(|c| match c {
-            c if c.is_alphanumeric() || " -_".contains(c) => c,
-            _ => '_',
-        })
-        .collect();
+    let stem = file_stem(name);
     let stem = if stem.is_empty() { "World" } else { &stem };
     let mut path = dir.join(format!("{stem}.{EXTENSION}"));
     let mut number = 2;

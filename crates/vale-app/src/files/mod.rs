@@ -6,6 +6,11 @@ use std::sync::{Arc, Mutex};
 #[cfg(target_os = "ios")]
 pub mod uikit;
 
+/// The folder of the export files that wait for the Files app.
+pub fn export_dir() -> PathBuf {
+    std::env::temp_dir().join("vale-export")
+}
+
 /// The picked files that wait for the app.
 #[derive(Clone, Default)]
 pub struct PickQueue(Arc<Mutex<Vec<PathBuf>>>);

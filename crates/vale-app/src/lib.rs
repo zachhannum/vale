@@ -27,6 +27,7 @@ pub extern "C" fn vale_app_main() {
     // The layers of a file take the styles of the sample.
     let result = ui::AppState::new(document::Document::sample()).and_then(|mut state| {
         state.file_buttons = false;
+        state.share_exports = true;
         state.projects = projects::default_dir();
         state.globe.set_face_size(globe::WINDOW_FACE_SIZE);
         state.show_projects();

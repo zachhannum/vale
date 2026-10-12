@@ -56,6 +56,22 @@ impl eframe::App for ValeApp {
                         picker.pick_heightmap();
                     }
                 }
+                // The hand-off of the file to the Files app is not there yet.
+                #[cfg(target_os = "ios")]
+                Action::ExportHeightmapDialog => {
+                    let path = crate::files::export_dir().join(state.export_name());
+                    state.run_action(Action::ExportHeightmap(path));
+                }
+                #[cfg(not(target_os = "ios"))]
+                Action::ExportHeightmapDialog => {
+                    let picked = rfd::FileDialog::new()
+                        .set_file_name(state.export_name())
+                        .add_filter("GeoTIFF", &["tif", "tiff"])
+                        .save_file();
+                    if let Some(path) = picked {
+                        state.run_action(Action::ExportHeightmap(path));
+                    }
+                }
                 #[cfg(not(target_os = "ios"))]
                 Action::OpenDialog => {
                     let picked = rfd::FileDialog::new()
