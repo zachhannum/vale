@@ -629,6 +629,49 @@ pub fn form_note(ui: &mut egui::Ui, text: &str, height: f32) {
     );
 }
 
+/// A rectangle that takes a tap, with no paint of its own.
+pub fn tap_area(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    name: &str,
+    enabled: bool,
+) -> Response {
+    hit(ui, controls, rect, name, Sense::click(), enabled, None)
+}
+
+/// A button with a text on the accent color. Its right edge and its middle
+/// are at `right`.
+pub fn accent_button(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    right: egui::Pos2,
+    name: &str,
+) -> Response {
+    let width = text_width(ui, name, theme::body()) + 2.0 * 18.0;
+    let rect = Rect::from_min_max(
+        pos2(right.x - width, right.y - TOUCH / 2.0),
+        pos2(right.x, right.y + TOUCH / 2.0),
+    );
+    let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
+    let color = if resp.is_pointer_button_down_on() {
+        theme::ACCENT
+    } else {
+        theme::ACCENT.gamma_multiply(0.8)
+    };
+    let back = rect.shrink(HIGHLIGHT_INSET);
+    ui.painter().rect_filled(back, theme::CONTROL_RADIUS, color);
+    let at = rect.center();
+    ui.painter().text(
+        at,
+        Align2::CENTER_CENTER,
+        name,
+        theme::body(),
+        theme::CANVAS,
+    );
+    resp
+}
+
 /// A row of a panel that is one button with its text in the middle.
 pub fn button_row(
     ui: &mut egui::Ui,
@@ -636,13 +679,24 @@ pub fn button_row(
     name: &str,
     enabled: bool,
 ) -> Response {
+    button_row_in(ui, controls, name, enabled, theme::ACCENT)
+}
+
+/// A button row with this fill color.
+pub fn button_row_in(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    enabled: bool,
+    fill: Color32,
+) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
     let resp = hit(ui, controls, rect, name, Sense::click(), enabled, None);
     let back = rect.shrink(HIGHLIGHT_INSET);
     let color = if resp.is_pointer_button_down_on() {
-        theme::ACCENT
+        fill
     } else {
-        theme::ACCENT.gamma_multiply(0.8)
+        fill.gamma_multiply(0.8)
     };
     ui.painter()
         .rect_filled(back, theme::CONTROL_RADIUS, fade(color, enabled));

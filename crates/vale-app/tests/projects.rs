@@ -10,6 +10,8 @@ use vale_app::projects;
 use vale_app::session::new_project_path;
 use vale_app::ui::browser::Dialog;
 use vale_app::ui::pad::WORLDS;
+use vale_app::ui::pad::browser as pad_browser;
+use vale_app::ui::pad::geometry::TOUCH;
 use vale_app::ui::panels::{ALL_WORLDS, FILE_MENU};
 use vale_app::ui::world_form::{CREATE, NEW_WORLD};
 use vale_app::ui::{Action, AppState, Layout, Screen, draw};
@@ -97,10 +99,35 @@ fn click_in_card(h: &mut App, label: &str, index: usize) {
     run(h);
 }
 
-/// The index of the card of the project with this name.
-fn card_of(h: &App, name: &str) -> usize {
-    let entries = &h.state().browser.entries;
-    entries.iter().position(|e| e.name == name).unwrap()
+/// An action on a project of the start screen.
+#[derive(Clone, Copy)]
+enum CardAction {
+    Rename,
+    Copy,
+    Delete,
+}
+
+/// Starts an action on the project with this name. The desktop layout has a
+/// button for each action. The iPad layout has a menu of the actions.
+fn card_action(h: &mut App, world: &str, action: CardAction) {
+    let (desktop, pad) = match action {
+        CardAction::Rename => ("Rename", pad_browser::RENAME),
+        CardAction::Copy => ("Copy", pad_browser::COPY),
+        CardAction::Delete => ("Delete", pad_browser::DELETE),
+    };
+    match h.state().layout {
+        Layout::Desktop => {
+            let entries = &h.state().browser.entries;
+            let index = entries.iter().position(|e| e.name == world).unwrap();
+            click_in_card(h, desktop, index);
+        }
+        Layout::Pad => {
+            click(h, &pad_browser::actions_name(world));
+            assert!(h.state().browser.menu.is_some());
+            click(h, pad);
+            assert_eq!(h.state().browser.menu, None);
+        }
+    }
 }
 
 /// Goes from the editor to the start screen with the control of the layout.
@@ -217,15 +244,13 @@ fn new_open_rename_copy_and_delete_work_in_both_layouts() {
         assert_eq!(names(dir.path()), ["Aurelia", "Borea"]);
 
         // Rename.
-        let card = card_of(&h, "Aurelia");
-        click_in_card(&mut h, "Rename", card);
+        card_action(&mut h, "Aurelia", CardAction::Rename);
         save_name(&mut h, "Cassia");
         assert_eq!(names(dir.path()), ["Borea", "Cassia"]);
         assert_eq!(vale_store::summary(&first).unwrap().name, "Cassia");
 
         // Copy.
-        let card = card_of(&h, "Cassia");
-        click_in_card(&mut h, "Copy", card);
+        card_action(&mut h, "Cassia", CardAction::Copy);
         assert_eq!(names(dir.path()), ["Borea", "Cassia", "Cassia copy"]);
 
         // Open: the copy has the name and the heightmap of its source.
@@ -237,8 +262,7 @@ fn new_open_rename_copy_and_delete_work_in_both_layouts() {
         all_worlds(&mut h);
 
         // Delete.
-        let card = card_of(&h, "Cassia");
-        click_in_card(&mut h, "Delete", card);
+        card_action(&mut h, "Cassia", CardAction::Delete);
         click(&mut h, "Delete world");
         assert_eq!(names(dir.path()), ["Borea", "Cassia copy"]);
         assert!(!first.exists());
@@ -247,22 +271,84 @@ fn new_open_rename_copy_and_delete_work_in_both_layouts() {
 
 #[test]
 fn delete_asks_before_it_removes_the_project() {
+    for layout in [Layout::Pad, Layout::Desktop] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = create(dir.path(), "Aurelia");
+        let mut h = app(dir.path(), layout);
+
+        card_action(&mut h, "Aurelia", CardAction::Delete);
+        let (question, cancel) = match layout {
+            Layout::Desktop => ("Delete Aurelia?", "Cancel".to_string()),
+            Layout::Pad => (
+                "\"Aurelia\" and its undo steps",
+                pad_browser::close_name(pad_browser::DELETE_TITLE),
+            ),
+        };
+        h.get_by_label_contains(question);
+        assert!(path.exists());
+        click(&mut h, &cancel);
+        assert_eq!(h.state().browser.dialog, None);
+        assert!(path.exists());
+
+        card_action(&mut h, "Aurelia", CardAction::Delete);
+        assert!(path.exists());
+        click(&mut h, "Delete world");
+        assert!(!path.exists(), "{layout:?}");
+        h.get_by_label_contains("No worlds yet");
+    }
+}
+
+/// Each control of the start screen of the iPad is large enough for a
+/// finger, and it is on the screen.
+#[test]
+fn the_ipad_start_screen_has_touch_size_controls() {
     let dir = tempfile::tempdir().unwrap();
-    let path = create(dir.path(), "Aurelia");
-    let mut h = app(dir.path(), Layout::Pad);
+    for name in ["Aurelia", "Borea", "Cassia"] {
+        create(dir.path(), name);
+    }
+    for size in [(1194.0, 834.0), (744.0, 1133.0), (390.0, 700.0)] {
+        let mut h = app(dir.path(), Layout::Pad);
+        h.set_size(egui::vec2(size.0, size.1));
+        run(&mut h);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.0, size.1));
+        let check = |h: &App, expected: &[String]| {
+            let controls = &h.state().pad.controls;
+            let names: Vec<&str> = controls.iter().map(|c| c.name.as_str()).collect();
+            for name in expected {
+                assert!(names.contains(&name.as_str()), "{name} in {names:?}");
+            }
+            for control in controls {
+                let rect = control.rect;
+                assert!(
+                    rect.width() >= TOUCH && rect.height() >= TOUCH,
+                    "{control:?}"
+                );
+                assert!(screen.contains_rect(rect), "{control:?} at {size:?}");
+            }
+        };
+        let mut list = vec![NEW_WORLD.to_string()];
+        for name in ["Aurelia", "Borea", "Cassia"] {
+            list.push(pad_browser::open_name(name));
+            list.push(pad_browser::actions_name(name));
+        }
+        check(&h, &list);
 
-    click_in_card(&mut h, "Delete", 0);
-    h.get_by_label("Delete Aurelia?");
-    assert!(path.exists());
-    click(&mut h, "Cancel");
-    assert_eq!(h.state().browser.dialog, None);
-    assert!(path.exists());
-
-    click_in_card(&mut h, "Delete", 0);
-    assert!(path.exists());
-    click(&mut h, "Delete world");
-    assert!(!path.exists());
-    h.get_by_label_contains("No worlds yet");
+        click(&mut h, &pad_browser::actions_name("Aurelia"));
+        let rows = [pad_browser::RENAME, pad_browser::COPY, pad_browser::DELETE];
+        check(&h, &rows.map(str::to_string));
+        click(&mut h, pad_browser::RENAME);
+        let close = pad_browser::close_name(pad_browser::RENAME_TITLE);
+        let names = [pad_browser::NAME, pad_browser::SAVE_NAME, close.as_str()];
+        check(&h, &names.map(str::to_string));
+        // The keyboard of the system covers the lower half of the screen.
+        let save = h
+            .state()
+            .pad
+            .controls
+            .iter()
+            .find(|c| c.name == pad_browser::SAVE_NAME);
+        assert!(save.unwrap().rect.bottom() < size.1 / 2.0, "{size:?}");
+    }
 }
 
 #[test]

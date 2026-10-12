@@ -14,6 +14,7 @@ use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds};
 use crate::world;
 
+pub mod browser;
 pub mod geometry;
 pub mod icons;
 pub mod theme;

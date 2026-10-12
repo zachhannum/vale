@@ -1,13 +1,14 @@
 //! The start screen: the list of the projects, and the dialogs that rename
-//! and delete a project.
+//! and delete a project. The iPad layout draws its own screen from the same
+//! state.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Align2, Id, Modal, Sense, Vec2, vec2};
+use eframe::egui::{self, Id, Modal, Sense, Vec2, vec2};
 
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState};
+use super::{Action, AppState, Layout, pad};
 use crate::projects::{self, Entry};
 
 /// The edge of the picture of a project, in points.
@@ -16,9 +17,6 @@ const PICTURE: f32 = 200.0;
 const GAP: f32 = 24.0;
 /// The space between the window and the list, in points.
 const MARGIN: i8 = 32;
-/// The distance from the top of the window to a dialog with a text field,
-/// in points. The dialog stays above the keyboard of the iPad.
-const DIALOG_TOP: f32 = 96.0;
 
 /// A dialog that waits for an answer.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,8 +34,17 @@ pub enum Dialog {
     },
 }
 
+/// The open menu of the actions of one project, in the iPad layout.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionsMenu {
+    pub path: PathBuf,
+    /// The button that opened the menu.
+    pub button: egui::Rect,
+}
+
 #[derive(Default)]
 pub struct BrowserState {
+    pub menu: Option<ActionsMenu>,
     /// The projects of the folder at the last read.
     pub entries: Vec<Entry>,
     /// The pictures of the entries that the screen showed.
@@ -50,6 +57,7 @@ impl BrowserState {
     pub fn reload(&mut self, dir: Option<&Path>) {
         self.entries = dir.map(projects::list).unwrap_or_default();
         self.textures.clear();
+        self.menu = None;
     }
 
     /// The count of the pictures that the screen showed.
@@ -71,7 +79,8 @@ impl BrowserState {
         self.dialog = Some(Dialog::Delete { path, name });
     }
 
-    fn texture(&mut self, ctx: &egui::Context, entry: &Entry) -> Option<egui::TextureHandle> {
+    /// The picture of an entry as a texture.
+    pub fn texture(&mut self, ctx: &egui::Context, entry: &Entry) -> Option<egui::TextureHandle> {
         let picture = entry.thumbnail.as_ref()?;
         let load = || {
             let size = [picture.width as usize, picture.height as usize];
@@ -90,6 +99,10 @@ impl BrowserState {
 
 /// Draws the start screen.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+    if state.layout == Layout::Pad {
+        pad::browser::draw(ui, state);
+        return;
+    }
     // The test harness puts a margin around the UI. See `ui::draw`.
     let screen = ui.ctx().content_rect();
     ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
@@ -132,7 +145,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         });
     });
     dialogs(ui, state);
-    world_form::top(ui.ctx(), state, DIALOG_TOP);
+    world_form::desktop(ui.ctx(), state);
 }
 
 /// One project: the picture, the name, the date, and the buttons.
@@ -234,9 +247,7 @@ pub fn dialogs(ui: &mut egui::Ui, state: &mut AppState) {
             name,
             focused,
         } => {
-            let id = Id::new("rename_project");
-            let area = Modal::default_area(id).anchor(Align2::CENTER_TOP, [0.0, DIALOG_TOP]);
-            let modal = Modal::new(id).area(area).show(&ctx, |ui| {
+            let modal = Modal::new(Id::new("rename_project")).show(&ctx, |ui| {
                 ui.set_width(320.0);
                 ui.heading("Rename the world");
                 let field = egui::TextEdit::singleline(name).desired_width(f32::INFINITY);
