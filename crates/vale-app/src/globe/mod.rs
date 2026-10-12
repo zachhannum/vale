@@ -31,7 +31,7 @@ pub mod view;
 use crate::pen::Pen;
 use backdrop::Canvas;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels};
-use erode::{Eroder, Ground, near_side, uplift_window};
+use erode::{Eroder, Ground, brush_window, erode_window, near_side};
 use flat::FlatView;
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms, Uploads};
 use import::{ImportResult, Job, Step};
@@ -119,6 +119,11 @@ struct Eroding {
     held: Option<ErodeBrush>,
     /// The time of the last request for a step.
     stepped: Option<Instant>,
+    /// The stroke asked for its first step.
+    begun: bool,
+    /// The window of the brush. `None`: the stroke works on the cells of the
+    /// view.
+    window: Option<Window>,
 }
 
 impl Eroding {
@@ -439,17 +444,29 @@ impl Globe {
         self.eroder.pending()
     }
 
-    /// The cells that an erode stroke lowers in the view of this frame: the
+    /// The window of the brush of the erode stroke in work. `None`: no
+    /// erode stroke is in work, or the stroke works on the cells of the
+    /// view.
+    pub fn erode_window(&self) -> Option<Window> {
+        self.stroke.as_ref()?.erode.as_ref()?.window
+    }
+
+    /// The ground of an erode stroke in the view of this frame. With
+    /// `brush`, the cells are those of that window, and the water of the
+    /// view comes in. Without it, the cells are those of the view: the
     /// cells of the window of small rivers, or the cells of the global map
     /// in a far view.
-    fn erode_ground(&self) -> Ground {
+    fn erode_ground(&self, brush: Option<Window>) -> Ground {
         let global = self.rivers.coarse().clone();
-        match self.chosen {
-            Some(window) => Ground::Window {
-                heights: WindowHeights::new(&self.map, window),
+        let view = self.chosen.map(|view| WindowHeights::new(&self.map, view));
+        match (brush, view) {
+            (Some(brush), view) => Ground::Nested {
+                heights: WindowHeights::new(&self.map, brush),
+                view,
                 global,
             },
-            None => Ground::Global {
+            (None, Some(heights)) => Ground::Window { heights, global },
+            (None, None) => Ground::Global {
                 heights: global,
                 face_size: self.map.face_size(),
             },
@@ -743,10 +760,7 @@ impl Globe {
                     let points = self.brush.points(self.radius());
                     self.stats
                         .begin_stroke(self.strokes, self.brush.mode, points);
-                    let erode = (self.brush.mode == Mode::Erode).then(|| {
-                        self.eroder.begin(self.erode_ground());
-                        Eroding::default()
-                    });
+                    let erode = (self.brush.mode == Mode::Erode).then(Eroding::default);
                     let eroding = self.brush.mode == Mode::Uplift && self.brush.erosion > 0.0;
                     let uplift = eroding.then(Uplifting::default);
                     self.stroke = Some(Active {
@@ -822,6 +836,9 @@ impl Globe {
     /// Sends the erode step that arrived to the GPU. Then asks for the next
     /// step, with the places of the pen after the last one. A pen that holds
     /// still makes a step at its place. One step is in work at a time.
+    ///
+    /// The first request sets the cells of the stroke. If the stroke has the
+    /// window of the brush, that window follows the pen.
     fn erode(&mut self, now: Instant) {
         let Some(active) = &mut self.stroke else {
             return;
@@ -856,6 +873,26 @@ impl Globe {
             _ => ERODE_SYNC_SECONDS,
         };
         erode.stepped = Some(now);
+        let (first, last) = (brushes[0], brushes[brushes.len() - 1]);
+        let face_size = self.map.face_size();
+        let (begun, window) = (erode.begun, erode.window);
+        let mut next = window;
+        if !begun {
+            next = erode_window(self.chosen, first.center, first.radius, face_size);
+            self.eroder.begin(self.erode_ground(next));
+        } else if let Some(window) = window
+            && near_side(&window, last.center, last.radius)
+        {
+            let moved = brush_window(last.center, last.radius, face_size);
+            if moved != window {
+                let heights = WindowHeights::new(&self.map, moved);
+                self.eroder.move_to(Ground::Follow(heights));
+                next = Some(moved);
+            }
+        }
+        if let Some(erode) = self.stroke.as_mut().and_then(|a| a.erode.as_mut()) {
+            (erode.begun, erode.window) = (true, next);
+        }
         let rate = self.brush.strength_m * ERODE_RATE * seconds;
         self.eroder.request(brushes, rate, 0.0);
     }
@@ -905,13 +942,13 @@ impl Globe {
         let face_size = self.map.face_size();
         match uplift.window {
             None => {
-                let window = uplift_window(first.center, first.radius, face_size);
+                let window = brush_window(first.center, first.radius, face_size);
                 let heights = WindowHeights::new(&self.map, window);
                 self.eroder.begin(Ground::Alone(heights));
                 uplift.window = Some(window);
             }
             Some(window) if near_side(&window, last.center, last.radius) => {
-                let next = uplift_window(last.center, last.radius, face_size);
+                let next = brush_window(last.center, last.radius, face_size);
                 if next != window {
                     let heights = WindowHeights::new(&self.map, next);
                     self.eroder.move_to(Ground::Alone(heights));

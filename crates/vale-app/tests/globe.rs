@@ -2177,6 +2177,124 @@ fn one_undo_puts_back_the_ground_from_before_an_erode_stroke() {
     assert!(image.as_raw() == eroded.1.as_raw(), "the render");
 }
 
+/// Holds the erode brush of this size at the middle of the view for 3
+/// frames. Returns the cell of the window of the brush of the stroke, in
+/// texels, or `None` for a stroke on the cells of the view.
+fn erode_cell(h: &mut Harness<'static, AppState>, size_points: f32) -> Option<usize> {
+    h.state_mut().globe.brush.size_points = size_points;
+    h.step();
+    let globe = &h.state().globe;
+    let c = globe.rect.center();
+    let (view, n) = (globe.window().map(|w| w.window()), globe.map.face_size());
+    let radius = globe.brush.radius(globe.radius());
+    let rule = vale_app::globe::erode::erode_window(view, place(h, c), radius, n);
+    let before = h.state().globe.map.sample(place(h, c));
+
+    button(h, egui::PointerButton::Primary, c, true);
+    h.run_steps(3);
+    let window = h.state().globe.erode_window();
+    button(h, egui::PointerButton::Primary, c, false);
+    h.step();
+    settle(h);
+    assert!(h.state().globe.erode_window().is_none());
+    assert!(h.state().globe.map.sample(place(h, c)) < before);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+
+    let cell = window.map(|window| window.cell);
+    assert_eq!(cell, rule.map(|window| window.cell));
+    if let Some(window) = window {
+        // The pen is at the middle of the window.
+        let (u, v) = window.place(place(h, c)).unwrap();
+        let half = window.cells as f64 / 2.0;
+        assert!((u - half).abs() < 1.0 && (v - half).abs() < 1.0, "{u} {v}");
+    }
+    cell
+}
+
+#[test]
+fn a_small_erode_brush_works_on_the_cells_of_the_window_of_the_brush() {
+    const N: usize = 2048;
+    let _gpu = one_gpu_test();
+    // A cell of the global map is 4 texels wide.
+    assert_eq!(N / CoarseHeights::size_for(N), 4);
+    for (zoom, view_cell) in [(1.0, 4), (7.0, 2)] {
+        let mut h = island_harness(N, 0.35, zoom);
+        let globe = &mut h.state_mut().globe;
+        globe.tool = Tool::Brush;
+        globe.brush.mode = Mode::Erode;
+        globe.brush.strength_m = 3000.0;
+        h.run_steps(2);
+        let globe = &h.state().globe;
+        let view = globe.window().map(|w| w.window());
+        assert_eq!(view.map_or(4, |view| view.cell), view_cell);
+        // The radius of a brush of one point, in cells of the view.
+        let texel = std::f64::consts::FRAC_PI_2 / N as f64;
+        let cells = |size_points: f32| {
+            let globe = &h.state().globe;
+            let mut brush = globe.brush;
+            brush.size_points = size_points;
+            brush.radius(globe.radius()) / (texel * view_cell as f64)
+        };
+        let (small, large) = ((12.0 / cells(1.0)) as f32, (20.0 / cells(1.0)) as f32);
+        assert!(cells(small) < 16.0 && cells(large) > 16.0);
+
+        let cell = erode_cell(&mut h, small).expect("the window of the brush");
+        assert!(cell < view_cell, "{cell}");
+        assert_eq!(erode_cell(&mut h, large), None);
+    }
+}
+
+#[test]
+fn one_undo_puts_back_the_ground_from_before_a_stroke_on_the_window_of_the_brush() {
+    const N: usize = 2048;
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(N, 0.35, 1.0);
+    let globe = &mut h.state_mut().globe;
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Erode;
+    globe.brush.size_points = 6.0;
+    globe.brush.strength_m = 3000.0;
+    h.run_steps(2);
+    let rivers =
+        |h: &Harness<'static, AppState>| h.state().globe.channels().unwrap().bytes().to_vec();
+    let before = (all_levels(&h), rivers(&h));
+
+    // The stroke goes over the land of the island.
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(30.0, 10.0), c + Vec2::new(30.0, 10.0));
+    button(&mut h, egui::PointerButton::Primary, from, true);
+    h.step();
+    for i in 1..=30 {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 30.0)));
+        h.step();
+        let window = h
+            .state()
+            .globe
+            .erode_window()
+            .expect("the window of the brush");
+        assert!(window.cell < 4);
+    }
+    button(&mut h, egui::PointerButton::Primary, to, false);
+    h.step();
+    settle(&mut h);
+    let eroded = (all_levels(&h), rivers(&h));
+    assert!(lowered(&before.0, &eroded.0) > 10_000);
+    // The rivers of the view follow the new ground.
+    assert!(eroded.1 != before.1);
+
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before.0);
+    assert!(rivers(&h) == before.1);
+    assert!(!h.state().globe.can_undo());
+
+    assert!(h.state_mut().globe.redo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == eroded.0);
+    assert!(rivers(&h) == eroded.1);
+}
+
 #[test]
 fn the_river_width_slider_changes_the_lines() {
     let _gpu = one_gpu_test();
