@@ -758,10 +758,6 @@ impl AppState {
         for path in self.system.take_opened() {
             self.open_external(&path);
         }
-        // The system can stop an app in the background at each time.
-        if self.system.take_leave() {
-            self.save_now();
-        }
     }
 
     /// Opens the world of a project file that the system gave.

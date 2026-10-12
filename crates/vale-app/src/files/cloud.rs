@@ -25,7 +25,7 @@ use objc2_foundation::{
 use objc2_ui_kit::{
     UIApplication, UIApplicationDelegate, UIApplicationDidBecomeActiveNotification,
     UIApplicationDidFinishLaunchingNotification, UIApplicationLaunchOptionsURLKey,
-    UIApplicationOpenURLOptionsKey, UIApplicationWillResignActiveNotification,
+    UIApplicationOpenURLOptionsKey,
 };
 
 use super::{Availability, Files, SystemEvents, Version};
@@ -258,11 +258,10 @@ fn observe(name: &NSNotificationName, f: impl Fn(&NSNotification) + 'static) {
 /// app starts.
 pub fn install(system: SystemEvents) {
     // SAFETY: the statics are constants of UIKit.
-    let (launched, active, resign) = unsafe {
+    let (launched, active) = unsafe {
         (
             UIApplicationDidFinishLaunchingNotification,
             UIApplicationDidBecomeActiveNotification,
-            UIApplicationWillResignActiveNotification,
         )
     };
 
@@ -302,11 +301,8 @@ pub fn install(system: SystemEvents) {
 
     // The account of the device can change while the app is in the
     // background.
-    let events = system.clone();
     observe(active, move |_| {
-        let events = events.clone();
+        let events = system.clone();
         std::thread::spawn(move || events.set_cloud(container_documents()));
     });
-
-    observe(resign, move |_| system.leave());
 }

@@ -105,7 +105,6 @@ pub struct SystemEvents(Arc<Mutex<Events>>);
 #[derive(Default)]
 struct Events {
     opened: Vec<PathBuf>,
-    leave: bool,
     cloud: Option<Option<PathBuf>>,
     wake: Option<Box<dyn Fn() + Send>>,
 }
@@ -134,11 +133,6 @@ impl SystemEvents {
         });
     }
 
-    /// The app goes to the background.
-    pub fn leave(&self) {
-        self.change(|events| events.leave = true);
-    }
-
     /// The system gives the iCloud folder. `None`: the device has no iCloud
     /// Drive for the app.
     pub fn set_cloud(&self, dir: Option<PathBuf>) {
@@ -151,13 +145,6 @@ impl SystemEvents {
             .as_mut()
             .map(|events| std::mem::take(&mut events.opened))
             .unwrap_or_default()
-    }
-
-    pub fn take_leave(&self) -> bool {
-        let mut events = self.0.lock();
-        events
-            .as_mut()
-            .is_ok_and(|events| std::mem::take(&mut events.leave))
     }
 
     pub fn take_cloud(&self) -> Option<Option<PathBuf>> {

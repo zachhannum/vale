@@ -30,8 +30,8 @@ pub extern "C" fn vale_app_main() {
         state.file_buttons = false;
         state.projects = projects::default_locations();
         state.projects.adopt_old_projects();
-        state.recover_projects();
         state.files = Box::new(files::cloud::CloudFiles);
+        state.recover_projects();
         files::cloud::install(state.system.clone());
         state.globe.set_face_size(globe::WINDOW_FACE_SIZE);
         state.show_projects();

@@ -495,8 +495,7 @@ fn the_project_file_gets_the_working_copy_when_the_app_goes_to_the_background() 
     click(&mut h, "Open Aurelia");
     rename_open_world(&mut h, "Borea");
     assert_eq!(world_name(&path), "Aurelia");
-    h.state().system.leave();
-    h.state_mut().poll_system();
+    h.state_mut().save_waiting().unwrap();
     assert_eq!(world_name(&path), "Borea");
     assert_eq!(h.state().screen, Screen::Editor);
 }
