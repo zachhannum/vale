@@ -29,7 +29,10 @@ pub extern "C" fn vale_app_main() {
     let result = ui::AppState::new(document::Document::sample()).and_then(|mut state| {
         state.file_buttons = false;
         state.projects = projects::default_locations();
+        state.projects.adopt_old_projects();
         state.recover_projects();
+        state.files = Box::new(files::cloud::CloudFiles);
+        files::cloud::install(state.system.clone());
         state.globe.set_face_size(globe::WINDOW_FACE_SIZE);
         state.show_projects();
         app::run_window(state, (1280.0, 800.0), None, None, true)

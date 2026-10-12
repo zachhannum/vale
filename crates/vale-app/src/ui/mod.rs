@@ -9,12 +9,12 @@ use vale_sphere::LonLat;
 use vale_store::{LayerId, Project, StoreError, World};
 
 use crate::document::Document;
-use crate::files::{Availability, Files, PlainFiles};
+use crate::files::{Availability, Files, PlainFiles, SystemEvents};
 use crate::globe::import::ImportResult;
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
-use crate::projects::{self, Locations};
+use crate::projects::{self, Location, Locations};
 use crate::resume::{self, Resume};
 use crate::session::{self, Session};
 use crate::workcopy;
@@ -43,6 +43,10 @@ pub enum Action {
     NewWorld(World),
     /// Opens the world of this project file.
     OpenWorld(PathBuf),
+    /// Opens the world of a project file that the system gave. A file
+    /// outside the folders of the projects gets a copy in the local folder,
+    /// and the copy opens.
+    OpenExternal(PathBuf),
     /// Asks for a project file and opens its world.
     OpenProjectDialog,
     /// Gives the world of this project file this name.
@@ -187,6 +191,7 @@ pub struct AppState {
     pub projects: Locations,
     /// The file services of the system for those folders.
     pub files: Box<dyn Files>,
+    pub system: SystemEvents,
     /// The edit count of the globe at the last save.
     saved_edits: u64,
     /// The time of the last save, for the save mark.
@@ -232,6 +237,7 @@ impl AppState {
             session: None,
             projects: Locations::default(),
             files: Box::new(PlainFiles),
+            system: SystemEvents::default(),
             saved_edits: 0,
             saved_at: None,
             save_failed: false,
@@ -738,6 +744,53 @@ impl AppState {
         Ok(())
     }
 
+    /// Acts on what the system told the app after the last frame. Call
+    /// this in each frame.
+    pub fn poll_system(&mut self) {
+        if let Some(dir) = self.system.take_cloud()
+            && self.projects.dir(Location::Cloud) != dir.as_deref()
+        {
+            self.projects.set_cloud(dir);
+            if self.screen == Screen::Browser {
+                self.reload_projects();
+            }
+        }
+        for path in self.system.take_opened() {
+            self.open_external(&path);
+        }
+        // The system can stop an app in the background at each time.
+        if self.system.take_leave() {
+            self.save_now();
+        }
+    }
+
+    /// Opens the world of a project file that the system gave.
+    fn open_external(&mut self, path: &Path) {
+        let local = self.projects.dir(Location::Local).map(Path::to_path_buf);
+        let (Some(local), None) = (local, self.projects.location_of(path)) else {
+            let files = self.files.as_ref();
+            if files.availability(path) == Availability::Here {
+                self.open_world(path);
+            } else {
+                self.show_projects();
+                self.run_action(Action::Download(path.to_path_buf()));
+            }
+            return;
+        };
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let to = session::new_project_path(&local, &stem);
+        let files = self.files.as_ref();
+        let copied = std::fs::create_dir_all(&local).and_then(|()| {
+            files.with_access(path, &mut || {
+                files.read(path, &mut |from| std::fs::copy(from, &to).map(drop))
+            })
+        });
+        match copied {
+            Ok(()) => self.open_world(&to),
+            Err(e) => self.status = format!("The app did not copy the file: {e}"),
+        }
+    }
+
     /// Opens the world of a project file. The file of the old world gets
     /// each change that waits. If the file does not open, the old world
     /// stays open.
@@ -840,6 +893,7 @@ impl AppState {
             }
             Action::NewWorld(world) => self.new_world(world),
             Action::OpenWorld(path) => self.open_world(&path),
+            Action::OpenExternal(path) => self.open_external(&path),
             Action::RenameProject(..) | Action::CopyProject(_) | Action::DeleteProject(_) => {
                 if let Err(text) = self.project_action(action) {
                     self.status = text;

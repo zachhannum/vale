@@ -31,6 +31,7 @@ struct ValeApp {
 impl eframe::App for ValeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let state = &mut *self.state.borrow_mut();
+        state.poll_system();
         ui::draw(ui, state);
 
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
@@ -202,6 +203,9 @@ pub fn run_window(
                     apply_touch_style(&cc.egui_ctx);
                 }
             }
+            let ctx = cc.egui_ctx.clone();
+            let system = app.state.borrow().system.clone();
+            system.set_wake(Box::new(move || ctx.request_repaint()));
             #[cfg(target_os = "ios")]
             {
                 use eframe::wgpu::rwh::{HasWindowHandle as _, RawWindowHandle};

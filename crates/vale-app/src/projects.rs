@@ -162,6 +162,26 @@ impl Locations {
         Some(state.join(WORK_DIR))
     }
 
+    /// Moves each project file of the state folder to the local folder. An
+    /// older version of the iPad app kept its projects in the state folder,
+    /// which the Files app does not show. Returns the count of the files.
+    pub fn adopt_old_projects(&self) -> usize {
+        let (Some(state), Some(local)) = (&self.state, &self.local) else {
+            return 0;
+        };
+        if real_path(state) == real_path(local) || std::fs::create_dir_all(local).is_err() {
+            return 0;
+        }
+        let moved = |path: &PathBuf| {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            std::fs::rename(path, new_project_path(local, &stem)).is_ok()
+        };
+        let old = project_paths(state).into_iter();
+        old.filter(|path| placeholder_target(path).is_none())
+            .filter(moved)
+            .count()
+    }
+
     /// The folder of the working copies.
     pub fn all_work_dir(&self) -> Option<PathBuf> {
         Some(self.state.as_ref()?.join(WORK_DIR))

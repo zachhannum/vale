@@ -441,3 +441,73 @@ fn rename_copy_and_delete_work_on_a_project_in_icloud_drive() {
     assert_eq!(file_names(&dirs.cloud), [] as [&str; 0]);
     assert_eq!(file_names(&dirs.state.join("work")), [] as [&str; 0]);
 }
+
+#[test]
+fn a_project_from_the_files_app_opens_in_place_or_as_a_copy() {
+    let dirs = Dirs::new();
+    let inside = create(&dirs.cloud, "Aurelia");
+    let outside_dir = tempfile::tempdir().unwrap();
+    let outside = create(outside_dir.path(), "Borea");
+    let mut h = app(dirs.locations(true), FakeFiles::default(), Layout::Pad);
+
+    // A file in one of the two folders opens in place.
+    h.state().system.open(inside.clone());
+    h.state_mut().poll_system();
+    run(&mut h);
+    assert_eq!(h.state().screen, Screen::Editor);
+    assert_eq!(open_path(&h), inside);
+
+    // A file in another place gets a copy in the local folder.
+    h.state().system.open(outside.clone());
+    h.state_mut().poll_system();
+    run(&mut h);
+    assert_eq!(open_path(&h), dirs.local.join("Borea.gpkg"));
+    assert_eq!(h.state().doc.project.world.name, "Borea");
+    assert!(outside.exists());
+
+    // A second open of the file makes a second copy.
+    h.state_mut().run_action(Action::OpenExternal(outside));
+    assert_eq!(open_path(&h), dirs.local.join("Borea 2.gpkg"));
+}
+
+#[test]
+fn the_icloud_folder_can_come_after_the_start() {
+    let dirs = Dirs::new();
+    create(&dirs.cloud, "Aurelia");
+    let mut h = app(dirs.locations(false), FakeFiles::default(), Layout::Pad);
+    assert!(h.state().browser.entries.is_empty());
+    h.state().system.set_cloud(Some(dirs.cloud.clone()));
+    h.state_mut().poll_system();
+    assert_eq!(h.state().browser.entries.len(), 1);
+    assert_eq!(h.state().projects.available().len(), 2);
+
+    // The account goes away.
+    h.state().system.set_cloud(None);
+    h.state_mut().poll_system();
+    assert!(h.state().browser.entries.is_empty());
+}
+
+#[test]
+fn the_project_file_gets_the_working_copy_when_the_app_goes_to_the_background() {
+    let dirs = Dirs::new();
+    let path = create(&dirs.cloud, "Aurelia");
+    let mut h = app(dirs.locations(true), FakeFiles::default(), Layout::Pad);
+    click(&mut h, "Open Aurelia");
+    rename_open_world(&mut h, "Borea");
+    assert_eq!(world_name(&path), "Aurelia");
+    h.state().system.leave();
+    h.state_mut().poll_system();
+    assert_eq!(world_name(&path), "Borea");
+    assert_eq!(h.state().screen, Screen::Editor);
+}
+
+#[test]
+fn the_projects_of_an_older_version_move_to_the_local_folder() {
+    let dirs = Dirs::new();
+    create(&dirs.state, "Aurelia");
+    create(&dirs.local, "Aurelia");
+    assert_eq!(dirs.locations(false).adopt_old_projects(), 1);
+    assert_eq!(file_names(&dirs.local), ["Aurelia 2.gpkg", "Aurelia.gpkg"]);
+    assert_eq!(file_names(&dirs.state), [] as [&str; 0]);
+    assert_eq!(Locations::single(&dirs.local).adopt_old_projects(), 0);
+}

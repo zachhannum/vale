@@ -95,3 +95,70 @@ pub trait Files {
 pub struct PlainFiles;
 
 impl Files for PlainFiles {}
+
+/// What the system tells the app between two frames.
+#[derive(Clone, Default)]
+pub struct SystemEvents(Arc<Mutex<Events>>);
+
+#[derive(Default)]
+struct Events {
+    opened: Vec<PathBuf>,
+    leave: bool,
+    cloud: Option<Option<PathBuf>>,
+    wake: Option<Box<dyn Fn() + Send>>,
+}
+
+impl SystemEvents {
+    fn change(&self, f: impl FnOnce(&mut Events)) {
+        if let Ok(mut events) = self.0.lock() {
+            f(&mut events);
+            if let Some(wake) = &events.wake {
+                wake();
+            }
+        }
+    }
+
+    /// Sets the function that asks the app for a new frame.
+    pub fn set_wake(&self, wake: Box<dyn Fn() + Send>) {
+        self.change(|events| events.wake = Some(wake));
+    }
+
+    /// The system asks the app to open a project file.
+    pub fn open(&self, path: PathBuf) {
+        self.change(|events| {
+            if !events.opened.contains(&path) {
+                events.opened.push(path);
+            }
+        });
+    }
+
+    /// The app goes to the background.
+    pub fn leave(&self) {
+        self.change(|events| events.leave = true);
+    }
+
+    /// The system gives the iCloud folder. `None`: the device has no iCloud
+    /// Drive for the app.
+    pub fn set_cloud(&self, dir: Option<PathBuf>) {
+        self.change(|events| events.cloud = Some(dir));
+    }
+
+    pub fn take_opened(&self) -> Vec<PathBuf> {
+        let mut events = self.0.lock();
+        events
+            .as_mut()
+            .map(|events| std::mem::take(&mut events.opened))
+            .unwrap_or_default()
+    }
+
+    pub fn take_leave(&self) -> bool {
+        let mut events = self.0.lock();
+        events
+            .as_mut()
+            .is_ok_and(|events| std::mem::take(&mut events.leave))
+    }
+
+    pub fn take_cloud(&self) -> Option<Option<PathBuf>> {
+        self.0.lock().ok()?.cloud.take()
+    }
+}
