@@ -2093,7 +2093,6 @@ fn ridge_run(
             .iter()
             .all(|plan| plan.segments.len() <= RIDGE_SEGMENTS)
     );
-    assert!(!skip_ties || plans.len() == 1, "one plan has all segments");
     let mut cpu = Heightmap::new(n, start.base());
     for (face, rect) in start.allocated_rects() {
         let mut data = Vec::new();
@@ -2139,7 +2138,7 @@ fn ridge_run(
             if a == b {
                 continue;
             }
-            if skip_ties && plans[0].margin(cpu.texel_dir(face, i % n, i / n)) < 0.05 * step {
+            if skip_ties && line.margin(cpu.texel_dir(face, i % n, i / n)) < 0.05 * step {
                 run.skipped += 1;
                 continue;
             }
@@ -2292,4 +2291,25 @@ fn a_batch_takes_a_limited_number_of_ridge_plans() {
     assert!(map.ridge(&gpu.queue, &mut enc, &plan));
     gpu.submit(enc);
     map.begin_batch();
+}
+
+/// The first leg of the line is 16 degrees to the side of the long last
+/// leg. The rectangle of a plan of the last leg holds a part of the first
+/// leg at its corner, and the pass keeps the ridge there.
+#[test]
+fn gpu_ridge_keeps_an_older_part_of_the_line_in_the_corner_of_a_plan() {
+    let start = smooth_ground(512);
+    let places = [
+        (-14.0, 2.0),
+        (-2.0, 14.0),
+        (-24.0, 6.0),
+        (-10.0, -10.0),
+        (10.0, 10.0),
+    ];
+    // The line turns back at two places, and two parts of it are at the
+    // same distance from a texel there.
+    let run = ridge_run(&start, ridge_spec(0.03), &places, false, true);
+    assert_ridge("older part in the corner of a plan", &run, &[0]);
+    assert!(run.skipped < run.changed[0] / 20, "{}", run.skipped);
+    assert!(run.plans > 3, "{}", run.plans);
 }
