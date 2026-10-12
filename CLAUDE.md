@@ -55,7 +55,7 @@ The phase table in `docs/DESIGN.md` gives the order of the work after that. When
 - The license is `MIT OR Apache-2.0` for all crates.
 - Do not name a binary `vale`, because a popular prose linter uses that command name.
 - Before you add Vello, Parley, or Krilla as a dependency, make sure of its current release status.
-- Procedural world generation is a permanent non-goal.
+- Wholesale procedural world generation is a permanent non-goal.
 - If a change contradicts `docs/DESIGN.md`, update the document in the same change.
 - Reference files for the demo are updated with `VALE_UPDATE_REFERENCE=1`.
 
