@@ -5,7 +5,8 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, talus_levels,
+    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan,
+    meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, normalize, scale};
@@ -71,6 +72,14 @@ pub struct BrushSettings {
     /// The size of the features of the noise of the warp mode, in
     /// kilometers.
     pub scale_km: f64,
+    /// The brush does not move ground across the floor.
+    pub floor_on: bool,
+    /// The elevation of the floor, in meters.
+    pub floor_m: f64,
+    /// The brush does not move ground across the ceiling.
+    pub ceiling_on: bool,
+    /// The elevation of the ceiling, in meters.
+    pub ceiling_m: f64,
 }
 
 impl Default for BrushSettings {
@@ -87,6 +96,10 @@ impl Default for BrushSettings {
             erosion: 0.5,
             warp_km: 50.0,
             scale_km: 200.0,
+            floor_on: false,
+            floor_m: 0.0,
+            ceiling_on: false,
+            ceiling_m: 1000.0,
         }
     }
 }
@@ -95,6 +108,22 @@ impl Default for BrushSettings {
 const LOCK_RADIUS: std::ops::RangeInclusive<f64> = 1e-4..=MAX_BRUSH_RADIUS;
 
 impl BrushSettings {
+    /// The floor and the ceiling in levels. A limit that is off has no
+    /// effect.
+    pub fn limits(&self) -> Limits {
+        let off = Limits::default();
+        Limits {
+            floor: match self.floor_on {
+                true => meters_to_level(self.floor_m),
+                false => off.floor,
+            },
+            ceiling: match self.ceiling_on {
+                true => meters_to_level(self.ceiling_m),
+                false => off.ceiling,
+            },
+        }
+    }
+
     /// The brush radius as an angle on the sphere, in radians. `globe_radius`
     /// is the radius of the globe on screen, in points.
     pub fn radius(&self, globe_radius: f64) -> f64 {
@@ -259,6 +288,7 @@ impl Tip<'_> {
             talus: 0.0,
             scale: 0.0,
             seed: 0,
+            limits: self.brush.limits(),
         }
     }
 }
@@ -468,6 +498,53 @@ mod tests {
     }
 
     #[test]
+    fn the_stamp_has_the_limits_of_the_brush_in_levels() {
+        let stamp_of = |brush: &BrushSettings| {
+            let mut out = Vec::new();
+            Stroke::default().add_sample(brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
+            out[0]
+        };
+        // Both limits are off at the start.
+        let mut brush = BrushSettings::default();
+        assert!(!brush.floor_on && !brush.ceiling_on);
+        assert_eq!((brush.floor_m, brush.ceiling_m), (0.0, 1000.0));
+        assert_eq!(brush.limits(), Limits::default());
+        assert_eq!(stamp_of(&brush).limits, Limits::default());
+
+        brush.floor_on = true;
+        let floor = meters_to_level(0.0);
+        assert_eq!(floor, 32768);
+        assert_eq!(
+            stamp_of(&brush).limits,
+            Limits {
+                floor,
+                ceiling: 65535
+            }
+        );
+
+        brush.ceiling_on = true;
+        brush.ceiling_m = 3000.0;
+        let ceiling = meters_to_level(3000.0);
+        assert_eq!(ceiling, 49151);
+        for mode in [
+            Mode::Lower,
+            Mode::Smooth,
+            Mode::Weather,
+            Mode::Uplift,
+            Mode::Warp,
+        ] {
+            brush.mode = mode;
+            assert_eq!(stamp_of(&brush).limits, Limits { floor, ceiling });
+        }
+
+        // The floor can be above the ceiling.
+        brush.floor_m = 4000.0;
+        let limits = stamp_of(&brush).limits;
+        assert_eq!(limits.floor, meters_to_level(4000.0));
+        assert_eq!(limits.ceiling, ceiling);
+    }
+
+    #[test]
     fn the_spacing_is_at_least_half_a_texel() {
         let brush = BrushSettings::default();
         let mut stroke = Stroke::default();
@@ -644,6 +721,7 @@ mod tests {
             talus: 0.0,
             scale: 0.0,
             seed: 0,
+            limits: Limits::default(),
         })
     }
 

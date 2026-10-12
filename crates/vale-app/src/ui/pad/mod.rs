@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
-use vale_terrain::Mode;
+use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode};
 
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, SaveMark, Workspace, elevation, globe, panels};
@@ -737,8 +737,37 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             brush.talus_deg = degrees;
         }
     }
+    let floor = (&mut brush.floor_on, &mut brush.floor_m);
+    limit_rows(ui, controls, "Floor", "Brush floor", floor);
+    let ceiling = (&mut brush.ceiling_on, &mut brush.ceiling_m);
+    limit_rows(ui, controls, "Ceiling", "Brush ceiling", ceiling);
     ui.spacing_mut().item_spacing.y = 6.0;
     panels::brush_settings(ui, state);
+}
+
+/// The step of the slider of an elevation limit of the brush, in meters.
+const LIMIT_STEP_M: f64 = 50.0;
+
+/// The switch of an elevation limit of the brush. While the switch is on,
+/// a slider below it sets the elevation.
+fn limit_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    label: &str,
+    name: &str,
+    (on, meters): (&mut bool, &mut f64),
+) {
+    widgets::switch_row(ui, controls, name, label, on);
+    if !*on {
+        return;
+    }
+    let span = ELEV_MAX - ELEV_MIN;
+    let mut fraction = ((*meters - ELEV_MIN) / span).clamp(0.0, 1.0);
+    let text = format!("{:.0} m", *meters);
+    let name = format!("{name} level");
+    if widgets::row_slider(ui, controls, &name, "Level", &mut fraction, &text) {
+        *meters = ((ELEV_MIN + fraction * span) / LIMIT_STEP_M).round() * LIMIT_STEP_M;
+    }
 }
 
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {

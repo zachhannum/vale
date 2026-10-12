@@ -16,7 +16,7 @@ use crate::bands::SEA_LEVEL;
 use crate::cube::{FACES, meters_to_level};
 use crate::erode::{ErodeGrid, ErodeStep};
 use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
-use crate::heightmap::{Mode, StampPlan, TILE_SIZE, TexelRect};
+use crate::heightmap::{Limits, Mode, StampPlan, TILE_SIZE, TexelRect};
 use crate::tiles::{Pool, TILES_WGSL};
 
 /// The number of face passes in one batch. One group of stamps takes one pass
@@ -125,11 +125,17 @@ struct Uniforms {
     origin: [i32; 2],
     /// The number of cells of an erode pass along one side of a face.
     cells: u32,
-    pad: u32,
+    /// The limits of the stamps of the group or of the erode pass. The low
+    /// 16 bits are the floor, and the high 16 bits are the ceiling.
+    limits: u32,
     /// The texels of the drop texture that hold the drops of an erode pass:
     /// x0, y0, x1, y1. The drop of each other cell is 0.
     drop_rect: [i32; 4],
     stamps: [FaceStamp; GROUP_STAMPS],
+}
+
+fn packed(limits: Limits) -> u32 {
+    u32::from(limits.floor) | u32::from(limits.ceiling) << 16
 }
 
 fn area(rect: TexelRect) -> usize {
@@ -607,8 +613,8 @@ impl GpuHeightmap {
     /// for each face. Returns the number of stamps in the group. The result
     /// is the same as that of `stamp` for each one in order.
     ///
-    /// The stamps of a group have one mode. A smooth stamp, a weather stamp,
-    /// or a warp stamp is a group of one.
+    /// The stamps of a group have one mode and the same limits. A smooth
+    /// stamp, a weather stamp, or a warp stamp is a group of one.
     /// A group has `GROUP_STAMPS` stamps at most, and it stops before a stamp
     /// that is far from the others.
     ///
@@ -644,7 +650,8 @@ impl GpuHeightmap {
         let mut count = 0;
         for plan in plans.iter().take(most) {
             let next = cover.with(plan);
-            let apart = count > 0 && (plan.stamp.mode != mode || next.is_wide());
+            let other = plan.stamp.mode != mode || plan.stamp.limits != first.stamp.limits;
+            let apart = count > 0 && (other || next.is_wide());
             if apart || next.passes() > free {
                 break;
             }
@@ -698,6 +705,7 @@ impl GpuHeightmap {
                 window_origin: window.map_or([0; 2], |w| [w.x0 as i32, w.y0 as i32]),
                 window_cell: window.map_or(1, |w| w.cell as u32),
                 origin: [rect.x0 as i32, rect.y0 as i32],
+                limits: packed(first.stamp.limits),
                 ..bytemuck::Zeroable::zeroed()
             };
             // A stamp with no rectangle on this face is not in the list.
@@ -951,6 +959,7 @@ impl GpuHeightmap {
                 origin: [rect.x0 as i32, rect.y0 as i32],
                 drop_rect: [cells.x0, cells.y0, cells.x1, cells.y1].map(|c| c as i32),
                 cells: self.drops.width() - 2,
+                limits: packed(step.limits()),
                 ..bytemuck::Zeroable::zeroed()
             };
             let used = size_of::<Uniforms>() - GROUP_STAMPS * size_of::<FaceStamp>();

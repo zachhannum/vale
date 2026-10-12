@@ -21,7 +21,7 @@ use vale_app::ui::{Action, AppState, Layout, SAVE_MARK_TIME, SaveMark, Screen, d
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{Project, ProjectFile, World};
 use vale_terrain::math::lonlat_to_dir;
-use vale_terrain::{Heightmap, Mode, Stamp};
+use vale_terrain::{Heightmap, Limits, Mode, Stamp};
 
 type App = Harness<'static, AppState>;
 
@@ -178,6 +178,7 @@ fn paint(map: &mut Heightmap) {
         talus: 0.0,
         scale: 0.0,
         seed: 0,
+        limits: Limits::default(),
     });
     assert!(map.end_stroke());
 }

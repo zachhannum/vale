@@ -13,7 +13,7 @@ use crate::flow::{
     CoarseHeights, CubeGrid, Drain, FlowMap, Grid, NONE, OUT, RIVER_MIN_AREA, RIVER_MIN_CELLS,
     STEPS, Window, WindowHeights, cell_past_edge, drain, index_corners, index_dir, solid_angles,
 };
-use crate::heightmap::{MAX_BRUSH_RADIUS, TexelRect, brush_rect, falloff};
+use crate::heightmap::{Limits, MAX_BRUSH_RADIUS, TexelRect, brush_rect, falloff};
 use crate::math::{V3, dot};
 
 /// The number of cells at each side of a window where the effect of the
@@ -53,9 +53,15 @@ pub struct ErodeStep {
     grid: ErodeGrid,
     drops: Vec<u16>,
     rects: [Option<TexelRect>; FACES],
+    limits: Limits,
 }
 
 impl ErodeStep {
+    /// The limits of the erosion of the step.
+    pub fn limits(&self) -> Limits {
+        self.limits
+    }
+
     pub fn grid(&self) -> ErodeGrid {
         self.grid
     }
@@ -420,6 +426,7 @@ pub struct Erosion {
     flow: Option<Drain>,
     /// Whether `levels` changed after `flow`.
     stale: bool,
+    limits: Limits,
 }
 
 /// The effect of the brushes of one step.
@@ -541,6 +548,7 @@ impl Erosion {
         let inflow = outer.map_or_else(Vec::new, |outer| outer.inflow(&heights));
         let mut erosion = Erosion::of_window(&heights, inflow);
         erosion.heights = kept;
+        erosion.limits = self.limits;
         erosion
     }
 
@@ -567,7 +575,16 @@ impl Erosion {
                 .map_or(0, |&lowest| lowest.saturating_add(1)),
             flow: None,
             stale: true,
+            limits: Limits::default(),
         }
+    }
+
+    /// Sets the limits of each later step and of each later call of `raise`.
+    /// A step does not move a cell from above the floor to below it, and it
+    /// does not lower a cell at or below the floor. `raise` does the same at
+    /// the ceiling.
+    pub fn set_limits(&mut self, limits: Limits) {
+        self.limits = limits;
     }
 
     /// The cells of the erosion.
@@ -698,8 +715,10 @@ impl Erosion {
         self.cells_under(brushes, |_, row, x, weight| {
             rises.push((row * side + x, weight * strength));
         });
+        let ceiling = f64::from(self.limits.ceiling);
         for (i, rise) in rises {
-            let height = (f64::from(self.heights[i]) + rise).min(65535.0) as f32;
+            let old = f64::from(self.heights[i]);
+            let height = (old + rise).min(old.max(ceiling)).min(65535.0) as f32;
             self.heights[i] = height;
             let level = height.round() as u16;
             if level != self.levels[i] {
@@ -775,6 +794,7 @@ impl Erosion {
             grid: self.grid(),
             drops: vec![0; self.heights.len()],
             rects: [None; FACES],
+            limits: self.limits,
         };
         if rate.is_nan() || rate <= 0.0 {
             return step;
@@ -818,6 +838,7 @@ impl Erosion {
         };
         self.stale = false;
         let side = self.side;
+        let floor = f32::from(self.limits.floor);
         let cell = |i: u32| match place {
             Some((x0, y0, width)) => (y0 + i as usize / width) * side + x0 + i as usize % width,
             None => i as usize,
@@ -840,7 +861,7 @@ impl Erosion {
             let area = f64::from(flow.area[at as usize]) / self.min_area;
             let power = rate * f64::from(weights[i]) * area.sqrt() / length;
             let new = f64::from(below) + f64::from(height - below) / (1.0 + power);
-            self.heights[i] = (new as f32).clamp(below, height);
+            self.heights[i] = (new as f32).clamp(below, height).max(height.min(floor));
         }
         if place.is_none() {
             self.flow = Some(flow);
@@ -1240,6 +1261,7 @@ mod tests {
             grid: ErodeGrid::Global { size: m },
             drops: drops.collect(),
             rects: [Some(all); FACES],
+            limits: Limits::default(),
         }
     }
 
@@ -1491,6 +1513,115 @@ mod tests {
         };
         // Two equal runs give equal levels.
         assert!(run() == run());
+    }
+
+    #[test]
+    fn a_step_with_a_floor_leaves_no_cell_and_no_texel_below_it() {
+        let (m, n) = (48, 96);
+        let heights = CoarseHeights::from_fn(m, lumpy);
+        let mut sorted = heights.levels.clone();
+        sorted.sort_unstable();
+        // Half of the cells are above the floor.
+        let limits = Limits {
+            floor: sorted[sorted.len() / 2],
+            ..Limits::default()
+        };
+        let brushes = brushes_on_all_sides();
+        let mut erosion = Erosion::global(&heights, n);
+        erosion.set_limits(limits);
+        let mut free = Erosion::global(&heights, n);
+        let mut map = map_of(n, lumpy);
+        // The texels with the drops of the steps and no floor.
+        let mut loose = map_of(n, lumpy);
+        let first = texels(&map);
+        for _ in 0..10 {
+            let before = erosion.heights.clone();
+            let step = erosion.step(&brushes, 1e6);
+            free.step(&brushes, 1e6);
+            assert_eq!(step.limits(), limits);
+            let floor = f32::from(limits.floor);
+            for (i, (&old, &new)) in before.iter().zip(&erosion.heights).enumerate() {
+                assert!(new >= old.min(floor), "cell {i}: {old} {new}");
+            }
+            let old = texels(&map);
+            map.erode(&step);
+            for (i, (&old, &new)) in old.iter().zip(&texels(&map)).enumerate() {
+                assert!(new >= old.min(limits.floor), "texel {i}: {old} {new}");
+            }
+            loose.erode(&ErodeStep {
+                limits: Limits::default(),
+                drops: step.drops.clone(),
+                ..step
+            });
+        }
+        // The floor stops cells and texels that go below it with no floor.
+        let cells = heights.levels.iter().zip(&erosion.levels).zip(&free.levels);
+        let stopped = cells.filter(|&((&old, &new), &free)| {
+            old > limits.floor && new == limits.floor && free < limits.floor
+        });
+        assert!(stopped.count() > 100);
+        let last = texels(&map);
+        let all = first.iter().zip(&last).zip(texels(&loose));
+        let stopped = all.filter(|&((&old, &new), loose)| {
+            old > limits.floor && new == limits.floor && loose < limits.floor
+        });
+        assert!(stopped.count() > 100);
+        assert!(first.iter().zip(&last).any(|(old, new)| new < old));
+    }
+
+    #[test]
+    fn a_moved_erosion_keeps_the_limits() {
+        let n = 256;
+        let map = map_of(n, equator_valley);
+        let window = |lon: f64| Window::centered(lonlat_to_dir(lon, 0.4), n, 1, 64);
+        let limits = Limits {
+            floor: 1000,
+            ceiling: 50_000,
+        };
+        let mut erosion = Erosion::window_alone(&WindowHeights::new(&map, window(10.0)));
+        erosion.set_limits(limits);
+        let moved = erosion.moved(&WindowHeights::new(&map, window(12.0)), None);
+        assert_eq!(moved.limits, limits);
+    }
+
+    #[test]
+    fn raise_with_a_ceiling_stops_the_cells_at_it() {
+        let m = 64;
+        let floor = meters_to_level(OCEAN);
+        let flat = CoarseHeights::from_fn(m, |_| floor);
+        let center = lonlat_to_dir(10.0, 5.0);
+        let brush = ErodeBrush {
+            center,
+            radius: 0.2,
+            hardness: 0.5,
+            flow: 0.5,
+        };
+        let (face, x, y) = cell_at(m, center);
+        let middle = (face * m + y) * m + x;
+        let mut erosion = Erosion::global(&flat, 1024);
+        erosion.set_limits(Limits {
+            ceiling: floor + 1500,
+            ..Limits::default()
+        });
+        // With no ceiling, the cell in the middle goes up by 4000 levels.
+        erosion.raise(&[brush, brush], 4000.0);
+        assert_eq!(erosion.levels[middle], floor + 1500);
+        assert!(erosion.levels.iter().all(|&level| level <= floor + 1500));
+        let between = |&&level: &&u16| level > floor && level < floor + 1500;
+        assert!(erosion.levels.iter().filter(between).count() > 20);
+
+        // A cell above the ceiling does not go up.
+        let hill = erosion.levels.clone();
+        erosion.set_limits(Limits {
+            ceiling: floor + 500,
+            ..Limits::default()
+        });
+        erosion.raise(&[brush], 4000.0);
+        for (i, (&old, &new)) in hill.iter().zip(&erosion.levels).enumerate() {
+            assert!(new >= old && new <= old.max(floor + 500), "cell {i}");
+        }
+        assert_eq!(erosion.levels[middle], floor + 1500);
+        assert!(erosion.levels != hill);
     }
 
     #[test]
@@ -1846,6 +1977,7 @@ mod tests {
             talus: 0.0,
             scale: 0.1,
             seed: 1,
+            limits: Limits::default(),
         };
         map.begin_stroke();
         assert_eq!(map.stamp(&stamp), 0);

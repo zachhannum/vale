@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use eframe::egui;
 
-use vale_terrain::{Heightmap, Mode, Stamp};
+use vale_terrain::{Heightmap, Limits, Mode, Stamp};
 
 use crate::app::{ProtoApp, Source, Tool};
 use crate::math::{V3, lonlat_to_dir, slerp};
@@ -117,6 +117,7 @@ pub fn bench(face_size: usize) -> String {
                 talus: 0.0,
                 scale: 0.0,
                 seed: 0,
+                limits: Limits::default(),
             });
         }
         let ms = start.elapsed().as_secs_f64() * 1000.0 / f64::from(stamps);

@@ -934,7 +934,7 @@ impl Globe {
             (erode.begun, erode.window) = (true, next);
         }
         let rate = self.brush.strength_m * ERODE_RATE * seconds;
-        self.eroder.request(brushes, rate, 0.0);
+        self.eroder.request(brushes, rate, 0.0, self.brush.limits());
     }
 
     /// Sends the erode step of an uplift stroke that arrived to the GPU, and
@@ -1010,8 +1010,9 @@ impl Globe {
             first.radius / cell
         });
         let rate = erosion * UPLIFT_ERODE_RATE * (cells / 16.0).sqrt() * stamps.len() as f64;
+        let limits = self.brush.limits();
         self.eroder
-            .request(brushes.collect(), rate, stamps[0].strength);
+            .request(brushes.collect(), rate, stamps[0].strength, limits);
         uplift.asked = stamps;
     }
 
