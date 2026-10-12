@@ -279,6 +279,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
             (Mode::Smooth, "Smooth"),
             (Mode::Flatten, "Flatten"),
             (Mode::Carve, "Carve"),
+            (Mode::Ridge, "Ridge"),
             (Mode::Erode, "Erode"),
             (Mode::Weather, "Weather"),
             (Mode::Uplift, "Uplift"),

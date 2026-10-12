@@ -1584,6 +1584,137 @@ fn the_brush_panel_has_the_carve_mode() {
 }
 
 #[test]
+fn the_brush_panel_has_the_ridge_mode() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    h.get_by_label("Ridge").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Ridge);
+}
+
+/// The mean of the numbers, which are not empty.
+fn mean(values: &[f64]) -> f64 {
+    assert!(values.len() > 20, "{}", values.len());
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
+#[test]
+fn ridge_raises_the_land_between_the_rivers_and_leaves_the_sea() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.preview.graticule = false;
+    set_island(&mut globe.map);
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Ridge;
+    globe.brush.size_points = 80.0;
+    globe.brush.strength_m = 3000.0;
+    h.run_steps(2);
+    save(&canvas_image(&mut h), "ridge-before");
+
+    let map = &h.state().globe.map;
+    let n = map.face_size();
+    let texels = || (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let levels = |map: &vale_terrain::Heightmap| -> Vec<u16> {
+        texels()
+            .map(|(face, x, y)| map.get(face, x as i64, y as i64))
+            .collect()
+    };
+    let before = levels(map);
+    let channels = channel_map(&CoarseHeights::new(map));
+    assert!(channels.bytes() == h.state().globe.channels().unwrap().bytes());
+
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    save(&canvas_image(&mut h), "ridge-after");
+    let after = levels(&h.state().globe.map);
+    let sea = meters_to_level(0.0);
+    let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / n as f64 - 0.5;
+    // The rise of each texel that the stroke raised, near a river and far
+    // from each river.
+    let (mut near, mut far) = (Vec::new(), Vec::new());
+    for (i, (face, x, y)) in texels().enumerate() {
+        let (old, new) = (before[i], after[i]);
+        assert!(new >= old, "{new} under {old}");
+        if old <= sea {
+            assert_eq!(new, old, "the sea floor");
+        }
+        if new == old {
+            continue;
+        }
+        let (distance, _) = channels.sample(face, at(x), at(y));
+        if distance < 0.5 {
+            near.push(f64::from(new - old));
+        } else if distance > 3.0 {
+            far.push(f64::from(new - old));
+        }
+    }
+    let (near, far) = (mean(&near), mean(&far));
+    assert!(far > 2.0 * near, "{near} {far}");
+}
+
+#[test]
+fn ridge_in_a_near_view_reads_the_window() {
+    const N: usize = 2048;
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(N, 0.2, 14.0);
+    let globe = &mut h.state_mut().globe;
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Ridge;
+    globe.brush.size_points = 80.0;
+    globe.brush.strength_m = 3000.0;
+    h.run_steps(2);
+
+    // The texels of face 0 around the stroke.
+    let texels = || (N / 4..3 * N / 4).flat_map(|y| (N / 4..3 * N / 4).map(move |x| (x, y)));
+    let levels = |map: &vale_terrain::Heightmap| -> Vec<u16> {
+        texels()
+            .map(|(x, y)| map.get(0, x as i64, y as i64))
+            .collect()
+    };
+    let map = &h.state().globe.map;
+    let before = levels(map);
+    let w = h.state().globe.window().unwrap().window();
+    assert_eq!(w.cell, 1);
+    let flow = FlowMap::new(&CoarseHeights::new(map));
+    let window = window_channels(&WindowHeights::new(map, w), &flow);
+    assert!(window.bytes() == h.state().globe.window().unwrap().bytes());
+    let channels = flow.channels();
+    let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / N as f64 - 0.5;
+
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    let after = levels(&h.state().globe.map);
+    // The rise of each texel that the stroke raised: near a river of the
+    // window, far from each river of the window, and far from each river of
+    // the window but near a river of the channel map.
+    let (mut near, mut far, mut far_in_window) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, (x, y)) in texels().enumerate() {
+        let (old, new) = (before[i], after[i]);
+        if new == old {
+            continue;
+        }
+        assert!(new > old, "{new} under {old}");
+        let (u, v) = w.channel_of_texel(x as i64, y as i64);
+        let (distance, _) = window.lookup(u, v).expect("the window covers the stroke");
+        let rise = f64::from(new - old);
+        if distance < 0.5 {
+            near.push(rise);
+        } else if distance > 3.0 {
+            far.push(rise);
+            if channels.sample(0, at(x), at(y)).0 < 0.5 {
+                far_in_window.push(rise);
+            }
+        }
+    }
+    let (near, far, far_in_window) = (mean(&near), mean(&far), mean(&far_in_window));
+    assert!(far > 2.0 * near, "{near} {far}");
+    assert!(far_in_window > 2.0 * near, "{near} {far_in_window}");
+}
+
+#[test]
 fn the_brush_panel_has_the_erode_mode() {
     let mut h = harness();
     h.state_mut().globe.tool = Tool::Brush;

@@ -240,6 +240,7 @@ impl Tip<'_> {
                 Mode::Raise
                 | Mode::Lower
                 | Mode::Carve
+                | Mode::Ridge
                 | Mode::Erode
                 | Mode::Weather
                 | Mode::Uplift
@@ -376,7 +377,13 @@ pub fn plan_texels(plan: &StampPlan) -> u64 {
 fn stamp_cost(plan: &StampPlan) -> usize {
     match plan.stamp.mode {
         Mode::Smooth | Mode::Weather | Mode::Warp => GROUP_STAMPS,
-        Mode::Raise | Mode::Lower | Mode::Flatten | Mode::Carve | Mode::Erode | Mode::Uplift => 1,
+        Mode::Raise
+        | Mode::Lower
+        | Mode::Flatten
+        | Mode::Carve
+        | Mode::Ridge
+        | Mode::Erode
+        | Mode::Uplift => 1,
     }
 }
 
