@@ -9,7 +9,8 @@ use eframe::egui::{self, Id, Modal, Sense, Vec2, vec2};
 
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Layout, pad};
-use crate::projects::{self, Entry};
+use crate::files::Files;
+use crate::projects::{self, Entry, Locations};
 
 /// The edge of the picture of a project, in points.
 const PICTURE: f32 = 200.0;
@@ -70,9 +71,9 @@ pub struct BrowserState {
 }
 
 impl BrowserState {
-    /// Reads the projects folder again.
-    pub fn reload(&mut self, dir: Option<&Path>) {
-        self.entries = dir.map(projects::list).unwrap_or_default();
+    /// Reads the projects folders again.
+    pub fn reload(&mut self, locations: &Locations, files: &dyn Files) {
+        self.entries = locations.list(files);
         self.textures.clear();
         self.menu = None;
     }

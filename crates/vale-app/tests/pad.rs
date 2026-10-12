@@ -7,6 +7,7 @@ use vale_app::document::Document;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
+use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
@@ -1572,7 +1573,7 @@ fn the_menu_of_the_worlds_opens_another_world() {
         let earth = dir.path().join("Earth.gpkg");
         let mut h = painted_pad(size);
         let state = h.state_mut();
-        state.projects = Some(dir.path().to_path_buf());
+        state.projects = Locations::single(dir.path());
         state.session = Some(Session::open(&earth, &mut state.doc).unwrap());
         let layers = state.doc.project.layers().len();
         let world = World {

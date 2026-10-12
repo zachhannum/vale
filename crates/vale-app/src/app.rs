@@ -7,6 +7,8 @@ use eframe::egui;
 
 use crate::files::PickQueue;
 #[cfg(not(target_os = "ios"))]
+use crate::projects::Location;
+#[cfg(not(target_os = "ios"))]
 use crate::session::EXTENSION;
 use crate::session::Session;
 #[cfg(not(target_os = "ios"))]
@@ -88,7 +90,7 @@ impl eframe::App for ValeApp {
                 Action::OpenProjectDialog => {
                     let mut dialog =
                         rfd::FileDialog::new().add_filter("Vale project", &[EXTENSION]);
-                    if let Some(dir) = &state.projects {
+                    if let Some(dir) = state.projects.dir(Location::Local) {
                         dialog = dialog.set_directory(dir);
                     }
                     if let Some(path) = dialog.pick_file() {

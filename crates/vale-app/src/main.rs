@@ -33,7 +33,7 @@ fn run() -> anyhow::Result<u8> {
     let new_state = |doc, face_size| -> anyhow::Result<AppState> {
         let mut state = AppState::new(doc)?;
         // A new world gets a file next to the project file.
-        state.projects = args.projects_folder(!headless_run);
+        state.projects = args.locations(!headless_run);
         if args.starts_on_projects(!headless_run) {
             state.show_projects();
         }

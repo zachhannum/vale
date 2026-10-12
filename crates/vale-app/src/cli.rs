@@ -12,7 +12,7 @@ use crate::globe::WorldView;
 use crate::globe::flat::{self, FlatView};
 use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
 use crate::pipeline::Pipeline;
-use crate::projects;
+use crate::projects::{self, Locations};
 use crate::ui::pad::Panel;
 use crate::ui::world_form::FormMode;
 use crate::ui::{Action, AppState, Layout, Workspace};
@@ -64,6 +64,10 @@ pub struct Args {
     /// folder of the system.
     #[arg(long, value_name = "DIR")]
     pub projects_dir: Option<PathBuf>,
+    /// A second folder of project files, which the app shows as the iCloud
+    /// Drive folder.
+    #[arg(long, value_name = "DIR")]
+    pub cloud_dir: Option<PathBuf>,
     /// Show the start screen. The window shows it without this flag if
     /// there is no --project and no FILES.
     #[arg(long)]
@@ -160,6 +164,21 @@ impl Args {
             None if self.starts_on_projects(window) => projects::default_dir(),
             dir => dir,
         }
+    }
+
+    /// The folders of the projects. With no flag, a start screen has the
+    /// folders of the system.
+    pub fn locations(&self, window: bool) -> Locations {
+        let flags = self.projects_dir.is_some() || self.project.is_some();
+        let mut locations = match self.projects_folder(window) {
+            Some(dir) if flags => Locations::single(dir),
+            Some(_) => projects::default_locations(),
+            None => Locations::default(),
+        };
+        if self.cloud_dir.is_some() {
+            locations.set_cloud(self.cloud_dir.clone());
+        }
+        locations
     }
 
     /// True if the app opens on the start screen. `window`: the run has a

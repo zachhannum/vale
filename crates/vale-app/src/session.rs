@@ -77,11 +77,17 @@ pub struct WorldFile {
 /// A file has the name of the file in place of the name of its world if it
 /// does not give its world, or if another file has a world of that name.
 pub fn worlds(dir: &Path) -> Vec<WorldFile> {
+    worlds_of(project_files(dir).into_iter().map(|(_, path)| path))
+}
+
+/// The worlds of these project files, with the names and the order of
+/// `worlds`.
+pub fn worlds_of(paths: impl IntoIterator<Item = PathBuf>) -> Vec<WorldFile> {
     let stem = |path: &Path| {
         let stem = path.file_stem().unwrap_or_default();
         stem.to_string_lossy().into_owned()
     };
-    let files = project_files(dir).into_iter().map(|(_, path)| {
+    let files = paths.into_iter().map(|path| {
         let name = ProjectFile::world_name(&path).unwrap_or_else(|_| stem(&path));
         WorldFile { path, name }
     });

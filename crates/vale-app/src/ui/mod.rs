@@ -9,11 +9,12 @@ use vale_sphere::LonLat;
 use vale_store::{LayerId, Project, StoreError, World};
 
 use crate::document::Document;
+use crate::files::{Files, PlainFiles};
 use crate::globe::import::ImportResult;
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
-use crate::projects;
+use crate::projects::{self, Locations};
 use crate::resume::{self, Resume};
 use crate::session::{self, Session};
 
@@ -171,10 +172,11 @@ pub struct AppState {
     pub frames: u64,
     /// The open project file. `None`: the app saves nothing.
     pub session: Option<Session>,
-    /// The folder that gets the project file of a new world, and the folder
-    /// of the start screen. `None`: a new world has no file, and the app has
-    /// no start screen.
-    pub projects: Option<PathBuf>,
+    /// The folders of the project files. With no folder, a new world has no
+    /// file, and the app has no start screen.
+    pub projects: Locations,
+    /// The file services of the system for those folders.
+    pub files: Box<dyn Files>,
     /// The edit count of the globe at the last save.
     saved_edits: u64,
     /// The time of the last save, for the save mark.
@@ -218,7 +220,8 @@ impl AppState {
             file_buttons: true,
             frames: 0,
             session: None,
-            projects: None,
+            projects: Locations::default(),
+            files: Box::new(PlainFiles),
             saved_edits: 0,
             saved_at: None,
             save_failed: false,
@@ -428,7 +431,7 @@ impl AppState {
     /// Writes the state for the next start to the projects folder, if the
     /// folder does not hold it.
     pub fn save_resume(&mut self) {
-        let Some(dir) = &self.projects else {
+        let Some(dir) = self.projects.state_dir() else {
             return;
         };
         let resume = self.resume_now();
@@ -443,7 +446,10 @@ impl AppState {
     /// `RESUME_DELAY` at most. With `hold`, a gesture moves the view, and the
     /// write waits. Returns the time to the write.
     fn resume_tick(&mut self, hold: bool, now: Instant) -> Option<Duration> {
-        if hold || self.projects.is_none() || self.resume.as_ref() == Some(&self.resume_now()) {
+        if hold
+            || self.projects.state_dir().is_none()
+            || self.resume.as_ref() == Some(&self.resume_now())
+        {
             return None;
         }
         let age = self.resume_at.map(|at| now.saturating_duration_since(at));
@@ -460,7 +466,7 @@ impl AppState {
     /// Opens the project of the last run in the projects folder, at its last
     /// view. Call this one time, at the start.
     pub fn restore(&mut self) {
-        let Some(resume) = self.projects.as_deref().and_then(Resume::read) else {
+        let Some(resume) = self.projects.state_dir().and_then(Resume::read) else {
             return;
         };
         self.resume = Some(resume.clone());
@@ -530,10 +536,8 @@ impl AppState {
         }
         self.session = None;
         self.status = format!("New world: {}", world.name);
-        let path = self
-            .projects
-            .as_ref()
-            .map(|dir| session::new_project_path(dir, &world.name));
+        let dir = self.projects.new_world_dir();
+        let path = dir.map(|dir| session::new_project_path(dir, &world.name));
         self.doc.set_project(Project::new(world));
         self.globe.clear();
         self.start_world();
@@ -550,7 +554,7 @@ impl AppState {
     /// the recent list.
     fn show_world(&mut self) {
         self.screen = Screen::Editor;
-        if let (Some(dir), Some(session)) = (&self.projects, &self.session) {
+        if let (Some(dir), Some(session)) = (self.projects.state_dir(), &self.session) {
             // The recent list is a convenience, so its error has no message.
             let _ = projects::push_recent(dir, session.path());
         }
@@ -566,7 +570,12 @@ impl AppState {
         self.status.clear();
         self.world_form = None;
         self.screen = Screen::Browser;
-        self.browser.reload(self.projects.as_deref());
+        self.reload_projects();
+    }
+
+    /// Reads the projects folders again.
+    pub fn reload_projects(&mut self) {
+        self.browser.reload(&self.projects, self.files.as_ref());
     }
 
     /// The path and the name of the open project.
@@ -721,7 +730,7 @@ impl AppState {
                 if let Err(text) = self.project_action(action) {
                     self.status = text;
                 }
-                self.browser.reload(self.projects.as_deref());
+                self.reload_projects();
             }
             Action::ShowProjects => self.show_projects(),
             Action::Save => self.save(Instant::now()),
