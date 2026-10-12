@@ -2240,22 +2240,45 @@ fn gpu_ridge_matches_cpu_on_a_large_face() {
 #[test]
 fn gpu_ridge_with_limits_matches_cpu() {
     let start = Heightmap::new(256, 30000);
-    let free = ridge_run(&start, ridge_spec(0.1), &RIDGE_BEND, false, false);
+    // With this seed, the line has a strong crack.
+    let strong = Ridge {
+        seed: 6,
+        ..ridge_spec(0.1)
+    };
+    let free = ridge_run(&start, strong, &RIDGE_BEND, false, false);
     let lowest = free.levels.iter().flatten().min().copied().unwrap();
     assert!(lowest < 29000, "a crack lowers the ground: {lowest}");
     let limits = Limits {
         floor: 29500,
         ceiling: 40000,
     };
-    let spec = Ridge {
-        limits,
-        ..ridge_spec(0.1)
-    };
+    let spec = Ridge { limits, ..strong };
     let run = ridge_run(&start, spec, &RIDGE_BEND, false, false);
     assert_ridge("floor and ceiling", &run, &[0, 2]);
     let levels = run.levels.iter().flatten();
     let (low, high) = levels.fold((u16::MAX, 0), |(low, high), l| (low.min(*l), high.max(*l)));
     assert_eq!((low, high), (29500, 40000));
+}
+
+/// A radius of 260 texels gives the fabric its three octaves, and the line
+/// has more than 10 cracks.
+#[test]
+fn gpu_ridge_matches_cpu_for_a_wide_ridge_on_a_large_face() {
+    let start = smooth_ground(2048);
+    let spec = Ridge {
+        segment: 0.08,
+        offset: 0.05,
+        roughness: 3000.0,
+        ..ridge_spec(0.2)
+    };
+    let places = [(-20.0, -14.0), (20.0, 6.0), (62.0, -8.0)];
+    let run = ridge_run(&start, spec, &places, false, false);
+    assert_ridge("wide ridge on a large face", &run, &[0, 2]);
+    assert!(
+        run.changed.iter().sum::<usize>() > 400000,
+        "{:?}",
+        run.changed
+    );
 }
 
 #[test]

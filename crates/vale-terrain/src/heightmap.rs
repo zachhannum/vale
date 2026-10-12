@@ -1160,7 +1160,9 @@ impl Heightmap {
                         RidgePlace::On(place) => Some(place),
                     };
                     let start = self.level_before(face, x, y);
-                    let new = place.map_or(start, |place| plan.level(start, place));
+                    let new = place.map_or(start, |place| {
+                        plan.level(start, place, plan.noise(self.texel_dir(face, x, y)))
+                    });
                     if new != self.texel(face, x, y) {
                         self.set(face, x, y, new);
                         changed += 1;
@@ -1242,7 +1244,7 @@ pub(crate) fn hash(ix: u32, iy: u32, iz: u32, seed: u32) -> u32 {
 /// A noise vector at a point, with each part from -1 to 1. Each lattice
 /// point with whole coordinates has a vector from `hash`, and the noise
 /// changes smoothly between the 8 lattice points around the point.
-fn noise3(p: V3, seed: u32) -> V3 {
+pub(crate) fn noise3(p: V3, seed: u32) -> V3 {
     let cell = p.map(f64::floor);
     let [ix, iy, iz] = cell.map(|c| c as i32 as u32);
     let [tx, ty, tz] = [0, 1, 2].map(|k| {
