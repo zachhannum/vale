@@ -2236,7 +2236,7 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
     let brush = s.globe.brush;
     assert_eq!(
         (brush.ridge_crest_m, brush.ridge_segment_km),
-        (-2500.0, 400.0)
+        (-700.0, 400.0)
     );
     assert_eq!(
         (
@@ -2244,7 +2244,7 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
             brush.ridge_roughness_m,
             brush.ridge_valley_m
         ),
-        (100.0, 150.0, 300.0)
+        (100.0, 400.0, 300.0)
     );
     // The size and the flow stay. The mode has no hardness and no strength.
     for row in ["Brush size", "Brush flow"] {
