@@ -18,6 +18,11 @@ const CHOICE_FILE: &str = "location.txt";
 /// that is not on the device. The name of that file starts with a dot.
 const PLACEHOLDER: &str = "icloud";
 
+/// The folder in the state folder that holds the working copies.
+const WORK_DIR: &str = "work";
+/// The folder of a Mac that holds each folder of iCloud Drive.
+const SYNC_ROOT: &str = "Mobile Documents";
+
 /// One of the two folders that hold the projects.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum Location {
@@ -145,6 +150,21 @@ impl Locations {
             dir.is_some_and(|dir| path.starts_with(dir))
         };
         Location::ALL.into_iter().find(holds)
+    }
+
+    /// The folder of the working copy of a project file. `None`: the app
+    /// edits the file in place. A file in a folder of iCloud Drive has a
+    /// working copy, because the sync service must see only whole files.
+    pub fn work_dir(&self, path: &Path) -> Option<PathBuf> {
+        let synced = self.location_of(path) == Some(Location::Cloud)
+            || path.components().any(|part| part.as_os_str() == SYNC_ROOT);
+        let state = self.state.as_ref().filter(|_| synced)?;
+        Some(state.join(WORK_DIR))
+    }
+
+    /// The folder of the working copies.
+    pub fn all_work_dir(&self) -> Option<PathBuf> {
+        Some(self.state.as_ref()?.join(WORK_DIR))
     }
 
     /// The project files of each folder. The file with the newest change is
@@ -412,6 +432,60 @@ pub fn copy(path: &Path) -> Result<PathBuf, StoreError> {
         return Err(e);
     }
     Ok(to)
+}
+
+fn io_error(e: StoreError) -> std::io::Error {
+    match e {
+        StoreError::Io(e) => e,
+        other => std::io::Error::other(other.to_string()),
+    }
+}
+
+/// The path of a scratch file in the folder of the working copies.
+fn scratch(work_dir: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(work_dir)?;
+    Ok(work_dir.join(format!("scratch-{}.{EXTENSION}", std::process::id())))
+}
+
+/// `rename` for a file in a folder that a sync service owns. The change is
+/// on a copy in `work_dir`, and the file gets the copy as one whole file.
+pub fn rename_synced(
+    path: &Path,
+    name: &str,
+    work_dir: &Path,
+    files: &dyn Files,
+) -> Result<(), StoreError> {
+    let temp = scratch(work_dir)?;
+    let result = (|| {
+        files.read(path, &mut |from| std::fs::copy(from, &temp).map(drop))?;
+        rename(&temp, name)?;
+        files.write(path, &mut |to| std::fs::copy(&temp, to).map(drop))?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&temp);
+    result
+}
+
+/// `copy` for a file in a folder that a sync service owns.
+pub fn copy_synced(path: &Path, work_dir: &Path, files: &dyn Files) -> Result<PathBuf, StoreError> {
+    let temp = scratch(work_dir)?;
+    let result = (|| {
+        files.read(path, &mut |from| std::fs::copy(from, &temp).map(drop))?;
+        let name = format!("{} copy", vale_store::summary(&temp)?.name);
+        rename(&temp, &name)?;
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let to = new_project_path(dir, &name);
+        files.write(&to, &mut |to| std::fs::copy(&temp, to).map(drop))?;
+        Ok(to)
+    })();
+    let _ = std::fs::remove_file(&temp);
+    result
+}
+
+/// `delete` for a file in a folder that a sync service owns.
+pub fn delete_synced(path: &Path, files: &dyn Files) -> Result<(), StoreError> {
+    files.write(path, &mut |path| delete(path).map_err(io_error))?;
+    Ok(())
 }
 
 /// Removes a project file. The file must not be open.

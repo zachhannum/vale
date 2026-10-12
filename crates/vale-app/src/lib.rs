@@ -18,6 +18,7 @@ pub mod resume;
 pub mod session;
 pub mod ui;
 pub mod view;
+pub mod workcopy;
 pub mod world;
 
 /// The entry point that `ios/main.m` calls.
@@ -28,6 +29,7 @@ pub extern "C" fn vale_app_main() {
     let result = ui::AppState::new(document::Document::sample()).and_then(|mut state| {
         state.file_buttons = false;
         state.projects = projects::default_locations();
+        state.recover_projects();
         state.globe.set_face_size(globe::WINDOW_FACE_SIZE);
         state.show_projects();
         app::run_window(state, (1280.0, 800.0), None, None, true)

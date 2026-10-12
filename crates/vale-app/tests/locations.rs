@@ -16,7 +16,7 @@ use vale_app::projects::{Location, Locations};
 use vale_app::session::new_project_path;
 use vale_app::ui::browser::{Dialog, info_line, keep_name};
 use vale_app::ui::world_form::{CREATE, NEW_WORLD};
-use vale_app::ui::{AppState, Layout, Screen, draw};
+use vale_app::ui::{Action, AppState, Layout, Screen, draw};
 use vale_store::{Project, ProjectFile, World};
 
 type App = Harness<'static, AppState>;
@@ -306,4 +306,138 @@ fn you_pick_one_version_of_a_project_that_two_devices_changed() {
         click(&mut h, "Open Aurelia");
         assert_eq!(h.state().screen, Screen::Editor, "{layout:?}");
     }
+}
+
+/// The files of a folder, in the order of their names.
+fn file_names(dir: &Path) -> Vec<String> {
+    let Ok(files) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let name = |file: std::io::Result<std::fs::DirEntry>| {
+        file.unwrap().file_name().to_string_lossy().into_owned()
+    };
+    let mut names: Vec<String> = files.map(name).collect();
+    names.sort();
+    names
+}
+
+fn world_name(path: &Path) -> String {
+    vale_store::summary(path).unwrap().name
+}
+
+/// Gives the open world a new name, and saves it to the database of the
+/// session. The project file of a working copy does not get the change.
+fn rename_open_world(h: &mut App, name: &str) {
+    h.state_mut().doc.project.world.name = name.to_string();
+    let now = Instant::now();
+    h.state_mut().save_tick(false, now);
+    h.state_mut().save_tick(false, now + Duration::from_secs(1));
+}
+
+#[test]
+fn a_project_in_icloud_drive_is_a_whole_file_that_opens_in_another_folder() {
+    let dirs = Dirs::new();
+    let mut h = app(dirs.locations(true), FakeFiles::default(), Layout::Pad);
+    click(&mut h, NEW_WORLD);
+    click(&mut h, CREATE);
+    let path = open_path(&h);
+    assert_eq!(path.parent(), Some(dirs.cloud.as_path()));
+    // The new world is in the folder at once, and the database is not.
+    assert_eq!(file_names(&dirs.cloud), ["New world.gpkg"]);
+    assert_eq!(world_name(&path), "New world");
+
+    rename_open_world(&mut h, "Aurelia");
+    assert_eq!(world_name(&path), "New world");
+    h.state_mut().show_projects();
+    run(&mut h);
+    assert_eq!(world_name(&path), "Aurelia");
+    assert_eq!(file_names(&dirs.cloud), ["New world.gpkg"]);
+    assert_eq!(file_names(&dirs.state.join("work")), [] as [&str; 0]);
+
+    // Another device has the file in a plain folder.
+    let desktop = tempfile::tempdir().unwrap();
+    let copy = desktop.path().join("New world.gpkg");
+    std::fs::copy(&path, &copy).unwrap();
+    let mut other = app(
+        Locations::single(desktop.path()),
+        FakeFiles::default(),
+        Layout::Desktop,
+    );
+    click(&mut other, "Open Aurelia");
+    assert_eq!(other.state().screen, Screen::Editor);
+    rename_open_world(&mut other, "Borea");
+    other.state_mut().show_projects();
+    // The file comes back, and the first device opens it.
+    std::fs::copy(&copy, &path).unwrap();
+    h.state_mut().show_projects();
+    run(&mut h);
+    click(&mut h, "Open Borea");
+    assert_eq!(h.state().doc.project.world.name, "Borea");
+}
+
+#[test]
+fn the_next_start_saves_the_working_copy_of_a_run_that_stopped() {
+    let dirs = Dirs::new();
+    let path = create(&dirs.cloud, "Aurelia");
+    let mut h = app(dirs.locations(true), FakeFiles::default(), Layout::Pad);
+    click(&mut h, "Open Aurelia");
+    rename_open_world(&mut h, "Borea");
+    // The app stops with no close of the project.
+    drop(h);
+    assert_eq!(world_name(&path), "Aurelia");
+
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.projects = dirs.locations(true);
+    state.recover_projects();
+    assert_eq!(world_name(&path), "Borea");
+    assert!(state.status.contains("Aurelia"), "{}", state.status);
+    assert_eq!(file_names(&dirs.state.join("work")), [] as [&str; 0]);
+}
+
+#[test]
+fn a_change_of_another_device_while_the_project_is_open_keeps_both_versions() {
+    let dirs = Dirs::new();
+    let path = create(&dirs.cloud, "Aurelia");
+    let mut h = app(dirs.locations(true), FakeFiles::default(), Layout::Pad);
+    click(&mut h, "Open Aurelia");
+    rename_open_world(&mut h, "Mine");
+
+    // The sync service brings the version of another device.
+    std::thread::sleep(Duration::from_millis(20));
+    vale_app::projects::rename(&path, "Theirs").unwrap();
+
+    h.state_mut().show_projects();
+    run(&mut h);
+    let conflict = dirs.cloud.join("Aurelia conflict.gpkg");
+    assert_eq!(world_name(&path), "Theirs");
+    assert_eq!(world_name(&conflict), "Mine");
+    assert!(h.state().status.contains("Aurelia conflict"));
+    assert_eq!(h.state().browser.entries.len(), 2);
+}
+
+#[test]
+fn rename_copy_and_delete_work_on_a_project_in_icloud_drive() {
+    let dirs = Dirs::new();
+    let path = create(&dirs.cloud, "Aurelia");
+    let mut h = app(dirs.locations(true), FakeFiles::default(), Layout::Pad);
+    let state = h.state_mut();
+    state.run_action(Action::RenameProject(path.clone(), "Borea".to_string()));
+    assert_eq!(world_name(&path), "Borea");
+    state.run_action(Action::CopyProject(path.clone()));
+    assert_eq!(
+        world_name(&dirs.cloud.join("Borea copy.gpkg")),
+        "Borea copy"
+    );
+    state.run_action(Action::DeleteProject(path.clone()));
+    assert_eq!(file_names(&dirs.cloud), ["Borea copy.gpkg"]);
+    assert_eq!(file_names(&dirs.state.join("work")), [] as [&str; 0]);
+
+    // A project that is open and has a change goes away with its copy.
+    let copy = dirs.cloud.join("Borea copy.gpkg");
+    run(&mut h);
+    click(&mut h, "Open Borea copy");
+    rename_open_world(&mut h, "Cassia");
+    h.state_mut().run_action(Action::DeleteProject(copy));
+    assert_eq!(file_names(&dirs.cloud), [] as [&str; 0]);
+    assert_eq!(file_names(&dirs.state.join("work")), [] as [&str; 0]);
 }
