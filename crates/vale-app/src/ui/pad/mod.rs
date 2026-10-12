@@ -14,6 +14,7 @@ use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds};
 use crate::world;
 
+pub mod browser;
 pub mod geometry;
 pub mod icons;
 pub mod theme;
@@ -1072,7 +1073,9 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let shown = list.len().min(WORLD_ROWS) as f32 * PANEL_ROW;
     let rule_height = if list.is_empty() { 0.0 } else { 13.0 };
     let width = geometry::WORLDS_WIDTH.min(rects.screen.width() - 2.0 * geometry::MARGIN);
-    let size = vec2(width, 10.0 + shown + rule_height + 2.0 * PANEL_ROW + 10.0);
+    // The row of the start screen needs a folder of projects.
+    let rows = if state.projects.is_some() { 3.0 } else { 2.0 };
+    let size = vec2(width, 10.0 + shown + rule_height + rows * PANEL_ROW + 10.0);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.worlds_rect = Some(rect);
     let pressed = ctx.input(|i| {
@@ -1137,6 +1140,12 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             }
             if widgets::text_row(ui, controls, WORLD_PROPERTIES, 0.0, false, true).clicked() {
                 state.world_form = Some(WorldForm::properties(&state.doc.project.world));
+                open = false;
+            }
+            if state.projects.is_some()
+                && widgets::text_row(ui, controls, panels::ALL_WORLDS, 0.0, false, true).clicked()
+            {
+                state.actions.push(Action::ShowProjects);
                 open = false;
             }
         },

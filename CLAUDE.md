@@ -10,7 +10,7 @@ The labeling prototype is done. The `vale-labeler` library labels points and lin
 cargo run --release -p vale-labeler-demo -- --preset world --out target/demo/world.png
 ```
 
-An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. The app opens on the globe workspace, and a switch in the tool bar opens the flat map. This command opens the window:
+An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. The app opens on a start screen that lists the projects. A project opens on the globe workspace, and a switch in the tool bar opens the flat map. This command opens the window:
 
 ```sh
 cargo run --release -p vale-app
@@ -41,7 +41,7 @@ cargo run --release -p vale-globe-proto
 scripts/globe-proto-ipad.sh
 ```
 
-The app prototype saves the world, the vector layers, and the heightmap to a GeoPackage project file. The file also holds the undo log. The file does not hold the styles. The prototype leaves out rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
+The app prototype saves the world, the vector layers, and the heightmap to a GeoPackage project file. The file also holds the undo log and a small picture of the globe for the start screen. The file does not hold the styles. The prototype leaves out rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
 
 The current phase is phase 0, the iPad test loop and CI. When each PR arrives on the iPad through TestFlight, and CI builds all four platforms, the phase is done.
 
@@ -56,6 +56,7 @@ The phase table in `docs/DESIGN.md` gives the order of the work after that. When
 - Do not name a binary `vale`, because a popular prose linter uses that command name.
 - Before you add Vello, Parley, or Krilla as a dependency, make sure of its current release status.
 - Wholesale procedural world generation is a permanent non-goal.
+- All UI is iPad first. Design each screen, panel, and dialog for the iPad layout, with the theme and the widgets of `ui/pad` and with touch-size controls. A feature is not done until its iPad UI is done. The desktop UI gets a new design at a later date, so until then a plain desktop version is sufficient.
 - If a change contradicts `docs/DESIGN.md`, update the document in the same change.
 - Reference files for the demo are updated with `VALE_UPDATE_REFERENCE=1`.
 
