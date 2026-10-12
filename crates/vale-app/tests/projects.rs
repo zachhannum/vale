@@ -172,6 +172,8 @@ fn paint(map: &mut Heightmap) {
         level: 0,
         strength: 9000.0,
         talus: 0.0,
+        scale: 0.0,
+        seed: 0,
     });
     assert!(map.end_stroke());
 }
