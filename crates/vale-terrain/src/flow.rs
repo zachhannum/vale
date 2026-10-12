@@ -100,6 +100,19 @@ fn split(m: usize, i: usize) -> (usize, usize, usize) {
     (i / (m * m), i % m, i / m % m)
 }
 
+/// The direction of the center of cell `i` of all faces.
+pub(crate) fn index_dir(m: usize, i: usize) -> V3 {
+    let (face, x, y) = split(m, i);
+    cell_dir(m, face, x, y)
+}
+
+/// The directions of the 4 corners of cell `i` of all faces.
+pub(crate) fn index_corners(m: usize, i: usize) -> [V3; 4] {
+    let (face, x, y) = split(m, i);
+    let flat = |i: usize| unwarp(i as f64 / m as f64 * 2.0 - 1.0);
+    [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)].map(|(x, y)| face_dir(face, flat(x), flat(y)))
+}
+
 /// The 8 neighbors of a cell, in the order of `STEPS`. Next to a cube corner,
 /// one cell can be in the list two times.
 fn neighbors(m: usize, i: usize) -> [u32; 8] {
@@ -404,12 +417,24 @@ impl FlowMap {
         self.area(face, x, y) >= RIVER_MIN_AREA
     }
 
+    /// The number of cells along one side of a face.
+    pub(crate) fn size(&self) -> usize {
+        self.m
+    }
+
+    /// Each river cell: its index, the index of its receiver, and the solid
+    /// angle that it drains.
+    pub(crate) fn river_cells(&self) -> impl Iterator<Item = (usize, usize, f64)> + '_ {
+        let cells = self.area.iter().zip(&self.receiver).enumerate();
+        cells.filter_map(|(i, (&area, &to))| {
+            let river = f64::from(area) >= RIVER_MIN_AREA && to != NONE;
+            river.then_some((i, to as usize, f64::from(area)))
+        })
+    }
+
     /// The river cells as nodes, and the first ocean cell after each river.
     fn rivers(&self) -> Rivers {
-        let dir = |i: usize| {
-            let (face, x, y) = split(self.m, i);
-            cell_dir(self.m, face, x, y)
-        };
+        let dir = |i: usize| index_dir(self.m, i);
         Rivers::new(&self.receiver, &self.area, RIVER_MIN_AREA, dir, dir)
     }
 
@@ -925,28 +950,28 @@ impl Window {
         RIVER_MIN_CELLS * solid / count as f64
     }
 
+    /// The cell of the window that takes water from outside. The water
+    /// goes from the direction `from` to the direction `to`. Water that
+    /// starts in the window or ends outside it has no cell.
+    pub(crate) fn entry(&self, from: V3, to: V3) -> Option<usize> {
+        if self.cell_at(from).is_some() {
+            return None;
+        }
+        let (x, y) = self.cell_at(to)?;
+        Some(y * self.cells + x)
+    }
+
     /// The water of the rivers of `global` that come into the window: a cell
     /// of the window and a solid angle.
     pub(crate) fn inflow(&self, global: &FlowMap) -> Vec<(usize, f64)> {
-        let m = global.m;
-        // The window cell that holds the center of a cell of `global`.
-        let inside = |i: usize| {
-            let (face, x, y) = split(m, i);
-            let (x, y) = self.cell_at(cell_dir(m, face, x, y))?;
-            Some(y * self.cells + x)
-        };
-        let mut inflow = Vec::new();
+        let dir = |i: usize| index_dir(global.m, i);
         // A river that comes in keeps the area that it drains outside.
-        for (i, &area) in global.area.iter().enumerate() {
-            let to = global.receiver[i];
-            if f64::from(area) < RIVER_MIN_AREA || to == NONE || inside(i).is_some() {
-                continue;
-            }
-            if let Some(cell) = inside(to as usize) {
-                inflow.push((cell, f64::from(area)));
-            }
-        }
-        inflow
+        let rivers = global.river_cells();
+        let enters = rivers.filter_map(|(from, to, area)| {
+            let cell = self.entry(dir(from), dir(to))?;
+            Some((cell, area))
+        });
+        enters.collect()
     }
 }
 

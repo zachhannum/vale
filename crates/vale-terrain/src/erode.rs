@@ -11,10 +11,10 @@ use std::f64::consts::{FRAC_PI_2, SQRT_2};
 use crate::cube::{FACES, face_dir, unwarp};
 use crate::flow::{
     CoarseHeights, CubeGrid, Drain, FlowMap, Grid, NONE, OUT, RIVER_MIN_AREA, RIVER_MIN_CELLS,
-    STEPS, Window, WindowHeights, cell_past_edge, drain, solid_angles,
+    STEPS, Window, WindowHeights, cell_past_edge, drain, index_corners, index_dir, solid_angles,
 };
 use crate::heightmap::{MAX_BRUSH_RADIUS, TexelRect, brush_rect, falloff};
-use crate::math::V3;
+use crate::math::{V3, dot};
 
 /// The number of cells at each side of a window where the effect of the
 /// brush goes down to 0.
@@ -241,6 +241,162 @@ impl Grid for WindowGrid<'_> {
     }
 }
 
+/// The flow of the ground around the window of a stroke. It gives the water
+/// that comes into that window from outside. The window must be wider than
+/// one cell of the ground.
+pub struct OuterFlow {
+    grid: ErodeGrid,
+    /// The flat coordinate of each cell center along `u` and along `v`.
+    flat_u: Vec<f64>,
+    flat_v: Vec<f64>,
+    flow: Drain,
+    /// The number of cells along one side of a face of the global map.
+    global_size: usize,
+    /// The rivers of the global map that start outside the window of `grid`:
+    /// the cell, its receiver, and the solid angle that the cell drains.
+    rivers: Vec<(u32, u32, f32)>,
+}
+
+impl OuterFlow {
+    /// The flow of the cells of the coarse copy. `face_size` is the number
+    /// of texels along one side of a face of the heightmap.
+    pub fn global(heights: &CoarseHeights, face_size: usize) -> OuterFlow {
+        OuterFlow::of(Erosion::global(heights, face_size), heights.m, Vec::new())
+    }
+
+    /// The flow of the cells of a window. `global` gives the rivers that
+    /// come into the window from outside.
+    pub fn window(heights: &WindowHeights, global: &FlowMap) -> OuterFlow {
+        let (window, m) = (heights.window, global.size());
+        let rivers = global.river_cells().filter_map(|(from, to, area)| {
+            let outside = window.cell_at(index_dir(m, from)).is_none();
+            outside.then_some((from as u32, to as u32, area as f32))
+        });
+        OuterFlow::of(Erosion::window(heights, global), m, rivers.collect())
+    }
+
+    fn of(erosion: Erosion, global_size: usize, rivers: Vec<(u32, u32, f32)>) -> OuterFlow {
+        OuterFlow {
+            grid: erosion.grid(),
+            flow: erosion.drain(),
+            flat_u: erosion.flat_u,
+            flat_v: erosion.flat_v,
+            global_size,
+            rivers,
+        }
+    }
+
+    /// The directions of the 4 corners of a cell.
+    fn corners(&self, i: usize) -> [V3; 4] {
+        match self.grid {
+            ErodeGrid::Global { size } => index_corners(size, i),
+            ErodeGrid::Window(window) => {
+                let (x, y) = ((i % window.cells) as f64, (i / window.cells) as f64);
+                [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+                    .map(|(dx, dy)| window.dir(x + dx, y + dy))
+            }
+        }
+    }
+
+    /// The water that comes into the window of `inner` from outside: a cell
+    /// of the window and a solid angle. A cell outside the window with its
+    /// receiver in the window gives the area that it drains. The water goes
+    /// to the lowest cell of the window in the square of the receiver, so a
+    /// river comes in at its channel.
+    fn inflow(&self, inner: &WindowHeights) -> Vec<(usize, f64)> {
+        let window = inner.window;
+        let end = window.cells as f64;
+        let center = window.dir(end / 2.0, end / 2.0);
+        // No direction of the window is farther from the center than a
+        // corner.
+        let corners = [(0.0, 0.0), (end, 0.0), (0.0, end), (end, end)];
+        let reach = corners.map(|(u, v)| dot(center, window.dir(u, v)));
+        let reach = reach.into_iter().fold(1.0, f64::min);
+
+        let (side, view) = match self.grid {
+            ErodeGrid::Global { size } => (size, None),
+            ErodeGrid::Window(view) => (view.cells, Some(view)),
+        };
+        let dir = |i: usize| {
+            let face = view.map_or(i / (side * side), |view| view.face);
+            face_dir(face, self.flat_u[i % side], self.flat_v[i / side % side])
+        };
+        let mut inflow = Vec::new();
+        for &from in &self.flow.order {
+            let to = self.flow.receiver[from as usize];
+            if to == OUT || to == NONE {
+                continue;
+            }
+            let (from, to) = (from as usize, to as usize);
+            let d = dir(to);
+            if dot(center, d) < reach {
+                continue;
+            }
+            if let Some(cell) = window.entry(dir(from), d) {
+                let cell = lowest_in(inner, self.corners(to), cell);
+                inflow.push((cell, f64::from(self.flow.area[from])));
+            }
+        }
+
+        // A river of the global map can come into a part of the window that
+        // is outside the window of `self`.
+        let Some(view) = view else {
+            return inflow;
+        };
+        let m = self.global_size;
+        for &(from, to, area) in &self.rivers {
+            let (from, to) = (from as usize, to as usize);
+            let d = index_dir(m, to);
+            if dot(center, d) < reach {
+                continue;
+            }
+            let Some(cell) = window.entry(index_dir(m, from), d) else {
+                continue;
+            };
+            // A cell of `self` outside the window of `inner` has this water
+            // in its area.
+            let counted = view
+                .cell_at(d)
+                .is_some_and(|(x, y)| window.cell_at(view.cell_dir(x, y)).is_none());
+            if !counted {
+                let cell = lowest_in(inner, index_corners(m, to), cell);
+                inflow.push((cell, f64::from(area)));
+            }
+        }
+        inflow
+    }
+}
+
+/// The lowest cell of `heights` with its center in the square with these
+/// corners. `middle` is the cell at the middle of the square. Of two cells
+/// at one level, the result is the cell nearer to `middle`.
+fn lowest_in(heights: &WindowHeights, corners: [V3; 4], middle: usize) -> usize {
+    let window = heights.window;
+    let (mut low, mut high) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for corner in corners {
+        let Some((u, v)) = window.place(corner) else {
+            return middle;
+        };
+        low = [low[0].min(u), low[1].min(v)];
+        high = [high[0].max(u), high[1].max(v)];
+    }
+    let last = (window.cells - 1) as f64;
+    let span = |axis: usize| {
+        let first = (low[axis] - 0.5).ceil().clamp(0.0, last) as usize;
+        first..=(high[axis] - 0.5).floor().clamp(0.0, last) as usize
+    };
+    let (mx, my) = (middle % window.cells, middle / window.cells);
+    let mut best = (heights.levels[middle], 0, middle);
+    for y in span(1) {
+        for x in span(0) {
+            let i = y * window.cells + x;
+            let far = x.abs_diff(mx).pow(2) + y.abs_diff(my).pow(2);
+            best = best.min((heights.levels[i], far, i));
+        }
+    }
+    best.2
+}
+
 /// The cells of one stroke of the erode brush. The heights are fractions of
 /// a level, so a weak brush adds up over the steps.
 pub struct Erosion {
@@ -344,12 +500,19 @@ impl Erosion {
         )
     }
 
+    /// An erosion of the cells of a window in the ground of `outer`. The
+    /// water of `outer` comes into the window from outside.
+    pub fn window_in(heights: &WindowHeights, outer: &OuterFlow) -> Erosion {
+        Erosion::of_window(heights, outer.inflow(heights))
+    }
+
     /// An erosion of the cells of a window, for a stroke that leaves the
     /// window of `self`. A cell that the window of `self` holds keeps the
     /// height that the stroke gave it there. Each other cell has the height
-    /// of `heights`. No river comes into the new window from outside. `self`
-    /// must be an erosion of a window.
-    pub fn moved(&self, heights: &WindowHeights) -> Erosion {
+    /// of `heights`. The water of `outer` comes into the new window from
+    /// outside. With no `outer`, no river comes in. `self` must be an
+    /// erosion of a window.
+    pub fn moved(&self, heights: &WindowHeights, outer: Option<&OuterFlow>) -> Erosion {
         let Cells::Window { window: old, .. } = &self.cells else {
             panic!("the erosion has no window");
         };
@@ -375,7 +538,8 @@ impl Erosion {
         }
         let levels: Vec<u16> = kept.iter().map(|h| h.round() as u16).collect();
         let heights = WindowHeights { window, levels };
-        let mut erosion = Erosion::window_alone(&heights);
+        let inflow = outer.map_or_else(Vec::new, |outer| outer.inflow(&heights));
+        let mut erosion = Erosion::of_window(&heights, inflow);
         erosion.heights = kept;
         erosion
     }
@@ -1352,7 +1516,7 @@ mod tests {
             x0: first.x0 + 60,
             ..first
         };
-        let moved = erosion.moved(&ground(next));
+        let moved = erosion.moved(&ground(next), None);
         assert_eq!(moved.grid(), ErodeGrid::Window(next));
         let mut hill = 0;
         for y in 0..128 {
@@ -1373,7 +1537,7 @@ mod tests {
         // sphere.
         let far = Window::centered(lonlat_to_dir(50.0, 0.0), n, 1, 512);
         assert!(far.face != first.face);
-        let moved = erosion.moved(&ground(far));
+        let moved = erosion.moved(&ground(far), None);
         let (x, y) = far.cell_at(center).unwrap();
         let (old_x, old_y) = first.cell_at(center).unwrap();
         let (new, old) = (
@@ -1385,6 +1549,213 @@ mod tests {
             (new - old).abs() < 0.2 * (old - f32::from(floor)),
             "{new} {old}"
         );
+    }
+
+    /// The largest water that comes into an erosion of a window from
+    /// outside: the cell, the solid angle of the water, and the solid angle
+    /// that drains through the cell.
+    fn largest_inflow(erosion: &Erosion) -> (usize, f64, f64) {
+        let Cells::Window { inflow, .. } = &erosion.cells else {
+            panic!("the erosion has no window");
+        };
+        let largest = inflow.iter().max_by(|a, b| a.1.total_cmp(&b.1));
+        let &(cell, water) = largest.expect("water comes in");
+        (cell, water, f64::from(erosion.drain().area[cell]))
+    }
+
+    /// The direction of a cell of a window.
+    fn dir_of(window: Window, cell: usize) -> V3 {
+        window.cell_dir(cell % window.cells, cell / window.cells)
+    }
+
+    /// The ocean on all of the sphere.
+    fn dry() -> FlowMap {
+        FlowMap::new(&CoarseHeights::from_fn(64, |_| meters_to_level(OCEAN)))
+    }
+
+    #[test]
+    fn a_stream_of_the_view_keeps_its_area_in_the_window_of_the_brush() {
+        let n = 8192;
+        let center = lonlat_to_dir(20.0, 0.4);
+        // The window of the brush is 16 cells of the view wide.
+        let view = WindowHeights::from_fn(Window::centered(center, n, 16, 128), equator_valley);
+        let inner = WindowHeights::from_fn(Window::centered(center, n, 2, 128), equator_valley);
+        let outer = OuterFlow::window(&view, &dry());
+        let erosion = Erosion::window_in(&inner, &outer);
+        let (cell, water, inside) = largest_inflow(&erosion);
+        // The stream drains a large part of the view.
+        let view_cell = view.window.cell_solid_angle(64, 64);
+        assert!(water > 500.0 * view_cell, "{water} {view_cell}");
+        // The area in the view at the place where the stream comes in.
+        let (x, y) = view.window.cell_at(dir_of(inner.window, cell)).unwrap();
+        let outside = f64::from(outer.flow.area[y * 128 + x]);
+        eprintln!("the area inside and outside: {inside} {outside}");
+        assert!(inside >= water && (inside / outside - 1.0).abs() < 0.05);
+        // Without the view, the stream is small.
+        let alone = Erosion::window_alone(&inner).drain();
+        let alone = alone.area.iter().fold(0.0f32, |a, &b| a.max(b));
+        assert!(f64::from(alone) < 0.2 * inside, "{alone} {inside}");
+    }
+
+    #[test]
+    fn a_global_river_keeps_its_area_in_the_window_of_the_brush() {
+        let n = 8192;
+        let coarse = CoarseHeights::from_fn(64, equator_valley);
+        let global = FlowMap::new(&coarse);
+        // The area of the global map at a cell of a window.
+        let global_area = |window: Window, cell: usize| {
+            let (face, x, y) = cell_at(64, dir_of(window, cell));
+            global.area(face, x, y)
+        };
+        let check = |inner: &WindowHeights, outer: &OuterFlow| {
+            let erosion = Erosion::window_in(inner, outer);
+            let (cell, water, inside) = largest_inflow(&erosion);
+            let outside = global_area(inner.window, cell);
+            eprintln!("the area inside and outside: {inside} {outside}");
+            assert!(water >= RIVER_MIN_AREA, "{water}");
+            assert!(inside >= water && (inside / outside - 1.0).abs() < 0.05);
+            // No water counts two times.
+            let Cells::Window { inflow, .. } = &erosion.cells else {
+                panic!("the erosion has no window");
+            };
+            let sum: f64 = inflow.iter().map(|&(_, water)| water).sum();
+            eprintln!("the sum {sum} {water}");
+            assert!(sum < 1.05 * outside, "{sum} {outside}");
+            cell
+        };
+
+        // The window of the brush is 4 cells of the global map wide.
+        let center = lonlat_to_dir(20.0, 0.4);
+        let inner = WindowHeights::from_fn(Window::centered(center, n, 2, 256), equator_valley);
+        check(&inner, &OuterFlow::global(&coarse, n));
+
+        // The east half of the window of the brush is outside the view. The
+        // river comes into that half.
+        let view = WindowHeights::from_fn(Window::centered(center, n, 16, 64), equator_valley);
+        let east = view.window.dir(64.0, 32.0);
+        let inner = WindowHeights::from_fn(Window::centered(east, n, 2, 256), equator_valley);
+        let cell = check(&inner, &OuterFlow::window(&view, &global));
+        assert!(view.window.cell_at(dir_of(inner.window, cell)).is_none());
+    }
+
+    #[test]
+    fn a_moved_erosion_keeps_the_heights_and_the_river_of_the_ground() {
+        let n = 8192;
+        let coarse = CoarseHeights::from_fn(64, equator_valley);
+        let outer = OuterFlow::global(&coarse, n);
+        let ground = |window: Window| WindowHeights::from_fn(window, equator_valley);
+        let center = lonlat_to_dir(20.0, 0.4);
+        let first = Window::centered(center, n, 2, 256);
+        let brush = ErodeBrush {
+            center,
+            radius: 0.01,
+            hardness: 0.5,
+            flow: 1.0,
+        };
+        let mut erosion = Erosion::window_in(&ground(first), &outer);
+        for _ in 0..4 {
+            erosion.step(&[brush], 1.0);
+        }
+
+        // The next window is 60 cells to the side.
+        let next = Window {
+            x0: first.x0 + 120,
+            ..first
+        };
+        let moved = erosion.moved(&ground(next), Some(&outer));
+        assert_eq!(moved.grid(), ErodeGrid::Window(next));
+        let fresh = ground(next);
+        let mut lowered = 0;
+        for y in 0..256 {
+            for x in 0..256 {
+                let i = y * 256 + x;
+                let new = moved.heights[i];
+                if x + 60 < 256 {
+                    assert_eq!(new, erosion.heights[i + 60], "{x} {y}");
+                    lowered += usize::from(new < f32::from(fresh.levels[i]) - 2.0);
+                } else {
+                    assert_eq!(new, f32::from(fresh.levels[i]), "{x} {y}");
+                }
+            }
+        }
+        assert!(lowered > 50, "{lowered}");
+
+        let (_, water, inside) = largest_inflow(&moved);
+        assert!(water >= RIVER_MIN_AREA && inside >= water, "{water}");
+        let (_, same, _) = largest_inflow(&Erosion::window_in(&fresh, &outer));
+        assert!((water / same - 1.0).abs() < 0.05, "{water} {same}");
+        // With no ground around the window, no river comes in.
+        let alone = erosion.moved(&ground(next), None);
+        let Cells::Window { inflow, .. } = &alone.cells else {
+            panic!("the erosion has no window");
+        };
+        assert!(inflow.is_empty());
+    }
+
+    /// The valleys of one brush on the equator valley, after 8 steps on the
+    /// cells of the view and on the cells of a window of the brush. `rate`
+    /// is the strength of one step. The result is the largest drop of each,
+    /// in levels, and the width of the valley of the window of the brush,
+    /// in cells. The width is the number of cells in a line through the
+    /// deepest cell that have half of its drop or more. The line is along
+    /// the axis that gives the smaller number.
+    fn valleys(rate: f64) -> (f64, f64, usize) {
+        let n = 8192;
+        let center = lonlat_to_dir(20.0, 0.4);
+        let global = FlowMap::new(&CoarseHeights::from_fn(64, equator_valley));
+        let view = WindowHeights::from_fn(Window::centered(center, n, 16, 128), equator_valley);
+        let inner = WindowHeights::from_fn(Window::centered(center, n, 2, 128), equator_valley);
+        let outer = OuterFlow::window(&view, &global);
+        let brush = ErodeBrush {
+            center,
+            radius: 0.01,
+            hardness: 0.5,
+            flow: 1.0,
+        };
+        let drops = |heights: &WindowHeights, mut erosion: Erosion| {
+            for _ in 0..8 {
+                erosion.step(&[brush], rate);
+            }
+            let drops = heights.levels.iter().zip(&erosion.heights);
+            drops
+                .map(|(&old, &new)| f64::from(old) - f64::from(new))
+                .collect::<Vec<f64>>()
+        };
+        let largest = |drops: &[f64]| drops.iter().fold(0.0f64, |a, &b| a.max(b));
+        let coarse = drops(&view, Erosion::window(&view, &global));
+        let fine = drops(&inner, Erosion::window_in(&inner, &outer));
+        let deepest = largest(&fine);
+        let at = fine.iter().position(|&drop| drop == deepest).unwrap();
+        let run = |step: usize| {
+            let deep = |&i: &usize| fine[i] >= 0.5 * deepest;
+            let up = (1..).map(|k| at + k * step).take_while(deep).count();
+            let down = (1..).map(|k| at - k * step).take_while(deep).count();
+            up + 1 + down
+        };
+        (largest(&coarse), deepest, run(1).min(run(128)))
+    }
+
+    #[test]
+    fn the_window_of_the_brush_cuts_as_deep_as_the_view() {
+        for rate in [0.05, 1.0] {
+            let (coarse, fine, _) = valleys(rate);
+            eprintln!("the largest drop at the rate {rate}: {coarse} and {fine}");
+            assert!(coarse > 10.0 && fine > 10.0, "{coarse} {fine}");
+            assert!(
+                fine < 2.0 * coarse && coarse < 2.0 * fine,
+                "{coarse} {fine}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_valley_of_the_window_of_the_brush_is_narrower_than_a_cell_of_the_view() {
+        // A cell of the view is 8 cells of the window of the brush wide.
+        for rate in [0.05, 1.0] {
+            let (_, _, width) = valleys(rate);
+            eprintln!("the width at the rate {rate}: {width} cells");
+            assert!(width < 8, "{width}");
+        }
     }
 
     #[test]
