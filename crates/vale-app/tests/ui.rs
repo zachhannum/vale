@@ -509,7 +509,7 @@ fn the_form_does_not_make_a_world_from_a_wrong_radius_or_an_empty_name() {
     form.radius_changed();
     h.state_mut().world_form = Some(form);
     h.run_steps(2);
-    assert!(h.query_by_label_contains("from 100 to 100000 km").is_some());
+    assert!(h.query_by_label_contains("From 100 to 100000 km").is_some());
     h.get_by_label(CREATE).click();
     h.run_steps(2);
     assert!(h.state().actions.is_empty() && h.state().world_form.is_some());

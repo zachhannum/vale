@@ -19,7 +19,18 @@ pub const NEW_TITLE: &str = "New world";
 pub const PROPERTIES_TITLE: &str = "World";
 pub const NAME: &str = "Name";
 pub const RADIUS: &str = "Radius";
-const WIDTH: f32 = 360.0;
+/// The label of the row of the radius presets.
+const SIZE: &str = "Size";
+const UNITS: &str = "Units";
+const WIDTH: f32 = 400.0;
+/// The space between two groups of rows of the form in the iPad layout.
+const GROUP_GAP: f32 = 10.0;
+/// The space above the button that makes the world.
+const BUTTON_GAP: f32 = 14.0;
+/// The height of the text below a wrong radius.
+const NOTE: f32 = 22.0;
+/// The space below the last row.
+const BOTTOM: f32 = 16.0;
 /// The ID of the card of the form in the iPad layout.
 const CARD: &str = "world-form";
 
@@ -141,7 +152,7 @@ impl WorldForm {
             let unit = world::large_unit(self.units);
             let limit = |km: f64| world::radius_text(km, self.units);
             format!(
-                "The radius is from {} to {} {}.",
+                "From {} to {} {}",
                 limit(*world::RADIUS_KM.start()),
                 limit(*world::RADIUS_KM.end()),
                 unit.1
@@ -290,10 +301,17 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     };
     let new = form.mode == FormMode::New;
     let note = form.radius_note();
-    let rows = 5.0 + if note.is_some() { 1.0 } else { 0.0 };
+    // The rows are in three groups: the name, the size, and the units.
+    let mut height = ROW + 4.0 * PANEL_ROW + 2.0 * GROUP_GAP + BOTTOM;
+    if note.is_some() {
+        height += NOTE;
+    }
+    if new {
+        height += BUTTON_GAP + PANEL_ROW;
+    }
     let screen = rects.screen;
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
-    let height = (ROW + rows * PANEL_ROW + 12.0).min(rects.panel_bottom - rects.bands.top - GAP);
+    let height = height.min(rects.panel_bottom - rects.bands.top - GAP);
     let top = (rects.workspace.bottom() + GAP).min(rects.panel_bottom - height);
     let rect = Rect::from_min_size(
         pos2(screen.center().x - width / 2.0, top),
@@ -330,42 +348,36 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         let ui = &mut ui;
         ui.spacing_mut().item_spacing.y = 0.0;
 
-        widgets::text_field(ui, controls, NAME, &mut form.name, true);
+        widgets::text_field(ui, controls, NAME, NAME, None, &mut form.name, true);
+        ui.add_space(GROUP_GAP);
+
         let presets = world::PRESETS.map(|(name, _)| name);
-        if let Some(index) = widgets::choice_row(ui, controls, &presets, form.preset()) {
+        if let Some(index) = widgets::choice_row(ui, controls, SIZE, &presets, form.preset()) {
             form.set_radius_km(world::PRESETS[index].1);
         }
-        let name = format!("{RADIUS} ({})", form.radius_unit());
+        let unit = form.radius_unit();
+        let name = format!("{RADIUS} ({unit})");
         let ok = form.radius_ok;
-        if widgets::text_field(ui, controls, &name, &mut form.radius, ok).changed() {
+        let radius = &mut form.radius;
+        if widgets::text_field(ui, controls, &name, RADIUS, Some(unit), radius, ok).changed() {
             form.radius_changed();
         }
+        if let Some(note) = &note {
+            widgets::form_note(ui, note, NOTE);
+        }
+        ui.add_space(GROUP_GAP);
+
         let units = Units::ALL.map(world::units_name);
         let active = Units::ALL.iter().position(|u| *u == form.units);
-        if let Some(index) = widgets::choice_row(ui, controls, &units, active) {
+        if let Some(index) = widgets::choice_row(ui, controls, UNITS, &units, active) {
             form.set_units(Units::ALL[index]);
         }
-        if let Some(note) = &note {
-            let size = vec2(ui.available_width(), PANEL_ROW);
-            ui.allocate_ui_with_layout(
-                size,
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.set_min_height(PANEL_ROW);
-                    let text = egui::RichText::new(note)
-                        .color(theme::WARN)
-                        .font(theme::small());
-                    ui.add(egui::Label::new(text).wrap());
-                },
-            );
-        }
         if new {
+            ui.add_space(BUTTON_GAP);
             let enabled = form.world().is_some() && !busy;
             if widgets::button_row(ui, controls, CREATE, enabled).clicked() {
                 did = Did::Create;
             }
-        } else if widgets::text_row(ui, controls, NEW_WORLD, 0.0, false, true).clicked() {
-            did = Did::OpenNew;
         }
     });
     // A touch on the dark fill does not put it above the card.

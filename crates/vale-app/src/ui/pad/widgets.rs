@@ -419,28 +419,45 @@ pub fn text_row(
     resp
 }
 
-/// The width of the name at the left of a text field.
-const FIELD_NAME: f32 = 104.0;
+/// The width of the label at the left of a row of a form.
+const FORM_LABEL: f32 = 92.0;
 
-/// A row of a panel with a name and a field for one line of text. The text
-/// has the warning color if it is not `valid`.
+/// One row of a form: the label at the left, and the place of the control
+/// at the right. The controls of all rows have the same left edge.
+fn form_row(ui: &mut egui::Ui, label: &str) -> Rect {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let at = pos2(rect.left(), rect.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::MUTE);
+    Rect::from_min_max(
+        pos2(rect.left() + FORM_LABEL, rect.center().y - TOUCH / 2.0),
+        pos2(rect.right(), rect.center().y + TOUCH / 2.0),
+    )
+}
+
+/// A row of a form with a field for one line of text. `name` is the name
+/// of the control. `suffix` is a unit at the right end of the field. The
+/// text has the warning color if it is not `valid`.
 pub fn text_field(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,
+    label: &str,
+    suffix: Option<&str>,
     text: &mut String,
     valid: bool,
 ) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-    let field = Rect::from_min_max(
-        pos2(rect.left() + FIELD_NAME, rect.center().y - TOUCH / 2.0),
-        pos2(rect.right(), rect.center().y + TOUCH / 2.0),
-    );
-    let painter = ui.painter();
-    let at = pos2(rect.left(), rect.center().y);
-    painter.text(at, Align2::LEFT_CENTER, name, theme::body(), theme::TEXT);
+    let field = form_row(ui, label);
     let back = field.shrink(HIGHLIGHT_INSET);
-    painter.rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+    ui.painter()
+        .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+    let mut inner = field.shrink2(vec2(12.0, 0.0));
+    if let Some(suffix) = suffix {
+        let at = pos2(inner.right(), inner.center().y);
+        ui.painter()
+            .text(at, Align2::RIGHT_CENTER, suffix, theme::body(), theme::MUTE);
+        inner.max.x -= text_width(ui, suffix, theme::body()) + 8.0;
+    }
     let color = if valid { theme::TEXT } else { theme::WARN };
     let edit = egui::TextEdit::singleline(text)
         .id(ui.id().with(name))
@@ -448,7 +465,7 @@ pub fn text_field(
         .font(theme::body())
         .text_color(color)
         .vertical_align(egui::Align::Center);
-    let resp = ui.put(field.shrink2(vec2(12.0, 0.0)), edit);
+    let resp = ui.put(inner, edit);
     controls.push(Control {
         name: name.to_owned(),
         rect: field,
@@ -456,32 +473,57 @@ pub fn text_field(
     resp
 }
 
-/// A row of a panel with choices of equal width. `active` is the choice that
-/// is on. Returns the choice that the user made.
+/// A row of a form with a segmented control: choices of equal width on one
+/// track. `active` is the choice that is on. Returns the choice that the
+/// user made.
 pub fn choice_row(
     ui: &mut egui::Ui,
     controls: &mut Controls,
-    labels: &[&str],
+    label: &str,
+    choices: &[&str],
     active: Option<usize>,
 ) -> Option<usize> {
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-    let width = row.width() / labels.len() as f32;
+    let field = form_row(ui, label);
+    let track = field.shrink(HIGHLIGHT_INSET);
+    ui.painter()
+        .rect_filled(track, theme::CONTROL_RADIUS, theme::track());
+    let width = field.width() / choices.len() as f32;
     let mut chosen = None;
-    for (index, label) in labels.iter().enumerate() {
-        let min = pos2(row.left() + index as f32 * width, row.top());
-        let rect = Rect::from_min_size(min, vec2(width, PANEL_ROW));
+    for (index, choice) in choices.iter().enumerate() {
+        let min = pos2(field.left() + index as f32 * width, field.top());
+        let rect = Rect::from_min_size(min, vec2(width, TOUCH));
         let on = active == Some(index);
-        let resp = hit(ui, controls, rect, label, Sense::click(), true, Some(on));
-        fill(ui, rect, &resp, on);
+        let resp = hit(ui, controls, rect, choice, Sense::click(), true, Some(on));
+        if on || resp.is_pointer_button_down_on() {
+            let thumb = rect.intersect(track).shrink(2.0);
+            ui.painter()
+                .rect_filled(thumb, theme::CONTROL_RADIUS - 2.0, theme::raise());
+        }
         let color = if on { theme::TEXT } else { theme::MUTE };
         let at = rect.center();
         ui.painter()
-            .text(at, Align2::CENTER_CENTER, *label, theme::body(), color);
+            .text(at, Align2::CENTER_CENTER, *choice, theme::body(), color);
         if resp.clicked() && !on {
             chosen = Some(index);
         }
     }
     chosen
+}
+
+/// A small text below the control of a row of a form, in the warning color.
+pub fn form_note(ui: &mut egui::Ui, text: &str, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let place = rect.with_min_x(rect.left() + FORM_LABEL + HIGHLIGHT_INSET);
+    let text = egui::RichText::new(text)
+        .font(theme::small())
+        .color(theme::WARN);
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(place).layout(layout),
+        |ui| {
+            ui.add(egui::Label::new(text).selectable(false));
+        },
+    );
 }
 
 /// A row of a panel that is one button with its text in the middle.

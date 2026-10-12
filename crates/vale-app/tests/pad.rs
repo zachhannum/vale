@@ -1492,6 +1492,9 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
         );
         check_form(&h, &format!("{size:?} properties"));
 
+        tap(&mut h, "Close World");
+        assert!(h.state().world_form.is_none());
+        open_worlds(&mut h);
         tap(&mut h, NEW_WORLD);
         assert_eq!(h.state().world_form.as_ref().unwrap().mode, FormMode::New);
         check_form(&h, &format!("{size:?} new"));
@@ -1591,7 +1594,7 @@ fn the_properties_of_the_world_apply_at_once_and_a_touch_does_not_reach_the_canv
     // A radius that is too small does not go to the world.
     type_text(&mut h, "Radius (km)", "5");
     assert_eq!(h.state().doc.project.world.radius_km, 3389.5);
-    assert!(h.query_by_label_contains("from 100 to 100000 km").is_some());
+    assert!(h.query_by_label_contains("From 100 to 100000 km").is_some());
     type_text(&mut h, "Radius (km)", "500");
     assert_eq!(h.state().doc.project.world.radius_km, 500.0);
     assert_eq!(h.state().doc.project.layers(), layers);
