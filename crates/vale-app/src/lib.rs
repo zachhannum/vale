@@ -8,10 +8,13 @@ pub mod furniture;
 pub mod globe;
 pub mod headless;
 pub mod labels;
+#[cfg(target_os = "ios")]
+pub mod lifecycle;
 pub mod pen;
 pub mod pick;
 pub mod pipeline;
 pub mod projects;
+pub mod resume;
 pub mod session;
 pub mod ui;
 pub mod view;
@@ -27,7 +30,7 @@ pub extern "C" fn vale_app_main() {
         state.projects = projects::default_dir();
         state.globe.set_face_size(globe::WINDOW_FACE_SIZE);
         state.show_projects();
-        app::run_window(state, (1280.0, 800.0), None, None)
+        app::run_window(state, (1280.0, 800.0), None, None, true)
     });
     if let Err(err) = result {
         eprintln!("vale-app: {err:#}");

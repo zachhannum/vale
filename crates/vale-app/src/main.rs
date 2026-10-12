@@ -59,7 +59,10 @@ fn run() -> anyhow::Result<u8> {
     if !headless_run {
         let mut state = new_state(doc, WINDOW_FACE_SIZE)?;
         apply_import(&args, &mut state, false)?;
-        run_window(state, size, args.smoke_frames.map(u64::from), session)?;
+        // The start screen opens only if the last run ended there.
+        let restore = args.starts_on_projects(true) && !args.start_screen;
+        let frames = args.smoke_frames.map(u64::from);
+        run_window(state, size, frames, session, restore)?;
         return Ok(0);
     }
     if args.stroke_test {
