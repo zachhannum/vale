@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock, mpsc};
 use vale_terrain::math::{V3, dot, lonlat_to_dir};
 use vale_terrain::{
     ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FlowMap, GROUP_STAMPS,
-    GpuHeightmap, Heightmap, Mode, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TexelRect,
+    GpuHeightmap, Heightmap, Mode, OuterFlow, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TexelRect,
     WINDOW_CELLS, Window, WindowHeights, channel_map, window_channels,
 };
 
@@ -1289,6 +1289,23 @@ fn gpu_erode_matches_cpu_for_a_global_step() {
     assert_eq!(steps, STAMP_SLOTS as usize / passes);
     map.begin_batch();
     assert!(map.erode(&gpu.queue, &mut gpu.encoder(), &step));
+}
+
+/// The cells of the window of the brush are 1 texel wide, and the water of a
+/// window with cells of 2 texels comes in.
+#[test]
+fn gpu_erode_matches_cpu_for_a_step_on_the_window_of_a_brush() {
+    let mut cpu = window_land();
+    let view = Window::centered(lonlat_to_dir(40.0, 3.0), WINDOW_FACE, 2, WINDOW_CELLS);
+    let global = FlowMap::new(&CoarseHeights::new(&cpu));
+    let outer = OuterFlow::window(&WindowHeights::new(&cpu, view), &global);
+    let brush = erode_brush(41.0, 3.0, 0.05);
+    let window = Window::centered(brush.center, WINDOW_FACE, 1, WINDOW_CELLS);
+    let mut erosion = Erosion::window_in(&WindowHeights::new(&cpu, window), &outer);
+    let (difference, changed) = erode_run(&mut cpu, &mut erosion, &[brush], 3);
+    eprintln!("erode on the window of a brush, largest difference: {difference}, {changed:?}");
+    assert!(changed.iter().sum::<usize>() > 100, "{changed:?}");
+    assert!(difference <= TOLERANCE, "{difference}");
 }
 
 /// The ground under the brush is below sea level, and it goes down as the
