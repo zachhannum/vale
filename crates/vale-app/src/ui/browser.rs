@@ -18,6 +18,18 @@ const GAP: f32 = 24.0;
 /// The space between the window and the list, in points.
 const MARGIN: i8 = 32;
 
+/// The title of the dialog with the error of a file.
+pub const PROBLEM_TITLE: &str = "The app cannot read this file";
+/// The button that opens a file that the list cannot read. The open can
+/// repair a file that the app did not close.
+pub const TRY_OPEN: &str = "Try to open";
+
+/// The name of the file and the whole error.
+pub fn problem_text(path: &Path, error: &str) -> String {
+    let file = path.file_name().unwrap_or(path.as_os_str());
+    format!("{}: {error}", file.to_string_lossy())
+}
+
 /// A dialog that waits for an answer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Dialog {
@@ -31,6 +43,11 @@ pub enum Dialog {
     Delete {
         path: PathBuf,
         name: String,
+    },
+    /// The whole error of a file that the app cannot read.
+    Problem {
+        path: PathBuf,
+        error: String,
     },
 }
 
@@ -77,6 +94,11 @@ impl BrowserState {
     /// Opens the dialog that asks before a project is removed.
     pub fn ask_delete(&mut self, path: PathBuf, name: String) {
         self.dialog = Some(Dialog::Delete { path, name });
+    }
+
+    /// Opens the dialog with the whole error of a file.
+    pub fn show_problem(&mut self, path: PathBuf, error: String) {
+        self.dialog = Some(Dialog::Problem { path, error });
     }
 
     /// The picture of an entry as a texture.
@@ -190,7 +212,15 @@ fn card(ui: &mut egui::Ui, state: &mut AppState, entry: &Entry) {
 
         ui.strong(&entry.name);
         match (&entry.error, entry.modified) {
-            (Some(error), _) => ui.weak(error),
+            (Some(error), _) => {
+                let details = ui.link("Cannot read the file");
+                if details.clicked() {
+                    state
+                        .browser
+                        .show_problem(entry.path.clone(), error.clone());
+                }
+                details
+            }
             (None, Some(time)) => ui.weak(projects::date_text(time)),
             (None, None) => ui.weak(""),
         };
@@ -225,6 +255,23 @@ pub fn dialogs(ui: &mut egui::Ui, state: &mut AppState) {
     let mut close = false;
     let mut action = None;
     match dialog {
+        Dialog::Problem { path, error } => {
+            let modal = Modal::new(Id::new("project_problem")).show(&ctx, |ui| {
+                ui.set_width(360.0);
+                ui.heading(PROBLEM_TITLE);
+                ui.label(problem_text(path, error));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                    if ui.button(TRY_OPEN).clicked() {
+                        action = Some(Action::OpenWorld(path.clone()));
+                    }
+                });
+            });
+            close |= modal.should_close();
+        }
         Dialog::Delete { path, name } => {
             let modal = Modal::new(Id::new("delete_project")).show(&ctx, |ui| {
                 ui.set_width(320.0);

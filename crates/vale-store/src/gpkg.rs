@@ -158,13 +158,29 @@ pub struct Summary {
     pub thumbnail: Option<Thumbnail>,
 }
 
+/// Opens a file for a read. If a save of the file did not end, the file has
+/// a journal, and a read-only connection cannot read it. The connection
+/// then puts back the state from before that save.
+fn open_for_read(path: &Path) -> Result<Connection, StoreError> {
+    let open = |flags| -> rusqlite::Result<Connection> {
+        let conn = Connection::open_with_flags(path, flags | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
+        Ok(conn)
+    };
+    match open(OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Err(e) if e.sqlite_error_code() == Some(ErrorCode::ReadOnly) => {
+            Ok(open(OpenFlags::SQLITE_OPEN_READ_WRITE)?)
+        }
+        other => Ok(other?),
+    }
+}
+
 /// Reads the summary of a project file. This does not read the features, and
-/// it does not change the file. A file of an older format version has no
+/// it does not migrate the file. A file of an older format version has no
 /// thumbnail.
 pub fn summary(path: &Path) -> Result<Summary, StoreError> {
     use rusqlite::OptionalExtension;
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = Connection::open_with_flags(path, flags)?;
+    let conn = open_for_read(path)?;
     let version = format_version(&conn)?;
     if version > FORMAT_VERSION {
         return Err(StoreError::NewerFormat {
@@ -277,8 +293,7 @@ impl ProjectFile {
     /// The name of the world of a project file. The call does not change
     /// the file.
     pub fn world_name(path: &Path) -> Result<String, StoreError> {
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let conn = Connection::open_with_flags(path, flags)?;
+        let conn = open_for_read(path)?;
         format_version(&conn)?;
         Ok(conn.query_row("SELECT name FROM vale_world", [], |r| r.get(0))?)
     }
@@ -2135,6 +2150,52 @@ mod tests {
             summary(&path(&dir)),
             Err(StoreError::NewerFormat { .. })
         ));
+    }
+
+    /// The system can stop the app in the middle of a save. The file then
+    /// has a journal, and the list of projects still reads it.
+    #[test]
+    fn the_summary_reads_a_file_with_a_save_that_did_not_end() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(ProjectFile::create(&path(&dir), &sample()).unwrap());
+        let name = summary(&path(&dir)).unwrap().name;
+
+        let conn = Connection::open(path(&dir)).unwrap();
+        // A small cache writes the changed pages to the file before the
+        // commit.
+        conn.execute_batch(
+            "PRAGMA cache_size = 10;
+             BEGIN;
+             UPDATE vale_world SET name = 'Half saved';
+             CREATE TABLE filler (data BLOB);",
+        )
+        .unwrap();
+        for _ in 0..50 {
+            conn.execute("INSERT INTO filler VALUES (zeroblob(100000))", [])
+                .unwrap();
+        }
+        let stopped = dir.path().join("stopped.gpkg");
+        let journal = |file: &Path| {
+            let mut name = file.as_os_str().to_owned();
+            name.push("-journal");
+            std::path::PathBuf::from(name)
+        };
+        std::fs::copy(path(&dir), &stopped).unwrap();
+        std::fs::copy(journal(&path(&dir)), journal(&stopped)).unwrap();
+        drop(conn);
+
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY;
+        let read_only = Connection::open_with_flags(&stopped, flags).unwrap();
+        let read = read_only.query_row("SELECT name FROM vale_world", [], |_| Ok(()));
+        assert!(
+            read.is_err(),
+            "a read-only connection does not read the file"
+        );
+        drop(read_only);
+
+        assert_eq!(summary(&stopped).unwrap().name, name);
+        assert_eq!(ProjectFile::world_name(&stopped).unwrap(), name);
+        assert!(!journal(&stopped).exists());
     }
 
     #[test]

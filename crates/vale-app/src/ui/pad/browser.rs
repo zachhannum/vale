@@ -11,7 +11,7 @@ use super::icons::Icon;
 use super::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
 use super::{rule, theme};
 use crate::projects::{self, Entry};
-use crate::ui::browser::{ActionsMenu, Dialog};
+use crate::ui::browser::{ActionsMenu, Dialog, PROBLEM_TITLE, TRY_OPEN, problem_text};
 use crate::ui::world_form::{self, WorldForm};
 use crate::ui::{Action, AppState};
 
@@ -141,11 +141,9 @@ fn header(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         state.world_form = Some(WorldForm::new_world());
     }
     if !state.status.is_empty() {
-        let (rect, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), 28.0), egui::Sense::hover());
-        let text = one_line(ui, &state.status, theme::body(), theme::MUTE, rect.width());
-        let at = pos2(rect.left(), rect.center().y - text.size().y / 2.0);
-        ui.painter().galley(at, text, theme::MUTE);
+        let text = egui::RichText::new(&state.status).font(theme::body());
+        ui.add(egui::Label::new(text.color(theme::MUTE)).wrap());
+        ui.add_space(GAP);
     }
 }
 
@@ -184,8 +182,7 @@ fn card(
     rect: Rect,
     entry: &Entry,
 ) {
-    let readable = entry.error.is_none();
-    let open = widgets::tap_area(ui, controls, rect, &open_name(&entry.name), readable);
+    let open = widgets::tap_area(ui, controls, rect, &open_name(&entry.name), true);
     let painter = ui.painter();
     painter.rect_filled(rect, theme::CARD_RADIUS, theme::card(false).to_opaque());
     if open.is_pointer_button_down_on() {
@@ -217,7 +214,7 @@ fn card(
     let name = one_line(ui, &entry.name, theme::title(), theme::TEXT, text_width);
     painter.galley(pos2(info.left(), info.top() + 10.0), name, theme::TEXT);
     let (line, color) = match (&entry.error, entry.modified) {
-        (Some(error), _) => (error.clone(), theme::WARN),
+        (Some(_), _) => ("Cannot read the file".to_string(), theme::WARN),
         (None, Some(time)) => (projects::date_text(time), theme::MUTE),
         (None, None) => (String::new(), theme::MUTE),
     };
@@ -234,7 +231,14 @@ fn card(
             button,
         });
     } else if open.clicked() {
-        state.actions.push(Action::OpenWorld(entry.path.clone()));
+        match &entry.error {
+            // The card has no room for the whole error.
+            Some(error) => {
+                let browser = &mut state.browser;
+                browser.show_problem(entry.path.clone(), error.clone());
+            }
+            None => state.actions.push(Action::OpenWorld(entry.path.clone())),
+        }
     }
 }
 
@@ -376,6 +380,38 @@ fn dialog(
                 let save = widgets::button_row(ui, controls, SAVE_NAME, valid);
                 if valid && (save.clicked() || enter) {
                     action = Some(Action::RenameProject(path.clone(), name.clone()));
+                }
+            });
+        }
+        Dialog::Problem { path, error } => {
+            let text = problem_text(path, error);
+            let font = theme::body();
+            let wrap = width - 2.0 * BODY_PAD;
+            let lines = ctx.fonts_mut(|f| f.layout(text.clone(), font, theme::MUTE, wrap));
+            let text_height = lines.size().y + 18.0;
+            let height = ROW + text_height + PANEL_ROW + 16.0;
+            let most = screen.height() - bands.top - bands.bottom - 2.0 * MARGIN;
+            let height = height.min(most);
+            let top = (screen.center().y - height / 2.0).max(screen.top() + bands.top);
+            let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
+            card_above(ctx, "pad-project-dialog", rect, |ui| {
+                close |= widgets::title_row(ui, controls, PROBLEM_TITLE, None, false).close;
+                let inner = ui.available_rect_before_wrap().shrink2(vec2(BODY_PAD, 0.0));
+                let layout = egui::Layout::top_down(egui::Align::Min);
+                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+                let ui = &mut ui;
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                let room = height - ROW - PANEL_ROW - 16.0;
+                egui::ScrollArea::vertical()
+                    .max_height(room)
+                    .min_scrolled_height(room)
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        let text = egui::RichText::new(text).font(theme::body());
+                        ui.add(egui::Label::new(text.color(theme::MUTE)).wrap());
+                    });
+                if widgets::button_row(ui, controls, TRY_OPEN, true).clicked() {
+                    action = Some(Action::OpenWorld(path.clone()));
                 }
             });
         }

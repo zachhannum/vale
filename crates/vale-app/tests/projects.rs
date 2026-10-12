@@ -298,6 +298,32 @@ fn delete_asks_before_it_removes_the_project() {
     }
 }
 
+/// The card of a file that the app cannot read has no room for its error.
+/// A tap on the card shows the whole error.
+#[test]
+fn a_tap_on_a_file_with_an_error_shows_the_whole_error() {
+    use vale_app::ui::browser::{TRY_OPEN, problem_text};
+    for layout in [Layout::Pad, Layout::Desktop] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.gpkg");
+        std::fs::write(&path, "x").unwrap();
+        let mut h = app(dir.path(), layout);
+        let error = h.state().browser.entries[0].error.clone().unwrap();
+
+        match layout {
+            Layout::Pad => click(&mut h, &pad_browser::open_name("broken")),
+            Layout::Desktop => click(&mut h, "Cannot read the file"),
+        }
+        h.get_by_label(problem_text(&path, &error).as_str());
+        click(&mut h, TRY_OPEN);
+        assert_eq!(h.state().browser.dialog, None);
+        assert_eq!(h.state().screen, Screen::Browser);
+        let status = h.state().status.clone();
+        assert!(status.contains("did not open"), "{status}");
+        h.get_by_label(status.as_str());
+    }
+}
+
 /// Each control of the start screen of the iPad is large enough for a
 /// finger, and it is on the screen.
 #[test]
