@@ -56,6 +56,7 @@ The phase table in `docs/DESIGN.md` gives the order of the work after that. When
 - Do not name a binary `vale`, because a popular prose linter uses that command name.
 - Before you add Vello, Parley, or Krilla as a dependency, make sure of its current release status.
 - Wholesale procedural world generation is a permanent non-goal.
+- All UI is iPad first. Design each screen, panel, and dialog for the iPad layout, with the theme and the widgets of `ui/pad` and with touch-size controls. A feature is not done until its iPad UI is done. The desktop UI gets a new design at a later date, so until then a plain desktop version is sufficient.
 - If a change contradicts `docs/DESIGN.md`, update the document in the same change.
 - Reference files for the demo are updated with `VALE_UPDATE_REFERENCE=1`.
 
