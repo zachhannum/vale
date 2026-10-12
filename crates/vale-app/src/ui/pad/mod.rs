@@ -14,8 +14,10 @@ use super::point_form;
 use super::raster_form::{self, RasterForm};
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
+use crate::globe::brush::BrushSettings;
 use crate::globe::brush::{
-    EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    EROSION, FLOW, RIDGE_CREST_M, RIDGE_OFFSET_KM, RIDGE_ROUGHNESS_M, RIDGE_SEGMENT_KM,
+    RIDGE_VALLEY_M, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
@@ -65,7 +67,7 @@ pub const SNAP_EDGES: &str = "Snap to edges";
 /// The slider of the snap distance, in points.
 pub const SNAP_DISTANCE: &str = "Snap distance";
 /// The modes of the flyout of the brush cell.
-pub const BRUSH_MODES: [(&str, Icon, Mode); 11] = [
+pub const BRUSH_MODES: [(&str, Icon, Mode); 12] = [
     ("Raise", Icon::Raise, Mode::Raise),
     ("Lower", Icon::Lower, Mode::Lower),
     ("Smooth", Icon::Smooth, Mode::Smooth),
@@ -77,6 +79,7 @@ pub const BRUSH_MODES: [(&str, Icon, Mode); 11] = [
     ("Weather", Icon::Weather, Mode::Weather),
     ("Uplift", Icon::Uplift, Mode::Uplift),
     ("Warp", Icon::Warp, Mode::Warp),
+    (panels::OCEAN_RIDGE, Icon::OceanRidge, Mode::OceanRidge),
 ];
 
 /// The name of the row that opens the properties of the world.
@@ -1355,13 +1358,19 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         widgets::row_slider(ui, controls, "Brush size", "Size", fraction, text)
     });
     let brush = &mut state.globe.brush;
-    percent_slider(&mut brush.hardness, 0.0..=1.0, |fraction, text| {
-        widgets::row_slider(ui, controls, "Brush hardness", "Hardness", fraction, text)
-    });
+    // The ocean ridge mode has no falloff and no strength.
+    let ridge = brush.mode == Mode::OceanRidge;
+    if !ridge {
+        percent_slider(&mut brush.hardness, 0.0..=1.0, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush hardness", "Hardness", fraction, text)
+        });
+    }
     percent_slider(&mut brush.flow, FLOW, |fraction, text| {
         widgets::row_slider(ui, controls, "Brush flow", "Flow", fraction, text)
     });
-    if brush.mode == Mode::Warp {
+    if ridge {
+        ridge_rows(ui, controls, brush);
+    } else if brush.mode == Mode::Warp {
         let text = format!("{} km", world::three_significant(brush.warp_km));
         let strength = log_slider(brush.warp_km, WARP_KM, &text, |fraction, text| {
             widgets::row_slider(ui, controls, "Brush strength", "Strength", fraction, text)
@@ -1428,6 +1437,68 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
 /// The number of steps of the slider of a limit of the brush. A height has
 /// steps of 50 meters.
 const LIMIT_STEPS: f64 = 240.0;
+
+/// Shows a value as a slider with a linear scale. The value is a multiple
+/// of `step`.
+fn linear_slider(
+    value: &mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    step: f64,
+    text: &str,
+    slider: impl FnOnce(&mut f64, &str) -> bool,
+) {
+    let (low, high) = (*range.start(), *range.end());
+    let mut fraction = ((*value - low) / (high - low)).clamp(0.0, 1.0);
+    if slider(&mut fraction, text) {
+        *value = ((low + fraction * (high - low)) / step).round() * step;
+    }
+}
+
+/// The sliders of the ocean ridge mode.
+fn ridge_rows(ui: &mut egui::Ui, controls: &mut Controls, brush: &mut BrushSettings) {
+    let text = format!("{:.0} m", brush.ridge_crest_m);
+    let crest = &mut brush.ridge_crest_m;
+    linear_slider(
+        crest,
+        RIDGE_CREST_M,
+        50.0,
+        &text,
+        |fraction, text| widgets::row_slider(ui, controls, "Brush crest", "Crest", fraction, text),
+    );
+    let text = format!("{} km", world::three_significant(brush.ridge_segment_km));
+    let segment = log_slider(
+        brush.ridge_segment_km,
+        RIDGE_SEGMENT_KM,
+        &text,
+        |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush segment", "Segment", fraction, text)
+        },
+    );
+    if let Some(km) = segment {
+        brush.ridge_segment_km = km;
+    }
+    let text = format!("{:.0} km", brush.ridge_offset_km);
+    let offset = &mut brush.ridge_offset_km;
+    linear_slider(offset, RIDGE_OFFSET_KM, 1.0, &text, |fraction, text| {
+        widgets::row_slider(ui, controls, "Brush offset", "Offset", fraction, text)
+    });
+    let text = format!("{:.0} m", brush.ridge_roughness_m);
+    let roughness = &mut brush.ridge_roughness_m;
+    linear_slider(
+        roughness,
+        RIDGE_ROUGHNESS_M,
+        1.0,
+        &text,
+        |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush roughness", "Roughness", fraction, text)
+        },
+    );
+    let text = format!("{:.0} m", brush.ridge_valley_m);
+    let valley = &mut brush.ridge_valley_m;
+    linear_slider(valley, RIDGE_VALLEY_M, 1.0, &text, |fraction, text| {
+        widgets::row_slider(ui, controls, "Brush valley", "Valley", fraction, text)
+    });
+}
 
 /// The switch of a limit of the brush. While the switch is on, a slider
 /// below it sets the value, in the unit of the layer that the brush paints.
