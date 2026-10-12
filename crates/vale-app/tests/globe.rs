@@ -1607,6 +1607,21 @@ fn the_brush_panel_has_the_weather_mode_and_its_angle_slider() {
     assert_eq!(h.state().globe.brush.talus_deg, 0.5);
 }
 
+#[test]
+fn the_brush_panel_has_the_warp_mode_and_its_two_sliders() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Scale").next().is_none());
+    h.get_by_label("Warp").click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::Warp);
+    assert_eq!((brush.warp_km, brush.scale_km), (50.0, 200.0));
+    assert!(h.query_all_by_label("Strength").next().is_some());
+    assert!(h.query_all_by_label("Scale").next().is_some());
+}
+
 /// The level of each texel of the heightmap.
 fn map_levels(map: &vale_terrain::Heightmap) -> Vec<u16> {
     let n = map.face_size();
@@ -2726,6 +2741,83 @@ fn one_undo_puts_back_the_ground_from_before_an_uplift_stroke() {
     assert!(all_levels(&h) == lifted.0);
     let image = canvas_image(&mut h);
     assert!(image.as_raw() == lifted.1.as_raw(), "the render");
+}
+
+/// A harness with a ridge from a raise stroke, in the warp mode.
+fn warp_harness(seed: u32) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    h.state_mut().globe.brush.mode = Mode::Raise;
+    uplift_stroke(&mut h);
+    let state = h.state_mut();
+    state.doc.project.world.seed = seed;
+    state.globe.brush.mode = Mode::Warp;
+    state.globe.brush.warp_km = 300.0;
+    state.globe.brush.scale_km = 300.0;
+    h.run_steps(2);
+    h
+}
+
+#[test]
+fn two_equal_warp_strokes_with_the_same_seed_give_equal_results() {
+    let _gpu = one_gpu_test();
+    let mut h = warp_harness(7);
+    assert_eq!(h.state().globe.world_seed, 7);
+    let before = all_levels(&h);
+    let first = uplift_stroke(&mut h);
+    assert!(first != before);
+    // The stroke moves the ground, and it adds no height.
+    let (lo, hi) = (before.iter().min(), before.iter().max());
+    assert!(first.iter().min() >= lo && first.iter().max() <= hi);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // A second harness starts from the same ground.
+    drop(h);
+    let mut h = warp_harness(7);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // Another seed gives another result.
+    drop(h);
+    let mut h = warp_harness(8);
+    assert!(all_levels(&h) == before);
+    let other = uplift_stroke(&mut h);
+    assert!(other != before && other != first);
+}
+
+#[test]
+fn one_undo_puts_back_the_ground_from_before_a_warp_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = warp_harness(7);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    let warped = (uplift_stroke(&mut h), canvas_image(&mut h));
+    assert!(warped.0 != before.0);
+    assert!(warped.1.as_raw() != before.1.as_raw());
+
+    assert!(h.state_mut().globe.undo());
+    assert!(all_levels(&h) == before.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before.1.as_raw(), "the render");
+
+    assert!(h.state_mut().globe.redo());
+    assert!(all_levels(&h) == warped.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == warped.1.as_raw(), "the render");
+}
+
+/// Writes an image of a ridge after warp strokes, for a person to look at.
+#[test]
+#[ignore]
+fn screenshots_of_warp() {
+    let _gpu = one_gpu_test();
+    let mut h = warp_harness(7);
+    save(&canvas_image(&mut h), "warp-before");
+    for _ in 0..3 {
+        uplift_stroke(&mut h);
+    }
+    save(&canvas_image(&mut h), "warp-after");
 }
 
 /// Writes images of a range from uplift strokes, for a person to look at.
