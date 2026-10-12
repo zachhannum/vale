@@ -198,7 +198,9 @@ pub struct StampPlan {
     pub reach: usize,
 }
 
-type Tile = Box<[u16]>;
+/// The texels of one tile. A snapshot shares it, and the first write after
+/// that makes a copy.
+type Tile = Arc<[u16]>;
 
 /// One undo or redo step: the base level and the tiles that one stroke
 /// changed. An undo step holds them from before the stroke, and a redo step
@@ -286,6 +288,32 @@ impl Heightmap {
         };
         map.mark_all_dirty();
         map
+    }
+
+    /// A copy that shares the tiles. It has no undo steps and no dirty
+    /// state. A later change to one of the two copies a tile at its first
+    /// write, and the other keeps its levels.
+    pub fn snapshot(&self) -> Heightmap {
+        Heightmap {
+            n: self.n,
+            tile: self.tile,
+            per_side: self.per_side,
+            base: self.base,
+            tiles: self.tiles.clone(),
+            flat: self.flat.clone(),
+            dirty: [None; FACES],
+            reset: false,
+            stroke: None,
+            undo: VecDeque::new(),
+            redo: VecDeque::new(),
+            undo_limit: self.undo_limit,
+            keep_steps: self.keep_steps,
+            changed: BTreeSet::new(),
+            changed_all: false,
+            channels: self.channels.clone(),
+            window: self.window.clone(),
+            bands: self.bands.clone(),
+        }
     }
 
     pub fn face_size(&self) -> usize {
@@ -536,7 +564,7 @@ impl Heightmap {
         let (len, base) = (self.tile * self.tile, self.base);
         let tile = &mut self.tiles[index];
         save_tile(&mut self.stroke, &mut self.changed, index, tile);
-        tile.get_or_insert_with(|| vec![base; len].into())[offset] = level;
+        Arc::make_mut(tile.get_or_insert_with(|| vec![base; len].into()))[offset] = level;
         self.mark_dirty(
             face,
             TexelRect {
@@ -596,7 +624,7 @@ impl Heightmap {
                     continue;
                 }
                 save_tile(&mut self.stroke, &mut self.changed, index, tile);
-                let tile = tile.get_or_insert_with(|| vec![base; t * t].into());
+                let tile = Arc::make_mut(tile.get_or_insert_with(|| vec![base; t * t].into()));
                 for (new, to) in rows {
                     tile[to].copy_from_slice(new);
                 }
@@ -851,7 +879,7 @@ impl Heightmap {
             for tx in rect.x0 / t..=(rect.x1 - 1) / t {
                 let index = (face * self.per_side + ty) * self.per_side + tx;
                 let tile = &mut self.tiles[index];
-                let mut saved = false;
+                let mut texels = Texels::Shared(tile.as_deref());
                 for y in rect.y0.max(ty * t)..rect.y1.min((ty + 1) * t) {
                     let fv = self.flat[y];
                     for x in rect.x0.max(tx * t)..rect.x1.min((tx + 1) * t) {
@@ -860,7 +888,7 @@ impl Heightmap {
                             continue;
                         };
                         let offset = (y - ty * t) * t + (x - tx * t);
-                        let old_level = tile.as_ref().map_or(base, |tile| tile[offset]);
+                        let old_level = texels.get(offset, base);
                         let old = f64::from(old_level);
                         let new = match stamp.mode {
                             Mode::Raise | Mode::Uplift => old + amount * stamp.strength,
@@ -915,11 +943,12 @@ impl Heightmap {
                         if new == old_level {
                             continue;
                         }
-                        if !saved {
+                        if let Texels::Shared(_) = texels {
                             save_tile(&mut self.stroke, &mut self.changed, index, tile);
-                            saved = true;
+                            let tile = tile.get_or_insert_with(|| vec![base; t * t].into());
+                            texels = Texels::Owned(Arc::make_mut(tile));
                         }
-                        tile.get_or_insert_with(|| vec![base; t * t].into())[offset] = new;
+                        texels.set(offset, new);
                     }
                 }
             }
@@ -944,7 +973,7 @@ impl Heightmap {
                 for tx in rect.x0 / t..=(rect.x1 - 1) / t {
                     let index = (face * self.per_side + ty) * self.per_side + tx;
                     let tile = &mut self.tiles[index];
-                    let mut saved = false;
+                    let mut texels = Texels::Shared(tile.as_deref());
                     for y in rect.y0.max(ty * t)..rect.y1.min((ty + 1) * t) {
                         for x in rect.x0.max(tx * t)..rect.x1.min((tx + 1) * t) {
                             let drop = step.drop_at(n, face, x, y).round();
@@ -952,16 +981,17 @@ impl Heightmap {
                                 continue;
                             }
                             let offset = (y - ty * t) * t + (x - tx * t);
-                            let old = tile.as_ref().map_or(base, |tile| tile[offset]);
+                            let old = texels.get(offset, base);
                             let new = (f64::from(old) - drop).max(f64::from(old.min(floor))) as u16;
                             if new == old {
                                 continue;
                             }
-                            if !saved {
+                            if let Texels::Shared(_) = texels {
                                 save_tile(&mut self.stroke, &mut self.changed, index, tile);
-                                saved = true;
+                                let tile = tile.get_or_insert_with(|| vec![base; t * t].into());
+                                texels = Texels::Owned(Arc::make_mut(tile));
                             }
-                            tile.get_or_insert_with(|| vec![base; t * t].into())[offset] = new;
+                            texels.set(offset, new);
                             changed += 1;
                         }
                     }
@@ -1076,13 +1106,39 @@ impl Heightmap {
     /// the face edge continue.
     fn level_between(&self, d: V3, past: bool) -> f64 {
         let (face, a, b) = face_of(d);
+        let at = |a: f64| (warp(a) + 1.0) * 0.5 * self.n as f64 - 0.5;
+        self.level_on_face(face, at(a), at(b), past)
+    }
+
+    /// `level_between` for a place on a face in texels. The center of texel
+    /// `i` is at `i`.
+    pub(crate) fn level_on_face(&self, face: usize, x: f64, y: f64, past: bool) -> f64 {
         let n = self.n as i64;
-        let at = |a: f64| (warp(a) + 1.0) * 0.5 * n as f64 - 0.5;
-        let (x, y) = (at(a), at(b));
         let (x0, y0) = (x.floor(), y.floor());
         let (tx, ty) = (x - x0, y - y0);
+        let (xi, yi) = (x0 as i64, y0 as i64);
+        let mix = |l: [f64; 4]| {
+            // With 4 equal levels, each step gives that level.
+            let top = l[0] + (l[1] - l[0]) * tx;
+            let bottom = l[2] + (l[3] - l[2]) * tx;
+            top + (bottom - top) * ty
+        };
+        if xi >= 0 && yi >= 0 && xi + 1 < n && yi + 1 < n {
+            let (x, y, t) = (xi as usize, yi as usize, self.tile);
+            let (column, row) = (x / t, y / t);
+            if (x + 1) / t == column && (y + 1) / t == row {
+                // The 4 texels are in one tile.
+                let index = (face * self.per_side + row) * self.per_side + column;
+                let Some(tile) = &self.tiles[index] else {
+                    return f64::from(self.base);
+                };
+                let at = (y - row * t) * t + (x - column * t);
+                let level = |at: usize| f64::from(tile[at]);
+                return mix([level(at), level(at + 1), level(at + t), level(at + t + 1)]);
+            }
+        }
         let level = |i: i64, j: i64| {
-            let (x, y) = (x0 as i64 + i, y0 as i64 + j);
+            let (x, y) = (xi + i, yi + j);
             let on_face = (x.clamp(0, n - 1), y.clamp(0, n - 1));
             if past && (x, y) != on_face {
                 let flat =
@@ -1092,10 +1148,7 @@ impl Heightmap {
                 f64::from(self.texel(face, on_face.0 as usize, on_face.1 as usize))
             }
         };
-        // With 4 equal levels, each step gives that level.
-        let top = level(0, 0) + (level(1, 0) - level(0, 0)) * tx;
-        let bottom = level(0, 1) + (level(1, 1) - level(0, 1)) * tx;
-        top + (bottom - top) * ty
+        mix([level(0, 0), level(1, 0), level(0, 1), level(1, 1)])
     }
 }
 
@@ -1236,6 +1289,30 @@ pub(crate) fn brush_rect(n: usize, face: usize, center: V3, radius: f64) -> Opti
     })
 }
 
+/// The texels of one tile in a loop that writes some of them. The tile is
+/// `Shared` until the first write, so a tile with no write gets no copy.
+enum Texels<'a> {
+    /// `None`: the tile has no memory.
+    Shared(Option<&'a [u16]>),
+    Owned(&'a mut [u16]),
+}
+
+impl Texels<'_> {
+    fn get(&self, offset: usize, base: u16) -> u16 {
+        match self {
+            Texels::Shared(tile) => tile.map_or(base, |tile| tile[offset]),
+            Texels::Owned(tile) => tile[offset],
+        }
+    }
+
+    /// Call this only on `Owned`.
+    fn set(&mut self, offset: usize, level: u16) {
+        if let Texels::Owned(tile) = self {
+            tile[offset] = level;
+        }
+    }
+}
+
 /// Call this before a change to a tile. It marks the tile for a save, and
 /// at the first change in a stroke it keeps a copy for undo.
 fn save_tile(
@@ -1272,6 +1349,66 @@ mod tests {
             seed: 1,
             limits: Limits::default(),
         }
+    }
+
+    #[test]
+    fn a_paint_after_a_snapshot_leaves_the_snapshot_and_copies_only_its_tiles() {
+        fn shared<T: Send + Sync>() {}
+        shared::<Heightmap>();
+
+        let n = 256;
+        let mut map = Heightmap::with_tile_size(n, 32, 100);
+        let (a, b) = (lonlat_to_dir(0.0, 0.0), lonlat_to_dir(180.0, 0.0));
+        map.begin_stroke();
+        map.stamp(&raise(a, 0.05));
+        map.stamp(&raise(b, 0.05));
+        map.end_stroke();
+        map.take_reset();
+        map.take_dirty();
+        map.clear_changes();
+
+        let snapshot = map.snapshot();
+        assert!(!snapshot.can_undo() && !snapshot.has_changes());
+        assert_eq!(snapshot.dirty, [None; FACES]);
+        assert!(!snapshot.reset);
+        let same = |x: &Option<Tile>, y: &Option<Tile>| match (x, y) {
+            (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+            (None, None) => true,
+            _ => false,
+        };
+        assert!(map.allocated_tiles() > 0);
+        assert!(
+            map.tiles
+                .iter()
+                .zip(&snapshot.tiles)
+                .all(|(x, y)| same(x, y))
+        );
+        let before: Vec<Option<Vec<u16>>> = (0..map.tiles.len())
+            .map(|index| map.tile(index).map(<[u16]>::to_vec))
+            .collect();
+
+        // A stroke, a stamp with no stroke, and one texel.
+        map.begin_stroke();
+        map.stamp(&raise(a, 0.05));
+        map.end_stroke();
+        map.stamp(&raise(lonlat_to_dir(90.0, 0.0), 0.05));
+        map.set(5, 0, 0, 7);
+        let painted: Vec<usize> = map.changed().collect();
+        assert!(painted.len() > 2);
+        for (index, before) in before.iter().enumerate() {
+            assert_eq!(snapshot.tile(index), before.as_deref(), "tile {index}");
+            let kept = same(&map.tiles[index], &snapshot.tiles[index]);
+            assert_eq!(kept, !painted.contains(&index), "tile {index}");
+        }
+        assert_eq!(snapshot.sample(a), map.sample(b));
+        assert!(map.sample(a) > snapshot.sample(a));
+
+        // A paint on the snapshot leaves the first heightmap.
+        let mut snapshot = snapshot;
+        let level = map.sample(b);
+        snapshot.stamp(&raise(b, 0.05));
+        assert_eq!(map.sample(b), level);
+        assert!(snapshot.sample(b) > level);
     }
 
     #[test]
