@@ -3,7 +3,7 @@
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_store::{Units, World};
 
-use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
+use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
 use super::{Action, AppState};
@@ -19,8 +19,8 @@ pub const NEW_TITLE: &str = "New world";
 pub const PROPERTIES_TITLE: &str = "World";
 pub const NAME: &str = "Name";
 pub const RADIUS: &str = "Radius";
-/// The label of the row of the radius presets.
-const SIZE: &str = "Size";
+/// The name of the slider of the radius in the iPad layout.
+pub const RADIUS_SLIDER: &str = "Radius slider";
 const UNITS: &str = "Units";
 const WIDTH: f32 = 400.0;
 /// The space between two groups of rows of the form in the iPad layout.
@@ -301,8 +301,9 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     };
     let new = form.mode == FormMode::New;
     let note = form.radius_note();
-    // The rows are in three groups: the name, the size, and the units.
-    let mut height = ROW + 4.0 * PANEL_ROW + 2.0 * GROUP_GAP + BOTTOM;
+    // The rows are in three groups: the name, the radius, and the units.
+    let slider = TOUCH + widgets::TICK_NAMES;
+    let mut height = ROW + 3.0 * PANEL_ROW + slider + 2.0 * GROUP_GAP + BOTTOM;
     if note.is_some() {
         height += NOTE;
     }
@@ -351,19 +352,24 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         widgets::text_field(ui, controls, NAME, NAME, None, &mut form.name, true);
         ui.add_space(GROUP_GAP);
 
-        let presets = world::PRESETS.map(|(name, _)| name);
-        if let Some(index) = widgets::choice_row(ui, controls, SIZE, &presets, form.preset()) {
-            form.set_radius_km(world::PRESETS[index].1);
-        }
+        // The slider is the control of the radius. Its scale has each
+        // preset at its place, and a tap on the value starts an edit.
         let unit = form.radius_unit();
         let name = format!("{RADIUS} ({unit})");
         let ok = form.radius_ok;
         let radius = &mut form.radius;
-        if widgets::text_field(ui, controls, &name, RADIUS, Some(unit), radius, ok).changed() {
+        if widgets::value_field(ui, controls, &name, RADIUS, unit, radius, ok).changed() {
             form.radius_changed();
         }
         if let Some(note) = &note {
             widgets::form_note(ui, note, NOTE);
+        }
+        let ticks = world::PRESETS.map(|(name, km)| (world::radius_fraction(km), name));
+        let fraction = world::radius_fraction(form.radius_km);
+        let slider =
+            widgets::tick_slider(ui, controls, RADIUS_SLIDER, fraction, &ticks, form.preset());
+        if let Some(fraction) = slider {
+            form.set_radius_km(world::slider_radius(fraction, form.units));
         }
         ui.add_space(GROUP_GAP);
 

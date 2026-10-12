@@ -419,6 +419,8 @@ pub fn text_row(
     resp
 }
 
+/// The distance from each end of a tick slider to the end of its scale.
+pub const SLIDER_INSET: f32 = THUMB / 2.0 + 6.0;
 /// The width of the label at the left of a row of a form.
 const FORM_LABEL: f32 = 92.0;
 
@@ -510,14 +512,115 @@ pub fn choice_row(
     chosen
 }
 
-/// A small text below the control of a row of a form, in the warning color.
+/// The width of the value at the right of a row of a form.
+const FORM_VALUE: f32 = 132.0;
+/// The height of the names below the ticks of a tick slider.
+pub const TICK_NAMES: f32 = 20.0;
+
+/// A row of a form with a value that the user can type: the label at the
+/// left, and the value with its unit at the right. A tap on the value
+/// starts the edit. `name` is the name of the control. The text has the
+/// warning color if it is not `valid`.
+pub fn value_field(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    suffix: &str,
+    text: &mut String,
+    valid: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let at = pos2(rect.left(), rect.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::MUTE);
+    let field = Rect::from_min_max(
+        pos2(rect.right() - FORM_VALUE, rect.center().y - TOUCH / 2.0),
+        pos2(rect.right(), rect.center().y + TOUCH / 2.0),
+    );
+    let id = ui.id().with(name);
+    if ui.memory(|memory| memory.has_focus(id)) {
+        let back = field.shrink(HIGHLIGHT_INSET);
+        ui.painter()
+            .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+    }
+    let mut inner = field.shrink2(vec2(12.0, 0.0));
+    let at = pos2(inner.right(), inner.center().y);
+    ui.painter()
+        .text(at, Align2::RIGHT_CENTER, suffix, theme::body(), theme::MUTE);
+    inner.max.x -= text_width(ui, suffix, theme::body()) + 6.0;
+    let color = if valid { theme::TEXT } else { theme::WARN };
+    let edit = egui::TextEdit::singleline(text)
+        .id(id)
+        .frame(egui::Frame::NONE)
+        .font(theme::body())
+        .text_color(color)
+        .horizontal_align(egui::Align::RIGHT)
+        .vertical_align(egui::Align::Center);
+    let resp = ui.put(inner, edit);
+    controls.push(Control {
+        name: name.to_owned(),
+        rect: field,
+    });
+    resp
+}
+
+/// A slider across a form, with ticks. Each tick has a place from 0 to 1
+/// and a name below it. `active` is the tick at the place of the thumb.
+/// Returns the new place of the thumb if the user moved it.
+pub fn tick_slider(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    fraction: f64,
+    ticks: &[(f64, &str)],
+    active: Option<usize>,
+) -> Option<f64> {
+    let size = vec2(ui.available_width(), TOUCH + TICK_NAMES);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let bar = rect.with_max_y(rect.top() + TOUCH);
+    let resp = hit(ui, controls, bar, name, Sense::click_and_drag(), true, None);
+    let left = bar.left() + SLIDER_INSET;
+    let right = bar.right() - SLIDER_INSET;
+    let mut moved = None;
+    if let Some(pos) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
+    {
+        moved = Some(f64::from((pos.x - left) / (right - left)).clamp(0.0, 1.0));
+    }
+    let y = bar.center().y;
+    let at = |fraction: f64| left + fraction as f32 * (right - left);
+    for (place, _) in ticks {
+        let mark = Rect::from_center_size(pos2(at(*place), y), vec2(2.0, 14.0));
+        ui.painter()
+            .rect_filled(mark, 1.0, theme::MUTE.gamma_multiply(0.5));
+    }
+    let x = at(fraction);
+    let whole = Rect::from_min_max(pos2(left - 6.0, y - 3.0), pos2(right + 6.0, y + 3.0));
+    let filled = Rect::from_min_max(whole.min, pos2(x, y + 3.0));
+    track(ui, whole, filled, pos2(x, y));
+
+    for (index, (place, tick)) in ticks.iter().enumerate() {
+        let color = if active == Some(index) {
+            theme::TEXT
+        } else {
+            theme::MUTE
+        };
+        let text = pos2(at(*place), bar.bottom() - 4.0);
+        ui.painter()
+            .text(text, Align2::CENTER_TOP, *tick, theme::small(), color);
+    }
+    moved
+}
+
+/// A small text below the value of a row of a form, in the warning color.
 pub fn form_note(ui: &mut egui::Ui, text: &str, height: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    let place = rect.with_min_x(rect.left() + FORM_LABEL + HIGHLIGHT_INSET);
     let text = egui::RichText::new(text)
         .font(theme::small())
         .color(theme::WARN);
-    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    let place = rect.shrink2(vec2(12.0, 0.0));
+    let layout = egui::Layout::right_to_left(egui::Align::Center);
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(place).layout(layout),
         |ui| {

@@ -83,9 +83,86 @@ pub fn radius_text(radius_km: f64, units: Units) -> String {
     text.strip_suffix(".0").unwrap_or(&text).to_string()
 }
 
+/// The radii at the two ends of the radius slider. A typed radius can be
+/// outside these limits.
+pub const SLIDER_KM: RangeInclusive<f64> = 1000.0..=20_000.0;
+
+/// The part of the radius slider on each side of a preset that gives the
+/// preset.
+const SNAP: f64 = 0.03;
+
+/// The place of a radius on the radius slider, from 0 to 1. The scale is
+/// logarithmic. A radius outside the limits of the slider is at an end.
+pub fn radius_fraction(radius_km: f64) -> f64 {
+    let (start, end) = (*SLIDER_KM.start(), *SLIDER_KM.end());
+    (radius_km.clamp(start, end) / start).ln() / (end / start).ln()
+}
+
+/// The radius in kilometers at a place of the radius slider. A place near
+/// a preset gives the preset, and each end gives its limit. Each other
+/// place gives a value of three significant digits in the large unit of
+/// `units`.
+pub fn slider_radius(fraction: f64, units: Units) -> f64 {
+    let (start, end) = (*SLIDER_KM.start(), *SLIDER_KM.end());
+    if fraction <= 0.0 {
+        return start;
+    }
+    if fraction >= 1.0 {
+        return end;
+    }
+    let near = |(_, km): &(&str, f64)| (radius_fraction(*km) - fraction).abs() <= SNAP;
+    if let Some((_, km)) = PRESETS.iter().find(|preset| near(preset)) {
+        return *km;
+    }
+    let unit = large_unit(units).0;
+    let value = start * (end / start).powf(fraction) / unit;
+    let step = 10f64.powf(value.log10().floor() - 2.0);
+    ((value / step).round() * step * unit).clamp(start, end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_radius_slider_has_each_preset_at_its_place_on_the_scale() {
+        assert_eq!(radius_fraction(1000.0), 0.0);
+        assert_eq!(radius_fraction(20_000.0), 1.0);
+        // A typed radius outside the slider is at an end.
+        assert_eq!(radius_fraction(200.0), 0.0);
+        assert_eq!(radius_fraction(70_000.0), 1.0);
+        let places = PRESETS.map(|(_, km)| (radius_fraction(km) * 100.0).round());
+        assert_eq!(places, [62.0, 41.0, 18.0]);
+        for (_, km) in PRESETS {
+            // A place near the preset gives the preset.
+            let place = radius_fraction(km);
+            for near in [place - 0.025, place, place + 0.025] {
+                assert_eq!(slider_radius(near, Units::Metric), km);
+                assert_eq!(slider_radius(near, Units::Imperial), km);
+            }
+        }
+        assert_eq!(slider_radius(0.0, Units::Metric), 1000.0);
+        assert_eq!(slider_radius(1.0, Units::Imperial), 20_000.0);
+    }
+
+    #[test]
+    fn the_radius_slider_gives_three_significant_digits() {
+        let mut last = 0.0;
+        for step in 0..=400 {
+            let fraction = f64::from(step) / 400.0;
+            let km = slider_radius(fraction, Units::Metric);
+            assert!(km >= last && SLIDER_KM.contains(&km), "{fraction}: {km}");
+            last = km;
+            if preset_of(km).is_none() {
+                assert_eq!(three_significant(km).parse::<f64>().unwrap(), km);
+            }
+            // The thumb stays near the finger.
+            assert!((radius_fraction(km) - fraction).abs() <= SNAP + 1e-9);
+        }
+        let miles = slider_radius(0.9, Units::Imperial) / KM_PER_MILE;
+        let round: f64 = three_significant(miles).parse().unwrap();
+        assert!((miles - round).abs() < 1e-6, "{miles}");
+    }
 
     #[test]
     fn a_distance_below_one_large_unit_is_in_the_small_unit() {

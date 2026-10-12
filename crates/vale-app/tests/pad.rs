@@ -9,13 +9,14 @@ use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
+use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
     brush_size_text, readout_text, theme,
 };
-use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, WorldForm};
+use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
-use vale_app::world::three_significant;
+use vale_app::world::{radius_fraction, three_significant};
 use vale_store::{Units, World};
 use vale_terrain::{Mode, meters_to_level};
 
@@ -1498,7 +1499,7 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
         tap(&mut h, NEW_WORLD);
         assert_eq!(h.state().world_form.as_ref().unwrap().mode, FormMode::New);
         check_form(&h, &format!("{size:?} new"));
-        tap(&mut h, "Moon");
+        tap_radius(&mut h, 1737.4);
         assert_eq!(h.state().world_form.as_ref().unwrap().radius, "1737.4");
         type_text(&mut h, NAME, "Pebble");
         type_text(&mut h, "Radius (km)", "200");
@@ -1547,12 +1548,68 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
     }
 }
 
+/// A tap on the radius slider of the open form at the place of this radius.
+fn tap_radius(h: &mut Pad, km: f64) {
+    let slider = control(h, RADIUS_SLIDER).unwrap();
+    let (left, width) = (
+        slider.left() + SLIDER_INSET,
+        slider.width() - 2.0 * SLIDER_INSET,
+    );
+    let pos = pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
+    touch(h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+}
+
+#[test]
+fn the_radius_slider_snaps_to_the_known_radii() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        h.state_mut().world_form = Some(WorldForm::new_world());
+        h.run_steps(2);
+        check_form(&h, &format!("{size:?} slider"));
+        let slider = control(&h, RADIUS_SLIDER).unwrap();
+        let (left, width) = (
+            slider.left() + SLIDER_INSET,
+            slider.width() - 2.0 * SLIDER_INSET,
+        );
+        let at = |km: f64| pos2(left + radius_fraction(km) as f32 * width, slider.center().y);
+        let radius = |h: &Pad| h.state().world_form.as_ref().unwrap().radius_km().unwrap();
+
+        // A drag to a place near Mars gives the radius of Mars.
+        drag(&mut h, at(6371.0), at(3389.5) + vec2(3.0, 0.0), None);
+        assert_eq!(radius(&h), 3389.5, "{size:?}");
+        let form = h.state().world_form.as_ref().unwrap();
+        assert_eq!((form.radius.as_str(), form.preset()), ("3389.5", Some(1)));
+        // A place off the presets gives a round value.
+        drag(&mut h, at(3389.5), at(12_000.0), None);
+        let km = radius(&h);
+        assert!(10_000.0 < km && km < 14_000.0, "{size:?}: {km}");
+        assert_eq!(three_significant(km).parse::<f64>().unwrap(), km);
+        assert_eq!(h.state().world_form.as_ref().unwrap().preset(), None);
+        // The end of the slider is its upper limit.
+        drag(
+            &mut h,
+            at(12_000.0),
+            pos2(slider.right(), slider.center().y),
+            None,
+        );
+        assert_eq!(radius(&h), 20_000.0);
+        tap_radius(&mut h, 1737.4);
+        assert_eq!(radius(&h), 1737.4);
+        // A typed value can be outside the limits of the slider.
+        type_text(&mut h, "Radius (km)", "250");
+        assert_eq!(radius(&h), 250.0, "{size:?}");
+    }
+}
+
 /// Makes sure that the open form holds each control of the frame, and that
 /// a finger can hit each one.
 fn check_form(h: &Pad, what: &str) {
     let screen = h.state().pad.rects.unwrap().screen;
     let controls = &h.state().pad.controls;
-    assert!(controls.len() >= 7, "{what}: {} controls", controls.len());
+    assert!(controls.len() >= 6, "{what}: {} controls", controls.len());
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -1583,7 +1640,7 @@ fn the_properties_of_the_world_apply_at_once_and_a_touch_does_not_reach_the_canv
     drag(&mut h, pos2(900.0, 600.0), pos2(700.0, 500.0), None);
     assert!(h.state().globe.view == view);
 
-    tap(&mut h, "Mars");
+    tap_radius(&mut h, 3389.5);
     tap(&mut h, "Miles");
     let world = &h.state().doc.project.world;
     assert_eq!((world.radius_km, world.units), (3389.5, Units::Imperial));
