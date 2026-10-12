@@ -22,6 +22,8 @@ pub const RADIUS: &str = "Radius";
 /// The name of the slider of the radius in the iPad layout.
 pub const RADIUS_SLIDER: &str = "Radius slider";
 const UNITS: &str = "Units";
+/// The row of the form that picks the folder of a new world.
+pub const LOCATION: &str = "Location";
 const WIDTH: f32 = 400.0;
 /// The space between two groups of rows of the form in the iPad layout.
 const GROUP_GAP: f32 = 10.0;
@@ -260,6 +262,20 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                     }
                 });
                 ui.end_row();
+                let locations = state.projects.available();
+                if new && locations.len() > 1 {
+                    ui.label(LOCATION);
+                    ui.horizontal(|ui| {
+                        let active = state.projects.choice();
+                        for location in locations {
+                            let name = location.label(false);
+                            if ui.selectable_label(active == location, name).clicked() {
+                                state.projects.set_choice(location);
+                            }
+                        }
+                    });
+                    ui.end_row();
+                }
             });
         if let Some(note) = form.radius_note() {
             ui.colored_label(ui.visuals().warn_fg_color, note);
@@ -310,6 +326,12 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     }
     if new {
         height += BUTTON_GAP + PANEL_ROW;
+    }
+    // The row of the location is a fourth group.
+    let locations = state.projects.available();
+    let locations = if new { locations } else { Vec::new() };
+    if !locations.is_empty() {
+        height += GROUP_GAP + PANEL_ROW;
     }
     let screen = rects.screen;
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
@@ -378,6 +400,14 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         let active = Units::ALL.iter().position(|u| *u == form.units);
         if let Some(index) = widgets::choice_row(ui, controls, UNITS, &units, active) {
             form.set_units(Units::ALL[index]);
+        }
+        if !locations.is_empty() {
+            ui.add_space(GROUP_GAP);
+            let names: Vec<&str> = locations.iter().map(|l| l.label(true)).collect();
+            let active = locations.iter().position(|l| *l == state.projects.choice());
+            if let Some(index) = widgets::choice_row(ui, controls, LOCATION, &names, active) {
+                state.projects.set_choice(locations[index]);
+            }
         }
         if new {
             ui.add_space(BUTTON_GAP);

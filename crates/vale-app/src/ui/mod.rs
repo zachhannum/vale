@@ -9,14 +9,15 @@ use vale_sphere::LonLat;
 use vale_store::{LayerId, Project, StoreError, World};
 
 use crate::document::Document;
-use crate::files::ExportEvent;
+use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, file_name};
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
-use crate::projects;
+use crate::projects::{self, Location, Locations};
 use crate::resume::{self, Resume};
 use crate::session::{self, Session};
+use crate::workcopy;
 
 pub mod browser;
 pub mod canvas;
@@ -46,6 +47,10 @@ pub enum Action {
     NewWorld(World),
     /// Opens the world of this project file.
     OpenWorld(PathBuf),
+    /// Opens the world of a project file that the system gave. A file
+    /// outside the folders of the projects gets a copy in the local folder,
+    /// and the copy opens.
+    OpenExternal(PathBuf),
     /// Asks for a project file and opens its world.
     OpenProjectDialog,
     /// Gives the world of this project file this name.
@@ -57,7 +62,16 @@ pub enum Action {
     ShowProjects,
     /// Saves each change that waits.
     Save,
+    /// Gets this project file from iCloud Drive, and then opens its world.
+    Download(PathBuf),
+    /// Keeps one version of a project file that two devices changed. The
+    /// number is an index into the other versions. `None` keeps the version
+    /// of this device.
+    KeepVersion(PathBuf, Option<usize>),
 }
+
+/// The time between two reads of the projects folders while a download runs.
+pub const DOWNLOAD_POLL: Duration = Duration::from_secs(1);
 
 /// The state of the save of the open project.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -183,10 +197,12 @@ pub struct AppState {
     pub frames: u64,
     /// The open project file. `None`: the app saves nothing.
     pub session: Option<Session>,
-    /// The folder that gets the project file of a new world, and the folder
-    /// of the start screen. `None`: a new world has no file, and the app has
-    /// no start screen.
-    pub projects: Option<PathBuf>,
+    /// The folders of the project files. With no folder, a new world has no
+    /// file, and the app has no start screen.
+    pub projects: Locations,
+    /// The file services of the system for those folders.
+    pub files: Box<dyn Files>,
+    pub system: SystemEvents,
     /// The edit count of the globe at the last save.
     saved_edits: u64,
     /// The time of the last save, for the save mark.
@@ -233,7 +249,9 @@ impl AppState {
             file_buttons: true,
             frames: 0,
             session: None,
-            projects: None,
+            projects: Locations::default(),
+            files: Box::new(PlainFiles),
+            system: SystemEvents::default(),
             saved_edits: 0,
             saved_at: None,
             save_failed: false,
@@ -353,6 +371,12 @@ impl AppState {
         if session.saves() != saves {
             self.saved_at = Some(now);
         }
+        let due = !hold && session.write_back_due(now);
+        let result = match result {
+            // The project file gets a change that is some minutes old.
+            Ok(wait) if due => self.write_back().map(|()| wait),
+            result => result,
+        };
         self.save_failed = result.is_err();
         let wait = match result {
             Ok(wait) => wait,
@@ -397,6 +421,9 @@ impl AppState {
         self.saved_edits = globe.edits();
         let saved = session.flush(&mut self.doc.project, &mut globe.map);
         let saved = saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view));
+        // The system can stop the app in the background, so the project
+        // file gets the working copy now.
+        let saved = saved.and_then(|()| self.write_back());
         self.save_failed = saved.is_err();
         saved
     }
@@ -443,7 +470,7 @@ impl AppState {
     /// Writes the state for the next start to the projects folder, if the
     /// folder does not hold it.
     pub fn save_resume(&mut self) {
-        let Some(dir) = &self.projects else {
+        let Some(dir) = self.projects.state_dir() else {
             return;
         };
         let resume = self.resume_now();
@@ -458,7 +485,10 @@ impl AppState {
     /// `RESUME_DELAY` at most. With `hold`, a gesture moves the view, and the
     /// write waits. Returns the time to the write.
     fn resume_tick(&mut self, hold: bool, now: Instant) -> Option<Duration> {
-        if hold || self.projects.is_none() || self.resume.as_ref() == Some(&self.resume_now()) {
+        if hold
+            || self.projects.state_dir().is_none()
+            || self.resume.as_ref() == Some(&self.resume_now())
+        {
             return None;
         }
         let age = self.resume_at.map(|at| now.saturating_duration_since(at));
@@ -475,7 +505,7 @@ impl AppState {
     /// Opens the project of the last run in the projects folder, at its last
     /// view. Call this one time, at the start.
     pub fn restore(&mut self) {
-        let Some(resume) = self.projects.as_deref().and_then(Resume::read) else {
+        let Some(resume) = self.projects.state_dir().and_then(Resume::read) else {
             return;
         };
         self.resume = Some(resume.clone());
@@ -515,12 +545,65 @@ impl AppState {
             globe.map.cancel_stroke();
         }
         let saved = session.flush(&mut self.doc.project, &mut globe.map);
-        match saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view)) {
+        let saved = saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view));
+        match saved.and_then(|()| self.write_back()) {
             Ok(()) => true,
             Err(e) => {
                 self.status = format!("The project did not save, so the world stays open: {e}");
                 false
             }
+        }
+    }
+
+    /// Opens the session of a project file, with a working copy if the file
+    /// is in a folder of iCloud Drive. `None`: the project goes into the
+    /// document of the app.
+    fn open_session(
+        &mut self,
+        path: &Path,
+        doc: Option<&mut Document>,
+    ) -> Result<Session, StoreError> {
+        let doc = doc.unwrap_or(&mut self.doc);
+        match self.projects.work_dir(path) {
+            Some(dir) => Session::open_copy(path, &dir, self.files.as_ref(), doc),
+            None => Session::open(path, doc),
+        }
+    }
+
+    /// Gives each working copy of an earlier run to its project file. Call
+    /// this one time, after the app has its folders.
+    pub fn recover_projects(&mut self) {
+        let Some(dir) = self.projects.all_work_dir() else {
+            return;
+        };
+        let (saved, errors) = workcopy::recover(&dir, self.files.as_ref());
+        let name = |path: &PathBuf| {
+            let stem = path.file_stem().unwrap_or_default();
+            stem.to_string_lossy().into_owned()
+        };
+        if let Some(error) = errors.first() {
+            self.status = format!("The app did not save the changes of the last run: {error}");
+        } else if let Some(path) = saved.first() {
+            self.status = format!("Saved the changes of the last run to \"{}\"", name(path));
+        }
+    }
+
+    /// Writes the working copy of the open project to its project file.
+    fn write_back(&mut self) -> Result<(), StoreError> {
+        let Some(session) = &mut self.session else {
+            return Ok(());
+        };
+        match session.write_back(self.files.as_ref()) {
+            Ok(false) => Ok(()),
+            Ok(true) => {
+                let stem = session.path().file_stem().unwrap_or_default();
+                self.status = format!(
+                    "Another device changed this world. Your version is \"{}\".",
+                    stem.to_string_lossy()
+                );
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -546,15 +629,13 @@ impl AppState {
         }
         self.session = None;
         self.status = format!("New world: {}", world.name);
-        let path = self
-            .projects
-            .as_ref()
-            .map(|dir| session::new_project_path(dir, &world.name));
+        let dir = self.projects.new_world_dir();
+        let path = dir.map(|dir| session::new_project_path(dir, &world.name));
         self.doc.set_project(Project::new(world));
         self.globe.clear();
         self.start_world();
         if let Some(path) = path {
-            match Session::open(&path, &mut self.doc) {
+            match self.open_session(&path, None) {
                 Ok(session) => self.session = Some(session),
                 Err(e) => self.status = format!("The new world has no file: {e}"),
             }
@@ -566,7 +647,7 @@ impl AppState {
     /// the recent list.
     fn show_world(&mut self) {
         self.screen = Screen::Editor;
-        if let (Some(dir), Some(session)) = (&self.projects, &self.session) {
+        if let (Some(dir), Some(session)) = (self.projects.state_dir(), &self.session) {
             // The recent list is a convenience, so its error has no message.
             let _ = projects::push_recent(dir, session.path());
         }
@@ -575,14 +656,49 @@ impl AppState {
     /// Saves the open project, closes its file, and shows the start screen.
     /// If the save fails, the world stays open.
     pub fn show_projects(&mut self) {
+        // The save can leave a message for the start screen.
+        self.status.clear();
         if !self.save_now() {
             return;
         }
         self.session = None;
-        self.status.clear();
         self.world_form = None;
         self.screen = Screen::Browser;
-        self.browser.reload(self.projects.as_deref());
+        self.reload_projects();
+    }
+
+    /// Reads the projects folders again while a download runs, one time
+    /// each second. It opens the world that waits for its download. Returns
+    /// `true` while a download runs.
+    pub fn poll_downloads(&mut self, now: Instant) -> bool {
+        let downloading = |entry: &projects::Entry| entry.availability == Availability::Downloading;
+        if self.browser.pending.is_none() && !self.browser.entries.iter().any(downloading) {
+            self.browser.polled = None;
+            return false;
+        }
+        let polled = self.browser.polled;
+        if polled.is_some_and(|at| now.duration_since(at) < DOWNLOAD_POLL) {
+            return true;
+        }
+        self.browser.polled = Some(now);
+        self.reload_projects();
+        if let Some(path) = self.browser.pending.clone() {
+            let entry = self.browser.entries.iter().find(|e| e.path == path);
+            match entry.map(|entry| entry.availability) {
+                Some(Availability::Here) => {
+                    self.browser.pending = None;
+                    self.actions.push(Action::OpenWorld(path));
+                }
+                Some(_) => {}
+                None => self.browser.pending = None,
+            }
+        }
+        true
+    }
+
+    /// Reads the projects folders again.
+    pub fn reload_projects(&mut self) {
+        self.browser.reload(&self.projects, self.files.as_ref());
     }
 
     /// The path and the name of the open project.
@@ -608,28 +724,82 @@ impl AppState {
                     // The next save writes the name, as one undo step.
                     self.doc.project.world.name = name.to_string();
                 } else {
-                    projects::rename(&path, name).map_err(text)?;
+                    match self.projects.work_dir(&path) {
+                        Some(dir) => {
+                            projects::rename_synced(&path, name, &dir, self.files.as_ref())
+                        }
+                        None => projects::rename(&path, name),
+                    }
+                    .map_err(text)?;
                 }
             }
             Action::CopyProject(path) => {
                 if is_open(&path) && !self.save_now() {
                     return Err(self.status.clone());
                 }
-                let copy = projects::copy(&path).map_err(text)?;
-                let name = vale_store::summary(&copy).map_err(text)?.name;
-                self.status = format!("Made {name}");
+                let copy = match self.projects.work_dir(&path) {
+                    Some(dir) => projects::copy_synced(&path, &dir, self.files.as_ref()),
+                    None => projects::copy(&path),
+                };
+                let name = vale_store::summary(&copy.map_err(text)?);
+                self.status = format!("Made {}", name.map_err(text)?.name);
             }
             Action::DeleteProject(path) => {
                 if is_open(&path) {
                     // The file goes away, so the last changes need no save.
-                    self.session = None;
+                    if let Some(session) = self.session.take() {
+                        session.discard();
+                    }
                     self.screen = Screen::Browser;
                 }
-                projects::delete(&path).map_err(text)?;
+                projects::delete_synced(&path, self.files.as_ref()).map_err(text)?;
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Acts on what the system told the app after the last frame. Call
+    /// this in each frame.
+    pub fn poll_system(&mut self) {
+        // The system gives the folder each time the app comes to the front.
+        // The sync service can have new files then.
+        if let Some(dir) = self.system.take_cloud() {
+            self.projects.set_cloud(dir);
+            if self.screen == Screen::Browser {
+                self.reload_projects();
+            }
+        }
+        for path in self.system.take_opened() {
+            self.open_external(&path);
+        }
+    }
+
+    /// Opens the world of a project file that the system gave.
+    fn open_external(&mut self, path: &Path) {
+        let local = self.projects.dir(Location::Local).map(Path::to_path_buf);
+        let (Some(local), None) = (local, self.projects.location_of(path)) else {
+            let files = self.files.as_ref();
+            if files.availability(path) == Availability::Here {
+                self.open_world(path);
+            } else {
+                self.show_projects();
+                self.run_action(Action::Download(path.to_path_buf()));
+            }
+            return;
+        };
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let to = session::new_project_path(&local, &stem);
+        let files = self.files.as_ref();
+        let copied = std::fs::create_dir_all(&local).and_then(|()| {
+            files.with_access(path, &mut || {
+                files.read(path, &mut |from| std::fs::copy(from, &to).map(drop))
+            })
+        });
+        match copied {
+            Ok(()) => self.open_world(&to),
+            Err(e) => self.status = format!("The app did not copy the file: {e}"),
+        }
     }
 
     /// Opens the world of a project file. The file of the old world gets
@@ -644,7 +814,8 @@ impl AppState {
             return;
         }
         let mut doc = self.doc.clone();
-        let opened = Session::open(path, &mut doc)
+        let opened = self
+            .open_session(path, Some(&mut doc))
             .and_then(|session| session.load_map().map(|map| (session, map)));
         let (session, map) = match opened {
             Ok(opened) => opened,
@@ -800,14 +971,28 @@ impl AppState {
             }
             Action::NewWorld(world) => self.new_world(world),
             Action::OpenWorld(path) => self.open_world(&path),
+            Action::OpenExternal(path) => self.open_external(&path),
             Action::RenameProject(..) | Action::CopyProject(_) | Action::DeleteProject(_) => {
                 if let Err(text) = self.project_action(action) {
                     self.status = text;
                 }
-                self.browser.reload(self.projects.as_deref());
+                self.reload_projects();
             }
             Action::ShowProjects => self.show_projects(),
             Action::Save => self.save(Instant::now()),
+            Action::Download(path) => {
+                match self.files.start_download(&path) {
+                    Ok(()) => self.browser.pending = Some(path),
+                    Err(e) => self.status = format!("The download did not start: {e}"),
+                }
+                self.reload_projects();
+            }
+            Action::KeepVersion(path, keep) => {
+                if let Err(e) = self.files.resolve(&path, keep) {
+                    self.status = format!("The app did not keep the version: {e}");
+                }
+                self.reload_projects();
+            }
             Action::OpenDialog
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog
@@ -823,6 +1008,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.poll_import();
     state.poll_export();
     if state.screen == Screen::Browser {
+        if state.poll_downloads(Instant::now()) {
+            ui.ctx().request_repaint_after(DOWNLOAD_POLL);
+        }
         browser::draw(ui, state);
         state.frames += 1;
         return;

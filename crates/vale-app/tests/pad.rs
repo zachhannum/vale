@@ -7,6 +7,7 @@ use vale_app::document::Document;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
+use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
@@ -183,8 +184,8 @@ fn check_controls(h: &Pad, what: &str) {
                     .iter()
                     .any(|k| k.name() == name);
                 let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
-                let more =
-                    in_more && ["Carve", "Erode", "Weather", "Uplift", "Warp"].contains(&name);
+                let more = in_more
+                    && ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"].contains(&name);
                 menu || kind || more || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
@@ -210,7 +211,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         tap(&mut h, MORE);
         assert!(h.state().pad.more);
-        for name in [MORE, "Carve", "Erode", "Weather", "Uplift", "Warp"] {
+        for name in [MORE, "Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, &format!("{size:?} with the More menu"));
@@ -523,6 +524,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
         ("Weather", Mode::Weather),
         ("Erode", Mode::Erode),
         ("Carve", Mode::Carve),
+        ("Ridge", Mode::Ridge),
     ] {
         // A row of the menu also picks the brush tool.
         tap(&mut h, "Pan");
@@ -533,7 +535,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
         let menu = h.state().pad.more_rect.unwrap();
         let cell = control(&h, MORE).unwrap();
         assert_eq!(menu.left_top(), pos2(tools.right() + 12.0, cell.top()));
-        for row in ["Carve", "Erode", "Weather", "Uplift", "Warp"] {
+        for row in ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"] {
             assert!(menu.contains_rect(control(&h, row).unwrap()), "{row}");
         }
         assert_eq!(strip(&h), cells);
@@ -1703,7 +1705,7 @@ fn the_menu_of_the_worlds_opens_another_world() {
         let earth = dir.path().join("Earth.gpkg");
         let mut h = painted_pad(size);
         let state = h.state_mut();
-        state.projects = Some(dir.path().to_path_buf());
+        state.projects = Locations::single(dir.path());
         state.session = Some(Session::open(&earth, &mut state.doc).unwrap());
         let layers = state.doc.project.layers().len();
         let world = World {

@@ -24,7 +24,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
         ui.horizontal_wrapped(|ui| {
             ui.strong("Vale");
             ui.separator();
-            if state.projects.is_some() {
+            if state.projects.any() {
                 file_menu(ui, state);
                 save_mark(ui, state);
                 ui.separator();
@@ -102,7 +102,7 @@ fn file_menu(ui: &mut egui::Ui, state: &mut AppState) {
             state.actions.push(Action::OpenProjectDialog);
         }
         ui.menu_button("Open recent", |ui| {
-            let dir = state.projects.as_deref();
+            let dir = state.projects.state_dir();
             let recent = dir.map(projects::recent).unwrap_or_default();
             if recent.is_empty() {
                 ui.weak("No recent worlds");
@@ -307,6 +307,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
             (Mode::Smooth, "Smooth"),
             (Mode::Flatten, "Flatten"),
             (Mode::Carve, "Carve"),
+            (Mode::Ridge, "Ridge"),
             (Mode::Erode, "Erode"),
             (Mode::Weather, "Weather"),
             (Mode::Uplift, "Uplift"),

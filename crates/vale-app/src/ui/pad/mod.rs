@@ -11,7 +11,7 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, elevation, globe, panels};
 use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::globe::{Tool, WorldView};
-use crate::session::{WorldFile, worlds};
+use crate::session::{WorldFile, worlds_of};
 use crate::world;
 
 pub mod browser;
@@ -27,8 +27,9 @@ use widgets::{BODY_PAD, Controls, PANEL_ROW};
 /// The control of the tool strip that opens the menu of the other modes.
 pub const MORE: &str = "More";
 /// The modes of the menu of the More cell.
-const MORE_MODES: [(&str, Icon, Mode); 5] = [
+const MORE_MODES: [(&str, Icon, Mode); 6] = [
     ("Carve", Icon::Carve, Mode::Carve),
+    ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Erode", Icon::Erode, Mode::Erode),
     ("Weather", Icon::Weather, Mode::Weather),
     ("Uplift", Icon::Uplift, Mode::Uplift),
@@ -1144,7 +1145,7 @@ fn rule(ui: &mut egui::Ui) {
 pub fn toggle_worlds(state: &mut AppState) {
     state.pad.worlds = match state.pad.worlds {
         Some(_) => None,
-        None => Some(state.projects.as_deref().map(worlds).unwrap_or_default()),
+        None => Some(worlds_of(state.projects.paths(state.files.as_ref()))),
     };
     state.pad.menu = false;
 }
@@ -1171,7 +1172,7 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let width = geometry::WORLDS_WIDTH.min(rects.screen.width() - 2.0 * geometry::MARGIN);
     // The row of the start screen needs a folder of projects, and the Save
     // row needs a project file.
-    let rows = 2.0 + f32::from(state.projects.is_some()) + f32::from(state.session.is_some());
+    let rows = 2.0 + f32::from(state.projects.any()) + f32::from(state.session.is_some());
     let size = vec2(width, 10.0 + shown + rule_height + rows * PANEL_ROW + 10.0);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.worlds_rect = Some(rect);
@@ -1245,7 +1246,7 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
                 state.actions.push(Action::Save);
                 open = false;
             }
-            if state.projects.is_some()
+            if state.projects.any()
                 && widgets::text_row(ui, controls, panels::ALL_WORLDS, 0.0, false, true).clicked()
             {
                 state.actions.push(Action::ShowProjects);

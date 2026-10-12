@@ -11,8 +11,10 @@ use vale_store::{
 use vale_terrain::{Bands, ELEV_MAX, ELEV_MIN, Heightmap, Ramp};
 
 use crate::document::Document;
+use crate::files::Files;
 use crate::globe::thumbnail;
 use crate::globe::view::GlobeView;
+use crate::workcopy::WorkCopy;
 
 /// The time from a change to its save. One drag of a control changes the
 /// project in each frame, and this delay turns the drag into a few saves.
@@ -80,11 +82,17 @@ pub struct WorldFile {
 /// A file has the name of the file in place of the name of its world if it
 /// does not give its world, or if another file has a world of that name.
 pub fn worlds(dir: &Path) -> Vec<WorldFile> {
+    worlds_of(project_files(dir).into_iter().map(|(_, path)| path))
+}
+
+/// The worlds of these project files, with the names and the order of
+/// `worlds`.
+pub fn worlds_of(paths: impl IntoIterator<Item = PathBuf>) -> Vec<WorldFile> {
     let stem = |path: &Path| {
         let stem = path.file_stem().unwrap_or_default();
         stem.to_string_lossy().into_owned()
     };
-    let files = project_files(dir).into_iter().map(|(_, path)| {
+    let files = paths.into_iter().map(|path| {
         let name = ProjectFile::world_name(&path).unwrap_or_else(|_| stem(&path));
         WorldFile { path, name }
     });
@@ -101,6 +109,9 @@ pub fn worlds(dir: &Path) -> Vec<WorldFile> {
 
 pub struct Session {
     file: ProjectFile,
+    /// The working copy that holds the database, for a project in a folder
+    /// that a sync service owns.
+    work: Option<WorkCopy>,
     path: PathBuf,
     /// The thumbnail of the file is older than the project, or the file has
     /// no thumbnail.
@@ -119,19 +130,49 @@ impl Session {
     /// Opens the project file and puts its project into the document. If no
     /// file is at the path, this makes the file from the document.
     pub fn open(path: &Path, doc: &mut Document) -> Result<Session, StoreError> {
-        let file = if path.exists() {
-            let (file, project) = ProjectFile::open(path)?;
+        Session::open_at(path, path, None, doc)
+    }
+
+    /// Opens a project file in a folder that a sync service owns. The
+    /// database is a working copy in `work_dir`. If no file is at the path,
+    /// this makes the file from the document.
+    pub fn open_copy(
+        path: &Path,
+        work_dir: &Path,
+        files: &dyn Files,
+        doc: &mut Document,
+    ) -> Result<Session, StoreError> {
+        let work = WorkCopy::open(path, work_dir, files)?;
+        let new = !work.path().exists();
+        let database = work.path().to_path_buf();
+        let mut session = Session::open_at(&database, path, Some(work), doc)?;
+        if new {
+            session.mark_changed();
+            session.write_back(files)?;
+        }
+        Ok(session)
+    }
+
+    fn open_at(
+        database: &Path,
+        path: &Path,
+        work: Option<WorkCopy>,
+        doc: &mut Document,
+    ) -> Result<Session, StoreError> {
+        let file = if database.exists() {
+            let (file, project) = ProjectFile::open(database)?;
             doc.set_project(project);
             file
         } else {
-            if let Some(parent) = path.parent() {
+            if let Some(parent) = database.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            ProjectFile::create(path, &doc.project)?
+            ProjectFile::create(database, &doc.project)?
         };
-        let thumbnail = vale_store::summary(path)?.thumbnail;
+        let thumbnail = vale_store::summary(database)?.thumbnail;
         Ok(Session {
             file,
+            work,
             path: path.to_path_buf(),
             thumbnail_stale: thumbnail.is_none(),
             changed_at: None,
@@ -146,6 +187,40 @@ impl Session {
         &self.path
     }
 
+    /// Closes the project file. The project file does not get the changes
+    /// that the working copy holds.
+    pub fn discard(mut self) {
+        if let Some(work) = &mut self.work {
+            work.forget();
+        }
+    }
+
+    fn mark_changed(&mut self) {
+        if let Some(work) = &mut self.work {
+            work.mark_changed(Instant::now());
+        }
+    }
+
+    /// True if the working copy holds a change for longer than
+    /// `WRITE_BACK_DELAY`.
+    pub fn write_back_due(&self, now: Instant) -> bool {
+        self.work.as_ref().is_some_and(|work| work.due(now))
+    }
+
+    /// Writes the working copy to the project file, if it has a change. If
+    /// another device changed the project file, the copy goes to a new file
+    /// beside it. That file is the project file from then on, and this
+    /// returns `true`.
+    pub fn write_back(&mut self, files: &dyn Files) -> Result<bool, StoreError> {
+        let Some(work) = &mut self.work else {
+            return Ok(false);
+        };
+        work.write_back(files)?;
+        let moved = work.source() != self.path;
+        self.path = work.source().to_path_buf();
+        Ok(moved)
+    }
+
     /// Writes the picture of the globe for the list of projects, if the
     /// file changed after the last picture. With `!saves_map(map)`, the app
     /// does not show the heightmap of the file, and the file keeps its
@@ -157,6 +232,7 @@ impl Session {
         let picture = thumbnail::render(map, view, thumbnail::SIZE);
         self.file.set_thumbnail(&picture)?;
         self.thumbnail_stale = false;
+        self.mark_changed();
         Ok(())
     }
 
@@ -244,6 +320,7 @@ impl Session {
         self.last_save = self.file.save_tiles(project, &changes)?;
         self.saves += 1;
         self.thumbnail_stale = true;
+        self.mark_changed();
         if saves_map {
             map.clear_changes();
         }
@@ -277,6 +354,7 @@ impl Session {
     /// open.
     pub fn undo(&mut self, doc: &mut Document, map: &mut Heightmap) -> Result<bool, StoreError> {
         self.flush(&mut doc.project, map)?;
+        self.mark_changed();
         match self.file.undo()? {
             Some(restored) => self.apply(restored, doc, map).map(|()| true),
             None => Ok(false),
@@ -286,6 +364,7 @@ impl Session {
     /// Puts back the edit that the last `undo` took away.
     pub fn redo(&mut self, doc: &mut Document, map: &mut Heightmap) -> Result<bool, StoreError> {
         self.flush(&mut doc.project, map)?;
+        self.mark_changed();
         match self.file.redo()? {
             Some(restored) => self.apply(restored, doc, map).map(|()| true),
             None => Ok(false),
