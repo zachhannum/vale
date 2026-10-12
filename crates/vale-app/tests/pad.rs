@@ -1433,6 +1433,7 @@ fn the_menu_of_the_worlds_opens_another_world() {
             name: "Pebble".to_string(),
             radius_km: 200.0,
             units: Units::Metric,
+            seed: 0,
         };
         state.run_action(Action::NewWorld(world));
         assert!(!state.has_raster());
@@ -1513,6 +1514,7 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
             name: "Pebble".to_string(),
             radius_km: 200.0,
             units: Units::Metric,
+            seed: 0,
         };
         let actions = std::mem::take(&mut h.state_mut().actions);
         assert_eq!(actions, [Action::NewWorld(world.clone())]);

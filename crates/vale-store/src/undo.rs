@@ -426,10 +426,12 @@ fn put_world(out: &mut Vec<u8>, world: &World) {
     put_bytes(out, world.name.as_bytes());
     put_f64(out, world.radius_km);
     put_bytes(out, world.units.id().as_bytes());
+    out.extend_from_slice(&world.seed.to_le_bytes());
 }
 
 /// An image from format version 3 ends after the radius, and its world has
-/// metric units.
+/// metric units. An image from format version 4 ends after the units. The
+/// seed of each is zero.
 fn world(r: &mut Reader) -> Option<World> {
     Some(World {
         name: string(r)?,
@@ -438,6 +440,7 @@ fn world(r: &mut Reader) -> Option<World> {
             true => Units::Metric,
             false => Units::from_id(&string(r)?)?,
         },
+        seed: if r.0.is_empty() { 0 } else { r.u32()? },
     })
 }
 
@@ -566,4 +569,34 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
         features,
     };
     Some((position, layer))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_world_image_keeps_the_seed() {
+        let before = World {
+            name: "Aerth".to_string(),
+            radius_km: 4321.125,
+            units: Units::Imperial,
+            seed: 0xDEAD_BEEF,
+        };
+        let mut out = Vec::new();
+        put_world(&mut out, &before);
+        assert_eq!(world(&mut Reader(&out)), Some(before));
+    }
+
+    #[test]
+    fn a_world_image_of_version_3_gets_a_seed_of_zero() {
+        let mut out = Vec::new();
+        put_bytes(&mut out, b"Old");
+        put_f64(&mut out, 1234.5);
+        let old = world(&mut Reader(&out)).unwrap();
+        assert_eq!(
+            (old.name.as_str(), old.radius_km, old.seed),
+            ("Old", 1234.5, 0)
+        );
+    }
 }
