@@ -9,7 +9,7 @@ use vale_terrain::Mode;
 
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Workspace, elevation, globe, panels};
-use crate::globe::brush::{EROSION, FLOW, STRENGTH_M, TALUS_DEG};
+use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds};
 use crate::world;
@@ -26,11 +26,12 @@ use widgets::{BODY_PAD, Controls, PANEL_ROW};
 /// The control of the tool strip that opens the menu of the other modes.
 pub const MORE: &str = "More";
 /// The modes of the menu of the More cell.
-const MORE_MODES: [(&str, Icon, Mode); 4] = [
+const MORE_MODES: [(&str, Icon, Mode); 5] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Erode", Icon::Erode, Mode::Erode),
     ("Weather", Icon::Weather, Mode::Weather),
     ("Uplift", Icon::Uplift, Mode::Uplift),
+    ("Warp", Icon::Warp, Mode::Warp),
 ];
 
 /// The name of the row that opens the properties of the world.
@@ -685,13 +686,37 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     percent_slider(&mut brush.flow, FLOW, |fraction, text| {
         widgets::row_slider(ui, controls, "Brush flow", "Flow", fraction, text)
     });
-    let text = format!("{:.0} m", brush.strength_m);
-    let strength = log_slider(brush.strength_m, STRENGTH_M, &text, |fraction, text| {
-        let name = panels::strength_name(brush.mode);
-        widgets::row_slider(ui, controls, "Brush strength", name, fraction, text)
-    });
-    if let Some(meters) = strength {
-        brush.strength_m = meters;
+    if brush.mode == Mode::Warp {
+        let text = format!("{} km", world::three_significant(brush.warp_km));
+        let strength = log_slider(brush.warp_km, WARP_KM, &text, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush strength", "Strength", fraction, text)
+        });
+        if let Some(km) = strength {
+            brush.warp_km = km;
+        }
+        let text = format!("{} km", world::three_significant(brush.scale_km));
+        let scale = log_slider(brush.scale_km, SCALE_KM, &text, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush scale", "Scale", fraction, text)
+        });
+        if let Some(km) = scale {
+            brush.scale_km = km;
+        }
+        let seed = &mut state.doc.project.world.seed;
+        let high = f64::from(*SEED.end());
+        let mut fraction = (f64::from(*seed) / high).min(1.0);
+        let text = seed.to_string();
+        if widgets::row_slider(ui, controls, "Brush seed", "Seed", &mut fraction, &text) {
+            *seed = (fraction * high).round() as u32;
+        }
+    } else {
+        let text = format!("{:.0} m", brush.strength_m);
+        let strength = log_slider(brush.strength_m, STRENGTH_M, &text, |fraction, text| {
+            let name = panels::strength_name(brush.mode);
+            widgets::row_slider(ui, controls, "Brush strength", name, fraction, text)
+        });
+        if let Some(meters) = strength {
+            brush.strength_m = meters;
+        }
     }
     if brush.mode == Mode::Uplift {
         percent_slider(&mut brush.erosion, EROSION, |fraction, text| {

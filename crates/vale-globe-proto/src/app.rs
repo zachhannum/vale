@@ -294,7 +294,8 @@ impl ProtoApp {
                 | Mode::Carve
                 | Mode::Erode
                 | Mode::Weather
-                | Mode::Uplift => flow,
+                | Mode::Uplift
+                | Mode::Warp => flow,
                 // These two modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten => flow * 0.3,
             },
@@ -302,6 +303,8 @@ impl ProtoApp {
             level,
             strength: brush.strength_m * STAMP_SPACING / span,
             talus: 0.0,
+            scale: 0.0,
+            seed: 0,
         };
         let start = Instant::now();
         match stroke.last {

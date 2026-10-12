@@ -21,6 +21,10 @@ struct Stamp {
     // The steepest slope that the weather mode leaves, in levels for each
     // texel step. It is a multiple of 1/16.
     talus: f32,
+    // The size of the features of the noise of the warp mode as an angle,
+    // and the seed of that noise.
+    scale: f32,
+    seed: u32,
 }
 
 // The same number as `GROUP_STAMPS` in `gpu.rs`.
@@ -63,6 +67,10 @@ const CARVE = 4u;
 // as `Heightmap::erode` does.
 const ERODE = 5u;
 const WEATHER = 6u;
+const WARP = 7u;
+
+// The same number as `WARP_MARGIN` in `heightmap.rs`.
+const WARP_MARGIN = 3.0;
 
 @group(0) @binding(0) var<uniform> group: Group;
 // The channel map of all faces. The third byte of a texel is the distance to
@@ -97,14 +105,21 @@ fn flat_of(i: i32) -> f32 {
     return sign(s) / tan_series((2.0 - abs(s)) * PI_4);
 }
 
+// The direction of a texel of a face, not as a unit vector. The texel can be
+// past the face edge.
+fn texel_dir(face: u32, p: vec2<i32>) -> vec3<f32> {
+    let axis = face / 2u;
+    var d: vec3<f32>;
+    d[axis] = 1.0 - 2.0 * f32(face % 2u);
+    d[(axis + 1u) % 3u] = flat_of(p.x);
+    d[(axis + 2u) % 3u] = flat_of(p.y);
+    return d;
+}
+
 // The level of a texel past the face edge. The texel grid continues past the
 // edge, and the read gets the nearest texel of the face that is there.
 fn level_past_edge(p: vec2<i32>) -> u32 {
-    let axis = group.face / 2u;
-    var d: vec3<f32>;
-    d[axis] = 1.0 - 2.0 * f32(group.face % 2u);
-    d[(axis + 1u) % 3u] = flat_of(p.x);
-    d[(axis + 2u) % 3u] = flat_of(p.y);
+    let d = texel_dir(group.face, p);
     let size = abs(d);
     var to = 2u;
     if size.x >= size.y && size.x >= size.z {
@@ -213,11 +228,7 @@ fn window_place(at: vec2<i32>) -> vec3<f32> {
     }
     // The direction of the texel, then its place on the face of the window.
     // The texel grid of that face continues past its edges.
-    let axis = group.face / 2u;
-    var d: vec3<f32>;
-    d[axis] = 1.0 - 2.0 * f32(group.face % 2u);
-    d[(axis + 1u) % 3u] = flat_of(at.x);
-    d[(axis + 2u) % 3u] = flat_of(at.y);
+    let d = texel_dir(group.face, at);
     let to = group.window_face / 2u;
     let depth = d[to] * (1.0 - 2.0 * f32(group.window_face % 2u));
     if depth <= 0.2 * length(d) {
@@ -321,9 +332,15 @@ fn drop_at(at: vec2<i32>) -> f32 {
 // The effect of a stamp at a texel, from 0 to the flow of the stamp. It is 0
 // outside the rectangle of the stamp and outside the brush circle.
 fn amount_at(stamp: Stamp, p: vec2<i32>) -> f32 {
+    return brush_at(stamp, p).x;
+}
+
+// The effect of a stamp at a texel, as `amount_at` gives it, and the angle
+// from the brush center to the texel. Both are 0 outside the brush.
+fn brush_at(stamp: Stamp, p: vec2<i32>) -> vec2<f32> {
     // `Heightmap::stamp` visits the texels of this rectangle only.
     if any(p < stamp.rect.xy) || any(p >= stamp.rect.zw) {
-        return 0.0;
+        return vec2<f32>(0.0);
     }
     let n = f32(group.size);
     let theta = ((vec2<f32>(p) + 0.5) / n * 2.0 - 1.0) * PI_4;
@@ -340,11 +357,11 @@ fn amount_at(stamp: Stamp, p: vec2<i32>) -> f32 {
     let across = sqrt(twist * twist + dot(d, d));
     let along = 1.0 + dot(flat, stamp.flat);
     if across >= MAX_TANGENT * along {
-        return 0.0;
+        return vec2<f32>(0.0);
     }
     let angle = atan_series(across / along);
     if angle >= stamp.radius {
-        return 0.0;
+        return vec2<f32>(0.0);
     }
     let k = angle / stamp.radius;
     var weight = 1.0;
@@ -352,7 +369,126 @@ fn amount_at(stamp: Stamp, p: vec2<i32>) -> f32 {
         let t = (k - stamp.hardness) / (1.0 - stamp.hardness);
         weight = 1.0 - t * t * (3.0 - 2.0 * t);
     }
-    return weight * stamp.flow;
+    return vec2<f32>(weight * stamp.flow, angle);
+}
+
+// A hash of a lattice point. The steps are those of `hash` in
+// `heightmap.rs`, and the bits are the same.
+fn hash(i: vec3<u32>, seed: u32) -> u32 {
+    var h = seed ^ 0x9e3779b9u ^ (i.x * 0x8da6b343u) ^ (i.y * 0xd8163841u) ^ (i.z * 0xcb1ab31fu);
+    h ^= h >> 16u;
+    h *= 0x7feb352du;
+    h ^= h >> 15u;
+    h *= 0x846ca68bu;
+    return h ^ (h >> 16u);
+}
+
+// The noise vector of a lattice point, with each part from -1 to 1.
+fn lattice_noise(i: vec3<u32>, seed: u32) -> vec3<f32> {
+    let h = hash(i, seed);
+    let k = vec3<u32>(h, h >> 10u, h >> 20u) & vec3<u32>(1023u);
+    return (vec3<f32>(k) - 511.5) / 511.5;
+}
+
+// A noise vector at a point. The steps are those of `noise3` in
+// `heightmap.rs`.
+fn noise3(p: vec3<f32>, seed: u32) -> vec3<f32> {
+    let cell = floor(p);
+    // A cell below zero has the bits of its whole number, as in Rust.
+    let i = vec3<u32>(vec3<i32>(cell));
+    let rest = p - cell;
+    let t = rest * rest * (3.0 - 2.0 * rest);
+    var along_y = array<vec3<f32>, 2>();
+    for (var z = 0u; z < 2u; z++) {
+        var along_x = array<vec3<f32>, 2>();
+        for (var y = 0u; y < 2u; y++) {
+            let a = lattice_noise(i + vec3<u32>(0u, y, z), seed);
+            let b = lattice_noise(i + vec3<u32>(1u, y, z), seed);
+            along_x[y] = a + (b - a) * t.x;
+        }
+        along_y[z] = along_x[0] + (along_x[1] - along_x[0]) * t.y;
+    }
+    return along_y[0] + (along_y[1] - along_y[0]) * t.z;
+}
+
+// The face of a direction, and the place of the direction in the texels of
+// that face. A texel center is at a whole number.
+fn place_of(d: vec3<f32>) -> vec3<f32> {
+    let size = abs(d);
+    var to = 2u;
+    if size.x >= size.y && size.x >= size.z {
+        to = 0u;
+    } else if size.y >= size.z {
+        to = 1u;
+    }
+    var face = 2.0 * f32(to);
+    if d[to] < 0.0 {
+        face += 1.0;
+    }
+    let flat = vec2<f32>(d[(to + 1u) % 3u], d[(to + 2u) % 3u]) / size[to];
+    let warp = vec2<f32>(atan_unit(flat.x), atan_unit(flat.y)) / PI_4;
+    return vec3<f32>(face, (warp + 1.0) * 0.5 * f32(group.size) - 0.5);
+}
+
+// The level at a place between 4 texels, in the ratio of the distances to
+// their centers. `rest` is the place from the first texel. The texels are in
+// rows.
+fn blend(levels: array<f32, 4>, rest: vec2<f32>) -> f32 {
+    // With 4 equal levels, each step gives that level.
+    let top = levels[0] + (levels[1] - levels[0]) * rest.x;
+    let bottom = levels[2] + (levels[3] - levels[2]) * rest.x;
+    return top + (bottom - top) * rest.y;
+}
+
+// The level at a direction, from the 4 texels around it on its face. The
+// texels at the face edge continue past the edge.
+fn level_on_face(d: vec3<f32>) -> f32 {
+    let place = place_of(d);
+    let whole = floor(place.yz);
+    let last = vec2<i32>(group.size - 1);
+    var levels = array<f32, 4>();
+    for (var i = 0; i < 4; i++) {
+        let p = vec2<i32>(whole) + vec2<i32>(i & 1, i >> 1u);
+        levels[i] = f32(tile_level(i32(place.x), clamp(p, vec2<i32>(0), last)));
+    }
+    return blend(levels, place.yz - whole);
+}
+
+// The level at a direction, from the 4 texels around it on its face. The
+// texel grid continues past the face edges, and the level of a texel there
+// comes from `level_on_face`.
+fn level_between(d: vec3<f32>) -> f32 {
+    let place = place_of(d);
+    let face = u32(place.x);
+    let whole = floor(place.yz);
+    var levels = array<f32, 4>();
+    for (var i = 0; i < 4; i++) {
+        let p = vec2<i32>(whole) + vec2<i32>(i & 1, i >> 1u);
+        if all(p >= vec2<i32>(0)) && all(p < vec2<i32>(group.size)) {
+            levels[i] = f32(tile_level(i32(face), p));
+        } else {
+            levels[i] = level_on_face(texel_dir(face, p));
+        }
+    }
+    return blend(levels, place.yz - whole);
+}
+
+// The level of a texel after one warp stamp. The texel takes the level of
+// the ground at an offset place. The steps are those of `warp_offset` and
+// `Heightmap::level_between`.
+fn warp_level(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
+    let brush = brush_at(stamp, at);
+    let margin = WARP_MARGIN * 2.0 * PI_4 / f32(group.size);
+    let len = min(stamp.strength * brush.x, stamp.radius - brush.y - margin);
+    if len <= 0.0 {
+        return old;
+    }
+    let p = normalize(texel_dir(group.face, at));
+    let v = noise3(p / stamp.scale, stamp.seed);
+    // The part of the noise vector along the ground.
+    let t = v - p * dot(v, p);
+    let source = p + t * (len / max(length(t), 1.0));
+    return floor(level_between(source) + 0.5);
 }
 
 // The change of the level of a texel from one weather stamp. Each pair of
@@ -421,6 +557,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
             // The change is a whole number, and the new level is between
             // the old levels of the pair texels.
             value += weather(stamp, at, value);
+            continue;
+        }
+        if group.mode == WARP {
+            value = warp_level(stamp, at, value);
             continue;
         }
         // With no effect, each mode keeps the level.

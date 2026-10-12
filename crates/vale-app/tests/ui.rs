@@ -392,6 +392,7 @@ fn a_new_world_starts_from_a_name_a_radius_and_units() {
         name: "Aerth".to_string(),
         radius_km: 1737.4,
         units: Units::Imperial,
+        seed: 0,
     };
     state.run_action(Action::NewWorld(world.clone()));
     assert_eq!(state.doc.project.world, world);
@@ -421,6 +422,7 @@ fn a_new_world_is_a_new_file_and_the_old_file_stays() {
         name: "Pebble".to_string(),
         radius_km: 200.0,
         units: Units::Metric,
+        seed: 0,
     };
     state.run_action(Action::NewWorld(world.clone()));
     assert!(state.session.is_some() && !state.can_undo());
@@ -480,6 +482,7 @@ fn the_new_world_form_makes_a_world_from_a_preset() {
         name: "New world".to_string(),
         radius_km: 3389.5,
         units: Units::Imperial,
+        seed: 0,
     };
     assert_eq!(h.state().actions, [Action::NewWorld(world)]);
 }

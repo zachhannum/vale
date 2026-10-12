@@ -215,13 +215,15 @@ impl Units {
     }
 }
 
-/// The world: a sphere with a name, a radius, and display units. The radius
-/// is in kilometers for each choice of units.
+/// The world: a sphere with a name, a radius, display units, and a seed. The
+/// radius is in kilometers for each choice of units.
 #[derive(Clone, Debug, PartialEq)]
 pub struct World {
     pub name: String,
     pub radius_km: f64,
     pub units: Units,
+    /// The seed of the noise of the world.
+    pub seed: u32,
 }
 
 impl Default for World {
@@ -230,6 +232,7 @@ impl Default for World {
             name: "New world".to_string(),
             radius_km: 6371.0,
             units: Units::Metric,
+            seed: 0,
         }
     }
 }

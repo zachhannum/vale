@@ -4,7 +4,9 @@ use std::collections::VecDeque;
 use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
-use vale_terrain::{ELEV_MAX, ELEV_MIN, GROUP_STAMPS, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan};
+use vale_terrain::{
+    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, talus_levels,
+};
 
 use super::math::{V3, add, angle, normalize, scale};
 
@@ -22,6 +24,12 @@ pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
 /// The limits of the angle of the weather mode, in degrees. Painted land on
 /// a world of the size of the Earth has slopes of 3 degrees or less.
 pub const TALUS_DEG: std::ops::RangeInclusive<f64> = 0.02..=20.0;
+/// The limits of the strength of the warp mode, in kilometers.
+pub const WARP_KM: std::ops::RangeInclusive<f64> = 1.0..=500.0;
+/// The limits of the scale of the warp mode, in kilometers.
+pub const SCALE_KM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
+/// The limits of the seed slider of the warp mode.
+pub const SEED: std::ops::RangeInclusive<u32> = 0..=999;
 /// The part that the erosion setting of 1 adds to the rise of an uplift
 /// stamp. With it, an uplift stroke gives a range of about the height of a
 /// raise stroke at each erosion setting.
@@ -57,6 +65,12 @@ pub struct BrushSettings {
     /// The strength of the erosion of the uplift mode, from 0 to 1. At 0,
     /// the mode gives the result of the raise mode.
     pub erosion: f64,
+    /// The largest distance that one pass of the warp mode moves the ground,
+    /// in kilometers.
+    pub warp_km: f64,
+    /// The size of the features of the noise of the warp mode, in
+    /// kilometers.
+    pub scale_km: f64,
 }
 
 impl Default for BrushSettings {
@@ -71,6 +85,8 @@ impl Default for BrushSettings {
             flatten_level: None,
             talus_deg: 0.5,
             erosion: 0.5,
+            warp_km: 50.0,
+            scale_km: 200.0,
         }
     }
 }
@@ -226,7 +242,8 @@ impl Tip<'_> {
                 | Mode::Carve
                 | Mode::Erode
                 | Mode::Weather
-                | Mode::Uplift => flow,
+                | Mode::Uplift
+                | Mode::Warp => flow,
                 // These two modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten => flow * 0.3,
             },
@@ -237,9 +254,30 @@ impl Tip<'_> {
                     Mode::Uplift => 1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0),
                     _ => 1.0,
                 },
-            // The globe sets the slope, which follows the size of the world.
+            // `set_world` sets the slope, the warp strength, the scale, and the
+            // seed, which follow the world.
             talus: 0.0,
+            scale: 0.0,
+            seed: 0,
         }
+    }
+}
+
+/// Sets the parts of a stamp that follow the world: the slope limit, and
+/// in the warp mode the offset and the size of the noise as angles.
+/// `world_km` is the radius of the world.
+pub fn set_world(
+    stamp: &mut Stamp,
+    brush: &BrushSettings,
+    face_size: usize,
+    world_km: f64,
+    seed: u32,
+) {
+    stamp.talus = talus_levels(brush.talus_deg, face_size, world_km * 1000.0);
+    stamp.scale = brush.scale_km / world_km;
+    stamp.seed = seed;
+    if stamp.mode == Mode::Warp {
+        stamp.strength = brush.warp_km * STAMP_SPACING / world_km;
     }
 }
 
@@ -337,7 +375,7 @@ pub fn plan_texels(plan: &StampPlan) -> u64 {
 /// The cost of a stamp, where `GROUP_STAMPS` is the cost of one pass.
 fn stamp_cost(plan: &StampPlan) -> usize {
     match plan.stamp.mode {
-        Mode::Smooth | Mode::Weather => GROUP_STAMPS,
+        Mode::Smooth | Mode::Weather | Mode::Warp => GROUP_STAMPS,
         Mode::Raise | Mode::Lower | Mode::Flatten | Mode::Carve | Mode::Erode | Mode::Uplift => 1,
     }
 }
@@ -574,6 +612,26 @@ mod tests {
         plan_of(map, radius, Mode::Raise)
     }
 
+    #[test]
+    fn a_warp_stamp_takes_its_angles_from_the_world_radius() {
+        let brush = BrushSettings {
+            mode: Mode::Warp,
+            warp_km: 100.0,
+            scale_km: 250.0,
+            ..BrushSettings::default()
+        };
+        let mut stamp = plan_of(&Heightmap::new(256, 0), 0.1, Mode::Warp).stamp;
+        set_world(&mut stamp, &brush, 256, 1000.0, 9);
+        assert!((stamp.strength - 0.1 * STAMP_SPACING).abs() < 1e-12);
+        assert!((stamp.scale - 0.25).abs() < 1e-12);
+        assert_eq!(stamp.seed, 9);
+
+        // Another mode keeps its strength.
+        let mut raise = plan_of(&Heightmap::new(256, 0), 0.1, Mode::Raise).stamp;
+        set_world(&mut raise, &brush, 256, 1000.0, 9);
+        assert_eq!(raise.strength, 1.0);
+    }
+
     fn plan_of(map: &Heightmap, radius: f64, mode: Mode) -> StampPlan {
         map.stamp_plan(&Stamp {
             center: lonlat_to_dir(0.0, 0.0),
@@ -584,6 +642,8 @@ mod tests {
             level: 0,
             strength: 1.0,
             talus: 0.0,
+            scale: 0.0,
+            seed: 0,
         })
     }
 

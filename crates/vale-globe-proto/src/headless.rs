@@ -115,6 +115,8 @@ pub fn bench(face_size: usize) -> String {
                 level: 0,
                 strength: 20.0,
                 talus: 0.0,
+                scale: 0.0,
+                seed: 0,
             });
         }
         let ms = start.elapsed().as_secs_f64() * 1000.0 / f64::from(stamps);

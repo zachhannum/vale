@@ -8,7 +8,7 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, ExportFormat, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::brush::{EROSION, FLOW, STRENGTH_M, TALUS_DEG};
+use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 use crate::world::{self, three_significant};
 
@@ -230,6 +230,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
             (Mode::Erode, "Erode"),
             (Mode::Weather, "Weather"),
             (Mode::Uplift, "Uplift"),
+            (Mode::Warp, "Warp"),
         ] {
             ui.selectable_value(current, mode, name);
         }
@@ -265,12 +266,30 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     }
     ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
     ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
-    let strength = egui::Slider::new(&mut globe.brush.strength_m, STRENGTH_M)
-        .logarithmic(true)
-        .fixed_decimals(0)
-        .suffix(" m")
-        .text(strength_name(globe.brush.mode));
-    ui.add(strength);
+    if globe.brush.mode == Mode::Warp {
+        for (value, range, name) in [
+            (&mut globe.brush.warp_km, WARP_KM, "Strength"),
+            (&mut globe.brush.scale_km, SCALE_KM, "Scale"),
+        ] {
+            let slider = egui::Slider::new(value, range)
+                .logarithmic(true)
+                .custom_formatter(|km, _| three_significant(km))
+                .suffix(" km")
+                .text(name);
+            ui.add(slider);
+        }
+        // The seed is a property of the world, so each brush gets the same
+        // noise field.
+        let seed = &mut state.doc.project.world.seed;
+        ui.add(egui::Slider::new(seed, SEED).text("Seed"));
+    } else {
+        let strength = egui::Slider::new(&mut globe.brush.strength_m, STRENGTH_M)
+            .logarithmic(true)
+            .fixed_decimals(0)
+            .suffix(" m")
+            .text(strength_name(globe.brush.mode));
+        ui.add(strength);
+    }
     if globe.brush.mode == Mode::Uplift {
         ui.add(egui::Slider::new(&mut globe.brush.erosion, EROSION).text("Erosion"));
     }

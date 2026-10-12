@@ -183,7 +183,8 @@ fn check_controls(h: &Pad, what: &str) {
                     .iter()
                     .any(|k| k.name() == name);
                 let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
-                let more = in_more && ["Carve", "Erode", "Weather", "Uplift"].contains(&name);
+                let more =
+                    in_more && ["Carve", "Erode", "Weather", "Uplift", "Warp"].contains(&name);
                 menu || kind || more || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
@@ -209,7 +210,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         tap(&mut h, MORE);
         assert!(h.state().pad.more);
-        for name in [MORE, "Carve", "Erode", "Weather", "Uplift"] {
+        for name in [MORE, "Carve", "Erode", "Weather", "Uplift", "Warp"] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, &format!("{size:?} with the More menu"));
@@ -413,6 +414,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
     assert_eq!(strip(&h), cells);
     assert!(!more_is_active(&h));
     for (name, mode) in [
+        ("Warp", Mode::Warp),
         ("Uplift", Mode::Uplift),
         ("Weather", Mode::Weather),
         ("Erode", Mode::Erode),
@@ -427,7 +429,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
         let menu = h.state().pad.more_rect.unwrap();
         let cell = control(&h, MORE).unwrap();
         assert_eq!(menu.left_top(), pos2(tools.right() + 12.0, cell.top()));
-        for row in ["Carve", "Erode", "Weather", "Uplift"] {
+        for row in ["Carve", "Erode", "Weather", "Uplift", "Warp"] {
             assert!(menu.contains_rect(control(&h, row).unwrap()), "{row}");
         }
         assert_eq!(strip(&h), cells);
@@ -483,6 +485,44 @@ fn the_brush_panel_has_the_two_sliders_of_the_uplift_mode() {
     assert_eq!(h.state().globe.brush.erosion, 1.0);
     assert!(control(&h, "Brush angle").is_some());
     check_controls(&h, "the Uplift mode");
+}
+
+#[test]
+fn the_brush_panel_has_the_two_sliders_of_the_warp_mode() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush scale").is_none());
+    tap(&mut h, MORE);
+    tap(&mut h, "Warp");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Warp)
+    );
+    assert!(more_is_active(&h));
+    assert_eq!(
+        (s.globe.brush.warp_km, s.globe.brush.scale_km),
+        (50.0, 200.0)
+    );
+    // The strength slider sets the offset in kilometers.
+    let meters = s.globe.brush.strength_m;
+    let rect = control(&h, "Brush strength").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert!((h.state().globe.brush.warp_km - 500.0).abs() < 1e-6);
+    assert_eq!(h.state().globe.brush.strength_m, meters);
+    let rect = control(&h, "Brush scale").unwrap();
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    assert!((h.state().globe.brush.scale_km - 5.0).abs() < 1e-9);
+    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    assert!((h.state().globe.brush.scale_km - 2000.0).abs() < 1e-6);
+    // The seed slider sets the seed of the world.
+    assert_eq!(h.state().doc.project.world.seed, 0);
+    let rect = control(&h, "Brush seed").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert_eq!(h.state().doc.project.world.seed, 999);
+    assert_eq!(h.state().globe.world_seed, 999);
+    assert!(control(&h, "Brush angle").is_none());
+    check_controls(&h, "the Warp mode");
 }
 
 #[test]
@@ -1433,6 +1473,7 @@ fn the_menu_of_the_worlds_opens_another_world() {
             name: "Pebble".to_string(),
             radius_km: 200.0,
             units: Units::Metric,
+            seed: 0,
         };
         state.run_action(Action::NewWorld(world));
         assert!(!state.has_raster());
@@ -1513,6 +1554,7 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
             name: "Pebble".to_string(),
             radius_km: 200.0,
             units: Units::Metric,
+            seed: 0,
         };
         let actions = std::mem::take(&mut h.state_mut().actions);
         assert_eq!(actions, [Action::NewWorld(world.clone())]);

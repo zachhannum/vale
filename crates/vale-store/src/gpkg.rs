@@ -22,11 +22,11 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3, v4];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3, v4, v5];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -404,6 +404,11 @@ fn meta(conn: &Connection, key: &str) -> Result<String, StoreError> {
     .ok_or_else(|| corrupt(format!("no {key} record")))
 }
 
+/// Adds the seed of the world.
+fn v5(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch("ALTER TABLE vale_world ADD COLUMN seed INTEGER NOT NULL DEFAULT 0")
+}
+
 /// Runs each step from version `from` to `FORMAT_VERSION` in one transaction.
 fn migrate(conn: &mut Connection, from: u32) -> Result<(), StoreError> {
     let tx = conn.transaction()?;
@@ -626,8 +631,8 @@ fn world_wkt(world: &World) -> String {
 
 fn write_world(tx: &Transaction, world: &World) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO vale_world (id, name, radius_km, units) VALUES (1, ?1, ?2, ?3)",
-        params![world.name, world.radius_km, world.units.id()],
+        "INSERT INTO vale_world (id, name, radius_km, units, seed) VALUES (1, ?1, ?2, ?3, ?4)",
+        params![world.name, world.radius_km, world.units.id(), world.seed],
     )?;
     tx.execute(
         "INSERT INTO gpkg_spatial_ref_sys VALUES (?1, ?2, 'NONE', ?2, ?3, NULL)",
@@ -1063,10 +1068,12 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
 
 fn load(conn: &Connection) -> Result<Project, StoreError> {
     use rusqlite::OptionalExtension;
-    let (name, radius_km, units) = conn
-        .query_row("SELECT name, radius_km, units FROM vale_world", [], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?))
-        })
+    let (name, radius_km, units, seed) = conn
+        .query_row(
+            "SELECT name, radius_km, units, seed FROM vale_world",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get(3)?)),
+        )
         .optional()?
         .ok_or_else(|| corrupt("no world record"))?;
     let units = Units::from_id(&units).ok_or_else(|| corrupt(format!("units {units:?}")))?;
@@ -1074,6 +1081,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         name,
         radius_km,
         units,
+        seed,
     };
     let next_id = meta(conn, "next_layer_id")?;
     let next_id = next_id
@@ -1317,6 +1325,7 @@ mod tests {
             name: "Aerth \"the second\"".to_string(),
             radius_km: 4321.125,
             units: Units::Imperial,
+            seed: 0xDEAD_BEEF,
         });
         p.add_layer(
             "Places".into(),
@@ -1948,6 +1957,35 @@ mod tests {
     }
 
     #[test]
+    fn a_file_of_version_4_gets_a_seed_of_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = Connection::open(path(&dir)).unwrap();
+        let tx = conn.transaction().unwrap();
+        for step in &MIGRATIONS[..4] {
+            step(&tx).unwrap();
+        }
+        tx.execute_batch(
+            "INSERT INTO vale_meta VALUES ('format_version', '4'), ('next_layer_id', '0');
+             INSERT INTO vale_world VALUES (1, 'Old', 1234.5, 'imperial');",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+
+        let (mut file, mut project) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(
+            (project.world.seed, project.world.units),
+            (0, Units::Imperial)
+        );
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        project.world.seed = 41;
+        file.save(&project).unwrap();
+        drop(file);
+        let (_, again) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(again.world.seed, 41);
+    }
+
+    #[test]
     fn a_file_of_version_1_gets_the_raster_tables() {
         let dir = tempfile::tempdir().unwrap();
         let mut conn = Connection::open(path(&dir)).unwrap();
@@ -2227,6 +2265,7 @@ mod tests {
         assert_eq!(steps(&file), 3);
         let mut next = states[1].0.clone();
         next.world.radius_km = 99.0;
+        next.world.seed = 7;
         file.save(&next).unwrap();
         assert!(!file.can_redo());
         assert_eq!(steps(&file), 2);
