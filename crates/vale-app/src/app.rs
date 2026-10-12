@@ -1,5 +1,8 @@
 //! The eframe wrapper and file dialogs.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use eframe::egui;
 
 use crate::files::PickQueue;
@@ -11,37 +14,41 @@ use crate::ui::ExportFormat;
 use crate::ui::{self, Action, AppState};
 
 struct ValeApp {
-    state: AppState,
+    /// The observer of the life cycle of the app has the state too.
+    state: Rc<RefCell<AppState>>,
     smoke_frames: Option<u64>,
     closing: bool,
     /// The files that the file picker of the system gave.
     picked: PickQueue,
     #[cfg(target_os = "ios")]
     picker: Option<crate::files::uikit::Picker>,
+    #[cfg(target_os = "ios")]
+    _lifecycle: Option<crate::lifecycle::Observer>,
 }
 
 impl eframe::App for ValeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        ui::draw(ui, &mut self.state);
+        let state = &mut *self.state.borrow_mut();
+        ui::draw(ui, state);
 
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
         let paths = dropped.into_iter().map(|f| f.path().to_path_buf());
         // The start screen has no world that takes a file.
-        let paths = paths.filter(|_| self.state.screen == ui::Screen::Editor);
+        let paths = paths.filter(|_| state.screen == ui::Screen::Editor);
         let (heightmaps, paths): (Vec<_>, Vec<_>) = paths.partition(|p| ui::is_heightmap_path(p));
         if !paths.is_empty() {
-            self.state.run_action(Action::OpenFiles(paths));
+            state.run_action(Action::OpenFiles(paths));
         }
         // One image fills the globe, so the last one wins.
         if let Some(path) = heightmaps.into_iter().next_back() {
-            self.state.run_action(Action::ImportHeightmap(path));
+            state.run_action(Action::ImportHeightmap(path));
         }
 
         for path in self.picked.take() {
-            self.state.run_action(Action::ImportHeightmap(path));
+            state.run_action(Action::ImportHeightmap(path));
         }
 
-        for action in std::mem::take(&mut self.state.actions) {
+        for action in std::mem::take(&mut state.actions) {
             match action {
                 #[cfg(target_os = "ios")]
                 Action::ImportHeightmapDialog => {
@@ -55,7 +62,7 @@ impl eframe::App for ValeApp {
                         .add_filter("GeoJSON", &["geojson", "json"])
                         .pick_files();
                     if let Some(paths) = picked {
-                        self.state.run_action(Action::OpenFiles(paths));
+                        state.run_action(Action::OpenFiles(paths));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
@@ -65,7 +72,7 @@ impl eframe::App for ValeApp {
                         ExportFormat::Pdf => "map.pdf",
                     };
                     if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
-                        self.state.run_action(Action::Export(path));
+                        state.run_action(Action::Export(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
@@ -74,43 +81,50 @@ impl eframe::App for ValeApp {
                         .add_filter("Heightmap", &["png", "tif", "tiff"])
                         .pick_file();
                     if let Some(path) = picked {
-                        self.state.run_action(Action::ImportHeightmap(path));
+                        state.run_action(Action::ImportHeightmap(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::OpenProjectDialog => {
                     let mut dialog =
                         rfd::FileDialog::new().add_filter("Vale project", &[EXTENSION]);
-                    if let Some(dir) = &self.state.projects {
+                    if let Some(dir) = &state.projects {
                         dialog = dialog.set_directory(dir);
                     }
                     if let Some(path) = dialog.pick_file() {
-                        self.state.run_action(Action::OpenWorld(path));
+                        state.run_action(Action::OpenWorld(path));
                     }
                 }
-                other => self.state.run_action(other),
+                other => state.run_action(other),
             }
+        }
+
+        let save = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
+        if ui.ctx().input_mut(|i| i.consume_shortcut(&save)) {
+            state.run_action(Action::Save);
         }
 
         // One drag of a control is one save, and thus one undo step.
         let hold = ui.ctx().input(|i| i.pointer.any_down());
-        if let Some(wait) = self.state.save_tick(hold, std::time::Instant::now()) {
+        if let Some(wait) = state.save_tick(hold, std::time::Instant::now()) {
             ui.ctx().request_repaint_after(wait);
         }
 
         if let Some(n) = self.smoke_frames {
             ui.ctx().request_repaint();
-            if self.state.frames >= n && !self.closing {
+            if state.frames >= n && !self.closing {
                 self.closing = true;
-                println!("smoke: {} frames", self.state.frames);
+                println!("smoke: {} frames", state.frames);
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
     }
 
     fn on_exit(&mut self) {
-        if !self.state.save_now() {
-            eprintln!("vale-app: {}", self.state.status);
+        let state = &mut *self.state.borrow_mut();
+        state.save_resume();
+        if !state.save_now() {
+            eprintln!("vale-app: {}", state.status);
         }
     }
 }
@@ -133,12 +147,14 @@ pub fn apply_touch_style(ctx: &egui::Context) {
     });
 }
 
-/// Opens the window and runs until it closes.
+/// Opens the window and runs until it closes. With `restore`, the window
+/// opens on the project and the view of the last run.
 pub fn run_window(
     state: AppState,
     size: (f64, f64),
     smoke_frames: Option<u64>,
     session: Option<Session>,
+    restore: bool,
 ) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -149,30 +165,40 @@ pub fn run_window(
     let mut state = state;
     state.session = session;
     let app = ValeApp {
-        state,
+        state: Rc::new(RefCell::new(state)),
         smoke_frames,
         closing: false,
         picked: PickQueue::default(),
         #[cfg(target_os = "ios")]
         picker: None,
+        #[cfg(target_os = "ios")]
+        _lifecycle: None,
     };
     eframe::run_native(
         "Vale",
         options,
         Box::new(|cc| {
+            #[cfg_attr(not(target_os = "ios"), expect(unused_mut))]
             let mut app = app;
-            if let Some(render_state) = &cc.wgpu_render_state {
-                app.state.globe.attach(render_state);
-            }
-            if let Some(session) = &app.state.session
-                && !session.saves_map(&app.state.globe.map)
             {
-                app.state.status = "This device cannot show the heightmap of the project. \
-                                    The project keeps it, and it does not save the painting."
-                    .to_string();
-            }
-            if cfg!(target_os = "ios") {
-                apply_touch_style(&cc.egui_ctx);
+                let state = &mut *app.state.borrow_mut();
+                if let Some(render_state) = &cc.wgpu_render_state {
+                    state.globe.attach(render_state);
+                }
+                // The renderer gives the largest face size, so it comes first.
+                if restore {
+                    state.restore();
+                }
+                if let Some(session) = &state.session
+                    && !session.saves_map(&state.globe.map)
+                {
+                    state.status = "This device cannot show the heightmap of the project. \
+                                        The project keeps it, and it does not save the painting."
+                        .to_string();
+                }
+                if cfg!(target_os = "ios") {
+                    apply_touch_style(&cc.egui_ctx);
+                }
             }
             #[cfg(target_os = "ios")]
             {
@@ -180,7 +206,7 @@ pub fn run_window(
                 let handle = cc.window_handle().map(|handle| handle.as_raw());
                 if let Ok(RawWindowHandle::UiKit(handle)) = handle {
                     let queue = crate::pen::PenQueue::default();
-                    app.state.globe.pen.queue = Some(queue.clone());
+                    app.state.borrow_mut().globe.pen.queue = Some(queue.clone());
                     crate::pen::uikit::install(handle.ui_view, cc.egui_ctx.clone(), queue);
                     let (picked, ctx) = (app.picked.clone(), cc.egui_ctx.clone());
                     app.picker = handle.ui_view_controller.and_then(|controller| {
@@ -188,6 +214,16 @@ pub fn run_window(
                         crate::files::uikit::Picker::new(controller, picked, wake)
                     });
                 }
+                let shared = app.state.clone();
+                // A frame can hold the state. The frame then saves.
+                let save = Box::new(move || {
+                    if let Ok(mut state) = shared.try_borrow_mut()
+                        && let Err(e) = state.save_waiting()
+                    {
+                        state.status = format!("The project did not save: {e}");
+                    }
+                });
+                app._lifecycle = crate::lifecycle::Observer::new(save);
             }
             Ok(Box::new(app))
         }),

@@ -8,7 +8,7 @@ use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_terrain::Mode;
 
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, Workspace, elevation, globe, panels};
+use super::{Action, AppState, SaveMark, Workspace, elevation, globe, panels};
 use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds};
@@ -37,6 +37,10 @@ const MORE_MODES: [(&str, Icon, Mode); 5] = [
 
 /// The name of the row that opens the properties of the world.
 pub const WORLD_PROPERTIES: &str = "World properties";
+/// The row of the menu of the worlds that saves the open project.
+pub const SAVE: &str = "Save";
+/// The side of the save mark in the readout.
+const SAVE_MARK: f32 = 14.0;
 /// The button that opens the menu of the worlds.
 pub const WORLDS: &str = "Worlds";
 /// The row of the workspace menu that opens the menu of the worlds.
@@ -816,6 +820,8 @@ fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
+/// The readout: the place and the elevation under the pointer. With a
+/// project file, the save mark is at its left.
 fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) {
     let Some(band) = rects.readout else {
         return;
@@ -824,7 +830,9 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     let galley = ui
         .painter()
         .layout_no_wrap(text, theme::mono(), theme::MUTE);
-    let size = vec2(galley.size().x.ceil() + 24.0, band.height());
+    let mark = state.save_mark(std::time::Instant::now());
+    let lead = if mark.is_some() { SAVE_MARK + 8.0 } else { 0.0 };
+    let size = vec2(lead + galley.size().x.ceil() + 24.0, band.height());
     let rect = if rects.class == WidthClass::Compact {
         Rect::from_min_size(band.min, size)
     } else {
@@ -839,10 +847,60 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
         Order::Middle,
         radius,
         |ui| {
-            let at = rect.center() - galley.size() / 2.0;
+            let left = rect.left() + 12.0;
+            if let Some(mark) = mark {
+                let center = pos2(left + SAVE_MARK / 2.0, rect.center().y);
+                let at = Rect::from_center_size(center, vec2(SAVE_MARK, SAVE_MARK));
+                // A test has no clock, so there the mark does not turn.
+                save_mark(ui, at, mark, !state.headless);
+            }
+            let at = pos2(left + lead, rect.center().y - galley.size().y / 2.0);
             ui.painter().galley(at, galley, theme::MUTE);
         },
     );
+}
+
+/// The save mark: an arc that turns during a save, a tick when the file
+/// holds each change, and a warning sign after a save that failed.
+fn save_mark(ui: &egui::Ui, rect: Rect, mark: SaveMark, turn: bool) {
+    let painter = ui.painter();
+    let stroke = |color| egui::Stroke::new(1.4, color);
+    match mark {
+        SaveMark::Saving => {
+            let start = if turn {
+                ui.ctx().request_repaint();
+                ui.input(|i| i.time) as f32 * std::f32::consts::TAU
+            } else {
+                0.0
+            };
+            let radius = rect.width() / 2.0 - 1.5;
+            let points = (0..=18).map(|i| {
+                let angle = start + i as f32 / 18.0 * 0.75 * std::f32::consts::TAU;
+                rect.center() + radius * vec2(angle.cos(), angle.sin())
+            });
+            painter.add(egui::Shape::line(points.collect(), stroke(theme::MUTE)));
+        }
+        SaveMark::Saved => {
+            let color = theme::MUTE.gamma_multiply(0.6);
+            icons::paint(painter, rect, Icon::Tick, rect.width(), color);
+        }
+        SaveMark::Failed => {
+            let (center, top) = (rect.center(), rect.top() + 1.0);
+            let half = rect.width() / 2.0 - 0.5;
+            let corners = [
+                pos2(center.x, top),
+                pos2(center.x + half, rect.bottom() - 1.0),
+                pos2(center.x - half, rect.bottom() - 1.0),
+            ];
+            painter.add(egui::Shape::closed_line(
+                corners.to_vec(),
+                stroke(theme::WARN),
+            ));
+            let line = [pos2(center.x, top + 4.5), pos2(center.x, top + 8.0)];
+            painter.line_segment(line, stroke(theme::WARN));
+            painter.circle_filled(pos2(center.x, top + 10.2), 0.8, theme::WARN);
+        }
+    }
 }
 
 /// The Recenter and Reset buttons of the flat view, at the given places.
@@ -1073,8 +1131,9 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let shown = list.len().min(WORLD_ROWS) as f32 * PANEL_ROW;
     let rule_height = if list.is_empty() { 0.0 } else { 13.0 };
     let width = geometry::WORLDS_WIDTH.min(rects.screen.width() - 2.0 * geometry::MARGIN);
-    // The row of the start screen needs a folder of projects.
-    let rows = if state.projects.is_some() { 3.0 } else { 2.0 };
+    // The row of the start screen needs a folder of projects, and the Save
+    // row needs a project file.
+    let rows = 2.0 + f32::from(state.projects.is_some()) + f32::from(state.session.is_some());
     let size = vec2(width, 10.0 + shown + rule_height + rows * PANEL_ROW + 10.0);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.worlds_rect = Some(rect);
@@ -1140,6 +1199,12 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             }
             if widgets::text_row(ui, controls, WORLD_PROPERTIES, 0.0, false, true).clicked() {
                 state.world_form = Some(WorldForm::properties(&state.doc.project.world));
+                open = false;
+            }
+            if state.session.is_some()
+                && widgets::text_row(ui, controls, SAVE, 0.0, false, true).clicked()
+            {
+                state.actions.push(Action::Save);
                 open = false;
             }
             if state.projects.is_some()

@@ -5,7 +5,7 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::World;
 
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, Workspace, pad};
+use super::{Action, AppState, ExportFormat, SaveMark, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
 use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
@@ -24,6 +24,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             ui.separator();
             if state.projects.is_some() {
                 file_menu(ui, state);
+                save_mark(ui, state);
                 ui.separator();
             }
             ui.selectable_value(&mut state.workspace, Workspace::Globe, "Globe");
@@ -109,6 +110,12 @@ fn file_menu(ui: &mut egui::Ui, state: &mut AppState) {
         ui.separator();
         ui.add_enabled_ui(open.is_some(), |ui| {
             let (path, name) = open.clone().unwrap_or_default();
+            let shortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
+            let save =
+                egui::Button::new(pad::SAVE).shortcut_text(ui.ctx().format_shortcut(&shortcut));
+            if ui.add(save).clicked() {
+                state.actions.push(Action::Save);
+            }
             if ui.button("Rename…").clicked() {
                 state.browser.ask_rename(path.clone(), name.clone());
             }
@@ -124,6 +131,20 @@ fn file_menu(ui: &mut egui::Ui, state: &mut AppState) {
             state.actions.push(Action::ShowProjects);
         }
     });
+}
+
+/// The state of the save of the open project, next to the File menu.
+fn save_mark(ui: &mut egui::Ui, state: &AppState) {
+    match state.save_mark(std::time::Instant::now()) {
+        // A test has no clock, so there the mark does not turn.
+        Some(SaveMark::Saving) if !state.headless => {
+            ui.add(egui::Spinner::new().size(12.0));
+        }
+        Some(SaveMark::Saving) => drop(ui.weak("Saving")),
+        Some(SaveMark::Saved) => drop(ui.weak("Saved")),
+        Some(SaveMark::Failed) => drop(ui.colored_label(ui.visuals().warn_fg_color, "Not saved")),
+        None => {}
+    }
 }
 
 fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
