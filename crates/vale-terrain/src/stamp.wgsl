@@ -766,27 +766,33 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     let ends = ridge_end(part, k) + ridge_end(1.0 - part, k + 1);
     let strength = ridge_strength(i);
     let half = max(0.02 * r, 3.0 * t) * (1.0 + 0.5 * strength);
-    let after = smooth_between(-half, half, s);
-    let shift_before = ridge_shift(i - 1);
-    let shift = shift_before + (ridge_shift(i) - shift_before) * after;
-    var own = vec3<f32>(0.0);
-    for (var c = 0u; c < 3u; c++) {
-        let before = ridge_unit(i - 1, 5u + c);
-        own[c] = before + (ridge_unit(i, 5u + c) - before) * after;
+    // The steps of the crest at 3 boundaries can reach a place.
+    let zone = min(
+        max(0.02 * r, 3.0 * t) + 0.6 * max(from_line - ridge.shift, 0.0),
+        0.9 * ridge.segment,
+    );
+    var before = ridge_shift(i - 2);
+    var shift = before;
+    for (var near = -1; near <= 1; near++) {
+        let j = i + near;
+        let ahead = s + (jitter - f32(near) - ridge_jitter(j)) * ridge.segment;
+        let next = ridge_shift(j);
+        shift += (next - before) * smooth_between(-zone, zone, ahead);
+        before = next;
     }
     let crack_mask = 1.0 - smooth_between(0.0, half, abs(s));
     let off = across - shift;
     let from_crest = sqrt(off * off + at.past2);
     let slow = ridge_gain(noise.slow);
     let mid = ridge_gain(noise.mid);
-    let less = 0.4 * slow + 0.4 * mid + 0.2 * own;
-    let height = 1.0 - 0.25 * less.x - 0.25 * ends;
+    let less = 0.5 * slow + 0.5 * mid;
+    let height = 1.0 - 0.25 * less.x;
     var side = 0.0;
     if from_crest > 0.0 {
         side = off / from_crest;
     }
     let narrow = 0.5 * (less.y + less.z) + 0.5 * (less.y - less.z) * side;
-    let width = r * (1.0 - 0.45 * narrow) * (1.0 - 0.3 * ends);
+    let width = r * (1.0 - 0.45 * narrow);
     let valley_width = max(0.05 * r * (1.0 + 0.4 * noise.bend.z), 2.0 * t);
     var top = 0.0;
     if ridge.valley > 0.0 {
@@ -797,7 +803,8 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     let sharp = max(1.0 - sqrt(drop), 0.0);
     let w = sharp * sharp * (1.0 + 0.06) / (sharp + 0.06);
     let lift = max(ridge.crest - old, 0.0);
-    let low = min(lift / (ridge.roughness + ridge.valley + 1.0), 1.0);
+    let rough = (1.0 + 1.5) * ridge.roughness;
+    let low = min(lift / (rough + ridge.valley + 1.0), 1.0);
     let rise = lift * height * w;
     let deep = (0.6 + 0.4 * ends) * (0.75 + noise.bend.z / 6.0);
     let valley = ridge.valley * low * deep * (1.0 - smooth_between(0.0, valley_width, from_crest));
@@ -829,9 +836,21 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
         sum += octaves[octave].x * ridged * ridged;
         total += octaves[octave].x;
     }
+    let detail = (sum / total - 0.45) * (1.0 - crack_mask);
+    // The fingers. The distance along the line is the one from the start of
+    // the line.
+    let finger_size = 0.22 * r;
+    var fingers = 0.0;
+    if finger_size >= 2.0 * finest {
+        let u = f32(i) * ridge.segment + (bent - cells * ridge.segment);
+        let n = value2(u / (5.0 * finger_size), off / finger_size, 0u, seed ^ 0x6d2b79f5u);
+        let ridged = 1.0 - abs(2.0 * n - 1.0);
+        fingers = 1.5 * (ridged * ridged - 0.45);
+    }
     let x = min(from_crest / width, 1.0);
-    let fabric = (sum / total - 0.45) * (1.0 - x * x);
-    let hills = ridge.roughness * low * fabric * (1.0 - crack_mask);
+    let cap = 1.0 - smooth_between(0.0, 0.5 * width, sqrt(at.past2));
+    let fabric = (detail * (1.0 - x * x) + fingers * (1.0 - x * x * x)) * cap;
+    let hills = ridge.roughness * low * fabric;
     let end = r * (0.7 + 0.8 * strength);
     let depth = (0.01 + 0.32 * strength * strength) * lift * (0.35 + 0.65 * w);
     let crack = depth * crack_mask * (1.0 - smooth_between(0.4 * end, end, from_line));

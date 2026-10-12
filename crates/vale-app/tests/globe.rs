@@ -3191,10 +3191,10 @@ fn an_ocean_ridge_stroke_gives_the_levels_of_the_cpu_ridge() {
     assert!((0..6).filter(|face| on_face(*face)).count() >= 2);
     let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
     assert!(worst.unwrap() <= 2, "{worst:?}");
-    // The top is near the Crest setting. The fabric goes above it by the
-    // Roughness setting at most.
+    // The top is near the Crest setting. The fabric goes above it by 1.4
+    // times the Roughness setting at most.
     let crest = meters_to_level(-500.0);
-    let rough = (spec.roughness.ceil() as u16) + 2;
+    let rough = ((1.4 * spec.roughness).ceil() as u16) + 2;
     let top = *app.iter().max().unwrap();
     let lift = crest - meters_to_level(-2500.0);
     assert!(

@@ -558,13 +558,20 @@ impl RidgePlan {
         let ends = end(part, k) + end(1.0 - part, k.wrapping_add(1));
         let strength = self.strength(i);
         let half = crack_half_width(r, t) * (1.0 + 0.5 * strength);
-        let after = smoothstep(-half, half, s);
-        let shift = mix(self.shift(i.wrapping_sub(1)), self.shift(i), after);
-        // Three numbers from 0 to 1 for each crest segment.
-        let own = |channel: u32| {
-            let of = |k: i32| unit(hash(k as u32, channel, 0, seed));
-            mix(of(i.wrapping_sub(1)), of(i), after)
-        };
+        // The crest steps sideways at each boundary. Near the crest, the
+        // step is as narrow as a crack. On the outer flank, it is wide, so
+        // the outline of the rise has a bend there and no cut. The zone of a
+        // step is shorter than 0.9 of the segment length on each side, so
+        // the steps of 3 boundaries can reach a place.
+        let zone = crack_half_width(r, t) + STEP_SPREAD * (from_line - spec.offset).max(0.0);
+        let zone = zone.min(0.9 * spec.segment);
+        let mut shift = self.shift(i.wrapping_sub(2));
+        for near in -1..=1 {
+            let j = i.wrapping_add(near);
+            let from = s + (jitter(i) - f64::from(near) - jitter(j)) * spec.segment;
+            let step = self.shift(j) - self.shift(j.wrapping_sub(1));
+            shift += step * smoothstep(-zone, zone, from);
+        }
         let crack_mask = 1.0 - smoothstep(0.0, half, s.abs());
         // The distance from the crest of the segment.
         let off = across - shift;
@@ -574,16 +581,15 @@ impl RidgePlan {
         // width on the left and on the right.
         let slow = noise.slow.map(|v| smoothstep(-0.6, 0.6, v));
         let mid = noise.mid.map(|v| smoothstep(-0.6, 0.6, v));
-        let less: [f64; 3] =
-            std::array::from_fn(|c| 0.4 * slow[c] + 0.4 * mid[c] + 0.2 * own(5 + c as u32));
-        let height = 1.0 - CREST_DROP * less[0] - END_DROP * ends;
+        let less: [f64; 3] = std::array::from_fn(|c| 0.5 * slow[c] + 0.5 * mid[c]);
+        let height = 1.0 - CREST_DROP * less[0];
         let side = if from_crest > 0.0 {
             off / from_crest
         } else {
             0.0
         };
         let narrow = 0.5 * (less[1] + less[2]) + 0.5 * (less[1] - less[2]) * side;
-        let width = r * (1.0 - NARROW * narrow) * (1.0 - END_NARROW * ends);
+        let width = r * (1.0 - NARROW * narrow);
         // A valley has a flat top of the rise across its width, so its rims
         // are at the level of the crest.
         let valley_width = (0.05 * r * (1.0 + 0.4 * noise.bend[2])).max(2.0 * t);
@@ -598,7 +604,8 @@ impl RidgePlan {
         let w = w * w * (1.0 + FOOT) / (w + FOOT);
         let lift = (f64::from(spec.crest) - old).max(0.0);
         // Ground at the crest level gets no fabric and no valley.
-        let low = (lift / (spec.roughness + spec.valley + 1.0)).min(1.0);
+        let rough = (1.0 + FINGER_HEIGHT) * spec.roughness;
+        let low = (lift / (rough + spec.valley + 1.0)).min(1.0);
         let rise = lift * height * w;
         let deep = (0.6 + 0.4 * ends) * (0.75 + noise.bend[2] / 6.0);
         let valley = spec.valley * low * deep * (1.0 - smoothstep(0.0, valley_width, from_crest));
@@ -625,9 +632,28 @@ impl RidgePlan {
             sum += weight * ridged * ridged;
             total += weight;
         }
+        let detail = (sum / total - FABRIC_MEAN) * (1.0 - crack_mask);
+        // The fingers: one more octave with large cells. Its pattern does
+        // not break at a crack.
+        let size = FINGER_SIZE * r;
+        let fingers = if size >= 2.0 * finest {
+            let n = value2(
+                u / (FINGER_STRETCH * size),
+                off / size,
+                0,
+                seed ^ SALT_FINGER,
+            );
+            let ridged = 1.0 - (2.0 * n - 1.0).abs();
+            FINGER_HEIGHT * (ridged * ridged - FABRIC_MEAN)
+        } else {
+            0.0
+        };
+        // The fabric is zero at the edge of the rise and in a round end of
+        // the line.
         let x = (from_crest / width).min(1.0);
-        let fabric = (sum / total - FABRIC_MEAN) * (1.0 - x * x);
-        let hills = spec.roughness * low * fabric * (1.0 - crack_mask);
+        let cap = 1.0 - smoothstep(0.0, 0.5 * width, at.past);
+        let fabric = (detail * (1.0 - x * x) + fingers * (1.0 - x * x * x)) * cap;
+        let hills = spec.roughness * low * fabric;
         // A strong crack is deep and goes far. A weak crack ends on the
         // flank.
         let end = r * (0.7 + 0.8 * strength);
@@ -671,6 +697,7 @@ const SALT_BEND_FINE: u32 = 0x2f6b_8a35;
 const SALT_SLOW: u32 = 0x7a3c_91d7;
 const SALT_MID: u32 = 0x4cf5_ad43;
 const SALT_FABRIC: u32 = 0x1b87_3593;
+const SALT_FINGER: u32 = 0x6d2b_79f5;
 
 /// The largest move of a boundary, as a part of the segment length.
 const JITTER: f64 = 0.35;
@@ -678,16 +705,20 @@ const JITTER: f64 = 0.35;
 /// The crest is lower than the Crest setting by up to this part of the rise.
 const CREST_DROP: f64 = 0.25;
 
-/// The crest is lower at an end of a crest segment by this part of the rise
-/// times the square of the strength of the crack there.
-const END_DROP: f64 = 0.25;
-
 /// A flank is narrower than the brush radius by up to this part.
 const NARROW: f64 = 0.45;
 
-/// A flank is narrower at an end of a crest segment by this part times the
-/// square of the strength of the crack there.
-const END_NARROW: f64 = 0.3;
+/// The zone of a step of the crest gets wider by this part of the distance
+/// from the line past the Offset setting.
+const STEP_SPREAD: f64 = 0.6;
+
+/// The cell of the fingers across the line, as a part of the brush radius,
+/// and the number of times that the cell is longer along the line.
+const FINGER_SIZE: f64 = 0.22;
+const FINGER_STRETCH: f64 = 5.0;
+
+/// The height of the fingers, as a part of the Roughness setting.
+const FINGER_HEIGHT: f64 = 1.5;
 
 /// The octaves of the fabric, from the finest one. Each has a weight, and
 /// the number of times that its cell is longer along the line than across
@@ -838,7 +869,7 @@ mod tests {
     /// with no rise.
     fn width(plan: &RidgePlan, noise: RidgeNoise, u: f64, side: f64) -> f64 {
         let r = plan.ridge.radius;
-        let mut places = (1..=2000).map(|i| r * f64::from(i) / 2000.0);
+        let mut places = (1..=3000).map(|i| r * f64::from(i) / 2000.0);
         let end = places.find(|a| plan.level(START, at(u, side * a), noise) == START);
         end.unwrap()
     }
@@ -849,16 +880,12 @@ mod tests {
         let r = plan.ridge.radius;
         for k in 1..12 {
             let u = middle(&plan, k);
-            // The crest of a segment is lower than the Crest setting by 0.05
-            // of the rise at most.
+            // With the calm noise, the crest has the Crest setting.
             let top = level(&plan, u, 0.0);
-            assert!(
-                top <= f64::from(CREST) && top >= f64::from(CREST) - 0.05 * LIFT - 1.0,
-                "{k}: {top}"
-            );
+            assert_eq!(top, f64::from(CREST), "{k}");
             for side in [-1.0, 1.0] {
                 let width = width(&plan, calm(), u, side);
-                assert!(width > 0.9 * r && width <= r, "{k}: {width}");
+                assert!(width > 0.99 * r && width <= r, "{k}: {width}");
                 let mut last = top;
                 for i in 1..=200 {
                     let across = side * width * f64::from(i) / 200.0;
@@ -878,7 +905,7 @@ mod tests {
             // and the crest is lower by a quarter of the rise at most.
             let low = f64::from(plan.level(START, at(u, 0.0), narrow()));
             let most = f64::from(CREST) - 0.25 * LIFT;
-            assert!(low >= most - 1.0 && low <= most + 0.05 * LIFT, "{k}: {low}");
+            assert!((low - most).abs() <= 1.0, "{k}: {low}");
             for side in [-1.0, 1.0] {
                 let width = width(&plan, narrow(), u, side);
                 assert!(width > 0.54 * r && width < 0.65 * r, "{k}: {width}");
@@ -909,11 +936,11 @@ mod tests {
             (low, high)
         };
         // The crest is lower in places. In a strong crack, it is lower by
-        // 0.83 of the rise at most.
+        // 0.58 of the rise at most.
         let (low, high) = range(&tops);
         assert!(high > f64::from(CREST) - 0.1 * LIFT, "{high}");
         assert!(low < f64::from(CREST) - 0.2 * LIFT, "{low}");
-        assert!(low > f64::from(CREST) - 0.85 * LIFT, "{low}");
+        assert!(low > f64::from(CREST) - 0.6 * LIFT, "{low}");
         // The two flanks have other widths.
         for widths in [&left, &right] {
             let (low, high) = range(widths);
@@ -993,7 +1020,7 @@ mod tests {
         let plan = shape(rough, FINE);
         let r = plan.ridge.radius;
         let half = 1.5 * crack_half_width(r, plan.step());
-        let top = f64::from(CREST) + 0.55 * rough.roughness;
+        let top = f64::from(CREST) + 0.55 * (1.0 + FINGER_HEIGHT) * rough.roughness;
         let mut away = 0;
         for noise in [calm(), narrow(), wild(), RidgeNoise::default()] {
             for j in 0..60 {
@@ -1080,6 +1107,24 @@ mod tests {
         }
         let mean = |steps: &[f64]| steps.iter().sum::<f64>() / steps.len() as f64;
         assert!(mean(&strong) > 2.0 * mean(&weak));
+        // At the crest, the step is as narrow as the crack. At the edge of
+        // the rise, a small part of the step is in that distance, so the
+        // outline of the rise has no cut.
+        let near = 2.0 * crack_half_width(r, plan.step());
+        let mut large = 0;
+        for i in 1..100 {
+            let step = shifts[i] - shifts[i - 1];
+            if step.abs() < 0.3 * stairs.offset {
+                continue;
+            }
+            large += 1;
+            let u = boundary(&plan, i as i32);
+            let crest = crest_at(u + near) - crest_at(u - near);
+            assert!((crest - step).abs() <= 0.02 * step.abs() + 2.0 * r / 500.0);
+            let edge = width(&plan, calm(), u + near, 1.0) - width(&plan, calm(), u - near, 1.0);
+            assert!(edge.abs() < 0.4 * step.abs(), "{i}: {edge} {step}");
+        }
+        assert!(large > 10);
         // An offset above half of the radius has the effect of that half.
         let wide = RidgeLine::new(
             Ridge {
@@ -1238,7 +1283,9 @@ mod tests {
             let highest = pattern.iter().copied().fold(f64::MIN, f64::max);
             let lowest = pattern.iter().copied().fold(f64::MAX, f64::min);
             assert!(highest - lowest > 600.0, "{k}: {lowest} {highest}");
-            assert!(highest <= 1100.0 && lowest >= -900.0, "{k}");
+            // The detail has the height of the Roughness setting, and the
+            // fingers have 1.5 times that height.
+            assert!(highest <= 2750.0 && lowest >= -2250.0, "{k}");
             assert!(lowest < -200.0 && highest > 200.0, "{k}");
             // The fabric changes less along the line than across it.
             let along = hills(&rough, &smooth, Some(calm()), u + cell, &inside);
@@ -1246,7 +1293,7 @@ mod tests {
             let across = hills(&rough, &smooth, Some(calm()), u, &moved);
             let (along, across) = (mean(&pattern, &along), mean(&pattern, &across));
             assert!(
-                along < 0.5 * across && across > 100.0,
+                along < 0.7 * across && across > 100.0,
                 "{k}: {along} {across}"
             );
             // Each segment has its own pattern, and the fabric ends at the
@@ -1261,15 +1308,54 @@ mod tests {
                     .map(|i| side * edge * f64::from(i) / 100.0)
                     .collect();
                 let hills = hills(&rough, &smooth, Some(calm()), u, &near);
-                assert!(hills.iter().all(|h| h.abs() <= 150.0), "{k}: {hills:?}");
+                assert!(hills.iter().all(|h| h.abs() <= 300.0), "{k}: {hills:?}");
             }
+            // A round end of the line has no fabric.
+            let end = |plan: &RidgePlan| {
+                let point = RidgePoint {
+                    past: 0.6 * r,
+                    ..at(u, 0.0)
+                };
+                plan.level(START, point, calm())
+            };
+            assert!(end(&smooth) > START + 1000);
+            assert_eq!(end(&rough), end(&smooth));
             last = pattern;
         }
-        // A crack has no fabric.
+        // The fingers go through a crack.
+        let crack = hills(&rough, &smooth, Some(calm()), boundary(&rough, 3), &inside);
+        assert!(crack.iter().any(|h| h.abs() > 200.0));
+        // At a small radius, the fabric has no fingers. Then a crack has no
+        // fabric.
+        let step = FRAC_PI_2 / FINE as f64;
+        let small = Ridge {
+            radius: 50.0 * step,
+            segment: 0.0,
+            roughness: 2000.0,
+            ..spec()
+        };
+        let (rough, smooth) = (
+            shape(small, FINE),
+            shape(
+                Ridge {
+                    roughness: 0.0,
+                    ..small
+                },
+                FINE,
+            ),
+        );
+        let inside: Vec<f64> = (-45..=45).map(|i| f64::from(i) * step).collect();
         for i in 1..20 {
             let hills = hills(&rough, &smooth, Some(calm()), boundary(&rough, i), &inside);
             assert!(hills.iter().all(|h| h.abs() <= 2.0), "{i}");
+            let hills = hills_at(&rough, &smooth, middle(&rough, i), &inside);
+            assert!(hills.iter().any(|h| h.abs() > 200.0), "{i}");
         }
+    }
+
+    /// `hills` with the calm noise.
+    fn hills_at(rough: &RidgePlan, smooth: &RidgePlan, u: f64, places: &[f64]) -> Vec<f64> {
+        hills(rough, smooth, Some(calm()), u, places)
     }
 
     /// The distances between two bottoms of the fabric across the line, in
@@ -1675,7 +1761,7 @@ mod tests {
             );
             assert!(after != levels(&start), "{name}");
             // No texel is above the crest by more than the fabric.
-            let top = f64::from(CREST) + full().roughness;
+            let top = f64::from(CREST) + 1.4 * full().roughness;
             assert!(after.iter().all(|l| f64::from(*l) <= top), "{name}");
             // A second pass over the line changes nothing.
             assert_eq!(map.ridge(&line.plan(0)), 0, "{name}");
