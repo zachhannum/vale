@@ -10,7 +10,7 @@ The labeling prototype is done. The `vale-labeler` library labels points and lin
 cargo run --release -p vale-labeler-demo -- --preset world --out target/demo/world.png
 ```
 
-An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. The app opens on the globe workspace, and a switch in the tool bar opens the flat map. This command opens the window:
+An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. The app opens on a start screen that lists the projects. A project opens on the globe workspace, and a switch in the tool bar opens the flat map. This command opens the window:
 
 ```sh
 cargo run --release -p vale-app
@@ -41,7 +41,7 @@ cargo run --release -p vale-globe-proto
 scripts/globe-proto-ipad.sh
 ```
 
-The app prototype saves the world, the vector layers, and the heightmap to a GeoPackage project file. The file also holds the undo log. The file does not hold the styles. The prototype leaves out rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
+The app prototype saves the world, the vector layers, and the heightmap to a GeoPackage project file. The file also holds the undo log and a small picture of the globe for the start screen. The file does not hold the styles. The prototype leaves out rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
 
 The current phase is phase 0, the iPad test loop and CI. When each PR arrives on the iPad through TestFlight, and CI builds all four platforms, the phase is done.
 

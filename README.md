@@ -18,7 +18,9 @@ The first build makes PROJ from source. It takes about one minute.
 cargo run --release -p vale-app
 ```
 
-The window opens on the globe workspace. The globe shows the heightmap of the world as stepped elevation tints. You can do these things.
+The window opens on the start screen, which lists your worlds. Click "New world…" to make a world, or click the picture of a world to open it. Each world has buttons that rename it, copy it, and delete it. The File menu of the tool bar has the same actions and a list of the recent worlds. "All worlds" in the File menu goes back to the start screen.
+
+A world opens in the globe workspace. The globe shows the heightmap of the world as stepped elevation tints. You can do these things.
 
 - Drag the globe to rotate it. On a touch screen, use one finger.
 - Scroll the wheel to zoom. On a trackpad, scroll with two fingers to rotate, and pinch to zoom.
@@ -65,7 +67,9 @@ This command keeps the world, the vector layers, and the heightmap in a project 
 cargo run --release -p vale-app -- --project path/to/world.gpkg
 ```
 
-The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after a change, and at once after a brush stroke. Each save is one undo step. A save after a brush stroke writes only the tiles that the stroke changed. The file does not hold the styles. On iPad, each world is one project file in the container of the app. The app opens the file with the newest change.
+The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after a change, and at once after a brush stroke. Each save is one undo step. A save after a brush stroke writes only the tiles that the stroke changed. The file does not hold the styles. On iPad, each world is one project file in the container of the app.
+
+The start screen keeps each world in a project file in the data folder of the system. On Linux, the folder is `~/.local/share/vale`. On macOS, it is `~/Library/Application Support/Vale`. On Windows, it is `%APPDATA%\Vale`. The flag `--projects-dir` sets another folder. With `--project`, the app opens that file with no start screen, and "All worlds" shows the project files of its folder.
 
 ## Headless use
 
@@ -90,6 +94,8 @@ cargo run --release -p vale-app -- --stroke-test --face-size 8192
 | `--center <LON,LAT>` | Center of the projection |
 | `--radius-km <KM>` | Radius of the world. The default is 6371. A project file that exists gives its own radius. |
 | `--project <GPKG>` | Project file for the world, the vector layers, and the heightmap |
+| `--projects-dir <DIR>` | Folder of the project files of the start screen |
+| `--start-screen` | Show the start screen. With `--screenshot`, draw it. |
 | `--look-at <LON,LAT>` | Put this place at the middle of the view, on the globe and on the map |
 | `--zoom <F>` | Zoom factor on the fitted view, on the globe and on the map |
 | `--face-size <N>` | Pixels on one edge of a heightmap face. The default is 8192 in the window and 1024 without a window. A project file that holds a heightmap gives its own face size. |
@@ -110,7 +116,7 @@ scripts/app-ipad.sh
 
 The script builds the app, installs it on the iPad, and starts it. It prints four steps and then "Done". The first build takes a few minutes, because it makes PROJ for iOS. If the build fails, read the full log in `target/ios/vale-app/xcodebuild.log`.
 
-At the first start, the app opens on an empty globe, in the iPad layout, with the form of a new world. Set the name, the radius, and the units, and tap "Create world". Paint with Apple Pencil. Drag with one finger to turn the globe, and pinch with two fingers to zoom. To import a heightmap, tap the layers button and tap "Import heightmap…". The file picker of the Files app opens. After the first stroke or import, the row is in the panel of the Height layer. The globe button at the top left opens the menu of the worlds. Tap a world to open it. Tap "New world…" to make a world, which is a new project file. In the form, the slider sets the radius, and it stops at the marks of the Moon, Mars, and Earth. Tap the value above the slider to type a radius. The file of the old world stays. Tap "World properties" to change the name, the radius, or the units of the open world. In a narrow window, the menu of the workspaces has the row "Worlds…". The iPad app has no other buttons to open or export files.
+The app opens on the start screen, which lists your worlds with a picture of each globe. Tap "New world…", set the name, the radius, and the units, and tap "Create world". The world opens on the globe, in the iPad layout. On the start screen, tap the picture of a world to open it, and use the buttons below it to rename it, copy it, or delete it. Paint with Apple Pencil. Drag with one finger to turn the globe, and pinch with two fingers to zoom. To import a heightmap, tap the layers button and tap "Import heightmap…". The file picker of the Files app opens. After the first stroke or import, the row is in the panel of the Height layer. The globe button at the top left opens the menu of the worlds. Tap a world to open it. Tap "All worlds" to go back to the start screen. Tap "New world…" to make a world, which is a new project file. In the form, the slider sets the radius, and it stops at the marks of the Moon, Mars, and Earth. Tap the value above the slider to type a radius. The file of the old world stays. Tap "World properties" to change the name, the radius, or the units of the open world. In a narrow window, the menu of the workspaces has the row "Worlds…". The iPad app has no other buttons to open or export files.
 
 To build for the iOS simulator on a Mac with Apple silicon, run these commands:
 
@@ -152,7 +158,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 
 ## What the prototype leaves out
 
-- The styles in the project file. Without `--project`, undo and redo are for brush strokes only, and the session ends when the window closes.
+- The styles in the project file. With GeoJSON files and no `--project`, undo and redo are for brush strokes only, and the session ends when the window closes.
 - Raster layers, SVG and Shapefile import, and the command Replace from file.
 - Rule-based styles. A layer has one fill, one stroke, and one circle symbol.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
