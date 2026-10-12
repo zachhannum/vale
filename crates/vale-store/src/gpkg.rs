@@ -2,14 +2,19 @@
 //!
 //! Each vector layer is one GeoPackage feature table. The `vale_` tables hold
 //! the world, the layer order, the attribute schema, the rasters, and the
-//! raster tiles, and the undo log. They are in
+//! raster tiles, the undo log, and the picture of the world. They are in
 //! `gpkg_contents` with the data type `vale`. GDAL, and thus QGIS, lists a
 //! table that is not in `gpkg_contents` as a layer, and it does not list a
 //! table with a data type that it does not know.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::io::{Read as _, Write as _};
 use std::path::Path;
+
+use flate2::Compression;
+use flate2::read::DeflateDecoder;
+use flate2::write::DeflateEncoder;
 
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
@@ -22,11 +27,11 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3, v4, v5];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3, v4, v5, v6];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -136,6 +141,71 @@ pub struct Restored {
     pub tiles: Vec<(RasterId, TileKey)>,
 }
 
+/// A small picture of the world, for a list of projects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Thumbnail {
+    pub width: u32,
+    pub height: u32,
+    /// The pixels, row by row, with 4 bytes for each pixel.
+    pub rgba: Vec<u8>,
+}
+
+/// The records of a project file that a list of projects shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Summary {
+    /// The name of the world.
+    pub name: String,
+    pub thumbnail: Option<Thumbnail>,
+}
+
+/// Reads the summary of a project file. This does not read the features, and
+/// it does not change the file. A file of an older format version has no
+/// thumbnail.
+pub fn summary(path: &Path) -> Result<Summary, StoreError> {
+    use rusqlite::OptionalExtension;
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(path, flags)?;
+    let version = format_version(&conn)?;
+    if version > FORMAT_VERSION {
+        return Err(StoreError::NewerFormat {
+            file: version,
+            app: FORMAT_VERSION,
+        });
+    }
+    let name = conn
+        .query_row("SELECT name FROM vale_world", [], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| corrupt("no world record".to_string()))?;
+    if version < 6 {
+        return Ok(Summary {
+            name,
+            thumbnail: None,
+        });
+    }
+    let row: Option<(u32, u32, Vec<u8>)> = conn
+        .query_row("SELECT width, height, data FROM vale_thumbnail", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .optional()?;
+    let thumbnail = match row {
+        Some((width, height, data)) => {
+            let mut rgba = Vec::new();
+            let read = DeflateDecoder::new(data.as_slice()).read_to_end(&mut rgba);
+            let len = u64::from(width) * u64::from(height) * 4;
+            if read.is_err() || rgba.len() as u64 != len {
+                return Err(corrupt("the pixels of the thumbnail".to_string()));
+            }
+            Some(Thumbnail {
+                width,
+                height,
+                rgba,
+            })
+        }
+        None => None,
+    };
+    Ok(Summary { name, thumbnail })
+}
+
 /// An open project file.
 pub struct ProjectFile {
     conn: Connection,
@@ -211,6 +281,22 @@ impl ProjectFile {
         let conn = Connection::open_with_flags(path, flags)?;
         format_version(&conn)?;
         Ok(conn.query_row("SELECT name FROM vale_world", [], |r| r.get(0))?)
+    }
+
+    /// Writes the picture of the world. This is not an edit, so it gets no
+    /// undo step.
+    pub fn set_thumbnail(&mut self, thumbnail: &Thumbnail) -> Result<(), StoreError> {
+        let len = u64::from(thumbnail.width) * u64::from(thumbnail.height) * 4;
+        assert_eq!(thumbnail.rgba.len() as u64, len, "4 bytes for each pixel");
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&thumbnail.rgba)?;
+        let data = encoder.finish()?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO vale_thumbnail (id, width, height, data)
+             VALUES (1, ?1, ?2, ?3)",
+            params![thumbnail.width, thumbnail.height, data],
+        )?;
+        Ok(())
     }
 
     /// Writes the project as one edit. Each feature keeps its UUID, and each
@@ -537,6 +623,21 @@ fn v2(tx: &Transaction) -> rusqlite::Result<()> {
          INSERT INTO gpkg_extensions
            SELECT table_name, NULL, 'vale_project', 'Records of the Vale app', 'read-write'
            FROM gpkg_contents WHERE table_name IN ('vale_raster', 'vale_raster_tile');",
+    )
+}
+
+/// The picture of the world.
+fn v6(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE vale_thumbnail (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           width INTEGER NOT NULL,
+           height INTEGER NOT NULL,
+           data BLOB NOT NULL);
+         INSERT INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_thumbnail', 'vale', 'vale_thumbnail');
+         INSERT INTO gpkg_extensions
+           VALUES ('vale_thumbnail', NULL, 'vale_project', 'Records of the Vale app', 'read-write');",
     )
 }
 
@@ -1523,6 +1624,7 @@ mod tests {
                 "vale_meta",
                 "vale_raster",
                 "vale_raster_tile",
+                "vale_thumbnail",
                 "vale_undo_record",
                 "vale_undo_step",
                 "vale_undo_tile",
@@ -1983,6 +2085,56 @@ mod tests {
         drop(file);
         let (_, again) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(again.world.seed, 41);
+    }
+
+    #[test]
+    fn the_summary_has_the_name_and_the_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut file, mut project) = {
+            drop(ProjectFile::create(&path(&dir), &sample()).unwrap());
+            ProjectFile::open(&path(&dir)).unwrap()
+        };
+        let name = project.world.name.clone();
+        assert_eq!(
+            summary(&path(&dir)).unwrap(),
+            Summary {
+                name,
+                thumbnail: None
+            }
+        );
+
+        let picture = |seed: u8| Thumbnail {
+            width: 3,
+            height: 2,
+            rgba: (0..24).map(|i| i * seed).collect(),
+        };
+        file.set_thumbnail(&picture(1)).unwrap();
+        file.set_thumbnail(&picture(2)).unwrap();
+        // The thumbnail is not an edit.
+        assert!(!file.can_undo());
+        project.world.name = "Renamed".into();
+        file.save(&project).unwrap();
+        // The summary reads a file that the app has open.
+        let found = summary(&path(&dir)).unwrap();
+        assert_eq!(found.name, "Renamed");
+        assert_eq!(found.thumbnail, Some(picture(2)));
+        // An undo keeps the thumbnail.
+        file.undo().unwrap();
+        assert_eq!(summary(&path(&dir)).unwrap().thumbnail, Some(picture(2)));
+        drop(file);
+
+        // A file of version 5 has no thumbnail table.
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch("DROP TABLE vale_thumbnail").unwrap();
+        drop(conn);
+        set_format_version(&dir, 5);
+        assert_eq!(summary(&path(&dir)).unwrap().thumbnail, None);
+
+        set_format_version(&dir, FORMAT_VERSION + 1);
+        assert!(matches!(
+            summary(&path(&dir)),
+            Err(StoreError::NewerFormat { .. })
+        ));
     }
 
     #[test]

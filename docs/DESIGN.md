@@ -140,6 +140,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Source | Name of the imported file, extents, and the pixels of an imported image |
 | Raster | Face size, unit, value range, base level, ramp, band limits |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
+| Thumbnail | A small picture of the globe, for the list of projects |
 | Layer | Type (raster, points, lines, or polygons), attribute schema, link to a source, to a raster, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Style | Ordered rules of one layer, stored as JSON |

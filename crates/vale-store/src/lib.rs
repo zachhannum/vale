@@ -9,7 +9,8 @@ mod tile;
 mod undo;
 
 pub use gpkg::{
-    FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, TileChanges, TileKey,
+    FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,
+    TileKey, summary,
 };
 pub use tile::TILE_SIZE;
 pub use undo::UNDO_LIMIT;
