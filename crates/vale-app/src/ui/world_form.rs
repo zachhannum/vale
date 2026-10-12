@@ -11,9 +11,6 @@ use crate::world;
 
 /// The control that makes the world of the form.
 pub const CREATE: &str = "Create world";
-/// The control that makes the world of the form in place of a world that
-/// has layers.
-pub const REPLACE: &str = "Replace world";
 /// The control that opens the form of a new world.
 pub const NEW_WORLD: &str = "New world…";
 /// The title of the form of a new world.
@@ -45,8 +42,9 @@ pub struct WorldForm {
     /// False: `radius` is not a radius.
     radius_ok: bool,
     pub units: Units,
-    /// The form asked the user to confirm that the world replaces a world.
-    pub confirm: bool,
+    /// The form does not close until it makes a world, because the app has
+    /// no world to go back to.
+    pub required: bool,
 }
 
 /// What the user did on the form in one frame.
@@ -67,7 +65,7 @@ impl WorldForm {
             radius_km: world.radius_km,
             radius_ok: true,
             units: world.units,
-            confirm: false,
+            required: false,
         }
     }
 
@@ -132,11 +130,6 @@ impl WorldForm {
         })
     }
 
-    /// The name of the button that makes the world.
-    pub fn create_name(&self) -> &'static str {
-        if self.confirm { REPLACE } else { CREATE }
-    }
-
     /// The text of the unit of the radius.
     fn radius_unit(&self) -> &'static str {
         world::large_unit(self.units).1
@@ -177,16 +170,10 @@ impl WorldForm {
     }
 }
 
-fn confirm_text(state: &AppState) -> String {
-    format!(
-        "The new world replaces {}, with its layers. You cannot undo this.",
-        state.doc.project.world.name
-    )
-}
-
 /// Acts on what the user did, and keeps or closes the form.
 fn finish(state: &mut AppState, mut form: WorldForm, did: Did) {
     match did {
+        Did::Close if form.required => {}
         Did::Close => return,
         Did::OpenNew => form = WorldForm::new_world(),
         Did::Create => {
@@ -194,12 +181,8 @@ fn finish(state: &mut AppState, mut form: WorldForm, did: Did) {
                 state.world_form = Some(form);
                 return;
             };
-            if state.has_content() && !form.confirm {
-                form.confirm = true;
-            } else {
-                state.actions.push(Action::NewWorld(world));
-                return;
-            }
+            state.actions.push(Action::NewWorld(world));
+            return;
         }
         Did::Nothing => {}
     }
@@ -269,20 +252,17 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
         if let Some(note) = form.radius_note() {
             ui.colored_label(ui.visuals().warn_fg_color, note);
         }
-        if form.confirm {
-            ui.colored_label(ui.visuals().warn_fg_color, confirm_text(state));
-        }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if new {
-                let create = egui::Button::new(form.create_name());
+                let create = egui::Button::new(CREATE);
                 if ui
                     .add_enabled(form.world().is_some() && !busy, create)
                     .clicked()
                 {
                     did = Did::Create;
                 }
-                if ui.button("Cancel").clicked() {
+                if !form.required && ui.button("Cancel").clicked() {
                     did = Did::Close;
                 }
             } else {
@@ -309,9 +289,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         return;
     };
     let new = form.mode == FormMode::New;
-    let note = form
-        .radius_note()
-        .or_else(|| form.confirm.then(|| confirm_text(state)));
+    let note = form.radius_note();
     let rows = 5.0 + if note.is_some() { 1.0 } else { 0.0 };
     let screen = rects.screen;
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
@@ -383,7 +361,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         }
         if new {
             let enabled = form.world().is_some() && !busy;
-            if widgets::button_row(ui, controls, form.create_name(), enabled).clicked() {
+            if widgets::button_row(ui, controls, CREATE, enabled).clicked() {
                 did = Did::Create;
             }
         } else if widgets::text_row(ui, controls, NEW_WORLD, 0.0, false, true).clicked() {

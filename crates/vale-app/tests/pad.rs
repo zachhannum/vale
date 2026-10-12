@@ -13,7 +13,7 @@ use vale_app::ui::pad::{
     IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, WORLD_PROPERTIES, brush_size_text,
     readout_text, theme,
 };
-use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, REPLACE, WorldForm};
+use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
 use vale_app::world::three_significant;
 use vale_store::{Units, World};
@@ -1141,7 +1141,7 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     tap(&mut h, "Brush settings");
     let layers = panel(&h, Panel::Layers).unwrap();
     assert_eq!((layers.min, layers.width()), (pos2(858.0, 96.0), 320.0));
-    assert_eq!(layers.height(), 52.0 + 2.0 * 48.0 + 10.0);
+    assert_eq!(layers.height(), 52.0 + 3.0 * 48.0 + 10.0);
     assert_eq!(
         control(&h, "Close Layers").unwrap().min,
         pos2(1130.0, 100.0)
@@ -1429,16 +1429,7 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
         assert_eq!(form.radius_km(), Some(200.0), "{size:?}: {:?}", form.radius);
         assert_eq!(form.preset(), None);
 
-        // The sample world has layers, so the form asks one time.
         tap(&mut h, CREATE);
-        assert!(h.state().actions.is_empty());
-        assert!(h.state().world_form.as_ref().unwrap().confirm);
-        assert!(
-            h.query_by_label_contains("replaces Earth (sample)")
-                .is_some()
-        );
-        check_form(&h, &format!("{size:?} confirm"));
-        tap(&mut h, REPLACE);
         assert!(h.state().world_form.is_none());
         let world = World {
             name: "Pebble".to_string(),
@@ -1463,9 +1454,16 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
         );
         assert_ne!(brush_size_text(state), earth);
         assert_eq!(state.globe.world_km, 200.0);
-        // A new world has no confirm step.
-        h.state_mut().world_form = Some(WorldForm::new_world());
+
+        // The Layers panel also opens the form of a new world, and the
+        // first form of an app with no project does not close.
+        tap(&mut h, NEW_WORLD);
+        let form = h.state_mut().world_form.as_mut().unwrap();
+        assert_eq!(form.mode, FormMode::New);
+        form.required = true;
         h.run_steps(2);
+        tap(&mut h, "Close New world");
+        assert!(h.state().world_form.is_some(), "{size:?}");
         tap(&mut h, CREATE);
         assert_eq!(h.state().actions.len(), 1, "{size:?}");
     }

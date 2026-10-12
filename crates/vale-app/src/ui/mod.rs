@@ -13,7 +13,7 @@ use crate::globe::import::ImportResult;
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
-use crate::session::Session;
+use crate::session::{self, Session};
 
 pub mod canvas;
 pub mod elevation;
@@ -33,7 +33,8 @@ pub enum Action {
     ImportHeightmapDialog,
     /// Imports this equirectangular image into the heightmap of the globe.
     ImportHeightmap(PathBuf),
-    /// Replaces the project with a new project of this world.
+    /// Makes a project of this world and opens it. With a folder of
+    /// projects, the project is a new file there.
     NewWorld(World),
 }
 
@@ -126,6 +127,9 @@ pub struct AppState {
     pub frames: u64,
     /// The open project file. `None`: the app saves nothing.
     pub session: Option<Session>,
+    /// The folder that gets the project file of a new world. `None`: a new
+    /// world has no file.
+    pub projects: Option<PathBuf>,
     /// The edit count of the globe at the last save.
     saved_edits: u64,
 }
@@ -159,6 +163,7 @@ impl AppState {
             file_buttons: true,
             frames: 0,
             session: None,
+            projects: None,
             saved_edits: 0,
         };
         state.set_layout(Layout::default());
@@ -281,9 +286,41 @@ impl AppState {
         !self.doc.project.rasters().is_empty() || self.globe.map.allocated().next().is_some()
     }
 
-    /// True if a new world replaces a layer of this world.
-    pub fn has_content(&self) -> bool {
-        !self.doc.project.layers().is_empty() || self.has_raster()
+    /// Opens a new project of this world. The file of the old world gets
+    /// each change that waits, and then it stays as it is.
+    fn new_world(&mut self, world: World) {
+        if let Some(session) = &mut self.session {
+            if self.globe.busy() {
+                self.globe.map.cancel_stroke();
+            }
+            if let Err(e) = session.flush(&mut self.doc.project, &mut self.globe.map) {
+                self.status = format!("The project did not save, so the world stays open: {e}");
+                return;
+            }
+        }
+        self.session = None;
+        self.status = format!("New world: {}", world.name);
+        let path = self
+            .projects
+            .as_ref()
+            .map(|dir| session::new_project_path(dir, &world.name));
+        self.doc.set_project(Project::new(world));
+        self.doc.frame.view = None;
+        self.globe.clear();
+        self.saved_edits = self.globe.edits();
+        self.selection = None;
+        self.selected_layer = None;
+        self.import_note = None;
+        self.pad.layer = false;
+        // A layer of the next world can have the ID of an old layer.
+        self.pipeline = Pipeline::new();
+        if let Some(path) = path {
+            match Session::open(&path, &mut self.doc) {
+                Ok(session) => self.session = Some(session),
+                Err(e) => self.status = format!("The new world has no file: {e}"),
+            }
+        }
+        self.touch();
     }
 
     /// Marks the map as needing a new compose.
@@ -352,24 +389,7 @@ impl AppState {
                 }
                 self.poll_import();
             }
-            Action::NewWorld(world) => {
-                self.status = format!("New world: {}", world.name);
-                self.doc.set_project(Project::new(world));
-                self.doc.frame.view = None;
-                self.globe.clear();
-                self.selection = None;
-                self.selected_layer = None;
-                self.import_note = None;
-                self.pad.layer = false;
-                // A layer of the next world can have the ID of an old layer.
-                self.pipeline = Pipeline::new();
-                if let Some(session) = &mut self.session
-                    && let Err(e) = session.new_world(&self.doc.project)
-                {
-                    self.status = format!("The project did not save: {e}");
-                }
-                self.touch();
-            }
+            Action::NewWorld(world) => self.new_world(world),
             Action::OpenDialog | Action::ExportDialog(_) | Action::ImportHeightmapDialog => {}
         }
     }

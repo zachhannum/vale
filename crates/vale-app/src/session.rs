@@ -2,7 +2,7 @@
 //! heightmap a short time after a change. Each save is one step of the undo
 //! log of the file.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use vale_store::{
@@ -20,6 +20,41 @@ pub const SAVE_DELAY: Duration = Duration::from_millis(500);
 const HEIGHT_NAME: &str = "Height";
 /// The largest face size of a heightmap that the app loads.
 const MAX_FACE_SIZE: u32 = 16384;
+
+/// The extension of a project file.
+const EXTENSION: &str = "gpkg";
+
+/// The path of a new project file in `dir` for a world with this name. No
+/// file is at the path.
+pub fn new_project_path(dir: &Path, name: &str) -> PathBuf {
+    let stem: String = name
+        .trim()
+        .chars()
+        .map(|c| match c {
+            c if c.is_alphanumeric() || " -_".contains(c) => c,
+            _ => '_',
+        })
+        .collect();
+    let stem = if stem.is_empty() { "World" } else { &stem };
+    let mut path = dir.join(format!("{stem}.{EXTENSION}"));
+    let mut number = 2;
+    while path.exists() {
+        path = dir.join(format!("{stem} {number}.{EXTENSION}"));
+        number += 1;
+    }
+    path
+}
+
+/// The project file in `dir` with the newest change.
+pub fn latest_project(dir: &Path) -> Option<PathBuf> {
+    let files = std::fs::read_dir(dir).ok()?.filter_map(|entry| {
+        let path = entry.ok()?.path();
+        let project = path.extension().is_some_and(|e| e == EXTENSION);
+        let changed = path.metadata().ok()?.modified().ok()?;
+        project.then_some((changed, path))
+    });
+    files.max().map(|(_, path)| path)
+}
 
 pub struct Session {
     file: ProjectFile,
@@ -139,13 +174,6 @@ impl Session {
             map.clear_changes();
         }
         Ok(())
-    }
-
-    /// Makes the file that of a new world: the project with no undo step, and
-    /// no tile of a raster that the project does not have.
-    pub fn new_world(&mut self, project: &Project) -> Result<(), StoreError> {
-        self.changed_at = None;
-        self.file.save_base(project)
     }
 
     /// True if the file has an edit to undo, or a change waits for its save.

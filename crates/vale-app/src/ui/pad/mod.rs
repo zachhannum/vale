@@ -681,6 +681,9 @@ fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
         let form = WorldForm::properties(&state.doc.project.world);
         state.world_form = Some(form);
     }
+    if widgets::text_row(ui, controls, world_form::NEW_WORLD, 0.0, false, true).clicked() {
+        state.world_form = Some(WorldForm::new_world());
+    }
     if !state.has_raster() {
         // The import makes the Height layer, and its panel shows the result.
         let asked = state.actions.len();

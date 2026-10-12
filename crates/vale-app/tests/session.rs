@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use vale_app::document::Document;
-use vale_app::session::{SAVE_DELAY, Session};
-use vale_store::{Project, ProjectFile, Units, World};
+use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path};
+use vale_store::{ProjectFile, Units};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{FACES, Heightmap, Mode, Stamp, TexelRect, meters_to_level};
 
@@ -481,37 +481,20 @@ fn a_new_radius_keeps_each_longitude_and_latitude() {
 }
 
 #[test]
-fn a_new_world_removes_the_old_heightmap_from_the_file() {
+fn a_new_project_file_has_the_name_of_its_world_and_a_free_path() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("project.gpkg");
-    let mut doc = Document::sample();
-    let mut session = Session::open(&path, &mut doc).unwrap();
-    let mut map = Heightmap::new(1024, BASE);
-    paint(&mut map, 45.0, 35.3, 0.2);
-    session.flush(&mut doc.project, &mut map).unwrap();
-    assert!(session.last_save.tiles_written > 0);
-
-    // The app saves the new world at once, and the undo log starts again.
-    let world = World {
-        name: "Pebble".to_string(),
-        radius_km: 200.0,
-        units: Units::Metric,
-    };
-    doc.set_project(Project::new(world.clone()));
-    let mut map = Heightmap::new(1024, BASE);
-    session.new_world(&doc.project).unwrap();
-    assert!(!session.can_undo() && !session.can_redo());
-    let (file, saved) = ProjectFile::open(&path).unwrap();
-    assert_eq!(saved, Project::new(world));
-    drop(file);
-
-    // A stroke on the new world saves its own tiles and no old tile.
-    paint(&mut map, -100.0, 5.0, 0.05);
-    session.flush(&mut doc.project, &mut map).unwrap();
-    assert_eq!(doc.project.rasters().len(), 1);
-    drop(session);
-    let (_, next, loaded) = reopen(&path);
-    assert_eq!(next.project.world.name, "Pebble");
-    assert!(next.project.layers().is_empty());
-    assert!(texels(&loaded) == texels(&map));
+    assert_eq!(latest_project(dir.path()), None);
+    let first = new_project_path(dir.path(), " Pebble ");
+    assert_eq!(first, dir.path().join("Pebble.gpkg"));
+    std::fs::write(&first, b"").unwrap();
+    std::fs::write(dir.path().join("notes.txt"), b"").unwrap();
+    assert_eq!(latest_project(dir.path()), Some(first));
+    let second = new_project_path(dir.path(), "Pebble");
+    assert_eq!(second, dir.path().join("Pebble 2.gpkg"));
+    let odd = new_project_path(dir.path(), "a/b: c");
+    assert_eq!(odd, dir.path().join("a_b_ c.gpkg"));
+    assert_eq!(
+        new_project_path(dir.path(), ""),
+        dir.path().join("World.gpkg")
+    );
 }

@@ -6,11 +6,13 @@ use egui_kittest::kittest::Queryable;
 use kurbo::Point;
 use vale_app::document::Document;
 use vale_app::headless;
+use vale_app::session::Session;
 use vale_app::ui::panels::WORLD_BUTTON;
-use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, REPLACE, WorldForm};
+use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{Action, AppState, ExportFormat, Workspace, draw, is_heightmap_path};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{Units, World};
+use vale_store::{Project, ProjectFile, Units, World};
+use vale_terrain::Heightmap;
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 
@@ -385,7 +387,7 @@ fn full_ui_renders_offscreen() {
 fn a_new_world_starts_from_a_name_a_radius_and_units() {
     let mut state = state_with(Document::sample());
     state.globe.map.set(0, 0, 0, 40000);
-    assert!(state.has_content() && state.has_raster());
+    assert!(state.has_raster());
     let world = World {
         name: "Aerth".to_string(),
         radius_km: 1737.4,
@@ -397,7 +399,51 @@ fn a_new_world_starts_from_a_name_a_radius_and_units() {
     assert!(state.doc.frame.entries.is_empty());
     assert!(state.doc.project.rasters().is_empty());
     assert!(state.globe.map.allocated().next().is_none());
-    assert!(!state.has_content() && !state.globe.can_undo());
+    assert!(!state.has_raster() && !state.globe.can_undo());
+    assert!(state.session.is_none());
+}
+
+#[test]
+fn a_new_world_is_a_new_file_and_the_old_file_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("Earth.gpkg");
+    let mut state = state_with(Document::sample());
+    state.session = Some(Session::open(&old, &mut state.doc).unwrap());
+    state.projects = Some(dir.path().to_path_buf());
+    // The heightmap of the file has its own face size.
+    state.globe.set_face_size(512);
+    let base = state.globe.map.base();
+    state.globe.set_map(Heightmap::new(1024, base));
+    state.globe.map.set(0, 0, 0, 40000);
+    let layers = state.doc.project.layers().to_vec();
+
+    let world = World {
+        name: "Pebble".to_string(),
+        radius_km: 200.0,
+        units: Units::Metric,
+    };
+    state.run_action(Action::NewWorld(world.clone()));
+    assert!(state.session.is_some() && !state.can_undo());
+    assert_eq!(state.globe.map.face_size(), 512);
+    let new = dir.path().join("Pebble.gpkg");
+    let (_, project) = ProjectFile::open(&new).unwrap();
+    assert_eq!(project, Project::new(world.clone()));
+
+    // The old file has the old world, with the stroke that waited.
+    let (_, project) = ProjectFile::open(&old).unwrap();
+    assert_eq!(project.world.name, "Earth (sample)");
+    assert_eq!(project.layers(), layers);
+    assert_eq!(project.rasters().len(), 1);
+    assert_eq!(project.rasters()[0].face_size, 1024);
+
+    // A stroke on the new world goes to the new file only.
+    state.globe.map.set(1, 0, 0, 40000);
+    state.run_action(Action::NewWorld(world));
+    assert!(dir.path().join("Pebble 2.gpkg").exists());
+    let (_, project) = ProjectFile::open(&new).unwrap();
+    assert_eq!(project.rasters()[0].face_size, 512);
+    let (_, project) = ProjectFile::open(&old).unwrap();
+    assert_eq!(project.rasters().len(), 1);
 }
 
 #[test]
@@ -427,16 +473,7 @@ fn the_new_world_form_makes_a_world_from_a_preset() {
     // The world of the project stays until the form makes the new one.
     assert_eq!(h.state().doc.project.world.radius_km, 6371.0);
 
-    // The sample world has layers, so the form asks one time.
     h.get_by_label(CREATE).click();
-    // The form grows by the text, and it takes its new place in a later frame.
-    h.run_steps(4);
-    assert!(h.state().actions.is_empty());
-    assert!(
-        h.query_by_label_contains("replaces Earth (sample)")
-            .is_some()
-    );
-    h.get_by_label(REPLACE).click();
     h.run_steps(2);
     assert!(h.state().world_form.is_none());
     let world = World {
