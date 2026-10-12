@@ -747,9 +747,9 @@ impl AppState {
     /// Acts on what the system told the app after the last frame. Call
     /// this in each frame.
     pub fn poll_system(&mut self) {
-        if let Some(dir) = self.system.take_cloud()
-            && self.projects.dir(Location::Cloud) != dir.as_deref()
-        {
+        // The system gives the folder each time the app comes to the front.
+        // The sync service can have new files then.
+        if let Some(dir) = self.system.take_cloud() {
             self.projects.set_cloud(dir);
             if self.screen == Screen::Browser {
                 self.reload_projects();

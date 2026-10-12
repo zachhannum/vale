@@ -101,6 +101,8 @@ jobs:
           echo "version=$VERSION_PREFIX.${PR:-0}" >> "$GITHUB_OUTPUT"
           echo "build=${{ github.run_number }}.${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
+      # The archive has an ad hoc signature, because a build with no signature
+      # loses the iCloud entitlement.
       - name: Make the archive
         working-directory: crates/vale-app/ios
         run: |
@@ -109,7 +111,9 @@ jobs:
           xcodebuild archive -project ValeApp.xcodeproj -scheme ValeApp \
             -configuration Release -destination generic/platform=iOS \
             -archivePath "$ARCHIVE" -derivedDataPath "$RUNNER_TEMP/xcode" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
             MARKETING_VERSION="${{ steps.version.outputs.version }}" \
             CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build }}" \
             -quiet
@@ -129,6 +133,11 @@ jobs:
           expect CFBundleShortVersionString "${{ steps.version.outputs.version }}"
           expect CFBundleVersion "${{ steps.version.outputs.build }}"
           expect ITSAppUsesNonExemptEncryption false
+          expect LSSupportsOpeningDocumentsInPlace true
+          expect UIFileSharingEnabled true
+          # The export keeps the entitlements of the archive.
+          codesign -d --entitlements - --xml "$app" | plutil -p - | tee "$RUNNER_TEMP/entitlements.txt"
+          grep -q CloudDocuments "$RUNNER_TEMP/entitlements.txt" || { echo "::error::The archive has no iCloud entitlement"; exit 1; }
           # The app is for iPad only, so the icon name is in the iPad key.
           /usr/libexec/PlistBuddy -c "Print :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName" "$app/Info.plist"
           echo "bundle_id=$(read_key CFBundleIdentifier)" >> "$GITHUB_OUTPUT"

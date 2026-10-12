@@ -21,6 +21,35 @@ targets:
         # The app has no encryption of its own, so TestFlight does not ask about it.
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
+        # The Files app shows the Documents folder as "On My iPad > Vale".
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        # The Files app shows the Documents folder of the container as
+        # "iCloud Drive > Vale". iPadOS reads this key again only when
+        # CFBundleVersion changes.
+        NSUbiquitousContainers:
+          iCloud.dev.vale.app:
+            NSUbiquitousContainerIsDocumentScopePublic: true
+            NSUbiquitousContainerName: Vale
+            NSUbiquitousContainerSupportedFolderLevels: Any
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Vale project
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Default
+            LSItemContentTypes:
+              - org.opengeospatial.geopackage
+        # Vale does not own the GeoPackage format, so the type is imported.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: org.opengeospatial.geopackage
+            UTTypeDescription: GeoPackage
+            UTTypeConformsTo:
+              - public.database
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - gpkg
+              public.mime-type:
+                - application/geopackage+sqlite3
         UIApplicationSupportsIndirectInputEvents: true
         CADisableMinimumFrameDurationOnPhone: true
         UISupportedInterfaceOrientations~ipad:
@@ -28,6 +57,17 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+    # xcodegen writes this file. A build with no iCloud entitlement has the
+    # local folder only.
+    entitlements:
+      path: ValeApp.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.dev.vale.app
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.dev.vale.app
+        com.apple.developer.icloud-services:
+          - CloudDocuments
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.vale.app

@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 #[cfg(target_os = "ios")]
+pub mod cloud;
+#[cfg(target_os = "ios")]
 pub mod uikit;
 
 /// The picked files that wait for the app.

@@ -67,9 +67,9 @@ This command keeps the world, the vector layers, and the heightmap in a project 
 cargo run --release -p vale-app -- --project path/to/world.gpkg
 ```
 
-The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after a change, and at once after a brush stroke. "Save" in the File menu, or Ctrl+S, saves a change that waits at once. The mark next to the File menu shows the state of the save. Each save is one undo step. A save after a brush stroke writes only the tiles that the stroke changed. The file does not hold the styles. On iPad, each world is one project file in the container of the app.
+The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after a change, and at once after a brush stroke. "Save" in the File menu, or Ctrl+S, saves a change that waits at once. The mark next to the File menu shows the state of the save. Each save is one undo step. A save after a brush stroke writes only the tiles that the stroke changed. The file does not hold the styles. On iPad, each world is one project file in "On My iPad > Vale" or in "iCloud Drive > Vale" of the Files app. The form of a new world picks the folder.
 
-The start screen keeps each world in a project file in the data folder of the system. On Linux, the folder is `~/.local/share/vale`. On macOS, it is `~/Library/Application Support/Vale`. On Windows, it is `%APPDATA%\Vale`. The flag `--projects-dir` sets another folder. With `--project`, the app opens that file with no start screen, and "All worlds" shows the project files of its folder.
+The start screen keeps each world in a project file in the data folder of the system. On Linux, the folder is `~/.local/share/vale`. On macOS, it is `~/Library/Application Support/Vale`. On Windows, it is `%APPDATA%\Vale`. The flag `--projects-dir` sets another folder. The flag `--cloud-dir` gives a second folder, which the app shows as the iCloud Drive folder. With `--project`, the app opens that file with no start screen, and "All worlds" shows the project files of its folder.
 
 ## Headless use
 

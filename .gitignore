@@ -5,3 +5,4 @@
 /crates/vale-globe-proto/ios/Info.plist
 /crates/vale-app/ios/ValeApp.xcodeproj/
 /crates/vale-app/ios/Info.plist
+/crates/vale-app/ios/ValeApp.entitlements
