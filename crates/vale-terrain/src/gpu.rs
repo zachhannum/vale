@@ -114,8 +114,8 @@ struct Uniforms {
     sea: u32,
     /// The number of texels along one side of a face of the channel map.
     channel_size: u32,
-    /// 1 if the carve mode has a window, and 0 if not. In an erode pass, 1
-    /// if the cells of the step are the cells of a window.
+    /// 1 if the carve mode or the ridge mode has a window, and 0 if not. In
+    /// an erode pass, 1 if the cells of the step are the cells of a window.
     window_on: u32,
     /// The first texel, the face, and the cell size of the window.
     window_origin: [i32; 2],
@@ -189,11 +189,11 @@ pub struct GpuHeightmap {
     tile: usize,
     state: Mutex<State>,
     tiles_layout: wgpu::BindGroupLayout,
-    /// The rivers that the carve mode follows, as the bytes of a
-    /// `ChannelMap`.
+    /// The rivers that the carve mode and the ridge mode follow, as the
+    /// bytes of a `ChannelMap`.
     channels: wgpu::Texture,
     channels_view: wgpu::TextureView,
-    /// The small rivers that the carve mode follows on a part of the sphere,
+    /// The small rivers that those modes follow on a part of the sphere,
     /// as the bytes of a `ChannelWindow`.
     window_channels: wgpu::Texture,
     window_view: wgpu::TextureView,
@@ -505,7 +505,7 @@ impl GpuHeightmap {
         &self.window_view
     }
 
-    /// Sets the window that the carve mode follows, or no window with `None`.
+    /// Sets the window that the carve mode and the ridge mode follow, or no window with `None`.
     /// The window has `WINDOW_CELLS` cells along one side. The stamps that go
     /// to an encoder after this call use the new window, and the texels go to
     /// the GPU at the next submit. Thus submit each encoder that holds stamps
@@ -687,6 +687,7 @@ impl GpuHeightmap {
                     Mode::Erode => 5,
                     Mode::Weather => 6,
                     Mode::Warp => 7,
+                    Mode::Ridge => 8,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,

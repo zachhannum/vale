@@ -723,9 +723,9 @@ fn window_land() -> Heightmap {
     map
 }
 
-/// Applies one carve stamp at each radius and hardness to `window_land`.
+/// Applies one stamp of a mode at each radius and hardness to `window_land`.
 /// Returns the largest difference between the GPU and the CPU.
-fn carve_in_window(lon: f64, lat: f64, face: usize) -> u16 {
+fn stamp_in_window(mode: Mode, lon: f64, lat: f64, face: usize) -> u16 {
     let mut worst = 0;
     for radius in [0.05, 0.08] {
         for hardness in [0.0, 0.95] {
@@ -733,7 +733,7 @@ fn carve_in_window(lon: f64, lat: f64, face: usize) -> u16 {
             let mut without = window_land();
             without.set_window(None);
             let before = levels(&cpu);
-            let stamp = stamp(lonlat_to_dir(lon, lat), radius, hardness, Mode::Carve);
+            let stamp = stamp(lonlat_to_dir(lon, lat), radius, hardness, mode);
             let plan = cpu.stamp_plan(&stamp);
             let touched: Vec<usize> = (0..FACES).filter(|&f| plan.rects[f].is_some()).collect();
             assert_eq!(touched, [face], "the stamp is on one face");
@@ -752,14 +752,14 @@ fn carve_in_window(lon: f64, lat: f64, face: usize) -> u16 {
 
 #[test]
 fn gpu_carve_in_a_window_matches_cpu_for_one_stamp() {
-    let difference = carve_in_window(30.0, 3.0, 0);
+    let difference = stamp_in_window(Mode::Carve, 30.0, 3.0, 0);
     eprintln!("carve in a window, largest difference: {difference}");
     assert!(difference <= TOLERANCE, "{difference}");
 }
 
 #[test]
 fn gpu_carve_in_a_window_matches_cpu_past_a_face_edge() {
-    let difference = carve_in_window(53.0, 3.0, 2);
+    let difference = stamp_in_window(Mode::Carve, 53.0, 3.0, 2);
     eprintln!("carve in a window past a face edge, largest difference: {difference}");
     assert!(difference <= TOLERANCE, "{difference}");
 }
@@ -794,6 +794,82 @@ fn gpu_carve_in_a_window_matches_cpu_for_a_stroke() {
     }
     eprintln!("carve stroke in a window, largest difference: {difference}");
     assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
+}
+
+#[test]
+fn gpu_ridge_matches_cpu_for_one_stamp() {
+    let places = [
+        ("face center", lonlat_to_dir(1.3, 0.7)),
+        ("face edge", lonlat_to_dir(45.0, 0.0)),
+        ("cube corner", lonlat_to_dir(45.0, 35.264)),
+        ("pole", lonlat_to_dir(0.0, 90.0)),
+    ];
+    let mut worst = 0;
+    for (place, center) in places {
+        for radius in [0.06, 0.3] {
+            for hardness in [0.0, 0.95] {
+                let mut cpu = river_land(256);
+                let before = levels(&cpu);
+                let stamp = stamp(center, radius, hardness, Mode::Ridge);
+                let difference = run(&mut cpu, &[stamp]).difference;
+                let name = format!("the {place}, radius {radius}, hardness {hardness}");
+                let changed = changes(&before, &levels(&cpu));
+                assert!(changed > 0, "{name}: no land is in the brush");
+                assert!(
+                    difference <= TOLERANCE,
+                    "{name}: the difference is {difference}"
+                );
+                worst = worst.max(difference);
+            }
+        }
+    }
+    eprintln!("one ridge stamp, largest difference: {worst}");
+}
+
+#[test]
+fn gpu_ridge_matches_cpu_for_a_stroke() {
+    let lines = [
+        ("face edge", (31.0, 2.0), (59.0, 5.0)),
+        ("cube corner", (35.0, 25.264), (55.0, 45.264)),
+    ];
+    let mut worst = 0;
+    for (place, from, to) in lines {
+        let stamps = stroke(from, to, 240, 0.05, Mode::Ridge);
+        let mut cpu = river_land(256);
+        let before = levels(&cpu);
+        let GroupRun {
+            groups, difference, ..
+        } = run_groups(&mut cpu, &stamps);
+        assert!(
+            groups.len() <= stamps.len() / GROUP_STAMPS + 2,
+            "stroke at the {place}: the groups are {groups:?}"
+        );
+        let changed = changes(&before, &levels(&cpu));
+        assert!(
+            changed > 200,
+            "stroke at the {place}: {changed} texels changed"
+        );
+        assert!(
+            difference <= ADD_STROKE_TOLERANCE,
+            "stroke at the {place}: the difference is {difference}"
+        );
+        worst = worst.max(difference);
+    }
+    eprintln!("ridge stroke in groups, largest difference: {worst}");
+}
+
+#[test]
+fn gpu_ridge_in_a_window_matches_cpu_for_one_stamp() {
+    let difference = stamp_in_window(Mode::Ridge, 30.0, 3.0, 0);
+    eprintln!("ridge in a window, largest difference: {difference}");
+    assert!(difference <= TOLERANCE, "{difference}");
+}
+
+#[test]
+fn gpu_ridge_in_a_window_matches_cpu_past_a_face_edge() {
+    let difference = stamp_in_window(Mode::Ridge, 53.0, 3.0, 2);
+    eprintln!("ridge in a window past a face edge, largest difference: {difference}");
+    assert!(difference <= TOLERANCE, "{difference}");
 }
 
 /// The result of the same stamps in groups and one at a time.

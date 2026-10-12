@@ -40,8 +40,8 @@ struct Group {
     sea: u32,
     // The number of texels along one side of a face of the channel map.
     channel_size: u32,
-    // 1 if the carve mode has a window, and 0 if not. In an erode pass, 1 if
-    // the cells of the step are the cells of a window.
+    // 1 if the carve mode or the ridge mode has a window, and 0 if not. In
+    // an erode pass, 1 if the cells of the step are the cells of a window.
     window_on: u32,
     // The first texel, the face, and the cell size of the window.
     window_origin: vec2<i32>,
@@ -68,6 +68,7 @@ const CARVE = 4u;
 const ERODE = 5u;
 const WEATHER = 6u;
 const WARP = 7u;
+const RIDGE = 8u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -185,9 +186,16 @@ fn atan_unit(t: f32) -> f32 {
     return 4.0 * atan_series(quarter);
 }
 
-// The distance from a texel to the river with the deepest valley there, in
-// channel texels, and the size of that river. The steps are those of
-// `ChannelMap::valley`.
+// The pair of a channel texel that the mode of the group reads. The ridge
+// mode reads the nearest river. The carve mode reads the river with the
+// deepest valley.
+fn pair_of(texel: vec4<u32>) -> vec2<f32> {
+    return vec2<f32>(select(texel.ba, texel.rg, group.mode == RIDGE));
+}
+
+// The distance from a texel to the river of its pair, in channel texels, and
+// the size of that river. The steps are those of `ChannelMap::valley` and
+// `ChannelMap::ridge`.
 fn river_at(at: vec2<i32>) -> vec2<f32> {
     let size = f32(group.channel_size);
     let c = (vec2<f32>(at) + 0.5) * size / f32(group.size) - 0.5;
@@ -197,10 +205,10 @@ fn river_at(at: vec2<i32>) -> vec2<f32> {
     let p0 = clamp(vec2<i32>(whole), vec2<i32>(0), last);
     let p1 = clamp(vec2<i32>(whole) + 1, vec2<i32>(0), last);
     let face = i32(group.face);
-    let a = vec2<f32>(textureLoad(channels, p0, face, 0).ba);
-    let b = vec2<f32>(textureLoad(channels, vec2<i32>(p1.x, p0.y), face, 0).ba);
-    let c0 = vec2<f32>(textureLoad(channels, vec2<i32>(p0.x, p1.y), face, 0).ba);
-    let d = vec2<f32>(textureLoad(channels, p1, face, 0).ba);
+    let a = pair_of(textureLoad(channels, p0, face, 0));
+    let b = pair_of(textureLoad(channels, vec2<i32>(p1.x, p0.y), face, 0));
+    let c0 = pair_of(textureLoad(channels, vec2<i32>(p0.x, p1.y), face, 0));
+    let d = pair_of(textureLoad(channels, p1, face, 0));
     // The products are exact when both sizes are powers of two. The builtin
     // `mix` can use other steps.
     let top = a * (1.0 - t.x) + b * t.x;
@@ -240,11 +248,11 @@ fn window_place(at: vec2<i32>) -> vec3<f32> {
     return vec3<f32>((texel - vec2<f32>(group.window_origin)) / cell, 1.0);
 }
 
-// The distance from a texel to the river of the window with the deepest
-// valley there, in channel texels of the window, and the size of that river
-// from 0 to 255. The third number is 1 if the window covers the texel, and 0
+// The distance from a texel to the river of its pair in the window, in
+// channel texels of the window, and the size of that river from 0 to 255. The third number is 1 if the window covers the texel, and 0
 // if not. The steps are those of `Window::channel_of_texel`,
-// `Window::channel_of_dir`, and `ChannelWindow::valley`.
+// `Window::channel_of_dir`, `ChannelWindow::valley`, and
+// `ChannelWindow::ridge`.
 fn window_river_at(at: vec2<i32>) -> vec3<f32> {
     if group.window_on == 0u {
         return vec3<f32>(0.0);
@@ -263,10 +271,10 @@ fn window_river_at(at: vec2<i32>) -> vec3<f32> {
     let t = c - whole;
     let p0 = vec2<i32>(whole);
     let p1 = p0 + 1;
-    let a = vec2<f32>(textureLoad(window_channels, p0, 0).ba);
-    let b = vec2<f32>(textureLoad(window_channels, vec2<i32>(p1.x, p0.y), 0).ba);
-    let c0 = vec2<f32>(textureLoad(window_channels, vec2<i32>(p0.x, p1.y), 0).ba);
-    let d = vec2<f32>(textureLoad(window_channels, p1, 0).ba);
+    let a = pair_of(textureLoad(window_channels, p0, 0));
+    let b = pair_of(textureLoad(window_channels, vec2<i32>(p1.x, p0.y), 0));
+    let c0 = pair_of(textureLoad(window_channels, vec2<i32>(p0.x, p1.y), 0));
+    let d = pair_of(textureLoad(window_channels, p1, 0));
     let top = a * (1.0 - t.x) + b * t.x;
     let bottom = c0 * (1.0 - t.x) + d * t.x;
     let both = top * (1.0 - t.y) + bottom * t.y;
@@ -543,7 +551,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     // The distance to the river and its size. The window comes first. With
     // no river near, the size is 0.
     var river = vec2<f32>(0.0);
-    if group.mode == CARVE {
+    if group.mode == CARVE || group.mode == RIDGE {
         let in_window = window_river_at(at);
         if in_window.z > 0.0 {
             river = in_window.xy;
@@ -600,6 +608,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                     let k = clamp(river.x / (1.5 + 4.5 * size), 0.0, 1.0);
                     let profile = 1.0 - k * k * (3.0 - 2.0 * k);
                     change = -amount * stamp.strength * profile * (0.25 + 0.75 * size);
+                }
+            }
+            case RIDGE {
+                // The sea floor stays. The distance is 32 times the byte of
+                // the texel, and the largest byte is 255.
+                if old > f32(group.sea) {
+                    change = amount * stamp.strength * (river.x * 32.0 / 255.0);
                 }
             }
             default {
