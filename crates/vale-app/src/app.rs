@@ -3,6 +3,8 @@
 use eframe::egui;
 
 use crate::files::PickQueue;
+#[cfg(not(target_os = "ios"))]
+use crate::session::EXTENSION;
 use crate::session::Session;
 #[cfg(not(target_os = "ios"))]
 use crate::ui::ExportFormat;
@@ -24,6 +26,8 @@ impl eframe::App for ValeApp {
 
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
         let paths = dropped.into_iter().map(|f| f.path().to_path_buf());
+        // The start screen has no world that takes a file.
+        let paths = paths.filter(|_| self.state.screen == ui::Screen::Editor);
         let (heightmaps, paths): (Vec<_>, Vec<_>) = paths.partition(|p| ui::is_heightmap_path(p));
         if !paths.is_empty() {
             self.state.run_action(Action::OpenFiles(paths));
@@ -73,6 +77,17 @@ impl eframe::App for ValeApp {
                         self.state.run_action(Action::ImportHeightmap(path));
                     }
                 }
+                #[cfg(not(target_os = "ios"))]
+                Action::OpenProjectDialog => {
+                    let mut dialog =
+                        rfd::FileDialog::new().add_filter("Vale project", &[EXTENSION]);
+                    if let Some(dir) = &self.state.projects {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    if let Some(path) = dialog.pick_file() {
+                        self.state.run_action(Action::OpenWorld(path));
+                    }
+                }
                 other => self.state.run_action(other),
             }
         }
@@ -94,17 +109,8 @@ impl eframe::App for ValeApp {
     }
 
     fn on_exit(&mut self) {
-        let Some(session) = &mut self.state.session else {
-            return;
-        };
-        let globe = &mut self.state.globe;
-        // The file gets each stroke that ended, and no part of a stroke that
-        // still waits for its texels.
-        if globe.busy() {
-            globe.map.cancel_stroke();
-        }
-        if let Err(e) = session.flush(&mut self.state.doc.project, &mut globe.map) {
-            eprintln!("vale-app: the project did not save: {e}");
+        if !self.state.save_now() {
+            eprintln!("vale-app: {}", self.state.status);
         }
     }
 }

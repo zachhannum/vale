@@ -6,15 +6,17 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
-use vale_store::{LayerId, Project, World};
+use vale_store::{LayerId, Project, StoreError, World};
 
 use crate::document::Document;
 use crate::globe::import::ImportResult;
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
+use crate::projects;
 use crate::session::{self, Session};
 
+pub mod browser;
 pub mod canvas;
 pub mod elevation;
 pub mod globe;
@@ -38,6 +40,25 @@ pub enum Action {
     NewWorld(World),
     /// Opens the world of this project file.
     OpenWorld(PathBuf),
+    /// Asks for a project file and opens its world.
+    OpenProjectDialog,
+    /// Gives the world of this project file this name.
+    RenameProject(PathBuf, String),
+    CopyProject(PathBuf),
+    /// Removes this project file. The UI asks before it sends this.
+    DeleteProject(PathBuf),
+    /// Closes the open project and shows the start screen.
+    ShowProjects,
+}
+
+/// What the window shows.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Screen {
+    /// The workspaces, with the open world.
+    #[default]
+    Editor,
+    /// The start screen with the list of the projects.
+    Browser,
 }
 
 /// The text of the last import of a heightmap.
@@ -90,6 +111,8 @@ impl Default for Layout {
 }
 
 pub struct AppState {
+    pub screen: Screen,
+    pub browser: browser::BrowserState,
     pub workspace: Workspace,
     pub layout: Layout,
     pub pad: pad::PadState,
@@ -129,8 +152,9 @@ pub struct AppState {
     pub frames: u64,
     /// The open project file. `None`: the app saves nothing.
     pub session: Option<Session>,
-    /// The folder that gets the project file of a new world. `None`: a new
-    /// world has no file.
+    /// The folder that gets the project file of a new world, and the folder
+    /// of the start screen. `None`: a new world has no file, and the app has
+    /// no start screen.
     pub projects: Option<PathBuf>,
     /// The edit count of the globe at the last save.
     saved_edits: u64,
@@ -139,6 +163,8 @@ pub struct AppState {
 impl AppState {
     pub fn new(doc: Document) -> anyhow::Result<Self> {
         let mut state = AppState {
+            screen: Screen::default(),
+            browser: browser::BrowserState::default(),
             workspace: Workspace::default(),
             layout: Layout::default(),
             pad: pad::PadState::default(),
@@ -268,7 +294,10 @@ impl AppState {
         let result = if globe.edits() != self.saved_edits {
             // The edit is one undo step, with no part of the next stroke.
             self.saved_edits = globe.edits();
-            session.flush(project, &mut globe.map).map(|()| None)
+            // The system can stop the app with no call of `close_project`.
+            let saved = session.flush(project, &mut globe.map);
+            let saved = saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view));
+            saved.map(|()| None)
         } else {
             let hold = hold || globe.busy();
             session.tick(project, &mut globe.map, hold, now)
@@ -288,16 +317,21 @@ impl AppState {
         !self.doc.project.rasters().is_empty() || self.globe.map.allocated().next().is_some()
     }
 
-    /// Saves each change that waits to the project file. Returns `false`
-    /// if the save failed. The world then stays open.
-    fn save_now(&mut self) -> bool {
+    /// Saves each change that waits and the picture of the globe to the
+    /// project file. Returns `false` if the save failed. The world then
+    /// stays open.
+    pub fn save_now(&mut self) -> bool {
         let Some(session) = &mut self.session else {
             return true;
         };
-        if self.globe.busy() {
-            self.globe.map.cancel_stroke();
+        let globe = &mut self.globe;
+        // The file gets each stroke that ended, and no part of a stroke that
+        // still waits for its texels.
+        if globe.busy() {
+            globe.map.cancel_stroke();
         }
-        match session.flush(&mut self.doc.project, &mut self.globe.map) {
+        let saved = session.flush(&mut self.doc.project, &mut globe.map);
+        match saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view)) {
             Ok(()) => true,
             Err(e) => {
                 self.status = format!("The project did not save, so the world stays open: {e}");
@@ -340,6 +374,77 @@ impl AppState {
                 Err(e) => self.status = format!("The new world has no file: {e}"),
             }
         }
+        self.show_world();
+    }
+
+    /// Shows the open world in the editor, and puts its file at the start of
+    /// the recent list.
+    fn show_world(&mut self) {
+        self.screen = Screen::Editor;
+        if let (Some(dir), Some(session)) = (&self.projects, &self.session) {
+            // The recent list is a convenience, so its error has no message.
+            let _ = projects::push_recent(dir, session.path());
+        }
+    }
+
+    /// Saves the open project, closes its file, and shows the start screen.
+    /// If the save fails, the world stays open.
+    pub fn show_projects(&mut self) {
+        if !self.save_now() {
+            return;
+        }
+        self.session = None;
+        self.status.clear();
+        self.world_form = None;
+        self.screen = Screen::Browser;
+        self.browser.reload(self.projects.as_deref());
+    }
+
+    /// The path and the name of the open project.
+    pub fn open_project_entry(&self) -> Option<(PathBuf, String)> {
+        let session = self.session.as_ref()?;
+        let name = self.doc.project.world.name.clone();
+        Some((session.path().to_path_buf(), name))
+    }
+
+    /// Runs the rename, the copy, or the delete of a project file. `Err`:
+    /// the text for the user.
+    fn project_action(&mut self, action: Action) -> Result<(), String> {
+        let text = |e: StoreError| e.to_string();
+        let open = self.session.as_ref().map(|s| s.path().to_path_buf());
+        let is_open = |path: &Path| open.as_deref() == Some(path);
+        match action {
+            Action::RenameProject(path, name) => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err("A world must have a name.".to_string());
+                }
+                if is_open(&path) {
+                    // The next save writes the name, as one undo step.
+                    self.doc.project.world.name = name.to_string();
+                } else {
+                    projects::rename(&path, name).map_err(text)?;
+                }
+            }
+            Action::CopyProject(path) => {
+                if is_open(&path) && !self.save_now() {
+                    return Err(self.status.clone());
+                }
+                let copy = projects::copy(&path).map_err(text)?;
+                let name = vale_store::summary(&copy).map_err(text)?.name;
+                self.status = format!("Made {name}");
+            }
+            Action::DeleteProject(path) => {
+                if is_open(&path) {
+                    // The file goes away, so the last changes need no save.
+                    self.session = None;
+                    self.screen = Screen::Browser;
+                }
+                projects::delete(&path).map_err(text)?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Opens the world of a project file. The file of the old world gets
@@ -347,6 +452,9 @@ impl AppState {
     /// stays open.
     fn open_world(&mut self, path: &Path) {
         let open = self.session.as_ref().is_some_and(|s| s.path() == path);
+        if open {
+            self.screen = Screen::Editor;
+        }
         if open || !self.save_now() {
             return;
         }
@@ -369,6 +477,7 @@ impl AppState {
         }
         self.session = Some(session);
         self.start_world();
+        self.show_world();
     }
 
     /// Marks the map as needing a new compose.
@@ -439,7 +548,17 @@ impl AppState {
             }
             Action::NewWorld(world) => self.new_world(world),
             Action::OpenWorld(path) => self.open_world(&path),
-            Action::OpenDialog | Action::ExportDialog(_) | Action::ImportHeightmapDialog => {}
+            Action::RenameProject(..) | Action::CopyProject(_) | Action::DeleteProject(_) => {
+                if let Err(text) = self.project_action(action) {
+                    self.status = text;
+                }
+                self.browser.reload(self.projects.as_deref());
+            }
+            Action::ShowProjects => self.show_projects(),
+            Action::OpenDialog
+            | Action::ExportDialog(_)
+            | Action::ImportHeightmapDialog
+            | Action::OpenProjectDialog => {}
         }
     }
 }
@@ -448,6 +567,12 @@ impl AppState {
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
+    if state.screen == Screen::Browser {
+        browser::draw(ui, state);
+        state.frames += 1;
+        return;
+    }
+    browser::dialogs(ui, state);
     if state.layout == Layout::Pad && state.workspace == Workspace::Globe {
         pad::draw(ui, state);
         state.frames += 1;

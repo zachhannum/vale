@@ -12,6 +12,7 @@ use crate::globe::WorldView;
 use crate::globe::flat::{self, FlatView};
 use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
 use crate::pipeline::Pipeline;
+use crate::projects;
 use crate::ui::pad::Panel;
 use crate::ui::world_form::FormMode;
 use crate::ui::{Action, AppState, Layout, Workspace};
@@ -58,6 +59,15 @@ pub struct Args {
     /// makes it from the sample world or from FILES.
     #[arg(long, value_name = "GPKG")]
     pub project: Option<PathBuf>,
+    /// The folder of the project files of the start screen and of the File
+    /// menu. Without it, the folder is that of --project, or the data
+    /// folder of the system.
+    #[arg(long, value_name = "DIR")]
+    pub projects_dir: Option<PathBuf>,
+    /// Show the start screen. The window shows it without this flag if
+    /// there is no --project and no FILES.
+    #[arg(long)]
+    pub start_screen: bool,
     /// equirectangular, equal-earth, mercator, lambert-azimuthal, orthographic, or stereographic.
     #[arg(long, value_name = "ID", default_value = "equal-earth")]
     pub projection: String,
@@ -138,6 +148,26 @@ pub fn parse_pair(s: &str) -> anyhow::Result<[f64; 2]> {
 }
 
 impl Args {
+    /// The projects folder: `--projects-dir`, or the folder of `--project`.
+    /// With a start screen, it is else the folder of the system.
+    pub fn projects_folder(&self, window: bool) -> Option<PathBuf> {
+        let beside = self.project.as_ref().map(|path| match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+            _ => ".".into(),
+        });
+        let dir = self.projects_dir.clone().or(beside);
+        match dir {
+            None if self.starts_on_projects(window) => projects::default_dir(),
+            dir => dir,
+        }
+    }
+
+    /// True if the app opens on the start screen. `window`: the run has a
+    /// window.
+    pub fn starts_on_projects(&self, window: bool) -> bool {
+        self.start_screen || (window && self.project.is_none() && self.files.is_empty())
+    }
+
     pub fn document(&self) -> anyhow::Result<Document> {
         let mut doc = if self.files.is_empty() {
             Document::sample()

@@ -10,6 +10,7 @@ use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
 use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
+use crate::projects;
 use crate::world::{self, three_significant};
 
 /// The button of the tool bar that opens the properties of the world.
@@ -21,6 +22,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
         ui.horizontal_wrapped(|ui| {
             ui.strong("Vale");
             ui.separator();
+            if state.projects.is_some() {
+                file_menu(ui, state);
+                ui.separator();
+            }
             ui.selectable_value(&mut state.workspace, Workspace::Globe, "Globe");
             ui.selectable_value(&mut state.workspace, Workspace::Map, "Map");
             ui.separator();
@@ -74,6 +79,53 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 /// The projection of the flat view.
+/// The button of the tool bar that opens the File menu.
+pub const FILE_MENU: &str = "File";
+/// The row of a menu that closes the project and shows the start screen.
+pub const ALL_WORLDS: &str = "All worlds";
+
+/// The File menu: the actions of the start screen, and the recent list.
+fn file_menu(ui: &mut egui::Ui, state: &mut AppState) {
+    let open = state.open_project_entry();
+    ui.menu_button(FILE_MENU, |ui| {
+        if ui.button("New…").clicked() {
+            state.world_form = Some(WorldForm::new_world());
+        }
+        if state.file_buttons && ui.button("Open file…").clicked() {
+            state.actions.push(Action::OpenProjectDialog);
+        }
+        ui.menu_button("Open recent", |ui| {
+            let dir = state.projects.as_deref();
+            let recent = dir.map(projects::recent).unwrap_or_default();
+            if recent.is_empty() {
+                ui.weak("No recent worlds");
+            }
+            for entry in recent.iter().map(|path| projects::entry(path)) {
+                if ui.button(&entry.name).clicked() {
+                    state.actions.push(Action::OpenWorld(entry.path));
+                }
+            }
+        });
+        ui.separator();
+        ui.add_enabled_ui(open.is_some(), |ui| {
+            let (path, name) = open.clone().unwrap_or_default();
+            if ui.button("Rename…").clicked() {
+                state.browser.ask_rename(path.clone(), name.clone());
+            }
+            if ui.button("Make a copy").clicked() {
+                state.actions.push(Action::CopyProject(path.clone()));
+            }
+            if ui.button("Delete…").clicked() {
+                state.browser.ask_delete(path, name);
+            }
+        });
+        ui.separator();
+        if ui.button(ALL_WORLDS).clicked() {
+            state.actions.push(Action::ShowProjects);
+        }
+    });
+}
+
 fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
     let flat = &mut state.globe.flat;
     let spec = flat.spec();

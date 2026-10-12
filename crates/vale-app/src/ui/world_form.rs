@@ -206,12 +206,25 @@ fn finish(state: &mut AppState, mut form: WorldForm, did: Did) {
 
 /// The form in the desktop layout.
 pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
+    let id = egui::Id::new("world-form");
+    modal(ctx, state, egui::Modal::new(id));
+}
+
+/// The form of the start screen, at this distance from the top of the
+/// window.
+pub fn top(ctx: &egui::Context, state: &mut AppState, distance: f32) {
+    let id = egui::Id::new("world-form");
+    let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, [0.0, distance]);
+    modal(ctx, state, egui::Modal::new(id).area(area));
+}
+
+fn modal(ctx: &egui::Context, state: &mut AppState, modal: egui::Modal) {
     let Some(mut form) = state.world_form.take() else {
         return;
     };
     let mut did = Did::Nothing;
     let busy = state.globe.busy();
-    let modal = egui::Modal::new(egui::Id::new("world-form")).show(ctx, |ui| {
+    let modal = modal.show(ctx, |ui| {
         ui.set_width(300.0);
         let new = form.mode == FormMode::New;
         ui.heading(if new { NEW_TITLE } else { PROPERTIES_TITLE });

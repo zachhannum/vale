@@ -11,6 +11,8 @@ use vale_store::{
 use vale_terrain::{Bands, ELEV_MAX, ELEV_MIN, Heightmap, Ramp};
 
 use crate::document::Document;
+use crate::globe::thumbnail;
+use crate::globe::view::GlobeView;
 
 /// The time from a change to its save. One drag of a control changes the
 /// project in each frame, and this delay turns the drag into a few saves.
@@ -22,7 +24,7 @@ const HEIGHT_NAME: &str = "Height";
 const MAX_FACE_SIZE: u32 = 16384;
 
 /// The extension of a project file.
-const EXTENSION: &str = "gpkg";
+pub const EXTENSION: &str = "gpkg";
 
 /// The path of a new project file in `dir` for a world with this name. No
 /// file is at the path.
@@ -97,6 +99,9 @@ pub fn worlds(dir: &Path) -> Vec<WorldFile> {
 pub struct Session {
     file: ProjectFile,
     path: PathBuf,
+    /// The thumbnail of the file is older than the project, or the file has
+    /// no thumbnail.
+    thumbnail_stale: bool,
     /// The time of the first change that the file does not hold.
     changed_at: Option<Instant>,
     /// The last `tick` had `hold`.
@@ -119,9 +124,11 @@ impl Session {
             }
             ProjectFile::create(path, &doc.project)?
         };
+        let thumbnail = vale_store::summary(path)?.thumbnail;
         Ok(Session {
             file,
             path: path.to_path_buf(),
+            thumbnail_stale: thumbnail.is_none(),
             changed_at: None,
             held: false,
             last_save: SaveStats::default(),
@@ -131,6 +138,20 @@ impl Session {
     /// The path of the project file.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Writes the picture of the globe for the list of projects, if the
+    /// file changed after the last picture. With `!saves_map(map)`, the app
+    /// does not show the heightmap of the file, and the file keeps its
+    /// picture.
+    pub fn save_thumbnail(&mut self, map: &Heightmap, view: &GlobeView) -> Result<(), StoreError> {
+        if !self.thumbnail_stale || !self.saves_map(map) {
+            return Ok(());
+        }
+        let picture = thumbnail::render(map, view, thumbnail::SIZE);
+        self.file.set_thumbnail(&picture)?;
+        self.thumbnail_stale = false;
+        Ok(())
     }
 
     /// The heightmap of the file, with the face size, the base level, the
@@ -215,6 +236,7 @@ impl Session {
             _ => Vec::new(),
         };
         self.last_save = self.file.save_tiles(project, &changes)?;
+        self.thumbnail_stale = true;
         if saves_map {
             map.clear_changes();
         }
