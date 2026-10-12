@@ -79,15 +79,22 @@ pub struct RidgeSegment {
 }
 
 impl RidgeSegment {
-    /// The segment as 4 vectors of 4 numbers: `n` and `u0`, `m0` and `len`,
-    /// `m1` and `q0`, then `q1`, the caps, and 2 zeros. The caps are 1 for
-    /// `first` plus 2 for `last`.
-    pub fn to_f32(&self) -> [f32; 16] {
+    /// The segment as 4 vectors of 4 numbers: `n` and the rest of `u0`,
+    /// `m0` and `len`, `m1` and `q0`, then `q1`, the caps, the cell of `u0`,
+    /// and a zero. The caps are 1 for `first` plus 2 for `last`.
+    ///
+    /// A 32-bit number cannot hold a long distance along the line to a part
+    /// of a texel step. Thus `u0` goes as the nearest multiple of `segment`,
+    /// the length of a crest segment, and the rest. The cell is the number
+    /// of that multiple.
+    pub fn to_f32(&self, segment: f64) -> [f32; 16] {
         let caps = f64::from(u8::from(self.first) + 2 * u8::from(self.last));
+        let cell = (self.u0 / segment + 0.5).floor();
+        let rest = self.u0 - cell * segment;
         let [n, m0, m1] = [self.n, self.m0, self.m1];
         [
-            n[0], n[1], n[2], self.u0, m0[0], m0[1], m0[2], self.len, m1[0], m1[1], m1[2], self.q0,
-            self.q1, caps, 0.0, 0.0,
+            n[0], n[1], n[2], rest, m0[0], m0[1], m0[2], self.len, m1[0], m1[1], m1[2], self.q0,
+            self.q1, caps, cell, 0.0,
         ]
         .map(|v| v as f32)
     }
@@ -305,7 +312,7 @@ impl RidgeLine {
             .filter_map(|j| {
                 let distances = samples.iter().map(|&s| self.distance(j, s));
                 let nearest = distances.fold(f64::MAX, f64::min);
-                (nearest < 3.0 * reach).then_some((nearest, j))
+                (nearest < 4.0 * reach).then_some((nearest, j))
             })
             .collect();
         others.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -339,11 +346,27 @@ impl RidgePlan {
     /// smallest distance to the direction gives the place. With two equal
     /// distances, the first segment gives it.
     pub(crate) fn place(&self, p: V3) -> RidgePlace {
+        self.pick(p).0
+    }
+
+    /// The difference between the two smallest distances from a unit
+    /// direction to the segments of the plan, in radians. With less than two
+    /// segments near the direction, it is `f64::MAX`. Where it is near zero,
+    /// the 32-bit numbers of the shader can give the place on the other
+    /// segment. The tests of the shader use it.
+    #[doc(hidden)]
+    pub fn margin(&self, p: V3) -> f64 {
+        self.pick(p).1
+    }
+
+    /// The place of a direction, and the result of `margin`.
+    fn pick(&self, p: V3) -> (RidgePlace, f64) {
         let reach = REACH * self.ridge.radius;
         let sin_reach = reach.sin();
         let mut near = false;
         let mut best = None;
         let mut best_distance = reach;
+        let mut second_distance = f64::MAX;
         for (i, s) in self.segments.iter().enumerate() {
             let side = dot(p, s.n);
             if side.abs() >= sin_reach {
@@ -379,7 +402,14 @@ impl RidgePlan {
             } else {
                 continue;
             };
-            if distance < best_distance {
+            if distance >= best_distance {
+                second_distance = second_distance.min(distance);
+                continue;
+            }
+            if best.is_some() {
+                second_distance = best_distance;
+            }
+            {
                 best_distance = distance;
                 best = Some(RidgePoint {
                     u: s.u0 + along * s.len,
@@ -389,11 +419,20 @@ impl RidgePlan {
                 });
             }
         }
-        match best {
+        let place = match best {
             _ if !near => RidgePlace::Far,
             Some(point) => RidgePlace::On(point),
             None => RidgePlace::Off,
-        }
+        };
+        let two = second_distance < f64::MAX && best.is_some();
+        (
+            place,
+            if two {
+                second_distance - best_distance
+            } else {
+                f64::MAX
+            },
+        )
     }
 
     /// The level of a texel on the ridge. `start` is its level from before
@@ -423,16 +462,20 @@ impl RidgePlan {
         let from_crest2 = (at.across - shift) * (at.across - shift) + past2;
         let from_crest = from_crest2.sqrt();
         let from_line = (at.across * at.across + past2).sqrt();
+        // A valley has a flat top of the rise across its width, so its rims
+        // are at the crest level.
+        let valley_width = (0.08 * r).max(2.0 * t);
+        let top = if spec.valley > 0.0 { valley_width } else { 0.0 };
         // A square root has a sharp point at zero. `round` makes it round,
         // and the ratio keeps the end of the rise at the radius.
         let e = 2.0 * t;
-        let round = |d2: f64| (d2 + e * e).sqrt() - e;
-        let w = (1.0 - (round(from_crest2) / round(r * r)).sqrt()).max(0.0);
+        let round = |d: f64| d * d / ((d * d + e * e).sqrt() + e);
+        let drop = round((from_crest - top).max(0.0)) / round(r - top);
+        let w = (1.0 - drop.sqrt()).max(0.0);
         let lift = (f64::from(spec.crest) - old).max(0.0);
         // Ground at the crest level gets no fine ridges and no valley.
         let low = (lift / (spec.roughness + spec.valley + 1.0)).min(1.0);
         let rise = lift * w;
-        let valley_width = (0.08 * r).max(2.0 * t);
         let valley = spec.valley * low * (1.0 - smoothstep(0.0, valley_width, from_crest));
         // The fine ridges: a value at each multiple of `wavelength` from the
         // crest, and a smooth change between two of them.
@@ -447,8 +490,8 @@ impl RidgePlan {
         let hills = spec.roughness * low * wave * fade * (1.0 - crack_mask);
         let crack = 0.3 * lift * crack_mask * (1.0 - smoothstep(r, REACH * r, from_line));
         let q = at.flow;
-        let new = old.max(old + q * (rise + hills - valley)) - q * crack;
-        let new = (new + 0.5).floor().clamp(0.0, 65535.0);
+        let change = (q * (rise + hills - valley)).max(0.0) - q * crack;
+        let new = (old + (change + 0.5).floor()).clamp(0.0, 65535.0);
         spec.limits.apply(old, new) as u16
     }
 }
@@ -849,13 +892,32 @@ mod tests {
             },
             FINE,
         );
+        let width = (0.08 * r).max(2.0 * FRAC_PI_2 / FINE as f64);
         for (u, _) in segment_places(&none, 2.0) {
             assert_eq!(level(&none, u, 0.0), f64::from(CREST));
             assert_eq!(highest(&none, u), f64::from(CREST));
-            assert_eq!(level(&shallow, u, 0.0), f64::from(CREST) - 3000.0);
-            assert_eq!(level(&deep, u, 0.0), f64::from(CREST) - 8000.0);
-            // The sides of a deep valley are higher than its floor.
-            assert!(highest(&deep, u) > level(&deep, u, 0.0) + 1000.0);
+            for (plan, depth) in [(&shallow, 3000.0), (&deep, 8000.0)] {
+                // The rims are at the crest level, and the floor is the
+                // depth below them.
+                assert_eq!(level(plan, u, 0.0), f64::from(CREST) - depth);
+                assert_eq!(highest(plan, u), f64::from(CREST));
+                for side in [-1.0, 1.0] {
+                    assert_eq!(level(plan, u, side * width), f64::from(CREST));
+                    let slope = level(plan, u, side * 0.5 * width);
+                    assert_eq!(slope, f64::from(CREST) - 0.5 * depth);
+                    assert!(level(plan, u, side * 2.0 * width) < f64::from(CREST));
+                    // The rise still ends at the radius.
+                    assert!(level(plan, u, side * 0.97 * r) > f64::from(START));
+                    assert_eq!(level(plan, u, side * r), f64::from(START));
+                }
+            }
+            // With half of the flow, the valley has half of the depth.
+            let half = RidgePoint {
+                flow: 0.5,
+                ..at(u, 0.0)
+            };
+            let rim = f64::from(START) + 0.5 * f64::from(CREST - START);
+            assert_eq!(f64::from(deep.level(START, half)), rim - 4000.0);
         }
     }
 
@@ -873,11 +935,12 @@ mod tests {
         let (first, second) = (plan.segments[0], plan.segments[1]);
         assert!(first.first && !first.last && !second.first && second.last);
         let len = 3f64.to_radians() as f32;
-        let numbers = second.to_f32();
-        assert!((numbers[2] - 1.0).abs() < 1e-6 && (numbers[3] - len).abs() < 1e-6);
+        // The second segment starts at 3 degrees, and cell 1 is at 0.1.
+        let numbers = second.to_f32(0.1);
+        assert!((numbers[2] - 1.0).abs() < 1e-6 && (numbers[3] - (len - 0.1)).abs() < 1e-6);
         assert!((numbers[7] - len).abs() < 1e-6);
-        assert_eq!(numbers[11..], [0.5, 0.5, 2.0, 0.0, 0.0]);
-        assert_eq!(first.to_f32()[13], 1.0);
+        assert_eq!(numbers[11..], [0.5, 0.5, 2.0, 1.0, 0.0]);
+        assert_eq!(first.to_f32(0.1)[13..], [1.0, 0.0, 0.0]);
         // The plane at the shared point is the same for the two segments.
         assert!(length(add(first.m1, scale(second.m0, -1.0))) < 1e-12);
     }
