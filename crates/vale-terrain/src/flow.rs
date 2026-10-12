@@ -604,6 +604,17 @@ fn deepest(texel: [f64; TEXEL]) -> f64 {
     valley_depth(texel[2] / CHANNEL_SCALE, texel[3])
 }
 
+/// The largest distance from a river that changes the height of a ridge, in
+/// channel texels. A place with no river near is at this distance.
+pub const RIDGE_REACH: f64 = CHANNEL_REACH;
+
+/// The height of the ridge at a place with the 4 bytes of a channel texel,
+/// after a blend, from 0 to 1. The height grows with the distance to the
+/// nearest river. `stamp.wgsl` has the same steps.
+fn ridge_height(texel: [f64; TEXEL]) -> f64 {
+    texel[0] / 255.0
+}
+
 /// The blend of the 4 bytes of 4 texels.
 fn blend_texels(texels: [[u8; TEXEL]; 4], tx: f64, ty: f64) -> [f64; TEXEL] {
     std::array::from_fn(|i| blend(texels.map(|texel| f64::from(texel[i])), tx, ty))
@@ -761,6 +772,13 @@ impl ChannelMap {
     pub fn valley(&self, face: usize, u: f64, v: f64) -> f64 {
         let (texels, tx, ty) = self.around(face, u, v);
         deepest(blend_texels(texels, tx, ty))
+    }
+
+    /// The height of the ridge at a place, from 0 on a river to 1 at
+    /// `RIDGE_REACH` from each river. `u` and `v` are as in `valley`.
+    pub fn ridge(&self, face: usize, u: f64, v: f64) -> f64 {
+        let (texels, tx, ty) = self.around(face, u, v);
+        ridge_height(blend_texels(texels, tx, ty))
     }
 
     /// The distance to the nearest river in channel texels, and the size of
@@ -1168,6 +1186,15 @@ impl ChannelWindow {
     /// at a whole number. `stamp.wgsl` has the same steps.
     pub fn valley(&self, u: f64, v: f64) -> Option<f64> {
         self.window.covers(u, v).then(|| deepest(self.around(u, v)))
+    }
+
+    /// The height of the ridge at a place that `Window::covers`, from 0 on a
+    /// river to 1 at `RIDGE_REACH` from each river. `u` and `v` are as in
+    /// `valley`.
+    pub fn ridge(&self, u: f64, v: f64) -> Option<f64> {
+        self.window
+            .covers(u, v)
+            .then(|| ridge_height(self.around(u, v)))
     }
 
     /// The distance to the nearest river in channel texels, and the size of
@@ -1593,6 +1620,30 @@ pub(crate) mod tests {
         for y in 30..36 {
             assert!(depth(y + 1) < depth(y), "row {y}");
         }
+    }
+
+    #[test]
+    fn the_ridge_height_grows_from_a_river_to_the_reach() {
+        let size = 64;
+        let mut map = ChannelMap::empty(size);
+        draw_line(
+            &mut map.data[..size * size * TEXEL],
+            size,
+            (0.0, 32.0),
+            (63.0, 32.0),
+            9,
+        );
+        assert_eq!(map.ridge(0, 20.0, 32.0), 0.0);
+        let heights: Vec<f64> = (0..=40)
+            .map(|i| map.ridge(0, 20.0, 32.0 + f64::from(i) * 0.25))
+            .collect();
+        assert!(heights.is_sorted());
+        // The height is the distance as a part of the reach.
+        let half = map.ridge(0, 20.0, 32.0 + RIDGE_REACH / 2.0);
+        assert!((half - 0.5).abs() < 0.01, "{half}");
+        assert_eq!(heights[40], 1.0);
+        // No river is near a place on another face.
+        assert_eq!(map.ridge(1, 20.0, 32.0), 1.0);
     }
 
     #[test]

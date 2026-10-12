@@ -31,6 +31,10 @@ pub enum Mode {
     /// Lowers the ground along the rivers of the channel map. Land does not
     /// go below sea level.
     Carve,
+    /// Raises the land by an amount that grows with the distance from the
+    /// nearest river of the channel map, up to `RIDGE_REACH`. The ground on a
+    /// river and the sea floor do not change.
+    Ridge,
     /// The mode of the erode brush. A stamp of this mode changes nothing.
     /// `Heightmap::erode` makes the change.
     Erode,
@@ -242,10 +246,10 @@ pub struct Heightmap {
     changed: BTreeSet<usize>,
     /// The base level changed after the last `clear_changes`.
     changed_all: bool,
-    /// The rivers that the carve mode follows.
+    /// The rivers that the carve mode and the ridge mode follow.
     channels: Option<Arc<ChannelMap>>,
     /// The rivers of a part of the sphere at a small scale. The carve mode
-    /// follows them where the window has them.
+    /// and the ridge mode follow them where the window has them.
     window: Option<Arc<ChannelWindow>>,
     /// The band limits and the color ramp of the preview.
     pub bands: Bands,
@@ -297,8 +301,8 @@ impl Heightmap {
         self.base
     }
 
-    /// Sets the rivers that the carve mode follows. With `None`, the carve
-    /// mode changes nothing.
+    /// Sets the rivers that the carve mode and the ridge mode follow. With
+    /// `None`, no river is near each place.
     pub fn set_channels(&mut self, channels: Option<Arc<ChannelMap>>) {
         self.channels = channels;
     }
@@ -307,8 +311,9 @@ impl Heightmap {
         self.channels.as_ref()
     }
 
-    /// Sets the window of small rivers. The carve mode follows it on the
-    /// ground that `Window::covers`, and the channel map on the other ground.
+    /// Sets the window of small rivers. The carve mode and the ridge mode
+    /// follow it on the ground that `Window::covers`, and the channel map on
+    /// the other ground.
     pub fn set_window(&mut self, window: Option<Arc<ChannelWindow>>) {
         self.window = window;
     }
@@ -847,6 +852,35 @@ impl Heightmap {
         let sea = f64::from(meters_to_level(SEA_LEVEL));
         let channel_size = channels.as_ref().map_or(0.0, |c| c.size() as f64);
         let n = self.n as f64;
+        // The valley depth at a texel, or its ridge height with `ridge`. The
+        // window comes first. With no channel map, no river is near, so the
+        // valley has no depth and the ridge has its full height.
+        let river = |x: usize, y: usize, fu: f64, fv: f64, ridge: bool| {
+            // The place of the texel in the window. On the face of the
+            // window, the place is exact.
+            let in_window = window.as_ref().and_then(|channels| {
+                let window = channels.window();
+                let (u, v) = if window.face == face {
+                    window.channel_of_texel(x as i64, y as i64)
+                } else {
+                    window.channel_of_dir(face_dir(face, fu, fv))?
+                };
+                if ridge {
+                    channels.ridge(u, v)
+                } else {
+                    channels.valley(u, v)
+                }
+            });
+            in_window.or_else(|| {
+                // The place of the texel in the channel map.
+                let at = |x: usize| (x as f64 + 0.5) * channel_size / n - 0.5;
+                match &channels {
+                    Some(channels) if ridge => Some(channels.ridge(face, at(x), at(y))),
+                    Some(channels) => Some(channels.valley(face, at(x), at(y))),
+                    None => ridge.then_some(1.0),
+                }
+            })
+        };
         for ty in rect.y0 / t..=(rect.y1 - 1) / t {
             for tx in rect.x0 / t..=(rect.x1 - 1) / t {
                 let index = (face * self.per_side + ty) * self.per_side + tx;
@@ -868,27 +902,20 @@ impl Heightmap {
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
                             Mode::Erode => continue,
                             Mode::Carve => {
-                                // The place of the texel in the window. On
-                                // the face of the window, the place is exact.
-                                let in_window = window.as_ref().and_then(|channels| {
-                                    let window = channels.window();
-                                    let (u, v) = if window.face == face {
-                                        window.channel_of_texel(x as i64, y as i64)
-                                    } else {
-                                        window.channel_of_dir(face_dir(face, fu, fv))?
-                                    };
-                                    channels.valley(u, v)
-                                });
-                                let in_map = || {
-                                    // The place of the texel in the channel map.
-                                    let at = |x: usize| (x as f64 + 0.5) * channel_size / n - 0.5;
-                                    Some(channels.as_ref()?.valley(face, at(x), at(y)))
-                                };
-                                let Some(valley) = in_window.or_else(in_map) else {
+                                let Some(valley) = river(x, y, fu, fv, false) else {
                                     continue;
                                 };
                                 let depth = amount * stamp.strength * valley;
                                 (old - depth).round().max(old.min(sea))
+                            }
+                            Mode::Ridge => {
+                                if old <= sea {
+                                    continue;
+                                }
+                                let Some(ridge) = river(x, y, fu, fv, true) else {
+                                    continue;
+                                };
+                                old + amount * stamp.strength * ridge
                             }
                             Mode::Weather => unreachable!("`stamp` sends it to `weather_face`"),
                             Mode::Warp => unreachable!("`stamp` sends it to `warp_stamp`"),
@@ -1830,6 +1857,112 @@ mod tests {
         let before = face_levels(&map);
         assert!(map.stamp(&carve(0.0, RIVER_LAT, 0.05)) > 0);
         assert!(face_levels(&map) == before);
+    }
+
+    fn ridge(lon: f64, lat: f64, radius: f64) -> Stamp {
+        Stamp {
+            mode: Mode::Ridge,
+            ..carve(lon, lat, radius)
+        }
+    }
+
+    #[test]
+    fn ridge_raises_the_ground_by_more_at_a_larger_distance_from_a_river() {
+        let mut map = valley();
+        let before = face_levels(&map);
+        let stamp = ridge(0.0, RIVER_LAT, 0.05);
+        map.stamp(&stamp);
+        let after = face_levels(&map);
+        // The pairs are the ridge height and the change of each texel with
+        // the full effect of the brush.
+        let channels = map.channels().expect("the map has channels").clone();
+        let falloff = Falloff::new(0, &stamp);
+        let mut pairs = Vec::new();
+        for (i, (new, old)) in after.iter().zip(&before).enumerate() {
+            let (x, y) = (i % 256, i / 256);
+            let amount = falloff.amount(map.flat[x], map.flat[y]);
+            if amount.is_none() {
+                assert_eq!(new, old);
+            }
+            if amount != Some(1.0) {
+                continue;
+            }
+            let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / 256.0 - 0.5;
+            pairs.push((channels.ridge(0, at(x), at(y)), new - old));
+        }
+        pairs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(pairs.is_sorted_by_key(|&(_, change)| change));
+        // The stamp raises the ground by 1000 steps at most.
+        let (near, far) = (pairs[0], pairs[pairs.len() - 1]);
+        assert!(near.0 < 0.1 && near.1 < 100, "{near:?}");
+        assert!(far.0 > 0.4 && far.1 > 400 && far.1 <= 1000, "{far:?}");
+        let on_river = after[place(&map, 0.0, RIVER_LAT)] - before[place(&map, 0.0, RIVER_LAT)];
+        assert!(on_river < 150, "{on_river}");
+    }
+
+    #[test]
+    fn ridge_does_not_change_the_sea_floor() {
+        let mut map = valley();
+        let sea = meters_to_level(SEA_LEVEL);
+        let before = face_levels(&map);
+        // The brush covers the mouth of the river and the sea next to it.
+        map.stamp(&ridge(-30.0, RIVER_LAT, 0.05));
+        let after = face_levels(&map);
+        assert!(after != before);
+        for (new, old) in after.iter().zip(&before) {
+            assert!(new >= old);
+            assert!(*old > sea || new == old);
+        }
+    }
+
+    #[test]
+    fn ridge_reads_the_window_where_the_window_covers_the_ground() {
+        let mut with = valley_with_window(48);
+        let mut without = valley_with_window(48);
+        without.set_window(None);
+        // The first stamp is far from the window. The second stamp covers
+        // the window and the ground around it.
+        for stamp in [ridge(-15.0, RIVER_LAT, 0.1), ridge(0.0, RIVER_LAT, 0.3)] {
+            let before = face_levels(&with);
+            with.stamp(&stamp);
+            without.stamp(&stamp);
+            let (a, b) = (face_levels(&with), face_levels(&without));
+            assert!(b != before);
+            let window = with.window().expect("the map has a window").window();
+            let mut inside = 0;
+            for (i, (a, b)) in a.iter().zip(&b).enumerate() {
+                let (u, v) = window.channel_of_texel((i % 256) as i64, (i / 256) as i64);
+                if window.covers(u, v) {
+                    inside += usize::from(a != b);
+                } else {
+                    assert_eq!(a, b, "texel {i}");
+                }
+            }
+            assert_eq!(inside > 100, stamp.radius > 0.2, "{inside}");
+            with.store_rect(0, face_rect(256), &before);
+            without.store_rect(0, face_rect(256), &before);
+        }
+    }
+
+    #[test]
+    fn ridge_without_channels_raises_the_land_as_raise_does() {
+        let mut map = valley();
+        map.set_channels(None);
+        let sea = meters_to_level(SEA_LEVEL);
+        let before = face_levels(&map);
+        let stamp = ridge(-30.0, RIVER_LAT, 0.05);
+        map.stamp(&stamp);
+        let after = face_levels(&map);
+        let mut raised = valley();
+        raised.stamp(&Stamp {
+            mode: Mode::Raise,
+            ..stamp
+        });
+        let raised = face_levels(&raised);
+        assert!(after != before);
+        for ((new, old), raised) in after.iter().zip(&before).zip(&raised) {
+            assert_eq!(new, if *old > sea { raised } else { old });
+        }
     }
 
     #[test]
@@ -2783,6 +2916,7 @@ mod tests {
         let modes = [
             Mode::Raise,
             Mode::Uplift,
+            Mode::Ridge,
             Mode::Smooth,
             Mode::Flatten,
             Mode::Weather,

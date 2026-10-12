@@ -293,6 +293,7 @@ impl ProtoApp {
                 Mode::Raise
                 | Mode::Lower
                 | Mode::Carve
+                | Mode::Ridge
                 | Mode::Erode
                 | Mode::Weather
                 | Mode::Uplift

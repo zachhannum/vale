@@ -26,9 +26,9 @@ pub use cube::{
 pub use equirect::Equirect;
 pub use erode::{ErodeBrush, ErodeGrid, ErodeStep, Erosion, OuterFlow};
 pub use flow::{
-    CHANNEL_SCALE, ChannelMap, ChannelWindow, CoarseHeights, FLOW_SIZE, FlowMap, RIVER_MIN_AREA,
-    RIVER_MIN_CELLS, RIVER_OCTAVES, WINDOW_CELLS, WINDOW_MARGIN, Window, WindowHeights,
-    channel_map, window_channels,
+    CHANNEL_SCALE, ChannelMap, ChannelWindow, CoarseHeights, FLOW_SIZE, FlowMap, RIDGE_REACH,
+    RIVER_MIN_AREA, RIVER_MIN_CELLS, RIVER_OCTAVES, WINDOW_CELLS, WINDOW_MARGIN, Window,
+    WindowHeights, channel_map, window_channels,
 };
 #[cfg(feature = "gpu")]
 pub use gpu::{GROUP_STAMPS, GpuHeightmap, Readback, STAMP_SLOTS};
