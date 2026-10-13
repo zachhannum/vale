@@ -392,10 +392,11 @@ const SIDES: [[usize; 2]; 8] = [
 ///
 /// A cell of a pit fills to the rim of the pit. A river cell fills to the
 /// level halfway from its bed to the lower of its two banks. A bank is the
-/// highest ground at one side of the river, within the width of the valley
-/// that the Carve mode cuts for a river of that size. Each cell also takes
-/// the level of the cell that takes its water, so the levels do not go down
-/// against the flow. A cell is a river if it drains `min_area` or more.
+/// highest ground at one side of the river. The search for a bank goes as far
+/// as the width of the valley that the Carve mode cuts for a river of that
+/// size. Each cell also takes the level of the cell that takes its water, so
+/// the levels do not go down against the flow. A cell is a river if it drains
+/// `min_area` or more.
 pub(crate) fn fill_levels(
     grid: &impl Grid,
     levels: &[u16],
