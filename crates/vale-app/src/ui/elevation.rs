@@ -66,13 +66,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         .default_size(210.0)
         .show(ui, |ui| {
             ui.heading("Elevation");
-            controls(ui, state);
+            let globe = &mut state.globe;
+            controls(ui, &mut globe.map.bands, &mut globe.preview);
         });
 }
 
-pub(super) fn controls(ui: &mut egui::Ui, state: &mut AppState) {
-    let globe = &mut state.globe;
-    let (bands, preview) = (&mut globe.map.bands, &mut globe.preview);
+/// The controls of the preview, and of the bands of one raster layer.
+pub(super) fn controls(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview) {
     ui.checkbox(&mut preview.levels, "Levels");
     ui.checkbox(&mut preview.graticule, "Graticule");
     ui.checkbox(&mut preview.rivers, "Rivers");
@@ -109,7 +109,7 @@ fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview) {
         (meters / SNAP).round() * SNAP
     };
 
-    let sea = bands.sea_index();
+    let sea = bands.sea();
     // The limit under a touch.
     let near = |bands: &Bands, y: f32| {
         let off = |m: &f64| (y_of(*m) - y).abs();
@@ -121,7 +121,7 @@ fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview) {
     if resp.drag_started()
         && let Some(pos) = press
     {
-        preview.selected = near(bands, pos.y).filter(|i| *i != sea);
+        preview.selected = near(bands, pos.y).filter(|i| Some(*i) != sea);
     }
     if resp.dragged()
         && let (Some(index), Some(pos)) = (preview.selected, resp.interact_pointer_pos())
@@ -133,7 +133,7 @@ fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview) {
         && let Some(pos) = resp.interact_pointer_pos()
     {
         preview.selected = match near(bands, pos.y) {
-            Some(index) => Some(index).filter(|i| *i != sea),
+            Some(index) => Some(index).filter(|i| Some(*i) != sea),
             None => bands.add(meters_of(pos.y)),
         };
     }
@@ -160,14 +160,14 @@ fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview) {
     for (index, &meters) in bands.limits().iter().enumerate() {
         let y = y_of(meters);
         let selected = preview.selected == Some(index);
-        let (width, color) = match (selected, index == sea) {
+        let (width, color) = match (selected, Some(index) == sea) {
             (true, _) => (3.0, strong),
             (false, true) => (2.0, text),
             (false, false) => (1.0, text),
         };
         let ends = [egui::pos2(bar.left(), y), egui::pos2(bar.right() + 8.0, y)];
         painter.line_segment(ends, egui::Stroke::new(width, color));
-        let label = if index == sea {
+        let label = if Some(index) == sea {
             "Sea level".to_string()
         } else {
             format!("{meters:.0} m")

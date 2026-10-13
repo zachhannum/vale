@@ -5,10 +5,12 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, World};
 
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, SaveMark, Workspace, pad};
+use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
+use crate::globe::brush::{
+    EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 use crate::projects;
 use crate::world::{self, three_significant};
@@ -41,8 +43,22 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
             if state.workspace == Workspace::Globe {
                 ui.separator();
-                ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
-                ui.selectable_value(&mut state.globe.tool, Tool::Brush, "Brush");
+                // With no raster layer to paint, the tool is Navigate.
+                let (paintable, tool) = (state.globe.paintable, state.globe.tool);
+                let navigate = !paintable || tool == Tool::Navigate;
+                if ui.selectable_label(navigate, "Navigate").clicked() {
+                    state.globe.tool = Tool::Navigate;
+                }
+                let brush = egui::Button::selectable(state.globe.brushing(), "Brush");
+                if ui.add_enabled(paintable, brush).clicked() {
+                    state.globe.tool = Tool::Brush;
+                }
+                ui.menu_button(RASTERS_MENU, |ui| {
+                    if ui.button(ADD_RASTER).clicked() {
+                        state.add_height();
+                    }
+                    raster_rows(ui, state);
+                });
                 ui.separator();
                 let mut flat = state.globe.world_view == WorldView::Flat;
                 if ui.toggle_value(&mut flat, "Flat").changed() {
@@ -85,7 +101,39 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
-/// The projection of the flat view.
+/// The button of the tool bar that opens the list of the raster layers.
+pub const RASTERS_MENU: &str = "Rasters";
+/// The button that adds a raster layer.
+pub const ADD_RASTER: &str = "Add raster";
+
+/// The rows of the raster layers, with the top layer first. A checkbox
+/// shows or hides a layer, and the name selects it.
+fn raster_rows(ui: &mut egui::Ui, state: &mut AppState) {
+    let rasters = state.doc.project.rasters().iter().rev();
+    let rows: Vec<_> = rasters.map(|r| (r.id, r.name.clone(), r.visible)).collect();
+    for (id, name, mut visible) in rows {
+        let selected = state.selected_raster() == Some(id);
+        ui.horizontal(|ui| {
+            let eye = ui.checkbox(&mut visible, "");
+            eye.widget_info(|| {
+                let name = format!("Show {name}");
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, visible, name)
+            });
+            if eye.changed() {
+                state.set_raster_visible(id, visible);
+            }
+            let pick = ui.selectable_label(selected, &name);
+            pick.widget_info(|| {
+                let name = format!("Select {name}");
+                egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, name)
+            });
+            if pick.clicked() {
+                state.select(Some(LayerRef::Raster(id)));
+            }
+        });
+    }
+}
+
 /// The button of the tool bar that opens the File menu.
 pub const FILE_MENU: &str = "File";
 /// The row of a menu that closes the project and shows the start screen.
@@ -215,9 +263,8 @@ fn window_line(globe: &Globe, world: &World) -> String {
 
 pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     let world = &state.doc.project.world;
-    // The undo log of the project file, if it has the strokes.
+    // The undo log of the project file has the strokes.
     let session = state.session.as_ref();
-    let session = session.filter(|s| s.saves_map(&state.globe.map));
     let log = session.map(|s| (s.undo_bytes(), s.undo_limit()));
     let globe = &mut state.globe;
     ui.label(globe.stats.gpu_line());
@@ -270,9 +317,11 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
     let test = egui::Button::new("Run stroke test");
     if ui.add_enabled(!globe.busy(), test).clicked() {
-        globe.start_stroke_test(stroke_test::SECONDS);
+        // The test paints a height layer.
+        state.select_height();
+        state.globe.start_stroke_test(stroke_test::SECONDS);
     }
-    if let Some(report) = &globe.test_report {
+    if let Some(report) = &state.globe.test_report {
         ui.separator();
         ui.strong("Stroke test");
         ui.label(report);
@@ -281,7 +330,7 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// The controls of the brush. The panel is open in the brush tool.
 pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
-    if state.globe.tool != Tool::Brush {
+    if !state.globe.brushing() {
         state.globe.pick_level = false;
         return;
     }
@@ -290,7 +339,8 @@ pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Brush");
-                brush_modes(ui, &mut state.globe.brush.mode);
+                let height = state.globe.is_height();
+                brush_modes(ui, &mut state.globe.brush.mode, height);
                 ui.add_space(6.0);
                 brush_size(ui, state);
                 brush_limits(ui, state);
@@ -299,7 +349,9 @@ pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
+/// The buttons of the brush modes. Without `height`, the modes that need
+/// heights in meters are off.
+fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
     ui.horizontal_wrapped(|ui| {
         for (mode, name) in [
             (Mode::Raise, "Raise"),
@@ -313,7 +365,13 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
             (Mode::Uplift, "Uplift"),
             (Mode::Warp, "Warp"),
         ] {
-            ui.selectable_value(current, mode, name);
+            let button = egui::Button::selectable(*current == mode, name);
+            if ui
+                .add_enabled(height || !needs_height(mode), button)
+                .clicked()
+            {
+                *current = mode;
+            }
         }
     });
 }
@@ -513,19 +571,24 @@ fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
 fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Layers");
     ui.menu_button("Add layer", |ui| {
+        if ui.button("Raster").clicked() {
+            state.add_height();
+            ui.close();
+        }
         for (name, kind) in [
             ("Lines", GeometryKind::Line),
             ("Points", GeometryKind::Point),
             ("Polygons", GeometryKind::Polygon),
         ] {
             if ui.button(name).clicked() {
-                state.selected_layer = Some(state.doc.add_layer(kind));
+                let id = state.doc.add_layer(kind);
+                state.select(Some(LayerRef::Vector(id)));
                 state.touch();
                 ui.close();
             }
         }
     });
-    if state.doc.frame.entries.is_empty() {
+    if state.doc.frame.entries.is_empty() && !state.has_raster() {
         ui.label("No layers. Open a GeoJSON file.");
     }
     let ids: Vec<_> = state
@@ -544,7 +607,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         else {
             continue;
         };
-        let selected = state.selected_layer == Some(id);
+        let selected = state.selected_vector() == Some(id);
         ui.horizontal(|ui| {
             let mut visible = state.doc.visible(id);
             let text = if selected {
@@ -559,7 +622,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                 state.dirty = true;
             }
             if resp.clicked() {
-                state.selected_layer = Some(id);
+                state.select(Some(LayerRef::Vector(id)));
             }
             let pick = ui.selectable_label(selected, "Edit");
             let accessible = format!("Select {}", state.doc.layer(id).map_or("", |l| &l.name));
@@ -572,10 +635,11 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                 )
             });
             if pick.clicked() {
-                state.selected_layer = Some(id);
+                state.select(Some(LayerRef::Vector(id)));
             }
         });
     }
+    raster_rows(ui, state);
     ui.add_space(6.0);
 }
 

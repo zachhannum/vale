@@ -1,5 +1,5 @@
-//! The globe workspace: the heightmap of the world on a globe that you rotate
-//! and paint.
+//! The globe workspace: a raster layer of the world on a globe that you
+//! rotate and paint.
 
 use std::collections::VecDeque;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
+use vale_store::RasterId;
 use vale_terrain::{
     ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, Stamp, TexelRect,
     Window, WindowHeights, meters_to_level,
@@ -37,7 +38,7 @@ use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, 
 use erode::{Eroder, Ground, brush_window, erode_window, near_side};
 use export::ExportResult;
 use flat::FlatView;
-use gpu::{Event, GlobeCallback, Link, Op, Uniforms, Uploads};
+use gpu::{Event, GlobeCallback, Link, MapTag, Op, Uniforms, Uploads};
 use import::{ImportResult, Job, Step};
 use math::{V3, angle};
 use nav::Nav;
@@ -53,8 +54,8 @@ pub const FACE_SIZE: usize = 1024;
 /// The face size of the app in a window.
 pub const WINDOW_FACE_SIZE: usize = 8192;
 
-/// The elevation of the empty world, in meters.
-const START_ELEVATION: f64 = -2500.0;
+/// The elevation of the empty world and of a new height layer, in meters.
+pub const START_ELEVATION: f64 = -2500.0;
 
 /// The rate of an erode step of one second, for a strength of one meter.
 const ERODE_RATE: f64 = 0.01;
@@ -194,11 +195,30 @@ fn union(a: Option<TexelRect>, b: TexelRect) -> TexelRect {
     }
 }
 
+/// The heightmap of a raster layer that the globe does not show.
+struct Parked {
+    id: RasterId,
+    height: bool,
+    map: Heightmap,
+}
+
 pub struct Globe {
-    /// The heightmap of the document. During a stroke, the GPU texture is
-    /// ahead of it. The texels come back when the stroke ends.
+    /// The heightmap that the globe shows and the brush paints. During a
+    /// stroke, the GPU texture is ahead of it. The texels come back when the
+    /// stroke ends.
     pub map: Heightmap,
-    /// The face size of the heightmap of a new world.
+    /// The raster layer of `map`. `None`: the globe shows no raster layer,
+    /// and `map` is an empty heightmap that the project does not hold.
+    raster: Option<RasterId>,
+    /// The values of `map` are heights in meters, so it has a sea and
+    /// rivers.
+    height: bool,
+    /// The heightmaps of the other raster layers.
+    parked: Vec<Parked>,
+    /// The count of the heightmaps that `map` held before this one.
+    generation: u64,
+    /// The face size of the empty heightmap, and of a raster layer that the
+    /// app makes with no choice of the user.
     new_face_size: usize,
     /// The largest face size that the device can show.
     max_face_size: usize,
@@ -212,6 +232,8 @@ pub struct Globe {
     /// The format of the render target. `None`: no wgpu renderer draws the UI.
     pub format: Option<wgpu::TextureFormat>,
     pub tool: Tool,
+    /// The brush can paint `map`. The UI sets it in each frame.
+    pub paintable: bool,
     pub preview: Preview,
     pub brush: BrushSettings,
     /// The radius of the world, in kilometers. Set by the canvas each frame.
@@ -276,6 +298,10 @@ impl Globe {
             chosen: None,
             window: None,
             map,
+            raster: None,
+            height: true,
+            parked: Vec::new(),
+            generation: 0,
             new_face_size: face_size,
             max_face_size: usize::MAX,
             view: GlobeView::centered(15.0, 25.0),
@@ -285,6 +311,7 @@ impl Globe {
             rect: Rect::ZERO,
             format: None,
             tool: Tool::default(),
+            paintable: true,
             preview: Preview::default(),
             brush: BrushSettings::default(),
             world_km: 6371.0,
@@ -313,45 +340,162 @@ impl Globe {
         }
     }
 
-    /// Replaces the heightmap with an empty one of this face size. The band
-    /// limits and the ramp stay. A new world also gets this face size.
+    /// Replaces the heightmap on the globe with an empty one of this face
+    /// size. The band limits and the ramp stay. A raster layer that the app
+    /// makes with no choice of the user also gets this face size. Call this
+    /// while the globe shows no raster layer.
     pub fn set_face_size(&mut self, face_size: usize) {
         self.new_face_size = face_size;
-        let mut map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
+        let mut map = self.empty_map();
         map.bands = std::mem::take(&mut self.map.bands);
         self.set_map(map);
     }
 
-    /// Makes the globe that of a new world: a heightmap with no painted tile
-    /// and no undo step, the first bands, and the first views. The face size
-    /// is that of `set_face_size`, and not that of the heightmap of a file.
+    /// The face size of `set_face_size`.
+    pub fn new_face_size(&self) -> usize {
+        self.new_face_size
+    }
+
+    /// The largest face size that the device can show.
+    pub fn max_face_size(&self) -> usize {
+        self.max_face_size
+    }
+
+    /// The heightmap of a globe with no raster layer.
+    fn empty_map(&self) -> Heightmap {
+        Heightmap::new(self.new_face_size, meters_to_level(START_ELEVATION))
+    }
+
+    /// Makes the globe that of a new world: no raster layer, an empty
+    /// heightmap with no undo step, and the first views.
     pub fn clear(&mut self) {
-        let face_size = self.new_face_size;
-        self.set_map(Heightmap::new(face_size, meters_to_level(START_ELEVATION)));
+        self.parked.clear();
+        self.raster = None;
+        self.height = true;
+        self.set_map(self.empty_map());
         self.view = GlobeView::centered(15.0, 25.0);
         self.flat = FlatView::default();
     }
 
-    /// Makes the globe that of a world from a file. `None`: the world has
-    /// no heightmap. Returns `false` if the device cannot show the heightmap.
-    /// The globe then shows an empty heightmap of another face size.
-    pub fn open_map(&mut self, map: Option<Heightmap>) -> bool {
-        self.clear();
-        match map {
-            Some(map) if map.face_size() > self.max_face_size => false,
-            Some(map) => {
-                self.set_map(map);
-                true
+    /// The raster layer that the globe shows.
+    pub fn raster(&self) -> Option<RasterId> {
+        self.raster
+    }
+
+    /// True if the values of the heightmap on the globe are heights in
+    /// meters. The sea, the rivers, and the brush modes that need them are
+    /// for such a heightmap only.
+    pub fn is_height(&self) -> bool {
+        self.height
+    }
+
+    /// Adds the heightmap of a raster layer. The globe does not show it
+    /// until `show`. `height`: the unit of the layer is the meter. Returns
+    /// `false` if the device cannot show the heightmap. The globe then does
+    /// not hold it.
+    pub fn add_raster(&mut self, id: RasterId, mut map: Heightmap, height: bool) -> bool {
+        if map.face_size() > self.max_face_size {
+            return false;
+        }
+        self.remove_raster(id);
+        map.set_undo_steps(self.memory_undo);
+        self.parked.push(Parked { id, height, map });
+        true
+    }
+
+    /// Removes the heightmap of a raster layer. If the globe shows it, the
+    /// globe then shows no raster layer.
+    pub fn remove_raster(&mut self, id: RasterId) {
+        if self.raster == Some(id) {
+            self.show(None);
+        }
+        self.parked.retain(|parked| parked.id != id);
+    }
+
+    /// Shows the heightmap of a raster layer, so that the brush paints it.
+    /// `None`: the globe shows an empty heightmap. A stroke or an import
+    /// that runs ends with no result. Returns `false` if the globe does not
+    /// hold the heightmap of the layer.
+    pub fn show(&mut self, id: Option<RasterId>) -> bool {
+        if id == self.raster {
+            return true;
+        }
+        let (map, height) = match id {
+            Some(id) => {
+                let Some(at) = self.parked.iter().position(|parked| parked.id == id) else {
+                    return false;
+                };
+                let parked = self.parked.swap_remove(at);
+                (parked.map, parked.height)
             }
-            None => true,
+            None => (self.empty_map(), true),
+        };
+        // The stroke or the import has the undo entry of the old heightmap.
+        self.map.cancel_stroke();
+        let map = std::mem::replace(&mut self.map, map);
+        if let Some(id) = self.raster {
+            let height = self.height;
+            self.parked.push(Parked { id, height, map });
+        }
+        (self.raster, self.height) = (id, height);
+        self.reset_map();
+        true
+    }
+
+    /// The ID of each raster layer that has its heightmap here.
+    pub fn rasters(&self) -> Vec<RasterId> {
+        let parked = self.parked.iter().map(|parked| parked.id);
+        self.raster.into_iter().chain(parked).collect()
+    }
+
+    /// The heightmap of a raster layer.
+    pub fn raster_map(&self, id: RasterId) -> Option<&Heightmap> {
+        if self.raster == Some(id) {
+            return Some(&self.map);
+        }
+        let parked = self.parked.iter().find(|parked| parked.id == id);
+        parked.map(|parked| &parked.map)
+    }
+
+    /// The heightmap of a raster layer. A change to a heightmap that the
+    /// globe does not show goes to the GPU when the globe shows it.
+    pub fn raster_map_mut(&mut self, id: RasterId) -> Option<&mut Heightmap> {
+        if self.raster == Some(id) {
+            return Some(&mut self.map);
+        }
+        let parked = self.parked.iter_mut().find(|parked| parked.id == id);
+        parked.map(|parked| &mut parked.map)
+    }
+
+    /// The heightmap of each raster layer, for a save.
+    pub fn raster_maps(&mut self) -> Vec<(RasterId, &mut Heightmap)> {
+        let shown = self.raster.map(|id| (id, &mut self.map));
+        let parked = self.parked.iter_mut().map(|p| (p.id, &mut p.map));
+        shown.into_iter().chain(parked).collect()
+    }
+
+    /// The tag of the heightmap on the globe for the changes in the queue
+    /// of the GPU.
+    fn tag(&self) -> MapTag {
+        MapTag {
+            face_size: self.map.face_size() as u32,
+            generation: self.generation,
         }
     }
 
-    /// Replaces the heightmap. A stroke or an import that runs ends with no
-    /// result.
+    /// Replaces the heightmap on the globe. The raster layer of the globe
+    /// stays. A stroke or an import that runs ends with no result.
     pub fn set_map(&mut self, map: Heightmap) {
-        let face_size = map.face_size();
         self.map = map;
+        self.reset_map();
+    }
+
+    /// Makes the state of the globe that of a heightmap that it did not
+    /// show before. The GPU gets each texel again.
+    fn reset_map(&mut self) {
+        let face_size = self.map.face_size();
+        self.generation += 1;
+        self.map.mark_reset();
         self.map.set_undo_steps(self.memory_undo);
         self.rivers = Rivers::new(&self.map, self.rivers.sync());
         self.eroder.cancel();
@@ -368,6 +512,10 @@ impl Globe {
         if let Some(test) = self.test.take() {
             self.brush = test.saved;
         }
+        // The GPU has the window of small rivers of the old heightmap.
+        if self.format.is_some() {
+            self.link.push(self.tag(), Op::Window(None));
+        }
     }
 
     /// Connects the globe to the renderer of the UI. A face is not larger
@@ -377,17 +525,26 @@ impl Globe {
         let info = render_state.adapter.get_info();
         self.stats.adapter = format!("{} ({:?})", info.name, info.backend);
         let limit = render_state.device.limits().max_texture_dimension_2d as usize;
+        self.max_face_size = limit;
+        self.parked.retain(|parked| parked.map.face_size() <= limit);
         if self.map.face_size() > limit {
-            self.set_face_size(limit);
+            self.raster = None;
+            self.height = true;
+            self.set_face_size(self.new_face_size.min(limit));
         }
         self.new_face_size = self.new_face_size.min(limit);
-        self.max_face_size = limit;
     }
 
     /// The format of the blurred canvas behind a card. `None`: a card has a
     /// plain fill.
     pub fn backdrop(&self) -> Option<wgpu::TextureFormat> {
         self.format.filter(|_| self.blur)
+    }
+
+    /// True if the brush is the tool and it can paint the heightmap. If
+    /// not, a pen and the mouse move the view.
+    pub fn brushing(&self) -> bool {
+        self.tool == Tool::Brush && self.paintable
     }
 
     pub fn pen_down(&mut self) {
@@ -452,6 +609,9 @@ impl Globe {
         if self.memory_undo != on {
             self.memory_undo = on;
             self.map.set_undo_steps(on);
+            for parked in &mut self.parked {
+                parked.map.set_undo_steps(on);
+            }
         }
     }
 
@@ -547,15 +707,19 @@ impl Globe {
 
     /// The window of small rivers for the view of this frame.
     fn view_window(&self) -> Option<Window> {
-        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+        if !self.height || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return None;
         }
         let middle = self.unproject(self.rect.center())?;
         choose_window(middle, self.span(), self.map.face_size(), self.chosen)
     }
 
-    /// Asks for the rivers of the heightmap as it is now.
+    /// Asks for the rivers of the heightmap as it is now. A heightmap with
+    /// no heights in meters has no rivers.
     fn request_rivers(&mut self) {
+        if !self.height {
+            return;
+        }
         self.rivers.request();
         if let Some(window) = self.chosen {
             self.rivers.request_window(&self.map, window);
@@ -566,7 +730,8 @@ impl Globe {
     /// rivers. Asks for the window of the view if the view left the last
     /// one. Sends the rivers that arrived to the GPU.
     fn queue_changes(&mut self) {
-        let changes = gpu::queue_changes(&mut self.map, &self.link, &mut self.uploads);
+        let tag = self.tag();
+        let changes = gpu::queue_changes(&mut self.map, tag, &self.link, &mut self.uploads);
         if changes.reset {
             self.rivers.rebuild(&self.map);
         }
@@ -576,7 +741,6 @@ impl Globe {
         if changes.reset || !changes.rects.is_empty() {
             self.request_rivers();
         }
-        let face_size = self.map.face_size() as u32;
         let window = self.view_window();
         if window != self.chosen {
             self.chosen = window;
@@ -587,17 +751,17 @@ impl Globe {
                     // The window on the GPU stays until the next one
                     // arrives. A far view has no next one.
                     if self.window.take().is_some() {
-                        self.link.push(face_size, Op::Window(None));
+                        self.link.push(tag, Op::Window(None));
                     }
                 }
             }
         }
         if let Some(channels) = self.rivers.poll() {
-            self.link.push(face_size, Op::Channels(channels.clone()));
+            self.link.push(tag, Op::Channels(channels.clone()));
             self.channels = Some(channels);
         }
         if let Some(window) = self.rivers.poll_window() {
-            self.link.push(face_size, Op::Window(Some(window.clone())));
+            self.link.push(tag, Op::Window(Some(window.clone())));
             self.window = Some(window);
         }
     }
@@ -682,10 +846,11 @@ impl Globe {
         }
     }
 
-    /// Starts the export of the heightmap to a GeoTIFF file on a worker
+    /// Starts the export of a heightmap to a GeoTIFF file on a worker
     /// thread. The file gets the heightmap of this moment, and painting
-    /// continues. `raster` is the record of the heightmap in the project.
-    /// One export runs at a time. Returns `false` with an error result if
+    /// continues. `raster` is the record of the raster layer in the project.
+    /// With no record, or with no heightmap of the layer, the file gets the
+    /// heightmap on the globe. One export runs at a time. Returns `false` with an error result if
     /// the globe is busy or an export runs.
     pub fn start_export(
         &mut self,
@@ -705,7 +870,9 @@ impl Globe {
             return false;
         }
         self.export_result = None;
-        let job = export::Job::start(self.map.snapshot(), world.clone(), raster.cloned(), path);
+        let map = raster.and_then(|raster| self.raster_map(raster.id));
+        let map = map.unwrap_or(&self.map).snapshot();
+        let job = export::Job::start(map, world.clone(), raster.cloned(), path);
         self.export = Some(job);
         true
     }
@@ -947,6 +1114,7 @@ impl Globe {
     /// The first request sets the cells of the stroke. If the stroke has the
     /// window of the brush, that window follows the pen.
     fn erode(&mut self, now: Instant) {
+        let tag = self.tag();
         let Some(active) = &mut self.stroke else {
             return;
         };
@@ -959,8 +1127,8 @@ impl Globe {
                     *touched = Some(union(*touched, rect));
                 }
             }
-            let (face_size, stroke) = (self.map.face_size() as u32, active.id);
-            self.link.push(face_size, Op::Erode { stroke, step });
+            let stroke = active.id;
+            self.link.push(tag, Op::Erode { stroke, step });
         }
         if self.eroder.pending() {
             return;
@@ -1012,6 +1180,7 @@ impl Globe {
     /// The rate of a step grows with the number of its stamps. Thus the
     /// erosion follows the uplift, and not the speed of the worker.
     fn uplift(&mut self, now: Instant) {
+        let tag = self.tag();
         let Some(active) = &mut self.stroke else {
             return;
         };
@@ -1026,8 +1195,8 @@ impl Globe {
                         *touched = Some(union(*touched, rect));
                     }
                 }
-                let (face_size, stroke) = (self.map.face_size() as u32, active.id);
-                self.link.push(face_size, Op::Erode { stroke, step });
+                let stroke = active.id;
+                self.link.push(tag, Op::Erode { stroke, step });
             }
             let stamps = std::mem::take(&mut uplift.asked);
             for stamp in stamps.iter().step_by(UPLIFT_WEATHER_EVERY) {
@@ -1087,10 +1256,10 @@ impl Globe {
     /// stroke and the last step of an erode stroke or of an uplift stroke, asks for the texels that
     /// the stroke changed.
     fn send_stamps(&mut self, now: Instant) {
+        let tag = self.tag();
         let Some(active) = &mut self.stroke else {
             return;
         };
-        let face_size = self.map.face_size() as u32;
         if !active.ended || !self.backlog.is_empty() {
             self.stats.frame(active.id, now);
         }
@@ -1106,7 +1275,7 @@ impl Globe {
                 }
             }
             let (plan, stroke) = (Box::new(plan), active.id);
-            self.link.push(face_size, Op::Stamp { plan, stroke, time });
+            self.link.push(tag, Op::Stamp { plan, stroke, time });
         }
         self.stats.backlog = self.backlog.len();
         if !active.ended || !self.backlog.is_empty() || active.reading.is_some() {
@@ -1133,8 +1302,7 @@ impl Globe {
         active.reading = Some(rects.len());
         for (face, rect) in rects {
             let (stroke, face) = (active.id, face as u32);
-            self.link
-                .push(face_size, Op::Readback { stroke, face, rect });
+            self.link.push(tag, Op::Readback { stroke, face, rect });
         }
     }
 
@@ -1157,8 +1325,8 @@ impl Globe {
                 (self.flat.zoom, center, Some(self.flat.mesh()))
             }
         };
-        let sea = f32::from(meters_to_level(SEA_LEVEL)) / 65535.0;
-        let rivers = self.preview.rivers && !self.preview.greyscale;
+        let sea = f32::from(self.map.bands.level(SEA_LEVEL)) / 65535.0;
+        let rivers = self.height && self.preview.rivers && !self.preview.greyscale;
         let channel_size = match rivers {
             true => ChannelMap::size_for(self.map.face_size()) as f32,
             false => 0.0,
@@ -1182,7 +1350,7 @@ impl Globe {
         let (bands, band_count) = band_uniforms(&self.map.bands);
         Some(GlobeCallback {
             format,
-            face_size: self.map.face_size() as u32,
+            map: self.tag(),
             uniforms: Uniforms {
                 rot: self.view.rot.0.map(row),
                 globe: [

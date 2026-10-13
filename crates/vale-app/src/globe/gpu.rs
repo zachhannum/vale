@@ -362,10 +362,10 @@ impl Drop for Poller {
 /// The path from the UI to the paint callback and back.
 #[derive(Clone)]
 pub struct Link {
-    /// The changes that wait for the GPU, each with the face size of its
+    /// The changes that wait for the GPU, each with the tag of its
     /// heightmap. egui can run a frame and not paint it, so the queue keeps
     /// them until `prepare` runs.
-    ops: Arc<Mutex<Vec<(u32, Op)>>>,
+    ops: Arc<Mutex<Vec<(MapTag, Op)>>>,
     events: mpsc::Sender<Event>,
     pub busy: Arc<Busy>,
 }
@@ -381,10 +381,19 @@ impl Link {
         (link, receiver)
     }
 
-    pub fn push(&self, face_size: u32, op: Op) {
+    pub fn push(&self, map: MapTag, op: Op) {
         let mut ops = self.ops.lock().expect("no panic holds the lock");
-        ops.push((face_size, op));
+        ops.push((map, op));
     }
+}
+
+/// The heightmap that a change in the queue belongs to. The GPU takes a
+/// change only if the globe still holds that heightmap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapTag {
+    pub face_size: u32,
+    /// The count of the heightmaps that the globe held before this one.
+    pub generation: u64,
 }
 
 /// The changes of the CPU heightmap that went to the queue.
@@ -440,15 +449,19 @@ fn strips(rect: TexelRect, texels: usize) -> impl Iterator<Item = TexelRect> {
 /// Moves the changes of the CPU heightmap to the queue. One call sends the
 /// texels of one budget, and the other strips wait in `pending`. A strip gets
 /// its texels when the call sends it, so it has each change up to that time.
-pub fn queue_changes(map: &mut Heightmap, link: &Link, pending: &mut Uploads) -> Changes {
-    let face_size = map.face_size() as u32;
+pub fn queue_changes(
+    map: &mut Heightmap,
+    tag: MapTag,
+    link: &Link,
+    pending: &mut Uploads,
+) -> Changes {
     let budget = pending.budget;
     let mut rects: Vec<(usize, TexelRect)> = Vec::new();
     let reset = map.take_reset();
     if reset {
         // The reset replaces each texel, so the strips before it are stale.
         pending.clear();
-        link.push(face_size, Op::Reset(map.base()));
+        link.push(tag, Op::Reset(map.base()));
         rects.extend(map.allocated_rects());
     } else {
         let dirty = map.take_dirty().into_iter().enumerate();
@@ -469,7 +482,7 @@ pub fn queue_changes(map: &mut Heightmap, link: &Link, pending: &mut Uploads) ->
         let mut data = Vec::with_capacity(texels(rect));
         map.read_rect(face, rect, &mut data);
         let face = face as u32;
-        link.push(face_size, Op::Upload { face, rect, data });
+        link.push(tag, Op::Upload { face, rect, data });
     }
     Changes { reset, rects }
 }
@@ -477,7 +490,8 @@ pub fn queue_changes(map: &mut Heightmap, link: &Link, pending: &mut Uploads) ->
 /// One frame of the globe. egui calls it inside its own render pass.
 pub struct GlobeCallback {
     pub format: wgpu::TextureFormat,
-    pub face_size: u32,
+    /// The heightmap that the globe holds.
+    pub map: MapTag,
     pub uniforms: Uniforms,
     pub link: Link,
     /// `Some`: the canvas shows the flat view with this mesh.
@@ -642,10 +656,11 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
     ) -> Vec<wgpu::CommandBuffer> {
         let stale = resources
             .get::<Resources>()
-            .is_none_or(|r| r.face_size != self.face_size || r.format != self.format);
+            .is_none_or(|r| r.face_size != self.map.face_size || r.format != self.format);
         if stale {
             let busy = &self.link.busy;
-            resources.insert(Resources::new(device, self.format, self.face_size, busy));
+            let face_size = self.map.face_size;
+            resources.insert(Resources::new(device, self.format, face_size, busy));
         }
         let size = screen_descriptor.size_in_pixels;
         if let Some(mesh) = &self.flat {
@@ -673,9 +688,9 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         };
         // The stamps that follow one another in the queue.
         let (mut plans, mut samples) = (Vec::new(), Vec::new());
-        for (face_size, op) in ops {
+        for (map, op) in ops {
             // A change of a heightmap that the app replaced.
-            if face_size != self.face_size {
+            if map != self.map {
                 continue;
             }
             match op {

@@ -34,6 +34,7 @@ fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
 fn flat_harness() -> App {
     let mut state = state();
     state.globe.set_face_size(256);
+    state.add_height();
     state.globe.world_view = WorldView::Flat;
     state.globe.tool = Tool::Brush;
     state.globe.brush.size_points = 12.0;
@@ -134,10 +135,12 @@ fn grey(h: &App, image: &image::RgbaImage, pos: Pos2) -> u8 {
 
 #[test]
 fn one_click_switches_the_view_and_the_tool_stays() {
+    let mut state = state();
+    state.add_height();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
         .with_pixels_per_point(1.0)
-        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
     h.run_steps(2);
     h.get_by_label("Brush").click();
     h.run_steps(2);

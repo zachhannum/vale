@@ -8,7 +8,7 @@ use vale_app::document::Document;
 use vale_app::files::ExportEvent;
 use vale_app::session::Session;
 use vale_app::ui::panels::EXPORT_GEOTIFF;
-use vale_app::ui::{Action, AppState, Workspace, draw};
+use vale_app::ui::{Action, AppState, LayerRef, Workspace, draw};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{EquirectGrid, Heightmap, Limits, Mode, Stamp};
 
@@ -65,7 +65,10 @@ fn project(path: &Path, radius_km: f64, painted: bool) {
         paint(&mut map, 45.0, 35.3, 0.4);
         paint(&mut map, -100.0, 5.0, 0.2);
         paint(&mut map, 0.0, 90.0, 0.3);
-        session.flush(&mut doc.project, &mut map).unwrap();
+        let (name, unit) = ("Height".to_string(), "m".to_string());
+        let project = &mut doc.project;
+        let id = project.add_raster(name, FACE_SIZE as u32, unit, -6000.0, 6000.0);
+        session.flush(project, &mut [(id, &mut map)]).unwrap();
     }
 }
 
@@ -75,11 +78,13 @@ fn args(project: &Path, out: &Path) -> Args {
     Args::try_parse_from(list).unwrap()
 }
 
-/// A state with no window, with a small heightmap that has a painted place.
+/// A state with no window, with a small height layer that has a painted
+/// place.
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
     state.headless = true;
     state.globe.set_face_size(FACE_SIZE);
+    state.add_height();
     paint(&mut state.globe.map, 20.0, 10.0, 0.4);
     state
 }
@@ -95,8 +100,9 @@ fn the_command_line_exports_the_heightmap_of_a_project() {
     assert_eq!((done.width, done.height), (4 * FACE_SIZE, 2 * FACE_SIZE));
 
     let mut doc = Document::sample();
-    let map = Session::open(&file, &mut doc).unwrap().load_map().unwrap();
-    let expected = equirect(&map.unwrap());
+    let session = Session::open(&file, &mut doc).unwrap();
+    let (_, map) = session.load_maps().unwrap().remove(0);
+    let expected = equirect(&map);
     let (size, levels) = read_tiff(&out);
     assert_eq!(size, (4 * FACE_SIZE as u32, 2 * FACE_SIZE as u32));
     assert!(levels == expected, "the levels differ");
@@ -129,13 +135,41 @@ fn the_command_line_fails_for_a_project_file_that_does_not_exist() {
 }
 
 #[test]
-fn the_command_line_fails_for_a_world_with_no_raster_layer() {
+fn the_command_line_exports_the_first_height_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (file, out) = (dir.path().join("w.gpkg"), dir.path().join("w.tif"));
+    let mut doc = Document::sample();
+    let mut session = Session::open(&file, &mut doc).unwrap();
+    let project = &mut doc.project;
+    let size = FACE_SIZE as u32;
+    let (name, unit) = ("Rain".to_string(), "mm".to_string());
+    let rain = project.add_raster(name, size, unit, 0.0, 4000.0);
+    let (name, unit) = ("Height".to_string(), "m".to_string());
+    let height = project.add_raster(name, size, unit, -6000.0, 6000.0);
+    let (mut wet, mut ground) = (
+        Heightmap::new(FACE_SIZE, 0),
+        Heightmap::new(FACE_SIZE, BASE),
+    );
+    wet.bands = vale_terrain::Bands::with_range(0.0, 4000.0).unwrap();
+    paint(&mut wet, 45.0, 35.3, 0.4);
+    paint(&mut ground, -100.0, 5.0, 0.2);
+    let mut maps = [(rain, &mut wet), (height, &mut ground)];
+    session.flush(project, &mut maps).unwrap();
+    drop(session);
+
+    export_heightmap(&args(&file, &out)).unwrap().unwrap();
+    assert!(read_tiff(&out).1 == equirect(&ground), "the levels differ");
+    assert!(equirect(&ground) != equirect(&wet));
+}
+
+#[test]
+fn the_command_line_fails_for_a_world_with_no_height_layer() {
     let dir = tempfile::tempdir().unwrap();
     let (file, out) = (dir.path().join("w.gpkg"), dir.path().join("w.tif"));
     project(&file, 6371.0, false);
     let error = export_heightmap(&args(&file, &out)).unwrap_err();
-    let text = format!("the world of {} has no raster layer", file.display());
-    assert_eq!(error.to_string(), text);
+    let text = format!("the world of {} has no height layer", file.display());
+    assert!(error.to_string().starts_with(&text), "{error}");
     assert!(!out.exists());
 }
 
@@ -211,7 +245,15 @@ fn a_world_with_no_raster_layer_cannot_export() {
     let mut state = AppState::new(Document::sample()).unwrap();
     state.globe.set_face_size(FACE_SIZE);
     assert!(!state.has_raster() && !state.can_export());
+    // A stroke with no raster layer makes none.
     paint(&mut state.globe.map, 20.0, 10.0, 0.4);
+    assert!(!state.has_raster() && !state.can_export());
+    let height = state.add_height();
+    assert!(state.can_export());
+    // The export is that of the selected raster layer.
+    state.select(None);
+    assert!(!state.can_export());
+    state.select(Some(LayerRef::Raster(height)));
     assert!(state.can_export());
 }
 

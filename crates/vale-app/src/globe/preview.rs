@@ -1,6 +1,6 @@
 //! The preview of the heightmap: stepped tints, a smooth ramp, or greyscale.
 
-use vale_terrain::{Bands, MAX_BANDS, Rgb, meters_to_level};
+use vale_terrain::{Bands, MAX_BANDS, Rgb};
 
 /// How the globe shows the heightmap.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,9 +54,9 @@ pub type BandUniform = [[f32; 4]; 3];
 pub fn band_uniforms(bands: &Bands) -> ([BandUniform; MAX_BANDS], usize) {
     let mut out = [[[0.0; 4]; 3]; MAX_BANDS];
     let list = bands.bands();
-    let entry = |color: Rgb, meters: f64| {
+    let entry = |color: Rgb, value: f64| {
         let [r, g, b] = color.map(|c| f32::from(c) / 255.0);
-        [r, g, b, f32::from(meters_to_level(meters)) / 65535.0]
+        [r, g, b, f32::from(bands.level(value)) / 65535.0]
     };
     for (slot, band) in out.iter_mut().zip(&list) {
         *slot = [

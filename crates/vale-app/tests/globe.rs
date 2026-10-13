@@ -31,11 +31,14 @@ fn state() -> AppState {
     state
 }
 
+/// A harness of a world with a height layer that the brush paints.
 fn harness() -> Harness<'static, AppState> {
+    let mut state = state();
+    state.add_height();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
         .with_pixels_per_point(1.0)
-        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
     h.run_steps(2);
     h
 }
@@ -443,11 +446,12 @@ fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A harness with the wgpu renderer. Each step renders, so each step runs the
-/// GPU work of the globe.
+/// A harness with the wgpu renderer and a height layer that the brush
+/// paints. Each step renders, so each step runs the GPU work of the globe.
 fn gpu_harness() -> Harness<'static, AppState> {
     let mut state = state();
     state.globe.set_face_size(BRUSH_FACE_SIZE);
+    state.add_height();
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
     h.set_render_every_step(true);
@@ -2127,8 +2131,9 @@ fn river_parts(globe: &vale_app::globe::Globe) -> (f64, f64) {
 /// size of 1024 at least, a near view has a window of small rivers.
 fn island_harness(face_size: usize, radius: f64, zoom: f64) -> Harness<'static, AppState> {
     let mut state = state();
+    state.globe.set_face_size(face_size);
+    state.add_height();
     let globe = &mut state.globe;
-    globe.set_face_size(face_size);
     globe.preview.graticule = false;
     globe.view = GlobeView::centered(0.0, 0.0);
     globe.view.zoom = zoom;

@@ -12,8 +12,9 @@ use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    ADD_LAYER, DELETE_LAYER, EXPORT_GEOTIFF, IMPORT_HEIGHTMAP, LAYER_NAME, LayerRef, MORE, Panel,
-    RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_text, theme,
+    ADD_LAYER, DELETE_LAYER, EXPORT_GEOTIFF, IMPORT_HEIGHTMAP, LAYER_NAME, LayerRef, MORE,
+    NEW_RASTER, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text,
+    readout_text, theme,
 };
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
@@ -41,7 +42,8 @@ fn state() -> AppState {
     state
 }
 
-fn pad((width, height): (f32, f32)) -> Pad {
+/// The layout of a world with no raster layer.
+fn empty_pad((width, height): (f32, f32)) -> Pad {
     let mut h = Harness::builder()
         .with_size(vec2(width, height))
         .with_pixels_per_point(1.0)
@@ -50,7 +52,15 @@ fn pad((width, height): (f32, f32)) -> Pad {
     h
 }
 
-/// The layout of a world with a painted heightmap, which is a raster layer.
+/// The layout of a world with a height layer that the pen paints.
+fn pad(size: (f32, f32)) -> Pad {
+    let mut h = empty_pad(size);
+    h.state_mut().add_height();
+    h.run_steps(2);
+    h
+}
+
+/// The layout of a world with a painted height layer.
 fn painted_pad(size: (f32, f32)) -> Pad {
     let mut h = pad(size);
     let globe = &mut h.state_mut().globe;
@@ -189,7 +199,7 @@ fn check_controls(h: &Pad, what: &str) {
                 let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
                 let more = in_more
                     && ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"].contains(&name);
-                let add = in_add && ["Lines", "Points", "Polygons"].contains(&name);
+                let add = in_add && [NEW_RASTER, "Lines", "Points", "Polygons"].contains(&name);
                 menu || kind || more || add || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
@@ -257,6 +267,132 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         check_controls(&h, &format!("{size:?} with the panel of a layer"));
     }
+}
+
+#[test]
+fn the_layers_panel_adds_selects_and_hides_raster_layers() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = empty_pad(size);
+        // With no raster layer, the brush cells are off and the tool is Move.
+        for name in ["Raise", "Lower", "Smooth", "Flatten", MORE] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+        assert!(control(&h, "Pan").is_some(), "{what}");
+        tap(&mut h, "Layers");
+        assert!(control(&h, "Layer Height").is_none(), "{what}");
+
+        // The first row of the menu adds a height layer, selects it, and
+        // opens its panel.
+        tap(&mut h, ADD_LAYER);
+        let (raster, lines) = (control(&h, NEW_RASTER), control(&h, "Lines"));
+        assert!(raster.unwrap().bottom() <= lines.unwrap().top() + 0.5);
+        check_controls(&h, &format!("{what} with the menu of the new layers"));
+        tap(&mut h, NEW_RASTER);
+        assert!(!h.state().pad.add);
+        let rasters = h.state().doc.project.rasters();
+        assert_eq!(rasters.len(), 1, "{what}");
+        let first = rasters[0].id;
+        let record = &rasters[0];
+        assert_eq!(
+            (record.name.as_str(), record.unit.as_str()),
+            ("Height", "m")
+        );
+        assert_eq!((record.value_min, record.value_max), (-6000.0, 6000.0));
+        assert_eq!(record.face_size as usize, h.state().globe.new_face_size());
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(first)));
+        assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(first)));
+        assert_eq!(h.state().globe.raster(), Some(first));
+        check_controls(&h, &format!("{what} with the panel of a raster layer"));
+        tap(&mut h, "Back to Layers");
+        tap(&mut h, ADD_LAYER);
+        tap(&mut h, NEW_RASTER);
+        tap(&mut h, "Back to Layers");
+        let rasters = h.state().doc.project.rasters();
+        let names: Vec<&str> = rasters.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Height", "Height 2"], "{what}");
+        let second = rasters[1].id;
+        assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(second)));
+
+        // The rows of the raster layers come before the rows of the vector
+        // layers, and each one is a touch target.
+        check_controls(&h, &format!("{what} with two raster layers"));
+        let top = |name: &str| control(&h, name).unwrap().top();
+        let rows = ["Layer Height", "Layer Height 2", "Layer Land"].map(top);
+        assert!(rows.is_sorted() && rows[0] < rows[2], "{what}: {rows:?}");
+
+        // A tap selects a layer, and the globe shows it.
+        tap(&mut h, "Layer Height");
+        assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(first)));
+        assert_eq!(h.state().globe.raster(), Some(first));
+        assert!(h.state().globe.paintable, "{what}");
+
+        // The eye hides the layer. The brush does not paint a hidden layer,
+        // and the globe shows the other layer.
+        tap(&mut h, "Hide Height");
+        assert!(!h.state().doc.project.raster(first).unwrap().visible);
+        assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(first)));
+        assert_eq!(h.state().globe.raster(), Some(second));
+        assert!(!h.state().globe.paintable, "{what}");
+        tap(&mut h, "Hide Height 2");
+        assert_eq!(h.state().globe.raster(), None, "{what}");
+        tap(&mut h, "Show Height");
+        tap(&mut h, "Show Height 2");
+        assert_eq!(h.state().globe.raster(), Some(first));
+        assert!(h.state().globe.paintable, "{what}");
+
+        // The brush does not paint a vector layer.
+        tap(&mut h, "Layer Rivers");
+        assert_eq!(h.state().globe.raster(), Some(second));
+        assert!(!h.state().globe.paintable, "{what}");
+
+        // The app takes a raster layer away.
+        assert!(h.state_mut().remove_raster(second));
+        h.run_steps(2);
+        assert!(control(&h, "Layer Height 2").is_none(), "{what}");
+        assert_eq!(h.state().globe.raster(), Some(first));
+    }
+}
+
+#[test]
+fn the_brush_cells_are_on_for_a_selected_raster_layer_only() {
+    let mut h = pad(BOARDS[0]);
+    let cells = ["Raise", "Lower", "Smooth", "Flatten", MORE, "Size", "Flow"];
+    let on = |h: &Pad| cells.map(|name| control(h, name).is_some());
+    assert_eq!(on(&h), [true; 7]);
+    assert_eq!(h.state().globe.tool, Tool::Brush);
+    h.state_mut().select(None);
+    h.run_steps(2);
+    assert_eq!(on(&h), [false; 7]);
+    // The six cells stay in their places, and the Move cell is the tool.
+    let tools = h.state().pad.rects.unwrap().tools;
+    assert!(tools.contains_rect(control(&h, "Pan").unwrap()));
+    assert!(!h.state().globe.brushing());
+    let height = h.state().doc.project.rasters()[0].id;
+    h.state_mut().select(Some(LayerRef::Raster(height)));
+    h.run_steps(2);
+    assert_eq!(on(&h), [true; 7]);
+    assert!(h.state().globe.brushing());
+
+    // A raster layer of another unit has no mode that needs heights.
+    let rain = vale_app::ui::RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 256,
+    };
+    h.state_mut().globe.brush.mode = Mode::Carve;
+    h.state_mut().add_raster(rain).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Raise);
+    assert!(!h.state().globe.is_height());
+    tap(&mut h, MORE);
+    for name in ["Carve", "Ridge", "Erode", "Weather", "Uplift"] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    tap(&mut h, "Warp");
+    assert_eq!(h.state().globe.brush.mode, Mode::Warp);
 }
 
 fn layer_names(h: &Pad) -> Vec<String> {
@@ -348,7 +484,7 @@ fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
         let rivers = h.state().doc.project.layers()[1].id;
         tap(&mut h, "Open Rivers");
         assert_eq!(h.state().pad.layer, Some(LayerRef::Vector(rivers)));
-        assert_eq!(h.state().selected_layer, Some(rivers));
+        assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(rivers)));
         let open = panel(&h, Panel::Layers).unwrap();
         assert_eq!(open.left_top(), list.left_top(), "{size:?}");
         assert_eq!(open.width(), list.width(), "{size:?}");
@@ -358,7 +494,9 @@ fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
         assert!(control(&h, ADD_LAYER).is_none());
         tap(&mut h, "Back to Layers");
         tap(&mut h, "Open Height");
-        assert_eq!(h.state().pad.layer, Some(LayerRef::Height));
+        let height = h.state().doc.project.rasters()[0].id;
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
+        assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(height)));
         assert!(control(&h, "Close Height").is_some());
 
         // The panel of a layer closes when an undo takes the layer away.
@@ -439,7 +577,7 @@ fn a_quick_drag_does_not_lift_a_row() {
     // A tap makes the layer the selected layer.
     tap(&mut h, "Layer Rivers");
     let rivers = h.state().doc.project.layers()[1].id;
-    assert_eq!(h.state().selected_layer, Some(rivers));
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(rivers)));
 }
 
 /// Writes a 16-bit greyscale PNG with a slope from west to east.
@@ -475,7 +613,7 @@ fn the_height_panel_shows_the_warning_of_a_wrong_aspect_ratio() {
     for size in BOARDS {
         // A world with no raster layer has the import row in the Layers
         // panel. The import makes the Height layer and opens its panel.
-        let mut h = pad(size);
+        let mut h = empty_pad(size);
         tap(&mut h, "Layers");
         assert!(control(&h, "Open Height").is_none());
         tap(&mut h, IMPORT_HEIGHTMAP);
@@ -525,8 +663,9 @@ fn the_import_row_is_off_while_an_import_runs() {
 
 /// The layout with the open panel of the Height layer of a small heightmap.
 fn height_pad(size: (f32, f32)) -> Pad {
-    let mut h = pad(size);
+    let mut h = empty_pad(size);
     h.state_mut().globe.set_face_size(64);
+    h.state_mut().add_height();
     h.state_mut().globe.map.set(0, 0, 0, meters_to_level(100.0));
     h.run_steps(2);
     tap(&mut h, "Layers");
@@ -555,7 +694,7 @@ fn the_height_panel_asks_for_the_file_of_an_export() {
 #[test]
 fn a_world_with_no_raster_layer_has_no_export_row() {
     for size in BOARDS {
-        let mut h = pad(size);
+        let mut h = empty_pad(size);
         tap(&mut h, "Layers");
         assert!(control(&h, IMPORT_HEIGHTMAP).is_some(), "{size:?}");
         assert!(control(&h, EXPORT_GEOTIFF).is_none(), "{size:?}");
@@ -1070,9 +1209,11 @@ fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The layout on the wgpu renderer, with a height layer that the pen paints.
 fn gpu_pad(size: (f32, f32)) -> Pad {
     let mut state = state();
     state.globe.set_face_size(256);
+    state.add_height();
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let size = (f64::from(size.0), f64::from(size.1));
     let mut h = headless::ui_harness(state, size, 1.0, setup);
@@ -1309,7 +1450,10 @@ fn a_new_world_has_an_empty_heightmap_on_the_gpu() {
     h.run_steps(3);
     assert!(!h.state().has_raster() && !h.state().globe.can_undo());
     assert_eq!(middle_level(&h), levels[0]);
-    // A stroke starts from the base level and not from the old ground.
+    // A stroke on a height layer of the new world starts from the base
+    // level and not from the old ground.
+    h.state_mut().add_height();
+    h.run_steps(2);
     let c = h.state().globe.rect.center();
     drag(&mut h, c - vec2(40.0, 0.0), c + vec2(40.0, 0.0), Some(0.5));
     settle(&mut h);
@@ -1381,11 +1525,11 @@ fn the_undo_button_and_the_redo_button_work() {
 fn file_pad(path: &std::path::Path) -> Pad {
     let mut state = state();
     let session = Session::open(path, &mut state.doc).unwrap();
-    match session.load_map().unwrap() {
-        Some(map) => state.globe.set_map(map),
-        None => state.globe.set_face_size(256),
-    }
+    state.globe.set_face_size(256);
+    state.open_rasters(session.load_maps().unwrap());
     state.session = Some(session);
+    // The pen paints the height layer.
+    state.select_height();
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let size = (f64::from(BOARDS[0].0), f64::from(BOARDS[0].1));
     let mut h = headless::ui_harness(state, size, 1.0, setup);
@@ -1834,7 +1978,8 @@ fn the_screenshots_show_the_export_row() {
         let mut state = state();
         state.globe.set_face_size(64);
         state.pad.open(Panel::Layers);
-        state.pad.layer = Some(LayerRef::Height);
+        let height = state.add_height();
+        state.pad.layer = Some(LayerRef::Raster(height));
         let paint = |state: &mut AppState| {
             state.globe.map.set(0, 0, 0, meters_to_level(100.0));
             let path = dir.path().join("Terra.tif");
@@ -1874,6 +2019,7 @@ fn the_screenshots_show_the_boards() {
     ];
     for (name, size, panels, menu) in shots {
         let mut state = state();
+        state.add_height();
         for panel in panels {
             state.pad.open(*panel);
         }

@@ -3,7 +3,7 @@
 
 use eframe::egui::{Pos2, Rect, Vec2};
 use vale_store::Thumbnail;
-use vale_terrain::{Heightmap, level_to_meters};
+use vale_terrain::Heightmap;
 
 use super::view::GlobeView;
 
@@ -26,8 +26,8 @@ pub fn render(map: &Heightmap, view: &GlobeView, size: u32) -> Thumbnail {
                 rgba.extend([0; 4]);
                 continue;
             };
-            let meters = level_to_meters(map.sample(dir));
-            let band = bands.iter().find(|b| meters < b.max).or(bands.last());
+            let value = map.bands.value(map.sample(dir));
+            let band = bands.iter().find(|b| value < b.max).or(bands.last());
             let color = band.map_or([128; 3], |b| b.color);
             // The globe is darker at its edge, as a lit ball is.
             let height = (1.0 - (from_center / radius).powi(2)).max(0.0).sqrt();

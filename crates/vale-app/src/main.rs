@@ -55,10 +55,8 @@ fn run() -> anyhow::Result<u8> {
             vale_app::ui::pad::toggle_worlds(&mut state);
         }
         apply_globe(&args, &mut state.globe, face_size)?;
-        if let Some(session) = &session
-            && let Some(map) = session.load_map()?
-        {
-            state.globe.set_map(map);
+        if let Some(session) = &session {
+            state.open_rasters(session.load_maps()?);
         }
         Ok(state)
     };

@@ -5,12 +5,15 @@ use std::collections::HashMap;
 
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
-use vale_store::{GeometryKind, LayerId};
+use vale_store::{GeometryKind, LayerId, RasterId};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode};
 
+pub use super::LayerRef;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, Note, SaveMark, Workspace, elevation, globe, panels};
-use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
+use super::{Action, AppState, Note, SaveMark, Workspace, elevation, globe, is_height, panels};
+use crate::globe::brush::{
+    EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+};
 use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds_of};
 use crate::world;
@@ -62,7 +65,9 @@ pub const ADD_LAYER: &str = "Add a layer";
 pub const DELETE_LAYER: &str = "Delete layer";
 /// The field of the panel of a vector layer with the name of the layer.
 pub const LAYER_NAME: &str = "Layer name";
-/// The rows of the menu of the new layers.
+/// The row of the menu of the new layers that adds a raster layer.
+pub const NEW_RASTER: &str = "Raster";
+/// The rows of the menu of the new vector layers.
 const NEW_LAYERS: [(&str, GeometryKind); 3] = [
     ("Lines", GeometryKind::Line),
     ("Points", GeometryKind::Point),
@@ -75,14 +80,6 @@ const ADD_WIDTH: f32 = 220.0;
 pub const HOLD_TIME: f64 = 0.4;
 /// The largest distance that a finger moves during the hold, in points.
 const HOLD_SLOP: f32 = 6.0;
-
-/// A layer that has a panel.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum LayerRef {
-    /// The heightmap.
-    Height,
-    Vector(LayerId),
-}
 
 /// A row of the layer list that moves with a finger.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -264,8 +261,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.panels.clear();
     state.pad.menu_rect = None;
     state.pad.add_button = None;
-    if state.globe.tool != Tool::Brush || state.globe.brush.mode != Mode::Flatten {
+    if !state.globe.brushing() || state.globe.brush.mode != Mode::Flatten {
         state.globe.pick_level = false;
+    }
+    if !state.globe.paintable {
+        state.pad.more = false;
     }
 
     top_row(&ctx, state, &mut controls, &rects);
@@ -479,14 +479,16 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             let mut ui = padded(ui);
             let mut cells = |ui: &mut egui::Ui| {
                 let globe = &mut state.globe;
+                // With no raster layer to paint, the tool is Move.
+                let paint = globe.paintable;
                 for (name, icon, mode) in [
                     ("Raise", Icon::Raise, Mode::Raise),
                     ("Lower", Icon::Lower, Mode::Lower),
                     ("Smooth", Icon::Smooth, Mode::Smooth),
                     ("Flatten", Icon::Flatten, Mode::Flatten),
                 ] {
-                    let active = globe.tool == Tool::Brush && globe.brush.mode == mode;
-                    if widgets::tool_cell(ui, controls, name, name, icon, active, true).clicked() {
+                    let active = globe.brushing() && globe.brush.mode == mode;
+                    if widgets::tool_cell(ui, controls, name, name, icon, active, paint).clicked() {
                         globe.tool = Tool::Brush;
                         globe.brush.mode = mode;
                     }
@@ -494,16 +496,16 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 // The cell shows the mode of the menu that the brush has.
                 let chosen = MORE_MODES
                     .into_iter()
-                    .find(|(_, _, mode)| globe.tool == Tool::Brush && globe.brush.mode == *mode);
+                    .find(|(_, _, mode)| globe.brushing() && globe.brush.mode == *mode);
                 let (label, icon) =
                     chosen.map_or((MORE, Icon::More), |(name, icon, _)| (name, icon));
                 let active = chosen.is_some();
-                let more = widgets::tool_cell(ui, controls, MORE, label, icon, active, true);
+                let more = widgets::tool_cell(ui, controls, MORE, label, icon, active, paint);
                 if more.clicked() {
                     state.pad.more = !state.pad.more;
                 }
                 state.pad.more_cell = Some(more.rect);
-                let active = globe.tool == Tool::Navigate;
+                let active = !globe.brushing();
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()
                 {
@@ -588,12 +590,14 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         radius,
         |ui| {
             let mut ui = padded(ui);
+            let paint = state.globe.paintable;
             if let BrushCard::Full(height) = rects.brush_card {
-                size_slider(state, |fraction, text| {
-                    widgets::vertical_slider(&mut ui, controls, "Size", height, fraction, text)
-                });
+                let mut slider = |name: &str, fraction: &mut f64, text: &str| {
+                    widgets::vertical_slider(&mut ui, controls, name, height, fraction, text, paint)
+                };
+                size_slider(state, |fraction, text| slider("Size", fraction, text));
                 percent_slider(&mut state.globe.brush.flow, FLOW, |fraction, text| {
-                    widgets::vertical_slider(&mut ui, controls, "Flow", height, fraction, text)
+                    slider("Flow", fraction, text)
                 });
             }
             let open = state.pad.brush;
@@ -604,7 +608,7 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 "Brush",
                 Icon::Brush,
                 open,
-                true,
+                paint,
             );
             if button.clicked() {
                 state.pad.toggle(Panel::Brush, rects.one_panel);
@@ -620,27 +624,27 @@ fn show_panel(
     rects: &Rects,
     panel: Panel,
 ) {
-    if let Some(LayerRef::Vector(id)) = state.pad.layer
-        && state.doc.layer(id).is_none()
-    {
+    let project = &state.doc.project;
+    let name = match state.pad.layer {
+        Some(LayerRef::Vector(id)) => project.layer(id).map(|l| l.name.clone()),
+        Some(LayerRef::Raster(id)) => project.raster(id).map(|r| r.name.clone()),
+        None => None,
+    };
+    if name.is_none() {
         state.pad.layer = None;
     }
-    let layer = match state.pad.layer.filter(|_| panel == Panel::Layers) {
-        Some(LayerRef::Height) if !state.has_raster() => None,
-        layer => layer,
-    };
-    let vector = match layer {
-        Some(LayerRef::Vector(id)) => state.doc.layer(id).map(|l| l.name.clone()),
-        _ => None,
-    };
+    let layer = state.pad.layer.filter(|_| panel == Panel::Layers);
+    // The panel of a raster layer has the controls of the selected layer.
+    if let Some(LayerRef::Raster(_)) = layer
+        && state.selected_layer != layer
+    {
+        state.select(layer);
+    }
+    let name = name.as_deref().unwrap_or_default();
     let (key, title, back) = match (panel, layer) {
         (Panel::Brush, _) => (panel.key(), "Brush", None),
-        (Panel::Layers, Some(LayerRef::Height)) => ("pad-layer", "Height", Some("Layers")),
-        (Panel::Layers, Some(LayerRef::Vector(_))) => (
-            "pad-vector",
-            vector.as_deref().unwrap_or_default(),
-            Some("Layers"),
-        ),
+        (Panel::Layers, Some(LayerRef::Raster(_))) => ("pad-layer", name, Some("Layers")),
+        (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
         (Panel::Layers, None) => (panel.key(), "Layers", None),
         (Panel::Toolbox, _) => (panel.key(), "Toolbox", None),
     };
@@ -739,8 +743,8 @@ fn show_panel(
                         ui.spacing_mut().item_spacing.y = 6.0;
                         match (panel, layer) {
                             (Panel::Brush, _) => brush_body(ui, state, controls),
-                            (Panel::Layers, Some(LayerRef::Height)) => {
-                                layer_body(ui, state, controls);
+                            (Panel::Layers, Some(LayerRef::Raster(id))) => {
+                                raster_body(ui, state, controls, id);
                             }
                             (Panel::Layers, Some(LayerRef::Vector(id))) => {
                                 vector_body(ui, state, controls, id);
@@ -869,40 +873,46 @@ fn limit_rows(
 }
 
 /// The list of the layers, in draw order. The first row is the bottom of
-/// the drawing.
+/// the drawing, so the raster layers come before the vector layers.
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
     if state.has_raster() {
-        let size = vec2(ui.available_width(), PANEL_ROW);
-        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-        let selected = state.selected_layer.is_none();
-        let live = state.pad.reorder.is_none();
-        let row = widgets::layer_row(
-            ui,
-            controls,
-            rect,
-            Icon::Raster,
-            "Height",
-            None,
-            selected,
-            live,
-            false,
-        );
-        if row.body.is_some_and(|body| body.clicked()) {
-            state.selected_layer = None;
-        }
-        if row.open {
-            state.pad.layer = Some(LayerRef::Height);
-        }
+        raster_rows(ui, state, controls);
     } else {
-        // The import makes the Height layer, and its panel shows the result.
-        let asked = state.actions.len();
+        // The import makes the Height layer and opens its panel.
         import_row(ui, state, controls);
-        if state.actions.len() > asked {
-            state.pad.layer = Some(LayerRef::Height);
-        }
     }
     vector_rows(ui, state, controls);
+}
+
+/// The rows of the raster layers. A tap on a row selects the layer, and the
+/// eye shows or hides it.
+fn raster_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let rasters = state.doc.project.rasters().iter();
+    let rows: Vec<(RasterId, String, bool)> =
+        rasters.map(|r| (r.id, r.name.clone(), r.visible)).collect();
+    let live = state.pad.reorder.is_none();
+    for (id, name, visible) in rows {
+        let size = vec2(ui.available_width(), PANEL_ROW);
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let on = state.selected_raster() == Some(id);
+        let row = ui
+            .push_id(("raster", id.0), |ui| {
+                let (icon, visible) = (Icon::Raster, Some(visible));
+                widgets::layer_row(ui, controls, rect, icon, &name, visible, on, live, false)
+            })
+            .inner;
+        if row.eye {
+            state.set_raster_visible(id, !visible);
+        }
+        if row.body.is_some_and(|body| body.clicked()) {
+            state.select(Some(LayerRef::Raster(id)));
+        }
+        if row.open {
+            state.select(Some(LayerRef::Raster(id)));
+            state.pad.layer = Some(LayerRef::Raster(id));
+        }
+    }
 }
 
 fn kind_icon(kind: GeometryKind) -> Icon {
@@ -928,7 +938,7 @@ fn vector_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     let slot =
         |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
     let place = |i: usize| slot(area.top() + i as f32 * PANEL_ROW);
-    let selected = state.selected_layer;
+    let selected = state.selected_vector();
     let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
 
     let lifted = state
@@ -951,12 +961,12 @@ fn vector_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
                 state.touch();
             }
             if row.open {
-                state.selected_layer = Some(id);
+                state.select(Some(LayerRef::Vector(id)));
                 state.pad.layer = Some(LayerRef::Vector(id));
             }
             let Some(body) = row.body else { continue };
             if body.clicked() {
-                state.selected_layer = Some(id);
+                state.select(Some(LayerRef::Vector(id)));
             }
             if !body.is_pointer_button_down_on() {
                 continue;
@@ -968,7 +978,7 @@ fn vector_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
             });
             match press {
                 Some((held, moved, y)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
-                    state.selected_layer = Some(id);
+                    state.select(Some(LayerRef::Vector(id)));
                     state.pad.reorder = Some(Reorder {
                         layer: id,
                         grab: y - rect.top(),
@@ -1036,7 +1046,8 @@ fn add_menu(
     rects: &Rects,
     button: Rect,
 ) {
-    let size = vec2(ADD_WIDTH, 10.0 + NEW_LAYERS.len() as f32 * PANEL_ROW + 10.0);
+    let rows = 1 + NEW_LAYERS.len();
+    let size = vec2(ADD_WIDTH, 10.0 + rows as f32 * PANEL_ROW + 10.0);
     let beside = pos2(
         rects.right_panel.x - geometry::PANEL_GAP - size.x,
         rects.right_panel.y,
@@ -1075,10 +1086,15 @@ fn add_menu(
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             let ui = &mut ui;
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            if widgets::text_row(ui, controls, NEW_RASTER, 0.0, false, true).clicked() {
+                let id = state.add_height();
+                state.pad.layer = Some(LayerRef::Raster(id));
+                state.pad.add = false;
+            }
             for (name, kind) in NEW_LAYERS {
                 if widgets::text_row(ui, controls, name, 0.0, false, true).clicked() {
                     let id = state.doc.add_layer(kind);
-                    state.selected_layer = Some(id);
+                    state.select(Some(LayerRef::Vector(id)));
                     state.pad.layer = Some(LayerRef::Vector(id));
                     state.pad.add = false;
                     state.touch();
@@ -1122,9 +1138,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     if widgets::button_row_in(ui, controls, DELETE_LAYER, true, theme::WARN).clicked() {
         state.doc.remove_layer(id);
         state.pad.layer = None;
-        if state.selected_layer == Some(id) {
-            state.selected_layer = None;
-        }
+        state.sync_globe();
         state.touch();
     }
 }
@@ -1150,7 +1164,8 @@ fn import_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     note_text(ui, progress, state.import_note.as_ref());
 }
 
-/// The row that exports the heightmap, and the text of the export below it.
+/// The row that exports the selected raster layer, and the text of the
+/// export below it.
 fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let enabled = state.can_export();
     if widgets::text_row(ui, controls, EXPORT_GEOTIFF, 0.0, false, enabled).clicked() {
@@ -1160,11 +1175,19 @@ fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     note_text(ui, progress, state.export_note.as_ref());
 }
 
-fn layer_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
-    import_row(ui, state, controls);
+/// The panel of a raster layer: the import into a height layer, the export,
+/// and the bands of the layer.
+fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+    if state.doc.project.raster(id).is_some_and(is_height) {
+        import_row(ui, state, controls);
+    }
     export_row(ui, state, controls);
     ui.checkbox(&mut state.globe.preview.greyscale, "Greyscale");
-    elevation::controls(ui, state);
+    let mut preview = state.globe.preview;
+    if let Some(map) = state.globe.raster_map_mut(id) {
+        elevation::controls(ui, &mut map.bands, &mut preview);
+    }
+    state.globe.preview = preview;
 }
 
 fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
@@ -1623,8 +1646,9 @@ fn more_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let globe = &mut state.globe;
             for (name, _, mode) in MORE_MODES {
-                let row = widgets::text_row(ui, controls, name, 0.0, false, true);
-                if globe.tool == Tool::Brush && globe.brush.mode == mode {
+                let enabled = globe.is_height() || !needs_height(mode);
+                let row = widgets::text_row(ui, controls, name, 0.0, false, enabled);
+                if globe.brushing() && globe.brush.mode == mode {
                     let tick = Rect::from_center_size(
                         pos2(row.rect.right() - 14.0, row.rect.center().y),
                         vec2(18.0, 18.0),

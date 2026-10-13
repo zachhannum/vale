@@ -6,12 +6,13 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
-use vale_store::{LayerId, Project, StoreError, World};
+use vale_store::{LayerId, Project, Raster, RasterId, StoreError, World};
+use vale_terrain::{Bands, Heightmap, Mode};
 
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, file_name};
-use crate::globe::{Globe, Tool};
+use crate::globe::{Globe, START_ELEVATION, Tool, brush};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
 use crate::projects::{self, Location, Locations};
@@ -36,11 +37,12 @@ pub enum Action {
     ExportDialog(ExportFormat),
     Export(PathBuf),
     ImportHeightmapDialog,
-    /// Imports this equirectangular image into the heightmap of the globe.
+    /// Imports this equirectangular image into a height layer. A world with
+    /// no height layer gets one.
     ImportHeightmap(PathBuf),
-    /// Asks for the file of an export of the heightmap.
+    /// Asks for the file of an export of the selected raster layer.
     ExportHeightmapDialog,
-    /// Exports the heightmap of the globe to this GeoTIFF file.
+    /// Exports the selected raster layer to this GeoTIFF file.
     ExportHeightmap(PathBuf),
     /// Makes a project of this world and opens it. With a folder of
     /// projects, the project is a new file there.
@@ -149,6 +151,78 @@ impl Default for Layout {
     }
 }
 
+/// A layer of the project.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum LayerRef {
+    Raster(RasterId),
+    Vector(LayerId),
+}
+
+/// The name of the raster layer that the app makes for a height.
+pub const HEIGHT_NAME: &str = "Height";
+/// The unit of a height layer. A raster layer with this unit has a sea and
+/// rivers.
+pub const HEIGHT_UNIT: &str = "m";
+
+/// The values of a new raster layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RasterSpec {
+    pub name: String,
+    /// The unit of the values, for example `m` or `mm`.
+    pub unit: String,
+    /// The value of the lowest level.
+    pub min: f64,
+    /// The value of the highest level.
+    pub max: f64,
+    /// Texels on one edge of a cube face.
+    pub face_size: usize,
+}
+
+impl RasterSpec {
+    /// A height layer in meters, with the range and the bands of the app.
+    pub fn height(name: &str, face_size: usize) -> RasterSpec {
+        let bands = Bands::default();
+        RasterSpec {
+            name: name.to_string(),
+            unit: HEIGHT_UNIT.to_string(),
+            min: bands.min(),
+            max: bands.max(),
+            face_size,
+        }
+    }
+
+    /// The first bands of the layer. `None`: the range is empty or not
+    /// finite.
+    fn bands(&self) -> Option<Bands> {
+        let height = Bands::default();
+        if self.unit == HEIGHT_UNIT && (self.min, self.max) == (height.min(), height.max()) {
+            return Some(height);
+        }
+        Bands::with_range(self.min, self.max)
+    }
+}
+
+/// True if the values of the raster are heights in meters.
+pub fn is_height(raster: &Raster) -> bool {
+    raster.unit == HEIGHT_UNIT
+}
+
+/// Saves each change that waits as one undo step, and then the picture of
+/// the globe. The picture stays if the globe does not hold each raster
+/// layer of the project.
+fn save_session(
+    session: &mut Session,
+    project: &mut Project,
+    globe: &mut Globe,
+) -> Result<(), StoreError> {
+    session.flush(project, &mut globe.raster_maps())?;
+    let held = |raster: &Raster| globe.raster_map(raster.id).is_some();
+    if project.rasters().iter().all(held) {
+        session.save_thumbnail(&globe.map, &globe.view)?;
+    }
+    Ok(())
+}
+
 pub struct AppState {
     pub screen: Screen,
     pub browser: browser::BrowserState,
@@ -172,9 +246,12 @@ pub struct AppState {
     /// Top-left corner of the canvas in screen points. Set by the canvas each frame.
     pub canvas_origin: (f32, f32),
     pub selection: Option<Selection>,
-    pub selected_layer: Option<LayerId>,
+    /// The layer that the tools work on. The brush paints a selected raster
+    /// layer that is visible.
+    pub selected_layer: Option<LayerRef>,
     pub cursor_lonlat: Option<LonLat>,
-    /// The elevation of the heightmap under the cursor, in meters.
+    /// The value of the raster layer on the globe under the cursor, in the
+    /// unit of the layer.
     pub cursor_meters: Option<f64>,
     /// Last message, for example an import error.
     pub status: String,
@@ -259,6 +336,7 @@ impl AppState {
             resume_at: None,
         };
         state.set_layout(Layout::default());
+        state.sync_globe();
         Ok(state)
     }
 
@@ -271,11 +349,230 @@ impl AppState {
         }
     }
 
-    /// True if the undo log of the project file has the edits. If not, the
-    /// heightmap keeps the strokes in memory.
+    /// True if the undo log of the project file has the edits. If not, each
+    /// heightmap keeps its strokes in memory.
     fn file_log(&self) -> bool {
-        let session = self.session.as_ref();
-        session.is_some_and(|s| s.saves_map(&self.globe.map))
+        self.session.is_some()
+    }
+
+    /// The selected vector layer.
+    pub fn selected_vector(&self) -> Option<LayerId> {
+        match self.selected_layer {
+            Some(LayerRef::Vector(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The selected raster layer.
+    pub fn selected_raster(&self) -> Option<RasterId> {
+        match self.selected_layer {
+            Some(LayerRef::Raster(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Selects a layer, or no layer.
+    pub fn select(&mut self, layer: Option<LayerRef>) {
+        self.selected_layer = layer;
+        self.sync_globe();
+    }
+
+    /// Shows a raster layer on the globe: the selected raster layer if it
+    /// is visible, or else the top visible raster layer. The brush can paint
+    /// only the first of the two. A layer that is not in the project is not
+    /// selected. Call this after a change of the selection or of the raster
+    /// layers.
+    pub fn sync_globe(&mut self) {
+        let (project, globe) = (&self.doc.project, &mut self.globe);
+        let gone = match self.selected_layer {
+            Some(LayerRef::Raster(id)) => project.raster(id).is_none(),
+            Some(LayerRef::Vector(id)) => project.layer(id).is_none(),
+            None => false,
+        };
+        if gone {
+            self.selected_layer = None;
+        }
+        let shows = |raster: &&Raster| raster.visible && globe.raster_map(raster.id).is_some();
+        let selected = match self.selected_layer {
+            Some(LayerRef::Raster(id)) => project.raster(id).filter(shows),
+            _ => None,
+        };
+        let top = project.rasters().iter().rev().find(shows);
+        let shown = selected.or(top).map(|raster| raster.id);
+        globe.paintable = selected.is_some();
+        globe.show(shown);
+        if !globe.is_height() && brush::needs_height(globe.brush.mode) {
+            globe.brush.mode = Mode::Raise;
+        }
+    }
+
+    /// The names of the raster layers that this device cannot show.
+    pub fn lost_rasters(&self) -> Vec<String> {
+        let lost = |raster: &&Raster| self.globe.raster_map(raster.id).is_none();
+        let rasters = self.doc.project.rasters().iter().filter(lost);
+        rasters.map(|raster| raster.name.clone()).collect()
+    }
+
+    /// Tells the user which raster layers this device cannot show.
+    pub fn note_lost_rasters(&mut self) {
+        let lost = self.lost_rasters();
+        if !lost.is_empty() {
+            self.status = format!(
+                "This device cannot show the raster layer {}. The project keeps it.",
+                lost.join(", ")
+            );
+        }
+    }
+
+    /// Makes the globe that of the raster layers of the project, with these
+    /// heightmaps. The globe holds no heightmap that the device cannot
+    /// show.
+    pub fn open_rasters(&mut self, maps: Vec<(RasterId, Heightmap)>) {
+        self.globe.clear();
+        for (id, map) in maps {
+            if let Some(raster) = self.doc.project.raster(id) {
+                self.globe.add_raster(id, map, is_height(raster));
+            }
+        }
+        self.sync_globe();
+    }
+
+    /// A name for a new raster layer: `name`, or `name` with a number if
+    /// a raster layer has that name.
+    fn raster_name(&self, name: &str) -> String {
+        let rasters = self.doc.project.rasters();
+        let taken = |name: &str| rasters.iter().any(|raster| raster.name == name);
+        let numbered = (2..).map(|number| format!("{name} {number}"));
+        let mut names = std::iter::once(name.to_string()).chain(numbered);
+        names.find(|name| !taken(name)).expect("a free number")
+    }
+
+    /// Saves each change that waits, so that the next change is its own
+    /// undo step. A stroke that still waits for its texels saves at its end.
+    fn save_edit(&mut self) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        if self.globe.busy() {
+            return;
+        }
+        if let Err(e) = save_session(session, &mut self.doc.project, &mut self.globe) {
+            self.status = format!("The project did not save: {e}");
+        }
+    }
+
+    /// Adds a raster layer with no painted tile and selects it. The device
+    /// sets the limit of the face size. Returns `None` if the range of the
+    /// values is empty or not finite, or if the face size is zero.
+    fn new_raster(&mut self, spec: RasterSpec) -> Option<RasterId> {
+        let bands = spec.bands()?;
+        let face_size = spec.face_size.min(self.globe.max_face_size());
+        if face_size == 0 {
+            return None;
+        }
+        let height = spec.unit == HEIGHT_UNIT;
+        // A height starts as a sea. Each other layer starts at zero, or at
+        // the end of its range that is nearest to zero.
+        let start = if height { START_ELEVATION } else { 0.0 };
+        let mut map = Heightmap::new(face_size, bands.level(start));
+        map.bands = bands;
+        let project = &mut self.doc.project;
+        let id = project.add_raster(spec.name, face_size as u32, spec.unit, spec.min, spec.max);
+        let raster = project.raster_mut(id).expect("the raster of the ID");
+        session::sync_record(raster, &map);
+        self.globe.add_raster(id, map, height);
+        self.select(Some(LayerRef::Raster(id)));
+        Some(id)
+    }
+
+    /// Adds a raster layer with no painted tile, as one undo step, and
+    /// selects it. Returns `None` if the range of the values is empty or
+    /// not finite, or if the face size is zero.
+    pub fn add_raster(&mut self, spec: RasterSpec) -> Option<RasterId> {
+        self.save_edit();
+        let id = self.new_raster(spec)?;
+        self.save_edit();
+        Some(id)
+    }
+
+    /// Adds a height layer in meters with the face size of the globe, and
+    /// selects it.
+    pub fn add_height(&mut self) -> RasterId {
+        let name = self.raster_name(HEIGHT_NAME);
+        let spec = RasterSpec::height(&name, self.globe.new_face_size());
+        self.add_raster(spec).expect("the range of a height")
+    }
+
+    /// Removes a raster layer and its heightmap, as one undo step. Returns
+    /// `false` if the project has no such layer.
+    pub fn remove_raster(&mut self, id: RasterId) -> bool {
+        self.save_edit();
+        if self.doc.project.remove_raster(id).is_none() {
+            return false;
+        }
+        self.globe.remove_raster(id);
+        if self.pad.layer == Some(LayerRef::Raster(id)) {
+            self.pad.layer = None;
+        }
+        self.sync_globe();
+        self.save_edit();
+        true
+    }
+
+    /// Shows or hides a raster layer.
+    pub fn set_raster_visible(&mut self, id: RasterId, visible: bool) {
+        self.doc.project.set_raster_visible(id, visible);
+        self.sync_globe();
+    }
+
+    /// Selects a height layer that the globe shows, for an import or for
+    /// the stroke test. This is the selected raster layer if it is a visible
+    /// height layer, or else the first height layer, which becomes visible.
+    /// A world with no height layer gets one. The new layer and the next
+    /// edit of it are one undo step.
+    pub fn select_height(&mut self) -> RasterId {
+        let project = &self.doc.project;
+        let height =
+            |raster: &&Raster| is_height(raster) && self.globe.raster_map(raster.id).is_some();
+        let selected = self.selected_raster().and_then(|id| project.raster(id));
+        let selected = selected.filter(height).filter(|raster| raster.visible);
+        let first = project.rasters().iter().find(height);
+        match selected.or(first).map(|raster| raster.id) {
+            Some(id) => {
+                self.doc.project.set_raster_visible(id, true);
+                self.select(Some(LayerRef::Raster(id)));
+                id
+            }
+            None => {
+                self.save_edit();
+                let name = self.raster_name(HEIGHT_NAME);
+                let spec = RasterSpec::height(&name, self.globe.new_face_size());
+                self.new_raster(spec).expect("the range of a height")
+            }
+        }
+    }
+
+    /// Gives the globe the heightmap of each raster layer that an undo or a
+    /// redo put back, and takes away each heightmap with no raster layer.
+    fn restore_rasters(&mut self) -> Result<(), StoreError> {
+        let project = &self.doc.project;
+        for id in self.globe.rasters() {
+            if project.raster(id).is_none() {
+                self.globe.remove_raster(id);
+            }
+        }
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
+        let limit = self.globe.max_face_size();
+        for raster in project.rasters() {
+            let held = self.globe.raster_map(raster.id).is_some();
+            if !held && raster.face_size as usize <= limit {
+                let map = session.load_map(raster)?;
+                self.globe.add_raster(raster.id, map, is_height(raster));
+            }
+        }
+        Ok(())
     }
 
     pub fn can_undo(&self) -> bool {
@@ -320,21 +617,19 @@ impl AppState {
             }
             return;
         };
-        let map = &mut self.globe.map;
+        let maps = &mut self.globe.raster_maps();
         let result = if redo {
-            session.redo(&mut self.doc, map)
+            session.redo(&mut self.doc, maps)
         } else {
-            session.undo(&mut self.doc, map)
+            session.undo(&mut self.doc, maps)
         };
-        match result {
-            Ok(_) => {
+        match result.and_then(|_| self.restore_rasters()) {
+            Ok(()) => {
                 let gone = |id| self.doc.layer(id).is_none();
-                if self.selected_layer.is_some_and(gone) {
-                    self.selected_layer = None;
-                }
                 if self.selection.is_some_and(|s| gone(s.layer)) {
                     self.selection = None;
                 }
+                self.sync_globe();
                 // A layer can come back with other features under its ID.
                 self.pipeline = Pipeline::new();
                 self.touch();
@@ -361,12 +656,10 @@ impl AppState {
         let result = if globe.edits() != self.saved_edits {
             // The edit is one undo step, with no part of the next stroke.
             self.saved_edits = globe.edits();
-            let saved = session.flush(project, &mut globe.map);
-            let saved = saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view));
-            saved.map(|()| None)
+            save_session(session, project, globe).map(|()| None)
         } else {
             let hold = hold || globe.busy();
-            session.tick(project, &mut globe.map, hold, now)
+            session.tick(project, &mut globe.raster_maps(), hold, now)
         };
         if session.saves() != saves {
             self.saved_at = Some(now);
@@ -419,8 +712,7 @@ impl AppState {
             return Ok(());
         }
         self.saved_edits = globe.edits();
-        let saved = session.flush(&mut self.doc.project, &mut globe.map);
-        let saved = saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view));
+        let saved = save_session(session, &mut self.doc.project, globe);
         // The system can stop the app in the background, so the project
         // file gets the working copy now.
         let saved = saved.and_then(|()| self.write_back());
@@ -525,10 +817,9 @@ impl AppState {
         }
     }
 
-    /// True if the world has a raster layer. The heightmap is a raster layer
-    /// from its first painted tile.
+    /// True if the world has a raster layer.
     pub fn has_raster(&self) -> bool {
-        !self.doc.project.rasters().is_empty() || self.globe.map.allocated().next().is_some()
+        !self.doc.project.rasters().is_empty()
     }
 
     /// Saves each change that waits and the picture of the globe to the
@@ -544,8 +835,7 @@ impl AppState {
         if globe.busy() {
             globe.map.cancel_stroke();
         }
-        let saved = session.flush(&mut self.doc.project, &mut globe.map);
-        let saved = saved.and_then(|()| session.save_thumbnail(&globe.map, &globe.view));
+        let saved = save_session(session, &mut self.doc.project, globe);
         match saved.and_then(|()| self.write_back()) {
             Ok(()) => true,
             Err(e) => {
@@ -612,7 +902,7 @@ impl AppState {
         self.doc.frame.view = None;
         self.saved_edits = self.globe.edits();
         self.selection = None;
-        self.selected_layer = None;
+        self.select(None);
         self.import_note = None;
         self.export_note = None;
         self.pad.layer = None;
@@ -818,8 +1108,8 @@ impl AppState {
         let mut doc = self.doc.clone();
         let opened = self
             .open_session(path, Some(&mut doc))
-            .and_then(|session| session.load_map().map(|map| (session, map)));
-        let (session, map) = match opened {
+            .and_then(|session| session.load_maps().map(|maps| (session, maps)));
+        let (session, maps) = match opened {
             Ok(opened) => opened,
             Err(e) => {
                 self.status = format!("The world did not open: {e}");
@@ -828,11 +1118,8 @@ impl AppState {
         };
         self.doc = doc;
         self.status = format!("Opened {}", self.doc.project.world.name);
-        if !self.globe.open_map(map) {
-            self.status = "This device cannot show the heightmap of the project. \
-                           The project keeps it, and it does not save the painting."
-                .to_string();
-        }
+        self.open_rasters(maps);
+        self.note_lost_rasters();
         self.session = Some(session);
         self.start_world();
         self.show_world();
@@ -909,7 +1196,7 @@ impl AppState {
         }
     }
 
-    /// The file name of an export of the heightmap, from the name of the
+    /// The file name of an export of a raster layer, from the name of the
     /// world.
     pub fn export_name(&self) -> String {
         let stem = session::file_stem(&self.doc.project.world.name);
@@ -917,9 +1204,11 @@ impl AppState {
         format!("{stem}.tif")
     }
 
-    /// True if the heightmap can go to a file now.
+    /// True if the selected raster layer can go to a file now.
     pub fn can_export(&self) -> bool {
-        self.has_raster() && !self.globe.busy() && !self.globe.exporting()
+        let selected = self.selected_raster();
+        let held = selected.is_some_and(|id| self.globe.raster_map(id).is_some());
+        held && !self.globe.busy() && !self.globe.exporting()
     }
 
     /// Runs `OpenFiles`, `Export`, `ImportHeightmap`, `ExportHeightmap`, and
@@ -955,6 +1244,16 @@ impl AppState {
             }
             Action::ImportHeightmap(path) => {
                 self.import_note = None;
+                // A second import gets its refusal from the globe, and the
+                // first import keeps its layer.
+                if !self.globe.importing() {
+                    let new = !self.doc.project.rasters().iter().any(is_height);
+                    let id = self.select_height();
+                    if new {
+                        // The panel of the new layer shows the result.
+                        self.pad.layer = Some(LayerRef::Raster(id));
+                    }
+                }
                 self.globe.start_import(path);
                 if self.headless {
                     self.globe.wait_import();
@@ -964,12 +1263,22 @@ impl AppState {
             Action::ExportHeightmap(path) => {
                 self.export_note = None;
                 let project = &self.doc.project;
-                let raster = project.rasters().first();
-                self.globe.start_export(path, &project.world, raster);
-                if self.headless {
-                    self.globe.wait_export();
+                match self.selected_raster().and_then(|id| project.raster(id)) {
+                    Some(raster) => {
+                        self.globe.start_export(path, &project.world, Some(raster));
+                        if self.headless {
+                            self.globe.wait_export();
+                        }
+                        self.poll_export();
+                    }
+                    None => {
+                        let name = file_name(&path);
+                        let text = format!("cannot export {name}: no raster layer is selected");
+                        self.status = text.clone();
+                        let warning = true;
+                        self.export_note = Some(Note { text, warning });
+                    }
                 }
-                self.poll_export();
             }
             Action::NewWorld(world) => self.new_world(world),
             Action::OpenWorld(path) => self.open_world(&path),
@@ -1018,6 +1327,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         return;
     }
     browser::dialogs(ui, state);
+    state.sync_globe();
     if state.layout == Layout::Pad && state.workspace == Workspace::Globe {
         pad::draw(ui, state);
         state.frames += 1;

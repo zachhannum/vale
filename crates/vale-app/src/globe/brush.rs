@@ -104,6 +104,14 @@ impl Default for BrushSettings {
     }
 }
 
+/// True if a brush mode needs heights in meters: it follows the rivers or
+/// the slope of the ground. A raster layer of another unit does not have
+/// the mode.
+pub fn needs_height(mode: Mode) -> bool {
+    use Mode::*;
+    matches!(mode, Carve | Ridge | Erode | Weather | Uplift)
+}
+
 /// The limits of a locked radius, in radians.
 const LOCK_RADIUS: std::ops::RangeInclusive<f64> = 1e-4..=MAX_BRUSH_RADIUS;
 

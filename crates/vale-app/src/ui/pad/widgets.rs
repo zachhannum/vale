@@ -266,6 +266,7 @@ pub fn vertical_slider(
     height: f32,
     fraction: &mut f64,
     value: &str,
+    enabled: bool,
 ) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(CELL.0, height), Sense::hover());
     let resp = hit(
@@ -274,7 +275,7 @@ pub fn vertical_slider(
         rect,
         name,
         Sense::click_and_drag(),
-        true,
+        enabled,
         None,
     );
     let top = rect.top() + 20.0 + THUMB / 2.0;
@@ -289,12 +290,17 @@ pub fn vertical_slider(
     let y = bottom - *fraction as f32 * (bottom - top);
     let whole = Rect::from_min_max(pos2(x - 3.0, top - 4.0), pos2(x + 3.0, bottom + 4.0));
     let filled = Rect::from_min_max(pos2(x - 3.0, y), whole.max);
-    track(ui, whole, filled, pos2(x, y));
+    if enabled {
+        track(ui, whole, filled, pos2(x, y));
+    } else {
+        ui.painter().rect_filled(whole, 3.0, theme::track());
+    }
     let painter = ui.painter();
+    let color = fade(theme::MUTE, enabled);
     let at = pos2(x, rect.top() + 6.0);
-    painter.text(at, Align2::CENTER_TOP, value, theme::small(), theme::MUTE);
+    painter.text(at, Align2::CENTER_TOP, value, theme::small(), color);
     let at = pos2(x, rect.bottom() - 6.0);
-    painter.text(at, Align2::CENTER_BOTTOM, name, theme::small(), theme::MUTE);
+    painter.text(at, Align2::CENTER_BOTTOM, name, theme::small(), color);
     *fraction != before
 }
 

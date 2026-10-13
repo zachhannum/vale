@@ -209,6 +209,8 @@ pub fn stroke_test(
         harness.step();
         harness.render().map_err(no_gpu)?;
     }
+    // The test paints a height layer.
+    harness.state_mut().select_height();
     let globe = &mut harness.state_mut().globe;
     globe.start_stroke_test(crate::globe::stroke_test::SECONDS);
     let start = std::time::Instant::now();

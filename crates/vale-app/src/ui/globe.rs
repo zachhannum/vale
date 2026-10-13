@@ -7,7 +7,7 @@ use eframe::egui_wgpu;
 
 use super::AppState;
 use vale_store::Geometry;
-use vale_terrain::{Mode, level_to_meters};
+use vale_terrain::Mode;
 
 use crate::document::Document;
 use crate::globe::backdrop::Canvas;
@@ -16,7 +16,7 @@ use crate::globe::math::{dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Painting, Tap, on_canvas};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
-use crate::globe::{Globe, Tool, WorldView};
+use crate::globe::{Globe, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
@@ -62,7 +62,7 @@ fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
 }
 
 /// Reads the pen and the mouse for the brush. In the brush tool, a pen and
-/// the primary mouse button paint. A touch with a force is a pen. With a pen
+/// the primary mouse button paint a raster layer that the brush can paint. A touch with a force is a pen. With a pen
 /// queue, the pen comes from the queue and not from egui.
 fn brush_input(
     ui: &egui::Ui,
@@ -81,7 +81,7 @@ fn brush_input(
         .map(|e| (egui::pos2(e.pos[0] / zoom, e.pos[1] / zoom), e))
         .collect();
     hover_input(globe, &queue);
-    if globe.tool != Tool::Brush || globe.format.is_none() || globe.importing() {
+    if !globe.brushing() || globe.format.is_none() || globe.importing() {
         if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
             release(globe);
             globe.pen.stats.up();
@@ -368,7 +368,8 @@ pub(super) fn canvas(
         .or(globe.input.pos)
         .and_then(|pos| globe.unproject(pos));
     state.cursor_lonlat = cursor.map(|dir| dir_to_lonlat(dir).into());
-    state.cursor_meters = cursor.map(|dir| level_to_meters(globe.map.sample(dir)));
+    let value = |dir| globe.map.bands.value(globe.map.sample(dir));
+    state.cursor_meters = cursor.filter(|_| globe.raster().is_some()).map(value);
 
     let more = globe.advance(now);
     let pixels_per_point = ui.ctx().pixels_per_point();
@@ -393,7 +394,7 @@ pub(super) fn canvas(
     if globe.world_view == WorldView::Globe {
         vectors(&painter, rect, &state.doc, &globe.view);
     }
-    if let Some(pos) = globe.input.pos.filter(|_| globe.tool == Tool::Brush) {
+    if let Some(pos) = globe.input.pos.filter(|_| globe.brushing()) {
         let globe_radius = globe.radius();
         let radius = globe.brush.radius(globe_radius);
         let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(170));

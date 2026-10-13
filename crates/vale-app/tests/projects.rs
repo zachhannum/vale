@@ -226,6 +226,7 @@ fn the_picture_shows_the_painted_world() {
     assert_eq!(unchanged, changed);
 
     h.state_mut().run_action(Action::OpenWorld(path.clone()));
+    h.state_mut().add_height();
     paint(&mut h.state_mut().globe.map);
     h.state_mut().show_projects();
     let painted = vale_store::summary(&path).unwrap().thumbnail.unwrap();
@@ -241,6 +242,7 @@ fn new_open_rename_copy_and_delete_work_in_both_layouts() {
         // New: the app makes two worlds, and each one opens in the editor.
         new_world(&mut h, "Aurelia");
         let first = open_path(&h);
+        h.state_mut().add_height();
         paint(&mut h.state_mut().globe.map);
         let painted = h.state().globe.map.allocated_tiles();
         assert!(painted > 0);
