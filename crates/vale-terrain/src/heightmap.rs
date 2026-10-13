@@ -188,6 +188,17 @@ impl TexelRect {
             y1: self.y1.max(o.y1),
         }
     }
+
+    /// The smallest rectangle of reduced texels that covers this rectangle.
+    /// A reduced texel covers `factor` by `factor` texels.
+    pub fn reduced(self, factor: usize) -> TexelRect {
+        TexelRect {
+            x0: self.x0 / factor,
+            y0: self.y0 / factor,
+            x1: self.x1.div_ceil(factor),
+            y1: self.y1.div_ceil(factor),
+        }
+    }
 }
 
 /// The texels that one stamp can touch.
@@ -601,6 +612,87 @@ impl Heightmap {
                     None => out.resize(out.len() + end - x, self.base),
                 }
                 x = end;
+            }
+        }
+    }
+
+    /// The texels of the face under a rectangle of reduced texels.
+    fn reduced_source(&self, rect: TexelRect, factor: usize) -> TexelRect {
+        assert!(factor.is_power_of_two(), "the factor is a power of two");
+        let size = self.n.div_ceil(factor);
+        assert!(rect.x1 <= size && rect.y1 <= size, "the rectangle");
+        TexelRect {
+            x0: rect.x0 * factor,
+            y0: rect.y0 * factor,
+            x1: (rect.x1 * factor).min(self.n),
+            y1: (rect.y1 * factor).min(self.n),
+        }
+    }
+
+    /// True if no tile under a rectangle of reduced texels holds memory. Each
+    /// reduced texel then has the base level. `rect` is in reduced texels, as
+    /// in `read_reduced`.
+    pub fn reduced_is_base(&self, face: usize, rect: TexelRect, factor: usize) -> bool {
+        let source = self.reduced_source(rect, factor);
+        let t = self.tile;
+        (source.y0 / t..source.y1.div_ceil(t)).all(|ty| {
+            (source.x0 / t..source.x1.div_ceil(t))
+                .all(|tx| self.tiles[(face * self.per_side + ty) * self.per_side + tx].is_none())
+        })
+    }
+
+    /// Adds the reduced texels of a rectangle to `out`, row by row. A reduced
+    /// texel is the rounded mean of `factor` by `factor` texels, and a face
+    /// has `face_size().div_ceil(factor)` of them along one side. `rect` is
+    /// in reduced texels. `factor` is a power of two, and 1 gives the texels
+    /// of `read_rect`.
+    ///
+    /// A reduced texel at the far side of a face can go past the face. It is
+    /// the mean of its texels on the face.
+    pub fn read_reduced(&self, face: usize, rect: TexelRect, factor: usize, out: &mut Vec<u16>) {
+        if factor == 1 {
+            return self.read_rect(face, rect, out);
+        }
+        let source = self.reduced_source(rect, factor);
+        let (width, t) = (rect.x1 - rect.x0, self.tile);
+        let start = out.len();
+        out.resize(start + width * (rect.y1 - rect.y0), self.base);
+        // The mean of the texels of the face in one block.
+        let mean = |x: usize, y: usize, level: &dyn Fn(usize, usize) -> u16| {
+            let (x0, x1) = (x * factor, ((x + 1) * factor).min(self.n));
+            let (y0, y1) = (y * factor, ((y + 1) * factor).min(self.n));
+            let mut sum = 0u64;
+            for sy in y0..y1 {
+                sum += (x0..x1).map(|sx| u64::from(level(sx, sy))).sum::<u64>();
+            }
+            let count = ((x1 - x0) * (y1 - y0)) as u64;
+            ((sum + count / 2) / count) as u16
+        };
+        if !t.is_multiple_of(factor) {
+            // A block can have texels in more than one tile.
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    out[start + (y - rect.y0) * width + x - rect.x0] =
+                        mean(x, y, &|sx, sy| self.texel(face, sx, sy));
+                }
+            }
+            return;
+        }
+        // Each block is in one tile. A tile with no memory keeps the base
+        // level in `out`.
+        let per_tile = t / factor;
+        for ty in source.y0 / t..source.y1.div_ceil(t) {
+            for tx in source.x0 / t..source.x1.div_ceil(t) {
+                let index = (face * self.per_side + ty) * self.per_side + tx;
+                let Some(tile) = &self.tiles[index] else {
+                    continue;
+                };
+                let level = |sx: usize, sy: usize| tile[(sy - ty * t) * t + sx - tx * t];
+                for y in rect.y0.max(ty * per_tile)..rect.y1.min((ty + 1) * per_tile) {
+                    for x in rect.x0.max(tx * per_tile)..rect.x1.min((tx + 1) * per_tile) {
+                        out[start + (y - rect.y0) * width + x - rect.x0] = mean(x, y, &level);
+                    }
+                }
             }
         }
     }
@@ -1625,6 +1717,160 @@ mod tests {
             let (x, y) = (10 + i % 30, 28 + i / 30);
             assert_eq!(level, if (x, y) == (20, 30) { 500 } else { 7 });
         }
+    }
+
+    /// The mean of the texels of the face in one block, from single reads.
+    fn block_mean(map: &Heightmap, face: usize, x: usize, y: usize, factor: usize) -> u16 {
+        let n = map.face_size();
+        let (mut sum, mut count) = (0u64, 0u64);
+        for sy in y * factor..((y + 1) * factor).min(n) {
+            for sx in x * factor..((x + 1) * factor).min(n) {
+                sum += u64::from(map.get(face, sx as i64, sy as i64));
+                count += 1;
+            }
+        }
+        ((sum + count / 2) / count) as u16
+    }
+
+    fn reduced(map: &Heightmap, face: usize, rect: TexelRect, factor: usize) -> Vec<u16> {
+        let mut out = Vec::new();
+        map.read_reduced(face, rect, factor, &mut out);
+        out
+    }
+
+    #[test]
+    fn a_reduced_texel_is_the_mean_of_its_texels() {
+        let mut map = Heightmap::with_tile_size(64, 16, 10);
+        // The block of the reduced texel at 5, 2 with a factor of 4.
+        for (i, level) in [3u16, 1000, 65535, 22].into_iter().enumerate() {
+            map.set(2, 20 + i, 9, level);
+        }
+        let rect = TexelRect {
+            x0: 4,
+            y0: 2,
+            x1: 7,
+            y1: 3,
+        };
+        // The sum is 66,560 plus 12 texels at 10, and 66,680 / 16 is 4167.5.
+        assert_eq!(reduced(&map, 2, rect, 4), [10, 4168, 10]);
+        // With a factor of 2, a block has 2 of those texels and 2 at 10.
+        let rect = TexelRect {
+            x0: 10,
+            y0: 4,
+            x1: 12,
+            y1: 5,
+        };
+        assert_eq!(reduced(&map, 2, rect, 2), [256, 16394]);
+    }
+
+    #[test]
+    fn a_tile_with_no_memory_reads_as_the_base() {
+        let mut map = Heightmap::with_tile_size(64, 16, 777);
+        map.set(1, 40, 40, 900);
+        let all = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: 16,
+            y1: 16,
+        };
+        assert_eq!(reduced(&map, 0, all, 4), [777; 256]);
+        assert!(map.reduced_is_base(0, all, 4));
+        assert!(!map.reduced_is_base(1, all, 4));
+        // The tile with memory is at the reduced texels from 8 to 12.
+        let near = TexelRect {
+            x0: 4,
+            y0: 8,
+            x1: 8,
+            y1: 12,
+        };
+        assert!(map.reduced_is_base(1, near, 4));
+        assert_eq!(reduced(&map, 1, near, 4), [777; 16]);
+        let at = TexelRect {
+            x0: 7,
+            y0: 11,
+            x1: 9,
+            y1: 12,
+        };
+        assert!(!map.reduced_is_base(1, at, 4));
+        assert_eq!(map.allocated_tiles(), 1);
+    }
+
+    #[test]
+    fn a_factor_of_1_reads_the_texels() {
+        let mut map = Heightmap::with_tile_size(64, 16, 7);
+        for i in 0..40 {
+            map.set(3, 10 + i, 5 + i, 100 + i as u16);
+        }
+        let rect = TexelRect {
+            x0: 3,
+            y0: 2,
+            x1: 60,
+            y1: 50,
+        };
+        let mut plain = Vec::new();
+        map.read_rect(3, rect, &mut plain);
+        assert_eq!(reduced(&map, 3, rect, 1), plain);
+        assert_eq!(rect.reduced(1), rect);
+    }
+
+    /// A face of 70 has 18 reduced texels along one side with a factor of 4,
+    /// and the last one has 2 texels along that side. With a factor of 32, a
+    /// block has texels in four tiles.
+    #[test]
+    fn a_reduced_rect_crosses_tiles_and_the_face_edge() {
+        let n = 70;
+        let mut map = Heightmap::with_tile_size(n, 16, 50);
+        for y in 0..n {
+            for x in (y % 3..n).step_by(3) {
+                // The tiles of one row and one column keep no memory.
+                if x / 16 != 2 && y / 16 != 1 {
+                    map.set(4, x, y, (x * 331 + y * 7919) as u16);
+                }
+            }
+        }
+        for factor in [2, 4, 16, 32] {
+            let size = n.div_ceil(factor);
+            let rects = [
+                TexelRect {
+                    x0: 0,
+                    y0: 0,
+                    x1: size,
+                    y1: size,
+                },
+                TexelRect {
+                    x0: size / 3,
+                    y0: size / 2,
+                    x1: size,
+                    y1: size,
+                },
+            ];
+            for rect in rects {
+                let out = reduced(&map, 4, rect, factor);
+                let width = rect.x1 - rect.x0;
+                assert_eq!(out.len(), width * (rect.y1 - rect.y0));
+                for (i, &level) in out.iter().enumerate() {
+                    let (x, y) = (rect.x0 + i % width, rect.y0 + i / width);
+                    assert_eq!(level, block_mean(&map, 4, x, y, factor), "{factor} {x} {y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_dirty_rect_maps_to_the_reduced_texels_that_cover_it() {
+        let rect = TexelRect {
+            x0: 9,
+            y0: 16,
+            x1: 17,
+            y1: 24,
+        };
+        let covering = TexelRect {
+            x0: 1,
+            y0: 2,
+            x1: 3,
+            y1: 3,
+        };
+        assert_eq!(rect.reduced(8), covering);
     }
 
     /// Face 2 is high and face 0 is low. A smooth stamp on face 0, at the

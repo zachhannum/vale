@@ -16,6 +16,7 @@ mod flow;
 mod gpu;
 mod heightmap;
 pub mod math;
+mod reduce;
 #[cfg(feature = "gpu")]
 mod tiles;
 
@@ -37,5 +38,6 @@ pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, TILE_SIZE, TexelRect,
     UNDO_MEMORY_LIMIT, talus_levels,
 };
+pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 #[cfg(feature = "gpu")]
-pub use tiles::TILES_WGSL;
+pub use tiles::{GpuTiles, TILES_WGSL, tiles_layout};

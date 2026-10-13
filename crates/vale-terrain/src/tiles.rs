@@ -7,9 +7,11 @@
 //! holds two copies of a tile.
 
 use std::num::NonZeroU64;
+use std::sync::Mutex;
 
 use crate::cube::FACES;
-use crate::heightmap::TexelRect;
+use crate::gpu::{Readback, read_rect};
+use crate::heightmap::{TILE_SIZE, TexelRect};
 
 /// The shader source of the table and the pool, for bind group 1. The
 /// function `tile_level` reads one texel.
@@ -115,8 +117,41 @@ fn first_layer(chunk: usize) -> u32 {
     }
 }
 
+/// The layout of the bind group of the table and the pool, for bind group 1
+/// of a shader that starts with `TILES_WGSL`. Each `GpuHeightmap` and each
+/// `GpuTiles` makes its bind group for this layout. Thus a pipeline with this
+/// layout draws from each of them.
+pub fn tiles_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Uint,
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let mut entries = vec![wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: NonZeroU64::new(size_of::<Uniforms>() as u64),
+        },
+        count: None,
+    }];
+    entries.extend((1..=1 + CHUNKS as u32).map(texture_entry));
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("tiles"),
+        entries: &entries,
+    })
+}
+
 impl Pool {
-    pub fn new(device: &wgpu::Device, n: usize, tile: usize) -> Pool {
+    /// A pool with no memory in each tile. Each texel reads as `base`.
+    pub fn new(device: &wgpu::Device, n: usize, tile: usize, base: u16) -> Pool {
         let per_side = n.div_ceil(tile);
         let tiles = (FACES * per_side * per_side) as u32;
         let layers = tiles.div_ceil(LAYER_SLOTS);
@@ -139,7 +174,7 @@ impl Pool {
             mapped_at_creation: true,
         });
         let start = Uniforms {
-            base: 0,
+            base: u32::from(base),
             tile: tile as u32,
         };
         uniforms
@@ -155,38 +190,14 @@ impl Pool {
             wgpu::TextureUsages::TEXTURE_BINDING,
         ));
 
-        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Uint,
-                view_dimension: wgpu::TextureViewDimension::D2Array,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let mut entries = vec![wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: NonZeroU64::new(size_of::<Uniforms>() as u64),
-            },
-            count: None,
-        }];
-        entries.extend((1..=1 + CHUNKS as u32).map(texture_entry));
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("tiles"),
-            entries: &entries,
-        });
+        let layout = tiles_layout(device);
         let bind_group = bind(device, &layout, &uniforms, &table_view, &[], &no_chunk);
 
         Pool {
             n,
             tile,
             per_side,
-            base: 0,
+            base,
             table: vec![0; tiles as usize],
             table_texture,
             table_view,
@@ -448,6 +459,55 @@ impl Pool {
         }
     }
 
+    /// Writes the texels of a rectangle, row by row. A tile gets memory when
+    /// it gets a level other than the base level. A tile that gets the base
+    /// level in each texel loses its memory. The change runs at the next
+    /// submit, as that of `ensure` does.
+    pub fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        face: usize,
+        rect: TexelRect,
+        data: &[u16],
+    ) {
+        let width = rect.x1 - rect.x0;
+        let mut levels = Vec::new();
+        for (tx, ty, part) in self.tiles_in(rect) {
+            levels.clear();
+            for y in part.y0..part.y1 {
+                let row = (y - rect.y0) * width;
+                levels.extend_from_slice(&data[row + part.x0 - rect.x0..row + part.x1 - rect.x0]);
+            }
+            let full = self.is_full(tx, ty, part);
+            if levels.iter().all(|level| *level == self.base) {
+                if full {
+                    self.release(queue, face, tx, ty);
+                    continue;
+                }
+                if self.slot(face, tx, ty).is_none() {
+                    continue;
+                }
+            }
+            let slot = self.ensure(device, queue, face, tx, ty, !full);
+            let size = wgpu::Extent3d {
+                width: (part.x1 - part.x0) as u32,
+                height: (part.y1 - part.y0) as u32,
+                depth_or_array_layers: 1,
+            };
+            queue.write_texture(
+                self.texels(slot, part.x0, part.y0),
+                bytemuck::cast_slice(&levels),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.width * 2),
+                    rows_per_image: Some(size.height),
+                },
+                size,
+            );
+        }
+    }
+
     fn bind(&mut self, device: &wgpu::Device) {
         let views: Vec<_> = self.chunks.iter().map(|chunk| &chunk.view).collect();
         self.bind_group = bind(
@@ -490,4 +550,97 @@ fn bind(
         layout,
         entries: &entries,
     })
+}
+
+/// The tiles of a heightmap in a pool of textures, for a shader that reads
+/// them. It has no brush.
+pub struct GpuTiles {
+    device: wgpu::Device,
+    face_size: u32,
+    pool: Mutex<Pool>,
+    tiles_layout: wgpu::BindGroupLayout,
+}
+
+impl GpuTiles {
+    /// Makes a map with `face_size` by `face_size` texels on each face, all
+    /// at `base`. No tile has memory.
+    pub fn new(device: &wgpu::Device, face_size: u32, base: u16) -> GpuTiles {
+        GpuTiles::with_tile_size(device, face_size, TILE_SIZE, base)
+    }
+
+    /// The same as `new`, with `tile` by `tile` texels in a tile.
+    pub fn with_tile_size(
+        device: &wgpu::Device,
+        face_size: u32,
+        tile: usize,
+        base: u16,
+    ) -> GpuTiles {
+        let pool = Pool::new(device, face_size as usize, tile, base);
+        GpuTiles {
+            device: device.clone(),
+            face_size,
+            tiles_layout: pool.layout().clone(),
+            pool: Mutex::new(pool),
+        }
+    }
+
+    pub fn face_size(&self) -> u32 {
+        self.face_size
+    }
+
+    fn pool(&self) -> std::sync::MutexGuard<'_, Pool> {
+        self.pool.lock().expect("no thread stops with the lock")
+    }
+
+    /// The layout of the bind group that `tiles` returns. A pipeline with the
+    /// layout of `tiles_layout` also takes that bind group.
+    pub fn tiles_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.tiles_layout
+    }
+
+    /// The table and the pool of the tiles, for bind group 1 of a shader
+    /// that starts with `TILES_WGSL`. A change of the tiles can make a new
+    /// bind group, so get it for each pass.
+    pub fn tiles(&self) -> wgpu::BindGroup {
+        self.pool().bind_group().clone()
+    }
+
+    /// The number of tiles that hold memory.
+    pub fn allocated_tiles(&self) -> usize {
+        self.pool().allocated_tiles()
+    }
+
+    /// The memory of the textures, in bytes: the table and the pool of the
+    /// tiles.
+    pub fn memory_bytes(&self) -> usize {
+        self.pool().memory_bytes()
+    }
+
+    /// Sets all texels to `base`, and takes the memory from each tile. The
+    /// change runs at the next submit, before the commands of each encoder in
+    /// that submit.
+    pub fn clear(&self, queue: &wgpu::Queue, base: u16) {
+        self.pool().clear(&self.device, queue, base);
+    }
+
+    /// Writes the texels of a rectangle, row by row. The write runs at the
+    /// next submit, before the commands of each encoder in that submit.
+    ///
+    /// A tile gets memory when it gets a level other than the base level. A
+    /// tile that gets the base level in each texel loses its memory.
+    pub fn upload(&self, queue: &wgpu::Queue, face: u32, rect: TexelRect, data: &[u16]) {
+        self.pool()
+            .upload(&self.device, queue, face as usize, rect, data);
+    }
+
+    /// Adds a copy of a rectangle to `enc`, for a read on the CPU.
+    pub fn read_rect(
+        &self,
+        device: &wgpu::Device,
+        enc: &mut wgpu::CommandEncoder,
+        face: u32,
+        rect: TexelRect,
+    ) -> Readback {
+        read_rect(&self.pool(), device, enc, face, rect)
+    }
 }
