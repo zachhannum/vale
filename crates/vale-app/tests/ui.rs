@@ -80,7 +80,24 @@ fn land_checkbox_hides_layer() {
         .find(|l| l.name == "Land")
         .unwrap()
         .id;
-    assert!(!doc.entry(land).unwrap().visible);
+    assert!(!doc.visible(land));
+}
+
+#[test]
+fn the_layer_list_adds_a_layer() {
+    let mut h = harness();
+    h.run_steps(3);
+    h.get_by_label("Add layer").click();
+    h.run_steps(2);
+    h.get_by_label("Points").click();
+    h.run_steps(2);
+    let state = h.state();
+    let top = state.doc.project.layers().last().unwrap();
+    assert_eq!(
+        (top.name.as_str(), top.kind),
+        ("Points 1", vale_store::GeometryKind::Point)
+    );
+    assert_eq!(state.selected_layer, Some(top.id));
 }
 
 #[test]

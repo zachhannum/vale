@@ -66,7 +66,7 @@ fn colors() {
         .find(|l| l.name == "Land")
         .unwrap()
         .id;
-    doc.entry_mut(land).unwrap().visible = false;
+    doc.set_visible(land, false);
     assert_eq!(color_at(&doc, [25.0, 25.0]), Some(WATER));
 }
 

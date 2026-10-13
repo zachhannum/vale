@@ -615,7 +615,9 @@ impl AppState {
         self.selected_layer = None;
         self.import_note = None;
         self.export_note = None;
-        self.pad.layer = false;
+        self.pad.layer = None;
+        self.pad.add = false;
+        self.pad.reorder = None;
         // A layer of the next world can have the ID of an old layer.
         self.pipeline = Pipeline::new();
         self.touch();

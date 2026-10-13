@@ -256,7 +256,7 @@ fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
 /// A harness with the wgpu renderer and the brush tool. Each step renders,
 /// so each step runs the GPU work of the globe.
 fn gpu_harness() -> Harness<'static, AppState> {
-    let mut state = AppState::new(Document::sample()).unwrap();
+    let mut state = AppState::new(Document::empty()).unwrap();
     state.globe.set_face_size(GPU_FACE_SIZE);
     state.globe.tool = Tool::Brush;
     let setup = egui_kittest::wgpu::default_wgpu_setup();
@@ -360,7 +360,7 @@ fn an_import_during_a_stroke_waits_for_the_stroke() {
 
 /// A state with no window, on the globe, with a small heightmap.
 fn state() -> AppState {
-    let mut state = AppState::new(Document::sample()).unwrap();
+    let mut state = AppState::new(Document::empty()).unwrap();
     state.headless = true;
     state.globe.set_face_size(FACE_SIZE);
     state

@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::World;
+use vale_store::{GeometryKind, World};
 
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, ExportFormat, SaveMark, Workspace, pad};
@@ -512,6 +512,19 @@ fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Layers");
+    ui.menu_button("Add layer", |ui| {
+        for (name, kind) in [
+            ("Lines", GeometryKind::Line),
+            ("Points", GeometryKind::Point),
+            ("Polygons", GeometryKind::Polygon),
+        ] {
+            if ui.button(name).clicked() {
+                state.selected_layer = Some(state.doc.add_layer(kind));
+                state.touch();
+                ui.close();
+            }
+        }
+    });
     if state.doc.frame.entries.is_empty() {
         ui.label("No layers. Open a GeoJSON file.");
     }
@@ -533,17 +546,16 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         };
         let selected = state.selected_layer == Some(id);
         ui.horizontal(|ui| {
-            let Some(entry) = state.doc.entry_mut(id) else {
-                return;
-            };
+            let mut visible = state.doc.visible(id);
             let text = if selected {
                 egui::RichText::new(name).strong()
             } else {
                 egui::RichText::new(name)
             };
-            let resp = ui.checkbox(&mut entry.visible, text);
+            let resp = ui.checkbox(&mut visible, text);
             ui.weak(format!("{count}"));
             if resp.changed() {
+                state.doc.set_visible(id, visible);
                 state.dirty = true;
             }
             if resp.clicked() {

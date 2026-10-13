@@ -27,11 +27,11 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3, v4, v5, v6];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3, v4, v5, v6, v7];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -656,6 +656,22 @@ fn v6(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// The visibility of a layer. The position of a layer becomes its place in
+/// the draw order, and the layers of an older file get the order in which
+/// the app drew them: polygons, then lines, then points.
+fn v7(tx: &Transaction) -> rusqlite::Result<()> {
+    const RANK: &str = "CASE kind WHEN 'polygon' THEN 0 WHEN 'line' THEN 1 ELSE 2 END";
+    tx.execute_batch(&format!(
+        "ALTER TABLE vale_layer ADD COLUMN visible INTEGER NOT NULL DEFAULT 1;
+         CREATE TEMP TABLE vale_layer_order AS
+           SELECT id, ROW_NUMBER() OVER (ORDER BY {RANK}, position) AS place FROM vale_layer;
+         UPDATE vale_layer SET position = -(SELECT place FROM vale_layer_order o
+           WHERE o.id = vale_layer.id);
+         UPDATE vale_layer SET position = -position - 1;
+         DROP TABLE vale_layer_order;"
+    ))
+}
+
 fn quote(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -908,15 +924,16 @@ fn write_layer(
     table: &str,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO vale_layer (id, position, name, kind, table_name, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO vale_layer (id, position, name, kind, table_name, source, visible)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             layer.id.0,
             position as i64,
             layer.name,
             layer.kind.name(),
             table,
-            layer.source
+            layer.source,
+            layer.visible
         ],
     )?;
     let columns = column_names(&layer.fields);
@@ -1209,8 +1226,9 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         .map_err(|_| corrupt(format!("next raster ID {next_raster_id:?}")))?;
 
     let mut layers = Vec::new();
-    let mut rows = conn
-        .prepare("SELECT id, name, kind, table_name, source FROM vale_layer ORDER BY position")?;
+    let mut rows = conn.prepare(
+        "SELECT id, name, kind, table_name, source, visible FROM vale_layer ORDER BY position",
+    )?;
     let mut rows = rows.query([])?;
     while let Some(r) = rows.next()? {
         let kind: String = r.get(2)?;
@@ -1221,6 +1239,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
             id: LayerId(r.get(0)?),
             name: r.get(1)?,
             kind,
+            visible: r.get(5)?,
             source: r.get(4)?,
             fields: Vec::new(),
             features: Vec::new(),
@@ -2071,6 +2090,70 @@ mod tests {
                 .iter()
                 .all(|(key, _)| key.level == 0)
         );
+    }
+
+    #[test]
+    fn a_file_of_version_6_gets_visible_layers_in_the_order_of_their_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        for (name, kind) in [
+            ("Places", GeometryKind::Point),
+            ("Rivers", GeometryKind::Line),
+            ("Land", GeometryKind::Polygon),
+            ("Roads", GeometryKind::Line),
+        ] {
+            project.add_layer(name.into(), kind, None, vec![]);
+        }
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        Connection::open(path(&dir))
+            .unwrap()
+            .execute_batch("ALTER TABLE vale_layer DROP COLUMN visible")
+            .unwrap();
+        set_format_version(&dir, 6);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        let names: Vec<&str> = loaded.layers().iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Land", "Rivers", "Roads", "Places"]);
+        assert!(loaded.layers().iter().all(|l| l.visible));
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT CAST(position AS TEXT) FROM vale_layer ORDER BY position"
+            ),
+            ["0", "1", "2", "3"]
+        );
+    }
+
+    #[test]
+    fn the_file_keeps_the_order_the_name_and_the_visibility_and_undo_puts_them_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let ids: Vec<LayerId> = ["a", "b", "c"]
+            .iter()
+            .map(|n| project.add_layer(n.to_string(), GeometryKind::Line, None, vec![]))
+            .collect();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let mut states = vec![project.clone()];
+        project.move_layer(ids[2], 0);
+        file.save(&project).unwrap();
+        states.push(project.clone());
+        project.set_layer_visible(ids[0], false);
+        file.save(&project).unwrap();
+        states.push(project.clone());
+        project.rename_layer(ids[1], "Coast".into());
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert!(loaded == project);
+        let names: Vec<&str> = loaded.layers().iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["c", "a", "Coast"]);
+        assert!(!loaded.layer(ids[0]).unwrap().visible);
+        for state in states.iter().rev() {
+            assert!(file.undo().unwrap().is_some());
+            assert!(file.project() == state);
+        }
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub mod rivers;
 pub mod stats;
 pub mod stroke_test;
 pub mod thumbnail;
+pub mod vector;
 pub mod view;
 
 use crate::pen::Pen;

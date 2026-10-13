@@ -154,6 +154,8 @@ pub struct Layer {
     pub id: LayerId,
     pub name: String,
     pub kind: GeometryKind,
+    /// The views draw the layer.
+    pub visible: bool,
     /// The name of the imported file.
     pub source: Option<String>,
     /// Attribute names, sorted, no duplicates.
@@ -327,6 +329,7 @@ impl Project {
             id,
             name,
             kind,
+            visible: true,
             source,
             fields,
             features,
@@ -339,9 +342,35 @@ impl Project {
         self.layers.iter().find(|l| l.id == id)
     }
 
-    /// The layers in the order they were added.
+    /// The layers in draw order. The first layer is at the bottom.
     pub fn layers(&self) -> &[Layer] {
         &self.layers
+    }
+
+    /// Moves a layer to this index of the draw order. An index past the end
+    /// is the top.
+    pub fn move_layer(&mut self, id: LayerId, to: usize) -> bool {
+        let Some(from) = self.layers.iter().position(|l| l.id == id) else {
+            return false;
+        };
+        let layer = self.layers.remove(from);
+        let to = to.min(self.layers.len());
+        self.layers.insert(to, layer);
+        true
+    }
+
+    /// Gives a layer a new name.
+    pub fn rename_layer(&mut self, id: LayerId, name: String) -> bool {
+        self.layer_mut(id).map(|l| l.name = name).is_some()
+    }
+
+    /// Shows or hides a layer.
+    pub fn set_layer_visible(&mut self, id: LayerId, visible: bool) -> bool {
+        self.layer_mut(id).map(|l| l.visible = visible).is_some()
+    }
+
+    fn layer_mut(&mut self, id: LayerId) -> Option<&mut Layer> {
+        self.layers.iter_mut().find(|l| l.id == id)
     }
 
     /// Removes a layer. Its ID is not used again.
@@ -402,6 +431,32 @@ mod tests {
         assert!(p.remove_layer(a).is_none());
         let b = p.add_layer("b".into(), GeometryKind::Line, None, vec![]);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn move_rename_and_hide() {
+        let mut p = Project::new(World::default());
+        let ids: Vec<LayerId> = ["a", "b", "c"]
+            .iter()
+            .map(|n| p.add_layer(n.to_string(), GeometryKind::Line, None, vec![]))
+            .collect();
+        let names =
+            |p: &Project| -> Vec<String> { p.layers().iter().map(|l| l.name.clone()).collect() };
+        assert!(p.move_layer(ids[0], 2));
+        assert_eq!(names(&p), ["b", "c", "a"]);
+        assert!(p.move_layer(ids[0], 0));
+        assert_eq!(names(&p), ["a", "b", "c"]);
+        assert!(p.move_layer(ids[1], 99));
+        assert_eq!(names(&p), ["a", "c", "b"]);
+        assert!(p.rename_layer(ids[2], "Coast".into()));
+        assert_eq!(names(&p), ["a", "Coast", "b"]);
+        assert!(p.layer(ids[0]).unwrap().visible);
+        assert!(p.set_layer_visible(ids[0], false));
+        assert!(!p.layer(ids[0]).unwrap().visible);
+        assert!(p.remove_layer(ids[0]).is_some());
+        assert!(!p.move_layer(ids[0], 0));
+        assert!(!p.rename_layer(ids[0], "x".into()));
+        assert!(!p.set_layer_visible(ids[0], true));
     }
 
     #[test]
