@@ -8,10 +8,16 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, ExportFormat, SaveMark, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
+use crate::globe::brush::{
+    EROSION, FLOW, RIDGE_CREST_M, RIDGE_OFFSET_KM, RIDGE_ROUGHNESS_M, RIDGE_SEGMENT_KM,
+    RIDGE_VALLEY_M, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM,
+};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 use crate::projects;
 use crate::world::{self, three_significant};
+
+/// The name of the ocean ridge mode of the brush.
+pub const OCEAN_RIDGE: &str = "Ocean ridge";
 
 /// The button of the tool bar that opens the properties of the world.
 pub const WORLD_BUTTON: &str = "World…";
@@ -312,6 +318,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
             (Mode::Weather, "Weather"),
             (Mode::Uplift, "Uplift"),
             (Mode::Warp, "Warp"),
+            (Mode::OceanRidge, OCEAN_RIDGE),
         ] {
             ui.selectable_value(current, mode, name);
         }
@@ -345,9 +352,43 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .brush
             .set_radius_km(size * unit_km, globe_radius, world_km);
     }
-    ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
+    // The ocean ridge mode has no falloff and no strength.
+    let ridge = globe.brush.mode == Mode::OceanRidge;
+    if !ridge {
+        ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
+    }
     ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
-    if globe.brush.mode == Mode::Warp {
+    if ridge {
+        let brush = &mut globe.brush;
+        let crest = egui::Slider::new(&mut brush.ridge_crest_m, RIDGE_CREST_M)
+            .step_by(50.0)
+            .fixed_decimals(0)
+            .suffix(" m")
+            .text("Crest");
+        ui.add(crest);
+        let segment = egui::Slider::new(&mut brush.ridge_segment_km, RIDGE_SEGMENT_KM)
+            .logarithmic(true)
+            .custom_formatter(|km, _| three_significant(km))
+            .suffix(" km")
+            .text("Segment");
+        ui.add(segment);
+        for (value, range, unit, name) in [
+            (&mut brush.ridge_offset_km, RIDGE_OFFSET_KM, " km", "Offset"),
+            (
+                &mut brush.ridge_roughness_m,
+                RIDGE_ROUGHNESS_M,
+                " m",
+                "Roughness",
+            ),
+            (&mut brush.ridge_valley_m, RIDGE_VALLEY_M, " m", "Valley"),
+        ] {
+            let slider = egui::Slider::new(value, range)
+                .fixed_decimals(0)
+                .suffix(unit)
+                .text(name);
+            ui.add(slider);
+        }
+    } else if globe.brush.mode == Mode::Warp {
         for (value, range, name) in [
             (&mut globe.brush.warp_km, WARP_KM, "Strength"),
             (&mut globe.brush.scale_km, SCALE_KM, "Scale"),
