@@ -12,8 +12,8 @@ use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
-    brush_size_text, readout_text, theme,
+    ADD_LAYER, DELETE_LAYER, IMPORT_HEIGHTMAP, LAYER_NAME, LayerRef, MORE, Panel, RECENTER, RESET,
+    WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_text, theme,
 };
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
@@ -130,6 +130,7 @@ fn cards(h: &Pad) -> Vec<Rect> {
     cards.extend(pad.panels.iter().map(|(_, rect)| *rect));
     cards.extend(pad.menu_rect);
     cards.extend(pad.more_rect);
+    cards.extend(pad.add_rect);
     cards
 }
 
@@ -158,7 +159,8 @@ fn check_controls(h: &Pad, what: &str) {
     assert!(controls.len() >= 8, "{what}: {} controls", controls.len());
     let in_menu = h.state().pad.menu_rect.is_some();
     let in_more = h.state().pad.more_rect.is_some();
-    let popup = in_menu || in_more || h.state().pad.projections_rect.is_some();
+    let in_add = h.state().pad.add_rect.is_some();
+    let popup = in_menu || in_more || in_add || h.state().pad.projections_rect.is_some();
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -176,8 +178,9 @@ fn check_controls(h: &Pad, what: &str) {
         );
         for b in &controls[i + 1..] {
             assert_ne!(a.name, b.name, "{what}");
-            // The open menu, the open list of projections, and the open menu
-            // of the More cell cover the cards below them.
+            // The open menu, the open list of projections, the open menu of
+            // the More cell, and the open menu of the new layers cover the
+            // cards below them.
             let row = |c: &vale_app::ui::pad::widgets::Control| {
                 let name = c.name.as_str();
                 let kind = vale_sphere::ProjectionKind::ALL
@@ -186,7 +189,8 @@ fn check_controls(h: &Pad, what: &str) {
                 let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
                 let more = in_more
                     && ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"].contains(&name);
-                menu || kind || more || (in_menu && name == "Projection")
+                let add = in_add && ["Lines", "Points", "Polygons"].contains(&name);
+                menu || kind || more || add || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
@@ -220,8 +224,222 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             tap(&mut h, "Workspace");
             assert!(h.state().pad.menu);
             check_controls(&h, &format!("{size:?} with the menu"));
+            h.state_mut().pad.menu = false;
+        }
+
+        // The list of the layers, the menu of the new layers, and the panel
+        // of a vector layer.
+        let pad = &mut h.state_mut().pad;
+        pad.brush = false;
+        pad.layer = None;
+        pad.open(Panel::Layers);
+        h.run_steps(2);
+        for name in [
+            "Layer Height",
+            "Layer Land",
+            "Hide Rivers",
+            "Open Places",
+            ADD_LAYER,
+        ] {
+            assert!(control(&h, name).is_some(), "{size:?}: {name}");
+        }
+        check_controls(&h, &format!("{size:?} with the layer list"));
+        tap(&mut h, ADD_LAYER);
+        let menu = h.state().pad.add_rect.unwrap();
+        for name in ["Lines", "Points", "Polygons"] {
+            let row = control(&h, name).unwrap();
+            assert!(menu.contains_rect(row), "{size:?}: {name}");
+        }
+        check_controls(&h, &format!("{size:?} with the menu of the new layers"));
+        tap(&mut h, "Lines");
+        for name in [LAYER_NAME, DELETE_LAYER, "Back to Layers", "Close Lines 1"] {
+            assert!(control(&h, name).is_some(), "{size:?}: {name}");
+        }
+        check_controls(&h, &format!("{size:?} with the panel of a layer"));
+    }
+}
+
+fn layer_names(h: &Pad) -> Vec<String> {
+    let layers = h.state().doc.project.layers();
+    layers.iter().map(|l| l.name.clone()).collect()
+}
+
+#[test]
+fn you_make_rename_hide_and_delete_a_layer() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        tap(&mut h, ADD_LAYER);
+        assert!(h.state().pad.add);
+        let (menu, layers) = (
+            h.state().pad.add_rect.unwrap(),
+            panel(&h, Panel::Layers).unwrap(),
+        );
+        if size == BOARDS[0] {
+            // The menu is at the left of the panel, with its top at the top
+            // of the panel.
+            assert_eq!(menu.right_top(), layers.left_top() - vec2(8.0, 0.0));
+        } else {
+            assert!(layers.contains_rect(menu), "{menu:?}");
+        }
+        assert_eq!(menu.width(), 220.0);
+
+        // A new layer goes on top, and its panel opens.
+        tap(&mut h, "Polygons");
+        assert!(!h.state().pad.add && h.state().pad.add_rect.is_none());
+        assert_eq!(
+            layer_names(&h),
+            ["Land", "Rivers", "Places", "Polygons 1"],
+            "{size:?}"
+        );
+        let id = h.state().doc.project.layers()[3].id;
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Vector(id)));
+        assert_eq!(
+            h.state().doc.layer(id).unwrap().kind,
+            vale_store::GeometryKind::Polygon
+        );
+        assert!(control(&h, "Close Polygons 1").is_some());
+
+        type_text(&mut h, LAYER_NAME, "Coast");
+        assert_eq!(h.state().doc.layer(id).unwrap().name, "Coast");
+        assert!(control(&h, "Close Coast").is_some());
+
+        tap(&mut h, "Back to Layers");
+        assert_eq!(h.state().pad.layer, None);
+        tap(&mut h, "Hide Coast");
+        assert!(!h.state().doc.visible(id));
+        assert!(control(&h, "Hide Coast").is_none());
+        tap(&mut h, "Show Coast");
+        assert!(h.state().doc.visible(id));
+
+        tap(&mut h, "Open Coast");
+        tap(&mut h, DELETE_LAYER);
+        assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"], "{size:?}");
+        assert_eq!(h.state().pad.layer, None);
+        assert!(control(&h, ADD_LAYER).is_some());
+        assert!(control(&h, "Open Coast").is_none());
+    }
+}
+
+#[test]
+fn a_press_outside_closes_the_menu_of_the_new_layers() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    tap(&mut h, ADD_LAYER);
+    assert!(h.state().pad.add);
+    tap(&mut h, ADD_LAYER);
+    assert!(!h.state().pad.add);
+    tap(&mut h, ADD_LAYER);
+    let pos = pos2(400.0, 500.0);
+    touch(&mut h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pos, None);
+    h.run_steps(2);
+    assert!(!h.state().pad.add);
+    assert_eq!(layer_names(&h).len(), 3);
+}
+
+#[test]
+fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
+    for size in BOARDS {
+        let mut h = painted_pad(size);
+        tap(&mut h, "Layers");
+        let list = panel(&h, Panel::Layers).unwrap();
+        let rivers = h.state().doc.project.layers()[1].id;
+        tap(&mut h, "Open Rivers");
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Vector(rivers)));
+        assert_eq!(h.state().selected_layer, Some(rivers));
+        let open = panel(&h, Panel::Layers).unwrap();
+        assert_eq!(open.left_top(), list.left_top(), "{size:?}");
+        assert_eq!(open.width(), list.width(), "{size:?}");
+        for name in ["Close Rivers", "Back to Layers", LAYER_NAME, DELETE_LAYER] {
+            assert!(control(&h, name).is_some(), "{size:?}: {name}");
+        }
+        assert!(control(&h, ADD_LAYER).is_none());
+        tap(&mut h, "Back to Layers");
+        tap(&mut h, "Open Height");
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Height));
+        assert!(control(&h, "Close Height").is_some());
+
+        // The panel of a layer closes when an undo takes the layer away.
+        h.state_mut().pad.layer = Some(LayerRef::Vector(rivers));
+        h.state_mut().doc.remove_layer(rivers);
+        h.run_steps(2);
+        assert_eq!(h.state().pad.layer, None);
+    }
+}
+
+/// Holds a finger on a row of the layer list until the row lifts.
+fn hold(h: &mut Pad, name: &str) -> Pos2 {
+    let pos = control(h, name).unwrap().center();
+    touch(h, egui::TouchPhase::Start, pos, None);
+    for _ in 0..200 {
+        h.step();
+        if h.state().pad.reorder.is_some() {
+            break;
         }
     }
+    pos
+}
+
+#[test]
+fn a_hold_and_a_drag_change_the_order() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        let land = h.state().doc.project.layers()[0].id;
+        let places = control(&h, "Layer Places").unwrap().center();
+        let from = hold(&mut h, "Layer Land");
+        assert_eq!(h.state().pad.reorder.map(|r| r.layer), Some(land));
+        // The order changes when the finger goes up.
+        for i in 1..=6 {
+            let pos = from.lerp(places + vec2(0.0, 6.0), i as f32 / 6.0);
+            touch(&mut h, egui::TouchPhase::Move, pos, None);
+            h.step();
+        }
+        assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"]);
+        touch(&mut h, egui::TouchPhase::End, places, None);
+        h.run_steps(3);
+        assert_eq!(h.state().pad.reorder, None);
+        assert_eq!(layer_names(&h), ["Rivers", "Places", "Land"], "{size:?}");
+        assert_eq!(
+            control(&h, "Layer Land").unwrap().center().y,
+            places.y,
+            "{size:?}"
+        );
+
+        // One row up.
+        let rivers = control(&h, "Layer Rivers").unwrap().center();
+        let from = hold(&mut h, "Layer Land");
+        touch(&mut h, egui::TouchPhase::Move, from.lerp(rivers, 0.5), None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::Move, pos2(from.x, 0.0), None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, pos2(from.x, 0.0), None);
+        h.run_steps(3);
+        assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"], "{size:?}");
+    }
+}
+
+#[test]
+fn a_quick_drag_does_not_lift_a_row() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    let from = control(&h, "Layer Land").unwrap().center();
+    let to = control(&h, "Layer Places").unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    touch(&mut h, egui::TouchPhase::Move, from.lerp(to, 0.5), None);
+    for _ in 0..8 {
+        h.step();
+        assert_eq!(h.state().pad.reorder, None);
+    }
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+    assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"]);
+    // A tap makes the layer the selected layer.
+    tap(&mut h, "Layer Rivers");
+    let rivers = h.state().doc.project.layers()[1].id;
+    assert_eq!(h.state().selected_layer, Some(rivers));
 }
 
 /// Writes a 16-bit greyscale PNG with a slope from west to east.
@@ -1292,7 +1510,8 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     tap(&mut h, "Brush settings");
     let layers = panel(&h, Panel::Layers).unwrap();
     assert_eq!((layers.min, layers.width()), (pos2(858.0, 96.0), 320.0));
-    assert_eq!(layers.height(), 52.0 + 48.0 + 10.0);
+    // The title row, the import row, and the three layers of the sample.
+    assert_eq!(layers.height(), 52.0 + 4.0 * 48.0 + 10.0);
     assert_eq!(
         control(&h, "Close Layers").unwrap().min,
         pos2(1130.0, 100.0)

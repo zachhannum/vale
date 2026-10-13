@@ -19,9 +19,15 @@ use vale_terrain::{
     meters_to_level, window_channels,
 };
 
+/// The sample world with its vector layers hidden, so that each place of the
+/// globe shows the heightmap.
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
     state.headless = true;
+    let ids: Vec<_> = state.doc.project.layers().iter().map(|l| l.id).collect();
+    for id in ids {
+        state.doc.set_visible(id, false);
+    }
     state
 }
 
@@ -324,16 +330,6 @@ fn a_touch_on_the_tool_bar_does_not_move_the_globe() {
 fn the_screenshot_draws_the_heightmap_on_the_globe() {
     let _gpu = one_gpu_test();
     let mut state = state();
-    for id in state
-        .doc
-        .project
-        .layers()
-        .iter()
-        .map(|l| l.id)
-        .collect::<Vec<_>>()
-    {
-        state.doc.set_visible(id, false);
-    }
     state.globe.preview.greyscale = true;
     // A high patch in the middle of the face that looks at the eye.
     state.globe.view = GlobeView::centered(0.0, 0.0);

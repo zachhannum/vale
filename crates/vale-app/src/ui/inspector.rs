@@ -49,7 +49,18 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(6.0);
         return;
     };
-    ui.strong(&info.name);
+    // The text of the field, from the first key to the end of the edit.
+    let key = ui.id().with(("layer-name", info.id.0));
+    let mut name = ui
+        .data(|d| d.get_temp::<String>(key))
+        .unwrap_or_else(|| info.name.clone());
+    let field = ui.add(egui::TextEdit::singleline(&mut name).hint_text("Layer name"));
+    if field.lost_focus() {
+        state.doc.rename_layer(info.id, &name);
+        ui.data_mut(|d| d.remove::<String>(key));
+    } else if field.has_focus() {
+        ui.data_mut(|d| d.insert_temp(key, name));
+    }
     ui.label(format!("{}, {} features", info.kind.name(), info.count));
 
     ui.horizontal(|ui| {

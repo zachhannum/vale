@@ -3,8 +3,9 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
+use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
+use vale_store::{GeometryKind, LayerId};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode};
 
 use super::world_form::{self, WorldForm};
@@ -53,6 +54,42 @@ const WORLD_ROWS: usize = 6;
 /// The name of the row that imports a heightmap.
 pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
 
+/// The button of the Layers panel that opens the menu of the new layers.
+pub const ADD_LAYER: &str = "Add a layer";
+/// The button of the panel of a vector layer that deletes the layer.
+pub const DELETE_LAYER: &str = "Delete layer";
+/// The field of the panel of a vector layer with the name of the layer.
+pub const LAYER_NAME: &str = "Layer name";
+/// The rows of the menu of the new layers.
+const NEW_LAYERS: [(&str, GeometryKind); 3] = [
+    ("Lines", GeometryKind::Line),
+    ("Points", GeometryKind::Point),
+    ("Polygons", GeometryKind::Polygon),
+];
+/// The width of the menu of the new layers.
+const ADD_WIDTH: f32 = 220.0;
+/// The time that a finger holds a row of the layer list before the row
+/// moves with the finger, in seconds.
+pub const HOLD_TIME: f64 = 0.4;
+/// The largest distance that a finger moves during the hold, in points.
+const HOLD_SLOP: f32 = 6.0;
+
+/// A layer that has a panel.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum LayerRef {
+    /// The heightmap.
+    Height,
+    Vector(LayerId),
+}
+
+/// A row of the layer list that moves with a finger.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Reorder {
+    pub layer: LayerId,
+    /// The distance from the top of the row to the finger.
+    grab: f32,
+}
+
 /// A panel that a button of the layout opens.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Panel {
@@ -78,8 +115,19 @@ pub struct PadState {
     pub brush: bool,
     /// The panel at the right: Layers, Toolbox, or none.
     pub right: Option<Panel>,
-    /// The Layers panel shows the Height layer.
-    pub layer: bool,
+    /// The layer that the Layers panel shows. `None`: the panel shows the
+    /// list of the layers.
+    pub layer: Option<LayerRef>,
+    /// The menu of the new layers is open.
+    pub add: bool,
+    /// The menu of the new layers in the last frame.
+    pub add_rect: Option<Rect>,
+    /// The button of this frame that opens the menu of the new layers.
+    add_button: Option<Rect>,
+    /// The row of the layer list that moves with a finger.
+    pub reorder: Option<Reorder>,
+    /// The text of the name field of the panel of a vector layer.
+    name: Option<(LayerId, String)>,
     /// The list of the projections of the flat view is open.
     pub projections: bool,
     /// The list of the projections in the last frame.
@@ -213,6 +261,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     controls.clear();
     state.pad.panels.clear();
     state.pad.menu_rect = None;
+    state.pad.add_button = None;
     if state.globe.tool != Tool::Brush || state.globe.brush.mode != Mode::Flatten {
         state.globe.pick_level = false;
     }
@@ -249,6 +298,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.pad.more_rect = None;
     if state.pad.more {
         more_menu(&ctx, state, &mut controls, &rects);
+    }
+    state.pad.add_rect = None;
+    match state.pad.add_button {
+        Some(button) if state.pad.add => add_menu(&ctx, state, &mut controls, &rects, button),
+        _ => state.pad.add = false,
     }
     state.pad.worlds_rect = None;
     if state.pad.worlds.is_some() {
@@ -564,12 +618,40 @@ fn show_panel(
     rects: &Rects,
     panel: Panel,
 ) {
-    let layer = panel == Panel::Layers && state.pad.layer && state.has_raster();
-    let (key, title, back) = match panel {
-        Panel::Brush => (panel.key(), "Brush", None),
-        Panel::Layers if layer => ("pad-layer", "Height", Some("Layers")),
-        Panel::Layers => (panel.key(), "Layers", None),
-        Panel::Toolbox => (panel.key(), "Toolbox", None),
+    if let Some(LayerRef::Vector(id)) = state.pad.layer
+        && state.doc.layer(id).is_none()
+    {
+        state.pad.layer = None;
+    }
+    let layer = match state.pad.layer.filter(|_| panel == Panel::Layers) {
+        Some(LayerRef::Height) if !state.has_raster() => None,
+        layer => layer,
+    };
+    let vector = match layer {
+        Some(LayerRef::Vector(id)) => state.doc.layer(id).map(|l| l.name.clone()),
+        _ => None,
+    };
+    let (key, title, back) = match (panel, layer) {
+        (Panel::Brush, _) => (panel.key(), "Brush", None),
+        (Panel::Layers, Some(LayerRef::Height)) => ("pad-layer", "Height", Some("Layers")),
+        (Panel::Layers, Some(LayerRef::Vector(_))) => (
+            "pad-vector",
+            vector.as_deref().unwrap_or_default(),
+            Some("Layers"),
+        ),
+        (Panel::Layers, None) => (panel.key(), "Layers", None),
+        (Panel::Toolbox, _) => (panel.key(), "Toolbox", None),
+    };
+    let list = panel == Panel::Layers && layer.is_none();
+    if list && state.pad.reorder.is_none() {
+        state.pad.name = None;
+    }
+    if !list {
+        state.pad.reorder = None;
+    }
+    let scroll = match state.pad.reorder {
+        Some(_) => egui::scroll_area::ScrollSource::NONE,
+        None => egui::scroll_area::ScrollSource::default(),
     };
     let (rect, radius) = match rects.sheet {
         Some(sheet) => {
@@ -613,9 +695,16 @@ fn show_panel(
                 ui.painter()
                     .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
             }
-            let row = widgets::title_row(ui, controls, title, back, sheet);
+            let action = list.then_some((ADD_LAYER, Icon::Plus, state.pad.add));
+            let row = widgets::title_row_with(ui, controls, title, back, sheet, action);
+            if let Some(add) = &row.action {
+                state.pad.add_button = Some(add.rect);
+                if add.clicked() {
+                    state.pad.add = !state.pad.add;
+                }
+            }
             if row.back {
-                state.pad.layer = false;
+                state.pad.layer = None;
             }
             if row.close {
                 state.pad.close(panel);
@@ -634,6 +723,7 @@ fn show_panel(
             let most = (bottom - ui.cursor().top()).max(0.0);
             let out = egui::ScrollArea::vertical()
                 .id_salt(key)
+                .scroll_source(scroll)
                 .max_height(most)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
@@ -645,11 +735,16 @@ fn show_panel(
                     };
                     egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 6.0;
-                        match panel {
-                            Panel::Brush => brush_body(ui, state, controls),
-                            Panel::Layers if layer => layer_body(ui, state, controls),
-                            Panel::Layers => layers_body(ui, state, controls),
-                            Panel::Toolbox => toolbox_body(ui, state),
+                        match (panel, layer) {
+                            (Panel::Brush, _) => brush_body(ui, state, controls),
+                            (Panel::Layers, Some(LayerRef::Height)) => {
+                                layer_body(ui, state, controls);
+                            }
+                            (Panel::Layers, Some(LayerRef::Vector(id))) => {
+                                vector_body(ui, state, controls, id);
+                            }
+                            (Panel::Layers, None) => layers_body(ui, state, controls),
+                            (Panel::Toolbox, _) => toolbox_body(ui, state),
                         }
                     });
                 });
@@ -771,37 +866,264 @@ fn limit_rows(
     }
 }
 
+/// The list of the layers, in draw order. The first row is the bottom of
+/// the drawing.
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    if !state.has_raster() {
+    if state.has_raster() {
+        let size = vec2(ui.available_width(), PANEL_ROW);
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let selected = state.selected_layer.is_none();
+        let live = state.pad.reorder.is_none();
+        let row = widgets::layer_row(
+            ui,
+            controls,
+            rect,
+            Icon::Raster,
+            "Height",
+            None,
+            selected,
+            live,
+            false,
+        );
+        if row.body.is_some_and(|body| body.clicked()) {
+            state.selected_layer = None;
+        }
+        if row.open {
+            state.pad.layer = Some(LayerRef::Height);
+        }
+    } else {
         // The import makes the Height layer, and its panel shows the result.
         let asked = state.actions.len();
         import_row(ui, state, controls);
-        state.pad.layer = state.pad.layer || state.actions.len() > asked;
-        return;
+        if state.actions.len() > asked {
+            state.pad.layer = Some(LayerRef::Height);
+        }
     }
-    let size = vec2(ui.available_width(), PANEL_ROW);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let painter = ui.painter();
-    let highlight = rect.expand2(vec2(8.0, -widgets::HIGHLIGHT_INSET));
-    painter.rect_filled(highlight, 5.0, theme::raise());
-    let icon = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
-    icons::paint(painter, icon, Icon::Raster, 18.0, theme::MUTE);
-    let at = pos2(rect.left() + 28.0, rect.center().y);
-    painter.text(
-        at,
-        Align2::LEFT_CENTER,
-        "Height",
-        theme::body(),
-        theme::TEXT,
+    vector_rows(ui, state, controls);
+}
+
+fn kind_icon(kind: GeometryKind) -> Icon {
+    match kind {
+        GeometryKind::Point => Icon::Point,
+        GeometryKind::Line => Icon::Line,
+        GeometryKind::Polygon => Icon::Polygon,
+    }
+}
+
+/// The rows of the vector layers. A finger that holds a row lifts it, and
+/// the row then moves with the finger to a new place in the order.
+fn vector_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let rows: Vec<(LayerId, String, Icon, bool)> = state
+        .doc
+        .project
+        .layers()
+        .iter()
+        .map(|l| (l.id, l.name.clone(), kind_icon(l.kind), l.visible))
+        .collect();
+    let size = vec2(ui.available_width(), rows.len() as f32 * PANEL_ROW);
+    let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let slot =
+        |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
+    let place = |i: usize| slot(area.top() + i as f32 * PANEL_ROW);
+    let selected = state.selected_layer;
+    let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
+
+    let lifted = state
+        .pad
+        .reorder
+        .and_then(|r| Some((r, rows.iter().position(|row| row.0 == r.layer)?)));
+    let Some((reorder, from)) = lifted else {
+        state.pad.reorder = None;
+        for (i, (id, name, icon, visible)) in rows.iter().enumerate() {
+            let (id, rect) = (*id, place(i));
+            let on = selected == Some(id);
+            let row = ui
+                .push_id(id.0, |ui| {
+                    let visible = Some(*visible);
+                    widgets::layer_row(ui, controls, rect, *icon, name, visible, on, true, false)
+                })
+                .inner;
+            if row.eye {
+                state.doc.set_visible(id, !*visible);
+                state.touch();
+            }
+            if row.open {
+                state.selected_layer = Some(id);
+                state.pad.layer = Some(LayerRef::Vector(id));
+            }
+            let Some(body) = row.body else { continue };
+            if body.clicked() {
+                state.selected_layer = Some(id);
+            }
+            if !body.is_pointer_button_down_on() {
+                continue;
+            }
+            let press = ui.input(|i| {
+                let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
+                let pos = i.pointer.interact_pos()?;
+                Some((i.time - start, origin.distance(pos), pos.y))
+            });
+            match press {
+                Some((held, moved, y)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
+                    state.selected_layer = Some(id);
+                    state.pad.reorder = Some(Reorder {
+                        layer: id,
+                        grab: y - rect.top(),
+                    });
+                    ui.ctx().request_repaint();
+                }
+                Some((held, moved, _)) if moved <= HOLD_SLOP => {
+                    let wait = std::time::Duration::from_secs_f64(HOLD_TIME - held);
+                    ui.ctx().request_repaint_after(wait);
+                }
+                _ => {}
+            }
+        }
+        return;
+    };
+
+    let y = pointer.map_or(place(from).top() + reorder.grab, |p| p.y);
+    let top = (y - reorder.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
+    let to = ((top - area.top()) / PANEL_ROW).round() as usize;
+    let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
+    for (k, (_, (id, name, icon, visible))) in others.enumerate() {
+        // The rows make room at the place where the lifted row goes.
+        let rect = place(if k < to { k } else { k + 1 });
+        let on = selected == Some(*id);
+        widgets::layer_row(
+            ui,
+            controls,
+            rect,
+            *icon,
+            name,
+            Some(*visible),
+            on,
+            false,
+            false,
+        );
+    }
+    let (_, name, icon, visible) = &rows[from];
+    let visible = Some(*visible);
+    widgets::layer_row(
+        ui,
+        controls,
+        slot(top),
+        *icon,
+        name,
+        visible,
+        true,
+        false,
+        true,
     );
-    let open = Rect::from_center_size(
-        pos2(rect.right() + 8.0 - TOUCH / 2.0, rect.center().y),
-        vec2(TOUCH, TOUCH),
+    if !down {
+        state.pad.reorder = None;
+        if to != from {
+            state.doc.move_layer(reorder.layer, to);
+            state.touch();
+        }
+    }
+}
+
+/// The menu of the new layers. A wide screen shows it at the left of the
+/// Layers panel, and a narrow screen shows it below its button.
+fn add_menu(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    button: Rect,
+) {
+    let size = vec2(ADD_WIDTH, 10.0 + NEW_LAYERS.len() as f32 * PANEL_ROW + 10.0);
+    let beside = pos2(
+        rects.right_panel.x - geometry::PANEL_GAP - size.x,
+        rects.right_panel.y,
     );
-    if widgets::icon_button_at(ui, controls, open, "Open Height", Icon::Open, false, true).clicked()
-    {
-        state.pad.layer = true;
+    let min = if rects.sheet.is_none() && beside.x >= rects.screen.left() + geometry::MARGIN {
+        beside
+    } else {
+        let left = (button.right() - size.x).max(rects.screen.left() + geometry::PANEL_GAP);
+        pos2(left, button.bottom() + PAD)
+    };
+    let rect = Rect::from_min_size(min, size);
+    state.pad.add_rect = Some(rect);
+    let pressed = ctx.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    if pressed.is_some_and(|pos| !rect.contains(pos) && !button.contains(pos)) {
+        state.pad.add = false;
+    }
+    let radius = theme::CARD_RADIUS.into();
+    widgets::card(
+        ctx,
+        None,
+        "pad-add-layer",
+        rect,
+        Order::Foreground,
+        radius,
+        |ui| {
+            // The menu can cover a panel, so its fill is opaque.
+            ui.painter()
+                .rect_filled(rect, radius, theme::card(false).to_opaque());
+            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            let ui = &mut ui;
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            for (name, kind) in NEW_LAYERS {
+                if widgets::text_row(ui, controls, name, 0.0, false, true).clicked() {
+                    let id = state.doc.add_layer(kind);
+                    state.selected_layer = Some(id);
+                    state.pad.layer = Some(LayerRef::Vector(id));
+                    state.pad.add = false;
+                    state.touch();
+                }
+            }
+        },
+    );
+}
+
+/// The panel of a vector layer: its name, its kind, the number of its
+/// features, and the button that deletes it.
+fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
+    let Some(layer) = state.doc.layer(id) else {
+        return;
+    };
+    let name = layer.name.clone();
+    let kind = match layer.kind {
+        GeometryKind::Point => "Points",
+        GeometryKind::Line => "Lines",
+        GeometryKind::Polygon => "Polygons",
+    };
+    let features = layer.features.len().to_string();
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    let mut text = match state.pad.name.take() {
+        Some((of, text)) if of == id => text,
+        _ => name.clone(),
+    };
+    let valid = !text.trim().is_empty();
+    let field = widgets::text_field(ui, controls, LAYER_NAME, "Name", None, &mut text, valid);
+    if field.changed() {
+        state.doc.rename_layer(id, &text);
+    } else if !field.has_focus() {
+        // The field shows the name again after an undo and after a blank text.
+        text = name;
+    }
+    state.pad.name = Some((id, text));
+    widgets::value_row(ui, "Type", kind);
+    widgets::value_row(ui, "Features", &features);
+    ui.add_space(6.0);
+    if widgets::button_row_in(ui, controls, DELETE_LAYER, true, theme::WARN).clicked() {
+        state.doc.remove_layer(id);
+        state.pad.layer = None;
+        if state.selected_layer == Some(id) {
+            state.selected_layer = None;
+        }
+        state.touch();
     }
 }
 

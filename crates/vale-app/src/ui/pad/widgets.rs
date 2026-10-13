@@ -395,6 +395,8 @@ pub fn switch_row(
 pub struct TitleRow {
     pub close: bool,
     pub back: bool,
+    /// The action button, if the row has one.
+    pub action: Option<Response>,
     /// The row without its buttons. A sheet moves with a drag on it.
     pub bar: Response,
 }
@@ -407,6 +409,19 @@ pub fn title_row(
     title: &str,
     back: Option<&str>,
     drag: bool,
+) -> TitleRow {
+    title_row_with(ui, controls, title, back, drag, None)
+}
+
+/// A title row with an action button at the left of the close button.
+/// `action` is the name of the button, its icon, and its state.
+pub fn title_row_with(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    title: &str,
+    back: Option<&str>,
+    drag: bool,
+    action: Option<(&str, Icon, bool)>,
 ) -> TitleRow {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
     let sense = if drag {
@@ -434,10 +449,114 @@ pub fn title_row(
     let name = format!("Close {title}");
     let close_rect = button(rect.right() - PAD - TOUCH);
     let close = icon_button_at(ui, controls, close_rect, &name, Icon::Close, false, true).clicked();
+    let action = action.map(|(name, icon, active)| {
+        let at = close_rect.translate(vec2(-TOUCH, 0.0));
+        icon_button_at(ui, controls, at, name, icon, active, true)
+    });
+    let text_right = action.as_ref().map_or(close_rect.left(), |a| a.rect.left());
+    let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(text_right, rect.bottom()));
     let at = pos2(text_left, rect.center().y);
-    ui.painter()
-        .text(at, Align2::LEFT_CENTER, title, theme::title(), theme::TEXT);
-    TitleRow { close, back, bar }
+    ui.painter().with_clip_rect(clip).text(
+        at,
+        Align2::LEFT_CENTER,
+        title,
+        theme::title(),
+        theme::TEXT,
+    );
+    TitleRow {
+        close,
+        back,
+        action,
+        bar,
+    }
+}
+
+/// What the user did with a row of the layer list.
+pub struct LayerRow {
+    /// The row without its buttons. A row that is not live has none.
+    pub body: Option<Response>,
+    pub eye: bool,
+    pub open: bool,
+}
+
+/// A row of the layer list, at a given place: the icon of the kind, the
+/// name, the eye that shows or hides the layer, and the arrow that opens the
+/// panel of the layer. `visible` is `None` for a layer with no eye. A row
+/// that is not `live` takes no touch. A `lifted` row covers the rows below it.
+#[allow(clippy::too_many_arguments)]
+pub fn layer_row(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    rect: Rect,
+    icon: Icon,
+    name: &str,
+    visible: Option<bool>,
+    selected: bool,
+    live: bool,
+    lifted: bool,
+) -> LayerRow {
+    let open_rect = Rect::from_center_size(
+        pos2(rect.right() + 8.0 - TOUCH / 2.0, rect.center().y),
+        vec2(TOUCH, TOUCH),
+    );
+    let eye_rect = open_rect.translate(vec2(-TOUCH, 0.0));
+    let body_right = match visible {
+        Some(_) => eye_rect.left(),
+        None => open_rect.left(),
+    };
+    let body_rect = Rect::from_min_max(rect.min, pos2(body_right, rect.bottom()));
+    let body_name = format!("Layer {name}");
+    let body = live.then(|| {
+        hit(
+            ui,
+            controls,
+            body_rect,
+            &body_name,
+            Sense::click(),
+            true,
+            Some(selected),
+        )
+    });
+    let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    if lifted {
+        ui.painter()
+            .rect_filled(highlight, 5.0, theme::card(false).to_opaque());
+    }
+    if selected || lifted || body.as_ref().is_some_and(|b| b.is_pointer_button_down_on()) {
+        ui.painter().rect_filled(highlight, 5.0, theme::raise());
+    }
+    let kind = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
+    icons::paint(ui.painter(), kind, icon, 18.0, theme::MUTE);
+    let shown = visible != Some(false);
+    let clip = Rect::from_min_max(
+        pos2(rect.left() + 28.0, rect.top()),
+        pos2(body_right - 4.0, rect.bottom()),
+    );
+    ui.painter().with_clip_rect(clip).text(
+        clip.left_center(),
+        Align2::LEFT_CENTER,
+        name,
+        theme::body(),
+        fade(theme::TEXT, shown),
+    );
+    let eye_icon = if shown { Icon::Eye } else { Icon::EyeOff };
+    let eye_name = format!("{} {name}", if shown { "Hide" } else { "Show" });
+    let open_name = format!("Open {name}");
+    let (mut eye, mut open) = (false, false);
+    if live {
+        if visible.is_some() {
+            eye =
+                icon_button_at(ui, controls, eye_rect, &eye_name, eye_icon, false, true).clicked();
+        }
+        open =
+            icon_button_at(ui, controls, open_rect, &open_name, Icon::Open, false, true).clicked();
+    } else {
+        if visible.is_some() {
+            icons::paint(ui.painter(), eye_rect, eye_icon, ICON, theme::MUTE);
+        }
+        icons::paint(ui.painter(), open_rect, Icon::Open, ICON, theme::MUTE);
+    }
+    LayerRow { body, eye, open }
 }
 
 /// A row of a panel or of a menu, with a text. Returns the response of the
@@ -490,6 +609,14 @@ fn form_row(ui: &mut egui::Ui, label: &str) -> Rect {
         pos2(rect.left() + FORM_LABEL, rect.center().y - TOUCH / 2.0),
         pos2(rect.right(), rect.center().y + TOUCH / 2.0),
     )
+}
+
+/// A row of a form with a value that the user cannot change.
+pub fn value_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    let field = form_row(ui, label);
+    let at = pos2(field.left() + 12.0, field.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, value, theme::body(), theme::TEXT);
 }
 
 /// A row of a form with a field for one line of text. `name` is the name
