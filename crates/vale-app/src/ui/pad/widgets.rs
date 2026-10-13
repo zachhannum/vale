@@ -599,6 +599,47 @@ pub fn text_row(
     resp
 }
 
+/// A row of a form that is one choice of a list: a title at the left, and
+/// lines of small text at the right that tell what the choice gives. The
+/// row that is `on` has a mark. `name` is the name of the control.
+pub fn option_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    title: &str,
+    lines: &[String],
+    on: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
+    if on || resp.is_pointer_button_down_on() {
+        let back = rect.shrink2(vec2(0.0, HIGHLIGHT_INSET));
+        ui.painter()
+            .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+    }
+    let mark = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(18.0, 18.0));
+    if on {
+        icons::paint(ui.painter(), mark, Icon::Tick, 18.0, theme::ACCENT);
+    }
+    let color = if on { theme::TEXT } else { theme::MUTE };
+    let at = pos2(rect.left() + 38.0, rect.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, title, theme::body(), color);
+    // The lines are labels, so a screen reader and a test can read them.
+    let step = 15.0;
+    let top = rect.center().y - step * lines.len() as f32 / 2.0;
+    for (index, line) in lines.iter().enumerate() {
+        let min = pos2(rect.left() + 110.0, top + index as f32 * step);
+        let place = Rect::from_min_max(min, pos2(rect.right() - 12.0, min.y + step));
+        let text = egui::RichText::new(line).font(theme::small()).color(color);
+        let layout = egui::Layout::right_to_left(egui::Align::Center);
+        // A child that is not in the layout keeps the height of the row.
+        let mut line = ui.new_child(egui::UiBuilder::new().max_rect(place).layout(layout));
+        line.add(egui::Label::new(text).selectable(false).truncate());
+    }
+    resp
+}
+
 /// The distance from each end of a tick slider to the end of its scale.
 pub const SLIDER_INSET: f32 = THUMB / 2.0 + 6.0;
 /// The width of the label at the left of a row of a form.

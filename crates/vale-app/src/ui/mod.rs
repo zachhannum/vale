@@ -27,6 +27,7 @@ pub mod globe;
 pub mod inspector;
 pub mod pad;
 pub mod panels;
+pub mod raster_form;
 pub mod world_form;
 
 /// A request that needs the host: a dialog or a file.
@@ -252,7 +253,7 @@ pub struct AppState {
     pub cursor_lonlat: Option<LonLat>,
     /// The value of the raster layer on the globe under the cursor, in the
     /// unit of the layer.
-    pub cursor_meters: Option<f64>,
+    pub cursor_value: Option<f64>,
     /// Last message, for example an import error.
     pub status: String,
     /// The text of the last import of a heightmap.
@@ -265,6 +266,8 @@ pub struct AppState {
     pub share: Option<PathBuf>,
     /// The open form of a new world or of the world of the project.
     pub world_form: Option<world_form::WorldForm>,
+    /// The open form of a new raster layer.
+    pub raster_form: Option<raster_form::RasterForm>,
     /// Requests that need the host (dialogs, files).
     pub actions: Vec<Action>,
     /// True: no timers, always `Quality::Final`.
@@ -314,13 +317,14 @@ impl AppState {
             selection: None,
             selected_layer: None,
             cursor_lonlat: None,
-            cursor_meters: None,
+            cursor_value: None,
             status: String::new(),
             import_note: None,
             export_note: None,
             share_exports: false,
             share: None,
             world_form: None,
+            raster_form: None,
             actions: Vec::new(),
             headless: false,
             file_buttons: true,
@@ -439,7 +443,7 @@ impl AppState {
 
     /// A name for a new raster layer: `name`, or `name` with a number if
     /// a raster layer has that name.
-    fn raster_name(&self, name: &str) -> String {
+    pub fn raster_name(&self, name: &str) -> String {
         let rasters = self.doc.project.rasters();
         let taken = |name: &str| rasters.iter().any(|raster| raster.name == name);
         let numbered = (2..).map(|number| format!("{name} {number}"));
@@ -517,6 +521,34 @@ impl AppState {
         self.sync_globe();
         self.save_edit();
         true
+    }
+
+    /// Gives a raster layer a new name. A name with no letter changes
+    /// nothing.
+    pub fn rename_raster(&mut self, id: RasterId, name: &str) -> bool {
+        let name = name.trim();
+        let raster = self.doc.project.raster_mut(id);
+        let raster = raster.filter(|raster| !name.is_empty() && raster.name != name);
+        raster
+            .map(|raster| raster.name = name.to_string())
+            .is_some()
+    }
+
+    /// The record of the raster layer that the globe shows.
+    pub fn shown_raster(&self) -> Option<&Raster> {
+        self.doc.project.raster(self.globe.raster()?)
+    }
+
+    /// The unit of the values of the heightmap on the globe. With no raster
+    /// layer on the globe, it is the meter.
+    pub fn shown_unit(&self) -> &str {
+        self.shown_raster().map_or(HEIGHT_UNIT, |r| r.unit.as_str())
+    }
+
+    /// A value of the heightmap on the globe as a text with its unit.
+    pub fn value_text(&self, value: f64) -> String {
+        let bands = &self.globe.map.bands;
+        crate::world::value_text(value, bands.max() - bands.min(), self.shown_unit())
     }
 
     /// Shows or hides a raster layer.
@@ -903,6 +935,7 @@ impl AppState {
         self.saved_edits = self.globe.edits();
         self.selection = None;
         self.select(None);
+        self.raster_form = None;
         self.import_note = None;
         self.export_note = None;
         self.pad.layer = None;
@@ -955,6 +988,7 @@ impl AppState {
         }
         self.session = None;
         self.world_form = None;
+        self.raster_form = None;
         self.screen = Screen::Browser;
         self.reload_projects();
     }
@@ -1357,5 +1391,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         }
     });
     world_form::desktop(ui.ctx(), state);
+    raster_form::desktop(ui.ctx(), state);
     state.frames += 1;
 }

@@ -704,9 +704,13 @@ fn a_stroke_on_the_second_raster_layer_leaves_the_first() {
     assert!(first != empty[0]);
     assert!(layer_texels(&h, rain) == empty[1]);
 
-    // The stroke on the second layer goes over the same place.
+    // The stroke on the second layer goes over the same place. The rivers
+    // of the first layer do not show on the second layer.
+    assert!(h.state().globe.channels().is_some());
     h.state_mut().select(Some(LayerRef::Raster(rain)));
+    assert!(h.state().globe.channels().is_none());
     h.run_steps(2);
+    assert!(h.state().globe.channels().is_none());
     assert_eq!(h.state().globe.raster(), Some(rain));
     pen_stroke(&mut h);
     let second = layer_texels(&h, rain);
@@ -723,7 +727,9 @@ fn a_stroke_on_the_second_raster_layer_leaves_the_first() {
     // The GPU has the first layer again, and a stroke goes on from its
     // ground.
     h.state_mut().select(Some(LayerRef::Raster(height)));
+    assert!(h.state().globe.channels().is_none());
     h.run_steps(2);
+    assert!(h.state().globe.channels().is_some());
     pen_stroke(&mut h);
     assert!(middle_level(&h) > first_middle);
     assert!(layer_texels(&h, rain) == second);

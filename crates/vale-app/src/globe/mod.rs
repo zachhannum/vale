@@ -512,9 +512,15 @@ impl Globe {
         if let Some(test) = self.test.take() {
             self.brush = test.saved;
         }
-        // The GPU has the window of small rivers of the old heightmap.
+        self.brush.value_range = (self.map.bands.min(), self.map.bands.max());
+        // The GPU has the rivers of the old heightmap. The new heightmap
+        // has no rivers until its own ones arrive.
         if self.format.is_some() {
-            self.link.push(self.tag(), Op::Window(None));
+            let tag = self.tag();
+            self.link.push(tag, Op::Window(None));
+            let size = ChannelMap::size_for(face_size);
+            self.link
+                .push(tag, Op::Channels(Arc::new(ChannelMap::empty(size))));
         }
     }
 
@@ -1326,7 +1332,10 @@ impl Globe {
             }
         };
         let sea = f32::from(self.map.bands.level(SEA_LEVEL)) / 65535.0;
-        let rivers = self.height && self.preview.rivers && !self.preview.greyscale;
+        // The channel map on the GPU is that of this heightmap after the
+        // first one arrives.
+        let rivers = self.height && self.channels.is_some();
+        let rivers = rivers && self.preview.rivers && !self.preview.greyscale;
         let channel_size = match rivers {
             true => ChannelMap::size_for(self.map.face_size()) as f32,
             false => 0.0,

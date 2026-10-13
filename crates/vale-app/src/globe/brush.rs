@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use vale_terrain::{
     ELEV_MAX, ELEV_MIN, GROUP_STAMPS, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan,
-    meters_to_level, talus_levels,
+    talus_levels,
 };
 
 use super::math::{V3, add, angle, normalize, scale};
@@ -74,12 +74,16 @@ pub struct BrushSettings {
     pub scale_km: f64,
     /// The brush does not move ground across the floor.
     pub floor_on: bool,
-    /// The elevation of the floor, in meters.
+    /// The value of the floor, in the unit of the layer. For a height, it
+    /// is an elevation in meters.
     pub floor_m: f64,
     /// The brush does not move ground across the ceiling.
     pub ceiling_on: bool,
-    /// The elevation of the ceiling, in meters.
+    /// The value of the ceiling, in the unit of the layer.
     pub ceiling_m: f64,
+    /// The values of the lowest and of the highest level of the layer that
+    /// the brush paints. The globe sets them.
+    pub value_range: (f64, f64),
 }
 
 impl Default for BrushSettings {
@@ -100,6 +104,7 @@ impl Default for BrushSettings {
             floor_m: 0.0,
             ceiling_on: false,
             ceiling_m: 1000.0,
+            value_range: (ELEV_MIN, ELEV_MAX),
         }
     }
 }
@@ -122,14 +127,35 @@ impl BrushSettings {
         let off = Limits::default();
         Limits {
             floor: match self.floor_on {
-                true => meters_to_level(self.floor_m),
+                true => self.level(self.floor_m),
                 false => off.floor,
             },
             ceiling: match self.ceiling_on {
-                true => meters_to_level(self.ceiling_m),
+                true => self.level(self.ceiling_m),
                 false => off.ceiling,
             },
         }
+    }
+
+    /// The level of a value of the layer that the brush paints. A value out
+    /// of the range gets the nearest end.
+    pub fn level(&self, value: f64) -> u16 {
+        let (min, max) = self.value_range;
+        (((value - min) / (max - min)).clamp(0.0, 1.0) * 65535.0).round() as u16
+    }
+
+    /// The value of a level of the layer that the brush paints.
+    pub fn value(&self, level: u16) -> f64 {
+        let (min, max) = self.value_range;
+        min + f64::from(level) / 65535.0 * (max - min)
+    }
+
+    /// The strength as a value of the layer that the brush paints. Each
+    /// layer gets the same part of its range, and for a height the value is
+    /// `strength_m`.
+    pub fn strength_value(&self) -> f64 {
+        let (min, max) = self.value_range;
+        self.strength_m * (max - min) / (ELEV_MAX - ELEV_MIN)
     }
 
     /// The brush radius as an angle on the sphere, in radians. `globe_radius`
@@ -472,7 +498,7 @@ impl Backlog {
 mod tests {
     use std::time::Duration;
 
-    use vale_terrain::Heightmap;
+    use vale_terrain::{Heightmap, meters_to_level};
 
     use super::*;
     use crate::globe::math::lonlat_to_dir;

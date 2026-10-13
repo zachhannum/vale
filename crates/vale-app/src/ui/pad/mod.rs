@@ -6,9 +6,10 @@ use std::collections::HashMap;
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, LayerId, RasterId};
-use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode};
+use vale_terrain::Mode;
 
 pub use super::LayerRef;
+use super::raster_form::{self, RasterForm};
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, elevation, globe, is_height, panels};
 use crate::globe::brush::{
@@ -65,7 +66,10 @@ pub const ADD_LAYER: &str = "Add a layer";
 pub const DELETE_LAYER: &str = "Delete layer";
 /// The field of the panel of a vector layer with the name of the layer.
 pub const LAYER_NAME: &str = "Layer name";
-/// The row of the menu of the new layers that adds a raster layer.
+/// The button of the panel of a raster layer that deletes the layer.
+pub const DELETE_RASTER: &str = "Delete raster layer";
+/// The row of the menu of the new layers that opens the form of a new raster
+/// layer.
 pub const NEW_RASTER: &str = "Raster";
 /// The rows of the menu of the new vector layers.
 const NEW_LAYERS: [(&str, GeometryKind); 3] = [
@@ -126,7 +130,7 @@ pub struct PadState {
     /// The row of the layer list that moves with a finger.
     pub reorder: Option<Reorder>,
     /// The text of the name field of the panel of a vector layer.
-    name: Option<(LayerId, String)>,
+    name: Option<(LayerRef, String)>,
     /// The list of the projections of the flat view is open.
     pub projections: bool,
     /// The list of the projections in the last frame.
@@ -209,15 +213,16 @@ pub const PROJECTION: &str = "Projection";
 const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
 
 /// The text of the position readout.
-pub fn readout_text(lonlat: Option<LonLat>, meters: Option<f64>) -> String {
+/// `value` is the value of the raster layer at the place, with its unit.
+pub fn readout_text(lonlat: Option<LonLat>, value: Option<&str>) -> String {
     let Some([lon, lat]) = lonlat else {
         return "–".to_owned();
     };
     let east = if lon < 0.0 { 'W' } else { 'E' };
     let north = if lat < 0.0 { 'S' } else { 'N' };
     let place = format!("{:.1}°{east} {:.1}°{north}", lon.abs(), lat.abs());
-    match meters {
-        Some(m) => format!("{place} · {m:.0} m"),
+    match value {
+        Some(value) => format!("{place} · {value}"),
         None => place,
     }
 }
@@ -311,6 +316,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         worlds_menu(&ctx, state, &mut controls, &rects);
     }
     world_form::pad(&ctx, state, &mut controls, &rects);
+    raster_form::pad(&ctx, state, &mut controls, &rects);
 
     state.pad.controls = controls;
     state.pad.rects = Some(rects);
@@ -783,6 +789,7 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, travel: f
 
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
+    let unit = state.shown_unit().to_string();
     size_slider(state, |fraction, text| {
         widgets::row_slider(ui, controls, "Brush size", "Size", fraction, text)
     });
@@ -816,7 +823,8 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             *seed = (fraction * high).round() as u32;
         }
     } else {
-        let text = format!("{:.0} m", brush.strength_m);
+        let (min, max) = brush.value_range;
+        let text = world::value_text(brush.strength_value(), max - min, &unit);
         let strength = log_slider(brush.strength_m, STRENGTH_M, &text, |fraction, text| {
             let name = panels::strength_name(brush.mode);
             widgets::row_slider(ui, controls, "Brush strength", name, fraction, text)
@@ -839,36 +847,50 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             brush.talus_deg = degrees;
         }
     }
+    let range = brush.value_range;
     let floor = (&mut brush.floor_on, &mut brush.floor_m);
-    limit_rows(ui, controls, "Floor", "Brush floor", floor);
+    limit_rows(ui, controls, "Floor", "Brush floor", floor, range, &unit);
     let ceiling = (&mut brush.ceiling_on, &mut brush.ceiling_m);
-    limit_rows(ui, controls, "Ceiling", "Brush ceiling", ceiling);
+    limit_rows(
+        ui,
+        controls,
+        "Ceiling",
+        "Brush ceiling",
+        ceiling,
+        range,
+        &unit,
+    );
     ui.spacing_mut().item_spacing.y = 6.0;
     panels::brush_settings(ui, state);
 }
 
-/// The step of the slider of an elevation limit of the brush, in meters.
-const LIMIT_STEP_M: f64 = 50.0;
+/// The number of steps of the slider of a limit of the brush. A height has
+/// steps of 50 meters.
+const LIMIT_STEPS: f64 = 240.0;
 
-/// The switch of an elevation limit of the brush. While the switch is on,
-/// a slider below it sets the elevation.
+/// The switch of a limit of the brush. While the switch is on, a slider
+/// below it sets the value, in the unit of the layer that the brush paints.
+/// `range` has the values of the lowest and of the highest level of the
+/// layer.
 fn limit_rows(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     label: &str,
     name: &str,
-    (on, meters): (&mut bool, &mut f64),
+    (on, value): (&mut bool, &mut f64),
+    (min, max): (f64, f64),
+    unit: &str,
 ) {
     widgets::switch_row(ui, controls, name, label, on);
     if !*on {
         return;
     }
-    let span = ELEV_MAX - ELEV_MIN;
-    let mut fraction = ((*meters - ELEV_MIN) / span).clamp(0.0, 1.0);
-    let text = format!("{:.0} m", *meters);
+    let span = max - min;
+    let mut fraction = ((*value - min) / span).clamp(0.0, 1.0);
+    let text = world::value_text(value.clamp(min, max), span, unit);
     let name = format!("{name} level");
     if widgets::row_slider(ui, controls, &name, "Level", &mut fraction, &text) {
-        *meters = ((ELEV_MIN + fraction * span) / LIMIT_STEP_M).round() * LIMIT_STEP_M;
+        *value = min + (fraction * LIMIT_STEPS).round() * span / LIMIT_STEPS;
     }
 }
 
@@ -1086,9 +1108,15 @@ fn add_menu(
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             let ui = &mut ui;
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            if widgets::text_row(ui, controls, NEW_RASTER, 0.0, false, true).clicked() {
-                let id = state.add_height();
-                state.pad.layer = Some(LayerRef::Raster(id));
+            // The arrow tells that the row opens a form.
+            let raster = widgets::text_row(ui, controls, NEW_RASTER, 0.0, false, true);
+            let arrow = Rect::from_center_size(
+                pos2(raster.rect.right() - 10.0, raster.rect.center().y),
+                vec2(18.0, 18.0),
+            );
+            icons::paint(ui.painter(), arrow, Icon::Open, 18.0, theme::MUTE);
+            if raster.clicked() {
+                state.raster_form = Some(RasterForm::open(state));
                 state.pad.add = false;
             }
             for (name, kind) in NEW_LAYERS {
@@ -1119,8 +1147,9 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     let features = layer.features.len().to_string();
     ui.spacing_mut().item_spacing.y = 0.0;
 
+    let of = LayerRef::Vector(id);
     let mut text = match state.pad.name.take() {
-        Some((of, text)) if of == id => text,
+        Some((layer, text)) if layer == of => text,
         _ => name.clone(),
     };
     let valid = !text.trim().is_empty();
@@ -1131,7 +1160,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         // The field shows the name again after an undo and after a blank text.
         text = name;
     }
-    state.pad.name = Some((id, text));
+    state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
     widgets::value_row(ui, "Features", &features);
     ui.add_space(6.0);
@@ -1175,19 +1204,57 @@ fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     note_text(ui, progress, state.export_note.as_ref());
 }
 
-/// The panel of a raster layer: the import into a height layer, the export,
-/// and the bands of the layer.
+/// The panel of a raster layer: its name, its value range with its unit, its
+/// face size, the import into a height layer, the export, the button that
+/// deletes the layer, and the bands of the layer.
 fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
-    if state.doc.project.raster(id).is_some_and(is_height) {
+    let Some(raster) = state.doc.project.raster(id) else {
+        return;
+    };
+    let (name, unit, height) = (raster.name.clone(), raster.unit.clone(), is_height(raster));
+    let span = raster.value_max - raster.value_min;
+    let range = format!(
+        "{} to {}",
+        world::value_text(raster.value_min, span, ""),
+        world::value_text(raster.value_max, span, &unit)
+    );
+    let face_size = world::grouped(u64::from(raster.face_size));
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    let of = LayerRef::Raster(id);
+    let mut text = match state.pad.name.take() {
+        Some((layer, text)) if layer == of => text,
+        _ => name.clone(),
+    };
+    let valid = !text.trim().is_empty();
+    let field = widgets::text_field(ui, controls, LAYER_NAME, "Name", None, &mut text, valid);
+    if field.changed() {
+        state.rename_raster(id, &text);
+    } else if !field.has_focus() {
+        // The field shows the name again after an undo and after a blank text.
+        text = name;
+    }
+    state.pad.name = Some((of, text));
+    widgets::value_row(ui, "Values", &range);
+    widgets::value_row(ui, "Face size", &face_size);
+    if height {
         import_row(ui, state, controls);
     }
     export_row(ui, state, controls);
+    // The button is above the bands, which are longer than a short panel.
+    ui.add_space(6.0);
+    let delete = widgets::button_row_in(ui, controls, DELETE_RASTER, true, theme::WARN);
+    ui.add_space(6.0);
+    ui.spacing_mut().item_spacing.y = 6.0;
     ui.checkbox(&mut state.globe.preview.greyscale, "Greyscale");
     let mut preview = state.globe.preview;
     if let Some(map) = state.globe.raster_map_mut(id) {
-        elevation::controls(ui, &mut map.bands, &mut preview);
+        elevation::controls(ui, &mut map.bands, &mut preview, &unit);
     }
     state.globe.preview = preview;
+    if delete.clicked() {
+        state.remove_raster(id);
+    }
 }
 
 fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
@@ -1210,7 +1277,8 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     let Some(band) = rects.readout else {
         return;
     };
-    let text = readout_text(state.cursor_lonlat, state.cursor_meters);
+    let value = state.cursor_value.map(|value| state.value_text(value));
+    let text = readout_text(state.cursor_lonlat, value.as_deref());
     let galley = ui
         .painter()
         .layout_no_wrap(text, theme::mono(), theme::MUTE);

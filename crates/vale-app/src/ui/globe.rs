@@ -369,7 +369,7 @@ pub(super) fn canvas(
         .and_then(|pos| globe.unproject(pos));
     state.cursor_lonlat = cursor.map(|dir| dir_to_lonlat(dir).into());
     let value = |dir| globe.map.bands.value(globe.map.sample(dir));
-    state.cursor_meters = cursor.filter(|_| globe.raster().is_some()).map(value);
+    state.cursor_value = cursor.filter(|_| globe.raster().is_some()).map(value);
 
     let more = globe.advance(now);
     let pixels_per_point = ui.ctx().pixels_per_point();

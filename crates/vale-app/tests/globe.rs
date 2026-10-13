@@ -1019,11 +1019,12 @@ fn a_change_of_a_band_limit_shows_in_the_same_frame() {
 #[test]
 fn the_bar_adds_moves_and_removes_a_band_limit() {
     let mut h = harness();
-    h.get_by_label("Elevation").click();
+    h.get_by_label(vale_app::ui::elevation::PANEL).click();
     h.run_steps(2);
     let count = h.state().globe.map.bands.limits().len();
     let rect = h.get_by_label(BAR_LABEL).rect();
-    let at = |meters: f64| Pos2::new(rect.left() + 20.0, limit_y(rect, meters));
+    let bands = vale_terrain::Bands::default();
+    let at = |meters: f64| Pos2::new(rect.left() + 20.0, limit_y(rect, &bands, meters));
 
     button(&mut h, egui::PointerButton::Primary, at(5000.0), true);
     h.step();

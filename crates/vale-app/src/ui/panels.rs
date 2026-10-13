@@ -4,9 +4,10 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, World};
 
+use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, pad};
-use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
+use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, elevation, pad};
+use vale_terrain::Mode;
 
 use crate::globe::brush::{
     EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
@@ -55,7 +56,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 }
                 ui.menu_button(RASTERS_MENU, |ui| {
                     if ui.button(ADD_RASTER).clicked() {
-                        state.add_height();
+                        state.raster_form = Some(RasterForm::open(state));
+                        ui.close();
                     }
                     raster_rows(ui, state);
                 });
@@ -72,7 +74,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     flat_projection(ui, state);
                 }
                 ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
-                ui.toggle_value(&mut state.globe.preview.panel, "Elevation");
+                ui.toggle_value(&mut state.globe.preview.panel, elevation::PANEL);
                 ui.toggle_value(&mut state.globe.debug, "Debug");
                 ui.separator();
                 let import = egui::Button::new("Import heightmap…");
@@ -103,8 +105,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// The button of the tool bar that opens the list of the raster layers.
 pub const RASTERS_MENU: &str = "Rasters";
-/// The button that adds a raster layer.
-pub const ADD_RASTER: &str = "Add raster";
+/// The button that opens the form of a new raster layer.
+pub const ADD_RASTER: &str = "Add raster…";
 
 /// The rows of the raster layers, with the top layer first. A checkbox
 /// shows or hides a layer, and the name selects it.
@@ -386,6 +388,7 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
 }
 
 fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
+    let unit = state.shown_unit().to_string();
     let world_km = state.doc.project.world.radius_km;
     let (unit_km, symbol) = world::large_unit(state.doc.project.world.units);
     let globe = &mut state.globe;
@@ -422,10 +425,19 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         let seed = &mut state.doc.project.world.seed;
         ui.add(egui::Slider::new(seed, SEED).text("Seed"));
     } else {
+        // The slider shows the strength as a value of the layer.
+        let (min, max) = globe.brush.value_range;
+        let (span, scale) = (
+            max - min,
+            globe.brush.strength_value() / globe.brush.strength_m,
+        );
         let strength = egui::Slider::new(&mut globe.brush.strength_m, STRENGTH_M)
             .logarithmic(true)
-            .fixed_decimals(0)
-            .suffix(" m")
+            .custom_formatter(move |meters, _| world::value_text(meters * scale, span, &unit))
+            .custom_parser(move |text| {
+                let number: String = text.chars().take_while(|c| !c.is_alphabetic()).collect();
+                Some(number.trim().parse::<f64>().ok()? / scale)
+            })
             .text(strength_name(globe.brush.mode));
         ui.add(strength);
     }
@@ -442,28 +454,37 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The floor and the ceiling of the brush. Each one has a checkbox and an
-/// elevation.
+/// A field for a value of the layer that the brush paints, in the unit of
+/// the layer. `range` has the values of the lowest and of the highest level.
+fn value_drag<'a>(value: &'a mut f64, (min, max): (f64, f64), unit: &str) -> egui::DragValue<'a> {
+    let span = max - min;
+    egui::DragValue::new(value)
+        .speed(span / 1200.0)
+        .range(min..=max)
+        .fixed_decimals(world::value_decimals(span))
+        .suffix(format!(" {unit}"))
+}
+
+/// The floor and the ceiling of the brush. Each one has a checkbox and a
+/// value.
 fn brush_limits(ui: &mut egui::Ui, state: &mut AppState) {
+    let unit = state.shown_unit().to_string();
     let brush = &mut state.globe.brush;
-    for (name, on, meters) in [
+    let range = brush.value_range;
+    for (name, on, value) in [
         ("Floor", &mut brush.floor_on, &mut brush.floor_m),
         ("Ceiling", &mut brush.ceiling_on, &mut brush.ceiling_m),
     ] {
         ui.horizontal(|ui| {
             ui.checkbox(on, name);
-            let value = egui::DragValue::new(meters)
-                .speed(10.0)
-                .range(ELEV_MIN..=ELEV_MAX)
-                .fixed_decimals(0)
-                .suffix(" m");
-            ui.add_enabled(*on, value);
+            ui.add_enabled(*on, value_drag(value, range, &unit));
         });
     }
 }
 
 /// The lock of the size and the flatten level.
 pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
+    let unit = state.shown_unit().to_string();
     let globe = &mut state.globe;
     let globe_radius = globe.radius();
     let mut lock = globe.brush.lock.is_some();
@@ -480,14 +501,10 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     match globe.brush.flatten_level {
         Some(level) => {
             ui.horizontal(|ui| {
-                let mut meters = level_to_meters(level);
-                let value = egui::DragValue::new(&mut meters)
-                    .speed(10.0)
-                    .range(ELEV_MIN..=ELEV_MAX)
-                    .fixed_decimals(0)
-                    .suffix(" m");
-                if ui.add(value).changed() {
-                    globe.brush.flatten_level = Some(meters_to_level(meters));
+                let mut value = globe.brush.value(level);
+                let range = globe.brush.value_range;
+                if ui.add(value_drag(&mut value, range, &unit)).changed() {
+                    globe.brush.flatten_level = Some(globe.brush.level(value));
                 }
                 if ui.button("Use stroke start").clicked() {
                     globe.brush.flatten_level = None;
@@ -571,8 +588,8 @@ fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
 fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Layers");
     ui.menu_button("Add layer", |ui| {
-        if ui.button("Raster").clicked() {
-            state.add_height();
+        if ui.button("Raster…").clicked() {
+            state.raster_form = Some(RasterForm::open(state));
             ui.close();
         }
         for (name, kind) in [

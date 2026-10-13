@@ -50,6 +50,9 @@ pub struct Args {
     /// With --layout pad: open the menu of the worlds.
     #[arg(long)]
     pub worlds_menu: bool,
+    /// Open the form of a new raster layer.
+    #[arg(long)]
+    pub raster_form: bool,
     /// Open the form of a new world or of the world of the project.
     #[arg(long, value_enum, value_name = "FORM")]
     pub world_form: Option<FormMode>,
