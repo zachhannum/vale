@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use eframe::egui;
 use eframe::egui_wgpu;
+use vale_store::LayerId;
 
 use super::AppState;
 use vale_store::Geometry;
@@ -16,7 +17,7 @@ use crate::globe::math::{dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Painting, Tap, on_canvas};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
-use crate::globe::{Globe, WorldView};
+use crate::globe::{Globe, Paint, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
@@ -244,9 +245,14 @@ fn color(c: vale_style::Color) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
 }
 
-/// Draws the visible vector layers over the globe, in the order of the
-/// project.
-fn vectors(painter: &egui::Painter, rect: egui::Rect, doc: &Document, view: &GlobeView) {
+/// Draws one vector layer over the globe.
+fn vector_layer(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    doc: &Document,
+    view: &GlobeView,
+    id: LayerId,
+) {
     let radius = view.radius(rect);
     let step = vector::step(radius * f64::from(painter.ctx().pixels_per_point()));
     let center = rect.center();
@@ -257,7 +263,8 @@ fn vectors(painter: &egui::Painter, rect: egui::Rect, doc: &Document, view: &Glo
         )
     };
     let path = |part: &Vec<vector::P2>| part.iter().map(to_screen).collect::<Vec<_>>();
-    for entry in &doc.frame.entries {
+    let entries = doc.frame.entries.iter().filter(|e| e.layer == id);
+    for entry in entries {
         let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
             continue;
         };
@@ -368,8 +375,12 @@ pub(super) fn canvas(
         .or(globe.input.pos)
         .and_then(|pos| globe.unproject(pos));
     state.cursor_lonlat = cursor.map(|dir| dir_to_lonlat(dir).into());
-    let value = |dir| globe.map.bands.value(globe.map.sample(dir));
-    state.cursor_value = cursor.filter(|_| globe.raster().is_some()).map(value);
+    // The value is that of the raster layer of the readout.
+    let shown = state.shown_raster().map(|raster| raster.id);
+    let globe = &mut state.globe;
+    let map = shown.and_then(|id| globe.raster_map(id));
+    let value = |(dir, map): (_, &vale_terrain::Heightmap)| map.bands.value(map.sample(dir));
+    state.cursor_value = cursor.zip(map).map(value);
 
     let more = globe.advance(now);
     let pixels_per_point = ui.ctx().pixels_per_point();
@@ -377,9 +388,23 @@ pub(super) fn canvas(
         background,
         pixels_per_point,
     });
-    match globe.callback(pixels_per_point, backdrop) {
-        Some(callback) => {
-            painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
+    // The passes of the raster layers and the shapes of the vector layers
+    // go to the painter in the draw order. The flat view draws no vector
+    // layer.
+    let globe_view = globe.world_view == WorldView::Globe;
+    match globe.paint(pixels_per_point, backdrop) {
+        Some(paints) => {
+            for paint in paints {
+                match paint {
+                    Paint::Callback(callback) => {
+                        painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
+                    }
+                    Paint::Vector(id) if globe_view => {
+                        vector_layer(&painter, rect, &state.doc, &globe.view, id);
+                    }
+                    Paint::Vector(_) => {}
+                }
+            }
         }
         None => {
             painter.text(
@@ -390,9 +415,6 @@ pub(super) fn canvas(
                 egui::Color32::GRAY,
             );
         }
-    }
-    if globe.world_view == WorldView::Globe {
-        vectors(&painter, rect, &state.doc, &globe.view);
     }
     if let Some(pos) = globe.input.pos.filter(|_| globe.brushing()) {
         let globe_radius = globe.radius();

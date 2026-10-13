@@ -606,7 +606,7 @@ fn the_project_file_stores_each_raster_layer() {
     let mut ground = Heightmap::new(1024, BASE);
     ground.bands.add(1234.5).unwrap();
     let mut wet = Heightmap::new(512, 0);
-    wet.bands = Bands::with_range(0.0, 4000.0).unwrap();
+    wet.bands = Bands::with_range(0.0, 4000.0, false).unwrap();
     wet.bands.add(250.0).unwrap();
     wet.bands.ramp.land[0] = [1, 2, 3];
     paint(&mut ground, 45.0, 35.3, 0.2);

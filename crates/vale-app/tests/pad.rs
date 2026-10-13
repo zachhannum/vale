@@ -5,7 +5,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
 use vale_app::globe::view::GlobeView;
-use vale_app::globe::{Tool, WorldView};
+use vale_app::globe::{StackItem, Tool, WorldView};
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
@@ -284,6 +284,21 @@ fn vector(h: &Pad, name: &str) -> vale_store::LayerId {
     layer.unwrap_or_else(|| panic!("no layer {name}")).id
 }
 
+/// The raster layers that the globe draws, from the bottom.
+fn drawn(h: &Pad) -> Vec<vale_store::RasterId> {
+    let stack = h.state().globe.stack().unwrap_or_default();
+    let ids = stack.iter().filter_map(|item| match item {
+        StackItem::Raster { id, .. } => Some(*id),
+        StackItem::Vector(_) => None,
+    });
+    ids.collect()
+}
+
+/// The raster layer of the readout.
+fn shown(h: &Pad) -> Option<vale_store::RasterId> {
+    h.state().shown_raster().map(|raster| raster.id)
+}
+
 #[test]
 fn the_layers_panel_adds_selects_and_hides_raster_layers() {
     for size in [BOARDS[0], BOARDS[3]] {
@@ -357,30 +372,37 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         assert_eq!(h.state().globe.raster(), Some(first));
         assert!(h.state().globe.paintable, "{what}");
 
+        // The globe draws the two raster layers in the draw order, and the
+        // selection does not change that.
+        assert_eq!(drawn(&h), [first, second], "{what}");
+
         // The eye hides the layer. The brush does not paint a hidden layer,
-        // and the globe shows the other layer.
+        // and the globe draws the other layer. The readout has the top
+        // visible raster layer.
         tap(&mut h, "Hide Height");
         let layer = h.state().doc.project.raster_layer(first).unwrap();
         assert!(!layer.visible, "{what}");
         assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(first)));
-        assert_eq!(h.state().globe.raster(), Some(second));
+        assert_eq!(h.state().globe.raster(), Some(first));
+        assert_eq!((drawn(&h), shown(&h)), (vec![second], Some(second)));
         assert!(!h.state().globe.paintable, "{what}");
         tap(&mut h, "Hide Raster");
-        assert_eq!(h.state().globe.raster(), None, "{what}");
+        assert_eq!((drawn(&h), shown(&h)), (vec![], None), "{what}");
         tap(&mut h, "Show Height");
         tap(&mut h, "Show Raster");
         assert_eq!(h.state().globe.raster(), Some(first));
+        assert_eq!((drawn(&h), shown(&h)), (vec![first, second], Some(first)));
         assert!(h.state().globe.paintable, "{what}");
 
-        // The brush does not paint a vector layer. The globe then shows the
+        // The brush does not paint a vector layer. The readout then has the
         // top raster layer of the draw order.
         tap(&mut h, "Layer Rivers");
-        assert_eq!(h.state().globe.raster(), Some(second));
+        assert_eq!(shown(&h), Some(second));
         assert!(!h.state().globe.paintable, "{what}");
         let height = h.state().doc.project.raster_layer(first).unwrap().id;
         assert!(h.state_mut().move_layer(height, 4));
         h.run_steps(2);
-        assert_eq!(h.state().globe.raster(), Some(first), "{what}");
+        assert_eq!((drawn(&h), shown(&h)), (vec![second, first], Some(first)));
 
         // The app takes a raster layer away, with its row.
         assert!(h.state_mut().remove_raster(second));
@@ -592,8 +614,16 @@ fn each_preset_adds_a_layer_with_its_unit_and_its_range() {
         assert!(limits.len() >= 4, "{preset}: {limits:?}");
         let inside = |limit: &f64| *limit > range.0 && *limit < range.1;
         assert!(limits.iter().all(inside), "{preset}: {limits:?}");
-        // Only the height preset gives a height layer.
-        assert_eq!(state.globe.is_height(), preset == "Height", "{preset}");
+        // Only the height preset gives a height layer. It has a sea split,
+        // and it starts as a sea. Each other layer has one ramp, and it
+        // starts at the minimum of its range.
+        let height = preset == "Height";
+        assert_eq!(state.globe.is_height(), height, "{preset}");
+        assert_eq!(bands.sea().is_some(), height, "{preset}");
+        let map = state.globe.raster_map(raster.id).unwrap();
+        let start = if height { -2500.0 } else { range.0 };
+        assert_eq!(map.base(), bands.level(start), "{preset}");
+        assert_eq!(map.allocated_tiles(), 0, "{preset}");
     }
 
     // A name that the user typed stays when the preset changes.

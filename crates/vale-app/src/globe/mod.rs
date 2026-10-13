@@ -1,5 +1,5 @@
-//! The globe workspace: a raster layer of the world on a globe that you
-//! rotate and paint.
+//! The globe workspace: the layers of the world on a globe that you rotate,
+//! and the raster layer that you paint.
 
 use std::collections::VecDeque;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -9,10 +9,10 @@ use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
-use vale_store::RasterId;
+use vale_store::{LayerId, RasterId};
 use vale_terrain::{
-    ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, Stamp, TexelRect,
-    Window, WindowHeights, meters_to_level,
+    Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, Stamp,
+    TexelRect, Window, WindowHeights, meters_to_level, reduced_cap, reduced_face_size,
 };
 
 pub mod backdrop;
@@ -38,7 +38,10 @@ use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, 
 use erode::{Eroder, Ground, brush_window, erode_window, near_side};
 use export::ExportResult;
 use flat::FlatView;
-use gpu::{Event, GlobeCallback, Link, MapTag, Op, Uniforms, Uploads};
+use gpu::{
+    Changes, Draw, Event, Frame, GlobeCallback, Job as GpuJob, LayerKey, Link, MapKey, Op, Pass,
+    Uniforms, Uploads,
+};
 use import::{ImportResult, Job, Step};
 use math::{V3, angle};
 use nav::Nav;
@@ -54,8 +57,24 @@ pub const FACE_SIZE: usize = 1024;
 /// The face size of the app in a window.
 pub const WINDOW_FACE_SIZE: usize = 8192;
 
-/// The elevation of the empty world and of a new height layer, in meters.
+/// The elevation of a new height layer, in meters.
 pub const START_ELEVATION: f64 = -2500.0;
+
+/// The largest face size of the reduced copy of a raster layer at first.
+pub const DISPLAY_CAP: u32 = 2048;
+/// The smallest of the largest face sizes of a reduced copy.
+const DISPLAY_CAP_MIN: u32 = 512;
+/// The memory of the GPU for the reduced copies of all raster layers, in
+/// bytes.
+pub const DISPLAY_BUDGET: u64 = 256 << 20;
+
+/// The key of a heightmap that the GPU does not hold.
+const NO_MAP: MapKey = MapKey {
+    layer: LayerKey::Solo,
+    generation: u64::MAX,
+    display: false,
+    face_size: 0,
+};
 
 /// The rate of an erode step of one second, for a strength of one meter.
 const ERODE_RATE: f64 = 0.01;
@@ -195,28 +214,117 @@ fn union(a: Option<TexelRect>, b: TexelRect) -> TexelRect {
     }
 }
 
-/// The heightmap of a raster layer that the globe does not show.
-struct Parked {
+/// One visible layer of the world, for the draw order of the globe.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StackItem {
+    /// A raster layer, and how much it hides the layers below it, from 0
+    /// to 1.
+    Raster {
+        id: RasterId,
+        opacity: f32,
+    },
+    Vector(LayerId),
+}
+
+/// One thing that the canvas paints for the globe, from the bottom.
+pub enum Paint {
+    /// A pass of the GPU.
+    Callback(GlobeCallback),
+    /// The shapes of a vector layer.
+    Vector(LayerId),
+}
+
+/// The reduced copy of a raster layer on the GPU. The globe draws it.
+struct DisplayCopy {
+    key: MapKey,
+    /// The changed texels that wait for the copy.
+    uploads: Uploads,
+    /// The copy got each texel one time. The globe does not draw a copy
+    /// before that.
+    loaded: bool,
+}
+
+impl DisplayCopy {
+    /// The number of texels of the heightmap along one side of a texel of
+    /// the copy.
+    fn factor(&self, map: &Heightmap) -> usize {
+        let factor = map.face_size().div_ceil(self.key.face_size as usize);
+        factor.max(1).next_power_of_two()
+    }
+
+    /// Adds the changes of the heightmap of the layer.
+    fn add(&mut self, map: &Heightmap, changes: &Changes, budget: usize) {
+        let factor = self.factor(map);
+        if changes.reset {
+            let side = self.key.face_size as usize;
+            let all = TexelRect {
+                x0: 0,
+                y0: 0,
+                x1: side,
+                y1: side,
+            };
+            self.uploads.restart();
+            for face in 0..FACES {
+                self.uploads.add(face, all, factor, budget, true);
+            }
+        } else {
+            for &(face, rect) in &changes.rects {
+                self.add_rect(map, face, rect, budget);
+            }
+        }
+    }
+
+    /// Adds changed texels of the heightmap of the layer.
+    fn add_rect(&mut self, map: &Heightmap, face: usize, rect: TexelRect, budget: usize) {
+        let factor = self.factor(map);
+        self.uploads
+            .add(face, rect.reduced(factor), factor, budget, false);
+    }
+}
+
+/// A raster layer of the world.
+struct Layer {
     id: RasterId,
     height: bool,
-    map: Heightmap,
+    /// The heightmap of the layer. `None`: the brush paints the layer, and
+    /// `Globe::map` is its heightmap.
+    map: Option<Heightmap>,
+    /// `Some`: the layer is visible.
+    copy: Option<DisplayCopy>,
 }
 
 pub struct Globe {
-    /// The heightmap that the globe shows and the brush paints. During a
-    /// stroke, the GPU texture is ahead of it. The texels come back when the
-    /// stroke ends.
+    /// The heightmap that the brush paints. During a stroke, the GPU
+    /// texture is ahead of it. The texels come back when the stroke ends.
     pub map: Heightmap,
-    /// The raster layer of `map`. `None`: the globe shows no raster layer,
+    /// The raster layer of `map`. `None`: the brush paints no raster layer,
     /// and `map` is an empty heightmap that the project does not hold.
     raster: Option<RasterId>,
     /// The values of `map` are heights in meters, so it has a sea and
     /// rivers.
     height: bool,
-    /// The heightmaps of the other raster layers.
-    parked: Vec<Parked>,
-    /// The count of the heightmaps that `map` held before this one.
-    generation: u64,
+    /// The raster layers of the world.
+    layers: Vec<Layer>,
+    /// The visible layers in draw order, from the bottom. `None`: the globe
+    /// draws `map` as one layer.
+    stack: Option<Vec<StackItem>>,
+    /// The raster layer that the brush paints after the stroke or the
+    /// import that runs.
+    pending: Option<Option<RasterId>>,
+    /// The count of the heightmaps that the GPU got.
+    generations: u64,
+    /// The full heightmap of `map` on the GPU. `None`: the GPU holds none.
+    full: Option<MapKey>,
+    /// The GPU got each texel of `map` one time after `full` changed.
+    full_loaded: bool,
+    /// The largest face size of a reduced copy.
+    display_cap: u32,
+    /// The memory of the GPU for the reduced copies, in bytes.
+    pub display_budget: u64,
+    /// The count of the sets of reduced copies before this one.
+    epoch: u64,
+    /// The app wants the brush to paint `map`.
+    paint_wanted: bool,
     /// The face size of the empty heightmap, and of a raster layer that the
     /// app makes with no choice of the user.
     new_face_size: usize,
@@ -232,7 +340,8 @@ pub struct Globe {
     /// The format of the render target. `None`: no wgpu renderer draws the UI.
     pub format: Option<wgpu::TextureFormat>,
     pub tool: Tool,
-    /// The brush can paint `map`. The UI sets it in each frame.
+    /// The brush can paint `map`. It is false while the brush waits for
+    /// another raster layer.
     pub paintable: bool,
     pub preview: Preview,
     pub brush: BrushSettings,
@@ -251,7 +360,7 @@ pub struct Globe {
     pub blur: bool,
     /// The text of the last stroke test.
     pub test_report: Option<String>,
-    /// The changed texels that wait for the GPU.
+    /// The changed texels that wait for the full heightmap on the GPU.
     pub uploads: Uploads,
     link: Link,
     events: mpsc::Receiver<Event>,
@@ -271,6 +380,8 @@ pub struct Globe {
     window: Option<Arc<ChannelWindow>>,
     /// The import that runs.
     import: Option<Job>,
+    /// The raster layer of the import.
+    import_target: Option<RasterId>,
     /// The result of the last import, until the UI takes it.
     import_result: Option<ImportResult>,
     /// The export that runs.
@@ -291,7 +402,7 @@ impl Globe {
     pub fn with_face_size(face_size: usize) -> Globe {
         let (link, events) = Link::new();
         let map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
-        Globe {
+        let mut globe = Globe {
             rivers: Rivers::new(&map, false),
             eroder: Eroder::new(false),
             channels: None,
@@ -300,8 +411,16 @@ impl Globe {
             map,
             raster: None,
             height: true,
-            parked: Vec::new(),
-            generation: 0,
+            layers: Vec::new(),
+            stack: None,
+            pending: None,
+            generations: 0,
+            full: None,
+            full_loaded: false,
+            display_cap: DISPLAY_CAP,
+            display_budget: DISPLAY_BUDGET,
+            epoch: 0,
+            paint_wanted: true,
             new_face_size: face_size,
             max_face_size: usize::MAX,
             view: GlobeView::centered(15.0, 25.0),
@@ -332,12 +451,15 @@ impl Globe {
             strokes: 0,
             test: None,
             import: None,
+            import_target: None,
             import_result: None,
             export: None,
             export_result: None,
             edits: 0,
             memory_undo: true,
-        }
+        };
+        globe.begin_full();
+        globe
     }
 
     /// Replaces the heightmap on the globe with an empty one of this face
@@ -369,28 +491,39 @@ impl Globe {
     /// Makes the globe that of a new world: no raster layer, an empty
     /// heightmap with no undo step, and the first views.
     pub fn clear(&mut self) {
-        self.parked.clear();
+        self.layers.clear();
         self.raster = None;
         self.height = true;
+        self.pending = None;
         self.set_map(self.empty_map());
+        self.sync_copies();
         self.view = GlobeView::centered(15.0, 25.0);
         self.flat = FlatView::default();
     }
 
-    /// The raster layer that the globe shows.
+    /// The raster layer that the brush paints.
     pub fn raster(&self) -> Option<RasterId> {
         self.raster
     }
 
-    /// True if the values of the heightmap on the globe are heights in
-    /// meters. The sea, the rivers, and the brush modes that need them are
-    /// for such a heightmap only.
+    /// True if the values of the heightmap that the brush paints are
+    /// heights in meters. The sea, the rivers, and the brush modes that
+    /// need them are for such a heightmap only.
     pub fn is_height(&self) -> bool {
         self.height
     }
 
-    /// Adds the heightmap of a raster layer. The globe does not show it
-    /// until `show`. `height`: the unit of the layer is the meter. Returns
+    fn layer(&self, id: RasterId) -> Option<&Layer> {
+        self.layers.iter().find(|layer| layer.id == id)
+    }
+
+    fn layer_mut(&mut self, id: RasterId) -> Option<&mut Layer> {
+        self.layers.iter_mut().find(|layer| layer.id == id)
+    }
+
+    /// Adds the heightmap of a raster layer. The globe draws the layer when
+    /// it is in the list of `set_stack`, and the brush paints it after
+    /// `activate`. `height`: the unit of the layer is the meter. Returns
     /// `false` if the device cannot show the heightmap. The globe then does
     /// not hold it.
     pub fn add_raster(&mut self, id: RasterId, mut map: Heightmap, height: bool) -> bool {
@@ -399,53 +532,106 @@ impl Globe {
         }
         self.remove_raster(id);
         map.set_undo_steps(self.memory_undo);
-        self.parked.push(Parked { id, height, map });
+        self.layers.push(Layer {
+            id,
+            height,
+            map: Some(map),
+            copy: None,
+        });
         true
     }
 
-    /// Removes the heightmap of a raster layer. If the globe shows it, the
-    /// globe then shows no raster layer.
+    /// Removes the heightmap of a raster layer. If the brush paints it, a
+    /// stroke or an import that runs ends with no result, and the brush then
+    /// paints no raster layer.
     pub fn remove_raster(&mut self, id: RasterId) {
-        if self.raster == Some(id) {
-            self.show(None);
+        if self.pending == Some(Some(id)) {
+            self.pending = None;
         }
-        self.parked.retain(|parked| parked.id != id);
+        if self.raster == Some(id) {
+            let next = self.pending.take().flatten();
+            self.switch(next);
+        }
+        self.layers.retain(|layer| layer.id != id);
+        if let Some(stack) = &mut self.stack {
+            stack.retain(|item| !matches!(item, StackItem::Raster { id: of, .. } if *of == id));
+        }
+        self.set_paintable(self.paint_wanted);
     }
 
-    /// Shows the heightmap of a raster layer, so that the brush paints it.
-    /// `None`: the globe shows an empty heightmap. A stroke or an import
-    /// that runs ends with no result. Returns `false` if the globe does not
-    /// hold the heightmap of the layer.
-    pub fn show(&mut self, id: Option<RasterId>) -> bool {
+    /// Makes a raster layer the one that the brush paints. `None`: the
+    /// brush paints no raster layer. A stroke or an import that runs ends
+    /// first, and the layer changes after it. Returns `false` if the globe
+    /// does not hold the heightmap of the layer.
+    pub fn activate(&mut self, id: Option<RasterId>) -> bool {
         if id == self.raster {
-            return true;
+            self.pending = None;
+        } else if id.is_some_and(|id| self.raster_map(id).is_none()) {
+            return false;
+        } else if self.switch_blocked() {
+            self.pending = Some(id);
+        } else {
+            self.switch(id);
         }
-        let (map, height) = match id {
+        self.set_paintable(self.paint_wanted);
+        true
+    }
+
+    /// Tells the globe if the app wants the brush to paint the raster layer
+    /// of the last `activate`.
+    pub fn set_paintable(&mut self, paintable: bool) {
+        self.paint_wanted = paintable;
+        self.paintable = paintable && self.pending.is_none();
+    }
+
+    /// True while a stroke or an import of `map` is not complete.
+    fn switch_blocked(&self) -> bool {
+        let import = self.import.is_some() && self.import_target == self.raster;
+        self.stroke.is_some() || !self.inputs.is_empty() || self.test.is_some() || import
+    }
+
+    /// Makes the raster layer that waits the one that the brush paints,
+    /// after the end of the stroke and of the import.
+    fn switch_if_idle(&mut self) {
+        if let Some(id) = self.pending.filter(|_| !self.switch_blocked()) {
+            self.switch(id);
+            self.set_paintable(self.paint_wanted);
+        }
+    }
+
+    /// Changes the raster layer that the brush paints. A stroke that runs
+    /// ends with no result.
+    fn switch(&mut self, id: Option<RasterId>) {
+        self.pending = None;
+        let next = match id {
             Some(id) => {
-                let Some(at) = self.parked.iter().position(|parked| parked.id == id) else {
-                    return false;
+                let layer = self.layer_mut(id);
+                let Some((map, height)) = layer.and_then(|l| Some((l.map.take()?, l.height)))
+                else {
+                    return;
                 };
-                let parked = self.parked.swap_remove(at);
-                (parked.map, parked.height)
+                (map, height)
             }
             None => (self.empty_map(), true),
         };
-        // The stroke or the import has the undo entry of the old heightmap.
+        // The stroke has the undo entry of the old heightmap.
         self.map.cancel_stroke();
-        let map = std::mem::replace(&mut self.map, map);
-        if let Some(id) = self.raster {
-            let height = self.height;
-            self.parked.push(Parked { id, height, map });
+        let old = std::mem::replace(&mut self.map, next.0);
+        if let Some(layer) = self.raster.and_then(|id| self.layer_mut(id)) {
+            layer.map = Some(old);
         }
-        (self.raster, self.height) = (id, height);
-        self.reset_map();
-        true
+        (self.raster, self.height) = (id, next.1);
+        if self.import_target != id {
+            self.import = None;
+        }
+        self.reset_state();
+        self.begin_full();
+        self.request_rivers();
     }
 
     /// The ID of each raster layer that has its heightmap here.
     pub fn rasters(&self) -> Vec<RasterId> {
-        let parked = self.parked.iter().map(|parked| parked.id);
-        self.raster.into_iter().chain(parked).collect()
+        self.layers.iter().map(|layer| layer.id).collect()
     }
 
     /// The heightmap of a raster layer.
@@ -453,59 +639,202 @@ impl Globe {
         if self.raster == Some(id) {
             return Some(&self.map);
         }
-        let parked = self.parked.iter().find(|parked| parked.id == id);
-        parked.map(|parked| &parked.map)
+        self.layer(id).and_then(|layer| layer.map.as_ref())
     }
 
-    /// The heightmap of a raster layer. A change to a heightmap that the
-    /// globe does not show goes to the GPU when the globe shows it.
+    /// The heightmap of a raster layer. A change goes to the GPU in the
+    /// next frame.
     pub fn raster_map_mut(&mut self, id: RasterId) -> Option<&mut Heightmap> {
         if self.raster == Some(id) {
             return Some(&mut self.map);
         }
-        let parked = self.parked.iter_mut().find(|parked| parked.id == id);
-        parked.map(|parked| &mut parked.map)
+        self.layer_mut(id).and_then(|layer| layer.map.as_mut())
     }
 
     /// The heightmap of each raster layer, for a save.
     pub fn raster_maps(&mut self) -> Vec<(RasterId, &mut Heightmap)> {
         let shown = self.raster.map(|id| (id, &mut self.map));
-        let parked = self.parked.iter_mut().map(|p| (p.id, &mut p.map));
-        shown.into_iter().chain(parked).collect()
+        let layers = self.layers.iter_mut();
+        let others = layers.filter_map(|layer| Some((layer.id, layer.map.as_mut()?)));
+        shown.into_iter().chain(others).collect()
     }
 
-    /// The tag of the heightmap on the globe for the changes in the queue
-    /// of the GPU.
-    fn tag(&self) -> MapTag {
-        MapTag {
-            face_size: self.map.face_size() as u32,
-            generation: self.generation,
+    /// Sets the visible layers of the world in draw order, from the bottom.
+    /// The globe draws each raster layer of the list with its opacity. A
+    /// raster layer that is not in the list holds no memory of the GPU for
+    /// the picture.
+    pub fn set_stack(&mut self, stack: Vec<StackItem>) {
+        let solo = self.stack.is_none();
+        let rasters = |stack: &[StackItem]| -> Vec<RasterId> {
+            let ids = stack.iter().filter_map(|item| match item {
+                StackItem::Raster { id, .. } => Some(*id),
+                StackItem::Vector(_) => None,
+            });
+            let mut ids: Vec<RasterId> = ids.collect();
+            ids.sort();
+            ids
+        };
+        let same = self
+            .stack
+            .as_ref()
+            .is_some_and(|old| rasters(old) == rasters(&stack));
+        self.stack = Some(stack);
+        if solo && self.raster.is_none() {
+            // The GPU holds no heightmap that no layer has.
+            self.begin_full();
+        }
+        if !same {
+            self.display_cap = self.first_cap();
+        }
+        self.sync_copies();
+    }
+
+    /// The visible layers of `set_stack`.
+    pub fn stack(&self) -> Option<&[StackItem]> {
+        self.stack.as_deref()
+    }
+
+    /// True if the list of `set_stack` has the raster layer.
+    fn visible(&self, id: RasterId) -> bool {
+        let stack = self.stack.iter().flatten();
+        stack
+            .into_iter()
+            .any(|item| matches!(item, StackItem::Raster { id: of, .. } if *of == id))
+    }
+
+    /// The largest face size of a reduced copy by the estimate of the
+    /// memory of the visible layers.
+    fn first_cap(&self) -> u32 {
+        let sizes = self.layers.iter().filter(|layer| self.visible(layer.id));
+        let sizes: Vec<(u32, usize)> = sizes
+            .filter_map(|layer| self.raster_map(layer.id))
+            .map(|map| (map.face_size() as u32, map.allocated_tiles()))
+            .collect();
+        reduced_cap(&sizes, self.display_budget)
+    }
+
+    /// Gives each visible raster layer a reduced copy with the face size of
+    /// the cap, and takes the copy from each other raster layer.
+    fn sync_copies(&mut self) {
+        let cap = self.display_cap;
+        let budget = self.uploads.budget;
+        let mut changed = false;
+        for at in 0..self.layers.len() {
+            let id = self.layers[at].id;
+            let size = self
+                .raster_map(id)
+                .filter(|_| self.visible(id))
+                .map(|map| reduced_face_size(map.face_size() as u32, cap));
+            let old = self.layers[at].copy.as_ref().map(|copy| copy.key.face_size);
+            if old == size {
+                continue;
+            }
+            changed = true;
+            self.generations += 1;
+            let copy = size.map(|face_size| DisplayCopy {
+                key: MapKey {
+                    layer: LayerKey::Raster(id),
+                    generation: self.generations,
+                    display: true,
+                    face_size,
+                },
+                uploads: Uploads::default(),
+                loaded: false,
+            });
+            let fresh = Changes {
+                reset: true,
+                rects: Vec::new(),
+            };
+            let copy = copy.map(|mut copy| {
+                if let Some(map) = self.raster_map(id) {
+                    copy.add(map, &fresh, budget);
+                }
+                copy
+            });
+            self.layers[at].copy = copy;
+        }
+        if changed {
+            self.epoch += 1;
         }
     }
 
-    /// Replaces the heightmap on the globe. The raster layer of the globe
-    /// stays. A stroke or an import that runs ends with no result.
+    /// The face size of the reduced copy of a raster layer on the GPU.
+    /// `None`: the layer is not visible.
+    pub fn display_face_size(&self, id: RasterId) -> Option<u32> {
+        let copy = self.layer(id)?.copy.as_ref()?;
+        Some(copy.key.face_size)
+    }
+
+    /// True while a visible raster layer waits for the texels of its
+    /// reduced copy.
+    pub fn loading(&self) -> bool {
+        let copies = self.layers.iter().filter_map(|layer| layer.copy.as_ref());
+        self.format.is_some() && copies.into_iter().any(|copy| !copy.loaded)
+    }
+
+    /// True while texels wait for the full heightmap on the GPU. With no
+    /// renderer, no texel waits.
+    fn uploading(&self) -> bool {
+        self.format.is_some() && self.full.is_some() && !self.uploads.is_empty()
+    }
+
+    /// The memory of the reduced copies on the GPU after the last frame, in
+    /// bytes.
+    pub fn display_bytes(&self) -> u64 {
+        self.link.copy_bytes().1
+    }
+
+    /// True if the globe draws the raster layer from the full heightmap that
+    /// the brush paints, and not from its reduced copy.
+    pub fn draws_full(&self, id: RasterId) -> bool {
+        self.raster == Some(id) && self.full.is_some() && self.full_loaded
+    }
+
+    /// Makes each reduced copy smaller if the copies hold more memory than
+    /// the budget.
+    fn check_budget(&mut self) {
+        let (epoch, bytes) = self.link.copy_bytes();
+        let over = epoch == self.epoch && bytes > self.display_budget && !self.loading();
+        if over && self.display_cap > DISPLAY_CAP_MIN {
+            self.display_cap /= 2;
+            self.sync_copies();
+        }
+    }
+
+    /// The key of the full heightmap on the GPU for the changes in the
+    /// queue of the GPU.
+    fn tag(&self) -> MapKey {
+        self.full.unwrap_or(NO_MAP)
+    }
+
+    /// Replaces the heightmap that the brush paints. The raster layer of
+    /// the heightmap stays. A stroke or an import that runs ends with no
+    /// result.
     pub fn set_map(&mut self, map: Heightmap) {
         self.map = map;
         self.reset_map();
     }
 
     /// Makes the state of the globe that of a heightmap that it did not
-    /// show before. The GPU gets each texel again.
+    /// hold before. The GPU gets each texel again.
     fn reset_map(&mut self) {
-        let face_size = self.map.face_size();
-        self.generation += 1;
         self.map.mark_reset();
+        self.import = None;
+        self.import_result = None;
+        self.reset_state();
+        self.begin_full();
+    }
+
+    /// Makes the state of the brush and of the rivers that of a new
+    /// heightmap in `map`.
+    fn reset_state(&mut self) {
         self.map.set_undo_steps(self.memory_undo);
         self.rivers = Rivers::new(&self.map, self.rivers.sync());
         self.eroder.cancel();
         self.channels = None;
         self.chosen = None;
         self.window = None;
-        self.stats.face_size = face_size as u32;
-        self.uploads.clear();
-        self.import = None;
-        self.import_result = None;
+        self.stats.face_size = self.map.face_size() as u32;
         self.inputs.clear();
         self.backlog.clear();
         self.stroke = None;
@@ -513,14 +842,29 @@ impl Globe {
             self.brush = test.saved;
         }
         self.brush.value_range = (self.map.bands.min(), self.map.bands.max());
-        // The GPU has the rivers of the old heightmap. The new heightmap
-        // has no rivers until its own ones arrive.
-        if self.format.is_some() {
-            let tag = self.tag();
-            self.link.push(tag, Op::Window(None));
-            let size = ChannelMap::size_for(face_size);
-            self.link
-                .push(tag, Op::Channels(Arc::new(ChannelMap::empty(size))));
+    }
+
+    /// Starts a new full heightmap on the GPU for `map`. The GPU gets each
+    /// texel. The GPU holds a full heightmap only for a raster layer, or for
+    /// a globe that draws `map` as one layer.
+    fn begin_full(&mut self) {
+        self.generations += 1;
+        let layer = match (self.raster, &self.stack) {
+            (Some(id), _) => Some(LayerKey::Raster(id)),
+            (None, None) => Some(LayerKey::Solo),
+            (None, Some(_)) => None,
+        };
+        self.full = layer.map(|layer| MapKey {
+            layer,
+            generation: self.generations,
+            display: false,
+            face_size: self.map.face_size() as u32,
+        });
+        self.full_loaded = false;
+        self.uploads.restart();
+        let budget = self.uploads.budget;
+        for (face, rect) in self.map.allocated_rects() {
+            self.uploads.add(face, rect, 1, budget, false);
         }
     }
 
@@ -532,12 +876,17 @@ impl Globe {
         self.stats.adapter = format!("{} ({:?})", info.name, info.backend);
         let limit = render_state.device.limits().max_texture_dimension_2d as usize;
         self.max_face_size = limit;
-        self.parked.retain(|parked| parked.map.face_size() <= limit);
-        if self.map.face_size() > limit {
-            self.raster = None;
+        let fits = |map: &Heightmap| map.face_size() <= limit;
+        if !fits(&self.map) {
+            let id = self.raster.take();
+            self.layers.retain(|layer| Some(layer.id) != id);
             self.height = true;
+            self.pending = None;
             self.set_face_size(self.new_face_size.min(limit));
         }
+        self.layers
+            .retain(|layer| layer.map.as_ref().is_none_or(fits));
+        self.sync_copies();
         self.new_face_size = self.new_face_size.min(limit);
     }
 
@@ -594,13 +943,15 @@ impl Globe {
         }
     }
 
-    /// True while a stroke, a stroke test, or an import is not complete, or
-    /// texels wait for the GPU.
+    /// True while a stroke, a stroke test, or an import is not complete,
+    /// texels wait for the full heightmap on the GPU, or the brush waits for
+    /// another raster layer.
     pub fn busy(&self) -> bool {
-        self.stroke.is_some()
+        self.pending.is_some()
+            || self.stroke.is_some()
             || !self.inputs.is_empty()
             || self.test.is_some()
-            || !self.uploads.is_empty()
+            || self.uploading()
             || self.import.is_some()
     }
 
@@ -615,8 +966,8 @@ impl Globe {
         if self.memory_undo != on {
             self.memory_undo = on;
             self.map.set_undo_steps(on);
-            for parked in &mut self.parked {
-                parked.map.set_undo_steps(on);
+            for map in self.layers.iter_mut().filter_map(|l| l.map.as_mut()) {
+                map.set_undo_steps(on);
             }
         }
     }
@@ -732,21 +1083,68 @@ impl Globe {
         }
     }
 
-    /// Moves the changes of the CPU heightmap to the GPU, and asks for their
-    /// rivers. Asks for the window of the view if the view left the last
-    /// one. Sends the rivers that arrived to the GPU.
+    /// Moves the changes of each CPU heightmap to the GPU: to the full
+    /// heightmap that the brush paints, and to the reduced copy of each
+    /// visible layer. One call sends the texels of one budget. Asks for the
+    /// rivers of the changes. Asks for the window of the view if the view
+    /// left the last one. Sends the rivers that arrived to the GPU.
     fn queue_changes(&mut self) {
         let tag = self.tag();
-        let changes = gpu::queue_changes(&mut self.map, tag, &self.link, &mut self.uploads);
+        let budget = self.uploads.budget;
+        let changes = gpu::take_changes(&mut self.map);
         if changes.reset {
+            self.uploads.restart();
             self.rivers.rebuild(&self.map);
         }
-        for &(face, rect) in changes.rects.iter().filter(|_| !changes.reset) {
-            self.rivers.update(&self.map, face, rect);
+        for &(face, rect) in &changes.rects {
+            self.uploads.add(face, rect, 1, budget, false);
+            if !changes.reset {
+                self.rivers.update(&self.map, face, rect);
+            }
         }
         if changes.reset || !changes.rects.is_empty() {
             self.request_rivers();
         }
+        let active = self.raster;
+        for layer in &mut self.layers {
+            let changes = match &mut layer.map {
+                Some(map) => &gpu::take_changes(map),
+                None if Some(layer.id) == active => &changes,
+                None => continue,
+            };
+            let map = layer.map.as_ref().unwrap_or(&self.map);
+            if let Some(copy) = &mut layer.copy {
+                copy.add(map, changes, budget);
+            }
+        }
+
+        // The full heightmap comes first. While a copy waits for texels, the
+        // full heightmap gets one half of the budget.
+        let copies = self.layers.iter().filter_map(|layer| layer.copy.as_ref());
+        let waiting = copies.into_iter().any(|copy| !copy.uploads.is_empty());
+        let mut room = budget;
+        let mut first = true;
+        match self.full {
+            Some(key) => {
+                let part = if waiting { budget / 2 } else { budget };
+                let sent = self.uploads.send(&self.map, key, &self.link, part, true);
+                room = room.saturating_sub(sent);
+                first = sent == 0;
+                self.full_loaded |= self.uploads.is_empty();
+            }
+            None => self.uploads.clear(),
+        }
+        for layer in &mut self.layers {
+            let map = layer.map.as_ref().unwrap_or(&self.map);
+            let Some(copy) = &mut layer.copy else {
+                continue;
+            };
+            let sent = copy.uploads.send(map, copy.key, &self.link, room, first);
+            room = room.saturating_sub(sent);
+            first &= sent == 0;
+            copy.loaded |= copy.uploads.is_empty();
+        }
+
         let window = self.view_window();
         if window != self.chosen {
             self.chosen = window;
@@ -785,7 +1183,14 @@ impl Globe {
             return;
         }
         self.import_result = None;
-        self.import = Some(Job::start(path, self.map.face_size()));
+        // The import is for the raster layer that the brush paints after
+        // the stroke that runs.
+        let target = self.pending.unwrap_or(self.raster);
+        let map = target
+            .and_then(|id| self.raster_map(id))
+            .unwrap_or(&self.map);
+        self.import = Some(Job::start(path, map.face_size()));
+        self.import_target = target;
     }
 
     pub fn importing(&self) -> bool {
@@ -812,6 +1217,10 @@ impl Globe {
     /// `block`, one call takes one face at most.
     fn pump_import(&mut self, block: bool) {
         loop {
+            self.switch_if_idle();
+            if self.import.is_some() && self.import_target != self.raster {
+                return;
+            }
             // A stroke that is open owns the undo entry of the heightmap, and
             // its texels come back from the GPU later. The first face waits
             // for the end of each stroke.
@@ -913,7 +1322,9 @@ impl Globe {
 
     /// Starts the stroke test. A slow stroke is `seconds` long.
     pub fn start_stroke_test(&mut self, seconds: f64) {
-        if self.format.is_some() && !self.busy() {
+        // The first stroke waits for the texels that go to the GPU.
+        let free = !self.switch_blocked() && self.import.is_none();
+        if self.format.is_some() && free {
             self.test = Some(StrokeTest::new(self.brush, seconds));
             self.test_report = None;
         }
@@ -931,6 +1342,8 @@ impl Globe {
         // The count comes first. A result that arrives after this line makes
         // one more frame.
         let in_flight = self.link.busy.any();
+        self.switch_if_idle();
+        self.check_budget();
         // An import starts in the frame after the end of a stroke, so that
         // the stroke and the import are two edits.
         self.pump_import(false);
@@ -944,7 +1357,8 @@ impl Globe {
         self.erode(now);
         self.uplift(now);
         self.send_stamps(now);
-        in_flight || self.busy() || self.rivers.pending() || self.export.is_some()
+        let busy = self.busy() || self.loading();
+        in_flight || busy || self.rivers.pending() || self.export.is_some()
     }
 
     fn read_events(&mut self) {
@@ -967,6 +1381,12 @@ impl Globe {
                     };
                     self.map.store_rect(face as usize, rect, &data);
                     self.rivers.update(&self.map, face as usize, rect);
+                    // The reduced copy of the layer gets the stroke.
+                    let budget = self.uploads.budget;
+                    let layer = self.layers.iter_mut().find(|l| Some(l.id) == self.raster);
+                    if let Some(copy) = layer.and_then(|layer| layer.copy.as_mut()) {
+                        copy.add_rect(&self.map, face as usize, rect, budget);
+                    }
                     let left = active.reading.get_or_insert(1);
                     *left -= 1;
                     if *left == 0 {
@@ -1026,7 +1446,7 @@ impl Globe {
                     }
                     // A strip that waits has texels from before the stroke.
                     // It must reach the GPU before the first stamp.
-                    if !self.uploads.is_empty() {
+                    if self.uploading() {
                         break;
                     }
                     // The import has the undo entry of the heightmap.
@@ -1312,42 +1732,44 @@ impl Globe {
         }
     }
 
-    /// The paint callback of this frame, or `None` with no wgpu renderer.
-    pub fn callback(
-        &mut self,
+    /// The uniforms of one pass. `source` is the heightmap that a layer
+    /// pass reads, with its bands, its opacity, and the switch of its
+    /// rivers. `small`: the pass draws into the small target of the blurred
+    /// copy.
+    fn uniforms(
+        &self,
         pixels_per_point: f32,
-        backdrop: Option<Canvas>,
-    ) -> Option<GlobeCallback> {
-        let format = self.format?;
-        self.queue_changes();
+        source: Option<(MapKey, &Bands, f32, bool)>,
+        graticule: bool,
+        small: bool,
+    ) -> Uniforms {
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
         let center = self.rect.center();
         let radius = self.radius() as f32;
-        let (zoom, flat_center, mesh) = match self.world_view {
-            WorldView::Globe => (self.view.zoom, [0.0; 2], None),
+        let (zoom, flat_center) = match self.world_view {
+            WorldView::Globe => (self.view.zoom, [0.0; 2]),
             WorldView::Flat => {
                 let center = self.flat.center;
-                let center = [center.x as f32, center.y as f32];
-                (self.flat.zoom, center, Some(self.flat.mesh()))
+                (self.flat.zoom, [center.x as f32, center.y as f32])
             }
         };
+        let scale = match small {
+            true => pixels_per_point / backdrop::REDUCTION as f32,
+            false => pixels_per_point,
+        };
+        let rivers = source.is_some_and(|source| source.3);
         let sea = f32::from(self.map.bands.level(SEA_LEVEL)) / 65535.0;
-        // The channel map on the GPU is that of this heightmap after the
-        // first one arrives.
-        let rivers = self.height && self.channels.is_some();
-        let rivers = rivers && self.preview.rivers && !self.preview.greyscale;
         let channel_size = match rivers {
             true => ChannelMap::size_for(self.map.face_size()) as f32,
             false => 0.0,
         };
-        let flat = [sea, channel_size, flat_center[0], flat_center[1]];
-        let (window, cell) = match self.window.as_deref().map(ChannelWindow::window) {
+        let window = self.window.as_deref().filter(|_| rivers);
+        let (window, cell) = match window.map(ChannelWindow::window) {
             Some(w) => ([1.0, w.face as f32, w.x0 as f32, w.y0 as f32], w.cell),
             None => ([0.0; 4], 1),
         };
         let window_size = (2 * vale_terrain::WINDOW_CELLS) as f32;
-        let rivers = [cell as f32, window_size, self.preview.river_width, 0.0];
-        let graticule_degrees: f64 = if !self.preview.graticule {
+        let graticule_degrees: f64 = if !graticule {
             0.0
         } else if zoom < 3.0 {
             15.0
@@ -1356,33 +1778,161 @@ impl Globe {
         } else {
             1.0
         };
-        let (bands, band_count) = band_uniforms(&self.map.bands);
-        Some(GlobeCallback {
+        let (bands, band_count) = match source {
+            Some((_, bands, _, _)) => band_uniforms(bands),
+            None => ([[[0.0; 4]; 3]; vale_terrain::MAX_BANDS], 0),
+        };
+        let ground = crate::ui::pad::theme::GROUND;
+        let [r, g, b] = [ground.r(), ground.g(), ground.b()].map(|c| f32::from(c) / 255.0);
+        Uniforms {
+            rot: self.view.rot.0.map(row),
+            globe: [
+                center.x * scale,
+                center.y * scale,
+                radius * scale,
+                pixels_per_point,
+            ],
+            params: [
+                source.map_or(1.0, |source| source.0.face_size as f32),
+                graticule_degrees.to_radians() as f32,
+                self.preview.mode(),
+                band_count as f32,
+            ],
+            flat: [sea, channel_size, flat_center[0], flat_center[1]],
+            screen: [0.0; 4],
+            window,
+            rivers: [cell as f32, window_size, self.preview.river_width, 0.0],
+            layer: [source.map_or(1.0, |source| source.2), 0.0, 0.0, 0.0],
+            ground: [r, g, b, 1.0],
+            bands,
+        }
+    }
+
+    /// The heightmap on the GPU that the globe draws a raster layer from:
+    /// the full heightmap of the layer that the brush paints, or else the
+    /// reduced copy. `None`: the GPU does not have each texel of the layer.
+    fn source(&self, id: RasterId) -> Option<MapKey> {
+        if self.draws_full(id) {
+            return self.full;
+        }
+        let copy = self.layer(id)?.copy.as_ref()?;
+        copy.loaded.then_some(copy.key)
+    }
+
+    /// The things that the canvas paints in this frame, from the bottom, or
+    /// `None` with no wgpu renderer.
+    ///
+    /// The list has one pass for each visible raster layer, between the
+    /// vector layers, in the draw order. It starts at the top raster layer
+    /// that hides each layer below it. With no such layer, it starts with
+    /// the plain ground. The graticule is above the top raster layer. With
+    /// `backdrop`, the first item draws the raster layers into the blurred
+    /// copy that the cards show.
+    pub fn paint(&mut self, pixels_per_point: f32, backdrop: Option<Canvas>) -> Option<Vec<Paint>> {
+        let format = self.format?;
+        self.queue_changes();
+        let ppp = pixels_per_point;
+        // The rivers are those of the heightmap that the brush paints.
+        let rivers = self.height && self.channels.is_some();
+        let rivers = rivers && self.preview.rivers && !self.preview.greyscale;
+
+        // Each layer of the list, with the heightmap of a raster layer.
+        enum Item<'a> {
+            Raster(MapKey, &'a Bands, f32, bool),
+            Vector(LayerId),
+        }
+        let mut items: Vec<Item> = Vec::new();
+        match &self.stack {
+            None => {
+                let key = self.full.expect("a globe with no list has a heightmap");
+                items.push(Item::Raster(key, &self.map.bands, 1.0, rivers));
+            }
+            Some(stack) => {
+                for item in stack {
+                    match *item {
+                        StackItem::Vector(id) => items.push(Item::Vector(id)),
+                        StackItem::Raster { id, opacity } => {
+                            let source = self.source(id).zip(self.raster_map(id));
+                            if let Some((key, map)) = source {
+                                let rivers = rivers && !key.display;
+                                let opacity = opacity.clamp(0.0, 1.0);
+                                items.push(Item::Raster(key, &map.bands, opacity, rivers));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let opaque =
+            |item: &Item| matches!(item, Item::Raster(_, _, opacity, _) if *opacity >= 1.0);
+        let start = items.iter().rposition(opaque);
+        let top = items.iter().rposition(|i| matches!(i, Item::Raster(..)));
+
+        let frame = Arc::new(Frame {
             format,
-            map: self.tag(),
-            uniforms: Uniforms {
-                rot: self.view.rot.0.map(row),
-                globe: [
-                    center.x * pixels_per_point,
-                    center.y * pixels_per_point,
-                    radius * pixels_per_point,
-                    pixels_per_point,
-                ],
-                params: [
-                    self.map.face_size() as f32,
-                    graticule_degrees.to_radians() as f32,
-                    self.preview.mode(),
-                    band_count as f32,
-                ],
-                flat,
-                screen: [0.0; 4],
-                window,
-                rivers,
-                bands,
-            },
-            flat: mesh,
             link: self.link.clone(),
-            backdrop,
-        })
+            full: self.full,
+            copies: {
+                let copies = self.layers.iter().filter_map(|l| l.copy.as_ref());
+                copies.map(|copy| copy.key).collect()
+            },
+            flat: (self.world_view == WorldView::Flat).then(|| self.flat.mesh()),
+            epoch: self.epoch,
+        });
+        let draw_job = |draw| GpuJob::Draw(Box::new(draw));
+        let callback = |job| {
+            Paint::Callback(GlobeCallback {
+                frame: frame.clone(),
+                job,
+            })
+        };
+        let plain = |pass, graticule, small| Draw {
+            pass,
+            source: None,
+            uniforms: self.uniforms(ppp, None, graticule, small),
+        };
+        let layer = |item: &Item, small: bool| match *item {
+            Item::Raster(key, bands, opacity, rivers) => {
+                let rivers = rivers && !small;
+                let source = Some((key, bands, opacity, rivers));
+                Some(Draw {
+                    pass: Pass::Layer(key.layer),
+                    source: Some(key),
+                    uniforms: self.uniforms(ppp, source, false, small),
+                })
+            }
+            Item::Vector(_) => None,
+        };
+
+        let mut out = Vec::new();
+        let drawn = &items[start.unwrap_or(0)..];
+        if let Some(canvas) = backdrop {
+            // The blurred copy has no vector layers and no graticule.
+            let ground = start.is_none().then(|| plain(Pass::Ground, false, true));
+            let layers = drawn.iter().filter_map(|item| layer(item, true));
+            let draws = ground.into_iter().chain(layers).collect();
+            out.push(callback(GpuJob::Backdrop(canvas, draws)));
+        }
+        let graticule = self.preview.graticule;
+        let graticule =
+            || graticule.then(|| callback(draw_job(plain(Pass::Graticule, true, false))));
+        if start.is_none() {
+            out.push(callback(draw_job(plain(Pass::Ground, false, false))));
+        }
+        if top.is_none() {
+            out.extend(graticule());
+        }
+        for (at, item) in items.iter().enumerate().skip(start.unwrap_or(0)) {
+            match item {
+                Item::Vector(id) => out.push(Paint::Vector(*id)),
+                Item::Raster(..) => {
+                    out.extend(layer(item, false).map(|draw| callback(draw_job(draw))));
+                    if top == Some(at) {
+                        out.extend(graticule());
+                    }
+                }
+            }
+        }
+        Some(out)
     }
 }

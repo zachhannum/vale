@@ -1,6 +1,8 @@
-// Draws the globe: one pass that reads the cube map and shows it as stepped
-// tints, as a smooth ramp, or in greyscale. The face layout matches `cube.rs`
-// of `vale-terrain`.
+// Draws the globe in passes, from the bottom of the layers: the plain ground,
+// one pass for each raster layer, and the graticule. A layer pass reads the
+// cube map of its layer and shows it as stepped tints, as a smooth ramp, or
+// in greyscale. Each pass gives a color with its alpha multiplied in. The
+// face layout matches `cube.rs` of `vale-terrain`.
 //
 // The source of `tiles.wgsl` of `vale-terrain` comes before this file, and
 // each read of a level goes through its `tile_level`.
@@ -23,7 +25,7 @@ struct Uniforms {
     // flat view, the radius is the size of one unit of the projection.
     globe: vec4<f32>,
     // Face size in texels, the graticule step in radians, the preview mode,
-    // and the band count. A step of 0 hides the graticule.
+    // and the band count. Only the graticule pass reads the step.
     params: vec4<f32>,
     // Sea level, from 0 to 1. The size of a face of the channel map in
     // texels, or 0 to hide the rivers. The point of the flat map at the
@@ -38,6 +40,10 @@ struct Uniforms {
     // number of channel texels along one side of the window, and the factor
     // of the width of a river line.
     rivers: vec4<f32>,
+    // The opacity of the layer, from 0 to 1.
+    layer: vec4<f32>,
+    // The color of the ground below the layers.
+    ground: vec4<f32>,
     // The bands, from the lowest to the highest.
     bands: array<Band, 32>,
 }
@@ -270,11 +276,10 @@ fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
     return color;
 }
 
-// The color of the ground in a world direction: the tint of the height, the
-// rivers, and the graticule. `width` is the change of the height across one
-// pixel. `wlat` and `wlon` are the latitude and the longitude that one pixel
-// covers there. `pixel` is the angle that one pixel covers there.
-fn ground(h: f32, width: f32, d: vec3<f32>, wlat: f32, wlon: f32, pixel: f32) -> vec3<f32> {
+// The color of a layer in a world direction: the tint of the height, and the
+// rivers. `width` is the change of the height across one pixel. `pixel` is
+// the angle that one pixel covers there.
+fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32) -> vec3<f32> {
     let mode = i32(u.params.z);
     var color = vec3<f32>(h);
     if mode != MODE_GREYSCALE {
@@ -285,45 +290,90 @@ fn ground(h: f32, width: f32, d: vec3<f32>, wlat: f32, wlon: f32, pixel: f32) ->
         let land = clamp((h - u.flat.x) / max(width, 1e-6) + 1.0, 0.0, 1.0);
         color = mix(color, RIVER_COLOR, 0.9 * land * river(d, pixel));
     }
-    let grat = u.params.y;
-    if grat > 0.0 {
-        let lat = asin(clamp(d.z, -1.0, 1.0));
-        let lon = atan2(d.y, d.x);
-        let dlat = abs(fract(lat / grat + 0.5) - 0.5) * grat;
-        let dlon = abs(fract(lon / grat + 0.5) - 0.5) * grat;
-        // Meridians stop near the poles, where they crowd together.
-        let keep = step(abs(lat), PI * 0.5 - grat * 0.5);
-        let line = max(1.0 - smoothstep(0.0, wlat * 1.5, dlat),
-                       keep * (1.0 - smoothstep(0.0, wlon * 1.5, dlon)));
-        color = mix(color, vec3<f32>(0.08, 0.12, 0.18), line * 0.22);
-    }
     return color;
 }
 
-@fragment
-fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+const GRATICULE_COLOR: vec3<f32> = vec3<f32>(0.08, 0.12, 0.18);
+
+// The part of a pixel that a line of the graticule covers in a world
+// direction, from 0 to 1. `wlat` and `wlon` are the latitude and the
+// longitude that one pixel covers there.
+fn graticule(d: vec3<f32>, wlat: f32, wlon: f32) -> f32 {
+    let grat = u.params.y;
+    if grat <= 0.0 {
+        return 0.0;
+    }
+    let lat = asin(clamp(d.z, -1.0, 1.0));
+    let lon = atan2(d.y, d.x);
+    let dlat = abs(fract(lat / grat + 0.5) - 0.5) * grat;
+    let dlon = abs(fract(lon / grat + 0.5) - 0.5) * grat;
+    // Meridians stop near the poles, where they crowd together.
+    let keep = step(abs(lat), PI * 0.5 - grat * 0.5);
+    let line = max(1.0 - smoothstep(0.0, wlat * 1.5, dlat),
+                   keep * (1.0 - smoothstep(0.0, wlon * 1.5, dlon)));
+    return line * 0.22;
+}
+
+struct Disk {
+    // The part of the pixel that the globe covers, from 0 to 1.
+    cover: f32,
+    // The shade toward the limb, so the disk reads as a ball. Each pass has
+    // the same shade, so a blend of two passes has it one time.
+    shade: f32,
+    // The world direction of the place.
+    d: vec3<f32>,
+    // The angle that one pixel covers at the place.
+    px: f32,
+    // The longitude that one pixel covers at the place.
+    wlon: f32,
+}
+
+// The place of a pixel on the disk of the globe.
+fn disk(frag: vec4<f32>) -> Disk {
     let radius = u.globe.z;
     let p = vec2<f32>(frag.x - u.globe.x, u.globe.y - frag.y) / radius;
     let r = length(p);
     // One pixel of soft edge at the limb.
     let cover = clamp((1.0 - r) * radius + 0.5, 0.0, 1.0);
-    if cover <= 0.0 {
-        discard;
-    }
     let rr = min(r, 1.0);
     let v = vec3<f32>(p / max(r, 1e-6) * rr, sqrt(max(1.0 - rr * rr, 0.0)));
     let d = v.x * u.rot0.xyz + v.y * u.rot1.xyz + v.z * u.rot2.xyz;
-
-    // The angle that one pixel covers at this place on the globe.
     let px = 1.0 / (radius * max(v.z, 0.05));
     let coslat = max(sqrt(max(1.0 - d.z * d.z, 0.0)), 1e-4);
-    let h = height(d).x;
-    var color = ground(h, fwidth(h), d, px, px / coslat, px);
+    return Disk(cover, mix(0.80, 1.0, pow(v.z, 0.6)), d, px, px / coslat);
+}
 
-    // A little shade toward the limb, so the disk reads as a ball.
-    color *= mix(0.80, 1.0, pow(v.z, 0.6));
+@fragment
+fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = disk(frag);
+    if at.cover <= 0.0 {
+        discard;
+    }
+    let h = height(at.d).x;
+    let color = ground(h, fwidth(h), at.d, at.px) * at.shade;
+    let alpha = at.cover * u.layer.x;
+    return vec4<f32>(color * alpha, alpha);
+}
 
-    return vec4<f32>(color * cover, cover);
+// The plain ground below the layers.
+@fragment
+fn fs_ground(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = disk(frag);
+    if at.cover <= 0.0 {
+        discard;
+    }
+    return vec4<f32>(u.ground.rgb * at.shade * at.cover, at.cover);
+}
+
+// The graticule above the raster layers.
+@fragment
+fn fs_graticule(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = disk(frag);
+    let alpha = graticule(at.d, at.px, at.wlon) * at.cover;
+    if alpha <= 0.0 {
+        discard;
+    }
+    return vec4<f32>(GRATICULE_COLOR * at.shade * alpha, alpha);
 }
 
 struct FlatVertex {
@@ -341,19 +391,38 @@ fn vs_flat(@location(0) point: vec2<f32>, @location(1) dir: vec3<f32>) -> FlatVe
     return FlatVertex(vec4<f32>(ndc, 0.0, 1.0), dir);
 }
 
-@fragment
-fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
-    let d = normalize(in.dir);
+// The latitude and the longitude that one pixel covers at a world direction
+// of the flat view.
+fn flat_widths(d: vec3<f32>) -> vec2<f32> {
     let lat = asin(clamp(d.z, -1.0, 1.0));
     // The longitude jumps at the 180 degree meridian. Its sine and its
     // cosine do not, and they change by the same angle.
     let east = normalize(vec2<f32>(d.x, d.y) + vec2<f32>(1e-9, 0.0));
-    let wlon = length(fwidth(east));
+    return vec2<f32>(fwidth(lat), length(fwidth(east)));
+}
+
+@fragment
+fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
+    let d = normalize(in.dir);
     // A derivative of the height is wrong at an edge of a triangle of the
     // mesh, so the width comes from the slope of the texels. A face has
     // 2 / PI of its texels in one radian.
     let h = height(d);
     let angle = max(length(dpdx(d)), length(dpdy(d)));
     let width = length(h.yz) * u.params.x * (2.0 / PI) * angle;
-    return vec4<f32>(ground(h.x, width, d, fwidth(lat), wlon, angle), 1.0);
+    let alpha = u.layer.x;
+    return vec4<f32>(ground(h.x, width, d, angle) * alpha, alpha);
+}
+
+@fragment
+fn fs_flat_ground(in: FlatVertex) -> @location(0) vec4<f32> {
+    return vec4<f32>(u.ground.rgb, 1.0);
+}
+
+@fragment
+fn fs_flat_graticule(in: FlatVertex) -> @location(0) vec4<f32> {
+    let d = normalize(in.dir);
+    let widths = flat_widths(d);
+    let alpha = graticule(d, widths.x, widths.y);
+    return vec4<f32>(GRATICULE_COLOR * alpha, alpha);
 }

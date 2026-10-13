@@ -5,6 +5,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use kurbo::Point;
 use vale_app::document::Document;
+use vale_app::globe::StackItem;
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
@@ -218,9 +219,13 @@ fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
     click(&mut h, "Show Height");
     let layer = h.state().doc.project.raster_layer(height).unwrap();
     assert!(!layer.visible);
-    assert_eq!(h.state().globe.raster(), None);
+    let stack = h.state().globe.stack().unwrap();
+    let raster = |item: &StackItem| matches!(item, StackItem::Raster { .. });
+    assert!(!stack.iter().any(raster));
+    assert!(h.state().shown_raster().is_none() && !h.state().globe.paintable);
     click(&mut h, "Show Height");
-    assert_eq!(h.state().globe.raster(), Some(height));
+    assert_eq!(h.state().shown_raster().map(|r| r.id), Some(height));
+    assert!(h.state().globe.paintable);
 
     // The selected layer has a name field, an opacity, and a delete button.
     assert!(h.query_by_label(LAYER_NAME).is_some());

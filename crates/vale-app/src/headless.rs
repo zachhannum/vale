@@ -259,7 +259,8 @@ pub fn ui_png_with(
     };
     // The heightmap goes to the GPU in parts. Each render sends one part.
     for _ in 0..UPLOAD_STEPS {
-        if !harness.state().globe.busy() {
+        let globe = &harness.state().globe;
+        if !globe.busy() && !globe.loading() {
             break;
         }
         harness.step();

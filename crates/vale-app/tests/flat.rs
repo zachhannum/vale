@@ -474,8 +474,9 @@ fn river_parts(globe: &vale_app::globe::Globe) -> (f64, f64) {
 fn zooming_in_gives_finer_rivers_in_the_flat_view() {
     let _gpu = one_gpu_test();
     let mut state = state();
+    state.globe.set_face_size(1024);
+    state.add_height();
     let globe = &mut state.globe;
-    globe.set_face_size(1024);
     globe.world_view = WorldView::Flat;
     globe.preview.graticule = false;
     globe.flat.zoom = 16.0;
@@ -499,4 +500,46 @@ fn zooming_in_gives_finer_rivers_in_the_flat_view() {
     h.state_mut().globe.flat.zoom = 2.0;
     h.run_steps(2);
     assert!(h.state().globe.window().is_none());
+}
+
+#[test]
+fn the_flat_view_blends_the_raster_layers_by_their_opacity() {
+    let _gpu = one_gpu_test();
+    let mut h = flat_harness();
+    let height = h.state().globe.raster().unwrap();
+    let rain = vale_app::ui::RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 128,
+    };
+    let rain = h.state_mut().add_raster(rain).unwrap();
+    let (low, high) = (16000, 50000);
+    let state = h.state_mut();
+    state.globe.raster_map_mut(height).unwrap().fill(low);
+    state.globe.raster_map_mut(rain).unwrap().fill(high);
+    h.run_steps(3);
+    let grey_of = |level: u16| (f32::from(level) / 65535.0 * 255.0).round() as u8;
+    let middle = |h: &mut App| {
+        let image = canvas_image(h);
+        let center = h.state().globe.rect.center();
+        grey(h, &image, center)
+    };
+    // The top layer hides the layer below it.
+    assert!(middle(&mut h).abs_diff(grey_of(high)) <= 2);
+    h.state_mut().set_raster_opacity(rain, 0.5);
+    let mean = ((u16::from(grey_of(low)) + u16::from(grey_of(high))) / 2) as u8;
+    assert!(middle(&mut h).abs_diff(mean) <= 2, "{}", middle(&mut h));
+    h.state_mut().set_raster_opacity(rain, 0.0);
+    assert!(middle(&mut h).abs_diff(grey_of(low)) <= 2);
+    // A hidden layer leaves the picture, and the ground is below the
+    // layers.
+    h.state_mut().set_raster_opacity(rain, 0.5);
+    h.state_mut().set_raster_visible(height, false);
+    let ground = vale_app::ui::pad::theme::GROUND;
+    let mean = ((u16::from(ground.r()) + u16::from(grey_of(high))) / 2) as u8;
+    assert!(middle(&mut h).abs_diff(mean) <= 2, "{}", middle(&mut h));
+    h.state_mut().set_raster_visible(rain, false);
+    assert_eq!(middle(&mut h), ground.r());
 }

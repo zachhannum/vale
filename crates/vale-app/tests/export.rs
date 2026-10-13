@@ -150,7 +150,7 @@ fn the_command_line_exports_the_first_height_layer() {
         Heightmap::new(FACE_SIZE, 0),
         Heightmap::new(FACE_SIZE, BASE),
     );
-    wet.bands = vale_terrain::Bands::with_range(0.0, 4000.0).unwrap();
+    wet.bands = vale_terrain::Bands::with_range(0.0, 4000.0, false).unwrap();
     paint(&mut wet, 45.0, 35.3, 0.4);
     paint(&mut ground, -100.0, 5.0, 0.2);
     let mut maps = [(rain, &mut wet), (height, &mut ground)];

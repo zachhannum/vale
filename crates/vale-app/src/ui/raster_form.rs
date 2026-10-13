@@ -236,7 +236,7 @@ impl RasterForm {
         }
         let number = |text: &str| text.trim().replace(',', "").parse::<f64>().ok();
         let (min, max) = (number(&self.min)?, number(&self.max)?);
-        Bands::with_range(min, max).map(|_| (min, max))
+        Bands::with_range(min, max, false).map(|_| (min, max))
     }
 
     /// The text that tells what is wrong with the form.
@@ -574,7 +574,7 @@ mod tests {
     fn each_preset_has_a_range_with_bands() {
         for preset in PRESETS {
             let (min, max) = preset.range;
-            let bands = Bands::with_range(min, max).unwrap();
+            let bands = Bands::with_range(min, max, preset.unit == HEIGHT_UNIT).unwrap();
             assert_eq!(bands.bands().len(), 8, "{}", preset.name);
             assert!(FACE_SIZES.contains(&preset.face_size), "{}", preset.name);
         }

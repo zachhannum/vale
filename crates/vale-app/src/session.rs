@@ -461,8 +461,9 @@ fn ramp_of(raster: &Raster) -> Ramp {
 /// range gets the range of a height in meters.
 pub fn bands_of(raster: &Raster) -> Bands {
     let (min, max) = (raster.value_min, raster.value_max);
-    Bands::from_range_parts(min, max, &raster.limits, ramp_of(raster))
-        .or_else(|| Bands::with_range(min, max))
+    let sea = crate::ui::is_height(raster);
+    Bands::from_range_parts(min, max, sea, &raster.limits, ramp_of(raster))
+        .or_else(|| Bands::with_range(min, max, sea))
         .or_else(|| Bands::from_parts(&raster.limits, ramp_of(raster)))
         .unwrap_or_default()
 }
@@ -472,7 +473,9 @@ pub fn bands_of(raster: &Raster) -> Bands {
 fn load_record(map: &mut Heightmap, raster: &Raster) {
     map.load_base(raster.base);
     let (min, max) = (raster.value_min, raster.value_max);
-    if let Some(bands) = Bands::from_range_parts(min, max, &raster.limits, ramp_of(raster)) {
+    let sea = crate::ui::is_height(raster);
+    let bands = Bands::from_range_parts(min, max, sea, &raster.limits, ramp_of(raster));
+    if let Some(bands) = bands {
         map.bands = bands;
     }
 }

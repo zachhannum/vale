@@ -86,8 +86,16 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             let name = layer.map_or(PANEL.to_string(), |layer| layer.name.clone());
             let unit = state.shown_unit().to_string();
             ui.heading(name);
+            let shown = state.shown_raster().map(|raster| raster.id);
             let globe = &mut state.globe;
-            controls(ui, &mut globe.map.bands, &mut globe.preview, &unit);
+            let mut preview = globe.preview;
+            let map = shown.and_then(|id| globe.raster_map_mut(id));
+            if let Some(map) = map {
+                controls(ui, &mut map.bands, &mut preview, &unit);
+            } else {
+                controls(ui, &mut globe.map.bands, &mut preview, &unit);
+            }
+            globe.preview = preview;
         });
 }
 
@@ -262,7 +270,7 @@ mod tests {
 
     #[test]
     fn a_range_with_no_sea_split_has_a_linear_bar() {
-        let rain = Bands::with_range(0.0, 4000.0).unwrap();
+        let rain = Bands::with_range(0.0, 4000.0, false).unwrap();
         assert_eq!(rain.sea(), None);
         for (value, fraction) in [(0.0, 0.0), (1000.0, 0.25), (2000.0, 0.5), (4000.0, 1.0)] {
             assert_eq!(bar_fraction(&rain, value), fraction);

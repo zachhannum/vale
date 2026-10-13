@@ -12,7 +12,7 @@ use vale_terrain::{Bands, Heightmap, Mode};
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, file_name};
-use crate::globe::{Globe, START_ELEVATION, Tool, brush};
+use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
 use crate::projects::{self, Location, Locations};
@@ -209,7 +209,7 @@ impl RasterSpec {
         if self.unit == HEIGHT_UNIT && (self.min, self.max) == (height.min(), height.max()) {
             return Some(height);
         }
-        Bands::with_range(self.min, self.max)
+        Bands::with_range(self.min, self.max, self.unit == HEIGHT_UNIT)
     }
 }
 
@@ -396,10 +396,10 @@ impl AppState {
         self.sync_globe();
     }
 
-    /// Shows a raster layer on the globe: the selected raster layer if it
-    /// is visible, or else the top visible raster layer. The brush can paint
-    /// only the first of the two. A layer that is not in the project is not
-    /// selected. Call this after a change of the selection or of the raster
+    /// Gives the globe the visible layers of the project in the draw order,
+    /// with the opacity of each raster layer. The brush paints the selected
+    /// raster layer while it is visible. A layer that is not in the project
+    /// is not selected. Call this after a change of the selection or of the
     /// layers.
     pub fn sync_globe(&mut self) {
         let (project, globe) = (&self.doc.project, &mut self.globe);
@@ -411,20 +411,45 @@ impl AppState {
         if gone {
             self.selected_layer = None;
         }
-        let shows = |id: &RasterId| {
-            let visible = project.raster_layer(*id).is_some_and(|layer| layer.visible);
-            visible && globe.raster_map(*id).is_some()
+        let item = |layer: &Layer| match layer.raster() {
+            Some(id) => {
+                let opacity = project.raster(id)?.opacity;
+                let held = globe.raster_map(id).is_some();
+                held.then_some(StackItem::Raster { id, opacity })
+            }
+            None => Some(StackItem::Vector(layer.id)),
         };
+        let visible = project.layers().iter().filter(|layer| layer.visible);
+        let stack: Vec<StackItem> = visible.filter_map(item).collect();
         let selected = match self.selected_layer {
-            Some(LayerRef::Raster(id)) => Some(id).filter(shows),
+            Some(LayerRef::Raster(id)) => Some(id).filter(|id| globe.raster_map(*id).is_some()),
             _ => None,
         };
-        let layers = project.layers().iter().rev();
-        let top = layers.filter_map(Layer::raster).find(shows);
-        let shown = selected.or(top);
-        globe.paintable = selected.is_some();
-        globe.show(shown);
-        if !globe.is_height() && brush::needs_height(globe.brush.mode) {
+        let shows = |id: &RasterId| {
+            let item =
+                |item: &StackItem| matches!(item, StackItem::Raster { id: of, .. } if of == id);
+            stack.iter().any(item)
+        };
+        // The selected raster layer keeps its full heightmap for the brush
+        // while it is hidden. With no selected raster layer, the last one
+        // keeps it, or else the top visible raster layer gets it.
+        let last = globe.raster().filter(|id| project.raster(*id).is_some());
+        let top = || {
+            let layers = project.layers().iter().rev();
+            layers.filter_map(Layer::raster).find(shows)
+        };
+        let active = selected.or(last).or_else(top);
+        let paintable = selected.is_some_and(|id| shows(&id));
+        let height = match selected.and_then(|id| project.raster(id)) {
+            Some(raster) => is_height(raster),
+            None => globe.is_height(),
+        };
+        globe.set_stack(stack);
+        if active.is_some() {
+            globe.activate(active);
+        }
+        globe.set_paintable(paintable);
+        if !height && brush::needs_height(globe.brush.mode) {
             globe.brush.mode = Mode::Raise;
         }
     }
@@ -508,9 +533,9 @@ impl AppState {
             return None;
         }
         let height = spec.unit == HEIGHT_UNIT;
-        // A height starts as a sea. Each other layer starts at zero, or at
-        // the end of its range that is nearest to zero.
-        let start = if height { START_ELEVATION } else { 0.0 };
+        // A height starts as a sea. Each other layer starts at the minimum
+        // of its range.
+        let start = if height { START_ELEVATION } else { bands.min() };
         let mut map = Heightmap::new(face_size, bands.level(start));
         map.bands = bands;
         let project = &mut self.doc.project;
@@ -565,7 +590,9 @@ impl AppState {
 
     /// Sets how much a raster layer hides the layers below it, from 0 to 1.
     pub fn set_raster_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
-        self.doc.project.set_raster_opacity(id, opacity)
+        let set = self.doc.project.set_raster_opacity(id, opacity);
+        self.sync_globe();
+        set
     }
 
     /// Moves a layer to this index of the draw order. Index 0 is the bottom.
@@ -603,20 +630,32 @@ impl AppState {
         }
     }
 
-    /// The record of the raster layer that the globe shows.
+    /// The record of the raster layer of the readout and of the bands
+    /// panel: the selected raster layer if it is visible, or else the top
+    /// visible raster layer.
     pub fn shown_raster(&self) -> Option<&Raster> {
-        self.doc.project.raster(self.globe.raster()?)
+        let project = &self.doc.project;
+        let shows = |id: &RasterId| {
+            let visible = project.raster_layer(*id).is_some_and(|layer| layer.visible);
+            visible && self.globe.raster_map(*id).is_some()
+        };
+        let selected = self.selected_raster().filter(shows);
+        let layers = project.layers().iter().rev();
+        let top = || layers.filter_map(Layer::raster).find(shows);
+        project.raster(selected.or_else(top)?)
     }
 
-    /// The unit of the values of the heightmap on the globe. With no raster
-    /// layer on the globe, it is the meter.
+    /// The unit of the values of the raster layer of the readout. With no
+    /// such layer, it is the meter.
     pub fn shown_unit(&self) -> &str {
         self.shown_raster().map_or(HEIGHT_UNIT, |r| r.unit.as_str())
     }
 
-    /// A value of the heightmap on the globe as a text with its unit.
+    /// A value of the raster layer of the readout as a text with its unit.
     pub fn value_text(&self, value: f64) -> String {
-        let bands = &self.globe.map.bands;
+        let shown = self.shown_raster().map(|raster| raster.id);
+        let map = shown.and_then(|id| self.globe.raster_map(id));
+        let bands = &map.unwrap_or(&self.globe.map).bands;
         crate::world::value_text(value, bands.max() - bands.min(), self.shown_unit())
     }
 
