@@ -35,6 +35,11 @@ pub enum Mode {
     /// nearest river of the channel map, up to `RIDGE_REACH`. The ground on a
     /// river and the sea floor do not change.
     Ridge,
+    /// Raises the ground toward the fill level of the channel map. That
+    /// level is the rim of a pit, or a level between the bed and the banks
+    /// of a river. Ground at or above the level and the sea floor do not
+    /// change.
+    Deposit,
     /// The mode of the erode brush. A stamp of this mode changes nothing.
     /// `Heightmap::erode` makes the change.
     Erode,
@@ -329,8 +334,9 @@ impl Heightmap {
         self.base
     }
 
-    /// Sets the rivers that the carve mode and the ridge mode follow. With
-    /// `None`, no river is near each place.
+    /// Sets the rivers that the carve mode and the ridge mode follow, and the
+    /// fill levels of the deposit mode. With `None`, no river is near each
+    /// place, and the deposit mode changes nothing.
     pub fn set_channels(&mut self, channels: Option<Arc<ChannelMap>>) {
         self.channels = channels;
     }
@@ -339,8 +345,8 @@ impl Heightmap {
         self.channels.as_ref()
     }
 
-    /// Sets the window of small rivers. The carve mode and the ridge mode
-    /// follow it on the ground that `Window::covers`, and the channel map on
+    /// Sets the window of small rivers. The carve mode, the ridge mode, and
+    /// the deposit mode follow it on the ground that `Window::covers`, and the channel map on
     /// the other ground.
     pub fn set_window(&mut self, window: Option<Arc<ChannelWindow>>) {
         self.window = window;
@@ -909,6 +915,22 @@ impl Heightmap {
                 }
             })
         };
+        // The fill level at a texel. The window comes first.
+        let fill = |x: usize, y: usize, fu: f64, fv: f64| {
+            let in_window = window.as_ref().and_then(|channels| {
+                let window = channels.window();
+                let (u, v) = if window.face == face {
+                    window.channel_of_texel(x as i64, y as i64)
+                } else {
+                    window.channel_of_dir(face_dir(face, fu, fv))?
+                };
+                channels.fill_level(u, v)
+            });
+            in_window.or_else(|| {
+                let at = |x: usize| (x as f64 + 0.5) * channel_size / n - 0.5;
+                Some(channels.as_ref()?.fill_level(face, at(x), at(y)))
+            })
+        };
         for ty in rect.y0 / t..=(rect.y1 - 1) / t {
             for tx in rect.x0 / t..=(rect.x1 - 1) / t {
                 let index = (face * self.per_side + ty) * self.per_side + tx;
@@ -944,6 +966,15 @@ impl Heightmap {
                                     continue;
                                 };
                                 old + amount * stamp.strength * ridge
+                            }
+                            Mode::Deposit => {
+                                if old < sea {
+                                    continue;
+                                }
+                                let Some(level) = fill(x, y, fu, fv) else {
+                                    continue;
+                                };
+                                old + (level - old).max(0.0) * amount.min(1.0)
                             }
                             Mode::Weather => unreachable!("`stamp` sends it to `weather_face`"),
                             Mode::Warp => unreachable!("`stamp` sends it to `warp_stamp`"),
@@ -2100,6 +2131,205 @@ mod tests {
         for ((new, old), raised) in after.iter().zip(&before).zip(&raised) {
             assert_eq!(new, if *old > sea { raised } else { old });
         }
+    }
+
+    fn deposit(lon: f64, lat: f64, radius: f64) -> Stamp {
+        Stamp {
+            mode: Mode::Deposit,
+            ..carve(lon, lat, radius)
+        }
+    }
+
+    /// The radius of the pit of `basin`, in degrees.
+    const PIT_RADIUS: f64 = 4.0;
+
+    /// The slope of `valley` with no valley, and a round pit at longitude 0
+    /// and latitude 0. The map has the channel map of its rivers.
+    fn basin() -> Heightmap {
+        let n = 256;
+        let mut map = Heightmap::new(n, meters_to_level(-1000.0));
+        let data: Vec<u16> = (0..n * n)
+            .map(|i| {
+                let (lon, lat) = dir_to_lonlat(map.texel_dir(0, i % n, i / n));
+                let from_pit = lon.hypot(lat) / PIT_RADIUS;
+                meters_to_level(if lon.abs() < 30.0 && lat.abs() < 20.0 {
+                    let pit = 400.0 * (1.0 - from_pit * from_pit).max(0.0);
+                    200.0 + 20.0 * (lon + 30.0) - pit
+                } else {
+                    -1000.0
+                })
+            })
+            .collect();
+        map.store_rect(0, face_rect(n), &data);
+        let channels = channel_map(&CoarseHeights::new(&map));
+        map.set_channels(Some(Arc::new(channels)));
+        map
+    }
+
+    #[test]
+    fn deposit_raises_a_pit_toward_its_rim() {
+        let mut map = basin();
+        let before = face_levels(&map);
+        let center = place(&map, 0.0, 0.0);
+        // Water leaves the pit at its west side.
+        let rim = before[place(&map, -PIT_RADIUS, 0.0)];
+        let level = |meters: f64| i32::from(meters_to_level(meters));
+        assert!((i32::from(rim) - level(720.0)).abs() < level(20.0) - level(0.0));
+        assert!(before[center] < rim - 1000);
+        let stamp = Stamp {
+            flow: 0.5,
+            ..deposit(0.0, 0.0, 0.12)
+        };
+        map.stamp(&stamp);
+        let once = face_levels(&map);
+        let half = (i32::from(before[center]) + i32::from(rim)) / 2;
+        assert!(
+            (i32::from(once[center]) - half).abs() < 20,
+            "{}",
+            once[center]
+        );
+        for _ in 0..20 {
+            map.stamp(&stamp);
+        }
+        let after = face_levels(&map);
+        for (i, (new, old)) in after.iter().zip(&before).enumerate() {
+            assert!(new >= old, "texel {i}");
+            let (lon, lat) = dir_to_lonlat(map.texel_dir(0, i % 256, i / 256));
+            if lon.hypot(lat) < PIT_RADIUS - 1.0 {
+                // The floor of the pit is flat at the level of the rim.
+                assert!(
+                    *new <= rim && *new >= rim - 20,
+                    "texel {i}: {new}, rim {rim}"
+                );
+            } else if lon.hypot(lat) > PIT_RADIUS + 1.0 {
+                assert_eq!(new, old, "texel {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn deposit_raises_a_valley_floor_by_more_near_the_river() {
+        let mut map = valley();
+        let before = face_levels(&map);
+        map.stamp(&deposit(0.0, RIVER_LAT, 0.05));
+        let after = face_levels(&map);
+        let river = place(&map, 0.0, RIVER_LAT);
+        let rise = |i: usize| i32::from(after[i]) - i32::from(before[i]);
+        // A step of 256 places goes one texel across the valley.
+        for side in [river + 256, river - 256] {
+            assert!(rise(river) > 100, "{}", rise(river));
+            assert!(rise(side) > 0 && rise(side) < rise(river), "{}", rise(side));
+            // The floor is flat from the river to the texel next to it. It
+            // keeps the fall of one texel along the river.
+            assert!(before[side] > before[river] + 100);
+            assert!(after[side].abs_diff(after[river]) <= 40, "{}", after[side]);
+        }
+        for far in [river + 4 * 256, river - 4 * 256] {
+            assert_eq!(rise(far), 0);
+        }
+        // The floor still goes down along the river.
+        let along: Vec<u16> = (0..8).map(|k| after[river - k]).collect();
+        assert!(along.is_sorted_by(|a, b| a > b), "{along:?}");
+    }
+
+    #[test]
+    fn deposit_does_not_raise_ground_above_the_level_where_water_leaves() {
+        let mut map = valley();
+        let before = face_levels(&map);
+        let stamp = deposit(0.0, RIVER_LAT, 0.05);
+        for _ in 0..4 {
+            map.stamp(&stamp);
+        }
+        let after = face_levels(&map);
+        let channels = map.channels().expect("the map has channels").clone();
+        let mut raised = 0;
+        for (i, (new, old)) in after.iter().zip(&before).enumerate() {
+            if new == old {
+                continue;
+            }
+            raised += 1;
+            let (x, y) = (i % 256, i / 256);
+            let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / 256.0 - 0.5;
+            assert!(f64::from(*new) <= channels.fill_level(0, at(x), at(y)));
+            // The banks are 3 texels from the texel, one at each side of the
+            // river.
+            assert!(
+                *new < before[i - 3 * 256].min(before[i + 3 * 256]),
+                "texel {i}"
+            );
+        }
+        assert!(raised > 20, "{raised}");
+    }
+
+    #[test]
+    fn deposit_does_not_lower_ground_and_does_not_change_the_sea_floor() {
+        let sea = meters_to_level(SEA_LEVEL);
+        // The brush covers the mouth of the river and the sea next to it.
+        for (mut map, lat) in [(valley(), RIVER_LAT), (basin(), 0.0)] {
+            let before = face_levels(&map);
+            map.stamp(&deposit(-30.0, lat, 0.05));
+            map.stamp(&deposit(0.0, lat, 0.2));
+            let after = face_levels(&map);
+            assert!(after != before);
+            for (new, old) in after.iter().zip(&before) {
+                assert!(new >= old);
+                assert!(*old >= sea || new == old);
+            }
+        }
+    }
+
+    #[test]
+    fn deposit_reads_the_window_where_the_window_covers_the_ground() {
+        let mut with = valley_with_window(48);
+        let mut without = valley_with_window(48);
+        without.set_window(None);
+        // The first stamp is far from the window. The second stamp covers
+        // the window and the ground around it.
+        for stamp in [deposit(-15.0, RIVER_LAT, 0.1), deposit(0.0, RIVER_LAT, 0.3)] {
+            let before = face_levels(&with);
+            with.stamp(&stamp);
+            without.stamp(&stamp);
+            let (a, b) = (face_levels(&with), face_levels(&without));
+            assert!(b != before);
+            let window = with.window().expect("the map has a window").window();
+            let mut inside = 0;
+            for (i, (a, b)) in a.iter().zip(&b).enumerate() {
+                let (u, v) = window.channel_of_texel((i % 256) as i64, (i / 256) as i64);
+                if window.covers(u, v) {
+                    inside += usize::from(a != b);
+                } else {
+                    assert_eq!(a, b, "texel {i}");
+                }
+            }
+            assert_eq!(inside > 10, stamp.radius > 0.2, "{inside}");
+            with.store_rect(0, face_rect(256), &before);
+            without.store_rect(0, face_rect(256), &before);
+        }
+    }
+
+    #[test]
+    fn deposit_without_channels_changes_nothing() {
+        let mut map = basin();
+        map.set_channels(None);
+        let before = face_levels(&map);
+        assert!(map.stamp(&deposit(0.0, 0.0, 0.12)) > 0);
+        assert!(face_levels(&map) == before);
+    }
+
+    #[test]
+    fn a_ceiling_stops_deposit_below_the_rim() {
+        let mut map = basin();
+        let center = place(&map, 0.0, 0.0);
+        let ceiling = face_levels(&map)[center] + 300;
+        let limits = Limits {
+            ceiling,
+            ..Limits::default()
+        };
+        map.stamp(&Stamp {
+            limits,
+            ..deposit(0.0, 0.0, 0.12)
+        });
+        assert_eq!(face_levels(&map)[center], ceiling);
     }
 
     #[test]

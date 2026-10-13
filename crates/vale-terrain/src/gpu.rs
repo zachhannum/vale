@@ -114,8 +114,8 @@ struct Uniforms {
     sea: u32,
     /// The number of texels along one side of a face of the channel map.
     channel_size: u32,
-    /// 1 if the carve mode or the ridge mode has a window, and 0 if not. In
-    /// an erode pass, 1 if the cells of the step are the cells of a window.
+    /// 1 if the carve mode, the ridge mode, or the deposit mode has a
+    /// window, and 0 if not. In an erode pass, 1 if the cells of the step are the cells of a window.
     window_on: u32,
     /// The first texel, the face, and the cell size of the window.
     window_origin: [i32; 2],
@@ -205,6 +205,11 @@ pub struct GpuHeightmap {
     window_view: wgpu::TextureView,
     /// The place of the window, or `None` with no window.
     window: Mutex<Option<Window>>,
+    /// The levels that the deposit mode fills the ground to, on the cells of
+    /// `CoarseHeights`.
+    fills: wgpu::Texture,
+    /// The same levels on the cells of the window.
+    window_fills: wgpu::Texture,
     /// The drops of an erode step on the cells of `CoarseHeights`. Each face
     /// has one more cell at each side, from the faces that are there.
     drops: wgpu::Texture,
@@ -289,7 +294,7 @@ impl GpuHeightmap {
         });
         let window_view = window_channels.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let drop_texture = |label, size: usize, layers: usize| {
+        let cell_texture = |label, size: usize, layers: usize| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -306,13 +311,21 @@ impl GpuHeightmap {
             })
         };
         let cells = CoarseHeights::size_for(face_size as usize);
-        let drops = drop_texture("erode drops", cells + 2, FACES);
+        let drops = cell_texture("erode drops", cells + 2, FACES);
         let drops_view = drops.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
-        let window_drops = drop_texture("erode window drops", WINDOW_CELLS, 1);
+        let window_drops = cell_texture("erode window drops", WINDOW_CELLS, 1);
         let window_drops_view = window_drops.create_view(&wgpu::TextureViewDescriptor::default());
+        // A new texture holds zeros, and a fill level of 0 is no fill.
+        let fills = cell_texture("fill levels", cells, FACES);
+        let fills_view = fills.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let window_fills = cell_texture("window fill levels", WINDOW_CELLS, 1);
+        let window_fills_view = window_fills.create_view(&wgpu::TextureViewDescriptor::default());
 
         let uniform_size = size_of::<Uniforms>() as u32;
         let slot_size =
@@ -352,6 +365,8 @@ impl GpuHeightmap {
                 texture_entry(2, wgpu::TextureViewDimension::D2),
                 texture_entry(3, wgpu::TextureViewDimension::D2Array),
                 texture_entry(4, wgpu::TextureViewDimension::D2),
+                texture_entry(5, wgpu::TextureViewDimension::D2Array),
+                texture_entry(6, wgpu::TextureViewDimension::D2),
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -381,6 +396,14 @@ impl GpuHeightmap {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(&window_drops_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&fills_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&window_fills_view),
                 },
             ],
         });
@@ -436,6 +459,8 @@ impl GpuHeightmap {
             window_channels,
             window_view,
             window: Mutex::new(None),
+            fills,
+            window_fills,
             drops,
             window_drops,
             pipeline,
@@ -487,7 +512,7 @@ impl GpuHeightmap {
         &self.channels_view
     }
 
-    /// Writes the channel map. The write runs at the next submit, before the
+    /// Writes the channel map and its fill levels. The write runs at the next submit, before the
     /// commands of each encoder in that submit. The size of the map comes
     /// from `ChannelMap::size_for`.
     pub fn upload_channels(&self, queue: &wgpu::Queue, map: &ChannelMap) {
@@ -503,6 +528,17 @@ impl GpuHeightmap {
             },
             size,
         );
+        let size = self.fills.size();
+        queue.write_texture(
+            texels(&self.fills, 0, 0, 0),
+            bytemuck::cast_slice(map.fills()),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.width * 2),
+                rows_per_image: Some(size.height),
+            },
+            size,
+        );
     }
 
     /// The channel texels of the window, with `2 * WINDOW_CELLS` texels along
@@ -511,7 +547,8 @@ impl GpuHeightmap {
         &self.window_view
     }
 
-    /// Sets the window that the carve mode and the ridge mode follow, or no window with `None`.
+    /// Sets the window that the carve mode, the ridge mode, and the deposit
+    /// mode follow, or no window with `None`.
     /// The window has `WINDOW_CELLS` cells along one side. The stamps that go
     /// to an encoder after this call use the new window, and the texels go to
     /// the GPU at the next submit. Thus submit each encoder that holds stamps
@@ -528,6 +565,17 @@ impl GpuHeightmap {
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(size.width * 4),
+                    rows_per_image: Some(size.height),
+                },
+                size,
+            );
+            let size = self.window_fills.size();
+            queue.write_texture(
+                texels(&self.window_fills, 0, 0, 0),
+                bytemuck::cast_slice(channels.fills()),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.width * 2),
                     rows_per_image: Some(size.height),
                 },
                 size,
@@ -695,6 +743,7 @@ impl GpuHeightmap {
                     Mode::Weather => 6,
                     Mode::Warp => 7,
                     Mode::Ridge => 8,
+                    Mode::Deposit => 9,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,

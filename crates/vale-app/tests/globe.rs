@@ -1742,6 +1742,66 @@ fn ridge_raises_the_land_between_the_rivers_and_leaves_the_sea() {
 }
 
 #[test]
+fn the_brush_panel_has_the_deposit_mode() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    h.get_by_label("Deposit").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Deposit);
+}
+
+#[test]
+fn deposit_raises_low_ground_to_the_fill_level_and_leaves_the_sea() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.preview.graticule = false;
+    set_island(&mut globe.map);
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Deposit;
+    globe.brush.size_points = 80.0;
+    h.run_steps(2);
+    save(&canvas_image(&mut h), "deposit-before");
+
+    let map = &h.state().globe.map;
+    let n = map.face_size();
+    let texels = || (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let levels = |map: &vale_terrain::Heightmap| -> Vec<u16> {
+        texels()
+            .map(|(face, x, y)| map.get(face, x as i64, y as i64))
+            .collect()
+    };
+    let before = levels(map);
+    let channels = channel_map(&CoarseHeights::new(map));
+    assert!(channels.fills() == h.state().globe.channels().unwrap().fills());
+
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    save(&canvas_image(&mut h), "deposit-after");
+    let after = levels(&h.state().globe.map);
+    let sea = meters_to_level(0.0);
+    let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / n as f64 - 0.5;
+    let mut raised = 0;
+    for (i, (face, x, y)) in texels().enumerate() {
+        let (old, new) = (before[i], after[i]);
+        assert!(new >= old, "{new} under {old}");
+        if old < sea {
+            assert_eq!(new, old, "the sea floor");
+        }
+        if new == old {
+            continue;
+        }
+        raised += 1;
+        // The GPU stamp can differ from the CPU stamp by 1 level.
+        let fill = channels.fill_level(face, at(x), at(y));
+        assert!(f64::from(new) <= fill + 1.0, "{new} over {fill}");
+    }
+    assert!(raised > 100, "{raised}");
+}
+
+#[test]
 fn ridge_in_a_near_view_reads_the_window() {
     const N: usize = 2048;
     let _gpu = one_gpu_test();

@@ -40,8 +40,8 @@ struct Group {
     sea: u32,
     // The number of texels along one side of a face of the channel map.
     channel_size: u32,
-    // 1 if the carve mode or the ridge mode has a window, and 0 if not. In
-    // an erode pass, 1 if the cells of the step are the cells of a window.
+    // 1 if the carve mode, the ridge mode, or the deposit mode has a window,
+    // and 0 if not. In an erode pass, 1 if the cells of the step are the cells of a window.
     window_on: u32,
     // The first texel, the face, and the cell size of the window.
     window_origin: vec2<i32>,
@@ -72,6 +72,7 @@ const ERODE = 5u;
 const WEATHER = 6u;
 const WARP = 7u;
 const RIDGE = 8u;
+const DEPOSIT = 9u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -88,6 +89,11 @@ const WARP_MARGIN = 3.0;
 @group(0) @binding(3) var drops: texture_2d_array<u32>;
 // The drops of an erode step on the cells of a window.
 @group(0) @binding(4) var window_drops: texture_2d<u32>;
+// The levels that the deposit mode fills the ground to, on the cells of all
+// faces. A cell is 2 channel texels wide.
+@group(0) @binding(5) var fills: texture_2d_array<u32>;
+// The same levels on the cells of the window.
+@group(0) @binding(6) var window_fills: texture_2d<u32>;
 
 // The same number as `WINDOW_MARGIN` in `flow.rs`.
 const WINDOW_MARGIN = 8.0;
@@ -251,12 +257,11 @@ fn window_place(at: vec2<i32>) -> vec3<f32> {
     return vec3<f32>((texel - vec2<f32>(group.window_origin)) / cell, 1.0);
 }
 
-// The distance from a texel to the river of its pair in the window, in
-// channel texels of the window, and the size of that river from 0 to 255. The third number is 1 if the window covers the texel, and 0
-// if not. The steps are those of `Window::channel_of_texel`,
-// `Window::channel_of_dir`, `ChannelWindow::valley`, and
-// `ChannelWindow::ridge`.
-fn window_river_at(at: vec2<i32>) -> vec3<f32> {
+// The place of a texel in the window, in channel texels of the window. The
+// third number is 1 if the window covers the texel, and 0 if not. The steps
+// are those of `Window::channel_of_texel`, `Window::channel_of_dir`, and
+// `Window::covers`.
+fn window_channel_at(at: vec2<i32>) -> vec3<f32> {
     if group.window_on == 0u {
         return vec3<f32>(0.0);
     }
@@ -270,6 +275,19 @@ fn window_river_at(at: vec2<i32>) -> vec3<f32> {
     if any(c < vec2<f32>(WINDOW_MARGIN)) || any(c > vec2<f32>(last)) {
         return vec3<f32>(0.0);
     }
+    return vec3<f32>(c, 1.0);
+}
+
+// The distance from a texel to the river of its pair in the window, in
+// channel texels of the window, and the size of that river from 0 to 255.
+// The third number is 1 if the window covers the texel, and 0 if not. The
+// steps are those of `ChannelWindow::valley` and `ChannelWindow::ridge`.
+fn window_river_at(at: vec2<i32>) -> vec3<f32> {
+    let place = window_channel_at(at);
+    if place.z == 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let c = place.xy;
     let whole = floor(c);
     let t = c - whole;
     let p0 = vec2<i32>(whole);
@@ -282,6 +300,56 @@ fn window_river_at(at: vec2<i32>) -> vec3<f32> {
     let bottom = c0 * (1.0 - t.x) + d * t.x;
     let both = top * (1.0 - t.y) + bottom * t.y;
     return vec3<f32>(both.x / 32.0, both.y, 1.0);
+}
+
+// The blend of 4 fill levels as a whole number. The steps are those of
+// `fill_at` in `flow.rs`.
+fn fill_blend(a: f32, b: f32, c: f32, d: f32, t: vec2<f32>) -> f32 {
+    let top = a * (1.0 - t.x) + b * t.x;
+    let bottom = c * (1.0 - t.x) + d * t.x;
+    return floor(top * (1.0 - t.y) + bottom * t.y + 0.5);
+}
+
+// The fill level at a texel, from the cells of the face. The steps are those
+// of `ChannelMap::fill_level`.
+fn fill_at(at: vec2<i32>) -> f32 {
+    let cells = i32(textureDimensions(fills).x);
+    let c = (vec2<f32>(at) + 0.5) * f32(cells) / f32(group.size) - 0.5;
+    let whole = floor(c);
+    let last = vec2<i32>(cells - 1);
+    let p0 = clamp(vec2<i32>(whole), vec2<i32>(0), last);
+    let p1 = clamp(vec2<i32>(whole) + 1, vec2<i32>(0), last);
+    let face = i32(group.face);
+    return fill_blend(
+        f32(textureLoad(fills, p0, face, 0).r),
+        f32(textureLoad(fills, vec2<i32>(p1.x, p0.y), face, 0).r),
+        f32(textureLoad(fills, vec2<i32>(p0.x, p1.y), face, 0).r),
+        f32(textureLoad(fills, p1, face, 0).r),
+        c - whole,
+    );
+}
+
+// The fill level at a texel, from the cells of the window. The second number
+// is 1 if the window covers the texel, and 0 if not. The steps are those of
+// `ChannelWindow::fill_level`.
+fn window_fill_at(at: vec2<i32>) -> vec2<f32> {
+    let place = window_channel_at(at);
+    if place.z == 0.0 {
+        return vec2<f32>(0.0);
+    }
+    let c = place.xy / 2.0 - 0.25;
+    let whole = floor(c);
+    let last = vec2<i32>(textureDimensions(window_fills)) - 1;
+    let p0 = clamp(vec2<i32>(whole), vec2<i32>(0), last);
+    let p1 = clamp(vec2<i32>(whole) + 1, vec2<i32>(0), last);
+    let level = fill_blend(
+        f32(textureLoad(window_fills, p0, 0).r),
+        f32(textureLoad(window_fills, vec2<i32>(p1.x, p0.y), 0).r),
+        f32(textureLoad(window_fills, vec2<i32>(p0.x, p1.y), 0).r),
+        f32(textureLoad(window_fills, p1, 0).r),
+        c - whole,
+    );
+    return vec2<f32>(level, 1.0);
 }
 
 // The drop of a cell of an erode pass. The cell can be one place past the end
@@ -582,6 +650,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
             river = river_at(at);
         }
     }
+    // The fill level. The window comes first.
+    var fill = 0.0;
+    if group.mode == DEPOSIT {
+        let in_window = window_fill_at(at);
+        if in_window.y > 0.0 {
+            fill = in_window.x;
+        } else {
+            fill = fill_at(at);
+        }
+    }
     for (var i = 0u; i < group.count; i++) {
         let stamp = group.stamps[i];
         if group.mode == WEATHER {
@@ -638,6 +716,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                 // the texel, and the largest byte is 255.
                 if old > f32(group.sea) {
                     change = amount * stamp.strength * (river.x * 32.0 / 255.0);
+                }
+            }
+            case DEPOSIT {
+                // The sea floor stays, and so does ground at or above the
+                // fill level.
+                if old >= f32(group.sea) {
+                    change = max(fill - old, 0.0) * min(amount, 1.0);
                 }
             }
             default {

@@ -188,7 +188,10 @@ fn check_controls(h: &Pad, what: &str) {
                     .any(|k| k.name() == name);
                 let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
                 let more = in_more
-                    && ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"].contains(&name);
+                    && [
+                        "Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp",
+                    ]
+                    .contains(&name);
                 let add = in_add && ["Lines", "Points", "Polygons"].contains(&name);
                 menu || kind || more || add || (in_menu && name == "Projection")
             };
@@ -215,7 +218,9 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         tap(&mut h, MORE);
         assert!(h.state().pad.more);
-        for name in [MORE, "Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"] {
+        for name in [
+            MORE, "Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp",
+        ] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, &format!("{size:?} with the More menu"));
@@ -743,6 +748,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
         ("Erode", Mode::Erode),
         ("Carve", Mode::Carve),
         ("Ridge", Mode::Ridge),
+        ("Deposit", Mode::Deposit),
     ] {
         // A row of the menu also picks the brush tool.
         tap(&mut h, "Pan");
@@ -753,7 +759,9 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
         let menu = h.state().pad.more_rect.unwrap();
         let cell = control(&h, MORE).unwrap();
         assert_eq!(menu.left_top(), pos2(tools.right() + 12.0, cell.top()));
-        for row in ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"] {
+        for row in [
+            "Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp",
+        ] {
             assert!(menu.contains_rect(control(&h, row).unwrap()), "{row}");
         }
         assert_eq!(strip(&h), cells);

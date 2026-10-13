@@ -278,6 +278,8 @@ pub(crate) struct Drain {
     /// The land cells. Each receiver is before the cells that it takes water
     /// from.
     pub(crate) order: Vec<u32>,
+    /// The level of each cell after the flood fills the pits.
+    pub(crate) filled: Vec<u16>,
 }
 
 /// The receiver of each land cell, and the solid angle that drains through
@@ -368,7 +370,95 @@ pub(crate) fn drain(grid: &impl Grid, levels: &[u16], inflow: &[(usize, f64)], s
         receiver,
         area: area.iter().map(|&area| area as f32).collect(),
         order,
+        filled,
     }
+}
+
+/// The two neighbors at the sides of the step to neighbor `k`, in the order
+/// of `STEPS`.
+const SIDES: [[usize; 2]; 8] = [
+    [2, 3],
+    [2, 3],
+    [0, 1],
+    [0, 1],
+    [5, 6],
+    [4, 7],
+    [4, 7],
+    [5, 6],
+];
+
+/// The level that the Deposit mode fills each cell to. A cell with a lower
+/// level than its ground gets no fill.
+///
+/// A cell of a pit fills to the rim of the pit. A river cell fills to the
+/// level halfway from its bed to the lower of its two banks. A bank is the
+/// highest ground at one side of the river. The search for a bank goes as far
+/// as the width of the valley that the Carve mode cuts for a river of that
+/// size. Each cell also takes the level of the cell that takes its water, so
+/// the levels do not go down against the flow. A cell is a river if it drains
+/// `min_area` or more.
+pub(crate) fn fill_levels(
+    grid: &impl Grid,
+    levels: &[u16],
+    flow: &Drain,
+    min_area: f64,
+) -> Vec<u16> {
+    let mut fill = vec![0u16; levels.len()];
+    for &i in &flow.order {
+        let i = i as usize;
+        let to = flow.receiver[i];
+        let bed = flow.filled[i];
+        let mut level = if bed > levels[i] { bed } else { 0 };
+        let area = f64::from(flow.area[i]);
+        let near = grid.neighbors(i);
+        let step = near.iter().position(|&j| j == to).filter(|_| to < OUT);
+        if let Some(step) = step.filter(|_| area >= min_area) {
+            let size = f64::from(size_byte(area / min_area)) / 255.0;
+            // A cell is 2 channel texels wide.
+            let reach = ((1.5 + 4.5 * size) / 2.0).ceil() as usize;
+            let bank = |side: usize| {
+                let mut top = 0;
+                let mut at = i;
+                for _ in 0..reach {
+                    let next = grid.neighbors(at)[side];
+                    if next == NONE {
+                        break;
+                    }
+                    at = next as usize;
+                    top = top.max(flow.filled[at]);
+                }
+                top
+            };
+            let [a, b] = SIDES[step].map(bank);
+            let rim = a.min(b);
+            if rim > bed {
+                level = level.max(bed + (rim - bed) / 2);
+            }
+        }
+        let below = if to < OUT { fill[to as usize] } else { 0 };
+        fill[i] = level.max(below);
+    }
+    fill
+}
+
+/// The blend of the fill levels of the 4 cells around a place, as a whole
+/// number. `fill` has `m` by `m` cells in row order. `x` and `y` are in
+/// cells, and a cell center is at a whole number. `stamp.wgsl` has the same
+/// steps.
+fn fill_at(fill: &[u16], m: usize, x: f64, y: f64) -> f64 {
+    let last = (m - 1) as f64;
+    let (x0, y0) = (x.floor(), y.floor());
+    let at = |x: f64, y: f64| {
+        let (x, y) = (x.clamp(0.0, last) as usize, y.clamp(0.0, last) as usize);
+        f64::from(fill[y * m + x])
+    };
+    let cells = [
+        at(x0, y0),
+        at(x0 + 1.0, y0),
+        at(x0, y0 + 1.0),
+        at(x0 + 1.0, y0 + 1.0),
+    ];
+    blend(cells, x - x0, y - y0).round()
 }
 
 /// The path of the water from each land cell to the sea. A cell below sea
@@ -379,6 +469,8 @@ pub struct FlowMap {
     receiver: Vec<u32>,
     /// The solid angle that drains through each land cell, in steradians.
     area: Vec<f32>,
+    /// The level that the Deposit mode fills each cell to.
+    fill: Vec<u16>,
 }
 
 impl FlowMap {
@@ -388,11 +480,13 @@ impl FlowMap {
             m: heights.m,
             solid: solid_angles(heights.m),
         };
-        let Drain { receiver, area, .. } = drain(&grid, &heights.levels, &[], sea());
+        let flow = drain(&grid, &heights.levels, &[], sea());
+        let fill = fill_levels(&grid, &heights.levels, &flow, RIVER_MIN_AREA);
         FlowMap {
             m: heights.m,
-            receiver,
-            area,
+            receiver: flow.receiver,
+            area: flow.area,
+            fill,
         }
     }
 
@@ -442,6 +536,7 @@ impl FlowMap {
     /// one axis.
     pub fn channels(&self) -> ChannelMap {
         let mut map = ChannelMap::empty(2 * self.m);
+        map.fill.clone_from(&self.fill);
         let mut rivers = self.rivers();
         rivers.smooth();
         for (k, &cell) in rivers.cells.iter().enumerate() {
@@ -701,18 +796,24 @@ fn blend(values: [f64; 4], tx: f64, ty: f64) -> f64 {
 /// or 0 if no river is near. A pair with no river near holds 255 and 0. The
 /// first pair is the nearest river, for the lines of the rivers. The second
 /// pair is the river with the deepest valley at the texel.
+///
+/// The map also holds the fill level of each cell of the flow, for the
+/// Deposit mode. A cell is 2 texels wide.
 pub struct ChannelMap {
     size: usize,
     data: Vec<u8>,
+    fill: Vec<u16>,
 }
 
 impl ChannelMap {
     /// A map with no rivers, with `size` by `size` texels on each face.
     pub fn empty(size: usize) -> ChannelMap {
         assert!(size > 0, "the size must not be zero");
+        let cells = size.div_ceil(2);
         ChannelMap {
             size,
             data: EMPTY.repeat(FACES * size * size),
+            fill: vec![0; FACES * cells * cells],
         }
     }
 
@@ -730,6 +831,21 @@ impl ChannelMap {
     /// The 4 bytes of each texel, face by face, in row order.
     pub fn bytes(&self) -> &[u8] {
         &self.data
+    }
+
+    /// The fill level of each cell, face by face, in row order. A face has
+    /// `size().div_ceil(2)` cells along one side.
+    pub fn fills(&self) -> &[u16] {
+        &self.fill
+    }
+
+    /// The level that the Deposit mode fills the ground to at a place, as a
+    /// whole number. `u` and `v` are as in `valley`. The level is a blend of
+    /// the 4 cells around the place. A level below the ground is no fill.
+    pub fn fill_level(&self, face: usize, u: f64, v: f64) -> f64 {
+        let m = self.size.div_ceil(2);
+        let cells = &self.fill[face * m * m..(face + 1) * m * m];
+        fill_at(cells, m, u / 2.0 - 0.25, v / 2.0 - 0.25)
     }
 
     /// The pair of a texel for the lines of the rivers.
@@ -1081,6 +1197,8 @@ struct WindowFlow {
     area: Vec<f32>,
     /// The smallest area that a river cell drains, in steradians.
     min_area: f64,
+    /// The level that the Deposit mode fills each cell to.
+    fill: Vec<u16>,
 }
 
 impl WindowFlow {
@@ -1088,12 +1206,15 @@ impl WindowFlow {
     fn new(heights: &WindowHeights, global: Option<&FlowMap>) -> WindowFlow {
         let window = heights.window;
         let inflow = global.map_or_else(Vec::new, |global| window.inflow(global));
-        let Drain { receiver, area, .. } = drain(&window, &heights.levels, &inflow, sea());
+        let flow = drain(&window, &heights.levels, &inflow, sea());
+        let min_area = window.river_min_area();
+        let fill = fill_levels(&window, &heights.levels, &flow, min_area);
         WindowFlow {
             window,
-            receiver,
-            area,
-            min_area: window.river_min_area(),
+            receiver: flow.receiver,
+            area: flow.area,
+            min_area,
+            fill,
         }
     }
 
@@ -1128,16 +1249,19 @@ impl WindowFlow {
         ChannelWindow {
             window: self.window,
             data,
+            fill: self.fill.clone(),
         }
     }
 }
 
 /// The rivers of a window as a texture, with 2 texels for each cell along
 /// one axis. A texel has the 4 bytes of a `ChannelMap` texel. The distances
-/// are in channel texels of the window.
+/// are in channel texels of the window. The window also holds the fill
+/// level of each cell, for the Deposit mode.
 pub struct ChannelWindow {
     window: Window,
     data: Vec<u8>,
+    fill: Vec<u16>,
 }
 
 impl ChannelWindow {
@@ -1153,6 +1277,21 @@ impl ChannelWindow {
     /// The 4 bytes of each texel, in row order.
     pub fn bytes(&self) -> &[u8] {
         &self.data
+    }
+
+    /// The fill level of each cell, in row order.
+    pub fn fills(&self) -> &[u16] {
+        &self.fill
+    }
+
+    /// The level that the Deposit mode fills the ground to at a place that
+    /// `Window::covers`, as a whole number. `u` and `v` are as in `valley`.
+    /// A level below the ground is no fill.
+    pub fn fill_level(&self, u: f64, v: f64) -> Option<f64> {
+        let cells = self.window.cells;
+        self.window
+            .covers(u, v)
+            .then(|| fill_at(&self.fill, cells, u / 2.0 - 0.25, v / 2.0 - 0.25))
     }
 
     /// The pair of a texel for the lines of the rivers.
