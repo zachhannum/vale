@@ -464,23 +464,34 @@ fn valley_fill(grid: &impl Grid, levels: &[u16], flow: &Drain, min_area: f64) ->
     fill
 }
 
-/// The number of cells along a river above and below a cell that give the
-/// two slopes of the cell.
-const FAN_SPAN: usize = 4;
+/// The number of cells along a river above a cell that give the slope above
+/// the cell.
+const FAN_SPAN_ABOVE: usize = 4;
 
-/// The smallest fall of a river above a fan, in levels, along `FAN_SPAN`
-/// cells.
-const FAN_MIN_DROP: u16 = 16;
+/// The number of cells along a river below a cell that give the slope below
+/// the cell.
+const FAN_SPAN_BELOW: usize = 8;
+
+/// The smallest height of a fan above the bed of its river, in levels. It is
+/// about 10 meters.
+const FAN_MIN_HEIGHT: f64 = 55.0;
+
+/// A river builds fans and deltas if it drains this many times the smallest
+/// area of a river.
+const SEDIMENT_MIN_RATIO: f64 = 8.0;
 
 /// Raises the fill levels to the surface of the alluvial fans.
 ///
 /// A river has a break where its slope below a cell is less than half of its
-/// slope above the cell. Each slope is along `FAN_SPAN` cells. A fan is a
-/// cone. Its top is the bed of the river 1 to 4 cells above the break, and a
-/// larger river has a higher top. The slope of the cone is the mean of the
-/// two slopes. Thus the cone meets the ground as far below the break as its
-/// top is above the break. The fan holds the land cells below the cone that
-/// connect to the river. A river has no second fan on the ground of a fan.
+/// slope above the cell. The slope above is along `FAN_SPAN_ABOVE` cells, and
+/// the slope below is along `FAN_SPAN_BELOW` cells. A fan is a cone. Its top
+/// is the bed of the river 1 to 3 cells above the break. Its foot is the bed
+/// of the river 4 to 16 cells from the top. A larger river has a higher top
+/// and a foot that is farther away. The fan holds the land cells below the
+/// cone that connect to the river. A fan that is lower than
+/// `FAN_MIN_HEIGHT` at the break is no fan. A river has no fan where it
+/// comes to a lake or to a larger river along the cells below the break. A
+/// river has no second fan on the ground of a fan.
 fn add_fans(
     grid: &impl Grid,
     levels: &[u16],
@@ -519,16 +530,21 @@ fn add_fans(
     // The slope above a river cell and the slope below it, in levels for
     // each radian.
     let slopes = |i: usize| {
-        if !is_river(i) || in_pit(i) {
+        if f64::from(flow.area[i]) < SEDIMENT_MIN_RATIO * min_area || in_pit(i) {
             return None;
         }
-        let top = above(i, FAN_SPAN)?;
+        let top = above(i, FAN_SPAN_ABOVE)?;
         let mut end = i;
-        for _ in 0..FAN_SPAN {
-            end = below(end).filter(|&to| !in_pit(to))?;
+        for _ in 0..FAN_SPAN_BELOW {
+            // A lake has its own fill, and so does the valley of a larger
+            // river that the river joins.
+            let to = below(end).filter(|&to| !in_pit(to))?;
+            if donor[to] as usize != end {
+                return None;
+            }
+            end = to;
         }
-        let steep = flow.filled[top] - flow.filled[i] >= FAN_MIN_DROP;
-        steep.then(|| (slope(top, i), slope(i, end)))
+        (flow.filled[top] > flow.filled[i]).then(|| (slope(top, i), slope(i, end)))
     };
 
     let mut blocked = vec![false; levels.len()];
@@ -552,34 +568,44 @@ fn add_fans(
             continue;
         }
         let size = river_size(flow.area[i], min_area);
-        let Some(top) = above(i, 1 + (3.0 * size).round() as usize) else {
+        let Some(top) = above(i, 2 + (2.0 * size).round() as usize) else {
             continue;
         };
         let peak = f64::from(flow.filled[top]);
         let origin = grid.dir(top);
-        let reach = 2.0 * angle(origin, grid.dir(i));
-        let fall = (steep + gentle) / 2.0;
+        let far = |cell: usize| angle(origin, grid.dir(cell));
+        // The foot of the fan is on the river.
+        let length = (6.0 + 14.0 * size) * grid.solid_angle(i).sqrt();
+        let mut foot = i;
+        while let Some(to) = below(foot).filter(|_| far(foot) < length) {
+            foot = to;
+        }
+        let reach = far(foot);
+        let fall = (peak - f64::from(flow.filled[foot])) / reach;
+        let cone = |cell: usize| (peak - fall * far(cell)).floor();
+        if cone(i) - f64::from(flow.filled[i]) < FAN_MIN_HEIGHT {
+            continue;
+        }
 
-        // The walk starts at the river cells from the top to the break.
+        // The walk starts at the river cells from the top to the foot.
         cells.clear();
         let mut at = top;
-        while at != i {
+        while at != foot {
             cells.push(at);
             at = flow.receiver[at] as usize;
         }
-        cells.push(i);
         for &cell in &cells {
             seen[cell] = true;
+            blocked[cell] = true;
         }
         let stem = cells.len();
         let mut next = 0;
         while next < cells.len() {
             let cell = cells[next];
             next += 1;
-            let far = angle(origin, grid.dir(cell));
-            let cone = (peak - fall * far).floor();
-            if cone > f64::from(flow.filled[cell]) {
-                fill[cell] = fill[cell].max(cone as u16);
+            let level = cone(cell);
+            if level > f64::from(flow.filled[cell]) {
+                fill[cell] = fill[cell].max(level as u16);
             } else if next > stem {
                 continue;
             }
@@ -588,7 +614,7 @@ fn add_fans(
                     continue;
                 }
                 let near = near as usize;
-                if !seen[near] && levels[near] >= sea && angle(origin, grid.dir(near)) <= reach {
+                if !seen[near] && levels[near] >= sea && far(near) <= reach {
                     seen[near] = true;
                     cells.push(near);
                 }
@@ -597,23 +623,15 @@ fn add_fans(
         for &cell in &cells {
             seen[cell] = false;
         }
-        let mut at = i;
-        while let Some(to) = below(at) {
-            if angle(grid.dir(i), grid.dir(to)) > reach {
-                break;
-            }
-            blocked[to] = true;
-            at = to;
-        }
     }
 }
 
 /// Raises the fill levels of the sea floor in front of each river mouth.
 ///
 /// A mouth is a river cell that drains to an ocean cell. Its delta holds the
-/// ocean cells that connect to the mouth and are at most 2 to 7 cells from
+/// ocean cells that connect to the mouth and are at most 3 to 12 cells from
 /// it, and a larger river has a larger delta. The level of a cell goes from
-/// sea level at the mouth to the sea floor at the edge of the delta.
+/// sea level near the mouth to the sea floor at the edge of the delta.
 fn add_deltas(
     grid: &impl Grid,
     levels: &[u16],
@@ -628,12 +646,12 @@ fn add_deltas(
         let i = i as usize;
         let to = flow.receiver[i];
         let is_mouth = to < OUT && levels[to as usize] < sea;
-        if !is_mouth || f64::from(flow.area[i]) < min_area {
+        if !is_mouth || f64::from(flow.area[i]) < SEDIMENT_MIN_RATIO * min_area {
             continue;
         }
         let size = river_size(flow.area[i], min_area);
         let origin = grid.dir(i);
-        let reach = (2.0 + 5.0 * size) * grid.solid_angle(i).sqrt();
+        let reach = (3.0 + 9.0 * size) * grid.solid_angle(i).sqrt();
         cells.clear();
         cells.push(to as usize);
         seen[to as usize] = true;
@@ -641,7 +659,8 @@ fn add_deltas(
         while next < cells.len() {
             let cell = cells[next];
             next += 1;
-            let k = (angle(origin, grid.dir(cell)) / reach).min(1.0);
+            // The top of the delta is flat as far as a third of its reach.
+            let k = (1.5 * angle(origin, grid.dir(cell)) / reach - 0.5).clamp(0.0, 1.0);
             let part = 1.0 - k * k * (3.0 - 2.0 * k);
             let floor = f64::from(levels[cell]);
             let level = (floor + (f64::from(sea) - floor) * part).floor() as u16;
@@ -1661,10 +1680,13 @@ pub(crate) mod tests {
         })
     }
 
+    /// The longitude and the latitude of each cell of a list.
+    type Places = Vec<(f64, f64)>;
+
     /// The fans and the deltas of `piedmont`. The first list has the
     /// longitude and the latitude of each cell that a fan raises. The second
     /// list has the same for each ocean cell that a delta raises.
-    fn piedmont_fills(width: f64) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+    fn piedmont_fills(width: f64) -> (Places, Places) {
         let m = 256;
         let heights = CoarseHeights::from_fn(m, |d| piedmont(d, width));
         let grid = CubeGrid {
@@ -1699,9 +1721,9 @@ pub(crate) mod tests {
             let column = |&&(lon, _): &&(f64, f64)| lon > from && lon < to;
             fans.iter().filter(near_river).filter(column).count()
         };
-        // The break is at longitude 0. The top of the fan is above it, and
-        // the fan ends as far below it.
-        assert!(fans.iter().all(|&(lon, _)| lon.abs() < 2.5));
+        // The break is at longitude 0. The top of the fan is at most 4 cells
+        // above it, and the foot is at most 20 cells from the top.
+        assert!(fans.iter().all(|&(lon, _)| lon < 2.5 && lon > -7.5));
         // The fan is wide on the plain and narrow in the valley.
         assert!(count(0.5, 1.5) > 0);
         assert!(count(-1.5, -0.5) > 2 * count(0.5, 1.5));
@@ -1714,7 +1736,7 @@ pub(crate) mod tests {
         let far = |&(lon, lat): &(f64, f64)| angle(mouth, lonlat_to_dir(lon, lat)).to_degrees();
         let near: Vec<f64> = deltas.iter().map(far).filter(|&far| far < 4.0).collect();
         assert!(near.len() > 20, "{}", near.len());
-        assert!(deltas.iter().all(|&(lon, _)| lon < -30.0 && lon > -33.0));
+        assert!(deltas.iter().all(|&(lon, _)| lon < -30.0 && lon > -35.0));
     }
 
     #[test]

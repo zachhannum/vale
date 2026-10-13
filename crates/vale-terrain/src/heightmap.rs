@@ -38,7 +38,7 @@ pub enum Mode {
     /// Raises the ground toward the fill level of the channel map. That
     /// level is the rim of a pit, a level between the bed and the banks of a
     /// river, the surface of a fan, or the top of a delta. Ground at or above
-    /// the level does not change. The sea floor does not go above sea level.
+    /// the level does not change. The sea floor stays below sea level.
     Deposit,
     /// The mode of the erode brush. A stamp of this mode changes nothing.
     /// `Heightmap::erode` makes the change.
@@ -971,8 +971,13 @@ impl Heightmap {
                                 let Some(level) = fill(x, y, fu, fv) else {
                                     continue;
                                 };
-                                // The sea floor does not go above sea level.
-                                let level = if old < sea { level.min(sea) } else { level };
+                                // The sea floor stays below sea level, so it
+                                // does not become land that rises more.
+                                let level = if old < sea {
+                                    level.min(sea - 1.0)
+                                } else {
+                                    level
+                                };
                                 old + (level - old).max(0.0) * amount.min(1.0)
                             }
                             Mode::Weather => unreachable!("`stamp` sends it to `weather_face`"),
@@ -2275,7 +2280,7 @@ mod tests {
     }
 
     #[test]
-    fn deposit_does_not_lower_ground_and_does_not_raise_the_sea_floor_above_sea_level() {
+    fn deposit_does_not_lower_ground_and_keeps_the_sea_floor_below_sea_level() {
         let sea = meters_to_level(SEA_LEVEL);
         // The brush covers the mouth of the river and the sea next to it.
         for (mut map, lat) in [
@@ -2292,7 +2297,7 @@ mod tests {
             assert!(after != before);
             for (new, old) in after.iter().zip(&before) {
                 assert!(new >= old);
-                assert!(*old >= sea || *new <= sea);
+                assert!(*old >= sea || *new < sea);
             }
         }
     }
@@ -2325,7 +2330,7 @@ mod tests {
         assert!(width(1.0) >= 1 && width(-0.2) > 2 * width(1.0));
         // The fan becomes thin with the distance from its top, and it ends.
         assert!(rise(-1.0, RIVER_LAT) < rise(-0.2, RIVER_LAT));
-        assert_eq!(width(-4.0), 0);
+        assert_eq!(width(-9.0), 0);
     }
 
     #[test]
@@ -2347,7 +2352,7 @@ mod tests {
         assert!(before[at_mouth] < sea - 5000);
         // One stamp moves the sea floor halfway to its fill level.
         let rise = i32::from(after[at_mouth]) - i32::from(before[at_mouth]);
-        assert!(rise > 3000 && after[at_mouth] <= sea, "{rise}");
+        assert!(rise > 3000 && after[at_mouth] < sea, "{rise}");
         let first = i32::from(once[at_mouth]) - i32::from(before[at_mouth]);
         assert!((first - rise / 2).abs() < 20, "{first}");
         // The delta is lower at a larger distance from the mouth, and it

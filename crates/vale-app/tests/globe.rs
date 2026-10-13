@@ -1752,7 +1752,7 @@ fn the_brush_panel_has_the_deposit_mode() {
 }
 
 #[test]
-fn deposit_raises_low_ground_to_the_fill_level_and_the_sea_floor_to_sea_level_at_most() {
+fn deposit_raises_low_ground_to_the_fill_level_and_keeps_the_sea_floor_below_sea_level() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
     let globe = &mut h.state_mut().globe;
@@ -1788,7 +1788,7 @@ fn deposit_raises_low_ground_to_the_fill_level_and_the_sea_floor_to_sea_level_at
         let (old, new) = (before[i], after[i]);
         assert!(new >= old, "{new} under {old}");
         if old < sea {
-            assert!(new <= sea, "the sea floor is at {new}");
+            assert!(new < sea, "the sea floor is at {new}");
         }
         if new == old {
             continue;
