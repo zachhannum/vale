@@ -15,6 +15,8 @@ use crate::world::{self, three_significant};
 
 /// The button of the tool bar that opens the properties of the world.
 pub const WORLD_BUTTON: &str = "World…";
+/// The button of the tool bar that exports the heightmap.
+pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -60,6 +62,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 let import = egui::Button::new("Import heightmap…");
                 if ui.add_enabled(!state.globe.busy(), import).clicked() {
                     state.actions.push(Action::ImportHeightmapDialog);
+                }
+                let export = egui::Button::new(EXPORT_GEOTIFF);
+                if ui.add_enabled(state.can_export(), export).clicked() {
+                    state.actions.push(Action::ExportHeightmapDialog);
                 }
             }
             if !state.file_buttons || state.workspace != Workspace::Map {
@@ -595,6 +601,7 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
                 ));
             }
             let progress = state.globe.import_progress();
+            let progress = progress.or_else(|| state.globe.export_progress());
             let text = progress.as_deref().unwrap_or(&state.status);
             if !text.is_empty() {
                 ui.separator();

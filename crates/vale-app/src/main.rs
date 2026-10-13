@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
-use vale_app::cli::{Args, apply_globe, apply_import, apply_view, parse_pair};
+use vale_app::cli::{Args, apply_globe, apply_import, apply_view, export_heightmap, parse_pair};
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
 use vale_app::pipeline::Pipeline;
@@ -13,6 +13,11 @@ use vale_app::ui::world_form::WorldForm;
 
 fn run() -> anyhow::Result<u8> {
     let args = Args::parse();
+    if let Some(done) = export_heightmap(&args)? {
+        let path = done.path.display();
+        println!("wrote {path} ({} x {})", done.width, done.height);
+        return Ok(0);
+    }
     let mut doc = args.document()?;
     let session = match &args.project {
         Some(path) => {

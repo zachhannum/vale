@@ -3843,8 +3843,10 @@ dependencies = [
 name = "vale-import"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "image",
  "serde_json",
+ "tempfile",
  "tiff",
  "vale-store",
 ]

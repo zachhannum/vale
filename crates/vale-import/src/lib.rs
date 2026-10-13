@@ -1,6 +1,7 @@
 //! Vector and raster data import.
 
 pub mod geojson;
+pub mod geotiff;
 pub mod raster;
 
 use std::fmt;
@@ -33,4 +34,5 @@ impl fmt::Display for ImportError {
 impl std::error::Error for ImportError {}
 
 pub use geojson::{Imported, ImportedLayer};
+pub use geotiff::{GeoTiff, GeoTiffError};
 pub use raster::Greyscale;

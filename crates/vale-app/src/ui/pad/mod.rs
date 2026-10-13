@@ -8,7 +8,7 @@ use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode};
 
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, SaveMark, Workspace, elevation, globe, panels};
+use super::{Action, AppState, Note, SaveMark, Workspace, elevation, globe, panels};
 use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds_of};
@@ -52,6 +52,8 @@ const WORLDS_LEAD: f32 = TOUCH + 9.0;
 const WORLD_ROWS: usize = 6;
 /// The name of the row that imports a heightmap.
 pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
+/// The name of the row that exports the heightmap.
+pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 
 /// A panel that a button of the layout opens.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -805,18 +807,15 @@ fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     }
 }
 
-/// The text of the import that runs, or of the last import, with its color.
-fn import_text(state: &AppState) -> Option<(String, egui::Color32)> {
-    if let Some(progress) = state.globe.import_progress() {
-        return Some((progress, theme::MUTE));
-    }
-    let note = state.import_note.as_ref()?;
-    let color = if note.warning {
-        theme::WARN
-    } else {
-        theme::MUTE
+/// Shows the text of the import or the export that runs, or of the last one.
+fn note_text(ui: &mut egui::Ui, progress: Option<String>, note: Option<&Note>) {
+    let (text, color) = match (progress, note) {
+        (Some(progress), _) => (progress, theme::MUTE),
+        (None, Some(note)) if note.warning => (note.text.clone(), theme::WARN),
+        (None, Some(note)) => (note.text.clone(), theme::MUTE),
+        (None, None) => return,
     };
-    Some((note.text.clone(), color))
+    ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
 }
 
 /// The row that imports a heightmap, and the text of the import below it.
@@ -825,13 +824,23 @@ fn import_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     if widgets::text_row(ui, controls, IMPORT_HEIGHTMAP, 0.0, false, enabled).clicked() {
         state.actions.push(Action::ImportHeightmapDialog);
     }
-    if let Some((text, color)) = import_text(state) {
-        ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
+    let progress = state.globe.import_progress();
+    note_text(ui, progress, state.import_note.as_ref());
+}
+
+/// The row that exports the heightmap, and the text of the export below it.
+fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let enabled = state.can_export();
+    if widgets::text_row(ui, controls, EXPORT_GEOTIFF, 0.0, false, enabled).clicked() {
+        state.actions.push(Action::ExportHeightmapDialog);
     }
+    let progress = state.globe.export_progress();
+    note_text(ui, progress, state.export_note.as_ref());
 }
 
 fn layer_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     import_row(ui, state, controls);
+    export_row(ui, state, controls);
     ui.checkbox(&mut state.globe.preview.greyscale, "Greyscale");
     elevation::controls(ui, state);
 }

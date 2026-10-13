@@ -10,6 +10,8 @@ license.workspace = true
 vale-store.workspace = true
 serde_json.workspace = true
 image = { workspace = true, features = ["tiff"] }
+tiff.workspace = true
+flate2.workspace = true
 
 [dev-dependencies]
-tiff.workspace = true
+tempfile.workspace = true

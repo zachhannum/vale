@@ -12,8 +12,8 @@ use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
-    brush_size_text, readout_text, theme,
+    EXPORT_GEOTIFF, IMPORT_HEIGHTMAP, MORE, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS,
+    WORLDS_ROW, brush_size_text, readout_text, theme,
 };
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
@@ -303,6 +303,110 @@ fn the_import_row_is_off_while_an_import_runs() {
     assert!(control(&h, IMPORT_HEIGHTMAP).is_some());
     assert!(h.query_by_label_contains("Imported pad-busy.png").is_some());
     assert!(!h.state().import_note.as_ref().unwrap().warning);
+}
+
+/// The layout with the open panel of the Height layer of a small heightmap.
+fn height_pad(size: (f32, f32)) -> Pad {
+    let mut h = pad(size);
+    h.state_mut().globe.set_face_size(64);
+    h.state_mut().globe.map.set(0, 0, 0, meters_to_level(100.0));
+    h.run_steps(2);
+    tap(&mut h, "Layers");
+    tap(&mut h, "Open Height");
+    h
+}
+
+#[test]
+fn the_height_panel_asks_for_the_file_of_an_export() {
+    for size in BOARDS {
+        let mut h = height_pad(size);
+        check_controls(&h, &format!("{size:?}"));
+        // The row is below the import row, and the two rows are in the panel.
+        let import = control(&h, IMPORT_HEIGHTMAP).unwrap();
+        let export = control(&h, EXPORT_GEOTIFF).unwrap();
+        assert!(export.top() >= import.bottom(), "{size:?}");
+        let card = panel(&h, Panel::Layers).unwrap();
+        assert!(card.contains_rect(export), "{size:?}: {export:?}");
+        assert!(h.state().actions.is_empty());
+        tap(&mut h, EXPORT_GEOTIFF);
+        let actions = &h.state().actions;
+        assert_eq!(actions, &[Action::ExportHeightmapDialog], "{size:?}");
+    }
+}
+
+#[test]
+fn a_world_with_no_raster_layer_has_no_export_row() {
+    for size in BOARDS {
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        assert!(control(&h, IMPORT_HEIGHTMAP).is_some(), "{size:?}");
+        assert!(control(&h, EXPORT_GEOTIFF).is_none(), "{size:?}");
+        assert!(h.query_by_label(EXPORT_GEOTIFF).is_none(), "{size:?}");
+    }
+}
+
+#[test]
+fn the_height_panel_shows_the_note_of_an_export_below_the_row() {
+    let dir = tempfile::tempdir().unwrap();
+    for size in BOARDS {
+        let mut h = height_pad(size);
+        let path = dir.path().join("Terra.tif");
+        h.state_mut().run_action(Action::ExportHeightmap(path));
+        h.run_steps(3);
+        assert!(!h.state().export_note.as_ref().unwrap().warning);
+        let note = h.get_by_label("Exported Terra.tif (256 x 128)").rect();
+        let row = control(&h, EXPORT_GEOTIFF).unwrap();
+        assert!(note.top() >= row.bottom() - 0.5, "{size:?}: {note:?}");
+        assert!(note.left() >= row.left() && note.right() <= row.right() + 0.5);
+        check_controls(&h, &format!("{size:?} with the note"));
+
+        // A folder is in the place of the file.
+        let path = dir.path().to_path_buf();
+        h.state_mut().run_action(Action::ExportHeightmap(path));
+        h.run_steps(3);
+        assert!(h.state().export_note.as_ref().unwrap().warning);
+        assert!(h.query_by_label_contains("Exported").is_none());
+        assert!(h.query_by_label_contains("cannot write").is_some());
+        // The panel grows with the text, or it scrolls.
+        let card = panel(&h, Panel::Layers).unwrap();
+        let screen = h.state().pad.rects.unwrap().screen;
+        assert!(screen.contains_rect(card), "{size:?}: {card:?}");
+    }
+}
+
+/// A named pipe holds the worker until the test opens the pipe.
+#[cfg(unix)]
+#[test]
+fn the_export_row_is_off_and_shows_the_progress_while_an_export_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let pipe = dir.path().join("Terra.tif");
+    let made = std::process::Command::new("mkfifo").arg(&pipe).status();
+    assert!(made.unwrap().success());
+
+    let mut h = height_pad(BOARDS[0]);
+    h.state_mut().headless = false;
+    h.state_mut()
+        .run_action(Action::ExportHeightmap(pipe.clone()));
+    h.run_steps(2);
+    assert!(h.state().globe.exporting());
+    assert!(control(&h, EXPORT_GEOTIFF).is_none());
+    // The brush and the import stay on.
+    assert!(control(&h, IMPORT_HEIGHTMAP).is_some());
+    let progress = h.get_by_label("Exporting Terra.tif: 0%").rect();
+    let import = control(&h, IMPORT_HEIGHTMAP).unwrap();
+    assert!(progress.top() >= import.bottom() + 40.0, "{progress:?}");
+
+    // The worker cannot write a GeoTIFF to a pipe, so the export fails.
+    drop(std::fs::File::open(&pipe).unwrap());
+    let start = std::time::Instant::now();
+    while h.state().globe.exporting() {
+        assert!(start.elapsed().as_secs() < 30, "the export did not end");
+        h.step();
+    }
+    h.run_steps(2);
+    assert!(control(&h, EXPORT_GEOTIFF).is_some());
+    assert!(h.query_by_label_contains("Exporting").is_none());
+    assert!(h.state().export_note.is_some());
 }
 
 #[test]
@@ -1500,6 +1604,33 @@ fn the_readout_shows_the_place_and_the_elevation() {
         "70.0°W 8.0°S · -120 m"
     );
     assert_eq!(readout_text(None, None), "–");
+}
+
+#[test]
+fn the_screenshots_show_the_export_row() {
+    let _gpu = one_gpu_test();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for (name, size) in [("landscape", (1194.0, 834.0)), ("third", (375.0, 834.0))] {
+        let mut state = state();
+        state.globe.set_face_size(64);
+        state.pad.open(Panel::Layers);
+        state.pad.layer = true;
+        let paint = |state: &mut AppState| {
+            state.globe.map.set(0, 0, 0, meters_to_level(100.0));
+            let path = dir.path().join("Terra.tif");
+            state.run_action(Action::ExportHeightmap(path));
+            Ok(())
+        };
+        let (image, state) = headless::ui_png_with(state, size, 1.0, paint).unwrap();
+        image
+            .save(format!("../../target/app/test-pad-export-{name}.png"))
+            .unwrap();
+        let note = state.export_note.unwrap();
+        assert!(note.text.starts_with("Exported Terra.tif"), "{}", note.text);
+        let rows = &state.pad.controls;
+        assert!(rows.iter().any(|c| c.name == EXPORT_GEOTIFF), "{name}");
+    }
 }
 
 #[test]
