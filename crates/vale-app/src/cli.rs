@@ -210,7 +210,7 @@ impl Args {
                 .find(|l| &l.name == name)
                 .map(|l| l.id);
             match id {
-                Some(id) => doc.entry_mut(id).expect("every layer has an entry").visible = false,
+                Some(id) => _ = doc.set_visible(id, false),
                 None => {
                     let names: Vec<&str> = doc
                         .project

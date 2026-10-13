@@ -80,7 +80,7 @@ fn land_checkbox_hides_layer() {
         .find(|l| l.name == "Land")
         .unwrap()
         .id;
-    assert!(!doc.entry(land).unwrap().visible);
+    assert!(!doc.visible(land));
 }
 
 #[test]

@@ -193,7 +193,7 @@ fn build_page_layers<'a>(
 ) -> Vec<PageLayer<'a>> {
     let page = vt.page_rect().inflate(8.0, 8.0);
     let mut out = Vec::new();
-    for entry in doc.frame.entries.iter().filter(|e| e.visible) {
+    for entry in doc.frame.entries.iter().filter(|e| doc.visible(e.layer)) {
         let (Some(layer), Some(feats)) = (doc.layer(entry.layer), cache.layers.get(&entry.layer))
         else {
             continue;
@@ -248,7 +248,7 @@ impl Pipeline {
         cache
             .layers
             .retain(|id, _| doc.project.layers().iter().any(|l| l.id == *id));
-        for entry in doc.frame.entries.iter().filter(|e| e.visible) {
+        for entry in doc.frame.entries.iter().filter(|e| doc.visible(e.layer)) {
             if cache.layers.contains_key(&entry.layer) {
                 continue;
             }

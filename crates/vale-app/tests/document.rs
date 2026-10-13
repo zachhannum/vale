@@ -4,6 +4,7 @@ use vale_app::document::Document;
 use vale_app::view::View;
 use vale_import::geojson::read_str;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
+use vale_store::GeometryKind;
 
 fn imported(name: &str, text: &str) -> vale_import::Imported {
     read_str(name, text).unwrap()
@@ -21,7 +22,7 @@ fn sample_layers() {
         .iter()
         .map(|e| {
             let l = d.layer(e.layer).unwrap();
-            (l.name.clone(), l.features.len(), e.visible)
+            (l.name.clone(), l.features.len(), l.visible)
         })
         .collect();
     assert_eq!(
@@ -60,6 +61,64 @@ fn move_and_remove() {
     assert!(d.entry(ids[1]).is_none());
     assert!(d.layer(ids[1]).is_none());
     assert_eq!(d.frame.entries.len(), 2);
+}
+
+#[test]
+fn a_new_layer_goes_on_top_with_the_first_free_name() {
+    let mut d = Document::sample();
+    let a = d.add_layer(GeometryKind::Line);
+    let b = d.add_layer(GeometryKind::Polygon);
+    let c = d.add_layer(GeometryKind::Line);
+    let names: Vec<&str> = d.project.layers().iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Land",
+            "Rivers",
+            "Places",
+            "Lines 1",
+            "Polygons 1",
+            "Lines 2"
+        ]
+    );
+    assert!(d.remove_layer(a));
+    let again = d.add_layer(GeometryKind::Line);
+    assert_eq!(d.layer(again).unwrap().name, "Lines 1");
+    assert!(d.layer(b).unwrap().features.is_empty());
+    assert!(d.visible(c));
+}
+
+#[test]
+fn the_entries_follow_the_order_of_the_project_and_keep_their_styles() {
+    let mut d = Document::sample();
+    let ids: Vec<_> = d.project.layers().iter().map(|l| l.id).collect();
+    let style = d.entry(ids[0]).unwrap().style.clone();
+    assert!(d.move_layer(ids[0], 2));
+    let order: Vec<_> = d.frame.entries.iter().map(|e| e.layer).collect();
+    assert_eq!(order, [ids[1], ids[2], ids[0]]);
+    let layers: Vec<_> = d.project.layers().iter().map(|l| l.id).collect();
+    assert_eq!(order, layers);
+    assert_eq!(d.entry(ids[0]).unwrap().style, style);
+
+    // An undo gives the document an older project.
+    let mut older = d.project.clone();
+    older.move_layer(ids[0], 0);
+    d.set_project(older);
+    let order: Vec<_> = d.frame.entries.iter().map(|e| e.layer).collect();
+    assert_eq!(order, ids);
+    assert_eq!(d.entry(ids[0]).unwrap().style, style);
+}
+
+#[test]
+fn rename_and_hide() {
+    let mut d = Document::sample();
+    let land = d.project.layers()[0].id;
+    assert!(d.rename_layer(land, "  Continents "));
+    assert_eq!(d.layer(land).unwrap().name, "Continents");
+    assert!(!d.rename_layer(land, "  "));
+    assert_eq!(d.layer(land).unwrap().name, "Continents");
+    assert!(d.set_visible(land, false));
+    assert!(!d.visible(land));
 }
 
 #[test]

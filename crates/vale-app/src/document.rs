@@ -15,17 +15,17 @@ use crate::world;
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerEntry {
     pub layer: LayerId,
-    pub visible: bool,
     pub style: LayerStyle,
 }
 
-/// How the map looks: projection, view, layer order, and map style.
+/// How the map looks: projection, view, layer styles, and map style.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapFrame {
     pub projection: ProjectionSpec,
     /// `None` means fit the world at the next compose.
     pub view: Option<View>,
-    /// Draw order. The first entry is at the bottom.
+    /// One entry for each layer of the project, in the order of the project.
+    /// The first entry is at the bottom.
     pub entries: Vec<LayerEntry>,
     pub graticule: bool,
     pub labels: bool,
@@ -129,53 +129,63 @@ impl Document {
         doc
     }
 
+    /// Adds each layer above the layers of its kind and of the kinds that
+    /// draw below it. Polygons draw below lines, and lines draw below points.
     pub fn add_imported(&mut self, imported: Imported, source: Option<&Path>) -> Vec<LayerId> {
         let mut ids = Vec::new();
         for l in imported.layers {
-            let ordinal = self
-                .frame
-                .entries
-                .iter()
-                .filter(|e| {
-                    self.project
-                        .layer(e.layer)
-                        .is_some_and(|x| x.kind == l.kind)
-                })
-                .count();
             let file = source
                 .and_then(Path::file_name)
                 .map(|n| n.to_string_lossy().into_owned());
+            let new_rank = rank(l.kind);
+            let to = self
+                .project
+                .layers()
+                .iter()
+                .rposition(|x| rank(x.kind) <= new_rank)
+                .map_or(0, |i| i + 1);
             let id = self.project.add_layer(l.name, l.kind, file, l.features);
-            self.add_entry(id, ordinal);
+            self.project.move_layer(id, to);
+            self.sync_entries();
             ids.push(id);
         }
         ids
     }
 
-    /// Adds an entry with the default style for a layer of the project. The
-    /// entry goes above the entries of its kind.
-    fn add_entry(&mut self, id: LayerId, ordinal: usize) {
-        let layer = self.project.layer(id).expect("the layer is in the project");
-        let style = LayerStyle::default_for(layer.kind, ordinal, &layer.fields);
-        let new_rank = rank(layer.kind);
-        let pos = self
-            .frame
-            .entries
-            .iter()
-            .rposition(|e| {
-                self.project
-                    .layer(e.layer)
-                    .is_some_and(|x| rank(x.kind) <= new_rank)
-            })
-            .map_or(0, |i| i + 1);
-        self.frame.entries.insert(
-            pos,
-            LayerEntry {
-                layer: id,
-                visible: true,
-                style,
-            },
-        );
+    /// Adds an empty layer on top. Its name is the kind and the first number
+    /// that no layer of the project has, for example "Lines 2".
+    pub fn add_layer(&mut self, kind: GeometryKind) -> LayerId {
+        let noun = match kind {
+            GeometryKind::Point => "Points",
+            GeometryKind::Line => "Lines",
+            GeometryKind::Polygon => "Polygons",
+        };
+        let name = (1..)
+            .map(|n| format!("{noun} {n}"))
+            .find(|name| self.project.layers().iter().all(|l| &l.name != name))
+            .expect("a free number");
+        let id = self.project.add_layer(name, kind, None, Vec::new());
+        self.sync_entries();
+        id
+    }
+
+    /// Puts the entries in the order of the layers of the project. A layer
+    /// with no entry gets one with the default style.
+    fn sync_entries(&mut self) {
+        let mut old = std::mem::take(&mut self.frame.entries);
+        let mut counts = [0; 3];
+        for layer in self.project.layers() {
+            let ordinal = &mut counts[rank(layer.kind) as usize];
+            let entry = match old.iter().position(|e| e.layer == layer.id) {
+                Some(i) => old.swap_remove(i),
+                None => LayerEntry {
+                    layer: layer.id,
+                    style: LayerStyle::default_for(layer.kind, *ordinal, &layer.fields),
+                },
+            };
+            *ordinal += 1;
+            self.frame.entries.push(entry);
+        }
     }
 
     /// Replaces the project. An entry stays if the new project has a layer
@@ -190,18 +200,7 @@ impl Document {
         self.frame
             .entries
             .retain(|e| kind(new, e.layer).is_some() && kind(new, e.layer) == kind(&old, e.layer));
-        let ids: Vec<LayerId> = self.project.layers().iter().map(|l| l.id).collect();
-        for id in ids {
-            if self.entry(id).is_none() {
-                let ordinal = self
-                    .frame
-                    .entries
-                    .iter()
-                    .filter(|e| kind(&self.project, e.layer) == kind(&self.project, id))
-                    .count();
-                self.add_entry(id, ordinal);
-            }
-        }
+        self.sync_entries();
     }
 
     pub fn open_geojson(&mut self, path: &Path) -> Result<Vec<LayerId>, ImportError> {
@@ -217,22 +216,35 @@ impl Document {
 
     /// `up` moves toward the top of the drawing. Returns false at the end.
     pub fn move_entry(&mut self, id: LayerId, up: bool) -> bool {
-        let Some(i) = self.frame.entries.iter().position(|e| e.layer == id) else {
+        let layers = self.project.layers();
+        let Some(i) = layers.iter().position(|l| l.id == id) else {
             return false;
         };
-        let j = if up {
-            if i + 1 >= self.frame.entries.len() {
-                return false;
-            }
-            i + 1
-        } else {
-            if i == 0 {
-                return false;
-            }
-            i - 1
-        };
-        self.frame.entries.swap(i, j);
-        true
+        if (up && i + 1 >= layers.len()) || (!up && i == 0) {
+            return false;
+        }
+        self.move_layer(id, if up { i + 1 } else { i - 1 })
+    }
+
+    /// Moves a layer to this index of the draw order. Index 0 is the bottom.
+    pub fn move_layer(&mut self, id: LayerId, to: usize) -> bool {
+        let moved = self.project.move_layer(id, to);
+        self.sync_entries();
+        moved
+    }
+
+    /// Gives a layer a new name. A blank name changes nothing.
+    pub fn rename_layer(&mut self, id: LayerId, name: &str) -> bool {
+        let name = name.trim();
+        !name.is_empty() && self.project.rename_layer(id, name.to_string())
+    }
+
+    pub fn set_visible(&mut self, id: LayerId, visible: bool) -> bool {
+        self.project.set_layer_visible(id, visible)
+    }
+
+    pub fn visible(&self, id: LayerId) -> bool {
+        self.project.layer(id).is_some_and(|l| l.visible)
     }
 
     pub fn entry(&self, id: LayerId) -> Option<&LayerEntry> {

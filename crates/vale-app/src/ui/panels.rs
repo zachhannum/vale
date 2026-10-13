@@ -527,17 +527,16 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         };
         let selected = state.selected_layer == Some(id);
         ui.horizontal(|ui| {
-            let Some(entry) = state.doc.entry_mut(id) else {
-                return;
-            };
+            let mut visible = state.doc.visible(id);
             let text = if selected {
                 egui::RichText::new(name).strong()
             } else {
                 egui::RichText::new(name)
             };
-            let resp = ui.checkbox(&mut entry.visible, text);
+            let resp = ui.checkbox(&mut visible, text);
             ui.weak(format!("{count}"));
             if resp.changed() {
+                state.doc.set_visible(id, visible);
                 state.dirty = true;
             }
             if resp.clicked() {

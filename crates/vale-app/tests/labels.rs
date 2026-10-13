@@ -79,7 +79,7 @@ fn labels_off_and_hidden() {
 
     let mut doc = Document::sample();
     let id = layer_id(&doc, "Places");
-    doc.entry_mut(id).unwrap().visible = false;
+    doc.set_visible(id, false);
     assert!(!texts(&compose(&doc)).iter().any(|t| t == "Tokyo"));
 }
 
@@ -302,7 +302,7 @@ fn picking() {
 
     let moscow = place_named(&doc, "Places", "Moscow");
     let id = layer_id(&doc, "Places");
-    doc.entry_mut(id).unwrap().visible = false;
+    doc.set_visible(id, false);
     let hit = land(&doc, moscow, &mut p).unwrap();
     assert_eq!(doc.layer(hit.layer).unwrap().name, "Land");
 }
@@ -344,7 +344,6 @@ fn hand_made(
     let layer = project.layer(id).unwrap().clone();
     let entry = LayerEntry {
         layer: id,
-        visible: true,
         style: LayerStyle::default_for(kind, 0, &[]),
     };
     (layer, entry, f)

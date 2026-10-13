@@ -114,7 +114,7 @@ pub fn report(doc: &Document, composed: &Composed) -> String {
             layer.name,
             layer.kind.name(),
             layer.features.len(),
-            if entry.visible { "visible" } else { "hidden" }
+            if layer.visible { "visible" } else { "hidden" }
         ));
     }
     out.push_str(&format!(
