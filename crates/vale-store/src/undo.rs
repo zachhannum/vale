@@ -529,9 +529,11 @@ fn put_layer(out: &mut Vec<u8>, position: usize, layer: &Layer) {
             }
         }
     }
+    out.push(layer.visible as u8);
 }
 
-/// A layer and its place in the project.
+/// A layer and its place in the project. An image from a format version
+/// before 7 ends after the features, and its layer is visible.
 fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
     let position = count(r)?;
     let id = LayerId(r.u32()?);
@@ -564,6 +566,7 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
         id,
         name,
         kind,
+        visible: r.0.is_empty() || r.take::<1>()? == [1],
         source,
         fields,
         features,
@@ -586,6 +589,19 @@ mod tests {
         let mut out = Vec::new();
         put_world(&mut out, &before);
         assert_eq!(world(&mut Reader(&out)), Some(before));
+    }
+
+    #[test]
+    fn a_layer_image_keeps_the_visibility_and_an_older_image_is_visible() {
+        let mut project = Project::new(World::default());
+        let id = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        project.set_layer_visible(id, false);
+        let hidden = project.layer(id).unwrap();
+        let mut out = Vec::new();
+        put_layer(&mut out, 0, hidden);
+        assert_eq!(layer(&mut Reader(&out)), Some((0, hidden.clone())));
+        out.pop();
+        assert!(layer(&mut Reader(&out)).unwrap().1.visible);
     }
 
     #[test]
