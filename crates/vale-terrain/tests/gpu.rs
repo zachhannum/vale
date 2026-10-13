@@ -1210,6 +1210,45 @@ fn a_tile_at_the_base_level_gives_its_memory_back() {
     assert!(gpu.read(&map, tile)[4].iter().all(|level| *level == 100));
 }
 
+/// The reset of a reader: the base level, then each tile that holds memory.
+fn show(gpu: &Gpu, map: &GpuHeightmap, cpu: &mut Heightmap) {
+    assert!(cpu.take_reset());
+    map.clear(&gpu.queue, cpu.base());
+    for (face, rect) in cpu.allocated_rects() {
+        let mut data = Vec::new();
+        cpu.read_rect(face, rect, &mut data);
+        map.upload(&gpu.queue, face as u32, rect, &data);
+    }
+}
+
+#[test]
+fn a_reset_shows_another_map_with_only_its_tiles() {
+    let gpu = gpu();
+    let n = 64;
+    let mut first = Heightmap::with_tile_size(n, 16, 100);
+    first.set(0, 3, 3, 900);
+    first.set(2, 40, 20, 800);
+    first.set(5, 63, 63, 700);
+    let mut second = Heightmap::with_tile_size(n, 16, 300);
+    second.set(2, 41, 21, 600);
+    second.set(3, 10, 50, 500);
+    let map = GpuHeightmap::with_tile_size(&gpu.device, n as u32, 16);
+
+    show(gpu, &map, &mut first);
+    assert_eq!(map.allocated_tiles(), 3);
+    assert_eq!(max_difference(&first, &gpu.read_all(&map)), 0);
+
+    // The maps were readers of their own state before, so they have no reset.
+    second.take_reset();
+    for (cpu, tiles) in [(&mut second, 2), (&mut first, 3)] {
+        assert!(!cpu.take_reset());
+        cpu.mark_reset();
+        show(gpu, &map, cpu);
+        assert_eq!(map.allocated_tiles(), tiles);
+        assert_eq!(max_difference(cpu, &gpu.read_all(&map)), 0);
+    }
+}
+
 /// The stamps of each mode on small tiles, across tile edges, a face edge,
 /// and a cube corner. Some of the tiles under the stamps have no memory. The
 /// levels do not depend on the tile size, so a tile edge is no seam.

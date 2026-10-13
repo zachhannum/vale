@@ -21,7 +21,8 @@ mod tiles;
 
 pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Ramp, Rgb, SEA_LEVEL};
 pub use cube::{
-    ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, level_to_meters, meters_to_level, unwarp, warp,
+    ELEV_MAX, ELEV_MIN, FACES, FaceSizeValues, face_dir, face_of, face_size_values,
+    level_to_meters, meters_to_level, unwarp, warp,
 };
 pub use equirect::{Equirect, EquirectGrid};
 pub use erode::{ErodeBrush, ErodeGrid, ErodeStep, Erosion, OuterFlow};

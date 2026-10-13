@@ -491,15 +491,21 @@ impl Heightmap {
         self.dirty = [Some(all); FACES];
     }
 
+    /// Marks each texel for a new upload, so the next `take_reset` is `true`.
+    pub fn mark_reset(&mut self) {
+        self.mark_all_dirty();
+        self.reset = true;
+    }
+
     /// Takes the rectangle of changed texels of each face.
     pub fn take_dirty(&mut self) -> [Option<TexelRect>; FACES] {
         std::mem::take(&mut self.dirty)
     }
 
     /// Returns `true` one time after the base level or the full set of tiles
-    /// changed. A new heightmap, `fill`, and the undo or the redo of a `fill`
-    /// do this. A reader then needs the base level and each tile again, so the call also
-    /// clears the changed rectangles.
+    /// changed. A new heightmap, `fill`, the undo or the redo of a `fill`, and
+    /// `mark_reset` do this. A reader then needs the base level and each tile
+    /// again, so the call also clears the changed rectangles.
     pub fn take_reset(&mut self) -> bool {
         if self.reset {
             self.dirty = [None; FACES];
@@ -1713,6 +1719,10 @@ mod tests {
         map.fill(500);
         map.take_dirty();
         assert!(map.take_reset());
+
+        map.mark_reset();
+        assert!(map.take_reset());
+        assert!(!map.take_reset());
     }
 
     #[test]
