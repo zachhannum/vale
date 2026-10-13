@@ -6,12 +6,16 @@ use eframe::egui;
 use eframe::egui_wgpu;
 
 use super::AppState;
+use vale_store::Geometry;
 use vale_terrain::{Mode, level_to_meters};
 
+use crate::document::Document;
 use crate::globe::backdrop::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow};
-use crate::globe::math::dir_to_lonlat;
+use crate::globe::math::{dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Painting, Tap, on_canvas};
+use crate::globe::vector;
+use crate::globe::view::GlobeView;
 use crate::globe::{Globe, Tool, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 
@@ -236,6 +240,92 @@ fn history_input(ui: &egui::Ui, globe: &mut Globe) -> Option<bool> {
     }
 }
 
+fn color(c: vale_style::Color) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+}
+
+/// Draws the visible vector layers over the globe, in the order of the
+/// project.
+fn vectors(painter: &egui::Painter, rect: egui::Rect, doc: &Document, view: &GlobeView) {
+    let radius = view.radius(rect);
+    let step = vector::step(radius * f64::from(painter.ctx().pixels_per_point()));
+    let center = rect.center();
+    let to_screen = |p: &vector::P2| {
+        egui::pos2(
+            center.x + (p[0] * radius) as f32,
+            center.y - (p[1] * radius) as f32,
+        )
+    };
+    let path = |part: &Vec<vector::P2>| part.iter().map(to_screen).collect::<Vec<_>>();
+    for entry in &doc.frame.entries {
+        let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
+            continue;
+        };
+        let fill = entry.style.fill.map(color);
+        let stroke = entry
+            .style
+            .stroke
+            .map(|s| egui::Stroke::new(s.width as f32, color(s.color)));
+        for feature in &layer.features {
+            match &feature.geometry {
+                Geometry::Points(points) => {
+                    for p in points {
+                        if let Some(pos) = view.project(rect, lonlat_to_dir(p[0], p[1])) {
+                            painter.circle(
+                                pos,
+                                entry.style.point_radius as f32,
+                                fill.unwrap_or(egui::Color32::TRANSPARENT),
+                                stroke.unwrap_or(egui::Stroke::NONE),
+                            );
+                        }
+                    }
+                }
+                Geometry::Lines(lines) => {
+                    let Some(stroke) = stroke else { continue };
+                    for line in lines {
+                        for part in vector::clip_line(&view.rot, &vector::line(line), step) {
+                            painter.line(path(&part), stroke);
+                        }
+                    }
+                }
+                Geometry::Polygons(polygons) => {
+                    for polygon in polygons {
+                        let rings: Vec<_> = polygon
+                            .iter()
+                            .enumerate()
+                            .map(|(i, ring)| vector::ring(ring, i > 0))
+                            .collect();
+                        if rings.first().is_none_or(|outer| outer.is_empty()) {
+                            continue;
+                        }
+                        let rings: Vec<_> = rings.into_iter().filter(|r| !r.is_empty()).collect();
+                        let clipped = vector::clip_polygon(&view.rot, &rings, step);
+                        if let Some(fill) = fill {
+                            let (points, indices) = vector::triangulate(&clipped.loops);
+                            let mut mesh = egui::Mesh::default();
+                            mesh.vertices = points
+                                .iter()
+                                .map(|p| egui::epaint::Vertex {
+                                    pos: to_screen(p),
+                                    uv: egui::epaint::WHITE_UV,
+                                    color: fill,
+                                })
+                                .collect();
+                            mesh.indices = indices;
+                            painter.add(mesh);
+                        }
+                        if let Some(stroke) = stroke {
+                            for part in &clipped.outlines {
+                                painter.line(path(part), stroke);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Draws the globe in the free space of `ui` and reads its input. `cards`:
 /// floating cards cover the canvas, and they can show a blurred copy of it.
 pub(super) fn canvas(
@@ -296,6 +386,9 @@ pub(super) fn canvas(
                 egui::Color32::GRAY,
             );
         }
+    }
+    if globe.world_view == WorldView::Globe {
+        vectors(&painter, rect, &state.doc, &globe.view);
     }
     if let Some(pos) = globe.input.pos.filter(|_| globe.tool == Tool::Brush) {
         let globe_radius = globe.radius();

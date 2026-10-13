@@ -4,6 +4,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::cli::{Args, apply_globe, apply_globe_view};
 use vale_app::document::Document;
+use vale_app::globe::brush::slerp;
 use vale_app::globe::math::{V3, angle, lonlat_to_dir};
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{FACE_SIZE, Tool};
@@ -11,6 +12,8 @@ use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::ui::elevation::{BAR_LABEL, limit_y};
 use vale_app::ui::{AppState, Workspace, draw};
+use vale_import::geojson;
+use vale_style::{Color, Stroke};
 use vale_terrain::{
     ChannelMap, CoarseHeights, FlowMap, Limits, Mode, WindowHeights, channel_map, level_to_meters,
     meters_to_level, window_channels,
@@ -321,6 +324,16 @@ fn a_touch_on_the_tool_bar_does_not_move_the_globe() {
 fn the_screenshot_draws_the_heightmap_on_the_globe() {
     let _gpu = one_gpu_test();
     let mut state = state();
+    for id in state
+        .doc
+        .project
+        .layers()
+        .iter()
+        .map(|l| l.id)
+        .collect::<Vec<_>>()
+    {
+        state.doc.set_visible(id, false);
+    }
     state.globe.preview.greyscale = true;
     // A high patch in the middle of the face that looks at the eye.
     state.globe.view = GlobeView::centered(0.0, 0.0);
@@ -344,6 +357,83 @@ fn the_screenshot_draws_the_heightmap_on_the_globe() {
     assert_eq!(disk[0], disk[1]);
     assert_ne!(outside, disk);
     assert!(state.composed.is_none());
+}
+
+#[test]
+fn the_globe_draws_vector_layers_with_great_circle_edges_up_to_its_edge() {
+    let _gpu = one_gpu_test();
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    // A polygon that goes around the edge of the globe at longitude 90, a
+    // line with one long edge, and a point on each side of the globe.
+    let ids: Vec<_> = [
+        r#"{"type":"Polygon","coordinates":[[[60,-30],[120,-30],[120,30],[60,30],[60,-30]]]}"#,
+        r#"{"type":"LineString","coordinates":[[-50,40],[50,40]]}"#,
+        r#"{"type":"MultiPoint","coordinates":[[-40,-20],[170,-20]]}"#,
+    ]
+    .into_iter()
+    .map(|text| {
+        state
+            .doc
+            .add_imported(geojson::read_str("shapes", text).unwrap(), None)[0]
+    })
+    .collect();
+    let (red, green, blue) = (
+        Color::rgb(255, 0, 0),
+        Color::rgb(0, 255, 0),
+        Color::rgb(0, 0, 255),
+    );
+    for (id, fill, stroke) in [
+        (ids[0], Some(red), None),
+        (ids[1], None, Some(green)),
+        (ids[2], Some(blue), None),
+    ] {
+        let style = &mut state.doc.entry_mut(id).unwrap().style;
+        style.fill = fill;
+        style.stroke = stroke.map(|color| Stroke { color, width: 4.0 });
+        style.point_radius = 5.0;
+    }
+    let hidden = state.doc.add_imported(
+        geojson::read_str(
+            "hidden",
+            r#"{"type":"Polygon","coordinates":[[[-20,-70],[20,-70],[20,-50],[-20,-50],[-20,-70]]]}"#,
+        )
+        .unwrap(),
+        None,
+    )[0];
+    state.doc.entry_mut(hidden).unwrap().style.fill = Some(red);
+    state.doc.set_visible(hidden, false);
+
+    let (img, state) = headless::ui_png(state, (1280.0, 800.0), 1.0).unwrap();
+    img.save("../../target/app/test-globe-vectors.png").unwrap();
+    let (rect, view) = (state.globe.rect, state.globe.view);
+    let pixel = |p: Pos2| {
+        let [r, g, b, _] = img.get_pixel(p.x as u32, p.y as u32).0;
+        [r, g, b]
+    };
+    let at = |lon: f64, lat: f64| pixel(view.project(rect, lonlat_to_dir(lon, lat)).unwrap());
+    let radius = view.radius(rect) as f32;
+    let edge = |dx: f32, dy: f32| pixel(rect.center() + Vec2::new(dx, dy));
+
+    // The fill goes to the edge of the globe and stops there.
+    assert_eq!(at(75.0, 0.0), [255, 0, 0]);
+    assert_eq!(edge(radius - 3.0, 0.0), [255, 0, 0]);
+    let outside = edge(radius + 3.0, 0.0);
+    assert!(outside[0] < 60, "{outside:?}");
+    assert_ne!(at(50.0, 0.0), [255, 0, 0]);
+    // The side of the polygon at latitude 30 is a great circle, so it is
+    // north of that latitude in the middle.
+    assert_eq!(at(75.0, 30.5), [255, 0, 0]);
+
+    // The line is a great circle and not a line of latitude.
+    let middle = slerp(lonlat_to_dir(-50.0, 40.0), lonlat_to_dir(50.0, 40.0), 0.5);
+    assert_eq!(pixel(view.project(rect, middle).unwrap()), [0, 255, 0]);
+    assert_ne!(at(0.0, 40.0), [0, 255, 0]);
+
+    assert_eq!(at(-40.0, -20.0), [0, 0, 255]);
+    // The hidden layer is not there.
+    assert_ne!(at(0.0, -60.0), [255, 0, 0]);
 }
 
 /// The face size of the brush tests.
