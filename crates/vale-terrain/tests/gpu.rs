@@ -2,11 +2,11 @@
 
 use std::sync::{Arc, OnceLock, mpsc};
 
-use vale_terrain::math::{V3, dot, lonlat_to_dir};
+use vale_terrain::math::{V3, dir_to_lonlat, dot, lonlat_to_dir};
 use vale_terrain::{
     ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FlowMap, GROUP_STAMPS,
     GpuHeightmap, Heightmap, Limits, Mode, OuterFlow, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE,
-    TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, window_channels,
+    TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, meters_to_level, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -934,6 +934,62 @@ fn gpu_deposit_matches_cpu_for_a_stroke() {
         worst = worst.max(difference);
     }
     eprintln!("deposit stroke in groups, largest difference: {worst}");
+}
+
+/// Land on face 0 with a steep valley east of longitude 0 and a plain west
+/// of it. The river of the valley goes west across the plain to the sea at
+/// longitude -30. The map has the channel map of its rivers.
+fn fan_land() -> Heightmap {
+    let n = 256;
+    let mut map = Heightmap::new(n, meters_to_level(-1000.0));
+    let mut data = Vec::with_capacity(n * n);
+    for i in 0..n * n {
+        let (lon, lat) = dir_to_lonlat(map.texel_dir(0, i % n, i / n));
+        let across = (lat - 0.18).abs();
+        data.push(meters_to_level(if lon.abs() >= 30.0 || across >= 20.0 {
+            -1000.0
+        } else if lon < 0.0 {
+            200.0 + 4.0 * (lon + 30.0) + 2.0 * across
+        } else {
+            320.0 + 60.0 * (lon + across)
+        }));
+    }
+    map.store_rect(0, full(n), &data);
+    let channels = channel_map(&CoarseHeights::new(&map));
+    map.set_channels(Some(Arc::new(channels)));
+    map
+}
+
+#[test]
+fn gpu_deposit_matches_cpu_on_a_fan_and_on_a_delta() {
+    let sea = meters_to_level(0.0);
+    // The fan is on the plain, and the delta is in the sea.
+    let places = [("fan", -0.5, 0.2), ("delta", -31.0, 0.2)];
+    for (place, lon, lat) in places {
+        for hardness in [0.0, 0.95] {
+            let mut cpu = fan_land();
+            let before = levels(&cpu);
+            let stamp = stamp(lonlat_to_dir(lon, lat), 0.06, hardness, Mode::Deposit);
+            let difference = run(&mut cpu, &[stamp]).difference;
+            let after = levels(&cpu);
+            let in_sea = |(old, new): (&u16, &u16)| *old < sea && new > old;
+            let raised_sea = before
+                .iter()
+                .zip(&after)
+                .filter(|&pair| in_sea(pair))
+                .count();
+            let changed = changes(&before, &after);
+            eprintln!(
+                "deposit on a {place}: {changed} texels, {raised_sea} in the sea, difference {difference}"
+            );
+            assert_eq!(raised_sea > 50, place == "delta", "{place}: {raised_sea}");
+            assert!(changed > 50, "{place}: {changed} texels changed");
+            assert!(
+                difference <= TOLERANCE,
+                "{place}: the difference is {difference}"
+            );
+        }
+    }
 }
 
 #[test]

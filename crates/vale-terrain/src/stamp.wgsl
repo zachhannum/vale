@@ -719,11 +719,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                 }
             }
             case DEPOSIT {
-                // The sea floor stays, and so does ground at or above the
-                // fill level.
-                if old >= f32(group.sea) {
-                    change = max(fill - old, 0.0) * min(amount, 1.0);
+                // Ground at or above the fill level stays. The sea floor
+                // stays below sea level.
+                var level = fill;
+                if old < f32(group.sea) {
+                    level = min(level, f32(group.sea) - 1.0);
                 }
+                change = max(level - old, 0.0) * min(amount, 1.0);
             }
             default {
                 change = (stamp.level - old) * min(amount, 1.0);
