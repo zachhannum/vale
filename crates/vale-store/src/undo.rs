@@ -460,9 +460,11 @@ fn put_raster(out: &mut Vec<u8>, position: usize, raster: &Raster) {
     for ramp in [&raster.ramp_sea, &raster.ramp_land] {
         put_bytes(out, ramp.as_flattened());
     }
+    out.push(raster.visible as u8);
 }
 
-/// A raster and its place in the project.
+/// A raster and its place in the project. An image from a format version
+/// before 8 ends after the ramp, and its raster is visible.
 fn raster(r: &mut Reader) -> Option<(usize, Raster)> {
     let position = count(r)?;
     let id = RasterId(r.u32()?);
@@ -476,17 +478,19 @@ fn raster(r: &mut Reader) -> Option<(usize, Raster)> {
         let (colors, rest) = bytes(r)?.as_chunks::<3>();
         rest.is_empty().then(|| colors.to_vec())
     };
+    let (ramp_sea, ramp_land) = (ramp()?, ramp()?);
     let raster = Raster {
         id,
         name,
+        visible: r.0.is_empty() || r.take::<1>()? == [1],
         face_size,
         unit,
         value_min,
         value_max,
         base,
         limits,
-        ramp_sea: ramp()?,
-        ramp_land: ramp()?,
+        ramp_sea,
+        ramp_land,
     };
     Some((position, raster))
 }
@@ -602,6 +606,22 @@ mod tests {
         assert_eq!(layer(&mut Reader(&out)), Some((0, hidden.clone())));
         out.pop();
         assert!(layer(&mut Reader(&out)).unwrap().1.visible);
+    }
+
+    #[test]
+    fn a_raster_image_keeps_the_visibility_and_an_older_image_is_visible() {
+        let mut project = Project::new(World::default());
+        let id = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
+        let rain = project.raster_mut(id).unwrap();
+        rain.limits = vec![250.0, 1000.0];
+        rain.ramp_land = vec![[1, 2, 3]];
+        rain.visible = false;
+        let hidden = project.raster(id).unwrap();
+        let mut out = Vec::new();
+        put_raster(&mut out, 1, hidden);
+        assert_eq!(raster(&mut Reader(&out)), Some((1, hidden.clone())));
+        out.pop();
+        assert!(raster(&mut Reader(&out)).unwrap().1.visible);
     }
 
     #[test]

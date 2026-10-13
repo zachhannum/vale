@@ -446,12 +446,19 @@ fn sync_raster(project: &mut Project, map: &Heightmap) {
     let id = match project.rasters().first() {
         Some(raster) => raster.id,
         None if map.allocated().next().is_none() => return,
-        None => project.add_raster(HEIGHT_NAME.to_string(), map.face_size() as u32),
+        None => project.add_raster(
+            HEIGHT_NAME.to_string(),
+            map.face_size() as u32,
+            "m".to_string(),
+            ELEV_MIN,
+            ELEV_MAX,
+        ),
     };
     let raster = project.raster_mut(id).expect("the raster of the ID");
     let record = Raster {
         id,
         name: raster.name.clone(),
+        visible: raster.visible,
         face_size: map.face_size() as u32,
         unit: "m".to_string(),
         value_min: ELEV_MIN,

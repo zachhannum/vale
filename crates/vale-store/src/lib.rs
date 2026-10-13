@@ -174,6 +174,8 @@ pub struct RasterId(pub u32);
 pub struct Raster {
     pub id: RasterId,
     pub name: String,
+    /// The views draw the raster.
+    pub visible: bool,
     /// The number of pixels along the edge of a face.
     pub face_size: u32,
     /// The unit of the values, for example `m`.
@@ -262,18 +264,28 @@ impl Project {
         }
     }
 
-    /// Adds a raster with no tiles and returns its ID. Its unit is empty, and
-    /// its range, its base, its band limits, and its ramp are zero or empty.
-    pub fn add_raster(&mut self, name: String, face_size: u32) -> RasterId {
+    /// Adds a raster with no tiles after the other rasters and returns its
+    /// ID. `value_min` is the value of pixel 0, and `value_max` is the value
+    /// of pixel 65,535. The raster is visible. Its base is zero, and its band
+    /// limits and its ramp are empty.
+    pub fn add_raster(
+        &mut self,
+        name: String,
+        face_size: u32,
+        unit: String,
+        value_min: f64,
+        value_max: f64,
+    ) -> RasterId {
         let id = RasterId(self.next_raster_id);
         self.next_raster_id += 1;
         self.rasters.push(Raster {
             id,
             name,
+            visible: true,
             face_size,
-            unit: String::new(),
-            value_min: 0.0,
-            value_max: 0.0,
+            unit,
+            value_min,
+            value_max,
             base: 0,
             limits: Vec::new(),
             ramp_sea: Vec::new(),
@@ -282,7 +294,7 @@ impl Project {
         id
     }
 
-    /// The rasters in the order they were added.
+    /// The rasters in the order of the project.
     pub fn rasters(&self) -> &[Raster] {
         &self.rasters
     }
@@ -296,6 +308,23 @@ impl Project {
     /// changes, the next save removes the tiles of the old size.
     pub fn raster_mut(&mut self, id: RasterId) -> Option<&mut Raster> {
         self.rasters.iter_mut().find(|r| r.id == id)
+    }
+
+    /// Moves a raster to this index of the order. An index past the end is
+    /// the last place.
+    pub fn move_raster(&mut self, id: RasterId, to: usize) -> bool {
+        let Some(from) = self.rasters.iter().position(|r| r.id == id) else {
+            return false;
+        };
+        let raster = self.rasters.remove(from);
+        let to = to.min(self.rasters.len());
+        self.rasters.insert(to, raster);
+        true
+    }
+
+    /// Shows or hides a raster.
+    pub fn set_raster_visible(&mut self, id: RasterId, visible: bool) -> bool {
+        self.raster_mut(id).map(|r| r.visible = visible).is_some()
     }
 
     /// Removes a raster. Its ID is not used again. The next save removes its
@@ -457,6 +486,37 @@ mod tests {
         assert!(!p.move_layer(ids[0], 0));
         assert!(!p.rename_layer(ids[0], "x".into()));
         assert!(!p.set_layer_visible(ids[0], true));
+    }
+
+    #[test]
+    fn a_raster_gets_its_values_and_moves_hides_and_goes() {
+        let mut p = Project::new(World::default());
+        let ids: Vec<RasterId> = ["a", "b", "c"]
+            .iter()
+            .map(|n| p.add_raster(n.to_string(), 4096, "mm".into(), 0.0, 5000.0))
+            .collect();
+        let a = p.raster(ids[0]).unwrap();
+        assert_eq!(
+            (a.name.as_str(), a.face_size, a.unit.as_str()),
+            ("a", 4096, "mm")
+        );
+        assert_eq!((a.value_min, a.value_max, a.visible), (0.0, 5000.0, true));
+        let names =
+            |p: &Project| -> Vec<String> { p.rasters().iter().map(|r| r.name.clone()).collect() };
+        assert!(p.move_raster(ids[0], 2));
+        assert_eq!(names(&p), ["b", "c", "a"]);
+        assert!(p.move_raster(ids[0], 0));
+        assert_eq!(names(&p), ["a", "b", "c"]);
+        assert!(p.move_raster(ids[1], 99));
+        assert_eq!(names(&p), ["a", "c", "b"]);
+        assert!(p.set_raster_visible(ids[0], false));
+        assert!(!p.raster(ids[0]).unwrap().visible);
+        assert!(p.remove_raster(ids[0]).is_some());
+        assert!(p.remove_raster(ids[0]).is_none());
+        assert!(!p.move_raster(ids[0], 0));
+        assert!(!p.set_raster_visible(ids[0], true));
+        let d = p.add_raster("d".into(), 1024, String::new(), 0.0, 1.0);
+        assert!(ids.iter().all(|id| d > *id));
     }
 
     #[test]

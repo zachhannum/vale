@@ -27,11 +27,12 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, undo::v3, v4, v5, v6, v7];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] =
+    &[v1, v2, undo::v3, v4, v5, v6, v7, v8];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -672,6 +673,11 @@ fn v7(tx: &Transaction) -> rusqlite::Result<()> {
     ))
 }
 
+/// The visibility of a raster.
+fn v8(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN visible INTEGER NOT NULL DEFAULT 1")
+}
+
 fn quote(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -1075,14 +1081,15 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
         // A replaced row is a deleted row, and the tiles refer to the row.
         tx.execute(
             "INSERT INTO vale_raster (id, position, name, face_size, unit, value_min,
-               value_max, base, limits, ramp_sea, ramp_land)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+               value_max, base, limits, ramp_sea, ramp_land, visible)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT (id) DO UPDATE SET
                position = excluded.position, name = excluded.name,
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
                base = excluded.base, limits = excluded.limits,
-               ramp_sea = excluded.ramp_sea, ramp_land = excluded.ramp_land",
+               ramp_sea = excluded.ramp_sea, ramp_land = excluded.ramp_land,
+               visible = excluded.visible",
             params![
                 r.id.0,
                 position as i64,
@@ -1095,6 +1102,7 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 limits_text(&r.limits),
                 colors_text(&r.ramp_sea),
                 colors_text(&r.ramp_land),
+                r.visible,
             ],
         )?;
     }
@@ -1170,7 +1178,7 @@ fn write_tiles(
 fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
     let mut rows = conn.prepare(
         "SELECT id, name, face_size, unit, value_min, value_max, base, limits, ramp_sea,
-           ramp_land
+           ramp_land, visible
          FROM vale_raster ORDER BY position, id",
     )?;
     let mut rows = rows.query([])?;
@@ -1182,6 +1190,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
         let text = |i: usize| r.get::<_, String>(i);
         rasters.push(Raster {
             id: RasterId(r.get(0)?),
+            visible: r.get(10)?,
             face_size: u32::try_from(face_size)
                 .ok()
                 .filter(|&n| n > 0)
@@ -1863,11 +1872,12 @@ mod tests {
     /// A project with a heightmap and a second raster of another face size.
     fn rasters() -> (Project, RasterId, RasterId) {
         let mut project = sample();
-        let height = project.add_raster("Height".into(), 8192);
-        let rain = project.add_raster("Rain".into(), 1000);
+        let height = project.add_raster("Height".into(), 8192, "m".into(), -6000.0, 6000.0);
+        let rain = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
         *project.raster_mut(height).unwrap() = Raster {
             id: height,
             name: "Height".into(),
+            visible: true,
             face_size: 8192,
             unit: "m".into(),
             value_min: -6000.0,
@@ -1877,7 +1887,6 @@ mod tests {
             ramp_sea: vec![[0, 1, 2], [250, 128, 7]],
             ramp_land: vec![[255, 255, 255]],
         };
-        project.raster_mut(rain).unwrap().unit = "mm".into();
         (project, height, rain)
     }
 
@@ -1949,7 +1958,7 @@ mod tests {
         let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded, next);
         assert_eq!(tiles_of(&file, loaded.raster(rain).unwrap()), wet);
-        let id = next.add_raster("New".into(), 4096);
+        let id = next.add_raster("New".into(), 4096, String::new(), 0.0, 1.0);
         assert!(id > height && id > rain);
 
         // The tiles of one face size are not the tiles of another.
@@ -2046,7 +2055,7 @@ mod tests {
     fn an_empty_world_gives_a_small_file() {
         let dir = tempfile::tempdir().unwrap();
         let mut project = Project::new(World::default());
-        let id = project.add_raster("Height".into(), 8192);
+        let id = project.add_raster("Height".into(), 8192, "m".into(), -6000.0, 6000.0);
         let file = ProjectFile::create(&path(&dir), &project).unwrap();
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
@@ -2107,7 +2116,10 @@ mod tests {
         drop(ProjectFile::create(&path(&dir), &project).unwrap());
         Connection::open(path(&dir))
             .unwrap()
-            .execute_batch("ALTER TABLE vale_layer DROP COLUMN visible")
+            .execute_batch(
+                "ALTER TABLE vale_layer DROP COLUMN visible;
+                 ALTER TABLE vale_raster DROP COLUMN visible;",
+            )
             .unwrap();
         set_format_version(&dir, 6);
 
@@ -2123,6 +2135,142 @@ mod tests {
             ),
             ["0", "1", "2", "3"]
         );
+    }
+
+    #[test]
+    fn a_file_of_version_7_gets_visible_rasters() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, height, rain) = rasters();
+        let wet = vec![(key(0, 0, 0), pixels(7))];
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        file.save_tiles(&project, &[put(rain, &wet, vec![])])
+            .unwrap();
+        drop(file);
+        Connection::open(path(&dir))
+            .unwrap()
+            .execute_batch("ALTER TABLE vale_raster DROP COLUMN visible")
+            .unwrap();
+        set_format_version(&dir, 7);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded, project);
+        assert!(loaded.rasters().iter().all(|r| r.visible));
+        assert_eq!(loaded.raster(height).unwrap().unit, "m");
+        assert_eq!(tiles_of(&file, loaded.raster(rain).unwrap()), wet);
+    }
+
+    #[test]
+    fn the_file_keeps_the_values_of_two_rasters() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let height = project.add_raster("Height".into(), 8192, "m".into(), -6000.0, 6000.0);
+        let rain = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
+        project.set_raster_visible(rain, false);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        let values = |p: &Project, id| {
+            let r = p.raster(id).unwrap();
+            (
+                r.visible,
+                r.unit.clone(),
+                r.value_min,
+                r.value_max,
+                r.face_size,
+            )
+        };
+        assert_eq!(
+            values(&loaded, height),
+            (true, "m".into(), -6000.0, 6000.0, 8192)
+        );
+        assert_eq!(
+            values(&loaded, rain),
+            (false, "mm".into(), 0.0, 5000.0, 1000)
+        );
+
+        // A save keeps a change of each value.
+        project.set_raster_visible(height, false);
+        project.set_raster_visible(rain, true);
+        project.raster_mut(rain).unwrap().value_max = 9000.0;
+        file.save(&project).unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert!(!loaded.raster(height).unwrap().visible);
+        assert!(loaded.raster(rain).unwrap().visible);
+    }
+
+    #[test]
+    fn an_undo_puts_back_the_visibility_and_the_order_of_a_raster() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, rain) = rasters();
+        let wet = vec![(key(5, 3, 3), pixels(3))];
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        file.save_tiles(&project, &[put(rain, &wet, vec![])])
+            .unwrap();
+        let mut states = vec![content(&file)];
+        project.set_raster_visible(rain, false);
+        file.save(&project).unwrap();
+        states.push(content(&file));
+        project.move_raster(rain, 0);
+        file.save(&project).unwrap();
+        states.push(content(&file));
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(loaded.rasters()[0].id, rain);
+        assert_eq!(file.undo().unwrap().unwrap().tiles, []);
+        assert_eq!(content(&file), states[1]);
+        assert_eq!(file.project().rasters()[0].id, height);
+        assert!(!file.project().raster(rain).unwrap().visible);
+        file.undo().unwrap();
+        assert_eq!(content(&file), states[0]);
+        assert!(file.project().raster(rain).unwrap().visible);
+        file.redo().unwrap();
+        assert_eq!(content(&file), states[1]);
+        assert!(!file.project().raster(rain).unwrap().visible);
+        file.redo().unwrap();
+        assert_eq!(content(&file), states[2]);
+        assert_eq!(tiles_of(&file, file.project().raster(rain).unwrap()), wet);
+    }
+
+    #[test]
+    fn a_removed_raster_leaves_no_tile_and_an_undo_puts_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, rain) = rasters();
+        let high = vec![(key(0, 0, 0), pixels(1)), (key(2, 3, 4), pixels(2))];
+        let wet = vec![(key(5, 3, 3), pixels(3))];
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let changes = [put(height, &high, vec![]), put(rain, &wet, vec![])];
+        file.save_tiles(&project, &changes).unwrap();
+        let before = content(&file);
+        const TILES: &str = "SELECT CAST(raster_id AS TEXT) FROM vale_raster_tile ORDER BY 1";
+        const RECORDS: &str = "SELECT CAST(id AS TEXT) FROM vale_raster ORDER BY 1";
+
+        project.remove_raster(height);
+        let stats = file.save_tiles(&project, &[]).unwrap();
+        assert_eq!((stats.tiles_written, stats.tiles_deleted), (0, 2));
+        assert_eq!(strings(&file.conn, TILES), ["1"]);
+        assert_eq!(strings(&file.conn, RECORDS), ["1"]);
+        let after = content(&file);
+        drop(file);
+
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(file.undo().unwrap().unwrap().tiles.len(), 2);
+        assert_eq!(content(&file), before);
+        assert_eq!(file.project().rasters()[0].id, height);
+        assert_eq!(
+            tiles_of(&file, file.project().raster(height).unwrap()),
+            high
+        );
+        assert_eq!(strings(&file.conn, TILES), ["0", "0", "1"]);
+        file.redo().unwrap();
+        assert_eq!(content(&file), after);
+        assert_eq!(strings(&file.conn, TILES), ["1"]);
+        assert_eq!(strings(&file.conn, RECORDS), ["1"]);
     }
 
     #[test]
@@ -2300,7 +2448,7 @@ mod tests {
         assert_eq!(project.rasters(), []);
         assert_eq!(project.world.units, Units::Metric);
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
-        let id = project.add_raster("Height".into(), 4096);
+        let id = project.add_raster("Height".into(), 4096, "m".into(), -6000.0, 6000.0);
         assert_eq!(id, RasterId(0));
         let tiles = vec![(key(1, 2, 3), pixels(1))];
         file.save_tiles(&project, &[put(id, &tiles, vec![])])

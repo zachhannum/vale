@@ -454,6 +454,7 @@ mod tests {
         let raster = vale_store::Raster {
             id: vale_store::RasterId(1),
             name: "Heat".to_string(),
+            visible: true,
             face_size: 16,
             unit: "<°C & more>".to_string(),
             value_min: -40.0,
