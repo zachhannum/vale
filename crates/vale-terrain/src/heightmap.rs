@@ -36,9 +36,9 @@ pub enum Mode {
     /// river and the sea floor do not change.
     Ridge,
     /// Raises the ground toward the fill level of the channel map. That
-    /// level is the rim of a pit, or a level between the bed and the banks
-    /// of a river. Ground at or above the level and the sea floor do not
-    /// change.
+    /// level is the rim of a pit, a level between the bed and the banks of a
+    /// river, the surface of a fan, or the top of a delta. Ground at or above
+    /// the level does not change. The sea floor does not go above sea level.
     Deposit,
     /// The mode of the erode brush. A stamp of this mode changes nothing.
     /// `Heightmap::erode` makes the change.
@@ -968,12 +968,11 @@ impl Heightmap {
                                 old + amount * stamp.strength * ridge
                             }
                             Mode::Deposit => {
-                                if old < sea {
-                                    continue;
-                                }
                                 let Some(level) = fill(x, y, fu, fv) else {
                                     continue;
                                 };
+                                // The sea floor does not go above sea level.
+                                let level = if old < sea { level.min(sea) } else { level };
                                 old + (level - old).max(0.0) * amount.min(1.0)
                             }
                             Mode::Weather => unreachable!("`stamp` sends it to `weather_face`"),
@@ -2261,21 +2260,100 @@ mod tests {
         assert!(raised > 20, "{raised}");
     }
 
+    /// The land of `flow::tests::piedmont`, 20 degrees wide at each side of
+    /// the river. The map has the channel map of its rivers.
+    fn piedmont() -> Heightmap {
+        let n = 256;
+        let mut map = Heightmap::new(n, meters_to_level(-1000.0));
+        let data: Vec<u16> = (0..n * n)
+            .map(|i| crate::flow::tests::piedmont(map.texel_dir(0, i % n, i / n), 20.0))
+            .collect();
+        map.store_rect(0, face_rect(n), &data);
+        let channels = channel_map(&CoarseHeights::new(&map));
+        map.set_channels(Some(Arc::new(channels)));
+        map
+    }
+
     #[test]
-    fn deposit_does_not_lower_ground_and_does_not_change_the_sea_floor() {
+    fn deposit_does_not_lower_ground_and_does_not_raise_the_sea_floor_above_sea_level() {
         let sea = meters_to_level(SEA_LEVEL);
         // The brush covers the mouth of the river and the sea next to it.
-        for (mut map, lat) in [(valley(), RIVER_LAT), (basin(), 0.0)] {
+        for (mut map, lat) in [
+            (valley(), RIVER_LAT),
+            (basin(), 0.0),
+            (piedmont(), RIVER_LAT),
+        ] {
             let before = face_levels(&map);
-            map.stamp(&deposit(-30.0, lat, 0.05));
-            map.stamp(&deposit(0.0, lat, 0.2));
+            for _ in 0..3 {
+                map.stamp(&deposit(-30.0, lat, 0.05));
+                map.stamp(&deposit(0.0, lat, 0.2));
+            }
             let after = face_levels(&map);
             assert!(after != before);
             for (new, old) in after.iter().zip(&before) {
                 assert!(new >= old);
-                assert!(*old >= sea || new == old);
+                assert!(*old >= sea || *new <= sea);
             }
         }
+    }
+
+    #[test]
+    fn deposit_builds_a_fan_below_a_break_in_the_slope_of_a_river() {
+        let mut map = piedmont();
+        let before = face_levels(&map);
+        map.stamp(&deposit(0.0, RIVER_LAT, 0.2));
+        let after = face_levels(&map);
+        let rise = |lon: f64, lat: f64| {
+            let i = place(&map, lon, lat);
+            i32::from(after[i]) - i32::from(before[i])
+        };
+        // The number of texels at one longitude that rise by 4 meters or
+        // more.
+        let width = |lon: f64| {
+            let lats = (-60..=60).map(|k| RIVER_LAT + f64::from(k) * 0.1);
+            let places: std::collections::BTreeSet<usize> = lats
+                .filter(|&lat| rise(lon, lat) > 20)
+                .map(|lat| place(&map, lon, lat))
+                .collect();
+            places.len()
+        };
+        // The slope breaks at longitude 0. The ground below the break rises,
+        // on the river and at its sides.
+        assert!(rise(-0.2, RIVER_LAT) > 100);
+        assert!(rise(-0.2, RIVER_LAT + 1.0) > 20);
+        // The fan is narrow at its top in the valley and wide on the plain.
+        assert!(width(1.0) >= 1 && width(-0.2) > 2 * width(1.0));
+        // The fan becomes thin with the distance from its top, and it ends.
+        assert!(rise(-1.0, RIVER_LAT) < rise(-0.2, RIVER_LAT));
+        assert_eq!(width(-4.0), 0);
+    }
+
+    #[test]
+    fn deposit_raises_the_sea_floor_in_front_of_a_river_mouth_toward_sea_level() {
+        let sea = meters_to_level(SEA_LEVEL);
+        let mut map = valley();
+        let before = face_levels(&map);
+        let stamp = Stamp {
+            flow: 0.5,
+            ..deposit(-31.0, RIVER_LAT, 0.2)
+        };
+        map.stamp(&stamp);
+        let once = face_levels(&map);
+        for _ in 0..20 {
+            map.stamp(&stamp);
+        }
+        let after = face_levels(&map);
+        let [at_mouth, near, far] = [-30.5, -31.5, -36.0].map(|lon| place(&map, lon, RIVER_LAT));
+        assert!(before[at_mouth] < sea - 5000);
+        // One stamp moves the sea floor halfway to its fill level.
+        let rise = i32::from(after[at_mouth]) - i32::from(before[at_mouth]);
+        assert!(rise > 3000 && after[at_mouth] <= sea, "{rise}");
+        let first = i32::from(once[at_mouth]) - i32::from(before[at_mouth]);
+        assert!((first - rise / 2).abs() < 20, "{first}");
+        // The delta is lower at a larger distance from the mouth, and it
+        // ends.
+        assert!(after[near] > before[near] && after[near] < after[at_mouth]);
+        assert_eq!(after[far], before[far]);
     }
 
     #[test]

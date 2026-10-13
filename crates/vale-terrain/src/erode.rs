@@ -231,6 +231,10 @@ impl Grid for BoxGrid<'_> {
     fn solid_angle(&self, i: usize) -> f64 {
         self.solid[self.cell(i)]
     }
+
+    fn dir(&self, i: usize) -> V3 {
+        Grid::dir(self.window, self.cell(i))
+    }
 }
 
 impl Grid for WindowGrid<'_> {
@@ -244,6 +248,10 @@ impl Grid for WindowGrid<'_> {
 
     fn solid_angle(&self, i: usize) -> f64 {
         self.solid[i]
+    }
+
+    fn dir(&self, i: usize) -> V3 {
+        Grid::dir(self.window, i)
     }
 }
 
