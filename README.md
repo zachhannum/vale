@@ -20,13 +20,15 @@ cargo run --release -p vale-app
 
 The first time, the window opens on the start screen, which lists your worlds. After that, the window opens on the world of the last run, at its last view. Click "New world…" to make a world, or click the picture of a world to open it. Each world has buttons that rename it, copy it, and delete it. The File menu of the tool bar has the same actions and a list of the recent worlds. "All worlds" in the File menu goes back to the start screen.
 
-A world opens in the globe workspace. The globe shows the heightmap of the world as stepped elevation tints. You can do these things.
+A world opens in the globe workspace. A new world has no raster layer. A raster layer holds one value for each place, and a height layer is a raster layer with the unit `m`. The globe shows the selected raster layer as stepped tints. If the selected layer is not a visible raster layer, the globe shows the top raster layer that is visible. You can do these things.
+
+- Click "Rasters" in the tool bar, and then "Add raster…", to add a raster layer. In the iPad layout, tap "+" in the Layers panel, and then "Raster". The form has the name, the kind, and the face size of the layer. The kind is "Height", or "Other" with a unit and a value range. Next to each face size, the form shows the ground per pixel, the world map of equal detail, and the memory of a layer that is painted all over.
 
 - Drag the globe to rotate it. On a touch screen, use one finger.
 - Scroll the wheel to zoom. On a trackpad, scroll with two fingers to rotate, and pinch to zoom.
 - Hold Shift and drag to twist the globe about the middle of the view. On a trackpad, use the rotate gesture.
 - On a touch screen, pinch and twist with two fingers. The place under your fingers stays under your fingers.
-- Click "Brush" in the tool bar to paint the heightmap. A pen or the left mouse button paints. A finger, the other mouse buttons, and Shift with a drag move the globe.
+- Click "Brush" in the tool bar to paint the selected raster layer. The brush is off if the selected layer is not a visible raster layer. The modes Carve, Ridge, Erode, Weather, and Uplift and the rivers need a height layer. A pen or the left mouse button paints. A finger, the other mouse buttons, and Shift with a drag move the globe.
 - The brush panel opens with the brush tool. It has the ten modes (raise, lower, smooth, flatten, carve, ridge, erode, weather, uplift, and warp), the radius on the ground in the display units of the world, the hardness, and the strength. In the weather mode, an Angle slider sets the steepest slope that the brush leaves. The uplift mode raises the land and cuts valleys into it while you paint. In that mode, the Uplift slider sets the rate of the rise, and the Erosion slider sets the strength of the valleys. The warp mode moves the ground sideways along a noise field, so a round coast gets bays and headlands. In that mode, the Strength slider sets the distance in kilometers, and the Scale slider sets the size of the bays. The Seed slider selects another noise field for the world. In each mode, a Floor setting and a Ceiling setting stop the brush at an elevation. The brush does not move ground down across the floor or up across the ceiling. A pen sets the flow from its pressure, and the mouse paints with a fixed flow.
 - The globe and the flat view draw the rivers that the painted land implies, and the carve mode cuts valleys along them. The ridge mode raises the land between them, so the crests become sharp. While you hold the brush, the erode mode cuts valleys that branch up toward the ridges. When you zoom in, the rivers and the valleys become finer. A smaller erode brush also cuts finer valleys. A Rivers switch in the elevation controls hides the rivers. A slider below it sets the width of the lines.
 - The brush keeps its size on screen when you zoom. Select "Lock size" to keep its size on the ground.
@@ -37,13 +39,13 @@ A world opens in the globe workspace. The globe shows the heightmap of the world
 - "Recenter" makes the place at the middle of the canvas the center of the projection. Move the map first. "Reset" puts the center of the projection back and shows the whole map. In the iPad layout, the two actions are buttons to the right of the view switch.
 - Click "New world…" in the tool bar to make a world from a name, a radius, and display units. The radius is that of Earth, Mars, or the Moon, or a value that you type. With `--project`, the new world is a new project file in the folder of the project file, and the app opens it. The file of the old world stays. With no project file, the new world has no file. Click "World…" to change the name, the radius, or the units of the world.
 - The globe draws the vector layers of the world over the heightmap. The flat view of the globe workspace does not draw them.
-- Click "Greyscale" in the tool bar to show the plain heightmap.
-- Click "Import heightmap…" in the tool bar to replace the heightmap with an equirectangular image. You can also drop the image on the window. The image is a PNG or TIFF file, and 16-bit greyscale gives the best result. Black is -6,000 m, and white is 6,000 m. If the image is not twice as wide as it is tall, the status bar shows a warning. In the iPad layout, the button is in the Layers panel, or in the panel of the Height layer if the world has one. "Undo" puts the old heightmap back. If the old heightmap has more painted tiles than the undo memory of 256 MB holds, the import has no undo step.
-- Click "Export GeoTIFF…" in the tool bar to write the heightmap to an equirectangular GeoTIFF file with 16-bit depth. QGIS opens the file at the correct place and with the correct elevations. The status bar shows the progress, and you can paint while the export runs. In the iPad layout, the row is in the panel of the Height layer.
-- Click "Elevation" in the tool bar to open the elevation panel. The bar shows the band limits, which are the elevations where the tints change. Tap a free place on the bar to add a limit. Drag a limit to move it. Tap a limit and click "Remove" to remove it. Sea level is a limit that stays. Clear "Levels" to show the color ramp with no steps. The land colors and the sea colors are separate.
+- Click "Greyscale" in the tool bar to show the plain raster layer.
+- Click "Import heightmap…" in the tool bar to replace the height layer with an equirectangular image. If the world has no height layer, the import adds one with the name "Height". You can also drop the image on the window. The image is a PNG or TIFF file, and 16-bit greyscale gives the best result. Black is -6,000 m, and white is 6,000 m. If the image is not twice as wide as it is tall, the status bar shows a warning. In the iPad layout, the button is in the Layers panel, or in the panel of the Height layer if the world has one. "Undo" puts the old heightmap back. If the old heightmap has more painted tiles than the undo memory of 256 MB holds, the import has no undo step.
+- Click "Export GeoTIFF…" in the tool bar to write the selected raster layer to an equirectangular GeoTIFF file with 16-bit depth. QGIS opens the file at the correct place and with the correct elevations. The status bar shows the progress, and you can paint while the export runs. In the iPad layout, the row is in the panel of the raster layer. That panel also has the name of the layer and the row that deletes the layer.
+- Click "Bands" in the tool bar to open the panel of the bands of the raster layer. The bar shows the band limits, which are the elevations where the tints change. Tap a free place on the bar to add a limit. Drag a limit to move it. Tap a limit and click "Remove" to remove it. Sea level is a limit that stays. Clear "Levels" to show the color ramp with no steps. The land colors and the sea colors are separate.
 - Click "Debug" in the tool bar to open the brush debug panel. It shows the stroke delay, which is the time from the frame that read the pen to the end of the GPU work. It shows the memory of the undo steps, or the size of the undo log of the project file. "Run stroke test" paints four fixed strokes and shows their numbers: the largest brush and a small fast brush, each in the raise mode and in the smooth mode.
 
-In the window, each face of the heightmap has 8,192 pixels. The GPU and the main memory hold only the tiles that you painted. After an import, the heightmap holds 805 MB on the GPU and 805 MB of main memory. If the computer has no GPU, start the app with `--face-size 1024`.
+In the window, the default face size of a raster layer is 8,192 pixels. The GPU and the main memory hold only the tiles that you painted. After an import, the heightmap holds 805 MB on the GPU and 805 MB of main memory. If the computer has no GPU, start the app with `--face-size 1024`.
 
 Click "Map" in the tool bar to open the flat map with the Natural Earth 110m sample world. You can do these things there.
 
@@ -102,9 +104,10 @@ cargo run --release -p vale-app -- --project path/to/world.gpkg --export-heightm
 | `--start-screen` | Show the start screen. With `--screenshot`, draw it. |
 | `--look-at <LON,LAT>` | Put this place at the middle of the view, on the globe and on the map |
 | `--zoom <F>` | Zoom factor on the fitted view, on the globe and on the map |
-| `--face-size <N>` | Pixels on one edge of a heightmap face. The default is 8192 in the window and 1024 without a window. A project file that holds a heightmap gives its own face size. |
+| `--face-size <N>` | Default pixels on one edge of a face of a new raster layer. The default is 8192 in the window and 1024 without a window. A raster layer of a project file keeps its own face size. |
+| `--raster-form` | Open the form of a new raster layer at the start |
 | `--import-heightmap <FILE>` | Import this equirectangular PNG or TIFF heightmap into the globe |
-| `--export-heightmap <FILE>` | Export the heightmap of the project file of `--project` to this GeoTIFF file, and exit |
+| `--export-heightmap <FILE>` | Export the first height layer of the project file of `--project` to this GeoTIFF file, and exit |
 | `--size <WxH>` | Size in points. The default is 1280x800. |
 | `--pixel-ratio <F>` | Pixels per point of the output |
 | `--hide <LAYER>` | Hide the layer with this name |
@@ -164,7 +167,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 ## What the prototype leaves out
 
 - The styles in the project file. With GeoJSON files and no `--project`, undo and redo are for brush strokes only, and the session ends when the window closes.
-- Raster layers, SVG and Shapefile import, and the command Replace from file.
+- Raster layers in a map frame, SVG and Shapefile import, and the command Replace from file.
 - Vector layers in the flat view of the globe workspace and in the picture of the globe on the start screen.
 - Rule-based styles. A layer has one fill, one stroke, and one circle symbol.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
