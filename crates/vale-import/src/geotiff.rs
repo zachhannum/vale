@@ -453,8 +453,6 @@ mod tests {
         };
         let raster = vale_store::Raster {
             id: vale_store::RasterId(1),
-            name: "Heat".to_string(),
-            visible: true,
             face_size: 16,
             unit: "<°C & more>".to_string(),
             value_min: -40.0,
@@ -463,6 +461,7 @@ mod tests {
             limits: Vec::new(),
             ramp_sea: Vec::new(),
             ramp_land: Vec::new(),
+            opacity: 1.0,
         };
         let mut tags = GeoTiff::new(&world, Some(&raster), 4, 2);
         assert_eq!(tags.radius_m, 1200500.0);

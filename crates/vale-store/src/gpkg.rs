@@ -1,8 +1,9 @@
 //! The project file: a GeoPackage with extra `vale_` tables.
 //!
-//! Each vector layer is one GeoPackage feature table. The `vale_` tables hold
-//! the world, the layer order, the attribute schema, the rasters, and the
-//! raster tiles, the undo log, and the picture of the world. They are in
+//! Each vector layer is one GeoPackage feature table. A raster layer has no
+//! feature table. The `vale_` tables hold the world, the layer order, the
+//! attribute schema, the rasters, and the raster tiles, the undo log, and the
+//! picture of the world. They are in
 //! `gpkg_contents` with the data type `vale`. GDAL, and thus QGIS, lists a
 //! table that is not in `gpkg_contents` as a layer, and it does not list a
 //! table with a data type that it does not know.
@@ -22,17 +23,17 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
-    Feature, Geometry, GeometryKind, Layer, LayerId, LonLat, Project, Raster, RasterId, Rgb, Units,
-    Uuid, Value, World,
+    Feature, Geometry, GeometryKind, Layer, LayerId, LayerKind, LonLat, Project, Raster, RasterId,
+    Rgb, Units, Uuid, Value, World, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
 const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] =
-    &[v1, v2, undo::v3, v4, v5, v6, v7, v8];
+    &[v1, v2, undo::v3, v4, v5, v6, v7, v8, v9];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -378,8 +379,6 @@ impl ProjectFile {
         };
         let project = undo::swap_records(&tx, step, &self.project)?;
         write_records(&tx, &project)?;
-        // A tile refers to the row of its raster.
-        write_rasters(&tx, &project)?;
         let tiles = undo::swap_tiles(&tx, step)?;
         remove_rasters(&tx, &project)?;
         undo::moved(&tx, step, !redo, self.undo_limit)?;
@@ -678,6 +677,37 @@ fn v8(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN visible INTEGER NOT NULL DEFAULT 1")
 }
 
+/// A layer record for each raster, and the opacity of a raster. The layer has
+/// the name and the visibility of the raster. The raster layers of an older
+/// file go below its vector layers, in the order of the rasters. The undo
+/// steps of an older file have no layer image for a raster, so they go.
+fn v9(tx: &Transaction) -> rusqlite::Result<()> {
+    const NEXT_ID: &str =
+        "SELECT CAST(value AS INTEGER) FROM vale_meta WHERE key = 'next_layer_id'";
+    const COUNT: &str = "SELECT COUNT(*) FROM vale_raster";
+    tx.execute_batch(&format!(
+        "ALTER TABLE vale_layer ADD COLUMN raster_id INTEGER REFERENCES vale_raster(id);
+         ALTER TABLE vale_raster ADD COLUMN opacity REAL NOT NULL DEFAULT 1;
+         UPDATE vale_layer SET position = -position - 1;
+         UPDATE vale_layer SET position = -position - 1 + ({COUNT});
+         CREATE TEMP TABLE vale_raster_order AS
+           SELECT id, ROW_NUMBER() OVER (ORDER BY position, id) - 1 AS place FROM vale_raster;
+         INSERT INTO vale_layer (id, position, name, kind, table_name, visible, raster_id)
+           SELECT ({NEXT_ID}) + o.place, o.place, r.name, 'raster', 'vale_raster_' || r.id,
+             r.visible, r.id
+           FROM vale_raster r JOIN vale_raster_order o ON o.id = r.id;
+         UPDATE vale_meta SET value = CAST(value AS INTEGER) + ({COUNT})
+           WHERE key = 'next_layer_id';
+         DROP TABLE vale_raster_order;
+         ALTER TABLE vale_raster DROP COLUMN position;
+         ALTER TABLE vale_raster DROP COLUMN name;
+         ALTER TABLE vale_raster DROP COLUMN visible;
+         DELETE FROM vale_undo_record;
+         DELETE FROM vale_undo_tile;
+         DELETE FROM vale_undo_step;"
+    ))
+}
+
 fn quote(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -699,13 +729,12 @@ fn write_edit(
         }
         None => None,
     };
-    write_records(tx, project)?;
     let mut stats = SaveStats {
         tiles_deleted: remove_old_tiles(tx, project, step)?,
         tiles_written: 0,
     };
+    write_records(tx, project)?;
     remove_rasters(tx, project)?;
-    write_rasters(tx, project)?;
     for change in changes {
         write_tiles(tx, change, step, &mut stats)?;
     }
@@ -715,18 +744,35 @@ fn write_edit(
     Ok(stats)
 }
 
-/// Writes the world and the vector layers.
+/// Writes the world, the raster records, and the layers. The record of a
+/// raster that is not in the project stays.
 fn write_records(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     clear(tx)?;
     write_world(tx, &project.world)?;
+    // A raster layer refers to the row of its raster.
+    write_rasters(tx, project)?;
     tx.execute(
         "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('next_layer_id', ?1)",
         [project.next_id.to_string()],
     )?;
     let mut tables = BTreeSet::new();
     for (position, layer) in project.layers.iter().enumerate() {
-        let table = table_name(layer, &mut tables);
-        write_layer(tx, position, layer, &table)?;
+        match layer.kind {
+            LayerKind::Vector(kind) => {
+                let table = table_name(layer, &mut tables);
+                write_layer(tx, position, layer, &table, None)?;
+                write_features(tx, layer, kind, &table)?;
+            }
+            LayerKind::Raster(raster) => {
+                if project.raster(raster).is_none() {
+                    return Err(corrupt(format!("layer {:?} has no raster", layer.name)));
+                }
+                // No table has this name. A feature table cannot have it,
+                // because the prefix is reserved.
+                let table = format!("vale_raster_{}", raster.0);
+                write_layer(tx, position, layer, &table, Some(raster))?;
+            }
+        }
     }
     Ok(())
 }
@@ -734,7 +780,7 @@ fn write_records(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
 /// Removes the world, the layer records, and the feature tables.
 fn clear(tx: &Transaction) -> Result<(), StoreError> {
     let tables: Vec<String> = tx
-        .prepare("SELECT table_name FROM vale_layer")?
+        .prepare("SELECT table_name FROM vale_layer WHERE raster_id IS NULL")?
         .query_map([], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     for table in tables {
@@ -779,8 +825,9 @@ fn write_world(tx: &Transaction, world: &World) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// A table name for the layer that no other layer has. SQLite compares names
-/// without case, and it keeps some prefixes for itself and for GeoPackage.
+/// A table name for the vector layer that no other layer has. SQLite compares
+/// names without case, and it keeps some prefixes for itself and for
+/// GeoPackage.
 fn table_name(layer: &Layer, taken: &mut BTreeSet<String>) -> String {
     let mut name: String = layer
         .name
@@ -923,15 +970,17 @@ fn geometry_type(kind: GeometryKind) -> &'static str {
     }
 }
 
+/// Writes the record of a layer.
 fn write_layer(
     tx: &Transaction,
     position: usize,
     layer: &Layer,
     table: &str,
+    raster: Option<RasterId>,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO vale_layer (id, position, name, kind, table_name, source, visible)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO vale_layer (id, position, name, kind, table_name, source, visible, raster_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             layer.id.0,
             position as i64,
@@ -939,9 +988,20 @@ fn write_layer(
             layer.kind.name(),
             table,
             layer.source,
-            layer.visible
+            layer.visible,
+            raster.map(|id| id.0)
         ],
     )?;
+    Ok(())
+}
+
+/// Writes the feature table and the fields of a vector layer.
+fn write_features(
+    tx: &Transaction,
+    layer: &Layer,
+    kind: GeometryKind,
+    table: &str,
+) -> Result<(), StoreError> {
     let columns = column_names(&layer.fields);
     let kinds: Vec<FieldKind> = layer
         .fields
@@ -952,7 +1012,7 @@ fn write_layer(
         "CREATE TABLE {} (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, geom {}, \
          uuid TEXT NOT NULL UNIQUE",
         quote(table),
-        geometry_type(layer.kind)
+        geometry_type(kind)
     );
     let mut insert = format!("INSERT INTO {} (fid, geom, uuid", quote(table));
     for (i, (column, kind)) in columns.iter().zip(&kinds).enumerate() {
@@ -977,12 +1037,12 @@ fn write_layer(
     )?;
     tx.execute(
         "INSERT INTO gpkg_geometry_columns VALUES (?1, 'geom', ?2, ?3, 0, 0)",
-        params![table, geometry_type(layer.kind), WORLD_SRS],
+        params![table, geometry_type(kind), WORLD_SRS],
     )?;
 
     let mut insert = tx.prepare(&insert)?;
     for (i, feature) in layer.features.iter().enumerate() {
-        if feature.geometry.kind() != layer.kind {
+        if feature.geometry.kind() != kind {
             return Err(corrupt(format!(
                 "layer {:?} holds a {} geometry",
                 layer.name,
@@ -1077,23 +1137,20 @@ fn remove_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError>
 
 /// Writes the raster records.
 fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
-    for (position, r) in project.rasters.iter().enumerate() {
+    for r in &project.rasters {
         // A replaced row is a deleted row, and the tiles refer to the row.
         tx.execute(
-            "INSERT INTO vale_raster (id, position, name, face_size, unit, value_min,
-               value_max, base, limits, ramp_sea, ramp_land, visible)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base, limits,
+               ramp_sea, ramp_land, opacity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT (id) DO UPDATE SET
-               position = excluded.position, name = excluded.name,
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
                base = excluded.base, limits = excluded.limits,
                ramp_sea = excluded.ramp_sea, ramp_land = excluded.ramp_land,
-               visible = excluded.visible",
+               opacity = excluded.opacity",
             params![
                 r.id.0,
-                position as i64,
-                r.name,
                 r.face_size,
                 r.unit,
                 r.value_min,
@@ -1102,7 +1159,7 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 limits_text(&r.limits),
                 colors_text(&r.ramp_sea),
                 colors_text(&r.ramp_land),
-                r.visible,
+                f64::from(clamp_opacity(r.opacity)),
             ],
         )?;
     }
@@ -1177,32 +1234,31 @@ fn write_tiles(
 
 fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
     let mut rows = conn.prepare(
-        "SELECT id, name, face_size, unit, value_min, value_max, base, limits, ramp_sea,
-           ramp_land, visible
-         FROM vale_raster ORDER BY position, id",
+        "SELECT id, face_size, unit, value_min, value_max, base, limits, ramp_sea, ramp_land,
+           opacity
+         FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
     let mut rasters = Vec::new();
     while let Some(r) = rows.next()? {
-        let name: String = r.get(1)?;
-        let bad = |what: &str| corrupt(format!("the {what} of raster {name:?}"));
-        let (face_size, base): (i64, i64) = (r.get(2)?, r.get(6)?);
+        let id: u32 = r.get(0)?;
+        let bad = |what: &str| corrupt(format!("the {what} of raster {id}"));
+        let (face_size, base): (i64, i64) = (r.get(1)?, r.get(5)?);
         let text = |i: usize| r.get::<_, String>(i);
         rasters.push(Raster {
-            id: RasterId(r.get(0)?),
-            visible: r.get(10)?,
+            id: RasterId(id),
+            opacity: clamp_opacity(r.get::<_, f64>(9)? as f32),
             face_size: u32::try_from(face_size)
                 .ok()
                 .filter(|&n| n > 0)
                 .ok_or_else(|| bad("face size"))?,
-            unit: r.get(3)?,
-            value_min: r.get(4)?,
-            value_max: r.get(5)?,
+            unit: r.get(2)?,
+            value_min: r.get(3)?,
+            value_max: r.get(4)?,
             base: u16::try_from(base).map_err(|_| bad("base"))?,
-            limits: parse_limits(&text(7)?).ok_or_else(|| bad("band limits"))?,
-            ramp_sea: parse_colors(&text(8)?).ok_or_else(|| bad("ramp"))?,
-            ramp_land: parse_colors(&text(9)?).ok_or_else(|| bad("ramp"))?,
-            name: name.clone(),
+            limits: parse_limits(&text(6)?).ok_or_else(|| bad("band limits"))?,
+            ramp_sea: parse_colors(&text(7)?).ok_or_else(|| bad("ramp"))?,
+            ramp_land: parse_colors(&text(8)?).ok_or_else(|| bad("ramp"))?,
         });
     }
     Ok(rasters)
@@ -1234,38 +1290,65 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         .parse()
         .map_err(|_| corrupt(format!("next raster ID {next_raster_id:?}")))?;
 
+    let rasters = load_rasters(conn)?;
     let mut layers = Vec::new();
     let mut rows = conn.prepare(
-        "SELECT id, name, kind, table_name, source, visible FROM vale_layer ORDER BY position",
+        "SELECT id, name, kind, table_name, source, visible, raster_id FROM vale_layer
+         ORDER BY position",
     )?;
     let mut rows = rows.query([])?;
     while let Some(r) = rows.next()? {
+        let name: String = r.get(1)?;
         let kind: String = r.get(2)?;
-        let kind = GeometryKind::from_name(&kind)
-            .ok_or_else(|| corrupt(format!("layer kind {kind:?}")))?;
+        let raster: Option<u32> = r.get(6)?;
+        let geometry = GeometryKind::from_name(&kind);
+        let kind = match (kind.as_str(), geometry, raster) {
+            (_, Some(geometry), None) => LayerKind::Vector(geometry),
+            ("raster", _, Some(id)) => {
+                let id = RasterId(id);
+                let known = rasters.iter().any(|x| x.id == id);
+                let twice = layers.iter().any(|l: &Layer| l.raster() == Some(id));
+                if !known || twice {
+                    return Err(corrupt(format!("the raster of layer {name:?}")));
+                }
+                LayerKind::Raster(id)
+            }
+            _ => return Err(corrupt(format!("layer kind {kind:?}"))),
+        };
         let table: String = r.get(3)?;
         let mut layer = Layer {
             id: LayerId(r.get(0)?),
-            name: r.get(1)?,
+            name,
             kind,
             visible: r.get(5)?,
             source: r.get(4)?,
             fields: Vec::new(),
             features: Vec::new(),
         };
-        load_features(conn, &mut layer, &table)?;
+        if let LayerKind::Vector(geometry) = kind {
+            load_features(conn, &mut layer, geometry, &table)?;
+        }
         layers.push(layer);
+    }
+    let alone = |r: &Raster| !layers.iter().any(|l| l.raster() == Some(r.id));
+    if let Some(raster) = rasters.iter().find(|r| alone(r)) {
+        return Err(corrupt(format!("raster {} has no layer", raster.id.0)));
     }
     Ok(Project {
         world,
         layers,
         next_id,
-        rasters: load_rasters(conn)?,
+        rasters,
         next_raster_id,
     })
 }
 
-fn load_features(conn: &Connection, layer: &mut Layer, table: &str) -> Result<(), StoreError> {
+fn load_features(
+    conn: &Connection,
+    layer: &mut Layer,
+    kind: GeometryKind,
+    table: &str,
+) -> Result<(), StoreError> {
     let mut select = "SELECT geom, uuid".to_string();
     let mut kinds = Vec::new();
     let mut fields = conn.prepare(
@@ -1288,7 +1371,7 @@ fn load_features(conn: &Connection, layer: &mut Layer, table: &str) -> Result<()
     let mut rows = conn.prepare(&select)?;
     let mut rows = rows.query([])?;
     while let Some(r) = rows.next()? {
-        let geometry = decode_geometry(r.get_ref(0)?.as_blob().unwrap_or(&[]), layer.kind)
+        let geometry = decode_geometry(r.get_ref(0)?.as_blob().unwrap_or(&[]), kind)
             .ok_or_else(|| corrupt(format!("a geometry of layer {:?}", layer.name)))?;
         let uuid: String = r.get(1)?;
         let uuid = Uuid::parse_str(&uuid).map_err(|_| corrupt(format!("UUID {uuid:?}")))?;
@@ -1870,14 +1953,14 @@ mod tests {
     }
 
     /// A project with a heightmap and a second raster of another face size.
+    /// The two raster layers are below the vector layers.
     fn rasters() -> (Project, RasterId, RasterId) {
         let mut project = sample();
         let height = project.add_raster("Height".into(), 8192, "m".into(), -6000.0, 6000.0);
         let rain = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
         *project.raster_mut(height).unwrap() = Raster {
             id: height,
-            name: "Height".into(),
-            visible: true,
+            opacity: 1.0,
             face_size: 8192,
             unit: "m".into(),
             value_min: -6000.0,
@@ -2101,27 +2184,82 @@ mod tests {
         );
     }
 
+    /// One layer of an older file: the ID, the position, the name, the kind,
+    /// and the visibility.
+    type OldLayer = (u32, i64, &'static str, GeometryKind, bool);
+
+    /// One raster of an older file: the ID, the position, the name, and the
+    /// visibility.
+    type OldRaster = (u32, i64, &'static str, bool);
+
+    /// Writes a file of format version 6, 7, or 8 with the steps of that
+    /// version and SQL. Each layer has an empty feature table. A file of a
+    /// version before 7 has no visibility of a layer, and a file of a
+    /// version before 8 has no visibility of a raster.
+    fn old_file(dir: &tempfile::TempDir, version: u32, layers: &[OldLayer], rasters: &[OldRaster]) {
+        assert!((6..=8).contains(&version));
+        let mut conn = Connection::open(path(dir)).unwrap();
+        let tx = conn.transaction().unwrap();
+        for step in &MIGRATIONS[..version as usize] {
+            step(&tx).unwrap();
+        }
+        tx.execute_batch(&format!(
+            "INSERT INTO vale_meta VALUES ('format_version', '{version}'), ('next_layer_id', '7');
+             UPDATE vale_meta SET value = '4' WHERE key = 'next_raster_id';
+             INSERT INTO vale_world (id, name, radius_km, units, seed)
+               VALUES (1, 'Old', 1234.5, 'metric', 0);
+             INSERT INTO gpkg_spatial_ref_sys
+               VALUES ('Old', 100000, 'NONE', 100000, 'undefined', NULL);"
+        ))
+        .unwrap();
+        for &(id, position, name, kind, visible) in layers {
+            tx.execute(
+                "INSERT INTO vale_layer (id, position, name, kind, table_name)
+                 VALUES (?1, ?2, ?3, ?4, ?3)",
+                params![id, position, name, kind.name()],
+            )
+            .unwrap();
+            if version >= 7 {
+                let hide = "UPDATE vale_layer SET visible = ?2 WHERE id = ?1";
+                tx.execute(hide, params![id, visible]).unwrap();
+            }
+            let geometry = geometry_type(kind);
+            tx.execute_batch(&format!(
+                "CREATE TABLE {name} (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                   geom {geometry}, uuid TEXT NOT NULL UNIQUE);
+                 INSERT INTO gpkg_contents (table_name, data_type, identifier, srs_id)
+                   VALUES ('{name}', 'features', '{name}', 100000);
+                 INSERT INTO gpkg_geometry_columns
+                   VALUES ('{name}', 'geom', '{geometry}', 100000, 0, 0);"
+            ))
+            .unwrap();
+        }
+        for &(id, position, name, visible) in rasters {
+            tx.execute(
+                "INSERT INTO vale_raster (id, position, name, face_size, unit, value_min,
+                   value_max, base, limits, ramp_sea, ramp_land)
+                 VALUES (?1, ?2, ?3, 1000, 'mm', 0, 5000, 7, '250,1000', '000102', 'ffffff')",
+                params![id, position, name],
+            )
+            .unwrap();
+            if version >= 8 {
+                let hide = "UPDATE vale_raster SET visible = ?2 WHERE id = ?1";
+                tx.execute(hide, params![id, visible]).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+
     #[test]
     fn a_file_of_version_6_gets_visible_layers_in_the_order_of_their_kinds() {
         let dir = tempfile::tempdir().unwrap();
-        let mut project = Project::new(World::default());
-        for (name, kind) in [
-            ("Places", GeometryKind::Point),
-            ("Rivers", GeometryKind::Line),
-            ("Land", GeometryKind::Polygon),
-            ("Roads", GeometryKind::Line),
-        ] {
-            project.add_layer(name.into(), kind, None, vec![]);
-        }
-        drop(ProjectFile::create(&path(&dir), &project).unwrap());
-        Connection::open(path(&dir))
-            .unwrap()
-            .execute_batch(
-                "ALTER TABLE vale_layer DROP COLUMN visible;
-                 ALTER TABLE vale_raster DROP COLUMN visible;",
-            )
-            .unwrap();
-        set_format_version(&dir, 6);
+        let layers = [
+            (0, 0, "Places", GeometryKind::Point, true),
+            (1, 1, "Rivers", GeometryKind::Line, true),
+            (2, 2, "Land", GeometryKind::Polygon, true),
+            (3, 3, "Roads", GeometryKind::Line, true),
+        ];
+        old_file(&dir, 6, &layers, &[]);
 
         let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
@@ -2137,27 +2275,150 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_file_of_version_7_gets_visible_rasters() {
+    /// A file of version 7 or 8 with three vector layers and two rasters.
+    /// The order of the rasters is not the order of their IDs. Each raster
+    /// has tiles, one layer has a feature, and the undo log has a step.
+    /// After the migration, the raster layers are below the vector layers.
+    fn old_rasters_become_layers(version: u32) {
         let dir = tempfile::tempdir().unwrap();
-        let (project, height, rain) = rasters();
-        let wet = vec![(key(0, 0, 0), pixels(7))];
-        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
-        file.save_tiles(&project, &[put(rain, &wet, vec![])])
-            .unwrap();
-        drop(file);
-        Connection::open(path(&dir))
-            .unwrap()
-            .execute_batch("ALTER TABLE vale_raster DROP COLUMN visible")
-            .unwrap();
-        set_format_version(&dir, 7);
+        let layers = [
+            (0, 1, "Land", GeometryKind::Polygon, true),
+            (2, 0, "Roads", GeometryKind::Line, false),
+            (5, 2, "Towns", GeometryKind::Point, true),
+        ];
+        old_file(
+            &dir,
+            version,
+            &layers,
+            &[(0, 1, "Height", true), (3, 0, "Rain", false)],
+        );
+        let conn = Connection::open(path(&dir)).unwrap();
+        let (height, rain) = (RasterId(0), RasterId(3));
+        let high = vec![(key(0, 0, 0), pixels(1)), (key(2, 3, 3), pixels(2))];
+        let wet = vec![(key(5, 3, 3), pixels(3))];
+        for (raster, tiles) in [(height, &high), (rain, &wet)] {
+            for (key, pixels) in tiles {
+                conn.execute(
+                    "INSERT INTO vale_raster_tile VALUES (?1, 0, ?2, ?3, ?4, ?5)",
+                    params![
+                        raster.0,
+                        key.face,
+                        key.column,
+                        key.row,
+                        tile::encode(pixels)
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        let town = Feature::new(Geometry::Points(vec![[3.0, 4.0]]), attributes(&[]));
+        conn.execute(
+            "INSERT INTO Towns (geom, uuid) VALUES (?1, ?2)",
+            params![encode_geometry(&town.geometry), town.uuid().to_string()],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO vale_undo_step (id, redo, bytes) VALUES (1, 0, 2);
+             INSERT INTO vale_undo_record VALUES (1, 'raster', 3, x'0102');
+             INSERT INTO vale_undo_tile VALUES (1, 3, 0, 5, 3, 3, NULL);",
+        )
+        .unwrap();
+        drop(conn);
 
-        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
-        assert_eq!(loaded, project);
-        assert!(loaded.rasters().iter().all(|r| r.visible));
-        assert_eq!(loaded.raster(height).unwrap().unit, "m");
+        let hidden = version >= 8;
+        let rows = loaded.layers().iter();
+        let rows: Vec<_> = rows
+            .map(|l| (l.id.0, l.name.as_str(), l.kind, l.visible))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (7, "Rain", LayerKind::Raster(rain), !hidden),
+                (8, "Height", LayerKind::Raster(height), true),
+                (2, "Roads", LayerKind::Vector(GeometryKind::Line), false),
+                (0, "Land", LayerKind::Vector(GeometryKind::Polygon), true),
+                (5, "Towns", LayerKind::Vector(GeometryKind::Point), true),
+            ]
+        );
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT position || ' ' || table_name FROM vale_layer ORDER BY position"
+            ),
+            [
+                "0 vale_raster_3",
+                "1 vale_raster_0",
+                "2 Roads",
+                "3 Land",
+                "4 Towns"
+            ]
+        );
+        assert_eq!(meta(&file.conn, "next_layer_id").unwrap(), "9");
+        assert_eq!(loaded.layers()[4].features, [town]);
+
+        // The rasters keep their values and their tiles.
+        let ids: Vec<RasterId> = loaded.rasters().iter().map(|r| r.id).collect();
+        assert_eq!(ids, [height, rain]);
+        for raster in loaded.rasters() {
+            assert_eq!((raster.face_size, raster.unit.as_str()), (1000, "mm"));
+            assert_eq!((raster.value_min, raster.value_max), (0.0, 5000.0));
+            assert_eq!((raster.base, raster.opacity), (7, 1.0));
+            assert_eq!(raster.limits, [250.0, 1000.0]);
+            assert_eq!(raster.ramp_sea, [[0, 1, 2]]);
+        }
+        assert_eq!(tiles_of(&file, loaded.raster(height).unwrap()), high);
         assert_eq!(tiles_of(&file, loaded.raster(rain).unwrap()), wet);
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT name FROM pragma_table_info('vale_raster')"
+            ),
+            [
+                "id",
+                "face_size",
+                "unit",
+                "value_min",
+                "value_max",
+                "base",
+                "limits",
+                "ramp_sea",
+                "ramp_land",
+                "opacity"
+            ]
+        );
+
+        // The undo log is empty.
+        assert!(!file.can_undo() && !file.can_redo());
+        assert_eq!((steps(&file), file.undo_bytes()), (0, 0));
+        for table in ["vale_undo_record", "vale_undo_tile"] {
+            let count = format!("SELECT CAST(COUNT(*) AS TEXT) FROM {table}");
+            assert_eq!(strings(&file.conn, &count), ["0"]);
+        }
+
+        // A new layer gets an ID that no layer has, and the file keeps an edit.
+        let mut next = loaded.clone();
+        let id = next.add_layer("New".into(), GeometryKind::Line, None, vec![]);
+        assert_eq!(id, LayerId(9));
+        next.move_layer(next.raster_layer(rain).unwrap().id, 3);
+        file.save(&next).unwrap();
+        drop(file);
+        let (mut file, again) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(again, next);
+        assert_eq!(tiles_of(&file, again.raster(rain).unwrap()), wet);
+        file.undo().unwrap();
+        assert_eq!(file.project().layers(), loaded.layers());
+    }
+
+    #[test]
+    fn a_file_of_version_8_gets_raster_layers_below_the_vector_layers() {
+        old_rasters_become_layers(8);
+    }
+
+    #[test]
+    fn a_file_of_version_7_gets_raster_layers_below_the_vector_layers() {
+        old_rasters_become_layers(7);
     }
 
     #[test]
@@ -2166,15 +2427,18 @@ mod tests {
         let mut project = Project::new(World::default());
         let height = project.add_raster("Height".into(), 8192, "m".into(), -6000.0, 6000.0);
         let rain = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
-        project.set_raster_visible(rain, false);
+        let layer = |p: &Project, id| p.raster_layer(id).unwrap().id;
+        project.set_layer_visible(layer(&project, rain), false);
         drop(ProjectFile::create(&path(&dir), &project).unwrap());
 
         let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded, project);
         let values = |p: &Project, id| {
             let r = p.raster(id).unwrap();
+            let layer = p.raster_layer(id).unwrap();
             (
-                r.visible,
+                layer.name.clone(),
+                layer.visible,
                 r.unit.clone(),
                 r.value_min,
                 r.value_max,
@@ -2183,58 +2447,325 @@ mod tests {
         };
         assert_eq!(
             values(&loaded, height),
-            (true, "m".into(), -6000.0, 6000.0, 8192)
+            ("Height".into(), true, "m".into(), -6000.0, 6000.0, 8192)
         );
         assert_eq!(
             values(&loaded, rain),
-            (false, "mm".into(), 0.0, 5000.0, 1000)
+            ("Rain".into(), false, "mm".into(), 0.0, 5000.0, 1000)
         );
 
         // A save keeps a change of each value.
-        project.set_raster_visible(height, false);
-        project.set_raster_visible(rain, true);
+        project.set_layer_visible(layer(&project, height), false);
+        project.set_layer_visible(layer(&project, rain), true);
+        project.rename_layer(layer(&project, rain), "Rainfall".into());
         project.raster_mut(rain).unwrap().value_max = 9000.0;
         file.save(&project).unwrap();
         drop(file);
         let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded, project);
-        assert!(!loaded.raster(height).unwrap().visible);
-        assert!(loaded.raster(rain).unwrap().visible);
+        assert_eq!(
+            values(&loaded, height),
+            ("Height".into(), false, "m".into(), -6000.0, 6000.0, 8192)
+        );
+        assert_eq!(
+            values(&loaded, rain),
+            ("Rainfall".into(), true, "mm".into(), 0.0, 9000.0, 1000)
+        );
+    }
+
+    fn names(project: &Project) -> Vec<&str> {
+        project.layers().iter().map(|l| l.name.as_str()).collect()
+    }
+
+    /// The kind and the ID of each record image of each step, in the order
+    /// of the steps.
+    fn images(file: &ProjectFile) -> Vec<String> {
+        let sql = "SELECT group_concat(kind || ' ' || id, ', ') FROM
+             (SELECT * FROM vale_undo_record ORDER BY step_id, kind, id) GROUP BY step_id";
+        strings(&file.conn, sql)
     }
 
     #[test]
-    fn an_undo_puts_back_the_visibility_and_the_order_of_a_raster() {
+    fn an_undo_puts_back_the_order_of_a_raster_layer_and_a_vector_layer() {
         let dir = tempfile::tempdir().unwrap();
-        let (mut project, height, rain) = rasters();
+        let mut project = Project::new(World::default());
+        let land = project.add_layer("Land".into(), GeometryKind::Polygon, None, vec![]);
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let height = project.add_raster("Height".into(), 8192, "m".into(), -6000.0, 6000.0);
+        let rain = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
+        let rain_layer = project.raster_layer(rain).unwrap().id;
         let wet = vec![(key(5, 3, 3), pixels(3))];
         let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
         file.save_tiles(&project, &[put(rain, &wet, vec![])])
             .unwrap();
+        file.save_base(&project).unwrap();
         let mut states = vec![content(&file)];
-        project.set_raster_visible(rain, false);
+        assert_eq!(names(&project), ["Height", "Rain", "Land", "Roads"]);
+
+        // The raster layer goes above a vector layer.
+        project.move_layer(rain_layer, 2);
         file.save(&project).unwrap();
         states.push(content(&file));
-        project.move_raster(rain, 0);
+        project.set_layer_visible(rain_layer, false);
         file.save(&project).unwrap();
         states.push(content(&file));
+        // A vector layer goes below each raster layer.
+        project.move_layer(roads, 0);
+        file.save(&project).unwrap();
+        states.push(content(&file));
+        assert_eq!(names(&project), ["Roads", "Height", "Land", "Rain"]);
+        // A change of the order or of the visibility keeps layer images only.
+        assert_eq!(
+            images(&file),
+            [
+                format!("layer {}, layer {}", land.0, rain_layer.0),
+                format!("layer {}", rain_layer.0),
+                "layer 0, layer 1, layer 2, layer 3".to_string(),
+            ]
+        );
         drop(file);
 
         let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded, project);
-        assert_eq!(loaded.rasters()[0].id, rain);
+        assert_eq!(content(&file), states[3]);
         assert_eq!(file.undo().unwrap().unwrap().tiles, []);
+        assert_eq!(content(&file), states[2]);
+        assert_eq!(names(file.project()), ["Height", "Land", "Rain", "Roads"]);
+        assert!(!file.project().raster_layer(rain).unwrap().visible);
+        file.undo().unwrap();
         assert_eq!(content(&file), states[1]);
-        assert_eq!(file.project().rasters()[0].id, height);
-        assert!(!file.project().raster(rain).unwrap().visible);
+        assert!(file.project().raster_layer(rain).unwrap().visible);
         file.undo().unwrap();
         assert_eq!(content(&file), states[0]);
-        assert!(file.project().raster(rain).unwrap().visible);
-        file.redo().unwrap();
-        assert_eq!(content(&file), states[1]);
-        assert!(!file.project().raster(rain).unwrap().visible);
-        file.redo().unwrap();
-        assert_eq!(content(&file), states[2]);
+        assert_eq!(names(file.project()), ["Height", "Rain", "Land", "Roads"]);
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(names(&loaded), ["Height", "Rain", "Land", "Roads"]);
+        for state in &states[1..] {
+            file.redo().unwrap();
+            assert_eq!(&content(&file), state);
+        }
+        assert_eq!(names(file.project()), ["Roads", "Height", "Land", "Rain"]);
+        assert_eq!(
+            file.project().raster_layer(height).unwrap().kind,
+            LayerKind::Raster(height)
+        );
         assert_eq!(tiles_of(&file, file.project().raster(rain).unwrap()), wet);
+    }
+
+    #[test]
+    fn an_undo_puts_back_a_removed_raster_layer_with_its_record_and_its_tiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let height = project.add_raster("Height".into(), 8192, "m".into(), -6000.0, 6000.0);
+        project.add_layer("Land".into(), GeometryKind::Polygon, None, vec![]);
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let empty = content(&file);
+        const TILES: &str = "SELECT CAST(raster_id AS TEXT) FROM vale_raster_tile ORDER BY 1";
+        const RECORDS: &str = "SELECT CAST(id AS TEXT) FROM vale_raster ORDER BY 1";
+        const LAYERS: &str = "SELECT name || ' ' || COALESCE(raster_id, '-') FROM vale_layer
+             ORDER BY position";
+
+        // The step of a new raster layer holds the layer and the raster.
+        let rain = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
+        let rain_layer = project.raster_layer(rain).unwrap().id;
+        project.raster_mut(rain).unwrap().limits = vec![250.0];
+        project.move_layer(rain_layer, 2);
+        project.set_layer_visible(rain_layer, false);
+        file.save(&project).unwrap();
+        // The layer above the place of the raster layer has a new place.
+        let step = format!(
+            "layer {}, layer {}, raster {}",
+            roads.0, rain_layer.0, rain.0
+        );
+        assert_eq!(images(&file), [step.as_str()]);
+        let high = vec![(key(0, 0, 0), pixels(1))];
+        let wet = vec![(key(5, 3, 3), pixels(3)), (key(2, 3, 3), pixels(4))];
+        let changes = [put(height, &high, vec![]), put(rain, &wet, vec![])];
+        file.save_tiles(&project, &changes).unwrap();
+        let before = content(&file);
+        assert_eq!(names(&project), ["Height", "Land", "Rain", "Roads"]);
+
+        // The step of a removed raster layer holds the layer, the raster,
+        // and the tiles.
+        assert_eq!(
+            project.remove_layer(rain_layer).unwrap().raster(),
+            Some(rain)
+        );
+        let stats = file.save_tiles(&project, &[]).unwrap();
+        assert_eq!((stats.tiles_written, stats.tiles_deleted), (0, 2));
+        // The step of the tiles has no record image.
+        assert_eq!(images(&file), [step.as_str(); 2]);
+        assert_eq!(steps(&file), 3);
+        assert_eq!(strings(&file.conn, TILES), ["0"]);
+        assert_eq!(strings(&file.conn, RECORDS), ["0"]);
+        assert_eq!(
+            strings(&file.conn, LAYERS),
+            ["Height 0", "Land -", "Roads -"]
+        );
+        let after = content(&file);
+        drop(file);
+
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        let mut restored = file.undo().unwrap().unwrap().tiles;
+        restored.sort();
+        assert_eq!(restored, [(rain, key(2, 3, 3)), (rain, key(5, 3, 3))]);
+        assert_eq!(content(&file), before);
+        let project = file.project();
+        assert_eq!(names(project), ["Height", "Land", "Rain", "Roads"]);
+        let layer = project.raster_layer(rain).unwrap();
+        assert_eq!((layer.id, layer.visible), (rain_layer, false));
+        assert_eq!(project.raster(rain).unwrap().limits, [250.0]);
+        let mut sorted = wet.clone();
+        sorted.sort_by_key(|(k, _)| (k.face, k.row, k.column));
+        assert_eq!(tiles_of(&file, project.raster(rain).unwrap()), sorted);
+        assert_eq!(strings(&file.conn, TILES), ["0", "1", "1"]);
+        assert_eq!(strings(&file.conn, RECORDS), ["0", "1"]);
+        assert_eq!(
+            strings(&file.conn, LAYERS),
+            ["Height 0", "Land -", "Rain 1", "Roads -"]
+        );
+        drop(file);
+
+        // The file holds the layer after the undo, and a redo removes it.
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(names(&loaded), ["Height", "Land", "Rain", "Roads"]);
+        file.redo().unwrap();
+        assert_eq!(content(&file), after);
+        assert!(file.project().raster(rain).is_none());
+        assert!(file.project().layer(rain_layer).is_none());
+        assert_eq!(strings(&file.conn, TILES), ["0"]);
+        assert_eq!(strings(&file.conn, RECORDS), ["0"]);
+        assert_eq!(
+            strings(&file.conn, LAYERS),
+            ["Height 0", "Land -", "Roads -"]
+        );
+
+        // An undo of each step takes away the new raster layer too.
+        for _ in 0..3 {
+            file.undo().unwrap();
+        }
+        assert_eq!(content(&file), empty);
+        assert!(!file.can_undo());
+        assert_eq!(strings(&file.conn, RECORDS), ["0"]);
+        assert_eq!(
+            strings(&file.conn, LAYERS),
+            ["Height 0", "Land -", "Roads -"]
+        );
+    }
+
+    #[test]
+    fn the_file_keeps_the_opacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, rain) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert!(project.set_raster_opacity(rain, 0.25));
+        file.save(&project).unwrap();
+        // An opacity change keeps the image of the raster only.
+        assert_eq!(images(&file), [format!("raster {}", rain.0)]);
+        drop(file);
+
+        let opacity = |p: &Project, id| p.raster(id).unwrap().opacity;
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(
+            (opacity(&loaded, height), opacity(&loaded, rain)),
+            (1.0, 0.25)
+        );
+        file.undo().unwrap();
+        assert_eq!(opacity(file.project(), rain), 1.0);
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(opacity(&loaded, rain), 1.0);
+        file.redo().unwrap();
+        assert_eq!(file.project(), &project);
+        drop(file);
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(opacity(&loaded, rain), 0.25);
+
+        // An opacity outside the range gets the nearest limit in the file
+        // and after a load.
+        file.conn
+            .execute("UPDATE vale_raster SET opacity = 7 WHERE id = ?1", [rain.0])
+            .unwrap();
+        drop(file);
+        let (mut file, mut loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(opacity(&loaded, rain), 1.0);
+        loaded.raster_mut(height).unwrap().opacity = -3.0;
+        file.save(&loaded).unwrap();
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT CAST(opacity AS TEXT) FROM vale_raster ORDER BY id"
+            ),
+            ["0.0", "1.0"]
+        );
+    }
+
+    /// QGIS lists the tables of `gpkg_contents` that have features. A raster
+    /// layer is not in that table, and it has no table of its own.
+    #[test]
+    fn a_raster_layer_has_no_feature_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, rain) = rasters();
+        project.move_layer(project.raster_layer(rain).unwrap().id, 99);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let tiles = vec![(key(0, 0, 0), pixels(1))];
+        file.save_tiles(&project, &[put(height, &tiles, vec![])])
+            .unwrap();
+        // A save after the first one removes the tables of the layers.
+        file.save(&project).unwrap();
+        let conn = &file.conn;
+
+        assert_eq!(
+            strings(
+                conn,
+                "SELECT kind || ' ' || table_name || ' ' || raster_id FROM vale_layer
+                 WHERE raster_id IS NOT NULL ORDER BY position"
+            ),
+            ["raster vale_raster_0 0", "raster vale_raster_1 1"]
+        );
+        let vectors = strings(
+            conn,
+            "SELECT table_name FROM vale_layer WHERE raster_id IS NULL ORDER BY table_name",
+        );
+        assert_eq!(vectors.len(), 5);
+        assert_eq!(
+            strings(
+                conn,
+                "SELECT table_name FROM gpkg_contents WHERE data_type = 'features'
+                 ORDER BY table_name"
+            ),
+            vectors
+        );
+        assert_eq!(
+            strings(
+                conn,
+                "SELECT table_name FROM gpkg_geometry_columns ORDER BY table_name"
+            ),
+            vectors
+        );
+        const RASTER_ROWS: &str = "(SELECT table_name FROM vale_layer WHERE raster_id IS NOT NULL)";
+        for sql in [
+            format!("SELECT table_name FROM gpkg_contents WHERE table_name IN {RASTER_ROWS}"),
+            format!("SELECT name FROM sqlite_master WHERE name IN {RASTER_ROWS}"),
+            "SELECT name FROM vale_field WHERE layer_id IN
+               (SELECT id FROM vale_layer WHERE raster_id IS NOT NULL)"
+                .to_string(),
+            // Each table is in the contents table.
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT GLOB 'gpkg_*' AND name NOT GLOB 'sqlite_*'
+               AND name NOT IN (SELECT table_name FROM gpkg_contents)"
+                .to_string(),
+        ] {
+            assert_eq!(strings(conn, &sql), [] as [&str; 0], "{sql}");
+        }
+        // The tile table stays when the layer records go.
+        assert_eq!(tiles_of(&file, project.raster(height).unwrap()), tiles);
+        drop(file);
+        assert_eq!(ProjectFile::open(&path(&dir)).unwrap().1, project);
     }
 
     #[test]
@@ -2586,10 +3117,10 @@ mod tests {
         file.save_tiles(&project, &changes).unwrap();
         states.push(content(&file));
 
-        let places = project.layers()[0].id;
-        let rivers = project.layers()[1].id;
-        project.layers[0].features.remove(1);
-        project.layers[0].features[0].geometry = Geometry::Points(vec![[1.0, 2.0]]);
+        let places = project.layers()[2].id;
+        let rivers = project.layers()[3].id;
+        project.layers[2].features.remove(1);
+        project.layers[2].features[0].geometry = Geometry::Points(vec![[1.0, 2.0]]);
         project.remove_layer(rivers);
         project.add_layer(
             "Towns".into(),
@@ -2600,13 +3131,13 @@ mod tests {
                 attributes(&[("name", text("Bree"))]),
             )],
         );
-        assert_eq!(project.layers()[0].id, places);
+        assert_eq!(project.layers()[2].id, places);
         file.save(&project).unwrap();
         states.push(content(&file));
 
         project.world.name = "Third".into();
         project.raster_mut(height).unwrap().base = 7;
-        project.layers.swap(0, 2);
+        project.layers.swap(2, 4);
         let stroke = vec![(key(0, 0, 0), pixels(4)), (key(1, 1, 1), pixels(5))];
         let changes = [put(height, &stroke, vec![key(2, 3, 4)])];
         file.save_tiles(&project, &changes).unwrap();
@@ -2769,7 +3300,7 @@ mod tests {
 
         let mut project = states[3].0.clone();
         project.world.name = "Half".into();
-        project.remove_layer(project.layers()[0].id);
+        project.remove_layer(project.layers()[2].id);
         let stroke: Vec<_> = (0..40).map(|i| (key(3, i, 0), noise(i))).collect();
         let tx = file.conn.transaction().unwrap();
         let changes = [put(RasterId(0), &stroke, vec![key(0, 0, 0)])];

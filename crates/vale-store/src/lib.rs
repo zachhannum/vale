@@ -148,12 +148,32 @@ impl Feature {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LayerId(pub u32);
 
-/// A set of features of one geometry kind.
+/// What a layer holds.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LayerKind {
+    /// Features of one geometry kind.
+    Vector(GeometryKind),
+    /// The raster with this ID.
+    Raster(RasterId),
+}
+
+impl LayerKind {
+    /// A lower-case name.
+    pub fn name(self) -> &'static str {
+        match self {
+            LayerKind::Vector(kind) => kind.name(),
+            LayerKind::Raster(_) => "raster",
+        }
+    }
+}
+
+/// One row of the draw order: a set of features of one geometry kind, or a
+/// raster. A raster layer has no source, no fields, and no features.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
     pub id: LayerId,
     pub name: String,
-    pub kind: GeometryKind,
+    pub kind: LayerKind,
     /// The views draw the layer.
     pub visible: bool,
     /// The name of the imported file.
@@ -164,18 +184,36 @@ pub struct Layer {
     pub features: Vec<Feature>,
 }
 
+impl Layer {
+    /// The geometry kind of a vector layer.
+    pub fn geometry(&self) -> Option<GeometryKind> {
+        match self.kind {
+            LayerKind::Vector(kind) => Some(kind),
+            LayerKind::Raster(_) => None,
+        }
+    }
+
+    /// The raster of a raster layer.
+    pub fn raster(&self) -> Option<RasterId> {
+        match self.kind {
+            LayerKind::Vector(_) => None,
+            LayerKind::Raster(id) => Some(id),
+        }
+    }
+}
+
 /// The identity of a raster. It is never reused.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RasterId(pub u32);
 
-/// The record of one raster layer: a cube map of 16-bit values. The project
-/// file holds its tiles, and the project in memory does not.
+/// The record of one raster: a cube map of 16-bit values. Its layer has the
+/// name and the visibility. The project file holds its tiles, and the project
+/// in memory does not.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Raster {
     pub id: RasterId,
-    pub name: String,
-    /// The views draw the raster.
-    pub visible: bool,
+    /// How much the raster hides the layers below it, from 0 to 1.
+    pub opacity: f32,
     /// The number of pixels along the edge of a face.
     pub face_size: u32,
     /// The unit of the values, for example `m`.
@@ -192,6 +230,15 @@ pub struct Raster {
     pub ramp_sea: Vec<Rgb>,
     /// The colors of the ramp above sea level.
     pub ramp_land: Vec<Rgb>,
+}
+
+/// An opacity from 0 to 1. A value that is not a number gives 1.
+pub(crate) fn clamp_opacity(opacity: f32) -> f32 {
+    if opacity.is_nan() {
+        1.0
+    } else {
+        opacity.clamp(0.0, 1.0)
+    }
 }
 
 /// The units in which the app shows a distance on the ground.
@@ -242,12 +289,14 @@ impl Default for World {
     }
 }
 
-/// A world and its layers.
+/// A world and its layers. Each raster has one layer, and each raster layer
+/// has one raster.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Project {
     pub world: World,
     layers: Vec<Layer>,
     next_id: u32,
+    /// In ID order.
     rasters: Vec<Raster>,
     next_raster_id: u32,
 }
@@ -264,9 +313,11 @@ impl Project {
         }
     }
 
-    /// Adds a raster with no tiles after the other rasters and returns its
-    /// ID. `value_min` is the value of pixel 0, and `value_max` is the value
-    /// of pixel 65,535. The raster is visible. Its base is zero, and its band
+    /// Adds a raster with no tiles, and its layer, and returns the ID of the
+    /// raster. The layer goes directly above the top raster layer, or to the
+    /// bottom of a project with no raster layer. `value_min` is the value of
+    /// pixel 0, and `value_max` is the value of pixel 65,535. The layer is
+    /// visible, and the raster is opaque. Its base is zero, and its band
     /// limits and its ramp are empty.
     pub fn add_raster(
         &mut self,
@@ -280,8 +331,7 @@ impl Project {
         self.next_raster_id += 1;
         self.rasters.push(Raster {
             id,
-            name,
-            visible: true,
+            opacity: 1.0,
             face_size,
             unit,
             value_min,
@@ -291,10 +341,22 @@ impl Project {
             ramp_sea: Vec::new(),
             ramp_land: Vec::new(),
         });
+        let top = self.layers.iter().rposition(|l| l.raster().is_some());
+        let layer = Layer {
+            id: LayerId(self.next_id),
+            name,
+            kind: LayerKind::Raster(id),
+            visible: true,
+            source: None,
+            fields: Vec::new(),
+            features: Vec::new(),
+        };
+        self.next_id += 1;
+        self.layers.insert(top.map_or(0, |i| i + 1), layer);
         id
     }
 
-    /// The rasters in the order of the project.
+    /// The rasters in ID order.
     pub fn rasters(&self) -> &[Raster] {
         &self.rasters
     }
@@ -310,27 +372,23 @@ impl Project {
         self.rasters.iter_mut().find(|r| r.id == id)
     }
 
-    /// Moves a raster to this index of the order. An index past the end is
-    /// the last place.
-    pub fn move_raster(&mut self, id: RasterId, to: usize) -> bool {
-        let Some(from) = self.rasters.iter().position(|r| r.id == id) else {
-            return false;
-        };
-        let raster = self.rasters.remove(from);
-        let to = to.min(self.rasters.len());
-        self.rasters.insert(to, raster);
-        true
+    /// The layer of the raster with this ID.
+    pub fn raster_layer(&self, id: RasterId) -> Option<&Layer> {
+        self.layers.iter().find(|l| l.raster() == Some(id))
     }
 
-    /// Shows or hides a raster.
-    pub fn set_raster_visible(&mut self, id: RasterId, visible: bool) -> bool {
-        self.raster_mut(id).map(|r| r.visible = visible).is_some()
+    /// Sets the opacity of a raster. A value outside 0 to 1 gets the nearest
+    /// limit.
+    pub fn set_raster_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
+        let raster = self.raster_mut(id);
+        raster.map(|r| r.opacity = clamp_opacity(opacity)).is_some()
     }
 
-    /// Removes a raster. Its ID is not used again. The next save removes its
-    /// tiles from the file.
+    /// Removes a raster and its layer. Its ID is not used again. The next
+    /// save removes its tiles from the file.
     pub fn remove_raster(&mut self, id: RasterId) -> Option<Raster> {
         let i = self.rasters.iter().position(|r| r.id == id)?;
+        self.layers.retain(|l| l.raster() != Some(id));
         Some(self.rasters.remove(i))
     }
 
@@ -357,7 +415,7 @@ impl Project {
         self.layers.push(Layer {
             id,
             name,
-            kind,
+            kind: LayerKind::Vector(kind),
             visible: true,
             source,
             fields,
@@ -402,10 +460,16 @@ impl Project {
         self.layers.iter_mut().find(|l| l.id == id)
     }
 
-    /// Removes a layer. Its ID is not used again.
+    /// Removes a layer. Its ID is not used again. A raster layer takes its
+    /// raster, and the next save removes the tiles of that raster from the
+    /// file.
     pub fn remove_layer(&mut self, id: LayerId) -> Option<Layer> {
         let i = self.layers.iter().position(|l| l.id == id)?;
-        Some(self.layers.remove(i))
+        let layer = self.layers.remove(i);
+        if let Some(raster) = layer.raster() {
+            self.rasters.retain(|r| r.id != raster);
+        }
+        Some(layer)
     }
 }
 
@@ -469,8 +533,6 @@ mod tests {
             .iter()
             .map(|n| p.add_layer(n.to_string(), GeometryKind::Line, None, vec![]))
             .collect();
-        let names =
-            |p: &Project| -> Vec<String> { p.layers().iter().map(|l| l.name.clone()).collect() };
         assert!(p.move_layer(ids[0], 2));
         assert_eq!(names(&p), ["b", "c", "a"]);
         assert!(p.move_layer(ids[0], 0));
@@ -489,34 +551,107 @@ mod tests {
     }
 
     #[test]
-    fn a_raster_gets_its_values_and_moves_hides_and_goes() {
+    fn a_raster_gets_its_values_and_its_layer() {
         let mut p = Project::new(World::default());
         let ids: Vec<RasterId> = ["a", "b", "c"]
             .iter()
             .map(|n| p.add_raster(n.to_string(), 4096, "mm".into(), 0.0, 5000.0))
             .collect();
         let a = p.raster(ids[0]).unwrap();
-        assert_eq!(
-            (a.name.as_str(), a.face_size, a.unit.as_str()),
-            ("a", 4096, "mm")
-        );
-        assert_eq!((a.value_min, a.value_max, a.visible), (0.0, 5000.0, true));
-        let names =
-            |p: &Project| -> Vec<String> { p.rasters().iter().map(|r| r.name.clone()).collect() };
-        assert!(p.move_raster(ids[0], 2));
-        assert_eq!(names(&p), ["b", "c", "a"]);
-        assert!(p.move_raster(ids[0], 0));
-        assert_eq!(names(&p), ["a", "b", "c"]);
-        assert!(p.move_raster(ids[1], 99));
-        assert_eq!(names(&p), ["a", "c", "b"]);
-        assert!(p.set_raster_visible(ids[0], false));
-        assert!(!p.raster(ids[0]).unwrap().visible);
+        assert_eq!((a.face_size, a.unit.as_str()), (4096, "mm"));
+        assert_eq!((a.value_min, a.value_max, a.opacity), (0.0, 5000.0, 1.0));
+        let layer = p.raster_layer(ids[0]).unwrap();
+        assert_eq!((layer.name.as_str(), layer.visible), ("a", true));
+        assert_eq!(layer.kind, LayerKind::Raster(ids[0]));
+        assert_eq!((layer.raster(), layer.geometry()), (Some(ids[0]), None));
+        assert_eq!(layer.kind.name(), "raster");
+        assert!(layer.source.is_none() && layer.fields.is_empty() && layer.features.is_empty());
+
+        assert!(p.set_raster_opacity(ids[1], 0.25));
+        assert_eq!(p.raster(ids[1]).unwrap().opacity, 0.25);
+        for (given, kept) in [(7.0, 1.0), (-1.0, 0.0), (f32::NAN, 1.0)] {
+            assert!(p.set_raster_opacity(ids[1], given));
+            assert_eq!(p.raster(ids[1]).unwrap().opacity, kept);
+        }
+
         assert!(p.remove_raster(ids[0]).is_some());
         assert!(p.remove_raster(ids[0]).is_none());
-        assert!(!p.move_raster(ids[0], 0));
-        assert!(!p.set_raster_visible(ids[0], true));
+        assert!(p.raster_layer(ids[0]).is_none());
+        assert!(!p.set_raster_opacity(ids[0], 0.5));
         let d = p.add_raster("d".into(), 1024, String::new(), 0.0, 1.0);
         assert!(ids.iter().all(|id| d > *id));
+        let rasters: Vec<RasterId> = p.rasters().iter().map(|r| r.id).collect();
+        assert_eq!(rasters, [ids[1], ids[2], d]);
+    }
+
+    fn names(p: &Project) -> Vec<&str> {
+        p.layers().iter().map(|l| l.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_raster_layer_is_a_layer_in_the_one_order() {
+        let mut p = Project::new(World::default());
+        let roads = p.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let height = p.add_raster("Height".into(), 4096, "m".into(), -6000.0, 6000.0);
+        assert_eq!(names(&p), ["Height", "Roads"]);
+        let towns = p.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let rain = p.add_raster("Rain".into(), 1024, "mm".into(), 0.0, 5000.0);
+        assert_eq!(names(&p), ["Height", "Rain", "Roads", "Towns"]);
+        let layer = |p: &Project, id| p.raster_layer(id).unwrap().id;
+        let (height_layer, rain_layer) = (layer(&p, height), layer(&p, rain));
+        let ids: BTreeSet<LayerId> = p.layers().iter().map(|l| l.id).collect();
+        assert_eq!(ids.len(), 4);
+        assert_eq!(p.layer(rain_layer).unwrap().raster(), Some(rain));
+        assert_eq!(p.layer(roads).unwrap().geometry(), Some(GeometryKind::Line));
+
+        // A layer of each kind moves to each place.
+        assert!(p.move_layer(rain_layer, 99));
+        assert_eq!(names(&p), ["Height", "Roads", "Towns", "Rain"]);
+        assert!(p.move_layer(towns, 0));
+        assert_eq!(names(&p), ["Towns", "Height", "Roads", "Rain"]);
+        // A new raster layer goes directly above the top raster layer.
+        let wind = p.add_raster("Wind".into(), 1024, "m/s".into(), 0.0, 100.0);
+        assert_eq!(names(&p), ["Towns", "Height", "Roads", "Rain", "Wind"]);
+        assert!(p.move_layer(height_layer, 2));
+        assert_eq!(names(&p), ["Towns", "Roads", "Height", "Rain", "Wind"]);
+        // The order of the layers is not the order of the rasters.
+        assert!(p.move_layer(layer(&p, wind), 0));
+        let rasters: Vec<RasterId> = p.rasters().iter().map(|r| r.id).collect();
+        assert_eq!(rasters, [height, rain, wind]);
+
+        assert!(p.set_layer_visible(rain_layer, false));
+        assert!(!p.raster_layer(rain).unwrap().visible);
+        assert!(p.raster_layer(height).unwrap().visible);
+        assert!(p.rename_layer(rain_layer, "Rainfall".into()));
+        assert_eq!(p.raster_layer(rain).unwrap().name, "Rainfall");
+    }
+
+    #[test]
+    fn a_removed_raster_layer_takes_its_raster() {
+        let mut p = Project::new(World::default());
+        let roads = p.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let height = p.add_raster("Height".into(), 4096, "m".into(), -6000.0, 6000.0);
+        let rain = p.add_raster("Rain".into(), 1024, "mm".into(), 0.0, 5000.0);
+        let rain_layer = p.raster_layer(rain).unwrap().id;
+
+        let removed = p.remove_layer(rain_layer).unwrap();
+        assert_eq!(removed.raster(), Some(rain));
+        assert!(p.raster(rain).is_none() && p.raster_layer(rain).is_none());
+        assert!(p.remove_raster(rain).is_none());
+        assert_eq!(names(&p), ["Height", "Roads"]);
+
+        let height_layer = p.raster_layer(height).unwrap().id;
+        assert_eq!(p.remove_raster(height).unwrap().id, height);
+        assert!(p.layer(height_layer).is_none());
+        assert!(p.remove_layer(height_layer).is_none());
+        assert_eq!(names(&p), ["Roads"]);
+        assert_eq!(p.rasters(), []);
+
+        // A removed vector layer takes no raster.
+        let wind = p.add_raster("Wind".into(), 1024, "m/s".into(), 0.0, 100.0);
+        assert!(p.remove_layer(roads).is_some());
+        assert!(p.raster(wind).is_some());
+        assert_eq!(names(&p), ["Wind"]);
     }
 
     #[test]
