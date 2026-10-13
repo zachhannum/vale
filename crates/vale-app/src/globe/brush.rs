@@ -88,7 +88,7 @@ pub struct BrushSettings {
     pub ridge_segment_km: f64,
     /// The largest shift of a segment across the line, in kilometers.
     pub ridge_offset_km: f64,
-    /// The height of the fabric, in meters.
+    /// The height of the hills, in meters.
     pub ridge_roughness_m: f64,
     /// The depth of the valley along the crest, in meters.
     pub ridge_valley_m: f64,
@@ -119,7 +119,7 @@ impl Default for BrushSettings {
             ridge_crest_m: -700.0,
             ridge_segment_km: 400.0,
             ridge_offset_km: 100.0,
-            ridge_roughness_m: 400.0,
+            ridge_roughness_m: 300.0,
             ridge_valley_m: 300.0,
             floor_on: false,
             floor_m: 0.0,

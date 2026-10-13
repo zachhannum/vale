@@ -3112,7 +3112,9 @@ fn an_ocean_ridge_shows_on_the_globe_while_you_paint() {
     assert_eq!(part.dimensions(), flat.dimensions());
     let changed = part.pixels().zip(flat.pixels()).filter(|(a, b)| a != b);
     let changed = changed.count();
-    assert!(changed > 2000, "{changed}");
+    // The ridge is low near the end of the line, so a short part of a
+    // stroke changes few pixels.
+    assert!(changed > 1000, "{changed}");
     let ridge = uplift_stroke_end(&mut h);
     assert!(ridge != before);
     assert_eq!(h.state().globe.stats.last().unwrap().id, 2);
@@ -3191,14 +3193,14 @@ fn an_ocean_ridge_stroke_gives_the_levels_of_the_cpu_ridge() {
     assert!((0..6).filter(|face| on_face(*face)).count() >= 2);
     let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
     assert!(worst.unwrap() <= 2, "{worst:?}");
-    // The top is near the Crest setting. The fabric goes above it by 1.4
-    // times the Roughness setting at most.
+    // The top is near the Crest setting. A rim of the valley goes above it
+    // by 0.4 times the Valley setting at most.
     let crest = meters_to_level(-500.0);
-    let rough = ((1.4 * spec.roughness).ceil() as u16) + 2;
+    let rim = ((0.4 * spec.valley).ceil() as u16) + 2;
     let top = *app.iter().max().unwrap();
     let lift = crest - meters_to_level(-2500.0);
     assert!(
-        top <= crest + rough && top + lift / 4 > crest,
+        top <= crest + rim && top + lift / 4 > crest,
         "{top} of {crest}"
     );
 }
@@ -3367,8 +3369,9 @@ fn map_picture(
 }
 
 /// Writes pictures of an ocean ridge that the CPU lays on the empty world,
-/// for a person to look at: the stepped tints, the elevation in grey, and
-/// the shade of the ground. `edit` changes the default brush.
+/// for a person to look at: the stepped tints, the elevation in grey, the
+/// shade of the ground, and smooth tints with the shade. `edit` changes the
+/// default brush.
 fn cpu_ridge_pictures(
     name: &str,
     n: usize,
@@ -3412,6 +3415,14 @@ fn cpu_ridge_pictures(
     save(&grey, &format!("{name}-grey"));
     let shade = map_picture(&map, window, 1400, |_, shade| [(255.0 * shade) as u8; 3]);
     save(&shade, &format!("{name}-shade"));
+    // Tints that change smoothly with the depth, with the shade on them.
+    let relief = map_picture(&map, window, 1400, |meters, shade| {
+        let t = ((meters - (base - 600.0)) / (top + 200.0 - (base - 600.0))).clamp(0.0, 1.0);
+        let (deep, high) = ([25.0, 60.0, 150.0], [90.0, 215.0, 235.0]);
+        let light = 0.35 + 1.2 * shade;
+        std::array::from_fn(|c| ((deep[c] + (high[c] - deep[c]) * t) * light).min(255.0) as u8)
+    });
+    save(&relief, &format!("{name}-relief"));
 }
 
 /// The window of the ridge pictures with the full stroke, and the window
