@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 use vale_store::{
     Project, ProjectFile, Raster, RasterId, Restored, SaveStats, StoreError, TileChanges, TileKey,
 };
-use vale_terrain::{Bands, FACES, Heightmap, Ramp};
+use vale_terrain::{Bands, FACES, Heightmap, Ramp, reduced_face_size};
 
 use crate::document::Document;
 use crate::files::Files;
-use crate::globe::thumbnail;
 use crate::globe::view::GlobeView;
+use crate::globe::{DISPLAY_CAP, reduce_tile, thumbnail};
 use crate::workcopy::WorkCopy;
 
 /// The time from a change to its save. One drag of a control changes the
@@ -122,6 +122,9 @@ pub struct Session {
     pub last_save: SaveStats,
     /// The count of the saves that changed the file.
     saves: u64,
+    /// The tiles that the last undo or redo put back in the file for the
+    /// raster layers with no heightmap in its `maps`.
+    pub last_restored: Vec<(RasterId, TileKey)>,
 }
 
 impl Session {
@@ -177,6 +180,7 @@ impl Session {
             held: false,
             last_save: SaveStats::default(),
             saves: 0,
+            last_restored: Vec::new(),
         })
     }
 
@@ -220,13 +224,17 @@ impl Session {
     }
 
     /// Writes the picture of the globe for the list of projects, if the
-    /// file changed after the last picture. `map` is the heightmap on the
-    /// globe.
-    pub fn save_thumbnail(&mut self, map: &Heightmap, view: &GlobeView) -> Result<(), StoreError> {
+    /// file changed after the last picture. `layers` has the heightmap and
+    /// the opacity of each visible raster layer, from the bottom.
+    pub fn save_thumbnail(
+        &mut self,
+        layers: &[(&Heightmap, f32)],
+        view: &GlobeView,
+    ) -> Result<(), StoreError> {
         if !self.thumbnail_stale {
             return Ok(());
         }
-        let picture = thumbnail::render(map, view, thumbnail::SIZE);
+        let picture = thumbnail::render(layers, view, thumbnail::SIZE);
         self.file.set_thumbnail(&picture)?;
         self.thumbnail_stale = false;
         self.mark_changed();
@@ -243,8 +251,9 @@ impl Session {
             .collect()
     }
 
-    /// The heightmap of one raster layer of the file.
-    pub fn load_map(&self, raster: &Raster) -> Result<Heightmap, StoreError> {
+    /// The heightmap of a raster layer with no tile: the face size, the
+    /// base level, and the bands of the record.
+    pub fn empty_map(raster: &Raster) -> Result<Heightmap, StoreError> {
         if raster.face_size > MAX_FACE_SIZE {
             return Err(StoreError::Corrupt(format!(
                 "the face size of raster {} is {}",
@@ -253,6 +262,66 @@ impl Session {
         }
         let mut map = Heightmap::new(raster.face_size as usize, raster.base);
         map.bands = bands_of(raster);
+        Ok(map)
+    }
+
+    /// One tile of a raster layer of the file. `None`: the file has no such
+    /// tile.
+    pub fn load_tile(
+        &self,
+        raster: RasterId,
+        face: usize,
+        column: usize,
+        row: usize,
+    ) -> Result<Option<Vec<u16>>, StoreError> {
+        let key = TileKey {
+            level: 0,
+            face: face as u8,
+            column: column as u32,
+            row: row as u32,
+        };
+        self.file.load_tile(raster, key)
+    }
+
+    /// The heightmap of the picture of each raster layer of the file: the
+    /// whole heightmap of a layer with a face of `DISPLAY_CAP` or less, or
+    /// else the reduced heightmap.
+    pub fn load_display_maps(&self) -> Result<Vec<(RasterId, Heightmap)>, StoreError> {
+        let rasters = self.file.project().rasters().iter();
+        rasters
+            .map(|raster| Ok((raster.id, self.load_display_map(raster)?)))
+            .collect()
+    }
+
+    /// The heightmap of the picture of one raster layer of the file. A
+    /// reduced heightmap comes from the tiles one by one, so the main memory
+    /// does not hold the whole heightmap.
+    pub fn load_display_map(&self, raster: &Raster) -> Result<Heightmap, StoreError> {
+        let face_size = raster.face_size as usize;
+        if raster.face_size <= DISPLAY_CAP {
+            return self.load_map(raster);
+        }
+        let whole = Session::empty_map(raster)?;
+        let reduced = reduced_face_size(raster.face_size, DISPLAY_CAP) as usize;
+        let mut map = Heightmap::new(reduced, whole.base());
+        map.bands = whole.bands;
+        let factor = raster.face_size.div_ceil(reduced as u32) as usize;
+        let tile = vale_store::TILE_SIZE;
+        self.file.load_tiles(raster, |key, pixels| {
+            let (face, column, row) = (key.face as usize, key.column as usize, key.row as usize);
+            let base = map.base();
+            let block = reduce_tile(Some(&pixels), base, tile, face_size, factor, column, row);
+            if let Some((rect, data)) = block.filter(|_| face < FACES) {
+                map.store_rect(face, rect, &data);
+            }
+        })?;
+        map.clear_changes();
+        Ok(map)
+    }
+
+    /// The heightmap of one raster layer of the file.
+    pub fn load_map(&self, raster: &Raster) -> Result<Heightmap, StoreError> {
+        let mut map = Session::empty_map(raster)?;
         self.file.load_tiles(raster, |key, pixels| {
             map.load_tile(
                 key.face as usize,
@@ -357,6 +426,7 @@ impl Session {
     pub fn undo(&mut self, doc: &mut Document, maps: &mut Maps) -> Result<bool, StoreError> {
         self.flush(&mut doc.project, maps)?;
         self.mark_changed();
+        self.last_restored.clear();
         match self.file.undo()? {
             Some(restored) => self.apply(restored, doc, maps).map(|()| true),
             None => Ok(false),
@@ -367,6 +437,7 @@ impl Session {
     pub fn redo(&mut self, doc: &mut Document, maps: &mut Maps) -> Result<bool, StoreError> {
         self.flush(&mut doc.project, maps)?;
         self.mark_changed();
+        self.last_restored.clear();
         match self.file.redo()? {
             Some(restored) => self.apply(restored, doc, maps).map(|()| true),
             None => Ok(false),
@@ -388,8 +459,10 @@ impl Session {
                 load_record(map, raster);
             }
         }
+        self.last_restored.clear();
         for (id, key) in restored.tiles {
             let Some((_, map)) = maps.iter_mut().find(|(of, _)| *of == id) else {
+                self.last_restored.push((id, key));
                 continue;
             };
             let (face, column, row) = (key.face as usize, key.column as usize, key.row as usize);

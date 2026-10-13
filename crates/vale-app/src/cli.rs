@@ -328,6 +328,8 @@ pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Re
     }
     state.import_note = None;
     state.select_height();
+    // The layer of the import has its whole heightmap.
+    state.pump_layers(true);
     state.globe.start_import(path.clone());
     state.globe.wait_import();
     match state.globe.take_import_result() {

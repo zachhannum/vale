@@ -268,7 +268,11 @@ fn new_open_rename_copy_and_delete_work_in_both_layouts() {
         assert_eq!(h.state().screen, Screen::Editor);
         assert_ne!(open_path(&h), first);
         assert_eq!(h.state().doc.project.world.name, "Cassia copy");
-        assert_eq!(h.state().globe.map.allocated_tiles(), painted);
+        // The brush paints no layer of a world that opens, so the heightmap
+        // of the layer is not the one of the brush.
+        let height = h.state().doc.project.rasters()[0].id;
+        let map = h.state().globe.raster_map(height).unwrap();
+        assert_eq!(map.allocated_tiles(), painted);
         all_worlds(&mut h);
 
         // Delete.

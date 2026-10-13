@@ -551,7 +551,9 @@ fn a_new_raster_layer_and_the_removal_of_one_are_undo_steps() {
     state.undo();
     assert_eq!(state.doc.project.rasters().len(), 1);
     assert!(layer_texels(&state, height) == painted);
-    assert_eq!(state.globe.raster(), Some(height));
+    // No layer is selected, so the brush paints no layer.
+    assert_eq!(state.globe.raster(), None);
+    assert_eq!(state.shown_raster().map(|raster| raster.id), Some(height));
     state.redo();
     assert!(state.doc.project.rasters().is_empty() && !state.can_redo());
     state.undo();
@@ -824,4 +826,251 @@ fn the_list_of_the_worlds_has_a_name_for_each_file() {
     // Two worlds with one name show the names of their files.
     assert_eq!(names, ["Aerth", "b", "broken", "c"]);
     assert_eq!(list[0].path, dir.path().join("a.gpkg"));
+}
+
+/// The face size of a raster layer that has a reduced heightmap.
+const LARGE: usize = 4096;
+
+/// A world with a project file and two large raster layers: a height and a
+/// rain layer. The brush paints the rain layer.
+fn large_world(path: &std::path::Path) -> (AppState, RasterId, RasterId) {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(path, &mut state.doc).unwrap());
+    let height = state
+        .add_raster(RasterSpec::height("Height", LARGE))
+        .unwrap();
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: LARGE,
+    };
+    let rain = state.add_raster(rain).unwrap();
+    (state, height, rain)
+}
+
+/// True if two heightmaps have the same tiles, texel for texel.
+fn same_tiles(a: &Heightmap, b: &Heightmap) -> bool {
+    let per_side = a.face_size().div_ceil(a.tile_size());
+    let same = |index| match (a.tile(index), b.tile(index)) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => true,
+        (Some(tile), None) => tile.iter().all(|level| *level == b.base()),
+        (None, Some(tile)) => tile.iter().all(|level| *level == a.base()),
+    };
+    a.face_size() == b.face_size() && (0..FACES * per_side * per_side).all(same)
+}
+
+/// The whole heightmap of a raster layer of the app from its project file.
+fn stored_map(state: &AppState, id: RasterId) -> Heightmap {
+    let session = state.session.as_ref().unwrap();
+    session
+        .load_map(state.doc.project.raster(id).unwrap())
+        .unwrap()
+}
+
+/// The whole heightmap of a raster layer of the app: from the main memory,
+/// or else from the project file.
+fn whole_map(state: &AppState, id: RasterId) -> Heightmap {
+    match state.globe.raster_map(id) {
+        Some(map) => map.snapshot(),
+        None => stored_map(state, id),
+    }
+}
+
+/// The texels that a reduced heightmap of a whole heightmap has.
+fn reduced_texels(whole: &Heightmap, size: usize) -> Vec<u16> {
+    let factor = whole.face_size() / size;
+    let all = TexelRect {
+        x0: 0,
+        y0: 0,
+        x1: size,
+        y1: size,
+    };
+    let mut out = Vec::new();
+    (0..FACES).for_each(|face| whole.read_reduced(face, all, factor, &mut out));
+    out
+}
+
+#[test]
+fn a_layer_that_is_not_the_brush_layer_holds_only_its_reduced_tiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, height, rain) = large_world(&dir.path().join("project.gpkg"));
+    // The brush layer has its whole heightmap. Its strokes go to the file.
+    paint_layer(&mut state, height, 45.0, 35.3);
+    paint_layer(&mut state, height, -100.0, 5.0);
+    let whole = state.globe.map.snapshot();
+    let whole_bytes = state.globe.map_bytes(height);
+    assert!(whole.allocated_tiles() >= 16, "{}", whole.allocated_tiles());
+    assert!(state.globe.raster_map(height).is_some());
+    assert!(state.globe.raster_map(rain).is_none());
+
+    // The other layer has only its reduced heightmap, with the mean of each
+    // block of texels of the file.
+    paint_layer(&mut state, rain, 10.0, -40.0);
+    assert_eq!(state.globe.raster(), Some(rain));
+    assert!(state.globe.raster_map(height).is_none());
+    let reduced = state.globe.display_map(height).unwrap();
+    assert_eq!(reduced.face_size(), 2048);
+    assert!(texels(reduced) == reduced_texels(&whole, 2048));
+    assert!(same_tiles(&stored_map(&state, height), &whole));
+    // A tile of the reduced heightmap has the texels of 4 tiles of the
+    // whole heightmap.
+    let bytes = state.globe.map_bytes(height);
+    assert_eq!(bytes, reduced.memory_bytes());
+    assert!(
+        bytes > 0 && bytes <= whole_bytes / 2,
+        "{bytes} of {whole_bytes}"
+    );
+    assert!(reduced.allocated_tiles() < whole.allocated_tiles());
+    // The rain layer is the same after it leaves the brush.
+    let rain_whole = state.globe.map.snapshot();
+    state.select(Some(LayerRef::Raster(height)));
+    assert!(state.globe.raster_map(rain).is_none());
+    let reduced = state.globe.display_map(rain).unwrap();
+    assert!(texels(reduced) == reduced_texels(&rain_whole, 2048));
+
+    // A layer with a face of 2,048 texels or less stays whole.
+    let small = state.add_height();
+    assert_eq!(state.globe.map.face_size(), 1024);
+    state.select(Some(LayerRef::Raster(rain)));
+    assert!(state.globe.raster_map(small).is_some());
+
+    // With no project file, each layer keeps its whole heightmap, and its
+    // undo steps.
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    let height = state
+        .add_raster(RasterSpec::height("Height", LARGE))
+        .unwrap();
+    state.globe.map.begin_stroke();
+    paint(&mut state.globe.map, 45.0, 35.3, 0.1);
+    state.globe.map.end_stroke();
+    let rain = RasterSpec::height("Other", LARGE);
+    let rain = state.add_raster(rain).unwrap();
+    state.pump_layers(true);
+    let map = state.globe.raster_map(height).unwrap();
+    assert!(map.allocated_tiles() > 0 && map.can_undo());
+    state.select(Some(LayerRef::Raster(height)));
+    assert_eq!(state.globe.raster(), Some(height));
+    assert!(state.globe.raster_map(rain).is_some() && state.globe.can_undo());
+}
+
+#[test]
+fn the_brush_layer_loads_its_tiles_from_the_working_copy_and_paints_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, a, b) = large_world(&dir.path().join("project.gpkg"));
+    // The same strokes on heightmaps that stay in the main memory.
+    let mut wanted = [a, b].map(|id| whole_map(&state, id));
+    let mut stroke = |state: &mut AppState, at: usize, lon: f64, lat: f64| {
+        paint_layer(state, [a, b][at], lon, lat);
+        paint(&mut wanted[at], lon, lat, 0.1);
+        assert!(same_tiles(&state.globe.map, &wanted[at]), "layer {at}");
+    };
+    stroke(&mut state, 0, 45.0, 35.3);
+    stroke(&mut state, 1, 45.0, 30.0);
+    // The first layer comes back from the file, and the next stroke goes
+    // on from its saved texels.
+    stroke(&mut state, 0, 50.0, 35.3);
+    stroke(&mut state, 1, -100.0, 5.0);
+    stroke(&mut state, 0, 0.0, 90.0);
+    for (id, wanted) in [a, b].into_iter().zip(&wanted) {
+        assert!(same_tiles(&whole_map(&state, id), wanted));
+        assert!(same_tiles(&stored_map(&state, id), wanted));
+    }
+    assert!(state.globe.raster_map(b).is_none());
+
+    // In a window, the tiles come in parts, and the brush waits for them.
+    state.headless = false;
+    state.select(Some(LayerRef::Raster(b)));
+    assert_eq!(state.globe.raster(), Some(a));
+    assert!(state.globe.busy() && !state.globe.paintable);
+    assert!(!state.can_undo());
+    let mut calls = 0;
+    while state.globe.raster() != Some(b) {
+        state.pump_layers(false);
+        calls += 1;
+        assert!(calls < 100_000, "the layer did not load");
+        assert_eq!(state.loading_layer(), state.globe.raster() != Some(b));
+    }
+    assert!(calls >= 2, "{calls}");
+    assert!(state.globe.paintable && !state.loading_layer());
+    assert!(same_tiles(&state.globe.map, &wanted[1]));
+    // The layer that the brush left goes out of the main memory.
+    state.pump_layers(false);
+    assert!(state.globe.raster_map(a).is_none());
+
+    // The same world opens with the reduced heightmap of each layer.
+    drop(state);
+    let mut doc = Document::empty();
+    let session = Session::open(&dir.path().join("project.gpkg"), &mut doc).unwrap();
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.open_rasters(session.load_display_maps().unwrap());
+    state.session = Some(session);
+    for (id, wanted) in [a, b].into_iter().zip(&wanted) {
+        assert!(state.globe.raster_map(id).is_none());
+        let reduced = state.globe.display_map(id).unwrap();
+        assert!(texels(reduced) == reduced_texels(wanted, 2048));
+    }
+    state.select(Some(LayerRef::Raster(a)));
+    assert!(same_tiles(&state.globe.map, &wanted[0]));
+}
+
+#[test]
+fn an_undo_on_a_layer_that_is_not_the_brush_layer_updates_its_picture() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, a, b) = large_world(&dir.path().join("project.gpkg"));
+    paint_layer(&mut state, a, 45.0, 35.3);
+    let first = state.globe.map.snapshot();
+    paint_layer(&mut state, a, -100.0, 5.0);
+    let second = state.globe.map.snapshot();
+    // The brush paints the other layer with no edit.
+    state.select(Some(LayerRef::Raster(b)));
+    assert!(state.globe.raster_map(a).is_none());
+    let picture = |state: &AppState| texels(state.globe.display_map(a).unwrap());
+    assert!(picture(&state) == reduced_texels(&second, 2048));
+
+    // The undo and the redo change the tiles of the file. The reduced
+    // heightmap of the layer follows, with no whole heightmap in memory.
+    state.undo();
+    assert!(state.globe.raster_map(a).is_none());
+    assert!(same_tiles(&stored_map(&state, a), &first));
+    assert!(picture(&state) == reduced_texels(&first, 2048));
+    assert!(picture(&state) != reduced_texels(&second, 2048));
+    state.redo();
+    assert!(picture(&state) == reduced_texels(&second, 2048));
+    state.undo();
+    state.undo();
+    let empty = Heightmap::new(LARGE, first.base());
+    assert!(picture(&state) == reduced_texels(&empty, 2048));
+    assert_eq!(state.globe.raster(), Some(b));
+    // The brush layer gets the texels of the file.
+    state.redo();
+    state.select(Some(LayerRef::Raster(a)));
+    assert!(same_tiles(&state.globe.map, &first));
+}
+
+#[test]
+fn the_export_of_a_layer_that_is_not_the_brush_layer_has_its_full_detail() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, a, b) = large_world(&dir.path().join("project.gpkg"));
+    paint_layer(&mut state, a, 45.0, 35.3);
+    paint_layer(&mut state, a, 0.0, 90.0);
+    // The file of the layer while the brush paints it.
+    let brush = dir.path().join("brush.tif");
+    state.export_raster(a, brush.clone());
+    assert!(!state.export_note.as_ref().unwrap().warning);
+
+    state.select(Some(LayerRef::Raster(b)));
+    assert!(state.globe.raster_map(a).is_none());
+    let other = dir.path().join("other.tif");
+    state.export_raster(a, other.clone());
+    assert!(!state.export_note.as_ref().unwrap().warning);
+    assert!(state.globe.raster_map(a).is_none());
+    let (brush, other) = (std::fs::read(brush).unwrap(), std::fs::read(other).unwrap());
+    assert!(brush.len() > 100_000, "{}", brush.len());
+    assert!(brush == other, "the two files are not the same");
 }

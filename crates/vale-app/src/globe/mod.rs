@@ -282,15 +282,223 @@ impl DisplayCopy {
     }
 }
 
+/// The rivers of a visible height layer that the brush does not paint.
+struct LayerRivers {
+    rivers: Rivers,
+    /// The newest channel map of the layer.
+    channels: Option<Arc<ChannelMap>>,
+    /// The GPU has `channels`.
+    sent: bool,
+}
+
 /// A raster layer of the world.
+///
+/// The brush layer has its whole heightmap in `Globe::map`. Each other
+/// layer has its whole heightmap here, or only its reduced heightmap. The
+/// project file then holds the tiles of the whole heightmap.
 struct Layer {
     id: RasterId,
     height: bool,
-    /// The heightmap of the layer. `None`: the brush paints the layer, and
-    /// `Globe::map` is its heightmap.
-    map: Option<Heightmap>,
+    /// Texels on one edge of a face of the whole heightmap.
+    face_size: usize,
+    /// The whole heightmap. `None`: the brush paints the layer, or the
+    /// project file holds the tiles.
+    full: Option<Heightmap>,
+    /// The heightmap at a face size of `DISPLAY_CAP` or less, for a layer
+    /// with a larger face. The picture, the rivers, and the readout of a
+    /// layer that the brush does not paint come from it. `None`: the whole
+    /// heightmap is not larger, and it does that work.
+    reduced: Option<Heightmap>,
     /// `Some`: the layer is visible.
     copy: Option<DisplayCopy>,
+    /// The copy before `copy`. The globe draws it until `copy` has each
+    /// texel.
+    old_copy: Option<MapKey>,
+    /// `Some`: the layer is a visible height layer that the brush does not
+    /// paint.
+    rivers: Option<LayerRivers>,
+}
+
+/// The number of texels of a heightmap along one side of a texel of its
+/// reduced heightmap.
+fn reduction(face_size: usize, reduced: &Heightmap) -> usize {
+    let factor = face_size.div_ceil(reduced.face_size());
+    factor.max(1).next_power_of_two()
+}
+
+/// The reduced heightmap of a whole heightmap with a face larger than
+/// `DISPLAY_CAP`.
+pub fn reduce_map(full: &Heightmap) -> Heightmap {
+    let size = reduced_face_size(full.face_size() as u32, DISPLAY_CAP) as usize;
+    let mut reduced = Heightmap::new(size, full.base());
+    reduced.set_undo_steps(false);
+    reduced.bands = full.bands.clone();
+    let factor = reduction(full.face_size(), &reduced);
+    let mut data = Vec::new();
+    for (face, rect) in full.allocated_rects() {
+        let rect = rect.reduced(factor);
+        data.clear();
+        full.read_reduced(face, rect, factor, &mut data);
+        reduced.store_rect(face, rect, &data);
+    }
+    reduced.clear_changes();
+    reduced
+}
+
+/// The texels of a reduced heightmap under one tile of the whole heightmap,
+/// with their rectangle. `pixels` has the tile row by row, with `tile` texels
+/// in a row. `None`: each texel of the tile has the level `base`. The whole
+/// heightmap has `face_size` texels along one side of a face, and a reduced
+/// texel is the mean of `factor` by `factor` of them.
+pub fn reduce_tile(
+    pixels: Option<&[u16]>,
+    base: u16,
+    tile: usize,
+    face_size: usize,
+    factor: usize,
+    column: usize,
+    row: usize,
+) -> Option<(TexelRect, Vec<u16>)> {
+    let (x0, y0) = (column * tile, row * tile);
+    if x0 >= face_size || y0 >= face_size {
+        return None;
+    }
+    let (x1, y1) = ((x0 + tile).min(face_size), (y0 + tile).min(face_size));
+    let rect = TexelRect { x0, y0, x1, y1 }.reduced(factor);
+    let mut out = Vec::with_capacity((rect.x1 - rect.x0) * (rect.y1 - rect.y0));
+    for y in rect.y0..rect.y1 {
+        for x in rect.x0..rect.x1 {
+            let Some(pixels) = pixels else {
+                out.push(base);
+                continue;
+            };
+            // The mean of the texels of the face in one block.
+            let (sx0, sx1) = (x * factor, ((x + 1) * factor).min(face_size));
+            let (sy0, sy1) = (y * factor, ((y + 1) * factor).min(face_size));
+            let mut sum = 0u64;
+            for sy in sy0..sy1 {
+                let at = (sy - y0) * tile;
+                let texels = &pixels[at + sx0 - x0..at + sx1 - x0];
+                sum += texels.iter().map(|level| u64::from(*level)).sum::<u64>();
+            }
+            let count = ((sx1 - sx0) * (sy1 - sy0)) as u64;
+            out.push(((sum + count / 2) / count) as u16);
+        }
+    }
+    Some((rect, out))
+}
+
+impl Layer {
+    fn new(id: RasterId, height: bool, face_size: usize) -> Layer {
+        Layer {
+            id,
+            height,
+            face_size,
+            full: None,
+            reduced: None,
+            copy: None,
+            old_copy: None,
+            rivers: None,
+        }
+    }
+
+    /// The heightmap of the picture of the layer. `brush` is the heightmap
+    /// that the brush paints.
+    fn display<'a>(&'a self, brush: &'a Heightmap) -> &'a Heightmap {
+        let own = self.reduced.as_ref().or(self.full.as_ref());
+        own.unwrap_or(brush)
+    }
+
+    /// Takes the changes of the whole heightmap of the layer to its reduced
+    /// heightmap, to its copy on the GPU, and to its rivers. `brush` is the
+    /// heightmap that the brush paints, if that is the whole heightmap of
+    /// this layer.
+    fn changed(&mut self, brush: Option<&Heightmap>, changes: &Changes, budget: usize) {
+        let Some(full) = brush.or(self.full.as_ref()) else {
+            return;
+        };
+        let Some(reduced) = &mut self.reduced else {
+            return Layer::display_changed(&mut self.copy, &mut self.rivers, full, changes, budget);
+        };
+        if reduced.bands != full.bands {
+            reduced.bands = full.bands.clone();
+        }
+        if !changes.reset && changes.rects.is_empty() {
+            return;
+        }
+        let mut display = Changes {
+            reset: changes.reset,
+            rects: Vec::new(),
+        };
+        if changes.reset {
+            *reduced = reduce_map(full);
+        } else {
+            let factor = reduction(full.face_size(), reduced);
+            let mut data = Vec::new();
+            for &(face, rect) in &changes.rects {
+                let rect = rect.reduced(factor);
+                data.clear();
+                full.read_reduced(face, rect, factor, &mut data);
+                reduced.store_rect(face, rect, &data);
+                display.rects.push((face, rect));
+            }
+        }
+        Layer::display_changed(&mut self.copy, &mut self.rivers, reduced, &display, budget);
+    }
+
+    /// Takes the changes of the heightmap of the picture to the copy on the
+    /// GPU and to the rivers.
+    fn display_changed(
+        copy: &mut Option<DisplayCopy>,
+        rivers: &mut Option<LayerRivers>,
+        map: &Heightmap,
+        changes: &Changes,
+        budget: usize,
+    ) {
+        if !changes.reset && changes.rects.is_empty() {
+            return;
+        }
+        if let Some(copy) = copy {
+            copy.add(map, changes, budget);
+        }
+        if let Some(rivers) = rivers {
+            if changes.reset {
+                rivers.rivers.rebuild(map);
+            }
+            for &(face, rect) in changes.rects.iter().filter(|_| !changes.reset) {
+                rivers.rivers.update(map, face, rect);
+            }
+            rivers.rivers.request();
+        }
+    }
+
+    /// Puts one tile of the whole heightmap from the project file into the
+    /// reduced heightmap. `pixels` is `None` if the file has no such tile.
+    fn restore_tile(
+        &mut self,
+        column: usize,
+        row: usize,
+        face: usize,
+        pixels: Option<&[u16]>,
+        budget: usize,
+    ) {
+        let Some(reduced) = &mut self.reduced else {
+            return;
+        };
+        let tile = reduced.tile_size();
+        let factor = reduction(self.face_size, reduced);
+        let base = reduced.base();
+        let block = reduce_tile(pixels, base, tile, self.face_size, factor, column, row);
+        let Some((rect, data)) = block else {
+            return;
+        };
+        reduced.store_rect(face, rect, &data);
+        let changes = Changes {
+            reset: false,
+            rects: vec![(face, rect)],
+        };
+        Layer::display_changed(&mut self.copy, &mut self.rivers, reduced, &changes, budget);
+    }
 }
 
 pub struct Globe {
@@ -325,6 +533,12 @@ pub struct Globe {
     epoch: u64,
     /// The app wants the brush to paint `map`.
     paint_wanted: bool,
+    /// The GPU has the channel map of the layer that the brush paints, for
+    /// the picture.
+    channels_sent: bool,
+    /// The length of the stroke test that starts after the brush has its
+    /// raster layer.
+    test_wanted: Option<f64>,
     /// The face size of the empty heightmap, and of a raster layer that the
     /// app makes with no choice of the user.
     new_face_size: usize,
@@ -421,6 +635,8 @@ impl Globe {
             display_budget: DISPLAY_BUDGET,
             epoch: 0,
             paint_wanted: true,
+            channels_sent: false,
+            test_wanted: None,
             new_face_size: face_size,
             max_face_size: usize::MAX,
             view: GlobeView::centered(15.0, 25.0),
@@ -521,8 +737,8 @@ impl Globe {
         self.layers.iter_mut().find(|layer| layer.id == id)
     }
 
-    /// Adds the heightmap of a raster layer. The globe draws the layer when
-    /// it is in the list of `set_stack`, and the brush paints it after
+    /// Adds the whole heightmap of a raster layer. The globe draws the layer
+    /// when it is in the list of `set_stack`, and the brush paints it after
     /// `activate`. `height`: the unit of the layer is the meter. Returns
     /// `false` if the device cannot show the heightmap. The globe then does
     /// not hold it.
@@ -532,12 +748,35 @@ impl Globe {
         }
         self.remove_raster(id);
         map.set_undo_steps(self.memory_undo);
-        self.layers.push(Layer {
-            id,
-            height,
-            map: Some(map),
-            copy: None,
-        });
+        let mut layer = Layer::new(id, height, map.face_size());
+        if map.face_size() > DISPLAY_CAP as usize {
+            layer.reduced = Some(reduce_map(&map));
+        }
+        layer.full = Some(map);
+        self.layers.push(layer);
+        true
+    }
+
+    /// Adds a raster layer with its reduced heightmap. The project file
+    /// holds the tiles of the whole heightmap, which has `face_size` texels
+    /// along one side of a face. `give_full` gives the whole heightmap when
+    /// the brush needs it. Returns `false` if the device cannot show the
+    /// whole heightmap.
+    pub fn add_reduced(
+        &mut self,
+        id: RasterId,
+        mut reduced: Heightmap,
+        face_size: usize,
+        height: bool,
+    ) -> bool {
+        if face_size > self.max_face_size {
+            return false;
+        }
+        self.remove_raster(id);
+        reduced.set_undo_steps(false);
+        let mut layer = Layer::new(id, height, face_size);
+        layer.reduced = Some(reduced);
+        self.layers.push(layer);
         true
     }
 
@@ -549,8 +788,8 @@ impl Globe {
             self.pending = None;
         }
         if self.raster == Some(id) {
-            let next = self.pending.take().flatten();
-            self.switch(next);
+            self.pending = None;
+            self.switch(None);
         }
         self.layers.retain(|layer| layer.id != id);
         if let Some(stack) = &mut self.stack {
@@ -561,14 +800,15 @@ impl Globe {
 
     /// Makes a raster layer the one that the brush paints. `None`: the
     /// brush paints no raster layer. A stroke or an import that runs ends
-    /// first, and the layer changes after it. Returns `false` if the globe
-    /// does not hold the heightmap of the layer.
+    /// first, and the layer changes after it. If the globe has only the
+    /// reduced heightmap of the layer, the layer changes after `give_full`.
+    /// Returns `false` if the globe does not hold the layer.
     pub fn activate(&mut self, id: Option<RasterId>) -> bool {
         if id == self.raster {
             self.pending = None;
-        } else if id.is_some_and(|id| self.raster_map(id).is_none()) {
+        } else if id.is_some_and(|id| !self.holds(id)) {
             return false;
-        } else if self.switch_blocked() {
+        } else if self.switch_blocked() || self.needs_full(id) {
             self.pending = Some(id);
         } else {
             self.switch(id);
@@ -590,12 +830,74 @@ impl Globe {
         self.stroke.is_some() || !self.inputs.is_empty() || self.test.is_some() || import
     }
 
+    /// True if the globe does not have the whole heightmap of the layer.
+    fn needs_full(&self, id: Option<RasterId>) -> bool {
+        let layer = id.and_then(|id| self.layer(id));
+        layer.is_some_and(|layer| layer.full.is_none())
+    }
+
+    /// The raster layer that waits for its whole heightmap from the project
+    /// file, with its face size, before the brush can paint it. `None`
+    /// while a stroke or an import runs.
+    pub fn load_request(&self) -> Option<(RasterId, usize)> {
+        let id = self.pending.flatten().filter(|_| !self.switch_blocked())?;
+        let layer = self.layer(id).filter(|layer| layer.full.is_none())?;
+        Some((id, layer.face_size))
+    }
+
+    /// Gives the whole heightmap of a raster layer from the project file.
+    pub fn give_full(&mut self, id: RasterId, mut map: Heightmap) {
+        let memory_undo = self.memory_undo;
+        if let Some(layer) = self
+            .layer_mut(id)
+            .filter(|l| l.face_size == map.face_size())
+        {
+            map.set_undo_steps(memory_undo);
+            layer.full = Some(map);
+        }
+        self.switch_if_idle();
+    }
+
+    /// Keeps the raster layer that the brush paints, and not the one that
+    /// waits.
+    pub fn cancel_activation(&mut self) {
+        self.pending = None;
+        self.set_paintable(self.paint_wanted);
+    }
+
+    /// True if a raster layer other than the brush layer has its whole
+    /// heightmap and its reduced heightmap in memory.
+    pub fn has_spare(&self) -> bool {
+        let spare = |layer: &Layer| layer.full.is_some() && layer.reduced.is_some();
+        self.layers.iter().any(spare)
+    }
+
+    /// Takes the whole heightmap from the main memory for each raster layer
+    /// that has a reduced heightmap, that the brush does not paint, and
+    /// that has no change that the project file does not hold. Call this
+    /// only with a project file.
+    pub fn release_saved(&mut self) {
+        self.sync_maps();
+        let waits = self.pending.flatten();
+        for layer in &mut self.layers {
+            let saved = layer.full.as_ref().is_some_and(|map| !map.has_changes());
+            if saved && layer.reduced.is_some() && Some(layer.id) != waits {
+                layer.full = None;
+            }
+        }
+    }
+
     /// Makes the raster layer that waits the one that the brush paints,
     /// after the end of the stroke and of the import.
     fn switch_if_idle(&mut self) {
-        if let Some(id) = self.pending.filter(|_| !self.switch_blocked()) {
+        let free = |id: &Option<RasterId>| !self.switch_blocked() && !self.needs_full(*id);
+        if let Some(id) = self.pending.filter(free) {
             self.switch(id);
             self.set_paintable(self.paint_wanted);
+        }
+        if let Some(seconds) = self.test_wanted.filter(|_| self.pending.is_none()) {
+            self.test_wanted = None;
+            self.start_stroke_test(seconds);
         }
     }
 
@@ -606,7 +908,7 @@ impl Globe {
         let next = match id {
             Some(id) => {
                 let layer = self.layer_mut(id);
-                let Some((map, height)) = layer.and_then(|l| Some((l.map.take()?, l.height)))
+                let Some((map, height)) = layer.and_then(|l| Some((l.full.take()?, l.height)))
                 else {
                     return;
                 };
@@ -616,10 +918,13 @@ impl Globe {
         };
         // The stroke has the undo entry of the old heightmap.
         self.map.cancel_stroke();
+        self.sync_maps();
         let old = std::mem::replace(&mut self.map, next.0);
+        let channels = self.channels.take();
         if let Some(layer) = self.raster.and_then(|id| self.layer_mut(id)) {
-            layer.map = Some(old);
+            layer.full = Some(old);
         }
+        let last = self.raster;
         (self.raster, self.height) = (id, next.1);
         if self.import_target != id {
             self.import = None;
@@ -627,36 +932,151 @@ impl Globe {
         self.reset_state();
         self.begin_full();
         self.request_rivers();
+        // The layer that the brush painted keeps its rivers.
+        self.sync_rivers();
+        let rivers = last.and_then(|id| self.layer_mut(id));
+        if let Some(rivers) = rivers.and_then(|layer| layer.rivers.as_mut()) {
+            rivers.channels = channels;
+            rivers.sent = false;
+        }
     }
 
-    /// The ID of each raster layer that has its heightmap here.
+    /// The ID of each raster layer that the globe holds.
     pub fn rasters(&self) -> Vec<RasterId> {
         self.layers.iter().map(|layer| layer.id).collect()
     }
 
-    /// The heightmap of a raster layer.
+    /// True if the globe holds the raster layer.
+    pub fn holds(&self, id: RasterId) -> bool {
+        self.layer(id).is_some()
+    }
+
+    /// The whole heightmap of a raster layer. `None`: the globe does not
+    /// hold the layer, or the project file holds its tiles.
     pub fn raster_map(&self, id: RasterId) -> Option<&Heightmap> {
         if self.raster == Some(id) {
             return Some(&self.map);
         }
-        self.layer(id).and_then(|layer| layer.map.as_ref())
+        self.layer(id).and_then(|layer| layer.full.as_ref())
     }
 
-    /// The heightmap of a raster layer. A change goes to the GPU in the
-    /// next frame.
+    /// The whole heightmap of a raster layer. A change goes to the GPU in
+    /// the next frame.
     pub fn raster_map_mut(&mut self, id: RasterId) -> Option<&mut Heightmap> {
         if self.raster == Some(id) {
             return Some(&mut self.map);
         }
-        self.layer_mut(id).and_then(|layer| layer.map.as_mut())
+        self.layer_mut(id).and_then(|layer| layer.full.as_mut())
     }
 
-    /// The heightmap of each raster layer, for a save.
+    /// The heightmap of the picture of a raster layer: the whole heightmap
+    /// of a layer with a face of `DISPLAY_CAP` or less, or else the reduced
+    /// heightmap.
+    pub fn display_map(&self, id: RasterId) -> Option<&Heightmap> {
+        Some(self.layer(id)?.display(&self.map))
+    }
+
+    /// The reduced heightmap of each raster layer that has no whole
+    /// heightmap in the main memory.
+    pub fn reduced_maps(&self) -> impl Iterator<Item = (RasterId, &Heightmap)> {
+        let alone = |layer: &Layer| layer.full.is_none() && Some(layer.id) != self.raster;
+        let layers = self.layers.iter().filter(move |layer| alone(layer));
+        layers.filter_map(|layer| Some((layer.id, layer.reduced.as_ref()?)))
+    }
+
+    /// The bands of a raster layer.
+    pub fn bands_mut(&mut self, id: RasterId) -> Option<&mut Bands> {
+        if self.raster == Some(id) {
+            return Some(&mut self.map.bands);
+        }
+        let layer = self.layer_mut(id)?;
+        let map = layer.full.as_mut().or(layer.reduced.as_mut())?;
+        Some(&mut map.bands)
+    }
+
+    /// Replaces the reduced heightmap of a raster layer that has no whole
+    /// heightmap in the main memory.
+    pub fn set_reduced(&mut self, id: RasterId, mut reduced: Heightmap) {
+        let budget = self.uploads.budget;
+        let Some(layer) = self.layer_mut(id).filter(|layer| layer.reduced.is_some()) else {
+            return;
+        };
+        reduced.set_undo_steps(false);
+        let changes = Changes {
+            reset: true,
+            rects: Vec::new(),
+        };
+        Layer::display_changed(
+            &mut layer.copy,
+            &mut layer.rivers,
+            &reduced,
+            &changes,
+            budget,
+        );
+        layer.reduced = Some(reduced);
+    }
+
+    /// Puts one tile of the whole heightmap of a raster layer into its
+    /// reduced heightmap, after the project file got the tile back. `pixels`
+    /// is `None` if the file has no such tile.
+    pub fn restore_tile(
+        &mut self,
+        id: RasterId,
+        face: usize,
+        column: usize,
+        row: usize,
+        pixels: Option<&[u16]>,
+    ) {
+        let budget = self.uploads.budget;
+        if let Some(layer) = self.layer_mut(id).filter(|_| face < FACES) {
+            layer.restore_tile(column, row, face, pixels, budget);
+        }
+    }
+
+    /// The heightmap of each raster layer that has its whole heightmap in
+    /// the main memory, for a save.
     pub fn raster_maps(&mut self) -> Vec<(RasterId, &mut Heightmap)> {
         let shown = self.raster.map(|id| (id, &mut self.map));
         let layers = self.layers.iter_mut();
-        let others = layers.filter_map(|layer| Some((layer.id, layer.map.as_mut()?)));
+        let others = layers.filter_map(|layer| Some((layer.id, layer.full.as_mut()?)));
         shown.into_iter().chain(others).collect()
+    }
+
+    /// The heightmap of the picture and the opacity of each visible raster
+    /// layer, from the bottom.
+    pub fn picture(&self) -> Vec<(&Heightmap, f32)> {
+        let Some(stack) = &self.stack else {
+            return vec![(&self.map, 1.0)];
+        };
+        let layer = |item: &StackItem| match *item {
+            StackItem::Raster { id, opacity } => Some((self.display_map(id)?, opacity)),
+            StackItem::Vector(_) => None,
+        };
+        stack.iter().filter_map(layer).collect()
+    }
+
+    /// Gives its own rivers to each visible height layer that the brush
+    /// does not paint, and takes them from each other layer.
+    fn sync_rivers(&mut self) {
+        let sync = self.rivers.sync();
+        for at in 0..self.layers.len() {
+            let layer = &self.layers[at];
+            let wanted = layer.height && self.visible(layer.id) && Some(layer.id) != self.raster;
+            let wanted = wanted && self.format.is_some();
+            if wanted == layer.rivers.is_some() {
+                continue;
+            }
+            let rivers = wanted.then(|| {
+                let mut rivers = Rivers::new(layer.display(&self.map), sync);
+                rivers.request();
+                LayerRivers {
+                    rivers,
+                    channels: None,
+                    sent: false,
+                }
+            });
+            self.layers[at].rivers = rivers;
+        }
     }
 
     /// Sets the visible layers of the world in draw order, from the bottom.
@@ -687,6 +1107,7 @@ impl Globe {
             self.display_cap = self.first_cap();
         }
         self.sync_copies();
+        self.sync_rivers();
     }
 
     /// The visible layers of `set_stack`.
@@ -707,51 +1128,66 @@ impl Globe {
     fn first_cap(&self) -> u32 {
         let sizes = self.layers.iter().filter(|layer| self.visible(layer.id));
         let sizes: Vec<(u32, usize)> = sizes
-            .filter_map(|layer| self.raster_map(layer.id))
+            .map(|layer| layer.display(&self.map))
             .map(|map| (map.face_size() as u32, map.allocated_tiles()))
             .collect();
         reduced_cap(&sizes, self.display_budget)
     }
 
     /// Gives each visible raster layer a reduced copy with the face size of
-    /// the cap, and takes the copy from each other raster layer.
+    /// the cap, and takes the copy from each other raster layer. One call
+    /// starts one new copy in the place of a copy of another size, and the
+    /// globe draws the old copy until the new one has each texel.
     fn sync_copies(&mut self) {
         let cap = self.display_cap;
         let budget = self.uploads.budget;
         let mut changed = false;
+        let mut replacing = self.layers.iter().any(|layer| layer.old_copy.is_some());
         for at in 0..self.layers.len() {
             let id = self.layers[at].id;
-            let size = self
-                .raster_map(id)
-                .filter(|_| self.visible(id))
-                .map(|map| reduced_face_size(map.face_size() as u32, cap));
-            let old = self.layers[at].copy.as_ref().map(|copy| copy.key.face_size);
+            let map = self.layers[at].display(&self.map);
+            // With no renderer, no layer has a copy.
+            let size = (self.format.is_some() && self.visible(id))
+                .then(|| reduced_face_size(map.face_size() as u32, cap));
+            let layer = &self.layers[at];
+            let old = layer.copy.as_ref().map(|copy| copy.key.face_size);
             if old == size {
                 continue;
             }
+            // A loaded copy of another size stays until its new copy is
+            // ready. One copy at a time has two sizes.
+            let keep = layer
+                .copy
+                .as_ref()
+                .filter(|copy| copy.loaded && size.is_some());
+            if keep.is_some() && replacing {
+                continue;
+            }
+            let keep = keep.map(|copy| copy.key);
+            replacing |= keep.is_some();
             changed = true;
             self.generations += 1;
-            let copy = size.map(|face_size| DisplayCopy {
-                key: MapKey {
-                    layer: LayerKey::Raster(id),
-                    generation: self.generations,
-                    display: true,
-                    face_size,
-                },
-                uploads: Uploads::default(),
-                loaded: false,
-            });
-            let fresh = Changes {
-                reset: true,
-                rects: Vec::new(),
-            };
-            let copy = copy.map(|mut copy| {
-                if let Some(map) = self.raster_map(id) {
-                    copy.add(map, &fresh, budget);
-                }
+            let copy = size.map(|face_size| {
+                let mut copy = DisplayCopy {
+                    key: MapKey {
+                        layer: LayerKey::Raster(id),
+                        generation: self.generations,
+                        display: true,
+                        face_size,
+                    },
+                    uploads: Uploads::default(),
+                    loaded: false,
+                };
+                let fresh = Changes {
+                    reset: true,
+                    rects: Vec::new(),
+                };
+                copy.add(map, &fresh, budget);
                 copy
             });
-            self.layers[at].copy = copy;
+            let layer = &mut self.layers[at];
+            layer.copy = copy;
+            layer.old_copy = keep.filter(|_| layer.copy.is_some());
         }
         if changed {
             self.epoch += 1;
@@ -769,7 +1205,39 @@ impl Globe {
     /// reduced copy.
     pub fn loading(&self) -> bool {
         let copies = self.layers.iter().filter_map(|layer| layer.copy.as_ref());
-        self.format.is_some() && copies.into_iter().any(|copy| !copy.loaded)
+        let waits = copies.into_iter().any(|copy| !copy.loaded);
+        let wrong = |layer: &Layer| {
+            let size = reduced_face_size(
+                layer.display(&self.map).face_size() as u32,
+                self.display_cap,
+            );
+            layer
+                .copy
+                .as_ref()
+                .is_some_and(|copy| copy.key.face_size != size)
+        };
+        self.format.is_some() && (waits || self.layers.iter().any(wrong))
+    }
+
+    /// The memory of the channel maps of the rivers of the layers on the GPU
+    /// after the last frame, in bytes. The budget of the reduced copies
+    /// does not count it.
+    pub fn river_bytes(&self) -> u64 {
+        self.link.copy_bytes().2
+    }
+
+    /// The memory of the heightmaps of the raster layers in the main
+    /// memory, in bytes: the whole heightmaps and the reduced heightmaps.
+    pub fn map_bytes(&self, id: RasterId) -> usize {
+        let Some(layer) = self.layer(id) else {
+            return 0;
+        };
+        let brush = (self.raster == Some(id)).then_some(&self.map);
+        let maps = [brush, layer.full.as_ref(), layer.reduced.as_ref()];
+        maps.into_iter()
+            .flatten()
+            .map(Heightmap::memory_bytes)
+            .sum()
     }
 
     /// True while texels wait for the full heightmap on the GPU. With no
@@ -793,12 +1261,12 @@ impl Globe {
     /// Makes each reduced copy smaller if the copies hold more memory than
     /// the budget.
     fn check_budget(&mut self) {
-        let (epoch, bytes) = self.link.copy_bytes();
+        let (epoch, bytes, _) = self.link.copy_bytes();
         let over = epoch == self.epoch && bytes > self.display_budget && !self.loading();
         if over && self.display_cap > DISPLAY_CAP_MIN {
             self.display_cap /= 2;
-            self.sync_copies();
         }
+        self.sync_copies();
     }
 
     /// The key of the full heightmap on the GPU for the changes in the
@@ -832,6 +1300,7 @@ impl Globe {
         self.rivers = Rivers::new(&self.map, self.rivers.sync());
         self.eroder.cancel();
         self.channels = None;
+        self.channels_sent = false;
         self.chosen = None;
         self.window = None;
         self.stats.face_size = self.map.face_size() as u32;
@@ -876,18 +1345,25 @@ impl Globe {
         self.stats.adapter = format!("{} ({:?})", info.name, info.backend);
         let limit = render_state.device.limits().max_texture_dimension_2d as usize;
         self.max_face_size = limit;
-        let fits = |map: &Heightmap| map.face_size() <= limit;
-        if !fits(&self.map) {
+        if self.map.face_size() > limit {
             let id = self.raster.take();
             self.layers.retain(|layer| Some(layer.id) != id);
             self.height = true;
             self.pending = None;
             self.set_face_size(self.new_face_size.min(limit));
         }
-        self.layers
-            .retain(|layer| layer.map.as_ref().is_none_or(fits));
-        self.sync_copies();
+        self.layers.retain(|layer| layer.face_size <= limit);
         self.new_face_size = self.new_face_size.min(limit);
+        // The renderer has no texel and no river of a layer.
+        self.sync_maps();
+        for layer in &mut self.layers {
+            (layer.copy, layer.old_copy, layer.rivers) = (None, None, None);
+        }
+        self.sync_copies();
+        self.sync_rivers();
+        self.reset_state();
+        self.begin_full();
+        self.request_rivers();
     }
 
     /// The format of the blurred canvas behind a card. `None`: a card has a
@@ -948,6 +1424,7 @@ impl Globe {
     /// another raster layer.
     pub fn busy(&self) -> bool {
         self.pending.is_some()
+            || self.test_wanted.is_some()
             || self.stroke.is_some()
             || !self.inputs.is_empty()
             || self.test.is_some()
@@ -966,7 +1443,7 @@ impl Globe {
         if self.memory_undo != on {
             self.memory_undo = on;
             self.map.set_undo_steps(on);
-            for map in self.layers.iter_mut().filter_map(|l| l.map.as_mut()) {
+            for map in self.layers.iter_mut().filter_map(|l| l.full.as_mut()) {
                 map.set_undo_steps(on);
             }
         }
@@ -992,7 +1469,8 @@ impl Globe {
 
     /// True until the rivers of the last change of the heightmap arrive.
     pub fn rivers_pending(&self) -> bool {
-        self.rivers.pending()
+        let layers = self.layers.iter().filter_map(|layer| layer.rivers.as_ref());
+        self.rivers.pending() || layers.into_iter().any(|rivers| rivers.rivers.pending())
     }
 
     /// With `sync`, a change of the heightmap waits for its rivers, and an
@@ -1000,6 +1478,10 @@ impl Globe {
     /// them.
     pub fn set_rivers_sync(&mut self, sync: bool) {
         self.rivers.set_sync(sync);
+        let layers = self.layers.iter_mut();
+        for rivers in layers.filter_map(|layer| layer.rivers.as_mut()) {
+            rivers.rivers.set_sync(sync);
+        }
         self.eroder.set_sync(sync);
     }
 
@@ -1083,6 +1565,40 @@ impl Globe {
         }
     }
 
+    /// Takes the changes of the whole heightmap of each raster layer to its
+    /// reduced heightmap. With a renderer, the changes also go to the queues
+    /// of the GPU and to the rivers. `attach` gives a new renderer each
+    /// texel.
+    pub fn sync_maps(&mut self) {
+        let gpu = self.format.is_some();
+        let budget = self.uploads.budget;
+        let changes = gpu::take_changes(&mut self.map);
+        if gpu {
+            if changes.reset {
+                self.uploads.restart();
+                self.rivers.rebuild(&self.map);
+            }
+            for &(face, rect) in &changes.rects {
+                self.uploads.add(face, rect, 1, budget, false);
+                if !changes.reset {
+                    self.rivers.update(&self.map, face, rect);
+                }
+            }
+            if changes.reset || !changes.rects.is_empty() {
+                self.request_rivers();
+            }
+        }
+        let active = self.raster;
+        for layer in &mut self.layers {
+            if Some(layer.id) == active {
+                layer.changed(Some(&self.map), &changes, budget);
+            } else if let Some(map) = &mut layer.full {
+                let changes = gpu::take_changes(map);
+                layer.changed(None, &changes, budget);
+            }
+        }
+    }
+
     /// Moves the changes of each CPU heightmap to the GPU: to the full
     /// heightmap that the brush paints, and to the reduced copy of each
     /// visible layer. One call sends the texels of one budget. Asks for the
@@ -1091,30 +1607,14 @@ impl Globe {
     fn queue_changes(&mut self) {
         let tag = self.tag();
         let budget = self.uploads.budget;
-        let changes = gpu::take_changes(&mut self.map);
-        if changes.reset {
-            self.uploads.restart();
-            self.rivers.rebuild(&self.map);
-        }
-        for &(face, rect) in &changes.rects {
-            self.uploads.add(face, rect, 1, budget, false);
-            if !changes.reset {
-                self.rivers.update(&self.map, face, rect);
-            }
-        }
-        if changes.reset || !changes.rects.is_empty() {
-            self.request_rivers();
-        }
-        let active = self.raster;
+        self.sync_maps();
         for layer in &mut self.layers {
-            let changes = match &mut layer.map {
-                Some(map) => &gpu::take_changes(map),
-                None if Some(layer.id) == active => &changes,
-                None => continue,
-            };
-            let map = layer.map.as_ref().unwrap_or(&self.map);
-            if let Some(copy) = &mut layer.copy {
-                copy.add(map, changes, budget);
+            // The rivers of the layer that arrived.
+            if let Some(rivers) = &mut layer.rivers
+                && let Some(channels) = rivers.rivers.poll()
+            {
+                rivers.channels = Some(channels);
+                rivers.sent = false;
             }
         }
 
@@ -1135,7 +1635,8 @@ impl Globe {
             None => self.uploads.clear(),
         }
         for layer in &mut self.layers {
-            let map = layer.map.as_ref().unwrap_or(&self.map);
+            let own = layer.reduced.as_ref().or(layer.full.as_ref());
+            let map = own.unwrap_or(&self.map);
             let Some(copy) = &mut layer.copy else {
                 continue;
             };
@@ -1143,6 +1644,9 @@ impl Globe {
             room = room.saturating_sub(sent);
             first &= sent == 0;
             copy.loaded |= copy.uploads.is_empty();
+            if copy.loaded {
+                layer.old_copy = None;
+            }
         }
 
         let window = self.view_window();
@@ -1163,6 +1667,7 @@ impl Globe {
         if let Some(channels) = self.rivers.poll() {
             self.link.push(tag, Op::Channels(channels.clone()));
             self.channels = Some(channels);
+            self.channels_sent = false;
         }
         if let Some(window) = self.rivers.poll_window() {
             self.link.push(tag, Op::Window(Some(window.clone())));
@@ -1186,10 +1691,9 @@ impl Globe {
         // The import is for the raster layer that the brush paints after
         // the stroke that runs.
         let target = self.pending.unwrap_or(self.raster);
-        let map = target
-            .and_then(|id| self.raster_map(id))
-            .unwrap_or(&self.map);
-        self.import = Some(Job::start(path, map.face_size()));
+        let layer = target.and_then(|id| self.layer(id));
+        let face_size = layer.map_or(self.map.face_size(), |layer| layer.face_size);
+        self.import = Some(Job::start(path, face_size));
         self.import_target = target;
     }
 
@@ -1264,14 +1768,27 @@ impl Globe {
     /// Starts the export of a heightmap to a GeoTIFF file on a worker
     /// thread. The file gets the heightmap of this moment, and painting
     /// continues. `raster` is the record of the raster layer in the project.
-    /// With no record, or with no heightmap of the layer, the file gets the
-    /// heightmap on the globe. One export runs at a time. Returns `false` with an error result if
+    /// With no record, the file gets the heightmap that the brush paints.
+    /// One export runs at a time. Returns `false` with an error result if
     /// the globe is busy or an export runs.
     pub fn start_export(
         &mut self,
         path: PathBuf,
         world: &vale_store::World,
         raster: Option<&vale_store::Raster>,
+    ) -> bool {
+        self.start_export_of(path, world, raster, None)
+    }
+
+    /// The same as `start_export`. `loaded` is the whole heightmap of the
+    /// layer from the project file, for a layer that has only its reduced
+    /// heightmap here.
+    pub fn start_export_of(
+        &mut self,
+        path: PathBuf,
+        world: &vale_store::World,
+        raster: Option<&vale_store::Raster>,
+        loaded: Option<Heightmap>,
     ) -> bool {
         let name = import::file_name(&path);
         let refusal = match &self.export {
@@ -1286,7 +1803,11 @@ impl Globe {
         }
         self.export_result = None;
         let map = raster.and_then(|raster| self.raster_map(raster.id));
-        let map = map.unwrap_or(&self.map).snapshot();
+        let map = match (map, loaded) {
+            (Some(map), _) => map.snapshot(),
+            (None, Some(loaded)) => loaded,
+            (None, None) => self.map.snapshot(),
+        };
         let job = export::Job::start(map, world.clone(), raster.cloned(), path);
         self.export = Some(job);
         true
@@ -1311,6 +1832,11 @@ impl Globe {
         self.export_result.take()
     }
 
+    /// Gives the export that did not start its error text.
+    pub fn fail_export(&mut self, text: String) {
+        self.export_result = Some(Err(text));
+    }
+
     /// Moves the result of the worker to `export_result`.
     fn pump_export(&mut self, block: bool) {
         let result = self.export.as_mut().and_then(|job| job.result(block));
@@ -1322,6 +1848,11 @@ impl Globe {
 
     /// Starts the stroke test. A slow stroke is `seconds` long.
     pub fn start_stroke_test(&mut self, seconds: f64) {
+        // The test paints the raster layer that waits for the brush.
+        if self.pending.is_some() {
+            self.test_wanted = Some(seconds);
+            return;
+        }
         // The first stroke waits for the texels that go to the GPU.
         let free = !self.switch_blocked() && self.import.is_none();
         if self.format.is_some() && free {
@@ -1334,6 +1865,7 @@ impl Globe {
     /// `true` if the brush needs one more frame.
     pub fn advance(&mut self, now: Instant) -> bool {
         if self.format.is_none() {
+            self.sync_maps();
             self.inputs.clear();
             self.pump_import(false);
             self.pump_export(false);
@@ -1381,11 +1913,16 @@ impl Globe {
                     };
                     self.map.store_rect(face as usize, rect, &data);
                     self.rivers.update(&self.map, face as usize, rect);
-                    // The reduced copy of the layer gets the stroke.
+                    // The reduced heightmap and the reduced copy of the
+                    // layer get the stroke.
                     let budget = self.uploads.budget;
+                    let stored = Changes {
+                        reset: false,
+                        rects: vec![(face as usize, rect)],
+                    };
                     let layer = self.layers.iter_mut().find(|l| Some(l.id) == self.raster);
-                    if let Some(copy) = layer.and_then(|layer| layer.copy.as_mut()) {
-                        copy.add_rect(&self.map, face as usize, rect, budget);
+                    if let Some(layer) = layer {
+                        layer.changed(Some(&self.map), &stored, budget);
                     }
                     let left = active.reading.get_or_insert(1);
                     *left -= 1;
@@ -1732,14 +2269,13 @@ impl Globe {
         }
     }
 
-    /// The uniforms of one pass. `source` is the heightmap that a layer
-    /// pass reads, with its bands, its opacity, and the switch of its
-    /// rivers. `small`: the pass draws into the small target of the blurred
+    /// The uniforms of one pass. `layer` is the raster layer of a layer
+    /// pass. `small`: the pass draws into the small target of the blurred
     /// copy.
     fn uniforms(
         &self,
-        pixels_per_point: f32,
-        source: Option<(MapKey, &Bands, f32, bool)>,
+        canvas: Canvas,
+        layer: Option<&LayerDraw>,
         graticule: bool,
         small: bool,
     ) -> Uniforms {
@@ -1753,17 +2289,18 @@ impl Globe {
                 (self.flat.zoom, [center.x as f32, center.y as f32])
             }
         };
+        let pixels_per_point = canvas.pixels_per_point;
         let scale = match small {
             true => pixels_per_point / backdrop::REDUCTION as f32,
             false => pixels_per_point,
         };
-        let rivers = source.is_some_and(|source| source.3);
-        let sea = f32::from(self.map.bands.level(SEA_LEVEL)) / 65535.0;
-        let channel_size = match rivers {
-            true => ChannelMap::size_for(self.map.face_size()) as f32,
-            false => 0.0,
-        };
-        let window = self.window.as_deref().filter(|_| rivers);
+        // The blurred copy has no rivers.
+        let rivers = layer.and_then(|layer| layer.rivers).filter(|_| !small);
+        let sea = layer.map_or(0.0, |layer| {
+            f32::from(layer.bands.level(SEA_LEVEL)) / 65535.0
+        });
+        let window = self.window.as_deref();
+        let window = window.filter(|_| rivers.is_some() && layer.is_some_and(|l| l.window));
         let (window, cell) = match window.map(ChannelWindow::window) {
             Some(w) => ([1.0, w.face as f32, w.x0 as f32, w.y0 as f32], w.cell),
             None => ([0.0; 4], 1),
@@ -1778,12 +2315,14 @@ impl Globe {
         } else {
             1.0
         };
-        let (bands, band_count) = match source {
-            Some((_, bands, _, _)) => band_uniforms(bands),
+        let (bands, band_count) = match layer {
+            Some(layer) => band_uniforms(layer.bands),
             None => ([[[0.0; 4]; 3]; vale_terrain::MAX_BANDS], 0),
         };
-        let ground = crate::ui::pad::theme::GROUND;
-        let [r, g, b] = [ground.r(), ground.g(), ground.b()].map(|c| f32::from(c) / 255.0);
+        let color = |c: eframe::egui::Color32| {
+            let [r, g, b] = [c.r(), c.g(), c.b()].map(|c| f32::from(c) / 255.0);
+            [r, g, b, 1.0]
+        };
         Uniforms {
             rot: self.view.rot.0.map(row),
             globe: [
@@ -1793,17 +2332,23 @@ impl Globe {
                 pixels_per_point,
             ],
             params: [
-                source.map_or(1.0, |source| source.0.face_size as f32),
+                layer.map_or(1.0, |layer| layer.key.face_size as f32),
                 graticule_degrees.to_radians() as f32,
                 self.preview.mode(),
                 band_count as f32,
             ],
-            flat: [sea, channel_size, flat_center[0], flat_center[1]],
+            flat: [
+                sea,
+                rivers.map_or(0.0, |size| size as f32),
+                flat_center[0],
+                flat_center[1],
+            ],
             screen: [0.0; 4],
             window,
             rivers: [cell as f32, window_size, self.preview.river_width, 0.0],
-            layer: [source.map_or(1.0, |source| source.2), 0.0, 0.0, 0.0],
-            ground: [r, g, b, 1.0],
+            layer: [layer.map_or(1.0, |layer| layer.opacity), 0.0, 0.0, 0.0],
+            ground: color(crate::ui::pad::theme::GROUND),
+            back: color(canvas.background),
             bands,
         }
     }
@@ -1815,8 +2360,48 @@ impl Globe {
         if self.draws_full(id) {
             return self.full;
         }
-        let copy = self.layer(id)?.copy.as_ref()?;
-        copy.loaded.then_some(copy.key)
+        let layer = self.layer(id)?;
+        let copy = layer.copy.as_ref()?;
+        copy.loaded.then_some(copy.key).or(layer.old_copy)
+    }
+
+    /// Sends the channel map of each layer that the GPU does not have, and
+    /// returns the layers that have rivers in the picture, each with the
+    /// size of its channel map. The rivers of the layer that the brush
+    /// paints are those of the brush.
+    fn send_rivers(&mut self) -> Vec<(LayerKey, usize)> {
+        let key = |layer| MapKey { layer, ..NO_MAP };
+        let mut out = Vec::new();
+        let brush = match (self.raster, &self.stack) {
+            (Some(id), _) if self.visible(id) => Some(LayerKey::Raster(id)),
+            (None, None) => Some(LayerKey::Solo),
+            _ => None,
+        };
+        match (brush, &self.channels) {
+            (Some(layer), Some(channels)) if self.height => {
+                if !std::mem::replace(&mut self.channels_sent, true) {
+                    let op = Op::LayerChannels(channels.clone());
+                    self.link.push(key(layer), op);
+                }
+                out.push((layer, channels.size()));
+            }
+            _ => self.channels_sent = false,
+        }
+        for layer in &mut self.layers {
+            let Some(rivers) = &mut layer.rivers else {
+                continue;
+            };
+            let Some(channels) = &rivers.channels else {
+                continue;
+            };
+            let layer = LayerKey::Raster(layer.id);
+            if !std::mem::replace(&mut rivers.sent, true) {
+                self.link
+                    .push(key(layer), Op::LayerChannels(channels.clone()));
+            }
+            out.push((layer, channels.size()));
+        }
+        out
     }
 
     /// The things that the canvas paints in this frame, from the bottom, or
@@ -1825,46 +2410,57 @@ impl Globe {
     /// The list has one pass for each visible raster layer, between the
     /// vector layers, in the draw order. It starts at the top raster layer
     /// that hides each layer below it. With no such layer, it starts with
-    /// the plain ground. The graticule is above the top raster layer. With
-    /// `backdrop`, the first item draws the raster layers into the blurred
-    /// copy that the cards show.
-    pub fn paint(&mut self, pixels_per_point: f32, backdrop: Option<Canvas>) -> Option<Vec<Paint>> {
+    /// the plain ground. The graticule and the soft edge of the globe are
+    /// above the top raster layer. With `blur`, the first item draws the
+    /// raster layers into the blurred copy that the cards show.
+    pub fn paint(&mut self, canvas: Canvas, blur: bool) -> Option<Vec<Paint>> {
         let format = self.format?;
         self.queue_changes();
-        let ppp = pixels_per_point;
-        // The rivers are those of the heightmap that the brush paints.
-        let rivers = self.height && self.channels.is_some();
-        let rivers = rivers && self.preview.rivers && !self.preview.greyscale;
+        let show_rivers = self.preview.rivers && !self.preview.greyscale;
+        let river_layers = self.send_rivers();
+        let rivers = |layer: LayerKey| {
+            let found = river_layers.iter().find(|(of, _)| *of == layer);
+            found.map(|(_, size)| *size).filter(|_| show_rivers)
+        };
 
         // Each layer of the list, with the heightmap of a raster layer.
         enum Item<'a> {
-            Raster(MapKey, &'a Bands, f32, bool),
+            Raster(LayerDraw<'a>),
             Vector(LayerId),
         }
         let mut items: Vec<Item> = Vec::new();
         match &self.stack {
             None => {
                 let key = self.full.expect("a globe with no list has a heightmap");
-                items.push(Item::Raster(key, &self.map.bands, 1.0, rivers));
+                items.push(Item::Raster(LayerDraw {
+                    key,
+                    bands: &self.map.bands,
+                    opacity: 1.0,
+                    rivers: rivers(key.layer),
+                    window: true,
+                }));
             }
             Some(stack) => {
                 for item in stack {
                     match *item {
                         StackItem::Vector(id) => items.push(Item::Vector(id)),
                         StackItem::Raster { id, opacity } => {
-                            let source = self.source(id).zip(self.raster_map(id));
+                            let source = self.source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
-                                let rivers = rivers && !key.display;
-                                let opacity = opacity.clamp(0.0, 1.0);
-                                items.push(Item::Raster(key, &map.bands, opacity, rivers));
+                                items.push(Item::Raster(LayerDraw {
+                                    key,
+                                    bands: &map.bands,
+                                    opacity: opacity.clamp(0.0, 1.0),
+                                    rivers: rivers(key.layer),
+                                    window: !key.display,
+                                }));
                             }
                         }
                     }
                 }
             }
         }
-        let opaque =
-            |item: &Item| matches!(item, Item::Raster(_, _, opacity, _) if *opacity >= 1.0);
+        let opaque = |item: &Item| matches!(item, Item::Raster(layer) if layer.opacity >= 1.0);
         let start = items.iter().rposition(opaque);
         let top = items.iter().rposition(|i| matches!(i, Item::Raster(..)));
 
@@ -1873,9 +2469,11 @@ impl Globe {
             link: self.link.clone(),
             full: self.full,
             copies: {
-                let copies = self.layers.iter().filter_map(|l| l.copy.as_ref());
-                copies.map(|copy| copy.key).collect()
+                let layers = self.layers.iter();
+                let keys = |l: &Layer| [l.copy.as_ref().map(|copy| copy.key), l.old_copy];
+                layers.flat_map(keys).flatten().collect()
             },
+            rivers: river_layers.iter().map(|(layer, _)| *layer).collect(),
             flat: (self.world_view == WorldView::Flat).then(|| self.flat.mesh()),
             epoch: self.epoch,
         });
@@ -1889,38 +2487,43 @@ impl Globe {
         let plain = |pass, graticule, small| Draw {
             pass,
             source: None,
-            uniforms: self.uniforms(ppp, None, graticule, small),
+            rivers: false,
+            uniforms: self.uniforms(canvas, None, graticule, small),
         };
-        let layer = |item: &Item, small: bool| match *item {
-            Item::Raster(key, bands, opacity, rivers) => {
-                let rivers = rivers && !small;
-                let source = Some((key, bands, opacity, rivers));
-                Some(Draw {
-                    pass: Pass::Layer(key.layer),
-                    source: Some(key),
-                    uniforms: self.uniforms(ppp, source, false, small),
-                })
-            }
+        let layer = |item: &Item, small: bool| match item {
+            Item::Raster(layer) => Some(Draw {
+                pass: Pass::Layer(layer.key.layer),
+                source: Some(layer.key),
+                rivers: layer.rivers.is_some() && !small,
+                uniforms: self.uniforms(canvas, Some(layer), false, small),
+            }),
             Item::Vector(_) => None,
         };
 
         let mut out = Vec::new();
         let drawn = &items[start.unwrap_or(0)..];
-        if let Some(canvas) = backdrop {
+        if blur {
             // The blurred copy has no vector layers and no graticule.
             let ground = start.is_none().then(|| plain(Pass::Ground, false, true));
             let layers = drawn.iter().filter_map(|item| layer(item, true));
-            let draws = ground.into_iter().chain(layers).collect();
+            let rim = plain(Pass::Rim, false, true);
+            let draws = ground.into_iter().chain(layers).chain([rim]).collect();
             out.push(callback(GpuJob::Backdrop(canvas, draws)));
         }
         let graticule = self.preview.graticule;
-        let graticule =
-            || graticule.then(|| callback(draw_job(plain(Pass::Graticule, true, false))));
+        // The graticule, and then the soft edge of the globe.
+        let over = || {
+            let graticule = graticule.then(|| plain(Pass::Graticule, true, false));
+            let passes = graticule
+                .into_iter()
+                .chain([plain(Pass::Rim, false, false)]);
+            passes.map(|draw| callback(draw_job(draw)))
+        };
         if start.is_none() {
             out.push(callback(draw_job(plain(Pass::Ground, false, false))));
         }
         if top.is_none() {
-            out.extend(graticule());
+            out.extend(over());
         }
         for (at, item) in items.iter().enumerate().skip(start.unwrap_or(0)) {
             match item {
@@ -1928,11 +2531,25 @@ impl Globe {
                 Item::Raster(..) => {
                     out.extend(layer(item, false).map(|draw| callback(draw_job(draw))));
                     if top == Some(at) {
-                        out.extend(graticule());
+                        out.extend(over());
                     }
                 }
             }
         }
         Some(out)
     }
+}
+
+/// One raster layer in a frame.
+struct LayerDraw<'a> {
+    /// The heightmap on the GPU that the pass reads.
+    key: MapKey,
+    bands: &'a Bands,
+    opacity: f32,
+    /// The size of the channel map of the rivers of the layer. `None`: the
+    /// pass draws no rivers.
+    rivers: Option<usize>,
+    /// The pass reads the full heightmap, so it has the window of small
+    /// rivers.
+    window: bool,
 }

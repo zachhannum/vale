@@ -1225,8 +1225,8 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     ui.spacing_mut().item_spacing.y = 6.0;
     ui.checkbox(&mut state.globe.preview.greyscale, "Greyscale");
     let mut preview = state.globe.preview;
-    if let Some(map) = state.globe.raster_map_mut(id) {
-        elevation::controls(ui, &mut map.bands, &mut preview, &unit);
+    if let Some(bands) = state.globe.bands_mut(id) {
+        elevation::controls(ui, bands, &mut preview, &unit);
     }
     state.globe.preview = preview;
     if delete.clicked() {
@@ -1254,7 +1254,7 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     let Some(band) = rects.readout else {
         return;
     };
-    let value = state.cursor_value.map(|value| state.value_text(value));
+    let value = state.readout_value();
     let text = readout_text(state.cursor_lonlat, value.as_deref());
     let galley = ui
         .painter()

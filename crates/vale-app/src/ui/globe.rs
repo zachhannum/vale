@@ -378,21 +378,21 @@ pub(super) fn canvas(
     // The value is that of the raster layer of the readout.
     let shown = state.shown_raster().map(|raster| raster.id);
     let globe = &mut state.globe;
-    let map = shown.and_then(|id| globe.raster_map(id));
+    let map = shown.and_then(|id| globe.display_map(id));
     let value = |(dir, map): (_, &vale_terrain::Heightmap)| map.bands.value(map.sample(dir));
     state.cursor_value = cursor.zip(map).map(value);
 
     let more = globe.advance(now);
     let pixels_per_point = ui.ctx().pixels_per_point();
-    let backdrop = (cards && globe.blur).then_some(Canvas {
-        background,
-        pixels_per_point,
-    });
     // The passes of the raster layers and the shapes of the vector layers
     // go to the painter in the draw order. The flat view draws no vector
     // layer.
     let globe_view = globe.world_view == WorldView::Globe;
-    match globe.paint(pixels_per_point, backdrop) {
+    let canvas = Canvas {
+        background,
+        pixels_per_point,
+    };
+    match globe.paint(canvas, cards && globe.blur) {
         Some(paints) => {
             for paint in paints {
                 match paint {

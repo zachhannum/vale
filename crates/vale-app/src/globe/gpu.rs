@@ -41,6 +41,8 @@ pub struct Uniforms {
     pub layer: [f32; 4],
     /// The color of the ground below the layers.
     pub ground: [f32; 4],
+    /// The color of the canvas around the globe.
+    pub back: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
 }
 
@@ -110,15 +112,28 @@ pub enum Pass {
     Layer(LayerKey),
     /// The graticule above the raster layers.
     Graticule,
+    /// The soft edge of the globe. The other passes have a hard edge, so
+    /// the edge has the cover of one pass.
+    Rim,
 }
 
 /// The uniform buffer of one pass, with its bind group.
 struct Slot {
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    /// The generation of the full heightmap that gives the channel textures
-    /// of the bind group. `None`: the textures are empty.
-    rivers: Option<u64>,
+    /// The number of the channel texture of the bind group, and the
+    /// generation of the full heightmap that gives the window texture.
+    /// `None`: the texture is empty.
+    rivers: (Option<u64>, Option<u64>),
+}
+
+/// The channel map of the rivers of one layer on the GPU.
+struct Channels {
+    /// The count of the channel textures before this one.
+    number: u64,
+    size: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
 }
 
 struct Resources {
@@ -127,8 +142,8 @@ struct Resources {
     pipeline: wgpu::RenderPipeline,
     flat_pipeline: wgpu::RenderPipeline,
     /// The passes that read no heightmap: the ground and the graticule, on
-    /// the globe and in the flat view.
-    plain: [wgpu::RenderPipeline; 4],
+    /// the globe and in the flat view, and the edge of the globe.
+    plain: [wgpu::RenderPipeline; 5],
     mesh: Option<GpuMesh>,
     /// Channel textures with no river, for a pass with no rivers.
     no_channels: wgpu::TextureView,
@@ -140,12 +155,16 @@ struct Resources {
     full: Option<(MapKey, GpuHeightmap)>,
     /// The reduced copies that the globe draws.
     copies: HashMap<MapKey, GpuTiles>,
+    /// The channel map of each visible height layer.
+    channels: HashMap<LayerKey, Channels>,
+    channel_count: u64,
     _poller: Poller,
 }
 
 const GROUND: usize = 0;
 const GRATICULE: usize = 1;
 const FLAT: usize = 2;
+const RIM: usize = 4;
 
 impl Resources {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat, busy: &Arc<Busy>) -> Resources {
@@ -263,6 +282,7 @@ impl Resources {
                     "fs_flat_graticule",
                     true,
                 ),
+                pipeline("rim", &no_tiles, "vs_main", "fs_rim", false),
             ],
             mesh: None,
             no_channels: empty(
@@ -275,6 +295,8 @@ impl Resources {
             slots: HashMap::new(),
             full: None,
             copies: HashMap::new(),
+            channels: HashMap::new(),
+            channel_count: 0,
             _poller: Poller::new(device.clone(), busy.clone()),
         }
     }
@@ -300,9 +322,67 @@ impl Resources {
                 let full = frame.full.is_some_and(|key| key.layer == *layer);
                 full || frame.copies.iter().any(|key| key.layer == *layer)
             }
-            Pass::Ground | Pass::Graticule => true,
+            Pass::Ground | Pass::Graticule | Pass::Rim => true,
         };
         self.slots.retain(|(pass, _), _| live(pass));
+        self.channels
+            .retain(|layer, _| frame.rivers.contains(layer));
+    }
+
+    /// Writes the channel map of the rivers of one layer.
+    fn upload_channels(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layer: LayerKey,
+        map: &ChannelMap,
+    ) {
+        let size = map.size() as u32;
+        if self.channels.get(&layer).is_none_or(|c| c.size != size) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("layer channel map"),
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: FACES as u32,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Uint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            self.channel_count += 1;
+            let channels = Channels {
+                number: self.channel_count,
+                size,
+                texture,
+                view,
+            };
+            self.channels.insert(layer, channels);
+        }
+        let channels = &self.channels[&layer];
+        queue.write_texture(
+            channels.texture.as_image_copy(),
+            map.bytes(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * 4),
+                rows_per_image: Some(size),
+            },
+            channels.texture.size(),
+        );
+    }
+
+    /// The memory of the channel maps of the layers, in bytes.
+    fn river_bytes(&self) -> u64 {
+        let bytes = |c: &Channels| u64::from(c.size) * u64::from(c.size) * 4 * FACES as u64;
+        self.channels.values().map(bytes).sum()
     }
 
     /// The memory of the reduced copies, in bytes.
@@ -317,11 +397,19 @@ impl Resources {
     /// Writes the uniforms of one pass. `small`: the pass draws into the
     /// small target of the blurred copy.
     fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draw: &Draw, small: bool) {
-        // Only the full heightmap has channel textures.
-        let rivers = match (&self.full, draw.source) {
-            (Some((key, _)), Some(source)) if *key == source => Some(key.generation),
+        // A layer has its channel map. Only the full heightmap has the
+        // window of small rivers.
+        let layer = match draw.pass {
+            Pass::Layer(layer) if draw.rivers => self.channels.get(&layer),
             _ => None,
         };
+        let window = match (&self.full, draw.source) {
+            (Some((key, _)), Some(source)) if *key == source && layer.is_some() => {
+                Some(key.generation)
+            }
+            _ => None,
+        };
+        let rivers = (layer.map(|channels| channels.number), window);
         let stale = |slot: &Slot| slot.rivers != rivers;
         if self.slots.get(&(draw.pass, small)).is_none_or(stale) {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -330,11 +418,10 @@ impl Resources {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let (channels, window) = match &self.full {
-                Some((_, heights)) if rivers.is_some() => {
-                    (heights.channels_view(), heights.window_view())
-                }
-                _ => (&self.no_channels, &self.no_window),
+            let channels = layer.map_or(&self.no_channels, |channels| &channels.view);
+            let window = match &self.full {
+                Some((_, heights)) if window.is_some() => heights.window_view(),
+                _ => &self.no_window,
             };
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("globe"),
@@ -381,9 +468,15 @@ impl Resources {
         let kind = match draw.pass {
             Pass::Ground => Some(GROUND),
             Pass::Graticule => Some(GRATICULE),
+            Pass::Rim => Some(RIM),
             Pass::Layer(_) => None,
         };
+        // The flat view has no edge of a globe.
+        if flat && kind == Some(RIM) {
+            return;
+        }
         let pipeline = match kind {
+            Some(RIM) => &self.plain[RIM],
             Some(kind) => &self.plain[kind + if flat { FLAT } else { 0 }],
             None if flat => &self.flat_pipeline,
             None => &self.pipeline,
@@ -437,6 +530,8 @@ pub enum Op {
         face: u32,
         rect: TexelRect,
     },
+    /// Writes the channel map of the rivers of a layer, for the picture.
+    LayerChannels(Arc<ChannelMap>),
     /// Writes the channel map of the rivers.
     Channels(Arc<ChannelMap>),
     /// Writes the window of small rivers. `None`: the brush follows the
@@ -557,7 +652,7 @@ pub struct Link {
     pub busy: Arc<Busy>,
     /// The memory of the reduced copies on the GPU, with the epoch of the
     /// frame that the GPU prepared last.
-    copy_bytes: Arc<Mutex<(u64, u64)>>,
+    copy_bytes: Arc<Mutex<(u64, u64, u64)>>,
 }
 
 impl Link {
@@ -577,9 +672,10 @@ impl Link {
         ops.push((map, op));
     }
 
-    /// The memory of the reduced copies on the GPU in bytes, after the last
-    /// frame that the GPU prepared, with the epoch of that frame.
-    pub fn copy_bytes(&self) -> (u64, u64) {
+    /// The epoch of the last frame that the GPU prepared, and the memory of
+    /// the reduced copies and of the channel maps of the layers on the GPU
+    /// after it, in bytes.
+    pub fn copy_bytes(&self) -> (u64, u64, u64) {
         *self.copy_bytes.lock().expect("no panic holds the lock")
     }
 }
@@ -718,6 +814,8 @@ pub struct Frame {
     pub full: Option<MapKey>,
     /// The reduced copies that the globe draws.
     pub copies: Vec<MapKey>,
+    /// The layers that have a channel map of their rivers.
+    pub rivers: Vec<LayerKey>,
     /// `Some`: the canvas shows the flat view with this mesh.
     pub flat: Option<Arc<FlatMesh>>,
     /// The count of the sets of reduced copies before this one.
@@ -730,6 +828,8 @@ pub struct Draw {
     pub pass: Pass,
     /// The heightmap that a layer pass reads.
     pub source: Option<MapKey>,
+    /// The pass draws the rivers of its layer.
+    pub rivers: bool,
     pub uniforms: Uniforms,
 }
 
@@ -900,6 +1000,7 @@ impl Batch<'_> {
                 let readback = heights.read_rect(device, self.encoder(), face, rect);
                 self.readbacks.push((stroke, face, rect, readback));
             }
+            Op::LayerChannels(_) => {}
             Op::Channels(map) => {
                 // The stamps before the write follow the rivers before it.
                 self.submit();
@@ -921,7 +1022,18 @@ impl Batch<'_> {
 fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, frame: &Frame) {
     res.sync(device, frame);
     let link = &frame.link;
-    let ops = std::mem::take(&mut *link.ops.lock().expect("no panic holds the lock"));
+    let mut ops = std::mem::take(&mut *link.ops.lock().expect("no panic holds the lock"));
+    // The channel maps of the layers are for the picture only, so their
+    // order in the queue has no effect.
+    ops.retain(|(map, op)| match op {
+        Op::LayerChannels(channels) => {
+            if frame.rivers.contains(&map.layer) {
+                res.upload_channels(device, queue, map.layer, channels);
+            }
+            false
+        }
+        _ => true,
+    });
     let mut batch = Batch {
         device,
         queue,
@@ -965,8 +1077,8 @@ fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, fram
     for (stroke, passes) in batch.passes {
         let _ = link.events.send(Event::Passes { stroke, passes });
     }
-    let bytes = res.copy_bytes();
-    *link.copy_bytes.lock().expect("no panic holds the lock") = (frame.epoch, bytes);
+    let bytes = (frame.epoch, res.copy_bytes(), res.river_bytes());
+    *link.copy_bytes.lock().expect("no panic holds the lock") = bytes;
 }
 
 impl egui_wgpu::CallbackTrait for GlobeCallback {

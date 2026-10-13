@@ -2102,8 +2102,11 @@ fn three_strokes(h: &mut Pad) -> [u16; 4] {
 
 fn middle_level(h: &Pad) -> u16 {
     let globe = &h.state().globe;
-    globe
-        .map
+    // The first raster layer of the world, or the empty heightmap of a
+    // world with no raster layer.
+    let first = h.state().doc.project.rasters().first();
+    let map = first.and_then(|raster| globe.raster_map(raster.id));
+    map.unwrap_or(&globe.map)
         .sample(globe.unproject(globe.rect.center()).unwrap())
 }
 

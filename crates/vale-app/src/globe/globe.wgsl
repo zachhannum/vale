@@ -1,5 +1,7 @@
 // Draws the globe in passes, from the bottom of the layers: the plain ground,
-// one pass for each raster layer, and the graticule. A layer pass reads the
+// one pass for each raster layer, the graticule, and the edge of the globe.
+// The passes before the edge have a hard edge, and the edge pass makes it
+// soft one time. A layer pass reads the
 // cube map of its layer and shows it as stepped tints, as a smooth ramp, or
 // in greyscale. Each pass gives a color with its alpha multiplied in. The
 // face layout matches `cube.rs` of `vale-terrain`.
@@ -44,6 +46,8 @@ struct Uniforms {
     layer: vec4<f32>,
     // The color of the ground below the layers.
     ground: vec4<f32>,
+    // The color of the canvas around the globe.
+    back: vec4<f32>,
     // The bands, from the lowest to the highest.
     bands: array<Band, 32>,
 }
@@ -351,7 +355,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     }
     let h = height(at.d).x;
     let color = ground(h, fwidth(h), at.d, at.px) * at.shade;
-    let alpha = at.cover * u.layer.x;
+    let alpha = u.layer.x;
     return vec4<f32>(color * alpha, alpha);
 }
 
@@ -362,15 +366,27 @@ fn fs_ground(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if at.cover <= 0.0 {
         discard;
     }
-    return vec4<f32>(u.ground.rgb * at.shade * at.cover, at.cover);
+    return vec4<f32>(u.ground.rgb * at.shade, 1.0);
+}
+
+// The soft edge of the globe: the color of the canvas over the pixels of
+// the edge, by the part of each pixel that the globe does not cover.
+@fragment
+fn fs_rim(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = disk(frag);
+    if at.cover <= 0.0 || at.cover >= 1.0 {
+        discard;
+    }
+    let alpha = 1.0 - at.cover;
+    return vec4<f32>(u.back.rgb * alpha, alpha);
 }
 
 // The graticule above the raster layers.
 @fragment
 fn fs_graticule(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let at = disk(frag);
-    let alpha = graticule(at.d, at.px, at.wlon) * at.cover;
-    if alpha <= 0.0 {
+    let alpha = graticule(at.d, at.px, at.wlon);
+    if at.cover <= 0.0 || alpha <= 0.0 {
         discard;
     }
     return vec4<f32>(GRATICULE_COLOR * at.shade * alpha, alpha);

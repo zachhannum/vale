@@ -763,6 +763,9 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
                 Some([lon, lat]) => ui.label(format!("lon {lon:.2}, lat {lat:.2}")),
                 None => ui.label("lon –, lat –"),
             };
+            if let Some(value) = state.readout_value() {
+                ui.label(value);
+            }
             ui.separator();
             if let Some(c) = &state.composed
                 && state.workspace == Workspace::Map

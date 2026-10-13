@@ -61,7 +61,7 @@ fn run() -> anyhow::Result<u8> {
             state.raster_form = Some(RasterForm::open(&state));
         }
         if let Some(session) = &session {
-            state.open_rasters(session.load_maps()?);
+            state.open_rasters(session.load_display_maps()?);
         }
         Ok(state)
     };

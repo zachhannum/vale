@@ -89,9 +89,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             let shown = state.shown_raster().map(|raster| raster.id);
             let globe = &mut state.globe;
             let mut preview = globe.preview;
-            let map = shown.and_then(|id| globe.raster_map_mut(id));
-            if let Some(map) = map {
-                controls(ui, &mut map.bands, &mut preview, &unit);
+            let bands = shown.and_then(|id| globe.bands_mut(id));
+            if let Some(bands) = bands {
+                controls(ui, bands, &mut preview, &unit);
             } else {
                 controls(ui, &mut globe.map.bands, &mut preview, &unit);
             }
