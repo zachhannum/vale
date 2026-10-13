@@ -61,7 +61,7 @@ fn distance(f: &PageFeature, kind: GeometryKind, at: Point) -> f64 {
 pub fn pick(layers: &[PageLayer<'_>], at: Point) -> Option<Selection> {
     for pl in layers.iter().rev() {
         let style = &pl.entry.style;
-        let kind = pl.layer.kind;
+        let kind = pl.kind;
         let reach = match kind {
             GeometryKind::Point => style.point_radius.max(3.0) + 3.0,
             GeometryKind::Line => (style.stroke.map_or(0.0, |s| s.width) / 2.0).max(1.0) + 3.0,

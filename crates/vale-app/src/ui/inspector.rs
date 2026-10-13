@@ -36,7 +36,7 @@ fn layer_info(state: &AppState) -> Option<LayerInfo> {
     Some(LayerInfo {
         id,
         name: layer.name.clone(),
-        kind: layer.kind,
+        kind: layer.geometry()?,
         count: layer.features.len(),
         fields: layer.fields.clone(),
     })

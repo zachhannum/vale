@@ -195,7 +195,8 @@ fn brush_strokes_and_vector_edits_use_the_same_log() {
         .flush(&mut doc.project, &mut maps(&mut map))
         .unwrap();
     let painted = texels(&map);
-    let places = doc.project.layers()[2].id;
+    let layer = |name: &str| doc.project.layers().iter().find(|l| l.name == name);
+    let places = layer("Places").unwrap().id;
     doc.remove_layer(places);
     session
         .flush(&mut doc.project, &mut maps(&mut map))
@@ -205,26 +206,29 @@ fn brush_strokes_and_vector_edits_use_the_same_log() {
         .flush(&mut doc.project, &mut maps(&mut map))
         .unwrap();
     let last = texels(&map);
-    assert_eq!(doc.project.layers().len(), 2);
+    // The height layer and two vector layers stay.
+    assert_eq!(doc.project.layers().len(), 3);
 
     // The edits go back in the reverse order.
     assert!(session.undo(&mut doc, &mut maps(&mut map)).unwrap());
     assert!(texels(&map) == painted, "the texels are not the same");
-    assert_eq!(doc.project.layers().len(), 2);
+    assert_eq!(doc.project.layers().len(), 3);
     assert!(session.undo(&mut doc, &mut maps(&mut map)).unwrap());
     assert!(texels(&map) == painted, "the texels are not the same");
     assert_eq!(doc.project.layers(), layers);
     assert_eq!(doc.frame.entries.len(), entries);
     assert!(session.undo(&mut doc, &mut maps(&mut map)).unwrap());
     assert_eq!(map.allocated_tiles(), 0);
-    assert_eq!(doc.project.layers(), layers);
+    // The first save had the new height layer and the first stroke.
+    assert_eq!(doc.project.layers(), &layers[1..]);
+    assert_eq!(doc.project.rasters(), []);
     assert!(!session.can_undo());
 
     for _ in 0..3 {
         assert!(session.redo(&mut doc, &mut maps(&mut map)).unwrap());
     }
     assert!(texels(&map) == last, "the texels are not the same");
-    assert_eq!(doc.project.layers().len(), 2);
+    assert_eq!(doc.project.layers().len(), 3);
     assert_eq!(doc.frame.entries.len(), entries - 1);
     assert!(!session.can_redo());
 }
@@ -516,7 +520,8 @@ fn a_save_adds_no_raster_layer() {
         .flush(&mut doc.project, &mut maps(&mut map))
         .unwrap();
     assert_eq!(doc.project.rasters().len(), 1);
-    assert_eq!(doc.project.rasters()[0].name, "Height");
+    let layer = doc.project.raster_layer(HEIGHT).unwrap();
+    assert_eq!(layer.name, "Height");
     drop(session);
     let (_, _, loaded) = reopen(&path);
     assert!(texels(&loaded) == texels(&map));
@@ -570,6 +575,11 @@ fn record(project: &Project, id: RasterId) -> &vale_store::Raster {
     project.raster(id).unwrap()
 }
 
+/// The name, the raster, and the visibility of a layer record.
+fn row(layer: &vale_store::Layer) -> (&str, Option<RasterId>, bool) {
+    (layer.name.as_str(), layer.raster(), layer.visible)
+}
+
 #[test]
 fn the_project_file_stores_each_raster_layer() {
     let dir = tempfile::tempdir().unwrap();
@@ -582,7 +592,17 @@ fn the_project_file_stores_each_raster_layer() {
     let height = project.add_raster(name, 1024, unit, -6000.0, 6000.0);
     let (name, unit) = ("Rain".to_string(), "mm".to_string());
     let rain = project.add_raster(name, 512, unit, 0.0, 4000.0);
-    project.set_raster_visible(rain, false);
+    // A vector layer is between the two raster layers in the draw order.
+    let lines = project.add_layer(
+        "Roads".to_string(),
+        vale_store::GeometryKind::Line,
+        None,
+        Vec::new(),
+    );
+    assert!(project.move_layer(lines, 1));
+    let rain_layer = project.raster_layer(rain).unwrap().id;
+    assert!(project.set_layer_visible(rain_layer, false));
+    assert!(project.set_raster_opacity(rain, 0.25));
     let mut ground = Heightmap::new(1024, BASE);
     ground.bands.add(1234.5).unwrap();
     let mut wet = Heightmap::new(512, 0);
@@ -604,15 +624,25 @@ fn the_project_file_stores_each_raster_layer() {
     let project = &doc.project;
     let ids: Vec<RasterId> = project.rasters().iter().map(|r| r.id).collect();
     assert_eq!(ids, [height, rain]);
+    // The layer records have the order, the names, and the visibility.
+    let rows: Vec<_> = project.layers().iter().map(row).collect();
+    assert_eq!(
+        rows,
+        [
+            ("Height", Some(height), true),
+            ("Roads", None, true),
+            ("Rain", Some(rain), false)
+        ]
+    );
     let (first, second) = (record(project, height), record(project, rain));
-    assert_eq!((first.name.as_str(), first.unit.as_str()), ("Height", "m"));
+    assert_eq!((first.unit.as_str(), first.opacity), ("m", 1.0));
     assert_eq!((first.value_min, first.value_max), (-6000.0, 6000.0));
-    assert_eq!((first.face_size, first.visible), (1024, true));
+    assert_eq!(first.face_size, 1024);
     assert_eq!(first.limits, ground.bands.limits());
     assert!(first.limits.contains(&1234.5));
-    assert_eq!((second.name.as_str(), second.unit.as_str()), ("Rain", "mm"));
+    assert_eq!((second.unit.as_str(), second.opacity), ("mm", 0.25));
     assert_eq!((second.value_min, second.value_max), (0.0, 4000.0));
-    assert_eq!((second.face_size, second.visible), (512, false));
+    assert_eq!(second.face_size, 512);
     assert_eq!(second.limits, wet.bands.limits());
     assert!(second.limits.contains(&250.0));
     assert_eq!(second.ramp_land[0], [1, 2, 3]);

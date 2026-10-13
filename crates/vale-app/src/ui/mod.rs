@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
-use vale_store::{LayerId, Project, Raster, RasterId, StoreError, World};
+use vale_store::{Layer, LayerId, Project, Raster, RasterId, StoreError, World};
 use vale_terrain::{Bands, Heightmap, Mode};
 
 use crate::document::Document;
@@ -159,6 +159,16 @@ pub enum LayerRef {
     Vector(LayerId),
 }
 
+impl LayerRef {
+    /// The reference of a layer record.
+    pub fn of(layer: &Layer) -> LayerRef {
+        match layer.raster() {
+            Some(id) => LayerRef::Raster(id),
+            None => LayerRef::Vector(layer.id),
+        }
+    }
+}
+
 /// The name of the raster layer that the app makes for a height.
 pub const HEIGHT_NAME: &str = "Height";
 /// The unit of a height layer. A raster layer with this unit has a sea and
@@ -268,6 +278,10 @@ pub struct AppState {
     pub world_form: Option<world_form::WorldForm>,
     /// The open form of a new raster layer.
     pub raster_form: Option<raster_form::RasterForm>,
+    /// The face size of `--face-size`. The form of a new raster layer
+    /// offers it, and it is on at first. `None`: the preset of the form
+    /// gives the face size.
+    pub form_face_size: Option<usize>,
     /// Requests that need the host (dialogs, files).
     pub actions: Vec<Action>,
     /// True: no timers, always `Quality::Final`.
@@ -325,6 +339,7 @@ impl AppState {
             share: None,
             world_form: None,
             raster_form: None,
+            form_face_size: None,
             actions: Vec::new(),
             headless: false,
             file_buttons: true,
@@ -396,13 +411,17 @@ impl AppState {
         if gone {
             self.selected_layer = None;
         }
-        let shows = |raster: &&Raster| raster.visible && globe.raster_map(raster.id).is_some();
+        let shows = |id: &RasterId| {
+            let visible = project.raster_layer(*id).is_some_and(|layer| layer.visible);
+            visible && globe.raster_map(*id).is_some()
+        };
         let selected = match self.selected_layer {
-            Some(LayerRef::Raster(id)) => project.raster(id).filter(shows),
+            Some(LayerRef::Raster(id)) => Some(id).filter(shows),
             _ => None,
         };
-        let top = project.rasters().iter().rev().find(shows);
-        let shown = selected.or(top).map(|raster| raster.id);
+        let layers = project.layers().iter().rev();
+        let top = layers.filter_map(Layer::raster).find(shows);
+        let shown = selected.or(top);
         globe.paintable = selected.is_some();
         globe.show(shown);
         if !globe.is_height() && brush::needs_height(globe.brush.mode) {
@@ -412,9 +431,20 @@ impl AppState {
 
     /// The names of the raster layers that this device cannot show.
     pub fn lost_rasters(&self) -> Vec<String> {
-        let lost = |raster: &&Raster| self.globe.raster_map(raster.id).is_none();
-        let rasters = self.doc.project.rasters().iter().filter(lost);
-        rasters.map(|raster| raster.name.clone()).collect()
+        let lost = |layer: &&Layer| {
+            let raster = layer.raster();
+            raster.is_some_and(|id| self.globe.raster_map(id).is_none())
+        };
+        let layers = self.doc.project.layers().iter().filter(lost);
+        layers.map(|layer| layer.name.clone()).collect()
+    }
+
+    /// The layer record of a layer.
+    pub fn layer_of(&self, layer: LayerRef) -> Option<&Layer> {
+        match layer {
+            LayerRef::Raster(id) => self.doc.project.raster_layer(id),
+            LayerRef::Vector(id) => self.doc.project.layer(id),
+        }
     }
 
     /// Tells the user which raster layers this device cannot show.
@@ -444,8 +474,11 @@ impl AppState {
     /// A name for a new raster layer: `name`, or `name` with a number if
     /// a raster layer has that name.
     pub fn raster_name(&self, name: &str) -> String {
-        let rasters = self.doc.project.rasters();
-        let taken = |name: &str| rasters.iter().any(|raster| raster.name == name);
+        let layers = self.doc.project.layers();
+        let taken = |name: &str| {
+            let mut rasters = layers.iter().filter(|layer| layer.raster().is_some());
+            rasters.any(|layer| layer.name == name)
+        };
         let numbered = (2..).map(|number| format!("{name} {number}"));
         let mut names = std::iter::once(name.to_string()).chain(numbered);
         names.find(|name| !taken(name)).expect("a free number")
@@ -526,12 +559,48 @@ impl AppState {
     /// Gives a raster layer a new name. A name with no letter changes
     /// nothing.
     pub fn rename_raster(&mut self, id: RasterId, name: &str) -> bool {
-        let name = name.trim();
-        let raster = self.doc.project.raster_mut(id);
-        let raster = raster.filter(|raster| !name.is_empty() && raster.name != name);
-        raster
-            .map(|raster| raster.name = name.to_string())
-            .is_some()
+        let layer = self.doc.project.raster_layer(id).map(|layer| layer.id);
+        layer.is_some_and(|layer| self.doc.rename_layer(layer, name))
+    }
+
+    /// Sets how much a raster layer hides the layers below it, from 0 to 1.
+    pub fn set_raster_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
+        self.doc.project.set_raster_opacity(id, opacity)
+    }
+
+    /// Moves a layer to this index of the draw order. Index 0 is the bottom.
+    pub fn move_layer(&mut self, id: LayerId, to: usize) -> bool {
+        let moved = self.doc.move_layer(id, to);
+        self.sync_globe();
+        self.touch();
+        moved
+    }
+
+    /// Moves a layer one place in the draw order. `up` moves toward the top.
+    /// Returns `false` at the end of the order.
+    pub fn move_layer_by_one(&mut self, id: LayerId, up: bool) -> bool {
+        let moved = self.doc.move_by_one(id, up);
+        self.sync_globe();
+        self.touch();
+        moved
+    }
+
+    /// Removes a layer of each kind. A raster layer takes its heightmap, as
+    /// one undo step.
+    pub fn remove_layer(&mut self, id: LayerId) -> bool {
+        match self.doc.layer(id).map(Layer::raster) {
+            Some(Some(raster)) => self.remove_raster(raster),
+            Some(None) => {
+                let removed = self.doc.remove_layer(id);
+                if self.pad.layer == Some(LayerRef::Vector(id)) {
+                    self.pad.layer = None;
+                }
+                self.sync_globe();
+                self.touch();
+                removed
+            }
+            None => false,
+        }
     }
 
     /// The record of the raster layer that the globe shows.
@@ -551,10 +620,18 @@ impl AppState {
         crate::world::value_text(value, bands.max() - bands.min(), self.shown_unit())
     }
 
+    /// Shows or hides a layer.
+    pub fn set_layer_visible(&mut self, id: LayerId, visible: bool) {
+        self.doc.set_visible(id, visible);
+        self.sync_globe();
+        self.touch();
+    }
+
     /// Shows or hides a raster layer.
     pub fn set_raster_visible(&mut self, id: RasterId, visible: bool) {
-        self.doc.project.set_raster_visible(id, visible);
-        self.sync_globe();
+        if let Some(layer) = self.doc.project.raster_layer(id).map(|layer| layer.id) {
+            self.set_layer_visible(layer, visible);
+        }
     }
 
     /// Selects a height layer that the globe shows, for an import or for
@@ -566,12 +643,16 @@ impl AppState {
         let project = &self.doc.project;
         let height =
             |raster: &&Raster| is_height(raster) && self.globe.raster_map(raster.id).is_some();
+        let visible = |raster: &&Raster| {
+            let layer = project.raster_layer(raster.id);
+            layer.is_some_and(|layer| layer.visible)
+        };
         let selected = self.selected_raster().and_then(|id| project.raster(id));
-        let selected = selected.filter(height).filter(|raster| raster.visible);
+        let selected = selected.filter(height).filter(visible);
         let first = project.rasters().iter().find(height);
         match selected.or(first).map(|raster| raster.id) {
             Some(id) => {
-                self.doc.project.set_raster_visible(id, true);
+                self.set_raster_visible(id, true);
                 self.select(Some(LayerRef::Raster(id)));
                 id
             }
@@ -1234,7 +1315,7 @@ impl AppState {
     /// world.
     pub fn export_name(&self) -> String {
         let stem = session::file_stem(&self.doc.project.world.name);
-        let stem = if stem.is_empty() { "heightmap" } else { &stem };
+        let stem = if stem.is_empty() { "raster" } else { &stem };
         format!("{stem}.tif")
     }
 

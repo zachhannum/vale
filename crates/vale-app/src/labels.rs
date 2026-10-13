@@ -37,7 +37,7 @@ pub fn place(
         let Some(field) = label.field.as_deref().filter(|_| label.enabled) else {
             continue;
         };
-        let is_line = match pl.layer.kind {
+        let is_line = match pl.kind {
             GeometryKind::Point => false,
             GeometryKind::Line => true,
             GeometryKind::Polygon => continue,

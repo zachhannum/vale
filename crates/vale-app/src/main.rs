@@ -56,6 +56,7 @@ fn run() -> anyhow::Result<u8> {
             vale_app::ui::pad::toggle_worlds(&mut state);
         }
         apply_globe(&args, &mut state.globe, face_size)?;
+        state.form_face_size = args.face_size.map(|size| size as usize);
         if args.raster_form {
             state.raster_form = Some(RasterForm::open(&state));
         }

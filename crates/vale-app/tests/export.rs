@@ -282,7 +282,7 @@ fn the_export_file_has_the_name_of_the_world() {
     };
     assert_eq!(name("Terra Nova"), "Terra Nova.tif");
     assert_eq!(name(" a/b:c "), "a_b_c.tif");
-    assert_eq!(name(""), "heightmap.tif");
+    assert_eq!(name(""), "raster.tif");
     let dir: PathBuf = vale_app::files::export_dir();
     assert!(dir.ends_with("vale-export"));
 }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
-use vale_store::{GeometryKind, LayerId, RasterId};
+use vale_store::{GeometryKind, Layer, LayerId, LayerKind, RasterId};
 use vale_terrain::Mode;
 
 pub use super::LayerRef;
@@ -55,7 +55,7 @@ pub const WORLDS_ROW: &str = "Worlds…";
 const WORLDS_LEAD: f32 = TOUCH + 9.0;
 /// The largest number of worlds that the menu shows with no scroll.
 const WORLD_ROWS: usize = 6;
-/// The name of the row that imports a heightmap.
+/// The name of the row that imports a heightmap into a height layer.
 pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
 /// The name of the row that exports the heightmap.
 pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
@@ -68,6 +68,8 @@ pub const DELETE_LAYER: &str = "Delete layer";
 pub const LAYER_NAME: &str = "Layer name";
 /// The button of the panel of a raster layer that deletes the layer.
 pub const DELETE_RASTER: &str = "Delete raster layer";
+/// The slider of the panel of a raster layer that sets its opacity.
+pub const OPACITY: &str = "Layer opacity";
 /// The row of the menu of the new layers that opens the form of a new raster
 /// layer.
 pub const NEW_RASTER: &str = "Raster";
@@ -630,12 +632,8 @@ fn show_panel(
     rects: &Rects,
     panel: Panel,
 ) {
-    let project = &state.doc.project;
-    let name = match state.pad.layer {
-        Some(LayerRef::Vector(id)) => project.layer(id).map(|l| l.name.clone()),
-        Some(LayerRef::Raster(id)) => project.raster(id).map(|r| r.name.clone()),
-        None => None,
-    };
+    let shown = state.pad.layer.and_then(|layer| state.layer_of(layer));
+    let name = shown.map(|layer| layer.name.clone());
     if name.is_none() {
         state.pad.layer = None;
     }
@@ -894,101 +892,83 @@ fn limit_rows(
     }
 }
 
-/// The list of the layers, in draw order. The first row is the bottom of
-/// the drawing, so the raster layers come before the vector layers.
+/// The text of the Layers panel of a world with no layer.
+pub const NO_LAYERS: &str = "This world has no layers.";
+
+/// The icon of the kind of a layer.
+fn layer_icon(layer: &Layer) -> Icon {
+    match layer.kind {
+        LayerKind::Raster(_) => Icon::Raster,
+        LayerKind::Vector(GeometryKind::Point) => Icon::Point,
+        LayerKind::Vector(GeometryKind::Line) => Icon::Line,
+        LayerKind::Vector(GeometryKind::Polygon) => Icon::Polygon,
+    }
+}
+
+/// One row of the layer list.
+struct ListRow {
+    id: LayerId,
+    layer: LayerRef,
+    name: String,
+    icon: Icon,
+    visible: bool,
+}
+
+/// The list of the layers of each kind, in draw order. The first row is the
+/// bottom of the drawing. A tap on a row selects the layer, and the eye
+/// shows or hides it. A finger that holds a row lifts it, and the row then
+/// moves with the finger to a new place in the order.
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    if state.has_raster() {
-        raster_rows(ui, state, controls);
-    } else {
-        // The import makes the Height layer and opens its panel.
-        import_row(ui, state, controls);
-    }
-    vector_rows(ui, state, controls);
-}
-
-/// The rows of the raster layers. A tap on a row selects the layer, and the
-/// eye shows or hides it.
-fn raster_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
-    let rasters = state.doc.project.rasters().iter();
-    let rows: Vec<(RasterId, String, bool)> =
-        rasters.map(|r| (r.id, r.name.clone(), r.visible)).collect();
-    let live = state.pad.reorder.is_none();
-    for (id, name, visible) in rows {
-        let size = vec2(ui.available_width(), PANEL_ROW);
-        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-        let on = state.selected_raster() == Some(id);
-        let row = ui
-            .push_id(("raster", id.0), |ui| {
-                let (icon, visible) = (Icon::Raster, Some(visible));
-                widgets::layer_row(ui, controls, rect, icon, &name, visible, on, live, false)
-            })
-            .inner;
-        if row.eye {
-            state.set_raster_visible(id, !visible);
-        }
-        if row.body.is_some_and(|body| body.clicked()) {
-            state.select(Some(LayerRef::Raster(id)));
-        }
-        if row.open {
-            state.select(Some(LayerRef::Raster(id)));
-            state.pad.layer = Some(LayerRef::Raster(id));
-        }
-    }
-}
-
-fn kind_icon(kind: GeometryKind) -> Icon {
-    match kind {
-        GeometryKind::Point => Icon::Point,
-        GeometryKind::Line => Icon::Line,
-        GeometryKind::Polygon => Icon::Polygon,
-    }
-}
-
-/// The rows of the vector layers. A finger that holds a row lifts it, and
-/// the row then moves with the finger to a new place in the order.
-fn vector_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
-    let rows: Vec<(LayerId, String, Icon, bool)> = state
-        .doc
-        .project
-        .layers()
-        .iter()
-        .map(|l| (l.id, l.name.clone(), kind_icon(l.kind), l.visible))
+    let layers = state.doc.project.layers().iter();
+    let rows: Vec<ListRow> = layers
+        .map(|l| ListRow {
+            id: l.id,
+            layer: LayerRef::of(l),
+            name: l.name.clone(),
+            icon: layer_icon(l),
+            visible: l.visible,
+        })
         .collect();
+    if rows.is_empty() {
+        state.pad.reorder = None;
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
+        return;
+    }
     let size = vec2(ui.available_width(), rows.len() as f32 * PANEL_ROW);
     let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let slot =
         |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
     let place = |i: usize| slot(area.top() + i as f32 * PANEL_ROW);
-    let selected = state.selected_vector();
+    let selected = state.selected_layer;
     let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
 
     let lifted = state
         .pad
         .reorder
-        .and_then(|r| Some((r, rows.iter().position(|row| row.0 == r.layer)?)));
+        .and_then(|r| Some((r, rows.iter().position(|row| row.id == r.layer)?)));
     let Some((reorder, from)) = lifted else {
         state.pad.reorder = None;
-        for (i, (id, name, icon, visible)) in rows.iter().enumerate() {
-            let (id, rect) = (*id, place(i));
-            let on = selected == Some(id);
-            let row = ui
+        for (i, row) in rows.iter().enumerate() {
+            let (id, rect) = (row.id, place(i));
+            let on = selected == Some(row.layer);
+            let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
+            let out = ui
                 .push_id(id.0, |ui| {
-                    let visible = Some(*visible);
-                    widgets::layer_row(ui, controls, rect, *icon, name, visible, on, true, false)
+                    widgets::layer_row(ui, controls, rect, icon, name, visible, on, true, false)
                 })
                 .inner;
-            if row.eye {
-                state.doc.set_visible(id, !*visible);
-                state.touch();
+            if out.eye {
+                state.set_layer_visible(id, !row.visible);
             }
-            if row.open {
-                state.select(Some(LayerRef::Vector(id)));
-                state.pad.layer = Some(LayerRef::Vector(id));
+            if out.open {
+                state.select(Some(row.layer));
+                state.pad.layer = Some(row.layer);
             }
-            let Some(body) = row.body else { continue };
+            let Some(body) = out.body else { continue };
             if body.clicked() {
-                state.select(Some(LayerRef::Vector(id)));
+                state.select(Some(row.layer));
             }
             if !body.is_pointer_button_down_on() {
                 continue;
@@ -1000,7 +980,7 @@ fn vector_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
             });
             match press {
                 Some((held, moved, y)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
-                    state.select(Some(LayerRef::Vector(id)));
+                    state.select(Some(row.layer));
                     state.pad.reorder = Some(Reorder {
                         layer: id,
                         grab: y - rect.top(),
@@ -1021,40 +1001,21 @@ fn vector_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     let top = (y - reorder.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
     let to = ((top - area.top()) / PANEL_ROW).round() as usize;
     let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
-    for (k, (_, (id, name, icon, visible))) in others.enumerate() {
+    for (k, (_, row)) in others.enumerate() {
         // The rows make room at the place where the lifted row goes.
         let rect = place(if k < to { k } else { k + 1 });
-        let on = selected == Some(*id);
-        widgets::layer_row(
-            ui,
-            controls,
-            rect,
-            *icon,
-            name,
-            Some(*visible),
-            on,
-            false,
-            false,
-        );
+        let on = selected == Some(row.layer);
+        let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
+        widgets::layer_row(ui, controls, rect, icon, name, visible, on, false, false);
     }
-    let (_, name, icon, visible) = &rows[from];
-    let visible = Some(*visible);
-    widgets::layer_row(
-        ui,
-        controls,
-        slot(top),
-        *icon,
-        name,
-        visible,
-        true,
-        false,
-        true,
-    );
+    let row = &rows[from];
+    let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
+    let rect = slot(top);
+    widgets::layer_row(ui, controls, rect, icon, name, visible, true, false, true);
     if !down {
         state.pad.reorder = None;
         if to != from {
-            state.doc.move_layer(reorder.layer, to);
-            state.touch();
+            state.move_layer(reorder.layer, to);
         }
     }
 }
@@ -1068,7 +1029,9 @@ fn add_menu(
     rects: &Rects,
     button: Rect,
 ) {
-    let rows = 1 + NEW_LAYERS.len();
+    // A world with no height layer gets one from an import.
+    let import = !state.doc.project.rasters().iter().any(is_height);
+    let rows = 1 + NEW_LAYERS.len() + usize::from(import);
     let size = vec2(ADD_WIDTH, 10.0 + rows as f32 * PANEL_ROW + 10.0);
     let beside = pos2(
         rects.right_panel.x - geometry::PANEL_GAP - size.x,
@@ -1128,6 +1091,14 @@ fn add_menu(
                     state.touch();
                 }
             }
+            if import {
+                let enabled = !state.globe.busy();
+                let row = widgets::text_row(ui, controls, IMPORT_HEIGHTMAP, 0.0, false, enabled);
+                if row.clicked() {
+                    state.actions.push(Action::ImportHeightmapDialog);
+                    state.pad.add = false;
+                }
+            }
         },
     );
 }
@@ -1139,10 +1110,11 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         return;
     };
     let name = layer.name.clone();
-    let kind = match layer.kind {
-        GeometryKind::Point => "Points",
-        GeometryKind::Line => "Lines",
-        GeometryKind::Polygon => "Polygons",
+    let kind = match layer.geometry() {
+        Some(GeometryKind::Point) => "Points",
+        Some(GeometryKind::Line) => "Lines",
+        Some(GeometryKind::Polygon) => "Polygons",
+        None => return,
     };
     let features = layer.features.len().to_string();
     ui.spacing_mut().item_spacing.y = 0.0;
@@ -1165,10 +1137,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     widgets::value_row(ui, "Features", &features);
     ui.add_space(6.0);
     if widgets::button_row_in(ui, controls, DELETE_LAYER, true, theme::WARN).clicked() {
-        state.doc.remove_layer(id);
-        state.pad.layer = None;
-        state.sync_globe();
-        state.touch();
+        state.remove_layer(id);
     }
 }
 
@@ -1205,13 +1174,15 @@ fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
 }
 
 /// The panel of a raster layer: its name, its value range with its unit, its
-/// face size, the import into a height layer, the export, the button that
-/// deletes the layer, and the bands of the layer.
+/// face size, its opacity, the import into a height layer, the export, the
+/// button that deletes the layer, and the bands of the layer.
 fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
     };
-    let (name, unit, height) = (raster.name.clone(), raster.unit.clone(), is_height(raster));
+    let (unit, height, opacity) = (raster.unit.clone(), is_height(raster), raster.opacity);
+    let layer = state.doc.project.raster_layer(id);
+    let name = layer.map_or(String::new(), |layer| layer.name.clone());
     let span = raster.value_max - raster.value_min;
     let range = format!(
         "{} to {}",
@@ -1237,6 +1208,12 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Values", &range);
     widgets::value_row(ui, "Face size", &face_size);
+    let mut fraction = f64::from(opacity);
+    let text = format!("{:.0}%", fraction * 100.0);
+    if widgets::row_slider(ui, controls, OPACITY, "Opacity", &mut fraction, &text) {
+        // The steps are whole percents.
+        state.set_raster_opacity(id, ((fraction * 100.0).round() / 100.0) as f32);
+    }
     if height {
         import_row(ui, state, controls);
     }

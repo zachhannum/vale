@@ -247,8 +247,8 @@ impl Session {
     pub fn load_map(&self, raster: &Raster) -> Result<Heightmap, StoreError> {
         if raster.face_size > MAX_FACE_SIZE {
             return Err(StoreError::Corrupt(format!(
-                "the face size of raster {:?} is {}",
-                raster.name, raster.face_size
+                "the face size of raster {} is {}",
+                raster.id.0, raster.face_size
             )));
         }
         let mut map = Heightmap::new(raster.face_size as usize, raster.base);
@@ -478,8 +478,8 @@ fn load_record(map: &mut Heightmap, raster: &Raster) {
 }
 
 /// Puts the base level, the value range, the band limits, and the ramp of
-/// a heightmap into its raster record. The name, the unit, the visibility,
-/// and the face size of the record stay.
+/// a heightmap into its raster record. The unit, the opacity, and the face
+/// size of the record stay.
 pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
     raster.value_min = map.bands.min();
     raster.value_max = map.bands.max();

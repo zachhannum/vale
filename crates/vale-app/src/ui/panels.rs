@@ -54,12 +54,17 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if ui.add_enabled(paintable, brush).clicked() {
                     state.globe.tool = Tool::Brush;
                 }
-                ui.menu_button(RASTERS_MENU, |ui| {
+                // The menu stays open while the user works on the list.
+                let stay = egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                let menu = egui::containers::menu::MenuButton::new(LAYERS_MENU).config(stay);
+                menu.ui(ui, |ui| {
                     if ui.button(ADD_RASTER).clicked() {
                         state.raster_form = Some(RasterForm::open(state));
                         ui.close();
                     }
-                    raster_rows(ui, state);
+                    layer_rows(ui, state);
+                    selected_layer(ui, state);
                 });
                 ui.separator();
                 let mut flat = state.globe.world_view == WorldView::Flat;
@@ -103,36 +108,119 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
-/// The button of the tool bar that opens the list of the raster layers.
-pub const RASTERS_MENU: &str = "Rasters";
+/// The button of the tool bar that opens the list of the layers.
+pub const LAYERS_MENU: &str = "Layers";
 /// The button that opens the form of a new raster layer.
 pub const ADD_RASTER: &str = "Add raster…";
+/// The field of the Layers menu with the name of the selected layer.
+pub const LAYER_NAME: &str = "Layer name";
+/// The slider of the Layers menu with the opacity of the selected raster
+/// layer.
+pub const OPACITY: &str = "Layer opacity";
+/// The button of the Layers menu that deletes the selected layer.
+pub const DELETE_LAYER: &str = "Delete layer";
 
-/// The rows of the raster layers, with the top layer first. A checkbox
-/// shows or hides a layer, and the name selects it.
-fn raster_rows(ui: &mut egui::Ui, state: &mut AppState) {
-    let rasters = state.doc.project.rasters().iter().rev();
-    let rows: Vec<_> = rasters.map(|r| (r.id, r.name.clone(), r.visible)).collect();
-    for (id, name, mut visible) in rows {
-        let selected = state.selected_raster() == Some(id);
+/// A widget with a name for a screen reader and for a test.
+fn named(resp: &egui::Response, kind: egui::WidgetType, on: bool, name: String) {
+    resp.widget_info(|| egui::WidgetInfo::selected(kind, true, on, name.clone()));
+}
+
+/// The rows of the layers of each kind, with the top layer first. A
+/// checkbox shows or hides a layer, the name selects it, and the arrows
+/// move it in the draw order.
+fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
+    let layers = state.doc.project.layers().iter().rev();
+    let rows: Vec<_> = layers
+        .map(|l| (l.id, LayerRef::of(l), l.name.clone(), l.visible))
+        .collect();
+    let count = rows.len();
+    for (index, (id, layer, name, mut visible)) in rows.into_iter().enumerate() {
+        let selected = state.selected_layer == Some(layer);
         ui.horizontal(|ui| {
             let eye = ui.checkbox(&mut visible, "");
-            eye.widget_info(|| {
-                let name = format!("Show {name}");
-                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, visible, name)
-            });
+            named(
+                &eye,
+                egui::WidgetType::Checkbox,
+                visible,
+                format!("Show {name}"),
+            );
             if eye.changed() {
-                state.set_raster_visible(id, visible);
+                state.set_layer_visible(id, visible);
             }
+            for (text, up, end) in [("▲", true, 0), ("▼", false, count - 1)] {
+                let button = ui.add_enabled(index != end, egui::Button::new(text).small());
+                let way = if up { "up" } else { "down" };
+                named(
+                    &button,
+                    egui::WidgetType::Button,
+                    false,
+                    format!("Move {name} {way}"),
+                );
+                if button.clicked() {
+                    state.move_layer_by_one(id, up);
+                }
+            }
+            let kind = match layer {
+                LayerRef::Raster(_) => "raster",
+                LayerRef::Vector(_) => "vector",
+            };
             let pick = ui.selectable_label(selected, &name);
-            pick.widget_info(|| {
-                let name = format!("Select {name}");
-                egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, name)
-            });
+            named(
+                &pick,
+                egui::WidgetType::SelectableLabel,
+                selected,
+                format!("Select {name}"),
+            );
             if pick.clicked() {
-                state.select(Some(LayerRef::Raster(id)));
+                state.select(Some(layer));
             }
+            ui.weak(kind);
         });
+    }
+}
+
+/// The controls of the selected layer: its name, the opacity of a raster
+/// layer, and the button that deletes the layer.
+fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
+    let Some(layer) = state.selected_layer else {
+        return;
+    };
+    let Some((id, name)) = state.layer_of(layer).map(|l| (l.id, l.name.clone())) else {
+        return;
+    };
+    ui.separator();
+    let mut text = name.clone();
+    let field = egui::TextEdit::singleline(&mut text).desired_width(160.0);
+    let field = ui.add(field);
+    named(
+        &field,
+        egui::WidgetType::TextEdit,
+        false,
+        LAYER_NAME.to_string(),
+    );
+    if field.changed() && state.doc.rename_layer(id, &text) {
+        state.touch();
+    }
+    if let LayerRef::Raster(raster) = layer {
+        let opacity = state.doc.project.raster(raster).map_or(1.0, |r| r.opacity);
+        let mut percent = (opacity * 100.0).round();
+        let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
+            .suffix(" %")
+            .fixed_decimals(0)
+            .text("Opacity");
+        let slider = ui.add(slider);
+        named(
+            &slider,
+            egui::WidgetType::Slider,
+            false,
+            OPACITY.to_string(),
+        );
+        if slider.changed() {
+            state.set_raster_opacity(raster, percent / 100.0);
+        }
+    }
+    if ui.button(DELETE_LAYER).clicked() {
+        state.remove_layer(id);
     }
 }
 
@@ -588,10 +676,6 @@ fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
 fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Layers");
     ui.menu_button("Add layer", |ui| {
-        if ui.button("Raster…").clicked() {
-            state.raster_form = Some(RasterForm::open(state));
-            ui.close();
-        }
         for (name, kind) in [
             ("Lines", GeometryKind::Line),
             ("Points", GeometryKind::Point),
@@ -605,7 +689,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             }
         }
     });
-    if state.doc.frame.entries.is_empty() && !state.has_raster() {
+    if state.doc.frame.entries.is_empty() {
         ui.label("No layers. Open a GeoJSON file.");
     }
     let ids: Vec<_> = state
@@ -656,7 +740,6 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     }
-    raster_rows(ui, state);
     ui.add_space(6.0);
 }
 

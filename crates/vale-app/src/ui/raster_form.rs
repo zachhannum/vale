@@ -4,10 +4,10 @@ use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_store::World;
 use vale_terrain::{Bands, face_size_values};
 
-use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
+use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
-use super::{AppState, HEIGHT_NAME, LayerRef, RasterSpec};
+use super::{AppState, HEIGHT_UNIT, LayerRef, RasterSpec};
 use crate::world;
 
 /// The title of the form.
@@ -18,12 +18,64 @@ pub const NAME: &str = "Raster name";
 pub const UNIT: &str = "Unit";
 pub const MINIMUM: &str = "Minimum";
 pub const MAXIMUM: &str = "Maximum";
-/// The two kinds of a raster layer.
-pub const KINDS: [&str; 2] = ["Height", "Other"];
-/// The name of a new raster layer that is not a height.
-pub const OTHER_NAME: &str = "Raster";
+/// The name of the choice of the preset.
+pub const KIND: &str = "Kind";
+
+/// The first values of a new raster layer of one kind.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Preset {
+    /// The name of the choice, and the first name of the layer.
+    pub name: &'static str,
+    pub unit: &'static str,
+    /// The values of the lowest and of the highest level.
+    pub range: (f64, f64),
+    /// Texels on one edge of a cube face.
+    pub face_size: usize,
+}
+
+/// The presets of the form. The range of the precipitation is that of the
+/// sum of one year.
+pub const PRESETS: [Preset; 5] = [
+    Preset {
+        name: "Height",
+        unit: HEIGHT_UNIT,
+        range: (-6000.0, 6000.0),
+        face_size: 8192,
+    },
+    Preset {
+        name: "Precipitation",
+        unit: "mm",
+        range: (0.0, 4000.0),
+        face_size: 2048,
+    },
+    Preset {
+        name: "Temperature",
+        unit: "°C",
+        range: (-60.0, 60.0),
+        face_size: 2048,
+    },
+    Preset {
+        name: "Pressure",
+        unit: "hPa",
+        range: (950.0, 1050.0),
+        face_size: 2048,
+    },
+    Preset {
+        name: "Custom",
+        unit: "",
+        range: (0.0, 100.0),
+        face_size: 2048,
+    },
+];
+/// The index of the height preset. Its unit and its range are fixed, because
+/// the sea, the rivers, and some brush modes need heights in meters.
+pub const HEIGHT: usize = 0;
+/// The index of the preset with no unit.
+pub const CUSTOM: usize = 4;
+/// The name of a new raster layer of the custom preset.
+pub const CUSTOM_NAME: &str = "Raster";
 /// The face sizes that the form offers on each device that can show them.
-pub const FACE_SIZES: [usize; 2] = [4096, 8192];
+pub const FACE_SIZES: [usize; 4] = [1024, 2048, 4096, 8192];
 const WIDTH: f32 = 400.0;
 /// The space between two groups of rows of the form in the iPad layout.
 const GROUP_GAP: f32 = 10.0;
@@ -38,18 +90,31 @@ const BOTTOM: f32 = 16.0;
 /// The ID of the card of the form in the iPad layout.
 const CARD: &str = "raster-form";
 
-/// The face sizes that the form offers, in ascending order, and the size
-/// that is on at first. `preferred` is the face size of the globe, and
-/// `limit` is the largest face size that the device can show. A preferred
-/// size that is not one of `FACE_SIZES` is in the list too.
-pub fn face_sizes(preferred: usize, limit: usize) -> (Vec<usize>, usize) {
-    let preferred = preferred.min(limit);
+/// The face sizes that the form offers, in ascending order. `flag` is the
+/// face size of `--face-size`, and `limit` is the largest face size that the
+/// device can show. A device with a limit below each of `FACE_SIZES` gets
+/// its limit.
+pub fn face_sizes(flag: Option<usize>, limit: usize) -> Vec<usize> {
     let mut sizes: Vec<usize> = FACE_SIZES.into_iter().filter(|s| *s <= limit).collect();
-    if preferred > 0 && !sizes.contains(&preferred) {
-        sizes.push(preferred);
+    let flag = flag.map(|size| size.min(limit)).filter(|size| *size > 0);
+    let least = sizes.is_empty().then_some(limit);
+    if let Some(size) = flag.or(least).filter(|size| !sizes.contains(size)) {
+        sizes.push(size);
         sizes.sort_unstable();
     }
-    (sizes, preferred)
+    sizes
+}
+
+/// The size of `sizes` that is on at first: the largest one that is not
+/// above `wanted`, or else the smallest one.
+pub fn first_face_size(sizes: &[usize], wanted: usize) -> usize {
+    let fits = sizes.iter().rev().find(|size| **size <= wanted);
+    fits.or(sizes.first()).copied().unwrap_or(wanted)
+}
+
+/// A number as the text of a field of the form.
+fn number_text(value: f64) -> String {
+    format!("{value}")
 }
 
 /// The three values that describe a face size on a world: the ground that
@@ -90,11 +155,11 @@ pub fn face_size_name(face_size: usize) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RasterForm {
     pub name: String,
-    /// The name that the form gave. The name follows the kind until the
+    /// The name that the form gave. The name follows the preset until the
     /// user changes it.
     given: String,
-    /// The layer is a height in meters.
-    pub height: bool,
+    /// The index of the preset in `PRESETS`.
+    pub preset: usize,
     pub unit: String,
     /// The value of the lowest level, as the user typed it.
     pub min: String,
@@ -103,6 +168,9 @@ pub struct RasterForm {
     /// The face sizes that the form offers.
     pub sizes: Vec<usize>,
     pub face_size: usize,
+    /// The face size of `--face-size`. With it, the face size does not
+    /// follow the preset.
+    flag: Option<usize>,
 }
 
 /// What the user did on the form in one frame.
@@ -114,36 +182,58 @@ enum Did {
 }
 
 impl RasterForm {
-    /// The form of a new height layer for the world of the app.
+    /// The form of a new raster layer for the world of the app. It starts
+    /// with the custom preset.
     pub fn open(state: &AppState) -> RasterForm {
-        let globe = &state.globe;
-        let (sizes, face_size) = face_sizes(globe.new_face_size(), globe.max_face_size());
-        let name = state.raster_name(HEIGHT_NAME);
-        RasterForm {
-            given: name.clone(),
-            name,
-            height: true,
-            unit: "mm".to_string(),
-            min: "0".to_string(),
-            max: "4000".to_string(),
-            sizes,
-            face_size,
-        }
+        let limit = state.globe.max_face_size();
+        let flag = state.form_face_size.map(|size| size.min(limit));
+        let mut form = RasterForm {
+            name: String::new(),
+            given: String::new(),
+            preset: CUSTOM,
+            unit: String::new(),
+            min: String::new(),
+            max: String::new(),
+            sizes: face_sizes(flag, limit),
+            face_size: 0,
+            flag,
+        };
+        form.set_preset(CUSTOM, state);
+        form
     }
 
-    /// Sets the kind. A name that the user did not change follows the kind.
-    pub fn set_height(&mut self, height: bool, state: &AppState) {
-        self.height = height;
+    /// True if the layer of the form is a height in meters.
+    pub fn height(&self) -> bool {
+        self.preset == HEIGHT
+    }
+
+    /// Sets the preset. It gives the unit, the range, and the face size. A
+    /// name that the user did not change follows the preset.
+    pub fn set_preset(&mut self, preset: usize, state: &AppState) {
+        let values = PRESETS[preset];
+        self.preset = preset;
         if self.name == self.given {
-            let name = if height { HEIGHT_NAME } else { OTHER_NAME };
+            let name = if preset == CUSTOM {
+                CUSTOM_NAME
+            } else {
+                values.name
+            };
             self.name = state.raster_name(name);
             self.given = self.name.clone();
         }
+        self.unit = values.unit.to_string();
+        self.min = number_text(values.range.0);
+        self.max = number_text(values.range.1);
+        let wanted = self.flag.unwrap_or(values.face_size);
+        self.face_size = first_face_size(&self.sizes, wanted);
     }
 
-    /// The value range of a layer that is not a height. `None`: a text is
-    /// not a number, or the range is empty.
+    /// The value range of the layer. `None`: a text is not a number, or the
+    /// range is empty.
     fn range(&self) -> Option<(f64, f64)> {
+        if self.height() {
+            return Some(PRESETS[HEIGHT].range);
+        }
         let number = |text: &str| text.trim().replace(',', "").parse::<f64>().ok();
         let (min, max) = (number(&self.min)?, number(&self.max)?);
         Bands::with_range(min, max).map(|_| (min, max))
@@ -153,10 +243,6 @@ impl RasterForm {
     pub fn note(&self) -> Option<&'static str> {
         if self.name.trim().is_empty() {
             Some("The layer must have a name")
-        } else if self.height {
-            None
-        } else if self.unit.trim().is_empty() {
-            Some("The layer must have a unit")
         } else if self.range().is_none() {
             Some("The maximum must be above the minimum")
         } else {
@@ -170,7 +256,7 @@ impl RasterForm {
             return None;
         }
         let name = self.name.trim();
-        if self.height {
+        if self.height() {
             return Some(RasterSpec::height(name, self.face_size));
         }
         let (min, max) = self.range()?;
@@ -181,6 +267,16 @@ impl RasterForm {
             max,
             face_size: self.face_size,
         })
+    }
+
+    /// The fixed range of a height layer, as a text with its unit.
+    fn fixed_range(&self) -> String {
+        let (min, max) = PRESETS[HEIGHT].range;
+        format!(
+            "{} to {}",
+            world::value_text(min, max - min, ""),
+            world::value_text(max, max - min, HEIGHT_UNIT)
+        )
     }
 }
 
@@ -222,17 +318,22 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                 ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(f32::INFINITY));
                 ui.end_row();
 
-                ui.label("Kind");
-                ui.horizontal(|ui| {
-                    for (name, height) in KINDS.into_iter().zip([true, false]) {
-                        if ui.selectable_label(form.height == height, name).clicked() {
-                            form.set_height(height, state);
+                ui.label(KIND);
+                ui.horizontal_wrapped(|ui| {
+                    for (index, preset) in PRESETS.iter().enumerate() {
+                        let on = form.preset == index;
+                        if ui.selectable_label(on, preset.name).clicked() && !on {
+                            form.set_preset(index, state);
                         }
                     }
                 });
                 ui.end_row();
 
-                if !form.height {
+                if form.height() {
+                    ui.label("Values");
+                    ui.label(form.fixed_range());
+                    ui.end_row();
+                } else {
                     for (label, text) in [
                         (UNIT, &mut form.unit),
                         (MINIMUM, &mut form.min),
@@ -284,13 +385,19 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     };
     let note = form.note();
     let world = state.doc.project.world.clone();
-    // The rows are in three groups: the name, the kind with its values, and
-    // the face size.
-    let kind_rows = if form.height { 1.0 } else { 4.0 };
+    // The rows are in three groups: the kind with its values, the name, and
+    // the face size. The first frame of the form has an estimate of the
+    // height of the rows, and each later frame has the height of the frame
+    // before it.
+    let kind_rows = if form.height() { 1.0 } else { 3.0 };
     let rows = 1.0 + kind_rows + form.sizes.len() as f32 + 1.0;
-    let mut body = rows * PANEL_ROW + 2.0 * GROUP_GAP + LABEL + BUTTON_GAP + BOTTOM;
+    let mut body = 2.0 * TOUCH + rows * PANEL_ROW + 3.0 * GROUP_GAP + LABEL + BUTTON_GAP + BOTTOM;
     if note.is_some() {
         body += NOTE;
+    }
+    let body_id = egui::Id::new("raster-form-body");
+    if let Some(last) = ctx.data(|data| data.get_temp::<f32>(body_id)) {
+        body = last;
     }
     let screen = rects.screen;
     let width = WIDTH.min(screen.width() - 2.0 * MARGIN);
@@ -329,22 +436,22 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             .id_salt(CARD)
             .max_height(height - ROW)
             .auto_shrink([false, false]);
-        scroll.show(ui, |ui| {
+        let out = scroll.show(ui, |ui| {
             let margin = egui::Margin::symmetric(BODY_PAD as i8, 0);
             egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
+                let names = PRESETS.map(|preset| preset.name);
+                if let Some(index) = widgets::chips(ui, controls, &names, form.preset) {
+                    form.set_preset(index, state);
+                }
+                ui.add_space(GROUP_GAP);
                 let valid = !form.name.trim().is_empty();
                 widgets::text_field(ui, controls, NAME, "Name", None, &mut form.name, valid);
-                ui.add_space(GROUP_GAP);
-
-                let active = Some(usize::from(!form.height));
-                if let Some(index) = widgets::choice_row(ui, controls, "Kind", &KINDS, active) {
-                    form.set_height(index == 0, state);
-                }
-                if !form.height {
-                    let unit_ok = !form.unit.trim().is_empty();
+                if form.height() {
+                    widgets::value_row(ui, "Values", &form.fixed_range());
+                } else {
                     let range_ok = form.range().is_some();
-                    widgets::text_field(ui, controls, UNIT, UNIT, None, &mut form.unit, unit_ok);
+                    widgets::text_field(ui, controls, UNIT, UNIT, None, &mut form.unit, true);
                     let unit = form.unit.trim().to_string();
                     let unit = Some(unit.as_str()).filter(|unit| !unit.is_empty());
                     for (name, text) in [(MINIMUM, &mut form.min), (MAXIMUM, &mut form.max)] {
@@ -382,6 +489,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 ui.add_space(BOTTOM);
             });
         });
+        ctx.data_mut(|data| data.insert_temp(body_id, out.content_size.y));
     });
     // A touch on the dark fill does not put it above the card.
     ctx.move_to_top(egui::LayerId::new(Order::Foreground, egui::Id::new(CARD)));
@@ -441,13 +549,39 @@ mod tests {
 
     #[test]
     fn the_form_offers_the_face_sizes_that_the_device_can_show() {
-        assert_eq!(face_sizes(8192, usize::MAX), (vec![4096, 8192], 8192));
-        assert_eq!(face_sizes(8192, 16384), (vec![4096, 8192], 8192));
-        assert_eq!(face_sizes(4096, usize::MAX), (vec![4096, 8192], 4096));
+        let all = vec![1024, 2048, 4096, 8192];
+        assert_eq!(face_sizes(None, usize::MAX), all);
+        assert_eq!(face_sizes(None, 16384), all);
+        assert_eq!(face_sizes(Some(4096), usize::MAX), all);
         // A device with a smaller limit has no larger size.
-        assert_eq!(face_sizes(8192, 4096), (vec![4096], 4096));
-        assert_eq!(face_sizes(8192, 2048), (vec![2048], 2048));
-        // The face size of `--face-size` is in the list, and it is on.
-        assert_eq!(face_sizes(256, usize::MAX), (vec![256, 4096, 8192], 256));
+        assert_eq!(face_sizes(None, 4096), [1024, 2048, 4096]);
+        assert_eq!(face_sizes(Some(8192), 2048), [1024, 2048]);
+        assert_eq!(face_sizes(None, 512), [512]);
+        // The face size of `--face-size` is in the list.
+        assert_eq!(
+            face_sizes(Some(256), usize::MAX),
+            [256, 1024, 2048, 4096, 8192]
+        );
+        // The first size is the wanted one, or the next smaller one.
+        assert_eq!(first_face_size(&all, 8192), 8192);
+        assert_eq!(first_face_size(&all, 2048), 2048);
+        assert_eq!(first_face_size(&[1024, 2048], 8192), 2048);
+        assert_eq!(first_face_size(&[1024, 2048], 256), 1024);
+        assert_eq!(first_face_size(&[256, 1024], 256), 256);
+    }
+
+    #[test]
+    fn each_preset_has_a_range_with_bands() {
+        for preset in PRESETS {
+            let (min, max) = preset.range;
+            let bands = Bands::with_range(min, max).unwrap();
+            assert_eq!(bands.bands().len(), 8, "{}", preset.name);
+            assert!(FACE_SIZES.contains(&preset.face_size), "{}", preset.name);
+        }
+        assert_eq!(
+            (PRESETS[HEIGHT].name, PRESETS[HEIGHT].unit),
+            ("Height", "m")
+        );
+        assert_eq!(PRESETS[CUSTOM].name, "Custom");
     }
 }

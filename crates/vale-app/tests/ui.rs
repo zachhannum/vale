@@ -9,7 +9,7 @@ use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::pad::MORE;
-use vale_app::ui::panels::WORLD_BUTTON;
+use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{
     Action, AppState, ExportFormat, LayerRef, Layout, RasterSpec, Workspace, draw,
@@ -98,10 +98,144 @@ fn the_layer_list_adds_a_layer() {
     let state = h.state();
     let top = state.doc.project.layers().last().unwrap();
     assert_eq!(
-        (top.name.as_str(), top.kind),
-        ("Points 1", vale_store::GeometryKind::Point)
+        (top.name.as_str(), top.geometry()),
+        ("Points 1", Some(vale_store::GeometryKind::Point))
     );
     assert_eq!(state.selected_layer, Some(LayerRef::Vector(top.id)));
+}
+
+/// The names of the layers of the project, from the bottom of the drawing.
+fn layer_names(state: &AppState) -> Vec<&str> {
+    let layers = state.doc.project.layers();
+    layers.iter().map(|l| l.name.as_str()).collect()
+}
+
+#[test]
+fn the_map_workspace_does_not_list_a_raster_layer() {
+    let mut h = harness();
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 64,
+    };
+    let rain = h.state_mut().add_raster(rain).unwrap();
+    let layer = h.state().doc.project.raster_layer(rain).unwrap().id;
+    // The raster layer is between two vector layers in the draw order.
+    assert!(h.state_mut().move_layer(layer, 1));
+    h.state_mut().select(None);
+    h.run_steps(3);
+    let state = h.state();
+    assert_eq!(layer_names(state), ["Land", "Rain", "Rivers", "Places"]);
+
+    // The map frame has an entry for each vector layer only.
+    let ids = |names: [&str; 3]| {
+        let layers = state.doc.project.layers();
+        names.map(|name| layers.iter().find(|l| l.name == name).unwrap().id)
+    };
+    let [land, rivers, places] = ids(["Land", "Rivers", "Places"]);
+    let entries: Vec<_> = state.doc.frame.entries.iter().map(|e| e.layer).collect();
+    assert_eq!(entries, [land, rivers, places]);
+    assert!(state.doc.entry(layer).is_none());
+    // The list, the map, and the labels have the vector layers.
+    assert!(h.query_by_label("Select Rain").is_none());
+    assert!(h.query_by_label("Rain").is_none());
+    for name in ["Select Land", "Select Rivers", "Select Places"] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    let composed = state.composed.as_ref().expect("a composed map");
+    assert!(composed.labels.placed > 0);
+
+    // A raster layer has no inspector.
+    h.state_mut().selected_layer = Some(LayerRef::Vector(layer));
+    h.run_steps(2);
+    assert!(h.query_by_label("Move up").is_none());
+
+    // A vector layer moves past the next vector layer of the map.
+    h.state_mut().select(Some(LayerRef::Vector(land)));
+    h.run_steps(2);
+    h.get_by_label("Move up").click();
+    h.run_steps(2);
+    let state = h.state();
+    assert_eq!(layer_names(state), ["Rain", "Rivers", "Land", "Places"]);
+    let entries: Vec<_> = state.doc.frame.entries.iter().map(|e| e.layer).collect();
+    assert_eq!(entries, [rivers, land, places]);
+}
+
+/// The desktop layout of the globe workspace of the sample world.
+fn globe_harness() -> Harness<'static, AppState> {
+    let mut state = state_with(Document::sample());
+    state.workspace = Workspace::Globe;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    h
+}
+
+#[test]
+fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
+    let mut h = globe_harness();
+    let height = RasterSpec::height("Height", 64);
+    let height = h.state_mut().add_raster(height).unwrap();
+    h.state_mut().select(None);
+    h.run_steps(2);
+    assert_eq!(
+        layer_names(h.state()),
+        ["Height", "Land", "Rivers", "Places"]
+    );
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    let click = |h: &mut Harness<'static, AppState>, name: &str| {
+        h.get_by_label(name).click();
+        h.run_steps(2);
+    };
+
+    // The list has each layer of each kind, and the arrows move a raster
+    // layer past a vector layer.
+    for name in ["Select Height", "Select Land", "Select Places"] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    click(&mut h, "Move Height up");
+    click(&mut h, "Move Height up");
+    assert_eq!(
+        layer_names(h.state()),
+        ["Land", "Rivers", "Height", "Places"]
+    );
+    click(&mut h, "Move Places down");
+    assert_eq!(
+        layer_names(h.state()),
+        ["Land", "Rivers", "Places", "Height"]
+    );
+    click(&mut h, "Move Height down");
+
+    // The name selects the layer, and the checkbox hides it.
+    click(&mut h, "Select Height");
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(height)));
+    assert_eq!(h.state().globe.raster(), Some(height));
+    click(&mut h, "Show Height");
+    let layer = h.state().doc.project.raster_layer(height).unwrap();
+    assert!(!layer.visible);
+    assert_eq!(h.state().globe.raster(), None);
+    click(&mut h, "Show Height");
+    assert_eq!(h.state().globe.raster(), Some(height));
+
+    // The selected layer has a name field, an opacity, and a delete button.
+    assert!(h.query_by_label(LAYER_NAME).is_some());
+    assert!(h.query_by_label(OPACITY).is_some());
+    assert!(h.state_mut().rename_raster(height, "Ground"));
+    assert!(h.state_mut().set_raster_opacity(height, 0.4));
+    h.run_steps(2);
+    assert!(h.query_by_label("Select Ground").is_some());
+    assert_eq!(h.state().doc.project.raster(height).unwrap().opacity, 0.4);
+    click(&mut h, DELETE_LAYER);
+    let state = h.state();
+    assert_eq!(layer_names(state), ["Land", "Rivers", "Places"]);
+    assert!(state.doc.project.rasters().is_empty());
+    assert!(state.globe.raster_map(height).is_none());
+    assert_eq!(state.selected_layer, None);
 }
 
 #[test]

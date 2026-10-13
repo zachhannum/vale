@@ -741,6 +741,60 @@ pub fn choice_row(
     chosen
 }
 
+/// The padding at the left and the right of the text of a chip.
+const CHIP_PAD: f32 = 14.0;
+
+/// A set of choices that wraps to the width of the form. Each choice is as
+/// wide as its text and as high as a touch target. `active` is the choice
+/// that is on. Returns the choice that the user made.
+pub fn chips(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    choices: &[&str],
+    active: usize,
+) -> Option<usize> {
+    let (left, top, width) = (ui.cursor().left(), ui.cursor().top(), ui.available_width());
+    let mut rects = Vec::with_capacity(choices.len());
+    let mut at = pos2(left, top);
+    for choice in choices {
+        let size = vec2(
+            text_width(ui, choice, theme::body()) + 2.0 * CHIP_PAD,
+            TOUCH,
+        );
+        if at.x > left && at.x + size.x > left + width {
+            at = pos2(left, at.y + TOUCH);
+        }
+        rects.push(Rect::from_min_size(at, size));
+        at.x += size.x;
+    }
+    ui.allocate_exact_size(vec2(width, at.y + TOUCH - top), Sense::hover());
+    let mut chosen = None;
+    for (index, (choice, rect)) in choices.iter().zip(rects).enumerate() {
+        let on = active == index;
+        let resp = hit(ui, controls, rect, choice, Sense::click(), true, Some(on));
+        let back = rect.shrink(HIGHLIGHT_INSET);
+        let pressed = on || resp.is_pointer_button_down_on();
+        let fill = if pressed {
+            theme::raise()
+        } else {
+            theme::track()
+        };
+        ui.painter().rect_filled(back, theme::CONTROL_RADIUS, fill);
+        let color = if on { theme::TEXT } else { theme::MUTE };
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            *choice,
+            theme::body(),
+            color,
+        );
+        if resp.clicked() && !on {
+            chosen = Some(index);
+        }
+    }
+    chosen
+}
+
 /// The width of the value at the right of a row of a form.
 const FORM_VALUE: f32 = 132.0;
 /// The height of the names below the ticks of a tick slider.

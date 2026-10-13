@@ -13,10 +13,10 @@ use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, DELETE_LAYER, DELETE_RASTER, EXPORT_GEOTIFF, IMPORT_HEIGHTMAP, LAYER_NAME, LayerRef,
-    MORE, NEW_RASTER, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
+    MORE, NEW_RASTER, OPACITY, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
     brush_size_text, readout_text, theme,
 };
-use vale_app::ui::raster_form::{self, RasterForm, face_size_name};
+use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
 use vale_app::world::{radius_fraction, three_significant};
@@ -200,7 +200,8 @@ fn check_controls(h: &Pad, what: &str) {
                 let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
                 let more = in_more
                     && ["Carve", "Ridge", "Erode", "Weather", "Uplift", "Warp"].contains(&name);
-                let add = in_add && [NEW_RASTER, "Lines", "Points", "Polygons"].contains(&name);
+                let rows = [NEW_RASTER, "Lines", "Points", "Polygons", IMPORT_HEIGHTMAP];
+                let add = in_add && rows.contains(&name);
                 menu || kind || more || add || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
@@ -270,11 +271,25 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
     }
 }
 
+/// The name of a raster layer, from its layer record.
+fn raster_name(h: &Pad, id: vale_store::RasterId) -> String {
+    let layer = h.state().doc.project.raster_layer(id);
+    layer.unwrap().name.clone()
+}
+
+/// The vector layer with a name.
+fn vector(h: &Pad, name: &str) -> vale_store::LayerId {
+    let layers = h.state().doc.project.layers();
+    let layer = layers.iter().find(|l| l.name == name);
+    layer.unwrap_or_else(|| panic!("no layer {name}")).id
+}
+
 #[test]
 fn the_layers_panel_adds_selects_and_hides_raster_layers() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = empty_pad(size);
+        h.state_mut().form_face_size = Some(64);
         // With no raster layer, the brush cells are off and the tool is Move.
         for name in ["Raise", "Lower", "Smooth", "Flatten", MORE] {
             assert!(control(&h, name).is_none(), "{what}: {name}");
@@ -282,26 +297,26 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         assert!(control(&h, "Pan").is_some(), "{what}");
         tap(&mut h, "Layers");
         assert!(control(&h, "Layer Height").is_none(), "{what}");
+        assert!(control(&h, IMPORT_HEIGHTMAP).is_none(), "{what}");
 
         // The first row of the menu opens the form of a raster layer. The
-        // form adds a height layer, selects it, and opens its panel.
+        // form adds a layer, selects it, and opens its panel.
         tap(&mut h, ADD_LAYER);
         let (raster, lines) = (control(&h, NEW_RASTER), control(&h, "Lines"));
         assert!(raster.unwrap().bottom() <= lines.unwrap().top() + 0.5);
         check_controls(&h, &format!("{what} with the menu of the new layers"));
         tap(&mut h, NEW_RASTER);
         assert!(!h.state().pad.add && h.state().raster_form.is_some());
+        tap(&mut h, "Height");
         tap(&mut h, raster_form::ADD);
         let rasters = h.state().doc.project.rasters();
         assert_eq!(rasters.len(), 1, "{what}");
         let first = rasters[0].id;
         let record = &rasters[0];
-        assert_eq!(
-            (record.name.as_str(), record.unit.as_str()),
-            ("Height", "m")
-        );
+        assert_eq!(record.unit, "m");
         assert_eq!((record.value_min, record.value_max), (-6000.0, 6000.0));
-        assert_eq!(record.face_size as usize, h.state().globe.new_face_size());
+        assert_eq!((record.face_size, record.opacity), (64, 1.0));
+        assert_eq!(raster_name(&h, first), "Height");
         assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(first)));
         assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(first)));
         assert_eq!(h.state().globe.raster(), Some(first));
@@ -311,18 +326,30 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         tap(&mut h, NEW_RASTER);
         tap(&mut h, raster_form::ADD);
         tap(&mut h, "Back to Layers");
-        let rasters = h.state().doc.project.rasters();
-        let names: Vec<&str> = rasters.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["Height", "Height 2"], "{what}");
-        let second = rasters[1].id;
+        let second = h.state().doc.project.rasters()[1].id;
+        assert_eq!(raster_name(&h, second), "Raster");
         assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(second)));
 
-        // The rows of the raster layers come before the rows of the vector
-        // layers, and each one is a touch target.
+        // The list has one row for each layer of each kind, in the draw
+        // order. A new raster layer is above the top raster layer.
+        assert_eq!(
+            layer_names(&h),
+            ["Height", "Raster", "Land", "Rivers", "Places"],
+            "{what}"
+        );
         check_controls(&h, &format!("{what} with two raster layers"));
         let top = |name: &str| control(&h, name).unwrap().top();
-        let rows = ["Layer Height", "Layer Height 2", "Layer Land"].map(top);
-        assert!(rows.is_sorted() && rows[0] < rows[2], "{what}: {rows:?}");
+        let names = layer_names(&h);
+        let rows: Vec<f32> = names.iter().map(|n| top(&format!("Layer {n}"))).collect();
+        assert!(rows.is_sorted() && rows[0] < rows[4], "{what}: {rows:?}");
+        for name in &names {
+            for control_name in [format!("Hide {name}"), format!("Open {name}")] {
+                assert!(
+                    control(&h, &control_name).is_some(),
+                    "{what}: {control_name}"
+                );
+            }
+        }
 
         // A tap selects a layer, and the globe shows it.
         tap(&mut h, "Layer Height");
@@ -333,26 +360,33 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         // The eye hides the layer. The brush does not paint a hidden layer,
         // and the globe shows the other layer.
         tap(&mut h, "Hide Height");
-        assert!(!h.state().doc.project.raster(first).unwrap().visible);
+        let layer = h.state().doc.project.raster_layer(first).unwrap();
+        assert!(!layer.visible, "{what}");
         assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(first)));
         assert_eq!(h.state().globe.raster(), Some(second));
         assert!(!h.state().globe.paintable, "{what}");
-        tap(&mut h, "Hide Height 2");
+        tap(&mut h, "Hide Raster");
         assert_eq!(h.state().globe.raster(), None, "{what}");
         tap(&mut h, "Show Height");
-        tap(&mut h, "Show Height 2");
+        tap(&mut h, "Show Raster");
         assert_eq!(h.state().globe.raster(), Some(first));
         assert!(h.state().globe.paintable, "{what}");
 
-        // The brush does not paint a vector layer.
+        // The brush does not paint a vector layer. The globe then shows the
+        // top raster layer of the draw order.
         tap(&mut h, "Layer Rivers");
         assert_eq!(h.state().globe.raster(), Some(second));
         assert!(!h.state().globe.paintable, "{what}");
+        let height = h.state().doc.project.raster_layer(first).unwrap().id;
+        assert!(h.state_mut().move_layer(height, 4));
+        h.run_steps(2);
+        assert_eq!(h.state().globe.raster(), Some(first), "{what}");
 
-        // The app takes a raster layer away.
+        // The app takes a raster layer away, with its row.
         assert!(h.state_mut().remove_raster(second));
         h.run_steps(2);
-        assert!(control(&h, "Layer Height 2").is_none(), "{what}");
+        assert!(control(&h, "Layer Raster").is_none(), "{what}");
+        assert_eq!(layer_names(&h), ["Land", "Rivers", "Places", "Height"]);
         assert_eq!(h.state().globe.raster(), Some(first));
     }
 }
@@ -414,46 +448,47 @@ fn a_new_raster_layer_has_the_picked_face_size() {
         let what = format!("{size:?}");
         let mut h = empty_pad(size);
         // The face size of `--face-size` is in the list, and it is on.
-        h.state_mut().globe.set_face_size(64);
+        h.state_mut().form_face_size = Some(64);
         tap(&mut h, "Layers");
         open_raster_form(&mut h);
         let form = h.state().raster_form.clone().unwrap();
         assert_eq!(
             (form.sizes.as_slice(), form.face_size),
-            (&[64, 4096, 8192][..], 64)
+            (&[64, 1024, 2048, 4096, 8192][..], 64)
         );
-        assert_eq!((form.name.as_str(), form.height), ("Height", true));
+        assert_eq!((form.name.as_str(), form.height()), ("Raster", false));
         check_controls(&h, &format!("{what} with the form of a raster layer"));
-        for size in [64, 4096, 8192] {
+        for size in [64, 1024, 2048, 4096, 8192] {
             assert!(
                 control(&h, &face_size_name(size)).is_some(),
                 "{what}: {size}"
             );
         }
 
-        tap(&mut h, &face_size_name(4096));
-        assert_eq!(h.state().raster_form.as_ref().unwrap().face_size, 4096);
+        tap(&mut h, &face_size_name(1024));
+        assert_eq!(h.state().raster_form.as_ref().unwrap().face_size, 1024);
         tap(&mut h, raster_form::ADD);
         assert!(h.state().raster_form.is_none(), "{what}");
         let state = h.state();
         let rasters = state.doc.project.rasters();
         assert_eq!(rasters.len(), 1, "{what}");
         let first = rasters[0].id;
-        assert_eq!(rasters[0].face_size, 4096, "{what}");
-        assert_eq!(state.globe.raster_map(first).unwrap().face_size(), 4096);
+        assert_eq!(rasters[0].face_size, 1024, "{what}");
+        assert_eq!(state.globe.raster_map(first).unwrap().face_size(), 1024);
         assert_eq!(state.pad.layer, Some(LayerRef::Raster(first)));
         assert_eq!(state.selected_layer, Some(LayerRef::Raster(first)));
         assert_eq!(state.globe.raster(), Some(first));
 
         // The next layer has the size that is on at first.
         open_raster_form(&mut h);
-        assert_eq!(h.state().raster_form.as_ref().unwrap().name, "Height 2");
+        assert_eq!(h.state().raster_form.as_ref().unwrap().name, "Raster 2");
         tap(&mut h, raster_form::ADD);
+        let second = h.state().doc.project.rasters()[1].clone();
+        assert_eq!(raster_name(&h, second.id), "Raster 2");
+        assert_eq!(second.face_size, 64);
         let state = h.state();
-        let second = &state.doc.project.rasters()[1];
-        assert_eq!((second.name.as_str(), second.face_size), ("Height 2", 64));
         assert_eq!(state.globe.raster_map(second.id).unwrap().face_size(), 64);
-        assert_eq!(state.globe.raster_map(first).unwrap().face_size(), 4096);
+        assert_eq!(state.globe.raster_map(first).unwrap().face_size(), 1024);
 
         // The close button adds no layer.
         open_raster_form(&mut h);
@@ -461,15 +496,118 @@ fn a_new_raster_layer_has_the_picked_face_size() {
         assert!(h.state().raster_form.is_none());
         assert_eq!(h.state().doc.project.rasters().len(), 2, "{what}");
     }
+}
 
-    // The window has the two face sizes, and the larger one is on.
+#[test]
+fn the_form_offers_four_face_sizes_and_the_preset_gives_the_default() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = empty_pad(size);
+        tap(&mut h, "Layers");
+        open_raster_form(&mut h);
+        // The form opens on the custom preset.
+        let form = h.state().raster_form.clone().unwrap();
+        assert_eq!(form.sizes, [1024, 2048, 4096, 8192], "{what}");
+        assert_eq!(PRESETS[form.preset].name, "Custom");
+        assert_eq!(form.face_size, 2048, "{what}");
+        check_controls(&h, &format!("{what} with the four face sizes"));
+        let screen = h.state().pad.rects.unwrap().screen;
+        for preset in PRESETS {
+            let chip = control(&h, preset.name).unwrap();
+            assert!(screen.contains_rect(chip), "{what}: {}", preset.name);
+        }
+        let top = |size: &usize| control(&h, &face_size_name(*size)).unwrap().top();
+        let tops: Vec<f32> = form.sizes.iter().map(top).collect();
+        assert!(tops.is_sorted(), "{what}: {tops:?}");
+
+        // The face size follows the preset.
+        for preset in PRESETS {
+            tap(&mut h, preset.name);
+            let form = h.state().raster_form.as_ref().unwrap();
+            assert_eq!(form.face_size, preset.face_size, "{}", preset.name);
+        }
+        let sizes: Vec<usize> = PRESETS.iter().map(|preset| preset.face_size).collect();
+        assert_eq!(sizes, [8192, 2048, 2048, 2048, 2048]);
+
+        // A face size that the user picks is the size of the layer.
+        tap(&mut h, "Precipitation");
+        tap(&mut h, &face_size_name(1024));
+        tap(&mut h, raster_form::ADD);
+        let rain = h.state().doc.project.rasters()[0].clone();
+        assert_eq!((rain.face_size, rain.unit.as_str()), (1024, "mm"), "{what}");
+    }
+
+    // With `--face-size`, that size is on for each preset.
     let mut state = state();
-    state.globe.set_face_size(vale_app::globe::WINDOW_FACE_SIZE);
-    let form = RasterForm::open(&state);
-    assert_eq!(
-        (form.sizes.as_slice(), form.face_size),
-        (&[4096, 8192][..], 8192)
-    );
+    state.form_face_size = Some(256);
+    let mut form = RasterForm::open(&state);
+    for index in 0..PRESETS.len() {
+        form.set_preset(index, &state);
+        assert_eq!(form.face_size, 256);
+    }
+    // A device with a small limit has no larger face size.
+    let sizes = raster_form::face_sizes(None, 4096);
+    assert_eq!(sizes, [1024, 2048, 4096]);
+    assert_eq!(raster_form::first_face_size(&sizes, 8192), 4096);
+}
+
+#[test]
+fn each_preset_adds_a_layer_with_its_unit_and_its_range() {
+    let mut h = empty_pad(BOARDS[0]);
+    h.state_mut().form_face_size = Some(64);
+    tap(&mut h, "Layers");
+    let wanted = [
+        ("Height", "m", (-6000.0, 6000.0)),
+        ("Precipitation", "mm", (0.0, 4000.0)),
+        ("Temperature", "°C", (-60.0, 60.0)),
+        ("Pressure", "hPa", (950.0, 1050.0)),
+        ("Custom", "", (0.0, 100.0)),
+    ];
+    for (index, (preset, unit, range)) in wanted.into_iter().enumerate() {
+        open_raster_form(&mut h);
+        tap(&mut h, preset);
+        // The name follows the preset. The unit and the range of each
+        // preset but Height are fields.
+        let name = if preset == "Custom" { "Raster" } else { preset };
+        let form = h.state().raster_form.clone().unwrap();
+        assert_eq!((form.name.as_str(), form.unit.as_str()), (name, unit));
+        let fields = control(&h, raster_form::UNIT).is_some()
+            && control(&h, raster_form::MINIMUM).is_some()
+            && control(&h, raster_form::MAXIMUM).is_some();
+        assert_eq!(fields, preset != "Height", "{preset}");
+        check_controls(&h, &format!("the form of the preset {preset}"));
+        tap(&mut h, raster_form::ADD);
+        let state = h.state();
+        let rasters = state.doc.project.rasters();
+        assert_eq!(rasters.len(), index + 1, "{preset}");
+        let raster = &rasters[index];
+        assert_eq!(raster.unit, unit, "{preset}");
+        assert_eq!((raster.value_min, raster.value_max), range, "{preset}");
+        assert_eq!(raster.face_size, 64, "{preset}");
+        assert_eq!(raster_name(&h, raster.id), name);
+        // The bands of the layer have limits in the range.
+        let bands = &state.globe.raster_map(raster.id).unwrap().bands;
+        assert_eq!((bands.min(), bands.max()), range, "{preset}");
+        let limits = bands.limits();
+        assert!(limits.len() >= 4, "{preset}: {limits:?}");
+        let inside = |limit: &f64| *limit > range.0 && *limit < range.1;
+        assert!(limits.iter().all(inside), "{preset}: {limits:?}");
+        // Only the height preset gives a height layer.
+        assert_eq!(state.globe.is_height(), preset == "Height", "{preset}");
+    }
+
+    // A name that the user typed stays when the preset changes.
+    open_raster_form(&mut h);
+    type_text(&mut h, raster_form::NAME, "Rain");
+    tap(&mut h, "Precipitation");
+    let form = h.state().raster_form.clone().unwrap();
+    assert_eq!((form.name.as_str(), form.unit.as_str()), ("Rain", "mm"));
+    // A preset is a start only: the unit and the range are free.
+    type_text(&mut h, raster_form::UNIT, "cm");
+    type_text(&mut h, raster_form::MAXIMUM, "400");
+    tap(&mut h, raster_form::ADD);
+    let rain = h.state().doc.project.rasters()[5].clone();
+    assert_eq!((rain.unit.as_str(), rain.value_max), ("cm", 400.0));
 }
 
 #[test]
@@ -477,7 +615,6 @@ fn the_form_shows_the_values_next_to_each_face_size() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = empty_pad(size);
-        h.state_mut().globe.set_face_size(8192);
         tap(&mut h, "Layers");
         open_raster_form(&mut h);
         let card = |h: &Pad, name: &str| control(h, name).unwrap();
@@ -513,10 +650,19 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        h.state_mut().globe.set_face_size(64);
+        h.state_mut().form_face_size = Some(64);
         tap(&mut h, "Layers");
         open_raster_form(&mut h);
-        // The height layer of the world has the name Height.
+        // The form opens on the custom preset, with a plain value.
+        let form = h.state().raster_form.clone().unwrap();
+        assert_eq!((form.name.as_str(), form.height()), ("Raster", false));
+        assert_eq!(
+            (form.unit.as_str(), form.min.as_str(), form.max.as_str()),
+            ("", "0", "100")
+        );
+        // The height layer of the world has the name Height. A height has
+        // a fixed unit and a fixed range.
+        tap(&mut h, "Height");
         assert_eq!(h.state().raster_form.as_ref().unwrap().name, "Height 2");
         for name in [
             raster_form::UNIT,
@@ -525,9 +671,12 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
         ] {
             assert!(control(&h, name).is_none(), "{what}: {name}");
         }
-        tap(&mut h, "Other");
+        tap(&mut h, "Precipitation");
         let form = h.state().raster_form.clone().unwrap();
-        assert_eq!((form.name.as_str(), form.height), ("Raster", false));
+        assert_eq!(
+            (form.name.as_str(), form.height()),
+            ("Precipitation", false)
+        );
         assert_eq!(
             (form.unit.as_str(), form.min.as_str(), form.max.as_str()),
             ("mm", "0", "4000")
@@ -541,7 +690,7 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
             );
         }
 
-        // The form does not add a layer with an empty range or with no unit.
+        // The form does not add a layer with an empty range.
         type_text(&mut h, raster_form::MAXIMUM, "0");
         assert!(control(&h, raster_form::ADD).is_none(), "{what}");
         assert!(
@@ -549,9 +698,9 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
                 .is_some()
         );
         type_text(&mut h, raster_form::MAXIMUM, "2500");
+        // A plain value has no unit.
         type_text(&mut h, raster_form::UNIT, " ");
-        assert!(control(&h, raster_form::ADD).is_none(), "{what}");
-        assert!(h.query_by_label("The layer must have a unit").is_some());
+        assert!(control(&h, raster_form::ADD).is_some(), "{what}");
         assert_eq!(h.state().doc.project.rasters().len(), 1);
 
         type_text(&mut h, raster_form::UNIT, "°C");
@@ -559,13 +708,14 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
         type_text(&mut h, raster_form::MAXIMUM, "50");
         type_text(&mut h, raster_form::NAME, "Heat");
         tap(&mut h, raster_form::ADD);
-        let state = h.state();
-        let heat = &state.doc.project.rasters()[1];
-        assert_eq!((heat.name.as_str(), heat.unit.as_str()), ("Heat", "°C"));
+        let heat = h.state().doc.project.rasters()[1].clone();
+        assert_eq!(raster_name(&h, heat.id), "Heat");
+        assert_eq!(heat.unit, "°C");
         assert_eq!(
             (heat.value_min, heat.value_max, heat.face_size),
             (-50.0, 50.0, 64)
         );
+        let state = h.state();
         assert_eq!(state.selected_layer, Some(LayerRef::Raster(heat.id)));
         assert!(!state.globe.is_height());
         check_controls(
@@ -671,12 +821,18 @@ fn the_panel_of_a_raster_layer_renames_and_deletes_the_layer() {
         tap(&mut h, "Open Height");
         check_controls(&h, &format!("{what} with the panel of a raster layer"));
         type_text(&mut h, LAYER_NAME, "Ground");
-        assert_eq!(h.state().doc.project.rasters()[0].name, "Ground");
+        assert_eq!(raster_name(&h, height), "Ground");
         assert!(control(&h, "Close Ground").is_some(), "{what}");
         // A blank name changes nothing.
         type_text(&mut h, LAYER_NAME, "  ");
-        assert_eq!(h.state().doc.project.rasters()[0].name, "Ground");
+        assert_eq!(raster_name(&h, height), "Ground");
 
+        // The sheet of a narrow screen scrolls to the button.
+        if control(&h, DELETE_RASTER).is_none() {
+            // The row of the values is below the name.
+            let from = control(&h, LAYER_NAME).unwrap().center_bottom() + vec2(0.0, 24.0);
+            drag(&mut h, from, from - vec2(0.0, 120.0), None);
+        }
         let delete = control(&h, DELETE_RASTER).unwrap_or_else(|| panic!("{what}"));
         assert!(
             panel(&h, Panel::Layers).unwrap().contains_rect(delete),
@@ -693,8 +849,8 @@ fn the_panel_of_a_raster_layer_renames_and_deletes_the_layer() {
         h.state_mut().undo();
         h.run_steps(2);
         let state = h.state();
-        assert_eq!(state.doc.project.rasters()[0].name, "Ground");
         assert_eq!(state.globe.raster_map(height).unwrap().get(0, 0, 0), level);
+        assert_eq!(raster_name(&h, height), "Ground");
         assert!(control(&h, "Layer Ground").is_some(), "{what}");
     }
 }
@@ -729,14 +885,14 @@ fn you_make_rename_hide_and_delete_a_layer() {
         assert!(!h.state().pad.add && h.state().pad.add_rect.is_none());
         assert_eq!(
             layer_names(&h),
-            ["Land", "Rivers", "Places", "Polygons 1"],
+            ["Height", "Land", "Rivers", "Places", "Polygons 1"],
             "{size:?}"
         );
-        let id = h.state().doc.project.layers()[3].id;
+        let id = vector(&h, "Polygons 1");
         assert_eq!(h.state().pad.layer, Some(LayerRef::Vector(id)));
         assert_eq!(
-            h.state().doc.layer(id).unwrap().kind,
-            vale_store::GeometryKind::Polygon
+            h.state().doc.layer(id).unwrap().geometry(),
+            Some(vale_store::GeometryKind::Polygon)
         );
         assert!(control(&h, "Close Polygons 1").is_some());
 
@@ -754,7 +910,11 @@ fn you_make_rename_hide_and_delete_a_layer() {
 
         tap(&mut h, "Open Coast");
         tap(&mut h, DELETE_LAYER);
-        assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"], "{size:?}");
+        assert_eq!(
+            layer_names(&h),
+            ["Height", "Land", "Rivers", "Places"],
+            "{size:?}"
+        );
         assert_eq!(h.state().pad.layer, None);
         assert!(control(&h, ADD_LAYER).is_some());
         assert!(control(&h, "Open Coast").is_none());
@@ -776,7 +936,7 @@ fn a_press_outside_closes_the_menu_of_the_new_layers() {
     touch(&mut h, egui::TouchPhase::End, pos, None);
     h.run_steps(2);
     assert!(!h.state().pad.add);
-    assert_eq!(layer_names(&h).len(), 3);
+    assert_eq!(layer_names(&h).len(), 4);
 }
 
 #[test]
@@ -785,7 +945,7 @@ fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
         let mut h = painted_pad(size);
         tap(&mut h, "Layers");
         let list = panel(&h, Panel::Layers).unwrap();
-        let rivers = h.state().doc.project.layers()[1].id;
+        let rivers = vector(&h, "Rivers");
         tap(&mut h, "Open Rivers");
         assert_eq!(h.state().pad.layer, Some(LayerRef::Vector(rivers)));
         assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(rivers)));
@@ -829,7 +989,7 @@ fn a_hold_and_a_drag_change_the_order() {
     for size in [BOARDS[0], BOARDS[3]] {
         let mut h = pad(size);
         tap(&mut h, "Layers");
-        let land = h.state().doc.project.layers()[0].id;
+        let land = vector(&h, "Land");
         let places = control(&h, "Layer Places").unwrap().center();
         let from = hold(&mut h, "Layer Land");
         assert_eq!(h.state().pad.reorder.map(|r| r.layer), Some(land));
@@ -839,18 +999,22 @@ fn a_hold_and_a_drag_change_the_order() {
             touch(&mut h, egui::TouchPhase::Move, pos, None);
             h.step();
         }
-        assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"]);
+        assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
         touch(&mut h, egui::TouchPhase::End, places, None);
         h.run_steps(3);
         assert_eq!(h.state().pad.reorder, None);
-        assert_eq!(layer_names(&h), ["Rivers", "Places", "Land"], "{size:?}");
+        assert_eq!(
+            layer_names(&h),
+            ["Height", "Rivers", "Places", "Land"],
+            "{size:?}"
+        );
         assert_eq!(
             control(&h, "Layer Land").unwrap().center().y,
             places.y,
             "{size:?}"
         );
 
-        // One row up.
+        // The row goes to the first place, below the raster layer.
         let rivers = control(&h, "Layer Rivers").unwrap().center();
         let from = hold(&mut h, "Layer Land");
         touch(&mut h, egui::TouchPhase::Move, from.lerp(rivers, 0.5), None);
@@ -859,7 +1023,173 @@ fn a_hold_and_a_drag_change_the_order() {
         h.step();
         touch(&mut h, egui::TouchPhase::End, pos2(from.x, 0.0), None);
         h.run_steps(3);
-        assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"], "{size:?}");
+        assert_eq!(
+            layer_names(&h),
+            ["Land", "Height", "Rivers", "Places"],
+            "{size:?}"
+        );
+    }
+}
+
+/// Runs one frame and the save of the app, as the window does.
+fn step_and_save(h: &mut Pad, hold: bool) {
+    h.step();
+    h.state_mut().save_tick(hold, std::time::Instant::now());
+}
+
+/// The layout of a world with a height layer and a project file. The file
+/// holds each change.
+fn saved_pad(size: (f32, f32), dir: &std::path::Path) -> Pad {
+    let mut h = pad(size);
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.join("w.gpkg"), &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    h.run_steps(2);
+    h
+}
+
+/// The number of the saves of the project file.
+fn saves(h: &Pad) -> u64 {
+    h.state().session.as_ref().unwrap().saves()
+}
+
+#[test]
+fn a_drag_moves_a_raster_row_past_a_vector_row_and_undo_puts_it_back() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        tap(&mut h, "Layers");
+        let before = ["Height", "Land", "Rivers", "Places"];
+        assert_eq!(layer_names(&h), before, "{what}");
+        let height = h.state().doc.project.rasters()[0].id;
+        let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+        let saved = saves(&h);
+
+        // The finger holds the raster row and moves it past two vector rows.
+        let rivers = control(&h, "Layer Rivers").unwrap().center();
+        let from = hold(&mut h, "Layer Height");
+        assert_eq!(h.state().pad.reorder.map(|r| r.layer), Some(layer));
+        for i in 1..=6 {
+            let pos = from.lerp(rivers + vec2(0.0, 6.0), i as f32 / 6.0);
+            touch(&mut h, egui::TouchPhase::Move, pos, None);
+            step_and_save(&mut h, true);
+        }
+        assert_eq!(layer_names(&h), before, "{what}");
+        touch(&mut h, egui::TouchPhase::End, rivers, None);
+        for _ in 0..3 {
+            step_and_save(&mut h, false);
+        }
+        let after = ["Land", "Rivers", "Height", "Places"];
+        assert_eq!(layer_names(&h), after, "{what}");
+        assert_eq!(
+            control(&h, "Layer Height").unwrap().center().y,
+            rivers.y,
+            "{what}"
+        );
+        // The map has the vector layers only, in their order.
+        let entries = &h.state().doc.frame.entries;
+        let on_map: Vec<_> = entries.iter().map(|e| e.layer).collect();
+        assert_eq!(on_map, ["Land", "Rivers", "Places"].map(|n| vector(&h, n)));
+        // The move is one undo step.
+        assert_eq!(saves(&h), saved + 1, "{what}");
+
+        tap(&mut h, "Undo");
+        assert_eq!(layer_names(&h), before, "{what}");
+        assert!(h.state().globe.raster_map(height).is_some(), "{what}");
+        tap(&mut h, "Redo");
+        assert_eq!(layer_names(&h), after, "{what}");
+
+        // A vector row moves past the raster row.
+        let land = control(&h, "Layer Land").unwrap().center();
+        let from = hold(&mut h, "Layer Places");
+        for i in 1..=6 {
+            let pos = from.lerp(land, i as f32 / 6.0);
+            touch(&mut h, egui::TouchPhase::Move, pos, None);
+            step_and_save(&mut h, true);
+        }
+        touch(&mut h, egui::TouchPhase::End, land, None);
+        for _ in 0..3 {
+            step_and_save(&mut h, false);
+        }
+        assert_eq!(
+            layer_names(&h),
+            ["Places", "Land", "Rivers", "Height"],
+            "{what}"
+        );
+        tap(&mut h, "Undo");
+        assert_eq!(layer_names(&h), after, "{what}");
+    }
+}
+
+#[test]
+fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        let height = h.state().doc.project.rasters()[0].id;
+        let opacity = |h: &Pad| h.state().doc.project.raster(height).unwrap().opacity;
+        assert_eq!(opacity(&h), 1.0);
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Height");
+        check_controls(&h, &format!("{what} with the opacity slider"));
+        let slider = control(&h, OPACITY).unwrap();
+        let card = panel(&h, Panel::Layers).unwrap();
+        assert!(card.contains_rect(slider), "{what}: {slider:?}");
+        // The row is below the rows of the values and of the face size.
+        let name = control(&h, LAYER_NAME).unwrap();
+        assert_eq!(slider.top(), name.bottom() + 96.0, "{what}");
+        let saved = saves(&h);
+
+        // One drag has many values and one save.
+        let y = slider.center().y;
+        let (from, to) = (pos2(slider.right() - 70.0, y), pos2(slider.left(), y));
+        touch(&mut h, egui::TouchPhase::Start, from, None);
+        step_and_save(&mut h, true);
+        let mut values = vec![opacity(&h)];
+        for i in 1..=6 {
+            touch(
+                &mut h,
+                egui::TouchPhase::Move,
+                from.lerp(to, i as f32 / 6.0),
+                None,
+            );
+            step_and_save(&mut h, true);
+            values.push(opacity(&h));
+        }
+        assert_eq!(saves(&h), saved, "{what}");
+        touch(&mut h, egui::TouchPhase::End, to, None);
+        for _ in 0..3 {
+            step_and_save(&mut h, false);
+        }
+        values.dedup();
+        assert!(values.len() >= 4, "{what}: {values:?}");
+        assert!(values.is_sorted_by(|a, b| a > b), "{what}: {values:?}");
+        assert_eq!(opacity(&h), 0.0, "{what}");
+        assert_eq!(saves(&h), saved + 1, "{what}");
+
+        // A tap on the track sets a whole percent.
+        let middle = pos2(slider.center().x + 3.3, y);
+        touch(&mut h, egui::TouchPhase::Start, middle, None);
+        step_and_save(&mut h, true);
+        touch(&mut h, egui::TouchPhase::End, middle, None);
+        for _ in 0..3 {
+            step_and_save(&mut h, false);
+        }
+        let half = opacity(&h);
+        assert!(half > 0.3 && half < 0.7, "{what}: {half}");
+        assert_eq!((half * 100.0).round() / 100.0, half, "{what}");
+        assert_eq!(saves(&h), saved + 2, "{what}");
+
+        // One undo puts back the opacity from before the tap, and the next
+        // one puts back the opacity from before the drag.
+        tap(&mut h, "Undo");
+        assert_eq!(opacity(&h), 0.0, "{what}");
+        tap(&mut h, "Undo");
+        assert_eq!(opacity(&h), 1.0, "{what}");
+        tap(&mut h, "Redo");
+        assert_eq!(opacity(&h), 0.0, "{what}");
     }
 }
 
@@ -877,10 +1207,10 @@ fn a_quick_drag_does_not_lift_a_row() {
     }
     touch(&mut h, egui::TouchPhase::End, to, None);
     h.run_steps(3);
-    assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"]);
+    assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
     // A tap makes the layer the selected layer.
     tap(&mut h, "Layer Rivers");
-    let rivers = h.state().doc.project.layers()[1].id;
+    let rivers = vector(&h, "Rivers");
     assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(rivers)));
 }
 
@@ -915,12 +1245,16 @@ fn the_height_panel_asks_for_a_heightmap_file() {
 fn the_height_panel_shows_the_warning_of_a_wrong_aspect_ratio() {
     let path = heightmap_file("pad-ratio.png", 300, 200);
     for size in BOARDS {
-        // A world with no raster layer has the import row in the Layers
-        // panel. The import makes the Height layer and opens its panel.
+        // A world with no height layer has the import row in the menu of
+        // the new layers. The import makes the Height layer and opens its
+        // panel.
         let mut h = empty_pad(size);
         tap(&mut h, "Layers");
         assert!(control(&h, "Open Height").is_none());
+        tap(&mut h, ADD_LAYER);
+        check_controls(&h, &format!("{size:?} with the import row"));
         tap(&mut h, IMPORT_HEIGHTMAP);
+        assert!(!h.state().pad.add, "{size:?}");
         assert_eq!(
             h.state_mut().actions.pop(),
             Some(Action::ImportHeightmapDialog)
@@ -1000,7 +1334,7 @@ fn a_world_with_no_raster_layer_has_no_export_row() {
     for size in BOARDS {
         let mut h = empty_pad(size);
         tap(&mut h, "Layers");
-        assert!(control(&h, IMPORT_HEIGHTMAP).is_some(), "{size:?}");
+        assert!(control(&h, IMPORT_HEIGHTMAP).is_none(), "{size:?}");
         assert!(control(&h, EXPORT_GEOTIFF).is_none(), "{size:?}");
         assert!(h.query_by_label(EXPORT_GEOTIFF).is_none(), "{size:?}");
     }
@@ -2354,7 +2688,8 @@ fn the_screenshots_show_the_boards() {
         let mut state = state();
         state.pad.open(Panel::Layers);
         if name == "layer" {
-            let rivers = state.doc.project.layers()[1].id;
+            let layers = state.doc.project.layers();
+            let rivers = layers.iter().find(|l| l.name == "Rivers").unwrap().id;
             state.pad.layer = Some(LayerRef::Vector(rivers));
         } else {
             state.pad.add = true;

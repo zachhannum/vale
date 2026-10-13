@@ -354,6 +354,7 @@ fn hit(kind: GeometryKind, geometry: Geometry, f: PageFeature, at: Point) -> boo
     let layers = [PageLayer {
         entry: &entry,
         layer: &layer,
+        kind,
         features: vec![f],
     }];
     pick(&layers, at).is_some()

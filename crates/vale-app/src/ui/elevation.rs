@@ -3,7 +3,7 @@
 use eframe::egui;
 use vale_terrain::{Bands, Rgb};
 
-use super::AppState;
+use super::{AppState, LayerRef};
 use crate::globe::preview::Preview;
 use crate::world;
 
@@ -79,8 +79,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::right("elevation")
         .default_size(210.0)
         .show(ui, |ui| {
-            let raster = state.shown_raster();
-            let name = raster.map_or(PANEL.to_string(), |raster| raster.name.clone());
+            let layer = state
+                .shown_raster()
+                .map(|raster| LayerRef::Raster(raster.id));
+            let layer = layer.and_then(|layer| state.layer_of(layer));
+            let name = layer.map_or(PANEL.to_string(), |layer| layer.name.clone());
             let unit = state.shown_unit().to_string();
             ui.heading(name);
             let globe = &mut state.globe;
