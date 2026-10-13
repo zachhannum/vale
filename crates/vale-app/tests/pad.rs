@@ -1764,6 +1764,26 @@ fn the_screenshots_show_the_boards() {
         assert_ne!(card.0, canvas.0, "{name}");
         assert_eq!(state.pad.more_rect.is_some(), name == "more", "{name}");
     }
+    // The menu of the new layers, and the panel of a vector layer.
+    for (name, size) in [
+        ("add", (1194.0, 834.0)),
+        ("add-third", (375.0, 834.0)),
+        ("layer", (1194.0, 834.0)),
+    ] {
+        let mut state = state();
+        state.pad.open(Panel::Layers);
+        if name == "layer" {
+            let rivers = state.doc.project.layers()[1].id;
+            state.pad.layer = Some(LayerRef::Vector(rivers));
+        } else {
+            state.pad.add = true;
+        }
+        let (image, state) = headless::ui_png(state, size, 1.0).unwrap();
+        image
+            .save(format!("../../target/app/test-pad-{name}.png"))
+            .unwrap();
+        assert_eq!(state.pad.add_rect.is_some(), name != "layer", "{name}");
+    }
 }
 
 /// Types text into the field that has the focus, in place of its text.

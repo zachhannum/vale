@@ -302,8 +302,7 @@ fn vectors(painter: &egui::Painter, rect: egui::Rect, doc: &Document, view: &Glo
                         let clipped = vector::clip_polygon(&view.rot, &rings, step);
                         if let Some(fill) = fill {
                             let (points, indices) = vector::triangulate(&clipped.loops);
-                            let mut mesh = egui::Mesh::default();
-                            mesh.vertices = points
+                            let vertices = points
                                 .iter()
                                 .map(|p| egui::epaint::Vertex {
                                     pos: to_screen(p),
@@ -311,7 +310,11 @@ fn vectors(painter: &egui::Painter, rect: egui::Rect, doc: &Document, view: &Glo
                                     color: fill,
                                 })
                                 .collect();
-                            mesh.indices = indices;
+                            let mesh = egui::Mesh {
+                                indices,
+                                vertices,
+                                ..Default::default()
+                            };
                             painter.add(mesh);
                         }
                         if let Some(stroke) = stroke {
