@@ -17,6 +17,7 @@ use vale_terrain::{
 pub mod backdrop;
 pub mod brush;
 pub mod erode;
+pub mod export;
 pub mod flat;
 pub mod gpu;
 pub mod import;
@@ -34,6 +35,7 @@ use crate::pen::Pen;
 use backdrop::Canvas;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, set_world};
 use erode::{Eroder, Ground, brush_window, erode_window, near_side};
+use export::ExportResult;
 use flat::FlatView;
 use gpu::{Event, GlobeCallback, Link, Op, Uniforms, Uploads};
 use import::{ImportResult, Job, Step};
@@ -249,6 +251,10 @@ pub struct Globe {
     import: Option<Job>,
     /// The result of the last import, until the UI takes it.
     import_result: Option<ImportResult>,
+    /// The export that runs.
+    export: Option<export::Job>,
+    /// The result of the last export, until the UI takes it.
+    export_result: Option<ExportResult>,
     edits: u64,
     memory_undo: bool,
 }
@@ -300,6 +306,8 @@ impl Globe {
             test: None,
             import: None,
             import_result: None,
+            export: None,
+            export_result: None,
             edits: 0,
             memory_undo: true,
         }
@@ -674,6 +682,62 @@ impl Globe {
         }
     }
 
+    /// Starts the export of the heightmap to a GeoTIFF file on a worker
+    /// thread. The file gets the heightmap of this moment, and painting
+    /// continues. `raster` is the record of the heightmap in the project.
+    /// One export runs at a time. Returns `false` with an error result if
+    /// the globe is busy or an export runs.
+    pub fn start_export(
+        &mut self,
+        path: PathBuf,
+        world: &vale_store::World,
+        raster: Option<&vale_store::Raster>,
+    ) -> bool {
+        let name = import::file_name(&path);
+        let refusal = match &self.export {
+            Some(job) => Some(format!("the export of {} is not complete", job.name)),
+            // The heightmap is behind the GPU during a stroke.
+            None if self.busy() => Some("an edit of the heightmap is not complete".to_string()),
+            None => None,
+        };
+        if let Some(why) = refusal {
+            self.export_result = Some(Err(format!("cannot export {name}: {why}")));
+            return false;
+        }
+        self.export_result = None;
+        let job = export::Job::start(self.map.snapshot(), world.clone(), raster.cloned(), path);
+        self.export = Some(job);
+        true
+    }
+
+    pub fn exporting(&self) -> bool {
+        self.export.is_some()
+    }
+
+    /// The text that tells how far the export is, or `None` with no export.
+    pub fn export_progress(&self) -> Option<String> {
+        self.export.as_ref().map(export::Job::progress)
+    }
+
+    /// Waits for the end of the export.
+    pub fn wait_export(&mut self) {
+        self.pump_export(true);
+    }
+
+    /// Takes the result of the last export.
+    pub fn take_export_result(&mut self) -> Option<ExportResult> {
+        self.export_result.take()
+    }
+
+    /// Moves the result of the worker to `export_result`.
+    fn pump_export(&mut self, block: bool) {
+        let result = self.export.as_mut().and_then(|job| job.result(block));
+        if result.is_some() {
+            self.export = None;
+            self.export_result = result;
+        }
+    }
+
     /// Starts the stroke test. A slow stroke is `seconds` long.
     pub fn start_stroke_test(&mut self, seconds: f64) {
         if self.format.is_some() && !self.busy() {
@@ -688,7 +752,8 @@ impl Globe {
         if self.format.is_none() {
             self.inputs.clear();
             self.pump_import(false);
-            return self.import.is_some();
+            self.pump_export(false);
+            return self.import.is_some() || self.export.is_some();
         }
         // The count comes first. A result that arrives after this line makes
         // one more frame.
@@ -696,6 +761,7 @@ impl Globe {
         // An import starts in the frame after the end of a stroke, so that
         // the stroke and the import are two edits.
         self.pump_import(false);
+        self.pump_export(false);
         self.read_events();
         // An undo or a redo goes to the GPU before the stamps of the next
         // stroke.
@@ -705,7 +771,7 @@ impl Globe {
         self.erode(now);
         self.uplift(now);
         self.send_stamps(now);
-        in_flight || self.busy() || self.rivers.pending()
+        in_flight || self.busy() || self.rivers.pending() || self.export.is_some()
     }
 
     fn read_events(&mut self) {

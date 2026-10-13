@@ -25,9 +25,11 @@ pub mod world;
 #[cfg(target_os = "ios")]
 #[unsafe(no_mangle)]
 pub extern "C" fn vale_app_main() {
+    files::clear_exports();
     // The layers of a file take the styles of the sample.
     let result = ui::AppState::new(document::Document::sample()).and_then(|mut state| {
         state.file_buttons = false;
+        state.share_exports = true;
         state.projects = projects::default_locations();
         state.projects.adopt_old_projects();
         state.files = Box::new(files::cloud::CloudFiles);

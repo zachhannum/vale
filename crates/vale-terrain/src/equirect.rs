@@ -1,10 +1,11 @@
-//! The import of an equirectangular image into the cube map.
+//! The import of an equirectangular image into the cube map, and the export
+//! of the cube map as the rows of an equirectangular image.
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use crate::cube::{FACES, unwarp};
+use crate::cube::{FACES, unwarp, warp};
 use crate::heightmap::Heightmap;
-use crate::math::V3;
+use crate::math::{V3, lonlat_to_dir};
 
 /// An equirectangular image of levels that covers the full globe. Row 0 is
 /// the north edge, and column 0 starts at longitude -180.
@@ -184,11 +185,113 @@ impl Heightmap {
     }
 }
 
+/// One column of an `EquirectGrid`.
+struct Column {
+    /// The cosine and the sine of the longitude.
+    cos: f64,
+    sin: f64,
+    /// The side face that the column is on at the equator.
+    face: usize,
+    /// The equal-angle coordinate along the equator on that face.
+    along: f64,
+    /// The tangent of the latitude times this factor is the flat coordinate
+    /// across the equator on that face.
+    factor: f64,
+}
+
+/// The pixel grid of an equirectangular image that covers the full globe.
+/// Row 0 is the north edge, and column 0 starts at longitude -180. Pixel
+/// centers are at longitude `-180 + (i + 0.5) * 360 / width` and at latitude
+/// `90 - (j + 0.5) * 180 / height`.
+pub struct EquirectGrid {
+    height: usize,
+    columns: Vec<Column>,
+}
+
+impl EquirectGrid {
+    pub fn new(width: usize, height: usize) -> EquirectGrid {
+        assert!(width > 0 && height > 0, "the sizes must not be zero");
+        let columns = (0..width).map(|i| {
+            let lon = -180.0 + (i as f64 + 0.5) * 360.0 / width as f64;
+            let [cos, sin, _] = lonlat_to_dir(lon, 0.0);
+            // The same choice of the face as in `face_of`.
+            let (face, along, depth) = if cos.abs() >= sin.abs() {
+                (usize::from(cos < 0.0), sin, cos.abs())
+            } else {
+                (2 + usize::from(sin < 0.0), cos, sin.abs())
+            };
+            Column {
+                cos,
+                sin,
+                face,
+                along: warp(along / depth),
+                factor: 1.0 / depth,
+            }
+        });
+        EquirectGrid {
+            height,
+            columns: columns.collect(),
+        }
+    }
+
+    /// The grid of `4 * n` by `2 * n` pixels. One pixel at the equator is as
+    /// large as one texel of a cube map with `n` texels along one side of a
+    /// face.
+    pub fn for_face_size(n: usize) -> EquirectGrid {
+        EquirectGrid::new(4 * n, 2 * n)
+    }
+
+    pub fn width(&self) -> usize {
+        self.columns.len()
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+}
+
+impl Heightmap {
+    /// Fills `out` with the levels of one row of the grid. The length of
+    /// `out` is the width of the grid. Each level comes from the 4 texels
+    /// around the pixel center, also across a face edge, and it is rounded
+    /// to the nearest level.
+    pub fn equirect_row(&self, grid: &EquirectGrid, row: usize, out: &mut [u16]) {
+        assert!(row < grid.height, "the row");
+        assert_eq!(out.len(), grid.width(), "the row length");
+        let lat = 90.0 - (row as f64 + 0.5) * 180.0 / grid.height as f64;
+        let [r, _, z] = lonlat_to_dir(0.0, lat);
+        let n = self.face_size() as f64;
+        // Equal-angle coordinate to texels.
+        let at = |s: f64| (s + 1.0) * 0.5 * n - 0.5;
+        let tan = z / r;
+        // On a polar face, the flat coordinates are the cosine and the sine
+        // of the longitude times this factor.
+        let polar = (4 + usize::from(z < 0.0), r / z.abs());
+        for (column, out) in grid.columns.iter().zip(out) {
+            let across = tan * column.factor;
+            let (face, x, y) = if across.abs() <= 1.0 {
+                let (along, across) = (at(column.along), at(warp(across)));
+                // `u` is along the equator on the X faces, and `v` on the Y
+                // faces.
+                if column.face < 2 {
+                    (column.face, along, across)
+                } else {
+                    (column.face, across, along)
+                }
+            } else {
+                let (face, k) = polar;
+                (face, at(warp(k * column.cos)), at(warp(k * column.sin)))
+            };
+            *out = self.level_on_face(face, x, y, true).round() as u16;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cube::face_of;
     use crate::heightmap::TexelRect;
-    use crate::math::lonlat_to_dir;
 
     const N: usize = 64;
 
@@ -484,5 +587,132 @@ mod tests {
         map.import_equirect(&flat);
         assert!(!map.can_undo());
         assert_eq!(map.get(0, 0, 0), flat.sample([1.0, 0.0, 0.0]));
+    }
+
+    /// A heightmap with the level of the function at each texel center.
+    fn painted(f: impl Fn(V3) -> f64) -> Heightmap {
+        let mut map = Heightmap::with_tile_size(N, 16, 0);
+        for face in 0..FACES {
+            let mut levels = Vec::with_capacity(N * N);
+            for y in 0..N {
+                for x in 0..N {
+                    levels.push(level(f(map.texel_dir(face, x, y))).round() as u16);
+                }
+            }
+            map.store_face(face, &levels);
+        }
+        map
+    }
+
+    /// The image of `4 * N` by `2 * N` pixels.
+    fn exported(map: &Heightmap) -> Equirect {
+        let grid = EquirectGrid::for_face_size(N);
+        assert_eq!((grid.width(), grid.height()), (4 * N, 2 * N));
+        let mut levels = vec![0; grid.width() * grid.height()];
+        for (row, out) in levels.chunks_exact_mut(grid.width()).enumerate() {
+            map.equirect_row(&grid, row, out);
+        }
+        Equirect::new(grid.width(), grid.height(), levels).unwrap()
+    }
+
+    /// The direction of a pixel center.
+    fn pixel_dir(src: &Equirect, i: usize, j: usize) -> V3 {
+        let lon = -180.0 + (i as f64 + 0.5) * 360.0 / src.width as f64;
+        let lat = 90.0 - (j as f64 + 0.5) * 180.0 / src.height as f64;
+        lonlat_to_dir(lon, lat)
+    }
+
+    /// True if a direction is between the last texel centers of two faces.
+    fn at_face_edge(d: V3) -> bool {
+        let (_, a, b) = face_of(d);
+        let outside =
+            |a: f64| !(0.0..=N as f64 - 1.0).contains(&((warp(a) + 1.0) * 0.5 * N as f64 - 0.5));
+        outside(a) || outside(b)
+    }
+
+    /// The largest difference between a pixel and the function, at the face
+    /// edges and at the other pixels.
+    fn worst_pixel_errors(src: &Equirect, f: impl Fn(V3) -> f64) -> (f64, f64) {
+        let (mut edge, mut inside) = (0.0f64, 0.0f64);
+        for j in 0..src.height {
+            for i in 0..src.width {
+                let d = pixel_dir(src, i, j);
+                let error = (f64::from(src.levels[j * src.width + i]) - level(f(d))).abs();
+                if at_face_edge(d) {
+                    edge = edge.max(error);
+                } else {
+                    inside = inside.max(error);
+                }
+            }
+        }
+        (edge, inside)
+    }
+
+    #[test]
+    fn a_flat_map_exports_as_its_level_at_each_pixel() {
+        let map = Heightmap::with_tile_size(N, 16, 12345);
+        assert!(exported(&map).levels.iter().all(|&l| l == 12345));
+        // The same level in tiles that hold memory.
+        let mut map = Heightmap::with_tile_size(N, 16, 0);
+        for face in 0..FACES {
+            map.store_face(face, &vec![54321; N * N]);
+        }
+        assert!(exported(&map).levels.iter().all(|&l| l == 54321));
+    }
+
+    #[test]
+    fn export_keeps_the_levels_of_a_smooth_map() {
+        // The bound of `import_keeps_the_levels_of_the_image`, with the
+        // texel size in place of the pixel size. The largest sums of the
+        // second derivatives are 3.25 for `hills` and 2.75 for `tilt`.
+        let h = FRAC_PI_2 / N as f64;
+        for (f, sum) in [(hills as fn(V3) -> f64, 3.25), (tilt, 2.75)] {
+            let bound = 32767.5 * sum * h * h / 8.0 + 1.0;
+            assert!(bound < 9.1);
+            let (edge, inside) = worst_pixel_errors(&exported(&painted(f)), f);
+            assert!(edge <= bound && inside <= bound, "{edge}, {inside}");
+            // The measured errors are 4.4 and 3.9 levels at most.
+            assert!(edge < 4.5 && inside < 4.0, "{edge}, {inside}");
+        }
+    }
+
+    #[test]
+    fn export_has_no_seam_at_a_face_edge() {
+        for f in [hills, tilt] {
+            let (edge, inside) = worst_pixel_errors(&exported(&painted(f)), f);
+            assert!(inside > 2.0, "the map has a curve");
+            // The measured ratio is 1.12 at most.
+            assert!(edge <= 1.25 * inside, "{edge} > {inside}");
+        }
+    }
+
+    #[test]
+    fn export_has_no_seam_at_longitude_180() {
+        let src = exported(&painted(tilt));
+        let (w, h) = (src.width, src.height);
+        // The largest difference between column `i` and the next column.
+        let step = |i: usize| {
+            let pair = |j: usize| src.levels[j * w + i].abs_diff(src.levels[j * w + (i + 1) % w]);
+            (0..h).map(pair).max().unwrap()
+        };
+        let (across, beside) = (step(w - 1), step(0).max(step(w - 2)));
+        assert!(across > 500, "the map has a slope at longitude 180");
+        assert!(across <= beside + 1, "{across} > {beside}");
+    }
+
+    #[test]
+    fn an_import_of_an_export_gives_the_same_map() {
+        let flat = Heightmap::with_tile_size(N, 16, 4321);
+        let back = imported(&exported(&flat));
+        assert!(all_texels(&back).iter().all(|&l| l == 4321));
+        for f in [hills, tilt] {
+            let map = painted(f);
+            let back = all_texels(&imported(&exported(&map)));
+            let pairs = all_texels(&map).into_iter().zip(back);
+            let worst = pairs.map(|(a, b)| a.abs_diff(b)).max().unwrap();
+            // Each of the two steps has the error of one bilinear sample.
+            // The measured difference is 8 levels at most.
+            assert!(worst <= 10, "{worst}");
+        }
     }
 }

@@ -9,8 +9,8 @@ use vale_sphere::LonLat;
 use vale_store::{LayerId, Project, StoreError, World};
 
 use crate::document::Document;
-use crate::files::{Availability, Files, PlainFiles, SystemEvents};
-use crate::globe::import::ImportResult;
+use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
+use crate::globe::import::{ImportResult, file_name};
 use crate::globe::{Globe, Tool};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
@@ -38,6 +38,10 @@ pub enum Action {
     ImportHeightmapDialog,
     /// Imports this equirectangular image into the heightmap of the globe.
     ImportHeightmap(PathBuf),
+    /// Asks for the file of an export of the heightmap.
+    ExportHeightmapDialog,
+    /// Exports the heightmap of the globe to this GeoTIFF file.
+    ExportHeightmap(PathBuf),
     /// Makes a project of this world and opens it. With a folder of
     /// projects, the project is a new file there.
     NewWorld(World),
@@ -95,11 +99,12 @@ pub enum Screen {
     Browser,
 }
 
-/// The text of the last import of a heightmap.
+/// The text of the last import or export of a heightmap.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Note {
     pub text: String,
-    /// The import failed, or it changed the shape of the image.
+    /// The import or the export failed, or the import changed the shape of
+    /// the image.
     pub warning: bool,
 }
 
@@ -175,6 +180,12 @@ pub struct AppState {
     pub status: String,
     /// The text of the last import of a heightmap.
     pub import_note: Option<Note>,
+    /// The text of the last export of the heightmap.
+    pub export_note: Option<Note>,
+    /// True: a complete export goes to `share`.
+    pub share_exports: bool,
+    /// The file of a complete export that the host gives to the Files app.
+    pub share: Option<PathBuf>,
     /// The open form of a new world or of the world of the project.
     pub world_form: Option<world_form::WorldForm>,
     /// Requests that need the host (dialogs, files).
@@ -229,6 +240,9 @@ impl AppState {
             cursor_meters: None,
             status: String::new(),
             import_note: None,
+            export_note: None,
+            share_exports: false,
+            share: None,
             world_form: None,
             actions: Vec::new(),
             headless: false,
@@ -600,6 +614,7 @@ impl AppState {
         self.selection = None;
         self.selected_layer = None;
         self.import_note = None;
+        self.export_note = None;
         self.pad.layer = None;
         self.pad.add = false;
         self.pad.reorder = None;
@@ -851,7 +866,64 @@ impl AppState {
         self.import_note = Some(note);
     }
 
-    /// Runs `OpenFiles`, `Export`, `ImportHeightmap`, and `NewWorld`. The
+    /// Moves the result of an export of the heightmap to the status text.
+    pub fn poll_export(&mut self) {
+        let Some(result) = self.globe.take_export_result() else {
+            return;
+        };
+        let note = match result {
+            Ok(info) => {
+                let text = info.message();
+                if self.share_exports {
+                    self.share = Some(info.path);
+                }
+                Note {
+                    text,
+                    warning: false,
+                }
+            }
+            Err(text) => Note {
+                text,
+                warning: true,
+            },
+        };
+        self.status = note.text.clone();
+        self.export_note = Some(note);
+    }
+
+    /// Ends the hand-off of the export file `path` to the Files app. A
+    /// cancelled hand-off removes the file and the text of the export.
+    pub fn end_share(&mut self, event: ExportEvent, path: &Path) {
+        match event {
+            ExportEvent::Saved => {
+                let text = format!("Saved {} to Files", file_name(path));
+                self.status = text.clone();
+                let warning = false;
+                self.export_note = Some(Note { text, warning });
+            }
+            ExportEvent::Cancelled => {
+                let _ = std::fs::remove_file(path);
+                self.export_note = None;
+                self.status.clear();
+            }
+        }
+    }
+
+    /// The file name of an export of the heightmap, from the name of the
+    /// world.
+    pub fn export_name(&self) -> String {
+        let stem = session::file_stem(&self.doc.project.world.name);
+        let stem = if stem.is_empty() { "heightmap" } else { &stem };
+        format!("{stem}.tif")
+    }
+
+    /// True if the heightmap can go to a file now.
+    pub fn can_export(&self) -> bool {
+        self.has_raster() && !self.globe.busy() && !self.globe.exporting()
+    }
+
+    /// Runs `OpenFiles`, `Export`, `ImportHeightmap`, `ExportHeightmap`, and
+    /// `NewWorld`. The
     /// dialog actions belong to the host.
     pub fn run_action(&mut self, action: Action) {
         match action {
@@ -889,6 +961,16 @@ impl AppState {
                 }
                 self.poll_import();
             }
+            Action::ExportHeightmap(path) => {
+                self.export_note = None;
+                let project = &self.doc.project;
+                let raster = project.rasters().first();
+                self.globe.start_export(path, &project.world, raster);
+                if self.headless {
+                    self.globe.wait_export();
+                }
+                self.poll_export();
+            }
             Action::NewWorld(world) => self.new_world(world),
             Action::OpenWorld(path) => self.open_world(&path),
             Action::OpenExternal(path) => self.open_external(&path),
@@ -916,6 +998,7 @@ impl AppState {
             Action::OpenDialog
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog
+            | Action::ExportHeightmapDialog
             | Action::OpenProjectDialog => {}
         }
     }
@@ -925,6 +1008,7 @@ impl AppState {
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
+    state.poll_export();
     if state.screen == Screen::Browser {
         if state.poll_downloads(Instant::now()) {
             ui.ctx().request_repaint_after(DOWNLOAD_POLL);

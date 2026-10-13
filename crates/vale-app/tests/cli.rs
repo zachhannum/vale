@@ -87,3 +87,16 @@ fn the_layout_and_the_panels_come_from_the_flags() {
         Some(vale_app::ui::world_form::FormMode::New)
     );
 }
+
+#[test]
+fn the_export_of_the_heightmap_needs_a_project() {
+    let args = parse(&["--project", "w.gpkg", "--export-heightmap", "w.tif"]);
+    assert_eq!(args.export_heightmap, Some("w.tif".into()));
+    assert_eq!(parse(&[]).export_heightmap, None);
+    let error = Args::try_parse_from(["vale-app", "--export-heightmap", "w.tif"]).unwrap_err();
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+    assert!(error.to_string().contains("--project"), "{error}");
+}
