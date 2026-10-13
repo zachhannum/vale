@@ -154,7 +154,9 @@ struct RidgeUniforms {
     sin_reach: f32,
     seed: u32,
     count: u32,
-    unused: [u32; 2],
+    /// The length of the line: the number of a multiple of `segment`, and
+    /// the distance from that multiple.
+    length: [f32; 2],
     segments: [[f32; 16]; RIDGE_SEGMENTS],
 }
 
@@ -1088,7 +1090,12 @@ impl GpuHeightmap {
         self.used_ridge_slots
             .store(ridge_slot + 1, Ordering::Relaxed);
         let spec = &plan.ridge;
+        let length_cell = (plan.length / spec.segment + 0.5).floor();
         let mut line = RidgeUniforms {
+            length: [
+                length_cell as f32,
+                (plan.length - length_cell * spec.segment) as f32,
+            ],
             radius: spec.radius as f32,
             segment: spec.segment as f32,
             shift: spec.offset as f32,
