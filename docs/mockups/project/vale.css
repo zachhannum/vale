@@ -1,28 +1,17 @@
 .app{--bg:#17191c;--panel:#1f2226;--raise:#2a2e34;--line:#2a2e34;--text:#e7e9ec;--mute:#8f96a0;--acc:#45c4a8;--warn:#f0b04a;--bad:#ff8f80;
-  display:flex;flex-direction:column;min-height:1000px;background:var(--bg);color:var(--text);font:13px/1.4 'IBM Plex Sans',system-ui,sans-serif}
+  display:flex;flex-direction:column;background:var(--bg);color:var(--text);font:13px/1.4 'IBM Plex Sans',system-ui,sans-serif}
 .app *{box-sizing:border-box}
-.top{display:flex;align-items:center;gap:20px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
-.brand{font-weight:600;font-size:15px}
 .mono{font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px}
 .mute{color:var(--mute)}
 .warn{color:var(--warn)}
 .bad{color:var(--bad)}
 .grow{flex:1}
-.tabs{display:flex;gap:2px}
-.tab{padding:6px 12px;border-radius:6px;color:var(--mute);text-decoration:none}
-.tab.on{background:var(--raise);color:var(--text)}
-.tab:hover{color:var(--text)}
 .btn{height:30px;padding:0 14px;border:0;background:var(--raise);color:var(--text);border-radius:6px;font:inherit;cursor:pointer;white-space:nowrap}
 .btn.pri{background:var(--acc);color:#0b1f1a;font-weight:600}
-.sub{display:flex;align-items:center;gap:12px;padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
 .seg{display:inline-flex;background:var(--bg);border-radius:6px;padding:2px}
 .seg a,.seg button{padding:4px 12px;color:var(--mute);text-decoration:none;border:0;border-radius:4px;background:transparent;font:inherit;cursor:pointer}
 .seg .on{background:var(--raise);color:var(--text)}
 .seg a:hover{color:var(--text)}
-.body{display:flex;flex-wrap:wrap;flex:1}
-.side{flex:0 1 256px;min-width:0}
-.sec{padding:16px 16px 8px}
-.sec h2{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--mute)}
 .row{display:flex;align-items:center;gap:8px;min-height:30px}
 .row.sel{background:var(--raise);margin:0 -8px;padding-left:8px;padding-right:8px;border-radius:5px}
 .row a{text-decoration:none}
@@ -32,31 +21,21 @@
 textarea.in{height:auto;padding:8px;resize:none;line-height:1.5}
 .chk{accent-color:#45c4a8;width:14px;height:14px;margin:0;flex:none}
 .sw{width:12px;height:12px;border-radius:3px;flex:none}
-.canvas{flex:999 1 560px;min-width:0;display:flex;flex-direction:column;background:#0f1113}
-.work{flex:1;display:flex;min-height:520px}
-.rail{display:flex;flex-direction:column;gap:4px;padding:8px}
 .tool{width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:var(--mute);cursor:pointer}
 .tool.on{background:var(--raise);color:var(--text)}
 .tool svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
-.stage{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;padding:32px}
 .sheet{position:relative;width:100%;max-width:580px;aspect-ratio:3/4;background:#f3efdf;overflow:hidden}
 .view{position:relative;width:100%;max-width:900px;overflow:hidden;background:#f3efdf}
 .sheet.bare,.view.bare{background:#e4e2da}
-.zoom{position:absolute;aspect-ratio:3/4}
 .lay{position:absolute;inset:0;width:100%;height:100%;display:block}
-.float{position:absolute;display:flex;gap:2px;padding:3px;background:#17191c;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
-.float .btn{background:transparent}
 .pt{position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:#17191c;color:#fff;font-size:11px;line-height:18px;text-align:center}
-.status{display:flex;gap:20px;padding:6px 16px;color:var(--mute)}
 .t{width:100%;border-collapse:collapse}
 .t th{text-align:left;font-weight:400;color:var(--mute);padding:6px 10px}
 .t td{padding:6px 10px}
 .t tr.sel td{background:var(--raise)}
 .t tr.sel td:first-child{border-radius:5px 0 0 5px}
 .t tr.sel td:last-child{border-radius:0 5px 5px 0}
-.scroll{overflow-x:auto}
 .thumb{position:relative;width:48px;aspect-ratio:3/4;overflow:hidden;background:var(--bg);flex:none}
-.canvas .in{background:var(--panel)}
 .globe{position:relative;width:100%;max-width:720px;aspect-ratio:1}
 .sl{flex:1;height:4px;border-radius:2px;background:var(--bg)}
 .sl div{height:100%;border-radius:2px;background:var(--mute)}
@@ -130,3 +109,127 @@ textarea.in{height:auto;padding:8px;resize:none;line-height:1.5}
 .pad .note{padding:8px 0 6px;font-size:13px;color:var(--mute)}
 .pad textarea.in{height:auto}
 .pad .row .tool+.tool{margin-left:-4px}
+.desk{--mute:#9aa1aa;--raise:rgba(255,255,255,.09);--hov:rgba(255,255,255,.05);--sel:rgba(69,196,168,.16);position:relative;height:900px;overflow:hidden;font-size:13px}
+.desk .mbar{position:relative;flex:none;display:flex;align-items:center;height:28px;padding:0 6px;background:#121416;border-bottom:1px solid var(--line)}
+.desk .mbar .m{padding:4px 9px;border-radius:4px}
+.desk .mbar .m:hover,.desk .mbar .m.on{background:var(--raise)}
+.desk .mbar .title{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;font-size:12px}
+.desk .mark svg{display:block;width:13px;height:13px;fill:none;stroke:var(--acc);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.desk .tbar{flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;height:40px;padding:0 8px;background:var(--panel);border-bottom:1px solid var(--line)}
+.desk .tl,.desk .tc,.desk .tr{display:flex;align-items:center;gap:6px}
+.desk .tr{justify-content:flex-end}
+.desk .tbar .h{padding-left:6px;font-weight:600}
+.desk .div{width:1px;height:18px;margin:0 4px;background:rgba(255,255,255,.12)}
+.desk .seg{padding:2px;border-radius:6px;background:rgba(0,0,0,.32)}
+.desk .seg a,.desk .seg button{padding:3px 12px;border-radius:4px;font-size:12px}
+.desk .seg a:hover,.desk .seg button:hover{color:var(--text)}
+.desk .menu{height:26px;padding:0 6px 0 10px;border:0;border-radius:5px;background:transparent;color:var(--text);font:inherit;font-weight:500;display:flex;align-items:center;gap:4px;cursor:pointer}
+.desk .menu:hover{background:var(--raise)}
+.desk .menu svg,.desk .chev svg{width:14px;height:14px;fill:none;stroke:var(--mute);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.desk .tool{width:28px;height:28px;border-radius:5px;flex:none}
+.desk .tool svg{width:16px;height:16px}
+.desk .tool:hover,.desk .tool.hov{background:var(--hov);color:var(--text)}
+.desk .tool.on{background:var(--raise);color:var(--text)}
+.desk .tool.off{opacity:.35}
+.desk .btn{height:24px;padding:0 10px;border-radius:5px;font-size:12px;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.desk .obar .in,.desk .dh .in{flex:none}
+.desk .btn:hover{background:rgba(255,255,255,.14)}
+.desk .btn.pri:hover{background:#5fd3b9}
+.desk .btn.sec{background:var(--raise)}
+.desk .in{height:24px;padding:0 7px;border-radius:4px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.06);font-size:12px}
+.desk select.in{padding-right:2px}
+.desk textarea.in{height:auto}
+.desk .kbd{margin-left:auto;padding-left:16px;font:11px 'IBM Plex Mono',ui-monospace,monospace;color:var(--mute)}
+.desk .btn .kbd{margin:0;padding:0}
+.desk .obar{flex:none;display:flex;align-items:center;gap:8px;height:32px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);font-size:12px}
+.desk .obar>.on{font-weight:600}
+.desk .obar .ol{color:var(--mute);margin-left:6px}
+.desk .obar .sl{flex:0 0 96px}
+.desk .obar .ov{width:52px;color:var(--mute)}
+.desk .ow{display:flex;align-items:center;gap:6px;margin-left:6px}
+.desk .sl{position:relative;height:4px;border-radius:2px;background:rgba(0,0,0,.45)}
+.desk .sl div{position:relative;height:100%;border-radius:2px;background:var(--mute)}
+.desk .sl i{position:absolute;right:-6px;top:-4px;width:12px;height:12px;border-radius:50%;background:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.5)}
+.desk .swt{position:relative;flex:none;width:26px;height:14px;border-radius:7px;background:rgba(0,0,0,.45)}
+.desk .swt::after{content:'';position:absolute;left:2px;top:2px;width:10px;height:10px;border-radius:50%;background:var(--mute)}
+.desk .swt.on{background:var(--acc)}
+.desk .swt.on::after{left:14px;background:#0b1f1a}
+.desk .main{flex:1;min-height:0;display:flex}
+.desk .col{flex:1;min-width:0;display:flex;flex-direction:column}
+.desk .drail{flex:none;width:44px;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0;background:var(--panel);border-right:1px solid var(--line)}
+.desk .drail .hr{width:20px;height:1px;margin:4px 0;background:rgba(255,255,255,.12)}
+.desk .cv{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;background:#0f1113}
+.desk .dock{flex:none;width:300px;display:flex;flex-direction:column;min-height:0;background:var(--panel);border-left:1px solid var(--line)}
+.desk .dock.l{border-left:0;border-right:1px solid var(--line)}
+.desk .dock.b{flex:0 0 220px;width:auto;border-left:0;border-top:1px solid var(--line)}
+.desk .dh{flex:none;display:flex;align-items:center;gap:2px;height:32px;padding:0 4px 0 6px;border-bottom:1px solid var(--line)}
+.desk .dt{padding:4px 8px;border-radius:4px;color:var(--mute);font-size:12px;font-weight:500}
+.desk .dt.on{color:var(--text);background:var(--raise)}
+.desk .dt+.mute{margin-left:6px;font-size:12px}
+.desk .dl{flex:1;min-height:0;overflow:hidden;padding:4px 0}
+.desk .dl .row{min-height:26px;margin:0;padding:0 8px 0 10px;border-radius:0}
+.desk .dl .row:hover,.desk .dl .row.hov{background:var(--hov)}
+.desk .dl .row.sel{background:var(--sel)}
+.desk .dl .row .tool{width:22px;height:22px;opacity:0}
+.desk .dl .row .tool.off,.desk .dl .row:hover .tool,.desk .dl .row.hov .tool,.desk .dl .row.sel .tool{opacity:1}
+.desk .dl .row .tool.off{opacity:.45}
+.desk .dl .row .tool svg{width:14px;height:14px}
+.desk .dl .search{padding:2px 8px 6px;gap:6px}
+.desk .search svg{width:14px;height:14px;fill:none;stroke:var(--mute);stroke-width:1.8;stroke-linecap:round}
+.desk .insp{flex:1;min-height:0;display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.desk .insp.shut{flex:none}
+.desk .ih{flex:none;display:flex;align-items:center;gap:4px;height:30px;padding:0 10px 0 6px;font-weight:600}
+.desk .chev{display:grid;place-items:center;width:16px}
+.desk .ib{flex:1;min-height:0;overflow:hidden;padding:0 12px 12px}
+.desk .ib h2{margin:12px 0 4px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mute)}
+.desk .ib .row{min-height:28px}
+.desk .ib .row.sel{margin:0 -6px;padding:0 6px;border-radius:4px;background:var(--sel)}
+.desk .lab{flex:0 0 76px}
+.desk .ib .seg{display:flex;margin:4px 0 6px}
+.desk .ib .seg button{flex:1}
+.desk .ty{display:grid;place-items:center;width:16px;flex:none}
+.desk .ty svg{width:14px;height:14px;fill:none;stroke:var(--mute);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.desk .badge{font-size:11px;color:var(--warn)}
+.desk .sw{width:12px;height:12px}
+.desk .grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 10px}
+.desk .grad{flex:1;height:12px;border-radius:3px}
+.desk .ramp{display:flex;gap:2px;padding-bottom:4px}
+.desk .ramp span{flex:1;font:9px/1 'IBM Plex Mono',ui-monospace,monospace;color:var(--mute);text-align:center}
+.desk .ramp i{display:block;height:12px;margin-bottom:4px;border-radius:2px}
+.desk .curve{display:block;width:100%;height:72px;margin:6px 0 4px;border-radius:5px;background:rgba(0,0,0,.3)}
+.desk .note{padding:6px 0 4px;font-size:12px;color:var(--mute)}
+.desk .rule{height:1px;margin:4px 0;background:var(--raise)}
+.desk .t th,.desk .t td{padding:4px 10px}
+.desk .t th{font-size:12px}
+.desk .t tbody tr:hover td{background:var(--hov)}
+.desk .t tr.sel td{background:var(--sel)}
+.desk .sketch{position:relative;aspect-ratio:21/16;overflow:hidden;background:#f4f1e6;border-radius:4px;margin-bottom:8px}
+.desk .sbar{flex:none;display:flex;align-items:center;gap:18px;height:24px;padding:0 12px;background:var(--panel);border-top:1px solid var(--line);font:11px 'IBM Plex Mono',ui-monospace,monospace;color:var(--mute)}
+.desk .sbar a{font-family:'IBM Plex Sans',system-ui,sans-serif;text-decoration:none}
+.desk .pop{position:absolute;z-index:5;padding:4px;background:#25292e;border:1px solid rgba(255,255,255,.08);border-radius:7px;box-shadow:0 8px 28px rgba(0,0,0,.5)}
+.desk .mi{display:flex;align-items:center;height:24px;padding:0 8px 0 4px;border-radius:4px}
+.desk .mi:hover,.desk .mi.hov{background:var(--acc);color:#0b1f1a}
+.desk .mi:hover .kbd,.desk .mi.hov .kbd,.desk .mi.hov .chev svg{color:#0b1f1a;stroke:#0b1f1a}
+.desk .mi.off{color:var(--mute);opacity:.6}
+.desk .mi .tk{display:grid;place-items:center;width:20px}
+.desk .mi .tk svg{width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.desk .mi .kbd{padding-left:24px}
+.desk .mi .chev{margin-left:8px}
+.desk .mr{height:1px;margin:4px 6px;background:rgba(255,255,255,.08)}
+.desk .tip{position:absolute;z-index:5;display:flex;align-items:center;gap:10px;height:24px;padding:0 8px;background:#0b0c0e;border:1px solid rgba(255,255,255,.1);border-radius:5px;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.4)}
+.desk .tip .kbd{padding:0}
+.desk .start-cv{overflow:hidden;background:var(--bg)}
+.desk .start{display:grid;grid-template-columns:repeat(5,1fr);gap:20px;padding:28px 32px}
+.desk .pcard{display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.desk .pcard:hover,.desk .pcard.hov{border-color:var(--acc)}
+.desk .pic{position:relative;display:grid;place-items:center;aspect-ratio:4/3;background:#0f1113}
+.desk .pic img{width:72%;aspect-ratio:1}
+.desk .pic .dl2{display:flex;flex-direction:column;align-items:center;gap:8px;font-size:12px;color:var(--mute)}
+.desk .pic .dl2 svg{width:32px;height:32px;fill:none;stroke:var(--mute);stroke-width:1.4;stroke-linejoin:round}
+.desk .pic .badge{position:absolute;right:8px;top:8px;padding:2px 6px;border-radius:4px;background:rgba(0,0,0,.6)}
+.desk .pm{padding:10px 12px 6px;font-size:12px;line-height:1.5}
+.desk .pn{font-size:13px;font-weight:600}
+.desk .pw{display:flex;align-items:center;gap:5px}
+.desk .pw svg{width:13px;height:13px;fill:none;stroke:var(--mute);stroke-width:1.6;stroke-linejoin:round}
+.desk .pa{display:flex;gap:4px;padding:6px 12px 12px}
+.desk .pa .btn{flex:1;justify-content:center;padding:0 6px}
