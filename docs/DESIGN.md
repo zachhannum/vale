@@ -355,6 +355,30 @@ These rules apply to the layout:
 
 The core crates have no UI dependency, so both platforms share them. The shell is egui on both platforms. The crate `vale-globe-proto` checked how well egui handles pen input and touch on iPad, and the section "Globe prototype" gives the results.
 
+### Desktop layout
+
+The desktop layout has the workspaces, switches, tools, and panels of the iPad layout. The panels are docked, and the controls are for a mouse and a keyboard. The app prototype does not have this layout yet.
+
+The window has six places, from top to bottom:
+
+- The menu bar holds the menus File, Edit, View, Layer, Map, Window, and Help. Its center shows the name of the world, the name of the file, and the save mark. On macOS, the menus are in the menu bar of the system.
+- The tool bar holds the workspace switch at the left, and the actions at the right. Its center holds the view switch in the World workspace, and the map frame menu and the mode switch in the Maps workspace.
+- The options bar holds the settings of the active tool. For a brush mode, these are the Size slider, the Flow slider, the Hardness slider, a pressure switch, and the button "Brush…".
+- The tool rail at the left edge holds the tools, the More button, and the Brush button.
+- The canvas is between the docks.
+- The status bar holds the position readout, the active layer, the progress of a task, the scale, and the zoom.
+
+A dock is a column at one side of the canvas. The right dock has the tabs Layers and Toolbox. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. The list and the inspector show at the same time, so a panel has no back button. The left dock holds the Brush panel, the list of the projections, or the list of the pages. In the Data mode, the table of the features is in a dock below the canvas.
+
+These rules apply to the layout:
+
+- A row is 26 pixels high, and a tool button is 28 by 28 pixels.
+- Each tool and each action shows its name and its key in a tooltip. The menus show the keys too. On macOS, Ctrl in a shortcut is Command.
+- The keys of the World tools are R for Raise, F for Lower, S for Smooth, T for Flatten, N for Line, H for Move, and B for the Brush panel. The keys of the Maps tools are V for Select, P for Point, A for Vertex, and L for Label.
+- A form, for example "New world" or "Export", is a dialog at the center of the window.
+- The start screen is a grid of cards. Each card has the buttons "Rename", "Copy", and "Delete". The File menu has the same actions and a list of the recent projects.
+- The left mouse button and the pen paint. The middle button, or Space with the left button, turns the globe, and the wheel zooms. The brush outline follows the pointer and a hovering pen.
+
 ## Styling model
 
 A style is an ordered list of rules. Each rule has a filter, a scale range, and one or more symbolizers (instructions that draw a feature). This is the QGIS rule-based model, and it lets one style serve all map frames.
