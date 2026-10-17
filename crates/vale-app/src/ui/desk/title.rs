@@ -47,7 +47,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-fn place<R>(
+pub(super) fn place<R>(
     ui: &mut egui::Ui,
     rect: Rect,
     layout: Layout,
@@ -58,7 +58,7 @@ fn place<R>(
 
 /// The window content fills the title bar of macOS, so the bar moves the
 /// window, and a double click zooms it.
-fn drag(ui: &egui::Ui, rect: Rect) {
+pub(super) fn drag(ui: &egui::Ui, rect: Rect) {
     let resp = ui.interact(rect, ui.id().with("drag"), Sense::click_and_drag());
     let ctx = ui.ctx();
     if resp.drag_started() {
@@ -119,7 +119,7 @@ fn doc(ui: &mut egui::Ui, state: &AppState) {
 }
 
 /// Gives a painted text a name for the screen reader.
-fn label(ui: &egui::Ui, rect: Rect, id: &str, text: &str) {
+pub(super) fn label(ui: &egui::Ui, rect: Rect, id: &str, text: &str) {
     let resp = ui.interact(rect, ui.id().with(id), Sense::hover());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
 }

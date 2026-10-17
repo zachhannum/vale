@@ -14,6 +14,7 @@ pub mod menu;
 pub mod native_menu;
 pub mod options;
 pub mod rail;
+pub mod start;
 pub mod status;
 pub mod theme;
 pub mod title;
@@ -54,6 +55,7 @@ pub struct DeskState {
     pub brush_button: Option<egui::Rect>,
     /// The More button of the tool rail, in this frame.
     pub more_button: Option<egui::Rect>,
+    pub start: start::StartState,
 }
 
 impl Default for DeskState {
@@ -68,6 +70,7 @@ impl Default for DeskState {
             map_tool: MapTool::default(),
             brush_button: None,
             more_button: None,
+            start: start::StartState::default(),
         }
     }
 }

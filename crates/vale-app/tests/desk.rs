@@ -610,3 +610,264 @@ fn without_the_glass_each_pixel_is_opaque() {
         assert_eq!(clear, 0, "{workspace:?}");
     }
 }
+
+mod start {
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    use super::App;
+    use eframe::egui;
+    use eframe::egui::accesskit::Toggled;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    use vale_app::document::Document;
+    use vale_app::projects::{self, Location, Locations};
+    use vale_app::session::new_project_path;
+    use vale_app::ui::browser::Dialog;
+    use vale_app::ui::desk::command::REVEAL;
+    use vale_app::ui::desk::start::{ALL_WORLDS, OPEN, RECENT, SEARCH, SORT, Sort, TITLE};
+    use vale_app::ui::pad::browser::{COPY, DELETE, RENAME, actions_name};
+    use vale_app::ui::world_form::NEW_WORLD;
+    use vale_app::ui::{Action, AppState, Layout, Screen, draw};
+    use vale_store::{Project, ProjectFile, World};
+
+    struct Dirs {
+        _root: tempfile::TempDir,
+        local: PathBuf,
+        cloud: PathBuf,
+        state: PathBuf,
+    }
+
+    /// The local folder holds Aurelia and Cassia, and the iCloud folder
+    /// holds borea. Cassia has the last change and Aurelia the first.
+    fn dirs() -> Dirs {
+        let root = tempfile::tempdir().unwrap();
+        let dir = |name: &str| {
+            let dir = root.path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            dir
+        };
+        let dirs = Dirs {
+            local: dir("local"),
+            cloud: dir("cloud"),
+            state: dir("state"),
+            _root: root,
+        };
+        let day = Duration::from_secs(86_400);
+        create(&dirs.local, "Aurelia", 1, day);
+        create(&dirs.cloud, "borea", 2, day);
+        create(&dirs.local, "Cassia", 3, day);
+        dirs
+    }
+
+    fn create(dir: &Path, name: &str, days: u32, day: Duration) -> PathBuf {
+        let path = new_project_path(dir, name);
+        let world = World {
+            name: name.to_string(),
+            ..World::default()
+        };
+        ProjectFile::create(&path, &Project::new(world)).unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH + 20_000 * day + days * day)
+            .unwrap();
+        path
+    }
+
+    fn app(dirs: &Dirs) -> App {
+        let mut state = AppState::new(Document::empty()).unwrap();
+        state.headless = true;
+        state.set_layout(Layout::Desktop);
+        let mut locations = Locations::new(Some(dirs.local.clone()), Some(dirs.state.clone()));
+        locations.set_cloud(Some(dirs.cloud.clone()));
+        state.projects = locations;
+        state.show_projects();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1440.0, 900.0))
+            .with_pixels_per_point(1.0)
+            .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+        h.run_steps(3);
+        h
+    }
+
+    fn click(h: &mut App, label: &str) {
+        h.get_by_label(label).click();
+        h.run_steps(3);
+    }
+
+    /// The row of the sidebar with this label. A card shows its place too.
+    fn side<'a>(h: &'a App, label: &'a str) -> egui_kittest::Node<'a> {
+        let rows = h.get_all_by_label(label);
+        rows.min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+            .unwrap()
+    }
+
+    /// The names of the cards, row by row.
+    fn cards(h: &App) -> Vec<String> {
+        let mut cards: Vec<_> = h
+            .query_all_by_label_contains("Open ")
+            .map(|n| (n.rect(), n.accesskit_node().label().unwrap()))
+            .collect();
+        let key = |r: &egui::Rect| (r.top(), r.left());
+        cards.sort_by(|a, b| key(&a.0).partial_cmp(&key(&b.0)).unwrap());
+        let name = |(_, label): (egui::Rect, String)| label["Open ".len()..].to_string();
+        cards.into_iter().map(name).collect()
+    }
+
+    #[test]
+    fn the_title_bar_has_the_count_the_search_the_sort_and_new_world() {
+        let dirs = dirs();
+        let mut h = app(&dirs);
+        // The title, and the group of the places in the sidebar.
+        assert_eq!(h.query_all_by_label(TITLE).count(), 2);
+        h.get_by_label("3 worlds");
+        h.get_by_label(SEARCH);
+        let sort = h.get_by_label(SORT);
+        assert_eq!(
+            sort.accesskit_node().value().as_deref(),
+            Some("Last changed")
+        );
+        click(&mut h, NEW_WORLD);
+        assert!(h.state().world_form.is_some());
+    }
+
+    #[test]
+    fn the_grid_has_four_columns_at_1440_points() {
+        let dirs = dirs();
+        create(&dirs.local, "Dune", 4, Duration::from_secs(86_400));
+        create(&dirs.local, "Erebus", 5, Duration::from_secs(86_400));
+        let mut h = app(&dirs);
+        h.state_mut().show_projects();
+        h.run_steps(3);
+        let tops: Vec<f32> = h
+            .query_all_by_label_contains("Open ")
+            .map(|n| n.rect().top())
+            .collect();
+        assert_eq!(tops.len(), 5);
+        let first = tops.iter().copied().fold(f32::INFINITY, f32::min);
+        assert_eq!(tops.iter().filter(|t| **t == first).count(), 4);
+    }
+
+    #[test]
+    fn a_place_of_the_sidebar_shows_only_its_cards() {
+        let dirs = dirs();
+        let mut h = app(&dirs);
+        let selected =
+            |h: &App, label: &str| side(h, label).accesskit_node().toggled() == Some(Toggled::True);
+        assert!(selected(&h, ALL_WORLDS));
+        assert_eq!(cards(&h), ["Cassia", "borea", "Aurelia"]);
+
+        side(&h, Location::Cloud.label(false)).click();
+        h.run_steps(3);
+        assert_eq!(cards(&h), ["borea"]);
+        assert!(!selected(&h, ALL_WORLDS));
+        assert!(selected(&h, Location::Cloud.label(false)));
+        h.get_by_label("1 world");
+
+        side(&h, Location::Local.label(false)).click();
+        h.run_steps(3);
+        assert_eq!(cards(&h), ["Cassia", "Aurelia"]);
+        click(&mut h, ALL_WORLDS);
+        assert_eq!(cards(&h).len(), 3);
+    }
+
+    #[test]
+    fn the_search_shows_the_cards_with_the_text_in_the_name() {
+        let dirs = dirs();
+        let mut h = app(&dirs);
+        h.get_by_label(SEARCH).focus();
+        h.run_steps(2);
+        h.get_by_label(SEARCH).type_text("SI");
+        h.run_steps(3);
+        assert_eq!(h.state().desk.start.search, "SI");
+        assert_eq!(cards(&h), ["Cassia"]);
+        h.get_by_label(SEARCH).type_text("x");
+        h.run_steps(3);
+        assert!(cards(&h).is_empty());
+        h.get_by_label_contains("No worlds match");
+    }
+
+    #[test]
+    fn the_sort_menu_changes_the_order_of_the_cards() {
+        let dirs = dirs();
+        let mut h = app(&dirs);
+        assert_eq!(cards(&h), ["Cassia", "borea", "Aurelia"]);
+        click(&mut h, SORT);
+        click(&mut h, Sort::Name.label());
+        assert_eq!(h.state().desk.start.sort, Sort::Name);
+        assert_eq!(cards(&h), ["Aurelia", "borea", "Cassia"]);
+        let sort = h.get_by_label(SORT);
+        assert_eq!(sort.accesskit_node().value().as_deref(), Some("Name"));
+        click(&mut h, SORT);
+        click(&mut h, Sort::LastChanged.label());
+        assert_eq!(cards(&h), ["Cassia", "borea", "Aurelia"]);
+    }
+
+    #[test]
+    fn the_card_menu_has_five_rows_and_each_one_works() {
+        let dirs = dirs();
+        let path = dirs.local.join("Aurelia.gpkg");
+        let rows = [OPEN, RENAME, COPY, REVEAL, DELETE];
+        let menu = actions_name("Aurelia");
+        let mut h = app(&dirs);
+        for row in rows {
+            assert!(h.query_by_label(row).is_none());
+        }
+        click(&mut h, &menu);
+        for row in rows {
+            assert!(!h.get_by_label(row).accesskit_node().is_disabled(), "{row}");
+        }
+
+        click(&mut h, REVEAL);
+        assert_eq!(h.state().actions, [Action::Reveal(path.clone())]);
+        assert!(h.query_by_label(REVEAL).is_none(), "the menu closes");
+        h.state_mut().actions.clear();
+
+        click(&mut h, &menu);
+        click(&mut h, COPY);
+        assert_eq!(h.state().actions, [Action::CopyProject(path.clone())]);
+        h.state_mut().actions.clear();
+
+        click(&mut h, &menu);
+        click(&mut h, RENAME);
+        let dialog = h.state().browser.dialog.clone();
+        assert!(matches!(dialog, Some(Dialog::Rename { .. })), "{dialog:?}");
+        h.state_mut().browser.dialog = None;
+        h.run_steps(2);
+
+        click(&mut h, &menu);
+        click(&mut h, DELETE);
+        let dialog = h.state().browser.dialog.clone();
+        assert!(matches!(dialog, Some(Dialog::Delete { .. })), "{dialog:?}");
+        h.state_mut().browser.dialog = None;
+        h.run_steps(2);
+
+        click(&mut h, &menu);
+        click(&mut h, OPEN);
+        assert_eq!(h.state().actions, [Action::OpenWorld(path)]);
+    }
+
+    #[test]
+    fn the_recent_group_shows_after_a_world_opens_and_its_row_opens_it() {
+        let dirs = dirs();
+        let mut h = app(&dirs);
+        assert!(h.query_by_label(RECENT).is_none());
+
+        let path = dirs.local.join("Aurelia.gpkg");
+        h.state_mut().run_action(Action::OpenWorld(path.clone()));
+        assert_eq!(h.state().screen, Screen::Editor);
+        h.state_mut().show_projects();
+        h.run_steps(3);
+        assert_eq!(projects::recent(&dirs.state).len(), 1);
+        h.get_by_label(RECENT);
+        // The card and the row of the recent group.
+        let rows: Vec<_> = h.get_all_by_label("Aurelia").collect();
+        assert_eq!(rows.len(), 2);
+        let row = rows
+            .into_iter()
+            .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()));
+        row.unwrap().click();
+        h.run_steps(3);
+        let absolute = std::path::absolute(&path).unwrap();
+        assert_eq!(h.state().actions, [Action::OpenWorld(absolute)]);
+    }
+}
