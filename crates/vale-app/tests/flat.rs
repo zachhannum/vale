@@ -139,8 +139,6 @@ fn one_click_switches_the_view_and_the_tool_stays() {
         .with_pixels_per_point(1.0)
         .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
     h.run_steps(2);
-    h.get_by_label("Brush").click();
-    h.run_steps(2);
     h.get_by_label("Lower").click();
     h.run_steps(2);
     for (view, name) in [(WorldView::Flat, "Flat"), (WorldView::Globe, "Globe")] {
@@ -149,8 +147,8 @@ fn one_click_switches_the_view_and_the_tool_stays() {
         let globe = &h.state().globe;
         assert_eq!(globe.world_view, view);
         assert_eq!((globe.tool, globe.brush.mode), (Tool::Brush, Mode::Lower));
-        // The brush panel stays open.
-        assert!(h.query_all_by_label("Hardness").next().is_some());
+        // The options bar keeps the settings of the brush.
+        assert!(h.query_by_label("Hardness").is_some());
     }
 }
 

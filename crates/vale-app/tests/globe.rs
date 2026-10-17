@@ -49,6 +49,26 @@ fn menu_row(h: &mut Harness<'static, AppState>, menu: &str, row: &str) {
     h.run_steps(1);
 }
 
+/// Opens the Brush popover in the brush tool. A click outside the popover
+/// closes it, so a test chooses the mode first.
+fn open_brush(h: &mut Harness<'static, AppState>) {
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(1);
+    h.get_by_label("Brush…").click();
+    h.run_steps(2);
+}
+
+/// Chooses a mode on the tool rail, or in the menu of the More button.
+fn choose_mode(h: &mut Harness<'static, AppState>, mode: &str) {
+    let on_rail = ["Raise", "Lower", "Smooth", "Flatten"].contains(&mode);
+    if !on_rail {
+        h.get_by_label("More tools").click();
+        h.run_steps(2);
+    }
+    h.get_by_label(mode).click();
+    h.run_steps(2);
+}
+
 /// The place on the globe under a screen position.
 fn place(h: &Harness<'static, AppState>, pos: Pos2) -> V3 {
     let globe = &h.state().globe;
@@ -526,7 +546,7 @@ fn face_size_sets_the_heightmap_of_the_globe() {
 fn painting_changes_the_globe() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
-    h.get_by_label("Brush").click();
+    h.get_by_label("Raise").click();
     h.run_steps(2);
     assert_eq!(h.state().globe.tool, Tool::Brush);
     let view = h.state().globe.view;
@@ -560,7 +580,7 @@ fn the_debug_panel_shows_the_stroke_delay() {
     h.set_size(egui::vec2(800.0, 480.0));
     assert!(h.query_by_label_contains("Stroke delay").is_none());
     menu_row(&mut h, "Window", "Toolbox");
-    h.get_by_label("Brush").click();
+    h.get_by_label("Raise").click();
     h.run_steps(2);
     assert!(h.query_by_label("Stroke delay: no stroke").is_some());
     assert!(h.state().globe.rect.width() < 640.0);
@@ -870,14 +890,13 @@ fn a_press_on_the_globe_picks_the_flatten_level() {
 fn the_brush_panel_locks_the_ground_size_of_the_brush() {
     let mut h = harness();
     assert!(h.query_by_label("Lock size").is_none());
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
-    for label in ["Raise", "Lower", "Smooth", "Flatten", "Radius", "Hardness"] {
+    open_brush(&mut h);
+    for label in ["Raise", "Lower", "Smooth", "Flatten", "Size", "Hardness"] {
         assert!(h.query_all_by_label(label).next().is_some(), "{label}");
     }
     assert!(h.query_by_label("Pick from globe").is_none());
-    h.get_by_label("Flatten").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Flatten");
+    open_brush(&mut h);
     assert!(h.query_by_label("Pick from globe").is_some());
 
     // Without the lock, the brush covers half of the ground at twice the zoom.
@@ -1677,8 +1696,7 @@ fn the_brush_panel_has_the_carve_mode() {
     let mut h = harness();
     h.state_mut().globe.tool = Tool::Brush;
     h.run_steps(2);
-    h.get_by_label("Carve").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Carve");
     assert_eq!(h.state().globe.brush.mode, Mode::Carve);
 }
 
@@ -1687,8 +1705,7 @@ fn the_brush_panel_has_the_ridge_mode() {
     let mut h = harness();
     h.state_mut().globe.tool = Tool::Brush;
     h.run_steps(2);
-    h.get_by_label("Ridge").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Ridge");
     assert_eq!(h.state().globe.brush.mode, Mode::Ridge);
 }
 
@@ -1759,8 +1776,7 @@ fn the_brush_panel_has_the_deposit_mode() {
     let mut h = harness();
     h.state_mut().globe.tool = Tool::Brush;
     h.run_steps(2);
-    h.get_by_label("Deposit").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Deposit");
     assert_eq!(h.state().globe.brush.mode, Mode::Deposit);
 }
 
@@ -1819,6 +1835,7 @@ fn ridge_in_a_near_view_reads_the_window() {
     const N: usize = 2048;
     let _gpu = one_gpu_test();
     let mut h = island_harness(N, 0.2, 14.0);
+    narrow(&mut h);
     let globe = &mut h.state_mut().globe;
     globe.tool = Tool::Brush;
     globe.brush.mode = Mode::Ridge;
@@ -1876,22 +1893,18 @@ fn ridge_in_a_near_view_reads_the_window() {
 #[test]
 fn the_brush_panel_has_the_erode_mode() {
     let mut h = harness();
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
-    h.get_by_label("Erode").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Erode");
     assert_eq!(h.state().globe.brush.mode, Mode::Erode);
 }
 
 #[test]
 fn the_brush_panel_has_the_weather_mode_and_its_angle_slider() {
     let mut h = harness();
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
+    open_brush(&mut h);
     assert_eq!(h.state().globe.brush.mode, Mode::Raise);
     assert!(h.query_all_by_label("Angle").next().is_none());
-    h.get_by_label("Weather").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Weather");
+    open_brush(&mut h);
     assert_eq!(h.state().globe.brush.mode, Mode::Weather);
     assert!(h.query_all_by_label("Angle").next().is_some());
     assert_eq!(h.state().globe.brush.talus_deg, 0.5);
@@ -1900,11 +1913,10 @@ fn the_brush_panel_has_the_weather_mode_and_its_angle_slider() {
 #[test]
 fn the_brush_panel_has_the_warp_mode_and_its_two_sliders() {
     let mut h = harness();
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
+    open_brush(&mut h);
     assert!(h.query_all_by_label("Scale").next().is_none());
-    h.get_by_label("Warp").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Warp");
+    open_brush(&mut h);
     let brush = &h.state().globe.brush;
     assert_eq!(brush.mode, Mode::Warp);
     assert_eq!((brush.warp_km, brush.scale_km), (50.0, 200.0));
@@ -1918,10 +1930,8 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
     use egui::accesskit::Role;
     for mode in ["Raise", "Erode", "Warp"] {
         let mut h = harness();
-        h.state_mut().globe.tool = Tool::Brush;
-        h.run_steps(2);
-        h.get_by_label(mode).click();
-        h.run_steps(2);
+        choose_mode(&mut h, mode);
+        open_brush(&mut h);
         // The elevations that take no input.
         let off = |h: &Harness<'static, AppState>| {
             let values = h.query_all_by_role(Role::SpinButton);
@@ -2213,6 +2223,13 @@ fn island_harness(face_size: usize, radius: f64, zoom: f64) -> Harness<'static, 
     h
 }
 
+/// Makes the canvas narrow. A narrow canvas shows less ground, so the window
+/// of the rivers has finer cells.
+fn narrow(h: &mut Harness<'static, AppState>) {
+    h.set_size(egui::vec2(400.0, 480.0));
+    h.run_steps(2);
+}
+
 #[test]
 fn zooming_in_gives_finer_rivers() {
     let _gpu = one_gpu_test();
@@ -2256,6 +2273,7 @@ fn carve_in_a_near_view_cuts_a_narrow_valley() {
     const N: usize = 2048;
     let _gpu = one_gpu_test();
     let mut h = island_harness(N, 0.2, 14.0);
+    narrow(&mut h);
     let globe = &mut h.state_mut().globe;
     globe.tool = Tool::Brush;
     globe.brush.mode = Mode::Carve;
@@ -2488,6 +2506,7 @@ fn erode_in_a_near_view_works_on_the_cells_of_the_window() {
     const N: usize = 2048;
     let _gpu = one_gpu_test();
     let mut h = island_harness(N, 0.2, 14.0);
+    narrow(&mut h);
     let globe = &mut h.state_mut().globe;
     globe.tool = Tool::Brush;
     globe.brush.mode = Mode::Erode;
@@ -2633,6 +2652,7 @@ fn a_small_erode_brush_works_on_the_cells_of_the_window_of_the_brush() {
     assert_eq!(N / CoarseHeights::size_for(N), 4);
     for (zoom, view_cell) in [(1.0, 4), (7.0, 2)] {
         let mut h = island_harness(N, 0.35, zoom);
+        narrow(&mut h);
         let globe = &mut h.state_mut().globe;
         globe.tool = Tool::Brush;
         globe.brush.mode = Mode::Erode;
@@ -2798,16 +2818,15 @@ fn screenshots_with_a_river_window() {
 #[test]
 fn the_brush_panel_has_the_uplift_mode_and_its_two_sliders() {
     let mut h = harness();
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
-    assert_eq!(h.query_all_by_label("Uplift").count(), 1);
+    open_brush(&mut h);
+    assert!(h.query_by_label("Uplift").is_none());
     assert!(h.query_all_by_label("Erosion").next().is_none());
     assert!(h.query_all_by_label("Strength").next().is_some());
-    h.get_by_label("Uplift").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Uplift");
+    open_brush(&mut h);
     assert_eq!(h.state().globe.brush.mode, Mode::Uplift);
-    // The mode and the slider of the rate of the uplift.
-    assert!(h.query_all_by_label("Uplift").count() > 1);
+    // The slider of the rate of the uplift.
+    assert!(h.query_by_label("Uplift").is_some());
     assert!(h.query_all_by_label("Strength").next().is_none());
     assert!(h.query_all_by_label("Erosion").next().is_some());
     assert_eq!(h.state().globe.brush.erosion, 0.5);

@@ -5,10 +5,12 @@ use eframe::egui;
 
 use super::{AppState, Workspace, canvas, elevation, globe, inspector, panels, world_form};
 use crate::globe::Tool;
-use crate::ui::pad::icons::Icon;
+use vale_terrain::Mode;
 
 pub mod command;
 pub mod menu;
+pub mod options;
+pub mod rail;
 pub mod theme;
 pub mod title;
 pub mod widgets;
@@ -21,6 +23,15 @@ pub enum Tab {
     Toolbox,
 }
 
+/// A tool of the Maps workspace.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum MapTool {
+    #[default]
+    Select,
+    /// Moves the map. A click selects nothing.
+    Hand,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeskState {
     /// The dock shows at the right edge.
@@ -28,6 +39,15 @@ pub struct DeskState {
     pub tab: Tab,
     /// The space at the left of the title bar for the window buttons.
     pub title_inset: f32,
+    /// The Brush popover is open.
+    pub brush_open: bool,
+    /// The menu of the More button is open.
+    pub more_open: bool,
+    pub map_tool: MapTool,
+    /// The Brush button of the options bar, in this frame.
+    pub brush_button: Option<egui::Rect>,
+    /// The More button of the tool rail, in this frame.
+    pub more_button: Option<egui::Rect>,
 }
 
 impl Default for DeskState {
@@ -36,59 +56,48 @@ impl Default for DeskState {
             dock_open: true,
             tab: Tab::default(),
             title_inset: 0.0,
+            brush_open: false,
+            more_open: false,
+            map_tool: MapTool::default(),
+            brush_button: None,
+            more_button: None,
         }
     }
 }
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    menu::keys(ui.ctx(), state);
-    let screen = ui.ctx().content_rect();
+    let ctx = ui.ctx().clone();
+    menu::keys(&ctx, state);
+    rail::keys(&ctx, state);
+    let globe = &mut state.globe;
+    if globe.tool != Tool::Brush || globe.brush.mode != Mode::Flatten {
+        globe.pick_level = false;
+    }
+    let screen = ctx.content_rect();
     ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
         menu::row(ui, state);
         title::draw(ui, state);
+        options::bar(ui, state);
+        panels::status(ui, state);
+        rail::draw(ui, state);
         match state.workspace {
             Workspace::Globe => {
-                rail(ui, state);
-                panels::status(ui, state);
                 let desk = &state.desk;
                 state.globe.debug = desk.dock_open && desk.tab == Tab::Toolbox;
                 panels::brush_debug(ui, state);
-                panels::brush(ui, state);
                 elevation::draw(ui, state);
-                globe::draw(ui, state);
+                let cards = state.desk.brush_open;
+                globe::draw(ui, state, cards);
             }
             Workspace::Map => {
                 panels::left(ui, state);
                 inspector::draw(ui, state);
-                panels::status(ui, state);
                 canvas::draw(ui, state);
             }
         }
     });
-    world_form::desktop(ui.ctx(), state);
-}
-
-/// The tools of the World workspace.
-fn rail(ui: &mut egui::Ui, state: &mut AppState) {
-    let frame = egui::Frame::NONE
-        .fill(theme::glass(state.translucent))
-        .inner_margin(egui::Margin::symmetric(8, 8));
-    egui::Panel::left("desk-rail")
-        .exact_size(theme::RAIL)
-        .resizable(false)
-        .frame(frame)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            for (tool, name, icon) in [
-                (Tool::Navigate, "Navigate", Icon::Move),
-                (Tool::Brush, "Brush", Icon::Brush),
-            ] {
-                let on = state.globe.tool == tool;
-                let resp = widgets::tool_button(ui, name, icon, name, Some(on), true);
-                if resp.clicked() {
-                    state.globe.tool = tool;
-                }
-            }
-        });
+    rail::more_menu(&ctx, state);
+    options::popover(&ctx, state);
+    world_form::desktop(&ctx, state);
 }

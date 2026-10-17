@@ -78,6 +78,16 @@ pub fn canvas(translucent: bool) -> Color32 {
     }
 }
 
+/// The fill of a popover. With `blur`, a blurred copy of the canvas is
+/// behind it.
+pub fn popover(blur: bool) -> Color32 {
+    if blur {
+        Color32::from_rgba_unmultiplied(40, 43, 49, 199)
+    } else {
+        Color32::from_rgb(40, 43, 49)
+    }
+}
+
 pub fn body() -> FontId {
     FontId::proportional(13.0)
 }
@@ -88,6 +98,10 @@ pub fn label() -> FontId {
 
 pub fn small() -> FontId {
     FontId::proportional(11.0)
+}
+
+pub fn mono() -> FontId {
+    FontId::monospace(12.0)
 }
 
 /// Sets the style of the desktop layout, one time for each context.
