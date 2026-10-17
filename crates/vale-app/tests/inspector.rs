@@ -63,11 +63,12 @@ fn click_at(h: &mut Harness<'static, AppState>, pos: egui::Pos2) {
 }
 
 #[test]
-fn empty_states() {
+fn with_no_selection_the_inspector_shows_the_frame() {
     let h = harness();
-    assert!(h.query_by_label("Select a layer in the list.").is_some());
-    assert!(h.query_by_label("Click a feature on the map.").is_some());
+    let heading = egui::accesskit::Role::Heading;
+    assert!(h.query_by_role_and_label(heading, "Frame").is_some());
     assert!(h.query_by_label("Unplaced labels").is_some());
+    assert!(h.query_by_label("Show labels").is_none());
 }
 
 #[test]
@@ -103,7 +104,8 @@ fn polygon_layer_has_no_point_controls() {
 #[test]
 fn select_label_selects_layer() {
     let mut h = harness();
-    h.get_by_label("Select Rivers").click();
+    let role = egui::accesskit::Role::Button;
+    h.get_by_role_and_label(role, "Rivers").click();
     h.run_steps(2);
     let rivers = id_of(&h, "Rivers");
     assert_eq!(h.state().selected_layer, Some(rivers));

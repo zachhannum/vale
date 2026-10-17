@@ -1,4 +1,4 @@
-//! The elevation panel: the band limits and the color ramp of the heightmap.
+//! The elevation controls: the band limits and the color ramp of the heightmap.
 
 use eframe::egui;
 use vale_terrain::{Bands, ELEV_MAX, ELEV_MIN, Rgb};
@@ -56,18 +56,6 @@ pub fn limit_y(rect: egui::Rect, meters: f64) -> f32 {
 
 fn color32(c: Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(c[0], c[1], c[2])
-}
-
-pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    if !state.globe.preview.panel {
-        return;
-    }
-    egui::Panel::right("elevation")
-        .default_size(210.0)
-        .show(ui, |ui| {
-            ui.heading("Elevation");
-            controls(ui, state);
-        });
 }
 
 pub(super) fn controls(ui: &mut egui::Ui, state: &mut AppState) {

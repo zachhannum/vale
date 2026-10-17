@@ -14,9 +14,7 @@ pub struct Preview {
     pub rivers: bool,
     /// The factor of the width of a river line on screen.
     pub river_width: f32,
-    /// The elevation panel is open.
-    pub panel: bool,
-    /// The band limit that the panel edits, as an index into the limits.
+    /// The band limit that the elevation controls edit, as an index into the limits.
     pub selected: Option<usize>,
 }
 
@@ -28,7 +26,6 @@ impl Default for Preview {
             graticule: true,
             rivers: true,
             river_width: 1.0,
-            panel: false,
             selected: None,
         }
     }

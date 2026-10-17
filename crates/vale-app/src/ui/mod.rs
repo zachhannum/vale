@@ -275,13 +275,10 @@ impl AppState {
         Ok(state)
     }
 
-    /// Sets the layout. In the iPad layout the pen paints, so the brush is
-    /// the first tool.
+    /// Sets the layout. The brush is the first tool in each layout.
     pub fn set_layout(&mut self, layout: Layout) {
         self.layout = layout;
-        if layout == Layout::Pad {
-            self.globe.tool = Tool::Brush;
-        }
+        self.globe.tool = Tool::Brush;
     }
 
     /// True if the undo log of the project file has the edits. If not, the
@@ -1051,21 +1048,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let screen = ui.ctx().content_rect();
     ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
+        // The iPad layout of the Maps workspace.
         panels::toolbar(ui, state);
-        match state.workspace {
-            Workspace::Globe => {
-                panels::status(ui, state);
-                panels::brush_debug(ui, state);
-                elevation::draw(ui, state);
-                globe::draw(ui, state, false);
-            }
-            Workspace::Map => {
-                panels::left(ui, state);
-                inspector::draw(ui, state);
-                panels::status(ui, state);
-                canvas::draw(ui, state);
-            }
-        }
+        panels::left(ui, state);
+        inspector::draw(ui, state);
+        panels::status(ui, state);
+        canvas::draw(ui, state);
     });
     world_form::desktop(ui.ctx(), state);
     state.frames += 1;

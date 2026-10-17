@@ -8,10 +8,13 @@ use vale_app::document::Document;
 use vale_app::globe::Tool;
 use vale_app::session::Session;
 use vale_app::ui::desk::command::Command;
+use vale_app::ui::desk::dock::{BRUSH_DEBUG, FRAME, HEIGHT, IMPORT, WORLD_PROPERTIES, grouped};
 use vale_app::ui::desk::options::{BRUSH_BUTTON, tool_name};
 use vale_app::ui::desk::rail::MORE_TOOLS;
+use vale_app::ui::desk::status::zoom_text;
 use vale_app::ui::desk::title::NOT_IN_PROTOTYPE;
 use vale_app::ui::desk::{MapTool, Tab, theme};
+use vale_app::ui::pad::{ADD_LAYER, readout_text};
 use vale_app::ui::{AppState, Layout, Workspace, draw};
 
 type App = Harness<'static, AppState>;
@@ -41,15 +44,11 @@ fn harness() -> App {
 #[test]
 fn the_title_bar_has_the_switches_and_the_actions() {
     let h = harness();
-    for label in [
-        "Earth (sample)",
-        "World",
-        "Maps",
-        "Globe",
-        "Flat",
-        "Undo",
-        "Redo",
-    ] {
+    // The world inspector also has the name.
+    let bar = theme::MENU + theme::BAR;
+    let names = h.query_all_by_label("Earth (sample)");
+    assert_eq!(names.filter(|n| n.rect().bottom() < bar).count(), 1);
+    for label in ["World", "Maps", "Globe", "Flat", "Undo", "Redo"] {
         assert!(h.query_by_label(label).is_some(), "{label}");
     }
     assert!(h.get_by_label("Atlas").accesskit_node().is_disabled());
@@ -127,7 +126,7 @@ fn a_menu_row_runs_its_command() {
     let mut h = harness();
     h.get_by_label("Window").click();
     h.run_steps(2);
-    h.get_by_label("Toolbox").click();
+    h.get_by_role_and_label(Role::Button, "Toolbox").click();
     h.run_steps(2);
     assert_eq!(h.state().desk.tab, Tab::Toolbox);
     assert!(h.query_by_label("Brush debug").is_some());
@@ -145,14 +144,200 @@ fn a_menu_row_runs_its_command() {
 #[test]
 fn the_dock_button_shows_and_hides_the_dock() {
     let mut h = harness();
+    let width = |h: &App| h.state().globe.rect.width();
+    assert_eq!(width(&h), 1280.0 - theme::RAIL - theme::DOCK);
+    let tab = h.get_by_role_and_label(Role::Tab, "Layers").rect();
+    assert_eq!(
+        tab.center().y,
+        theme::MENU + theme::BAR + theme::OPTIONS + theme::TABS / 2.0
+    );
     h.get_by_label("Dock").click();
     h.run_steps(2);
     assert!(!h.state().desk.dock_open);
+    assert!(h.query_by_role(Role::Tab).is_none());
+    assert_eq!(width(&h), 1280.0 - theme::RAIL);
     let dock = h.get_by_label("Dock");
     assert_eq!(dock.accesskit_node().toggled(), Some(Toggled::False));
     dock.click();
     h.run_steps(2);
     assert!(h.state().desk.dock_open);
+    assert_eq!(width(&h), 1280.0 - theme::RAIL - theme::DOCK);
+}
+
+#[test]
+fn the_tabs_of_the_dock_switch_between_the_layers_and_the_toolbox() {
+    let mut h = harness();
+    let layers = h.get_by_role_and_label(Role::Tab, "Layers");
+    assert_eq!(layers.accesskit_node().toggled(), Some(Toggled::True));
+    assert!(h.query_by_label(ADD_LAYER).is_some());
+    assert!(!h.state().globe.debug);
+    h.get_by_role_and_label(Role::Tab, "Toolbox").click();
+    h.run_steps(2);
+    assert_eq!(h.state().desk.tab, Tab::Toolbox);
+    assert!(
+        h.query_by_role_and_label(Role::Heading, BRUSH_DEBUG)
+            .is_some()
+    );
+    assert!(h.query_by_label(ADD_LAYER).is_none());
+    assert!(h.query_by_label("Hide Rivers").is_none());
+    assert!(h.state().globe.debug);
+    h.get_by_role_and_label(Role::Tab, "Layers").click();
+    h.run_steps(2);
+    assert_eq!(h.state().desk.tab, Tab::Layers);
+    assert!(h.query_by_label("Hide Rivers").is_some());
+    assert!(!h.state().globe.debug);
+}
+
+/// The heading of the inspector.
+fn heading(h: &App) -> String {
+    let node = h.get_by_role(Role::Heading);
+    node.accesskit_node().label().unwrap_or_default()
+}
+
+#[test]
+fn the_inspector_shows_the_panel_of_the_selection() {
+    let mut h = harness();
+    // The heading is the name of the world, and the world has no raster.
+    assert_eq!(heading(&h), "Earth (sample)");
+    assert!(h.query_by_label(WORLD_PROPERTIES).is_some());
+    assert!(h.query_by_label(IMPORT).is_some());
+    assert!(h.query_by_role_and_label(Role::Button, HEIGHT).is_none());
+    h.get_by_label(WORLD_PROPERTIES).click();
+    h.run_steps(2);
+    assert!(h.state().world_form.is_some());
+    h.state_mut().world_form = None;
+
+    let map = &mut h.state_mut().globe.map;
+    map.set(0, 0, 0, map.base() + 1);
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, HEIGHT).click();
+    h.run_steps(2);
+    assert_eq!(heading(&h), HEIGHT);
+    let height = h.get_by_role_and_label(Role::Button, HEIGHT);
+    assert_eq!(height.accesskit_node().toggled(), Some(Toggled::True));
+    for label in [
+        "Levels",
+        "Greyscale",
+        "Import heightmap…",
+        "Export GeoTIFF…",
+    ] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+
+    h.get_by_role_and_label(Role::Button, "Rivers").click();
+    h.run_steps(2);
+    assert_eq!(heading(&h), "Rivers");
+    assert!(h.query_by_label("Levels").is_none());
+    assert!(h.query_by_label("Lines").is_some());
+    let height = h.get_by_role_and_label(Role::Button, HEIGHT);
+    assert_eq!(height.accesskit_node().toggled(), Some(Toggled::False));
+
+    // A click on the selected row selects nothing.
+    h.get_by_role_and_label(Role::Button, "Rivers").click();
+    h.run_steps(2);
+    assert_eq!(heading(&h), "Earth (sample)");
+    assert_eq!(h.state().selected_layer, None);
+
+    let count = h.state().doc.project.layers().len();
+    h.get_by_role_and_label(Role::Button, "Rivers").click();
+    h.run_steps(2);
+    h.get_by_label("Delete layer").click();
+    h.run_steps(2);
+    assert_eq!(h.state().doc.project.layers().len(), count - 1);
+    assert_eq!(heading(&h), "Earth (sample)");
+}
+
+#[test]
+fn the_eye_of_a_layer_hides_and_shows_it() {
+    let mut h = harness();
+    let visible = |h: &App| {
+        let layers = h.state().doc.project.layers();
+        layers.iter().find(|l| l.name == "Rivers").unwrap().visible
+    };
+    assert!(visible(&h));
+    h.get_by_label("Hide Rivers").click();
+    h.run_steps(2);
+    assert!(!visible(&h));
+    assert!(h.query_by_label("Hide Rivers").is_none());
+    h.get_by_label("Show Rivers").click();
+    h.run_steps(2);
+    assert!(visible(&h));
+    // The eye does not select the layer.
+    assert_eq!(h.state().selected_layer, None);
+}
+
+#[test]
+fn the_add_button_of_the_dock_adds_a_layer() {
+    let mut h = harness();
+    let count = h.state().doc.project.layers().len();
+    h.get_by_label(ADD_LAYER).click();
+    h.run_steps(2);
+    h.get_by_label("Polygons").click();
+    h.run_steps(2);
+    let layers = h.state().doc.project.layers();
+    assert_eq!(layers.len(), count + 1);
+    let added = layers.last().unwrap();
+    assert_eq!(h.state().selected_layer, Some(added.id));
+    assert_eq!(heading(&h), added.name);
+}
+
+#[test]
+fn the_status_bar_shows_the_readout_the_scale_and_the_zoom() {
+    let mut h = harness();
+    let face = format!("Face {}", grouped(h.state().globe.map.face_size()));
+    let label = h.get_by_label(&face);
+    assert!(label.rect().top() >= 800.0 - theme::STATUS);
+    assert!(h.query_by_label("100%").is_some());
+    assert!(h.query_by_label("–").is_some());
+
+    let c = h.state().globe.rect.center();
+    h.hover_at(c);
+    h.run_steps(2);
+    let s = h.state();
+    let text = readout_text(s.cursor_lonlat, s.cursor_meters);
+    assert!(text.ends_with(" m"), "{text}");
+    assert!(h.query_by_label(&text).is_some(), "{text}");
+
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, 2.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(3);
+    let zoom = h.state().globe.view.zoom;
+    assert!(zoom > 1.0, "{zoom}");
+    assert!(h.query_by_label("100%").is_none());
+    assert!(h.query_by_label(&zoom_text(zoom)).is_some());
+
+    h.get_by_label("Maps").click();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("1 pt = ").is_some());
+    assert!(h.query_by_label("100%").is_some());
+}
+
+#[test]
+fn the_maps_inspector_shows_the_frame_with_no_selection() {
+    let mut h = harness();
+    h.get_by_label("Maps").click();
+    h.run_steps(3);
+    assert_eq!(heading(&h), FRAME);
+    for label in ["Graticule", "Labels", "Fit world", "Unplaced labels"] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    let projection = h.get_by_role(Role::ComboBox);
+    assert_eq!(
+        projection.accesskit_node().value().as_deref(),
+        Some("Equal Earth")
+    );
+    h.get_by_label("Graticule").click();
+    h.run_steps(3);
+    assert!(!h.state().doc.frame.graticule);
+
+    h.get_by_role_and_label(Role::Button, "Places").click();
+    h.run_steps(2);
+    assert_eq!(heading(&h), "Places");
+    assert!(h.query_by_label("Show labels").is_some());
 }
 
 #[test]

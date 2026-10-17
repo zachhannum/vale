@@ -8,14 +8,12 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, ExportFormat, SaveMark, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
+use crate::globe::{Globe, rivers, stats, stroke_test};
 use crate::projects;
 use crate::world;
 
 /// The button of the tool bar that opens the properties of the world.
 pub const WORLD_BUTTON: &str = "World…";
-/// The button of the tool bar that exports the heightmap.
-pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -37,35 +35,6 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             if ui.button(WORLD_BUTTON).clicked() {
                 let form = WorldForm::properties(&state.doc.project.world);
                 state.world_form = Some(form);
-            }
-            if state.workspace == Workspace::Globe {
-                ui.separator();
-                ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
-                ui.selectable_value(&mut state.globe.tool, Tool::Brush, "Brush");
-                ui.separator();
-                let mut flat = state.globe.world_view == WorldView::Flat;
-                if ui.toggle_value(&mut flat, "Flat").changed() {
-                    state.globe.world_view = if flat {
-                        WorldView::Flat
-                    } else {
-                        WorldView::Globe
-                    };
-                }
-                if flat {
-                    flat_projection(ui, state);
-                }
-                ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
-                ui.toggle_value(&mut state.globe.preview.panel, "Elevation");
-                ui.toggle_value(&mut state.globe.debug, "Debug");
-                ui.separator();
-                let import = egui::Button::new("Import heightmap…");
-                if ui.add_enabled(!state.globe.busy(), import).clicked() {
-                    state.actions.push(Action::ImportHeightmapDialog);
-                }
-                let export = egui::Button::new(EXPORT_GEOTIFF);
-                if ui.add_enabled(state.can_export(), export).clicked() {
-                    state.actions.push(Action::ExportHeightmapDialog);
-                }
             }
             if !state.file_buttons || state.workspace != Workspace::Map {
                 return;
@@ -183,21 +152,6 @@ pub(super) fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
     {
         flat.reset();
     }
-}
-
-/// The numbers of the brush on the GPU, and controls for a test of the brush.
-pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
-    if !state.globe.debug {
-        return;
-    }
-    egui::Panel::right("brush_debug")
-        .default_size(300.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Brush debug");
-                debug_controls(ui, state);
-            });
-        });
 }
 
 /// The state of the window of small rivers.
@@ -374,7 +328,7 @@ fn world_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Projection");
     let mut spec = state.doc.frame.projection;
     egui::ComboBox::from_id_salt("projection")
@@ -482,7 +436,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Map");
     if ui
         .checkbox(&mut state.doc.frame.graticule, "Graticule")

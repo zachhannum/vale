@@ -7,7 +7,7 @@ use vale_app::cli::{Args, export_heightmap};
 use vale_app::document::Document;
 use vale_app::files::ExportEvent;
 use vale_app::session::Session;
-use vale_app::ui::panels::EXPORT_GEOTIFF;
+use vale_app::ui::pad::EXPORT_GEOTIFF;
 use vale_app::ui::{Action, AppState, Workspace, draw};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{EquirectGrid, Heightmap, Limits, Mode, Stamp};
@@ -277,8 +277,11 @@ fn the_end_of_the_hand_off_to_the_files_app_sets_the_note() {
     assert!(state.can_export());
 }
 
+/// The desktop layout with the dock closed, so that the File menu has the
+/// only rows of the import and the export.
 fn desktop(mut state: AppState) -> egui_kittest::Harness<'static, AppState> {
     state.workspace = Workspace::Globe;
+    state.desk.dock_open = false;
     let mut h = egui_kittest::Harness::builder()
         .with_size(eframe::egui::vec2(1280.0, 800.0))
         .with_pixels_per_point(1.0)

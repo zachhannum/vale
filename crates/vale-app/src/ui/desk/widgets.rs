@@ -265,6 +265,109 @@ pub fn button(ui: &mut egui::Ui, label: &str, tip: &str, selected: Option<bool>)
     resp.on_hover_text(tip)
 }
 
+/// A tab of the dock. A screen reader gets the role of a tab.
+pub fn tab(ui: &mut egui::Ui, label: &str, on: bool) -> Response {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::label(), theme::TEXT);
+    let size = vec2(galley.size().x.ceil() + 18.0, SEGMENT_HEIGHT);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
+    ui.ctx().accesskit_node_builder(resp.id, |node| {
+        node.set_role(egui::accesskit::Role::Tab);
+    });
+    let color = if on {
+        ui.painter()
+            .rect_filled(rect, theme::CONTROL_RADIUS, theme::selected());
+        theme::SELECTED_TEXT
+    } else if resp.hovered() {
+        theme::TEXT
+    } else {
+        theme::MUTE
+    };
+    let at = rect.center() - galley.size() / 2.0;
+    ui.painter().galley(at, galley, color);
+    resp
+}
+
+/// The side of the eye button of a row.
+const EYE: f32 = 22.0;
+
+/// What the user did with a row of a list.
+pub struct ListRow {
+    pub body: Response,
+    /// The eye button was clicked.
+    pub eye: bool,
+}
+
+/// A row of a list: an icon, a name, and an eye button. `visible` is `None`
+/// for a row with no eye. The eye of a hidden layer is crossed and dim.
+pub fn list_row(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    name: &str,
+    selected: bool,
+    visible: Option<bool>,
+    enabled: bool,
+) -> ListRow {
+    let width = ui.available_width();
+    let (outer, _) = ui.allocate_exact_size(vec2(width, theme::ROW), Sense::hover());
+    let rect = outer.shrink2(vec2(6.0, 0.0));
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let body = ui.interact(rect, ui.id().with(("row", name)), sense);
+    body.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, name)
+    });
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, theme::CONTROL_RADIUS, theme::selected());
+    } else if enabled && body.hovered() {
+        painter.rect_filled(rect, theme::CONTROL_RADIUS, theme::hover());
+    }
+    let alpha = if enabled { 1.0 } else { theme::OFF };
+    let icon_rect =
+        Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), vec2(16.0, 16.0));
+    icons::paint(
+        painter,
+        icon_rect,
+        icon,
+        14.0,
+        theme::MUTE.gamma_multiply(alpha),
+    );
+    let galley = painter.layout(
+        name.to_owned(),
+        theme::label(),
+        theme::TEXT,
+        rect.width() - 36.0 - EYE - 4.0,
+    );
+    let at = pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0);
+    painter.galley(at, galley, theme::TEXT.gamma_multiply(alpha));
+    let eye = visible.is_some_and(|shown| {
+        let eye_rect = Rect::from_center_size(
+            pos2(rect.right() - 4.0 - EYE / 2.0, rect.center().y),
+            vec2(EYE, EYE),
+        );
+        let label = format!("{} {name}", if shown { "Hide" } else { "Show" });
+        let resp = ui.interact(eye_rect, ui.id().with(("eye", name)), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+        let painter = ui.painter();
+        if resp.hovered() {
+            painter.rect_filled(eye_rect, theme::CONTROL_RADIUS, theme::hover());
+        }
+        let (icon, color) = match shown {
+            true => (Icon::Eye, theme::MUTE),
+            false => (Icon::EyeOff, theme::MUTE.gamma_multiply(0.55)),
+        };
+        icons::paint(painter, eye_rect, icon, 14.0, color);
+        resp.on_hover_text(&label).clicked()
+    });
+    ListRow { body, eye }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

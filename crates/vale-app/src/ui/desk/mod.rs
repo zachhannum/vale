@@ -3,14 +3,16 @@
 
 use eframe::egui;
 
-use super::{AppState, Workspace, canvas, elevation, globe, inspector, panels, world_form};
+use super::{AppState, Workspace, canvas, globe, world_form};
 use crate::globe::Tool;
 use vale_terrain::Mode;
 
 pub mod command;
+pub mod dock;
 pub mod menu;
 pub mod options;
 pub mod rail;
+pub mod status;
 pub mod theme;
 pub mod title;
 pub mod widgets;
@@ -37,6 +39,8 @@ pub struct DeskState {
     /// The dock shows at the right edge.
     pub dock_open: bool,
     pub tab: Tab,
+    /// The Height row of the layer list is selected.
+    pub height_selected: bool,
     /// The space at the left of the title bar for the window buttons.
     pub title_inset: f32,
     /// The Brush popover is open.
@@ -55,6 +59,7 @@ impl Default for DeskState {
         DeskState {
             dock_open: true,
             tab: Tab::default(),
+            height_selected: false,
             title_inset: 0.0,
             brush_open: false,
             more_open: false,
@@ -79,22 +84,17 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         menu::row(ui, state);
         title::draw(ui, state);
         options::bar(ui, state);
-        panels::status(ui, state);
+        status::draw(ui, state);
         rail::draw(ui, state);
+        let desk = &state.desk;
+        state.globe.debug = desk.dock_open && desk.tab == Tab::Toolbox;
+        dock::draw(ui, state);
         match state.workspace {
             Workspace::Globe => {
-                let desk = &state.desk;
-                state.globe.debug = desk.dock_open && desk.tab == Tab::Toolbox;
-                panels::brush_debug(ui, state);
-                elevation::draw(ui, state);
                 let cards = state.desk.brush_open;
                 globe::draw(ui, state, cards);
             }
-            Workspace::Map => {
-                panels::left(ui, state);
-                inspector::draw(ui, state);
-                canvas::draw(ui, state);
-            }
+            Workspace::Map => canvas::draw(ui, state),
         }
     });
     rail::more_menu(&ctx, state);

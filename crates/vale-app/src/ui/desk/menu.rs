@@ -71,7 +71,6 @@ pub const MENUS: [Menu; 6] = [
             C(Command::Flat),
             S,
             C(Command::Greyscale),
-            C(Command::Elevation),
         ],
     },
     Menu {

@@ -32,7 +32,6 @@ pub enum Command {
     Globe,
     Flat,
     Greyscale,
-    Elevation,
     AddLines,
     AddPoints,
     AddPolygons,
@@ -53,7 +52,7 @@ pub const REVEAL: &str = if cfg!(target_os = "macos") {
 };
 
 impl Command {
-    pub const ALL: [Command; 31] = [
+    pub const ALL: [Command; 30] = [
         Command::NewWorld,
         Command::Open,
         Command::Save,
@@ -76,7 +75,6 @@ impl Command {
         Command::Globe,
         Command::Flat,
         Command::Greyscale,
-        Command::Elevation,
         Command::AddLines,
         Command::AddPoints,
         Command::AddPolygons,
@@ -112,7 +110,6 @@ impl Command {
             Command::Globe => "Globe",
             Command::Flat => "Flat",
             Command::Greyscale => "Greyscale",
-            Command::Elevation => "Elevation",
             Command::AddLines => "Lines",
             Command::AddPoints => "Points",
             Command::AddPolygons => "Polygons",
@@ -149,7 +146,6 @@ impl Command {
             Command::Globe => "view.globe",
             Command::Flat => "view.flat",
             Command::Greyscale => "view.greyscale",
-            Command::Elevation => "view.elevation",
             Command::AddLines => "layer.add-lines",
             Command::AddPoints => "layer.add-points",
             Command::AddPolygons => "layer.add-polygons",
@@ -228,7 +224,7 @@ impl Command {
             Command::ExportPng | Command::ExportPdf => !world,
             Command::Undo => state.can_undo(),
             Command::Redo => state.can_redo(),
-            Command::Globe | Command::Flat | Command::Greyscale | Command::Elevation => world,
+            Command::Globe | Command::Flat | Command::Greyscale => world,
             Command::DeleteLayer => state
                 .selected_layer
                 .is_some_and(|id| state.doc.layer(id).is_some()),
@@ -247,7 +243,6 @@ impl Command {
             Command::Globe => view == WorldView::Globe,
             Command::Flat => view == WorldView::Flat,
             Command::Greyscale => state.globe.preview.greyscale,
-            Command::Elevation => state.globe.preview.panel,
             Command::Layers => desk.dock_open && desk.tab == Tab::Layers,
             Command::Toolbox => desk.dock_open && desk.tab == Tab::Toolbox,
             Command::Dock => desk.dock_open,
@@ -306,10 +301,6 @@ pub fn run(command: Command, ctx: &egui::Context, state: &mut AppState) {
         Command::Greyscale => {
             let preview = &mut state.globe.preview;
             preview.greyscale = !preview.greyscale;
-        }
-        Command::Elevation => {
-            let preview = &mut state.globe.preview;
-            preview.panel = !preview.panel;
         }
         Command::AddLines => add_layer(state, GeometryKind::Line),
         Command::AddPoints => add_layer(state, GeometryKind::Point),

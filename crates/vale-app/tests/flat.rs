@@ -16,9 +16,11 @@ use vale_terrain::{Mode, meters_to_level};
 
 type App = Harness<'static, AppState>;
 
+/// The sample world with the dock closed.
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
     state.headless = true;
+    state.desk.dock_open = false;
     state
 }
 
@@ -394,7 +396,6 @@ fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
     let mut h = flat_harness();
     let globe = &mut h.state_mut().globe;
     globe.preview.greyscale = false;
-    globe.preview.panel = true;
     // Without the brush panel, the canvas has more room.
     globe.tool = Tool::Navigate;
     globe.flat.zoom = 2.0;
@@ -414,7 +415,14 @@ fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
     let count = river_pixels(&h, &on);
     assert!(count > 300, "{count}");
 
-    h.get_by_label("Rivers").click();
+    // The switch is in the panel of the Height layer.
+    h.state_mut().desk.dock_open = true;
+    h.run_steps(2);
+    let role = egui::accesskit::Role::Button;
+    h.get_by_role_and_label(role, "Height").click();
+    h.run_steps(2);
+    let role = egui::accesskit::Role::CheckBox;
+    h.get_by_role_and_label(role, "Rivers").click();
     h.run_steps(2);
     assert!(!h.state().globe.preview.rivers);
     let off = canvas_image(&mut h);
