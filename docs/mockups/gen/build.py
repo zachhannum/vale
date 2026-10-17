@@ -395,7 +395,8 @@ ipage('PadAtlas', 'Vale atlas on iPad', wswitch('Atlas') + actions().replace(tbt
 
 
 # Desktop boards. All sizes are in pixels, for a Mac screen of 1440 by 900.
-# The window uses the macOS materials: the bars, the rail, and the docks are translucent over the desktop, and the canvas is opaque.
+# The window uses the macOS materials: the bars, the rail, and the docks are translucent over the desktop, and the canvas has a darker tint.
+# The globe, the flat map, and the pages are opaque.
 def dpage(name, title, inner, menus=None):
     html = '''<!doctype html>
 <html lang="en">

@@ -170,9 +170,9 @@ textarea.in{height:auto;padding:8px;resize:none;line-height:1.5}
 .desk .main{flex:1;min-height:0;display:flex}
 .desk .col{flex:1;min-width:0;display:flex;flex-direction:column}
 .desk .drail{flex:none;width:44px;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0;border-right:1px solid var(--line)}
-.desk .cv{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;background:#0f1113}
+.desk .cv{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden;background:rgba(10,12,15,.8);-webkit-backdrop-filter:blur(60px) saturate(1.4);backdrop-filter:blur(60px) saturate(1.4)}
 .desk .dock{flex:none;width:300px;display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--line)}
-.desk .dock.b{flex:0 0 220px;width:auto;border-left:0;border-top:1px solid var(--line);background:#16191d;-webkit-backdrop-filter:none;backdrop-filter:none}
+.desk .dock.b{flex:0 0 220px;width:auto;border-left:0;border-top:1px solid var(--line);background:rgba(18,20,24,.85)}
 .desk .dh{flex:none;display:flex;align-items:center;gap:2px;height:34px;padding:0 6px 0 8px;border-bottom:1px solid var(--line)}
 .desk .dt{padding:3px 9px;border-radius:5px;color:var(--mute);font-size:12px;font-weight:500}
 .desk .dt.on{color:#c9f5ea;background:var(--sel)}
@@ -239,7 +239,7 @@ textarea.in{height:auto;padding:8px;resize:none;line-height:1.5}
 .desk .side2{flex:none;width:200px;padding:6px 0;border-right:1px solid var(--line)}
 .desk .side2 .row{gap:8px}
 .desk .side2 svg{width:15px;height:15px;fill:none;stroke:var(--acc);stroke-width:1.6;stroke-linejoin:round}
-.desk .start-cv{background:#121418}
+.desk .start-cv{background:rgba(14,16,20,.8)}
 .desk .start{display:grid;grid-template-columns:repeat(4,1fr);gap:22px;padding:28px 32px}
 .desk .pcard{display:flex;flex-direction:column;border-radius:10px;overflow:hidden}
 .desk .pic{position:relative;display:grid;place-items:center;aspect-ratio:4/3;border-radius:10px;background:#1b1e23;box-shadow:inset 0 0 0 1px var(--line)}

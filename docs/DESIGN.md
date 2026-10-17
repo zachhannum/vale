@@ -371,7 +371,7 @@ Each workspace has a tool rail and an options bar, so the canvas keeps its place
 
 The dock is a column at the right edge. Its tabs keep the same order in a workspace. The World and Maps workspaces have the tabs Layers and Toolbox, and the Projection and Labels modes add a tab after them. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. With no selection, it holds the properties of the world. The list and the inspector show at the same time, so a panel has no back button. In the Data mode, the table of the features is in a dock below the canvas.
 
-The title bar, the tool rail, the dock, the popovers, and the menus are translucent, with the blur of the macOS materials. The canvas is opaque.
+The title bar, the tool rail, the dock, the popovers, and the menus are translucent, with the blur of the macOS materials. The background of the canvas is the same material with a darker tint. The globe, the flat map, and the map pages are opaque, so their colors stay true.
 
 These rules apply to the layout:
 
@@ -620,7 +620,7 @@ The largest risk is the scope of the labeling engine. To contain it, the library
 | PROJ is hard to package on Windows. | Use the bundled build and add a Windows build to CI in phase 0. |
 | When you replace an imported vector file, features lose identity. | Use element IDs first and geometry matching second, and report each lost match. |
 | Painting needs a fast, steady stroke, and a slow brush makes the tool useless. | Stamp on the GPU and repaint only the tiles under the brush. Measure the stroke delay in phase 1. |
-| The translucent macOS window needs a transparent title bar, an `NSVisualEffectView` behind the window, and egui panels with a transparent fill. | Make a test window with winit, wgpu, and the `window-vibrancy` crate before the desktop layout is built. If it fails, the bars and the dock are opaque. |
+| The translucent macOS window needs a transparent title bar, an `NSVisualEffectView` behind the window, egui panels with a transparent fill, and a wgpu surface with alpha. | Make a test window with winit, wgpu, and the `window-vibrancy` crate before the desktop layout is built. If it fails, the bars and the dock are opaque. |
 | One heightmap resolution does not fit both a world and a small region. | Each raster layer has one face size, high enough for regional maps. Finer tiles for a region, in levels, come after version 1. The tile key has a level field for them. |
 | egui gives no hover, no tilt, and only 120 pen samples per second on iPad. | The iPad test of the globe prototype passed for painting, pressure, and palm rejection. A UIKit gesture recognizer below egui reads hover, tilt, and the 240 Hz samples in `vale-app`. |
 | Reprojected rasters look soft. | Show the resolution of each source against each map frame, and support regional sources. |
