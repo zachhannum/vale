@@ -19,14 +19,13 @@ use crate::globe::view::GlobeView;
 use crate::globe::{Globe, Tool, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 
-const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
-
-/// Draws the globe in the free space of `ui`. `cards`: floating cards cover
-/// the canvas.
+/// Draws the globe of the desktop layout in the free space of `ui`.
+/// `cards`: floating cards cover the canvas.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState, cards: bool) {
+    let background = super::desk::theme::canvas(state.translucent);
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show(ui, |ui| canvas(ui, state, BACKGROUND, cards));
+        .show(ui, |ui| canvas(ui, state, background, cards));
 }
 
 /// Starts a stroke, or starts to pick the flatten level.

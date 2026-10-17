@@ -1021,7 +1021,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.poll_import();
     state.poll_export();
     if state.layout == Layout::Desktop {
-        desk::theme::install(ui.ctx());
+        desk::theme::install(ui.ctx(), state.translucent);
     }
     if state.screen == Screen::Browser {
         if state.poll_downloads(Instant::now()) {

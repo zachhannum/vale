@@ -10,6 +10,8 @@ use vale_terrain::Mode;
 pub mod command;
 pub mod dock;
 pub mod menu;
+#[cfg(target_os = "macos")]
+pub mod native_menu;
 pub mod options;
 pub mod rail;
 pub mod status;

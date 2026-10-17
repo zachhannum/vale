@@ -78,10 +78,10 @@ pub fn canvas(translucent: bool) -> Color32 {
     }
 }
 
-/// The fill of a popover. With `blur`, a blurred copy of the canvas is
-/// behind it.
-pub fn popover(blur: bool) -> Color32 {
-    if blur {
+/// The fill of a popover, a menu, and a tooltip. With `see_through`, the
+/// glass of the system or a blurred copy of the canvas is behind it.
+pub fn popover(see_through: bool) -> Color32 {
+    if see_through {
         Color32::from_rgba_unmultiplied(40, 43, 49, 199)
     } else {
         Color32::from_rgb(40, 43, 49)
@@ -104,13 +104,14 @@ pub fn mono() -> FontId {
     FontId::monospace(12.0)
 }
 
-/// Sets the style of the desktop layout, one time for each context.
-pub fn install(ctx: &egui::Context) {
+/// Sets the style of the desktop layout. It changes the style only when
+/// `translucent` changes.
+pub fn install(ctx: &egui::Context, translucent: bool) {
     let id = egui::Id::new("desk-theme");
-    if ctx.data(|d| d.get_temp::<bool>(id)).is_some() {
+    if ctx.data(|d| d.get_temp::<bool>(id)) == Some(translucent) {
         return;
     }
-    ctx.data_mut(|d| d.insert_temp(id, true));
+    ctx.data_mut(|d| d.insert_temp(id, translucent));
     ctx.all_styles_mut(|style| {
         style.visuals = egui::Visuals::dark();
         let visuals = &mut style.visuals;
@@ -118,8 +119,8 @@ pub fn install(ctx: &egui::Context) {
         visuals.selection.stroke = Stroke::new(1.0, ACCENT);
         visuals.hyperlink_color = ACCENT;
         visuals.warn_fg_color = WARN;
-        visuals.panel_fill = glass(false);
-        visuals.window_fill = Color32::from_rgb(40, 43, 49);
+        visuals.panel_fill = glass(translucent);
+        visuals.window_fill = popover(translucent);
         visuals.window_stroke = Stroke::new(1.0, Color32::from_white_alpha(31));
         visuals.window_corner_radius = 9.into();
         visuals.menu_corner_radius = 9.into();
@@ -145,4 +146,25 @@ pub fn install(ctx: &egui::Context) {
             };
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_translucent_fills_let_the_glass_through() {
+        for fill in [glass, canvas, popover] {
+            assert!(fill(true).a() < 255);
+            assert_eq!(fill(false).a(), 255);
+        }
+    }
+
+    #[test]
+    fn the_canvas_is_darker_than_the_glass() {
+        for translucent in [false, true] {
+            let (canvas, glass) = (canvas(translucent), glass(translucent));
+            assert!(canvas.r() < glass.r() && canvas.g() < glass.g() && canvas.b() < glass.b());
+        }
+    }
 }

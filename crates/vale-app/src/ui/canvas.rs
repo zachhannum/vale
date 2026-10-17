@@ -201,6 +201,13 @@ fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
         state.dirty = false;
     }
 
+    // The desktop window can be translucent, and the page is opaque there,
+    // also before its first picture.
+    if state.layout == Layout::Desktop {
+        let page = state.doc.frame.style.background;
+        let page = egui::Color32::from_rgb(page.r, page.g, page.b);
+        ui.painter().rect_filled(rect, 0.0, page);
+    }
     if let Some(tex) = &state.texture {
         ui.painter().image(
             tex.id(),

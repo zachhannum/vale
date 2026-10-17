@@ -30,13 +30,23 @@ struct ValeApp {
     picker: Option<crate::files::uikit::Picker>,
     #[cfg(target_os = "ios")]
     _lifecycle: Option<crate::lifecycle::Observer>,
+    #[cfg(target_os = "macos")]
+    menu: Option<ui::desk::native_menu::NativeMenu>,
 }
 
 impl eframe::App for ValeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let state = &mut *self.state.borrow_mut();
         state.poll_system();
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &self.menu {
+            menu.run(ui.ctx(), state);
+        }
         ui::draw(ui, state);
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &mut self.menu {
+            menu.sync(state);
+        }
 
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
         let paths = dropped.into_iter().map(|f| f.path().to_path_buf());
@@ -156,8 +166,9 @@ impl eframe::App for ValeApp {
             }
         }
 
+        // The menu bar of the system has the key of Save.
         let save = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
-        if ui.ctx().input_mut(|i| i.consume_shortcut(&save)) {
+        if !state.native_menu && ui.ctx().input_mut(|i| i.consume_shortcut(&save)) {
             state.run_action(Action::Save);
         }
 
@@ -294,12 +305,14 @@ pub fn run_window(
         picker: None,
         #[cfg(target_os = "ios")]
         _lifecycle: None,
+        #[cfg(target_os = "macos")]
+        menu: None,
     };
     eframe::run_native(
         "Vale",
         options,
         Box::new(|cc| {
-            #[cfg_attr(not(target_os = "ios"), expect(unused_mut))]
+            #[cfg_attr(not(any(target_os = "ios", target_os = "macos")), expect(unused_mut))]
             let mut app = app;
             {
                 let state = &mut *app.state.borrow_mut();
@@ -323,6 +336,18 @@ pub fn run_window(
                 state.translucent = apply_glass(cc);
                 if cfg!(target_os = "macos") {
                     state.desk.title_inset = ui::desk::theme::LIGHTS;
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                use ui::desk::native_menu::NativeMenu;
+                let menu = NativeMenu::install(&cc.egui_ctx, &app.state.borrow());
+                match menu {
+                    Ok(menu) => {
+                        app.state.borrow_mut().native_menu = true;
+                        app.menu = Some(menu);
+                    }
+                    Err(e) => eprintln!("vale-app: the menu bar did not start: {e}"),
                 }
             }
             let ctx = cc.egui_ctx.clone();

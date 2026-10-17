@@ -216,6 +216,26 @@ pub fn keys(ctx: &egui::Context, state: &mut AppState) {
     }
 }
 
+/// The key of a shortcut in the form of the menu bar of macOS, for example
+/// "Cmd+Shift+Z".
+#[cfg(any(test, target_os = "macos"))]
+pub fn accelerator(shortcut: &egui::KeyboardShortcut) -> String {
+    let m = shortcut.modifiers;
+    let names = [
+        (m.command || m.mac_cmd, "Cmd"),
+        (m.ctrl, "Ctrl"),
+        (m.alt, "Alt"),
+        (m.shift, "Shift"),
+    ];
+    let mut parts: Vec<_> = names
+        .iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, n)| *n)
+        .collect();
+    parts.push(shortcut.logical_key.name());
+    parts.join("+")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +260,87 @@ mod tests {
             let count = all.iter().filter(|c| **c == command).count();
             assert_eq!(count, 1, "{command:?}");
         }
+    }
+
+    fn ids(items: &[Item], out: &mut Vec<&'static str>) {
+        for item in items {
+            match *item {
+                Item::Command(command) => out.push(command.id()),
+                Item::Submenu(name, rows) => {
+                    out.push(name);
+                    ids(rows, out);
+                }
+                Item::Recent => out.push(RECENT),
+                Item::Separator => {}
+            }
+        }
+    }
+
+    #[test]
+    fn each_row_has_its_own_id() {
+        let mut all = Vec::new();
+        for menu in MENUS {
+            all.push(menu.name);
+            ids(menu.items, &mut all);
+        }
+        for (i, id) in all.iter().enumerate() {
+            assert!(!all[i + 1..].contains(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn each_key_has_a_key_of_the_menu_bar() {
+        let key = |c: Command| accelerator(&c.shortcut().unwrap());
+        assert_eq!(key(Command::Save), "Cmd+S");
+        assert_eq!(key(Command::Redo), "Cmd+Shift+Z");
+        assert_eq!(key(Command::Reveal), "Cmd+Alt+R");
+        assert_eq!(key(Command::World), "Cmd+1");
+        assert_eq!(key(Command::Dock), "Cmd+Alt+0");
+        for command in Command::ALL {
+            let Some(shortcut) = command.shortcut() else {
+                continue;
+            };
+            let text = accelerator(&shortcut);
+            let (mods, key) = text.rsplit_once('+').unwrap();
+            assert!(mods.starts_with("Cmd"), "{text}");
+            assert!(
+                key.len() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric()),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_menus_have_the_commands_of_the_issue() {
+        let names: Vec<_> = MENUS.iter().map(|m| m.name).collect();
+        assert_eq!(names, ["File", "Edit", "View", "Layer", "Window", "Help"]);
+        let menu = |name: &str| MENUS.iter().find(|m| m.name == name).unwrap().items;
+        let has = |name: &str, command: Command| {
+            let mut all = Vec::new();
+            commands(menu(name), &mut all);
+            all.contains(&command)
+        };
+        for command in [
+            Command::NewWorld,
+            Command::Open,
+            Command::Save,
+            Command::ImportHeightmap,
+            Command::ExportGeoTiff,
+            Command::ExportPng,
+            Command::ExportPdf,
+            Command::Quit,
+        ] {
+            assert!(has("File", command), "{command:?}");
+        }
+        assert!(menu("File").contains(&Item::Recent));
+        assert!(has("Edit", Command::Undo) && has("Edit", Command::Redo));
+        for command in [Command::World, Command::Maps, Command::Globe, Command::Flat] {
+            assert!(has("View", command), "{command:?}");
+        }
+        assert!(has("Layer", Command::AddLines) && has("Layer", Command::DeleteLayer));
+        for command in [Command::Layers, Command::Toolbox, Command::Dock] {
+            assert!(has("Window", command), "{command:?}");
+        }
+        assert!(has("Help", Command::About));
     }
 }

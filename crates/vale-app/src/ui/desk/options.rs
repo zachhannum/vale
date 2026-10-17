@@ -138,7 +138,7 @@ pub fn popover(ctx: &egui::Context, state: &mut AppState) {
             let fill = egui::epaint::RectShape::new(
                 rect,
                 radius,
-                theme::popover(backdrop.is_some()),
+                theme::popover(backdrop.is_some() || state.translucent),
                 Stroke::new(1.0, egui::Color32::from_white_alpha(31)),
                 egui::StrokeKind::Inside,
             );

@@ -593,3 +593,20 @@ fn the_hand_of_the_maps_workspace_selects_nothing() {
     click(&mut h);
     assert!(h.state().selection.is_some());
 }
+
+#[test]
+fn without_the_glass_each_pixel_is_opaque() {
+    for workspace in [Workspace::Globe, Workspace::Map] {
+        let mut state = state();
+        state.workspace = workspace;
+        state.globe.tool = Tool::Brush;
+        state.desk.brush_open = true;
+        let (img, state) = vale_app::headless::ui_png(state, (1280.0, 800.0), 1.0).unwrap();
+        assert!(!state.translucent);
+        if workspace == Workspace::Globe {
+            assert!(state.desk.brush_open);
+        }
+        let clear = img.pixels().filter(|p| p.0[3] < 255).count();
+        assert_eq!(clear, 0, "{workspace:?}");
+    }
+}

@@ -32,6 +32,7 @@ rfd.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 window-vibrancy = "0.8.1"
+muda = { version = "0.21.2", default-features = false }
 
 [dev-dependencies]
 tiff.workspace = true
