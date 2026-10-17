@@ -287,18 +287,25 @@ fn desktop(mut state: AppState) -> egui_kittest::Harness<'static, AppState> {
     h
 }
 
+fn open_file_menu(h: &mut egui_kittest::Harness<'static, AppState>) {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("File").click();
+    h.run_steps(2);
+}
+
 #[test]
-fn the_tool_bar_has_a_button_that_exports_the_heightmap() {
+fn the_file_menu_has_a_row_that_exports_the_heightmap() {
     use egui_kittest::kittest::{NodeT, Queryable};
     for file_buttons in [true, false] {
         let mut state = state();
         state.file_buttons = file_buttons;
         let mut h = desktop(state);
+        open_file_menu(&mut h);
         let button = h.get_by_label(EXPORT_GEOTIFF);
         assert!(!button.accesskit_node().is_disabled());
-        // The button is after the import button.
+        // The row is below the import row.
         let import = h.get_by_label("Import heightmap…").rect();
-        assert!(button.rect().left() > import.right());
+        assert!(button.rect().top() >= import.bottom());
         button.click();
         h.run_steps(1);
         let actions = &h.state().actions;
@@ -307,11 +314,12 @@ fn the_tool_bar_has_a_button_that_exports_the_heightmap() {
 }
 
 #[test]
-fn the_export_button_is_off_for_a_world_with_no_raster_layer() {
+fn the_export_row_is_off_for_a_world_with_no_raster_layer() {
     use egui_kittest::kittest::{NodeT, Queryable};
     let mut state = AppState::new(Document::sample()).unwrap();
     state.headless = true;
     let mut h = desktop(state);
+    open_file_menu(&mut h);
     let button = h.get_by_label(EXPORT_GEOTIFF);
     assert!(button.accesskit_node().is_disabled());
     button.click();

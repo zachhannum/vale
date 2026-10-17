@@ -21,6 +21,7 @@ use crate::workcopy;
 
 pub mod browser;
 pub mod canvas;
+pub mod desk;
 pub mod elevation;
 pub mod globe;
 pub mod inspector;
@@ -58,6 +59,8 @@ pub enum Action {
     CopyProject(PathBuf),
     /// Removes this project file. The UI asks before it sends this.
     DeleteProject(PathBuf),
+    /// Shows this project file in the file manager of the system.
+    Reveal(PathBuf),
     /// Closes the open project and shows the start screen.
     ShowProjects,
     /// Saves each change that waits.
@@ -190,6 +193,13 @@ pub struct AppState {
     pub world_form: Option<world_form::WorldForm>,
     /// Requests that need the host (dialogs, files).
     pub actions: Vec<Action>,
+    /// The window shows the glass of the system behind the translucent
+    /// places of the desktop layout.
+    pub translucent: bool,
+    /// The menus are in the menu bar of the system, so the window has no
+    /// row of menus.
+    pub native_menu: bool,
+    pub desk: desk::DeskState,
     /// True: no timers, always `Quality::Final`.
     pub headless: bool,
     /// False: the tool bar has no buttons for GeoJSON files and for exports.
@@ -245,6 +255,9 @@ impl AppState {
             share: None,
             world_form: None,
             actions: Vec::new(),
+            translucent: false,
+            native_menu: false,
+            desk: desk::DeskState::default(),
             headless: false,
             file_buttons: true,
             frames: 0,
@@ -999,7 +1012,8 @@ impl AppState {
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog
             | Action::ExportHeightmapDialog
-            | Action::OpenProjectDialog => {}
+            | Action::OpenProjectDialog
+            | Action::Reveal(_) => {}
         }
     }
 }
@@ -1009,6 +1023,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
     state.poll_export();
+    if state.layout == Layout::Desktop {
+        desk::theme::install(ui.ctx());
+    }
     if state.screen == Screen::Browser {
         if state.poll_downloads(Instant::now()) {
             ui.ctx().request_repaint_after(DOWNLOAD_POLL);
@@ -1020,6 +1037,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     browser::dialogs(ui, state);
     if state.layout == Layout::Pad && state.workspace == Workspace::Globe {
         pad::draw(ui, state);
+        state.frames += 1;
+        return;
+    }
+    if state.layout == Layout::Desktop {
+        desk::draw(ui, state);
         state.frames += 1;
         return;
     }

@@ -30,6 +30,9 @@ egui_kittest.workspace = true
 image.workspace = true
 rfd.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+window-vibrancy = "0.8.1"
+
 [dev-dependencies]
 tiff.workspace = true
 tempfile.workspace = true

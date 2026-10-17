@@ -155,11 +155,7 @@ fn the_start_screen_lists_the_projects_of_both_folders() {
         let pad = layout == Layout::Pad;
         let lines: Vec<String> = entries.iter().map(|e| info_line(e, pad, true).0).collect();
         assert!(lines.iter().any(|l| l.starts_with("iCloud Drive · ")));
-        let here = if pad {
-            "On this iPad"
-        } else {
-            "On this computer"
-        };
+        let here = Location::Local.label(pad);
         assert!(lines.iter().any(|l| l.starts_with(here)), "{lines:?}");
 
         // A project of each folder opens in place.

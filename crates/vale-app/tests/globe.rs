@@ -10,6 +10,7 @@ use vale_app::globe::view::GlobeView;
 use vale_app::globe::{FACE_SIZE, Tool};
 use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
+use vale_app::ui::desk::{Tab, theme};
 use vale_app::ui::elevation::{BAR_LABEL, limit_y};
 use vale_app::ui::{AppState, Workspace, draw};
 use vale_import::geojson;
@@ -38,6 +39,14 @@ fn harness() -> Harness<'static, AppState> {
         .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
     h.run_steps(2);
     h
+}
+
+/// Clicks a row of a menu of the menu row.
+fn menu_row(h: &mut Harness<'static, AppState>, menu: &str, row: &str) {
+    h.get_by_label(menu).click();
+    h.run_steps(2);
+    h.get_by_label(row).click();
+    h.run_steps(1);
 }
 
 /// The place on the globe under a screen position.
@@ -129,21 +138,24 @@ fn the_app_opens_on_the_globe() {
     let s = h.state();
     assert_eq!(s.workspace, Workspace::Globe);
     assert!(s.composed.is_none());
-    // The globe has the full width, with no side panels.
-    assert_eq!(s.globe.rect.width(), 1280.0);
+    // The globe has the full width, with the tool rail and no other side
+    // panel.
+    assert_eq!(s.globe.rect.width(), 1280.0 - theme::RAIL);
     assert!(h.query_by_label("Projection").is_none());
 }
 
 #[test]
 fn the_flat_map_is_reachable() {
     let mut h = harness();
-    h.get_by_label("Map").click();
+    h.get_by_label("Maps").click();
     h.run_steps(3);
     let s = h.state();
     assert_eq!(s.workspace, Workspace::Map);
     assert!(s.composed.is_some());
     assert!(h.query_by_label("Projection").is_some());
-    h.get_by_label("Globe").click();
+    // The panel of the Maps workspace has a heading with the same name.
+    let role = egui::accesskit::Role::Button;
+    h.get_by_role_and_label(role, "World").click();
     h.run_steps(2);
     assert_eq!(h.state().workspace, Workspace::Globe);
 
@@ -544,8 +556,10 @@ fn painting_changes_the_globe() {
 fn the_debug_panel_shows_the_stroke_delay() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
+    // The globe has room for the stroke between the tool rail and the panels.
+    h.set_size(egui::vec2(800.0, 480.0));
     assert!(h.query_by_label_contains("Stroke delay").is_none());
-    h.get_by_label("Debug").click();
+    menu_row(&mut h, "Window", "Toolbox");
     h.get_by_label("Brush").click();
     h.run_steps(2);
     assert!(h.query_by_label("Stroke delay: no stroke").is_some());
@@ -681,7 +695,7 @@ fn in_the_brush_tool_a_pen_paints_and_the_other_input_moves_the_globe() {
 fn the_stroke_test_runs_and_gives_the_stroke_delay() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
-    h.get_by_label("Debug").click();
+    menu_row(&mut h, "Window", "Toolbox");
     h.run_steps(2);
     let brush = h.state().globe.brush;
     h.state_mut().globe.start_stroke_test(0.25);
@@ -956,13 +970,11 @@ fn one_switch_shows_the_plain_greyscale() {
     let mut h = preview_harness();
     let [r, g, b] = color_at(&mut h, 1500.0);
     assert!(r != g || g != b);
-    h.get_by_label("Greyscale").click();
-    h.step();
+    menu_row(&mut h, "View", "Greyscale");
     let grey = middle(&mut h);
     let level = (f32::from(meters_to_level(1500.0)) / 65535.0 * 255.0).round() as u8;
     assert!(close(grey, [level; 3]), "{grey:?}");
-    h.get_by_label("Greyscale").click();
-    h.step();
+    menu_row(&mut h, "View", "Greyscale");
     assert_eq!(middle(&mut h), [r, g, b]);
 }
 
@@ -1015,7 +1027,7 @@ fn a_change_of_a_band_limit_shows_in_the_same_frame() {
 #[test]
 fn the_bar_adds_moves_and_removes_a_band_limit() {
     let mut h = harness();
-    h.get_by_label("Elevation").click();
+    menu_row(&mut h, "View", "Elevation");
     h.run_steps(2);
     let count = h.state().globe.map.bands.limits().len();
     let rect = h.get_by_label(BAR_LABEL).rect();
@@ -1297,7 +1309,8 @@ fn queue_harness() -> (Harness<'static, AppState>, PenQueue) {
 fn the_debug_panel_shows_240_samples_per_second_for_a_pen_from_the_queue() {
     let _gpu = one_gpu_test();
     let (mut h, queue) = queue_harness();
-    h.state_mut().globe.debug = true;
+    h.set_size(egui::vec2(800.0, 480.0));
+    h.state_mut().desk.tab = Tab::Toolbox;
     h.run_steps(2);
     assert!(h.query_by_label("Pen and timing").is_some());
     assert!(h.query_by_label("Pen source: UIKit").is_some());

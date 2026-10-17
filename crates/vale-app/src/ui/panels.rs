@@ -153,7 +153,7 @@ fn save_mark(ui: &mut egui::Ui, state: &AppState) {
     }
 }
 
-fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
     let flat = &mut state.globe.flat;
     let spec = flat.spec();
     let mut kind = spec.kind;

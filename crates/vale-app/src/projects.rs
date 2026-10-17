@@ -41,6 +41,7 @@ impl Location {
         match (self, pad) {
             (Location::Cloud, _) => "iCloud Drive",
             (Location::Local, true) => "On this iPad",
+            (Location::Local, false) if cfg!(target_os = "macos") => "On this Mac",
             (Location::Local, false) => "On this computer",
         }
     }

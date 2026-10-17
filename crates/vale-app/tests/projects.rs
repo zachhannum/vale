@@ -572,8 +572,7 @@ fn the_save_command_saves_a_change_that_waits_in_both_layouts() {
             Layout::Desktop => click(&mut h, FILE_MENU),
             Layout::Pad => click(&mut h, WORLDS),
         }
-        // The desktop row also has the text of its shortcut.
-        h.get_by_label_contains(SAVE).click();
+        h.get_by_label(SAVE).click();
         run(&mut h);
         assert_eq!(vale_store::summary(&path).unwrap().name, "Cassia");
         assert_eq!(h.state().status, "Saved Cassia");

@@ -136,6 +136,12 @@ impl eframe::App for ValeApp {
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
+                Action::Reveal(path) => {
+                    if let Err(e) = reveal(&path) {
+                        state.status = format!("The app did not show the file: {e}");
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
                 Action::OpenProjectDialog => {
                     let mut dialog =
                         rfd::FileDialog::new().add_filter("Vale project", &[EXTENSION]);
@@ -171,12 +177,79 @@ impl eframe::App for ValeApp {
         }
     }
 
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        if self.state.borrow().translucent {
+            [0.0; 4]
+        } else {
+            egui::Color32::from_rgb(12, 12, 12).to_normalized_gamma_f32()
+        }
+    }
+
     fn on_exit(&mut self) {
         let state = &mut *self.state.borrow_mut();
         state.save_resume();
         if !state.save_now() {
             eprintln!("vale-app: {}", state.status);
         }
+    }
+}
+
+/// Shows a file in the file manager of the system. On Linux, the file
+/// manager opens the folder of the file.
+#[cfg(not(target_os = "ios"))]
+fn reveal(path: &std::path::Path) -> std::io::Result<()> {
+    use std::process::Command;
+    #[cfg(target_os = "macos")]
+    let child = Command::new("open").arg("-R").arg(path).spawn()?;
+    #[cfg(windows)]
+    let child = {
+        use std::os::windows::process::CommandExt as _;
+        let select = format!("/select,\"{}\"", path.display());
+        Command::new("explorer").raw_arg(select).spawn()?
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let child = {
+        let dir = path.parent().unwrap_or(path);
+        Command::new("xdg-open").arg(dir).spawn()?
+    };
+    let mut child = child;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+/// The options of the window. On macOS, the content fills the title bar,
+/// and the window is transparent, so it can show the glass of the system.
+pub fn window_options(size: (f64, f64)) -> eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([size.0 as f32, size.1 as f32])
+        .with_title("Vale");
+    if cfg!(target_os = "macos") {
+        viewport = viewport
+            .with_transparent(true)
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+            .with_min_inner_size([960.0, 600.0]);
+    }
+    eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    }
+}
+
+/// Puts the glass of macOS behind the window. Returns `false` if the window
+/// has no glass, for example on another platform.
+pub fn apply_glass(cc: &eframe::CreationContext<'_>) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy};
+        let material = NSVisualEffectMaterial::UnderWindowBackground;
+        apply_vibrancy(cc, material, None, None).is_ok()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cc;
+        false
     }
 }
 
@@ -207,12 +280,7 @@ pub fn run_window(
     session: Option<Session>,
     restore: bool,
 ) -> anyhow::Result<()> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([size.0 as f32, size.1 as f32])
-            .with_title("Vale"),
-        ..Default::default()
-    };
+    let options = window_options(size);
     let mut state = state;
     state.session = session;
     let app = ValeApp {
@@ -251,6 +319,10 @@ pub fn run_window(
                 }
                 if cfg!(target_os = "ios") {
                     apply_touch_style(&cc.egui_ctx);
+                }
+                state.translucent = apply_glass(cc);
+                if cfg!(target_os = "macos") {
+                    state.desk.title_inset = ui::desk::theme::LIGHTS;
                 }
             }
             let ctx = cc.egui_ctx.clone();

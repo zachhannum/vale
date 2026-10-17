@@ -143,8 +143,8 @@ fn one_click_switches_the_view_and_the_tool_stays() {
     h.run_steps(2);
     h.get_by_label("Lower").click();
     h.run_steps(2);
-    for view in [WorldView::Flat, WorldView::Globe] {
-        h.get_by_label("Flat").click();
+    for (view, name) in [(WorldView::Flat, "Flat"), (WorldView::Globe, "Globe")] {
+        h.get_by_label(name).click();
         h.run_steps(2);
         let globe = &h.state().globe;
         assert_eq!(globe.world_view, view);
