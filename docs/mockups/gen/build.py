@@ -394,9 +394,9 @@ ipage('PadAtlas', 'Vale atlas on iPad', wswitch('Atlas') + actions().replace(tbt
       + READ.replace('24.6°E 31.2°N · 640 m', '12 × 16 in · 2 / 4') % 'left: 50%; bottom: 28px; transform: translateX(-50%)')
 
 
-# Desktop boards. All sizes are in pixels, for a window of 1440 by 900.
-# The desktop has the workspaces, switches, tools, and panels of the iPad, with docked panels, a menu bar, and controls for a mouse.
-def dpage(name, title, inner):
+# Desktop boards. All sizes are in pixels, for a Mac screen of 1440 by 900.
+# The window uses the macOS materials: the bars, the rail, and the docks are translucent over the desktop, and the canvas is opaque.
+def dpage(name, title, inner, menus=None):
     html = '''<!doctype html>
 <html lang="en">
 <head>
@@ -416,6 +416,9 @@ a{color:#45c4a8}
 </helmet>
 <div class="app desk">
 %s
+<div class="win">
+%s
+</div>
 </div>
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
@@ -427,21 +430,39 @@ return {};
 </script>
 </body>
 </html>
-''' % (title, inner)
+''' % (title, sysbar(menus or MENUS), inner)
     open('%s/%s.dc.html' % (OUT, name), 'w').write(html)
 
 
-DWS = (('World', 'Draw'), ('Maps', 'Map'), ('Atlas', 'Atlas'))
-DVIEW = (('Globe', 'Draw'), ('Flat', 'DrawFlat'))
-DMAP = (('Layout', 'Map'), ('Projection', 'Projection'), ('Labels', 'Labels'), ('Data', 'Data'))
 MENUS = ('File', 'Edit', 'View', 'Layer', 'Map', 'Window', 'Help')
-KEYS = {'Raise': 'R', 'Lower': 'F', 'Smooth': 'S', 'Flatten': 'T', 'Line': 'N', 'Pan': 'H', 'More tools': '', 'Brush settings': 'B',
-        'Select': 'V', 'Place point': 'P', 'Edit vertices': 'A', 'Edit labels': 'L', 'Undo': 'Ctrl+Z', 'Redo': 'Ctrl+Shift+Z',
-        'Layers': 'F7', 'Toolbox': 'F8', 'Add a layer': 'Ctrl+Shift+N'}
+APPLE = ('<svg viewBox="0 0 24 24" class="apple"><path d="M15.5 3c.2 1.4-.4 2.7-1.2 3.6-.8.9-2 1.5-3.1 1.4-.2-1.3.4-2.7 1.2-3.5.8-.9 2.1-1.5 3.1-1.5zM19.6 17'
+         'c-.5 1.2-.8 1.7-1.5 2.7-1 1.4-2.3 3.2-4 3.2-1.5 0-1.9-1-3.9-1s-2.5 1-4 1c-1.7 0-2.9-1.6-3.9-3C-.2 16.1-.5 11.4 1.2 8.9c1.2-1.8 3-2.8 4.8-2.8 1.8 0 2.9 1 4.4 1 1.4 0 2.3-1 4.4-1 '
+         '1.6 0 3.2.9 4.4 2.3-3.8 2.1-3.2 7.6.4 8.6z"></path></svg>')
+
+
+# The menus are in the menu bar of the system.
+def sysbar(menus):
+    return ('<div class="sysbar" aria-label="Menu bar">' + APPLE + '<b>Vale</b>' + ''.join('<span>%s</span>' % m for m in menus)
+            + '<span class="grow"></span><span>Fri Oct 16&ensp;9:41 AM</span></div>')
+
+
+KEYS = {'Raise': 'R', 'Lower': 'F', 'Smooth': 'S', 'Flatten': 'E', 'Line': 'L', 'Hand': 'H', 'Select': 'V', 'Place point': 'P', 'Edit vertices': 'A',
+        'Edit labels': 'T', 'Undo': '⌘Z', 'Redo': '⇧⌘Z', 'Layers': '⌥⌘1', 'Toolbox': '⌥⌘2', 'Add a layer': '⇧⌘N', 'Brush…': 'B',
+        'Previous': '[', 'Next': ']', 'Pin': '↩', 'Hide': '⌫', 'Export…': '⇧⌘E'}
 DOTS = '<circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle>'
 SEARCH = '<circle cx="11" cy="11" r="6"></circle><path d="M16 16l4 4"></path>'
 FOLDER = '<path d="M3 7h6l2 2h10v10H3z"></path>'
 CLOUD = '<path d="M7 18a4 4 0 010-8 5 5 0 019.6-1.5A4 4 0 0117 18z"></path>'
+HAND = ('<path d="M8 13V6a1.5 1.5 0 013 0v5M11 11V4.5a1.5 1.5 0 013 0V11M14 11V6a1.5 1.5 0 013 0v7c0 4-2.5 7-6 7-2.5 0-4-1.5-5.5-4L4 13'
+        'a1.5 1.5 0 012.5-1.5L8 13"></path>')
+EYE_OFF = '<path d="M3 3l18 18M10.6 6.1A10 10 0 0112 6c6 0 10 6 10 6a17 17 0 01-3.2 3.8M6.6 6.6C3.8 8.4 2 12 2 12s4 6 10 6a9.6 9.6 0 004.4-1"></path>'
+GRID = '<path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"></path>'
+LIST = '<path d="M4 6h16M4 12h16M4 18h16"></path>'
+SIDEBAR = '<path d="M3 5h18v14H3zM9 5v14"></path>'
+
+WTOOLS = DTOOLS[:5] + (('Hand', HAND),)
+MTOOLS = (TOOLS[0], ('Hand', HAND)) + TOOLS[2:]
+ATOOLS = (TOOLS[0], ('Hand', HAND))
 
 
 def dbtn(name, path, cls=''):
@@ -449,40 +470,46 @@ def dbtn(name, path, cls=''):
     return '<button class="tool%s" aria-label="%s" title="%s">%s</button>' % (cls, name, name + (' (%s)' % key if key else ''), ic(path))
 
 
-# The menu bar holds the menus at the left and the name of the world at the center. The save mark follows the name.
-def mbar(open_=None, title='Kareth', file_='kareth.gpkg'):
-    return ('<div class="mbar" role="menubar">' + ''.join('<span class="m%s" role="menuitem">%s</span>' % (' on' if m == open_ else '', m) for m in MENUS)
-            + '<span class="title">%s%s<span class="mark" aria-label="Saved">%s</span></span></div>'
-            % (title, '<span class="mute">&ensp;·&ensp;%s</span>' % file_ if file_ else '', ic(TICK) if file_ else ''))
+def tbtn2(label, cls='btn'):
+    key = KEYS.get(label, '')
+    return '<button class="%s" title="%s">%s</button>' % (cls, label + (' (%s)' % key if key else ''), label)
 
 
-# The tool bar has three places: workspace at the left, view or mode at the center, and actions at the right.
-def tbar(left, center='', right=''):
-    return '<div class="tbar"><div class="tl">%s</div><div class="tc">%s</div><div class="tr">%s</div></div>' % (left, center, right)
+# The title bar and the tool bar are one bar. It has three places: the window and the workspace at the left, the view or the mode at the center,
+# and the actions at the right. The actions are the same in each workspace.
+def tbar(left, center=''):
+    return ('<div class="tbar"><div class="tl"><span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>%s</div><div class="tc">%s</div>'
+            '<div class="tr">%s</div></div>' % (left, center, ACTIONS))
+
+
+ACTIONS = (dbtn('Undo', UNDO) + dbtn('Redo', REDO, ' off') + '<span class="div"></span>' + dbtn('Layers', SIDEBAR, ' on'))
+DOC = '<div class="doc"><b>Kareth</b><span>kareth.gpkg · Saved<span class="mark" aria-label="Saved">%s</span></span></div>' % ic(TICK)
+
+
+def head(ws, center=''):
+    return tbar(DOC + dseg(DWS, ws, 'Workspace'), center)
+
+
+DWS = (('World', 'Draw'), ('Maps', 'Map'), ('Atlas', 'Atlas'))
+DVIEW = (('Globe', 'Draw'), ('Flat', 'DrawFlat'))
+DMAP = (('Layout', 'Map'), ('Projection', 'Projection'), ('Labels', 'Labels'), ('Data', 'Data'))
 
 
 def dseg(set_, on, label):
     return '<nav class="seg" aria-label="%s">%s</nav>' % (label, links(set_, on))
 
 
-def dacts(on=None):
-    return (dbtn('Undo', UNDO) + dbtn('Redo', REDO, ' off') + '<span class="div"></span>'
-            + dbtn('Layers', LAYERS_IC, ' on' if on in (None, 'Layers') else '') + dbtn('Toolbox', TOOLBOX, ' on' if on == 'Toolbox' else ''))
+def popup(text, label):
+    return '<button class="menu" aria-label="%s" aria-haspopup="menu">%s%s</button>' % (label, text, ic(CHEVRON))
 
 
-DFRAME = '<button class="menu" aria-label="Map frame" aria-haspopup="menu">Vesperan%s</button>' % ic(CHEVRON)
+DFRAME = popup('Vesperan', 'Map frame')
 
 
-# The rail holds the tools. Each tool shows its name and its key in a tooltip.
-def drail(set_, on, hov=None, brush=None):
+# The rail holds the tools. A tooltip shows the name and the key of each tool.
+def drail(set_, on, hov=None, more=False):
     tools = ''.join(dbtn(n, p, (' on' if n == on else '') + (' hov' if n == hov else '')) for n, p in set_)
-    if brush is not None:
-        tools += dbtn('More tools', DOTS) + '<span class="hr"></span>' + dbtn('Brush settings', MORE, ' on' if brush else '')
-    return '<div class="drail" role="toolbar" aria-label="Tools">%s</div>' % tools
-
-
-WTOOLS = DTOOLS
-MTOOLS = TOOLS
+    return '<div class="drail" role="toolbar" aria-label="Tools">%s%s</div>' % (tools, dbtn('More tools', DOTS) if more else '')
 
 
 def tip(name, style):
@@ -490,7 +517,7 @@ def tip(name, style):
     return '<div class="tip" role="tooltip" style="%s">%s%s</div>' % (style, name, '<span class="kbd">%s</span>' % key if key else '')
 
 
-# The options bar holds the settings of the active tool, in one row below the tool bar.
+# The options bar holds the settings of the active tool. Each mode has one, so the canvas does not move when the mode changes.
 def obar(*parts):
     return '<div class="obar" role="toolbar" aria-label="Tool options">%s</div>' % ''.join(parts)
 
@@ -505,34 +532,38 @@ def osw(label, on=True):
         ' on' if on else '', label, 'true' if on else 'false', label)
 
 
+def osel(label, value, width=140):
+    return '<span class="ol">%s</span><select class="in" aria-label="%s" style="width: %dpx"><option>%s</option></select>' % (label, label, width, value)
+
+
 OSEP = '<span class="div"></span>'
+GROW = '<span class="grow"></span>'
 BRUSH_OPTS = obar('<span class="on">Raise</span>', OSEP, osl('Size', '120 km', 40), osl('Flow', '30%', 30), osl('Hardness', '20%', 20), OSEP,
-                  osw('Pressure sets the flow'), '<span class="grow"></span><button class="btn">Brush…</button>')
-LINE_OPTS = obar('<span class="on">Line</span>', OSEP, '<span class="ol">Layer</span><select class="in" aria-label="Layer" style="width: 140px"><option>Rivers</option></select>',
-                 osl('Smoothing', '40%', 40), OSEP, osw('Snap to lines'), osw('Close the line', False))
+                  osw('Pressure sets the flow'), GROW, tbtn2('Brush…'))
+LINE_OPTS = obar('<span class="on">Line</span>', OSEP, osel('Layer', 'Rivers'), osl('Smoothing', '40%', 40), OSEP, osw('Snap to lines'), osw('Close the line', False))
+SEL_OPTS = obar('<span class="on">Select</span>', OSEP, osel('Outline', 'Custom', 120), osw('Snap to the graticule', False))
+LABEL_OPTS = obar('<span class="on">Label</span>', OSEP, tbtn2('Previous') + tbtn2('Next') + tbtn2('Pin') + tbtn2('Hide'), OSEP, osw('Show candidates'), osw('Show overlaps'))
+DATA_OPTS = obar('<span class="on">Point</span>', OSEP, osel('Layer', 'Places'), OSEP, osw('Snap to vertices'), osw('Snap to lines'))
+PAGE_OPTS = obar('<span class="on">Select</span>', OSEP, osw('Show the margins'), osw('Show the bleed', False))
 
 
-# A dock is a column at the left or the right edge. Its tabs are at the top, its list below them, and the inspector under the list.
-# The inspector is the panel of the selection, so the list and the panel show at the same time.
-def dock(side, tabs, body='', insp=None, act='', width=None, list_h=None):
-    head = ('<div class="dh">' + ''.join('<span class="dt%s">%s</span>' % (' on' if i == 0 else '', t) for i, t in enumerate(tabs))
-            + '<span class="grow"></span>' + act + '</div>')
+# A dock is a column at the right edge. Its tabs keep the same order in a workspace. Below the tabs is the list, and below the list is the inspector,
+# which is the panel of the selection. With no selection, the inspector holds the world.
+def dock(tabs, on, body='', insp=None, act='', list_h=None):
+    head_ = ('<div class="dh">' + ''.join('<span class="dt%s">%s</span>' % (' on' if t == on else '', t) for t in tabs) + GROW + act + '</div>')
     lst = '<div class="dl"%s>%s</div>' % (' style="flex: 0 0 %dpx"' % list_h if list_h else '', body) if body else ''
-    ins = ''
-    if insp:
-        title, ib = insp
-        ins = ('<section class="insp%s" aria-label="%s"><div class="ih"><span class="chev">%s</span>%s</div>%s</section>'
-               % ('' if ib else ' shut', title, ic(CHEVRON if ib else NEXT), title, '<div class="ib">%s</div>' % ib if ib else ''))
-    return '<aside class="dock %s"%s>%s%s%s</aside>' % (side, ' style="width: %dpx"' % width if width else '', head, lst, ins)
+    ins = ('<section class="insp" aria-label="%s"><div class="ih">%s</div><div class="ib">%s</div></section>' % (insp[0], insp[0], insp[1])) if insp else ''
+    return '<aside class="dock">%s%s%s</aside>' % (head_, lst, ins)
 
 
+# The eye of a layer always shows, so a hidden layer is easy to see.
 def drow(name, kind, sel=False, vis=True, badge='', hov=False):
     return ('<div class="row%s%s"><span class="ty">%s</span><span class="grow">%s</span>%s%s</div>' % (
         ' sel' if sel else '', ' hov' if hov else '', ic(KINDS[kind]), name, '<span class="badge">%s</span>' % badge if badge else '',
-        dbtn(('Hide ' if vis else 'Show ') + name, EYE, '' if vis else ' off')))
+        dbtn(('Hide ' if vis else 'Show ') + name, EYE if vis else EYE_OFF, '' if vis else ' off')))
 
 
-def wlayers(sel='Height', hov=None):
+def wlayers(sel=None, hov=None):
     return ''.join(drow(n, k, n == sel, v, b, n == hov) for n, k, v, b in (
         ('Height', 'raster', True, ''), ('Precipitation', 'raster', False, ''), ('Topography', 'polygon', True, 'Out of date'),
         ('Bathymetry', 'polygon', True, ''), ('Rivers', 'line', True, ''), ('Borders', 'line', True, ''), ('Places', 'point', True, ''),
@@ -540,13 +571,13 @@ def wlayers(sel='Height', hov=None):
 
 
 def mlayers(sel=None):
-    return ''.join(drow(n, k, n == sel) for n, k in (
+    return ''.join(drow(n, k, n == sel, n != 'Graticule') for n, k in (
         ('Bathymetry', 'polygon'), ('Topography', 'polygon'), ('Graticule', 'line'), ('Rivers and lakes', 'line'), ('National border', 'line'),
         ('Province borders', 'line'), ('Roads', 'line'), ('Sea routes', 'line'), ('Peaks', 'point'), ('Places', 'point')))
 
 
 ADD = dbtn('Add a layer', PLUS)
-TABS = ('Layers', 'Toolbox')
+WTABS = ('Layers', 'Toolbox')
 
 
 def canvas(inner, cls=''):
@@ -558,7 +589,7 @@ def main(*cols):
 
 
 def sbar(*parts):
-    return '<footer class="sbar">%s</footer>' % ''.join('<span class="grow"></span>' if p is None else '<span>%s</span>' % p for p in parts)
+    return '<footer class="sbar">%s</footer>' % ''.join(GROW if p is None else '<span>%s</span>' % p for p in parts)
 
 
 # A popup menu. A row can have a key, a submenu, a tick, or the hover state.
@@ -574,118 +605,135 @@ def mi(label, key='', sub=False, on=False, off=False, hov=False):
 
 MR = '<div class="mr"></div>'
 
-WORLD_STATUS = sbar('24.6°E 31.2°N · 640 m', 'Height', None, 'Face 4,096', '100%')
-MAP_STATUS = sbar('29.27°E 45.70°N', 'Vesperan', None, '1:3,500,000', '47%')
+WORLD_STATUS = sbar('24.6°E 31.2°N · 640 m', None, 'Face 4,096', '100%')
+MAP_STATUS = sbar('29.27°E 45.70°N', None, '1:3,500,000', '47%')
 DGLOBE = globe('left: 50%; top: 50%; width: 700px; transform: translate(-50%, -50%)')
 DSHEET = '<div class="sheet bare" style="position: absolute; left: 50%%; top: %dpx; width: %dpx; max-width: none; transform: translateX(-50%%)">'
-
-
-def world(center, rail, opts, cv, right, left='', status=WORLD_STATUS, on=None):
-    return (mbar() + tbar(dseg(DWS, 'World', 'Workspace'), center, dacts(on)) + opts
-            + main(rail, left, canvas(cv), right) + status)
-
-
 GLOBE_VIEW = dseg(DVIEW, 'Globe', 'View')
-FLAT_VIEW = (dseg(DVIEW, 'Flat', 'View') + '<button class="menu" aria-haspopup="menu">Equirectangular%s</button>' % ic(CHEVRON)
-             + '<button class="btn">Recenter</button><button class="btn">Reset</button>')
-WRAIL = drail(WTOOLS, 'Raise', brush=False)
+FLAT_VIEW = dseg(DVIEW, 'Flat', 'View') + popup('Equirectangular', 'Projection') + tbtn2('Recenter') + tbtn2('Reset')
+
+
+def world(center, rail, opts, cv, right, status=WORLD_STATUS):
+    return head('World', center) + opts + main(rail, canvas(cv), right) + status
+
+
+WRAIL = drail(WTOOLS, 'Raise', more=True)
+WORLD_BODY = (field('Name', 'Kareth') + field('Radius', '4,820 km', True) + '<div class="row"><span class="lab">1°</span><span class="mono mute">84.1 km</span></div>'
+              + '<div class="row"><span class="lab">Face size</span><span class="mono mute">4,096</span></div>'
+              + '<h2>Heightmap</h2><div class="row"><button class="btn sec" style="flex: 1">Import…</button><button class="btn sec" style="flex: 1">Export GeoTIFF…</button></div>'
+              + '<div class="note">Select a layer or a tool to see its settings here.</div>')
 HEIGHT_IO = ('<div class="row"><button class="btn sec" style="flex: 1">Import heightmap…</button><button class="btn sec" style="flex: 1">Export GeoTIFF…</button></div>'
              + HEIGHT_BODY)
+LINE_GLOBE = globe('left: 50%; top: 50%; width: 700px; transform: translate(-50%, -50%)').replace(
+    GLOBE[GLOBE.index('<svg'):],
+    '<svg class="lay" viewBox="0 0 1000 1000"><path d="M300 300C330 340 350 360 370 385S384 398 388 402" fill="none" stroke="#3f8aa3" stroke-width="3" stroke-linecap="round"></path>'
+    '<g fill="#fff" stroke="#17191c" stroke-width="1.2"><circle cx="300" cy="300" r="3.5"></circle><circle cx="340" cy="350" r="3.5"></circle><circle cx="370" cy="385" r="3.5"></circle></g>'
+    '<g stroke="#17191c" stroke-width="1.4"><path d="M388 390v8M388 406v8M376 402h8M392 402h8"></path></g></svg>')
 
-# Start screen. The projects are a grid of cards. Each card has a picture of the globe, the name, the date, the place, and three buttons.
+# Start screen. The sidebar lists the places. The projects are a grid of cards, and the actions of a card are in its menu.
 def pcard(name, date, where, hue=0, pic=True, badge='', hov=False):
     img = ('<img src="./globe.svg" alt="" style="filter: hue-rotate(%ddeg)">' % hue) if pic else '<span class="dl2">%sNot downloaded</span>' % ic(CLOUD)
-    return ('<article class="pcard%s"><div class="pic">%s%s</div><div class="pm"><div class="pn">%s</div>'
-            '<div class="mute">%s</div><div class="mute pw">%s%s</div></div><div class="pa">'
-            '<button class="btn">Rename</button><button class="btn">Copy</button><button class="btn">Delete</button></div></article>'
-            % (' hov' if hov else '', img, '<span class="badge">%s</span>' % badge if badge else '', name if pic else name.lower().replace(' ', '-') + '.gpkg', date,
-               ic(CLOUD if where == 'iCloud Drive' else FOLDER), where))
+    return ('<article class="pcard%s"><div class="pic">%s%s%s</div><div class="pm"><div class="pn">%s</div>'
+            '<div class="mute">%s</div><div class="mute pw">%s%s</div></div></article>'
+            % (' hov' if hov else '', img, '<span class="badge">%s</span>' % badge if badge else '',
+               '<button class="tool more" aria-label="Actions" aria-haspopup="menu">%s</button>' % ic(DOTS),
+               name if pic else name.lower().replace(' ', '-') + '.gpkg', date, ic(CLOUD if where == 'iCloud Drive' else FOLDER), where))
 
 
-FILE_MENU = pop([mi('New world…', 'Ctrl+N'), mi('Open…', 'Ctrl+O'), mi('Open recent', sub=True, hov=True), MR,
-                 mi('Save', 'Ctrl+S', off=True), mi('World properties…', off=True), mi('Rename…', off=True), mi('Make a copy', off=True), mi('Delete…', off=True), MR,
-                 mi('All worlds', on=True), MR, mi('Import heightmap…', off=True), mi('Export GeoTIFF…', off=True), MR, mi('Quit', 'Ctrl+Q')],
-                'left: 4px; top: 28px; width: 248px', 'File')
-RECENT = pop([mi('Kareth'), mi('Isles of Morrow'), mi('The Sundering'), mi('Ashfall Reach'), MR, mi('Clear the list')], 'left: 250px; top: 78px; width: 200px', 'Open recent')
+def side(*rows):
+    return '<aside class="side2">%s</aside>' % ''.join(rows)
+
+
+def srow(name, path, sel=False):
+    return '<div class="row%s">%s<span>%s</span></div>' % (' sel' if sel else '', ic(path), name)
+
+
 dpage('Start', 'Vale start screen',
-      mbar('File', 'Worlds', None) + tbar('<span class="h">Worlds</span>', '<nav class="seg" aria-label="Place"><a class="on">All</a><a>On this computer</a><a>iCloud Drive</a></nav>',
-                                          '<button class="btn">Open…</button><button class="btn pri">New world…</button>')
-      + main(canvas('<div class="start">'
-                    + pcard('Kareth', 'Oct 14, 2026', 'On this computer', hov=True) + pcard('Isles of Morrow', 'Oct 12, 2026', 'iCloud Drive', 140, badge='2 versions')
-                    + pcard('The Sundering', 'Oct 3, 2026', 'On this computer', 260) + pcard('Ashfall Reach', 'Sep 28, 2026', 'iCloud Drive', 40)
-                    + pcard('Tidewater', 'Sep 9, 2026', 'On this computer', 200) + pcard('Low Countries', 'Aug 30, 2026', 'iCloud Drive', pic=False)
+      tbar('<div class="doc"><b>Worlds</b><span>6 worlds</span></div>',
+           '')
+      .replace(ACTIONS, '<div class="search">%s<input class="in" placeholder="Search" aria-label="Search worlds"></div>' % ic(SEARCH)
+               + popup('Last changed', 'Sort') + '<nav class="seg" aria-label="Show as"><a class="on" title="Grid">%s</a><a title="List">%s</a></nav>' % (ic(GRID), ic(LIST))
+               + '<button class="btn pri" title="New world (⌘N)">New world…</button>')
+      + main(side('<div class="gh">Worlds</div>', srow('All worlds', GRID, True), srow('On this Mac', FOLDER), srow('iCloud Drive', CLOUD),
+                  '<div class="gh">Recent</div>', srow('Kareth', KINDS['polygon']), srow('Isles of Morrow', KINDS['polygon']), srow('The Sundering', KINDS['polygon'])),
+             canvas('<div class="start">'
+                    + pcard('Kareth', 'Today, 9:12 AM', 'On this Mac') + pcard('Isles of Morrow', 'Oct 12, 2026', 'iCloud Drive', 140, badge='2 versions', hov=True)
+                    + pcard('The Sundering', 'Oct 3, 2026', 'On this Mac', 260) + pcard('Ashfall Reach', 'Sep 28, 2026', 'iCloud Drive', 40)
+                    + pcard('Tidewater', 'Sep 9, 2026', 'On this Mac', 200) + pcard('Low Countries', 'Aug 30, 2026', 'iCloud Drive', pic=False)
                     + '</div>', ' start-cv'))
-      + sbar('6 worlds', None, '<a href="#">Show the projects folder</a>') + FILE_MENU + RECENT)
+      + pop([mi('Open', '⌘O'), MR, mi('Rename…'), mi('Make a copy', '⌘D'), mi('Show in Finder', '⌥⌘R'), MR, mi('Delete…', '⌘⌫', hov=True)],
+            'left: 750px; top: 150px; width: 220px', 'Actions'),
+      menus=('File', 'Edit', 'View', 'Window', 'Help'))
 
 # World workspace
-dpage('Draw', 'Vale draw', world(GLOBE_VIEW, drail(WTOOLS, 'Raise', hov='Smooth', brush=False), BRUSH_OPTS, DGLOBE,
-                                 dock('r', TABS, wlayers(hov='Rivers'), ('Height', ''), ADD))
-      + tip('Smooth', 'left: 48px; top: 192px'))
-dpage('DrawOpen', 'Vale draw with the brush and the layers', world(GLOBE_VIEW, drail(WTOOLS, 'Raise', brush=True), BRUSH_OPTS, DGLOBE,
-                                                                  dock('r', TABS, wlayers(), ('Height', ''), ADD.replace('class="tool"', 'class="tool on"')),
-                                                                  left=dock('l', ('Brush',), insp=None, act=dbtn('Close', CLOSE)).replace('</aside>', '<div class="ib">%s</div></aside>' % BRUSH_BODY))
-      + pop([mi('Raster'), mi('Lines', 'Ctrl+Shift+N', hov=True), mi('Points'), mi('Polygons'), MR, mi('From a file…', 'Ctrl+Shift+O'), mi('From a tool', sub=True)],
-            'right: 300px; top: 130px; width: 236px', 'Add a layer'))
-dpage('DrawHeight', 'Vale height layer', world(GLOBE_VIEW, WRAIL, BRUSH_OPTS, DGLOBE, dock('r', TABS, wlayers(), ('Height', HEIGHT_IO), ADD, list_h=232)))
-dpage('DrawFlat', 'Vale draw on a flat view', world(FLAT_VIEW, WRAIL, BRUSH_OPTS, flat(FLAT_BRUSH, 1096), dock('r', TABS, wlayers(), ('Height', ''), ADD)))
+dpage('Draw', 'Vale draw', world(GLOBE_VIEW, drail(WTOOLS, 'Raise', hov='Smooth', more=True), BRUSH_OPTS, DGLOBE,
+                                 dock(WTABS, 'Layers', wlayers(hov='Rivers'), ('Kareth', WORLD_BODY), ADD, list_h=232))
+      + tip('Smooth', 'left: 48px; top: 210px'))
+dpage('DrawOpen', 'Vale draw with the brush settings', world(GLOBE_VIEW, WRAIL, BRUSH_OPTS, DGLOBE,
+                                                              dock(WTABS, 'Layers', wlayers('Height'), ('Height', HEIGHT_IO), ADD, list_h=232)).replace('title="Brush… (B)">', 'title="Brush… (B)" aria-expanded="true" style="background: var(--sel); color: #c9f5ea">')
+      + '<section class="pop popover" aria-label="Brush" style="right: 8px; top: 104px; width: 320px"><div class="ih">Brush</div><div class="ib">%s</div></section>' % BRUSH_BODY)
+dpage('DrawHeight', 'Vale height layer', world(GLOBE_VIEW, WRAIL, BRUSH_OPTS, DGLOBE, dock(WTABS, 'Layers', wlayers('Height'), ('Height', HEIGHT_IO), ADD, list_h=232)))
+dpage('DrawFlat', 'Vale draw on a flat view', world(FLAT_VIEW, WRAIL, BRUSH_OPTS, flat(FLAT_BRUSH, 1096),
+                                                    dock(WTABS, 'Layers', wlayers(), ('Kareth', WORLD_BODY), ADD.replace('class="tool"', 'class="tool on"'), list_h=232))
+      + pop([mi('Raster'), mi('Lines', '⇧⌘N', hov=True), mi('Points'), mi('Polygons'), MR, mi('From a file…', '⇧⌘O'), mi('From a tool', sub=True)],
+            'right: 14px; top: 144px; width: 236px', 'Add a layer'))
 dpage('DrawLinked', 'Vale linked file layer', world(FLAT_VIEW, WRAIL, BRUSH_OPTS, flat(LINK_RECT, 1096),
-                                                    dock('r', TABS, wlayers('coast-scan.png'), ('coast-scan.png', link_body('~/Sketches/coast-scan.png')
-                                                         .replace('</span></div><h2>', '</span></div><div class="row"><a href="#" style="margin-left: 76px">Show in folder</a></div><h2>', 1)), ADD, list_h=232),
-                                                    status=sbar('31.8°E 47.4°N', 'coast-scan.png', None, 'Face 4,096', '100%')))
-dpage('DrawStyle', 'Vale layer style on the globe', world(GLOBE_VIEW, drail(WTOOLS, 'Line', brush=False), LINE_OPTS, DGLOBE,
-                                                         dock('r', TABS, wlayers('Rivers'), ('Rivers', RIVER_STYLE), ADD, list_h=232),
-                                                         status=sbar('24.6°E 31.2°N · 640 m', 'Rivers', None, 'Face 4,096', '100%')))
+                                                    dock(WTABS, 'Layers', wlayers('coast-scan.png'), ('coast-scan.png', link_body('~/Sketches/coast-scan.png')
+                                                         .replace('</span></div><h2>', '</span></div><div class="row"><a href="#" style="margin-left: 76px">Show in Finder</a></div><h2>', 1)), ADD, list_h=232),
+                                                    status=sbar('31.8°E 47.4°N', None, 'Face 4,096', '100%')))
+dpage('DrawStyle', 'Vale layer style on the globe', world(GLOBE_VIEW, drail(WTOOLS, 'Line', more=True), LINE_OPTS, LINE_GLOBE,
+                                                         dock(WTABS, 'Layers', wlayers('Rivers'), ('Rivers', RIVER_STYLE), ADD, list_h=232)))
 dpage('DrawToolbox', 'Vale toolbox', world(GLOBE_VIEW, WRAIL, BRUSH_OPTS, DGLOBE,
-                                           dock('r', ('Toolbox', 'Layers'), '<div class="row search">%s<input class="in" placeholder="Search" aria-label="Search tools"></div>' % ic(SEARCH)
+                                           dock(WTABS, 'Toolbox', '<div class="row search">%s<input class="in" placeholder="Search" aria-label="Search tools"></div>' % ic(SEARCH)
                                                 + item('Polygonize', sel=True) + ''.join(item(t) for t in ('Contour lines', 'Smooth', 'Simplify', 'Dissolve', 'Clip')),
-                                                ('Polygonize', TOOL_BODY), list_h=232), on='Toolbox'))
+                                                ('Polygonize', TOOL_BODY), list_h=232)))
 
 
-# Maps workspace
-def maps(mode, cv, right, rail='', opts='', left='', status=MAP_STATUS, extra=''):
-    return (mbar() + tbar(dseg(DWS, 'Maps', 'Workspace'), DFRAME + dseg(DMAP, mode, 'Map mode'), dacts()) + opts
-            + main(rail, left, extra if extra else canvas(cv), right) + status)
+# Maps workspace. The Projection and Labels modes add their tab after the shared tabs.
+def maps(mode, cv, right, opts, rail_on='Select', status=MAP_STATUS, extra=''):
+    return (head('Maps', DFRAME + dseg(DMAP, mode, 'Map mode')) + opts
+            + main(drail(MTOOLS, rail_on), extra if extra else canvas(cv), right) + status)
 
 
-SEL_OPTS = obar('<span class="on">Select</span>', OSEP, '<span class="ol">Outline</span><select class="in" aria-label="Outline" style="width: 120px"><option>Custom</option><option>Rectangle</option></select>',
-                osw('Snap to the graticule', False))
 HANDLES = ('<svg class="lay" viewBox="0 0 1500 2000" role="img" aria-label="Outline handles"><g fill="#45c4a8" stroke="#0b1f1a" stroke-width="4">'
            + ''.join('<rect x="%d" y="%d" width="24" height="24"></rect>' % (x - 12, y - 12) for x, y in CORNERS) + '</g></svg>')
 FRAME_INFO = FRAME_BODY + '<h2>Labels</h2>' + item('Placed', '96') + item('Not placed', '3', cls='warn')
-dpage('Map', 'Vale map layout', maps('Layout', DSHEET % (24, 546) + PLATE % 'Map of Vesperan' + HANDLES + '</div>',
-                                     dock('r', TABS, mlayers(), ('Vesperan', FRAME_INFO), ADD, list_h=300),
-                                     drail(MTOOLS, 'Select'), SEL_OPTS))
-dpage('Projection', 'Vale projection', maps('Projection', DSHEET % (24, 570) + '<img class="lay" src="./plate-base.svg" alt="Map with distortion circles">'
+MTABS = ('Layers', 'Toolbox')
+dpage('Map', 'Vale map layout', maps('Layout', DSHEET % (24, 540) + PLATE % 'Map of Vesperan' + HANDLES + '</div>',
+                                     dock(MTABS, 'Layers', mlayers(), ('Frame', FRAME_INFO), ADD, list_h=272), SEL_OPTS))
+dpage('Projection', 'Vale projection', maps('Projection', DSHEET % (24, 540) + '<img class="lay" src="./plate-base.svg" alt="Map with distortion circles">'
                                             '<svg class="lay" viewBox="0 0 1500 2000">' + DISTORT + '</svg></div>',
-                                            dock('r', ('Parameters',), insp=('Lambert conformal conic', PARAM_BODY)),
-                                            left=dock('l', ('Projection',), PROJ_LIST, width=264)))
-dpage('Style', 'Vale layer style in a map', maps('Layout', DSHEET % (24, 546) + PLATE % 'Map of Vesperan' + '</div>',
-                                                 dock('r', TABS, mlayers('Topography'), ('Topography', SCOPE + TOPO_STYLE), ADD, list_h=272),
-                                                 drail(MTOOLS, 'Select'), SEL_OPTS))
+                                            dock(MTABS + ('Projection',), 'Projection', PROJ_LIST, ('Lambert conformal conic', PARAM_BODY), list_h=246), SEL_OPTS))
+dpage('Style', 'Vale layer style in a map', maps('Layout', DSHEET % (24, 540) + PLATE % 'Map of Vesperan' + '</div>',
+                                                 dock(MTABS, 'Layers', mlayers('Topography'), ('Topography', SCOPE + TOPO_STYLE), ADD, list_h=272), SEL_OPTS))
 CANDIDATES = ('<table class="t"><thead><tr><th>Position</th><th>Cost</th></tr></thead><tbody>'
               '<tr class="sel"><td>Northeast</td><td class="mono">0.22</td></tr><tr><td>Southeast</td><td class="mono mute">0.47</td></tr>'
               '<tr><td>Northwest</td><td class="mono mute">0.66</td></tr><tr><td>Southwest</td><td class="mono mute">0.81</td></tr></tbody></table>'
-              + '<h2>Class</h2>' + item('Cities', 'rank &lt;= 2') + '<div class="row"><button class="btn sec" style="flex: 1">Pin</button><button class="btn sec" style="flex: 1">Hide</button></div>')
-LABEL_OPTS = obar('<span class="on">Label</span>', OSEP, '<button class="btn">Pin<span class="kbd">P</span></button><button class="btn">Next<span class="kbd">Tab</span></button>'
-                  '<button class="btn">Hide<span class="kbd">H</span></button>', OSEP, osw('Show candidates'), osw('Show overlaps'))
-dpage('Labels', 'Vale labels', maps('Labels', '<div class="view bare" style="position: absolute; inset: 0; max-width: none"><div style="position: absolute; left: -1362px; top: -1612px; width: 3000px; height: 4000px">'
+              + '<h2>Class</h2>' + item('Cities', 'rank &lt;= 2'))
+LABEL_LIST = ('<div class="gh">Not placed</div>' + ''.join(item(n, r, cls='warn') for n, r in zip(NOT_PLACED, ('Overlap', 'Too long', 'Overlap')))
+              + '<div class="gh">Changed by hand</div>' + item('Castellane', 'Selected', True) + item('Deepwell', 'Pinned') + item('Tarn', 'Moved') + item('Sable Ford', 'Hidden'))
+dpage('Labels', 'Vale labels', maps('Labels', '<div class="view bare" style="position: absolute; inset: 0; max-width: none"><div style="position: absolute; left: -1362px; top: -1614px; width: 3000px; height: 4000px">'
                                     + PLATE % 'Map zoomed to Castellane' + LABEL_MARKS + '</div></div>',
-                                    dock('r', ('Not placed', 'Overrides', 'Layers'), ''.join(item(n, r, cls='warn') for n, r in zip(NOT_PLACED, ('Overlap', 'Too long', 'Overlap'))),
-                                         ('Castellane', CANDIDATES), list_h=110),
-                                    drail(MTOOLS, 'Edit labels'), LABEL_OPTS, status=sbar('31.42°E 46.31°N', 'Cities', None, '1:1,250,000', '130%')))
-DATA_OPTS = obar('<span class="on">Point</span>', OSEP, '<span class="ol">Layer</span><select class="in" aria-label="Layer" style="width: 140px"><option>Places</option></select>',
-                 OSEP, osw('Snap to vertices'), osw('Snap to lines'))
-PLACES = places(ROWS + (('Zell', 'Town', '3', ''),))
-dpage('Data', 'Vale data', maps('Data', '', dock('r', ('Place', 'Layers'), insp=('New place', PLACE_BODY)), drail(MTOOLS, 'Place point'), DATA_OPTS,
-                                status=sbar('29.27°E 45.70°N', 'Places', None, '1:1,250,000', '130%'),
-                                extra='<div class="col">' + canvas('<div class="view bare" style="position: absolute; inset: 0; max-width: none"><div style="position: absolute; left: -852px; top: -1842px; width: 3000px; height: 4000px">'
+                                    dock(MTABS + ('Labels',), 'Labels', LABEL_LIST, ('Castellane', CANDIDATES), list_h=260), LABEL_OPTS, 'Edit labels',
+                                    status=sbar('31.42°E 46.31°N', None, '1:1,250,000', '130%')))
+DPLACES = ('<table class="t places"><colgroup><col style="width: 38%"><col style="width: 22%"><col style="width: 14%"><col></colgroup>'
+           '<thead><tr><th>Name<span class="sort">▲</span></th><th>Kind</th><th>Rank</th><th>Port</th></tr></thead><tbody>'
+           + ''.join('<tr%s><td>%s</td><td>%s</td><td class="mono">%s</td><td>%s</td></tr>' % (
+               (' class="sel"', '<span class="mute">New place</span>', k, r, '') if not n else ('', n, k, r, '<span class="ok">%s</span>' % ic(TICK) if p else ''))
+               for n, k, r, p in ROWS + (('Zell', 'Town', '3', ''),))
+           + '</tbody></table>')
+DPLACE = PLACE_BODY.replace('aria-label="Name">', 'aria-label="Name" placeholder="Name of the place">', 1).replace('class="in"', 'class="in focus"', 1)
+dpage('Data', 'Vale data', maps('Data', '', dock(MTABS, 'Layers', mlayers('Places'), ('New place', DPLACE), ADD, list_h=272), DATA_OPTS, 'Place point',
+                                status=sbar('29.27°E 45.70°N', None, '1:1,250,000', '130%'),
+                                extra='<div class="col">' + canvas('<div class="view bare" style="position: absolute; inset: 0; max-width: none"><div style="position: absolute; left: -852px; top: -1844px; width: 3000px; height: 4000px">'
                                                                    + PLATE % 'Map zoomed to Ostrey' + DATA_MARK + '</div></div>')
-                                + '<section class="dock b" aria-label="Places"><div class="dh"><span class="dt on">Places</span><span class="mute">58</span><span class="grow"></span>'
-                                  '<input class="in" placeholder="Filter" aria-label="Filter" style="width: 220px"></div><div class="dl">' + PLACES + '</div></section></div>'))
+                                + '<section class="dock b" aria-label="Places"><div class="dh"><span class="dt on">Places</span><span class="mute">58</span>' + GROW
+                                + '<input class="in" placeholder="Filter" aria-label="Filter" style="width: 220px"></div><div class="dl">' + DPLACES + '</div></section></div>'))
 
 # Atlas workspace
-dpage('Atlas', 'Vale atlas', mbar() + tbar(dseg(DWS, 'Atlas', 'Workspace'), '', dbtn('Undo', UNDO) + dbtn('Redo', REDO, ' off') + '<span class="div"></span><button class="btn pri">Export…</button>')
-      + main(dock('l', ('Pages',), PAGES_BODY, width=264), canvas(DSHEET.replace('sheet bare', 'sheet') % (24, 570) + FULL % 'Atlas page for Vesperan' + '</div>'),
-             dock('r', ('Page',), insp=('Page 2 · Vesperan', PAGE_BODY + '<h2>Export</h2><div class="seg" role="group" aria-label="Format"><button class="on">PDF</button><button>SVG</button><button>PNG</button><button>TIFF</button></div>'
-                                       + pick('Pages', 'All', 'This page'))))
-      + sbar('12 × 16 in', 'Page 2 of 4', None, '62%'))
+dpage('Atlas', 'Vale atlas', head('Atlas', '<button class="tool" aria-label="Previous page">%s</button><span class="pgn">Page 2 of 4</span><button class="tool" aria-label="Next page">%s</button>'
+                                  % (ic(BACK), ic(NEXT)) + '<span class="div"></span>' + tbtn2('Export…', 'btn pri'))
+      + PAGE_OPTS + main(drail(ATOOLS, 'Select'), canvas(DSHEET.replace('sheet bare', 'sheet') % (24, 540) + FULL % 'Atlas page for Vesperan' + '</div>'),
+                         dock(('Pages',), 'Pages', PAGES_BODY, ('Page 2 · Vesperan', PAGE_BODY + '<h2>Export</h2><div class="seg" role="group" aria-label="Format"><button class="on">PDF</button>'
+                                                                 '<button>SVG</button><button>PNG</button><button>TIFF</button></div>' + pick('Pages', 'All', 'This page')), list_h=362))
+      + sbar('12 × 16 in', None, '62%'))

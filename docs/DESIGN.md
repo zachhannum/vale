@@ -357,27 +357,34 @@ The core crates have no UI dependency, so both platforms share them. The shell i
 
 ### Desktop layout
 
-The desktop layout has the workspaces, switches, tools, and panels of the iPad layout. The panels are docked, and the controls are for a mouse and a keyboard. The app prototype does not have this layout yet.
+The desktop layout has the workspaces, switches, tools, and panels of the iPad layout. The panels are docked, and the controls are for a mouse and a keyboard. macOS is the primary desktop platform, and the app uses its materials and conventions. The app prototype does not have this layout yet.
 
-The window has six places, from top to bottom:
+The window has five places, from top to bottom:
 
-- The menu bar holds the menus File, Edit, View, Layer, Map, Window, and Help. Its center shows the name of the world, the name of the file, and the save mark. On macOS, the menus are in the menu bar of the system.
-- The tool bar holds the workspace switch at the left, and the actions at the right. Its center holds the view switch in the World workspace, and the map frame menu and the mode switch in the Maps workspace.
-- The options bar holds the settings of the active tool. For a brush mode, these are the Size slider, the Flow slider, the Hardness slider, a pressure switch, and the button "Brush…".
-- The tool rail at the left edge holds the tools, the More button, and the Brush button.
-- The canvas is between the docks.
-- The status bar holds the position readout, the active layer, the progress of a task, the scale, and the zoom.
+- The title bar and the tool bar are one bar. At the left, it holds the window buttons, the name of the world, the name of the file with the save mark, and the workspace switch. At the center, it holds the view switch in the World workspace, the map frame menu and the mode switch in the Maps workspace, and the page controls and "Export…" in the Atlas workspace. At the right, it holds undo, redo, and the button that shows or hides the dock. These actions are the same in each workspace.
+- The options bar holds the settings of the active tool. For a brush mode, these are the Size slider, the Flow slider, the Hardness slider, a pressure switch, and the button "Brush…". That button opens the Brush panel as a popover.
+- The tool rail at the left edge holds the tools and the More button.
+- The canvas is between the tool rail and the dock.
+- The status bar holds the position readout, the scale, and the zoom.
 
-A dock is a column at one side of the canvas. The right dock has the tabs Layers and Toolbox. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. The list and the inspector show at the same time, so a panel has no back button. The left dock holds the Brush panel, the list of the projections, or the list of the pages. In the Data mode, the table of the features is in a dock below the canvas.
+Each workspace has a tool rail and an options bar, so the canvas keeps its place when the mode changes. The menus are in the menu bar of the system.
+
+The dock is a column at the right edge. Its tabs keep the same order in a workspace. The World and Maps workspaces have the tabs Layers and Toolbox, and the Projection and Labels modes add a tab after them. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. With no selection, it holds the properties of the world. The list and the inspector show at the same time, so a panel has no back button. In the Data mode, the table of the features is in a dock below the canvas.
+
+The title bar, the tool rail, the dock, the popovers, and the menus are translucent, with the blur of the macOS materials. The canvas is opaque.
 
 These rules apply to the layout:
 
 - A row is 26 pixels high, and a tool button is 28 by 28 pixels.
-- Each tool and each action shows its name and its key in a tooltip. The menus show the keys too. On macOS, Ctrl in a shortcut is Command.
-- The keys of the World tools are R for Raise, F for Lower, S for Smooth, T for Flatten, N for Line, H for Move, and B for the Brush panel. The keys of the Maps tools are V for Select, P for Point, A for Vertex, and L for Label.
-- A form, for example "New world" or "Export", is a dialog at the center of the window.
-- The start screen is a grid of cards. Each card has the buttons "Rename", "Copy", and "Delete". The File menu has the same actions and a list of the recent projects.
+- The eye of a layer always shows. A hidden layer shows a crossed eye.
+- Selected tools, segments, tabs, and rows have the same tint of the accent color.
+- Each tool and each action shows its name and its key in a tooltip, and the menus show the keys too.
+- The keys of the World tools are R for Raise, F for Lower, S for Smooth, E for Flatten, L for Line, and H for the hand. B opens the Brush panel. The keys of the Maps tools are V for Select, H for the hand, P for Point, A for Vertex, and T for Label. In the Labels mode, ] and [ go to the next and the previous label, Return pins a label, and Delete hides it.
+- A form, for example "New world" or "Export", is a sheet of the window.
+- The start screen has a sidebar with the places and the recent worlds, and a grid of cards. The tool bar has a search field, the sort order, a switch between a grid and a list, and "New world…". The menu of a card holds "Open", "Rename…", "Make a copy", "Show in Finder", and "Delete…".
 - The left mouse button and the pen paint. The middle button, or Space with the left button, turns the globe, and the wheel zooms. The brush outline follows the pointer and a hovering pen.
+
+On Windows and Linux, the menus are a row at the top of the window, and the window has no translucency. The shortcuts use Ctrl in place of Command.
 
 ## Styling model
 
@@ -613,6 +620,7 @@ The largest risk is the scope of the labeling engine. To contain it, the library
 | PROJ is hard to package on Windows. | Use the bundled build and add a Windows build to CI in phase 0. |
 | When you replace an imported vector file, features lose identity. | Use element IDs first and geometry matching second, and report each lost match. |
 | Painting needs a fast, steady stroke, and a slow brush makes the tool useless. | Stamp on the GPU and repaint only the tiles under the brush. Measure the stroke delay in phase 1. |
+| The translucent macOS window needs a transparent title bar, an `NSVisualEffectView` behind the window, and egui panels with a transparent fill. | Make a test window with winit, wgpu, and the `window-vibrancy` crate before the desktop layout is built. If it fails, the bars and the dock are opaque. |
 | One heightmap resolution does not fit both a world and a small region. | Each raster layer has one face size, high enough for regional maps. Finer tiles for a region, in levels, come after version 1. The tile key has a level field for them. |
 | egui gives no hover, no tilt, and only 120 pen samples per second on iPad. | The iPad test of the globe prototype passed for painting, pressure, and palm rejection. A UIKit gesture recognizer below egui reads hover, tilt, and the 240 Hz samples in `vale-app`. |
 | Reprojected rasters look soft. | Show the resolution of each source against each map frame, and support regional sources. |

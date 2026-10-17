@@ -1,6 +1,6 @@
 # UI mockups
 
-These files are the source of the Vale UI mockups. The mockups show fourteen desktop screens and fifteen iPad screens. The desktop screens are 1440 by 900 pixels.
+These files are the source of the Vale UI mockups. The mockups show fourteen desktop screens and fifteen iPad screens. The desktop screens show a Mac window on a screen of 1440 by 900 pixels.
 
 View the mockups at https://claude.ai/artifact/K7SGPcJf76r1k1HhgvQi8T. The link is private to its owner. The screen files need the Claude Design runtime, so they do not open from this folder.
 
