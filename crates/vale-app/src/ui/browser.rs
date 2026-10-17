@@ -1,24 +1,15 @@
-//! The start screen: the list of the projects, and the dialogs that rename
-//! and delete a project. The iPad layout draws its own screen from the same
-//! state.
+//! The state of the start screen, and the dialogs that rename and delete a
+//! project. Each layout draws its own screen from this state.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
-use eframe::egui::{self, Id, Modal, Sense, Vec2, vec2};
+use eframe::egui::{self, Id, Modal};
 
-use super::world_form::{self, WorldForm};
-use super::{Action, AppState, Layout, pad};
+use super::{Action, AppState, Layout, desk, pad};
 use crate::files::{Availability, Files, Version};
 use crate::projects::{self, Entry, Locations};
-
-/// The edge of the picture of a project, in points.
-const PICTURE: f32 = 200.0;
-/// The space between two cards, in points.
-const GAP: f32 = 24.0;
-/// The space between the window and the list, in points.
-const MARGIN: i8 = 32;
 
 /// The title of the dialog with the error of a file.
 pub const PROBLEM_TITLE: &str = "The app cannot read this file";
@@ -153,6 +144,8 @@ pub struct BrowserState {
     pub pending: Option<PathBuf>,
     /// The time of the last read of the folders while a download runs.
     pub polled: Option<Instant>,
+    /// The recent worlds at the last read: the path and the name.
+    pub recent: Vec<(PathBuf, String)>,
 }
 
 impl BrowserState {
@@ -161,6 +154,22 @@ impl BrowserState {
         self.entries = locations.list(files);
         self.textures.clear();
         self.menu = None;
+        let recent = locations.state_dir().map(projects::recent);
+        let name = |path: &PathBuf| {
+            let entry = self
+                .entries
+                .iter()
+                .find(|e| std::path::absolute(&e.path).is_ok_and(|absolute| absolute == *path));
+            entry.map_or_else(|| projects::entry(path).name, |e| e.name.clone())
+        };
+        self.recent = recent
+            .unwrap_or_default()
+            .into_iter()
+            .map(|path| {
+                let name = name(&path);
+                (path, name)
+            })
+            .collect();
     }
 
     /// The count of the pictures that the screen showed.
@@ -207,134 +216,10 @@ impl BrowserState {
 
 /// Draws the start screen.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    if state.layout == Layout::Pad {
-        pad::browser::draw(ui, state);
-        return;
+    match state.layout {
+        Layout::Pad => pad::browser::draw(ui, state),
+        Layout::Desktop => desk::start::draw(ui, state),
     }
-    // The test harness puts a margin around the UI. See `ui::draw`.
-    let screen = ui.ctx().content_rect();
-    ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
-        ui.set_clip_rect(screen);
-        let frame = egui::Frame::central_panel(ui.style()).inner_margin(MARGIN);
-        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Worlds");
-                ui.add_space(16.0);
-                if ui.button(world_form::NEW_WORLD).clicked() {
-                    state.world_form = Some(WorldForm::new_world());
-                }
-                if state.file_buttons && ui.button("Open file…").clicked() {
-                    state.actions.push(Action::OpenProjectDialog);
-                }
-            });
-            if !state.status.is_empty() {
-                ui.label(&state.status);
-            }
-            ui.add_space(16.0);
-            if state.browser.entries.is_empty() {
-                ui.weak("No worlds yet. Make the first one with \"New world…\".");
-                return;
-            }
-            egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    let entries = state.browser.entries.clone();
-                    let columns = ((ui.available_width() + GAP) / (PICTURE + GAP)).floor();
-                    for row in entries.chunks((columns as usize).max(1)) {
-                        ui.horizontal_top(|ui| {
-                            ui.spacing_mut().item_spacing.x = GAP;
-                            for entry in row {
-                                card(ui, state, entry);
-                            }
-                        });
-                        ui.add_space(GAP);
-                    }
-                });
-        });
-    });
-    dialogs(ui, state);
-    world_form::desktop(ui.ctx(), state);
-}
-
-/// One project: the picture, the name, the date, and the buttons.
-fn card(ui: &mut egui::Ui, state: &mut AppState, entry: &Entry) {
-    let texture = state.browser.texture(ui.ctx(), entry);
-    let readable = entry.error.is_none();
-    let layout = egui::Layout::top_down(egui::Align::Min);
-    ui.allocate_ui_with_layout(vec2(PICTURE, 0.0), layout, |ui| {
-        ui.set_width(PICTURE);
-        ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
-        let sense = if readable {
-            Sense::click()
-        } else {
-            Sense::hover()
-        };
-        let (rect, picture) = ui.allocate_exact_size(Vec2::splat(PICTURE), sense);
-        let label = format!("Open {}", entry.name);
-        picture
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, readable, &label));
-        let visuals = ui.style().interact(&picture);
-        ui.painter().rect_filled(rect, 8.0, visuals.weak_bg_fill);
-        match &texture {
-            Some(texture) => {
-                egui::Image::new(texture).paint_at(ui, rect);
-            }
-            // A file of an older version has no picture until it is open
-            // one time.
-            None => {
-                let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
-                ui.painter()
-                    .circle_stroke(rect.center(), 0.45 * PICTURE, stroke);
-            }
-        }
-        if picture.hovered() || picture.has_focus() {
-            let stroke = ui.visuals().selection.stroke;
-            let kind = egui::StrokeKind::Inside;
-            ui.painter().rect_stroke(rect, 8.0, stroke, kind);
-        }
-        if picture.clicked() {
-            open_entry(state, entry);
-        }
-
-        ui.strong(&entry.name);
-        let locations = state.projects.available().len() > 1;
-        let (line, warning) = info_line(entry, false, locations);
-        match &entry.error {
-            Some(error) => {
-                if ui.link(line).clicked() {
-                    state
-                        .browser
-                        .show_problem(entry.path.clone(), error.clone());
-                }
-            }
-            None if warning => {
-                ui.colored_label(ui.visuals().warn_fg_color, line);
-            }
-            None => {
-                ui.weak(line);
-            }
-        }
-        let readable = readable && entry.availability == Availability::Here;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().button_padding.x = 6.0;
-            let (path, name) = (entry.path.clone(), entry.name.clone());
-            if ui
-                .add_enabled(readable, egui::Button::new("Rename"))
-                .clicked()
-            {
-                state.browser.ask_rename(path.clone(), name.clone());
-            }
-            if ui
-                .add_enabled(readable, egui::Button::new("Copy"))
-                .clicked()
-            {
-                state.actions.push(Action::CopyProject(path.clone()));
-            }
-            if ui.button("Delete").clicked() {
-                state.browser.ask_delete(path, name);
-            }
-        });
-    });
 }
 
 /// Draws the open dialog. The editor calls this too, for the File menu.

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::cli::Args;
 use vale_app::document::Document;
 use vale_app::globe::WorldView;
@@ -13,6 +13,7 @@ use vale_app::projects::Locations;
 use vale_app::resume::Resume;
 use vale_app::session::{SAVE_DELAY, new_project_path};
 use vale_app::ui::browser::Dialog;
+use vale_app::ui::desk;
 use vale_app::ui::pad::browser as pad_browser;
 use vale_app::ui::pad::geometry::TOUCH;
 use vale_app::ui::pad::{SAVE, WORLDS};
@@ -69,10 +70,14 @@ fn create(dir: &Path, name: &str) -> PathBuf {
     path
 }
 
-/// The first text field of the screen.
+/// The first text field of the screen, after the search field of the
+/// desktop start screen.
 fn field(h: &App) -> egui_kittest::Node<'_> {
     let mut fields = h.get_all_by_role(egui::accesskit::Role::TextInput);
-    fields.next().unwrap()
+    let search = Some(desk::start::SEARCH.to_string());
+    fields
+        .find(|f| f.accesskit_node().label() != search)
+        .unwrap()
 }
 
 /// Puts this text in the first text field, in place of its text.
@@ -94,16 +99,6 @@ fn new_world(h: &mut App, name: &str) {
     assert_eq!(h.state().doc.project.world.name, name);
 }
 
-/// Clicks the button with this label in the card of the project at `index`.
-fn click_in_card(h: &mut App, label: &str, index: usize) {
-    let mut buttons: Vec<_> = h.get_all_by_label(label).collect();
-    assert_eq!(buttons.len(), h.state().browser.entries.len());
-    // The cards are in one row, in the order of the entries.
-    buttons.sort_by(|a, b| a.rect().left().total_cmp(&b.rect().left()));
-    buttons[index].click();
-    run(h);
-}
-
 /// An action on a project of the start screen.
 #[derive(Clone, Copy)]
 enum CardAction {
@@ -112,27 +107,21 @@ enum CardAction {
     Delete,
 }
 
-/// Starts an action on the project with this name. The desktop layout has a
-/// button for each action. The iPad layout has a menu of the actions.
+/// Starts an action on the project with this name, from the menu of its
+/// card.
 fn card_action(h: &mut App, world: &str, action: CardAction) {
-    let (desktop, pad) = match action {
-        CardAction::Rename => ("Rename", pad_browser::RENAME),
-        CardAction::Copy => ("Copy", pad_browser::COPY),
-        CardAction::Delete => ("Delete", pad_browser::DELETE),
+    let row = match action {
+        CardAction::Rename => pad_browser::RENAME,
+        CardAction::Copy => pad_browser::COPY,
+        CardAction::Delete => pad_browser::DELETE,
     };
-    match h.state().layout {
-        Layout::Desktop => {
-            let entries = &h.state().browser.entries;
-            let index = entries.iter().position(|e| e.name == world).unwrap();
-            click_in_card(h, desktop, index);
-        }
-        Layout::Pad => {
-            click(h, &pad_browser::actions_name(world));
-            assert!(h.state().browser.menu.is_some());
-            click(h, pad);
-            assert_eq!(h.state().browser.menu, None);
-        }
+    click(h, &pad_browser::actions_name(world));
+    if h.state().layout == Layout::Pad {
+        assert!(h.state().browser.menu.is_some());
     }
+    click(h, row);
+    assert_eq!(h.state().browser.menu, None);
+    assert!(h.query_by_label(row).is_none(), "the menu closes");
 }
 
 /// Goes from the editor to the start screen with the control of the layout.
@@ -201,7 +190,8 @@ fn the_start_screen_lists_each_project_with_its_picture_name_and_date() {
     let today = projects::date_text(SystemTime::now());
     assert_eq!(h.get_all_by_label(today.as_str()).count(), 2);
     for name in ["Aurelia", "Borea"] {
-        h.get_by_label(name);
+        // The desktop sidebar has the recent worlds too.
+        assert!(h.get_all_by_label(name).count() >= 1);
         h.get_by_label(format!("Open {name}").as_str());
     }
     let browser = &h.state().browser;
@@ -318,10 +308,7 @@ fn a_tap_on_a_file_with_an_error_shows_the_whole_error() {
         let mut h = app(dir.path(), layout);
         let error = h.state().browser.entries[0].error.clone().unwrap();
 
-        match layout {
-            Layout::Pad => click(&mut h, &pad_browser::open_name("broken")),
-            Layout::Desktop => click(&mut h, "Cannot read the file"),
-        }
+        click(&mut h, &pad_browser::open_name("broken"));
         h.get_by_label(problem_text(&path, &error).as_str());
         click(&mut h, TRY_OPEN);
         assert_eq!(h.state().browser.dialog, None);
@@ -572,8 +559,7 @@ fn the_save_command_saves_a_change_that_waits_in_both_layouts() {
             Layout::Desktop => click(&mut h, FILE_MENU),
             Layout::Pad => click(&mut h, WORLDS),
         }
-        // The desktop row also has the text of its shortcut.
-        h.get_by_label_contains(SAVE).click();
+        h.get_by_label(SAVE).click();
         run(&mut h);
         assert_eq!(vale_store::summary(&path).unwrap().name, "Cassia");
         assert_eq!(h.state().status, "Saved Cassia");

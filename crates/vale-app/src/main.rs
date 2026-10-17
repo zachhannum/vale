@@ -45,6 +45,8 @@ fn run() -> anyhow::Result<u8> {
         }
         state.workspace = args.workspace;
         state.set_layout(args.layout);
+        // On macOS, the menus are in the menu bar of the system.
+        state.native_menu = headless_run && cfg!(target_os = "macos");
         for panel in &args.panel {
             state.pad.open(*panel);
         }

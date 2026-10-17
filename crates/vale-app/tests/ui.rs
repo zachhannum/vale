@@ -8,7 +8,9 @@ use vale_app::document::Document;
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
-use vale_app::ui::panels::WORLD_BUTTON;
+use vale_app::ui::desk::command::Command;
+use vale_app::ui::desk::theme;
+use vale_app::ui::pad::ADD_LAYER;
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{Action, AppState, ExportFormat, Workspace, draw, is_heightmap_path};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
@@ -35,6 +37,14 @@ fn harness() -> Harness<'static, AppState> {
     harness_with(Document::sample())
 }
 
+/// Clicks a row of a menu of the menu row.
+fn menu_row(h: &mut Harness<'static, AppState>, menu: &str, row: &str) {
+    h.get_by_label(menu).click();
+    h.run_steps(2);
+    h.get_by_label(row).click();
+    h.run_steps(1);
+}
+
 fn land_path() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/natural-earth/110m/ne_110m_land.geojson")
 }
@@ -46,10 +56,10 @@ fn first_frames_compose_the_map() {
     let s = h.state();
     assert!(s.composed.is_some());
     assert!(s.texture.is_some());
-    assert!(
-        s.canvas_size.0 > 650.0 && s.canvas_size.0 < 850.0,
-        "{:?}",
-        s.canvas_size
+    // The canvas is between the tool rail and the dock.
+    assert_eq!(
+        s.canvas_size.0,
+        SIZE.0 - f64::from(theme::RAIL + theme::DOCK)
     );
     assert!(!s.dirty);
 }
@@ -70,8 +80,9 @@ fn graticule_checkbox_recomposes() {
 fn land_checkbox_hides_layer() {
     let mut h = harness();
     h.run_steps(3);
-    h.get_by_label("Land").click();
+    h.get_by_label("Hide Land").click();
     h.run_steps(2);
+    assert!(h.query_by_label("Show Land").is_some());
     let doc = &h.state().doc;
     let land = doc
         .project
@@ -87,7 +98,7 @@ fn land_checkbox_hides_layer() {
 fn the_layer_list_adds_a_layer() {
     let mut h = harness();
     h.run_steps(3);
-    h.get_by_label("Add layer").click();
+    h.get_by_label(ADD_LAYER).click();
     h.run_steps(2);
     h.get_by_label("Points").click();
     h.run_steps(2);
@@ -101,14 +112,12 @@ fn the_layer_list_adds_a_layer() {
 }
 
 #[test]
-fn toolbar_buttons_push_actions() {
+fn file_menu_rows_push_actions() {
     let mut h = harness();
     h.run_steps(2);
-    h.get_by_label("Open GeoJSON…").click();
-    h.run_steps(1);
+    menu_row(&mut h, "File", "Open GeoJSON…");
     assert!(h.state().actions.contains(&Action::OpenDialog));
-    h.get_by_label("Export PDF…").click();
-    h.run_steps(1);
+    menu_row(&mut h, "File", "Export PDF…");
     assert!(
         h.state()
             .actions
@@ -120,26 +129,31 @@ fn toolbar_buttons_push_actions() {
 fn file_buttons_can_be_hidden() {
     let mut state = state_with(Document::sample());
     state.file_buttons = false;
+    // The layer list of the dock also has the import row.
+    state.desk.dock_open = false;
     let mut h = Harness::builder()
         .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
         .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
     h.run_steps(2);
+    h.get_by_label("File").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Import heightmap…").is_some());
     assert!(h.query_by_label("Open GeoJSON…").is_none());
     assert!(h.query_by_label("Export PDF…").is_none());
 }
 
 #[test]
-fn the_import_button_shows_with_and_without_the_file_buttons() {
+fn the_import_row_shows_with_and_without_the_file_buttons() {
     for file_buttons in [true, false] {
         let mut state = state_with(Document::sample());
         state.workspace = Workspace::Globe;
         state.file_buttons = file_buttons;
+        state.desk.dock_open = false;
         let mut h = Harness::builder()
             .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
             .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
         h.run_steps(2);
-        h.get_by_label("Import heightmap…").click();
-        h.run_steps(1);
+        menu_row(&mut h, "File", "Import heightmap…");
         let actions = &h.state().actions;
         assert_eq!(actions, &[Action::ImportHeightmapDialog], "{file_buttons}");
     }
@@ -471,8 +485,8 @@ fn the_new_world_form_makes_a_world_from_a_preset() {
     let mut h = harness();
     h.state_mut().workspace = Workspace::Globe;
     h.run_steps(2);
-    h.get_by_label(NEW_WORLD).click();
-    h.run_steps(2);
+    menu_row(&mut h, "File", NEW_WORLD);
+    h.run_steps(1);
     let form = h.state().world_form.clone().unwrap();
     assert_eq!(form.mode, FormMode::New);
     assert_eq!(
@@ -545,8 +559,8 @@ fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
     h.run_steps(3);
     let layers = h.state().doc.project.layers().to_vec();
     let scale = h.state().composed.as_ref().unwrap().km_per_point;
-    h.get_by_label(WORLD_BUTTON).click();
-    h.run_steps(2);
+    menu_row(&mut h, "File", Command::WorldProperties.label());
+    h.run_steps(1);
     assert_eq!(
         h.state().world_form.as_ref().unwrap().mode,
         FormMode::Properties
@@ -564,7 +578,12 @@ fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
     assert_eq!(state.doc.project.layers(), layers);
     let small = state.composed.as_ref().unwrap().km_per_point;
     assert!((small / scale - 1737.4 / 6371.0).abs() < 1e-9);
-    assert!(h.query_by_label_contains("Radius 1079.6 mi").is_some());
+    // The world inspector shows the new radius.
+    h.state_mut().workspace = Workspace::Globe;
+    h.run_steps(2);
+    assert!(h.query_by_label("1079.6 mi").is_some());
+    h.state_mut().workspace = Workspace::Map;
+    h.run_steps(2);
 
     let form = h.state_mut().world_form.as_mut().unwrap();
     form.name = "Luna".to_string();

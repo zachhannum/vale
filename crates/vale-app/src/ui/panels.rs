@@ -8,15 +8,12 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, ExportFormat, SaveMark, Workspace, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
-use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
-use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
+use crate::globe::{Globe, rivers, stats, stroke_test};
 use crate::projects;
-use crate::world::{self, three_significant};
+use crate::world;
 
 /// The button of the tool bar that opens the properties of the world.
 pub const WORLD_BUTTON: &str = "World…";
-/// The button of the tool bar that exports the heightmap.
-pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -38,35 +35,6 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             if ui.button(WORLD_BUTTON).clicked() {
                 let form = WorldForm::properties(&state.doc.project.world);
                 state.world_form = Some(form);
-            }
-            if state.workspace == Workspace::Globe {
-                ui.separator();
-                ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
-                ui.selectable_value(&mut state.globe.tool, Tool::Brush, "Brush");
-                ui.separator();
-                let mut flat = state.globe.world_view == WorldView::Flat;
-                if ui.toggle_value(&mut flat, "Flat").changed() {
-                    state.globe.world_view = if flat {
-                        WorldView::Flat
-                    } else {
-                        WorldView::Globe
-                    };
-                }
-                if flat {
-                    flat_projection(ui, state);
-                }
-                ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
-                ui.toggle_value(&mut state.globe.preview.panel, "Elevation");
-                ui.toggle_value(&mut state.globe.debug, "Debug");
-                ui.separator();
-                let import = egui::Button::new("Import heightmap…");
-                if ui.add_enabled(!state.globe.busy(), import).clicked() {
-                    state.actions.push(Action::ImportHeightmapDialog);
-                }
-                let export = egui::Button::new(EXPORT_GEOTIFF);
-                if ui.add_enabled(state.can_export(), export).clicked() {
-                    state.actions.push(Action::ExportHeightmapDialog);
-                }
             }
             if !state.file_buttons || state.workspace != Workspace::Map {
                 return;
@@ -153,7 +121,7 @@ fn save_mark(ui: &mut egui::Ui, state: &AppState) {
     }
 }
 
-fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
     let flat = &mut state.globe.flat;
     let spec = flat.spec();
     let mut kind = spec.kind;
@@ -184,21 +152,6 @@ fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
     {
         flat.reset();
     }
-}
-
-/// The numbers of the brush on the GPU, and controls for a test of the brush.
-pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
-    if !state.globe.debug {
-        return;
-    }
-    egui::Panel::right("brush_debug")
-        .default_size(300.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Brush debug");
-                debug_controls(ui, state);
-            });
-        });
 }
 
 /// The state of the window of small rivers.
@@ -279,46 +232,6 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The controls of the brush. The panel is open in the brush tool.
-pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
-    if state.globe.tool != Tool::Brush {
-        state.globe.pick_level = false;
-        return;
-    }
-    egui::Panel::left("brush")
-        .default_size(240.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Brush");
-                brush_modes(ui, &mut state.globe.brush.mode);
-                ui.add_space(6.0);
-                brush_size(ui, state);
-                brush_limits(ui, state);
-                brush_settings(ui, state);
-            });
-        });
-}
-
-fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
-    ui.horizontal_wrapped(|ui| {
-        for (mode, name) in [
-            (Mode::Raise, "Raise"),
-            (Mode::Lower, "Lower"),
-            (Mode::Smooth, "Smooth"),
-            (Mode::Flatten, "Flatten"),
-            (Mode::Carve, "Carve"),
-            (Mode::Ridge, "Ridge"),
-            (Mode::Deposit, "Deposit"),
-            (Mode::Erode, "Erode"),
-            (Mode::Weather, "Weather"),
-            (Mode::Uplift, "Uplift"),
-            (Mode::Warp, "Warp"),
-        ] {
-            ui.selectable_value(current, mode, name);
-        }
-    });
-}
-
 /// The name of the strength slider. In the uplift mode, the strength is the
 /// rate of the uplift.
 pub(super) fn strength_name(mode: Mode) -> &'static str {
@@ -328,66 +241,9 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
     }
 }
 
-fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
-    let world_km = state.doc.project.world.radius_km;
-    let (unit_km, symbol) = world::large_unit(state.doc.project.world.units);
-    let globe = &mut state.globe;
-    let globe_radius = globe.radius();
-    let mut size = globe.brush.radius_km(globe_radius, world_km) / unit_km;
-    let range = globe.brush.radius_km_range(globe_radius, world_km);
-    let range = range.start() / unit_km..=range.end() / unit_km;
-    let slider = egui::Slider::new(&mut size, range)
-        .logarithmic(true)
-        .custom_formatter(|size, _| three_significant(size))
-        .suffix(format!(" {symbol}"))
-        .text("Radius");
-    if ui.add(slider).changed() {
-        globe
-            .brush
-            .set_radius_km(size * unit_km, globe_radius, world_km);
-    }
-    ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
-    ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
-    if globe.brush.mode == Mode::Warp {
-        for (value, range, name) in [
-            (&mut globe.brush.warp_km, WARP_KM, "Strength"),
-            (&mut globe.brush.scale_km, SCALE_KM, "Scale"),
-        ] {
-            let slider = egui::Slider::new(value, range)
-                .logarithmic(true)
-                .custom_formatter(|km, _| three_significant(km))
-                .suffix(" km")
-                .text(name);
-            ui.add(slider);
-        }
-        // The seed is a property of the world, so each brush gets the same
-        // noise field.
-        let seed = &mut state.doc.project.world.seed;
-        ui.add(egui::Slider::new(seed, SEED).text("Seed"));
-    } else {
-        let strength = egui::Slider::new(&mut globe.brush.strength_m, STRENGTH_M)
-            .logarithmic(true)
-            .fixed_decimals(0)
-            .suffix(" m")
-            .text(strength_name(globe.brush.mode));
-        ui.add(strength);
-    }
-    if globe.brush.mode == Mode::Uplift {
-        ui.add(egui::Slider::new(&mut globe.brush.erosion, EROSION).text("Erosion"));
-    }
-    if matches!(globe.brush.mode, Mode::Weather | Mode::Uplift) {
-        let angle = egui::Slider::new(&mut globe.brush.talus_deg, TALUS_DEG)
-            .logarithmic(true)
-            .custom_formatter(|deg, _| three_significant(deg))
-            .suffix("°")
-            .text("Angle");
-        ui.add(angle);
-    }
-}
-
 /// The floor and the ceiling of the brush. Each one has a checkbox and an
 /// elevation.
-fn brush_limits(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn brush_limits(ui: &mut egui::Ui, state: &mut AppState) {
     let brush = &mut state.globe.brush;
     for (name, on, meters) in [
         ("Floor", &mut brush.floor_on, &mut brush.floor_m),
@@ -472,7 +328,7 @@ fn world_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Projection");
     let mut spec = state.doc.frame.projection;
     egui::ComboBox::from_id_salt("projection")
@@ -580,7 +436,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Map");
     if ui
         .checkbox(&mut state.doc.frame.graticule, "Graticule")

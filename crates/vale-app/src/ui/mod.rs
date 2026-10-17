@@ -21,6 +21,7 @@ use crate::workcopy;
 
 pub mod browser;
 pub mod canvas;
+pub mod desk;
 pub mod elevation;
 pub mod globe;
 pub mod inspector;
@@ -58,6 +59,8 @@ pub enum Action {
     CopyProject(PathBuf),
     /// Removes this project file. The UI asks before it sends this.
     DeleteProject(PathBuf),
+    /// Shows this project file in the file manager of the system.
+    Reveal(PathBuf),
     /// Closes the open project and shows the start screen.
     ShowProjects,
     /// Saves each change that waits.
@@ -190,6 +193,13 @@ pub struct AppState {
     pub world_form: Option<world_form::WorldForm>,
     /// Requests that need the host (dialogs, files).
     pub actions: Vec<Action>,
+    /// The window shows the glass of the system behind the translucent
+    /// places of the desktop layout.
+    pub translucent: bool,
+    /// The menus are in the menu bar of the system, so the window has no
+    /// row of menus.
+    pub native_menu: bool,
+    pub desk: desk::DeskState,
     /// True: no timers, always `Quality::Final`.
     pub headless: bool,
     /// False: the tool bar has no buttons for GeoJSON files and for exports.
@@ -245,6 +255,9 @@ impl AppState {
             share: None,
             world_form: None,
             actions: Vec::new(),
+            translucent: false,
+            native_menu: false,
+            desk: desk::DeskState::default(),
             headless: false,
             file_buttons: true,
             frames: 0,
@@ -262,13 +275,10 @@ impl AppState {
         Ok(state)
     }
 
-    /// Sets the layout. In the iPad layout the pen paints, so the brush is
-    /// the first tool.
+    /// Sets the layout. The brush is the first tool in each layout.
     pub fn set_layout(&mut self, layout: Layout) {
         self.layout = layout;
-        if layout == Layout::Pad {
-            self.globe.tool = Tool::Brush;
-        }
+        self.globe.tool = Tool::Brush;
     }
 
     /// True if the undo log of the project file has the edits. If not, the
@@ -999,7 +1009,8 @@ impl AppState {
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog
             | Action::ExportHeightmapDialog
-            | Action::OpenProjectDialog => {}
+            | Action::OpenProjectDialog
+            | Action::Reveal(_) => {}
         }
     }
 }
@@ -1009,6 +1020,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
     state.poll_export();
+    if state.layout == Layout::Desktop {
+        desk::theme::install(ui.ctx(), state.translucent);
+    }
     if state.screen == Screen::Browser {
         if state.poll_downloads(Instant::now()) {
             ui.ctx().request_repaint_after(DOWNLOAD_POLL);
@@ -1023,28 +1037,23 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         state.frames += 1;
         return;
     }
+    if state.layout == Layout::Desktop {
+        desk::draw(ui, state);
+        state.frames += 1;
+        return;
+    }
     // Fill the whole viewport. The test harness (egui_kittest) wraps the UI in an
     // 8 point outer margin, which would show as a dark border in screenshots. In the
     // real window this rectangle equals the rectangle of `ui`, so it changes nothing.
     let screen = ui.ctx().content_rect();
     ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
+        // The iPad layout of the Maps workspace.
         panels::toolbar(ui, state);
-        match state.workspace {
-            Workspace::Globe => {
-                panels::status(ui, state);
-                panels::brush_debug(ui, state);
-                panels::brush(ui, state);
-                elevation::draw(ui, state);
-                globe::draw(ui, state);
-            }
-            Workspace::Map => {
-                panels::left(ui, state);
-                inspector::draw(ui, state);
-                panels::status(ui, state);
-                canvas::draw(ui, state);
-            }
-        }
+        panels::left(ui, state);
+        inspector::draw(ui, state);
+        panels::status(ui, state);
+        canvas::draw(ui, state);
     });
     world_form::desktop(ui.ctx(), state);
     state.frames += 1;

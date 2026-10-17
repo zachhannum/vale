@@ -5,7 +5,8 @@ use std::time::Duration;
 use eframe::egui;
 use kurbo::Point;
 
-use super::AppState;
+use super::desk::MapTool;
+use super::{AppState, Layout};
 use crate::pipeline::Quality;
 
 const SETTLE_SECONDS: f64 = 0.25;
@@ -62,6 +63,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ui, |ui| canvas(ui, state));
+}
+
+/// A click selects a feature. The hand of the desktop layout only moves the map.
+fn selects(state: &AppState) -> bool {
+    state.layout != Layout::Desktop || state.desk.map_tool == MapTool::Select
 }
 
 fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
@@ -129,6 +135,7 @@ fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
     {
         center_on(state, local(pos, rect));
     } else if resp.clicked()
+        && selects(state)
         && let Some(pos) = resp.interact_pointer_pos()
     {
         click_at(state, local(pos, rect));
@@ -194,6 +201,13 @@ fn canvas(ui: &mut egui::Ui, state: &mut AppState) {
         state.dirty = false;
     }
 
+    // The desktop window can be translucent, and the page is opaque there,
+    // also before its first picture.
+    if state.layout == Layout::Desktop {
+        let page = state.doc.frame.style.background;
+        let page = egui::Color32::from_rgb(page.r, page.g, page.b);
+        ui.painter().rect_filled(rect, 0.0, page);
+    }
     if let Some(tex) = &state.texture {
         ui.painter().image(
             tex.id(),

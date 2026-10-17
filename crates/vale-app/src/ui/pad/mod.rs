@@ -28,7 +28,7 @@ use widgets::{BODY_PAD, Controls, PANEL_ROW};
 /// The control of the tool strip that opens the menu of the other modes.
 pub const MORE: &str = "More";
 /// The modes of the menu of the More cell.
-const MORE_MODES: [(&str, Icon, Mode); 7] = [
+pub(crate) const MORE_MODES: [(&str, Icon, Mode); 7] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -64,7 +64,7 @@ pub const DELETE_LAYER: &str = "Delete layer";
 /// The field of the panel of a vector layer with the name of the layer.
 pub const LAYER_NAME: &str = "Layer name";
 /// The rows of the menu of the new layers.
-const NEW_LAYERS: [(&str, GeometryKind); 3] = [
+pub(crate) const NEW_LAYERS: [(&str, GeometryKind); 3] = [
     ("Lines", GeometryKind::Line),
     ("Points", GeometryKind::Point),
     ("Polygons", GeometryKind::Polygon),
@@ -523,7 +523,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
 }
 
 /// Shows a value as a slider with a logarithmic scale.
-fn log_slider(
+pub(crate) fn log_slider(
     value: f64,
     range: std::ops::RangeInclusive<f64>,
     text: &str,
@@ -548,7 +548,7 @@ pub fn brush_size_text(state: &AppState) -> String {
 }
 
 /// Shows the size of the brush on the ground as a slider.
-fn size_slider(state: &mut AppState, slider: impl FnOnce(&mut f64, &str) -> bool) {
+pub(crate) fn size_slider(state: &mut AppState, slider: impl FnOnce(&mut f64, &str) -> bool) {
     let world_km = state.doc.project.world.radius_km;
     let globe = &state.globe;
     let globe_radius = globe.radius();
@@ -562,7 +562,7 @@ fn size_slider(state: &mut AppState, slider: impl FnOnce(&mut f64, &str) -> bool
 }
 
 /// Shows a value from 0 to 1 as a slider with a value in percent.
-fn percent_slider(
+pub(crate) fn percent_slider(
     value: &mut f64,
     range: std::ops::RangeInclusive<f64>,
     slider: impl FnOnce(&mut f64, &str) -> bool,
@@ -906,7 +906,7 @@ fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
     vector_rows(ui, state, controls);
 }
 
-fn kind_icon(kind: GeometryKind) -> Icon {
+pub(crate) fn kind_icon(kind: GeometryKind) -> Icon {
     match kind {
         GeometryKind::Point => Icon::Point,
         GeometryKind::Line => Icon::Line,
@@ -1131,7 +1131,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
 }
 
 /// Shows the text of the import or the export that runs, or of the last one.
-fn note_text(ui: &mut egui::Ui, progress: Option<String>, note: Option<&Note>) {
+pub(crate) fn note_text(ui: &mut egui::Ui, progress: Option<String>, note: Option<&Note>) {
     let (text, color) = match (progress, note) {
         (Some(progress), _) => (progress, theme::MUTE),
         (None, Some(note)) if note.warning => (note.text.clone(), theme::WARN),
@@ -1224,7 +1224,7 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
 
 /// The save mark: an arc that turns during a save, a tick when the file
 /// holds each change, and a warning sign after a save that failed.
-fn save_mark(ui: &egui::Ui, rect: Rect, mark: SaveMark, turn: bool) {
+pub(crate) fn save_mark(ui: &egui::Ui, rect: Rect, mark: SaveMark, turn: bool) {
     let painter = ui.painter();
     let stroke = |color| egui::Stroke::new(1.4, color);
     match mark {

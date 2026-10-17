@@ -155,11 +155,7 @@ fn the_start_screen_lists_the_projects_of_both_folders() {
         let pad = layout == Layout::Pad;
         let lines: Vec<String> = entries.iter().map(|e| info_line(e, pad, true).0).collect();
         assert!(lines.iter().any(|l| l.starts_with("iCloud Drive · ")));
-        let here = if pad {
-            "On this iPad"
-        } else {
-            "On this computer"
-        };
+        let here = Location::Local.label(pad);
         assert!(lines.iter().any(|l| l.starts_with(here)), "{lines:?}");
 
         // A project of each folder opens in place.
@@ -184,7 +180,12 @@ fn a_new_world_goes_to_the_location_of_the_form() {
         h.state_mut().show_projects();
         run(&mut h);
         click(&mut h, NEW_WORLD);
-        click(&mut h, local);
+        // The sidebar of the desktop start screen has a row of each place
+        // too. The form is at the right of it.
+        let mut choices: Vec<_> = h.get_all_by_label(local).collect();
+        choices.sort_by(|a, b| a.rect().left().total_cmp(&b.rect().left()));
+        choices.pop().unwrap().click();
+        run(&mut h);
         click(&mut h, CREATE);
         assert_eq!(open_path(&h).parent(), Some(dirs.local.as_path()));
 

@@ -44,9 +44,17 @@ fn layer_info(state: &AppState) -> Option<LayerInfo> {
 
 fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Layer");
-    let Some(info) = layer_info(state) else {
+    if layer_info(state).is_none() {
         ui.label("Select a layer in the list.");
         ui.add_space(6.0);
+        return;
+    }
+    layer_body(ui, state);
+}
+
+/// The name, the order, and the style of the selected layer.
+pub(super) fn layer_body(ui: &mut egui::Ui, state: &mut AppState) {
+    let Some(info) = layer_info(state) else {
         return;
     };
     // The text of the field, from the first key to the end of the edit.
@@ -215,6 +223,11 @@ fn color_button(ui: &mut egui::Ui, c: &mut vale_style::Color) -> bool {
 fn feature_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.separator();
     ui.heading("Feature");
+    feature_body(ui, state);
+}
+
+/// The layer and the attributes of the selected feature.
+pub(super) fn feature_body(ui: &mut egui::Ui, state: &mut AppState) {
     let Some(sel) = state.selection else {
         ui.label("Click a feature on the map.");
         ui.add_space(6.0);
@@ -245,7 +258,7 @@ fn feature_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-fn unplaced_section(ui: &mut egui::Ui, state: &AppState) {
+pub(super) fn unplaced_section(ui: &mut egui::Ui, state: &AppState) {
     ui.separator();
     ui.heading("Unplaced labels");
     let Some(composed) = &state.composed else {

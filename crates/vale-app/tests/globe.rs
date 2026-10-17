@@ -10,6 +10,7 @@ use vale_app::globe::view::GlobeView;
 use vale_app::globe::{FACE_SIZE, Tool};
 use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
+use vale_app::ui::desk::{Tab, theme};
 use vale_app::ui::elevation::{BAR_LABEL, limit_y};
 use vale_app::ui::{AppState, Workspace, draw};
 use vale_import::geojson;
@@ -20,10 +21,12 @@ use vale_terrain::{
 };
 
 /// The sample world with its vector layers hidden, so that each place of the
-/// globe shows the heightmap.
+/// globe shows the heightmap. The dock is closed, so the globe has the width
+/// of the window without the tool rail.
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
     state.headless = true;
+    state.desk.dock_open = false;
     let ids: Vec<_> = state.doc.project.layers().iter().map(|l| l.id).collect();
     for id in ids {
         state.doc.set_visible(id, false);
@@ -38,6 +41,44 @@ fn harness() -> Harness<'static, AppState> {
         .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
     h.run_steps(2);
     h
+}
+
+/// Clicks a row of a menu of the menu row.
+fn menu_row(h: &mut Harness<'static, AppState>, menu: &str, row: &str) {
+    h.get_by_label(menu).click();
+    h.run_steps(2);
+    h.get_by_label(row).click();
+    h.run_steps(1);
+}
+
+/// Opens the Brush popover in the brush tool. A click outside the popover
+/// closes it, so a test chooses the mode first.
+fn open_brush(h: &mut Harness<'static, AppState>) {
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(1);
+    h.get_by_label("Brush…").click();
+    h.run_steps(2);
+}
+
+/// Opens the dock and selects the Height layer, so that the inspector shows
+/// the elevation controls. The world needs a raster.
+fn show_height(h: &mut Harness<'static, AppState>) {
+    h.state_mut().desk.dock_open = true;
+    h.run_steps(2);
+    let role = egui::accesskit::Role::Button;
+    h.get_by_role_and_label(role, "Height").click();
+    h.run_steps(2);
+}
+
+/// Chooses a mode on the tool rail, or in the menu of the More button.
+fn choose_mode(h: &mut Harness<'static, AppState>, mode: &str) {
+    let on_rail = ["Raise", "Lower", "Smooth", "Flatten"].contains(&mode);
+    if !on_rail {
+        h.get_by_label("More tools").click();
+        h.run_steps(2);
+    }
+    h.get_by_label(mode).click();
+    h.run_steps(2);
 }
 
 /// The place on the globe under a screen position.
@@ -129,21 +170,25 @@ fn the_app_opens_on_the_globe() {
     let s = h.state();
     assert_eq!(s.workspace, Workspace::Globe);
     assert!(s.composed.is_none());
-    // The globe has the full width, with no side panels.
-    assert_eq!(s.globe.rect.width(), 1280.0);
+    // Without the dock, the globe has the full width without the tool rail.
+    assert_eq!(s.globe.rect.width(), 1280.0 - theme::RAIL);
     assert!(h.query_by_label("Projection").is_none());
 }
 
 #[test]
 fn the_flat_map_is_reachable() {
     let mut h = harness();
-    h.get_by_label("Map").click();
+    h.get_by_label("Maps").click();
     h.run_steps(3);
     let s = h.state();
     assert_eq!(s.workspace, Workspace::Map);
     assert!(s.composed.is_some());
+    h.state_mut().desk.dock_open = true;
+    h.run_steps(2);
     assert!(h.query_by_label("Projection").is_some());
-    h.get_by_label("Globe").click();
+    // The panel of the Maps workspace has a heading with the same name.
+    let role = egui::accesskit::Role::Button;
+    h.get_by_role_and_label(role, "World").click();
     h.run_steps(2);
     assert_eq!(h.state().workspace, Workspace::Globe);
 
@@ -449,7 +494,7 @@ fn gpu_harness() -> Harness<'static, AppState> {
     let mut state = state();
     state.globe.set_face_size(BRUSH_FACE_SIZE);
     let setup = egui_kittest::wgpu::default_wgpu_setup();
-    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    let mut h = headless::ui_harness(state, (640.0, 490.0), 1.0, setup);
     h.set_render_every_step(true);
     h.run_steps(3);
     h
@@ -514,7 +559,7 @@ fn face_size_sets_the_heightmap_of_the_globe() {
 fn painting_changes_the_globe() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
-    h.get_by_label("Brush").click();
+    h.get_by_label("Raise").click();
     h.run_steps(2);
     assert_eq!(h.state().globe.tool, Tool::Brush);
     let view = h.state().globe.view;
@@ -544,9 +589,11 @@ fn painting_changes_the_globe() {
 fn the_debug_panel_shows_the_stroke_delay() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
+    // The globe has room for the stroke between the tool rail and the panels.
+    h.set_size(egui::vec2(800.0, 480.0));
     assert!(h.query_by_label_contains("Stroke delay").is_none());
-    h.get_by_label("Debug").click();
-    h.get_by_label("Brush").click();
+    menu_row(&mut h, "Window", "Toolbox");
+    h.get_by_label("Raise").click();
     h.run_steps(2);
     assert!(h.query_by_label("Stroke delay: no stroke").is_some());
     assert!(h.state().globe.rect.width() < 640.0);
@@ -604,7 +651,7 @@ fn a_stroke_reaches_the_cpu_heightmap_and_undo_puts_it_back() {
 fn navigate_is_unchanged_with_the_brush_tool_off() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
-    assert_eq!(h.state().globe.tool, Tool::Navigate);
+    h.state_mut().globe.tool = Tool::Navigate;
     let c = h.state().globe.rect.center();
     let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 20.0));
     let grabbed = place(&h, from);
@@ -678,10 +725,65 @@ fn in_the_brush_tool_a_pen_paints_and_the_other_input_moves_the_globe() {
 }
 
 #[test]
+fn the_middle_button_and_space_turn_the_globe_while_the_brush_paints_with_the_left() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    // The desktop layout starts with the brush in the Raise mode.
+    assert_eq!(h.state().globe.tool, Tool::Brush);
+    assert_eq!(h.state().globe.brush.mode, Mode::Raise);
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 20.0));
+
+    let grabbed = place(&h, from);
+    button(&mut h, egui::PointerButton::Middle, from, true);
+    h.step();
+    h.event(egui::Event::PointerMoved(to));
+    h.step();
+    button(&mut h, egui::PointerButton::Middle, to, false);
+    h.run_steps(2);
+    assert!(off(&h, grabbed, to) < 0.05);
+
+    let space = |h: &mut Harness<'static, AppState>, pressed| {
+        h.event(egui::Event::Key {
+            key: egui::Key::Space,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+    };
+    let grabbed = place(&h, from);
+    space(&mut h, true);
+    button(&mut h, egui::PointerButton::Primary, from, true);
+    h.step();
+    h.event(egui::Event::PointerMoved(to));
+    h.step();
+    button(&mut h, egui::PointerButton::Primary, to, false);
+    space(&mut h, false);
+    h.run_steps(2);
+    assert!(off(&h, grabbed, to) < 0.05);
+    let globe = &h.state().globe;
+    assert!(globe.stats.last().is_none());
+    assert_eq!(globe.map.allocated_tiles(), 0);
+
+    // Without Space, the left button paints.
+    let view = h.state().globe.view;
+    mouse_stroke(&mut h);
+    settle(&mut h);
+    assert_eq!(h.state().globe.view, view);
+    assert!(h.state().globe.map.allocated_tiles() > 0);
+
+    // The wheel zooms.
+    wheel(&mut h, egui::MouseWheelUnit::Line, Vec2::new(0.0, 2.0));
+    h.run_steps(2);
+    assert!(h.state().globe.view.zoom > 1.0);
+}
+
+#[test]
 fn the_stroke_test_runs_and_gives_the_stroke_delay() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
-    h.get_by_label("Debug").click();
+    menu_row(&mut h, "Window", "Toolbox");
     h.run_steps(2);
     let brush = h.state().globe.brush;
     h.state_mut().globe.start_stroke_test(0.25);
@@ -856,14 +958,13 @@ fn a_press_on_the_globe_picks_the_flatten_level() {
 fn the_brush_panel_locks_the_ground_size_of_the_brush() {
     let mut h = harness();
     assert!(h.query_by_label("Lock size").is_none());
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
-    for label in ["Raise", "Lower", "Smooth", "Flatten", "Radius", "Hardness"] {
+    open_brush(&mut h);
+    for label in ["Raise", "Lower", "Smooth", "Flatten", "Size", "Hardness"] {
         assert!(h.query_all_by_label(label).next().is_some(), "{label}");
     }
     assert!(h.query_by_label("Pick from globe").is_none());
-    h.get_by_label("Flatten").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Flatten");
+    open_brush(&mut h);
     assert!(h.query_by_label("Pick from globe").is_some());
 
     // Without the lock, the brush covers half of the ground at twice the zoom.
@@ -895,7 +996,6 @@ fn preview_harness() -> Harness<'static, AppState> {
     let mut h = gpu_harness();
     let globe = &mut h.state_mut().globe;
     globe.preview.graticule = false;
-    globe.preview.panel = true;
     globe.view = GlobeView::centered(0.0, 0.0);
     h.step();
     h
@@ -956,13 +1056,11 @@ fn one_switch_shows_the_plain_greyscale() {
     let mut h = preview_harness();
     let [r, g, b] = color_at(&mut h, 1500.0);
     assert!(r != g || g != b);
-    h.get_by_label("Greyscale").click();
-    h.step();
+    menu_row(&mut h, "View", "Greyscale");
     let grey = middle(&mut h);
     let level = (f32::from(meters_to_level(1500.0)) / 65535.0 * 255.0).round() as u8;
     assert!(close(grey, [level; 3]), "{grey:?}");
-    h.get_by_label("Greyscale").click();
-    h.step();
+    menu_row(&mut h, "View", "Greyscale");
     assert_eq!(middle(&mut h), [r, g, b]);
 }
 
@@ -973,9 +1071,7 @@ fn without_levels_the_ramp_is_smooth() {
     // Two heights in the band from 1000 m to 2000 m.
     let (low, high) = (color_at(&mut h, 1200.0), color_at(&mut h, 1800.0));
     assert_eq!(low, high);
-    h.get_by_label("Levels").click();
-    h.step();
-    assert!(!h.state().globe.preview.levels);
+    h.state_mut().globe.preview.levels = false;
     let (low, high) = (color_at(&mut h, 1200.0), color_at(&mut h, 1800.0));
     assert_ne!(low, high);
     // The ramp still has a cut at sea level.
@@ -1015,8 +1111,11 @@ fn a_change_of_a_band_limit_shows_in_the_same_frame() {
 #[test]
 fn the_bar_adds_moves_and_removes_a_band_limit() {
     let mut h = harness();
-    h.get_by_label("Elevation").click();
-    h.run_steps(2);
+    // The bar has room below the other elevation controls.
+    h.set_size(egui::vec2(1280.0, 1100.0));
+    let map = &mut h.state_mut().globe.map;
+    map.set(0, 0, 0, map.base() + 1);
+    show_height(&mut h);
     let count = h.state().globe.map.bands.limits().len();
     let rect = h.get_by_label(BAR_LABEL).rect();
     let at = |meters: f64| Pos2::new(rect.left() + 20.0, limit_y(rect, meters));
@@ -1297,7 +1396,9 @@ fn queue_harness() -> (Harness<'static, AppState>, PenQueue) {
 fn the_debug_panel_shows_240_samples_per_second_for_a_pen_from_the_queue() {
     let _gpu = one_gpu_test();
     let (mut h, queue) = queue_harness();
-    h.state_mut().globe.debug = true;
+    h.set_size(egui::vec2(800.0, 480.0));
+    h.state_mut().desk.dock_open = true;
+    h.state_mut().desk.tab = Tab::Toolbox;
     h.run_steps(2);
     assert!(h.query_by_label("Pen and timing").is_some());
     assert!(h.query_by_label("Pen source: UIKit").is_some());
@@ -1525,7 +1626,9 @@ fn rivers_show_on_the_globe_and_a_switch_hides_them() {
     let count = river_pixels(&h, &on);
     assert!(count > 300, "{count}");
 
-    h.get_by_label("Rivers").click();
+    show_height(&mut h);
+    let role = egui::accesskit::Role::CheckBox;
+    h.get_by_role_and_label(role, "Rivers").click();
     h.run_steps(2);
     assert!(!h.state().globe.preview.rivers);
     let off = canvas_image(&mut h);
@@ -1664,8 +1767,7 @@ fn the_brush_panel_has_the_carve_mode() {
     let mut h = harness();
     h.state_mut().globe.tool = Tool::Brush;
     h.run_steps(2);
-    h.get_by_label("Carve").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Carve");
     assert_eq!(h.state().globe.brush.mode, Mode::Carve);
 }
 
@@ -1674,8 +1776,7 @@ fn the_brush_panel_has_the_ridge_mode() {
     let mut h = harness();
     h.state_mut().globe.tool = Tool::Brush;
     h.run_steps(2);
-    h.get_by_label("Ridge").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Ridge");
     assert_eq!(h.state().globe.brush.mode, Mode::Ridge);
 }
 
@@ -1746,8 +1847,7 @@ fn the_brush_panel_has_the_deposit_mode() {
     let mut h = harness();
     h.state_mut().globe.tool = Tool::Brush;
     h.run_steps(2);
-    h.get_by_label("Deposit").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Deposit");
     assert_eq!(h.state().globe.brush.mode, Mode::Deposit);
 }
 
@@ -1806,6 +1906,7 @@ fn ridge_in_a_near_view_reads_the_window() {
     const N: usize = 2048;
     let _gpu = one_gpu_test();
     let mut h = island_harness(N, 0.2, 14.0);
+    narrow(&mut h);
     let globe = &mut h.state_mut().globe;
     globe.tool = Tool::Brush;
     globe.brush.mode = Mode::Ridge;
@@ -1863,22 +1964,18 @@ fn ridge_in_a_near_view_reads_the_window() {
 #[test]
 fn the_brush_panel_has_the_erode_mode() {
     let mut h = harness();
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
-    h.get_by_label("Erode").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Erode");
     assert_eq!(h.state().globe.brush.mode, Mode::Erode);
 }
 
 #[test]
 fn the_brush_panel_has_the_weather_mode_and_its_angle_slider() {
     let mut h = harness();
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
+    open_brush(&mut h);
     assert_eq!(h.state().globe.brush.mode, Mode::Raise);
     assert!(h.query_all_by_label("Angle").next().is_none());
-    h.get_by_label("Weather").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Weather");
+    open_brush(&mut h);
     assert_eq!(h.state().globe.brush.mode, Mode::Weather);
     assert!(h.query_all_by_label("Angle").next().is_some());
     assert_eq!(h.state().globe.brush.talus_deg, 0.5);
@@ -1887,11 +1984,10 @@ fn the_brush_panel_has_the_weather_mode_and_its_angle_slider() {
 #[test]
 fn the_brush_panel_has_the_warp_mode_and_its_two_sliders() {
     let mut h = harness();
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
+    open_brush(&mut h);
     assert!(h.query_all_by_label("Scale").next().is_none());
-    h.get_by_label("Warp").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Warp");
+    open_brush(&mut h);
     let brush = &h.state().globe.brush;
     assert_eq!(brush.mode, Mode::Warp);
     assert_eq!((brush.warp_km, brush.scale_km), (50.0, 200.0));
@@ -1905,10 +2001,8 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
     use egui::accesskit::Role;
     for mode in ["Raise", "Erode", "Warp"] {
         let mut h = harness();
-        h.state_mut().globe.tool = Tool::Brush;
-        h.run_steps(2);
-        h.get_by_label(mode).click();
-        h.run_steps(2);
+        choose_mode(&mut h, mode);
+        open_brush(&mut h);
         // The elevations that take no input.
         let off = |h: &Harness<'static, AppState>| {
             let values = h.query_all_by_role(Role::SpinButton);
@@ -2200,6 +2294,13 @@ fn island_harness(face_size: usize, radius: f64, zoom: f64) -> Harness<'static, 
     h
 }
 
+/// Makes the canvas narrow. A narrow canvas shows less ground, so the window
+/// of the rivers has finer cells.
+fn narrow(h: &mut Harness<'static, AppState>) {
+    h.set_size(egui::vec2(400.0, 480.0));
+    h.run_steps(2);
+}
+
 #[test]
 fn zooming_in_gives_finer_rivers() {
     let _gpu = one_gpu_test();
@@ -2243,6 +2344,7 @@ fn carve_in_a_near_view_cuts_a_narrow_valley() {
     const N: usize = 2048;
     let _gpu = one_gpu_test();
     let mut h = island_harness(N, 0.2, 14.0);
+    narrow(&mut h);
     let globe = &mut h.state_mut().globe;
     globe.tool = Tool::Brush;
     globe.brush.mode = Mode::Carve;
@@ -2475,6 +2577,7 @@ fn erode_in_a_near_view_works_on_the_cells_of_the_window() {
     const N: usize = 2048;
     let _gpu = one_gpu_test();
     let mut h = island_harness(N, 0.2, 14.0);
+    narrow(&mut h);
     let globe = &mut h.state_mut().globe;
     globe.tool = Tool::Brush;
     globe.brush.mode = Mode::Erode;
@@ -2620,6 +2723,7 @@ fn a_small_erode_brush_works_on_the_cells_of_the_window_of_the_brush() {
     assert_eq!(N / CoarseHeights::size_for(N), 4);
     for (zoom, view_cell) in [(1.0, 4), (7.0, 2)] {
         let mut h = island_harness(N, 0.35, zoom);
+        narrow(&mut h);
         let globe = &mut h.state_mut().globe;
         globe.tool = Tool::Brush;
         globe.brush.mode = Mode::Erode;
@@ -2699,8 +2803,7 @@ fn one_undo_puts_back_the_ground_from_before_a_stroke_on_the_window_of_the_brush
 fn the_river_width_slider_changes_the_lines() {
     let _gpu = one_gpu_test();
     let mut h = island_harness(1024, 0.35, 8.0);
-    h.state_mut().globe.preview.panel = true;
-    h.run_steps(2);
+    show_height(&mut h);
     assert!(h.query_all_by_label("River width").next().is_some());
     let state_of = |h: &Harness<'static, AppState>| {
         let globe = &h.state().globe;
@@ -2785,16 +2888,15 @@ fn screenshots_with_a_river_window() {
 #[test]
 fn the_brush_panel_has_the_uplift_mode_and_its_two_sliders() {
     let mut h = harness();
-    h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(2);
-    assert_eq!(h.query_all_by_label("Uplift").count(), 1);
+    open_brush(&mut h);
+    assert!(h.query_by_label("Uplift").is_none());
     assert!(h.query_all_by_label("Erosion").next().is_none());
     assert!(h.query_all_by_label("Strength").next().is_some());
-    h.get_by_label("Uplift").click();
-    h.run_steps(2);
+    choose_mode(&mut h, "Uplift");
+    open_brush(&mut h);
     assert_eq!(h.state().globe.brush.mode, Mode::Uplift);
-    // The mode and the slider of the rate of the uplift.
-    assert!(h.query_all_by_label("Uplift").count() > 1);
+    // The slider of the rate of the uplift.
+    assert!(h.query_by_label("Uplift").is_some());
     assert!(h.query_all_by_label("Strength").next().is_none());
     assert!(h.query_all_by_label("Erosion").next().is_some());
     assert_eq!(h.state().globe.brush.erosion, 0.5);
