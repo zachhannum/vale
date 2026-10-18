@@ -24,8 +24,8 @@ pub struct MapFrame {
     pub projection: ProjectionSpec,
     /// `None` means fit the world at the next compose.
     pub view: Option<View>,
-    /// One entry for each layer of the project, in the order of the project.
-    /// The first entry is at the bottom.
+    /// One entry for each vector layer of the project, in the order of the
+    /// project. The first entry is at the bottom.
     pub entries: Vec<LayerEntry>,
     pub graticule: bool,
     pub labels: bool,
@@ -44,6 +44,12 @@ fn rank(kind: GeometryKind) -> u8 {
         GeometryKind::Line => 1,
         GeometryKind::Point => 2,
     }
+}
+
+/// The rank of a layer in the order of an import. A raster layer draws
+/// below each imported layer.
+fn layer_rank(layer: &Layer) -> u8 {
+    layer.geometry().map_or(0, rank)
 }
 
 impl Document {
@@ -142,7 +148,7 @@ impl Document {
                 .project
                 .layers()
                 .iter()
-                .rposition(|x| rank(x.kind) <= new_rank)
+                .rposition(|x| layer_rank(x) <= new_rank)
                 .map_or(0, |i| i + 1);
             let id = self.project.add_layer(l.name, l.kind, file, l.features);
             self.project.move_layer(id, to);
@@ -169,18 +175,22 @@ impl Document {
         id
     }
 
-    /// Puts the entries in the order of the layers of the project. A layer
-    /// with no entry gets one with the default style.
+    /// Puts the entries in the order of the vector layers of the project. A
+    /// vector layer with no entry gets one with the default style. A raster
+    /// layer has no entry.
     fn sync_entries(&mut self) {
         let mut old = std::mem::take(&mut self.frame.entries);
         let mut counts = [0; 3];
         for layer in self.project.layers() {
-            let ordinal = &mut counts[rank(layer.kind) as usize];
+            let Some(kind) = layer.geometry() else {
+                continue;
+            };
+            let ordinal = &mut counts[rank(kind) as usize];
             let entry = match old.iter().position(|e| e.layer == layer.id) {
                 Some(i) => old.swap_remove(i),
                 None => LayerEntry {
                     layer: layer.id,
-                    style: LayerStyle::default_for(layer.kind, *ordinal, &layer.fields),
+                    style: LayerStyle::default_for(kind, *ordinal, &layer.fields),
                 },
             };
             *ordinal += 1;
@@ -214,8 +224,29 @@ impl Document {
         self.project.remove_layer(id).is_some()
     }
 
-    /// `up` moves toward the top of the drawing. Returns false at the end.
+    /// Moves a layer of the map past the next layer of the map. `up` moves
+    /// toward the top of the drawing. Returns false at the end.
     pub fn move_entry(&mut self, id: LayerId, up: bool) -> bool {
+        let entries = &self.frame.entries;
+        let Some(i) = entries.iter().position(|e| e.layer == id) else {
+            return false;
+        };
+        let next = if up {
+            i.checked_add(1)
+        } else {
+            i.checked_sub(1)
+        };
+        let Some(next) = next.and_then(|i| entries.get(i)).map(|e| e.layer) else {
+            return false;
+        };
+        let layers = self.project.layers();
+        let to = layers.iter().position(|l| l.id == next);
+        to.is_some_and(|to| self.move_layer(id, to))
+    }
+
+    /// Moves a layer one place in the draw order of the layers of each kind.
+    /// `up` moves toward the top of the drawing. Returns false at the end.
+    pub fn move_by_one(&mut self, id: LayerId, up: bool) -> bool {
         let layers = self.project.layers();
         let Some(i) = layers.iter().position(|l| l.id == id) else {
             return false;

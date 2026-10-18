@@ -42,6 +42,8 @@ pub struct LabelSummary {
 pub struct PageLayer<'a> {
     pub entry: &'a LayerEntry,
     pub layer: &'a Layer,
+    /// The geometry kind of the layer.
+    pub kind: GeometryKind,
     pub features: Vec<PageFeature>,
 }
 
@@ -198,6 +200,10 @@ fn build_page_layers<'a>(
         else {
             continue;
         };
+        // A raster layer is not on the map.
+        let Some(kind) = layer.geometry() else {
+            continue;
+        };
         let features = feats
             .iter()
             .enumerate()
@@ -208,6 +214,7 @@ fn build_page_layers<'a>(
         out.push(PageLayer {
             entry,
             layer,
+            kind,
             features,
         });
     }
@@ -389,7 +396,7 @@ impl Pipeline {
         let page_layers = build_page_layers(doc, cache, &vt);
         for pl in &page_layers {
             let s = &pl.entry.style;
-            match pl.layer.kind {
+            match pl.kind {
                 GeometryKind::Polygon => {
                     if let Some(fill) = s.fill {
                         for f in &pl.features {
@@ -496,7 +503,7 @@ impl Pipeline {
             && let Some(f) = pl.features.iter().find(|f| f.index == sel.feature)
         {
             let width = pl.entry.style.stroke.map_or(0.0, |s| s.width);
-            let item = match pl.layer.kind {
+            let item = match pl.kind {
                 GeometryKind::Point => {
                     let mut path = BezPath::new();
                     for p in &f.points {

@@ -4,7 +4,8 @@
 //! that the edit changed, from before the edit. An undo swaps each image with
 //! the record or the tile in the file, so the step then holds the images from
 //! after the edit, and a redo swaps them back. A record is the world, one
-//! raster, or one vector layer with its features.
+//! raster, or one layer with its features. The step of a new raster layer or
+//! of a removed one holds the image of the layer and the image of the raster.
 
 use std::io::{Read, Write};
 
@@ -15,7 +16,8 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::gpkg::{Reader, StoreError, TileKey, corrupt, decode_geometry, encode_geometry};
 use crate::{
-    Feature, GeometryKind, Layer, LayerId, Project, Raster, RasterId, Units, Uuid, Value, World,
+    Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterId, Units, Uuid,
+    Value, World, clamp_opacity,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -92,9 +94,8 @@ pub(crate) fn keep_records(
         changed.push((WORLD, 0));
     }
     let ids = |a: &Project, b: &Project| -> Vec<u32> {
-        let rasters = a.rasters.iter().enumerate();
-        let rasters = rasters.filter(|(i, r)| b.rasters.get(*i) != Some(r));
-        rasters.map(|(_, r)| r.id.0).collect()
+        let rasters = a.rasters.iter().filter(|r| b.raster(r.id) != Some(r));
+        rasters.map(|r| r.id.0).collect()
     };
     let mut rasters = ids(old, new);
     rasters.extend(ids(new, old));
@@ -181,7 +182,6 @@ pub(crate) fn swap_records(
         "UPDATE vale_undo_record SET data = ?4 WHERE step_id = ?1 AND kind = ?2 AND id = ?3",
     )?;
     let mut next = current.clone();
-    let mut rasters = Vec::new();
     let mut layers = Vec::new();
     for (kind, id, data) in rows {
         let bad = || corrupt(format!("the {kind} image of undo step {step}"));
@@ -202,7 +202,7 @@ pub(crate) fn swap_records(
             RASTER => {
                 next.rasters.retain(|x| x.id.0 != id);
                 if payload.is_some() {
-                    rasters.push(raster(&mut r).ok_or_else(bad)?);
+                    next.rasters.push(raster(&mut r).ok_or_else(bad)?);
                 }
             }
             LAYER => {
@@ -214,13 +214,9 @@ pub(crate) fn swap_records(
             _ => return Err(bad()),
         }
     }
-    // Each record that did not change has its old place, so each image goes
+    next.rasters.sort_by_key(|r| r.id);
+    // Each layer that did not change has its old place, so each image goes
     // to its old place when the images go in from the first place up.
-    rasters.sort_by_key(|(position, _)| *position);
-    for (position, raster) in rasters {
-        let at = position.min(next.rasters.len());
-        next.rasters.insert(at, raster);
-    }
     layers.sort_by_key(|(position, _)| *position);
     for (position, layer) in layers {
         let at = position.min(next.layers.len());
@@ -364,10 +360,7 @@ fn image(project: &Project, kind: &str, id: u32) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     match kind {
         WORLD => put_world(&mut out, &project.world),
-        RASTER => {
-            let at = project.rasters.iter().position(|r| r.id.0 == id)?;
-            put_raster(&mut out, at, &project.rasters[at]);
-        }
+        RASTER => put_raster(&mut out, project.raster(RasterId(id))?),
         _ => {
             let at = project.layers.iter().position(|l| l.id.0 == id)?;
             put_layer(&mut out, at, &project.layers[at]);
@@ -444,10 +437,8 @@ fn world(r: &mut Reader) -> Option<World> {
     })
 }
 
-fn put_raster(out: &mut Vec<u8>, position: usize, raster: &Raster) {
-    put_u32(out, position);
+fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     put_u32(out, raster.id.0 as usize);
-    put_bytes(out, raster.name.as_bytes());
     put_u32(out, raster.face_size as usize);
     put_bytes(out, raster.unit.as_bytes());
     put_f64(out, raster.value_min);
@@ -460,13 +451,11 @@ fn put_raster(out: &mut Vec<u8>, position: usize, raster: &Raster) {
     for ramp in [&raster.ramp_sea, &raster.ramp_land] {
         put_bytes(out, ramp.as_flattened());
     }
+    out.extend_from_slice(&raster.opacity.to_le_bytes());
 }
 
-/// A raster and its place in the project.
-fn raster(r: &mut Reader) -> Option<(usize, Raster)> {
-    let position = count(r)?;
+fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
-    let name = string(r)?;
     let face_size = r.u32()?;
     let unit = string(r)?;
     let (value_min, value_max) = (r.f64()?, r.f64()?);
@@ -476,19 +465,20 @@ fn raster(r: &mut Reader) -> Option<(usize, Raster)> {
         let (colors, rest) = bytes(r)?.as_chunks::<3>();
         rest.is_empty().then(|| colors.to_vec())
     };
-    let raster = Raster {
+    let (ramp_sea, ramp_land) = (ramp()?, ramp()?);
+    let opacity = clamp_opacity(f32::from_le_bytes(r.take()?));
+    r.0.is_empty().then_some(Raster {
         id,
-        name,
+        opacity,
         face_size,
         unit,
         value_min,
         value_max,
         base,
         limits,
-        ramp_sea: ramp()?,
-        ramp_land: ramp()?,
-    };
-    Some((position, raster))
+        ramp_sea,
+        ramp_land,
+    })
 }
 
 const KINDS: [GeometryKind; 3] = [
@@ -497,11 +487,23 @@ const KINDS: [GeometryKind; 3] = [
     GeometryKind::Polygon,
 ];
 
+/// The kind byte of the image of a raster layer. The ID of the raster comes
+/// after it.
+const RASTER_KIND: u8 = KINDS.len() as u8;
+
 fn put_layer(out: &mut Vec<u8>, position: usize, layer: &Layer) {
     put_u32(out, position);
     put_u32(out, layer.id.0 as usize);
     put_bytes(out, layer.name.as_bytes());
-    out.push(KINDS.iter().position(|k| *k == layer.kind).expect("a kind") as u8);
+    match layer.kind {
+        LayerKind::Vector(kind) => {
+            out.push(KINDS.iter().position(|k| *k == kind).expect("a kind") as u8);
+        }
+        LayerKind::Raster(raster) => {
+            out.push(RASTER_KIND);
+            put_u32(out, raster.0 as usize);
+        }
+    }
     out.push(layer.source.is_some() as u8);
     put_bytes(out, layer.source.as_deref().unwrap_or_default().as_bytes());
     put_u32(out, layer.fields.len());
@@ -532,20 +534,25 @@ fn put_layer(out: &mut Vec<u8>, position: usize, layer: &Layer) {
     out.push(layer.visible as u8);
 }
 
-/// A layer and its place in the project. An image from a format version
-/// before 7 ends after the features, and its layer is visible.
+/// A layer and its place in the project.
 fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
     let position = count(r)?;
     let id = LayerId(r.u32()?);
     let name = string(r)?;
-    let [kind, has_source] = r.take()?;
-    let kind = *KINDS.get(kind as usize)?;
+    let kind = match r.take()? {
+        [RASTER_KIND] => LayerKind::Raster(RasterId(r.u32()?)),
+        [kind] => LayerKind::Vector(*KINDS.get(kind as usize)?),
+    };
+    let [has_source] = r.take()?;
     let source = string(r)?;
     let source = (has_source == 1).then_some(source);
     let fields = (0..count(r)?).map(|_| string(r)).collect::<Option<_>>()?;
     let mut features = Vec::new();
     for _ in 0..count(r)? {
         let uuid = Uuid::from_bytes(r.take()?);
+        let LayerKind::Vector(kind) = kind else {
+            return None;
+        };
         let geometry = decode_geometry(bytes(r)?, kind)?;
         let mut attributes = std::collections::BTreeMap::new();
         for _ in 0..count(r)? {
@@ -562,16 +569,17 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
         }
         features.push(Feature::with_uuid(uuid, geometry, attributes));
     }
+    let visible = r.take::<1>()? == [1];
     let layer = Layer {
         id,
         name,
         kind,
-        visible: r.0.is_empty() || r.take::<1>()? == [1],
+        visible,
         source,
         fields,
         features,
     };
-    Some((position, layer))
+    r.0.is_empty().then_some((position, layer))
 }
 
 #[cfg(test)]
@@ -592,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_image_keeps_the_visibility_and_an_older_image_is_visible() {
+    fn a_layer_image_keeps_the_visibility() {
         let mut project = Project::new(World::default());
         let id = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
         project.set_layer_visible(id, false);
@@ -601,7 +609,37 @@ mod tests {
         put_layer(&mut out, 0, hidden);
         assert_eq!(layer(&mut Reader(&out)), Some((0, hidden.clone())));
         out.pop();
-        assert!(layer(&mut Reader(&out)).unwrap().1.visible);
+        assert_eq!(layer(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn the_image_of_a_raster_layer_keeps_the_id_of_its_raster() {
+        let mut project = Project::new(World::default());
+        project.add_raster("Height".into(), 1000, "m".into(), 0.0, 1.0);
+        let id = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
+        let rain = project.raster_layer(id).unwrap().id;
+        project.set_layer_visible(rain, false);
+        let hidden = project.layer(rain).unwrap();
+        assert_eq!(hidden.kind, LayerKind::Raster(id));
+        let mut out = Vec::new();
+        put_layer(&mut out, 1, hidden);
+        assert_eq!(layer(&mut Reader(&out)), Some((1, hidden.clone())));
+    }
+
+    #[test]
+    fn a_raster_image_keeps_the_values_and_the_opacity() {
+        let mut project = Project::new(World::default());
+        let id = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
+        let rain = project.raster_mut(id).unwrap();
+        rain.limits = vec![250.0, 1000.0];
+        rain.ramp_land = vec![[1, 2, 3]];
+        rain.opacity = 0.375;
+        let rain = project.raster(id).unwrap();
+        let mut out = Vec::new();
+        put_raster(&mut out, rain);
+        assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
+        out.pop();
+        assert_eq!(raster(&mut Reader(&out)), None);
     }
 
     #[test]

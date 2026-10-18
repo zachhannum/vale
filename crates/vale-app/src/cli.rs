@@ -17,7 +17,7 @@ use crate::projects::{self, Locations};
 use crate::session::Session;
 use crate::ui::pad::Panel;
 use crate::ui::world_form::FormMode;
-use crate::ui::{Action, AppState, Layout, Workspace};
+use crate::ui::{Action, AppState, Layout, Workspace, is_height};
 
 #[derive(Parser, Clone, Debug)]
 #[command(
@@ -50,6 +50,9 @@ pub struct Args {
     /// With --layout pad: open the menu of the worlds.
     #[arg(long)]
     pub worlds_menu: bool,
+    /// Open the form of a new raster layer.
+    #[arg(long)]
+    pub raster_form: bool,
     /// Open the form of a new world or of the world of the project.
     #[arg(long, value_enum, value_name = "FORM")]
     pub world_form: Option<FormMode>,
@@ -119,15 +122,17 @@ pub struct Args {
     /// Print the world, the layers, and the label counts.
     #[arg(long)]
     pub report: bool,
-    /// Texels on one edge of a cube face of the globe. The window uses 8192
-    /// and headless output uses 1024, or less if the GPU has a lower limit.
+    /// Texels on one edge of a cube face of a raster layer that the app
+    /// makes with no choice of the user. The window uses 8192 and headless
+    /// output uses 1024, or less if the GPU has a lower limit.
     #[arg(long, value_name = "N")]
     pub face_size: Option<u32>,
-    /// Import this equirectangular PNG or TIFF heightmap into the globe.
+    /// Import this equirectangular PNG or TIFF heightmap into a height
+    /// layer. A world with no height layer gets one.
     #[arg(long, value_name = "FILE")]
     pub import_heightmap: Option<PathBuf>,
-    /// Headless: export the heightmap of the project to a GeoTIFF file and
-    /// exit.
+    /// Headless: export the first height layer of the project to a GeoTIFF
+    /// file and exit.
     #[arg(long, value_name = "FILE", requires = "project")]
     pub export_heightmap: Option<PathBuf>,
     /// Headless: paint a fixed stroke on the globe, print the stroke delay,
@@ -285,7 +290,8 @@ impl Args {
 const FACE_SIZES: std::ops::RangeInclusive<u32> = 16..=16384;
 
 /// Applies `--face-size`, `--view`, `--look-at`, and `--zoom` to the globe.
-/// `face_size` is the face size without the flag.
+/// `face_size` is the face size without the flag. The globe must hold no
+/// raster layer.
 pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::Result<()> {
     let face_size = match args.face_size {
         Some(n) if FACE_SIZES.contains(&n) => n as usize,
@@ -296,7 +302,7 @@ pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::
         ),
         None => face_size,
     };
-    if face_size != globe.map.face_size() {
+    if face_size != globe.new_face_size() {
         globe.set_face_size(face_size);
     }
     globe.world_view = args.view;
@@ -321,6 +327,9 @@ pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Re
         return Ok(());
     }
     state.import_note = None;
+    state.select_height();
+    // The layer of the import has its whole heightmap.
+    state.pump_layers(true);
     state.globe.start_import(path.clone());
     state.globe.wait_import();
     match state.globe.take_import_result() {
@@ -343,13 +352,16 @@ pub fn export_heightmap(args: &Args) -> anyhow::Result<Option<Exported>> {
     }
     let mut doc = Document::empty();
     let session = Session::open(path, &mut doc).with_context(|| format!("{}", path.display()))?;
-    let map = session
-        .load_map()
-        .with_context(|| format!("{}", path.display()))?
-        .ok_or_else(|| anyhow!("the world of {} has no raster layer", path.display()))?;
     let project = &doc.project;
-    let raster = project.rasters().first();
-    let done = write_heightmap(&map, &project.world, raster, out, &|_| {});
+    let raster = project.rasters().iter().find(|raster| is_height(raster));
+    let raster = raster.ok_or_else(|| {
+        let path = path.display();
+        anyhow!("the world of {path} has no height layer: no raster layer has the unit m")
+    })?;
+    let map = session
+        .load_map(raster)
+        .with_context(|| format!("{}", path.display()))?;
+    let done = write_heightmap(&map, &project.world, Some(raster), out, &|_| {});
     done.map(Some).map_err(|text| anyhow!("{text}"))
 }
 

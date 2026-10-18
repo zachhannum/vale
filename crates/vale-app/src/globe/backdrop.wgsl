@@ -1,6 +1,5 @@
 // The blurred copy of the canvas that a card of the iPad layout shows. The
-// canvas is drawn into a texture. A second texture holds the canvas at a
-// reduced size, and two passes blur it.
+// canvas is drawn into a texture at a reduced size, and two passes blur it.
 
 struct Globals {
     // The left and the top of the canvas on the screen, then its width and
@@ -31,28 +30,6 @@ fn corner(i: u32) -> vec4<f32> {
 @vertex
 fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return corner(i);
-}
-
-// Copies the canvas texture to the screen.
-@fragment
-fn fs_blit(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let last = vec2<i32>(g.canvas.zw) - 1;
-    let at = clamp(vec2<i32>(frag.xy - g.canvas.xy), vec2<i32>(0), last);
-    return textureLoad(source, at, 0);
-}
-
-// Reduces the canvas texture. The four taps give the mean of the pixels that
-// one pixel of the copy covers, at a reduction of 4.
-@fragment
-fn fs_down(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let center = frag.xy * g.blur.y;
-    let tap = g.blur.y * 0.25;
-    var sum = vec4<f32>(0.0);
-    for (var i = 0; i < 4; i++) {
-        let side = vec2<f32>(f32(i & 1), f32(i >> 1)) * 2.0 - 1.0;
-        sum += textureSampleLevel(source, bilinear, (center + side * tap) / g.canvas.zw, 0.0);
-    }
-    return sum * 0.25;
 }
 
 fn gauss(x: f32, sigma: f32) -> f32 {

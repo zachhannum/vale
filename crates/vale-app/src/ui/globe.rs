@@ -4,10 +4,11 @@ use std::time::Instant;
 
 use eframe::egui;
 use eframe::egui_wgpu;
+use vale_store::LayerId;
 
 use super::AppState;
 use vale_store::Geometry;
-use vale_terrain::{Mode, level_to_meters};
+use vale_terrain::Mode;
 
 use crate::document::Document;
 use crate::globe::backdrop::Canvas;
@@ -16,7 +17,7 @@ use crate::globe::math::{dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Painting, Tap, on_canvas};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
-use crate::globe::{Globe, Tool, WorldView};
+use crate::globe::{Globe, Paint, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
@@ -62,7 +63,7 @@ fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
 }
 
 /// Reads the pen and the mouse for the brush. In the brush tool, a pen and
-/// the primary mouse button paint. A touch with a force is a pen. With a pen
+/// the primary mouse button paint a raster layer that the brush can paint. A touch with a force is a pen. With a pen
 /// queue, the pen comes from the queue and not from egui.
 fn brush_input(
     ui: &egui::Ui,
@@ -81,7 +82,7 @@ fn brush_input(
         .map(|e| (egui::pos2(e.pos[0] / zoom, e.pos[1] / zoom), e))
         .collect();
     hover_input(globe, &queue);
-    if globe.tool != Tool::Brush || globe.format.is_none() || globe.importing() {
+    if !globe.brushing() || globe.format.is_none() || globe.importing() {
         if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
             release(globe);
             globe.pen.stats.up();
@@ -244,9 +245,14 @@ fn color(c: vale_style::Color) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
 }
 
-/// Draws the visible vector layers over the globe, in the order of the
-/// project.
-fn vectors(painter: &egui::Painter, rect: egui::Rect, doc: &Document, view: &GlobeView) {
+/// Draws one vector layer over the globe.
+fn vector_layer(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    doc: &Document,
+    view: &GlobeView,
+    id: LayerId,
+) {
     let radius = view.radius(rect);
     let step = vector::step(radius * f64::from(painter.ctx().pixels_per_point()));
     let center = rect.center();
@@ -257,7 +263,8 @@ fn vectors(painter: &egui::Painter, rect: egui::Rect, doc: &Document, view: &Glo
         )
     };
     let path = |part: &Vec<vector::P2>| part.iter().map(to_screen).collect::<Vec<_>>();
-    for entry in &doc.frame.entries {
+    let entries = doc.frame.entries.iter().filter(|e| e.layer == id);
+    for entry in entries {
         let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
             continue;
         };
@@ -368,17 +375,36 @@ pub(super) fn canvas(
         .or(globe.input.pos)
         .and_then(|pos| globe.unproject(pos));
     state.cursor_lonlat = cursor.map(|dir| dir_to_lonlat(dir).into());
-    state.cursor_meters = cursor.map(|dir| level_to_meters(globe.map.sample(dir)));
+    // The value is that of the raster layer of the readout.
+    let shown = state.shown_raster().map(|raster| raster.id);
+    let globe = &mut state.globe;
+    let map = shown.and_then(|id| globe.display_map(id));
+    let value = |(dir, map): (_, &vale_terrain::Heightmap)| map.bands.value(map.sample(dir));
+    state.cursor_value = cursor.zip(map).map(value);
 
     let more = globe.advance(now);
     let pixels_per_point = ui.ctx().pixels_per_point();
-    let backdrop = (cards && globe.blur).then_some(Canvas {
+    // The passes of the raster layers and the shapes of the vector layers
+    // go to the painter in the draw order. The flat view draws no vector
+    // layer.
+    let globe_view = globe.world_view == WorldView::Globe;
+    let canvas = Canvas {
         background,
         pixels_per_point,
-    });
-    match globe.callback(pixels_per_point, backdrop) {
-        Some(callback) => {
-            painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
+    };
+    match globe.paint(canvas, cards && globe.blur) {
+        Some(paints) => {
+            for paint in paints {
+                match paint {
+                    Paint::Callback(callback) => {
+                        painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
+                    }
+                    Paint::Vector(id) if globe_view => {
+                        vector_layer(&painter, rect, &state.doc, &globe.view, id);
+                    }
+                    Paint::Vector(_) => {}
+                }
+            }
         }
         None => {
             painter.text(
@@ -390,10 +416,7 @@ pub(super) fn canvas(
             );
         }
     }
-    if globe.world_view == WorldView::Globe {
-        vectors(&painter, rect, &state.doc, &globe.view);
-    }
-    if let Some(pos) = globe.input.pos.filter(|_| globe.tool == Tool::Brush) {
+    if let Some(pos) = globe.input.pos.filter(|_| globe.brushing()) {
         let globe_radius = globe.radius();
         let radius = globe.brush.radius(globe_radius);
         let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(170));

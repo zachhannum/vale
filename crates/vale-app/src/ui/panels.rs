@@ -4,11 +4,14 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, World};
 
+use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, SaveMark, Workspace, pad};
-use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
+use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, elevation, pad};
+use vale_terrain::Mode;
 
-use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
+use crate::globe::brush::{
+    EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+};
 use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
 use crate::projects;
 use crate::world::{self, three_significant};
@@ -41,8 +44,28 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
             if state.workspace == Workspace::Globe {
                 ui.separator();
-                ui.selectable_value(&mut state.globe.tool, Tool::Navigate, "Navigate");
-                ui.selectable_value(&mut state.globe.tool, Tool::Brush, "Brush");
+                // With no raster layer to paint, the tool is Navigate.
+                let (paintable, tool) = (state.globe.paintable, state.globe.tool);
+                let navigate = !paintable || tool == Tool::Navigate;
+                if ui.selectable_label(navigate, "Navigate").clicked() {
+                    state.globe.tool = Tool::Navigate;
+                }
+                let brush = egui::Button::selectable(state.globe.brushing(), "Brush");
+                if ui.add_enabled(paintable, brush).clicked() {
+                    state.globe.tool = Tool::Brush;
+                }
+                // The menu stays open while the user works on the list.
+                let stay = egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                let menu = egui::containers::menu::MenuButton::new(LAYERS_MENU).config(stay);
+                menu.ui(ui, |ui| {
+                    if ui.button(ADD_RASTER).clicked() {
+                        state.raster_form = Some(RasterForm::open(state));
+                        ui.close();
+                    }
+                    layer_rows(ui, state);
+                    selected_layer(ui, state);
+                });
                 ui.separator();
                 let mut flat = state.globe.world_view == WorldView::Flat;
                 if ui.toggle_value(&mut flat, "Flat").changed() {
@@ -56,7 +79,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     flat_projection(ui, state);
                 }
                 ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
-                ui.toggle_value(&mut state.globe.preview.panel, "Elevation");
+                ui.toggle_value(&mut state.globe.preview.panel, elevation::PANEL);
                 ui.toggle_value(&mut state.globe.debug, "Debug");
                 ui.separator();
                 let import = egui::Button::new("Import heightmap…");
@@ -85,7 +108,122 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
-/// The projection of the flat view.
+/// The button of the tool bar that opens the list of the layers.
+pub const LAYERS_MENU: &str = "Layers";
+/// The button that opens the form of a new raster layer.
+pub const ADD_RASTER: &str = "Add raster…";
+/// The field of the Layers menu with the name of the selected layer.
+pub const LAYER_NAME: &str = "Layer name";
+/// The slider of the Layers menu with the opacity of the selected raster
+/// layer.
+pub const OPACITY: &str = "Layer opacity";
+/// The button of the Layers menu that deletes the selected layer.
+pub const DELETE_LAYER: &str = "Delete layer";
+
+/// A widget with a name for a screen reader and for a test.
+fn named(resp: &egui::Response, kind: egui::WidgetType, on: bool, name: String) {
+    resp.widget_info(|| egui::WidgetInfo::selected(kind, true, on, name.clone()));
+}
+
+/// The rows of the layers of each kind, with the top layer first. A
+/// checkbox shows or hides a layer, the name selects it, and the arrows
+/// move it in the draw order.
+fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
+    let layers = state.doc.project.layers().iter().rev();
+    let rows: Vec<_> = layers
+        .map(|l| (l.id, LayerRef::of(l), l.name.clone(), l.visible))
+        .collect();
+    let count = rows.len();
+    for (index, (id, layer, name, mut visible)) in rows.into_iter().enumerate() {
+        let selected = state.selected_layer == Some(layer);
+        ui.horizontal(|ui| {
+            let eye = ui.checkbox(&mut visible, "");
+            named(
+                &eye,
+                egui::WidgetType::Checkbox,
+                visible,
+                format!("Show {name}"),
+            );
+            if eye.changed() {
+                state.set_layer_visible(id, visible);
+            }
+            for (text, up, end) in [("▲", true, 0), ("▼", false, count - 1)] {
+                let button = ui.add_enabled(index != end, egui::Button::new(text).small());
+                let way = if up { "up" } else { "down" };
+                named(
+                    &button,
+                    egui::WidgetType::Button,
+                    false,
+                    format!("Move {name} {way}"),
+                );
+                if button.clicked() {
+                    state.move_layer_by_one(id, up);
+                }
+            }
+            let kind = match layer {
+                LayerRef::Raster(_) => "raster",
+                LayerRef::Vector(_) => "vector",
+            };
+            let pick = ui.selectable_label(selected, &name);
+            named(
+                &pick,
+                egui::WidgetType::SelectableLabel,
+                selected,
+                format!("Select {name}"),
+            );
+            if pick.clicked() {
+                state.select(Some(layer));
+            }
+            ui.weak(kind);
+        });
+    }
+}
+
+/// The controls of the selected layer: its name, the opacity of a raster
+/// layer, and the button that deletes the layer.
+fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
+    let Some(layer) = state.selected_layer else {
+        return;
+    };
+    let Some((id, name)) = state.layer_of(layer).map(|l| (l.id, l.name.clone())) else {
+        return;
+    };
+    ui.separator();
+    let mut text = name.clone();
+    let field = egui::TextEdit::singleline(&mut text).desired_width(160.0);
+    let field = ui.add(field);
+    named(
+        &field,
+        egui::WidgetType::TextEdit,
+        false,
+        LAYER_NAME.to_string(),
+    );
+    if field.changed() && state.doc.rename_layer(id, &text) {
+        state.touch();
+    }
+    if let LayerRef::Raster(raster) = layer {
+        let opacity = state.doc.project.raster(raster).map_or(1.0, |r| r.opacity);
+        let mut percent = (opacity * 100.0).round();
+        let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
+            .suffix(" %")
+            .fixed_decimals(0)
+            .text("Opacity");
+        let slider = ui.add(slider);
+        named(
+            &slider,
+            egui::WidgetType::Slider,
+            false,
+            OPACITY.to_string(),
+        );
+        if slider.changed() {
+            state.set_raster_opacity(raster, percent / 100.0);
+        }
+    }
+    if ui.button(DELETE_LAYER).clicked() {
+        state.remove_layer(id);
+    }
+}
+
 /// The button of the tool bar that opens the File menu.
 pub const FILE_MENU: &str = "File";
 /// The row of a menu that closes the project and shows the start screen.
@@ -215,9 +353,8 @@ fn window_line(globe: &Globe, world: &World) -> String {
 
 pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     let world = &state.doc.project.world;
-    // The undo log of the project file, if it has the strokes.
+    // The undo log of the project file has the strokes.
     let session = state.session.as_ref();
-    let session = session.filter(|s| s.saves_map(&state.globe.map));
     let log = session.map(|s| (s.undo_bytes(), s.undo_limit()));
     let globe = &mut state.globe;
     ui.label(globe.stats.gpu_line());
@@ -270,9 +407,11 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
     let test = egui::Button::new("Run stroke test");
     if ui.add_enabled(!globe.busy(), test).clicked() {
-        globe.start_stroke_test(stroke_test::SECONDS);
+        // The test paints a height layer.
+        state.select_height();
+        state.globe.start_stroke_test(stroke_test::SECONDS);
     }
-    if let Some(report) = &globe.test_report {
+    if let Some(report) = &state.globe.test_report {
         ui.separator();
         ui.strong("Stroke test");
         ui.label(report);
@@ -281,7 +420,7 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// The controls of the brush. The panel is open in the brush tool.
 pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
-    if state.globe.tool != Tool::Brush {
+    if !state.globe.brushing() {
         state.globe.pick_level = false;
         return;
     }
@@ -290,7 +429,8 @@ pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Brush");
-                brush_modes(ui, &mut state.globe.brush.mode);
+                let height = state.globe.is_height();
+                brush_modes(ui, &mut state.globe.brush.mode, height);
                 ui.add_space(6.0);
                 brush_size(ui, state);
                 brush_limits(ui, state);
@@ -299,7 +439,9 @@ pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
+/// The buttons of the brush modes. Without `height`, the modes that need
+/// heights in meters are off.
+fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
     ui.horizontal_wrapped(|ui| {
         for (mode, name) in [
             (Mode::Raise, "Raise"),
@@ -314,7 +456,13 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode) {
             (Mode::Uplift, "Uplift"),
             (Mode::Warp, "Warp"),
         ] {
-            ui.selectable_value(current, mode, name);
+            let button = egui::Button::selectable(*current == mode, name);
+            if ui
+                .add_enabled(height || !needs_height(mode), button)
+                .clicked()
+            {
+                *current = mode;
+            }
         }
     });
 }
@@ -329,6 +477,7 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
 }
 
 fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
+    let unit = state.shown_unit().to_string();
     let world_km = state.doc.project.world.radius_km;
     let (unit_km, symbol) = world::large_unit(state.doc.project.world.units);
     let globe = &mut state.globe;
@@ -365,10 +514,19 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         let seed = &mut state.doc.project.world.seed;
         ui.add(egui::Slider::new(seed, SEED).text("Seed"));
     } else {
+        // The slider shows the strength as a value of the layer.
+        let (min, max) = globe.brush.value_range;
+        let (span, scale) = (
+            max - min,
+            globe.brush.strength_value() / globe.brush.strength_m,
+        );
         let strength = egui::Slider::new(&mut globe.brush.strength_m, STRENGTH_M)
             .logarithmic(true)
-            .fixed_decimals(0)
-            .suffix(" m")
+            .custom_formatter(move |meters, _| world::value_text(meters * scale, span, &unit))
+            .custom_parser(move |text| {
+                let number: String = text.chars().take_while(|c| !c.is_alphabetic()).collect();
+                Some(number.trim().parse::<f64>().ok()? / scale)
+            })
             .text(strength_name(globe.brush.mode));
         ui.add(strength);
     }
@@ -385,28 +543,37 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The floor and the ceiling of the brush. Each one has a checkbox and an
-/// elevation.
+/// A field for a value of the layer that the brush paints, in the unit of
+/// the layer. `range` has the values of the lowest and of the highest level.
+fn value_drag<'a>(value: &'a mut f64, (min, max): (f64, f64), unit: &str) -> egui::DragValue<'a> {
+    let span = max - min;
+    egui::DragValue::new(value)
+        .speed(span / 1200.0)
+        .range(min..=max)
+        .fixed_decimals(world::value_decimals(span))
+        .suffix(format!(" {unit}"))
+}
+
+/// The floor and the ceiling of the brush. Each one has a checkbox and a
+/// value.
 fn brush_limits(ui: &mut egui::Ui, state: &mut AppState) {
+    let unit = state.shown_unit().to_string();
     let brush = &mut state.globe.brush;
-    for (name, on, meters) in [
+    let range = brush.value_range;
+    for (name, on, value) in [
         ("Floor", &mut brush.floor_on, &mut brush.floor_m),
         ("Ceiling", &mut brush.ceiling_on, &mut brush.ceiling_m),
     ] {
         ui.horizontal(|ui| {
             ui.checkbox(on, name);
-            let value = egui::DragValue::new(meters)
-                .speed(10.0)
-                .range(ELEV_MIN..=ELEV_MAX)
-                .fixed_decimals(0)
-                .suffix(" m");
-            ui.add_enabled(*on, value);
+            ui.add_enabled(*on, value_drag(value, range, &unit));
         });
     }
 }
 
 /// The lock of the size and the flatten level.
 pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
+    let unit = state.shown_unit().to_string();
     let globe = &mut state.globe;
     let globe_radius = globe.radius();
     let mut lock = globe.brush.lock.is_some();
@@ -423,14 +590,10 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     match globe.brush.flatten_level {
         Some(level) => {
             ui.horizontal(|ui| {
-                let mut meters = level_to_meters(level);
-                let value = egui::DragValue::new(&mut meters)
-                    .speed(10.0)
-                    .range(ELEV_MIN..=ELEV_MAX)
-                    .fixed_decimals(0)
-                    .suffix(" m");
-                if ui.add(value).changed() {
-                    globe.brush.flatten_level = Some(meters_to_level(meters));
+                let mut value = globe.brush.value(level);
+                let range = globe.brush.value_range;
+                if ui.add(value_drag(&mut value, range, &unit)).changed() {
+                    globe.brush.flatten_level = Some(globe.brush.level(value));
                 }
                 if ui.button("Use stroke start").clicked() {
                     globe.brush.flatten_level = None;
@@ -520,7 +683,8 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             ("Polygons", GeometryKind::Polygon),
         ] {
             if ui.button(name).clicked() {
-                state.selected_layer = Some(state.doc.add_layer(kind));
+                let id = state.doc.add_layer(kind);
+                state.select(Some(LayerRef::Vector(id)));
                 state.touch();
                 ui.close();
             }
@@ -545,7 +709,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         else {
             continue;
         };
-        let selected = state.selected_layer == Some(id);
+        let selected = state.selected_vector() == Some(id);
         ui.horizontal(|ui| {
             let mut visible = state.doc.visible(id);
             let text = if selected {
@@ -560,7 +724,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                 state.dirty = true;
             }
             if resp.clicked() {
-                state.selected_layer = Some(id);
+                state.select(Some(LayerRef::Vector(id)));
             }
             let pick = ui.selectable_label(selected, "Edit");
             let accessible = format!("Select {}", state.doc.layer(id).map_or("", |l| &l.name));
@@ -573,7 +737,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                 )
             });
             if pick.clicked() {
-                state.selected_layer = Some(id);
+                state.select(Some(LayerRef::Vector(id)));
             }
         });
     }
@@ -600,6 +764,9 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
                 Some([lon, lat]) => ui.label(format!("lon {lon:.2}, lat {lat:.2}")),
                 None => ui.label("lon –, lat –"),
             };
+            if let Some(value) = state.readout_value() {
+                ui.label(value);
+            }
             ui.separator();
             if let Some(c) = &state.composed
                 && state.workspace == Workspace::Map

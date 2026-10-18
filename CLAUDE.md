@@ -41,7 +41,7 @@ cargo run --release -p vale-globe-proto
 scripts/globe-proto-ipad.sh
 ```
 
-The app prototype saves the world, the vector layers, and the heightmap to a GeoPackage project file. The file also holds the undo log and a small picture of the globe for the start screen. The file does not hold the styles. The flag `--export-heightmap` exports the heightmap of a project file as a GeoTIFF. On iPad, the projects are in a local folder and in an iCloud Drive folder, and the Files app shows both. The prototype leaves out rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
+The app prototype saves the world, the vector layers, and the raster layers to a GeoPackage project file. The file also holds the undo log and a small picture of the globe for the start screen. The file does not hold the styles of the vector layers. A raster layer is a layer in the one draw order, and the globe blends the visible raster layers by their opacity. The flag `--export-heightmap` exports the first height layer of a project file as a GeoTIFF. On iPad, the projects are in a local folder and in an iCloud Drive folder, and the Files app shows both. The prototype leaves out rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools, and the GPU Vello backend. `README.md` has the full list.
 
 The current phase is phase 0, the iPad test loop and CI. When each PR arrives on the iPad through TestFlight, and CI builds all four platforms, the phase is done.
 

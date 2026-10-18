@@ -266,6 +266,7 @@ pub fn vertical_slider(
     height: f32,
     fraction: &mut f64,
     value: &str,
+    enabled: bool,
 ) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(CELL.0, height), Sense::hover());
     let resp = hit(
@@ -274,7 +275,7 @@ pub fn vertical_slider(
         rect,
         name,
         Sense::click_and_drag(),
-        true,
+        enabled,
         None,
     );
     let top = rect.top() + 20.0 + THUMB / 2.0;
@@ -289,12 +290,17 @@ pub fn vertical_slider(
     let y = bottom - *fraction as f32 * (bottom - top);
     let whole = Rect::from_min_max(pos2(x - 3.0, top - 4.0), pos2(x + 3.0, bottom + 4.0));
     let filled = Rect::from_min_max(pos2(x - 3.0, y), whole.max);
-    track(ui, whole, filled, pos2(x, y));
+    if enabled {
+        track(ui, whole, filled, pos2(x, y));
+    } else {
+        ui.painter().rect_filled(whole, 3.0, theme::track());
+    }
     let painter = ui.painter();
+    let color = fade(theme::MUTE, enabled);
     let at = pos2(x, rect.top() + 6.0);
-    painter.text(at, Align2::CENTER_TOP, value, theme::small(), theme::MUTE);
+    painter.text(at, Align2::CENTER_TOP, value, theme::small(), color);
     let at = pos2(x, rect.bottom() - 6.0);
-    painter.text(at, Align2::CENTER_BOTTOM, name, theme::small(), theme::MUTE);
+    painter.text(at, Align2::CENTER_BOTTOM, name, theme::small(), color);
     *fraction != before
 }
 
@@ -593,6 +599,47 @@ pub fn text_row(
     resp
 }
 
+/// A row of a form that is one choice of a list: a title at the left, and
+/// lines of small text at the right that tell what the choice gives. The
+/// row that is `on` has a mark. `name` is the name of the control.
+pub fn option_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    title: &str,
+    lines: &[String],
+    on: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
+    if on || resp.is_pointer_button_down_on() {
+        let back = rect.shrink2(vec2(0.0, HIGHLIGHT_INSET));
+        ui.painter()
+            .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+    }
+    let mark = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(18.0, 18.0));
+    if on {
+        icons::paint(ui.painter(), mark, Icon::Tick, 18.0, theme::ACCENT);
+    }
+    let color = if on { theme::TEXT } else { theme::MUTE };
+    let at = pos2(rect.left() + 38.0, rect.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, title, theme::body(), color);
+    // The lines are labels, so a screen reader and a test can read them.
+    let step = 15.0;
+    let top = rect.center().y - step * lines.len() as f32 / 2.0;
+    for (index, line) in lines.iter().enumerate() {
+        let min = pos2(rect.left() + 110.0, top + index as f32 * step);
+        let place = Rect::from_min_max(min, pos2(rect.right() - 12.0, min.y + step));
+        let text = egui::RichText::new(line).font(theme::small()).color(color);
+        let layout = egui::Layout::right_to_left(egui::Align::Center);
+        // A child that is not in the layout keeps the height of the row.
+        let mut line = ui.new_child(egui::UiBuilder::new().max_rect(place).layout(layout));
+        line.add(egui::Label::new(text).selectable(false).truncate());
+    }
+    resp
+}
+
 /// The distance from each end of a tick slider to the end of its scale.
 pub const SLIDER_INSET: f32 = THUMB / 2.0 + 6.0;
 /// The width of the label at the left of a row of a form.
@@ -687,6 +734,60 @@ pub fn choice_row(
         let at = rect.center();
         ui.painter()
             .text(at, Align2::CENTER_CENTER, *choice, theme::body(), color);
+        if resp.clicked() && !on {
+            chosen = Some(index);
+        }
+    }
+    chosen
+}
+
+/// The padding at the left and the right of the text of a chip.
+const CHIP_PAD: f32 = 14.0;
+
+/// A set of choices that wraps to the width of the form. Each choice is as
+/// wide as its text and as high as a touch target. `active` is the choice
+/// that is on. Returns the choice that the user made.
+pub fn chips(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    choices: &[&str],
+    active: usize,
+) -> Option<usize> {
+    let (left, top, width) = (ui.cursor().left(), ui.cursor().top(), ui.available_width());
+    let mut rects = Vec::with_capacity(choices.len());
+    let mut at = pos2(left, top);
+    for choice in choices {
+        let size = vec2(
+            text_width(ui, choice, theme::body()) + 2.0 * CHIP_PAD,
+            TOUCH,
+        );
+        if at.x > left && at.x + size.x > left + width {
+            at = pos2(left, at.y + TOUCH);
+        }
+        rects.push(Rect::from_min_size(at, size));
+        at.x += size.x;
+    }
+    ui.allocate_exact_size(vec2(width, at.y + TOUCH - top), Sense::hover());
+    let mut chosen = None;
+    for (index, (choice, rect)) in choices.iter().zip(rects).enumerate() {
+        let on = active == index;
+        let resp = hit(ui, controls, rect, choice, Sense::click(), true, Some(on));
+        let back = rect.shrink(HIGHLIGHT_INSET);
+        let pressed = on || resp.is_pointer_button_down_on();
+        let fill = if pressed {
+            theme::raise()
+        } else {
+            theme::track()
+        };
+        ui.painter().rect_filled(back, theme::CONTROL_RADIUS, fill);
+        let color = if on { theme::TEXT } else { theme::MUTE };
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            *choice,
+            theme::body(),
+            color,
+        );
         if resp.clicked() && !on {
             chosen = Some(index);
         }

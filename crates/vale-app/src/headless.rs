@@ -209,6 +209,8 @@ pub fn stroke_test(
         harness.step();
         harness.render().map_err(no_gpu)?;
     }
+    // The test paints a height layer.
+    harness.state_mut().select_height();
     let globe = &mut harness.state_mut().globe;
     globe.start_stroke_test(crate::globe::stroke_test::SECONDS);
     let start = std::time::Instant::now();
@@ -257,7 +259,8 @@ pub fn ui_png_with(
     };
     // The heightmap goes to the GPU in parts. Each render sends one part.
     for _ in 0..UPLOAD_STEPS {
-        if !harness.state().globe.busy() {
+        let globe = &harness.state().globe;
+        if !globe.busy() && !globe.loading() {
             break;
         }
         harness.step();

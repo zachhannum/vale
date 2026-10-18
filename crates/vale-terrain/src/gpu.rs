@@ -254,7 +254,7 @@ impl GpuHeightmap {
 
     /// The same as `new`, with `tile` by `tile` texels in a tile.
     pub fn with_tile_size(device: &wgpu::Device, face_size: u32, tile: usize) -> GpuHeightmap {
-        let pool = Pool::new(device, face_size as usize, tile);
+        let pool = Pool::new(device, face_size as usize, tile, 0);
         let tiles_layout = pool.layout().clone();
         // A new texture holds zeros, and a river size of 0 is no river.
         let channel_size = ChannelMap::size_for(face_size as usize) as u32;
@@ -479,7 +479,8 @@ impl GpuHeightmap {
         self.state.lock().expect("no thread stops with the lock")
     }
 
-    /// The layout of the bind group that `tiles` returns.
+    /// The layout of the bind group that `tiles` returns. A pipeline with the
+    /// layout of `tiles_layout` also takes that bind group.
     pub fn tiles_layout(&self) -> &wgpu::BindGroupLayout {
         &self.tiles_layout
     }
@@ -603,38 +604,7 @@ impl GpuHeightmap {
     /// tile that gets the base level in each texel loses its memory.
     pub fn upload(&self, queue: &wgpu::Queue, face: u32, rect: TexelRect, data: &[u16]) {
         let pool = &mut self.state().pool;
-        let face = face as usize;
-        let width = rect.x1 - rect.x0;
-        let mut levels = Vec::new();
-        for (tx, ty, part) in pool.tiles_in(rect) {
-            levels.clear();
-            for y in part.y0..part.y1 {
-                let row = (y - rect.y0) * width;
-                levels.extend_from_slice(&data[row + part.x0 - rect.x0..row + part.x1 - rect.x0]);
-            }
-            let full = pool.is_full(tx, ty, part);
-            if levels.iter().all(|level| *level == pool.base()) {
-                if full {
-                    pool.release(queue, face, tx, ty);
-                    continue;
-                }
-                if pool.slot(face, tx, ty).is_none() {
-                    continue;
-                }
-            }
-            let slot = pool.ensure(&self.device, queue, face, tx, ty, !full);
-            let size = extent(part);
-            queue.write_texture(
-                pool.texels(slot, part.x0, part.y0),
-                bytemuck::cast_slice(&levels),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size.width * 2),
-                    rows_per_image: Some(size.height),
-                },
-                size,
-            );
-        }
+        pool.upload(&self.device, queue, face as usize, rect, data);
     }
 
     /// Starts a batch of stamps. Call it after each submit of an encoder
@@ -1058,42 +1028,53 @@ impl GpuHeightmap {
         face: u32,
         rect: TexelRect,
     ) -> Readback {
-        let (width, height) = (rect.x1 - rect.x0, rect.y1 - rect.y0);
-        let row_bytes = (width * 2).next_multiple_of(ROW_ALIGN);
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("heightmap readback"),
-            size: (row_bytes * height) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let pool = &self.state().pool;
-        let mut holes = Vec::new();
-        for (tx, ty, part) in pool.tiles_in(rect) {
-            let Some(slot) = pool.slot(face as usize, tx, ty) else {
-                holes.push(part);
-                continue;
-            };
-            let offset = (part.y0 - rect.y0) * row_bytes + (part.x0 - rect.x0) * 2;
-            enc.copy_texture_to_buffer(
-                pool.texels(slot, part.x0, part.y0),
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &buffer,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: offset as u64,
-                        bytes_per_row: Some(row_bytes as u32),
-                        rows_per_image: None,
-                    },
+        read_rect(&self.state().pool, device, enc, face, rect)
+    }
+}
+
+/// Adds a copy of a rectangle of the tiles of `pool` to `enc`, for a read on
+/// the CPU.
+pub(crate) fn read_rect(
+    pool: &Pool,
+    device: &wgpu::Device,
+    enc: &mut wgpu::CommandEncoder,
+    face: u32,
+    rect: TexelRect,
+) -> Readback {
+    let (width, height) = (rect.x1 - rect.x0, rect.y1 - rect.y0);
+    let row_bytes = (width * 2).next_multiple_of(ROW_ALIGN);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("heightmap readback"),
+        size: (row_bytes * height) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut holes = Vec::new();
+    for (tx, ty, part) in pool.tiles_in(rect) {
+        let Some(slot) = pool.slot(face as usize, tx, ty) else {
+            holes.push(part);
+            continue;
+        };
+        let offset = (part.y0 - rect.y0) * row_bytes + (part.x0 - rect.x0) * 2;
+        enc.copy_texture_to_buffer(
+            pool.texels(slot, part.x0, part.y0),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: offset as u64,
+                    bytes_per_row: Some(row_bytes as u32),
+                    rows_per_image: None,
                 },
-                extent(part),
-            );
-        }
-        Readback {
-            buffer,
-            rect,
-            row_bytes,
-            base: pool.base(),
-            holes,
-        }
+            },
+            extent(part),
+        );
+    }
+    Readback {
+        buffer,
+        rect,
+        row_bytes,
+        base: pool.base(),
+        holes,
     }
 }
 

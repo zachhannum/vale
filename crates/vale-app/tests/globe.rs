@@ -11,8 +11,9 @@ use vale_app::globe::{FACE_SIZE, Tool};
 use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::ui::elevation::{BAR_LABEL, limit_y};
-use vale_app::ui::{AppState, Workspace, draw};
+use vale_app::ui::{AppState, LayerRef, RasterSpec, Workspace, draw};
 use vale_import::geojson;
+use vale_store::RasterId;
 use vale_style::{Color, Stroke};
 use vale_terrain::{
     ChannelMap, CoarseHeights, FlowMap, Limits, Mode, WindowHeights, channel_map, level_to_meters,
@@ -31,11 +32,14 @@ fn state() -> AppState {
     state
 }
 
+/// A harness of a world with a height layer that the brush paints.
 fn harness() -> Harness<'static, AppState> {
+    let mut state = state();
+    state.add_height();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
         .with_pixels_per_point(1.0)
-        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
     h.run_steps(2);
     h
 }
@@ -330,6 +334,7 @@ fn a_touch_on_the_tool_bar_does_not_move_the_globe() {
 fn the_screenshot_draws_the_heightmap_on_the_globe() {
     let _gpu = one_gpu_test();
     let mut state = state();
+    state.add_height();
     state.globe.preview.greyscale = true;
     // A high patch in the middle of the face that looks at the eye.
     state.globe.view = GlobeView::centered(0.0, 0.0);
@@ -443,11 +448,12 @@ fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A harness with the wgpu renderer. Each step renders, so each step runs the
-/// GPU work of the globe.
+/// A harness with the wgpu renderer and a height layer that the brush
+/// paints. Each step renders, so each step runs the GPU work of the globe.
 fn gpu_harness() -> Harness<'static, AppState> {
     let mut state = state();
     state.globe.set_face_size(BRUSH_FACE_SIZE);
+    state.add_height();
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
     h.set_render_every_step(true);
@@ -1015,11 +1021,12 @@ fn a_change_of_a_band_limit_shows_in_the_same_frame() {
 #[test]
 fn the_bar_adds_moves_and_removes_a_band_limit() {
     let mut h = harness();
-    h.get_by_label("Elevation").click();
+    h.get_by_label(vale_app::ui::elevation::PANEL).click();
     h.run_steps(2);
     let count = h.state().globe.map.bands.limits().len();
     let rect = h.get_by_label(BAR_LABEL).rect();
-    let at = |meters: f64| Pos2::new(rect.left() + 20.0, limit_y(rect, meters));
+    let bands = vale_terrain::Bands::default();
+    let at = |meters: f64| Pos2::new(rect.left() + 20.0, limit_y(rect, &bands, meters));
 
     button(&mut h, egui::PointerButton::Primary, at(5000.0), true);
     h.step();
@@ -2187,8 +2194,9 @@ fn river_parts(globe: &vale_app::globe::Globe) -> (f64, f64) {
 /// size of 1024 at least, a near view has a window of small rivers.
 fn island_harness(face_size: usize, radius: f64, zoom: f64) -> Harness<'static, AppState> {
     let mut state = state();
+    state.globe.set_face_size(face_size);
+    state.add_height();
     let globe = &mut state.globe;
-    globe.set_face_size(face_size);
     globe.preview.graticule = false;
     globe.view = GlobeView::centered(0.0, 0.0);
     globe.view.zoom = zoom;
@@ -3253,4 +3261,701 @@ fn screenshots_of_uplift() {
         }
         save(&canvas_image(&mut h), &format!("uplift-{name}"));
     }
+}
+
+/// The face size of the raster layers of the tests of the layer order.
+const LAYER_FACE_SIZE: usize = 256;
+
+/// A raster layer with no unit and a range from 0 to 100.
+fn plain_layer(state: &mut AppState, name: &str, face_size: usize) -> RasterId {
+    let spec = RasterSpec {
+        name: name.to_string(),
+        unit: String::new(),
+        min: 0.0,
+        max: 100.0,
+        face_size,
+    };
+    state.add_raster(spec).unwrap()
+}
+
+/// The grey of a level in the greyscale preview, at the middle of the
+/// globe.
+fn grey_of(level: u16) -> u8 {
+    (f32::from(level) / 65535.0 * 255.0).round() as u8
+}
+
+/// A GPU harness of a world with one flat raster layer for each level, from
+/// the bottom. The preview is greyscale with no graticule, the vector layers
+/// are hidden, and the last layer is selected.
+fn layers_harness(levels: &[u16]) -> (Harness<'static, AppState>, Vec<RasterId>) {
+    let mut state = state();
+    let globe = &mut state.globe;
+    globe.preview.greyscale = true;
+    globe.preview.graticule = false;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    let mut ids = Vec::new();
+    for (at, level) in levels.iter().enumerate() {
+        let id = plain_layer(&mut state, &format!("Layer {at}"), LAYER_FACE_SIZE);
+        state.globe.raster_map_mut(id).unwrap().fill(*level);
+        ids.push(id);
+    }
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    (h, ids)
+}
+
+fn is_grey(color: [u8; 3], level: u16) -> bool {
+    close(color, [grey_of(level); 3])
+}
+
+const LOW: u16 = 16000;
+const HIGH: u16 = 50000;
+
+#[test]
+fn two_raster_layers_blend_by_the_opacity_of_the_top_one() {
+    let _gpu = one_gpu_test();
+    let (mut h, ids) = layers_harness(&[LOW, HIGH]);
+    let (bottom, top) = (grey_of(LOW), grey_of(HIGH));
+    assert!(is_grey(middle(&mut h), HIGH));
+    h.state_mut().set_raster_opacity(ids[1], 0.0);
+    assert!(is_grey(middle(&mut h), LOW));
+    h.state_mut().set_raster_opacity(ids[1], 0.5);
+    let half = middle(&mut h);
+    let mean = ((u16::from(bottom) + u16::from(top)) / 2) as u8;
+    assert!(close(half, [mean; 3]), "{half:?} and {mean}");
+    assert!(half[0] > bottom + 20 && half[0] < top - 20, "{half:?}");
+    // The opacity of the bottom layer shows the plain ground through it.
+    h.state_mut().set_raster_opacity(ids[1], 0.0);
+    h.state_mut().set_raster_opacity(ids[0], 0.25);
+    let ground = vale_app::ui::pad::theme::GROUND;
+    let mix = |g: u8| (0.25 * f32::from(bottom) + 0.75 * f32::from(g)).round() as u8;
+    let low = middle(&mut h);
+    let wanted = [mix(ground.r()), mix(ground.g()), mix(ground.b())];
+    assert!(close(low, wanted), "{low:?} and {wanted:?}");
+
+    // The edge of the globe has no dark ring and no light ring: each pixel
+    // from the middle to the edge is between the ground and the background.
+    h.state_mut().set_raster_opacity(ids[0], 1.0);
+    h.state_mut().set_raster_opacity(ids[1], 0.5);
+    let img = canvas_image(&mut h);
+    let y = img.height() / 2;
+    let row: Vec<u8> = (0..img.width()).map(|x| img.get_pixel(x, y).0[0]).collect();
+    let background = row[0];
+    let (least, most) = (background.min(mean), background.max(mean));
+    assert!(row.iter().all(|v| *v + 2 >= least && *v <= most + 2));
+    // The shade toward the limb is that of one layer.
+    let (mut one, _) = layers_harness(&[((u32::from(LOW) + u32::from(HIGH)) / 2) as u16]);
+    let single = canvas_image(&mut one);
+    for x in (0..img.width()).step_by(7) {
+        let (a, b) = (img.get_pixel(x, y).0[0], single.get_pixel(x, y).0[0]);
+        assert!(a.abs_diff(b) <= 3, "{a} and {b} at {x}");
+    }
+}
+
+#[test]
+fn a_raster_layer_and_a_vector_layer_draw_in_the_layer_order() {
+    let _gpu = one_gpu_test();
+    let mut state = state();
+    state.globe.preview.greyscale = true;
+    state.globe.preview.graticule = false;
+    // The middle of the globe is on the land of Africa.
+    state.globe.view = GlobeView::centered(22.0, 10.0);
+    let land = state.doc.project.layers()[0].id;
+    assert_eq!(state.doc.layer(land).unwrap().name, "Land");
+    state.set_layer_visible(land, true);
+    let raster = plain_layer(&mut state, "Rain", LAYER_FACE_SIZE);
+    state.globe.raster_map_mut(raster).unwrap().fill(LOW);
+    let layer = state.doc.project.raster_layer(raster).unwrap().id;
+    let fill = state.doc.entry(land).unwrap().style.fill.unwrap();
+    let fill = [fill.r, fill.g, fill.b];
+    assert!(!is_grey(fill, LOW));
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+
+    // The raster layer is below the vector layer.
+    let order = |h: &Harness<'static, AppState>| {
+        let layers = h.state().doc.project.layers();
+        let at = |id| layers.iter().position(|l| l.id == id).unwrap();
+        at(layer) < at(land)
+    };
+    assert!(order(&h));
+    let above = middle(&mut h);
+    assert!(close(above, fill), "{above:?} and {fill:?}");
+    // The sea has no polygon, so the raster layer shows there.
+    let img = canvas_image(&mut h);
+    let sea = img
+        .get_pixel(img.width() / 2 - 120, img.height() / 2 + 60)
+        .0;
+    assert!(sea[0] == sea[1] && sea[1] == sea[2], "{sea:?}");
+
+    // The raster layer is above the vector layer, and it hides it.
+    assert!(h.state_mut().move_layer(layer, 3));
+    assert!(!order(&h));
+    let below = middle(&mut h);
+    assert!(is_grey(below, LOW), "{below:?}");
+    // At one half, the vector layer shows through the raster layer.
+    h.state_mut().set_raster_opacity(raster, 0.5);
+    let half = middle(&mut h);
+    let mean = fill.map(|c| ((u16::from(c) + u16::from(grey_of(LOW))) / 2) as u8);
+    assert!(close(half, mean), "{half:?} and {mean:?}");
+
+    // The vector layer is above the raster layer again.
+    assert!(h.state_mut().move_layer(layer, 0));
+    let above = middle(&mut h);
+    assert!(close(above, fill), "{above:?} and {fill:?}");
+}
+
+#[test]
+fn a_hidden_layer_leaves_the_picture_and_the_selection_does_not_change_it() {
+    let _gpu = one_gpu_test();
+    let (mut h, ids) = layers_harness(&[LOW, HIGH]);
+    assert_eq!(h.state().globe.raster(), Some(ids[1]));
+    assert!(is_grey(middle(&mut h), HIGH));
+    // The selected layer does not come to the front.
+    h.state_mut().select(Some(LayerRef::Raster(ids[0])));
+    assert!(is_grey(middle(&mut h), HIGH));
+    assert_eq!(h.state().globe.raster(), Some(ids[0]));
+    assert!(h.state().globe.paintable);
+    h.state_mut().select(None);
+    assert!(is_grey(middle(&mut h), HIGH));
+    // With the top layer hidden, the globe shows the lower one.
+    h.state_mut().set_raster_visible(ids[1], false);
+    assert!(is_grey(middle(&mut h), LOW));
+    h.state_mut().select(Some(LayerRef::Raster(ids[1])));
+    assert!(is_grey(middle(&mut h), LOW));
+    assert!(!h.state().globe.paintable);
+    h.state_mut().set_raster_visible(ids[1], true);
+    assert!(is_grey(middle(&mut h), HIGH));
+    assert!(h.state().globe.paintable);
+}
+
+#[test]
+fn an_empty_world_shows_the_neutral_ground() {
+    let _gpu = one_gpu_test();
+    let (mut h, _) = layers_harness(&[]);
+    let ground = vale_app::ui::pad::theme::GROUND;
+    let ground = [ground.r(), ground.g(), ground.b()];
+    assert_eq!(middle(&mut h), ground);
+    assert!(h.state().globe.raster().is_none() && !h.state().globe.paintable);
+    assert_eq!(h.state().globe.display_bytes(), 0);
+    // The graticule is on the ground.
+    h.state_mut().globe.preview.graticule = true;
+    let img = canvas_image(&mut h);
+    let dark = img
+        .pixels()
+        .filter(|p| p.0[0] + 4 < ground[0] && p.0[0] > 40);
+    assert!(dark.count() > 200);
+
+    // One layer at one half shows the ground through it. A hidden layer
+    // shows the ground alone.
+    h.state_mut().globe.preview.graticule = false;
+    let id = plain_layer(h.state_mut(), "Rain", LAYER_FACE_SIZE);
+    h.state_mut().globe.raster_map_mut(id).unwrap().fill(HIGH);
+    assert!(is_grey(middle(&mut h), HIGH));
+    h.state_mut().set_raster_opacity(id, 0.5);
+    let half = middle(&mut h);
+    let mean = ground.map(|c| ((u16::from(c) + u16::from(grey_of(HIGH))) / 2) as u8);
+    assert!(close(half, mean), "{half:?} and {mean:?}");
+    h.state_mut().set_raster_visible(id, false);
+    assert_eq!(middle(&mut h), ground);
+}
+
+#[test]
+fn a_layer_that_is_not_selected_uses_the_reduced_size() {
+    let _gpu = one_gpu_test();
+    let (mut h, _) = layers_harness(&[]);
+    let large = plain_layer(h.state_mut(), "Large", 4096);
+    let other = plain_layer(h.state_mut(), "Other", 4096);
+    let small = plain_layer(h.state_mut(), "Small", 1024);
+    let state = h.state_mut();
+    state.globe.raster_map_mut(large).unwrap().fill(LOW);
+    state.globe.raster_map_mut(other).unwrap().fill(HIGH);
+    state.set_raster_visible(small, false);
+    state.select(Some(LayerRef::Raster(large)));
+    h.run_steps(3);
+    let globe = &h.state().globe;
+    // Each visible layer has a copy of 2,048 texels at most. The selected
+    // layer also has its full heightmap, and the globe draws from it.
+    assert_eq!(globe.display_face_size(large), Some(2048));
+    assert_eq!(globe.display_face_size(other), Some(2048));
+    assert_eq!(globe.display_face_size(small), None);
+    assert!(globe.draws_full(large) && !globe.draws_full(other));
+    assert_eq!(globe.map.face_size(), 4096);
+    // The picture is that of the top layer, from its reduced copy.
+    assert!(is_grey(middle(&mut h), HIGH));
+    h.state_mut().set_raster_visible(other, false);
+    assert!(is_grey(middle(&mut h), LOW));
+    // A layer of 2,048 texels or less has a copy of its own size.
+    h.state_mut().set_raster_visible(small, true);
+    h.run_steps(2);
+    assert_eq!(h.state().globe.display_face_size(small), Some(1024));
+    assert!(!h.state().globe.draws_full(small));
+}
+
+/// Gives each texel of a raster layer noise, so that each tile has memory.
+fn layer_noise(h: &mut Harness<'static, AppState>, id: RasterId, seed: usize) {
+    let map = h.state_mut().globe.raster_map_mut(id).unwrap();
+    let n = map.face_size();
+    for face in 0..6 {
+        for y in 0..n {
+            for x in 0..n {
+                let block = (x / 16 * 16 + y / 16) as u16;
+                let level = noise(face + seed, x % 16, y % 16) ^ block.wrapping_mul(251);
+                map.set(face, x, y, level.max(1));
+            }
+        }
+    }
+}
+
+/// Runs frames until each visible layer has its texels on the GPU.
+fn load(h: &mut Harness<'static, AppState>) {
+    for _ in 0..400 {
+        h.step();
+        let globe = &h.state().globe;
+        if !globe.busy() && !globe.loading() {
+            h.run_steps(2);
+            return;
+        }
+    }
+    panic!("the layers did not reach the GPU");
+}
+
+#[test]
+fn the_display_copies_fit_the_budget() {
+    let _gpu = one_gpu_test();
+    let (mut h, _) = layers_harness(&[]);
+    let a = plain_layer(h.state_mut(), "A", 1024);
+    let b = plain_layer(h.state_mut(), "B", 1024);
+    layer_noise(&mut h, a, 0);
+    layer_noise(&mut h, b, 3);
+    h.state_mut().select(None);
+    load(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.display_face_size(a), Some(1024));
+    assert_eq!(globe.display_face_size(b), Some(1024));
+    let whole = globe.display_bytes();
+    // Each copy holds its 96 tiles of 256 by 256 texels.
+    assert!(whole >= 2 * 96 * 256 * 256 * 2, "{whole}");
+
+    // With a smaller budget, each copy gets a smaller face size.
+    let budget = whole - 1;
+    h.state_mut().globe.display_budget = budget;
+    load(&mut h);
+    load(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.display_face_size(a), Some(512));
+    assert_eq!(globe.display_face_size(b), Some(512));
+    assert!(globe.display_bytes() <= budget, "{}", globe.display_bytes());
+    // The globe refuses no layer: it draws each one at the smallest size.
+    h.state_mut().globe.display_budget = 1;
+    load(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.display_face_size(a), Some(512));
+    assert!(globe.display_bytes() > 1 && !globe.loading());
+    let img = canvas_image(&mut h);
+    let greys: std::collections::HashSet<u8> = img.pixels().map(|p| p.0[0]).collect();
+    assert!(greys.len() > 30, "{}", greys.len());
+
+    // A new set of visible layers starts from the first size again.
+    h.state_mut().globe.display_budget = u64::MAX;
+    h.state_mut().set_raster_visible(b, false);
+    load(&mut h);
+    assert_eq!(h.state().globe.display_face_size(a), Some(1024));
+}
+
+#[test]
+fn a_hidden_layer_holds_no_gpu_memory() {
+    let _gpu = one_gpu_test();
+    let (mut h, _) = layers_harness(&[]);
+    let a = plain_layer(h.state_mut(), "A", LAYER_FACE_SIZE);
+    let b = plain_layer(h.state_mut(), "B", LAYER_FACE_SIZE);
+    layer_noise(&mut h, a, 0);
+    layer_noise(&mut h, b, 3);
+    load(&mut h);
+    let both = h.state().globe.display_bytes();
+    assert!(both > 0);
+    // The selected layer keeps its full heightmap, and it has no copy.
+    h.state_mut().set_raster_visible(b, false);
+    load(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.raster(), Some(b));
+    assert_eq!(globe.display_face_size(b), None);
+    assert_eq!(globe.display_face_size(a), Some(LAYER_FACE_SIZE as u32));
+    let one = globe.display_bytes();
+    assert!(one > 0 && one < both, "{one} of {both}");
+    h.state_mut().set_raster_visible(a, false);
+    load(&mut h);
+    assert_eq!(h.state().globe.display_bytes(), 0);
+    // The layer comes back whole.
+    h.state_mut().set_raster_visible(a, true);
+    load(&mut h);
+    assert_eq!(h.state().globe.display_bytes(), one);
+}
+
+#[test]
+fn a_stroke_ends_before_the_selection_changes_the_painted_layer() {
+    let _gpu = one_gpu_test();
+    let (mut h, ids) = layers_harness(&[LOW, LOW]);
+    let (first, second) = (ids[0], ids[1]);
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    let before = [first, second].map(|id| layer_texels(&h, id));
+    assert_eq!(h.state().globe.raster(), Some(second));
+
+    // The pen is down on the second layer when the selection changes.
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 0.0));
+    first_touch(&mut h, egui::TouchPhase::Start, from, Some(0.5));
+    h.step();
+    for i in 1..=4 {
+        let pos = from.lerp(to, i as f32 / 8.0);
+        first_touch(&mut h, egui::TouchPhase::Move, pos, Some(0.5));
+        h.step();
+    }
+    h.state_mut().select(Some(LayerRef::Raster(first)));
+    let globe = &h.state().globe;
+    assert_eq!(globe.raster(), Some(second));
+    assert!(globe.busy() && !globe.paintable && !globe.brushing());
+    // The other samples of the pen paint no layer.
+    for i in 5..=8 {
+        let pos = from.lerp(to, i as f32 / 8.0);
+        first_touch(&mut h, egui::TouchPhase::Move, pos, Some(0.5));
+        h.step();
+    }
+    first_touch(&mut h, egui::TouchPhase::End, to, Some(0.5));
+    settle(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.raster(), Some(first));
+    assert!(globe.paintable);
+    // The stroke is in the second layer, and the first layer has no part
+    // of it.
+    assert!(layer_texels(&h, second) != before[1]);
+    assert!(layer_texels(&h, first) == before[0]);
+
+    // The next stroke paints the first layer.
+    load(&mut h);
+    let painted = layer_texels(&h, second);
+    pen_stroke(&mut h);
+    settle(&mut h);
+    assert!(layer_texels(&h, first) != before[0]);
+    assert!(layer_texels(&h, second) == painted);
+}
+
+/// Each texel of a raster layer of the app.
+fn layer_texels(h: &Harness<'static, AppState>, id: RasterId) -> Vec<u16> {
+    let map = h.state().globe.raster_map(id).unwrap();
+    let n = map.face_size();
+    let all = vale_terrain::TexelRect {
+        x0: 0,
+        y0: 0,
+        x1: n,
+        y1: n,
+    };
+    let mut out = Vec::new();
+    (0..6).for_each(|face| map.read_rect(face, all, &mut out));
+    out
+}
+
+#[test]
+fn the_display_copy_shows_until_the_full_map_is_ready() {
+    let _gpu = one_gpu_test();
+    let (mut h, ids) = layers_harness(&[LOW, HIGH]);
+    let (bottom, top) = (ids[0], ids[1]);
+    // Each tile of the top layer has memory, with one level in each texel.
+    let map = h.state_mut().globe.raster_map_mut(top).unwrap();
+    map.fill(0);
+    let n = map.face_size();
+    for face in 0..6 {
+        map.store_face(face, &vec![HIGH; n * n]);
+    }
+    h.state_mut().select(Some(LayerRef::Raster(bottom)));
+    load(&mut h);
+    assert!(is_grey(middle(&mut h), HIGH));
+    assert!(h.state().globe.draws_full(bottom));
+
+    // The full heightmap of the top layer goes to the GPU in many frames.
+    // In each of them, the globe shows the layer from its copy.
+    h.state_mut().globe.uploads.budget = 16 * LAYER_FACE_SIZE;
+    h.state_mut().select(Some(LayerRef::Raster(top)));
+    assert_eq!(h.state().globe.raster(), Some(top));
+    let mut frames = 0;
+    while !h.state().globe.draws_full(top) {
+        assert!(h.state().globe.busy());
+        let frame = h.render().unwrap();
+        let rect = h.state().globe.rect;
+        let at = rect.center();
+        let color = frame.get_pixel(at.x as u32, at.y as u32).0;
+        assert!(
+            is_grey([color[0], color[1], color[2]], HIGH),
+            "{color:?} in frame {frames}"
+        );
+        h.step();
+        frames += 1;
+        assert!(frames < 400, "the full heightmap did not reach the GPU");
+    }
+    assert!(frames >= 10, "{frames}");
+    assert!(is_grey(middle(&mut h), HIGH));
+    assert!(!h.state().globe.busy());
+}
+
+#[test]
+fn a_stroke_shows_on_the_display_copy_after_the_layer_is_deselected() {
+    let _gpu = one_gpu_test();
+    let (mut h, ids) = layers_harness(&[LOW, LOW]);
+    let (bottom, top) = (ids[0], ids[1]);
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    let before = canvas_image(&mut h);
+    pen_stroke(&mut h);
+    settle(&mut h);
+    assert!(h.state().globe.draws_full(top));
+    let painted = canvas_image(&mut h);
+    assert!(painted != before);
+    assert!(middle(&mut h)[0] > grey_of(LOW) + 5);
+
+    // The globe draws the layer from its copy, with the stroke.
+    h.state_mut().select(Some(LayerRef::Raster(bottom)));
+    load(&mut h);
+    assert!(!h.state().globe.draws_full(top));
+    let copy = canvas_image(&mut h);
+    let differ = |a: &image::RgbaImage, b: &image::RgbaImage| {
+        let pairs = a.pixels().zip(b.pixels());
+        pairs.filter(|(a, b)| a.0[0].abs_diff(b.0[0]) > 2).count()
+    };
+    assert_eq!(differ(&copy, &painted), 0);
+    assert!(differ(&copy, &before) > 100);
+}
+
+/// The elevation of an island around `center`, in meters. The coast is
+/// about 0.5 radians from the center, and the valleys run to the coast.
+fn island_meters(d: V3, center: V3) -> f64 {
+    let ridges = (d[0] * 23.0).sin() * (d[1] * 19.0).cos() + (d[2] * 29.0).sin();
+    let cone = 2600.0 * (1.0 - angle(d, center) / 0.5);
+    (cone + 250.0 * ridges).max(-2500.0)
+}
+
+/// Puts an island on a height layer.
+fn set_layer_island(h: &mut Harness<'static, AppState>, id: RasterId, lon: f64, lat: f64) {
+    let center = lonlat_to_dir(lon, lat);
+    let map = h.state_mut().globe.raster_map_mut(id).unwrap();
+    let n = map.face_size();
+    for face in 0..6 {
+        for y in 0..n {
+            for x in 0..n {
+                let meters = island_meters(map.texel_dir(face, x, y), center);
+                if meters > -2500.0 {
+                    map.set(face, x, y, meters_to_level(meters));
+                }
+            }
+        }
+    }
+}
+
+/// The number of pixels with the color of a river in the left half and in
+/// the right half of the canvas.
+fn river_halves(h: &mut Harness<'static, AppState>) -> [usize; 2] {
+    let img = canvas_image(h);
+    let half = img.width() / 2;
+    let river = |p: &image::Rgba<u8>| {
+        let [r, g, b, _] = p.0.map(i32::from);
+        b > r + 25 && b > g + 8
+    };
+    let count = |left: bool| {
+        let pixels = img.enumerate_pixels();
+        let side = pixels.filter(|(x, _, p)| (*x < half) == left && river(p));
+        side.count()
+    };
+    [count(true), count(false)]
+}
+
+#[test]
+fn each_visible_height_layer_shows_its_rivers() {
+    let _gpu = one_gpu_test();
+    let mut state = state();
+    state.globe.preview.graticule = false;
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    state.globe.set_face_size(LAYER_FACE_SIZE);
+    // The island of the first layer is at the left, and the island of the
+    // second layer is at the right. The land of each layer has no blue.
+    let west = state.add_height();
+    let east = state.add_height();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    h.set_render_every_step(true);
+    set_layer_island(&mut h, west, -40.0, 0.0);
+    set_layer_island(&mut h, east, 40.0, 0.0);
+    for id in [west, east] {
+        let bands = h.state_mut().globe.bands_mut(id).unwrap();
+        bands.ramp.sea = vec![[90, 90, 90], [120, 120, 120]];
+        bands.ramp.land = vec![[150, 140, 120], [230, 220, 200]];
+    }
+    // The top layer is one half clear, so the layer below it shows.
+    h.state_mut().set_raster_opacity(east, 0.5);
+    load(&mut h);
+    assert_eq!(h.state().globe.raster(), Some(east));
+    canvas_image(&mut h)
+        .save("../../target/app/test-layer-rivers.png")
+        .unwrap();
+    let both = river_halves(&mut h);
+    assert!(both[0] > 40 && both[1] > 40, "{both:?}");
+    // The layer that the brush does not paint has its own channel map on
+    // the GPU. A channel map has 512 texels of 4 bytes along a face of 256.
+    let one = 6 * 512 * 512 * 4;
+    assert_eq!(h.state().globe.river_bytes(), 2 * one);
+
+    // The rivers of a layer follow its opacity and its visibility.
+    h.state_mut().set_raster_opacity(east, 1.0);
+    let top = river_halves(&mut h);
+    assert!(top[0] == 0 && top[1] > both[1], "{top:?}");
+    h.state_mut().set_raster_opacity(east, 0.5);
+    h.state_mut().set_raster_visible(east, false);
+    let west_only = river_halves(&mut h);
+    assert!(west_only[0] > both[0] && west_only[1] == 0, "{west_only:?}");
+    // A hidden layer has no channel map for the picture.
+    load(&mut h);
+    assert_eq!(h.state().globe.river_bytes(), one);
+    h.state_mut().set_raster_visible(east, true);
+    load(&mut h);
+    let again = river_halves(&mut h);
+    assert!(again[0] > 40 && again[1] > 40, "{again:?}");
+
+    // The selection does not change the rivers of a layer.
+    h.state_mut().select(Some(LayerRef::Raster(west)));
+    load(&mut h);
+    let other = river_halves(&mut h);
+    assert!(other[0] > 40 && other[1] > 40, "{other:?}");
+    assert!(
+        other[0].abs_diff(again[0]) * 4 < again[0],
+        "{other:?} and {again:?}"
+    );
+    assert!(
+        other[1].abs_diff(again[1]) * 4 < again[1],
+        "{other:?} and {again:?}"
+    );
+
+    // The switch hides the rivers of each layer.
+    h.state_mut().globe.preview.rivers = false;
+    assert_eq!(river_halves(&mut h), [0, 0]);
+    h.state_mut().globe.preview.rivers = true;
+
+    // A layer that is not a height has no rivers and no channel map.
+    h.state_mut().remove_raster(west);
+    h.state_mut().remove_raster(east);
+    let plain = plain_layer(h.state_mut(), "Plain", LAYER_FACE_SIZE);
+    let center = lonlat_to_dir(0.0, 0.0);
+    let map = h.state_mut().globe.raster_map_mut(plain).unwrap();
+    for y in 0..LAYER_FACE_SIZE {
+        for x in 0..LAYER_FACE_SIZE {
+            let meters = island_meters(map.texel_dir(0, x, y), center);
+            map.set(0, x, y, meters_to_level(meters));
+        }
+    }
+    load(&mut h);
+    assert_eq!(river_halves(&mut h), [0, 0]);
+    assert_eq!(h.state().globe.river_bytes(), 0);
+}
+
+#[test]
+fn the_readout_shows_the_selected_raster_layer_or_the_top_visible_one() {
+    let _gpu = one_gpu_test();
+    let (mut h, ids) = layers_harness(&[LOW, HIGH]);
+    let (bottom, top) = (ids[0], ids[1]);
+    let c = h.state().globe.rect.center();
+    h.event(egui::Event::PointerMoved(c));
+    h.run_steps(2);
+    // The range of each layer is from 0 to 100, with no unit.
+    let value = |level: u16| {
+        let value = f64::from(level) / 65535.0 * 100.0;
+        vale_app::world::value_text(value, 100.0, "")
+    };
+    let text = |h: &Harness<'static, AppState>| h.state().readout_value().unwrap();
+    // The selected layer is visible, so the readout has its value alone.
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(top)));
+    assert_eq!(text(&h), value(HIGH));
+    h.state_mut().select(Some(LayerRef::Raster(bottom)));
+    h.run_steps(2);
+    assert_eq!(text(&h), value(LOW));
+    // The selected layer is hidden. The readout has the top visible layer,
+    // with its name.
+    h.state_mut().set_raster_visible(bottom, false);
+    h.run_steps(2);
+    assert_eq!(text(&h), format!("Layer 1 {}", value(HIGH)));
+    // No layer is selected.
+    h.state_mut().set_raster_visible(bottom, true);
+    h.state_mut().select(None);
+    h.run_steps(2);
+    assert_eq!(text(&h), format!("Layer 1 {}", value(HIGH)));
+    h.state_mut().set_raster_visible(top, false);
+    h.run_steps(2);
+    assert_eq!(text(&h), format!("Layer 0 {}", value(LOW)));
+    // The unit of the layer is in the text.
+    let height = h.state_mut().add_height();
+    h.state_mut()
+        .globe
+        .raster_map_mut(height)
+        .unwrap()
+        .fill(meters_to_level(1500.0));
+    h.state_mut().select(None);
+    h.run_steps(2);
+    assert_eq!(text(&h), "Height 1500 m");
+    // With no visible raster layer, the readout has no value.
+    for id in [bottom, height] {
+        h.state_mut().set_raster_visible(id, false);
+    }
+    h.run_steps(2);
+    assert_eq!(h.state().readout_value(), None);
+}
+
+#[test]
+fn a_smaller_copy_takes_the_place_of_a_copy_with_no_frame_without_the_layer() {
+    let _gpu = one_gpu_test();
+    let (mut h, _) = layers_harness(&[]);
+    let a = plain_layer(h.state_mut(), "A", 1024);
+    let b = plain_layer(h.state_mut(), "B", 1024);
+    // Each tile of each layer has memory, with one level in each texel.
+    for (id, level) in [(a, LOW), (b, HIGH)] {
+        let map = h.state_mut().globe.raster_map_mut(id).unwrap();
+        map.fill(0);
+        let n = map.face_size();
+        for face in 0..6 {
+            map.store_face(face, &vec![level; n * n]);
+        }
+    }
+    h.state_mut().set_raster_opacity(b, 0.5);
+    h.state_mut().select(None);
+    load(&mut h);
+    let mean = ((u16::from(grey_of(LOW)) + u16::from(grey_of(HIGH))) / 2) as u8;
+    assert!(close(middle(&mut h), [mean; 3]));
+    assert_eq!(h.state().globe.display_face_size(a), Some(1024));
+
+    // The copies go to the GPU in many frames. Each frame shows the two
+    // layers.
+    let whole = h.state().globe.display_bytes();
+    h.state_mut().globe.uploads.budget = 64 * 1024;
+    h.state_mut().globe.display_budget = whole - 1;
+    let mut frames = 0;
+    let mut most = 0;
+    while h.state().globe.display_face_size(b) != Some(512) || h.state().globe.loading() {
+        let frame = h.render().unwrap();
+        let at = h.state().globe.rect.center();
+        let color = frame.get_pixel(at.x as u32, at.y as u32).0;
+        assert!(
+            close([color[0], color[1], color[2]], [mean; 3]),
+            "{color:?} in frame {frames}"
+        );
+        most = most.max(h.state().globe.display_bytes());
+        h.step();
+        frames += 1;
+        assert!(frames < 2000, "the copies did not reach the GPU");
+    }
+    assert!(frames >= 10, "{frames}");
+    assert_eq!(h.state().globe.display_face_size(a), Some(512));
+    // One layer at a time has two copies.
+    assert!(most < whole + whole / 2, "{most} of {whole}");
+    assert!(close(middle(&mut h), [mean; 3]));
+    assert!(h.state().globe.display_bytes() < whole);
 }

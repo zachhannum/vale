@@ -5,8 +5,9 @@ use std::sync::{Arc, OnceLock, mpsc};
 use vale_terrain::math::{V3, dot, lonlat_to_dir};
 use vale_terrain::{
     ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FlowMap, GROUP_STAMPS,
-    GpuHeightmap, Heightmap, Limits, Mode, OuterFlow, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE,
-    TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, window_channels,
+    GpuHeightmap, GpuTiles, Heightmap, Limits, Mode, OuterFlow, Readback, STAMP_SLOTS, Stamp,
+    StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map,
+    tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -123,10 +124,21 @@ impl Gpu {
 
     /// The texels of one rectangle on each face.
     fn read(&self, map: &GpuHeightmap, rect: TexelRect) -> Vec<Vec<u16>> {
+        self.read_with(|enc, face| map.read_rect(&self.device, enc, face, rect))
+    }
+
+    /// The same as `read`, for a map with no brush.
+    fn read_tiles(&self, map: &GpuTiles, rect: TexelRect) -> Vec<Vec<u16>> {
+        self.read_with(|enc, face| map.read_rect(&self.device, enc, face, rect))
+    }
+
+    /// The texels of the readback that `read` makes for each face.
+    fn read_with(
+        &self,
+        mut read: impl FnMut(&mut wgpu::CommandEncoder, u32) -> Readback,
+    ) -> Vec<Vec<u16>> {
         let mut enc = self.encoder();
-        let readbacks: Vec<_> = (0..FACES as u32)
-            .map(|face| map.read_rect(&self.device, &mut enc, face, rect))
-            .collect();
+        let readbacks: Vec<_> = (0..FACES as u32).map(|face| read(&mut enc, face)).collect();
         self.submit(enc);
         let faces: Vec<_> = readbacks
             .into_iter()
@@ -1285,6 +1297,364 @@ fn a_tile_at_the_base_level_gives_its_memory_back() {
     map.clear(&gpu.queue, 100);
     assert_eq!(map.memory_bytes(), table_bytes(n));
     assert!(gpu.read(&map, tile)[4].iter().all(|level| *level == 100));
+}
+
+/// A code that is different for each texel of a face of 64.
+fn code(face: usize, x: usize, y: usize) -> u16 {
+    (face * 5000 + y * 67 + x * 3) as u16
+}
+
+/// A map with tiles of 16, and codes on a part of four faces.
+fn coded() -> Heightmap {
+    let mut cpu = Heightmap::with_tile_size(64, 16, 321);
+    for face in [0, 2, 3, 5] {
+        for y in 5 + face..40 {
+            for x in 20..64 - face {
+                cpu.set(face, x, y, code(face, x, y));
+            }
+        }
+    }
+    cpu
+}
+
+/// A display map with the texels of `cpu`, reduced by `factor`.
+fn display_of(gpu: &Gpu, cpu: &Heightmap, factor: usize) -> GpuTiles {
+    let size = cpu.face_size().div_ceil(factor);
+    let map = GpuTiles::with_tile_size(&gpu.device, size as u32, 16, cpu.base());
+    for face in 0..FACES {
+        let mut data = Vec::new();
+        cpu.read_reduced(face, full(size), factor, &mut data);
+        map.upload(&gpu.queue, face as u32, full(size), &data);
+    }
+    map
+}
+
+#[test]
+fn a_display_map_reads_the_same_levels_as_the_heightmap() {
+    let gpu = gpu();
+    let cpu = coded();
+    let n = cpu.face_size();
+    let heights = gpu.copy_with_tiles(&cpu, 16);
+    let display = display_of(gpu, &cpu, 1);
+    assert_eq!(display.face_size(), heights.face_size());
+    let levels = gpu.read_tiles(&display, full(n));
+    assert_eq!(max_difference(&cpu, &levels), 0);
+    assert_eq!(levels, gpu.read_all(&heights));
+    // A tile with no code takes no memory, as in the heightmap.
+    assert_eq!(display.allocated_tiles(), cpu.allocated_tiles());
+    assert_eq!(display.allocated_tiles(), heights.allocated_tiles());
+    // The display map has no render target of a brush.
+    let table = FACES * 4 * 4 * 4;
+    assert_eq!(display.memory_bytes(), table + 64 * 16 * 16 * 2);
+
+    // A part of a face goes to the same texels.
+    let rect = TexelRect {
+        x0: 10,
+        y0: 30,
+        x1: 37,
+        y1: 50,
+    };
+    let data = vec![4000; 27 * 20];
+    heights.upload(&gpu.queue, 1, rect, &data);
+    display.upload(&gpu.queue, 1, rect, &data);
+    let levels = gpu.read_tiles(&display, full(n));
+    assert_eq!(levels, gpu.read_all(&heights));
+    assert_eq!(
+        levels[1].iter().filter(|level| **level == 4000).count(),
+        540
+    );
+}
+
+#[test]
+fn a_display_map_holds_the_reduced_levels() {
+    let gpu = gpu();
+    let cpu = coded();
+    let display = display_of(gpu, &cpu, 4);
+    assert_eq!(display.face_size(), 16);
+    for (face, levels) in gpu.read_tiles(&display, full(16)).iter().enumerate() {
+        let mut expected = Vec::new();
+        cpu.read_reduced(face, full(16), 4, &mut expected);
+        assert_eq!(*levels, expected, "face {face}");
+    }
+    // Faces 1 and 4 have the base level, so their tiles take no memory.
+    assert_eq!(display.allocated_tiles(), 4);
+}
+
+#[test]
+fn clear_puts_each_tile_of_a_display_map_back_to_the_base() {
+    let gpu = gpu();
+    let cpu = coded();
+    let display = display_of(gpu, &cpu, 1);
+    assert!(display.allocated_tiles() > 0);
+    display.clear(&gpu.queue, 9000);
+    assert_eq!(display.allocated_tiles(), 0);
+    assert_eq!(display.memory_bytes(), FACES * 4 * 4 * 4);
+    for levels in gpu.read_tiles(&display, full(64)) {
+        assert!(levels.iter().all(|level| *level == 9000));
+    }
+    // A tile that gets the new base level in each texel takes no memory.
+    let tile = TexelRect {
+        x0: 16,
+        y0: 32,
+        x1: 32,
+        y1: 48,
+    };
+    display.upload(&gpu.queue, 2, tile, &[9000; 256]);
+    assert_eq!(display.allocated_tiles(), 0);
+    display.upload(&gpu.queue, 2, tile, &[1; 256]);
+    assert_eq!(display.allocated_tiles(), 1);
+    display.upload(&gpu.queue, 2, tile, &[9000; 256]);
+    assert_eq!(display.allocated_tiles(), 0);
+}
+
+/// A shader that draws the levels of one face, texel by texel.
+const SHOW_WGSL: &str = "
+@group(0) @binding(0) var<uniform> face: u32;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let at = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(at * 2.0 - 1.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) at: vec4<f32>) -> @location(0) vec4<u32> {
+    return vec4<u32>(tile_level(i32(face), vec2<i32>(at.xy)), 0u, 0u, 0u);
+}
+";
+
+/// A pipeline that draws from each map with the layout of `tiles_layout`.
+struct Show {
+    pipeline: wgpu::RenderPipeline,
+    faces: Vec<wgpu::BindGroup>,
+}
+
+impl Show {
+    fn new(gpu: &Gpu) -> Show {
+        let device = &gpu.device;
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let faces = (0..FACES as u32).map(|face| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 4,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            gpu.queue.write_buffer(&buffer, 0, &face.to_le_bytes());
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            })
+        });
+        let faces = faces.collect();
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(format!("{TILES_WGSL}\n{SHOW_WGSL}").into()),
+        });
+        let tiles = tiles_layout(device);
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&layout), Some(&tiles)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::TextureFormat::R16Uint.into())],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        Show { pipeline, faces }
+    }
+
+    /// The levels that the shader reads from the bind group of a map, for
+    /// each face of `n` by `n` texels.
+    fn draw(&self, gpu: &Gpu, tiles: &wgpu::BindGroup, n: usize) -> Vec<Vec<u16>> {
+        let row_bytes = (n * 2).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        let size = wgpu::Extent3d {
+            width: n as u32,
+            height: n as u32,
+            depth_or_array_layers: 1,
+        };
+        let mut enc = gpu.encoder();
+        let buffers: Vec<_> = (0..FACES)
+            .map(|face| {
+                let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R16Uint,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations::default(),
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.faces[face], &[]);
+                pass.set_bind_group(1, tiles, &[]);
+                pass.draw(0..3, 0..1);
+                drop(pass);
+                let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: (row_bytes * n) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                enc.copy_texture_to_buffer(
+                    target.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(row_bytes as u32),
+                            rows_per_image: None,
+                        },
+                    },
+                    size,
+                );
+                buffer
+            })
+            .collect();
+        gpu.submit(enc);
+        let mapped: Vec<_> = buffers
+            .iter()
+            .map(|buffer| {
+                let (sender, receiver) = mpsc::channel();
+                buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+                    sender.send(result).expect("the test waits");
+                });
+                receiver
+            })
+            .collect();
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("the device answers");
+        let levels = buffers.iter().zip(mapped).map(|(buffer, receiver)| {
+            receiver
+                .recv()
+                .expect("the readback runs")
+                .expect("the buffer maps");
+            let bytes = buffer.get_mapped_range(..).expect("the buffer is mapped");
+            let rows = bytes.chunks(row_bytes);
+            let pairs = rows.flat_map(|row| row[..n * 2].as_chunks::<2>().0);
+            pairs.map(|pair| u16::from_le_bytes(*pair)).collect()
+        });
+        levels.collect()
+    }
+}
+
+/// The heightmap, a display map of the same size, and a display map of
+/// another size and another base level go through one pipeline.
+#[test]
+fn one_pipeline_draws_from_the_heightmap_and_from_each_display_map() {
+    let gpu = gpu();
+    let cpu = coded();
+    let n = cpu.face_size();
+    let heights = gpu.copy_with_tiles(&cpu, 16);
+    let display = display_of(gpu, &cpu, 1);
+    let mut other = Heightmap::with_tile_size(128, 16, 40_000);
+    other.set(4, 100, 3, 77);
+    other.set(1, 0, 127, 78);
+    let other_display = display_of(gpu, &other, 1);
+
+    let show = Show::new(gpu);
+    assert_eq!(
+        max_difference(&cpu, &show.draw(gpu, &heights.tiles(), n)),
+        0
+    );
+    assert_eq!(
+        max_difference(&cpu, &show.draw(gpu, &display.tiles(), n)),
+        0
+    );
+    let levels = show.draw(gpu, &other_display.tiles(), 128);
+    assert_eq!(max_difference(&other, &levels), 0);
+    // A draw after an upload reads the new texels.
+    display.upload(&gpu.queue, 1, full(n), &vec![555; n * n]);
+    let levels = show.draw(gpu, &display.tiles(), n);
+    assert!(levels[1].iter().all(|level| *level == 555));
+}
+
+/// The reset of a reader: the base level, then each tile that holds memory.
+fn show(gpu: &Gpu, map: &GpuHeightmap, cpu: &mut Heightmap) {
+    assert!(cpu.take_reset());
+    map.clear(&gpu.queue, cpu.base());
+    for (face, rect) in cpu.allocated_rects() {
+        let mut data = Vec::new();
+        cpu.read_rect(face, rect, &mut data);
+        map.upload(&gpu.queue, face as u32, rect, &data);
+    }
+}
+
+#[test]
+fn a_reset_shows_another_map_with_only_its_tiles() {
+    let gpu = gpu();
+    let n = 64;
+    let mut first = Heightmap::with_tile_size(n, 16, 100);
+    first.set(0, 3, 3, 900);
+    first.set(2, 40, 20, 800);
+    first.set(5, 63, 63, 700);
+    let mut second = Heightmap::with_tile_size(n, 16, 300);
+    second.set(2, 41, 21, 600);
+    second.set(3, 10, 50, 500);
+    let map = GpuHeightmap::with_tile_size(&gpu.device, n as u32, 16);
+
+    show(gpu, &map, &mut first);
+    assert_eq!(map.allocated_tiles(), 3);
+    assert_eq!(max_difference(&first, &gpu.read_all(&map)), 0);
+
+    // The maps were readers of their own state before, so they have no reset.
+    second.take_reset();
+    for (cpu, tiles) in [(&mut second, 2), (&mut first, 3)] {
+        assert!(!cpu.take_reset());
+        cpu.mark_reset();
+        show(gpu, &map, cpu);
+        assert_eq!(map.allocated_tiles(), tiles);
+        assert_eq!(max_difference(cpu, &gpu.read_all(&map)), 0);
+    }
 }
 
 /// The stamps of each mode on small tiles, across tile edges, a face edge,
