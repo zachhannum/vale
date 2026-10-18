@@ -9,6 +9,7 @@ use vale_app::headless;
 use vale_app::pipeline::Pipeline;
 use vale_app::session::Session;
 use vale_app::ui::AppState;
+use vale_app::ui::pad::Panel;
 use vale_app::ui::world_form::WorldForm;
 
 fn run() -> anyhow::Result<u8> {
@@ -51,6 +52,8 @@ fn run() -> anyhow::Result<u8> {
             state.pad.open(*panel);
         }
         state.pad.more = args.more_tools;
+        state.desk.brush_open = args.panel.contains(&Panel::Brush);
+        state.desk.more_open = args.more_tools;
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
         if args.worlds_menu {

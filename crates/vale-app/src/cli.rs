@@ -41,10 +41,11 @@ pub struct Args {
     /// The arrangement of the controls. The iPad uses `pad`.
     #[arg(long, value_enum, default_value_t)]
     pub layout: Layout,
-    /// With --layout pad: open this panel. You can give more than one.
+    /// Open this panel. You can give more than one. The desktop layout
+    /// opens only the Brush panel, as a popover.
     #[arg(long, value_enum, value_name = "PANEL")]
     pub panel: Vec<Panel>,
-    /// With --layout pad: open the menu of the More cell.
+    /// Open the menu of the More tools.
     #[arg(long)]
     pub more_tools: bool,
     /// With --layout pad: open the menu of the worlds.
