@@ -16,8 +16,8 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::gpkg::{Reader, StoreError, TileKey, corrupt, decode_geometry, encode_geometry};
 use crate::{
-    Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterId, Units, Uuid,
-    Value, World, clamp_opacity,
+    Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
+    Units, Uuid, Value, World, clamp_opacity,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -452,8 +452,11 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
         put_bytes(out, ramp.as_flattened());
     }
     out.extend_from_slice(&raster.opacity.to_le_bytes());
+    put_bytes(out, raster.display.id().as_bytes());
 }
 
+/// An image from format version 9 ends after the opacity, and its raster
+/// shows bands. An unknown display also gives bands.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -467,9 +470,14 @@ fn raster(r: &mut Reader) -> Option<Raster> {
     };
     let (ramp_sea, ramp_land) = (ramp()?, ramp()?);
     let opacity = clamp_opacity(f32::from_le_bytes(r.take()?));
+    let display = match r.0.is_empty() {
+        true => RasterDisplay::Bands,
+        false => RasterDisplay::from_id(&string(r)?).unwrap_or_default(),
+    };
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
+        display,
         face_size,
         unit,
         value_min,
@@ -634,12 +642,27 @@ mod tests {
         rain.limits = vec![250.0, 1000.0];
         rain.ramp_land = vec![[1, 2, 3]];
         rain.opacity = 0.375;
+        rain.display = RasterDisplay::Grey;
         let rain = project.raster(id).unwrap();
         let mut out = Vec::new();
         put_raster(&mut out, rain);
         assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
         out.pop();
         assert_eq!(raster(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn a_raster_image_of_version_9_shows_bands() {
+        let mut project = Project::new(World::default());
+        let id = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
+        project.set_raster_display(id, RasterDisplay::Gradient);
+        let rain = project.raster(id).unwrap();
+        let mut out = Vec::new();
+        put_raster(&mut out, rain);
+        out.truncate(out.len() - 4 - "gradient".len());
+        let old = raster(&mut Reader(&out)).unwrap();
+        assert_eq!(old.display, RasterDisplay::Bands);
+        assert_eq!(old.opacity, rain.opacity);
     }
 
     #[test]

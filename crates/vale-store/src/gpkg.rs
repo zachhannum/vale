@@ -23,17 +23,17 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
-    Feature, Geometry, GeometryKind, Layer, LayerId, LayerKind, LonLat, Project, Raster, RasterId,
-    Rgb, Units, Uuid, Value, World, clamp_opacity,
+    Feature, Geometry, GeometryKind, Layer, LayerId, LayerKind, LonLat, Project, Raster,
+    RasterDisplay, RasterId, Rgb, Units, Uuid, Value, World, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 9;
+pub const FORMAT_VERSION: u32 = 10;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
 const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] =
-    &[v1, v2, undo::v3, v4, v5, v6, v7, v8, v9];
+    &[v1, v2, undo::v3, v4, v5, v6, v7, v8, v9, v10];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -708,6 +708,11 @@ fn v9(tx: &Transaction) -> rusqlite::Result<()> {
     ))
 }
 
+/// The display of a raster. The rasters of an older file show bands.
+fn v10(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN display TEXT NOT NULL DEFAULT 'bands'")
+}
+
 fn quote(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -1141,14 +1146,14 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
         // A replaced row is a deleted row, and the tiles refer to the row.
         tx.execute(
             "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base, limits,
-               ramp_sea, ramp_land, opacity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+               ramp_sea, ramp_land, opacity, display)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (id) DO UPDATE SET
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
                base = excluded.base, limits = excluded.limits,
                ramp_sea = excluded.ramp_sea, ramp_land = excluded.ramp_land,
-               opacity = excluded.opacity",
+               opacity = excluded.opacity, display = excluded.display",
             params![
                 r.id.0,
                 r.face_size,
@@ -1160,6 +1165,7 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 colors_text(&r.ramp_sea),
                 colors_text(&r.ramp_land),
                 f64::from(clamp_opacity(r.opacity)),
+                r.display.id(),
             ],
         )?;
     }
@@ -1235,7 +1241,7 @@ fn write_tiles(
 fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
     let mut rows = conn.prepare(
         "SELECT id, face_size, unit, value_min, value_max, base, limits, ramp_sea, ramp_land,
-           opacity
+           opacity, display
          FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
@@ -1248,6 +1254,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
         rasters.push(Raster {
             id: RasterId(id),
             opacity: clamp_opacity(r.get::<_, f64>(9)? as f32),
+            display: RasterDisplay::from_id(&text(10)?).unwrap_or_default(),
             face_size: u32::try_from(face_size)
                 .ok()
                 .filter(|&n| n > 0)
@@ -1961,6 +1968,7 @@ mod tests {
         *project.raster_mut(height).unwrap() = Raster {
             id: height,
             opacity: 1.0,
+            display: RasterDisplay::Bands,
             face_size: 8192,
             unit: "m".into(),
             value_min: -6000.0,
@@ -2365,6 +2373,7 @@ mod tests {
             assert_eq!((raster.face_size, raster.unit.as_str()), (1000, "mm"));
             assert_eq!((raster.value_min, raster.value_max), (0.0, 5000.0));
             assert_eq!((raster.base, raster.opacity), (7, 1.0));
+            assert_eq!(raster.display, RasterDisplay::Bands);
             assert_eq!(raster.limits, [250.0, 1000.0]);
             assert_eq!(raster.ramp_sea, [[0, 1, 2]]);
         }
@@ -2385,7 +2394,8 @@ mod tests {
                 "limits",
                 "ramp_sea",
                 "ramp_land",
-                "opacity"
+                "opacity",
+                "display"
             ]
         );
 
@@ -2702,6 +2712,74 @@ mod tests {
             ),
             ["0.0", "1.0"]
         );
+    }
+
+    #[test]
+    fn the_file_keeps_the_display_and_the_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, rain) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert!(project.set_raster_display(rain, RasterDisplay::Grey));
+        assert!(project.set_raster_unit(rain, "cm"));
+        file.save(&project).unwrap();
+        assert_eq!(images(&file), [format!("raster {}", rain.0)]);
+        drop(file);
+
+        let shown = |p: &Project, id| {
+            let r = p.raster(id).unwrap();
+            (r.display, r.unit.clone())
+        };
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(shown(&loaded, height), (RasterDisplay::Bands, "m".into()));
+        assert_eq!(shown(&loaded, rain), (RasterDisplay::Grey, "cm".into()));
+        file.undo().unwrap();
+        assert_eq!(
+            shown(file.project(), rain),
+            (RasterDisplay::Bands, "mm".into())
+        );
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(shown(&loaded, rain), (RasterDisplay::Bands, "mm".into()));
+        file.redo().unwrap();
+        assert_eq!(file.project(), &project);
+        drop(file);
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(shown(&loaded, rain), (RasterDisplay::Grey, "cm".into()));
+
+        // An unknown display shows bands.
+        file.conn
+            .execute(
+                "UPDATE vale_raster SET display = 'sparkles' WHERE id = ?1",
+                [rain.0],
+            )
+            .unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.raster(rain).unwrap().display, RasterDisplay::Bands);
+    }
+
+    #[test]
+    fn the_rasters_of_a_file_of_version_9_show_bands() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, _, rain) = rasters();
+        project.set_raster_opacity(rain, 0.5);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch("ALTER TABLE vale_raster DROP COLUMN display")
+            .unwrap();
+        drop(conn);
+        set_format_version(&dir, 9);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert!(
+            loaded
+                .rasters()
+                .iter()
+                .all(|r| r.display == RasterDisplay::Bands)
+        );
+        assert_eq!(loaded, project);
     }
 
     /// QGIS lists the tables of `gpkg_contents` that have features. A raster
