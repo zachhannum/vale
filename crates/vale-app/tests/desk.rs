@@ -665,6 +665,8 @@ fn the_options_bar_has_the_value_fields_of_the_brush() {
     // The button of the Brush panel comes before the fields.
     let button = h.get_by_label(BRUSH_SETTINGS);
     assert_eq!(button.rect().center().y, middle);
+    // It keeps 4 points of the bar above and below it.
+    assert!(button.rect().height() <= theme::OPTIONS - 8.0);
     let mut left = button.rect().right();
     for (name, value) in values {
         let field = bar_field(&h, name);

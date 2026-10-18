@@ -59,7 +59,9 @@ pub fn bar(ui: &mut egui::Ui, state: &mut AppState) {
 fn brush(ui: &mut egui::Ui, state: &mut AppState) {
     let tip = tip_text(BRUSH_SETTINGS, Some("B"));
     let on = Some(state.desk.brush_shows());
-    let resp = widgets::tool_button(ui, BRUSH_SETTINGS, Icon::Sliders, &tip, on, true);
+    let size = widgets::SMALL;
+    let icon = Icon::Sliders;
+    let resp = widgets::sized_tool_button(ui, size, BRUSH_SETTINGS, icon, &tip, on, true);
     if resp.clicked() {
         state.desk.toggle_brush();
     }

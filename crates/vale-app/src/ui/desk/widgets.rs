@@ -30,13 +30,42 @@ pub fn tool_button(
     selected: Option<bool>,
     enabled: bool,
 ) -> Response {
+    let size = Size {
+        side: theme::TOOL,
+        icon: theme::ICON,
+    };
+    sized_tool_button(ui, size, name, icon, tip, selected, enabled)
+}
+
+/// The size of a tool button and of its icon.
+#[derive(Copy, Clone, Debug)]
+pub struct Size {
+    pub side: f32,
+    pub icon: f32,
+}
+
+/// The tool button of a bar that is too low for a button of the rail.
+pub const SMALL: Size = Size {
+    side: 22.0,
+    icon: 14.0,
+};
+
+/// A tool button of the given size.
+pub fn sized_tool_button(
+    ui: &mut egui::Ui,
+    size: Size,
+    name: &str,
+    icon: Icon,
+    tip: &str,
+    selected: Option<bool>,
+    enabled: bool,
+) -> Response {
     let sense = if enabled {
         Sense::click()
     } else {
         Sense::hover()
     };
-    let size = vec2(theme::TOOL, theme::TOOL);
-    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    let (rect, resp) = ui.allocate_exact_size(vec2(size.side, size.side), sense);
     resp.widget_info(|| match selected {
         Some(on) => egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name),
         None => egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name),
@@ -57,7 +86,7 @@ pub fn tool_button(
     } else {
         theme::MUTE.gamma_multiply(theme::OFF)
     };
-    icons::paint(painter, rect, icon, theme::ICON, color);
+    icons::paint(painter, rect, icon, size.icon, color);
     resp.on_hover_text(tip)
 }
 
