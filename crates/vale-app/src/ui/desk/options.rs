@@ -54,7 +54,15 @@ pub fn bar(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
+/// The button of the Brush panel next to the name of the mode, and then the
+/// fields that the panel also holds.
 fn brush(ui: &mut egui::Ui, state: &mut AppState) {
+    let tip = tip_text(BRUSH_SETTINGS, Some("B"));
+    let on = Some(state.desk.brush_shows());
+    let resp = widgets::tool_button(ui, BRUSH_SETTINGS, Icon::Sliders, &tip, on, true);
+    if resp.clicked() {
+        state.desk.toggle_brush();
+    }
     widgets::divider(ui);
     ui.spacing_mut().item_spacing.x = 16.0;
     let glass = Glass::of(state);
@@ -63,14 +71,4 @@ fn brush(ui: &mut egui::Ui, state: &mut AppState) {
             setting.set(state, value);
         }
     }
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.add_space(8.0);
-        let tip = tip_text(BRUSH_SETTINGS, Some("B"));
-        let on = Some(state.desk.brush_shows());
-        let icon = Icon::Sliders;
-        let resp = widgets::tool_button(ui, BRUSH_SETTINGS, icon, &tip, on, true);
-        if resp.clicked() {
-            state.desk.toggle_brush();
-        }
-    });
 }

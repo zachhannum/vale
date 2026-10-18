@@ -374,7 +374,7 @@ The desktop layout has the workspaces, switches, tools, and panels of the iPad l
 The window has five places, from top to bottom:
 
 - The title bar and the tool bar are one bar. At the left, it holds the window buttons, the name of the world, the name of the file with the save mark, and the workspace switch. At the center, it holds the view switch in the World workspace, the map frame menu and the mode switch in the Maps workspace, and the page controls and "Export…" in the Atlas workspace. At the right, it holds undo, redo, and the button that shows or hides the dock. These actions are the same in each workspace.
-- The options bar holds the settings of the active tool. For a brush mode, these are the value fields Size, Strength, Flow, and Hardness, a pressure switch, and the button "Brush settings". A drag on a value field changes the value, and a click on it opens a slider. The button "Brush settings" shows the Brush panel in the dock.
+- The options bar holds the settings of the active tool. For a brush mode, these are the button "Brush settings" next to the name of the mode, the value fields Size, Strength, Flow, and Hardness, and a pressure switch. A drag on a value field changes the value, and a click on it opens a slider. The button "Brush settings" shows the Brush panel in the dock.
 - The tool rail at the left edge holds the tools and the More button. If the selected layer is not a visible raster layer, the brush modes are disabled, and the tool is the hand.
 - The canvas is between the tool rail and the dock.
 - The status bar holds the position readout, the scale, and the zoom.

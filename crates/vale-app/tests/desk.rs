@@ -662,7 +662,10 @@ fn the_options_bar_has_the_value_fields_of_the_brush() {
     let values = values
         .into_iter()
         .chain([("Flow", Some(100.0)), ("Hardness", Some(30.0))]);
-    let mut left = 0.0;
+    // The button of the Brush panel comes before the fields.
+    let button = h.get_by_label(BRUSH_SETTINGS);
+    assert_eq!(button.rect().center().y, middle);
+    let mut left = button.rect().right();
     for (name, value) in values {
         let field = bar_field(&h, name);
         assert_eq!(field.rect().center().y, middle, "{name}");
@@ -676,9 +679,7 @@ fn the_options_bar_has_the_value_fields_of_the_brush() {
             );
         }
     }
-    let button = h.get_by_label(BRUSH_SETTINGS);
-    assert!(button.rect().right() > 1200.0);
-    button.hover();
+    h.get_by_label(BRUSH_SETTINGS).hover();
     h.run_steps(60);
     assert!(h.query_by_label("Brush settings (B)").is_some());
 
