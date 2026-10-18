@@ -33,6 +33,22 @@ rfd.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 window-vibrancy = "0.8.1"
 muda = { version = "0.21.2", default-features = false }
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSResponder",
+    "NSView",
+    "objc2-quartz-core",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "CALayer",
+    "objc2-core-foundation",
+] }
 
 [dev-dependencies]
 tiff.workspace = true

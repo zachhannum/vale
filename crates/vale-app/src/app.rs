@@ -253,14 +253,53 @@ pub fn window_options(size: (f64, f64)) -> eframe::NativeOptions {
 pub fn apply_glass(cc: &eframe::CreationContext<'_>) -> bool {
     #[cfg(target_os = "macos")]
     {
+        use eframe::wgpu::rwh::{HasWindowHandle as _, RawWindowHandle};
         use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy};
         let material = NSVisualEffectMaterial::UnderWindowBackground;
-        apply_vibrancy(cc, material, None, None).is_ok()
+        if apply_vibrancy(cc, material, None, None).is_err() {
+            return false;
+        }
+        if let Ok(RawWindowHandle::AppKit(handle)) = cc.window_handle().map(|h| h.as_raw()) {
+            // SAFETY: The handle of the window gives a valid `NSView`, and
+            // the creation closure runs on the main thread.
+            unsafe { raise_render_layer(handle.ns_view) };
+        }
+        true
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = cc;
         false
+    }
+}
+
+/// Puts the Metal layer of wgpu above the glass. wgpu adds the layer to the
+/// view before the glass view comes, and AppKit puts the layer of the glass
+/// view on top. The glass then hides each frame.
+///
+/// # Safety
+///
+/// `ns_view` must be a valid `NSView`, and the call must be on the main
+/// thread.
+#[cfg(target_os = "macos")]
+unsafe fn raise_render_layer(ns_view: std::ptr::NonNull<std::ffi::c_void>) {
+    use objc2::runtime::{AnyClass, NSObjectProtocol as _};
+    use objc2_app_kit::NSView;
+
+    // SAFETY: The caller gives a valid `NSView`.
+    let view: &NSView = unsafe { ns_view.cast().as_ref() };
+    let Some(metal) = AnyClass::get(c"CAMetalLayer") else {
+        return;
+    };
+    let Some(root) = view.layer() else {
+        return;
+    };
+    // SAFETY: The sublayers are `CALayer` objects.
+    let sublayers = unsafe { root.sublayers() };
+    for layer in sublayers.iter().flat_map(|layers| layers.iter()) {
+        if layer.isKindOfClass(metal) {
+            layer.setZPosition(1.0);
+        }
     }
 }
 
