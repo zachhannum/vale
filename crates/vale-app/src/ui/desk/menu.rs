@@ -79,11 +79,17 @@ pub const MENUS: [Menu; 6] = [
             Item::Submenu(
                 ADD_LAYER,
                 &[
+                    C(Command::AddRaster),
+                    S,
                     C(Command::AddLines),
                     C(Command::AddPoints),
                     C(Command::AddPolygons),
                 ],
             ),
+            S,
+            C(Command::LayerUp),
+            C(Command::LayerDown),
+            S,
             C(Command::DeleteLayer),
         ],
     },
@@ -194,8 +200,7 @@ fn name_submenu(resp: &egui::Response, name: &str) {
 /// Runs the command of a key that the menus show. The menu bar of the
 /// system has these keys, so this does nothing with `native_menu`.
 pub fn keys(ctx: &egui::Context, state: &mut AppState) {
-    let dialog = state.world_form.is_some() || state.browser.dialog.is_some();
-    if state.native_menu || dialog || ctx.egui_wants_keyboard_input() {
+    if state.native_menu || super::dialog(state) || ctx.egui_wants_keyboard_input() {
         return;
     }
     let mut commands: Vec<_> = Command::ALL
@@ -338,6 +343,7 @@ mod tests {
             assert!(has("View", command), "{command:?}");
         }
         assert!(has("Layer", Command::AddLines) && has("Layer", Command::DeleteLayer));
+        assert!(has("Layer", Command::AddRaster) && has("Layer", Command::LayerUp));
         for command in [Command::Layers, Command::Toolbox, Command::Dock] {
             assert!(has("Window", command), "{command:?}");
         }

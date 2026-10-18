@@ -1,21 +1,27 @@
 use std::path::Path;
 
 use eframe::egui;
+use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use kurbo::Point;
 use vale_app::document::Document;
+use vale_app::globe::StackItem;
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::desk::command::Command;
+use vale_app::ui::desk::dock::OPACITY;
 use vale_app::ui::desk::theme;
-use vale_app::ui::pad::ADD_LAYER;
+use vale_app::ui::pad::{ADD_LAYER, DELETE_LAYER, LAYER_NAME, MORE};
 use vale_app::ui::world_form::{CANCEL, CREATE, FormMode, NEW_WORLD, SAVE, WorldForm};
-use vale_app::ui::{Action, AppState, ExportFormat, Workspace, draw, is_heightmap_path};
+use vale_app::ui::{
+    Action, AppState, ExportFormat, LayerRef, Layout, RasterSpec, Workspace, draw,
+    is_heightmap_path,
+};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{Project, ProjectFile, Units, World};
-use vale_terrain::Heightmap;
+use vale_store::{Project, ProjectFile, RasterId, Units, World};
+use vale_terrain::{FACES, Heightmap, TexelRect};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 
@@ -105,10 +111,165 @@ fn the_layer_list_adds_a_layer() {
     let state = h.state();
     let top = state.doc.project.layers().last().unwrap();
     assert_eq!(
-        (top.name.as_str(), top.kind),
-        ("Points 1", vale_store::GeometryKind::Point)
+        (top.name.as_str(), top.geometry()),
+        ("Points 1", Some(vale_store::GeometryKind::Point))
     );
-    assert_eq!(state.selected_layer, Some(top.id));
+    assert_eq!(state.selected_layer, Some(LayerRef::Vector(top.id)));
+}
+
+/// The names of the layers of the project, from the bottom of the drawing.
+fn layer_names(state: &AppState) -> Vec<&str> {
+    let layers = state.doc.project.layers();
+    layers.iter().map(|l| l.name.as_str()).collect()
+}
+
+#[test]
+fn the_map_workspace_does_not_list_a_raster_layer() {
+    let mut h = harness();
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 64,
+    };
+    let rain = h.state_mut().add_raster(rain).unwrap();
+    let layer = h.state().doc.project.raster_layer(rain).unwrap().id;
+    // The raster layer is between two vector layers in the draw order.
+    assert!(h.state_mut().move_layer(layer, 1));
+    h.state_mut().select(None);
+    h.run_steps(3);
+    let state = h.state();
+    assert_eq!(layer_names(state), ["Land", "Rain", "Rivers", "Places"]);
+
+    // The map frame has an entry for each vector layer only.
+    let ids = |names: [&str; 3]| {
+        let layers = state.doc.project.layers();
+        names.map(|name| layers.iter().find(|l| l.name == name).unwrap().id)
+    };
+    let [land, rivers, places] = ids(["Land", "Rivers", "Places"]);
+    let entries: Vec<_> = state.doc.frame.entries.iter().map(|e| e.layer).collect();
+    assert_eq!(entries, [land, rivers, places]);
+    assert!(state.doc.entry(layer).is_none());
+    // The list, the map, and the labels have the vector layers.
+    assert!(h.query_by_label("Rain").is_none());
+    for name in ["Land", "Rivers", "Places"] {
+        assert!(
+            h.query_by_role_and_label(Role::Button, name).is_some(),
+            "{name}"
+        );
+    }
+    let composed = state.composed.as_ref().expect("a composed map");
+    assert!(composed.labels.placed > 0);
+
+    // A raster layer has no inspector.
+    h.state_mut().selected_layer = Some(LayerRef::Raster(rain));
+    h.run_steps(2);
+    assert!(h.query_by_label("Move up").is_none());
+    h.state_mut().selected_layer = Some(LayerRef::Vector(layer));
+    h.run_steps(2);
+    assert!(h.query_by_label("Move up").is_none());
+
+    // A vector layer moves past the next vector layer of the map.
+    h.state_mut().select(Some(LayerRef::Vector(land)));
+    h.run_steps(2);
+    h.get_by_label("Move up").click();
+    h.run_steps(2);
+    let state = h.state();
+    assert_eq!(layer_names(state), ["Rain", "Rivers", "Land", "Places"]);
+    let entries: Vec<_> = state.doc.frame.entries.iter().map(|e| e.layer).collect();
+    assert_eq!(entries, [rivers, land, places]);
+}
+
+/// The desktop layout of the globe workspace of the sample world.
+fn globe_harness() -> Harness<'static, AppState> {
+    let mut state = state_with(Document::sample());
+    state.workspace = Workspace::Globe;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    h
+}
+
+#[test]
+fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
+    let mut h = globe_harness();
+    let height = RasterSpec::height("Height", 64);
+    let height = h.state_mut().add_raster(height).unwrap();
+    h.state_mut().select(None);
+    h.run_steps(2);
+    assert_eq!(
+        layer_names(h.state()),
+        ["Height", "Land", "Rivers", "Places"]
+    );
+    let click = |h: &mut Harness<'static, AppState>, name: &str| {
+        h.get_by_label(name).click();
+        h.run_steps(2);
+    };
+    let row = |h: &mut Harness<'static, AppState>, name: &str| {
+        h.get_by_role_and_label(Role::Button, name).click();
+        h.run_steps(2);
+    };
+
+    // The dock lists each layer of each kind. A row selects its layer.
+    for name in ["Height", "Land", "Rivers", "Places"] {
+        assert!(
+            h.query_by_role_and_label(Role::Button, name).is_some(),
+            "{name}"
+        );
+    }
+    row(&mut h, "Height");
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(height)));
+    assert_eq!(h.state().globe.raster(), Some(height));
+
+    // The Layer menu moves the selected layer past a vector layer.
+    menu_row(&mut h, "Layer", "Move layer up");
+    h.run_steps(2);
+    menu_row(&mut h, "Layer", "Move layer up");
+    h.run_steps(2);
+    assert_eq!(
+        layer_names(h.state()),
+        ["Land", "Rivers", "Height", "Places"]
+    );
+    row(&mut h, "Places");
+    menu_row(&mut h, "Layer", "Move layer down");
+    h.run_steps(2);
+    assert_eq!(
+        layer_names(h.state()),
+        ["Land", "Rivers", "Places", "Height"]
+    );
+    row(&mut h, "Height");
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(height)));
+
+    // The eye hides the layer, and the brush cannot paint it.
+    click(&mut h, "Hide Height");
+    let layer = h.state().doc.project.raster_layer(height).unwrap();
+    assert!(!layer.visible);
+    let stack = h.state().globe.stack().unwrap();
+    let raster = |item: &StackItem| matches!(item, StackItem::Raster { .. });
+    assert!(!stack.iter().any(raster));
+    assert!(h.state().shown_raster().is_none() && !h.state().globe.paintable);
+    click(&mut h, "Show Height");
+    assert_eq!(h.state().shown_raster().map(|r| r.id), Some(height));
+    assert!(h.state().globe.paintable);
+
+    // The panel of the layer has a name field, an opacity, and a delete
+    // button.
+    assert!(h.query_by_label(LAYER_NAME).is_some());
+    assert!(h.query_all_by_label(OPACITY).next().is_some());
+    assert!(h.state_mut().rename_raster(height, "Ground"));
+    assert!(h.state_mut().set_raster_opacity(height, 0.4));
+    h.run_steps(2);
+    assert!(h.query_by_role_and_label(Role::Button, "Ground").is_some());
+    assert_eq!(h.state().doc.project.raster(height).unwrap().opacity, 0.4);
+    click(&mut h, DELETE_LAYER);
+    let state = h.state();
+    assert_eq!(layer_names(state), ["Land", "Rivers", "Places"]);
+    assert!(state.doc.project.rasters().is_empty());
+    assert!(state.globe.raster_map(height).is_none());
+    assert_eq!(state.selected_layer, None);
 }
 
 #[test]
@@ -399,6 +560,7 @@ fn projection_change_recomposes() {
 
 #[test]
 fn full_ui_renders_offscreen() {
+    let _gpu = one_gpu_test();
     let state = state_with(Document::sample());
     let (img, state) = match headless::ui_png(state, SIZE, 1.0) {
         Ok(v) => v,
@@ -418,6 +580,7 @@ fn full_ui_renders_offscreen() {
 #[test]
 fn a_new_world_starts_from_a_name_a_radius_and_units() {
     let mut state = state_with(Document::sample());
+    state.add_height();
     state.globe.map.set(0, 0, 0, 40000);
     assert!(state.has_raster());
     let world = World {
@@ -432,6 +595,7 @@ fn a_new_world_starts_from_a_name_a_radius_and_units() {
     assert!(state.doc.frame.entries.is_empty());
     assert!(state.doc.project.rasters().is_empty());
     assert!(state.globe.map.allocated().next().is_none());
+    assert_eq!((state.globe.raster(), state.selected_layer), (None, None));
     assert!(!state.has_raster() && !state.globe.can_undo());
     assert!(state.session.is_none());
 }
@@ -443,10 +607,10 @@ fn a_new_world_is_a_new_file_and_the_old_file_stays() {
     let mut state = state_with(Document::sample());
     state.session = Some(Session::open(&old, &mut state.doc).unwrap());
     state.projects = Locations::single(dir.path());
-    // The heightmap of the file has its own face size.
+    // The height layer of the file has its own face size.
     state.globe.set_face_size(512);
-    let base = state.globe.map.base();
-    state.globe.set_map(Heightmap::new(1024, base));
+    let height = RasterSpec::height("Height", 1024);
+    state.add_raster(height).unwrap();
     state.globe.map.set(0, 0, 0, 40000);
     let layers = state.doc.project.layers().to_vec();
 
@@ -471,6 +635,7 @@ fn a_new_world_is_a_new_file_and_the_old_file_stays() {
     assert_eq!(project.rasters()[0].face_size, 1024);
 
     // A stroke on the new world goes to the new file only.
+    state.add_height();
     state.globe.map.set(1, 0, 0, 40000);
     state.run_action(Action::NewWorld(world));
     assert!(dir.path().join("Pebble 2.gpkg").exists());
@@ -611,4 +776,239 @@ fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
     assert!(h.state().world_form.is_none());
     assert_eq!(h.state().doc.project.world.name, "Luna");
     assert_eq!(h.state().doc.project.world.radius_km, 1737.4);
+}
+
+/// One test at a time makes a wgpu device. Software adapters fail when two
+/// threads make devices at the same time.
+fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The face size of the raster layers of the brush tests.
+const BRUSH_FACE_SIZE: usize = 256;
+
+/// The iPad layout of the globe workspace on the wgpu renderer, for a world
+/// with no layer. Each step renders, so each step runs the GPU work of the
+/// globe.
+fn gpu_globe() -> Harness<'static, AppState> {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.set_layout(Layout::Pad);
+    state.globe.set_face_size(BRUSH_FACE_SIZE);
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    h
+}
+
+/// One event of a pen. The first touch is also the pointer.
+fn pen(h: &mut Harness<'static, AppState>, phase: egui::TouchPhase, pos: egui::Pos2) {
+    h.event(egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(1),
+        phase,
+        pos,
+        force: Some(0.5),
+    });
+    h.event(egui::Event::PointerMoved(pos));
+    if phase != egui::TouchPhase::Move {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: phase == egui::TouchPhase::Start,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    if phase == egui::TouchPhase::End {
+        h.event(egui::Event::PointerGone);
+    }
+}
+
+/// A pen stroke across the middle of the canvas. The call returns after the
+/// texels of the stroke are in the CPU heightmap.
+fn pen_stroke(h: &mut Harness<'static, AppState>) {
+    let c = h.state().globe.rect.center();
+    let (from, to) = (c - egui::vec2(40.0, 0.0), c + egui::vec2(40.0, 0.0));
+    pen(h, egui::TouchPhase::Start, from);
+    h.step();
+    for i in 1..=6 {
+        pen(h, egui::TouchPhase::Move, from.lerp(to, i as f32 / 6.0));
+        h.step();
+    }
+    pen(h, egui::TouchPhase::End, to);
+    h.run_steps(3);
+    for _ in 0..400 {
+        if !h.state().globe.busy() {
+            return;
+        }
+        h.step();
+    }
+    panic!("the stroke did not end");
+}
+
+/// Each texel of a heightmap, face by face.
+fn texels(map: &Heightmap) -> Vec<u16> {
+    let n = map.face_size();
+    let all = TexelRect {
+        x0: 0,
+        y0: 0,
+        x1: n,
+        y1: n,
+    };
+    let mut out = Vec::new();
+    (0..FACES).for_each(|face| map.read_rect(face, all, &mut out));
+    out
+}
+
+/// Each texel of a raster layer of the app.
+fn layer_texels(h: &Harness<'static, AppState>, id: RasterId) -> Vec<u16> {
+    texels(h.state().globe.raster_map(id).unwrap())
+}
+
+/// The level of the heightmap on the globe at the middle of the canvas.
+fn middle_level(h: &Harness<'static, AppState>) -> u16 {
+    let globe = &h.state().globe;
+    let middle = globe.unproject(globe.rect.center()).unwrap();
+    globe.map.sample(middle)
+}
+
+#[test]
+fn a_stroke_on_the_second_raster_layer_leaves_the_first() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_globe();
+    let height = h.state_mut().add_height();
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: BRUSH_FACE_SIZE,
+    };
+    let rain = h.state_mut().add_raster(rain).unwrap();
+    let empty = [layer_texels(&h, height), layer_texels(&h, rain)];
+    assert!(empty[0] != empty[1]);
+
+    h.state_mut().select(Some(LayerRef::Raster(height)));
+    h.run_steps(2);
+    pen_stroke(&mut h);
+    let first = layer_texels(&h, height);
+    let first_middle = middle_level(&h);
+    assert!(first != empty[0]);
+    assert!(layer_texels(&h, rain) == empty[1]);
+
+    // The stroke on the second layer goes over the same place. The rivers
+    // of the first layer do not show on the second layer.
+    assert!(h.state().globe.channels().is_some());
+    h.state_mut().select(Some(LayerRef::Raster(rain)));
+    assert!(h.state().globe.channels().is_none());
+    h.run_steps(2);
+    assert!(h.state().globe.channels().is_none());
+    assert_eq!(h.state().globe.raster(), Some(rain));
+    pen_stroke(&mut h);
+    let second = layer_texels(&h, rain);
+    assert!(second != empty[1]);
+    assert!(
+        layer_texels(&h, height) == first,
+        "the stroke on the second layer changed the first"
+    );
+    // The stroke started from the ground of the second layer.
+    let base = h.state().globe.map.base();
+    assert_eq!(base, 0);
+    assert!(middle_level(&h) > base && middle_level(&h) < first_middle);
+
+    // The GPU has the first layer again, and a stroke goes on from its
+    // ground.
+    h.state_mut().select(Some(LayerRef::Raster(height)));
+    assert!(h.state().globe.channels().is_none());
+    h.run_steps(2);
+    assert!(h.state().globe.channels().is_some());
+    pen_stroke(&mut h);
+    assert!(middle_level(&h) > first_middle);
+    assert!(layer_texels(&h, rain) == second);
+    let project = &h.state().doc.project;
+    let units: Vec<&str> = project.rasters().iter().map(|r| r.unit.as_str()).collect();
+    assert_eq!(units, ["m", "mm"]);
+}
+
+#[test]
+fn a_new_world_has_no_raster_layer() {
+    let _gpu = one_gpu_test();
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = gpu_globe();
+    h.state_mut().projects = Locations::single(dir.path());
+    let world = World {
+        name: "Pebble".to_string(),
+        ..World::default()
+    };
+    h.state_mut().run_action(Action::NewWorld(world));
+    h.run_steps(3);
+    let state = h.state();
+    assert!(state.session.is_some() && !state.has_raster());
+    assert!(state.doc.project.rasters().is_empty());
+    assert_eq!((state.globe.raster(), state.selected_layer), (None, None));
+
+    // With no raster layer, the brush cells are off, and the pen moves the
+    // globe.
+    let cell = |h: &Harness<'static, AppState>, name: &str| {
+        let controls = &h.state().pad.controls;
+        controls.iter().any(|control| control.name == name)
+    };
+    assert!(!cell(&h, "Raise") && !cell(&h, MORE) && !cell(&h, "Size"));
+    assert!(cell(&h, "Pan"));
+    let view = h.state().globe.view;
+    let before = texels(&h.state().globe.map);
+    pen_stroke(&mut h);
+    let state = h.state();
+    assert_ne!(state.globe.view, view);
+    assert!(texels(&state.globe.map) == before);
+    assert!(state.globe.map.allocated().next().is_none());
+    assert!(state.doc.project.rasters().is_empty());
+    assert!(!state.can_undo());
+
+    // The file has no raster layer after a save.
+    assert!(h.state_mut().save_now());
+    let (file, project) = ProjectFile::open(&dir.path().join("Pebble.gpkg")).unwrap();
+    assert!(project.rasters().is_empty());
+    assert_eq!(project.world.name, "Pebble");
+    drop(file);
+
+    // A vector layer is not a layer that the brush paints.
+    let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
+    h.state_mut().select(Some(LayerRef::Vector(lines)));
+    h.run_steps(2);
+    pen_stroke(&mut h);
+    assert!(h.state().doc.project.rasters().is_empty());
+    assert!(h.state().globe.map.allocated().next().is_none());
+
+    // The brush paints a raster layer that is selected and visible.
+    let height = h.state_mut().add_height();
+    h.run_steps(2);
+    assert!(cell(&h, "Raise") && cell(&h, MORE) && cell(&h, "Size"));
+    h.state_mut().set_raster_visible(height, false);
+    h.run_steps(2);
+    assert!(!cell(&h, "Raise"));
+    pen_stroke(&mut h);
+    assert!(
+        h.state()
+            .globe
+            .raster_map(height)
+            .unwrap()
+            .allocated()
+            .next()
+            .is_none()
+    );
+    h.state_mut().set_raster_visible(height, true);
+    h.run_steps(2);
+    pen_stroke(&mut h);
+    assert!(
+        h.state()
+            .globe
+            .raster_map(height)
+            .unwrap()
+            .allocated()
+            .next()
+            .is_some()
+    );
 }

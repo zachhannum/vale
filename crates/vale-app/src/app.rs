@@ -362,12 +362,10 @@ pub fn run_window(
                 if restore {
                     state.restore();
                 }
-                if let Some(session) = &state.session
-                    && !session.saves_map(&state.globe.map)
-                {
-                    state.status = "This device cannot show the heightmap of the project. \
-                                        The project keeps it, and it does not save the painting."
-                        .to_string();
+                // The renderer can take away a heightmap that is too large.
+                state.sync_globe();
+                if state.session.is_some() {
+                    state.note_lost_rasters();
                 }
                 if cfg!(target_os = "ios") {
                     apply_touch_style(&cc.egui_ctx);

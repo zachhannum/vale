@@ -1,15 +1,18 @@
-//! The band limits and the color ramp of the elevation preview.
+//! The value range, the band limits, and the color ramp of the preview.
 
 use crate::cube::{ELEV_MAX, ELEV_MIN};
 
 pub type Rgb = [u8; 3];
 
-/// The elevation of sea level, in meters. It is always a band limit.
+/// The elevation of sea level, in meters. It is a band limit of each range
+/// that has values below it and above it.
 pub const SEA_LEVEL: f64 = 0.0;
 /// The largest number of bands.
 pub const MAX_BANDS: usize = 32;
-/// The least height of one band, in meters.
+/// The least height of one band, in the unit of the layer.
 pub const MIN_BAND: f64 = 1.0;
+/// The number of bands on each side of sea level in `Bands::with_range`.
+const SIDE_BANDS: usize = 4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ramp {
@@ -69,7 +72,7 @@ fn blend(stops: &[Rgb], t: f64) -> Rgb {
 /// One step of the preview.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Band {
-    /// The lower and upper elevation, in meters.
+    /// The lower and upper value, in the unit of the layer.
     pub min: f64,
     pub max: f64,
     /// The color of the whole band in the stepped preview.
@@ -81,89 +84,179 @@ pub struct Band {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bands {
-    /// The limits in ascending order. Sea level is one of them.
+    /// The values of level 0 and of the highest level.
+    min: f64,
+    max: f64,
+    /// The limits in ascending order. With a sea split, sea level is one of
+    /// them.
     limits: Vec<f64>,
+    /// The bands have a sea split: sea level is a limit that stays, and the
+    /// bands below it use the sea side of the ramp.
+    split: bool,
     pub ramp: Ramp,
 }
 
+/// The bands of the height in meters.
 impl Default for Bands {
     fn default() -> Bands {
         Bands {
+            min: ELEV_MIN,
+            max: ELEV_MAX,
             limits: vec![
                 -4000.0, -2000.0, -1000.0, -200.0, SEA_LEVEL, 200.0, 500.0, 1000.0, 2000.0, 3000.0,
                 4000.0,
             ],
+            split: true,
             ramp: Ramp::default(),
         }
     }
 }
 
 impl Bands {
-    /// The bands of a saved copy. Returns `None` if `add` does not take a
-    /// limit, if sea level is not a limit, or if a side of the ramp is empty.
-    pub fn from_parts(limits: &[f64], ramp: Ramp) -> Option<Bands> {
-        if ramp.sea.is_empty() || ramp.land.is_empty() {
-            return None;
-        }
-        let mut bands = Bands {
-            limits: vec![SEA_LEVEL],
-            ramp,
+    /// The bands of a range from `min` to `max`, with limits at even spacing
+    /// and the default ramp. With `sea`, the values are heights, and a range
+    /// with values below and above sea level has a sea split. Such a range
+    /// gets the same number of bands on each side of sea level. Returns
+    /// `None` if the range is empty or not finite.
+    pub fn with_range(min: f64, max: f64, sea: bool) -> Option<Bands> {
+        let mut bands = Bands::empty(min, max, sea, Ramp::default())?;
+        let sides: &[(f64, f64)] = if bands.sea().is_some() {
+            &[(min, SEA_LEVEL), (SEA_LEVEL, max)]
+        } else {
+            &[(min, max)]
         };
-        let mut sea = false;
-        for &meters in limits {
-            if meters == SEA_LEVEL && !sea {
-                sea = true;
-            } else {
-                bands.add(meters)?;
+        let count = 2 * SIDE_BANDS / sides.len();
+        for &(from, to) in sides {
+            for i in 1..count {
+                // A range of less than `MIN_BAND` for each band gets fewer limits.
+                bands.add(from + (to - from) * i as f64 / count as f64);
             }
         }
-        sea.then_some(bands)
+        Some(bands)
     }
 
-    /// The limits in meters, in ascending order. Sea level is one of them.
+    /// The height bands of a saved copy. Returns `None` if `add` does not
+    /// take a limit, if sea level is not a limit, or if a side of the ramp is
+    /// empty.
+    pub fn from_parts(limits: &[f64], ramp: Ramp) -> Option<Bands> {
+        Bands::from_range_parts(ELEV_MIN, ELEV_MAX, true, limits, ramp)
+    }
+
+    /// The bands of a saved copy with a range from `min` to `max`. Returns
+    /// `None` if the range is empty or not finite, if `add` does not take a
+    /// limit, or if the land side of the ramp is empty. With `sea`, the
+    /// values are heights. A range of heights with a sea split also needs
+    /// sea level as a limit and a sea side of the ramp.
+    pub fn from_range_parts(
+        min: f64,
+        max: f64,
+        sea: bool,
+        limits: &[f64],
+        ramp: Ramp,
+    ) -> Option<Bands> {
+        let mut bands = Bands::empty(min, max, sea, ramp)?;
+        let split = bands.sea().is_some();
+        if bands.ramp.land.is_empty() || (split && bands.ramp.sea.is_empty()) {
+            return None;
+        }
+        let mut sea = false;
+        for &value in limits {
+            if split && value == SEA_LEVEL && !sea {
+                sea = true;
+            } else {
+                bands.add(value)?;
+            }
+        }
+        (sea == split).then_some(bands)
+    }
+
+    /// The bands of a range with no limits other than sea level.
+    fn empty(min: f64, max: f64, sea: bool, ramp: Ramp) -> Option<Bands> {
+        if !(min.is_finite() && max.is_finite() && min < max) {
+            return None;
+        }
+        let split = sea && min < SEA_LEVEL && SEA_LEVEL < max;
+        Some(Bands {
+            min,
+            max,
+            limits: if split { vec![SEA_LEVEL] } else { Vec::new() },
+            split,
+            ramp,
+        })
+    }
+
+    /// The value of level 0, in the unit of the layer.
+    pub fn min(&self) -> f64 {
+        self.min
+    }
+
+    /// The value of the highest level, in the unit of the layer.
+    pub fn max(&self) -> f64 {
+        self.max
+    }
+
+    /// The level of a value. A value out of the range gets the nearest end.
+    pub fn level(&self, value: f64) -> u16 {
+        (((value - self.min) / (self.max - self.min)).clamp(0.0, 1.0) * 65535.0).round() as u16
+    }
+
+    /// The value of a level.
+    pub fn value(&self, level: u16) -> f64 {
+        self.min + f64::from(level) / 65535.0 * (self.max - self.min)
+    }
+
+    /// The limits in ascending order. With a sea split, sea level is one of
+    /// them.
     pub fn limits(&self) -> &[f64] {
         &self.limits
     }
 
-    /// The index of sea level in `limits`.
+    /// The index of sea level in `limits`. Only a range of heights with
+    /// values on both sides of sea level has a sea split. All the bands of
+    /// each other range use the land side of the ramp.
+    pub fn sea(&self) -> Option<usize> {
+        self.split.then(|| self.sea_index())
+    }
+
+    /// The number of limits below sea level. With a sea split, this is the
+    /// index of sea level in `limits`.
     pub fn sea_index(&self) -> usize {
         self.limits.partition_point(|&m| m < SEA_LEVEL)
     }
 
     /// Adds a limit and returns its index. Returns `None` if the limit is
-    /// less than `MIN_BAND` from another limit or from an end of the
-    /// elevation range, if it is not finite, or if the list is full.
-    pub fn add(&mut self, meters: f64) -> Option<usize> {
-        let free = meters.is_finite()
+    /// less than `MIN_BAND` from another limit or from an end of the range,
+    /// if it is not finite, or if the list is full.
+    pub fn add(&mut self, value: f64) -> Option<usize> {
+        let free = value.is_finite()
             && self.limits.len() + 1 < MAX_BANDS
-            && (ELEV_MIN + MIN_BAND..=ELEV_MAX - MIN_BAND).contains(&meters)
-            && self.limits.iter().all(|m| (m - meters).abs() >= MIN_BAND);
+            && (self.min + MIN_BAND..=self.max - MIN_BAND).contains(&value)
+            && self.limits.iter().all(|m| (m - value).abs() >= MIN_BAND);
         if !free {
             return None;
         }
-        let index = self.limits.partition_point(|&m| m < meters);
-        self.limits.insert(index, meters);
+        let index = self.limits.partition_point(|&m| m < value);
+        self.limits.insert(index, value);
         Some(index)
     }
 
-    /// Moves a limit and returns its new elevation. The limit stays between
-    /// the limits next to it or the ends of the elevation range, `MIN_BAND`
-    /// away from each, so its index does not change. Sea level does not move.
-    pub fn move_to(&mut self, index: usize, meters: f64) -> f64 {
-        if index == self.sea_index() || meters.is_nan() {
+    /// Moves a limit and returns its new value. The limit stays between the
+    /// limits next to it or the ends of the range, `MIN_BAND` away from each,
+    /// so its index does not change. Sea level does not move.
+    pub fn move_to(&mut self, index: usize, value: f64) -> f64 {
+        if Some(index) == self.sea() || value.is_nan() {
             return self.limits[index];
         }
         let below = if index == 0 {
-            ELEV_MIN
+            self.min
         } else {
             self.limits[index - 1]
         };
-        let above = self.limits.get(index + 1).copied().unwrap_or(ELEV_MAX);
-        // Two neighbors can be less than two bands apart only after a change
-        // to the constants, so the limit then stays where it is.
+        let above = self.limits.get(index + 1).copied().unwrap_or(self.max);
+        // A limit with less than two bands of room stays where it is.
         let (lo, hi) = (below + MIN_BAND, above - MIN_BAND);
         if lo <= hi {
-            self.limits[index] = meters.clamp(lo, hi);
+            self.limits[index] = value.clamp(lo, hi);
         }
         self.limits[index]
     }
@@ -171,25 +264,25 @@ impl Bands {
     /// Removes a limit. Returns `false` for sea level and for an index out of
     /// range.
     pub fn remove(&mut self, index: usize) -> bool {
-        if index >= self.limits.len() || index == self.sea_index() {
+        if index >= self.limits.len() || Some(index) == self.sea() {
             return false;
         }
         self.limits.remove(index);
         true
     }
 
-    /// The bands from `ELEV_MIN` to `ELEV_MAX`, in ascending order. There is
-    /// one more band than there are limits.
+    /// The bands from `min` to `max`, in ascending order. There is one more
+    /// band than there are limits.
     ///
     /// The position of a band on the ramp comes from its index on its side of
-    /// sea level, and not from its elevation.
+    /// sea level, and not from its value.
     pub fn bands(&self) -> Vec<Band> {
-        let sea = self.sea_index() + 1;
+        let sea = self.sea().map_or(0, |index| index + 1);
         let land = self.limits.len() + 1 - sea;
         (0..=self.limits.len())
             .map(|i| {
-                let min = if i == 0 { ELEV_MIN } else { self.limits[i - 1] };
-                let max = self.limits.get(i).copied().unwrap_or(ELEV_MAX);
+                let min = if i == 0 { self.min } else { self.limits[i - 1] };
+                let max = self.limits.get(i).copied().unwrap_or(self.max);
                 let (j, k) = if i < sea { (i, sea) } else { (i - sea, land) };
                 let at = |offset: f64| {
                     let t = (j as f64 + offset) / k as f64;
@@ -214,6 +307,7 @@ impl Bands {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cube::{level_to_meters, meters_to_level};
 
     fn sorted(bands: &Bands) -> bool {
         bands.limits().windows(2).all(|w| w[0] < w[1])
@@ -461,5 +555,174 @@ mod tests {
             land: vec![[1, 2, 3]],
         };
         assert_eq!(Bands::from_parts(&[0.0], empty), None);
+    }
+
+    #[test]
+    fn the_default_gives_the_levels_of_meters() {
+        let bands = Bands::default();
+        assert_eq!((bands.min(), bands.max()), (ELEV_MIN, ELEV_MAX));
+        assert_eq!(bands.sea(), Some(bands.sea_index()));
+        for meters in [
+            -9000.0, ELEV_MIN, -1234.5, SEA_LEVEL, 0.1, 2500.0, ELEV_MAX, 9000.0,
+        ] {
+            assert_eq!(bands.level(meters), meters_to_level(meters), "{meters}");
+        }
+        for level in [0, 1, 32767, 32768, 65535] {
+            assert_eq!(bands.value(level), level_to_meters(level), "{level}");
+        }
+        let same =
+            Bands::from_range_parts(ELEV_MIN, ELEV_MAX, true, bands.limits(), Ramp::default());
+        assert_eq!(same, Some(bands));
+    }
+
+    #[test]
+    fn a_range_has_its_own_levels() {
+        let bands = Bands::with_range(0.0, 4000.0, false).unwrap();
+        assert_eq!(bands.level(0.0), 0);
+        assert_eq!(bands.level(4000.0), 65535);
+        assert_eq!(bands.level(2000.0), 32768);
+        assert_eq!(bands.level(-50.0), 0);
+        assert_eq!(bands.level(5000.0), 65535);
+        assert_eq!(bands.value(0), 0.0);
+        assert_eq!(bands.value(65535), 4000.0);
+        // One level is about 0.06 of the unit.
+        for value in [0.0, 1.0, 1234.5, 3999.0, 4000.0] {
+            let back = bands.value(bands.level(value));
+            assert!(
+                (back - value).abs() <= 4000.0 / 65535.0 / 2.0 + 1e-9,
+                "{value}"
+            );
+        }
+        for level in [0, 1, 777, 40000, 65535] {
+            assert_eq!(bands.level(bands.value(level)), level);
+        }
+    }
+
+    #[test]
+    fn a_range_with_no_sea_uses_the_land_ramp() {
+        let bands = Bands::with_range(0.0, 4000.0, false).unwrap();
+        assert_eq!(bands.sea(), None);
+        let limits = [500.0, 1000.0, 1500.0, 2000.0, 2500.0, 3000.0, 3500.0];
+        assert_eq!(bands.limits(), limits);
+        let steps = bands.bands();
+        assert_eq!(steps.len(), 8);
+        assert_eq!((steps[0].min, steps[7].max), (0.0, 4000.0));
+        for (j, band) in steps.iter().enumerate() {
+            assert_eq!(band.color, bands.ramp.land((j as f64 + 0.5) / 8.0));
+        }
+
+        // Each limit moves and goes away, also the first one.
+        let mut bands = bands;
+        assert_eq!(bands.move_to(0, 100.0), 100.0);
+        assert_eq!(bands.move_to(0, -100.0), MIN_BAND);
+        assert_eq!(bands.move_to(6, 9000.0), 4000.0 - MIN_BAND);
+        assert_eq!(bands.add(0.0), None);
+        assert_eq!(bands.add(4000.0), None);
+        while !bands.limits().is_empty() {
+            assert!(bands.remove(0));
+        }
+        let steps = bands.bands();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].bottom, bands.ramp.land(0.0));
+        assert_eq!(steps[0].top, bands.ramp.land(1.0));
+
+        let below = Bands::with_range(-4000.0, 0.0, true).unwrap();
+        assert_eq!(below.sea(), None);
+        assert_eq!(below.bands()[0].bottom, below.ramp.land(0.0));
+    }
+
+    #[test]
+    fn a_range_across_zero_that_is_not_a_height_has_one_ramp() {
+        let bands = Bands::with_range(-60.0, 60.0, false).unwrap();
+        assert_eq!(bands.sea(), None);
+        let limits = [-45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0];
+        assert_eq!(bands.limits(), limits);
+        let steps = bands.bands();
+        assert_eq!(steps.len(), 8);
+        for (j, band) in steps.iter().enumerate() {
+            assert_eq!(band.color, bands.ramp.land((j as f64 + 0.5) / 8.0));
+        }
+        // The limit at zero moves and goes away as each other limit.
+        let mut bands = bands;
+        assert_eq!(bands.move_to(3, 5.0), 5.0);
+        assert!(bands.remove(3));
+        assert_eq!(bands.limits().len(), 6);
+        let ramp = bands.ramp.clone();
+        let copy = Bands::from_range_parts(-60.0, 60.0, false, bands.limits(), ramp);
+        assert_eq!(copy, Some(bands.clone()));
+        // The same parts are not the bands of a height.
+        let ramp = bands.ramp.clone();
+        assert_eq!(
+            Bands::from_range_parts(-60.0, 60.0, true, bands.limits(), ramp),
+            None
+        );
+    }
+
+    #[test]
+    fn a_range_across_sea_level_has_a_sea_split() {
+        let bands = Bands::with_range(-100.0, 300.0, true).unwrap();
+        let limits = [-75.0, -50.0, -25.0, SEA_LEVEL, 75.0, 150.0, 225.0];
+        assert_eq!(bands.limits(), limits);
+        assert_eq!(bands.sea(), Some(3));
+        let steps = bands.bands();
+        assert_eq!(steps[3].top, bands.ramp.sea(1.0));
+        assert_eq!(steps[4].bottom, bands.ramp.land(0.0));
+
+        // A small range has fewer limits.
+        let small = Bands::with_range(0.0, 4.0, true).unwrap();
+        assert_eq!(small.limits(), [1.0, 2.0, 3.0]);
+
+        assert_eq!(Bands::with_range(5.0, 5.0, true), None);
+        assert_eq!(Bands::with_range(5.0, 1.0, true), None);
+        assert_eq!(Bands::with_range(0.0, f64::INFINITY, true), None);
+        assert_eq!(Bands::with_range(f64::NAN, 1.0, true), None);
+    }
+
+    #[test]
+    fn from_range_parts_needs_sea_level_only_with_a_sea_split() {
+        let ramp = Ramp::default;
+        let land = Ramp {
+            sea: vec![],
+            land: vec![[1, 2, 3]],
+        };
+        let bands =
+            Bands::from_range_parts(0.0, 4000.0, true, &[250.0, 1000.0], land.clone()).unwrap();
+        assert_eq!(bands.limits(), [250.0, 1000.0]);
+        assert_eq!((bands.min(), bands.max()), (0.0, 4000.0));
+        assert_eq!(bands.level(4000.0), 65535);
+        let none = Bands::from_range_parts(0.0, 4000.0, true, &[], ramp()).unwrap();
+        assert!(none.limits().is_empty());
+
+        // Sea level is an end of the range, and not a limit.
+        assert_eq!(
+            Bands::from_range_parts(0.0, 4000.0, true, &[0.0, 250.0], ramp()),
+            None
+        );
+        assert_eq!(
+            Bands::from_range_parts(0.0, 4000.0, true, &[5000.0], ramp()),
+            None
+        );
+        assert_eq!(
+            Bands::from_range_parts(4000.0, 0.0, true, &[250.0], ramp()),
+            None
+        );
+        let empty = Ramp {
+            sea: vec![[1, 2, 3]],
+            land: vec![],
+        };
+        assert_eq!(
+            Bands::from_range_parts(0.0, 4000.0, true, &[250.0], empty),
+            None
+        );
+
+        assert!(Bands::from_range_parts(-10.0, 4000.0, true, &[0.0, 250.0], ramp()).is_some());
+        assert_eq!(
+            Bands::from_range_parts(-10.0, 4000.0, true, &[250.0], ramp()),
+            None
+        );
+        assert_eq!(
+            Bands::from_range_parts(-10.0, 4000.0, true, &[0.0, 250.0], land),
+            None
+        );
     }
 }

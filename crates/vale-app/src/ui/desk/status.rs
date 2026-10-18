@@ -51,16 +51,18 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                     .font(font.clone())
                     .color(theme::MUTE)
             };
-            let meters = match state.workspace {
-                Workspace::Globe => state.cursor_meters,
+            let value = match state.workspace {
+                Workspace::Globe => state.readout_value(),
                 Workspace::Map => None,
             };
-            let readout = pad::readout_text(state.cursor_lonlat, meters);
+            let readout = pad::readout_text(state.cursor_lonlat, value.as_deref());
             let progress = state.globe.import_progress();
             let progress = progress.or_else(|| state.globe.export_progress());
             let message = progress.unwrap_or_else(|| state.status.clone());
             let scale = match state.workspace {
-                Workspace::Globe => Some(format!("Face {}", grouped(state.globe.map.face_size()))),
+                Workspace::Globe => state
+                    .shown_raster()
+                    .map(|r| format!("Face {}", grouped(r.face_size as usize))),
                 Workspace::Map => state.composed.as_ref().map(|c| {
                     let units = state.doc.project.world.units;
                     format!("1 pt = {}", world::distance(c.km_per_point, units))

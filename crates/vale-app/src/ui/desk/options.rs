@@ -6,7 +6,6 @@ use super::float::Glass;
 use super::rail::{self, HAND, SELECT};
 use super::widgets::{self, tip_text};
 use super::{MapTool, brush, field, theme};
-use crate::globe::Tool;
 use crate::ui::pad::icons::Icon;
 use crate::ui::{AppState, Workspace};
 
@@ -16,10 +15,8 @@ pub const BRUSH_SETTINGS: &str = "Brush settings";
 /// The name of the active tool.
 pub fn tool_name(state: &AppState) -> &'static str {
     match state.workspace {
-        Workspace::Globe => match state.globe.tool {
-            Tool::Navigate => HAND,
-            Tool::Brush => rail::mode_name(state.globe.brush.mode),
-        },
+        Workspace::Globe if state.globe.brushing() => rail::mode_name(state.globe.brush.mode),
+        Workspace::Globe => HAND,
         Workspace::Map => match state.desk.map_tool {
             MapTool::Select => SELECT,
             MapTool::Hand => HAND,
@@ -50,7 +47,7 @@ pub fn bar(ui: &mut egui::Ui, state: &mut AppState) {
                 );
                 let (at, _) = ui.allocate_exact_size(name.size(), Sense::hover());
                 ui.painter().galley(at.min, name, theme::TEXT);
-                if state.workspace == Workspace::Globe && state.globe.tool == Tool::Brush {
+                if state.workspace == Workspace::Globe && state.globe.brushing() {
                     brush(ui, state);
                 }
             });

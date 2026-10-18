@@ -258,6 +258,7 @@ fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
 fn gpu_harness() -> Harness<'static, AppState> {
     let mut state = AppState::new(Document::empty()).unwrap();
     state.globe.set_face_size(GPU_FACE_SIZE);
+    state.add_height();
     state.globe.tool = Tool::Brush;
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
@@ -683,7 +684,10 @@ fn an_imported_heightmap_opens_again_from_the_project_file() {
     let mut session = Session::open(&file, &mut doc).unwrap();
     let mut globe = Globe::with_face_size(FACE_SIZE);
     let start = Instant::now();
-    session.flush(&mut doc.project, &mut globe.map).unwrap();
+    let (name, unit) = ("Height".to_string(), "m".to_string());
+    let project = &mut doc.project;
+    let id = project.add_raster(name, FACE_SIZE as u32, unit, -6000.0, 6000.0);
+    session.flush(project, &mut [(id, &mut globe.map)]).unwrap();
 
     // The file does not get a part of an import.
     globe.start_import(png);
@@ -693,7 +697,8 @@ fn an_imported_heightmap_opens_again_from_the_project_file() {
     assert!(globe.busy() && globe.map.has_changes());
     let mut tick = |globe: &mut Globe, now| {
         let busy = globe.busy();
-        let tick = session.tick(&mut doc.project, &mut globe.map, busy, now);
+        let maps = &mut [(id, &mut globe.map)];
+        let tick = session.tick(&mut doc.project, maps, busy, now);
         (tick.unwrap(), session.last_save.tiles_written)
     };
     assert_eq!(tick(&mut globe, start), (Some(SAVE_DELAY), 0));
@@ -709,10 +714,9 @@ fn an_imported_heightmap_opens_again_from_the_project_file() {
     let session = Session::open(&file, &mut doc).unwrap();
     let mut next = Globe::with_face_size(1024);
     next.map.bands.add(55.0).unwrap();
-    next.set_map(session.load_map().unwrap().unwrap());
+    next.set_map(session.load_maps().unwrap().remove(0).1);
     assert_eq!(next.map.face_size(), FACE_SIZE);
     assert_eq!(next.map.bands, globe.map.bands);
     assert!(texels(&next.map) == texels(&globe.map), "the texels differ");
     assert!(!next.busy() && !next.can_undo());
-    assert!(session.saves_map(&next.map));
 }

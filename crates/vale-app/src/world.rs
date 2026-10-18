@@ -60,6 +60,62 @@ pub fn distance(km: f64, units: Units) -> String {
     format!("{} {symbol}", three_significant(km / unit_km))
 }
 
+/// A whole number with a comma after each three digits.
+pub fn grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// A distance with two significant digits and its unit, for a value that
+/// a person compares with another one.
+pub fn short_distance(km: f64, units: Units) -> String {
+    let (unit_km, symbol) = unit_for(km, units);
+    let value = km / unit_km;
+    if !value.is_finite() || value <= 0.0 {
+        return format!("– {symbol}");
+    }
+    let digits = 1 - value.log10().floor() as i32;
+    let step = 10f64.powi(digits);
+    let rounded = (value * step).round() / step;
+    if digits > 0 {
+        format!("{rounded:.*} {symbol}", digits as usize)
+    } else {
+        format!("{} {symbol}", grouped(rounded as u64))
+    }
+}
+
+/// The number of decimals that show a value of a raster layer. `span` is
+/// the size of the value range of the layer.
+pub fn value_decimals(span: f64) -> usize {
+    if !span.is_finite() || span <= 0.0 {
+        return 0;
+    }
+    (3.0 - span.log10()).ceil().clamp(0.0, 6.0) as usize
+}
+
+/// A value of a raster layer with its unit. `span` is the size of the value
+/// range of the layer.
+pub fn value_text(value: f64, span: f64, unit: &str) -> String {
+    let text = format!("{value:.*}", value_decimals(span));
+    // A value near zero has no sign.
+    let text = match text.strip_prefix('-') {
+        Some(rest) if rest.chars().all(|c| c == '0' || c == '.') => rest.to_string(),
+        _ => text,
+    };
+    if unit.is_empty() {
+        text
+    } else {
+        format!("{text} {unit}")
+    }
+}
+
 pub fn three_significant(v: f64) -> String {
     if !v.is_finite() || v <= 0.0 {
         return "–".to_string();

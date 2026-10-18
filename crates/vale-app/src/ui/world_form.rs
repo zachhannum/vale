@@ -216,11 +216,11 @@ fn finish(state: &mut AppState, form: WorldForm, did: Did, live: bool) {
     state.world_form = Some(form);
 }
 
-/// The width of the labels of the desktop form.
-const LABEL: f32 = 76.0;
+/// The width of the labels of a desktop form.
+pub(super) const LABEL: f32 = 76.0;
 
-/// A row of the desktop form: the label, and the controls at its right.
-fn row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+/// A row of a desktop form: the label, and the controls at its right.
+pub(super) fn row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal(|ui| {
         ui.set_min_height(desk::theme::ROW);
         let (rect, _) = ui.allocate_exact_size(vec2(LABEL, desk::theme::ROW), egui::Sense::hover());

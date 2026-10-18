@@ -4,7 +4,7 @@
 //! looks along the negative axis. On each face, `u` runs along axis
 //! `(axis + 1) % 3` and `v` runs along axis `(axis + 2) % 3`.
 
-use std::f64::consts::FRAC_PI_4;
+use std::f64::consts::{FRAC_PI_4, TAU};
 
 use crate::math::{V3, normalize};
 
@@ -20,6 +20,29 @@ pub fn meters_to_level(m: f64) -> u16 {
 
 pub fn level_to_meters(level: u16) -> f64 {
     ELEV_MIN + f64::from(level) / 65535.0 * (ELEV_MAX - ELEV_MIN)
+}
+
+/// The values that describe a face size to a person.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceSizeValues {
+    /// The ground that one texel covers at the equator, in kilometers.
+    pub km_per_pixel: f64,
+    /// The width and the height of the equirectangular world map with the
+    /// same detail, in pixels.
+    pub map: (u32, u32),
+    /// The memory of a layer with paint on each texel, before compression.
+    pub bytes: u64,
+}
+
+/// The values of a face of `face_size` by `face_size` texels on a sphere with
+/// a radius of `radius_km`.
+pub fn face_size_values(face_size: u32, radius_km: f64) -> FaceSizeValues {
+    let face = u64::from(face_size);
+    FaceSizeValues {
+        km_per_pixel: TAU * radius_km / (4.0 * f64::from(face_size)),
+        map: (4 * face_size, 2 * face_size),
+        bytes: FACES as u64 * face * face * size_of::<u16>() as u64,
+    }
 }
 
 /// The face that a direction hits, and the flat coordinates on that face,
@@ -80,5 +103,22 @@ mod tests {
             assert!(a.abs() <= 1.0 + 1e-12 && b.abs() <= 1.0 + 1e-12);
             assert!(angle(face_dir(face, a, b), d) < 1e-12);
         }
+    }
+
+    #[test]
+    fn face_size_values_for_the_earth() {
+        let small = face_size_values(4096, 6371.0);
+        assert!((small.km_per_pixel - 2.443).abs() < 5e-4);
+        assert_eq!(small.map, (16_384, 8192));
+        assert_eq!(small.bytes, 201_326_592);
+
+        let large = face_size_values(8192, 6371.0);
+        assert!((large.km_per_pixel - 1.222).abs() < 5e-4);
+        assert_eq!(large.map, (32_768, 16_384));
+        assert_eq!(large.bytes, 805_306_368);
+
+        let half = face_size_values(4096, 6371.0 / 2.0);
+        assert_eq!(half.km_per_pixel, small.km_per_pixel / 2.0);
+        assert_eq!((half.map, half.bytes), (small.map, small.bytes));
     }
 }

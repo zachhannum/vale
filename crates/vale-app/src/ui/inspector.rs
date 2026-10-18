@@ -31,12 +31,12 @@ struct LayerInfo {
 }
 
 fn layer_info(state: &AppState) -> Option<LayerInfo> {
-    let id = state.selected_layer?;
+    let id = state.selected_vector()?;
     let layer = state.doc.layer(id)?;
     Some(LayerInfo {
         id,
         name: layer.name.clone(),
-        kind: layer.kind,
+        kind: layer.geometry()?,
         count: layer.features.len(),
         fields: layer.fields.clone(),
     })
@@ -80,7 +80,7 @@ pub(super) fn layer_body(ui: &mut egui::Ui, state: &mut AppState) {
         }
         if ui.button("Remove").clicked() {
             state.doc.remove_layer(info.id);
-            state.selected_layer = None;
+            state.select(None);
             if state.selection.is_some_and(|s| s.layer == info.id) {
                 state.selection = None;
             }

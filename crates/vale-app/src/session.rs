@@ -1,27 +1,25 @@
-//! The open project file. It saves the project and the changed tiles of the
-//! heightmap a short time after a change. Each save is one step of the undo
+//! The open project file. It saves the project and the changed tiles of each
+//! raster layer a short time after a change. Each save is one step of the undo
 //! log of the file.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use vale_store::{
-    Project, ProjectFile, Raster, Restored, SaveStats, StoreError, TileChanges, TileKey,
+    Project, ProjectFile, Raster, RasterId, Restored, SaveStats, StoreError, TileChanges, TileKey,
 };
-use vale_terrain::{Bands, ELEV_MAX, ELEV_MIN, Heightmap, Ramp};
+use vale_terrain::{Bands, FACES, Heightmap, Ramp, reduced_face_size};
 
 use crate::document::Document;
 use crate::files::Files;
-use crate::globe::thumbnail;
 use crate::globe::view::GlobeView;
+use crate::globe::{DISPLAY_CAP, reduce_tile, thumbnail};
 use crate::workcopy::WorkCopy;
 
 /// The time from a change to its save. One drag of a control changes the
 /// project in each frame, and this delay turns the drag into a few saves.
 pub const SAVE_DELAY: Duration = Duration::from_millis(500);
 
-/// The name of the raster that the app makes for its heightmap.
-const HEIGHT_NAME: &str = "Height";
 /// The largest face size of a heightmap that the app loads.
 const MAX_FACE_SIZE: u32 = 16384;
 
@@ -124,6 +122,9 @@ pub struct Session {
     pub last_save: SaveStats,
     /// The count of the saves that changed the file.
     saves: u64,
+    /// The tiles that the last undo or redo put back in the file for the
+    /// raster layers with no heightmap in its `maps`.
+    pub last_restored: Vec<(RasterId, TileKey)>,
 }
 
 impl Session {
@@ -179,6 +180,7 @@ impl Session {
             held: false,
             last_save: SaveStats::default(),
             saves: 0,
+            last_restored: Vec::new(),
         })
     }
 
@@ -222,35 +224,104 @@ impl Session {
     }
 
     /// Writes the picture of the globe for the list of projects, if the
-    /// file changed after the last picture. With `!saves_map(map)`, the app
-    /// does not show the heightmap of the file, and the file keeps its
-    /// picture.
-    pub fn save_thumbnail(&mut self, map: &Heightmap, view: &GlobeView) -> Result<(), StoreError> {
-        if !self.thumbnail_stale || !self.saves_map(map) {
+    /// file changed after the last picture. `layers` has the heightmap and
+    /// the opacity of each visible raster layer, from the bottom.
+    pub fn save_thumbnail(
+        &mut self,
+        layers: &[(&Heightmap, f32)],
+        view: &GlobeView,
+    ) -> Result<(), StoreError> {
+        if !self.thumbnail_stale {
             return Ok(());
         }
-        let picture = thumbnail::render(map, view, thumbnail::SIZE);
+        let picture = thumbnail::render(layers, view, thumbnail::SIZE);
         self.file.set_thumbnail(&picture)?;
         self.thumbnail_stale = false;
         self.mark_changed();
         Ok(())
     }
 
-    /// The heightmap of the file, with the face size, the base level, the
-    /// bands, and the tiles that the file holds. The heightmap is the first
-    /// raster of the project. `None`: the project has no raster.
-    pub fn load_map(&self) -> Result<Option<Heightmap>, StoreError> {
-        let Some(raster) = self.file.project().rasters().first() else {
-            return Ok(None);
-        };
+    /// The heightmap of each raster layer of the file, in the order of the
+    /// project. A heightmap has the face size, the base level, the bands,
+    /// and the tiles that the file holds.
+    pub fn load_maps(&self) -> Result<Vec<(RasterId, Heightmap)>, StoreError> {
+        let rasters = self.file.project().rasters().iter();
+        rasters
+            .map(|raster| Ok((raster.id, self.load_map(raster)?)))
+            .collect()
+    }
+
+    /// The heightmap of a raster layer with no tile: the face size, the
+    /// base level, and the bands of the record.
+    pub fn empty_map(raster: &Raster) -> Result<Heightmap, StoreError> {
         if raster.face_size > MAX_FACE_SIZE {
             return Err(StoreError::Corrupt(format!(
-                "the face size of raster {:?} is {}",
-                raster.name, raster.face_size
+                "the face size of raster {} is {}",
+                raster.id.0, raster.face_size
             )));
         }
         let mut map = Heightmap::new(raster.face_size as usize, raster.base);
-        load_record(&mut map, raster);
+        map.bands = bands_of(raster);
+        Ok(map)
+    }
+
+    /// One tile of a raster layer of the file. `None`: the file has no such
+    /// tile.
+    pub fn load_tile(
+        &self,
+        raster: RasterId,
+        face: usize,
+        column: usize,
+        row: usize,
+    ) -> Result<Option<Vec<u16>>, StoreError> {
+        let key = TileKey {
+            level: 0,
+            face: face as u8,
+            column: column as u32,
+            row: row as u32,
+        };
+        self.file.load_tile(raster, key)
+    }
+
+    /// The heightmap of the picture of each raster layer of the file: the
+    /// whole heightmap of a layer with a face of `DISPLAY_CAP` or less, or
+    /// else the reduced heightmap.
+    pub fn load_display_maps(&self) -> Result<Vec<(RasterId, Heightmap)>, StoreError> {
+        let rasters = self.file.project().rasters().iter();
+        rasters
+            .map(|raster| Ok((raster.id, self.load_display_map(raster)?)))
+            .collect()
+    }
+
+    /// The heightmap of the picture of one raster layer of the file. A
+    /// reduced heightmap comes from the tiles one by one, so the main memory
+    /// does not hold the whole heightmap.
+    pub fn load_display_map(&self, raster: &Raster) -> Result<Heightmap, StoreError> {
+        let face_size = raster.face_size as usize;
+        if raster.face_size <= DISPLAY_CAP {
+            return self.load_map(raster);
+        }
+        let whole = Session::empty_map(raster)?;
+        let reduced = reduced_face_size(raster.face_size, DISPLAY_CAP) as usize;
+        let mut map = Heightmap::new(reduced, whole.base());
+        map.bands = whole.bands;
+        let factor = raster.face_size.div_ceil(reduced as u32) as usize;
+        let tile = vale_store::TILE_SIZE;
+        self.file.load_tiles(raster, |key, pixels| {
+            let (face, column, row) = (key.face as usize, key.column as usize, key.row as usize);
+            let base = map.base();
+            let block = reduce_tile(Some(&pixels), base, tile, face_size, factor, column, row);
+            if let Some((rect, data)) = block.filter(|_| face < FACES) {
+                map.store_rect(face, rect, &data);
+            }
+        })?;
+        map.clear_changes();
+        Ok(map)
+    }
+
+    /// The heightmap of one raster layer of the file.
+    pub fn load_map(&self, raster: &Raster) -> Result<Heightmap, StoreError> {
+        let mut map = Session::empty_map(raster)?;
         self.file.load_tiles(raster, |key, pixels| {
             map.load_tile(
                 key.face as usize,
@@ -259,34 +330,26 @@ impl Session {
                 &pixels,
             );
         })?;
-        Ok(Some(map))
-    }
-
-    /// True if a save writes the heightmap. A heightmap with a face size
-    /// other than the face size in the file does not go to the file, and the
-    /// file keeps its tiles.
-    pub fn saves_map(&self, map: &Heightmap) -> bool {
-        let raster = self.file.project().rasters().first();
-        raster.is_none_or(|r| r.face_size as usize == map.face_size())
+        Ok(map)
     }
 
     /// Call this in each frame. It saves a change that is older than
     /// `SAVE_DELAY`. It returns the time to the save of a newer change.
     ///
-    /// A painted heightmap gets a raster record in the project. With `hold`,
-    /// there is no save: the heightmap waits for texels of a stroke, or a
-    /// control is held. The changes of one hold are one save, at the end of
-    /// the hold.
+    /// `maps` has the heightmap of each raster layer. A raster layer with no
+    /// heightmap there keeps the tiles of the file. With `hold`, there is no
+    /// save: a heightmap waits for texels of a stroke, or a control is held.
+    /// The changes of one hold are one save, at the end of the hold.
     pub fn tick(
         &mut self,
         project: &mut Project,
-        map: &mut Heightmap,
+        maps: &mut Maps,
         hold: bool,
         now: Instant,
     ) -> Result<Option<Duration>, StoreError> {
         let released = self.held && !hold;
         self.held = hold;
-        if !self.changed(project, map) {
+        if !self.changed(project, maps) {
             self.changed_at = None;
             return Ok(None);
         }
@@ -297,32 +360,37 @@ impl Session {
         if !released && age < SAVE_DELAY {
             return Ok(Some(SAVE_DELAY - age));
         }
-        self.flush(project, map)?;
+        self.flush(project, maps)?;
         Ok(None)
     }
 
     /// Saves a change now, as one undo step.
-    pub fn flush(&mut self, project: &mut Project, map: &mut Heightmap) -> Result<(), StoreError> {
+    pub fn flush(&mut self, project: &mut Project, maps: &mut Maps) -> Result<(), StoreError> {
         self.changed_at = None;
-        if !self.changed(project, map) {
+        if !self.changed(project, maps) {
             return Ok(());
         }
-        let saves_map = self.saves_map(map);
-        let changes = match project.rasters().first() {
-            Some(raster) if saves_map => {
-                // The file has no tile of a raster that is new to it.
-                let stored = self.file.project().rasters().first();
-                let new = stored.map(|r| r.id) != Some(raster.id);
-                vec![tile_changes(raster, map, new)]
+        let mut changes = Vec::new();
+        for (id, map) in maps.iter() {
+            let Some(raster) = record(project, *id, map) else {
+                continue;
+            };
+            // The file has no tile of a raster that is new to it.
+            let stored = self.file.project().raster(*id);
+            let new = stored.is_none_or(|stored| stored.face_size != raster.face_size);
+            if new || map.has_changes() {
+                changes.push(tile_changes(raster, map, new));
             }
-            _ => Vec::new(),
-        };
+        }
         self.last_save = self.file.save_tiles(project, &changes)?;
+        drop(changes);
         self.saves += 1;
         self.thumbnail_stale = true;
         self.mark_changed();
-        if saves_map {
-            map.clear_changes();
+        for (id, map) in maps.iter_mut() {
+            if record(project, *id, map).is_some() {
+                map.clear_changes();
+            }
         }
         Ok(())
     }
@@ -348,53 +416,64 @@ impl Session {
         self.file.can_redo() && self.changed_at.is_none()
     }
 
-    /// Puts back the project and the heightmap from before the last edit.
+    /// Puts back the project and the heightmaps from before the last edit.
     /// A change that waits for its save is saved first, so it is the edit.
     /// Returns `false` if the file has no edit to undo. No stroke must be
     /// open.
-    pub fn undo(&mut self, doc: &mut Document, map: &mut Heightmap) -> Result<bool, StoreError> {
-        self.flush(&mut doc.project, map)?;
+    ///
+    /// A raster layer that the step brings back has no heightmap in `maps`.
+    /// `load_map` gives it.
+    pub fn undo(&mut self, doc: &mut Document, maps: &mut Maps) -> Result<bool, StoreError> {
+        self.flush(&mut doc.project, maps)?;
         self.mark_changed();
+        self.last_restored.clear();
         match self.file.undo()? {
-            Some(restored) => self.apply(restored, doc, map).map(|()| true),
+            Some(restored) => self.apply(restored, doc, maps).map(|()| true),
             None => Ok(false),
         }
     }
 
     /// Puts back the edit that the last `undo` took away.
-    pub fn redo(&mut self, doc: &mut Document, map: &mut Heightmap) -> Result<bool, StoreError> {
-        self.flush(&mut doc.project, map)?;
+    pub fn redo(&mut self, doc: &mut Document, maps: &mut Maps) -> Result<bool, StoreError> {
+        self.flush(&mut doc.project, maps)?;
         self.mark_changed();
+        self.last_restored.clear();
         match self.file.redo()? {
-            Some(restored) => self.apply(restored, doc, map).map(|()| true),
+            Some(restored) => self.apply(restored, doc, maps).map(|()| true),
             None => Ok(false),
         }
     }
 
     /// Puts the project of the file into the document, and the record and
-    /// the restored tiles of the heightmap into `map`.
+    /// the restored tiles of each raster into its heightmap.
     fn apply(
         &mut self,
         restored: Restored,
         doc: &mut Document,
-        map: &mut Heightmap,
+        maps: &mut Maps,
     ) -> Result<(), StoreError> {
         doc.set_project(self.file.project().clone());
-        if !self.saves_map(map) {
-            return Ok(());
+        let project = self.file.project();
+        for (id, map) in maps.iter_mut() {
+            if let Some(raster) = record(project, *id, map) {
+                load_record(map, raster);
+            }
         }
-        // An undo of the first stroke leaves a project with no raster. The
-        // tiles of that stroke then leave the heightmap.
-        let raster = self.file.project().rasters().first();
-        if let Some(raster) = raster {
-            load_record(map, raster);
-        }
+        self.last_restored.clear();
         for (id, key) in restored.tiles {
-            if raster.is_some_and(|r| r.id != id) {
+            let Some((_, map)) = maps.iter_mut().find(|(of, _)| *of == id) else {
+                self.last_restored.push((id, key));
+                continue;
+            };
+            let (face, column, row) = (key.face as usize, key.column as usize, key.row as usize);
+            let side = map.face_size().div_ceil(map.tile_size());
+            if face >= FACES || column >= side || row >= side {
                 continue;
             }
-            let (face, column, row) = (key.face as usize, key.column as usize, key.row as usize);
-            let pixels = match raster {
+            // A raster that the step took away leaves no tile in its
+            // heightmap.
+            let pixels = match project.raster(id) {
+                Some(raster) if raster.face_size as usize != map.face_size() => continue,
                 Some(_) => self.file.load_tile(id, key)?,
                 None => None,
             };
@@ -416,53 +495,79 @@ impl Session {
         self.file.undo_limit()
     }
 
-    /// Updates the raster record of the heightmap. Returns `true` if the
-    /// file does not hold the project or the heightmap.
-    fn changed(&self, project: &mut Project, map: &Heightmap) -> bool {
-        let saves_map = self.saves_map(map);
-        if saves_map {
-            sync_raster(project, map);
+    /// Updates the record of each raster from its heightmap. Returns `true`
+    /// if the file does not hold the project or a heightmap.
+    fn changed(&self, project: &mut Project, maps: &Maps) -> bool {
+        let mut painted = false;
+        for (id, map) in maps {
+            let raster = project.raster_mut(*id);
+            let Some(raster) = raster.filter(|r| r.face_size as usize == map.face_size()) else {
+                continue;
+            };
+            sync_record(raster, map);
+            painted |= map.has_changes();
         }
-        project != self.file.project() || (saves_map && map.has_changes())
+        painted || project != self.file.project()
     }
+}
+
+/// The heightmap of each raster layer that a save writes.
+pub type Maps<'a> = [(RasterId, &'a mut Heightmap)];
+
+/// The record of a heightmap in the project. `None`: the project has no
+/// raster with this ID, or the raster has another face size. A save then
+/// does not write the heightmap.
+fn record<'a>(project: &'a Project, id: RasterId, map: &Heightmap) -> Option<&'a Raster> {
+    let raster = project.raster(id);
+    raster.filter(|raster| raster.face_size as usize == map.face_size())
+}
+
+fn ramp_of(raster: &Raster) -> Ramp {
+    Ramp {
+        sea: raster.ramp_sea.clone(),
+        land: raster.ramp_land.clone(),
+    }
+}
+
+/// The bands of a raster record. A record with no limits or with no ramp
+/// gets the bands that a new raster of its range has. A record with an empty
+/// range gets the range of a height in meters.
+pub fn bands_of(raster: &Raster) -> Bands {
+    let (min, max) = (raster.value_min, raster.value_max);
+    let sea = crate::ui::is_height(raster);
+    Bands::from_range_parts(min, max, sea, &raster.limits, ramp_of(raster))
+        .or_else(|| Bands::with_range(min, max, sea))
+        .or_else(|| Bands::from_parts(&raster.limits, ramp_of(raster)))
+        .unwrap_or_default()
 }
 
 /// Puts the base level, the band limits, and the ramp of a raster record
 /// into the heightmap. The call makes no change for a save.
 fn load_record(map: &mut Heightmap, raster: &Raster) {
     map.load_base(raster.base);
-    let ramp = Ramp {
-        sea: raster.ramp_sea.clone(),
-        land: raster.ramp_land.clone(),
-    };
-    if let Some(bands) = Bands::from_parts(&raster.limits, ramp) {
+    let (min, max) = (raster.value_min, raster.value_max);
+    let sea = crate::ui::is_height(raster);
+    let bands = Bands::from_range_parts(min, max, sea, &raster.limits, ramp_of(raster));
+    if let Some(bands) = bands {
         map.bands = bands;
     }
 }
 
-/// Makes the first raster of the project the record of the heightmap. A
-/// project with no raster gets one when the heightmap has a painted tile.
-fn sync_raster(project: &mut Project, map: &Heightmap) {
-    let id = match project.rasters().first() {
-        Some(raster) => raster.id,
-        None if map.allocated().next().is_none() => return,
-        None => project.add_raster(HEIGHT_NAME.to_string(), map.face_size() as u32),
-    };
-    let raster = project.raster_mut(id).expect("the raster of the ID");
-    let record = Raster {
-        id,
-        name: raster.name.clone(),
-        face_size: map.face_size() as u32,
-        unit: "m".to_string(),
-        value_min: ELEV_MIN,
-        value_max: ELEV_MAX,
-        base: map.base(),
-        limits: map.bands.limits().to_vec(),
-        ramp_sea: map.bands.ramp.sea.clone(),
-        ramp_land: map.bands.ramp.land.clone(),
-    };
-    if *raster != record {
-        *raster = record;
+/// Puts the base level, the value range, the band limits, and the ramp of
+/// a heightmap into its raster record. The unit, the opacity, and the face
+/// size of the record stay.
+pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
+    raster.value_min = map.bands.min();
+    raster.value_max = map.bands.max();
+    raster.base = map.base();
+    if raster.limits != map.bands.limits() {
+        raster.limits = map.bands.limits().to_vec();
+    }
+    if raster.ramp_sea != map.bands.ramp.sea {
+        raster.ramp_sea = map.bands.ramp.sea.clone();
+    }
+    if raster.ramp_land != map.bands.ramp.land {
+        raster.ramp_land = map.bands.ramp.land.clone();
     }
 }
 

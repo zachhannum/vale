@@ -3,7 +3,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
 use vale_app::headless;
-use vale_app::ui::{AppState, Workspace, draw};
+use vale_app::ui::{AppState, LayerRef, Workspace, draw};
 use vale_render::Color;
 use vale_store::LayerId;
 
@@ -75,7 +75,7 @@ fn with_no_selection_the_inspector_shows_the_frame() {
 fn places_controls_and_labels_switch() {
     let mut h = harness();
     let places = id_of(&h, "Places");
-    h.state_mut().selected_layer = Some(places);
+    h.state_mut().selected_layer = Some(LayerRef::Vector(places));
     h.run_steps(2);
     assert!(h.query_by_label("Show labels").is_some());
     assert!(h.query_by_label("Point size").is_some());
@@ -92,7 +92,7 @@ fn places_controls_and_labels_switch() {
 fn polygon_layer_has_no_point_controls() {
     let mut h = harness();
     let land = id_of(&h, "Land");
-    h.state_mut().selected_layer = Some(land);
+    h.state_mut().selected_layer = Some(LayerRef::Vector(land));
     h.run_steps(2);
     assert!(
         h.query_by_label("Polygon labels are not in the prototype.")
@@ -108,7 +108,7 @@ fn select_label_selects_layer() {
     h.get_by_role_and_label(role, "Rivers").click();
     h.run_steps(2);
     let rivers = id_of(&h, "Rivers");
-    assert_eq!(h.state().selected_layer, Some(rivers));
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(rivers)));
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn move_down_and_remove() {
     let mut h = harness();
     let places = id_of(&h, "Places");
     let rivers = id_of(&h, "Rivers");
-    h.state_mut().selected_layer = Some(places);
+    h.state_mut().selected_layer = Some(LayerRef::Vector(places));
     h.run_steps(2);
     h.get_by_label("Move down").click();
     h.run_steps(2);
@@ -161,7 +161,7 @@ fn click_identifies_a_feature() {
     let s = h.state();
     let sel = s.selection.expect("Tokyo is selected");
     assert_eq!(sel.layer, places);
-    assert_eq!(s.selected_layer, Some(places));
+    assert_eq!(s.selected_layer, Some(LayerRef::Vector(places)));
     assert!(h.query_all_by_label("Tokyo").count() >= 1);
     assert!(h.query_by_label("Clear selection").is_some());
     let list = &h.state().composed.as_ref().unwrap().list;
@@ -220,7 +220,7 @@ fn inspector_screenshots() {
         .find(|l| l.name == "Places")
         .unwrap()
         .id;
-    state.selected_layer = Some(places);
+    state.selected_layer = Some(LayerRef::Vector(places));
     state.selection = Some(Selection {
         layer: places,
         feature: 0,

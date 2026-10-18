@@ -216,6 +216,7 @@ fn the_picture_shows_the_painted_world() {
     assert_eq!(unchanged, changed);
 
     h.state_mut().run_action(Action::OpenWorld(path.clone()));
+    h.state_mut().add_height();
     paint(&mut h.state_mut().globe.map);
     h.state_mut().show_projects();
     let painted = vale_store::summary(&path).unwrap().thumbnail.unwrap();
@@ -231,6 +232,7 @@ fn new_open_rename_copy_and_delete_work_in_both_layouts() {
         // New: the app makes two worlds, and each one opens in the editor.
         new_world(&mut h, "Aurelia");
         let first = open_path(&h);
+        h.state_mut().add_height();
         paint(&mut h.state_mut().globe.map);
         let painted = h.state().globe.map.allocated_tiles();
         assert!(painted > 0);
@@ -256,7 +258,11 @@ fn new_open_rename_copy_and_delete_work_in_both_layouts() {
         assert_eq!(h.state().screen, Screen::Editor);
         assert_ne!(open_path(&h), first);
         assert_eq!(h.state().doc.project.world.name, "Cassia copy");
-        assert_eq!(h.state().globe.map.allocated_tiles(), painted);
+        // The brush paints no layer of a world that opens, so the heightmap
+        // of the layer is not the one of the brush.
+        let height = h.state().doc.project.rasters()[0].id;
+        let map = h.state().globe.raster_map(height).unwrap();
+        assert_eq!(map.allocated_tiles(), painted);
         all_worlds(&mut h);
 
         // Delete.

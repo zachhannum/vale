@@ -90,7 +90,7 @@ pub struct Field {
     pub text: String,
     /// The units that typed text can have: the symbol, and its size in the
     /// unit of `value`.
-    pub units: Vec<(&'static str, f64)>,
+    pub units: Vec<(String, f64)>,
     /// The step between two values, or 0 for no step.
     pub step: f64,
     pub enabled: bool,
@@ -486,7 +486,7 @@ mod tests {
             value: 1500.0,
             scale: Scale::log(50.0..=6000.0),
             text: "1500 m".to_owned(),
-            units: vec![("m", 1.0), ("km", 1000.0)],
+            units: vec![("m".into(), 1.0), ("km".into(), 1000.0)],
             step: 0.0,
             enabled: true,
         }

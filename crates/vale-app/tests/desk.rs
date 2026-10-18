@@ -9,7 +9,7 @@ use vale_app::globe::Tool;
 use vale_app::session::Session;
 use vale_app::ui::desk::brush::{LOCK, PICK, STROKE_START};
 use vale_app::ui::desk::command::Command;
-use vale_app::ui::desk::dock::{BRUSH_DEBUG, FRAME, HEIGHT, IMPORT, WORLD_PROPERTIES, grouped};
+use vale_app::ui::desk::dock::{BRUSH_DEBUG, FRAME, IMPORT, OPACITY, WORLD_PROPERTIES, grouped};
 use vale_app::ui::desk::float::SHEET;
 use vale_app::ui::desk::options::{BRUSH_SETTINGS, tool_name};
 use vale_app::ui::desk::rail::MORE_TOOLS;
@@ -18,8 +18,11 @@ use vale_app::ui::desk::title::NOT_IN_PROTOTYPE;
 use vale_app::ui::desk::{MapTool, Tab, theme};
 use vale_app::ui::pad::{ADD_LAYER, readout_text};
 use vale_app::ui::panels::PROJECTION;
+use vale_app::ui::raster_form;
 use vale_app::ui::world_form::{CANCEL, SAVE};
-use vale_app::ui::{AppState, Layout, Workspace, draw};
+use vale_app::ui::{
+    AppState, HEIGHT_NAME as HEIGHT, LayerRef, Layout, RasterSpec, Workspace, draw,
+};
 use vale_sphere::ProjectionKind;
 
 type App = Harness<'static, AppState>;
@@ -44,6 +47,17 @@ fn state() -> AppState {
 
 fn harness() -> App {
     harness_with(state())
+}
+
+/// A world with a height layer that the brush paints.
+fn brush_state() -> AppState {
+    let mut state = state();
+    state.add_height();
+    state
+}
+
+fn brush_harness() -> App {
+    harness_with(brush_state())
 }
 
 #[test]
@@ -276,8 +290,8 @@ fn the_inspector_shows_the_panel_of_the_selection() {
     assert!(h.state().world_form.is_some());
     h.state_mut().world_form = None;
 
-    let map = &mut h.state_mut().globe.map;
-    map.set(0, 0, 0, map.base() + 1);
+    h.state_mut().add_height();
+    h.state_mut().select(None);
     h.run_steps(2);
     h.get_by_role_and_label(Role::Button, HEIGHT).click();
     h.run_steps(2);
@@ -289,8 +303,10 @@ fn the_inspector_shows_the_panel_of_the_selection() {
         "Greyscale",
         "Import heightmap…",
         "Export GeoTIFF…",
+        OPACITY,
+        "Delete layer",
     ] {
-        assert!(h.query_by_label(label).is_some(), "{label}");
+        assert!(h.query_all_by_label(label).next().is_some(), "{label}");
     }
 
     h.get_by_role_and_label(Role::Button, "Rivers").click();
@@ -346,14 +362,19 @@ fn the_add_button_of_the_dock_adds_a_layer() {
     let layers = h.state().doc.project.layers();
     assert_eq!(layers.len(), count + 1);
     let added = layers.last().unwrap();
-    assert_eq!(h.state().selected_layer, Some(added.id));
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(added.id)));
     assert_eq!(heading(&h), added.name);
 }
 
 #[test]
 fn the_status_bar_shows_the_readout_the_scale_and_the_zoom() {
     let mut h = harness();
-    let face = format!("Face {}", grouped(h.state().globe.map.face_size()));
+    // The scale is the face size of the raster layer of the readout.
+    assert!(h.query_by_label_contains("Face ").is_none());
+    let height = h.state_mut().add_height();
+    h.run_steps(2);
+    let size = h.state().doc.project.raster(height).unwrap().face_size;
+    let face = format!("Face {}", grouped(size as usize));
     let label = h.get_by_label(&face);
     assert!(label.rect().top() >= 800.0 - theme::STATUS);
     assert!(h.query_by_label("100%").is_some());
@@ -363,7 +384,7 @@ fn the_status_bar_shows_the_readout_the_scale_and_the_zoom() {
     h.hover_at(c);
     h.run_steps(2);
     let s = h.state();
-    let text = readout_text(s.cursor_lonlat, s.cursor_meters);
+    let text = readout_text(s.cursor_lonlat, s.readout_value().as_deref());
     assert!(text.ends_with(" m"), "{text}");
     assert!(h.query_by_label(&text).is_some(), "{text}");
 
@@ -469,7 +490,7 @@ fn mode(h: &App) -> (Tool, vale_terrain::Mode) {
 
 #[test]
 fn the_tool_rail_has_the_tools_with_their_keys() {
-    let mut h = harness();
+    let mut h = brush_harness();
     let top = theme::MENU + theme::BAR + theme::OPTIONS;
     for name in WORLD_TOOLS
         .map(|(name, _)| name)
@@ -499,7 +520,7 @@ fn the_tool_rail_has_the_tools_with_their_keys() {
 #[test]
 fn the_keys_choose_the_tools_and_show_the_brush_panel() {
     use vale_terrain::Mode;
-    let mut h = harness();
+    let mut h = brush_harness();
     assert!(!h.state().desk.brush_shows());
     for (key, mode) in [
         (Key::R, Mode::Raise),
@@ -512,11 +533,12 @@ fn the_keys_choose_the_tools_and_show_the_brush_panel() {
         assert!(h.state().desk.brush_shows());
     }
     assert!(h.query_by_label(LOCK).is_some());
-    // B goes back to the world, and then shows the Brush panel again.
+    // B goes back to the panel of the layer, and then shows the Brush panel
+    // again.
     press(&mut h, Key::B);
     assert!(!h.state().desk.brush_shows());
     assert!(h.query_by_label(LOCK).is_none());
-    assert!(h.query_by_label(WORLD_PROPERTIES).is_some());
+    assert!(h.query_all_by_label(OPACITY).next().is_some());
     press(&mut h, Key::B);
     assert!(h.state().desk.brush_shows());
     // B opens the dock.
@@ -548,7 +570,7 @@ fn the_keys_choose_the_tools_and_show_the_brush_panel() {
 fn the_keys_of_the_tools_do_nothing_while_a_text_field_has_the_keyboard() {
     let mut state = state();
     state.workspace = Workspace::Map;
-    state.selected_layer = state.doc.project.layers().first().map(|l| l.id);
+    state.selected_layer = state.doc.project.layers().first().map(LayerRef::of);
     let mut h = harness_with(state);
     h.get_by_role(Role::TextInput).focus();
     h.run_steps(2);
@@ -559,7 +581,7 @@ fn the_keys_of_the_tools_do_nothing_while_a_text_field_has_the_keyboard() {
 
 #[test]
 fn the_more_button_lists_the_other_modes() {
-    let mut h = harness();
+    let mut h = brush_harness();
     let modes = [
         "Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp",
     ];
@@ -605,7 +627,7 @@ fn drag(h: &mut App, from: egui::Pos2, dx: f32) {
 
 #[test]
 fn the_options_bar_has_the_value_fields_of_the_brush() {
-    let mut h = harness();
+    let mut h = brush_harness();
     let middle = theme::MENU + theme::BAR + theme::OPTIONS / 2.0;
     let values = [("Size", None), ("Strength", Some(1500.0))];
     let values = values
@@ -645,13 +667,17 @@ fn the_options_bar_has_the_value_fields_of_the_brush() {
     h.get_by_label("Hand").click();
     h.run_steps(2);
     assert_eq!(tool_name(h.state()), "Hand");
-    assert!(h.query_by_role(Role::Slider).is_none());
+    let bar = theme::MENU + theme::BAR + theme::OPTIONS;
+    assert!(
+        h.query_all_by_role(Role::Slider)
+            .all(|f| f.rect().top() > bar)
+    );
     assert!(h.query_by_label(BRUSH_SETTINGS).is_none());
 }
 
 #[test]
 fn a_drag_on_a_field_or_its_label_changes_the_value() {
-    let mut h = harness();
+    let mut h = brush_harness();
     let hardness = bar_field(&h, "Hardness").rect().center();
     drag(&mut h, hardness, 60.0);
     let brush = h.state().globe.brush;
@@ -675,7 +701,7 @@ fn a_click_on_a_field_opens_its_slider_and_a_double_click_types_the_value() {
         .with_size(egui::vec2(1280.0, 800.0))
         .with_pixels_per_point(1.0)
         .with_step_dt(1.0 / 60.0)
-        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), brush_state());
     h.run_steps(3);
     let size = |h: &App| h.state().globe.brush.size_points;
     let before = size(&h);
@@ -725,50 +751,52 @@ fn a_click_on_a_field_opens_its_slider_and_a_double_click_types_the_value() {
     h.run_steps(1);
     press(&mut h, Key::Enter);
     assert_eq!(h.state().globe.brush.strength_m, 800.0);
-    assert!(h.query_by_role(Role::TextInput).is_none());
+    let typing = h.query_by_role_and_label(Role::TextInput, "Strength");
+    assert!(typing.is_none());
 }
 
 #[test]
 fn the_brush_panel_is_the_inspector_until_a_layer_is_chosen() {
-    let mut h = harness();
+    let mut h = brush_harness();
     let heading = |h: &App| {
         let mut headings = h.query_all_by_role(Role::Heading);
         headings.find_map(|n| n.accesskit_node().label()).unwrap()
     };
-    assert_eq!(heading(&h), "Earth (sample)");
+    // The height layer that the brush paints is selected.
+    assert_eq!(heading(&h), HEIGHT);
     h.get_by_label(BRUSH_SETTINGS).click();
     h.run_steps(2);
     assert_eq!(heading(&h), "Brush · Raise");
     let button = h.get_by_label(BRUSH_SETTINGS);
     assert_eq!(button.accesskit_node().toggled(), Some(Toggled::True));
     let role = Role::Button;
-    h.get_by_role_and_label(role, "Land").click();
+    h.get_by_role_and_label(role, HEIGHT).click();
     h.run_steps(2);
-    assert_eq!(heading(&h), "Land");
+    assert_eq!(heading(&h), HEIGHT);
     let button = h.get_by_label(BRUSH_SETTINGS);
     assert_eq!(button.accesskit_node().toggled(), Some(Toggled::False));
-    // B shows the Brush panel, and a click on the selected row shows the
-    // layer again.
+    // B shows the Brush panel, and B again goes back to the layer.
     press(&mut h, Key::B);
     assert_eq!(heading(&h), "Brush · Raise");
-    h.get_by_role_and_label(role, "Land").click();
-    h.run_steps(2);
-    assert_eq!(heading(&h), "Land");
-    // A second click selects nothing.
-    h.get_by_role_and_label(role, "Land").click();
+    press(&mut h, Key::B);
+    assert_eq!(heading(&h), HEIGHT);
+    // A second click selects nothing, and the brush then has no layer to
+    // paint.
+    h.get_by_role_and_label(role, HEIGHT).click();
     h.run_steps(2);
     assert_eq!(heading(&h), "Earth (sample)");
-    // B goes back to the subject before the Brush panel.
+    assert!(!h.state().globe.brushing());
+    assert!(h.query_by_label(BRUSH_SETTINGS).is_none());
+    // A vector layer has no brush, so B does nothing.
     h.get_by_role_and_label(role, "Rivers").click();
     h.run_steps(2);
-    press(&mut h, Key::B);
     press(&mut h, Key::B);
     assert_eq!(heading(&h), "Rivers");
 }
 
 #[test]
 fn the_brush_panel_has_the_tip_the_stroke_and_the_limits() {
-    let mut h = harness();
+    let mut h = brush_harness();
     press(&mut h, Key::B);
     for section in ["Tip", "Stroke", "Limits"] {
         assert!(h.query_by_label(section).is_some(), "{section}");
@@ -818,7 +846,7 @@ fn the_brush_panel_has_the_tip_the_stroke_and_the_limits() {
 
 #[test]
 fn the_lock_of_the_brush_panel_locks_the_size() {
-    let mut h = harness();
+    let mut h = brush_harness();
     press(&mut h, Key::B);
     let lock = h.get_by_label(LOCK);
     assert_eq!(lock.accesskit_node().toggled(), Some(Toggled::False));
@@ -832,7 +860,7 @@ fn the_lock_of_the_brush_panel_locks_the_size() {
 
 #[test]
 fn the_flatten_level_comes_from_the_globe_or_the_start_of_the_stroke() {
-    let mut h = harness();
+    let mut h = brush_harness();
     press(&mut h, Key::E);
     assert!(h.get_by_label(STROKE_START).accesskit_node().is_disabled());
     h.get_by_label(PICK).click();
@@ -1155,4 +1183,95 @@ mod start {
         let absolute = std::path::absolute(&path).unwrap();
         assert_eq!(h.state().actions, [Action::OpenWorld(absolute)]);
     }
+}
+
+#[test]
+fn the_dock_and_the_layer_menu_open_the_sheet_of_a_new_raster_layer() {
+    let mut h = harness();
+    // The add button has the raster row. A world with no height layer also
+    // gets the row that imports one.
+    h.get_by_label(ADD_LAYER).click();
+    h.run_steps(2);
+    assert!(h.query_by_label(Command::ImportHeightmap.label()).is_some());
+    h.get_by_label(Command::AddRaster.label()).click();
+    h.run_steps(2);
+    assert!(h.state().raster_form.is_some());
+    let title = h.get_by_label(raster_form::TITLE);
+    assert!(title.rect().width() <= SHEET);
+    h.get_by_label(CANCEL).click();
+    h.run_steps(2);
+    assert!(h.state().raster_form.is_none());
+
+    // The Layer menu opens the same sheet. The Kind menu sets the preset.
+    h.get_by_label("Layer").click();
+    h.run_steps(2);
+    h.get_by_label("Add layer").click();
+    h.run_steps(2);
+    h.get_by_label(Command::AddRaster.label()).click();
+    h.run_steps(2);
+    h.get_by_label(raster_form::KIND).click();
+    h.run_steps(2);
+    h.get_by_label("Temperature").click();
+    h.run_steps(2);
+    let form = h.state().raster_form.clone().unwrap();
+    assert_eq!(
+        (form.name.as_str(), form.unit.as_str()),
+        ("Temperature", "°C")
+    );
+    for name in [
+        raster_form::UNIT,
+        raster_form::MINIMUM,
+        raster_form::MAXIMUM,
+    ] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    h.get_by_label(&raster_form::face_size_name(1024)).click();
+    h.run_steps(2);
+    h.get_by_label(raster_form::ADD).click();
+    h.run_steps(2);
+
+    // The new layer is selected, and the inspector shows its panel.
+    let state = h.state();
+    assert!(state.raster_form.is_none());
+    let raster = &state.doc.project.rasters()[0];
+    assert_eq!((raster.unit.as_str(), raster.face_size), ("°C", 1024));
+    assert_eq!(state.selected_layer, Some(LayerRef::Raster(raster.id)));
+    assert_eq!(heading(&h), "Temperature");
+    assert!(h.query_all_by_label(OPACITY).next().is_some());
+}
+
+#[test]
+fn the_brush_paints_a_visible_raster_layer_and_some_modes_need_a_height() {
+    let mut h = harness();
+    let off = |h: &App, name: &str| h.get_by_label(name).accesskit_node().is_disabled();
+    // With no raster layer, the modes are off, and the tool is the hand.
+    assert!(off(&h, "Raise") && off(&h, MORE_TOOLS));
+    press(&mut h, Key::R);
+    assert!(!h.state().globe.brushing());
+    assert_eq!(tool_name(h.state()), "Hand");
+
+    // A layer that is not a height has the modes that need no heights.
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 64,
+    };
+    h.state_mut().add_raster(rain).unwrap();
+    h.run_steps(2);
+    assert!(!off(&h, "Raise") && !off(&h, MORE_TOOLS));
+    h.get_by_label(MORE_TOOLS).click();
+    h.run_steps(2);
+    assert!(off(&h, "Carve") && !off(&h, "Warp"));
+    h.get_by_label("Warp").click();
+    h.run_steps(2);
+    assert!(h.state().globe.brushing());
+    assert_eq!(tool_name(h.state()), "Warp");
+
+    // A hidden layer has no brush.
+    h.get_by_label("Hide Rain").click();
+    h.run_steps(2);
+    assert!(off(&h, "Raise"));
+    assert_eq!(tool_name(h.state()), "Hand");
 }

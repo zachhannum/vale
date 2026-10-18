@@ -1,12 +1,13 @@
 //! The commands of the menus and their keys.
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
-use vale_store::GeometryKind;
+use vale_store::{GeometryKind, LayerId};
 
-use super::{DeskState, Tab};
+use super::{DeskState, Inspect, Tab};
 use crate::globe::WorldView;
+use crate::ui::raster_form::RasterForm;
 use crate::ui::world_form::{self, WorldForm};
-use crate::ui::{Action, AppState, ExportFormat, Workspace};
+use crate::ui::{Action, AppState, ExportFormat, LayerRef, Workspace};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -32,9 +33,12 @@ pub enum Command {
     Globe,
     Flat,
     Greyscale,
+    AddRaster,
     AddLines,
     AddPoints,
     AddPolygons,
+    LayerUp,
+    LayerDown,
     DeleteLayer,
     Layers,
     Toolbox,
@@ -52,7 +56,7 @@ pub const REVEAL: &str = if cfg!(target_os = "macos") {
 };
 
 impl Command {
-    pub const ALL: [Command; 30] = [
+    pub const ALL: [Command; 33] = [
         Command::NewWorld,
         Command::Open,
         Command::Save,
@@ -75,9 +79,12 @@ impl Command {
         Command::Globe,
         Command::Flat,
         Command::Greyscale,
+        Command::AddRaster,
         Command::AddLines,
         Command::AddPoints,
         Command::AddPolygons,
+        Command::LayerUp,
+        Command::LayerDown,
         Command::DeleteLayer,
         Command::Layers,
         Command::Toolbox,
@@ -110,9 +117,12 @@ impl Command {
             Command::Globe => "Globe",
             Command::Flat => "Flat",
             Command::Greyscale => "Greyscale",
+            Command::AddRaster => "Raster…",
             Command::AddLines => "Lines",
             Command::AddPoints => "Points",
             Command::AddPolygons => "Polygons",
+            Command::LayerUp => "Move layer up",
+            Command::LayerDown => "Move layer down",
             Command::DeleteLayer => "Delete layer",
             Command::Layers => "Layers",
             Command::Toolbox => "Toolbox",
@@ -146,9 +156,12 @@ impl Command {
             Command::Globe => "view.globe",
             Command::Flat => "view.flat",
             Command::Greyscale => "view.greyscale",
+            Command::AddRaster => "layer.add-raster",
             Command::AddLines => "layer.add-lines",
             Command::AddPoints => "layer.add-points",
             Command::AddPolygons => "layer.add-polygons",
+            Command::LayerUp => "layer.up",
+            Command::LayerDown => "layer.down",
             Command::DeleteLayer => "layer.delete",
             Command::Layers => "window.layers",
             Command::Toolbox => "window.toolbox",
@@ -225,9 +238,12 @@ impl Command {
             Command::Undo => state.can_undo(),
             Command::Redo => state.can_redo(),
             Command::Globe | Command::Flat | Command::Greyscale => world,
-            Command::DeleteLayer => state
-                .selected_layer
-                .is_some_and(|id| state.doc.layer(id).is_some()),
+            Command::AddRaster => world,
+            Command::LayerUp | Command::LayerDown => {
+                let up = self == Command::LayerUp;
+                selected_layer(state).is_some_and(|id| can_move(state, id, up))
+            }
+            Command::DeleteLayer => selected_layer(state).is_some(),
             _ => true,
         }
     }
@@ -302,12 +318,19 @@ pub fn run(command: Command, ctx: &egui::Context, state: &mut AppState) {
             let preview = &mut state.globe.preview;
             preview.greyscale = !preview.greyscale;
         }
+        Command::AddRaster => state.raster_form = Some(RasterForm::open(state)),
         Command::AddLines => add_layer(state, GeometryKind::Line),
         Command::AddPoints => add_layer(state, GeometryKind::Point),
         Command::AddPolygons => add_layer(state, GeometryKind::Polygon),
+        Command::LayerUp | Command::LayerDown => {
+            if let Some(id) = selected_layer(state) {
+                state.move_layer_by_one(id, command == Command::LayerUp);
+            }
+        }
         Command::DeleteLayer => {
-            if let Some(id) = state.selected_layer.take() {
-                state.doc.remove_layer(id);
+            if let Some(id) = selected_layer(state) {
+                state.remove_layer(id);
+                state.select(None);
                 state.selection = None;
                 state.touch();
             }
@@ -321,9 +344,27 @@ pub fn run(command: Command, ctx: &egui::Context, state: &mut AppState) {
     }
 }
 
-fn add_layer(state: &mut AppState, kind: GeometryKind) {
-    state.selected_layer = Some(state.doc.add_layer(kind));
+/// Adds a vector layer and selects it.
+pub fn add_layer(state: &mut AppState, kind: GeometryKind) {
+    let id = state.doc.add_layer(kind);
+    state.select(Some(LayerRef::Vector(id)));
+    state.desk.inspect = Inspect::Selection;
+    state.selection = None;
     state.touch();
+}
+
+/// True if the layer is not at the end of the draw order. `up` is toward
+/// the top.
+fn can_move(state: &AppState, id: LayerId, up: bool) -> bool {
+    let layers = state.doc.project.layers();
+    let index = layers.iter().position(|l| l.id == id);
+    index.is_some_and(|i| if up { i + 1 < layers.len() } else { i > 0 })
+}
+
+/// The record of the selected layer of each kind.
+fn selected_layer(state: &AppState) -> Option<LayerId> {
+    let layer = state.selected_layer?;
+    state.layer_of(layer).map(|layer| layer.id)
 }
 
 fn show_tab(desk: &mut DeskState, tab: Tab) {

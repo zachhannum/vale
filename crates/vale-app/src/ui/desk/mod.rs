@@ -3,8 +3,7 @@
 
 use eframe::egui;
 
-use super::{AppState, Workspace, canvas, globe, world_form};
-use crate::globe::Tool;
+use super::{AppState, Workspace, canvas, globe, raster_form, world_form};
 use vale_terrain::Mode;
 
 pub mod brush;
@@ -46,7 +45,6 @@ pub enum Inspect {
     /// The selected layer, or the world with no selected layer.
     #[default]
     Selection,
-    Height,
     /// The Brush panel, while a brush mode is the tool.
     Brush,
 }
@@ -121,25 +119,26 @@ pub fn bar_bottom(state: &AppState) -> f32 {
     }
 }
 
+/// True if a sheet or a dialog is open.
+pub fn dialog(state: &AppState) -> bool {
+    state.world_form.is_some() || state.raster_form.is_some() || state.browser.dialog.is_some()
+}
+
 /// True if a dropdown, a menu, or a sheet is open. Then the canvas makes
 /// its blurred copy.
 fn covered(ctx: &egui::Context, state: &AppState) -> bool {
-    let desk = &state.desk;
-    desk.more_open
-        || state.world_form.is_some()
-        || state.browser.dialog.is_some()
-        || egui::Popup::is_any_open(ctx)
+    state.desk.more_open || dialog(state) || egui::Popup::is_any_open(ctx)
 }
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
-    if state.world_form.is_some() || state.browser.dialog.is_some() {
+    if dialog(state) {
         state.desk.more_open = false;
     }
     menu::keys(&ctx, state);
     rail::keys(&ctx, state);
     let globe = &mut state.globe;
-    if globe.tool != Tool::Brush || globe.brush.mode != Mode::Flatten {
+    if !globe.brushing() || globe.brush.mode != Mode::Flatten {
         globe.pick_level = false;
     }
     let screen = ctx.content_rect();
@@ -163,4 +162,5 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
     rail::more_menu(&ctx, state);
     world_form::desktop(&ctx, state);
+    raster_form::desktop(&ctx, state);
 }

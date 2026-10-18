@@ -6,7 +6,7 @@ use eframe::egui;
 use kurbo::Point;
 
 use super::desk::MapTool;
-use super::{AppState, Layout};
+use super::{AppState, LayerRef, Layout};
 use crate::pipeline::Quality;
 
 const SETTLE_SECONDS: f64 = 0.25;
@@ -38,7 +38,7 @@ pub fn click_at(state: &mut AppState, q: Point) {
     let size = state.canvas_size;
     state.selection = state.pipeline.pick(&state.doc, size, q).ok().flatten();
     if let Some(sel) = state.selection {
-        state.selected_layer = Some(sel.layer);
+        state.select(Some(LayerRef::Vector(sel.layer)));
     }
     state.touch();
 }

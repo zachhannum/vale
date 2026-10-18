@@ -10,6 +10,7 @@ use vale_app::pipeline::Pipeline;
 use vale_app::session::Session;
 use vale_app::ui::AppState;
 use vale_app::ui::pad::Panel;
+use vale_app::ui::raster_form::RasterForm;
 use vale_app::ui::world_form::WorldForm;
 
 fn run() -> anyhow::Result<u8> {
@@ -62,10 +63,12 @@ fn run() -> anyhow::Result<u8> {
             vale_app::ui::pad::toggle_worlds(&mut state);
         }
         apply_globe(&args, &mut state.globe, face_size)?;
-        if let Some(session) = &session
-            && let Some(map) = session.load_map()?
-        {
-            state.globe.set_map(map);
+        state.form_face_size = args.face_size.map(|size| size as usize);
+        if args.raster_form {
+            state.raster_form = Some(RasterForm::open(&state));
+        }
+        if let Some(session) = &session {
+            state.open_rasters(session.load_display_maps()?);
         }
         Ok(state)
     };

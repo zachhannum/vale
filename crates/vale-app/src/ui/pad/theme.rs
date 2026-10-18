@@ -5,6 +5,8 @@ use eframe::egui::{self, Color32, FontId};
 use super::geometry::TOUCH;
 
 pub const CANVAS: Color32 = Color32::from_rgb(15, 17, 19);
+/// The globe below the raster layers of the world.
+pub const GROUND: Color32 = Color32::from_rgb(64, 70, 79);
 pub const TEXT: Color32 = Color32::from_rgb(231, 233, 236);
 pub const MUTE: Color32 = Color32::from_rgb(174, 181, 190);
 /// The color of a text that warns.

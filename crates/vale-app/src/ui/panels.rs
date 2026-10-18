@@ -5,8 +5,8 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, World};
 
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, SaveMark, Workspace, desk, pad};
-use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
+use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, desk, pad};
+use vale_terrain::Mode;
 
 use crate::globe::{Globe, rivers, stats, stroke_test};
 use crate::projects;
@@ -53,7 +53,6 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
-/// The projection of the flat view.
 /// The button of the tool bar that opens the File menu.
 pub const FILE_MENU: &str = "File";
 /// The row of a menu that closes the project and shows the start screen.
@@ -176,9 +175,8 @@ fn window_line(globe: &Globe, world: &World) -> String {
 
 pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     let world = &state.doc.project.world;
-    // The undo log of the project file, if it has the strokes.
+    // The undo log of the project file has the strokes.
     let session = state.session.as_ref();
-    let session = session.filter(|s| s.saves_map(&state.globe.map));
     let log = session.map(|s| (s.undo_bytes(), s.undo_limit()));
     let globe = &mut state.globe;
     ui.label(globe.stats.gpu_line());
@@ -231,9 +229,11 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
     let test = egui::Button::new("Run stroke test");
     if ui.add_enabled(!globe.busy(), test).clicked() {
-        globe.start_stroke_test(stroke_test::SECONDS);
+        // The test paints a height layer.
+        state.select_height();
+        state.globe.start_stroke_test(stroke_test::SECONDS);
     }
-    if let Some(report) = &globe.test_report {
+    if let Some(report) = &state.globe.test_report {
         ui.separator();
         ui.strong("Stroke test");
         ui.label(report);
@@ -249,8 +249,20 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
     }
 }
 
+/// A field for a value of the layer that the brush paints, in the unit of
+/// the layer. `range` has the values of the lowest and of the highest level.
+fn value_drag<'a>(value: &'a mut f64, (min, max): (f64, f64), unit: &str) -> egui::DragValue<'a> {
+    let span = max - min;
+    egui::DragValue::new(value)
+        .speed(span / 1200.0)
+        .range(min..=max)
+        .fixed_decimals(world::value_decimals(span))
+        .suffix(format!(" {unit}"))
+}
+
 /// The lock of the size and the flatten level.
 pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
+    let unit = state.shown_unit().to_string();
     let globe = &mut state.globe;
     let globe_radius = globe.radius();
     let mut lock = globe.brush.lock.is_some();
@@ -267,14 +279,10 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     match globe.brush.flatten_level {
         Some(level) => {
             ui.horizontal(|ui| {
-                let mut meters = level_to_meters(level);
-                let value = egui::DragValue::new(&mut meters)
-                    .speed(10.0)
-                    .range(ELEV_MIN..=ELEV_MAX)
-                    .fixed_decimals(0)
-                    .suffix(" m");
-                if ui.add(value).changed() {
-                    globe.brush.flatten_level = Some(meters_to_level(meters));
+                let mut value = globe.brush.value(level);
+                let range = globe.brush.value_range;
+                if ui.add(value_drag(&mut value, range, &unit)).changed() {
+                    globe.brush.flatten_level = Some(globe.brush.level(value));
                 }
                 if ui.button("Use stroke start").clicked() {
                     globe.brush.flatten_level = None;
@@ -364,7 +372,8 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             ("Polygons", GeometryKind::Polygon),
         ] {
             if ui.button(name).clicked() {
-                state.selected_layer = Some(state.doc.add_layer(kind));
+                let id = state.doc.add_layer(kind);
+                state.select(Some(LayerRef::Vector(id)));
                 state.touch();
                 ui.close();
             }
@@ -389,7 +398,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         else {
             continue;
         };
-        let selected = state.selected_layer == Some(id);
+        let selected = state.selected_vector() == Some(id);
         ui.horizontal(|ui| {
             let mut visible = state.doc.visible(id);
             let text = if selected {
@@ -404,7 +413,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                 state.dirty = true;
             }
             if resp.clicked() {
-                state.selected_layer = Some(id);
+                state.select(Some(LayerRef::Vector(id)));
             }
             let pick = ui.selectable_label(selected, "Edit");
             let accessible = format!("Select {}", state.doc.layer(id).map_or("", |l| &l.name));
@@ -417,7 +426,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                 )
             });
             if pick.clicked() {
-                state.selected_layer = Some(id);
+                state.select(Some(LayerRef::Vector(id)));
             }
         });
     }
@@ -444,6 +453,9 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
                 Some([lon, lat]) => ui.label(format!("lon {lon:.2}, lat {lat:.2}")),
                 None => ui.label("lon –, lat –"),
             };
+            if let Some(value) = state.readout_value() {
+                ui.label(value);
+            }
             ui.separator();
             if let Some(c) = &state.composed
                 && state.workspace == Workspace::Map

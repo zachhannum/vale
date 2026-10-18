@@ -2,14 +2,14 @@
 //! options bar and the panel show the same settings.
 
 use eframe::egui::{self, Align, Layout, vec2};
-use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
+use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode};
 
 use super::field::{self, Field, Scale};
 use super::{rail, theme, widgets};
 use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::ui::pad::brush_size_text;
 use crate::ui::pad::icons::Icon;
-use crate::ui::{AppState, panels};
+use crate::ui::{AppState, HEIGHT_UNIT, panels};
 use crate::world::{self, three_significant};
 
 /// The button of the Brush panel that sets the flatten level from the globe.
@@ -18,8 +18,9 @@ pub const PICK: &str = "Pick from globe";
 /// of the stroke.
 pub const STROKE_START: &str = "Use stroke start";
 pub const LOCK: &str = "Lock size";
-/// The step of an elevation limit, in meters.
-const LIMIT_STEP_M: f64 = 10.0;
+/// The number of steps of a limit across the value range of the layer. A
+/// height has steps of 10 meters.
+const LIMIT_STEPS: f64 = 1200.0;
 
 /// A setting of the brush.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -55,7 +56,7 @@ fn percent(name: &'static str, value: f64, range: std::ops::RangeInclusive<f64>)
         value,
         scale: Scale::linear(range.start() * 100.0..=range.end() * 100.0),
         text: format!("{value:.0}%"),
-        units: vec![("%", 1.0)],
+        units: vec![("%".into(), 1.0)],
         step: 0.0,
         enabled: true,
     }
@@ -67,19 +68,30 @@ fn km(name: &'static str, value: f64, range: std::ops::RangeInclusive<f64>) -> F
         value,
         scale: Scale::log(range),
         text: format!("{} km", three_significant(value)),
-        units: vec![("km", 1.0), ("m", 0.001)],
+        units: vec![("km".into(), 1.0), ("m".into(), 0.001)],
         step: 0.0,
         enabled: true,
     }
 }
 
-fn meters(name: &'static str, value: f64, scale: Scale, step: f64) -> Field {
+/// A field for a value of the layer that the brush paints, in the unit of
+/// the layer. A height also takes kilometers.
+fn layer_value(name: &'static str, value: f64, scale: Scale, step: f64, state: &AppState) -> Field {
+    let unit = state.shown_unit();
+    let (min, max) = state.globe.brush.value_range;
+    let mut units = Vec::new();
+    if !unit.is_empty() {
+        units.push((unit.to_owned(), 1.0));
+    }
+    if unit == HEIGHT_UNIT {
+        units.push(("km".to_owned(), 1000.0));
+    }
     Field {
         name,
         value,
         scale,
-        text: format!("{value:.0} m"),
-        units: vec![("m", 1.0), ("km", 1000.0)],
+        text: world::value_text(value, max - min, unit),
+        units,
         step,
         enabled: true,
     }
@@ -89,7 +101,9 @@ impl Setting {
     /// The setting as a field, in the units that the field shows.
     pub fn field(self, state: &AppState) -> Field {
         let brush = &state.globe.brush;
-        let elevation = Scale::linear(ELEV_MIN..=ELEV_MAX);
+        let (min, max) = brush.value_range;
+        let range = Scale::linear(min..=max);
+        let step = (max - min) / LIMIT_STEPS;
         match self {
             Setting::Size => {
                 let world = &state.doc.project.world;
@@ -102,7 +116,7 @@ impl Setting {
                     value: brush.radius_km(globe.radius(), world.radius_km),
                     scale: Scale::log(range),
                     text: brush_size_text(state),
-                    units: vec![(large.1, large.0), (small.1, small.0)],
+                    units: vec![(large.1.into(), large.0), (small.1.into(), small.0)],
                     step: 0.0,
                     enabled: true,
                 }
@@ -113,7 +127,9 @@ impl Setting {
             Setting::Strength if brush.mode == Mode::Warp => km("Strength", brush.warp_km, WARP_KM),
             Setting::Strength => {
                 let name = panels::strength_name(brush.mode);
-                meters(name, brush.strength_m, Scale::log(STRENGTH_M), 0.0)
+                let factor = strength_factor(state);
+                let scale = Scale::log(STRENGTH_M.start() * factor..=STRENGTH_M.end() * factor);
+                layer_value(name, brush.strength_value(), scale, 0.0, state)
             }
             Setting::Scale => km("Scale", brush.scale_km, SCALE_KM),
             Setting::Seed => {
@@ -134,23 +150,23 @@ impl Setting {
                 value: brush.talus_deg,
                 scale: Scale::log(TALUS_DEG),
                 text: format!("{}°", three_significant(brush.talus_deg)),
-                units: vec![("°", 1.0), ("deg", 1.0)],
+                units: vec![("°".into(), 1.0), ("deg".into(), 1.0)],
                 step: 0.0,
                 enabled: true,
             },
             Setting::Floor => Field {
                 enabled: brush.floor_on,
-                ..meters("Floor", brush.floor_m, elevation, LIMIT_STEP_M)
+                ..layer_value("Floor", brush.floor_m, range, step, state)
             },
             Setting::Ceiling => Field {
                 enabled: brush.ceiling_on,
-                ..meters("Ceiling", brush.ceiling_m, elevation, LIMIT_STEP_M)
+                ..layer_value("Ceiling", brush.ceiling_m, range, step, state)
             },
             Setting::Level => match brush.flatten_level {
-                Some(level) => meters("Level", level_to_meters(level), elevation, 1.0),
+                Some(level) => layer_value("Level", brush.value(level), range, 0.0, state),
                 None => Field {
                     text: "Start".to_owned(),
-                    ..meters("Level", 0.0, elevation, 1.0)
+                    ..layer_value("Level", min.max(0.0).min(max), range, 0.0, state)
                 },
             },
         }
@@ -158,6 +174,7 @@ impl Setting {
 
     /// Sets the value, in the units of the field.
     pub fn set(self, state: &mut AppState, value: f64) {
+        let factor = strength_factor(state);
         let world_km = state.doc.project.world.radius_km;
         let globe = &mut state.globe;
         let globe_radius = globe.radius();
@@ -168,7 +185,7 @@ impl Setting {
             Setting::Flow => brush.flow = value / 100.0,
             Setting::Erosion => brush.erosion = value / 100.0,
             Setting::Strength if brush.mode == Mode::Warp => brush.warp_km = value,
-            Setting::Strength => brush.strength_m = value,
+            Setting::Strength => brush.strength_m = value / factor,
             Setting::Scale => brush.scale_km = value,
             // The seed is a property of the world, so each brush gets the
             // same noise field.
@@ -176,9 +193,16 @@ impl Setting {
             Setting::Angle => brush.talus_deg = value,
             Setting::Floor => brush.floor_m = value,
             Setting::Ceiling => brush.ceiling_m = value,
-            Setting::Level => brush.flatten_level = Some(meters_to_level(value)),
+            Setting::Level => brush.flatten_level = Some(brush.level(value)),
         }
     }
+}
+
+/// The size of the strength in the unit of the layer, for each meter of the
+/// strength of the brush.
+fn strength_factor(state: &AppState) -> f64 {
+    let (min, max) = state.globe.brush.value_range;
+    (max - min) / (ELEV_MAX - ELEV_MIN)
 }
 
 /// The settings of the Stroke section, for a mode.

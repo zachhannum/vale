@@ -8,8 +8,8 @@ use eframe::egui_wgpu::{self, wgpu};
 /// The standard deviation of the blur, in points.
 pub const BLUR_POINTS: f32 = 20.0;
 /// The blurred copy has one pixel for this many pixels of the canvas, on
-/// each axis. The shader takes four taps, which is correct for 4.
-const REDUCTION: u32 = 4;
+/// each axis.
+pub const REDUCTION: u32 = 4;
 /// A card shows the blurred canvas at this part of its brightness. With the
 /// tint of the card, grey text stays easy to read over a white canvas.
 pub const GAIN: f32 = 0.7;
@@ -61,10 +61,8 @@ fn clear_color(format: wgpu::TextureFormat, color: egui::Color32) -> wgpu::Color
 struct Targets {
     size: [u32; 2],
     small_size: [u32; 2],
-    canvas: wgpu::TextureView,
+    /// The reduced canvas, and the target of the first blur pass.
     small: [wgpu::TextureView; 2],
-    /// Reads the canvas texture.
-    from_canvas: wgpu::BindGroup,
     /// The two blur passes. The first reads `small[0]`.
     passes: [wgpu::BindGroup; 2],
     /// Reads the blurred copy.
@@ -75,11 +73,9 @@ pub struct Backdrop {
     pub format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    blit: wgpu::RenderPipeline,
-    down: wgpu::RenderPipeline,
     blur: wgpu::RenderPipeline,
     card: wgpu::RenderPipeline,
-    /// The values for the canvas, and for each of the two blur passes.
+    /// The values for the cards, and for each of the two blur passes.
     globals: [wgpu::Buffer; 3],
     targets: Option<Targets>,
     /// The cards of this frame that wait for the upload.
@@ -173,8 +169,6 @@ impl Backdrop {
         });
         Backdrop {
             format,
-            blit: pipeline("backdrop blit", "vs_full", "fs_blit", None, &[]),
-            down: pipeline("backdrop down", "vs_full", "fs_down", None, &[]),
             blur: pipeline("backdrop blur", "vs_full", "fs_blur", None, &[]),
             card: pipeline(
                 "backdrop card",
@@ -242,7 +236,6 @@ impl Backdrop {
                 ],
             })
         };
-        let canvas = view("backdrop canvas", size);
         let small = [
             view("backdrop blur", small_size),
             view("backdrop blur", small_size),
@@ -250,16 +243,15 @@ impl Backdrop {
         Targets {
             size,
             small_size,
-            from_canvas: bind(0, &canvas),
             passes: [bind(1, &small[0]), bind(2, &small[1])],
             from_blur: bind(0, &small[0]),
-            canvas,
             small,
         }
     }
 
-    /// Draws the canvas into its texture and makes the blurred copy. `draw`
-    /// draws the canvas. The passes run before the pass of egui.
+    /// Draws the canvas at the reduced size and blurs it. `draw` draws the
+    /// canvas into a target of that size. The passes run before the pass of
+    /// egui.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -307,10 +299,9 @@ impl Backdrop {
                 .forget_lifetime()
         };
         let clear = wgpu::LoadOp::Clear(clear_color(self.format, canvas.background));
-        draw(&mut pass(&targets.canvas, clear));
+        draw(&mut pass(&targets.small[0], clear));
         let black = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
         let steps = [
-            (&self.down, &targets.from_canvas, &targets.small[0]),
             (&self.blur, &targets.passes[0], &targets.small[1]),
             (&self.blur, &targets.passes[1], &targets.small[0]),
         ];
@@ -320,16 +311,6 @@ impl Backdrop {
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-    }
-
-    /// Copies the canvas texture to the screen.
-    pub fn blit(&self, pass: &mut wgpu::RenderPass<'static>) {
-        let Some(targets) = &self.targets else {
-            return;
-        };
-        pass.set_pipeline(&self.blit);
-        pass.set_bind_group(0, &targets.from_canvas, &[]);
-        pass.draw(0..3, 0..1);
     }
 }
 

@@ -1,4 +1,5 @@
-//! The wgpu side: the cube map texture and the paint callback of the globe.
+//! The wgpu side: the heightmaps on the GPU and the paint callbacks of the
+//! globe.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,12 +8,15 @@ use std::time::{Duration, Instant};
 
 use eframe::egui_wgpu::{self, wgpu};
 
+use std::collections::HashMap;
+
+use vale_store::RasterId;
 use vale_terrain::{
-    ChannelMap, ChannelWindow, ErodeStep, FACES, GpuHeightmap, Heightmap, MAX_BANDS, Readback,
-    StampPlan, TILES_WGSL, TexelRect,
+    ChannelMap, ChannelWindow, ErodeStep, FACES, GpuHeightmap, GpuTiles, Heightmap, MAX_BANDS,
+    Readback, StampPlan, TILES_WGSL, TexelRect, tiles_layout,
 };
 
-use super::backdrop::{Backdrop, Canvas};
+use super::backdrop::{Backdrop, Canvas, REDUCTION};
 use super::flat::{FlatMesh, Vertex};
 use super::preview::BandUniform;
 
@@ -33,6 +37,12 @@ pub struct Uniforms {
     pub screen: [f32; 4],
     pub window: [f32; 4],
     pub rivers: [f32; 4],
+    /// The opacity of the layer, from 0 to 1.
+    pub layer: [f32; 4],
+    /// The color of the ground below the layers.
+    pub ground: [f32; 4],
+    /// The color of the canvas around the globe.
+    pub back: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
 }
 
@@ -71,38 +81,109 @@ impl GpuMesh {
     }
 }
 
+/// The layer that a heightmap on the GPU belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LayerKey {
+    /// The heightmap of a globe that draws no list of layers.
+    Solo,
+    Raster(RasterId),
+}
+
+/// One heightmap on the GPU. The GPU takes a change only if it still holds
+/// the heightmap with this key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MapKey {
+    pub layer: LayerKey,
+    /// The count of the heightmaps that the globe made before this one.
+    pub generation: u64,
+    /// True: the reduced copy that the globe draws. False: the full
+    /// heightmap that the brush paints.
+    pub display: bool,
+    /// Texels on one edge of a face of this heightmap.
+    pub face_size: u32,
+}
+
+/// What one pass draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Pass {
+    /// The plain ground below the layers.
+    Ground,
+    /// One raster layer.
+    Layer(LayerKey),
+    /// The graticule above the raster layers.
+    Graticule,
+    /// The soft edge of the globe. The other passes have a hard edge, so
+    /// the edge has the cover of one pass.
+    Rim,
+}
+
+/// The uniform buffer of one pass, with its bind group.
+struct Slot {
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    /// The number of the channel texture of the bind group, and the
+    /// generation of the full heightmap that gives the window texture.
+    /// `None`: the texture is empty.
+    rivers: (Option<u64>, Option<u64>),
+}
+
+/// The channel map of the rivers of one layer on the GPU.
+struct Channels {
+    /// The count of the channel textures before this one.
+    number: u64,
+    size: u32,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
 struct Resources {
-    face_size: u32,
     format: wgpu::TextureFormat,
+    layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     flat_pipeline: wgpu::RenderPipeline,
+    /// The passes that read no heightmap: the ground and the graticule, on
+    /// the globe and in the flat view, and the edge of the globe.
+    plain: [wgpu::RenderPipeline; 5],
     mesh: Option<GpuMesh>,
-    bind_group: wgpu::BindGroup,
-    uniform_buffer: wgpu::Buffer,
-    heights: GpuHeightmap,
+    /// Channel textures with no river, for a pass with no rivers.
+    no_channels: wgpu::TextureView,
+    no_window: wgpu::TextureView,
+    /// The pass and the target of each slot. True: the small target of the
+    /// blurred copy.
+    slots: HashMap<(Pass, bool), Slot>,
+    /// The heightmap that the brush paints.
+    full: Option<(MapKey, GpuHeightmap)>,
+    /// The reduced copies that the globe draws.
+    copies: HashMap<MapKey, GpuTiles>,
+    /// The channel map of each visible height layer.
+    channels: HashMap<LayerKey, Channels>,
+    channel_count: u64,
     _poller: Poller,
 }
 
+const GROUND: usize = 0;
+const GRATICULE: usize = 1;
+const FLAT: usize = 2;
+const RIM: usize = 4;
+
 impl Resources {
-    fn new(
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        face_size: u32,
-        busy: &Arc<Busy>,
-    ) -> Resources {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, busy: &Arc<Busy>) -> Resources {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("globe"),
             source: wgpu::ShaderSource::Wgsl(
                 format!("{TILES_WGSL}\n{}", include_str!("globe.wgsl")).into(),
             ),
         });
-        let heights = GpuHeightmap::new(device, face_size);
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("globe uniforms"),
-            size: size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let texture = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Uint,
+                view_dimension,
+                multisampled: false,
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globe"),
             entries: &[
@@ -116,49 +197,19 @@ impl Resources {
                     },
                     count: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
+                texture(1, wgpu::TextureViewDimension::D2Array),
+                texture(2, wgpu::TextureViewDimension::D2),
             ],
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let tiles = tiles_layout(device);
+        let with_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("globe"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(heights.channels_view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(heights.window_view()),
-                },
-            ],
+            bind_group_layouts: &[Some(&layout), Some(&tiles)],
+            immediate_size: 0,
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("globe"),
-            bind_group_layouts: &[Some(&layout), Some(heights.tiles_layout())],
+        let no_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("globe plain"),
+            bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -166,59 +217,288 @@ impl Resources {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3],
         };
-        let pipeline =
-            |label, vertex, fragment, buffers: &[Option<wgpu::VertexBufferLayout<'_>>]| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some(vertex),
-                        buffers,
-                        compilation_options: Default::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some(fragment),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: Default::default(),
-                    }),
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            };
+        let pipeline = |label, layout, vertex, fragment, flat: bool| {
+            let buffers = [Some(vertex_layout.clone())];
+            let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
+                if flat { &buffers } else { &[] };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vertex),
+                    buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let empty = |label, layers, dimension| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: layers,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Uint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(dimension),
+                ..Default::default()
+            })
+        };
         Resources {
-            face_size,
             format,
-            flat_pipeline: pipeline("flat", "vs_flat", "fs_flat", &[Some(vertex_layout)]),
-            pipeline: pipeline("globe", "vs_main", "fs_main", &[]),
+            flat_pipeline: pipeline("flat", &with_tiles, "vs_flat", "fs_flat", true),
+            pipeline: pipeline("globe", &with_tiles, "vs_main", "fs_main", false),
+            plain: [
+                pipeline("ground", &no_tiles, "vs_main", "fs_ground", false),
+                pipeline("graticule", &no_tiles, "vs_main", "fs_graticule", false),
+                pipeline("flat ground", &no_tiles, "vs_flat", "fs_flat_ground", true),
+                pipeline(
+                    "flat graticule",
+                    &no_tiles,
+                    "vs_flat",
+                    "fs_flat_graticule",
+                    true,
+                ),
+                pipeline("rim", &no_tiles, "vs_main", "fs_rim", false),
+            ],
             mesh: None,
-            bind_group,
-            uniform_buffer,
-            heights,
+            no_channels: empty(
+                "no channels",
+                FACES as u32,
+                wgpu::TextureViewDimension::D2Array,
+            ),
+            no_window: empty("no window", 1, wgpu::TextureViewDimension::D2),
+            layout,
+            slots: HashMap::new(),
+            full: None,
+            copies: HashMap::new(),
+            channels: HashMap::new(),
+            channel_count: 0,
             _poller: Poller::new(device.clone(), busy.clone()),
         }
     }
 
-    /// Draws the globe, or the mesh of the flat view. `screen` is the size
-    /// of the render target in pixels.
-    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, flat: bool, screen: [u32; 2]) {
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.set_bind_group(1, &self.heights.tiles(), &[]);
+    /// Makes the heightmaps on the GPU those of the frame. A heightmap with
+    /// another key goes away, and a new one starts with no texels.
+    fn sync(&mut self, device: &wgpu::Device, frame: &Frame) {
+        if self.full.as_ref().map(|(key, _)| *key) != frame.full {
+            // The old heightmap goes away before the new one takes memory.
+            self.full = None;
+            self.full = frame
+                .full
+                .map(|key| (key, GpuHeightmap::new(device, key.face_size)));
+        }
+        self.copies.retain(|key, _| frame.copies.contains(key));
+        for key in &frame.copies {
+            self.copies
+                .entry(*key)
+                .or_insert_with(|| GpuTiles::new(device, key.face_size, 0));
+        }
+        let live = |pass: &Pass| match pass {
+            Pass::Layer(layer) => {
+                let full = frame.full.is_some_and(|key| key.layer == *layer);
+                full || frame.copies.iter().any(|key| key.layer == *layer)
+            }
+            Pass::Ground | Pass::Graticule | Pass::Rim => true,
+        };
+        self.slots.retain(|(pass, _), _| live(pass));
+        self.channels
+            .retain(|layer, _| frame.rivers.contains(layer));
+    }
+
+    /// Writes the channel map of the rivers of one layer.
+    fn upload_channels(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layer: LayerKey,
+        map: &ChannelMap,
+    ) {
+        let size = map.size() as u32;
+        if self.channels.get(&layer).is_none_or(|c| c.size != size) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("layer channel map"),
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: FACES as u32,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Uint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            self.channel_count += 1;
+            let channels = Channels {
+                number: self.channel_count,
+                size,
+                texture,
+                view,
+            };
+            self.channels.insert(layer, channels);
+        }
+        let channels = &self.channels[&layer];
+        queue.write_texture(
+            channels.texture.as_image_copy(),
+            map.bytes(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * 4),
+                rows_per_image: Some(size),
+            },
+            channels.texture.size(),
+        );
+    }
+
+    /// The memory of the channel maps of the layers, in bytes.
+    fn river_bytes(&self) -> u64 {
+        let bytes = |c: &Channels| u64::from(c.size) * u64::from(c.size) * 4 * FACES as u64;
+        self.channels.values().map(bytes).sum()
+    }
+
+    /// The memory of the reduced copies, in bytes.
+    fn copy_bytes(&self) -> u64 {
+        let bytes = self
+            .copies
+            .values()
+            .map(|tiles| tiles.memory_bytes() as u64);
+        bytes.sum()
+    }
+
+    /// Writes the uniforms of one pass. `small`: the pass draws into the
+    /// small target of the blurred copy.
+    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draw: &Draw, small: bool) {
+        // A layer has its channel map. Only the full heightmap has the
+        // window of small rivers.
+        let layer = match draw.pass {
+            Pass::Layer(layer) if draw.rivers => self.channels.get(&layer),
+            _ => None,
+        };
+        let window = match (&self.full, draw.source) {
+            (Some((key, _)), Some(source)) if *key == source && layer.is_some() => {
+                Some(key.generation)
+            }
+            _ => None,
+        };
+        let rivers = (layer.map(|channels| channels.number), window);
+        let stale = |slot: &Slot| slot.rivers != rivers;
+        if self.slots.get(&(draw.pass, small)).is_none_or(stale) {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("globe uniforms"),
+                size: size_of::<Uniforms>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let channels = layer.map_or(&self.no_channels, |channels| &channels.view);
+            let window = match &self.full {
+                Some((_, heights)) if window.is_some() => heights.window_view(),
+                _ => &self.no_window,
+            };
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("globe"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(channels),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(window),
+                    },
+                ],
+            });
+            let slot = Slot {
+                buffer,
+                bind_group,
+                rivers,
+            };
+            self.slots.insert((draw.pass, small), slot);
+        }
+        let slot = &self.slots[&(draw.pass, small)];
+        queue.write_buffer(&slot.buffer, 0, bytemuck::bytes_of(&draw.uniforms));
+    }
+
+    /// Draws one pass on the globe, or on the mesh of the flat view. `screen`
+    /// is the size of the render target in pixels.
+    fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw: &Draw,
+        small: bool,
+        flat: bool,
+        screen: [u32; 2],
+    ) {
+        let Some(slot) = self.slots.get(&(draw.pass, small)) else {
+            return;
+        };
+        let kind = match draw.pass {
+            Pass::Ground => Some(GROUND),
+            Pass::Graticule => Some(GRATICULE),
+            Pass::Rim => Some(RIM),
+            Pass::Layer(_) => None,
+        };
+        // The flat view has no edge of a globe.
+        if flat && kind == Some(RIM) {
+            return;
+        }
+        let pipeline = match kind {
+            Some(RIM) => &self.plain[RIM],
+            Some(kind) => &self.plain[kind + if flat { FLAT } else { 0 }],
+            None if flat => &self.flat_pipeline,
+            None => &self.pipeline,
+        };
+        if kind.is_none() {
+            let tiles = match (draw.source, &self.full) {
+                (Some(source), Some((key, heights))) if source == *key => heights.tiles(),
+                (Some(source), _) => match self.copies.get(&source) {
+                    Some(tiles) => tiles.tiles(),
+                    None => return,
+                },
+                (None, _) => return,
+            };
+            pass.set_bind_group(1, &tiles, &[]);
+        }
+        pass.set_bind_group(0, &slot.bind_group, &[]);
+        pass.set_pipeline(pipeline);
         if !flat {
-            pass.set_pipeline(&self.pipeline);
             pass.draw(0..3, 0..1);
         } else if let Some(mesh) = &self.mesh {
             // The shader places the mesh on the whole render target.
             pass.set_viewport(0.0, 0.0, screen[0] as f32, screen[1] as f32, 0.0, 1.0);
-            pass.set_pipeline(&self.flat_pipeline);
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.count, 0, 0..1);
@@ -250,6 +530,8 @@ pub enum Op {
         face: u32,
         rect: TexelRect,
     },
+    /// Writes the channel map of the rivers of a layer, for the picture.
+    LayerChannels(Arc<ChannelMap>),
     /// Writes the channel map of the rivers.
     Channels(Arc<ChannelMap>),
     /// Writes the window of small rivers. `None`: the brush follows the
@@ -362,12 +644,15 @@ impl Drop for Poller {
 /// The path from the UI to the paint callback and back.
 #[derive(Clone)]
 pub struct Link {
-    /// The changes that wait for the GPU, each with the face size of its
+    /// The changes that wait for the GPU, each with the tag of its
     /// heightmap. egui can run a frame and not paint it, so the queue keeps
     /// them until `prepare` runs.
-    ops: Arc<Mutex<Vec<(u32, Op)>>>,
+    ops: Arc<Mutex<Vec<(MapKey, Op)>>>,
     events: mpsc::Sender<Event>,
     pub busy: Arc<Busy>,
+    /// The memory of the reduced copies on the GPU, with the epoch of the
+    /// frame that the GPU prepared last.
+    copy_bytes: Arc<Mutex<(u64, u64, u64)>>,
 }
 
 impl Link {
@@ -377,13 +662,21 @@ impl Link {
             ops: Arc::default(),
             events,
             busy: Arc::default(),
+            copy_bytes: Arc::default(),
         };
         (link, receiver)
     }
 
-    pub fn push(&self, face_size: u32, op: Op) {
+    pub fn push(&self, map: MapKey, op: Op) {
         let mut ops = self.ops.lock().expect("no panic holds the lock");
-        ops.push((face_size, op));
+        ops.push((map, op));
+    }
+
+    /// The epoch of the last frame that the GPU prepared, and the memory of
+    /// the reduced copies and of the channel maps of the layers on the GPU
+    /// after it, in bytes.
+    pub fn copy_bytes(&self) -> (u64, u64, u64) {
+        *self.copy_bytes.lock().expect("no panic holds the lock")
     }
 }
 
@@ -395,11 +688,18 @@ pub struct Changes {
     pub rects: Vec<(usize, TexelRect)>,
 }
 
-/// The changed texels of the CPU heightmap that wait for the GPU.
+/// The changed texels of a CPU heightmap that wait for one heightmap on the
+/// GPU.
 pub struct Uploads {
-    /// The strips of each face, in the order of the changes.
-    strips: VecDeque<(usize, TexelRect)>,
-    /// The most texels that one call of `queue_changes` sends.
+    /// The strips of each face, in the order of the changes. A strip is in
+    /// the texels of the heightmap on the GPU. `true`: the strip follows a
+    /// reset, so a strip with the base level only needs no upload.
+    strips: VecDeque<(usize, TexelRect, bool)>,
+    /// The heightmap on the GPU gets its base level in each texel before
+    /// the next strip.
+    reset: bool,
+    /// The most texels that one call of `Globe::queue_changes` sends, in
+    /// texels of the CPU heightmaps.
     pub budget: usize,
 }
 
@@ -407,6 +707,7 @@ impl Default for Uploads {
     fn default() -> Uploads {
         Uploads {
             strips: VecDeque::new(),
+            reset: false,
             budget: UPLOAD_TEXELS,
         }
     }
@@ -414,11 +715,65 @@ impl Default for Uploads {
 
 impl Uploads {
     pub fn is_empty(&self) -> bool {
-        self.strips.is_empty()
+        self.strips.is_empty() && !self.reset
     }
 
     pub fn clear(&mut self) {
         self.strips.clear();
+        self.reset = false;
+    }
+
+    /// Starts again for a heightmap on the GPU that needs each texel. The
+    /// strips before the call are stale.
+    pub fn restart(&mut self) {
+        self.strips.clear();
+        self.reset = true;
+    }
+
+    /// Adds a rectangle of the heightmap on the GPU. `factor` is the number
+    /// of texels of the CPU heightmap along one side of a texel of the
+    /// rectangle. `fresh`: the rectangle follows a reset.
+    pub fn add(&mut self, face: usize, rect: TexelRect, factor: usize, budget: usize, fresh: bool) {
+        let cut = strips(rect, (budget / (factor * factor)).max(1));
+        self.strips.extend(cut.map(|strip| (face, strip, fresh)));
+    }
+
+    /// Moves strips to the queue of the GPU. A strip gets its texels when
+    /// the call sends it, so it has each change up to that time. `room` is
+    /// the count of texels of the CPU heightmap that the call can send.
+    /// `first`: the call sends one strip at least. Returns the count that
+    /// the call sent.
+    pub fn send(
+        &mut self,
+        map: &Heightmap,
+        key: MapKey,
+        link: &Link,
+        room: usize,
+        first: bool,
+    ) -> usize {
+        let factor = map.face_size().div_ceil(key.face_size as usize).max(1);
+        let factor = factor.next_power_of_two();
+        if std::mem::take(&mut self.reset) {
+            link.push(key, Op::Reset(map.base()));
+        }
+        let mut sent = 0;
+        while let Some(&(face, rect, fresh)) = self.strips.front() {
+            if fresh && map.reduced_is_base(face, rect, factor) {
+                self.strips.pop_front();
+                continue;
+            }
+            let cost = texels(rect) * factor * factor;
+            if (sent > 0 || !first) && sent + cost > room {
+                break;
+            }
+            self.strips.pop_front();
+            sent += cost;
+            let mut data = Vec::with_capacity(texels(rect));
+            map.read_reduced(face, rect, factor, &mut data);
+            let face = face as u32;
+            link.push(key, Op::Upload { face, rect, data });
+        }
+        sent
     }
 }
 
@@ -437,61 +792,72 @@ fn strips(rect: TexelRect, texels: usize) -> impl Iterator<Item = TexelRect> {
     })
 }
 
-/// Moves the changes of the CPU heightmap to the queue. One call sends the
-/// texels of one budget, and the other strips wait in `pending`. A strip gets
-/// its texels when the call sends it, so it has each change up to that time.
-pub fn queue_changes(map: &mut Heightmap, link: &Link, pending: &mut Uploads) -> Changes {
-    let face_size = map.face_size() as u32;
-    let budget = pending.budget;
-    let mut rects: Vec<(usize, TexelRect)> = Vec::new();
+/// Takes the changes of a CPU heightmap.
+pub fn take_changes(map: &mut Heightmap) -> Changes {
     let reset = map.take_reset();
-    if reset {
-        // The reset replaces each texel, so the strips before it are stale.
-        pending.clear();
-        link.push(face_size, Op::Reset(map.base()));
-        rects.extend(map.allocated_rects());
+    let rects = if reset {
+        map.allocated_rects().collect()
     } else {
         let dirty = map.take_dirty().into_iter().enumerate();
-        rects.extend(dirty.filter_map(|(face, rect)| Some((face, rect?))));
-    }
-    for &(face, rect) in &rects {
-        let cut = strips(rect, budget).map(|strip| (face, strip));
-        pending.strips.extend(cut);
-    }
-    let mut sent = 0;
-    while let Some(&(face, rect)) = pending.strips.front() {
-        // A call sends one strip at least.
-        if sent > 0 && sent + texels(rect) > budget {
-            break;
-        }
-        pending.strips.pop_front();
-        sent += texels(rect);
-        let mut data = Vec::with_capacity(texels(rect));
-        map.read_rect(face, rect, &mut data);
-        let face = face as u32;
-        link.push(face_size, Op::Upload { face, rect, data });
-    }
+        dirty
+            .filter_map(|(face, rect)| Some((face, rect?)))
+            .collect()
+    };
     Changes { reset, rects }
 }
 
-/// One frame of the globe. egui calls it inside its own render pass.
-pub struct GlobeCallback {
+/// The heightmaps on the GPU in one frame, and the path to the UI.
+pub struct Frame {
     pub format: wgpu::TextureFormat,
-    pub face_size: u32,
-    pub uniforms: Uniforms,
     pub link: Link,
+    /// The heightmap that the brush paints.
+    pub full: Option<MapKey>,
+    /// The reduced copies that the globe draws.
+    pub copies: Vec<MapKey>,
+    /// The layers that have a channel map of their rivers.
+    pub rivers: Vec<LayerKey>,
     /// `Some`: the canvas shows the flat view with this mesh.
     pub flat: Option<Arc<FlatMesh>>,
-    /// `Some`: the globe goes into the canvas texture of the backdrop, and
-    /// the cards show a blurred copy of it.
-    pub backdrop: Option<Canvas>,
+    /// The count of the sets of reduced copies before this one.
+    pub epoch: u64,
+}
+
+/// One pass of a frame.
+#[derive(Clone, Copy)]
+pub struct Draw {
+    pub pass: Pass,
+    /// The heightmap that a layer pass reads.
+    pub source: Option<MapKey>,
+    /// The pass draws the rivers of its layer.
+    pub rivers: bool,
+    pub uniforms: Uniforms,
+}
+
+/// The work of one callback.
+pub enum Job {
+    /// Draws one pass on the screen.
+    Draw(Box<Draw>),
+    /// Draws the passes into the small target of the blurred copy that the
+    /// cards show, and blurs it. It draws nothing on the screen.
+    Backdrop(Canvas, Vec<Draw>),
+}
+
+/// One callback of a frame of the globe. egui calls it inside its own
+/// render pass. The callbacks of a frame draw in the order of the layers,
+/// between the shapes of egui.
+pub struct GlobeCallback {
+    pub frame: Arc<Frame>,
+    pub job: Job,
 }
 
 /// The commands of one `prepare` call that wait for a submit.
 struct Batch<'a> {
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
-    heights: &'a GpuHeightmap,
+    /// The heightmap that the brush paints.
+    heights: Option<&'a GpuHeightmap>,
+    full: Option<MapKey>,
+    copies: &'a HashMap<MapKey, GpuTiles>,
     link: &'a Link,
     encoder: Option<wgpu::CommandEncoder>,
     /// The stroke and the sample time of each stamp in the encoder.
@@ -518,8 +884,8 @@ impl Batch<'_> {
         };
         self.queue.submit([encoder.finish()]);
         let mut stamps = std::mem::take(&mut self.stamps);
-        if !stamps.is_empty() {
-            self.heights.begin_batch();
+        if let Some(heights) = self.heights.filter(|_| !stamps.is_empty()) {
+            heights.begin_batch();
             // The stamps of one pen sample give one delay.
             stamps.dedup();
             let (events, token) = (self.link.events.clone(), self.link.busy.token());
@@ -559,7 +925,9 @@ impl Batch<'_> {
     /// Adds stamps that follow one another in the queue, in groups. `samples`
     /// has the stroke and the sample time of each stamp.
     fn stamp_run(&mut self, plans: &[StampPlan], samples: &[(u64, Instant)]) {
-        let (heights, queue) = (self.heights, self.queue);
+        let (Some(heights), queue) = (self.heights, self.queue) else {
+            return;
+        };
         let mut at = 0;
         let mut full = false;
         while at < plans.len() {
@@ -584,19 +952,35 @@ impl Batch<'_> {
         }
     }
 
+    /// Runs one change of the reduced copy with this key.
+    fn run_copy(&mut self, key: MapKey, op: Op) {
+        let Some(tiles) = self.copies.get(&key) else {
+            return;
+        };
+        match op {
+            Op::Reset(level) => tiles.clear(self.queue, level),
+            Op::Upload { face, rect, data } => tiles.upload(self.queue, face, rect, &data),
+            _ => {}
+        }
+    }
+
+    /// Runs one change of the heightmap that the brush paints.
     fn run(&mut self, op: Op) {
+        let Some(heights) = self.heights else {
+            return;
+        };
         match op {
             Op::Reset(level) => {
                 // The change runs before the commands of the next submit, so
                 // the commands before it go first.
                 self.submit();
-                self.heights.clear(self.queue, level);
+                heights.clear(self.queue, level);
             }
             Op::Upload { face, rect, data } => {
                 // The write runs before the commands of the next submit, so
                 // the commands before it go first.
                 self.submit();
-                self.heights.upload(self.queue, face, rect, &data);
+                heights.upload(self.queue, face, rect, &data);
             }
             Op::Stamp { plan, stroke, time } => self.stamp_run(&[*plan], &[(stroke, time)]),
             Op::Erode { stroke, step } => {
@@ -604,7 +988,7 @@ impl Batch<'_> {
                 // before the commands in the encoder. So the commands before
                 // the step go first, and a submit holds one step.
                 self.submit();
-                let (heights, queue) = (self.heights, self.queue);
+                let queue = self.queue;
                 heights.begin_batch();
                 let added = heights.erode(queue, self.encoder(), &step);
                 debug_assert!(added, "an empty batch takes one step");
@@ -612,23 +996,89 @@ impl Batch<'_> {
                 self.count_passes(stroke, passes);
             }
             Op::Readback { stroke, face, rect } => {
-                let (heights, device) = (self.heights, self.device);
+                let device = self.device;
                 let readback = heights.read_rect(device, self.encoder(), face, rect);
                 self.readbacks.push((stroke, face, rect, readback));
             }
+            Op::LayerChannels(_) => {}
             Op::Channels(map) => {
                 // The stamps before the write follow the rivers before it.
                 self.submit();
-                self.heights.upload_channels(self.queue, &map);
+                heights.upload_channels(self.queue, &map);
             }
             Op::Window(window) => {
                 // A stamp in the encoder after this call follows the new
                 // window, so the stamps before it go first.
                 self.submit();
-                self.heights.upload_window(self.queue, window.as_deref());
+                heights.upload_window(self.queue, window.as_deref());
             }
         }
     }
+}
+
+/// Runs the changes that wait in the queue, on the heightmaps of the frame.
+/// The first callback of a frame finds the changes, and each other one finds
+/// an empty queue.
+fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, frame: &Frame) {
+    res.sync(device, frame);
+    let link = &frame.link;
+    let mut ops = std::mem::take(&mut *link.ops.lock().expect("no panic holds the lock"));
+    // The channel maps of the layers are for the picture only, so their
+    // order in the queue has no effect.
+    ops.retain(|(map, op)| match op {
+        Op::LayerChannels(channels) => {
+            if frame.rivers.contains(&map.layer) {
+                res.upload_channels(device, queue, map.layer, channels);
+            }
+            false
+        }
+        _ => true,
+    });
+    let mut batch = Batch {
+        device,
+        queue,
+        heights: res.full.as_ref().map(|(_, heights)| heights),
+        full: frame.full,
+        copies: &res.copies,
+        link,
+        encoder: None,
+        stamps: Vec::new(),
+        readbacks: Vec::new(),
+        passes: Vec::new(),
+    };
+    // The stamps that follow one another in the queue.
+    let (mut plans, mut samples) = (Vec::new(), Vec::new());
+    for (map, op) in ops {
+        if map.display {
+            batch.run_copy(map, op);
+            continue;
+        }
+        // A change of a heightmap that the app replaced.
+        if Some(map) != batch.full {
+            continue;
+        }
+        match op {
+            Op::Stamp { plan, stroke, time } => {
+                plans.push(*plan);
+                samples.push((stroke, time));
+            }
+            op => {
+                batch.stamp_run(&plans, &samples);
+                plans.clear();
+                samples.clear();
+                batch.run(op);
+            }
+        }
+    }
+    batch.stamp_run(&plans, &samples);
+    // This submit is before the submit of egui, so the frame shows the new
+    // levels.
+    batch.submit();
+    for (stroke, passes) in batch.passes {
+        let _ = link.events.send(Event::Passes { stroke, passes });
+    }
+    let bytes = (frame.epoch, res.copy_bytes(), res.river_bytes());
+    *link.copy_bytes.lock().expect("no panic holds the lock") = bytes;
 }
 
 impl egui_wgpu::CallbackTrait for GlobeCallback {
@@ -640,75 +1090,48 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         egui_encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
+        let frame = &*self.frame;
         let stale = resources
             .get::<Resources>()
-            .is_none_or(|r| r.face_size != self.face_size || r.format != self.format);
+            .is_none_or(|r| r.format != frame.format);
         if stale {
-            let busy = &self.link.busy;
-            resources.insert(Resources::new(device, self.format, self.face_size, busy));
+            let busy = &frame.link.busy;
+            resources.insert(Resources::new(device, frame.format, busy));
+        }
+        let res: &mut Resources = resources.get_mut().expect("inserted above");
+        run_ops(device, queue, res, frame);
+        if let Some(mesh) = &frame.flat
+            && res.mesh.as_ref().is_none_or(|m| m.spec != mesh.spec)
+        {
+            res.mesh = Some(GpuMesh::new(device, mesh));
         }
         let size = screen_descriptor.size_in_pixels;
-        if let Some(mesh) = &self.flat {
-            let res: &mut Resources = resources.get_mut().expect("inserted above");
-            if res.mesh.as_ref().is_none_or(|m| m.spec != mesh.spec) {
-                res.mesh = Some(GpuMesh::new(device, mesh));
+        let flat = frame.flat.is_some();
+        match &self.job {
+            Job::Draw(draw) => {
+                let mut draw = **draw;
+                draw.uniforms.screen = [size[0] as f32, size[1] as f32, 0.0, 0.0];
+                res.write(device, queue, &draw, false);
             }
-        }
-        let res: &Resources = resources.get().expect("inserted above");
-        let uniforms = Uniforms {
-            screen: [size[0] as f32, size[1] as f32, 0.0, 0.0],
-            ..self.uniforms
-        };
-        queue.write_buffer(&res.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-        let ops = std::mem::take(&mut *self.link.ops.lock().expect("no panic holds the lock"));
-        let mut batch = Batch {
-            device,
-            queue,
-            heights: &res.heights,
-            link: &self.link,
-            encoder: None,
-            stamps: Vec::new(),
-            readbacks: Vec::new(),
-            passes: Vec::new(),
-        };
-        // The stamps that follow one another in the queue.
-        let (mut plans, mut samples) = (Vec::new(), Vec::new());
-        for (face_size, op) in ops {
-            // A change of a heightmap that the app replaced.
-            if face_size != self.face_size {
-                continue;
-            }
-            match op {
-                Op::Stamp { plan, stroke, time } => {
-                    plans.push(*plan);
-                    samples.push((stroke, time));
+            Job::Backdrop(canvas, draws) => {
+                let small = size.map(|s| s.max(1).div_ceil(REDUCTION));
+                for draw in draws {
+                    let mut draw = *draw;
+                    draw.uniforms.screen = [small[0] as f32, small[1] as f32, 0.0, 0.0];
+                    res.write(device, queue, &draw, true);
                 }
-                op => {
-                    batch.stamp_run(&plans, &samples);
-                    plans.clear();
-                    samples.clear();
-                    batch.run(op);
-                }
+                let kept = resources.remove::<Backdrop>();
+                let mut backdrop = kept
+                    .filter(|b| b.format == frame.format)
+                    .unwrap_or_else(|| Backdrop::new(device, frame.format));
+                let res: &Resources = resources.get().expect("inserted above");
+                backdrop.render(device, queue, egui_encoder, size, canvas, |pass| {
+                    for draw in draws {
+                        res.draw(pass, draw, true, flat, small);
+                    }
+                });
+                resources.insert(backdrop);
             }
-        }
-        batch.stamp_run(&plans, &samples);
-        // This submit is before the submit of egui, so the frame shows the
-        // new levels.
-        batch.submit();
-        for (stroke, passes) in batch.passes {
-            let _ = self.link.events.send(Event::Passes { stroke, passes });
-        }
-        if let Some(canvas) = &self.backdrop {
-            let kept = resources.remove::<Backdrop>();
-            let mut backdrop = kept
-                .filter(|b| b.format == self.format)
-                .unwrap_or_else(|| Backdrop::new(device, self.format));
-            let res: &Resources = resources.get().expect("inserted above");
-            let flat = self.flat.is_some();
-            backdrop.render(device, queue, egui_encoder, size, canvas, |pass| {
-                res.draw(pass, flat, size);
-            });
-            resources.insert(backdrop);
         }
         Vec::new()
     }
@@ -719,15 +1142,11 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         resources: &egui_wgpu::CallbackResources,
     ) {
-        if self.backdrop.is_some() {
-            if let Some(backdrop) = resources.get::<Backdrop>() {
-                backdrop.blit(render_pass);
-            }
+        let (Job::Draw(draw), Some(res)) = (&self.job, resources.get::<Resources>()) else {
             return;
-        }
-        if let Some(res) = resources.get::<Resources>() {
-            res.draw(render_pass, self.flat.is_some(), info.screen_size_px);
-        }
+        };
+        let flat = self.frame.flat.is_some();
+        res.draw(render_pass, draw, false, flat, info.screen_size_px);
     }
 }
 
