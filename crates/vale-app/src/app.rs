@@ -30,13 +30,23 @@ struct ValeApp {
     picker: Option<crate::files::uikit::Picker>,
     #[cfg(target_os = "ios")]
     _lifecycle: Option<crate::lifecycle::Observer>,
+    #[cfg(target_os = "macos")]
+    menu: Option<ui::desk::native_menu::NativeMenu>,
 }
 
 impl eframe::App for ValeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let state = &mut *self.state.borrow_mut();
         state.poll_system();
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &self.menu {
+            menu.run(ui.ctx(), state);
+        }
         ui::draw(ui, state);
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &mut self.menu {
+            menu.sync(state);
+        }
 
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
         let paths = dropped.into_iter().map(|f| f.path().to_path_buf());
@@ -136,6 +146,12 @@ impl eframe::App for ValeApp {
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
+                Action::Reveal(path) => {
+                    if let Err(e) = reveal(&path) {
+                        state.status = format!("The app did not show the file: {e}");
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
                 Action::OpenProjectDialog => {
                     let mut dialog =
                         rfd::FileDialog::new().add_filter("Vale project", &[EXTENSION]);
@@ -150,8 +166,9 @@ impl eframe::App for ValeApp {
             }
         }
 
+        // The menu bar of the system has the key of Save.
         let save = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
-        if ui.ctx().input_mut(|i| i.consume_shortcut(&save)) {
+        if !state.native_menu && ui.ctx().input_mut(|i| i.consume_shortcut(&save)) {
             state.run_action(Action::Save);
         }
 
@@ -171,11 +188,117 @@ impl eframe::App for ValeApp {
         }
     }
 
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        if self.state.borrow().translucent {
+            [0.0; 4]
+        } else {
+            egui::Color32::from_rgb(12, 12, 12).to_normalized_gamma_f32()
+        }
+    }
+
     fn on_exit(&mut self) {
         let state = &mut *self.state.borrow_mut();
         state.save_resume();
         if !state.save_now() {
             eprintln!("vale-app: {}", state.status);
+        }
+    }
+}
+
+/// Shows a file in the file manager of the system. On Linux, the file
+/// manager opens the folder of the file.
+#[cfg(not(target_os = "ios"))]
+fn reveal(path: &std::path::Path) -> std::io::Result<()> {
+    use std::process::Command;
+    #[cfg(target_os = "macos")]
+    let child = Command::new("open").arg("-R").arg(path).spawn()?;
+    #[cfg(windows)]
+    let child = {
+        use std::os::windows::process::CommandExt as _;
+        let select = format!("/select,\"{}\"", path.display());
+        Command::new("explorer").raw_arg(select).spawn()?
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let child = {
+        let dir = path.parent().unwrap_or(path);
+        Command::new("xdg-open").arg(dir).spawn()?
+    };
+    let mut child = child;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+/// The options of the window. On macOS, the content fills the title bar,
+/// and the window is transparent, so it can show the glass of the system.
+pub fn window_options(size: (f64, f64)) -> eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([size.0 as f32, size.1 as f32])
+        .with_title("Vale");
+    if cfg!(target_os = "macos") {
+        viewport = viewport
+            .with_transparent(true)
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+            .with_min_inner_size([960.0, 600.0]);
+    }
+    eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    }
+}
+
+/// Puts the glass of macOS behind the window. Returns `false` if the window
+/// has no glass, for example on another platform.
+pub fn apply_glass(cc: &eframe::CreationContext<'_>) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use eframe::wgpu::rwh::{HasWindowHandle as _, RawWindowHandle};
+        use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy};
+        let material = NSVisualEffectMaterial::UnderWindowBackground;
+        if apply_vibrancy(cc, material, None, None).is_err() {
+            return false;
+        }
+        if let Ok(RawWindowHandle::AppKit(handle)) = cc.window_handle().map(|h| h.as_raw()) {
+            // SAFETY: The handle of the window gives a valid `NSView`, and
+            // the creation closure runs on the main thread.
+            unsafe { raise_render_layer(handle.ns_view) };
+        }
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cc;
+        false
+    }
+}
+
+/// Puts the Metal layer of wgpu above the glass. wgpu adds the layer to the
+/// view before the glass view comes, and AppKit puts the layer of the glass
+/// view on top. The glass then hides each frame.
+///
+/// # Safety
+///
+/// `ns_view` must be a valid `NSView`, and the call must be on the main
+/// thread.
+#[cfg(target_os = "macos")]
+unsafe fn raise_render_layer(ns_view: std::ptr::NonNull<std::ffi::c_void>) {
+    use objc2::runtime::{AnyClass, NSObjectProtocol as _};
+    use objc2_app_kit::NSView;
+
+    // SAFETY: The caller gives a valid `NSView`.
+    let view: &NSView = unsafe { ns_view.cast().as_ref() };
+    let Some(metal) = AnyClass::get(c"CAMetalLayer") else {
+        return;
+    };
+    let Some(root) = view.layer() else {
+        return;
+    };
+    // SAFETY: The sublayers are `CALayer` objects.
+    let sublayers = unsafe { root.sublayers() };
+    for layer in sublayers.iter().flat_map(|layers| layers.iter()) {
+        if layer.isKindOfClass(metal) {
+            layer.setZPosition(1.0);
         }
     }
 }
@@ -207,12 +330,7 @@ pub fn run_window(
     session: Option<Session>,
     restore: bool,
 ) -> anyhow::Result<()> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([size.0 as f32, size.1 as f32])
-            .with_title("Vale"),
-        ..Default::default()
-    };
+    let options = window_options(size);
     let mut state = state;
     state.session = session;
     let app = ValeApp {
@@ -226,12 +344,14 @@ pub fn run_window(
         picker: None,
         #[cfg(target_os = "ios")]
         _lifecycle: None,
+        #[cfg(target_os = "macos")]
+        menu: None,
     };
     eframe::run_native(
         "Vale",
         options,
         Box::new(|cc| {
-            #[cfg_attr(not(target_os = "ios"), expect(unused_mut))]
+            #[cfg_attr(not(any(target_os = "ios", target_os = "macos")), expect(unused_mut))]
             let mut app = app;
             {
                 let state = &mut *app.state.borrow_mut();
@@ -249,6 +369,22 @@ pub fn run_window(
                 }
                 if cfg!(target_os = "ios") {
                     apply_touch_style(&cc.egui_ctx);
+                }
+                state.translucent = apply_glass(cc);
+                if cfg!(target_os = "macos") {
+                    state.desk.title_inset = ui::desk::theme::LIGHTS;
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                use ui::desk::native_menu::NativeMenu;
+                let menu = NativeMenu::install(&cc.egui_ctx, &app.state.borrow());
+                match menu {
+                    Ok(menu) => {
+                        app.state.borrow_mut().native_menu = true;
+                        app.menu = Some(menu);
+                    }
+                    Err(e) => eprintln!("vale-app: the menu bar did not start: {e}"),
                 }
             }
             let ctx = cc.egui_ctx.clone();

@@ -4,10 +4,12 @@ use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_store::World;
 use vale_terrain::{Bands, face_size_values};
 
+use super::desk::float::{self, Glass, Item, SheetButton};
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
-use super::{AppState, HEIGHT_UNIT, LayerRef, RasterSpec};
+use super::world_form::{self, CANCEL, row};
+use super::{AppState, HEIGHT_UNIT, LayerRef, RasterSpec, desk};
 use crate::world;
 
 /// The title of the form.
@@ -299,80 +301,127 @@ fn finish(state: &mut AppState, form: RasterForm, did: Did) -> Option<LayerRef> 
     }
 }
 
-/// The form in the desktop layout.
+/// A row of the desktop form that picks one face size, with the values of
+/// the face size below its title.
+fn size_option(ui: &mut egui::Ui, name: &str, title: &str, detail: &str, on: bool) -> bool {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 34.0), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, name));
+    let painter = ui.painter();
+    if on {
+        painter.rect_filled(rect, desk::theme::CONTROL_RADIUS, desk::theme::selected());
+    } else if resp.hovered() {
+        painter.rect_filled(rect, desk::theme::CONTROL_RADIUS, desk::theme::hover());
+    }
+    let dot = pos2(rect.left() + 12.0, rect.top() + 11.0);
+    let edge = if on {
+        desk::theme::ACCENT
+    } else {
+        desk::theme::MUTE
+    };
+    painter.circle_stroke(dot, 5.0, egui::Stroke::new(1.2, edge));
+    if on {
+        painter.circle_filled(dot, 2.5, desk::theme::ACCENT);
+    }
+    let (x, align) = (rect.left() + 26.0, egui::Align2::LEFT_CENTER);
+    let font = desk::theme::label();
+    painter.text(pos2(x, dot.y), align, title, font, desk::theme::TEXT);
+    let small = desk::theme::small();
+    let y = rect.top() + 25.0;
+    painter.text(pos2(x, y), align, detail, small, desk::theme::MUTE);
+    resp.clicked()
+}
+
+/// The form in the desktop layout: a sheet of the window.
 pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
     let Some(mut form) = state.raster_form.take() else {
         return;
     };
-    let mut did = Did::Nothing;
     let world = state.doc.project.world.clone();
-    let modal = egui::Modal::new(egui::Id::new("raster-form")).show(ctx, |ui| {
-        ui.set_width(340.0);
-        ui.heading(TITLE);
-        ui.add_space(6.0);
-        egui::Grid::new("raster-form-grid")
-            .num_columns(2)
-            .spacing([10.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Name");
-                ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(f32::INFINITY));
-                ui.end_row();
-
-                ui.label(KIND);
-                ui.horizontal_wrapped(|ui| {
-                    for (index, preset) in PRESETS.iter().enumerate() {
-                        let on = form.preset == index;
-                        if ui.selectable_label(on, preset.name).clicked() && !on {
-                            form.set_preset(index, state);
-                        }
-                    }
-                });
-                ui.end_row();
-
-                if form.height() {
-                    ui.label("Values");
-                    ui.label(form.fixed_range());
-                    ui.end_row();
-                } else {
-                    for (label, text) in [
-                        (UNIT, &mut form.unit),
-                        (MINIMUM, &mut form.min),
-                        (MAXIMUM, &mut form.max),
-                    ] {
-                        ui.label(label);
-                        ui.add(egui::TextEdit::singleline(text).desired_width(90.0));
-                        ui.end_row();
+    let glass = Glass::of(state);
+    let top = desk::bar_bottom(state);
+    let ((clicked, kinds), keys) = float::sheet(ctx, glass, top, CARD, TITLE, |ui| {
+        let width = ui.available_width() - world_form::LABEL - 8.0;
+        let kinds = row(ui, KIND, |ui| {
+            let button = desk::widgets::menu_button(ui, KIND, PRESETS[form.preset].name);
+            float::menu(&button, glass, |ui| {
+                ui.set_min_width(160.0);
+                for (index, preset) in PRESETS.iter().enumerate() {
+                    let on = form.preset == index;
+                    if float::item(ui, Item::new(preset.name).checked(on)).clicked() && !on {
+                        form.set_preset(index, state);
                     }
                 }
-
-                ui.label("Face size");
-                ui.vertical(|ui| {
-                    for size in form.sizes.clone() {
-                        let name = world::grouped(size as u64);
-                        ui.radio_value(&mut form.face_size, size, name);
-                        let [ground, detail] = face_size_lines(size, &world);
-                        ui.weak(format!("{ground} · {detail}"));
-                    }
-                });
-                ui.end_row();
             });
-        if let Some(note) = form.note() {
-            ui.colored_label(ui.visuals().warn_fg_color, note);
-        }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            let add = egui::Button::new(ADD);
-            if ui.add_enabled(form.spec().is_some(), add).clicked() {
-                did = Did::Add;
-            }
-            if ui.button("Cancel").clicked() {
-                did = Did::Close;
-            }
+            egui::Popup::default_response_id(&button)
         });
+        row(ui, "Name", |ui| {
+            let id = egui::Id::new("raster-form-name");
+            let warn = form.name.trim().is_empty();
+            desk::widgets::text_field(ui, id, NAME, &mut form.name, width, warn);
+        });
+        if form.height() {
+            row(ui, "Values", |ui| {
+                let text = egui::RichText::new(form.fixed_range())
+                    .font(desk::theme::label())
+                    .color(desk::theme::TEXT);
+                ui.label(text);
+            });
+        } else {
+            let warn = form.range().is_none();
+            row(ui, UNIT, |ui| {
+                let id = egui::Id::new("raster-form-unit");
+                desk::widgets::text_field(ui, id, UNIT, &mut form.unit, 96.0, false);
+            });
+            for (label, text) in [(MINIMUM, &mut form.min), (MAXIMUM, &mut form.max)] {
+                row(ui, label, |ui| {
+                    let id = egui::Id::new(("raster-form", label));
+                    desk::widgets::text_field(ui, id, label, text, 96.0, warn);
+                });
+            }
+        }
+        row(ui, "Face size", |_| {});
+        for size in form.sizes.clone() {
+            let title = world::grouped(size as u64);
+            let [ground, detail] = face_size_lines(size, &world);
+            let detail = format!("{ground} · {detail}");
+            let name = face_size_name(size);
+            if size_option(ui, &name, &title, &detail, form.face_size == size) {
+                form.face_size = size;
+            }
+        }
+        if let Some(note) = form.note() {
+            let text = egui::RichText::new(note)
+                .font(desk::theme::small())
+                .color(desk::theme::WARN);
+            ui.label(text);
+        }
+        let enabled = form.spec().is_some();
+        let buttons = [
+            SheetButton {
+                label: CANCEL,
+                enabled: true,
+                primary: false,
+            },
+            SheetButton {
+                label: ADD,
+                enabled,
+                primary: true,
+            },
+        ];
+        (float::buttons(ui, &buttons), kinds)
     });
-    if modal.should_close() && did == Did::Nothing {
-        did = Did::Close;
+    // The menu of the kinds is above the sheet.
+    if egui::Popup::is_id_open(ctx, kinds) {
+        ctx.move_to_top(egui::LayerId::new(Order::Foreground, kinds));
     }
+    let did = match clicked {
+        Some(1) => Did::Add,
+        Some(_) => Did::Close,
+        None if keys.cancel => Did::Close,
+        None if keys.confirm && form.spec().is_some() => Did::Add,
+        None => Did::Nothing,
+    };
     finish(state, form, did);
 }
 

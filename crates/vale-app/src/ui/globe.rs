@@ -6,7 +6,7 @@ use eframe::egui;
 use eframe::egui_wgpu;
 use vale_store::LayerId;
 
-use super::AppState;
+use super::{AppState, Layout};
 use vale_store::Geometry;
 use vale_terrain::Mode;
 
@@ -20,12 +20,13 @@ use crate::globe::view::GlobeView;
 use crate::globe::{Globe, Paint, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 
-const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
-
-pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
+/// Draws the globe of the desktop layout in the free space of `ui`.
+/// `cards`: floating cards cover the canvas.
+pub fn draw(ui: &mut egui::Ui, state: &mut AppState, cards: bool) {
+    let background = super::desk::theme::canvas(state.translucent);
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
-        .show(ui, |ui| canvas(ui, state, BACKGROUND, false));
+        .show(ui, |ui| canvas(ui, state, background, cards));
 }
 
 /// Starts a stroke, or starts to pick the flatten level.
@@ -63,14 +64,17 @@ fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
 }
 
 /// Reads the pen and the mouse for the brush. In the brush tool, a pen and
-/// the primary mouse button paint a raster layer that the brush can paint. A touch with a force is a pen. With a pen
-/// queue, the pen comes from the queue and not from egui.
+/// the primary mouse button paint a raster layer that the brush can paint. A
+/// touch with a force is a pen. With a pen queue, the pen comes from the
+/// queue and not from egui. With `hand`, the primary mouse button moves the
+/// view and does not paint.
 fn brush_input(
     ui: &egui::Ui,
     rect: egui::Rect,
     resp: &egui::Response,
     globe: &mut Globe,
     now: Instant,
+    hand: bool,
 ) -> Painting {
     // The queue gives view points. A zoom of the UI changes the egui points.
     let zoom = ui.ctx().zoom_factor();
@@ -197,7 +201,7 @@ fn brush_input(
             release(globe);
             globe.pen.stats.up();
         }
-        Some(pos) if pressed && !shift && !touched && resp.contains_pointer() => {
+        Some(pos) if pressed && !shift && !hand && !touched && resp.contains_pointer() => {
             globe.input.mouse = true;
             press(globe);
             sample(globe, pos, FIXED_FLOW);
@@ -356,7 +360,11 @@ pub(super) fn canvas(
     if rect.width() < 8.0 || rect.height() < 8.0 {
         return;
     }
-    let painting = brush_input(ui, rect, &resp, globe, now);
+    // In the desktop layout, Space and the primary button turn the globe.
+    let hand = state.layout == Layout::Desktop
+        && !ui.ctx().egui_wants_keyboard_input()
+        && ui.input(|i| i.key_down(egui::Key::Space));
+    let painting = brush_input(ui, rect, &resp, globe, now, hand);
     match globe.world_view {
         WorldView::Globe => globe.nav.update(ui, rect, &resp, &mut globe.view, painting),
         WorldView::Flat => {

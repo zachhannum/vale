@@ -4,22 +4,16 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, World};
 
-use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, elevation, pad};
+use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, desk, pad};
 use vale_terrain::Mode;
 
-use crate::globe::brush::{
-    EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
-};
-use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
+use crate::globe::{Globe, rivers, stats, stroke_test};
 use crate::projects;
-use crate::world::{self, three_significant};
+use crate::world;
 
 /// The button of the tool bar that opens the properties of the world.
 pub const WORLD_BUTTON: &str = "World…";
-/// The button of the tool bar that exports the heightmap.
-pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -42,55 +36,6 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 let form = WorldForm::properties(&state.doc.project.world);
                 state.world_form = Some(form);
             }
-            if state.workspace == Workspace::Globe {
-                ui.separator();
-                // With no raster layer to paint, the tool is Navigate.
-                let (paintable, tool) = (state.globe.paintable, state.globe.tool);
-                let navigate = !paintable || tool == Tool::Navigate;
-                if ui.selectable_label(navigate, "Navigate").clicked() {
-                    state.globe.tool = Tool::Navigate;
-                }
-                let brush = egui::Button::selectable(state.globe.brushing(), "Brush");
-                if ui.add_enabled(paintable, brush).clicked() {
-                    state.globe.tool = Tool::Brush;
-                }
-                // The menu stays open while the user works on the list.
-                let stay = egui::containers::menu::MenuConfig::new()
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-                let menu = egui::containers::menu::MenuButton::new(LAYERS_MENU).config(stay);
-                menu.ui(ui, |ui| {
-                    if ui.button(ADD_RASTER).clicked() {
-                        state.raster_form = Some(RasterForm::open(state));
-                        ui.close();
-                    }
-                    layer_rows(ui, state);
-                    selected_layer(ui, state);
-                });
-                ui.separator();
-                let mut flat = state.globe.world_view == WorldView::Flat;
-                if ui.toggle_value(&mut flat, "Flat").changed() {
-                    state.globe.world_view = if flat {
-                        WorldView::Flat
-                    } else {
-                        WorldView::Globe
-                    };
-                }
-                if flat {
-                    flat_projection(ui, state);
-                }
-                ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
-                ui.toggle_value(&mut state.globe.preview.panel, elevation::PANEL);
-                ui.toggle_value(&mut state.globe.debug, "Debug");
-                ui.separator();
-                let import = egui::Button::new("Import heightmap…");
-                if ui.add_enabled(!state.globe.busy(), import).clicked() {
-                    state.actions.push(Action::ImportHeightmapDialog);
-                }
-                let export = egui::Button::new(EXPORT_GEOTIFF);
-                if ui.add_enabled(state.can_export(), export).clicked() {
-                    state.actions.push(Action::ExportHeightmapDialog);
-                }
-            }
             if !state.file_buttons || state.workspace != Workspace::Map {
                 return;
             }
@@ -106,122 +51,6 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     });
-}
-
-/// The button of the tool bar that opens the list of the layers.
-pub const LAYERS_MENU: &str = "Layers";
-/// The button that opens the form of a new raster layer.
-pub const ADD_RASTER: &str = "Add raster…";
-/// The field of the Layers menu with the name of the selected layer.
-pub const LAYER_NAME: &str = "Layer name";
-/// The slider of the Layers menu with the opacity of the selected raster
-/// layer.
-pub const OPACITY: &str = "Layer opacity";
-/// The button of the Layers menu that deletes the selected layer.
-pub const DELETE_LAYER: &str = "Delete layer";
-
-/// A widget with a name for a screen reader and for a test.
-fn named(resp: &egui::Response, kind: egui::WidgetType, on: bool, name: String) {
-    resp.widget_info(|| egui::WidgetInfo::selected(kind, true, on, name.clone()));
-}
-
-/// The rows of the layers of each kind, with the top layer first. A
-/// checkbox shows or hides a layer, the name selects it, and the arrows
-/// move it in the draw order.
-fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
-    let layers = state.doc.project.layers().iter().rev();
-    let rows: Vec<_> = layers
-        .map(|l| (l.id, LayerRef::of(l), l.name.clone(), l.visible))
-        .collect();
-    let count = rows.len();
-    for (index, (id, layer, name, mut visible)) in rows.into_iter().enumerate() {
-        let selected = state.selected_layer == Some(layer);
-        ui.horizontal(|ui| {
-            let eye = ui.checkbox(&mut visible, "");
-            named(
-                &eye,
-                egui::WidgetType::Checkbox,
-                visible,
-                format!("Show {name}"),
-            );
-            if eye.changed() {
-                state.set_layer_visible(id, visible);
-            }
-            for (text, up, end) in [("▲", true, 0), ("▼", false, count - 1)] {
-                let button = ui.add_enabled(index != end, egui::Button::new(text).small());
-                let way = if up { "up" } else { "down" };
-                named(
-                    &button,
-                    egui::WidgetType::Button,
-                    false,
-                    format!("Move {name} {way}"),
-                );
-                if button.clicked() {
-                    state.move_layer_by_one(id, up);
-                }
-            }
-            let kind = match layer {
-                LayerRef::Raster(_) => "raster",
-                LayerRef::Vector(_) => "vector",
-            };
-            let pick = ui.selectable_label(selected, &name);
-            named(
-                &pick,
-                egui::WidgetType::SelectableLabel,
-                selected,
-                format!("Select {name}"),
-            );
-            if pick.clicked() {
-                state.select(Some(layer));
-            }
-            ui.weak(kind);
-        });
-    }
-}
-
-/// The controls of the selected layer: its name, the opacity of a raster
-/// layer, and the button that deletes the layer.
-fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
-    let Some(layer) = state.selected_layer else {
-        return;
-    };
-    let Some((id, name)) = state.layer_of(layer).map(|l| (l.id, l.name.clone())) else {
-        return;
-    };
-    ui.separator();
-    let mut text = name.clone();
-    let field = egui::TextEdit::singleline(&mut text).desired_width(160.0);
-    let field = ui.add(field);
-    named(
-        &field,
-        egui::WidgetType::TextEdit,
-        false,
-        LAYER_NAME.to_string(),
-    );
-    if field.changed() && state.doc.rename_layer(id, &text) {
-        state.touch();
-    }
-    if let LayerRef::Raster(raster) = layer {
-        let opacity = state.doc.project.raster(raster).map_or(1.0, |r| r.opacity);
-        let mut percent = (opacity * 100.0).round();
-        let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
-            .suffix(" %")
-            .fixed_decimals(0)
-            .text("Opacity");
-        let slider = ui.add(slider);
-        named(
-            &slider,
-            egui::WidgetType::Slider,
-            false,
-            OPACITY.to_string(),
-        );
-        if slider.changed() {
-            state.set_raster_opacity(raster, percent / 100.0);
-        }
-    }
-    if ui.button(DELETE_LAYER).clicked() {
-        state.remove_layer(id);
-    }
 }
 
 /// The button of the tool bar that opens the File menu.
@@ -291,17 +120,25 @@ fn save_mark(ui: &mut egui::Ui, state: &AppState) {
     }
 }
 
-fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
+/// The name of the button of the projection of the flat view.
+pub const PROJECTION: &str = "Projection";
+
+/// The projection of the flat view, and the buttons of its center.
+pub(super) fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
+    let glass = desk::float::Glass::of(state);
     let flat = &mut state.globe.flat;
     let spec = flat.spec();
     let mut kind = spec.kind;
-    egui::ComboBox::from_id_salt("flat-projection")
-        .selected_text(kind.name())
-        .show_ui(ui, |ui| {
-            for k in ProjectionKind::ALL {
-                ui.selectable_value(&mut kind, k, k.name());
+    let button = desk::widgets::menu_button(ui, PROJECTION, kind.name());
+    desk::float::menu(&button, glass, |ui| {
+        ui.set_min_width(160.0);
+        for k in ProjectionKind::ALL {
+            let item = desk::float::Item::new(k.name()).checked(k == kind);
+            if desk::float::item(ui, item).clicked() {
+                kind = k;
             }
-        });
+        }
+    });
     flat.set_spec(ProjectionSpec { kind, ..spec });
     let button = ui.add_enabled(flat.can_center_here(), egui::Button::new(pad::RECENTER));
     let help = "Makes the place at the middle of the view the center of the projection. \
@@ -322,21 +159,6 @@ fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
     {
         flat.reset();
     }
-}
-
-/// The numbers of the brush on the GPU, and controls for a test of the brush.
-pub fn brush_debug(ui: &mut egui::Ui, state: &mut AppState) {
-    if !state.globe.debug {
-        return;
-    }
-    egui::Panel::right("brush_debug")
-        .default_size(300.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Brush debug");
-                debug_controls(ui, state);
-            });
-        });
 }
 
 /// The state of the window of small rivers.
@@ -418,128 +240,12 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The controls of the brush. The panel is open in the brush tool.
-pub fn brush(ui: &mut egui::Ui, state: &mut AppState) {
-    if !state.globe.brushing() {
-        state.globe.pick_level = false;
-        return;
-    }
-    egui::Panel::left("brush")
-        .default_size(240.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Brush");
-                let height = state.globe.is_height();
-                brush_modes(ui, &mut state.globe.brush.mode, height);
-                ui.add_space(6.0);
-                brush_size(ui, state);
-                brush_limits(ui, state);
-                brush_settings(ui, state);
-            });
-        });
-}
-
-/// The buttons of the brush modes. Without `height`, the modes that need
-/// heights in meters are off.
-fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
-    ui.horizontal_wrapped(|ui| {
-        for (mode, name) in [
-            (Mode::Raise, "Raise"),
-            (Mode::Lower, "Lower"),
-            (Mode::Smooth, "Smooth"),
-            (Mode::Flatten, "Flatten"),
-            (Mode::Carve, "Carve"),
-            (Mode::Ridge, "Ridge"),
-            (Mode::Deposit, "Deposit"),
-            (Mode::Erode, "Erode"),
-            (Mode::Weather, "Weather"),
-            (Mode::Uplift, "Uplift"),
-            (Mode::Warp, "Warp"),
-        ] {
-            let button = egui::Button::selectable(*current == mode, name);
-            if ui
-                .add_enabled(height || !needs_height(mode), button)
-                .clicked()
-            {
-                *current = mode;
-            }
-        }
-    });
-}
-
 /// The name of the strength slider. In the uplift mode, the strength is the
 /// rate of the uplift.
 pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
         _ => "Strength",
-    }
-}
-
-fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
-    let unit = state.shown_unit().to_string();
-    let world_km = state.doc.project.world.radius_km;
-    let (unit_km, symbol) = world::large_unit(state.doc.project.world.units);
-    let globe = &mut state.globe;
-    let globe_radius = globe.radius();
-    let mut size = globe.brush.radius_km(globe_radius, world_km) / unit_km;
-    let range = globe.brush.radius_km_range(globe_radius, world_km);
-    let range = range.start() / unit_km..=range.end() / unit_km;
-    let slider = egui::Slider::new(&mut size, range)
-        .logarithmic(true)
-        .custom_formatter(|size, _| three_significant(size))
-        .suffix(format!(" {symbol}"))
-        .text("Radius");
-    if ui.add(slider).changed() {
-        globe
-            .brush
-            .set_radius_km(size * unit_km, globe_radius, world_km);
-    }
-    ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
-    ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
-    if globe.brush.mode == Mode::Warp {
-        for (value, range, name) in [
-            (&mut globe.brush.warp_km, WARP_KM, "Strength"),
-            (&mut globe.brush.scale_km, SCALE_KM, "Scale"),
-        ] {
-            let slider = egui::Slider::new(value, range)
-                .logarithmic(true)
-                .custom_formatter(|km, _| three_significant(km))
-                .suffix(" km")
-                .text(name);
-            ui.add(slider);
-        }
-        // The seed is a property of the world, so each brush gets the same
-        // noise field.
-        let seed = &mut state.doc.project.world.seed;
-        ui.add(egui::Slider::new(seed, SEED).text("Seed"));
-    } else {
-        // The slider shows the strength as a value of the layer.
-        let (min, max) = globe.brush.value_range;
-        let (span, scale) = (
-            max - min,
-            globe.brush.strength_value() / globe.brush.strength_m,
-        );
-        let strength = egui::Slider::new(&mut globe.brush.strength_m, STRENGTH_M)
-            .logarithmic(true)
-            .custom_formatter(move |meters, _| world::value_text(meters * scale, span, &unit))
-            .custom_parser(move |text| {
-                let number: String = text.chars().take_while(|c| !c.is_alphabetic()).collect();
-                Some(number.trim().parse::<f64>().ok()? / scale)
-            })
-            .text(strength_name(globe.brush.mode));
-        ui.add(strength);
-    }
-    if globe.brush.mode == Mode::Uplift {
-        ui.add(egui::Slider::new(&mut globe.brush.erosion, EROSION).text("Erosion"));
-    }
-    if matches!(globe.brush.mode, Mode::Weather | Mode::Uplift) {
-        let angle = egui::Slider::new(&mut globe.brush.talus_deg, TALUS_DEG)
-            .logarithmic(true)
-            .custom_formatter(|deg, _| three_significant(deg))
-            .suffix("°")
-            .text("Angle");
-        ui.add(angle);
     }
 }
 
@@ -552,23 +258,6 @@ fn value_drag<'a>(value: &'a mut f64, (min, max): (f64, f64), unit: &str) -> egu
         .range(min..=max)
         .fixed_decimals(world::value_decimals(span))
         .suffix(format!(" {unit}"))
-}
-
-/// The floor and the ceiling of the brush. Each one has a checkbox and a
-/// value.
-fn brush_limits(ui: &mut egui::Ui, state: &mut AppState) {
-    let unit = state.shown_unit().to_string();
-    let brush = &mut state.globe.brush;
-    let range = brush.value_range;
-    for (name, on, value) in [
-        ("Floor", &mut brush.floor_on, &mut brush.floor_m),
-        ("Ceiling", &mut brush.ceiling_on, &mut brush.ceiling_m),
-    ] {
-        ui.horizontal(|ui| {
-            ui.checkbox(on, name);
-            ui.add_enabled(*on, value_drag(value, range, &unit));
-        });
-    }
 }
 
 /// The lock of the size and the flatten level.
@@ -635,7 +324,7 @@ fn world_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Projection");
     let mut spec = state.doc.frame.projection;
     egui::ComboBox::from_id_salt("projection")
@@ -744,7 +433,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Map");
     if ui
         .checkbox(&mut state.doc.frame.graticule, "Graticule")

@@ -1,9 +1,8 @@
-//! The bands panel: the band limits and the color ramp of a raster layer.
+//! The bands of a raster layer: the band limits and the color ramp.
 
 use eframe::egui;
 use vale_terrain::{Bands, Rgb};
 
-use super::{AppState, LayerRef};
 use crate::globe::preview::Preview;
 use crate::world;
 
@@ -12,8 +11,6 @@ pub const RIVER_WIDTH: std::ops::RangeInclusive<f32> = 0.25..=4.0;
 
 /// The name of the bar for a screen reader and for the tests.
 pub const BAR_LABEL: &str = "Band limits";
-/// The button of the tool bar that opens the panel.
-pub const PANEL: &str = "Bands";
 
 const BAR_HEIGHT: f32 = 340.0;
 const BAR_WIDTH: f32 = 56.0;
@@ -72,33 +69,6 @@ fn color32(c: Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(c[0], c[1], c[2])
 }
 
-pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    if !state.globe.preview.panel {
-        return;
-    }
-    egui::Panel::right("elevation")
-        .default_size(210.0)
-        .show(ui, |ui| {
-            let layer = state
-                .shown_raster()
-                .map(|raster| LayerRef::Raster(raster.id));
-            let layer = layer.and_then(|layer| state.layer_of(layer));
-            let name = layer.map_or(PANEL.to_string(), |layer| layer.name.clone());
-            let unit = state.shown_unit().to_string();
-            ui.heading(name);
-            let shown = state.shown_raster().map(|raster| raster.id);
-            let globe = &mut state.globe;
-            let mut preview = globe.preview;
-            let bands = shown.and_then(|id| globe.bands_mut(id));
-            if let Some(bands) = bands {
-                controls(ui, bands, &mut preview, &unit);
-            } else {
-                controls(ui, &mut globe.map.bands, &mut preview, &unit);
-            }
-            globe.preview = preview;
-        });
-}
-
 /// The controls of the preview, and of the bands of one raster layer.
 /// `unit` is the unit of the values of the layer. A height in meters has
 /// rivers.
@@ -110,6 +80,16 @@ pub(super) fn controls(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Previ
         let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
         ui.add_enabled(preview.rivers, width);
     }
+    band_controls(ui, bands, preview, unit);
+}
+
+/// The bar of the band limits and the colors of the ramp.
+pub(super) fn band_controls(
+    ui: &mut egui::Ui,
+    bands: &mut Bands,
+    preview: &mut Preview,
+    unit: &str,
+) {
     ui.separator();
     limit_bar(ui, bands, preview, unit);
     selected_limit(ui, bands, preview, unit);

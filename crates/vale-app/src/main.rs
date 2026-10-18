@@ -9,6 +9,7 @@ use vale_app::headless;
 use vale_app::pipeline::Pipeline;
 use vale_app::session::Session;
 use vale_app::ui::AppState;
+use vale_app::ui::pad::Panel;
 use vale_app::ui::raster_form::RasterForm;
 use vale_app::ui::world_form::WorldForm;
 
@@ -46,10 +47,16 @@ fn run() -> anyhow::Result<u8> {
         }
         state.workspace = args.workspace;
         state.set_layout(args.layout);
+        // On macOS, the menus are in the menu bar of the system.
+        state.native_menu = headless_run && cfg!(target_os = "macos");
         for panel in &args.panel {
             state.pad.open(*panel);
         }
         state.pad.more = args.more_tools;
+        if args.panel.contains(&Panel::Brush) {
+            state.desk.toggle_brush();
+        }
+        state.desk.more_open = args.more_tools;
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
         if args.worlds_menu {

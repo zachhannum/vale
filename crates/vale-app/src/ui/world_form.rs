@@ -3,10 +3,12 @@
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_store::{Units, World};
 
+use super::desk::float::{self, Glass, SheetButton};
+use super::desk::widgets::Segment;
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
-use super::{Action, AppState};
+use super::{Action, AppState, desk};
 use crate::world;
 
 /// The control that makes the world of the form.
@@ -22,6 +24,9 @@ pub const RADIUS: &str = "Radius";
 /// The name of the slider of the radius in the iPad layout.
 pub const RADIUS_SLIDER: &str = "Radius slider";
 const UNITS: &str = "Units";
+/// The button that saves the desktop form of the world of the project.
+pub const SAVE: &str = "Save";
+pub const CANCEL: &str = "Cancel";
 /// The row of the form that picks the folder of a new world.
 pub const LOCATION: &str = "Location";
 const WIDTH: f32 = 400.0;
@@ -66,7 +71,8 @@ enum Did {
     Nothing,
     Close,
     Create,
-    OpenNew,
+    /// The desktop form writes the world of the project.
+    Save,
 }
 
 impl WorldForm {
@@ -184,12 +190,16 @@ impl WorldForm {
     }
 }
 
-/// Acts on what the user did, and keeps or closes the form.
-fn finish(state: &mut AppState, mut form: WorldForm, did: Did) {
+/// Acts on what the user did, and keeps or closes the form. `live`: each
+/// change of a properties form applies at once.
+fn finish(state: &mut AppState, form: WorldForm, did: Did, live: bool) {
     match did {
         Did::Close if form.required => {}
         Did::Close => return,
-        Did::OpenNew => form = WorldForm::new_world(),
+        Did::Save => {
+            form.apply(state);
+            return;
+        }
         Did::Create => {
             let Some(world) = form.world() else {
                 state.world_form = Some(form);
@@ -200,113 +210,137 @@ fn finish(state: &mut AppState, mut form: WorldForm, did: Did) {
         }
         Did::Nothing => {}
     }
-    if form.mode == FormMode::Properties {
+    if live && form.mode == FormMode::Properties {
         form.apply(state);
     }
     state.world_form = Some(form);
 }
 
-/// The form in the desktop layout.
+/// The width of the labels of a desktop form.
+pub(super) const LABEL: f32 = 76.0;
+
+/// A row of a desktop form: the label, and the controls at its right.
+pub(super) fn row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        ui.set_min_height(desk::theme::ROW);
+        let (rect, _) = ui.allocate_exact_size(vec2(LABEL, desk::theme::ROW), egui::Sense::hover());
+        let at = pos2(rect.left(), rect.center().y);
+        let font = desk::theme::label();
+        let color = desk::theme::MUTE;
+        ui.painter()
+            .text(at, egui::Align2::LEFT_CENTER, label, font, color);
+        add(ui)
+    })
+    .inner
+}
+
+/// The form in the desktop layout: a sheet of the window. A properties
+/// form writes the world when the user saves it.
 pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
     let Some(mut form) = state.world_form.take() else {
         return;
     };
-    let mut did = Did::Nothing;
+    let new = form.mode == FormMode::New;
     let busy = state.globe.busy();
-    let modal = egui::Modal::new(egui::Id::new("world-form")).show(ctx, |ui| {
-        ui.set_width(300.0);
-        let new = form.mode == FormMode::New;
-        ui.heading(if new { NEW_TITLE } else { PROPERTIES_TITLE });
-        ui.add_space(6.0);
-        egui::Grid::new("world-form-grid")
-            .num_columns(2)
-            .spacing([10.0, 8.0])
-            .show(ui, |ui| {
-                ui.label(NAME);
-                ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(f32::INFINITY));
-                ui.end_row();
-
-                ui.label("Preset");
-                ui.horizontal(|ui| {
-                    let active = form.preset();
-                    for (index, (name, km)) in world::PRESETS.into_iter().enumerate() {
-                        if ui.selectable_label(active == Some(index), name).clicked() {
-                            form.set_radius_km(km);
-                        }
-                    }
-                });
-                ui.end_row();
-
-                ui.label(RADIUS);
-                ui.horizontal(|ui| {
-                    let edit = egui::TextEdit::singleline(&mut form.radius).desired_width(90.0);
-                    let edit = if form.radius_ok {
-                        edit
-                    } else {
-                        edit.text_color(ui.visuals().warn_fg_color)
-                    };
-                    if ui.add(edit).changed() {
-                        form.radius_changed();
-                    }
-                    ui.label(form.radius_unit());
-                });
-                ui.end_row();
-
-                ui.label("Units");
-                ui.horizontal(|ui| {
-                    for units in Units::ALL {
-                        let name = world::units_name(units);
-                        if ui.selectable_label(form.units == units, name).clicked() {
-                            form.set_units(units);
-                        }
-                    }
-                });
-                ui.end_row();
-                let locations = state.projects.available();
-                if new && locations.len() > 1 {
-                    ui.label(LOCATION);
-                    ui.horizontal(|ui| {
-                        let active = state.projects.choice();
-                        for location in locations {
-                            let name = location.label(false);
-                            if ui.selectable_label(active == location, name).clicked() {
-                                state.projects.set_choice(location);
-                            }
-                        }
-                    });
-                    ui.end_row();
-                }
-            });
-        if let Some(note) = form.radius_note() {
-            ui.colored_label(ui.visuals().warn_fg_color, note);
-        }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if new {
-                let create = egui::Button::new(CREATE);
-                if ui
-                    .add_enabled(form.world().is_some() && !busy, create)
-                    .clicked()
-                {
-                    did = Did::Create;
-                }
-                if !form.required && ui.button("Cancel").clicked() {
-                    did = Did::Close;
-                }
-            } else {
-                if ui.button("Close").clicked() {
-                    did = Did::Close;
-                }
-                if ui.button(NEW_WORLD).clicked() {
-                    did = Did::OpenNew;
-                }
+    let glass = Glass::of(state);
+    let top = desk::bar_bottom(state);
+    let title = if new { NEW_TITLE } else { PROPERTIES_TITLE };
+    let locations = state.projects.available();
+    let locations = if new && locations.len() > 1 {
+        locations
+    } else {
+        Vec::new()
+    };
+    let (clicked, keys) = float::sheet(ctx, glass, top, CARD, title, |ui| {
+        let width = ui.available_width() - LABEL - 8.0;
+        row(ui, NAME, |ui| {
+            let id = egui::Id::new("world-form-name");
+            desk::widgets::text_field(ui, id, NAME, &mut form.name, width, false);
+        });
+        row(ui, "Preset", |ui| {
+            let items = world::PRESETS.map(|(name, _)| Segment::new(name));
+            if let Some(index) = desk::widgets::segments(ui, &items, form.preset()) {
+                form.set_radius_km(world::PRESETS[index].1);
             }
         });
+        row(ui, RADIUS, |ui| {
+            let id = egui::Id::new("world-form-radius");
+            let ok = form.radius_ok;
+            let field = desk::widgets::text_field(ui, id, RADIUS, &mut form.radius, 96.0, !ok);
+            if field.changed() {
+                form.radius_changed();
+            }
+            let unit = egui::RichText::new(form.radius_unit())
+                .font(desk::theme::label())
+                .color(desk::theme::MUTE);
+            ui.label(unit);
+        });
+        if let Some(note) = form.radius_note() {
+            row(ui, "", |ui| {
+                let text = egui::RichText::new(note)
+                    .font(desk::theme::small())
+                    .color(desk::theme::WARN);
+                ui.label(text);
+            });
+        }
+        row(ui, UNITS, |ui| {
+            let items = Units::ALL.map(|units| Segment::new(world::units_name(units)));
+            let active = Units::ALL.iter().position(|u| *u == form.units);
+            if let Some(index) = desk::widgets::segments(ui, &items, active) {
+                form.set_units(Units::ALL[index]);
+            }
+        });
+        if !locations.is_empty() {
+            row(ui, LOCATION, |ui| {
+                let items: Vec<_> = locations
+                    .iter()
+                    .map(|l| Segment::new(l.label(false)))
+                    .collect();
+                let active = locations.iter().position(|l| *l == state.projects.choice());
+                if let Some(index) = desk::widgets::segments(ui, &items, active) {
+                    state.projects.set_choice(locations[index]);
+                }
+            });
+        }
+        let ready = form.world().is_some();
+        let (label, enabled) = match new {
+            true => (CREATE, ready && !busy),
+            false => (SAVE, ready),
+        };
+        let cancel = SheetButton {
+            label: CANCEL,
+            enabled: true,
+            primary: false,
+        };
+        let confirm = SheetButton {
+            label,
+            enabled,
+            primary: true,
+        };
+        let buttons = if form.required {
+            vec![confirm]
+        } else {
+            vec![cancel, confirm]
+        };
+        let last = buttons.len() - 1;
+        float::buttons(ui, &buttons).map(|index| (index == last, enabled))
     });
-    if modal.should_close() && did == Did::Nothing {
-        did = Did::Close;
-    }
-    finish(state, form, did);
+    let confirm = |enabled: bool| match new {
+        true => Did::Create,
+        false if enabled => Did::Save,
+        false => Did::Nothing,
+    };
+    let did = match clicked {
+        Some((true, enabled)) => confirm(enabled),
+        Some((false, _)) => Did::Close,
+        None if keys.cancel => Did::Close,
+        None if keys.confirm => {
+            let enabled = form.world().is_some() && (!new || !busy);
+            if enabled { confirm(true) } else { Did::Nothing }
+        }
+        None => Did::Nothing,
+    };
+    finish(state, form, did, false);
 }
 
 /// The form in the iPad layout: a card near the top of the screen, over a
@@ -419,5 +453,5 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     });
     // A touch on the dark fill does not put it above the card.
     ctx.move_to_top(egui::LayerId::new(Order::Foreground, egui::Id::new(CARD)));
-    finish(state, form, did);
+    finish(state, form, did, true);
 }

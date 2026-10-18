@@ -10,7 +10,7 @@ The labeling prototype is done. The `vale-labeler` library labels points and lin
 cargo run --release -p vale-labeler-demo -- --preset world --out target/demo/world.png
 ```
 
-An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. The first start opens on a start screen that lists the projects, and a later start opens the project of the last run. A project opens on the globe workspace, and a switch in the tool bar opens the flat map. The globe workspace has a list of the layers, and the globe draws the vector layers. This command opens the window:
+An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. The first start opens on a start screen that lists the projects, and a later start opens the project of the last run. A project opens on the globe workspace, and a switch in the title bar opens the flat map. The globe workspace has a list of the layers, and the globe draws the vector layers. This command opens the window:
 
 ```sh
 cargo run --release -p vale-app
@@ -56,7 +56,7 @@ The phase table in `docs/DESIGN.md` gives the order of the work after that. When
 - Do not name a binary `vale`, because a popular prose linter uses that command name.
 - Before you add Vello, Parley, or Krilla as a dependency, make sure of its current release status.
 - Wholesale procedural world generation is a permanent non-goal.
-- All UI is iPad first. Design each screen, panel, and dialog for the iPad layout, with the theme and the widgets of `ui/pad` and with touch-size controls. A feature is not done until its iPad UI is done. The desktop UI follows the desktop mockups in `docs/mockups` and the section "Desktop layout" of `docs/DESIGN.md`. If no mockup shows a screen, use the patterns of the nearest desktop mockup. Until the app has the desktop layout, a plain desktop version is sufficient.
+- All UI is iPad first. Design each screen, panel, and dialog for the iPad layout, with the theme and the widgets of `ui/pad` and with touch-size controls. A feature is not done until its iPad UI is done. The desktop UI follows the desktop mockups in `docs/mockups` and the section "Desktop layout" of `docs/DESIGN.md`. If no mockup shows a screen, use the patterns of the nearest desktop mockup.
 - If a change contradicts `docs/DESIGN.md`, update the document in the same change.
 - Reference files for the demo are updated with `VALE_UPDATE_REFERENCE=1`.
 

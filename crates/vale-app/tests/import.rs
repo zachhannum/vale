@@ -546,7 +546,8 @@ fn a_wrong_aspect_ratio_gives_a_warning() {
     assert!(s.status.contains("300 x 200"), "{}", s.status);
     assert!(s.import_note.as_ref().unwrap().warning);
     assert!(s.globe.map.allocated_tiles() > 0);
-    assert!(h.query_by_label_contains("twice as wide").is_some());
+    // The status bar and the inspector show the text.
+    assert_eq!(h.query_all_by_label_contains("twice as wide").count(), 2);
 
     let path = write_png("ratio-good.png", WIDTH, HEIGHT);
     h.state_mut().run_action(Action::ImportHeightmap(path));
@@ -555,9 +556,10 @@ fn a_wrong_aspect_ratio_gives_a_warning() {
     assert_eq!(s.status, "Imported ratio-good.png (512 x 256).");
     assert!(!s.import_note.as_ref().unwrap().warning);
     assert!(h.query_by_label_contains("twice as wide").is_none());
-    assert!(
-        h.query_by_label_contains("Imported ratio-good.png")
-            .is_some()
+    assert_eq!(
+        h.query_all_by_label_contains("Imported ratio-good.png")
+            .count(),
+        2
     );
 }
 
@@ -585,9 +587,10 @@ fn a_file_that_is_not_an_image_gives_a_warning_and_no_change() {
     assert!(s.import_note.as_ref().unwrap().warning);
     assert!(texels(&s.globe.map) == empty);
     assert!(!s.globe.can_undo());
-    assert!(
-        h.query_by_label_contains("is not a PNG or TIFF image")
-            .is_some()
+    assert_eq!(
+        h.query_all_by_label_contains("is not a PNG or TIFF image")
+            .count(),
+        2
     );
 }
 

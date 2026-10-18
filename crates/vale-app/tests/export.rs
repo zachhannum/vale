@@ -7,7 +7,7 @@ use vale_app::cli::{Args, export_heightmap};
 use vale_app::document::Document;
 use vale_app::files::ExportEvent;
 use vale_app::session::Session;
-use vale_app::ui::panels::EXPORT_GEOTIFF;
+use vale_app::ui::pad::EXPORT_GEOTIFF;
 use vale_app::ui::{Action, AppState, LayerRef, Workspace, draw};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{EquirectGrid, Heightmap, Limits, Mode, Stamp};
@@ -319,8 +319,11 @@ fn the_end_of_the_hand_off_to_the_files_app_sets_the_note() {
     assert!(state.can_export());
 }
 
+/// The desktop layout with the dock closed, so that the File menu has the
+/// only rows of the import and the export.
 fn desktop(mut state: AppState) -> egui_kittest::Harness<'static, AppState> {
     state.workspace = Workspace::Globe;
+    state.desk.dock_open = false;
     let mut h = egui_kittest::Harness::builder()
         .with_size(eframe::egui::vec2(1280.0, 800.0))
         .with_pixels_per_point(1.0)
@@ -329,18 +332,25 @@ fn desktop(mut state: AppState) -> egui_kittest::Harness<'static, AppState> {
     h
 }
 
+fn open_file_menu(h: &mut egui_kittest::Harness<'static, AppState>) {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("File").click();
+    h.run_steps(2);
+}
+
 #[test]
-fn the_tool_bar_has_a_button_that_exports_the_heightmap() {
+fn the_file_menu_has_a_row_that_exports_the_heightmap() {
     use egui_kittest::kittest::{NodeT, Queryable};
     for file_buttons in [true, false] {
         let mut state = state();
         state.file_buttons = file_buttons;
         let mut h = desktop(state);
+        open_file_menu(&mut h);
         let button = h.get_by_label(EXPORT_GEOTIFF);
         assert!(!button.accesskit_node().is_disabled());
-        // The button is after the import button.
+        // The row is below the import row.
         let import = h.get_by_label("Import heightmap…").rect();
-        assert!(button.rect().left() > import.right());
+        assert!(button.rect().top() >= import.bottom());
         button.click();
         h.run_steps(1);
         let actions = &h.state().actions;
@@ -349,11 +359,12 @@ fn the_tool_bar_has_a_button_that_exports_the_heightmap() {
 }
 
 #[test]
-fn the_export_button_is_off_for_a_world_with_no_raster_layer() {
+fn the_export_row_is_off_for_a_world_with_no_raster_layer() {
     use egui_kittest::kittest::{NodeT, Queryable};
     let mut state = AppState::new(Document::sample()).unwrap();
     state.headless = true;
     let mut h = desktop(state);
+    open_file_menu(&mut h);
     let button = h.get_by_label(EXPORT_GEOTIFF);
     assert!(button.accesskit_node().is_disabled());
     button.click();

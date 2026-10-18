@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use eframe::egui;
+use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use kurbo::Point;
@@ -9,9 +10,11 @@ use vale_app::globe::StackItem;
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
-use vale_app::ui::pad::MORE;
-use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
-use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
+use vale_app::ui::desk::command::Command;
+use vale_app::ui::desk::dock::OPACITY;
+use vale_app::ui::desk::theme;
+use vale_app::ui::pad::{ADD_LAYER, DELETE_LAYER, LAYER_NAME, MORE};
+use vale_app::ui::world_form::{CANCEL, CREATE, FormMode, NEW_WORLD, SAVE, WorldForm};
 use vale_app::ui::{
     Action, AppState, ExportFormat, LayerRef, Layout, RasterSpec, Workspace, draw,
     is_heightmap_path,
@@ -40,6 +43,14 @@ fn harness() -> Harness<'static, AppState> {
     harness_with(Document::sample())
 }
 
+/// Clicks a row of a menu of the menu row.
+fn menu_row(h: &mut Harness<'static, AppState>, menu: &str, row: &str) {
+    h.get_by_label(menu).click();
+    h.run_steps(2);
+    h.get_by_label(row).click();
+    h.run_steps(1);
+}
+
 fn land_path() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/natural-earth/110m/ne_110m_land.geojson")
 }
@@ -51,10 +62,10 @@ fn first_frames_compose_the_map() {
     let s = h.state();
     assert!(s.composed.is_some());
     assert!(s.texture.is_some());
-    assert!(
-        s.canvas_size.0 > 650.0 && s.canvas_size.0 < 850.0,
-        "{:?}",
-        s.canvas_size
+    // The canvas is between the tool rail and the dock.
+    assert_eq!(
+        s.canvas_size.0,
+        SIZE.0 - f64::from(theme::RAIL + theme::DOCK)
     );
     assert!(!s.dirty);
 }
@@ -75,8 +86,9 @@ fn graticule_checkbox_recomposes() {
 fn land_checkbox_hides_layer() {
     let mut h = harness();
     h.run_steps(3);
-    h.get_by_label("Land").click();
+    h.get_by_label("Hide Land").click();
     h.run_steps(2);
+    assert!(h.query_by_label("Show Land").is_some());
     let doc = &h.state().doc;
     let land = doc
         .project
@@ -92,7 +104,7 @@ fn land_checkbox_hides_layer() {
 fn the_layer_list_adds_a_layer() {
     let mut h = harness();
     h.run_steps(3);
-    h.get_by_label("Add layer").click();
+    h.get_by_label(ADD_LAYER).click();
     h.run_steps(2);
     h.get_by_label("Points").click();
     h.run_steps(2);
@@ -140,15 +152,20 @@ fn the_map_workspace_does_not_list_a_raster_layer() {
     assert_eq!(entries, [land, rivers, places]);
     assert!(state.doc.entry(layer).is_none());
     // The list, the map, and the labels have the vector layers.
-    assert!(h.query_by_label("Select Rain").is_none());
     assert!(h.query_by_label("Rain").is_none());
-    for name in ["Select Land", "Select Rivers", "Select Places"] {
-        assert!(h.query_by_label(name).is_some(), "{name}");
+    for name in ["Land", "Rivers", "Places"] {
+        assert!(
+            h.query_by_role_and_label(Role::Button, name).is_some(),
+            "{name}"
+        );
     }
     let composed = state.composed.as_ref().expect("a composed map");
     assert!(composed.labels.placed > 0);
 
     // A raster layer has no inspector.
+    h.state_mut().selected_layer = Some(LayerRef::Raster(rain));
+    h.run_steps(2);
+    assert!(h.query_by_label("Move up").is_none());
     h.state_mut().selected_layer = Some(LayerRef::Vector(layer));
     h.run_steps(2);
     assert!(h.query_by_label("Move up").is_none());
@@ -187,36 +204,47 @@ fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
         layer_names(h.state()),
         ["Height", "Land", "Rivers", "Places"]
     );
-    h.get_by_label(LAYERS_MENU).click();
-    h.run_steps(2);
     let click = |h: &mut Harness<'static, AppState>, name: &str| {
         h.get_by_label(name).click();
         h.run_steps(2);
     };
+    let row = |h: &mut Harness<'static, AppState>, name: &str| {
+        h.get_by_role_and_label(Role::Button, name).click();
+        h.run_steps(2);
+    };
 
-    // The list has each layer of each kind, and the arrows move a raster
-    // layer past a vector layer.
-    for name in ["Select Height", "Select Land", "Select Places"] {
-        assert!(h.query_by_label(name).is_some(), "{name}");
+    // The dock lists each layer of each kind. A row selects its layer.
+    for name in ["Height", "Land", "Rivers", "Places"] {
+        assert!(
+            h.query_by_role_and_label(Role::Button, name).is_some(),
+            "{name}"
+        );
     }
-    click(&mut h, "Move Height up");
-    click(&mut h, "Move Height up");
+    row(&mut h, "Height");
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(height)));
+    assert_eq!(h.state().globe.raster(), Some(height));
+
+    // The Layer menu moves the selected layer past a vector layer.
+    menu_row(&mut h, "Layer", "Move layer up");
+    h.run_steps(2);
+    menu_row(&mut h, "Layer", "Move layer up");
+    h.run_steps(2);
     assert_eq!(
         layer_names(h.state()),
         ["Land", "Rivers", "Height", "Places"]
     );
-    click(&mut h, "Move Places down");
+    row(&mut h, "Places");
+    menu_row(&mut h, "Layer", "Move layer down");
+    h.run_steps(2);
     assert_eq!(
         layer_names(h.state()),
         ["Land", "Rivers", "Places", "Height"]
     );
-    click(&mut h, "Move Height down");
-
-    // The name selects the layer, and the checkbox hides it.
-    click(&mut h, "Select Height");
+    row(&mut h, "Height");
     assert_eq!(h.state().selected_layer, Some(LayerRef::Raster(height)));
-    assert_eq!(h.state().globe.raster(), Some(height));
-    click(&mut h, "Show Height");
+
+    // The eye hides the layer, and the brush cannot paint it.
+    click(&mut h, "Hide Height");
     let layer = h.state().doc.project.raster_layer(height).unwrap();
     assert!(!layer.visible);
     let stack = h.state().globe.stack().unwrap();
@@ -227,13 +255,14 @@ fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
     assert_eq!(h.state().shown_raster().map(|r| r.id), Some(height));
     assert!(h.state().globe.paintable);
 
-    // The selected layer has a name field, an opacity, and a delete button.
+    // The panel of the layer has a name field, an opacity, and a delete
+    // button.
     assert!(h.query_by_label(LAYER_NAME).is_some());
-    assert!(h.query_by_label(OPACITY).is_some());
+    assert!(h.query_all_by_label(OPACITY).next().is_some());
     assert!(h.state_mut().rename_raster(height, "Ground"));
     assert!(h.state_mut().set_raster_opacity(height, 0.4));
     h.run_steps(2);
-    assert!(h.query_by_label("Select Ground").is_some());
+    assert!(h.query_by_role_and_label(Role::Button, "Ground").is_some());
     assert_eq!(h.state().doc.project.raster(height).unwrap().opacity, 0.4);
     click(&mut h, DELETE_LAYER);
     let state = h.state();
@@ -244,14 +273,12 @@ fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
 }
 
 #[test]
-fn toolbar_buttons_push_actions() {
+fn file_menu_rows_push_actions() {
     let mut h = harness();
     h.run_steps(2);
-    h.get_by_label("Open GeoJSON…").click();
-    h.run_steps(1);
+    menu_row(&mut h, "File", "Open GeoJSON…");
     assert!(h.state().actions.contains(&Action::OpenDialog));
-    h.get_by_label("Export PDF…").click();
-    h.run_steps(1);
+    menu_row(&mut h, "File", "Export PDF…");
     assert!(
         h.state()
             .actions
@@ -263,26 +290,31 @@ fn toolbar_buttons_push_actions() {
 fn file_buttons_can_be_hidden() {
     let mut state = state_with(Document::sample());
     state.file_buttons = false;
+    // The layer list of the dock also has the import row.
+    state.desk.dock_open = false;
     let mut h = Harness::builder()
         .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
         .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
     h.run_steps(2);
+    h.get_by_label("File").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Import heightmap…").is_some());
     assert!(h.query_by_label("Open GeoJSON…").is_none());
     assert!(h.query_by_label("Export PDF…").is_none());
 }
 
 #[test]
-fn the_import_button_shows_with_and_without_the_file_buttons() {
+fn the_import_row_shows_with_and_without_the_file_buttons() {
     for file_buttons in [true, false] {
         let mut state = state_with(Document::sample());
         state.workspace = Workspace::Globe;
         state.file_buttons = file_buttons;
+        state.desk.dock_open = false;
         let mut h = Harness::builder()
             .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
             .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
         h.run_steps(2);
-        h.get_by_label("Import heightmap…").click();
-        h.run_steps(1);
+        menu_row(&mut h, "File", "Import heightmap…");
         let actions = &h.state().actions;
         assert_eq!(actions, &[Action::ImportHeightmapDialog], "{file_buttons}");
     }
@@ -618,8 +650,8 @@ fn the_new_world_form_makes_a_world_from_a_preset() {
     let mut h = harness();
     h.state_mut().workspace = Workspace::Globe;
     h.run_steps(2);
-    h.get_by_label(NEW_WORLD).click();
-    h.run_steps(2);
+    menu_row(&mut h, "File", NEW_WORLD);
+    h.run_steps(1);
     let form = h.state().world_form.clone().unwrap();
     assert_eq!(form.mode, FormMode::New);
     assert_eq!(
@@ -692,8 +724,8 @@ fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
     h.run_steps(3);
     let layers = h.state().doc.project.layers().to_vec();
     let scale = h.state().composed.as_ref().unwrap().km_per_point;
-    h.get_by_label(WORLD_BUTTON).click();
-    h.run_steps(2);
+    menu_row(&mut h, "File", Command::WorldProperties.label());
+    h.run_steps(1);
     assert_eq!(
         h.state().world_form.as_ref().unwrap().mode,
         FormMode::Properties
@@ -702,7 +734,12 @@ fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
     h.get_by_label("Moon").click();
     h.run_steps(2);
     h.get_by_label("Miles").click();
+    h.run_steps(2);
+    // The world changes when the user saves the form.
+    assert_eq!(h.state().doc.project.world.radius_km, 6371.0);
+    h.get_by_label(SAVE).click();
     h.run_steps(3);
+    assert!(h.state().world_form.is_none());
     let state = h.state();
     let world = &state.doc.project.world;
     assert_eq!((world.radius_km, world.units), (1737.4, Units::Imperial));
@@ -711,15 +748,33 @@ fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
     assert_eq!(state.doc.project.layers(), layers);
     let small = state.composed.as_ref().unwrap().km_per_point;
     assert!((small / scale - 1737.4 / 6371.0).abs() < 1e-9);
-    assert!(h.query_by_label_contains("Radius 1079.6 mi").is_some());
+    // The world inspector shows the new radius.
+    h.state_mut().workspace = Workspace::Globe;
+    h.run_steps(2);
+    assert!(h.query_by_label("1079.6 mi").is_some());
+    h.state_mut().workspace = Workspace::Map;
+    h.run_steps(2);
 
+    // Cancel drops the changes.
+    menu_row(&mut h, "File", Command::WorldProperties.label());
+    h.run_steps(1);
     let form = h.state_mut().world_form.as_mut().unwrap();
     form.name = "Luna".to_string();
     h.run_steps(2);
-    assert_eq!(h.state().doc.project.world.name, "Luna");
-    h.get_by_label("Close").click();
+    h.get_by_label(CANCEL).click();
     h.run_steps(2);
     assert!(h.state().world_form.is_none());
+    assert_eq!(h.state().doc.project.world.name, "Earth (sample)");
+
+    menu_row(&mut h, "File", Command::WorldProperties.label());
+    h.run_steps(1);
+    let form = h.state_mut().world_form.as_mut().unwrap();
+    form.name = "Luna".to_string();
+    h.run_steps(2);
+    h.get_by_label(SAVE).click();
+    h.run_steps(2);
+    assert!(h.state().world_form.is_none());
+    assert_eq!(h.state().doc.project.world.name, "Luna");
     assert_eq!(h.state().doc.project.world.radius_km, 1737.4);
 }
 
