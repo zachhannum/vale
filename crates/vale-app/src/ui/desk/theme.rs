@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, Color32, FontId, Stroke, vec2};
 
+use super::float;
 pub use crate::ui::pad::theme::{ACCENT, TEXT, WARN};
 
 /// The height of the row of the menus.
@@ -120,10 +121,14 @@ pub fn install(ctx: &egui::Context, translucent: bool) {
         visuals.hyperlink_color = ACCENT;
         visuals.warn_fg_color = WARN;
         visuals.panel_fill = glass(translucent);
+        // The menus and the tooltips of egui have the look of the floating
+        // surfaces, with no blur.
         visuals.window_fill = popover(translucent);
-        visuals.window_stroke = Stroke::new(1.0, Color32::from_white_alpha(31));
-        visuals.window_corner_radius = 9.into();
-        visuals.menu_corner_radius = 9.into();
+        visuals.window_stroke = float::stroke();
+        visuals.window_corner_radius = float::RADIUS.into();
+        visuals.menu_corner_radius = float::RADIUS.into();
+        visuals.window_shadow = float::shadow();
+        visuals.popup_shadow = float::shadow();
         let widgets = &mut visuals.widgets;
         for widget in [
             &mut widgets.inactive,

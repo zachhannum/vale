@@ -9,7 +9,8 @@ use eframe::egui::{
 };
 
 use super::command::{self, Command, REVEAL};
-use super::{menu, theme, title};
+use super::float::{self, Glass, Item};
+use super::{menu, theme, title, widgets};
 use crate::files::Availability;
 use crate::projects::{self, Entry, Location};
 use crate::ui::browser::{self, open_entry};
@@ -43,8 +44,6 @@ const PICTURE_RADIUS: u8 = 10;
 const SEARCH_WIDTH: f32 = 200.0;
 const CONTROL: f32 = 24.0;
 const MENU_WIDTH: f32 = 200.0;
-/// The text of the primary button.
-const ON_ACCENT: Color32 = Color32::from_rgb(11, 31, 26);
 
 /// The order of the cards.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -165,7 +164,7 @@ fn title_bar(ui: &mut egui::Ui, state: &mut AppState, count: usize) {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let ctx = ui.ctx().clone();
                 let new = Command::NewWorld;
-                if primary_button(ui, new.label(), &new.tip(&ctx)).clicked() {
+                if widgets::primary_button(ui, new.label(), Some(&new.tip(&ctx)), true).clicked() {
                     command::run(new, &ctx, state);
                 }
                 sort_button(ui, state);
@@ -190,64 +189,16 @@ fn heading(ui: &mut egui::Ui, count: usize) {
     ui.painter().galley(line_rect.min, line, theme::MUTE);
 }
 
-fn primary_button(ui: &mut egui::Ui, label: &str, tip: &str) -> egui::Response {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), theme::label(), ON_ACCENT);
-    let size = vec2(galley.size().x.ceil() + 22.0, CONTROL);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    let fill = if resp.hovered() {
-        Color32::from_rgb(95, 211, 185)
-    } else {
-        theme::ACCENT
-    };
-    ui.painter().rect_filled(rect, theme::CONTROL_RADIUS, fill);
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, ON_ACCENT);
-    resp.on_hover_text(tip)
-}
-
 /// The button that shows the sort order and opens the menu of the orders.
 fn sort_button(ui: &mut egui::Ui, state: &mut AppState) {
     let sort = state.desk.start.sort;
-    let galley = ui
-        .painter()
-        .layout_no_wrap(sort.label().to_owned(), theme::label(), theme::TEXT);
-    let size = vec2(galley.size().x.ceil() + 33.0, CONTROL);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    resp.widget_info(|| {
-        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, SORT);
-        info.current_text_value = Some(sort.label().to_owned());
-        info
-    });
-    let fill = Color32::from_white_alpha(if resp.hovered() { 36 } else { 23 });
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        theme::CONTROL_RADIUS,
-        fill,
-        Stroke::new(1.0, theme::line()),
-        egui::StrokeKind::Inside,
-    );
-    let at = pos2(rect.left() + 9.0, rect.center().y - galley.size().y / 2.0);
-    painter.galley(at, galley, theme::TEXT);
-    // An arrow up and an arrow down.
-    let x = rect.right() - 12.0;
-    let y = rect.center().y;
-    let stroke = Stroke::new(1.3, theme::MUTE);
-    for dy in [-1.0, 1.0] {
-        let tip = pos2(x, y + dy * 5.0);
-        let base = y + dy * 1.5;
-        let line = vec![pos2(x - 3.0, base), tip, pos2(x + 3.0, base)];
-        painter.add(egui::Shape::line(line, stroke));
-    }
-    egui::Popup::menu(&resp).show(|ui| {
+    let resp = widgets::menu_button(ui, SORT, sort.label());
+    let glass = Glass::of(state);
+    float::menu(&resp, glass, |ui| {
         ui.set_min_width(140.0);
         for order in Sort::ALL {
-            let row = egui::Button::selectable(order == sort, order.label())
-                .min_size(vec2(140.0, theme::ROW));
-            if ui.add(row).clicked() {
+            let item = Item::new(order.label()).checked(order == sort);
+            if float::item(ui, item).clicked() {
                 state.desk.start.sort = order;
             }
         }
@@ -599,17 +550,17 @@ fn badge(ui: &egui::Ui, picture: Rect, versions: usize) {
 fn card_menu(button: &egui::Response, state: &mut AppState, entry: &Entry) -> Option<()> {
     let here = entry.availability == Availability::Here;
     let readable = entry.error.is_none() && here;
-    let shown = egui::Popup::menu(button).show(|ui| {
+    let glass = Glass::of(state);
+    let shown = float::menu(button, glass, |ui| {
         ui.set_min_width(MENU_WIDTH);
         let row = |ui: &mut egui::Ui, label: &str, enabled: bool| {
-            let button = egui::Button::new(label).min_size(vec2(MENU_WIDTH, theme::ROW - 4.0));
-            ui.add_enabled(enabled, button).clicked()
+            float::item(ui, Item::new(label).enabled(enabled)).clicked()
         };
         let (path, name) = (entry.path.clone(), entry.name.clone());
         if row(ui, OPEN, true) {
             open_card(state, entry);
         }
-        ui.separator();
+        float::separator(ui);
         if row(ui, RENAME, readable) {
             state.browser.ask_rename(path.clone(), name.clone());
         }
@@ -619,7 +570,7 @@ fn card_menu(button: &egui::Response, state: &mut AppState, entry: &Entry) -> Op
         if row(ui, REVEAL, here) {
             state.actions.push(Action::Reveal(path.clone()));
         }
-        ui.separator();
+        float::separator(ui);
         if row(ui, DELETE, true) {
             state.browser.ask_delete(path, name);
         }

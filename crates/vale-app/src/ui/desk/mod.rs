@@ -9,6 +9,7 @@ use vale_terrain::Mode;
 
 pub mod command;
 pub mod dock;
+pub mod float;
 pub mod menu;
 #[cfg(target_os = "macos")]
 pub mod native_menu;
@@ -75,8 +76,32 @@ impl Default for DeskState {
     }
 }
 
+/// The bottom edge of the title bar, below the row of the menus if the
+/// window has it.
+pub fn bar_bottom(state: &AppState) -> f32 {
+    match state.native_menu {
+        true => theme::BAR,
+        false => theme::MENU + theme::BAR,
+    }
+}
+
+/// True if a popover, a menu, or a sheet is open. Then the canvas makes
+/// its blurred copy.
+fn covered(ctx: &egui::Context, state: &AppState) -> bool {
+    let desk = &state.desk;
+    desk.brush_open
+        || desk.more_open
+        || state.world_form.is_some()
+        || state.browser.dialog.is_some()
+        || egui::Popup::is_any_open(ctx)
+}
+
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
+    if state.world_form.is_some() || state.browser.dialog.is_some() {
+        state.desk.brush_open = false;
+        state.desk.more_open = false;
+    }
     menu::keys(&ctx, state);
     rail::keys(&ctx, state);
     let globe = &mut state.globe;
@@ -96,7 +121,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         dock::draw(ui, state);
         match state.workspace {
             Workspace::Globe => {
-                let cards = state.desk.brush_open;
+                let cards = covered(ui.ctx(), state);
                 globe::draw(ui, state, cards);
             }
             Workspace::Map => canvas::draw(ui, state),

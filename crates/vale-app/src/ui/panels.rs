@@ -5,7 +5,7 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, World};
 
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, SaveMark, Workspace, pad};
+use super::{Action, AppState, ExportFormat, SaveMark, Workspace, desk, pad};
 use vale_terrain::{ELEV_MAX, ELEV_MIN, Mode, level_to_meters, meters_to_level};
 
 use crate::globe::{Globe, rivers, stats, stroke_test};
@@ -121,17 +121,25 @@ fn save_mark(ui: &mut egui::Ui, state: &AppState) {
     }
 }
 
+/// The name of the button of the projection of the flat view.
+pub const PROJECTION: &str = "Projection";
+
+/// The projection of the flat view, and the buttons of its center.
 pub(super) fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
+    let glass = desk::float::Glass::of(state);
     let flat = &mut state.globe.flat;
     let spec = flat.spec();
     let mut kind = spec.kind;
-    egui::ComboBox::from_id_salt("flat-projection")
-        .selected_text(kind.name())
-        .show_ui(ui, |ui| {
-            for k in ProjectionKind::ALL {
-                ui.selectable_value(&mut kind, k, k.name());
+    let button = desk::widgets::menu_button(ui, PROJECTION, kind.name());
+    desk::float::menu(&button, glass, |ui| {
+        ui.set_min_width(160.0);
+        for k in ProjectionKind::ALL {
+            let item = desk::float::Item::new(k.name()).checked(k == kind);
+            if desk::float::item(ui, item).clicked() {
+                kind = k;
             }
-        });
+        }
+    });
     flat.set_spec(ProjectionSpec { kind, ..spec });
     let button = ui.add_enabled(flat.can_center_here(), egui::Button::new(pad::RECENTER));
     let help = "Makes the place at the middle of the view the center of the projection. \

@@ -9,13 +9,17 @@ use vale_app::globe::Tool;
 use vale_app::session::Session;
 use vale_app::ui::desk::command::Command;
 use vale_app::ui::desk::dock::{BRUSH_DEBUG, FRAME, HEIGHT, IMPORT, WORLD_PROPERTIES, grouped};
+use vale_app::ui::desk::float::SHEET;
 use vale_app::ui::desk::options::{BRUSH_BUTTON, tool_name};
 use vale_app::ui::desk::rail::MORE_TOOLS;
 use vale_app::ui::desk::status::zoom_text;
 use vale_app::ui::desk::title::NOT_IN_PROTOTYPE;
 use vale_app::ui::desk::{MapTool, Tab, theme};
 use vale_app::ui::pad::{ADD_LAYER, readout_text};
+use vale_app::ui::panels::PROJECTION;
+use vale_app::ui::world_form::{CANCEL, SAVE};
 use vale_app::ui::{AppState, Layout, Workspace, draw};
+use vale_sphere::ProjectionKind;
 
 type App = Harness<'static, AppState>;
 
@@ -91,6 +95,70 @@ fn the_flat_view_has_the_projection_and_the_center_buttons() {
     assert!(h.query_by_role(egui::accesskit::Role::ComboBox).is_some());
     assert!(h.query_by_label("Recenter").is_some());
     assert!(h.query_by_label("Reset").is_some());
+}
+
+#[test]
+fn the_projection_menu_lists_the_projections_and_sets_one() {
+    let mut h = harness();
+    h.get_by_label("Flat").click();
+    h.run_steps(3);
+    let button = h.get_by_role_and_label(Role::ComboBox, PROJECTION);
+    assert_eq!(
+        button.rect().bottom(),
+        theme::MENU + theme::BAR / 2.0 + 12.0
+    );
+    button.click();
+    h.run_steps(2);
+    for kind in ProjectionKind::ALL {
+        assert!(h.query_by_label(kind.name()).is_some(), "{kind:?}");
+    }
+    let kind = *ProjectionKind::ALL.last().unwrap();
+    h.get_by_label(kind.name()).click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.flat.spec().kind, kind);
+    let button = h.get_by_role_and_label(Role::ComboBox, PROJECTION);
+    assert_eq!(
+        button.accesskit_node().value().as_deref(),
+        Some(kind.name())
+    );
+}
+
+/// The rectangle of the sheet of the world form.
+fn sheet_rect(h: &App) -> egui::Rect {
+    let id = egui::Id::new("world-form");
+    h.ctx.memory(|m| m.area_rect(id)).unwrap()
+}
+
+#[test]
+fn the_world_form_is_a_sheet_below_the_title_bar() {
+    let mut h = harness();
+    h.get_by_label(WORLD_PROPERTIES).click();
+    h.run_steps(3);
+    let rect = sheet_rect(&h);
+    assert_eq!(rect.top(), theme::MENU + theme::BAR);
+    assert_eq!(rect.center().x, 640.0);
+    assert_eq!(rect.width(), SHEET);
+    for label in ["Moon", "Miles", CANCEL, SAVE] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+
+    // Escape drops the changes.
+    h.get_by_label("Moon").click();
+    h.run_steps(2);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().world_form.is_none());
+    assert_eq!(h.state().doc.project.world.radius_km, 6371.0);
+
+    // Return saves them.
+    h.get_by_label(WORLD_PROPERTIES).click();
+    h.run_steps(3);
+    h.get_by_label("Moon").click();
+    h.run_steps(2);
+    h.key_press(Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().world_form.is_none());
+    assert_eq!(h.state().doc.project.world.radius_km, 1737.4);
 }
 
 #[test]

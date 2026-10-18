@@ -1,9 +1,10 @@
 //! The tool rail at the left edge, the menu of the More button, and the keys
 //! of the tools.
 
-use eframe::egui::{self, Key, Modifiers, Rect, Stroke, pos2, vec2};
+use eframe::egui::{self, Key, Modifiers, Stroke, pos2};
 use vale_terrain::Mode;
 
+use super::float::{self, Glass, Item};
 use super::widgets::{self, tip_text};
 use super::{MapTool, theme};
 use crate::globe::Tool;
@@ -105,18 +106,17 @@ pub fn more_menu(ctx: &egui::Context, state: &mut AppState) {
         return;
     };
     let at = pos2(button.right() + 6.0, button.top() - 5.0);
+    let glass = Glass::of(state);
     let area = egui::Area::new(egui::Id::new("desk-more"))
         .order(egui::Order::Foreground)
         .fixed_pos(at)
         .show(ctx, |ui| {
-            egui::Frame::menu(ui.style()).show(ui, |ui| {
+            float::menu_body(ui, glass, |ui| {
                 ui.set_min_width(140.0);
-                ui.spacing_mut().item_spacing.y = 0.0;
                 let globe = &mut state.globe;
                 for (name, _, mode) in MORE_MODES {
                     let on = globe.tool == Tool::Brush && globe.brush.mode == mode;
-                    let row = egui::Button::selectable(on, name).min_size(vec2(140.0, theme::ROW));
-                    if ui.add(row).clicked() {
+                    if float::item(ui, Item::new(name).checked(on)).clicked() {
                         globe.tool = Tool::Brush;
                         globe.brush.mode = mode;
                         state.desk.more_open = false;
@@ -124,21 +124,9 @@ pub fn more_menu(ctx: &egui::Context, state: &mut AppState) {
                 }
             });
         });
-    if pressed_outside(ctx, area.response.rect, button) {
+    if float::pressed_outside(ctx, area.response.rect, button) {
         state.desk.more_open = false;
     }
-}
-
-/// True if the pointer went down outside `rect` and outside the button that
-/// opened it.
-pub(super) fn pressed_outside(ctx: &egui::Context, rect: Rect, button: Rect) -> bool {
-    let pressed = ctx.input(|i| {
-        i.pointer
-            .any_pressed()
-            .then(|| i.pointer.interact_pos())
-            .flatten()
-    });
-    pressed.is_some_and(|pos| !rect.contains(pos) && !button.contains(pos))
 }
 
 /// The keys of the tools. They work while no text field has the keyboard and

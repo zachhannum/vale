@@ -1,7 +1,8 @@
 //! The controls of the desktop layout.
 
-use eframe::egui::{self, Align2, Color32, Rect, Response, Sense, Stroke, pos2, vec2};
+use eframe::egui::{self, Align, Align2, Color32, Rect, Response, Sense, Stroke, pos2, vec2};
 
+use super::float::ON_ACCENT;
 use super::theme;
 use crate::ui::pad::icons::{self, Icon};
 
@@ -263,6 +264,150 @@ pub fn button(ui: &mut egui::Ui, label: &str, tip: &str, selected: Option<bool>)
     let at = rect.center() - galley.size() / 2.0;
     painter.galley(at, galley, theme::TEXT);
     resp.on_hover_text(tip)
+}
+
+/// The height of a button and a field of a form.
+pub const FIELD: f32 = 24.0;
+
+/// A button with text of the accent color.
+pub fn primary_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    tip: Option<&str>,
+    enabled: bool,
+) -> Response {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::label(), ON_ACCENT);
+    let size = vec2(galley.size().x.ceil() + 22.0, FIELD);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    let fill = if !enabled {
+        theme::ACCENT.gamma_multiply(theme::OFF)
+    } else if resp.hovered() {
+        Color32::from_rgb(95, 211, 185)
+    } else {
+        theme::ACCENT
+    };
+    ui.painter().rect_filled(rect, theme::CONTROL_RADIUS, fill);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, ON_ACCENT);
+    match tip {
+        Some(tip) => resp.on_hover_text(tip),
+        None => resp,
+    }
+}
+
+/// A button with text and no tooltip, that can be off.
+pub fn plain_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> Response {
+    let color = if enabled {
+        theme::TEXT
+    } else {
+        theme::MUTE.gamma_multiply(theme::OFF)
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::label(), color);
+    let size = vec2(galley.size().x.ceil() + 22.0, FIELD);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    let fill = Color32::from_white_alpha(if enabled && resp.hovered() { 38 } else { 26 });
+    ui.painter().rect(
+        rect,
+        theme::CONTROL_RADIUS,
+        fill,
+        Stroke::new(1.0, theme::line()),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, color);
+    resp
+}
+
+/// A button that shows a value and opens a menu of the values. A screen
+/// reader gets the role of a combo box.
+pub fn menu_button(ui: &mut egui::Ui, name: &str, value: &str) -> Response {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(value.to_owned(), theme::label(), theme::TEXT);
+    let size = vec2(galley.size().x.ceil() + 33.0, FIELD);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    resp.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, name);
+        info.current_text_value = Some(value.to_owned());
+        info
+    });
+    let fill = Color32::from_white_alpha(if resp.hovered() { 36 } else { 23 });
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        theme::CONTROL_RADIUS,
+        fill,
+        Stroke::new(1.0, theme::line()),
+        egui::StrokeKind::Inside,
+    );
+    let at = pos2(rect.left() + 9.0, rect.center().y - galley.size().y / 2.0);
+    painter.galley(at, galley, theme::TEXT);
+    // An arrow up and an arrow down.
+    let x = rect.right() - 12.0;
+    let y = rect.center().y;
+    let stroke = Stroke::new(1.3, theme::MUTE);
+    for dy in [-1.0, 1.0] {
+        let tip = pos2(x, y + dy * 5.0);
+        let base = y + dy * 1.5;
+        let line = vec![pos2(x - 3.0, base), tip, pos2(x + 3.0, base)];
+        painter.add(egui::Shape::line(line, stroke));
+    }
+    resp
+}
+
+/// A field of one line of text. `warn`: the text is not valid.
+pub fn text_field(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    name: &str,
+    text: &mut String,
+    width: f32,
+    warn: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(width, FIELD), Sense::hover());
+    // The fill goes below the text of the field.
+    let below = ui.painter().add(egui::Shape::Noop);
+    let color = if warn { theme::WARN } else { theme::TEXT };
+    let edit = egui::TextEdit::singleline(text)
+        .id(id)
+        .frame(egui::Frame::NONE)
+        .margin(egui::Margin::symmetric(7, 0))
+        .font(theme::label())
+        .text_color(color)
+        .vertical_align(Align::Center);
+    let resp = ui.put(rect, edit);
+    ui.ctx()
+        .accesskit_node_builder(resp.id, |node| node.set_label(name));
+    let edge = if resp.has_focus() {
+        theme::ACCENT
+    } else {
+        theme::line()
+    };
+    let back = egui::Shape::rect_filled(rect, theme::CONTROL_RADIUS, theme::well());
+    let edge = egui::Shape::rect_stroke(
+        rect,
+        theme::CONTROL_RADIUS,
+        Stroke::new(1.0, edge),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().set(below, egui::Shape::Vec(vec![back, edge]));
+    resp
 }
 
 /// A tab of the dock. A screen reader gets the role of a tab.

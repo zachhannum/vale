@@ -1,13 +1,13 @@
 //! The options bar below the title bar, and the Brush popover.
 
-use eframe::egui::{self, Align, Align2, Layout, Rect, Sense, Shape, Stroke, pos2, vec2};
+use eframe::egui::{self, Align, Align2, Layout, Sense, Stroke, pos2};
 use vale_terrain::Mode;
 
+use super::float::{self, Glass};
 use super::rail::{self, HAND, SELECT};
 use super::widgets::{self, tip_text};
 use super::{MapTool, theme};
 use crate::globe::Tool;
-use crate::globe::backdrop::card_shape;
 use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
 use crate::ui::pad::{log_slider, percent_slider, size_slider};
 use crate::ui::{AppState, Workspace, panels};
@@ -17,7 +17,6 @@ use crate::world::three_significant;
 pub const BRUSH_BUTTON: &str = "Brush…";
 const POPOVER_WIDTH: f32 = 320.0;
 const POPOVER_PAD: f32 = 14.0;
-const POPOVER_RADIUS: u8 = 9;
 /// The width of the label of a slider in the popover.
 const LABEL: f32 = 72.0;
 
@@ -103,62 +102,23 @@ pub fn popover(ctx: &egui::Context, state: &mut AppState) {
         return;
     };
     let at = pos2(button.right() + 4.0 - POPOVER_WIDTH, button.bottom() + 10.0);
-    let backdrop = state.globe.backdrop();
-    let area = egui::Area::new(egui::Id::new("desk-brush"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(at)
-        .constrain(false)
-        .show(ctx, |ui| {
-            let painter = ui.painter().clone();
-            let back: Vec<_> = (0..3).map(|_| painter.add(Shape::Noop)).collect();
-            let margin = egui::Margin {
-                left: POPOVER_PAD as i8,
-                right: POPOVER_PAD as i8,
-                top: 0,
-                bottom: 12,
-            };
-            let inner = egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
-                ui.set_width(POPOVER_WIDTH - 2.0 * POPOVER_PAD);
-                title(ui);
-                body(ui, state);
-            });
-            let rect = inner.response.rect;
-            let radius = POPOVER_RADIUS.into();
-            let shadow = egui::Shadow {
-                offset: [0, 12],
-                blur: 36,
-                spread: 0,
-                color: egui::Color32::from_black_alpha(128),
-            };
-            painter.set(back[0], shadow.as_shape(rect, radius));
-            if let Some(format) = backdrop {
-                let blur = card_shape(format, rect, radius, ctx.pixels_per_point());
-                painter.set(back[1], blur);
-            }
-            let fill = egui::epaint::RectShape::new(
-                rect,
-                radius,
-                theme::popover(backdrop.is_some() || state.translucent),
-                Stroke::new(1.0, egui::Color32::from_white_alpha(31)),
-                egui::StrokeKind::Inside,
-            );
-            painter.set(back[2], fill);
-        });
-    if rail::pressed_outside(ctx, area.response.rect, button) {
+    let margin = egui::Margin {
+        left: POPOVER_PAD as i8,
+        right: POPOVER_PAD as i8,
+        top: 0,
+        bottom: 12,
+    };
+    let glass = Glass::of(state);
+    let id = egui::Id::new("desk-brush");
+    let radius = float::RADIUS.into();
+    let area = float::floating(ctx, id, at, Align2::LEFT_TOP, glass, radius, margin, |ui| {
+        ui.set_width(POPOVER_WIDTH - 2.0 * POPOVER_PAD);
+        float::title(ui, "Brush", POPOVER_PAD);
+        body(ui, state);
+    });
+    if float::pressed_outside(ctx, area.response.rect, button) {
         state.desk.brush_open = false;
     }
-}
-
-fn title(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
-    let painter = ui.painter();
-    let at = pos2(rect.left(), rect.center().y);
-    painter.text(at, Align2::LEFT_CENTER, "Brush", theme::body(), theme::TEXT);
-    let line = Rect::from_min_max(
-        pos2(rect.left() - POPOVER_PAD, rect.bottom() - 1.0),
-        pos2(rect.right() + POPOVER_PAD, rect.bottom()),
-    );
-    painter.rect_filled(line, 0.0, theme::line());
 }
 
 fn body(ui: &mut egui::Ui, state: &mut AppState) {

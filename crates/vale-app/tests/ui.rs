@@ -11,7 +11,7 @@ use vale_app::session::Session;
 use vale_app::ui::desk::command::Command;
 use vale_app::ui::desk::theme;
 use vale_app::ui::pad::ADD_LAYER;
-use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
+use vale_app::ui::world_form::{CANCEL, CREATE, FormMode, NEW_WORLD, SAVE, WorldForm};
 use vale_app::ui::{Action, AppState, ExportFormat, Workspace, draw, is_heightmap_path};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{Project, ProjectFile, Units, World};
@@ -569,7 +569,12 @@ fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
     h.get_by_label("Moon").click();
     h.run_steps(2);
     h.get_by_label("Miles").click();
+    h.run_steps(2);
+    // The world changes when the user saves the form.
+    assert_eq!(h.state().doc.project.world.radius_km, 6371.0);
+    h.get_by_label(SAVE).click();
     h.run_steps(3);
+    assert!(h.state().world_form.is_none());
     let state = h.state();
     let world = &state.doc.project.world;
     assert_eq!((world.radius_km, world.units), (1737.4, Units::Imperial));
@@ -585,12 +590,25 @@ fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
     h.state_mut().workspace = Workspace::Map;
     h.run_steps(2);
 
+    // Cancel drops the changes.
+    menu_row(&mut h, "File", Command::WorldProperties.label());
+    h.run_steps(1);
     let form = h.state_mut().world_form.as_mut().unwrap();
     form.name = "Luna".to_string();
     h.run_steps(2);
-    assert_eq!(h.state().doc.project.world.name, "Luna");
-    h.get_by_label("Close").click();
+    h.get_by_label(CANCEL).click();
     h.run_steps(2);
     assert!(h.state().world_form.is_none());
+    assert_eq!(h.state().doc.project.world.name, "Earth (sample)");
+
+    menu_row(&mut h, "File", Command::WorldProperties.label());
+    h.run_steps(1);
+    let form = h.state_mut().world_form.as_mut().unwrap();
+    form.name = "Luna".to_string();
+    h.run_steps(2);
+    h.get_by_label(SAVE).click();
+    h.run_steps(2);
+    assert!(h.state().world_form.is_none());
+    assert_eq!(h.state().doc.project.world.name, "Luna");
     assert_eq!(h.state().doc.project.world.radius_km, 1737.4);
 }

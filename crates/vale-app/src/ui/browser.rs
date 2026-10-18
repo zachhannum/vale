@@ -7,6 +7,7 @@ use std::time::{Instant, SystemTime};
 
 use eframe::egui::{self, Id, Modal};
 
+use super::desk::float::{self, Glass, SheetButton};
 use super::{Action, AppState, Layout, desk, pad};
 use crate::files::{Availability, Files, Version};
 use crate::projects::{self, Entry, Locations};
@@ -224,6 +225,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// Draws the open dialog. The editor calls this too, for the File menu.
 pub fn dialogs(ui: &mut egui::Ui, state: &mut AppState) {
+    if state.layout == Layout::Desktop {
+        sheets(ui.ctx(), state);
+        return;
+    }
     let Some(dialog) = &mut state.browser.dialog else {
         return;
     };
@@ -316,6 +321,122 @@ pub fn dialogs(ui: &mut egui::Ui, state: &mut AppState) {
                 });
             });
             close |= modal.should_close();
+        }
+    }
+    if let Some(action) = action {
+        state.actions.push(action);
+        close = true;
+    }
+    if close {
+        state.browser.dialog = None;
+    }
+}
+
+/// The text of a sheet, in lines that wrap.
+fn sheet_text(ui: &mut egui::Ui, text: &str) {
+    let text = egui::RichText::new(text)
+        .font(desk::theme::label())
+        .color(desk::theme::TEXT);
+    ui.add(egui::Label::new(text).wrap());
+}
+
+/// The dialogs of the desktop layout, as sheets of the window.
+fn sheets(ctx: &egui::Context, state: &mut AppState) {
+    let glass = Glass::of(state);
+    let top = desk::bar_bottom(state);
+    let Some(dialog) = &mut state.browser.dialog else {
+        return;
+    };
+    let cancel = |label| SheetButton {
+        label,
+        enabled: true,
+        primary: false,
+    };
+    let primary = |label, enabled| SheetButton {
+        label,
+        enabled,
+        primary: true,
+    };
+    let mut close = false;
+    let mut action = None;
+    match dialog {
+        Dialog::Problem { path, error } => {
+            let (clicked, keys) =
+                float::sheet(ctx, glass, top, "project_problem", PROBLEM_TITLE, |ui| {
+                    sheet_text(ui, &problem_text(path, error));
+                    float::buttons(ui, &[cancel("Close"), primary(TRY_OPEN, true)])
+                });
+            close = clicked == Some(0) || keys.cancel;
+            if clicked == Some(1) || keys.confirm {
+                action = Some(Action::OpenWorld(path.clone()));
+            }
+        }
+        Dialog::Versions {
+            path,
+            name,
+            modified,
+            others,
+        } => {
+            let title = format!("{VERSIONS_TITLE}: {name}");
+            let (keep, keys) = float::sheet(ctx, glass, top, "project_versions", &title, |ui| {
+                sheet_text(ui, VERSIONS_TEXT);
+                ui.add_space(4.0);
+                let mut keep = None;
+                for (text, version) in version_buttons(*modified, others, false) {
+                    if desk::widgets::plain_button(ui, &text, true).clicked() {
+                        keep = Some(version);
+                    }
+                }
+                close = float::buttons(ui, &[cancel("Cancel")]).is_some();
+                keep
+            });
+            close |= keys.cancel;
+            if let Some(keep) = keep {
+                action = Some(Action::KeepVersion(path.clone(), keep));
+            }
+        }
+        Dialog::Delete { path, name } => {
+            let title = format!("Delete {name}?");
+            let (clicked, keys) = float::sheet(ctx, glass, top, "delete_project", &title, |ui| {
+                sheet_text(
+                    ui,
+                    "The world and its undo steps go away. You cannot get them back.",
+                );
+                float::buttons(ui, &[cancel("Cancel"), primary("Delete world", true)])
+            });
+            close = clicked == Some(0) || keys.cancel;
+            if clicked == Some(1) || keys.confirm {
+                action = Some(Action::DeleteProject(path.clone()));
+            }
+        }
+        Dialog::Rename {
+            path,
+            name,
+            focused,
+        } => {
+            let valid = !name.trim().is_empty();
+            let (clicked, keys) = float::sheet(
+                ctx,
+                glass,
+                top,
+                "rename_project",
+                "Rename the world",
+                |ui| {
+                    let id = Id::new("rename_project_name");
+                    let width = ui.available_width();
+                    let field = desk::widgets::text_field(ui, id, "Name", name, width, false);
+                    if !*focused {
+                        *focused = true;
+                        field.request_focus();
+                    }
+                    float::buttons(ui, &[cancel("Cancel"), primary("Save name", valid)])
+                },
+            );
+            close = clicked == Some(0) || keys.cancel;
+            let valid = !name.trim().is_empty();
+            if valid && (clicked == Some(1) || keys.confirm) {
+                action = Some(Action::RenameProject(path.clone(), name.clone()));
+            }
         }
     }
     if let Some(action) = action {

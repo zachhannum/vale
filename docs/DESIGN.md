@@ -199,7 +199,7 @@ The versions of a project come in two ways. If two devices save the same project
 
 A world is a sphere with one radius, and all stored geometry is longitude and latitude in degrees on that sphere. In PROJ terms the world is `+proj=longlat +R=<radius>`.
 
-A new world starts from a form with a name, a radius, and display units. The form has the radius presets Earth (6,371 km), Mars (3,389.5 km), and the Moon (1,737.4 km), and it takes a free value from 100 km to 100,000 km. The world properties show the same fields, and a change there applies at once. A change of the radius does not change the longitude and the latitude of a feature.
+A new world starts from a form with a name, a radius, and display units. The form has the radius presets Earth (6,371 km), Mars (3,389.5 km), and the Moon (1,737.4 km), and it takes a free value from 100 km to 100,000 km. The world properties show the same fields. On iPad, a change there applies at once. On the desktop, the form is a sheet, and a change applies when you click "Save". A change of the radius does not change the longitude and the latitude of a feature.
 
 The display units are kilometers or miles. They apply to a distance on the ground: the brush size, the scale bar, and the radius. A distance below one kilometer shows in meters, and a distance below one mile shows in feet. The project file holds the radius in kilometers for each choice. A value of a raster layer shows in the unit of that layer.
 

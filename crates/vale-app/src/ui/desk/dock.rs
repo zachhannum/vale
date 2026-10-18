@@ -5,6 +5,7 @@ use eframe::egui::{self, Align, Layout, Sense, Stroke, UiBuilder, pos2, vec2};
 use vale_store::{GeometryKind, LayerId};
 
 use super::command::{self, Command};
+use super::float::{self, Glass, Item};
 use super::widgets;
 use super::{Tab, theme};
 use crate::ui::pad::icons::Icon;
@@ -123,11 +124,11 @@ fn tabs(ui: &mut egui::Ui, state: &mut AppState) {
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let button = widgets::tool_button(ui, ADD_LAYER, Icon::Plus, ADD_LAYER, None, true);
-            egui::Popup::menu(&button).show(|ui| {
+            let glass = Glass::of(state);
+            float::menu(&button, glass, |ui| {
                 ui.set_min_width(140.0);
                 for (name, kind) in NEW_LAYERS {
-                    let row = egui::Button::new(name).min_size(vec2(140.0, theme::ROW));
-                    if ui.add(row).clicked() {
+                    if float::item(ui, Item::new(name)).clicked() {
                         add_layer(state, kind);
                     }
                 }
