@@ -7,8 +7,10 @@ use super::{AppState, Workspace, canvas, globe, world_form};
 use crate::globe::Tool;
 use vale_terrain::Mode;
 
+pub mod brush;
 pub mod command;
 pub mod dock;
+pub mod field;
 pub mod float;
 pub mod menu;
 #[cfg(target_os = "macos")]
@@ -38,22 +40,31 @@ pub enum MapTool {
     Hand,
 }
 
+/// The subject of the inspector.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Inspect {
+    /// The selected layer, or the world with no selected layer.
+    #[default]
+    Selection,
+    Height,
+    /// The Brush panel, while a brush mode is the tool.
+    Brush,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeskState {
     /// The dock shows at the right edge.
     pub dock_open: bool,
     pub tab: Tab,
-    /// The Height row of the layer list is selected.
-    pub height_selected: bool,
+    pub inspect: Inspect,
+    /// The subject of the inspector before the Brush panel. B goes back
+    /// to it.
+    pub before_brush: Inspect,
     /// The space at the left of the title bar for the window buttons.
     pub title_inset: f32,
-    /// The Brush popover is open.
-    pub brush_open: bool,
     /// The menu of the More button is open.
     pub more_open: bool,
     pub map_tool: MapTool,
-    /// The Brush button of the options bar, in this frame.
-    pub brush_button: Option<egui::Rect>,
     /// The More button of the tool rail, in this frame.
     pub more_button: Option<egui::Rect>,
     pub start: start::StartState,
@@ -64,14 +75,39 @@ impl Default for DeskState {
         DeskState {
             dock_open: true,
             tab: Tab::default(),
-            height_selected: false,
+            inspect: Inspect::default(),
+            before_brush: Inspect::default(),
             title_inset: 0.0,
-            brush_open: false,
             more_open: false,
             map_tool: MapTool::default(),
-            brush_button: None,
             more_button: None,
             start: start::StartState::default(),
+        }
+    }
+}
+
+impl DeskState {
+    /// Makes the Brush panel the subject of the inspector.
+    pub fn inspect_brush(&mut self) {
+        if self.inspect != Inspect::Brush {
+            self.before_brush = self.inspect;
+            self.inspect = Inspect::Brush;
+        }
+    }
+
+    /// True if the dock shows the Brush panel. The tool must be a brush.
+    pub fn brush_shows(&self) -> bool {
+        self.dock_open && self.tab == Tab::Layers && self.inspect == Inspect::Brush
+    }
+
+    /// Shows the Brush panel in the dock, or the subject before it.
+    pub fn toggle_brush(&mut self) {
+        if self.brush_shows() {
+            self.inspect = self.before_brush;
+        } else {
+            self.inspect_brush();
+            self.dock_open = true;
+            self.tab = Tab::Layers;
         }
     }
 }
@@ -85,12 +121,11 @@ pub fn bar_bottom(state: &AppState) -> f32 {
     }
 }
 
-/// True if a popover, a menu, or a sheet is open. Then the canvas makes
+/// True if a dropdown, a menu, or a sheet is open. Then the canvas makes
 /// its blurred copy.
 fn covered(ctx: &egui::Context, state: &AppState) -> bool {
     let desk = &state.desk;
-    desk.brush_open
-        || desk.more_open
+    desk.more_open
         || state.world_form.is_some()
         || state.browser.dialog.is_some()
         || egui::Popup::is_any_open(ctx)
@@ -99,7 +134,6 @@ fn covered(ctx: &egui::Context, state: &AppState) -> bool {
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     if state.world_form.is_some() || state.browser.dialog.is_some() {
-        state.desk.brush_open = false;
         state.desk.more_open = false;
     }
     menu::keys(&ctx, state);
@@ -128,6 +162,5 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         }
     });
     rail::more_menu(&ctx, state);
-    options::popover(&ctx, state);
     world_form::desktop(&ctx, state);
 }

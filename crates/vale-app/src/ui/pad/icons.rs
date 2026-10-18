@@ -43,6 +43,8 @@ pub enum Icon {
     Grid,
     Folder,
     Cloud,
+    Sliders,
+    Lock,
 }
 
 impl Icon {
@@ -92,6 +94,8 @@ impl Icon {
             Icon::Dock => "M3 5h18v14H3zM15 5v14",
             Icon::Grid => "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
             Icon::Folder => "M3 7h6l2 2h10v10H3z",
+            Icon::Sliders => "M4 6h3M11 6h9M4 12h9M17 12h3M4 18h1M9 18h11",
+            Icon::Lock => "M6 11h12v9H6zM8.5 11V8c0-1.93 1.57-3.5 3.5-3.5s3.5 1.57 3.5 3.5v3",
             Icon::Cloud => {
                 "M7 18C4.79 18 3 16.21 3 14S4.79 10 7 10C7.2 7.4 9.3 5.4 12 5.4S16 6.7 16.6 8.5\
                  C19.3 8.4 21.5 10.6 21.5 13.3S19.5 18 17 18z"
@@ -112,6 +116,11 @@ impl Icon {
             ],
             Icon::Eye | Icon::EyeOff | Icon::Point => &[(12.0, 12.0, 3.0, false)],
             Icon::Search => &[(11.0, 11.0, 6.0, false)],
+            Icon::Sliders => &[
+                (9.0, 6.0, 2.0, false),
+                (15.0, 12.0, 2.0, false),
+                (7.0, 18.0, 2.0, false),
+            ],
             Icon::More => &[
                 (5.0, 12.0, 1.5, true),
                 (12.0, 12.0, 1.5, true),
@@ -376,6 +385,8 @@ mod tests {
             Icon::Grid,
             Icon::Folder,
             Icon::Cloud,
+            Icon::Sliders,
+            Icon::Lock,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

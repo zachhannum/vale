@@ -7,10 +7,11 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
 use vale_app::globe::Tool;
 use vale_app::session::Session;
+use vale_app::ui::desk::brush::{LOCK, PICK, STROKE_START};
 use vale_app::ui::desk::command::Command;
 use vale_app::ui::desk::dock::{BRUSH_DEBUG, FRAME, HEIGHT, IMPORT, WORLD_PROPERTIES, grouped};
 use vale_app::ui::desk::float::SHEET;
-use vale_app::ui::desk::options::{BRUSH_BUTTON, tool_name};
+use vale_app::ui::desk::options::{BRUSH_SETTINGS, tool_name};
 use vale_app::ui::desk::rail::MORE_TOOLS;
 use vale_app::ui::desk::status::zoom_text;
 use vale_app::ui::desk::title::NOT_IN_PROTOTYPE;
@@ -496,9 +497,10 @@ fn the_tool_rail_has_the_tools_with_their_keys() {
 }
 
 #[test]
-fn the_keys_choose_the_tools_and_open_the_brush_popover() {
+fn the_keys_choose_the_tools_and_show_the_brush_panel() {
     use vale_terrain::Mode;
     let mut h = harness();
+    assert!(!h.state().desk.brush_shows());
     for (key, mode) in [
         (Key::R, Mode::Raise),
         (Key::F, Mode::Lower),
@@ -507,20 +509,26 @@ fn the_keys_choose_the_tools_and_open_the_brush_popover() {
     ] {
         press(&mut h, key);
         assert_eq!(self::mode(&h), (Tool::Brush, mode));
+        assert!(h.state().desk.brush_shows());
     }
+    assert!(h.query_by_label(LOCK).is_some());
+    // B goes back to the world, and then shows the Brush panel again.
     press(&mut h, Key::B);
-    assert!(h.state().desk.brush_open);
-    assert!(h.query_by_label("Lock size").is_some());
+    assert!(!h.state().desk.brush_shows());
+    assert!(h.query_by_label(LOCK).is_none());
+    assert!(h.query_by_label(WORLD_PROPERTIES).is_some());
     press(&mut h, Key::B);
-    assert!(!h.state().desk.brush_open);
+    assert!(h.state().desk.brush_shows());
+    // B opens the dock.
+    h.state_mut().desk.dock_open = false;
     press(&mut h, Key::B);
-    press(&mut h, Key::Escape);
-    assert!(!h.state().desk.brush_open);
+    assert!(h.state().desk.dock_open && h.state().desk.brush_shows());
     press(&mut h, Key::H);
     assert_eq!(h.state().globe.tool, Tool::Navigate);
     // The hand has no brush.
+    assert!(h.query_by_label(LOCK).is_none());
     press(&mut h, Key::B);
-    assert!(!h.state().desk.brush_open);
+    assert!(h.query_by_label(LOCK).is_none());
 
     h.get_by_label("Maps").click();
     h.run_steps(3);
@@ -575,48 +583,124 @@ fn the_more_button_lists_the_other_modes() {
     assert_eq!(more.accesskit_node().toggled(), Some(Toggled::False));
 }
 
-#[test]
-fn the_options_bar_has_the_settings_of_the_brush() {
-    let mut h = harness();
-    h.get_by_label("Raise").click();
-    h.run_steps(2);
-    let middle = theme::MENU + theme::BAR + theme::OPTIONS / 2.0;
-    for name in ["Size", "Flow", "Hardness"] {
-        let slider = h.get_by_role_and_label(Role::Slider, name);
-        assert_eq!(slider.rect().center().y, middle, "{name}");
+/// The field of the options bar with this name.
+fn bar_field<'a>(h: &'a App, name: &'a str) -> egui_kittest::Node<'a> {
+    let bar = theme::MENU + theme::BAR + theme::OPTIONS;
+    let mut fields = h.query_all_by_role_and_label(Role::Slider, name);
+    fields.find(|f| f.rect().bottom() < bar).expect(name)
+}
+
+fn drag(h: &mut App, from: egui::Pos2, dx: f32) {
+    h.hover_at(from);
+    h.step();
+    h.drag_at(from);
+    h.step();
+    for i in 1..=4 {
+        h.hover_at(from + egui::vec2(dx * i as f32 / 4.0, 0.0));
+        h.step();
     }
-    let button = h.get_by_label(BRUSH_BUTTON);
+    h.drop_at(from + egui::vec2(dx, 0.0));
+    h.run_steps(2);
+}
+
+#[test]
+fn the_options_bar_has_the_value_fields_of_the_brush() {
+    let mut h = harness();
+    let middle = theme::MENU + theme::BAR + theme::OPTIONS / 2.0;
+    let values = [("Size", None), ("Strength", Some(1500.0))];
+    let values = values
+        .into_iter()
+        .chain([("Flow", Some(100.0)), ("Hardness", Some(30.0))]);
+    let mut left = 0.0;
+    for (name, value) in values {
+        let field = bar_field(&h, name);
+        assert_eq!(field.rect().center().y, middle, "{name}");
+        assert!(field.rect().left() > left, "{name}");
+        left = field.rect().left();
+        if let Some(value) = value {
+            assert_eq!(
+                field.accesskit_node().numeric_value(),
+                Some(value),
+                "{name}"
+            );
+        }
+    }
+    let button = h.get_by_label(BRUSH_SETTINGS);
     assert!(button.rect().right() > 1200.0);
     button.hover();
     h.run_steps(60);
-    assert!(h.query_by_label("Brush… (B)").is_some());
+    assert!(h.query_by_label("Brush settings (B)").is_some());
+
+    // In the warp mode, the strength is a distance.
+    h.get_by_label(MORE_TOOLS).click();
+    h.run_steps(2);
+    h.get_by_label("Warp").click();
+    h.run_steps(2);
+    let strength = bar_field(&h, "Strength");
+    assert_eq!(strength.accesskit_node().numeric_value(), Some(50.0));
+    for name in ["Size", "Flow", "Hardness"] {
+        bar_field(&h, name);
+    }
 
     h.get_by_label("Hand").click();
     h.run_steps(2);
     assert_eq!(tool_name(h.state()), "Hand");
     assert!(h.query_by_role(Role::Slider).is_none());
-    assert!(h.query_by_label(BRUSH_BUTTON).is_none());
+    assert!(h.query_by_label(BRUSH_SETTINGS).is_none());
 }
 
 #[test]
-fn the_brush_button_opens_the_popover_with_the_other_settings() {
+fn a_drag_on_a_field_or_its_label_changes_the_value() {
     let mut h = harness();
-    h.get_by_label("Raise").click();
-    h.run_steps(2);
-    assert!(h.query_by_label("Strength").is_none());
-    h.get_by_label(BRUSH_BUTTON).click();
-    h.run_steps(2);
-    let button = h.get_by_label(BRUSH_BUTTON);
-    assert_eq!(button.accesskit_node().toggled(), Some(Toggled::True));
-    for label in ["Strength", "Floor", "Ceiling", "Lock size"] {
-        assert!(h.query_by_label(label).is_some(), "{label}");
-    }
-    // The popover is below the button.
-    let lock = h.get_by_label("Lock size").rect();
-    assert!(lock.top() > theme::MENU + theme::BAR + theme::OPTIONS);
-    assert!(lock.left() > 1280.0 - 340.0, "{lock:?}");
+    let hardness = bar_field(&h, "Hardness").rect().center();
+    drag(&mut h, hardness, 60.0);
+    let brush = h.state().globe.brush;
+    assert!((brush.hardness - 0.5).abs() < 0.01, "{}", brush.hardness);
+    // The label of Flow is at the left of its box.
+    let flow = bar_field(&h, "Flow").rect().left_center() - egui::vec2(12.0, 0.0);
+    drag(&mut h, flow, -30.0);
+    let brush = h.state().globe.brush;
+    assert!((brush.flow - 0.9).abs() < 0.01, "{}", brush.flow);
+    // A drag does not open the slider.
+    assert_eq!(
+        h.query_all_by_role_and_label(Role::Slider, "Flow").count(),
+        1
+    );
+}
 
-    // A click outside the popover closes it.
+#[test]
+fn a_click_on_a_field_opens_its_slider_and_a_double_click_types_the_value() {
+    // A harness with short steps, so that two clicks make a double click.
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_pixels_per_point(1.0)
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+    h.run_steps(3);
+    let size = |h: &App| h.state().globe.brush.size_points;
+    let before = size(&h);
+    bar_field(&h, "Size").click();
+    h.run_steps(2);
+    let bar = theme::MENU + theme::BAR + theme::OPTIONS;
+    let slider = {
+        let mut sliders = h.query_all_by_role_and_label(Role::Slider, "Size");
+        sliders.find(|s| s.rect().top() > bar).unwrap().rect()
+    };
+    let field = bar_field(&h, "Size").rect();
+    assert!(slider.top() < field.bottom() + 20.0 && slider.left() < field.right());
+    // A click at the left end of the slider makes the brush small.
+    h.hover_at(slider.left_center() + egui::vec2(1.0, 0.0));
+    h.step();
+    h.drag_at(slider.left_center() + egui::vec2(1.0, 0.0));
+    h.step();
+    h.drop_at(slider.left_center() + egui::vec2(1.0, 0.0));
+    h.run_steps(2);
+    assert!(size(&h) < before);
+    assert_eq!(
+        h.query_all_by_role_and_label(Role::Slider, "Size").count(),
+        2
+    );
+    // A click outside closes the slider.
     let canvas = h.state().globe.rect.center();
     h.hover_at(canvas);
     h.step();
@@ -624,8 +708,143 @@ fn the_brush_button_opens_the_popover_with_the_other_settings() {
     h.step();
     h.drop_at(canvas);
     h.run_steps(2);
-    assert!(!h.state().desk.brush_open);
-    assert!(h.query_by_label("Lock size").is_none());
+    assert_eq!(
+        h.query_all_by_role_and_label(Role::Slider, "Size").count(),
+        1
+    );
+
+    // The clicks before are not part of the double click.
+    h.run_steps(30);
+    let strength = bar_field(&h, "Strength");
+    strength.click();
+    strength.click();
+    h.run_steps(3);
+    let text = h.get_by_role_and_label(Role::TextInput, "Strength");
+    assert!(text.is_focused());
+    text.type_text("800");
+    h.run_steps(1);
+    press(&mut h, Key::Enter);
+    assert_eq!(h.state().globe.brush.strength_m, 800.0);
+    assert!(h.query_by_role(Role::TextInput).is_none());
+}
+
+#[test]
+fn the_brush_panel_is_the_inspector_until_a_layer_is_chosen() {
+    let mut h = harness();
+    let heading = |h: &App| {
+        let mut headings = h.query_all_by_role(Role::Heading);
+        headings.find_map(|n| n.accesskit_node().label()).unwrap()
+    };
+    assert_eq!(heading(&h), "Earth (sample)");
+    h.get_by_label(BRUSH_SETTINGS).click();
+    h.run_steps(2);
+    assert_eq!(heading(&h), "Brush · Raise");
+    let button = h.get_by_label(BRUSH_SETTINGS);
+    assert_eq!(button.accesskit_node().toggled(), Some(Toggled::True));
+    let role = Role::Button;
+    h.get_by_role_and_label(role, "Land").click();
+    h.run_steps(2);
+    assert_eq!(heading(&h), "Land");
+    let button = h.get_by_label(BRUSH_SETTINGS);
+    assert_eq!(button.accesskit_node().toggled(), Some(Toggled::False));
+    // B shows the Brush panel, and a click on the selected row shows the
+    // layer again.
+    press(&mut h, Key::B);
+    assert_eq!(heading(&h), "Brush · Raise");
+    h.get_by_role_and_label(role, "Land").click();
+    h.run_steps(2);
+    assert_eq!(heading(&h), "Land");
+    // A second click selects nothing.
+    h.get_by_role_and_label(role, "Land").click();
+    h.run_steps(2);
+    assert_eq!(heading(&h), "Earth (sample)");
+    // B goes back to the subject before the Brush panel.
+    h.get_by_role_and_label(role, "Rivers").click();
+    h.run_steps(2);
+    press(&mut h, Key::B);
+    press(&mut h, Key::B);
+    assert_eq!(heading(&h), "Rivers");
+}
+
+#[test]
+fn the_brush_panel_has_the_tip_the_stroke_and_the_limits() {
+    let mut h = harness();
+    press(&mut h, Key::B);
+    for section in ["Tip", "Stroke", "Limits"] {
+        assert!(h.query_by_label(section).is_some(), "{section}");
+    }
+    let dock = 1280.0 - theme::DOCK;
+    let in_panel = |h: &App, name: &str| {
+        let fields = h.query_all_by_role_and_label(Role::Slider, name);
+        fields.filter(|f| f.rect().left() > dock).count()
+    };
+    for name in ["Size", "Hardness", "Strength", "Flow", "Floor", "Ceiling"] {
+        // The slider and the box.
+        assert_eq!(in_panel(&h, name), 2, "{name}");
+    }
+    let floor = |h: &App| {
+        let mut fields = h.query_all_by_role_and_label(Role::Slider, "Floor");
+        fields.all(|f| !f.accesskit_node().is_disabled())
+    };
+    assert!(!floor(&h));
+    let switch = h.get_by_role_and_label(Role::CheckBox, "Floor");
+    assert_eq!(switch.accesskit_node().toggled(), Some(Toggled::False));
+    switch.click();
+    h.run_steps(2);
+    assert!(h.state().globe.brush.floor_on && floor(&h));
+    // The panel and the options bar show the same value.
+    let hardness = h.query_all_by_role_and_label(Role::Slider, "Hardness");
+    let values: Vec<_> = hardness
+        .map(|f| f.accesskit_node().numeric_value())
+        .collect();
+    assert_eq!(values, vec![Some(30.0); 3]);
+
+    // Each mode has its own settings in the Stroke section.
+    h.get_by_label(MORE_TOOLS).click();
+    h.run_steps(2);
+    h.get_by_label("Warp").click();
+    h.run_steps(2);
+    for name in ["Strength", "Scale", "Seed"] {
+        assert_eq!(in_panel(&h, name), 2, "{name}");
+    }
+    h.get_by_label(MORE_TOOLS).click();
+    h.run_steps(2);
+    h.get_by_label("Uplift").click();
+    h.run_steps(2);
+    for name in ["Uplift", "Erosion", "Angle"] {
+        assert_eq!(in_panel(&h, name), 2, "{name}");
+    }
+}
+
+#[test]
+fn the_lock_of_the_brush_panel_locks_the_size() {
+    let mut h = harness();
+    press(&mut h, Key::B);
+    let lock = h.get_by_label(LOCK);
+    assert_eq!(lock.accesskit_node().toggled(), Some(Toggled::False));
+    lock.click();
+    h.run_steps(2);
+    assert!(h.state().globe.brush.lock.is_some());
+    h.get_by_label(LOCK).click();
+    h.run_steps(2);
+    assert!(h.state().globe.brush.lock.is_none());
+}
+
+#[test]
+fn the_flatten_level_comes_from_the_globe_or_the_start_of_the_stroke() {
+    let mut h = harness();
+    press(&mut h, Key::E);
+    assert!(h.get_by_label(STROKE_START).accesskit_node().is_disabled());
+    h.get_by_label(PICK).click();
+    h.run_steps(2);
+    assert!(h.state().globe.pick_level);
+    let pick = h.get_by_label(PICK);
+    assert_eq!(pick.accesskit_node().toggled(), Some(Toggled::True));
+    h.state_mut().globe.brush.flatten_level = Some(vale_terrain::meters_to_level(500.0));
+    h.run_steps(2);
+    h.get_by_label(STROKE_START).click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.flatten_level, None);
 }
 
 #[test]
@@ -668,12 +887,10 @@ fn without_the_glass_each_pixel_is_opaque() {
         let mut state = state();
         state.workspace = workspace;
         state.globe.tool = Tool::Brush;
-        state.desk.brush_open = true;
+        state.desk.toggle_brush();
         let (img, state) = vale_app::headless::ui_png(state, (1280.0, 800.0), 1.0).unwrap();
         assert!(!state.translucent);
-        if workspace == Workspace::Globe {
-            assert!(state.desk.brush_open);
-        }
+        assert!(state.desk.brush_shows());
         let clear = img.pixels().filter(|p| p.0[3] < 255).count();
         assert_eq!(clear, 0, "{workspace:?}");
     }

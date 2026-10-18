@@ -51,12 +51,13 @@ fn menu_row(h: &mut Harness<'static, AppState>, menu: &str, row: &str) {
     h.run_steps(1);
 }
 
-/// Opens the Brush popover in the brush tool. A click outside the popover
-/// closes it, so a test chooses the mode first.
+/// Shows the Brush panel in the dock, in the brush tool.
 fn open_brush(h: &mut Harness<'static, AppState>) {
     h.state_mut().globe.tool = Tool::Brush;
-    h.run_steps(1);
-    h.get_by_label("Brush…").click();
+    let desk = &mut h.state_mut().desk;
+    if !desk.brush_shows() {
+        desk.toggle_brush();
+    }
     h.run_steps(2);
 }
 
@@ -2003,10 +2004,10 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         let mut h = harness();
         choose_mode(&mut h, mode);
         open_brush(&mut h);
-        // The elevations that take no input.
+        // The sliders and the boxes of the elevations that take no input.
         let off = |h: &Harness<'static, AppState>| {
-            let values = h.query_all_by_role(Role::SpinButton);
-            values.filter(|v| v.accesskit_node().is_disabled()).count()
+            let values = h.query_all_by_role(Role::Slider);
+            values.filter(|v| v.accesskit_node().is_disabled()).count() / 2
         };
         // Both limits are off at the start.
         let brush = h.state().globe.brush;
@@ -2015,12 +2016,12 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         assert_eq!(brush.limits(), Limits::default(), "{mode}");
         assert_eq!(off(&h), 2, "{mode}");
 
-        h.get_by_label("Floor").click();
+        h.get_by_role_and_label(Role::CheckBox, "Floor").click();
         h.run_steps(2);
         let brush = h.state().globe.brush;
         assert!(brush.floor_on && !brush.ceiling_on, "{mode}");
         assert_eq!(off(&h), 1, "{mode}");
-        h.get_by_label("Ceiling").click();
+        h.get_by_role_and_label(Role::CheckBox, "Ceiling").click();
         h.run_steps(2);
         let brush = h.state().globe.brush;
         assert!(brush.floor_on && brush.ceiling_on, "{mode}");
@@ -2028,11 +2029,11 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         let (floor, ceiling) = (meters_to_level(0.0), meters_to_level(1000.0));
         assert_eq!(brush.limits(), Limits { floor, ceiling }, "{mode}");
 
-        // A drag on the elevation of the ceiling changes it.
+        // A drag on the box of the elevation of the ceiling changes it.
         let pos = {
-            let values = h.query_all_by_role(Role::SpinButton);
-            let mut value = values.filter(|v| v.accesskit_node().numeric_value() == Some(1000.0));
-            value.next_back().unwrap().rect().center()
+            let values = h.query_all_by_role_and_label(Role::Slider, "Ceiling");
+            let value = values.max_by(|a, b| a.rect().right().total_cmp(&b.rect().right()));
+            value.unwrap().rect().center()
         };
         button(&mut h, egui::PointerButton::Primary, pos, true);
         h.step();
@@ -2889,14 +2890,14 @@ fn screenshots_with_a_river_window() {
 fn the_brush_panel_has_the_uplift_mode_and_its_two_sliders() {
     let mut h = harness();
     open_brush(&mut h);
-    assert!(h.query_by_label("Uplift").is_none());
+    assert!(h.query_all_by_label("Uplift").next().is_none());
     assert!(h.query_all_by_label("Erosion").next().is_none());
     assert!(h.query_all_by_label("Strength").next().is_some());
     choose_mode(&mut h, "Uplift");
     open_brush(&mut h);
     assert_eq!(h.state().globe.brush.mode, Mode::Uplift);
     // The slider of the rate of the uplift.
-    assert!(h.query_by_label("Uplift").is_some());
+    assert!(h.query_all_by_label("Uplift").next().is_some());
     assert!(h.query_all_by_label("Strength").next().is_none());
     assert!(h.query_all_by_label("Erosion").next().is_some());
     assert_eq!(h.state().globe.brush.erosion, 0.5);

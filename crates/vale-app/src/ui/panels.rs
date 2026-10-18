@@ -249,26 +249,6 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
     }
 }
 
-/// The floor and the ceiling of the brush. Each one has a checkbox and an
-/// elevation.
-pub(super) fn brush_limits(ui: &mut egui::Ui, state: &mut AppState) {
-    let brush = &mut state.globe.brush;
-    for (name, on, meters) in [
-        ("Floor", &mut brush.floor_on, &mut brush.floor_m),
-        ("Ceiling", &mut brush.ceiling_on, &mut brush.ceiling_m),
-    ] {
-        ui.horizontal(|ui| {
-            ui.checkbox(on, name);
-            let value = egui::DragValue::new(meters)
-                .speed(10.0)
-                .range(ELEV_MIN..=ELEV_MAX)
-                .fixed_decimals(0)
-                .suffix(" m");
-            ui.add_enabled(*on, value);
-        });
-    }
-}
-
 /// The lock of the size and the flatten level.
 pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     let globe = &mut state.globe;

@@ -65,6 +65,7 @@ fn world_tools(ui: &mut egui::Ui, state: &mut AppState) {
         if widgets::tool_button(ui, name, icon, &tip, Some(on), true).clicked() {
             globe.tool = Tool::Brush;
             globe.brush.mode = mode;
+            state.desk.inspect_brush();
         }
     }
     let on = globe.tool == Tool::Navigate;
@@ -120,6 +121,7 @@ pub fn more_menu(ctx: &egui::Context, state: &mut AppState) {
                         globe.tool = Tool::Brush;
                         globe.brush.mode = mode;
                         state.desk.more_open = false;
+                        state.desk.inspect_brush();
                     }
                 }
             });
@@ -138,8 +140,7 @@ pub fn keys(ctx: &egui::Context, state: &mut AppState) {
     }
     let key = |key| ctx.input_mut(|i| i.modifiers.is_none() && i.consume_key(Modifiers::NONE, key));
     let desk = &mut state.desk;
-    if (desk.brush_open || desk.more_open) && key(Key::Escape) {
-        desk.brush_open = false;
+    if desk.more_open && key(Key::Escape) {
         desk.more_open = false;
     }
     match state.workspace {
@@ -149,13 +150,14 @@ pub fn keys(ctx: &egui::Context, state: &mut AppState) {
                 if key(code) {
                     globe.tool = Tool::Brush;
                     globe.brush.mode = mode;
+                    desk.inspect_brush();
                 }
             }
             if key(Key::H) {
                 globe.tool = Tool::Navigate;
             }
             if key(Key::B) && globe.tool == Tool::Brush {
-                desk.brush_open = !desk.brush_open;
+                desk.toggle_brush();
             }
         }
         Workspace::Map => {

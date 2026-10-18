@@ -42,7 +42,7 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t)]
     pub layout: Layout,
     /// Open this panel. You can give more than one. The desktop layout
-    /// opens only the Brush panel, as a popover.
+    /// opens only the Brush panel, in the dock.
     #[arg(long, value_enum, value_name = "PANEL")]
     pub panel: Vec<Panel>,
     /// Open the menu of the More tools.

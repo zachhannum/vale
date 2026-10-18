@@ -7,7 +7,8 @@ use vale_store::{GeometryKind, LayerId};
 use super::command::{self, Command};
 use super::float::{self, Glass, Item};
 use super::widgets;
-use super::{Tab, theme};
+use super::{Inspect, Tab, brush, theme};
+use crate::globe::Tool;
 use crate::ui::pad::icons::Icon;
 use crate::ui::pad::{self, ADD_LAYER, NEW_LAYERS, kind_icon, note_text};
 use crate::ui::{Action, AppState, Workspace, elevation, inspector, panels};
@@ -38,16 +39,33 @@ pub enum Selected {
     Layer(LayerId),
     /// A feature on the map of the Maps workspace.
     Feature,
+    /// The settings of the brush.
+    Brush,
+}
+
+/// The subject of the inspector.
+pub fn selected(state: &AppState) -> Selected {
+    let desk = &state.desk;
+    let brush = state.workspace == Workspace::Globe && state.globe.tool == Tool::Brush;
+    match desk.inspect == Inspect::Brush && brush {
+        true => Selected::Brush,
+        false => selection(state),
+    }
 }
 
 /// The selection of the layer list and of the map.
-pub fn selected(state: &AppState) -> Selected {
+fn selection(state: &AppState) -> Selected {
     if state.workspace == Workspace::Map && state.selection.is_some() {
         return Selected::Feature;
     }
+    let desk = &state.desk;
+    let subject = match desk.inspect {
+        Inspect::Brush => desk.before_brush,
+        subject => subject,
+    };
     match state.selected_layer {
         Some(id) if state.doc.layer(id).is_some() => Selected::Layer(id),
-        _ if state.desk.height_selected && state.has_raster() => Selected::Height,
+        _ if subject == Inspect::Height && state.has_raster() => Selected::Height,
         _ => Selected::Nothing,
     }
 }
@@ -139,14 +157,17 @@ fn tabs(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn add_layer(state: &mut AppState, kind: GeometryKind) {
     state.selected_layer = Some(state.doc.add_layer(kind));
+    state.desk.inspect = Inspect::Selection;
     state.selection = None;
     state.touch();
 }
 
 /// The rows of the layers in draw order, with the bottom layer first. The
-/// first row is the heightmap, or the row that imports one.
+/// first row is the heightmap, or the row that imports one. A click on the
+/// selected row selects nothing, or shows its panel if the Brush panel shows.
 fn list(ui: &mut egui::Ui, state: &mut AppState, height: f32) {
-    let chosen = selected(state);
+    let chosen = selection(state);
+    let shown = selected(state) != Selected::Brush;
     egui::ScrollArea::vertical()
         .id_salt("desk-list")
         .max_height(height)
@@ -158,7 +179,7 @@ fn list(ui: &mut egui::Ui, state: &mut AppState, height: f32) {
                 let on = chosen == Selected::Height;
                 let row = widgets::list_row(ui, Icon::Raster, HEIGHT, on, None, true);
                 if row.body.clicked() {
-                    select(state, (!on).then_some(Selected::Height));
+                    select(state, (!on || !shown).then_some(Selected::Height));
                 }
             } else {
                 let enabled = !state.globe.busy();
@@ -187,7 +208,7 @@ fn list(ui: &mut egui::Ui, state: &mut AppState, height: f32) {
                     state.doc.set_visible(id, !visible);
                     state.touch();
                 } else if row.body.clicked() {
-                    select(state, (!on).then_some(Selected::Layer(id)));
+                    select(state, (!on || !shown).then_some(Selected::Layer(id)));
                 }
             }
             ui.add_space(4.0);
@@ -197,7 +218,10 @@ fn list(ui: &mut egui::Ui, state: &mut AppState, height: f32) {
 /// Selects a row of the list, or nothing. A click on the selected row
 /// selects nothing.
 fn select(state: &mut AppState, selected: Option<Selected>) {
-    state.desk.height_selected = selected == Some(Selected::Height);
+    state.desk.inspect = match selected {
+        Some(Selected::Height) => Inspect::Height,
+        _ => Inspect::Selection,
+    };
     state.selected_layer = match selected {
         Some(Selected::Layer(id)) => Some(id),
         _ => None,
@@ -220,6 +244,7 @@ fn inspector_name(state: &AppState) -> String {
             .layer(id)
             .map_or(String::new(), |l| l.name.clone()),
         Selected::Feature => "Feature".to_owned(),
+        Selected::Brush => brush::title(state.globe.brush.mode),
     }
 }
 
@@ -268,6 +293,7 @@ fn layer_inspector(ui: &mut egui::Ui, state: &mut AppState) {
         (Selected::Layer(id), Workspace::Globe) => vector_body(ui, state, id),
         (Selected::Layer(_), Workspace::Map) => inspector::layer_body(ui, state),
         (Selected::Feature, _) => inspector::feature_body(ui, state),
+        (Selected::Brush, _) => brush::body(ui, state),
     }
 }
 

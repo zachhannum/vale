@@ -1,24 +1,17 @@
-//! The options bar below the title bar, and the Brush popover.
+//! The options bar below the title bar.
 
-use eframe::egui::{self, Align, Align2, Layout, Sense, Stroke, pos2};
-use vale_terrain::Mode;
+use eframe::egui::{self, Align, Layout, Sense, Stroke};
 
-use super::float::{self, Glass};
+use super::float::Glass;
 use super::rail::{self, HAND, SELECT};
 use super::widgets::{self, tip_text};
-use super::{MapTool, theme};
+use super::{MapTool, brush, field, theme};
 use crate::globe::Tool;
-use crate::globe::brush::{EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM};
-use crate::ui::pad::{log_slider, percent_slider, size_slider};
-use crate::ui::{AppState, Workspace, panels};
-use crate::world::three_significant;
+use crate::ui::pad::icons::Icon;
+use crate::ui::{AppState, Workspace};
 
-/// The button of the options bar that opens the Brush popover.
-pub const BRUSH_BUTTON: &str = "Brush…";
-const POPOVER_WIDTH: f32 = 320.0;
-const POPOVER_PAD: f32 = 14.0;
-/// The width of the label of a slider in the popover.
-const LABEL: f32 = 72.0;
+/// The button of the options bar that shows the Brush panel in the dock.
+pub const BRUSH_SETTINGS: &str = "Brush settings";
 
 /// The name of the active tool.
 pub fn tool_name(state: &AppState) -> &'static str {
@@ -36,7 +29,6 @@ pub fn tool_name(state: &AppState) -> &'static str {
 
 /// The settings of the active tool, in one row across the window.
 pub fn bar(ui: &mut egui::Ui, state: &mut AppState) {
-    state.desk.brush_button = None;
     let frame = egui::Frame::NONE.fill(theme::glass(state.translucent));
     egui::Panel::top("desk-options")
         .exact_size(theme::OPTIONS)
@@ -67,117 +59,21 @@ pub fn bar(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn brush(ui: &mut egui::Ui, state: &mut AppState) {
     widgets::divider(ui);
-    let width = widgets::SLIDER;
-    ui.add_space(6.0);
-    size_slider(state, |fraction, text| {
-        widgets::slider(ui, "Size", None, width, fraction, text)
-    });
-    ui.add_space(6.0);
-    let brush = &mut state.globe.brush;
-    percent_slider(&mut brush.flow, FLOW, |fraction, text| {
-        widgets::slider(ui, "Flow", None, width, fraction, text)
-    });
-    ui.add_space(6.0);
-    percent_slider(&mut brush.hardness, 0.0..=1.0, |fraction, text| {
-        widgets::slider(ui, "Hardness", None, width, fraction, text)
-    });
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.add_space(12.0);
-        let tip = tip_text(BRUSH_BUTTON, Some("B"));
-        let open = state.desk.brush_open;
-        let resp = widgets::button(ui, BRUSH_BUTTON, &tip, Some(open));
-        if resp.clicked() {
-            state.desk.brush_open = !open;
-        }
-        state.desk.brush_button = Some(resp.rect);
-    });
-}
-
-/// The settings of the brush that the options bar does not have. The popover
-/// opens below the Brush button.
-pub fn popover(ctx: &egui::Context, state: &mut AppState) {
-    let button = state.desk.brush_button.filter(|_| state.desk.brush_open);
-    let Some(button) = button else {
-        state.desk.brush_open = false;
-        return;
-    };
-    let at = pos2(button.right() + 4.0 - POPOVER_WIDTH, button.bottom() + 10.0);
-    let margin = egui::Margin {
-        left: POPOVER_PAD as i8,
-        right: POPOVER_PAD as i8,
-        top: 0,
-        bottom: 12,
-    };
+    ui.spacing_mut().item_spacing.x = 16.0;
     let glass = Glass::of(state);
-    let id = egui::Id::new("desk-brush");
-    let radius = float::RADIUS.into();
-    let area = float::floating(ctx, id, at, Align2::LEFT_TOP, glass, radius, margin, |ui| {
-        ui.set_width(POPOVER_WIDTH - 2.0 * POPOVER_PAD);
-        float::title(ui, "Brush", POPOVER_PAD);
-        body(ui, state);
+    for setting in brush::BAR {
+        if let Some(value) = field::bar_field(ui, glass, &setting.field(state)) {
+            setting.set(state, value);
+        }
+    }
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.add_space(8.0);
+        let tip = tip_text(BRUSH_SETTINGS, Some("B"));
+        let on = Some(state.desk.brush_shows());
+        let icon = Icon::Sliders;
+        let resp = widgets::tool_button(ui, BRUSH_SETTINGS, icon, &tip, on, true);
+        if resp.clicked() {
+            state.desk.toggle_brush();
+        }
     });
-    if float::pressed_outside(ctx, area.response.rect, button) {
-        state.desk.brush_open = false;
-    }
-}
-
-fn body(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.spacing_mut().item_spacing.y = 2.0;
-    ui.add_space(6.0);
-    let width = ui.available_width() - LABEL - 20.0 - widgets::VALUE;
-    let row = |ui: &mut egui::Ui, name: &str, fraction: &mut f64, text: &str| {
-        widgets::slider(ui, name, Some(LABEL), width, fraction, text)
-    };
-    let brush = &mut state.globe.brush;
-    if brush.mode == Mode::Warp {
-        let text = format!("{} km", three_significant(brush.warp_km));
-        let strength = log_slider(brush.warp_km, WARP_KM, &text, |fraction, text| {
-            row(ui, "Strength", fraction, text)
-        });
-        if let Some(km) = strength {
-            brush.warp_km = km;
-        }
-        let text = format!("{} km", three_significant(brush.scale_km));
-        let scale = log_slider(brush.scale_km, SCALE_KM, &text, |fraction, text| {
-            row(ui, "Scale", fraction, text)
-        });
-        if let Some(km) = scale {
-            brush.scale_km = km;
-        }
-        // The seed is a property of the world, so each brush gets the same
-        // noise field.
-        let seed = &mut state.doc.project.world.seed;
-        let high = f64::from(*SEED.end());
-        let mut fraction = (f64::from(*seed) / high).min(1.0);
-        if row(ui, "Seed", &mut fraction, &seed.to_string()) {
-            *seed = (fraction * high).round() as u32;
-        }
-    } else {
-        let text = format!("{:.0} m", brush.strength_m);
-        let name = panels::strength_name(brush.mode);
-        let strength = log_slider(brush.strength_m, STRENGTH_M, &text, |fraction, text| {
-            row(ui, name, fraction, text)
-        });
-        if let Some(meters) = strength {
-            brush.strength_m = meters;
-        }
-    }
-    if brush.mode == Mode::Uplift {
-        percent_slider(&mut brush.erosion, EROSION, |fraction, text| {
-            row(ui, "Erosion", fraction, text)
-        });
-    }
-    if matches!(brush.mode, Mode::Weather | Mode::Uplift) {
-        let text = format!("{}°", three_significant(brush.talus_deg));
-        let angle = log_slider(brush.talus_deg, TALUS_DEG, &text, |fraction, text| {
-            row(ui, "Angle", fraction, text)
-        });
-        if let Some(degrees) = angle {
-            brush.talus_deg = degrees;
-        }
-    }
-    ui.add_space(6.0);
-    ui.spacing_mut().item_spacing.y = 6.0;
-    panels::brush_limits(ui, state);
-    panels::brush_settings(ui, state);
 }

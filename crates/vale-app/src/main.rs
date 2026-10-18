@@ -52,7 +52,9 @@ fn run() -> anyhow::Result<u8> {
             state.pad.open(*panel);
         }
         state.pad.more = args.more_tools;
-        state.desk.brush_open = args.panel.contains(&Panel::Brush);
+        if args.panel.contains(&Panel::Brush) {
+            state.desk.toggle_brush();
+        }
         state.desk.more_open = args.more_tools;
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
