@@ -80,6 +80,16 @@ pub(super) fn controls(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Previ
         let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
         ui.add_enabled(preview.rivers, width);
     }
+    band_controls(ui, bands, preview, unit);
+}
+
+/// The bar of the band limits and the colors of the ramp.
+pub(super) fn band_controls(
+    ui: &mut egui::Ui,
+    bands: &mut Bands,
+    preview: &mut Preview,
+    unit: &str,
+) {
     ui.separator();
     limit_bar(ui, bands, preview, unit);
     selected_limit(ui, bands, preview, unit);

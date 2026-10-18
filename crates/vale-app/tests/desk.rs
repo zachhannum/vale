@@ -9,7 +9,9 @@ use vale_app::globe::Tool;
 use vale_app::session::Session;
 use vale_app::ui::desk::brush::{LOCK, PICK, STROKE_START};
 use vale_app::ui::desk::command::Command;
-use vale_app::ui::desk::dock::{BRUSH_DEBUG, FRAME, IMPORT, OPACITY, WORLD_PROPERTIES, grouped};
+use vale_app::ui::desk::dock::{
+    BRUSH_DEBUG, FRAME, IMPORT, OPACITY, RIVER_WIDTH, WORLD_PROPERTIES, grouped,
+};
 use vale_app::ui::desk::float::SHEET;
 use vale_app::ui::desk::options::{BRUSH_SETTINGS, tool_name};
 use vale_app::ui::desk::rail::MORE_TOOLS;
@@ -275,6 +277,33 @@ fn the_tabs_of_the_dock_switch_between_the_layers_and_the_toolbox() {
 fn heading(h: &App) -> String {
     let node = h.get_by_role(Role::Heading);
     node.accesskit_node().label().unwrap_or_default()
+}
+
+#[test]
+fn the_style_of_a_height_layer_has_switches_and_a_river_width_field() {
+    let mut h = brush_harness();
+    h.state_mut().select(None);
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, HEIGHT).click();
+    h.run_steps(2);
+    let preview = h.state().globe.preview;
+    for (label, on) in [
+        ("Greyscale", preview.greyscale),
+        ("Levels", preview.levels),
+        ("Graticule", preview.graticule),
+        ("Rivers", preview.rivers),
+    ] {
+        let switch = h.get_by_role_and_label(Role::CheckBox, label);
+        let toggled = if on { Toggled::True } else { Toggled::False };
+        assert_eq!(switch.accesskit_node().toggled(), Some(toggled), "{label}");
+    }
+    h.get_by_role_and_label(Role::CheckBox, "Greyscale").click();
+    h.get_by_role_and_label(Role::CheckBox, "Rivers").click();
+    h.run_steps(2);
+    let after = h.state().globe.preview;
+    assert_eq!(after.greyscale, !preview.greyscale);
+    assert_eq!(after.rivers, !preview.rivers);
+    assert!(h.query_all_by_label(RIVER_WIDTH).next().is_some());
 }
 
 #[test]

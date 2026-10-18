@@ -12,7 +12,9 @@ use super::{Inspect, Tab, brush, theme};
 use crate::ui::pad::icons::Icon;
 use crate::ui::pad::{self, ADD_LAYER, NEW_LAYERS, layer_icon, note_text};
 use crate::ui::raster_form::RasterForm;
-use crate::ui::{Action, AppState, LayerRef, Workspace, elevation, inspector, is_height, panels};
+use crate::ui::{
+    Action, AppState, HEIGHT_UNIT, LayerRef, Workspace, elevation, inspector, is_height, panels,
+};
 use crate::world;
 
 /// The heading of the inspector of the Toolbox tab.
@@ -25,6 +27,8 @@ pub const WORLD_PROPERTIES: &str = "World properties…";
 pub const IMPORT: &str = "Import…";
 /// The field of the panel of a raster layer with its opacity.
 pub const OPACITY: &str = "Opacity";
+/// The field of the width of the rivers on the globe.
+pub const RIVER_WIDTH: &str = "River width";
 /// The width of the label of a row of the inspector.
 const LABEL: f32 = 76.0;
 const INSET: f32 = 14.0;
@@ -449,10 +453,37 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         return;
     }
     subheading(ui, "Style");
-    ui.checkbox(&mut state.globe.preview.greyscale, "Greyscale");
     let mut preview = state.globe.preview;
+    let mut toggles = vec![
+        ("Greyscale", &mut preview.greyscale),
+        ("Levels", &mut preview.levels),
+        ("Graticule", &mut preview.graticule),
+    ];
+    if unit == HEIGHT_UNIT {
+        toggles.push(("Rivers", &mut preview.rivers));
+    }
+    for (name, on) in toggles {
+        if field::switch_row(ui, name, *on) {
+            *on = !*on;
+        }
+    }
+    if unit == HEIGHT_UNIT {
+        let range = elevation::RIVER_WIDTH;
+        let width = Field {
+            name: RIVER_WIDTH,
+            value: f64::from(preview.river_width),
+            scale: Scale::linear(f64::from(*range.start())..=f64::from(*range.end())),
+            text: format!("{:.2}", preview.river_width),
+            units: Vec::new(),
+            step: 0.05,
+            enabled: preview.rivers,
+        };
+        if let Some(value) = field::row(ui, &width).value {
+            preview.river_width = value as f32;
+        }
+    }
     if let Some(bands) = state.globe.bands_mut(id) {
-        elevation::controls(ui, bands, &mut preview, &unit);
+        elevation::band_controls(ui, bands, &mut preview, &unit);
     }
     state.globe.preview = preview;
 }

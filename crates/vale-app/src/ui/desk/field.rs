@@ -449,6 +449,18 @@ pub fn switch(ui: &mut egui::Ui, rect: Rect, name: &str, on: bool) -> bool {
     resp.clicked()
 }
 
+/// A row of a panel with a label and a switch at the right. Returns true if
+/// the user flipped the switch.
+pub fn switch_row(ui: &mut egui::Ui, name: &str, on: bool) -> bool {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(width, theme::ROW), Sense::hover());
+    let at = pos2(rect.left(), rect.center().y);
+    let painter = ui.painter();
+    painter.text(at, Align2::LEFT_CENTER, name, theme::label(), theme::MUTE);
+    let trailing = Rect::from_min_max(pos2(rect.right() - TRAILING, rect.top()), rect.max);
+    switch(ui, trailing, name, on)
+}
+
 /// A small button with an icon in the middle of `rect`, that stays on.
 /// Returns true if the user clicked it.
 pub fn icon_toggle(
