@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
-use vale_store::{Layer, LayerId, Project, Raster, RasterId, StoreError, World};
+use vale_store::{Layer, LayerId, Project, Raster, RasterDisplay, RasterId, StoreError, World};
 use vale_terrain::{Bands, Heightmap, Mode};
 
 use crate::document::Document;
@@ -451,9 +451,14 @@ impl AppState {
         }
         let item = |layer: &Layer| match layer.raster() {
             Some(id) => {
-                let opacity = project.raster(id)?.opacity;
+                let raster = project.raster(id)?;
+                let (opacity, display) = (raster.opacity, raster.display);
                 let held = globe.holds(id);
-                held.then_some(StackItem::Raster { id, opacity })
+                held.then_some(StackItem::Raster {
+                    id,
+                    opacity,
+                    display,
+                })
             }
             None => Some(StackItem::Vector(layer.id)),
         };
@@ -713,6 +718,25 @@ impl AppState {
         set
     }
 
+    /// Sets how a raster layer colors its values on the globe.
+    pub fn set_raster_display(&mut self, id: RasterId, display: RasterDisplay) -> bool {
+        let set = self.doc.project.set_raster_display(id, display);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets the unit of the values of a raster layer. The unit of a height
+    /// layer stays, and no other layer gets that unit.
+    pub fn set_raster_unit(&mut self, id: RasterId, unit: &str) -> bool {
+        let unit = unit.trim();
+        let project = &mut self.doc.project;
+        let height = project.raster(id).is_none_or(is_height);
+        if height || unit == HEIGHT_UNIT {
+            return false;
+        }
+        project.set_raster_unit(id, unit)
+    }
+
     /// Moves a layer to this index of the draw order. Index 0 is the bottom.
     pub fn move_layer(&mut self, id: LayerId, to: usize) -> bool {
         let moved = self.doc.move_layer(id, to);
@@ -761,6 +785,16 @@ impl AppState {
         let layers = project.layers().iter().rev();
         let top = || layers.filter_map(Layer::raster).find(shows);
         project.raster(selected.or_else(top)?)
+    }
+
+    /// The raster layer of the desktop style panel: the selected
+    /// raster layer, or else the raster layer of the readout.
+    pub fn panel_raster(&self) -> Option<&Raster> {
+        let selected = self.selected_raster().filter(|id| self.globe.holds(*id));
+        match selected {
+            Some(id) => self.doc.project.raster(id),
+            None => self.shown_raster(),
+        }
     }
 
     /// The unit of the values of the raster layer of the readout. With no

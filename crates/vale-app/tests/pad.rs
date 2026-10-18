@@ -20,7 +20,7 @@ use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
 use vale_app::world::{radius_fraction, three_significant};
-use vale_store::{Units, World};
+use vale_store::{RasterDisplay, RasterId, Units, World};
 use vale_terrain::{Mode, meters_to_level};
 
 type Pad = Harness<'static, AppState>;
@@ -35,6 +35,15 @@ const BOARDS: [(f32, f32); 4] = [
 ];
 /// The bands that the system uses at the top and at the bottom.
 const BANDS: (f32, f32) = (24.0, 20.0);
+
+/// Shows each raster layer, and a globe with no layers, with this display.
+fn show_as(state: &mut AppState, display: RasterDisplay) {
+    state.globe.preview.display = display;
+    let ids: Vec<RasterId> = state.doc.project.rasters().iter().map(|r| r.id).collect();
+    for id in ids {
+        state.set_raster_display(id, display);
+    }
+}
 
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
@@ -1916,8 +1925,8 @@ fn blur_pad(level: impl Fn(f64) -> u16) -> Pad {
     let state = h.state_mut();
     state.pad.open(Panel::Brush);
     state.pad.open(Panel::Layers);
+    show_as(state, RasterDisplay::Grey);
     let globe = &mut state.globe;
-    globe.preview.greyscale = true;
     globe.preview.graticule = false;
     globe.view = GlobeView::centered(0.0, 0.0);
     globe.view.zoom = 3.0;
@@ -3003,4 +3012,176 @@ fn the_properties_of_the_world_apply_at_once_and_a_touch_does_not_reach_the_canv
     assert_eq!(h.state().doc.project.layers(), layers);
     tap(&mut h, "Close World");
     assert!(h.state().world_form.is_none());
+}
+
+/// Opens the panel of the height layer, and returns its ID.
+fn open_height(h: &mut Pad) -> RasterId {
+    tap(h, "Layers");
+    tap(h, "Open Height");
+    h.state().doc.project.rasters()[0].id
+}
+
+#[test]
+fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
+    use vale_app::ui::pad::raster::{ADD_LIMIT, RAMP, SHOW_AS, UNIT, swatch_name};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        let height = open_height(&mut h);
+        check_controls(&h, &format!("{what} in the panel of a raster layer"));
+        let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+        let card = panel(&h, Panel::Layers).unwrap();
+        assert!(screen.contains_rect(card), "{what}: {card:?}");
+        assert!(
+            control(&h, UNIT).is_none(),
+            "{what}: a height layer has no unit row"
+        );
+        // The rows that are on the screen are inside the card.
+        for name in [LAYER_NAME, OPACITY, SHOW_AS, RAMP, ADD_LIMIT] {
+            if let Some(rect) = control(&h, name) {
+                assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
+            }
+        }
+        if control(&h, RAMP).is_some() {
+            tap(&mut h, RAMP);
+            check_controls(&h, &format!("{what} with the colors of the ramp"));
+            if control(&h, &swatch_name(false, 0)).is_some() {
+                tap(&mut h, &swatch_name(false, 0));
+                check_controls(&h, &format!("{what} with the color picker"));
+            }
+        }
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
+    }
+}
+
+#[test]
+fn a_tap_chooses_each_display_and_a_finger_moves_a_band_limit() {
+    use vale_app::ui::elevation::{BAR_LABEL, limit_y};
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    let display = |h: &Pad| h.state().doc.project.raster(height).unwrap().display;
+    assert_eq!(display(&h), RasterDisplay::Bands);
+    for (name, shown) in [
+        ("Gradient", RasterDisplay::Gradient),
+        ("Grey", RasterDisplay::Grey),
+        ("Bands", RasterDisplay::Bands),
+    ] {
+        tap(&mut h, name);
+        assert_eq!(display(&h), shown, "{name}");
+    }
+
+    let bar = h.get_by_label(BAR_LABEL).rect();
+    let card = panel(&h, Panel::Layers).unwrap();
+    assert!(card.contains_rect(bar), "{bar:?} is not in {card:?}");
+    let bands = h.state().globe.map.bands.clone();
+    // The top limit moves up toward the top of the range.
+    let index = bands.limits().len() - 1;
+    let from = bands.limits()[index];
+    let to = (from + bands.max()) / 2.0 + 300.0;
+    let at = |meters: f64| pos2(bar.left() + 20.0, limit_y(bar, &bands, meters));
+    drag(&mut h, at(from), at(to), None);
+    let moved = h.state().globe.map.bands.limits()[index];
+    assert!(
+        (moved - to).abs() < 40.0,
+        "{from} moved to {moved}, not to {to}"
+    );
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    assert_eq!(
+        h.state().globe.map.bands.limits().len(),
+        bands.limits().len()
+    );
+}
+
+#[test]
+fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame() {
+    use vale_app::ui::elevation::{BAR_LABEL, limit_y};
+    let _gpu = one_gpu_test();
+    let mut h = gpu_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    let globe = &mut h.state_mut().globe;
+    globe.preview.graticule = false;
+    globe.preview.rivers = false;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    let meters = 1100.0;
+    globe.map.fill(meters_to_level(meters));
+    h.run_steps(3);
+    let center = |h: &mut Pad| {
+        let img = h.render().unwrap();
+        let c = h.state().globe.rect.center();
+        let p = img.get_pixel(c.x as u32, c.y as u32).0;
+        [p[0], p[1], p[2]]
+    };
+    let card = panel(&h, Panel::Layers).unwrap();
+    assert!(!card.contains(h.state().globe.rect.center()));
+    // The color of the band of the height in the Bands display.
+    let band_color = |h: &Pad| {
+        let bands = h.state().globe.map.bands.bands();
+        let band = bands.iter().find(|b| b.min <= meters && meters < b.max);
+        band.unwrap().color
+    };
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3);
+    assert!(near(center(&mut h), band_color(&h)));
+
+    // The frame of the tap on Grey draws the globe in grey.
+    let pos = control(&h, "Grey").unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pos, None);
+    h.step();
+    let display = h.state().doc.project.raster(height).unwrap().display;
+    assert_eq!(display, RasterDisplay::Grey);
+    let level = (f32::from(meters_to_level(meters)) / 65535.0 * 255.0).round() as u8;
+    let grey = center(&mut h);
+    assert!(near(grey, [level; 3]), "{grey:?}");
+    tap(&mut h, "Bands");
+
+    // Each frame of the drag of a band limit draws the globe with the
+    // limit of that frame.
+    let bar = h.get_by_label(BAR_LABEL).rect();
+    let bands = h.state().globe.map.bands.clone();
+    let index = bands.limits().iter().position(|m| *m > meters).unwrap();
+    let (from, to) = (bands.limits()[index], bands.limits()[index - 1] + 50.0);
+    assert!(to < meters);
+    let at = |value: f64| pos2(bar.left() + 20.0, limit_y(bar, &bands, value));
+    let before = band_color(&h);
+    touch(&mut h, egui::TouchPhase::Start, at(from), None);
+    h.step();
+    for i in 1..=6 {
+        let pos = at(from + (to - from) * f64::from(i) / 6.0);
+        touch(&mut h, egui::TouchPhase::Move, pos, None);
+        h.step();
+        let shown = center(&mut h);
+        assert!(near(shown, band_color(&h)), "frame {i}: {shown:?}");
+    }
+    touch(&mut h, egui::TouchPhase::End, at(to), None);
+    h.step();
+    assert_ne!(band_color(&h), before);
+}
+
+#[test]
+fn the_panel_of_a_layer_that_is_not_a_height_layer_changes_its_unit() {
+    use vale_app::ui::pad::raster::UNIT;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        let spec = vale_app::ui::RasterSpec {
+            name: "Rain".to_string(),
+            unit: "mm".to_string(),
+            min: 0.0,
+            max: 4000.0,
+            face_size: 128,
+        };
+        let rain = h.state_mut().add_raster(spec).unwrap();
+        h.run_steps(2);
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Rain");
+        check_controls(&h, &format!("{what} in the panel of Rain"));
+        let card = panel(&h, Panel::Layers).unwrap();
+        assert!(card.contains_rect(control(&h, UNIT).unwrap()), "{what}");
+        tap(&mut h, UNIT);
+        h.event(egui::Event::Text("/yr".to_string()));
+        h.run_steps(2);
+        let unit = &h.state().doc.project.raster(rain).unwrap().unit;
+        assert_eq!(unit, "mm/yr", "{what}");
+    }
 }

@@ -454,6 +454,7 @@ mod tests {
         let raster = vale_store::Raster {
             id: vale_store::RasterId(1),
             face_size: 16,
+            display: vale_store::RasterDisplay::Bands,
             unit: "<°C & more>".to_string(),
             value_min: -40.0,
             value_max: 25.535,

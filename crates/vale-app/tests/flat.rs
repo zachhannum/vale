@@ -12,9 +12,19 @@ use vale_app::headless;
 use vale_app::ui::pad::{RECENTER, RESET};
 use vale_app::ui::{AppState, draw};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
+use vale_store::{RasterDisplay, RasterId};
 use vale_terrain::{Mode, meters_to_level};
 
 type App = Harness<'static, AppState>;
+
+/// Shows each raster layer, and a globe with no layers, with this display.
+fn show_as(state: &mut AppState, display: RasterDisplay) {
+    state.globe.preview.display = display;
+    let ids: Vec<RasterId> = state.doc.project.rasters().iter().map(|r| r.id).collect();
+    for id in ids {
+        state.set_raster_display(id, display);
+    }
+}
 
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
@@ -38,7 +48,7 @@ fn flat_harness() -> App {
     state.globe.world_view = WorldView::Flat;
     state.globe.tool = Tool::Brush;
     state.globe.brush.size_points = 12.0;
-    state.globe.preview.greyscale = true;
+    show_as(&mut state, RasterDisplay::Grey);
     state.globe.preview.graticule = false;
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
@@ -397,8 +407,8 @@ fn river_pixels(h: &App, img: &image::RgbaImage) -> usize {
 fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
     let _gpu = one_gpu_test();
     let mut h = flat_harness();
+    show_as(h.state_mut(), RasterDisplay::Bands);
     let globe = &mut h.state_mut().globe;
-    globe.preview.greyscale = false;
     globe.preview.panel = true;
     // Without the brush panel, the canvas has more room.
     globe.tool = Tool::Navigate;
@@ -515,6 +525,7 @@ fn the_flat_view_blends_the_raster_layers_by_their_opacity() {
         face_size: 128,
     };
     let rain = h.state_mut().add_raster(rain).unwrap();
+    show_as(h.state_mut(), RasterDisplay::Grey);
     let (low, high) = (16000, 50000);
     let state = h.state_mut();
     state.globe.raster_map_mut(height).unwrap().fill(low);

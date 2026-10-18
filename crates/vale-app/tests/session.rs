@@ -3,7 +3,7 @@ use std::time::Instant;
 use vale_app::document::Document;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
 use vale_app::ui::{AppState, LayerRef, RasterSpec};
-use vale_store::{Project, ProjectFile, RasterId, Units, World};
+use vale_store::{Project, ProjectFile, RasterDisplay, RasterId, Units, World};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{Bands, FACES, Heightmap, Limits, Mode, Stamp, TexelRect, meters_to_level};
 
@@ -1073,4 +1073,66 @@ fn the_export_of_a_layer_that_is_not_the_brush_layer_has_its_full_detail() {
     let (brush, other) = (std::fs::read(brush).unwrap(), std::fs::read(other).unwrap());
     assert!(brush.len() > 100_000, "{}", brush.len());
     assert!(brush == other, "the two files are not the same");
+}
+
+#[test]
+fn each_raster_layer_keeps_its_own_unit_ramp_band_limits_and_display() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    let height = state.add_height();
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 128,
+    };
+    let rain = state.add_raster(rain).unwrap();
+    let bands = |state: &AppState, id| state.globe.display_map(id).unwrap().bands.clone();
+    let height_bands = bands(&state, height);
+
+    assert!(state.set_raster_display(rain, RasterDisplay::Gradient));
+    assert!(state.set_raster_unit(rain, "mm/yr"));
+    let map = state.globe.bands_mut(rain).unwrap();
+    let index = map.add(1234.0).unwrap();
+    map.ramp.land[0] = [1, 2, 3];
+    // The unit of a height layer stays, and no other layer becomes one.
+    assert!(!state.set_raster_unit(height, "ft"));
+    assert!(!state.set_raster_unit(rain, "m"));
+    assert!(state.set_raster_display(height, RasterDisplay::Grey));
+    let rain_bands = bands(&state, rain);
+    assert_eq!(rain_bands.limits()[index], 1234.0);
+
+    // A change of the selection keeps the style of each layer.
+    state.select(Some(LayerRef::Raster(height)));
+    state.select(Some(LayerRef::Raster(rain)));
+    let raster = |state: &AppState, id| state.doc.project.raster(id).unwrap().clone();
+    assert_eq!(raster(&state, height).display, RasterDisplay::Grey);
+    assert_eq!(raster(&state, height).unit, "m");
+    assert_eq!(bands(&state, height), height_bands);
+    assert_eq!(raster(&state, rain).display, RasterDisplay::Gradient);
+    assert_eq!(raster(&state, rain).unit, "mm/yr");
+    assert_eq!(bands(&state, rain), rain_bands);
+
+    // A new layer saves the changes that wait, and the file keeps them.
+    let next = RasterSpec {
+        name: "Heat".to_string(),
+        unit: "K".to_string(),
+        min: 200.0,
+        max: 330.0,
+        face_size: 128,
+    };
+    state.add_raster(next).unwrap();
+    let (_, stored) = ProjectFile::open(&path).unwrap();
+    let (stored_height, stored_rain) =
+        (stored.raster(height).unwrap(), stored.raster(rain).unwrap());
+    assert_eq!(stored_height.display, RasterDisplay::Grey);
+    assert_eq!(stored_height.unit, "m");
+    assert_eq!(vale_app::session::bands_of(stored_height), height_bands);
+    assert_eq!(stored_rain.display, RasterDisplay::Gradient);
+    assert_eq!(stored_rain.unit, "mm/yr");
+    assert_eq!(vale_app::session::bands_of(stored_rain), rain_bands);
 }

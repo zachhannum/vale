@@ -11,7 +11,7 @@ use vale_terrain::Mode;
 pub use super::LayerRef;
 use super::raster_form::{self, RasterForm};
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, Note, SaveMark, Workspace, elevation, globe, is_height, panels};
+use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::{
     EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
@@ -22,6 +22,7 @@ use crate::world;
 pub mod browser;
 pub mod geometry;
 pub mod icons;
+pub mod raster;
 pub mod theme;
 pub mod widgets;
 
@@ -164,6 +165,8 @@ pub struct PadState {
     more_cell: Option<Rect>,
     /// The height of the contents of each panel, by the key of the panel.
     heights: HashMap<&'static str, f32>,
+    /// The Style section of the panel of a raster layer.
+    style: raster::StyleState,
 }
 
 impl PadState {
@@ -233,9 +236,11 @@ pub fn readout_text(lonlat: Option<LonLat>, value: Option<&str>) -> String {
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
-    ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
+    // The globe paints after the panels, so a change in a panel shows in
+    // the same frame.
+    let canvas = ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
         ui.set_clip_rect(screen);
-        globe::canvas(ui, state, theme::CANVAS, true);
+        globe::canvas_input(ui, state, theme::CANVAS)
     });
 
     let class = WidthClass::of(screen.width());
@@ -320,6 +325,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
+    if let Some(rect) = canvas.inner {
+        globe::paint_canvas(ui, state, rect, theme::CANVAS, true);
+    }
 
     state.pad.controls = controls;
     state.pad.rects = Some(rects);
@@ -1174,9 +1182,10 @@ fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     note_text(ui, progress, state.export_note.as_ref());
 }
 
-/// The panel of a raster layer: its name, its value range with its unit, its
-/// face size, its opacity, the import into a height layer, the export, the
-/// button that deletes the layer, and the bands of the layer.
+/// The panel of a raster layer: its name, the unit of a layer that is not a
+/// height layer, its value range, its face size, its opacity, the import
+/// into a height layer, the export, the button that deletes the layer, and
+/// the Style section.
 fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -1207,6 +1216,7 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         text = name;
     }
     state.pad.name = Some((of, text));
+    raster::unit_row(ui, state, controls, id);
     widgets::value_row(ui, "Values", &range);
     widgets::value_row(ui, "Face size", &face_size);
     let mut fraction = f64::from(opacity);
@@ -1219,17 +1229,11 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         import_row(ui, state, controls);
     }
     export_row(ui, state, controls);
-    // The button is above the bands, which are longer than a short panel.
+    // The button is above the Style section, which is longer than a short
+    // panel.
     ui.add_space(6.0);
     let delete = widgets::button_row_in(ui, controls, DELETE_RASTER, true, theme::WARN);
-    ui.add_space(6.0);
-    ui.spacing_mut().item_spacing.y = 6.0;
-    ui.checkbox(&mut state.globe.preview.greyscale, "Greyscale");
-    let mut preview = state.globe.preview;
-    if let Some(bands) = state.globe.bands_mut(id) {
-        elevation::controls(ui, bands, &mut preview, &unit);
-    }
-    state.globe.preview = preview;
+    raster::style(ui, state, controls, id);
     if delete.clicked() {
         state.remove_raster(id);
     }

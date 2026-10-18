@@ -1,6 +1,8 @@
-//! The bands panel: the band limits and the color ramp of a raster layer.
+//! The style panel of the desktop: the display, the band limits, and the
+//! color ramp of a raster layer.
 
 use eframe::egui;
+use vale_store::{RasterDisplay, RasterId};
 use vale_terrain::{Bands, Rgb};
 
 use super::{AppState, LayerRef};
@@ -13,13 +15,13 @@ pub const RIVER_WIDTH: std::ops::RangeInclusive<f32> = 0.25..=4.0;
 /// The name of the bar for a screen reader and for the tests.
 pub const BAR_LABEL: &str = "Band limits";
 /// The button of the tool bar that opens the panel.
-pub const PANEL: &str = "Bands";
+pub const PANEL: &str = "Layer style";
 
-const BAR_HEIGHT: f32 = 340.0;
+pub const BAR_HEIGHT: f32 = 340.0;
 const BAR_WIDTH: f32 = 56.0;
 /// The space above and below the bar, so that a label at an end has room.
 const BAR_PAD: f32 = 10.0;
-/// A touch this near to a limit takes the limit, in points.
+/// A pointer this near to a limit takes the limit, in points.
 const GRAB: f32 = 14.0;
 /// The number of the values of a range that a limit can land on when you
 /// add or drag it. A limit of a height lands on a multiple of 10 meters.
@@ -72,6 +74,40 @@ fn color32(c: Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(c[0], c[1], c[2])
 }
 
+/// The color of a value in the Grey display.
+fn grey(bands: &Bands, value: f64) -> egui::Color32 {
+    let level = (u32::from(bands.level(value)) * 255 / 65535) as u8;
+    egui::Color32::from_gray(level)
+}
+
+/// The colors of a band at its top and at its bottom in a display.
+pub fn band_colors(
+    bands: &Bands,
+    band: &vale_terrain::Band,
+    display: RasterDisplay,
+) -> (egui::Color32, egui::Color32) {
+    match display {
+        RasterDisplay::Bands => (color32(band.color), color32(band.color)),
+        RasterDisplay::Gradient => (color32(band.top), color32(band.bottom)),
+        RasterDisplay::Grey => (grey(bands, band.max), grey(bands, band.min)),
+    }
+}
+
+/// The names of the displays, in the order of `RasterDisplay::ALL`.
+pub const DISPLAYS: [&str; 3] = ["Bands", "Gradient", "Grey"];
+
+/// The name of a display.
+pub fn display_name(display: RasterDisplay) -> &'static str {
+    let index = RasterDisplay::ALL.iter().position(|d| *d == display);
+    DISPLAYS[index.unwrap_or(0)]
+}
+
+/// The selected band limit of a raster layer.
+pub fn selected(preview: &Preview, id: Option<RasterId>) -> Option<usize> {
+    let (of, index) = preview.selected?;
+    (Some(of) == id).then_some(index)
+}
+
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if !state.globe.preview.panel {
         return;
@@ -79,41 +115,89 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::right("elevation")
         .default_size(210.0)
         .show(ui, |ui| {
-            let layer = state
-                .shown_raster()
-                .map(|raster| LayerRef::Raster(raster.id));
+            let raster = state.panel_raster().cloned();
+            let layer = raster.as_ref().map(|raster| LayerRef::Raster(raster.id));
             let layer = layer.and_then(|layer| state.layer_of(layer));
             let name = layer.map_or(PANEL.to_string(), |layer| layer.name.clone());
-            let unit = state.shown_unit().to_string();
             ui.heading(name);
-            let shown = state.shown_raster().map(|raster| raster.id);
-            let globe = &mut state.globe;
-            let mut preview = globe.preview;
-            let bands = shown.and_then(|id| globe.bands_mut(id));
-            if let Some(bands) = bands {
-                controls(ui, bands, &mut preview, &unit);
-            } else {
-                controls(ui, &mut globe.map.bands, &mut preview, &unit);
+            let Some(raster) = raster else {
+                let mut preview = state.globe.preview;
+                let (bands, unit) = (&mut state.globe.map.bands, super::HEIGHT_UNIT);
+                view_controls(ui, &mut preview, true);
+                display_choice(ui, &mut preview.display);
+                ui.separator();
+                let mut chosen = selected(&preview, None);
+                limit_bar(ui, bands, &mut chosen, preview.display, unit, GRAB);
+                selected_limit(ui, bands, &mut chosen, unit);
+                ramp_buttons(ui, bands);
+                state.globe.preview = preview;
+                return;
+            };
+            let id = raster.id;
+            let height = super::is_height(&raster);
+            ui.horizontal(|ui| {
+                ui.label("Unit");
+                if height {
+                    ui.label(&raster.unit);
+                    return;
+                }
+                let mut unit = raster.unit.clone();
+                let field = ui.add(egui::TextEdit::singleline(&mut unit).desired_width(80.0));
+                field.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, UNIT)
+                });
+                if field.changed() {
+                    state.set_raster_unit(id, &unit);
+                }
+            });
+            view_controls(ui, &mut state.globe.preview, height);
+            ui.separator();
+            ui.label("Style");
+            let mut display = raster.display;
+            if display_choice(ui, &mut display) {
+                state.set_raster_display(id, display);
             }
-            globe.preview = preview;
+            let unit = raster.unit.clone();
+            let globe = &mut state.globe;
+            let mut chosen = selected(&globe.preview, Some(id));
+            if let Some(bands) = globe.bands_mut(id) {
+                limit_bar(ui, bands, &mut chosen, display, &unit, GRAB);
+                selected_limit(ui, bands, &mut chosen, &unit);
+                ui.separator();
+                ramp_buttons(ui, bands);
+            }
+            globe.preview.selected = chosen.map(|index| (id, index));
         });
 }
 
-/// The controls of the preview, and of the bands of one raster layer.
-/// `unit` is the unit of the values of the layer. A height in meters has
-/// rivers.
-pub(super) fn controls(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: &str) {
-    ui.checkbox(&mut preview.levels, "Levels");
+/// The name of the unit field.
+pub const UNIT: &str = "Unit";
+
+/// The switches of the globe that are not part of a layer. A height layer
+/// has rivers.
+fn view_controls(ui: &mut egui::Ui, preview: &mut Preview, height: bool) {
     ui.checkbox(&mut preview.graticule, "Graticule");
-    if unit == super::HEIGHT_UNIT {
+    if height {
         ui.checkbox(&mut preview.rivers, "Rivers");
         let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
         ui.add_enabled(preview.rivers, width);
     }
-    ui.separator();
-    limit_bar(ui, bands, preview, unit);
-    selected_limit(ui, bands, preview, unit);
-    ui.separator();
+}
+
+/// The three displays as a row of buttons. Returns true if the user chose
+/// another display.
+fn display_choice(ui: &mut egui::Ui, display: &mut RasterDisplay) -> bool {
+    let before = *display;
+    ui.horizontal(|ui| {
+        for (choice, name) in RasterDisplay::ALL.into_iter().zip(DISPLAYS) {
+            ui.selectable_value(display, choice, name);
+        }
+    });
+    *display != before
+}
+
+/// A button for each color of the ramp.
+fn ramp_buttons(ui: &mut egui::Ui, bands: &mut Bands) {
     // A range with no sea split has one ramp.
     if bands.sea().is_none() {
         ui.label("Colors");
@@ -138,9 +222,18 @@ pub(super) fn controls(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Previ
     });
 }
 
-/// The bar with the bands and the limits. A tap on a free place adds a limit.
-/// A tap on a limit selects it, and a drag moves it.
-fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: &str) {
+/// The bar with the bands and the limits, in the colors of `display`. A
+/// tap on a free place adds a limit. A tap on a limit selects it, and a
+/// drag moves it. A touch that is `grab` points or nearer to a limit takes
+/// the limit.
+pub(super) fn limit_bar(
+    ui: &mut egui::Ui,
+    bands: &mut Bands,
+    selected: &mut Option<usize>,
+    display: RasterDisplay,
+    unit: &str,
+    grab: f32,
+) {
     let span = bands.max() - bands.min();
     let snap = span / SNAPS;
     let size = egui::vec2(ui.available_width(), BAR_HEIGHT);
@@ -160,16 +253,16 @@ fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: 
         let off = |m: &f64| (y_of(*m) - y).abs();
         let limits = bands.limits().iter().enumerate();
         let (index, m) = limits.min_by(|a, b| off(a.1).total_cmp(&off(b.1)))?;
-        (off(m) <= GRAB).then_some(index)
+        (off(m) <= grab).then_some(index)
     };
     let press = ui.input(|i| i.pointer.press_origin());
     if resp.drag_started()
         && let Some(pos) = press
     {
-        preview.selected = near(bands, pos.y).filter(|i| Some(*i) != sea);
+        *selected = near(bands, pos.y).filter(|i| Some(*i) != sea);
     }
     if resp.dragged()
-        && let (Some(index), Some(pos)) = (preview.selected, resp.interact_pointer_pos())
+        && let (Some(index), Some(pos)) = (*selected, resp.interact_pointer_pos())
         && index < bands.limits().len()
     {
         bands.move_to(index, value_of(pos.y));
@@ -177,7 +270,7 @@ fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: 
     if resp.clicked()
         && let Some(pos) = resp.interact_pointer_pos()
     {
-        preview.selected = match near(bands, pos.y) {
+        *selected = match near(bands, pos.y) {
             Some(index) => Some(index).filter(|i| Some(*i) != sea),
             None => bands.add(value_of(pos.y)),
         };
@@ -186,16 +279,12 @@ fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: 
     let painter = ui.painter_at(rect);
     for band in bands.bands() {
         let (top, bottom) = (y_of(band.max), y_of(band.min));
-        let (high, low) = if preview.levels {
-            (band.color, band.color)
-        } else {
-            (band.top, band.bottom)
-        };
+        let (high, low) = band_colors(bands, &band, display);
         let mut mesh = egui::Mesh::default();
-        mesh.colored_vertex(egui::pos2(bar.left(), top), color32(high));
-        mesh.colored_vertex(egui::pos2(bar.right(), top), color32(high));
-        mesh.colored_vertex(egui::pos2(bar.right(), bottom), color32(low));
-        mesh.colored_vertex(egui::pos2(bar.left(), bottom), color32(low));
+        mesh.colored_vertex(egui::pos2(bar.left(), top), high);
+        mesh.colored_vertex(egui::pos2(bar.right(), top), high);
+        mesh.colored_vertex(egui::pos2(bar.right(), bottom), low);
+        mesh.colored_vertex(egui::pos2(bar.left(), bottom), low);
         mesh.add_triangle(0, 1, 2);
         mesh.add_triangle(0, 2, 3);
         painter.add(egui::Shape::mesh(mesh));
@@ -204,8 +293,8 @@ fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: 
     let strong = ui.visuals().strong_text_color();
     for (index, &meters) in bands.limits().iter().enumerate() {
         let y = y_of(meters);
-        let selected = preview.selected == Some(index);
-        let (width, color) = match (selected, Some(index) == sea) {
+        let chosen = *selected == Some(index);
+        let (width, color) = match (chosen, Some(index) == sea) {
             (true, _) => (3.0, strong),
             (false, true) => (2.0, text),
             (false, false) => (1.0, text),
@@ -228,12 +317,12 @@ fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: 
 }
 
 /// The controls of the selected limit.
-fn selected_limit(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: &str) {
+fn selected_limit(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usize>, unit: &str) {
     let span = bands.max() - bands.min();
     let count = bands.limits().len();
-    let Some(index) = preview.selected.filter(|i| *i < count) else {
-        preview.selected = None;
-        ui.weak("Tap the bar to add a limit. Drag a limit to move it.");
+    let Some(index) = selected.filter(|i| *i < count) else {
+        *selected = None;
+        ui.weak(BAR_HINT);
         return;
     };
     ui.horizontal(|ui| {
@@ -245,9 +334,26 @@ fn selected_limit(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, u
             bands.move_to(index, meters);
         }
         if ui.button("Remove").clicked() && bands.remove(index) {
-            preview.selected = None;
+            *selected = None;
         }
     });
+}
+
+/// The hint below the bar when no limit is selected.
+pub const BAR_HINT: &str = "Tap the bar to add a limit. Drag a limit to move it.";
+
+/// A value in the middle of the tallest band on the bar, for a new limit.
+/// It lands on a snap value.
+pub fn new_limit(bands: &Bands) -> f64 {
+    let place = |value: f64| bar_fraction(bands, value);
+    let list = bands.bands();
+    let tallest = list.iter().max_by(|a, b| {
+        let size = |band: &&vale_terrain::Band| place(band.max) - place(band.min);
+        size(a).total_cmp(&size(b))
+    });
+    let middle = tallest.map_or(0.5, |band| (place(band.min) + place(band.max)) / 2.0);
+    let snap = (bands.max() - bands.min()) / SNAPS;
+    (bar_value(bands, middle) / snap).round() * snap
 }
 
 #[cfg(test)]

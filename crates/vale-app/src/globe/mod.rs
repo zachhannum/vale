@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
-use vale_store::{LayerId, RasterId};
+use vale_store::{LayerId, RasterDisplay, RasterId};
 use vale_terrain::{
     Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, Stamp,
     TexelRect, Window, WindowHeights, meters_to_level, reduced_cap, reduced_face_size,
@@ -217,11 +217,12 @@ fn union(a: Option<TexelRect>, b: TexelRect) -> TexelRect {
 /// One visible layer of the world, for the draw order of the globe.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StackItem {
-    /// A raster layer, and how much it hides the layers below it, from 0
-    /// to 1.
+    /// A raster layer, how much it hides the layers below it, from 0 to 1,
+    /// and how it colors its values.
     Raster {
         id: RasterId,
         opacity: f32,
+        display: RasterDisplay,
     },
     Vector(LayerId),
 }
@@ -1049,7 +1050,7 @@ impl Globe {
             return vec![(&self.map, 1.0)];
         };
         let layer = |item: &StackItem| match *item {
-            StackItem::Raster { id, opacity } => Some((self.display_map(id)?, opacity)),
+            StackItem::Raster { id, opacity, .. } => Some((self.display_map(id)?, opacity)),
             StackItem::Vector(_) => None,
         };
         stack.iter().filter_map(layer).collect()
@@ -2334,7 +2335,7 @@ impl Globe {
             params: [
                 layer.map_or(1.0, |layer| layer.key.face_size as f32),
                 graticule_degrees.to_radians() as f32,
-                self.preview.mode(),
+                preview::mode(layer.map_or(self.preview.display, |layer| layer.display)),
                 band_count as f32,
             ],
             flat: [
@@ -2416,11 +2417,12 @@ impl Globe {
     pub fn paint(&mut self, canvas: Canvas, blur: bool) -> Option<Vec<Paint>> {
         let format = self.format?;
         self.queue_changes();
-        let show_rivers = self.preview.rivers && !self.preview.greyscale;
+        let show_rivers = self.preview.rivers;
         let river_layers = self.send_rivers();
-        let rivers = |layer: LayerKey| {
+        let rivers = |layer: LayerKey, display: RasterDisplay| {
             let found = river_layers.iter().find(|(of, _)| *of == layer);
-            found.map(|(_, size)| *size).filter(|_| show_rivers)
+            let shown = show_rivers && display != RasterDisplay::Grey;
+            found.map(|(_, size)| *size).filter(|_| shown)
         };
 
         // Each layer of the list, with the heightmap of a raster layer.
@@ -2432,11 +2434,13 @@ impl Globe {
         match &self.stack {
             None => {
                 let key = self.full.expect("a globe with no list has a heightmap");
+                let display = self.preview.display;
                 items.push(Item::Raster(LayerDraw {
                     key,
                     bands: &self.map.bands,
                     opacity: 1.0,
-                    rivers: rivers(key.layer),
+                    display,
+                    rivers: rivers(key.layer, display),
                     window: true,
                 }));
             }
@@ -2444,14 +2448,19 @@ impl Globe {
                 for item in stack {
                     match *item {
                         StackItem::Vector(id) => items.push(Item::Vector(id)),
-                        StackItem::Raster { id, opacity } => {
+                        StackItem::Raster {
+                            id,
+                            opacity,
+                            display,
+                        } => {
                             let source = self.source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
                                 items.push(Item::Raster(LayerDraw {
                                     key,
                                     bands: &map.bands,
                                     opacity: opacity.clamp(0.0, 1.0),
-                                    rivers: rivers(key.layer),
+                                    display,
+                                    rivers: rivers(key.layer, display),
                                     window: !key.display,
                                 }));
                             }
@@ -2546,6 +2555,7 @@ struct LayerDraw<'a> {
     key: MapKey,
     bands: &'a Bands,
     opacity: f32,
+    display: RasterDisplay,
     /// The size of the channel map of the rivers of the layer. `None`: the
     /// pass draws no rivers.
     rivers: Option<usize>,

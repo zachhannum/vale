@@ -1,14 +1,14 @@
 //! The preview of the heightmap: stepped tints, a smooth ramp, or greyscale.
 
+use vale_store::{RasterDisplay, RasterId};
 use vale_terrain::{Bands, MAX_BANDS, Rgb};
 
 /// How the globe shows the heightmap.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Preview {
-    /// Shows the plain heights and no colors.
-    pub greyscale: bool,
-    /// Cuts the colors at the band limits. Without it, the ramp is smooth.
-    pub levels: bool,
+    /// The display of a globe with no list of layers. A raster layer of
+    /// the list has its own display.
+    pub display: RasterDisplay,
     pub graticule: bool,
     /// Draws the rivers over the colors.
     pub rivers: bool,
@@ -16,15 +16,15 @@ pub struct Preview {
     pub river_width: f32,
     /// The elevation panel is open.
     pub panel: bool,
-    /// The band limit that the panel edits, as an index into the limits.
-    pub selected: Option<usize>,
+    /// The band limit that a panel edits: the raster layer, and an index
+    /// into its limits.
+    pub selected: Option<(RasterId, usize)>,
 }
 
 impl Default for Preview {
     fn default() -> Preview {
         Preview {
-            greyscale: false,
-            levels: true,
+            display: RasterDisplay::Bands,
             graticule: true,
             rivers: true,
             river_width: 1.0,
@@ -34,14 +34,12 @@ impl Default for Preview {
     }
 }
 
-impl Preview {
-    /// The mode number of `globe.wgsl`.
-    pub fn mode(&self) -> f32 {
-        match (self.greyscale, self.levels) {
-            (true, _) => 0.0,
-            (false, true) => 1.0,
-            (false, false) => 2.0,
-        }
+/// The mode number of `globe.wgsl` for a display.
+pub fn mode(display: RasterDisplay) -> f32 {
+    match display {
+        RasterDisplay::Grey => 0.0,
+        RasterDisplay::Bands => 1.0,
+        RasterDisplay::Gradient => 2.0,
     }
 }
 
@@ -85,12 +83,9 @@ mod tests {
     }
 
     #[test]
-    fn the_mode_follows_the_switches() {
-        let mut preview = Preview::default();
-        assert_eq!(preview.mode(), 1.0);
-        preview.levels = false;
-        assert_eq!(preview.mode(), 2.0);
-        preview.greyscale = true;
-        assert_eq!(preview.mode(), 0.0);
+    fn each_display_has_its_mode() {
+        assert_eq!(mode(RasterDisplay::Grey), 0.0);
+        assert_eq!(mode(RasterDisplay::Bands), 1.0);
+        assert_eq!(mode(RasterDisplay::Gradient), 2.0);
     }
 }

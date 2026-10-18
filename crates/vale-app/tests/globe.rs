@@ -13,12 +13,21 @@ use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::ui::elevation::{BAR_LABEL, limit_y};
 use vale_app::ui::{AppState, LayerRef, RasterSpec, Workspace, draw};
 use vale_import::geojson;
-use vale_store::RasterId;
+use vale_store::{RasterDisplay, RasterId};
 use vale_style::{Color, Stroke};
 use vale_terrain::{
     ChannelMap, CoarseHeights, FlowMap, Limits, Mode, WindowHeights, channel_map, level_to_meters,
     meters_to_level, window_channels,
 };
+
+/// Shows each raster layer, and a globe with no layers, with this display.
+fn show_as(state: &mut AppState, display: RasterDisplay) {
+    state.globe.preview.display = display;
+    let ids: Vec<RasterId> = state.doc.project.rasters().iter().map(|r| r.id).collect();
+    for id in ids {
+        state.set_raster_display(id, display);
+    }
+}
 
 /// The sample world with its vector layers hidden, so that each place of the
 /// globe shows the heightmap.
@@ -335,7 +344,7 @@ fn the_screenshot_draws_the_heightmap_on_the_globe() {
     let _gpu = one_gpu_test();
     let mut state = state();
     state.add_height();
-    state.globe.preview.greyscale = true;
+    show_as(&mut state, RasterDisplay::Grey);
     // A high patch in the middle of the face that looks at the eye.
     state.globe.view = GlobeView::centered(0.0, 0.0);
     let n = state.globe.map.face_size();
@@ -957,31 +966,33 @@ fn the_preview_shows_the_color_of_the_band() {
 }
 
 #[test]
-fn one_switch_shows_the_plain_greyscale() {
+fn the_grey_display_shows_the_plain_greyscale() {
     let _gpu = one_gpu_test();
     let mut h = preview_harness();
     let [r, g, b] = color_at(&mut h, 1500.0);
     assert!(r != g || g != b);
-    h.get_by_label("Greyscale").click();
+    h.get_by_label("Grey").click();
     h.step();
     let grey = middle(&mut h);
     let level = (f32::from(meters_to_level(1500.0)) / 65535.0 * 255.0).round() as u8;
     assert!(close(grey, [level; 3]), "{grey:?}");
-    h.get_by_label("Greyscale").click();
+    h.get_by_label("Bands").click();
     h.step();
     assert_eq!(middle(&mut h), [r, g, b]);
 }
 
 #[test]
-fn without_levels_the_ramp_is_smooth() {
+fn the_gradient_display_has_a_smooth_ramp() {
     let _gpu = one_gpu_test();
     let mut h = preview_harness();
     // Two heights in the band from 1000 m to 2000 m.
     let (low, high) = (color_at(&mut h, 1200.0), color_at(&mut h, 1800.0));
     assert_eq!(low, high);
-    h.get_by_label("Levels").click();
+    h.get_by_label("Gradient").click();
     h.step();
-    assert!(!h.state().globe.preview.levels);
+    let id = h.state().shown_raster().unwrap().id;
+    let display = h.state().doc.project.raster(id).unwrap().display;
+    assert_eq!(display, RasterDisplay::Gradient);
     let (low, high) = (color_at(&mut h, 1200.0), color_at(&mut h, 1800.0));
     assert_ne!(low, high);
     // The ramp still has a cut at sea level.
@@ -1023,6 +1034,7 @@ fn the_bar_adds_moves_and_removes_a_band_limit() {
     let mut h = harness();
     h.get_by_label(vale_app::ui::elevation::PANEL).click();
     h.run_steps(2);
+    let id = h.state().shown_raster().unwrap().id;
     let count = h.state().globe.map.bands.limits().len();
     let rect = h.get_by_label(BAR_LABEL).rect();
     let bands = vale_terrain::Bands::default();
@@ -1036,7 +1048,7 @@ fn the_bar_adds_moves_and_removes_a_band_limit() {
     assert_eq!(limits.len(), count + 1);
     let added = *limits.last().unwrap();
     assert!((added - 5000.0).abs() < 80.0, "{added}");
-    assert_eq!(h.state().globe.preview.selected, Some(count));
+    assert_eq!(h.state().globe.preview.selected, Some((id, count)));
 
     button(&mut h, egui::PointerButton::Primary, at(added), true);
     h.step();
@@ -1065,7 +1077,7 @@ fn the_bar_adds_moves_and_removes_a_band_limit() {
     h.step();
     button(&mut h, egui::PointerButton::Primary, at(moved), false);
     h.step();
-    assert_eq!(h.state().globe.preview.selected, Some(count));
+    assert_eq!(h.state().globe.preview.selected, Some((id, count)));
     h.get_by_label("Remove").click();
     h.step();
     assert_eq!(h.state().globe.map.bands.limits().len(), count);
@@ -1081,14 +1093,35 @@ fn noise(face: usize, x: usize, y: usize) -> u16 {
 
 #[test]
 fn no_seam_shows_at_a_face_edge_or_at_a_cube_corner() {
+    let _gpu = one_gpu_test();
+    assert_no_seam(RasterDisplay::Grey);
+}
+
+#[test]
+fn the_gradient_shows_no_seam_at_a_face_edge_or_at_a_cube_corner() {
+    let _gpu = one_gpu_test();
+    assert_no_seam(RasterDisplay::Gradient);
+}
+
+/// Makes sure that the globe shows no seam at the 8 corners and at the
+/// middles of the 12 edges of the cube, in a display. The Gradient display
+/// has a grey ramp with one stop at each end of a band, so its colors are
+/// near the Grey display.
+fn assert_no_seam(display: RasterDisplay) {
     const N: usize = 16;
     const ZOOM: f64 = 15.0;
-    let _gpu = one_gpu_test();
     let mut h = gpu_harness();
+    show_as(h.state_mut(), display);
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(N);
     globe.preview.graticule = false;
-    globe.preview.greyscale = true;
+    globe.preview.rivers = false;
+    let bands = &mut globe.map.bands;
+    while let Some(index) = (0..bands.limits().len()).find(|i| Some(*i) != bands.sea()) {
+        assert!(bands.remove(index));
+    }
+    bands.ramp.sea = vec![[0; 3], [127; 3]];
+    bands.ramp.land = vec![[128; 3], [255; 3]];
     for face in 0..6 {
         for y in 0..N {
             for x in 0..N {
@@ -1128,11 +1161,15 @@ fn no_seam_shows_at_a_face_edge_or_at_a_cube_corner() {
                 seen = [seen[0].min(v), seen[1].max(v)];
                 for other in [img.get_pixel(px + 1, py), img.get_pixel(px, py + 1)] {
                     let step = v.abs_diff(other.0[0]);
-                    assert!(step <= limit, "{step} at {px}, {py}, place {:?}", [x, y, z]);
+                    let place = [x, y, z];
+                    assert!(
+                        step <= limit,
+                        "{display:?}: {step} at {px}, {py}, {place:?}"
+                    );
                 }
             }
         }
-        assert!(seen[1] - seen[0] > 60, "{seen:?}");
+        assert!(seen[1] - seen[0] > 60, "{display:?}: {seen:?}");
     }
 }
 
@@ -1158,10 +1195,10 @@ fn no_seam_shows_at_a_tile_edge_at_each_zoom() {
     const N: usize = 2 * vale_terrain::TILE_SIZE;
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
+    show_as(h.state_mut(), RasterDisplay::Grey);
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(N);
     globe.preview.graticule = false;
-    globe.preview.greyscale = true;
     // A slope from the south pole to the north pole. The face +z has the
     // level of the north pole, which is the base level.
     let slope = |z: f64| (32768.0 + 24000.0 * z.min(0.55)) as u16;
@@ -3266,7 +3303,8 @@ fn screenshots_of_uplift() {
 /// The face size of the raster layers of the tests of the layer order.
 const LAYER_FACE_SIZE: usize = 256;
 
-/// A raster layer with no unit and a range from 0 to 100.
+/// A raster layer with no unit and a range from 0 to 100, in the Grey
+/// display.
 fn plain_layer(state: &mut AppState, name: &str, face_size: usize) -> RasterId {
     let spec = RasterSpec {
         name: name.to_string(),
@@ -3275,7 +3313,9 @@ fn plain_layer(state: &mut AppState, name: &str, face_size: usize) -> RasterId {
         max: 100.0,
         face_size,
     };
-    state.add_raster(spec).unwrap()
+    let id = state.add_raster(spec).unwrap();
+    state.set_raster_display(id, RasterDisplay::Grey);
+    id
 }
 
 /// The grey of a level in the greyscale preview, at the middle of the
@@ -3290,7 +3330,6 @@ fn grey_of(level: u16) -> u8 {
 fn layers_harness(levels: &[u16]) -> (Harness<'static, AppState>, Vec<RasterId>) {
     let mut state = state();
     let globe = &mut state.globe;
-    globe.preview.greyscale = true;
     globe.preview.graticule = false;
     globe.view = GlobeView::centered(0.0, 0.0);
     let mut ids = Vec::new();
@@ -3299,6 +3338,7 @@ fn layers_harness(levels: &[u16]) -> (Harness<'static, AppState>, Vec<RasterId>)
         state.globe.raster_map_mut(id).unwrap().fill(*level);
         ids.push(id);
     }
+    show_as(&mut state, RasterDisplay::Grey);
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
     h.set_render_every_step(true);
@@ -3358,7 +3398,6 @@ fn two_raster_layers_blend_by_the_opacity_of_the_top_one() {
 fn a_raster_layer_and_a_vector_layer_draw_in_the_layer_order() {
     let _gpu = one_gpu_test();
     let mut state = state();
-    state.globe.preview.greyscale = true;
     state.globe.preview.graticule = false;
     // The middle of the globe is on the land of Africa.
     state.globe.view = GlobeView::centered(22.0, 10.0);
@@ -3367,6 +3406,7 @@ fn a_raster_layer_and_a_vector_layer_draw_in_the_layer_order() {
     state.set_layer_visible(land, true);
     let raster = plain_layer(&mut state, "Rain", LAYER_FACE_SIZE);
     state.globe.raster_map_mut(raster).unwrap().fill(LOW);
+    show_as(&mut state, RasterDisplay::Grey);
     let layer = state.doc.project.raster_layer(raster).unwrap().id;
     let fill = state.doc.entry(land).unwrap().style.fill.unwrap();
     let fill = [fill.r, fill.g, fill.b];

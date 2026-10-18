@@ -13,6 +13,7 @@ use vale_app::globe::{Globe, Tool};
 use vale_app::headless;
 use vale_app::ui::{Action, AppState, draw};
 use vale_import::raster;
+use vale_store::{RasterDisplay, RasterId};
 use vale_terrain::{Equirect, FACES, Heightmap, TexelRect};
 
 const WIDTH: usize = 512;
@@ -21,6 +22,15 @@ const FACE_SIZE: usize = 64;
 
 /// The longest time that an import can take.
 const LIMIT: Duration = Duration::from_secs(30);
+
+/// Shows each raster layer, and a globe with no layers, with this display.
+fn show_as(state: &mut AppState, display: RasterDisplay) {
+    state.globe.preview.display = display;
+    let ids: Vec<RasterId> = state.doc.project.rasters().iter().map(|r| r.id).collect();
+    for id in ids {
+        state.set_raster_display(id, display);
+    }
+}
 
 /// A smooth function of the direction that takes each value from -1 to 1.
 fn hills(d: [f64; 3]) -> f64 {
@@ -443,9 +453,9 @@ fn no_seam_shows_on_the_globe_after_an_import() {
     let path = write_png("seam.png", WIDTH, HEIGHT);
     let mut h = gpu_harness();
     h.state_mut().run_action(Action::ImportHeightmap(path));
+    show_as(h.state_mut(), RasterDisplay::Grey);
     let globe = &mut h.state_mut().globe;
     globe.preview.graticule = false;
-    globe.preview.greyscale = true;
     settle(&mut h);
     // The 8 corners and the middles of the 12 edges.
     let mut places = Vec::new();
@@ -651,9 +661,13 @@ fn the_screenshot_shows_the_imported_heightmap() {
     ]);
     let mut state = state();
     apply_globe(&args, &mut state.globe, FACE_SIZE).unwrap();
-    state.globe.preview.greyscale = true;
+    show_as(&mut state, RasterDisplay::Grey);
     state.globe.preview.graticule = false;
-    let import = |state: &mut AppState| apply_import(&args, state, true);
+    let import = |state: &mut AppState| {
+        let result = apply_import(&args, state, true);
+        show_as(state, RasterDisplay::Grey);
+        result
+    };
     let (img, state) = headless::ui_png_with(state, (1280.0, 800.0), 1.0, import).unwrap();
     assert!(state.status.starts_with("Imported west-east.png"));
     let center = state.globe.rect.center();
