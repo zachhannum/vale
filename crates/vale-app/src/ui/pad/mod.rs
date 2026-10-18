@@ -32,9 +32,10 @@ use widgets::{BODY_PAD, Controls, PANEL_ROW};
 /// The control of the tool strip that opens the menu of the other modes.
 pub const MORE: &str = "More";
 /// The modes of the menu of the More cell.
-const MORE_MODES: [(&str, Icon, Mode); 6] = [
+const MORE_MODES: [(&str, Icon, Mode); 7] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
+    ("Deposit", Icon::Deposit, Mode::Deposit),
     ("Erode", Icon::Erode, Mode::Erode),
     ("Weather", Icon::Weather, Mode::Weather),
     ("Uplift", Icon::Uplift, Mode::Uplift),

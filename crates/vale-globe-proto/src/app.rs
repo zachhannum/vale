@@ -298,8 +298,8 @@ impl ProtoApp {
                 | Mode::Weather
                 | Mode::Uplift
                 | Mode::Warp => flow,
-                // These two modes move toward a target, so each stamp does less.
-                Mode::Smooth | Mode::Flatten => flow * 0.3,
+                // These three modes move toward a target, so each stamp does less.
+                Mode::Smooth | Mode::Flatten | Mode::Deposit => flow * 0.3,
             },
             mode: brush.mode,
             level,
