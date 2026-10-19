@@ -898,7 +898,7 @@ fn the_panel_of_a_raster_layer_renames_the_layer_and_a_swipe_deletes_it() {
         assert_eq!(raster_name(&h, height), "Ground");
 
         tap(&mut h, "Back to Layers");
-        full_swipe(&mut h, "Ground");
+        swipe_and_delete(&mut h, "Ground");
         let state = h.state();
         assert!(state.doc.project.rasters().is_empty(), "{what}");
         assert!(state.globe.raster_map(height).is_none());
@@ -1282,14 +1282,14 @@ fn swipe(h: &mut Pad, name: &str, dx: f32) {
     drag(h, from, from + vec2(dx, 0.0), None);
 }
 
-/// A swipe past the part of the row that deletes the layer.
-fn full_swipe(h: &mut Pad, name: &str) {
-    let width = panel(h, Panel::Layers).unwrap().width();
-    swipe(h, name, -0.8 * width);
+/// A swipe that opens a row, and a tap on its Delete button.
+fn swipe_and_delete(h: &mut Pad, name: &str) {
+    swipe(h, name, -70.0);
+    tap(h, &format!("Delete {name}"));
 }
 
 #[test]
-fn a_swipe_shows_delete_and_a_full_swipe_deletes_and_undo_brings_it_back() {
+fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
     for size in BOARDS {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
@@ -1316,9 +1316,14 @@ fn a_swipe_shows_delete_and_a_full_swipe_deletes_and_undo_brings_it_back() {
         assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
         assert!(control(&h, "Hide Rivers").is_some(), "{what}");
 
-        // A full swipe deletes a raster layer with no tap.
+        // A long swipe only opens the row, and it deletes nothing.
         let height = h.state().doc.project.rasters()[0].id;
-        full_swipe(&mut h, "Height");
+        let width = panel(&h, Panel::Layers).unwrap().width();
+        swipe(&mut h, "Height", -0.9 * width);
+        assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
+        let open = h.state().pad.swipe.unwrap();
+        assert_eq!(open.offset, -88.0, "{what}");
+        tap(&mut h, "Delete Height");
         assert!(h.state().doc.project.rasters().is_empty(), "{what}");
         assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"], "{what}");
         step_and_save(&mut h, false);

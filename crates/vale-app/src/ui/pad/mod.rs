@@ -85,8 +85,6 @@ pub const HOLD_TIME: f64 = 0.4;
 /// The largest distance that a finger moves during the hold, in points.
 const HOLD_SLOP: f32 = 6.0;
 
-/// The part of the width of a row that a swipe passes to delete the layer.
-pub const FULL_SWIPE: f32 = 0.6;
 /// The time that a row takes to snap open or shut, in seconds.
 const SNAP_TIME: f32 = 0.15;
 
@@ -1063,7 +1061,6 @@ fn swipe_rows(
         let top = area.top() + i as f32 * PANEL_ROW;
         Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW))
     };
-    let width = area.width();
     let selected = state.selected_layer;
     // A press outside the open row closes it.
     if let Some(swipe) = state.pad.swipe {
@@ -1121,16 +1118,10 @@ fn swipe_rows(
         if let Some(mut swipe) = swiping {
             if body.dragged() {
                 let dx = moved.map_or(0.0, |d| d.x);
-                swipe.offset = (swipe.base + dx).clamp(-width, 0.0);
+                swipe.offset = (swipe.base + dx).clamp(-widgets::DELETE_WIDTH, 0.0);
                 state.pad.swipe = Some(swipe);
             } else {
-                // The finger is up: the row deletes the layer, opens, or
-                // shuts.
-                if swipe.offset < -FULL_SWIPE * width {
-                    state.pad.swipe = None;
-                    state.remove_layer(id);
-                    continue;
-                }
+                // The finger is up: the row opens or shuts.
                 let open = swipe.offset < -widgets::DELETE_WIDTH / 2.0;
                 state.pad.swipe = open.then_some(Swipe {
                     offset: -widgets::DELETE_WIDTH,
