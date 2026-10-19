@@ -321,6 +321,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
     }
+    expire_notes(&ctx, state);
     raster::stop_card(&ctx, state, &mut controls, &rects);
     raster::reset_card(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);
@@ -1286,9 +1287,37 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     widgets::value_row(ui, "Features", &features);
 }
 
-/// Shows the text of the import or the export that runs, or of the last one.
-fn note_text(ui: &mut egui::Ui, progress: Option<String>, note: Option<&Note>) {
-    let (text, color) = match (progress, note) {
+/// A note with no warning goes away after this time, in seconds.
+pub const NOTE_TIME: f64 = 6.0;
+
+/// Shows the text of the import or the export that runs, or of the last one
+/// for the raster layer `layer` of the panel. A note with no warning goes
+/// away after `NOTE_TIME`. `expire_notes` removes a note after its panel
+/// closes.
+fn note_text(
+    ui: &mut egui::Ui,
+    progress: Option<String>,
+    note: &mut Option<Note>,
+    layer: Option<RasterId>,
+) {
+    let ours = |n: &Note| n.layer.is_none() || n.layer == layer;
+    if progress.is_none()
+        && let Some(n) = note.as_mut().filter(|n| ours(n))
+    {
+        let (time, pass) = (ui.input(|i| i.time), ui.ctx().cumulative_pass_nr());
+        let (start, _) = *n.shown.get_or_insert((time, pass));
+        n.last_pass = pass;
+        if !n.warning {
+            let left = NOTE_TIME - (time - start);
+            if left <= 0.0 {
+                *note = None;
+                return;
+            }
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(left));
+        }
+    }
+    let (text, color) = match (progress, note.as_ref().filter(|n| ours(n))) {
         (Some(progress), _) => (progress, theme::MUTE),
         (None, Some(note)) if note.warning => (note.text.clone(), theme::WARN),
         (None, Some(note)) => (note.text.clone(), theme::MUTE),
@@ -1297,25 +1326,45 @@ fn note_text(ui: &mut egui::Ui, progress: Option<String>, note: Option<&Note>) {
     ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
 }
 
+/// Removes each note that a panel showed and that no panel showed in the
+/// last pass, because the user left its panel.
+fn expire_notes(ctx: &egui::Context, state: &mut AppState) {
+    let pass = ctx.cumulative_pass_nr();
+    for note in [&mut state.import_note, &mut state.export_note] {
+        if note
+            .as_ref()
+            .is_some_and(|n| n.shown.is_some() && n.last_pass < pass)
+        {
+            *note = None;
+        }
+    }
+}
+
 /// The row that imports a heightmap, and the text of the import below it.
-fn import_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+/// `layer` is the raster layer of the panel.
+fn import_row(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    layer: Option<RasterId>,
+) {
     let enabled = !state.globe.busy();
     if widgets::text_row(ui, controls, IMPORT_HEIGHTMAP, 0.0, false, enabled).clicked() {
         state.actions.push(Action::ImportHeightmapDialog);
     }
     let progress = state.globe.import_progress();
-    note_text(ui, progress, state.import_note.as_ref());
+    note_text(ui, progress, &mut state.import_note, layer);
 }
 
-/// The row that exports the selected raster layer, and the text of the
-/// export below it.
-fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+/// The row that exports the raster layer `layer` of the panel, and the text
+/// of the export below it.
+fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, layer: RasterId) {
     let enabled = state.can_export();
     if widgets::text_row(ui, controls, EXPORT_GEOTIFF, 0.0, false, enabled).clicked() {
         state.actions.push(Action::ExportHeightmapDialog);
     }
     let progress = state.globe.export_progress();
-    note_text(ui, progress, state.export_note.as_ref());
+    note_text(ui, progress, &mut state.export_note, Some(layer));
 }
 
 /// The panel of a raster layer: its name, the unit of a layer that is not a
@@ -1362,9 +1411,9 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         state.set_raster_opacity(id, ((fraction * 100.0).round() / 100.0) as f32);
     }
     if height {
-        import_row(ui, state, controls);
+        import_row(ui, state, controls, Some(id));
     }
-    export_row(ui, state, controls);
+    export_row(ui, state, controls, id);
     raster::style(ui, state, controls, id);
 }
 

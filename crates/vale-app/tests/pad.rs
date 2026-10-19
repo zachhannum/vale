@@ -1473,6 +1473,60 @@ fn the_import_row_is_off_while_an_import_runs() {
     assert!(!h.state().import_note.as_ref().unwrap().warning);
 }
 
+#[test]
+fn the_note_of_an_import_shows_only_in_the_panel_of_its_layer_and_goes_away() {
+    use vale_app::ui::pad::NOTE_TIME;
+    let path = heightmap_file("pad-note.png", 512, 256);
+    let mut h = painted_pad(BOARDS[0]);
+    let rain = vale_app::ui::RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 64,
+    };
+    h.state_mut().add_raster(rain).unwrap();
+    h.run_steps(2);
+    tap(&mut h, "Layers");
+    tap(&mut h, "Open Height");
+    h.state_mut()
+        .run_action(Action::ImportHeightmap(path.clone()));
+    let start = std::time::Instant::now();
+    while h.state().globe.busy() {
+        assert!(start.elapsed().as_secs() < 30, "the import did not end");
+        h.step();
+    }
+    h.run_steps(2);
+    let note = |h: &Pad| h.query_by_label_contains("Imported pad-note.png").is_some();
+    assert!(note(&h));
+    // The panel of another raster layer does not show the note.
+    tap(&mut h, "Back to Layers");
+    tap(&mut h, "Open Rain");
+    assert!(!note(&h));
+    // The note went away when its panel closed.
+    assert_eq!(h.state().import_note, None);
+    tap(&mut h, "Back to Layers");
+    tap(&mut h, "Open Height");
+    assert!(!note(&h));
+
+    // A note with no warning goes away after a few seconds, and a warning
+    // stays while its panel is open.
+    for warning in [false, true] {
+        let text = format!("note {warning}");
+        let height = h.state().doc.project.rasters()[0].id;
+        let mut made = vale_app::ui::Note::new(text.clone(), warning, Some(height));
+        h.state_mut().import_note = Some(made.clone());
+        h.run_steps(2);
+        assert!(h.query_by_label(&text).is_some(), "{warning}");
+        let (time, pass) = h.state().import_note.as_ref().unwrap().shown.unwrap();
+        made.shown = Some((time - NOTE_TIME, pass));
+        made.last_pass = h.state().import_note.as_ref().unwrap().last_pass;
+        h.state_mut().import_note = Some(made);
+        h.run_steps(2);
+        assert_eq!(h.query_by_label(&text).is_some(), warning);
+    }
+}
+
 /// The layout with the open panel of the Height layer of a small heightmap.
 fn height_pad(size: (f32, f32)) -> Pad {
     let mut h = empty_pad(size);
