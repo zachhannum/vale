@@ -1092,11 +1092,15 @@ fn the_gradient_adds_moves_and_removes_a_stop() {
     h.step();
     assert_eq!(stops(&h)[sea].value, 0.0);
 
-    button(&mut h, egui::PointerButton::Primary, handle(moved), true);
-    h.step();
-    button(&mut h, egui::PointerButton::Primary, handle(moved), false);
-    h.step();
-    assert_eq!(h.state().globe.preview.selected, Some((id, index)));
+    // A click on the selected stop clears the selection, and the next
+    // click selects the stop again.
+    for selected in [None, Some((id, index))] {
+        button(&mut h, egui::PointerButton::Primary, handle(moved), true);
+        h.step();
+        button(&mut h, egui::PointerButton::Primary, handle(moved), false);
+        h.step();
+        assert_eq!(h.state().globe.preview.selected, selected);
+    }
     h.get_by_label("Remove").click();
     h.step();
     assert_eq!(stops(&h).len(), count);

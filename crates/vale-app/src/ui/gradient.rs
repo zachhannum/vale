@@ -110,7 +110,8 @@ fn color32(c: Rgb) -> Color32 {
 }
 
 /// The gradient control. A tap on a handle or near a stop on the bar
-/// selects the stop, and another tap on the bar adds a stop. A drag that
+/// selects the stop, or clears the selection if the stop is selected. A
+/// tap at another place on the bar adds a stop. A drag that
 /// starts sideways on a handle moves the stop, and a drag that starts down
 /// on the selected handle pulls it off. A release far below the handles
 /// removes the stop. Each other drag scrolls the panel. With `controls`,
@@ -221,10 +222,11 @@ pub fn editor(
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let xs = xs(bands);
+        let toggle = |index: Option<usize>| index.filter(|i| *selected != Some(*i));
         if pos.y >= row.top() {
-            *selected = hit(&xs, pos.x, m.cap);
+            *selected = toggle(hit(&xs, pos.x, m.cap));
         } else if let Some(index) = hit(&xs, pos.x, BAR_GRAB) {
-            *selected = Some(index);
+            *selected = toggle(Some(index));
         } else if let Some(index) = bands.add(value_of(bands, pos.x)) {
             *selected = Some(index);
         }
