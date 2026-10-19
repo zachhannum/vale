@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, Order, Rect, pos2, vec2};
+use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, Layer, LayerId, LayerKind, RasterId};
 use vale_terrain::Mode;
@@ -64,12 +64,8 @@ pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 
 /// The button of the Layers panel that opens the menu of the new layers.
 pub const ADD_LAYER: &str = "Add a layer";
-/// The button of the panel of a vector layer that deletes the layer.
-pub const DELETE_LAYER: &str = "Delete layer";
 /// The field of the panel of a vector layer with the name of the layer.
 pub const LAYER_NAME: &str = "Layer name";
-/// The button of the panel of a raster layer that deletes the layer.
-pub const DELETE_RASTER: &str = "Delete raster layer";
 /// The slider of the panel of a raster layer that sets its opacity.
 pub const OPACITY: &str = "Layer opacity";
 /// The row of the menu of the new layers that opens the form of a new raster
@@ -88,6 +84,24 @@ const ADD_WIDTH: f32 = 220.0;
 pub const HOLD_TIME: f64 = 0.4;
 /// The largest distance that a finger moves during the hold, in points.
 const HOLD_SLOP: f32 = 6.0;
+
+/// The part of the width of a row that a swipe passes to delete the layer.
+pub const FULL_SWIPE: f32 = 0.6;
+/// The time that a row takes to snap open or shut, in seconds.
+const SNAP_TIME: f32 = 0.15;
+
+/// A row of the layer list that a finger moved to the left, to show its
+/// Delete button.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Swipe {
+    pub layer: LayerId,
+    /// The distance of the row from its place, zero or less.
+    pub offset: f32,
+    /// The offset at the start of the drag.
+    base: f32,
+    /// The row moves with the finger. `false`: the row stays open.
+    pub moving: bool,
+}
 
 /// A row of the layer list that moves with a finger.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -133,6 +147,8 @@ pub struct PadState {
     add_button: Option<Rect>,
     /// The row of the layer list that moves with a finger.
     pub reorder: Option<Reorder>,
+    /// The row of the layer list that a finger swiped.
+    pub swipe: Option<Swipe>,
     /// The text of the name field of the panel of a vector layer.
     name: Option<(LayerRef, String)>,
     /// The list of the projections of the flat view is open.
@@ -187,6 +203,7 @@ impl PadState {
             other => self.right = Some(other),
         }
         self.sheet_offset = 0.0;
+        self.swipe = None;
     }
 
     pub fn close(&mut self, panel: Panel) {
@@ -706,6 +723,7 @@ fn show_panel(
     }
     if !list {
         state.pad.reorder = None;
+        state.pad.swipe = None;
     }
     let scroll = match state.pad.reorder {
         Some(_) => egui::scroll_area::ScrollSource::NONE,
@@ -965,7 +983,8 @@ struct ListRow {
 /// The list of the layers of each kind, in draw order. The first row is the
 /// bottom of the drawing. A tap on a row selects the layer, and the eye
 /// shows or hides it. A finger that holds a row lifts it, and the row then
-/// moves with the finger to a new place in the order.
+/// moves with the finger to a new place in the order. A swipe to the left
+/// shows the Delete button of the row, and a long swipe deletes the layer.
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
     let layers = state.doc.project.layers().iter();
@@ -980,6 +999,7 @@ fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
         .collect();
     if rows.is_empty() {
         state.pad.reorder = None;
+        state.pad.swipe = None;
         ui.add_space(4.0);
         ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
         return;
@@ -998,50 +1018,7 @@ fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
         .and_then(|r| Some((r, rows.iter().position(|row| row.id == r.layer)?)));
     let Some((reorder, from)) = lifted else {
         state.pad.reorder = None;
-        for (i, row) in rows.iter().enumerate() {
-            let (id, rect) = (row.id, place(i));
-            let on = selected == Some(row.layer);
-            let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
-            let out = ui
-                .push_id(id.0, |ui| {
-                    widgets::layer_row(ui, controls, rect, icon, name, visible, on, true, false)
-                })
-                .inner;
-            if out.eye {
-                state.set_layer_visible(id, !row.visible);
-            }
-            if out.open {
-                state.select(Some(row.layer));
-                state.pad.layer = Some(row.layer);
-            }
-            let Some(body) = out.body else { continue };
-            if body.clicked() {
-                state.select(Some(row.layer));
-            }
-            if !body.is_pointer_button_down_on() {
-                continue;
-            }
-            let press = ui.input(|i| {
-                let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
-                let pos = i.pointer.interact_pos()?;
-                Some((i.time - start, origin.distance(pos), pos.y))
-            });
-            match press {
-                Some((held, moved, y)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
-                    state.select(Some(row.layer));
-                    state.pad.reorder = Some(Reorder {
-                        layer: id,
-                        grab: y - rect.top(),
-                    });
-                    ui.ctx().request_repaint();
-                }
-                Some((held, moved, _)) if moved <= HOLD_SLOP => {
-                    let wait = std::time::Duration::from_secs_f64(HOLD_TIME - held);
-                    ui.ctx().request_repaint_after(wait);
-                }
-                _ => {}
-            }
-        }
+        swipe_rows(ui, state, controls, &rows, area);
         return;
     };
 
@@ -1054,16 +1031,147 @@ fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
         let rect = place(if k < to { k } else { k + 1 });
         let on = selected == Some(row.layer);
         let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
-        widgets::layer_row(ui, controls, rect, icon, name, visible, on, false, false);
+        widgets::layer_row(
+            ui, controls, rect, icon, name, visible, on, false, false, 0.0,
+        );
     }
     let row = &rows[from];
     let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
     let rect = slot(top);
-    widgets::layer_row(ui, controls, rect, icon, name, visible, true, false, true);
+    widgets::layer_row(
+        ui, controls, rect, icon, name, visible, true, false, true, 0.0,
+    );
     if !down {
         state.pad.reorder = None;
         if to != from {
             state.move_layer(reorder.layer, to);
+        }
+    }
+}
+
+/// The rows of the layer list that take touch. A sideways drag on a row
+/// swipes it, and a drag up or down scrolls the list.
+fn swipe_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rows: &[ListRow],
+    area: Rect,
+) {
+    let place = |i: usize| {
+        let top = area.top() + i as f32 * PANEL_ROW;
+        Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW))
+    };
+    let width = area.width();
+    let selected = state.selected_layer;
+    // A press outside the open row closes it.
+    if let Some(swipe) = state.pad.swipe {
+        let at = rows.iter().position(|row| row.id == swipe.layer);
+        let press = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.press_origin()));
+        let inside = |p: Pos2| at.is_some_and(|i| place(i).expand2(vec2(8.0, 0.0)).contains(p));
+        if at.is_none() || press.is_some_and(|p| !p.is_some_and(inside)) {
+            state.pad.swipe = None;
+        }
+    }
+    let moved = ui.input(|i| Some(i.pointer.interact_pos()? - i.pointer.press_origin()?));
+    for (i, row) in rows.iter().enumerate() {
+        let (id, rect) = (row.id, place(i));
+        let on = selected == Some(row.layer);
+        let (icon, name, visible) = (row.icon, &row.name, Some(row.visible));
+        let swipe = state.pad.swipe.filter(|s| s.layer == id);
+        let (target, moving) = swipe.map_or((0.0, false), |s| (s.offset, s.moving));
+        let time = if moving { 0.0 } else { SNAP_TIME };
+        let anim = ui.id().with(("swipe", id.0));
+        let shift = ui.ctx().animate_value_with_time(anim, target, time);
+        let out = ui
+            .push_id(id.0, |ui| {
+                widgets::layer_row(
+                    ui, controls, rect, icon, name, visible, on, true, false, shift,
+                )
+            })
+            .inner;
+        if out.delete {
+            state.pad.swipe = None;
+            state.remove_layer(id);
+            continue;
+        }
+        if out.eye {
+            state.set_layer_visible(id, !row.visible);
+        }
+        if out.open {
+            state.select(Some(row.layer));
+            state.pad.layer = Some(row.layer);
+            state.pad.swipe = None;
+        }
+        let Some(body) = out.body else { continue };
+        if body.drag_started() {
+            let d = moved.unwrap_or_default();
+            state.pad.swipe = (d.x.abs() > d.y.abs()).then(|| {
+                let base = swipe.map_or(0.0, |s| s.offset);
+                Swipe {
+                    layer: id,
+                    offset: base,
+                    base,
+                    moving: true,
+                }
+            });
+        }
+        let swiping = state.pad.swipe.filter(|s| s.layer == id && s.moving);
+        if let Some(mut swipe) = swiping {
+            if body.dragged() {
+                let dx = moved.map_or(0.0, |d| d.x);
+                swipe.offset = (swipe.base + dx).clamp(-width, 0.0);
+                state.pad.swipe = Some(swipe);
+            } else {
+                // The finger is up: the row deletes the layer, opens, or
+                // shuts.
+                if swipe.offset < -FULL_SWIPE * width {
+                    state.pad.swipe = None;
+                    state.remove_layer(id);
+                    continue;
+                }
+                let open = swipe.offset < -widgets::DELETE_WIDTH / 2.0;
+                state.pad.swipe = open.then_some(Swipe {
+                    offset: -widgets::DELETE_WIDTH,
+                    moving: false,
+                    ..swipe
+                });
+            }
+            ui.ctx().request_repaint();
+            continue;
+        }
+        if body.dragged() {
+            ui.scroll_with_delta(vec2(0.0, body.drag_delta().y));
+        }
+        if body.clicked() {
+            if swipe.is_some() {
+                state.pad.swipe = None;
+            } else {
+                state.select(Some(row.layer));
+            }
+        }
+        if !body.is_pointer_button_down_on() || body.dragged() || state.pad.swipe.is_some() {
+            continue;
+        }
+        let press = ui.input(|i| {
+            let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
+            let pos = i.pointer.interact_pos()?;
+            Some((i.time - start, origin.distance(pos), pos.y))
+        });
+        match press {
+            Some((held, moved, y)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
+                state.select(Some(row.layer));
+                state.pad.reorder = Some(Reorder {
+                    layer: id,
+                    grab: y - rect.top(),
+                });
+                ui.ctx().request_repaint();
+            }
+            Some((held, moved, _)) if moved <= HOLD_SLOP => {
+                let wait = std::time::Duration::from_secs_f64(HOLD_TIME - held);
+                ui.ctx().request_repaint_after(wait);
+            }
+            _ => {}
         }
     }
 }
@@ -1151,8 +1259,8 @@ fn add_menu(
     );
 }
 
-/// The panel of a vector layer: its name, its kind, the number of its
-/// features, and the button that deletes it.
+/// The panel of a vector layer: its name, its kind, and the number of its
+/// features.
 fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(layer) = state.doc.layer(id) else {
         return;
@@ -1183,10 +1291,6 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
     widgets::value_row(ui, "Features", &features);
-    ui.add_space(6.0);
-    if widgets::button_row_in(ui, controls, DELETE_LAYER, true, theme::WARN).clicked() {
-        state.remove_layer(id);
-    }
 }
 
 /// Shows the text of the import or the export that runs, or of the last one.
@@ -1223,8 +1327,8 @@ fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
 
 /// The panel of a raster layer: its name, the unit of a layer that is not a
 /// height layer, its value range, the size of its pixels on the ground, its
-/// opacity, the import into a height layer, the export, the button that
-/// deletes the layer, and the Style section.
+/// opacity, the import into a height layer, the export, and the Style
+/// section.
 fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -1268,14 +1372,7 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         import_row(ui, state, controls);
     }
     export_row(ui, state, controls);
-    // The button is above the Style section, which is longer than a short
-    // panel.
-    ui.add_space(6.0);
-    let delete = widgets::button_row_in(ui, controls, DELETE_RASTER, true, theme::WARN);
     raster::style(ui, state, controls, id);
-    if delete.clicked() {
-        state.remove_raster(id);
-    }
 }
 
 fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {

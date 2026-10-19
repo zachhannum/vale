@@ -12,9 +12,9 @@ use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    ADD_LAYER, DELETE_LAYER, DELETE_RASTER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP,
-    LAYER_NAME, LayerRef, MORE, NEW_RASTER, OPACITY, Panel, RECENTER, RESET, VIEW_OPTIONS,
-    WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_text, theme,
+    ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LayerRef, MORE, NEW_RASTER,
+    OPACITY, Panel, RECENTER, RESET, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
+    brush_size_text, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -178,7 +178,7 @@ fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
 fn check_controls(h: &Pad, what: &str) {
     let screen = h.state().pad.rects.unwrap().screen;
     let controls = &h.state().pad.controls;
-    assert!(controls.len() >= 8, "{what}: {} controls", controls.len());
+    assert!(controls.len() >= 7, "{what}: {} controls", controls.len());
     let in_menu = h.state().pad.menu_rect.is_some();
     let in_more = h.state().pad.more_rect.is_some();
     let in_add = h.state().pad.add_rect.is_some();
@@ -283,7 +283,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         check_controls(&h, &format!("{size:?} with the menu of the new layers"));
         tap(&mut h, "Lines");
-        for name in [LAYER_NAME, DELETE_LAYER, "Back to Layers", "Close Lines 1"] {
+        for name in [LAYER_NAME, "Back to Layers", "Close Lines 1"] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, &format!("{size:?} with the panel of a layer"));
@@ -853,7 +853,7 @@ fn the_values_of_a_raster_layer_have_the_unit_and_the_range_of_the_layer() {
 }
 
 #[test]
-fn the_panel_of_a_raster_layer_renames_and_deletes_the_layer() {
+fn the_panel_of_a_raster_layer_renames_the_layer_and_a_swipe_deletes_it() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
@@ -876,18 +876,8 @@ fn the_panel_of_a_raster_layer_renames_and_deletes_the_layer() {
         type_text(&mut h, LAYER_NAME, "  ");
         assert_eq!(raster_name(&h, height), "Ground");
 
-        // The sheet of a narrow screen scrolls to the button.
-        if control(&h, DELETE_RASTER).is_none() {
-            // The row of the values is below the name.
-            let from = control(&h, LAYER_NAME).unwrap().center_bottom() + vec2(0.0, 24.0);
-            drag(&mut h, from, from - vec2(0.0, 120.0), None);
-        }
-        let delete = control(&h, DELETE_RASTER).unwrap_or_else(|| panic!("{what}"));
-        assert!(
-            panel(&h, Panel::Layers).unwrap().contains_rect(delete),
-            "{what}"
-        );
-        tap(&mut h, DELETE_RASTER);
+        tap(&mut h, "Back to Layers");
+        full_swipe(&mut h, "Ground");
         let state = h.state();
         assert!(state.doc.project.rasters().is_empty(), "{what}");
         assert!(state.globe.raster_map(height).is_none());
@@ -957,8 +947,8 @@ fn you_make_rename_hide_and_delete_a_layer() {
         tap(&mut h, "Show Coast");
         assert!(h.state().doc.visible(id));
 
-        tap(&mut h, "Open Coast");
-        tap(&mut h, DELETE_LAYER);
+        swipe(&mut h, "Coast", -70.0);
+        tap(&mut h, "Delete Coast");
         assert_eq!(
             layer_names(&h),
             ["Height", "Land", "Rivers", "Places"],
@@ -1001,7 +991,7 @@ fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
         let open = panel(&h, Panel::Layers).unwrap();
         assert_eq!(open.left_top(), list.left_top(), "{size:?}");
         assert_eq!(open.width(), list.width(), "{size:?}");
-        for name in ["Close Rivers", "Back to Layers", LAYER_NAME, DELETE_LAYER] {
+        for name in ["Close Rivers", "Back to Layers", LAYER_NAME] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         assert!(control(&h, ADD_LAYER).is_none());
@@ -1261,6 +1251,114 @@ fn a_quick_drag_does_not_lift_a_row() {
     tap(&mut h, "Layer Rivers");
     let rivers = vector(&h, "Rivers");
     assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(rivers)));
+}
+
+/// A sideways drag of a finger on the row of a layer, from near the right
+/// end of its body.
+fn swipe(h: &mut Pad, name: &str, dx: f32) {
+    let body = control(h, &format!("Layer {name}")).unwrap_or_else(|| panic!("no row {name}"));
+    let from = body.right_center() - vec2(10.0, 0.0);
+    drag(h, from, from + vec2(dx, 0.0), None);
+}
+
+/// A swipe past the part of the row that deletes the layer.
+fn full_swipe(h: &mut Pad, name: &str) {
+    let width = panel(h, Panel::Layers).unwrap().width();
+    swipe(h, name, -0.8 * width);
+}
+
+#[test]
+fn a_swipe_shows_delete_and_a_full_swipe_deletes_and_undo_brings_it_back() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        tap(&mut h, "Layers");
+        assert!(control(&h, "Delete Rivers").is_none(), "{what}");
+        swipe(&mut h, "Rivers", -70.0);
+        let rivers = vector(&h, "Rivers");
+        let open = h.state().pad.swipe.unwrap();
+        assert_eq!((open.layer, open.moving), (rivers, false), "{what}");
+        let delete = control(&h, "Delete Rivers").unwrap_or_else(|| panic!("{what}"));
+        assert!(delete.width() >= 88.0 - 0.5, "{what}: {delete:?}");
+        // The eye and the arrow of the open row take no touch.
+        assert!(control(&h, "Hide Rivers").is_none(), "{what}");
+        assert!(control(&h, "Open Rivers").is_none(), "{what}");
+        assert!(control(&h, "Hide Land").is_some(), "{what}");
+        check_controls(&h, &format!("{what} with an open row"));
+        tap(&mut h, "Delete Rivers");
+        assert_eq!(layer_names(&h), ["Height", "Land", "Places"], "{what}");
+        assert_eq!(h.state().pad.swipe, None, "{what}");
+        step_and_save(&mut h, false);
+        h.state_mut().undo();
+        h.run_steps(2);
+        assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
+        assert!(control(&h, "Hide Rivers").is_some(), "{what}");
+
+        // A full swipe deletes a raster layer with no tap.
+        let height = h.state().doc.project.rasters()[0].id;
+        full_swipe(&mut h, "Height");
+        assert!(h.state().doc.project.rasters().is_empty(), "{what}");
+        assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"], "{what}");
+        step_and_save(&mut h, false);
+        h.state_mut().undo();
+        h.run_steps(2);
+        assert_eq!(raster_name(&h, height), "Height", "{what}");
+        assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
+    }
+}
+
+#[test]
+fn a_short_swipe_snaps_shut() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        swipe(&mut h, "Land", -30.0);
+        assert_eq!(h.state().pad.swipe, None, "{what}");
+        assert!(control(&h, "Delete Land").is_none(), "{what}");
+        assert!(control(&h, "Hide Land").is_some(), "{what}");
+        assert_eq!(layer_names(&h).len(), 4, "{what}");
+
+        // A tap on the body of an open row shuts it, and a press elsewhere
+        // shuts it.
+        swipe(&mut h, "Land", -70.0);
+        assert!(h.state().pad.swipe.is_some(), "{what}");
+        tap(&mut h, "Layer Land");
+        assert_eq!(h.state().pad.swipe, None, "{what}");
+        swipe(&mut h, "Land", -70.0);
+        tap(&mut h, "Layer Places");
+        assert_eq!(h.state().pad.swipe, None, "{what}");
+        assert!(control(&h, "Hide Land").is_some(), "{what}");
+        // Only one row is open.
+        swipe(&mut h, "Land", -70.0);
+        swipe(&mut h, "Places", -70.0);
+        let open = h.state().pad.swipe.map(|s| s.layer);
+        assert_eq!(open, Some(vector(&h, "Places")), "{what}");
+        assert!(control(&h, "Delete Land").is_none(), "{what}");
+        assert_eq!(layer_names(&h).len(), 4, "{what}");
+    }
+}
+
+#[test]
+fn a_vertical_drag_on_the_list_scrolls_and_opens_no_row() {
+    let mut h = pad(BOARDS[3]);
+    for _ in 0..12 {
+        h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
+    }
+    h.run_steps(2);
+    tap(&mut h, "Layers");
+    let top = control(&h, "Layer Height").unwrap().center().y;
+    let from = control(&h, "Layer Places").unwrap().center();
+    drag(&mut h, from, from - vec2(10.0, 150.0), None);
+    assert_eq!(h.state().pad.swipe, None);
+    assert_eq!(h.state().pad.reorder, None);
+    assert!(
+        control(&h, "Layer Height").is_none_or(|r| r.center().y < top - 50.0),
+        "the list did not scroll"
+    );
+    assert_eq!(layer_names(&h).len(), 16);
+    assert!(control(&h, "Delete Places").is_none());
 }
 
 /// Writes a 16-bit greyscale PNG with a slope from west to east.
@@ -2417,7 +2515,7 @@ fn the_view_options_menu_has_the_graticule_switch() {
             // A drag on a row or on a heading scrolls. A drag on the bar of
             // the band limits moves a limit.
             let inside = |p: &Pos2| p.y > card.top() + 60.0 && p.y < card.bottom() - 10.0;
-            let rows = [IMPORT_HEIGHTMAP, EXPORT_GEOTIFF, DELETE_RASTER, ADD_LIMIT];
+            let rows = [IMPORT_HEIGHTMAP, EXPORT_GEOTIFF, ADD_LIMIT];
             let mut points: Vec<Pos2> = rows
                 .into_iter()
                 .filter_map(|name| control(&h, name))
@@ -2429,7 +2527,8 @@ fn the_view_options_menu_has_the_graticule_switch() {
                 .into_iter()
                 .filter(inside)
                 .max_by(|a, b| a.y.total_cmp(&b.y))
-                .unwrap_or_else(|| panic!("{size:?}: no row to drag"));
+                // The margin at the left of the rows scrolls too.
+                .unwrap_or(pos2(card.left() + 6.0, card.bottom() - 40.0));
             let to = pos2(from.x, (from.y - 400.0).max(40.0));
             drag(&mut h, from, to, None);
             rivers = control(&h, RIVERS).is_some();

@@ -483,12 +483,24 @@ pub struct LayerRow {
     pub body: Option<Response>,
     pub eye: bool,
     pub open: bool,
+    /// A tap on the Delete button of an open row.
+    pub delete: bool,
+}
+
+/// The width of the Delete button of an open row of the layer list.
+pub const DELETE_WIDTH: f32 = 2.0 * TOUCH;
+
+/// The name of the Delete button of the row of a layer.
+pub fn delete_name(name: &str) -> String {
+    format!("Delete {name}")
 }
 
 /// A row of the layer list, at a given place: the icon of the kind, the
 /// name, the eye that shows or hides the layer, and the arrow that opens the
 /// panel of the layer. `visible` is `None` for a layer with no eye. A row
 /// that is not `live` takes no touch. A `lifted` row covers the rows below it.
+/// A negative `shift` moves the row to the left and shows the Delete button
+/// behind it. The eye and the arrow take touch only at a shift of zero.
 #[allow(clippy::too_many_arguments)]
 pub fn layer_row(
     ui: &egui::Ui,
@@ -500,9 +512,11 @@ pub fn layer_row(
     selected: bool,
     live: bool,
     lifted: bool,
+    shift: f32,
 ) -> LayerRow {
+    let edge = rect.right() + 8.0;
     let open_rect = Rect::from_center_size(
-        pos2(rect.right() + 8.0 - TOUCH / 2.0, rect.center().y),
+        pos2(edge - TOUCH / 2.0, rect.center().y),
         vec2(TOUCH, TOUCH),
     );
     let eye_rect = open_rect.translate(vec2(-TOUCH, 0.0));
@@ -510,7 +524,9 @@ pub fn layer_row(
         Some(_) => eye_rect.left(),
         None => open_rect.left(),
     };
-    let body_rect = Rect::from_min_max(rect.min, pos2(body_right, rect.bottom()));
+    let reveal = Rect::from_min_max(pos2(edge + shift, rect.top()), pos2(edge, rect.bottom()));
+    let hit_right = body_right.min(reveal.left()).max(rect.left() + TOUCH);
+    let body_rect = Rect::from_min_max(rect.min, pos2(hit_right, rect.bottom()));
     let body_name = format!("Layer {name}");
     let body = live.then(|| {
         hit(
@@ -518,38 +534,71 @@ pub fn layer_row(
             controls,
             body_rect,
             &body_name,
-            Sense::click(),
+            Sense::click_and_drag(),
             true,
             Some(selected),
         )
     });
     let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    let mut delete = false;
+    if shift < 0.0 {
+        let back = Rect::from_x_y_ranges(reveal.x_range(), highlight.y_range());
+        let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(back));
+        painter.rect_filled(back, 5.0, theme::WARN);
+        let at = pos2(edge - DELETE_WIDTH / 2.0, rect.center().y);
+        painter.text(
+            at,
+            Align2::CENTER_CENTER,
+            "Delete",
+            theme::body(),
+            theme::CANVAS,
+        );
+        if live && -shift >= DELETE_WIDTH - 0.5 {
+            let area = Rect::from_min_max(
+                pos2(reveal.left(), rect.center().y - TOUCH / 2.0),
+                pos2(edge, rect.center().y + TOUCH / 2.0),
+            );
+            delete = tap_area(ui, controls, area, &delete_name(name), true).clicked();
+        }
+    }
+    // The row slides over the Delete button.
+    let row_clip = Rect::from_x_y_ranges(highlight.left()..=edge + shift, rect.y_range());
+    let painter = ui
+        .painter()
+        .with_clip_rect(ui.clip_rect().intersect(row_clip));
+    let moved = vec2(shift, 0.0);
+    let highlight = highlight.translate(moved);
     if lifted {
-        ui.painter()
-            .rect_filled(highlight, 5.0, theme::card(false).to_opaque());
+        painter.rect_filled(highlight, 5.0, theme::card(false).to_opaque());
     }
     if selected || lifted || body.as_ref().is_some_and(|b| b.is_pointer_button_down_on()) {
-        ui.painter().rect_filled(highlight, 5.0, theme::raise());
+        painter.rect_filled(highlight, 5.0, theme::raise());
     }
-    let kind = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
-    icons::paint(ui.painter(), kind, icon, 18.0, theme::MUTE);
+    let kind = Rect::from_center_size(
+        pos2(rect.left() + 10.0 + shift, rect.center().y),
+        vec2(18.0, 18.0),
+    );
+    icons::paint(&painter, kind, icon, 18.0, theme::MUTE);
     let shown = visible != Some(false);
     let clip = Rect::from_min_max(
         pos2(rect.left() + 28.0, rect.top()),
         pos2(body_right - 4.0, rect.bottom()),
-    );
-    ui.painter().with_clip_rect(clip).text(
-        clip.left_center(),
-        Align2::LEFT_CENTER,
-        name,
-        theme::body(),
-        fade(theme::TEXT, shown),
-    );
+    )
+    .translate(moved);
+    painter
+        .with_clip_rect(painter.clip_rect().intersect(clip))
+        .text(
+            clip.left_center(),
+            Align2::LEFT_CENTER,
+            name,
+            theme::body(),
+            fade(theme::TEXT, shown),
+        );
     let eye_icon = if shown { Icon::Eye } else { Icon::EyeOff };
     let eye_name = format!("{} {name}", if shown { "Hide" } else { "Show" });
     let open_name = format!("Open {name}");
     let (mut eye, mut open) = (false, false);
-    if live {
+    if live && shift == 0.0 {
         if visible.is_some() {
             eye =
                 icon_button_at(ui, controls, eye_rect, &eye_name, eye_icon, false, true).clicked();
@@ -558,11 +607,28 @@ pub fn layer_row(
             icon_button_at(ui, controls, open_rect, &open_name, Icon::Open, false, true).clicked();
     } else {
         if visible.is_some() {
-            icons::paint(ui.painter(), eye_rect, eye_icon, ICON, theme::MUTE);
+            icons::paint(
+                &painter,
+                eye_rect.translate(moved),
+                eye_icon,
+                ICON,
+                theme::MUTE,
+            );
         }
-        icons::paint(ui.painter(), open_rect, Icon::Open, ICON, theme::MUTE);
+        icons::paint(
+            &painter,
+            open_rect.translate(moved),
+            Icon::Open,
+            ICON,
+            theme::MUTE,
+        );
     }
-    LayerRow { body, eye, open }
+    LayerRow {
+        body,
+        eye,
+        open,
+        delete,
+    }
 }
 
 /// A row of a panel or of a menu, with a text. Returns the response of the
