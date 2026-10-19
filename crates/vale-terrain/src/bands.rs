@@ -1,11 +1,11 @@
-//! The value range, the band limits, and the color ramp of the preview.
+//! The value range and the color stops of the preview.
 
 use crate::cube::{ELEV_MAX, ELEV_MIN};
 
 pub type Rgb = [u8; 3];
 
-/// The elevation of sea level, in meters. It is a band limit of each range
-/// that has values below it and above it.
+/// The elevation of sea level, in meters. It is a stop of each range of
+/// heights that has values below it and above it.
 pub const SEA_LEVEL: f64 = 0.0;
 /// The largest number of bands.
 pub const MAX_BANDS: usize = 32;
@@ -14,62 +14,38 @@ pub const MIN_BAND: f64 = 1.0;
 /// The number of bands on each side of sea level in `Bands::with_range`.
 const SIDE_BANDS: usize = 4;
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Ramp {
-    /// Color stops below sea level, from the deepest to the shallowest, with
-    /// even spacing.
-    pub sea: Vec<Rgb>,
-    /// Color stops above sea level, from the lowest to the highest, with even
-    /// spacing.
-    pub land: Vec<Rgb>,
+/// The default colors below sea level, from the deepest to the shallowest,
+/// with even spacing over the bands.
+const SEA_PALETTE: [Rgb; 2] = [[16, 44, 92], [190, 222, 240]];
+/// The default colors above sea level, from the lowest to the highest, with
+/// even spacing over the bands.
+const LAND_PALETTE: [Rgb; 4] = [
+    [108, 164, 100],
+    [222, 202, 148],
+    [150, 108, 76],
+    [246, 244, 240],
+];
+
+/// One color stop. The color goes from `above` of a stop to `below` of the
+/// next stop. Only the stop at sea level has two different colors.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stop {
+    /// The value, in the unit of the layer.
+    pub value: f64,
+    /// The color just below the value.
+    pub below: Rgb,
+    /// The color at the value and just above it.
+    pub above: Rgb,
 }
 
-impl Default for Ramp {
-    fn default() -> Ramp {
-        Ramp {
-            sea: vec![[16, 44, 92], [190, 222, 240]],
-            land: vec![
-                [108, 164, 100],
-                [222, 202, 148],
-                [150, 108, 76],
-                [246, 244, 240],
-            ],
-        }
-    }
+/// A side of a stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Below,
+    Above,
 }
 
-impl Ramp {
-    /// The color below sea level at `t`, from 0 at the deepest stop to 1 at
-    /// the shallowest.
-    pub fn sea(&self, t: f64) -> Rgb {
-        blend(&self.sea, t)
-    }
-
-    /// The color above sea level at `t`, from 0 at the lowest stop to 1 at
-    /// the highest.
-    pub fn land(&self, t: f64) -> Rgb {
-        blend(&self.land, t)
-    }
-}
-
-/// The color at `t` along stops with even spacing. An empty list gives black.
-fn blend(stops: &[Rgb], t: f64) -> Rgb {
-    match stops {
-        [] => [0; 3],
-        [one] => *one,
-        _ => {
-            let x = t.clamp(0.0, 1.0) * (stops.len() - 1) as f64;
-            let i = (x as usize).min(stops.len() - 2);
-            let f = x - i as f64;
-            let (a, b) = (stops[i], stops[i + 1]);
-            std::array::from_fn(|c| {
-                (f64::from(a[c]) + (f64::from(b[c]) - f64::from(a[c])) * f).round() as u8
-            })
-        }
-    }
-}
-
-/// One step of the preview.
+/// One step of the preview, from one stop to the next.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Band {
     /// The lower and upper value, in the unit of the layer.
@@ -87,102 +63,143 @@ pub struct Bands {
     /// The values of level 0 and of the highest level.
     min: f64,
     max: f64,
-    /// The limits in ascending order. With a sea split, sea level is one of
-    /// them.
-    limits: Vec<f64>,
-    /// The bands have a sea split: sea level is a limit that stays, and the
-    /// bands below it use the sea side of the ramp.
+    /// The stops in ascending order. The first stop is at `min` and the last
+    /// stop is at `max`.
+    stops: Vec<Stop>,
+    /// The bands have a sea split: sea level is a stop that stays, with a
+    /// sea color below it and a land color above it.
     split: bool,
-    pub ramp: Ramp,
 }
 
 /// The bands of the height in meters.
 impl Default for Bands {
     fn default() -> Bands {
-        Bands {
-            min: ELEV_MIN,
-            max: ELEV_MAX,
-            limits: vec![
-                -4000.0, -2000.0, -1000.0, -200.0, SEA_LEVEL, 200.0, 500.0, 1000.0, 2000.0, 3000.0,
-                4000.0,
-            ],
-            split: true,
-            ramp: Ramp::default(),
-        }
+        let limits = [
+            -4000.0, -2000.0, -1000.0, -200.0, SEA_LEVEL, 200.0, 500.0, 1000.0, 2000.0, 3000.0,
+            4000.0,
+        ];
+        Bands::from_palette(ELEV_MIN, ELEV_MAX, true, &limits)
     }
 }
 
 impl Bands {
-    /// The bands of a range from `min` to `max`, with limits at even spacing
-    /// and the default ramp. With `sea`, the values are heights, and a range
-    /// with values below and above sea level has a sea split. Such a range
-    /// gets the same number of bands on each side of sea level. Returns
-    /// `None` if the range is empty or not finite.
+    /// The bands of a range from `min` to `max`, with stops at even spacing
+    /// and the default colors. With `sea`, the values are heights, and a
+    /// range with values below and above sea level has a sea split. Such a
+    /// range gets the same number of bands on each side of sea level.
+    /// Returns `None` if the range is empty or not finite.
     pub fn with_range(min: f64, max: f64, sea: bool) -> Option<Bands> {
-        let mut bands = Bands::empty(min, max, sea, Ramp::default())?;
-        let sides: &[(f64, f64)] = if bands.sea().is_some() {
+        if !(min.is_finite() && max.is_finite() && min < max) {
+            return None;
+        }
+        let split = splits(min, max, sea);
+        let sides: &[(f64, f64)] = if split {
             &[(min, SEA_LEVEL), (SEA_LEVEL, max)]
         } else {
             &[(min, max)]
         };
+        let mut limits: Vec<f64> = if split { vec![SEA_LEVEL] } else { Vec::new() };
         let count = 2 * SIDE_BANDS / sides.len();
         for &(from, to) in sides {
             for i in 1..count {
-                // A range of less than `MIN_BAND` for each band gets fewer limits.
-                bands.add(from + (to - from) * i as f64 / count as f64);
+                let value = from + (to - from) * i as f64 / count as f64;
+                // A range of less than `MIN_BAND` for each band gets fewer stops.
+                let free = (min + MIN_BAND..=max - MIN_BAND).contains(&value)
+                    && limits.iter().all(|m| (m - value).abs() >= MIN_BAND);
+                if free {
+                    limits.push(value);
+                }
             }
         }
-        Some(bands)
+        limits.sort_by(f64::total_cmp);
+        Some(Bands::from_palette(min, max, split, &limits))
     }
 
-    /// The height bands of a saved copy. Returns `None` if `add` does not
-    /// take a limit, if sea level is not a limit, or if a side of the ramp is
-    /// empty.
-    pub fn from_parts(limits: &[f64], ramp: Ramp) -> Option<Bands> {
-        Bands::from_range_parts(ELEV_MIN, ELEV_MAX, true, limits, ramp)
-    }
-
-    /// The bands of a saved copy with a range from `min` to `max`. Returns
-    /// `None` if the range is empty or not finite, if `add` does not take a
-    /// limit, or if the land side of the ramp is empty. With `sea`, the
-    /// values are heights. A range of heights with a sea split also needs
-    /// sea level as a limit and a sea side of the ramp.
-    pub fn from_range_parts(
-        min: f64,
-        max: f64,
-        sea: bool,
-        limits: &[f64],
-        ramp: Ramp,
-    ) -> Option<Bands> {
-        let mut bands = Bands::empty(min, max, sea, ramp)?;
-        let split = bands.sea().is_some();
-        if bands.ramp.land.is_empty() || (split && bands.ramp.sea.is_empty()) {
-            return None;
+    /// The bands of a saved copy with a range from `min` to `max`. With
+    /// `sea`, the values are heights. An empty list of stops gives the
+    /// stops of `with_range`.
+    ///
+    /// Returns `None` if the range is empty or not finite, or if the stops
+    /// break a rule:
+    /// - There are 2 to `MAX_BANDS + 1` stops.
+    /// - The first stop is at `min`, and the last stop is at `max`.
+    /// - The values ascend, with at least `MIN_BAND` between two stops.
+    /// - With a sea split, a stop is at sea level.
+    /// - Only the stop at sea level has two different colors.
+    pub fn from_range_parts(min: f64, max: f64, sea: bool, stops: &[Stop]) -> Option<Bands> {
+        if stops.is_empty() {
+            return Bands::with_range(min, max, sea);
         }
-        let mut sea = false;
-        for &value in limits {
-            if split && value == SEA_LEVEL && !sea {
-                sea = true;
-            } else {
-                bands.add(value)?;
-            }
-        }
-        (sea == split).then_some(bands)
-    }
-
-    /// The bands of a range with no limits other than sea level.
-    fn empty(min: f64, max: f64, sea: bool, ramp: Ramp) -> Option<Bands> {
         if !(min.is_finite() && max.is_finite() && min < max) {
             return None;
         }
-        let split = sea && min < SEA_LEVEL && SEA_LEVEL < max;
-        Some(Bands {
+        let split = splits(min, max, sea);
+        let valid = (2..=MAX_BANDS + 1).contains(&stops.len())
+            && stops[0].value == min
+            && stops[stops.len() - 1].value == max
+            && stops
+                .windows(2)
+                .all(|w| w[1].value - w[0].value >= MIN_BAND)
+            && stops
+                .iter()
+                .all(|s| s.below == s.above || (split && s.value == SEA_LEVEL))
+            && (!split || stops.iter().any(|s| s.value == SEA_LEVEL));
+        valid.then(|| Bands {
             min,
             max,
-            limits: if split { vec![SEA_LEVEL] } else { Vec::new() },
+            stops: stops.to_vec(),
             split,
-            ramp,
         })
+    }
+
+    /// The bands with stops at `min`, at each of `limits`, and at `max`. The
+    /// limits ascend, and with `split`, sea level is one of them. Each band
+    /// takes its colors from the default palette by its index on its side
+    /// of sea level.
+    fn from_palette(min: f64, max: f64, split: bool, limits: &[f64]) -> Bands {
+        let values: Vec<f64> = std::iter::once(min)
+            .chain(limits.iter().copied())
+            .chain(std::iter::once(max))
+            .collect();
+        let bands = values.len() - 1;
+        let sea = if split {
+            values.partition_point(|&v| v < SEA_LEVEL)
+        } else {
+            0
+        };
+        let land = bands - sea;
+        let sea_color = |i: usize| blend(&SEA_PALETTE, i as f64 / sea as f64);
+        let land_color = |i: usize| blend(&LAND_PALETTE, (i - sea) as f64 / land as f64);
+        let stops = values
+            .iter()
+            .enumerate()
+            .map(|(i, &value)| {
+                // The top of the band below the stop, and the bottom of the
+                // band above it.
+                let below = match i {
+                    0 => None,
+                    _ if i <= sea => Some(sea_color(i)),
+                    _ => Some(land_color(i)),
+                };
+                let above = match i {
+                    _ if i == bands => None,
+                    _ if i < sea => Some(sea_color(i)),
+                    _ => Some(land_color(i)),
+                };
+                let below = below.or(above).unwrap_or_default();
+                Stop {
+                    value,
+                    below,
+                    above: above.unwrap_or(below),
+                }
+            })
+            .collect();
+        Bands {
+            min,
+            max,
+            stops,
+            split,
+        }
     }
 
     /// The value of level 0, in the unit of the layer.
@@ -205,103 +222,138 @@ impl Bands {
         self.min + f64::from(level) / 65535.0 * (self.max - self.min)
     }
 
-    /// The limits in ascending order. With a sea split, sea level is one of
-    /// them.
-    pub fn limits(&self) -> &[f64] {
-        &self.limits
+    /// The stops in ascending order, from `min` to `max`.
+    pub fn stops(&self) -> &[Stop] {
+        &self.stops
     }
 
-    /// The index of sea level in `limits`. Only a range of heights with
-    /// values on both sides of sea level has a sea split. All the bands of
-    /// each other range use the land side of the ramp.
+    /// The index of the stop at sea level. Only a range of heights with
+    /// values on both sides of sea level has a sea split.
     pub fn sea(&self) -> Option<usize> {
-        self.split.then(|| self.sea_index())
+        self.split
+            .then(|| self.stops.partition_point(|s| s.value < SEA_LEVEL))
     }
 
-    /// The number of limits below sea level. With a sea split, this is the
-    /// index of sea level in `limits`.
-    pub fn sea_index(&self) -> usize {
-        self.limits.partition_point(|&m| m < SEA_LEVEL)
+    /// Whether the stop at `index` does not move: the two ends and sea level.
+    pub fn fixed(&self, index: usize) -> bool {
+        index == 0 || index + 1 == self.stops.len() || Some(index) == self.sea()
     }
 
-    /// Adds a limit and returns its index. Returns `None` if the limit is
-    /// less than `MIN_BAND` from another limit or from an end of the range,
-    /// if it is not finite, or if the list is full.
+    /// The color of the smooth preview at a value. A value out of the range
+    /// gets the color of the nearest end.
+    pub fn color_at(&self, value: f64) -> Rgb {
+        if value.is_nan() || value <= self.min {
+            return self.stops[0].above;
+        }
+        if value >= self.max {
+            return self.stops[self.stops.len() - 1].below;
+        }
+        let i = self.stops.partition_point(|s| s.value <= value) - 1;
+        let (a, b) = (self.stops[i], self.stops[i + 1]);
+        mix(a.above, b.below, (value - a.value) / (b.value - a.value))
+    }
+
+    /// Adds a stop with the color of the gradient at its value, and returns
+    /// its index. Returns `None` if the value is less than `MIN_BAND` from
+    /// another stop, if it is not finite, or if the list is full.
     pub fn add(&mut self, value: f64) -> Option<usize> {
         let free = value.is_finite()
-            && self.limits.len() + 1 < MAX_BANDS
+            && self.stops.len() <= MAX_BANDS
             && (self.min + MIN_BAND..=self.max - MIN_BAND).contains(&value)
-            && self.limits.iter().all(|m| (m - value).abs() >= MIN_BAND);
+            && self
+                .stops
+                .iter()
+                .all(|s| (s.value - value).abs() >= MIN_BAND);
         if !free {
             return None;
         }
-        let index = self.limits.partition_point(|&m| m < value);
-        self.limits.insert(index, value);
+        let color = self.color_at(value);
+        let index = self.stops.partition_point(|s| s.value < value);
+        let stop = Stop {
+            value,
+            below: color,
+            above: color,
+        };
+        self.stops.insert(index, stop);
         Some(index)
     }
 
-    /// Moves a limit and returns its new value. The limit stays between the
-    /// limits next to it or the ends of the range, `MIN_BAND` away from each,
-    /// so its index does not change. Sea level does not move.
+    /// Moves a stop and returns its new value. The stop stays between the
+    /// stops next to it, `MIN_BAND` away from each, so its index does not
+    /// change. A fixed stop does not move.
     pub fn move_to(&mut self, index: usize, value: f64) -> f64 {
-        if Some(index) == self.sea() || value.is_nan() {
-            return self.limits[index];
+        if self.fixed(index) || value.is_nan() {
+            return self.stops[index].value;
         }
-        let below = if index == 0 {
-            self.min
-        } else {
-            self.limits[index - 1]
-        };
-        let above = self.limits.get(index + 1).copied().unwrap_or(self.max);
-        // A limit with less than two bands of room stays where it is.
-        let (lo, hi) = (below + MIN_BAND, above - MIN_BAND);
+        let lo = self.stops[index - 1].value + MIN_BAND;
+        let hi = self.stops[index + 1].value - MIN_BAND;
+        // A stop with less than two bands of room stays where it is.
         if lo <= hi {
-            self.limits[index] = value.clamp(lo, hi);
+            self.stops[index].value = value.clamp(lo, hi);
         }
-        self.limits[index]
+        self.stops[index].value
     }
 
-    /// Removes a limit. Returns `false` for sea level and for an index out of
-    /// range.
+    /// Removes a stop. Returns `false` for a fixed stop and for an index out
+    /// of range.
     pub fn remove(&mut self, index: usize) -> bool {
-        if index >= self.limits.len() || Some(index) == self.sea() {
+        if index >= self.stops.len() || self.fixed(index) {
             return false;
         }
-        self.limits.remove(index);
+        self.stops.remove(index);
         true
     }
 
-    /// The bands from `min` to `max`, in ascending order. There is one more
-    /// band than there are limits.
-    ///
-    /// The position of a band on the ramp comes from its index on its side of
-    /// sea level, and not from its value.
+    /// Sets a color of a stop. The stop at sea level takes the color on
+    /// `side` only, and each other stop takes it on both sides. Returns
+    /// `false` for an index out of range.
+    pub fn set_color(&mut self, index: usize, side: Side, color: Rgb) -> bool {
+        let sea = self.sea();
+        let Some(stop) = self.stops.get_mut(index) else {
+            return false;
+        };
+        match side {
+            _ if Some(index) != sea => (stop.below, stop.above) = (color, color),
+            Side::Below => stop.below = color,
+            Side::Above => stop.above = color,
+        }
+        true
+    }
+
+    /// The bands from `min` to `max`, in ascending order. There is one band
+    /// fewer than there are stops. The color of a band is the color of the
+    /// gradient at its middle.
     pub fn bands(&self) -> Vec<Band> {
-        let sea = self.sea().map_or(0, |index| index + 1);
-        let land = self.limits.len() + 1 - sea;
-        (0..=self.limits.len())
-            .map(|i| {
-                let min = if i == 0 { self.min } else { self.limits[i - 1] };
-                let max = self.limits.get(i).copied().unwrap_or(self.max);
-                let (j, k) = if i < sea { (i, sea) } else { (i - sea, land) };
-                let at = |offset: f64| {
-                    let t = (j as f64 + offset) / k as f64;
-                    if i < sea {
-                        self.ramp.sea(t)
-                    } else {
-                        self.ramp.land(t)
-                    }
-                };
-                Band {
-                    min,
-                    max,
-                    color: at(0.5),
-                    bottom: at(0.0),
-                    top: at(1.0),
-                }
+        self.stops
+            .windows(2)
+            .map(|w| Band {
+                min: w[0].value,
+                max: w[1].value,
+                color: mix(w[0].above, w[1].below, 0.5),
+                bottom: w[0].above,
+                top: w[1].below,
             })
             .collect()
     }
+}
+
+/// Whether a range has a sea split.
+fn splits(min: f64, max: f64, sea: bool) -> bool {
+    sea && min < SEA_LEVEL && SEA_LEVEL < max
+}
+
+/// The color at `t` from `a` to `b`.
+fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
+    std::array::from_fn(|c| {
+        (f64::from(a[c]) + (f64::from(b[c]) - f64::from(a[c])) * t).round() as u8
+    })
+}
+
+/// The color at `t` along colors with even spacing.
+fn blend(colors: &[Rgb], t: f64) -> Rgb {
+    let x = t.clamp(0.0, 1.0) * (colors.len() - 1) as f64;
+    let i = (x as usize).min(colors.len() - 2);
+    mix(colors[i], colors[i + 1], x - i as f64)
 }
 
 #[cfg(test)]
@@ -309,27 +361,82 @@ mod tests {
     use super::*;
     use crate::cube::{level_to_meters, meters_to_level};
 
+    fn values(bands: &Bands) -> Vec<f64> {
+        bands.stops().iter().map(|s| s.value).collect()
+    }
+
     fn sorted(bands: &Bands) -> bool {
-        bands.limits().windows(2).all(|w| w[0] < w[1])
+        bands.stops().windows(2).all(|w| w[0].value < w[1].value)
+    }
+
+    fn stop(value: f64, color: Rgb) -> Stop {
+        Stop {
+            value,
+            below: color,
+            above: color,
+        }
+    }
+
+    /// Stops with one grey color.
+    fn plain(values: &[f64]) -> Vec<Stop> {
+        values.iter().map(|&v| stop(v, [9; 3])).collect()
     }
 
     #[test]
     fn the_default_has_sea_level() {
         let bands = Bands::default();
-        assert_eq!(bands.limits().len(), 11);
-        assert_eq!(bands.limits()[bands.sea_index()], SEA_LEVEL);
+        assert_eq!(bands.stops().len(), 13);
+        let sea = bands.sea().unwrap();
+        assert_eq!(sea, 5);
+        assert_eq!(bands.stops()[sea].value, SEA_LEVEL);
+        assert_eq!(
+            (bands.stops()[0].value, bands.stops()[12].value),
+            (ELEV_MIN, ELEV_MAX)
+        );
         assert!(sorted(&bands));
+    }
+
+    #[test]
+    fn the_default_keeps_the_old_band_edges() {
+        let bands = Bands::default();
+        let sea = [
+            [16, 44, 92],
+            [51, 80, 122],
+            [86, 115, 151],
+            [120, 151, 181],
+            [155, 186, 210],
+            [190, 222, 240],
+        ];
+        let land = [
+            [108, 164, 100],
+            [157, 180, 121],
+            [206, 197, 141],
+            [201, 175, 127],
+            [171, 135, 97],
+            [164, 127, 99],
+            [205, 186, 170],
+            [246, 244, 240],
+        ];
+        let stops = bands.stops();
+        for (i, color) in sea.iter().enumerate().take(5) {
+            assert_eq!((stops[i].below, stops[i].above), (*color, *color), "{i}");
+        }
+        assert_eq!((stops[5].below, stops[5].above), (sea[5], land[0]));
+        for (j, color) in land.iter().enumerate().skip(1) {
+            let s = stops[5 + j];
+            assert_eq!((s.below, s.above), (*color, *color), "{j}");
+        }
     }
 
     #[test]
     fn add_inserts_in_order() {
         let mut bands = Bands::default();
-        assert_eq!(bands.add(100.0), Some(5));
-        assert_eq!(bands.add(-5000.0), Some(0));
-        assert_eq!(bands.add(5000.0), Some(13));
+        assert_eq!(bands.add(100.0), Some(6));
+        assert_eq!(bands.add(-5000.0), Some(1));
+        assert_eq!(bands.add(5000.0), Some(14));
         assert!(sorted(&bands));
-        assert_eq!(bands.limits().len(), 14);
-        assert_eq!(bands.sea_index(), 5);
+        assert_eq!(bands.stops().len(), 16);
+        assert_eq!(bands.sea(), Some(6));
 
         let steps = bands.bands();
         assert_eq!(steps.len(), 15);
@@ -359,139 +466,196 @@ mod tests {
             assert_eq!(bands.add(meters), None, "{meters}");
         }
         assert_eq!(bands, before);
-        assert_eq!(bands.add(201.0), Some(6));
-        assert_eq!(bands.add(ELEV_MIN + MIN_BAND), Some(0));
+        assert_eq!(bands.add(201.0), Some(7));
+        assert_eq!(bands.add(ELEV_MIN + MIN_BAND), Some(1));
     }
 
     #[test]
     fn add_rejects_a_full_list() {
         let mut bands = Bands::default();
         let mut meters = 5.0;
-        while bands.limits().len() + 1 < MAX_BANDS {
+        while bands.bands().len() < MAX_BANDS {
             assert!(bands.add(meters).is_some());
             meters += 7.0;
         }
-        assert_eq!(bands.bands().len(), MAX_BANDS);
+        assert_eq!(bands.stops().len(), MAX_BANDS + 1);
         assert_eq!(bands.add(meters), None);
         assert_eq!(bands.bands().len(), MAX_BANDS);
     }
 
     #[test]
+    fn add_takes_the_color_of_the_gradient() {
+        let stops = [stop(0.0, [0, 0, 0]), stop(100.0, [200, 100, 50])];
+        let mut bands = Bands::from_range_parts(0.0, 100.0, false, &stops).unwrap();
+        assert_eq!(bands.add(25.0), Some(1));
+        assert_eq!(bands.stops()[1], stop(25.0, [50, 25, 13]));
+        assert_eq!(bands.stops()[0], stops[0]);
+        assert_eq!(bands.stops()[2], stops[1]);
+
+        // The gradient does not change.
+        let mut bands = Bands::default();
+        let before: Vec<Rgb> = (-50..=50)
+            .map(|i| bands.color_at(i as f64 * 97.0))
+            .collect();
+        let color = bands.color_at(1234.0);
+        let index = bands.add(1234.0).unwrap();
+        assert_eq!(bands.stops()[index], stop(1234.0, color));
+        let after: Vec<Rgb> = (-50..=50)
+            .map(|i| bands.color_at(i as f64 * 97.0))
+            .collect();
+        for (a, b) in before.iter().zip(&after) {
+            for c in 0..3 {
+                assert!(a[c].abs_diff(b[c]) <= 1, "{a:?} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn color_at_blends_between_stops() {
+        let stops = [
+            stop(0.0, [0, 0, 0]),
+            stop(10.0, [100, 200, 51]),
+            stop(30.0, [200, 0, 100]),
+        ];
+        let bands = Bands::from_range_parts(0.0, 30.0, false, &stops).unwrap();
+        assert_eq!(bands.color_at(0.0), [0, 0, 0]);
+        assert_eq!(bands.color_at(5.0), [50, 100, 26]);
+        assert_eq!(bands.color_at(10.0), [100, 200, 51]);
+        assert_eq!(bands.color_at(25.0), [175, 50, 88]);
+        assert_eq!(bands.color_at(30.0), [200, 0, 100]);
+        assert_eq!(bands.color_at(-5.0), [0, 0, 0]);
+        assert_eq!(bands.color_at(f64::NAN), [0, 0, 0]);
+        assert_eq!(bands.color_at(99.0), [200, 0, 100]);
+    }
+
+    #[test]
+    fn the_step_color_is_the_middle_of_the_gradient() {
+        let stops = [stop(0.0, [0, 0, 0]), stop(10.0, [101, 50, 3])];
+        let bands = Bands::from_range_parts(0.0, 10.0, false, &stops).unwrap();
+        let steps = bands.bands();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].bottom, [0, 0, 0]);
+        assert_eq!(steps[0].top, [101, 50, 3]);
+        assert_eq!(steps[0].color, [51, 25, 2]);
+
+        let bands = Bands::default();
+        for band in bands.bands() {
+            assert_eq!(band.color, mix(band.bottom, band.top, 0.5));
+        }
+    }
+
+    #[test]
     fn move_to_stays_between_the_neighbors() {
         let mut bands = Bands::default();
-        assert_eq!(bands.move_to(6, 350.0), 350.0);
-        assert_eq!(bands.limits()[6], 350.0);
+        assert_eq!(bands.move_to(7, 350.0), 350.0);
+        assert_eq!(bands.stops()[7].value, 350.0);
         assert_eq!(bands.bands()[6].max, 350.0);
         assert_eq!(bands.bands()[7].min, 350.0);
 
-        assert_eq!(bands.move_to(6, 5000.0), 1000.0 - MIN_BAND);
-        assert_eq!(bands.move_to(6, -5000.0), 200.0 + MIN_BAND);
-        assert_eq!(bands.move_to(6, f64::INFINITY), 1000.0 - MIN_BAND);
-        assert_eq!(bands.move_to(6, f64::NAN), 1000.0 - MIN_BAND);
+        assert_eq!(bands.move_to(7, 5000.0), 1000.0 - MIN_BAND);
+        assert_eq!(bands.move_to(7, -5000.0), 200.0 + MIN_BAND);
+        assert_eq!(bands.move_to(7, f64::INFINITY), 1000.0 - MIN_BAND);
+        assert_eq!(bands.move_to(7, f64::NAN), 1000.0 - MIN_BAND);
 
-        assert_eq!(bands.move_to(0, -9000.0), ELEV_MIN + MIN_BAND);
-        assert_eq!(bands.move_to(10, 9000.0), ELEV_MAX - MIN_BAND);
-        assert_eq!(bands.move_to(3, 500.0), SEA_LEVEL - MIN_BAND);
-        assert_eq!(bands.limits().len(), 11);
+        assert_eq!(bands.move_to(1, -9000.0), ELEV_MIN + MIN_BAND);
+        assert_eq!(bands.move_to(11, 9000.0), ELEV_MAX - MIN_BAND);
+        assert_eq!(bands.move_to(4, 500.0), SEA_LEVEL - MIN_BAND);
+        assert_eq!(bands.stops().len(), 13);
         assert!(sorted(&bands));
     }
 
     #[test]
-    fn sea_level_stays() {
+    fn the_ends_stay_and_take_colors() {
         let mut bands = Bands::default();
-        let sea = bands.sea_index();
+        let last = bands.stops().len() - 1;
+        assert!(bands.fixed(0) && bands.fixed(last) && bands.fixed(5));
+        assert!(!bands.fixed(1) && !bands.fixed(last - 1));
+        assert_eq!(bands.move_to(0, 100.0), ELEV_MIN);
+        assert_eq!(bands.move_to(last, 100.0), ELEV_MAX);
+        assert!(!bands.remove(0));
+        assert!(!bands.remove(last));
+        assert_eq!(bands, Bands::default());
+
+        assert!(bands.set_color(0, Side::Above, [1, 2, 3]));
+        assert_eq!(bands.stops()[0], stop(ELEV_MIN, [1, 2, 3]));
+        assert!(bands.set_color(last, Side::Below, [4, 5, 6]));
+        assert_eq!(bands.stops()[last], stop(ELEV_MAX, [4, 5, 6]));
+        assert!(bands.set_color(3, Side::Below, [7, 8, 9]));
+        assert_eq!(bands.stops()[3], stop(-1000.0, [7, 8, 9]));
+        assert!(!bands.set_color(last + 1, Side::Below, [7, 8, 9]));
+        assert_eq!(bands.bands()[0].bottom, [1, 2, 3]);
+        assert_eq!(bands.bands()[last - 1].top, [4, 5, 6]);
+    }
+
+    #[test]
+    fn sea_level_has_two_colors_and_stays() {
+        let mut bands = Bands::default();
+        let sea = bands.sea().unwrap();
         assert_eq!(bands.move_to(sea, 100.0), SEA_LEVEL);
         assert_eq!(bands.move_to(sea, -100.0), SEA_LEVEL);
         assert!(!bands.remove(sea));
         assert_eq!(bands, Bands::default());
+
+        assert!(bands.set_color(sea, Side::Below, [0, 0, 255]));
+        assert!(bands.set_color(sea, Side::Above, [255, 0, 0]));
+        let s = bands.stops()[sea];
+        assert_eq!(
+            (s.value, s.below, s.above),
+            (SEA_LEVEL, [0, 0, 255], [255, 0, 0])
+        );
+        let steps = bands.bands();
+        assert_eq!(steps[sea - 1].max, SEA_LEVEL);
+        assert_eq!(steps[sea - 1].top, [0, 0, 255]);
+        assert_eq!(steps[sea].min, SEA_LEVEL);
+        assert_eq!(steps[sea].bottom, [255, 0, 0]);
+        assert_eq!(bands.color_at(SEA_LEVEL), [255, 0, 0]);
+        assert_eq!(bands.color_at(-1e-9), [0, 0, 255]);
+
+        // A stop next to sea level takes the color on its side.
+        let index = bands.add(-100.0).unwrap();
+        assert_eq!(index, sea);
+        let near = bands.stops()[index];
+        assert_eq!(near.below, near.above);
+        assert_eq!(bands.stops()[sea + 1].value, SEA_LEVEL);
+        let copy = Bands::from_range_parts(ELEV_MIN, ELEV_MAX, true, bands.stops());
+        assert_eq!(copy, Some(bands));
     }
 
     #[test]
     fn remove_joins_two_bands() {
         let mut bands = Bands::default();
-        assert!(bands.remove(5));
-        assert_eq!(bands.limits().len(), 10);
-        assert!(!bands.limits().contains(&200.0));
+        assert!(bands.remove(6));
+        assert_eq!(bands.stops().len(), 12);
+        assert!(!values(&bands).contains(&200.0));
         assert!(sorted(&bands));
         let steps = bands.bands();
         assert_eq!(steps.len(), 11);
         assert_eq!((steps[5].min, steps[5].max), (0.0, 500.0));
 
-        assert!(bands.remove(0));
-        assert_eq!(bands.sea_index(), 3);
-        assert!(!bands.remove(3));
-        assert!(!bands.remove(bands.limits().len()));
+        assert!(bands.remove(1));
+        assert_eq!(bands.sea(), Some(4));
+        assert!(!bands.remove(4));
+        assert!(!bands.remove(bands.stops().len()));
     }
 
     #[test]
-    fn sea_level_is_the_only_limit_that_stays() {
+    fn sea_level_is_the_only_inner_stop_that_stays() {
         let mut bands = Bands::default();
-        while bands.limits().len() > 1 {
-            let index = if bands.sea_index() == 0 { 1 } else { 0 };
+        let first = bands.stops()[0];
+        let last = bands.stops()[12];
+        let sea = bands.stops()[5];
+        while bands.stops().len() > 3 {
+            let index = (0..bands.stops().len()).find(|&i| !bands.fixed(i)).unwrap();
             assert!(bands.remove(index));
         }
-        assert_eq!(bands.limits(), [SEA_LEVEL]);
+        assert_eq!(values(&bands), [ELEV_MIN, SEA_LEVEL, ELEV_MAX]);
         let steps = bands.bands();
         assert_eq!((steps[0].min, steps[0].max), (ELEV_MIN, SEA_LEVEL));
         assert_eq!((steps[1].min, steps[1].max), (SEA_LEVEL, ELEV_MAX));
-        assert_eq!(steps[0].bottom, bands.ramp.sea(0.0));
-        assert_eq!(steps[0].top, bands.ramp.sea(1.0));
-        assert_eq!(steps[1].color, bands.ramp.land(0.5));
-    }
-
-    #[test]
-    fn each_side_has_its_own_ramp() {
-        let mut bands = Bands {
-            ramp: Ramp {
-                sea: vec![[0, 0, 40], [0, 0, 255]],
-                land: vec![[255, 0, 0], [0, 255, 0]],
-            },
-            ..Bands::default()
-        };
-        bands.add(-2.0).unwrap();
-        bands.add(2.0).unwrap();
-        let sea = bands.sea_index();
-        let steps = bands.bands();
-        for (i, band) in steps.iter().enumerate() {
-            for color in [band.color, band.bottom, band.top] {
-                if i <= sea {
-                    assert_eq!((color[0], color[1]), (0, 0), "band {i}");
-                    assert!(color[2] >= 40, "band {i}");
-                } else {
-                    assert_eq!(color[2], 0, "band {i}");
-                    let sum = u16::from(color[0]) + u16::from(color[1]);
-                    assert!(sum.abs_diff(255) <= 1, "band {i}");
-                }
-            }
-        }
-        assert_eq!(steps[sea].max, SEA_LEVEL);
-        assert_eq!(steps[sea + 1].min, SEA_LEVEL);
-        assert_eq!(steps[sea].top, [0, 0, 255]);
-        assert_eq!(steps[sea + 1].bottom, [255, 0, 0]);
-        assert_ne!(steps[sea].color, steps[sea + 1].color);
-    }
-
-    #[test]
-    fn the_ramp_position_comes_from_the_band_index() {
-        let mut bands = Bands::default();
-        bands.add(1.0).unwrap();
-        bands.add(2.0).unwrap();
-        let steps = bands.bands();
-        let land = &steps[bands.sea_index() + 1..];
-        let k = land.len() as f64;
-        for (j, band) in land.iter().enumerate() {
-            let j = j as f64;
-            assert_eq!(band.bottom, bands.ramp.land(j / k));
-            assert_eq!(band.color, bands.ramp.land((j + 0.5) / k));
-            assert_eq!(band.top, bands.ramp.land((j + 1.0) / k));
-        }
-        assert_ne!(land[0].color, land[1].color);
-        assert_ne!(land[1].color, land[2].color);
-        for pair in steps.windows(2) {
-            if pair[0].max != SEA_LEVEL {
-                assert_eq!(pair[0].top, pair[1].bottom);
-            }
-        }
+        assert_eq!(steps[0].bottom, first.above);
+        assert_eq!(steps[0].top, sea.below);
+        assert_eq!(steps[1].bottom, sea.above);
+        assert_eq!(steps[1].top, last.below);
     }
 
     #[test]
@@ -499,14 +663,17 @@ mod tests {
         let mut bands = Bands::default();
         bands.add(-3000.5).unwrap();
         bands.add(5999.0).unwrap();
-        bands.move_to(2, -2500.0);
-        bands.remove(7);
+        bands.move_to(3, -2500.0);
+        bands.remove(8);
         let steps = bands.bands();
-        assert_eq!(steps.len(), bands.limits().len() + 1);
+        assert_eq!(steps.len(), bands.stops().len() - 1);
         assert_eq!(steps[0].min, ELEV_MIN);
         assert_eq!(steps[steps.len() - 1].max, ELEV_MAX);
         for pair in steps.windows(2) {
             assert_eq!(pair[0].max, pair[1].min);
+            if pair[0].max != SEA_LEVEL {
+                assert_eq!(pair[0].top, pair[1].bottom);
+            }
         }
         for band in &steps {
             assert!(band.max - band.min >= MIN_BAND);
@@ -514,54 +681,59 @@ mod tests {
     }
 
     #[test]
-    fn the_ramp_blends_between_stops() {
-        let ramp = Ramp {
-            sea: vec![[0, 0, 0], [100, 200, 51]],
-            land: vec![[0, 0, 0], [100, 100, 100], [200, 0, 100]],
-        };
-        assert_eq!(ramp.sea(0.0), [0, 0, 0]);
-        assert_eq!(ramp.sea(0.5), [50, 100, 26]);
-        assert_eq!(ramp.sea(1.0), [100, 200, 51]);
-        assert_eq!(ramp.sea(-1.0), [0, 0, 0]);
-        assert_eq!(ramp.sea(2.0), [100, 200, 51]);
-        assert_eq!(ramp.land(0.5), [100, 100, 100]);
-        assert_eq!(ramp.land(0.75), [150, 50, 100]);
-        assert_eq!(ramp.land(1.0), [200, 0, 100]);
-
-        let short = Ramp {
-            sea: Vec::new(),
-            land: vec![[1, 2, 3]],
-        };
-        assert_eq!(short.sea(0.3), [0, 0, 0]);
-        assert_eq!(short.land(0.3), [1, 2, 3]);
+    fn from_range_parts_gives_the_same_bands() {
+        let mut bands = Bands::default();
+        bands.add(123.5).unwrap();
+        bands.remove(1);
+        bands.set_color(3, Side::Above, [9, 8, 7]);
+        let copy = Bands::from_range_parts(ELEV_MIN, ELEV_MAX, true, bands.stops());
+        assert_eq!(copy, Some(bands));
     }
 
     #[test]
-    fn from_parts_gives_the_same_bands() {
-        let mut bands = Bands::default();
-        bands.add(123.5).unwrap();
-        bands.remove(0);
-        bands.ramp.land.push([9, 8, 7]);
-        let copy = Bands::from_parts(bands.limits(), bands.ramp.clone());
-        assert_eq!(copy, Some(bands));
-
-        let ramp = Ramp::default;
-        assert_eq!(Bands::from_parts(&[-100.0, 100.0], ramp()), None);
-        assert_eq!(Bands::from_parts(&[0.0, 0.0], ramp()), None);
-        assert_eq!(Bands::from_parts(&[0.0, 100.0, 100.5], ramp()), None);
-        assert_eq!(Bands::from_parts(&[0.0, f64::NAN], ramp()), None);
-        let empty = Ramp {
-            sea: vec![],
-            land: vec![[1, 2, 3]],
+    fn from_range_parts_rejects_bad_stops() {
+        let parts = |stops: &[Stop]| Bands::from_range_parts(0.0, 100.0, false, stops);
+        assert!(parts(&plain(&[0.0, 50.0, 100.0])).is_some());
+        // One stop.
+        assert_eq!(parts(&plain(&[0.0])), None);
+        // The ends are not at the ends of the range.
+        assert_eq!(parts(&plain(&[1.0, 50.0, 100.0])), None);
+        assert_eq!(parts(&plain(&[0.0, 50.0, 99.0])), None);
+        assert_eq!(parts(&plain(&[0.0, 50.0, 100.0, 120.0])), None);
+        // The values do not ascend, or are too near.
+        assert_eq!(parts(&plain(&[0.0, 60.0, 40.0, 100.0])), None);
+        assert_eq!(parts(&plain(&[0.0, 50.0, 50.0, 100.0])), None);
+        assert_eq!(parts(&plain(&[0.0, 50.0, 50.5, 100.0])), None);
+        assert_eq!(parts(&plain(&[0.0, 0.5, 100.0])), None);
+        assert_eq!(parts(&plain(&[0.0, f64::NAN, 100.0])), None);
+        // Too many stops.
+        let many: Vec<f64> = (0..=MAX_BANDS).map(|i| i as f64 * 2.0).collect();
+        let range = |values: &[f64]| {
+            let max = values[values.len() - 1];
+            Bands::from_range_parts(0.0, max, false, &plain(values))
         };
-        assert_eq!(Bands::from_parts(&[0.0], empty), None);
+        assert!(range(&many).is_some());
+        let many: Vec<f64> = (0..=MAX_BANDS + 1).map(|i| i as f64 * 2.0).collect();
+        assert_eq!(range(&many), None);
+        // A hard stop that is not at sea level.
+        let mut hard = plain(&[0.0, 50.0, 100.0]);
+        hard[1].above = [1, 2, 3];
+        assert_eq!(parts(&hard), None);
+        hard[1].value = SEA_LEVEL;
+        assert_eq!(parts(&hard), None);
+        // A bad range.
+        assert_eq!(
+            Bands::from_range_parts(100.0, 0.0, false, &plain(&[100.0, 0.0])),
+            None
+        );
+        let nan = [stop(f64::NAN, [0; 3]), stop(1.0, [0; 3])];
+        assert_eq!(Bands::from_range_parts(f64::NAN, 1.0, false, &nan), None);
     }
 
     #[test]
     fn the_default_gives_the_levels_of_meters() {
         let bands = Bands::default();
         assert_eq!((bands.min(), bands.max()), (ELEV_MIN, ELEV_MAX));
-        assert_eq!(bands.sea(), Some(bands.sea_index()));
         for meters in [
             -9000.0, ELEV_MIN, -1234.5, SEA_LEVEL, 0.1, 2500.0, ELEV_MAX, 9000.0,
         ] {
@@ -570,8 +742,7 @@ mod tests {
         for level in [0, 1, 32767, 32768, 65535] {
             assert_eq!(bands.value(level), level_to_meters(level), "{level}");
         }
-        let same =
-            Bands::from_range_parts(ELEV_MIN, ELEV_MAX, true, bands.limits(), Ramp::default());
+        let same = Bands::from_range_parts(ELEV_MIN, ELEV_MAX, true, bands.stops());
         assert_eq!(same, Some(bands));
     }
 
@@ -599,61 +770,60 @@ mod tests {
     }
 
     #[test]
-    fn a_range_with_no_sea_uses_the_land_ramp() {
+    fn a_range_with_no_sea_has_no_hard_stop() {
         let bands = Bands::with_range(0.0, 4000.0, false).unwrap();
         assert_eq!(bands.sea(), None);
-        let limits = [500.0, 1000.0, 1500.0, 2000.0, 2500.0, 3000.0, 3500.0];
-        assert_eq!(bands.limits(), limits);
+        let expect = [
+            0.0, 500.0, 1000.0, 1500.0, 2000.0, 2500.0, 3000.0, 3500.0, 4000.0,
+        ];
+        assert_eq!(values(&bands), expect);
+        for (j, s) in bands.stops().iter().enumerate() {
+            assert_eq!(s.below, s.above, "{j}");
+            assert_eq!(s.above, blend(&LAND_PALETTE, j as f64 / 8.0), "{j}");
+        }
         let steps = bands.bands();
         assert_eq!(steps.len(), 8);
         assert_eq!((steps[0].min, steps[7].max), (0.0, 4000.0));
-        for (j, band) in steps.iter().enumerate() {
-            assert_eq!(band.color, bands.ramp.land((j as f64 + 0.5) / 8.0));
-        }
 
-        // Each limit moves and goes away, also the first one.
+        // Each inner stop moves and goes away, also the first one.
         let mut bands = bands;
-        assert_eq!(bands.move_to(0, 100.0), 100.0);
-        assert_eq!(bands.move_to(0, -100.0), MIN_BAND);
-        assert_eq!(bands.move_to(6, 9000.0), 4000.0 - MIN_BAND);
+        assert_eq!(bands.move_to(1, 100.0), 100.0);
+        assert_eq!(bands.move_to(1, -100.0), MIN_BAND);
+        assert_eq!(bands.move_to(7, 9000.0), 4000.0 - MIN_BAND);
         assert_eq!(bands.add(0.0), None);
         assert_eq!(bands.add(4000.0), None);
-        while !bands.limits().is_empty() {
-            assert!(bands.remove(0));
+        while bands.stops().len() > 2 {
+            assert!(bands.remove(1));
         }
         let steps = bands.bands();
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].bottom, bands.ramp.land(0.0));
-        assert_eq!(steps[0].top, bands.ramp.land(1.0));
+        assert_eq!(steps[0].bottom, LAND_PALETTE[0]);
+        assert_eq!(steps[0].top, LAND_PALETTE[3]);
 
         let below = Bands::with_range(-4000.0, 0.0, true).unwrap();
         assert_eq!(below.sea(), None);
-        assert_eq!(below.bands()[0].bottom, below.ramp.land(0.0));
+        assert_eq!(below.bands()[0].bottom, LAND_PALETTE[0]);
+        assert!(below.stops().iter().all(|s| s.below == s.above));
     }
 
     #[test]
-    fn a_range_across_zero_that_is_not_a_height_has_one_ramp() {
+    fn a_range_across_zero_that_is_not_a_height_has_one_gradient() {
         let bands = Bands::with_range(-60.0, 60.0, false).unwrap();
         assert_eq!(bands.sea(), None);
-        let limits = [-45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0];
-        assert_eq!(bands.limits(), limits);
-        let steps = bands.bands();
-        assert_eq!(steps.len(), 8);
-        for (j, band) in steps.iter().enumerate() {
-            assert_eq!(band.color, bands.ramp.land((j as f64 + 0.5) / 8.0));
-        }
-        // The limit at zero moves and goes away as each other limit.
+        let expect = [-60.0, -45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0, 60.0];
+        assert_eq!(values(&bands), expect);
+        assert!(bands.stops().iter().all(|s| s.below == s.above));
+        // The stop at zero moves and goes away as each other stop.
         let mut bands = bands;
-        assert_eq!(bands.move_to(3, 5.0), 5.0);
-        assert!(bands.remove(3));
-        assert_eq!(bands.limits().len(), 6);
-        let ramp = bands.ramp.clone();
-        let copy = Bands::from_range_parts(-60.0, 60.0, false, bands.limits(), ramp);
+        assert!(!bands.fixed(4));
+        assert_eq!(bands.move_to(4, 5.0), 5.0);
+        assert!(bands.remove(4));
+        assert_eq!(bands.stops().len(), 8);
+        let copy = Bands::from_range_parts(-60.0, 60.0, false, bands.stops());
         assert_eq!(copy, Some(bands.clone()));
         // The same parts are not the bands of a height.
-        let ramp = bands.ramp.clone();
         assert_eq!(
-            Bands::from_range_parts(-60.0, 60.0, true, bands.limits(), ramp),
+            Bands::from_range_parts(-60.0, 60.0, true, bands.stops()),
             None
         );
     }
@@ -661,16 +831,20 @@ mod tests {
     #[test]
     fn a_range_across_sea_level_has_a_sea_split() {
         let bands = Bands::with_range(-100.0, 300.0, true).unwrap();
-        let limits = [-75.0, -50.0, -25.0, SEA_LEVEL, 75.0, 150.0, 225.0];
-        assert_eq!(bands.limits(), limits);
-        assert_eq!(bands.sea(), Some(3));
+        let expect = [
+            -100.0, -75.0, -50.0, -25.0, SEA_LEVEL, 75.0, 150.0, 225.0, 300.0,
+        ];
+        assert_eq!(values(&bands), expect);
+        assert_eq!(bands.sea(), Some(4));
         let steps = bands.bands();
-        assert_eq!(steps[3].top, bands.ramp.sea(1.0));
-        assert_eq!(steps[4].bottom, bands.ramp.land(0.0));
+        assert_eq!(steps[3].top, SEA_PALETTE[1]);
+        assert_eq!(steps[4].bottom, LAND_PALETTE[0]);
+        assert_eq!(steps[0].bottom, SEA_PALETTE[0]);
+        assert_eq!(steps[7].top, LAND_PALETTE[3]);
 
-        // A small range has fewer limits.
+        // A small range has fewer stops.
         let small = Bands::with_range(0.0, 4.0, true).unwrap();
-        assert_eq!(small.limits(), [1.0, 2.0, 3.0]);
+        assert_eq!(values(&small), [0.0, 1.0, 2.0, 3.0, 4.0]);
 
         assert_eq!(Bands::with_range(5.0, 5.0, true), None);
         assert_eq!(Bands::with_range(5.0, 1.0, true), None);
@@ -680,49 +854,32 @@ mod tests {
 
     #[test]
     fn from_range_parts_needs_sea_level_only_with_a_sea_split() {
-        let ramp = Ramp::default;
-        let land = Ramp {
-            sea: vec![],
-            land: vec![[1, 2, 3]],
-        };
         let bands =
-            Bands::from_range_parts(0.0, 4000.0, true, &[250.0, 1000.0], land.clone()).unwrap();
-        assert_eq!(bands.limits(), [250.0, 1000.0]);
+            Bands::from_range_parts(0.0, 4000.0, true, &plain(&[0.0, 250.0, 1000.0, 4000.0]))
+                .unwrap();
+        assert_eq!(values(&bands), [0.0, 250.0, 1000.0, 4000.0]);
+        assert_eq!(bands.sea(), None);
         assert_eq!((bands.min(), bands.max()), (0.0, 4000.0));
         assert_eq!(bands.level(4000.0), 65535);
-        let none = Bands::from_range_parts(0.0, 4000.0, true, &[], ramp()).unwrap();
-        assert!(none.limits().is_empty());
 
-        // Sea level is an end of the range, and not a limit.
-        assert_eq!(
-            Bands::from_range_parts(0.0, 4000.0, true, &[0.0, 250.0], ramp()),
-            None
-        );
-        assert_eq!(
-            Bands::from_range_parts(0.0, 4000.0, true, &[5000.0], ramp()),
-            None
-        );
-        assert_eq!(
-            Bands::from_range_parts(4000.0, 0.0, true, &[250.0], ramp()),
-            None
-        );
-        let empty = Ramp {
-            sea: vec![[1, 2, 3]],
-            land: vec![],
-        };
-        assert_eq!(
-            Bands::from_range_parts(0.0, 4000.0, true, &[250.0], empty),
-            None
-        );
+        // An empty list gives the stops of the range.
+        let none = Bands::from_range_parts(0.0, 4000.0, true, &[]);
+        assert_eq!(none, Bands::with_range(0.0, 4000.0, true));
+        assert_eq!(Bands::from_range_parts(4000.0, 0.0, true, &[]), None);
 
-        assert!(Bands::from_range_parts(-10.0, 4000.0, true, &[0.0, 250.0], ramp()).is_some());
-        assert_eq!(
-            Bands::from_range_parts(-10.0, 4000.0, true, &[250.0], ramp()),
-            None
-        );
-        assert_eq!(
-            Bands::from_range_parts(-10.0, 4000.0, true, &[0.0, 250.0], land),
-            None
-        );
+        // Sea level is an end of the range, and not a hard stop.
+        let mut hard = plain(&[0.0, 250.0, 4000.0]);
+        hard[0].below = [1, 2, 3];
+        assert_eq!(Bands::from_range_parts(0.0, 4000.0, true, &hard), None);
+
+        let split = plain(&[-10.0, 0.0, 250.0, 4000.0]);
+        let bands = Bands::from_range_parts(-10.0, 4000.0, true, &split).unwrap();
+        assert_eq!(bands.sea(), Some(1));
+        let mut hard = split.clone();
+        hard[1].below = [1, 2, 3];
+        assert!(Bands::from_range_parts(-10.0, 4000.0, true, &hard).is_some());
+        assert_eq!(Bands::from_range_parts(-10.0, 4000.0, false, &hard), None);
+        let land = plain(&[-10.0, 250.0, 4000.0]);
+        assert_eq!(Bands::from_range_parts(-10.0, 4000.0, true, &land), None);
     }
 }

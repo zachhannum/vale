@@ -9,6 +9,7 @@ use vale_app::globe::{StackItem, Tool, WorldView};
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
+use vale_app::ui::gradient::{GRADIENT, PAD as GRADIENT_PAD, stop_x};
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
@@ -626,13 +627,14 @@ fn each_preset_adds_a_layer_with_its_unit_and_its_range() {
         assert_eq!((raster.value_min, raster.value_max), range, "{preset}");
         assert_eq!(raster.face_size, 64, "{preset}");
         assert_eq!(raster_name(&h, raster.id), name);
-        // The bands of the layer have limits in the range.
+        // The bands of the layer have stops in the range.
         let bands = &state.globe.raster_map(raster.id).unwrap().bands;
         assert_eq!((bands.min(), bands.max()), range, "{preset}");
-        let limits = bands.limits();
-        assert!(limits.len() >= 4, "{preset}: {limits:?}");
-        let inside = |limit: &f64| *limit > range.0 && *limit < range.1;
-        assert!(limits.iter().all(inside), "{preset}: {limits:?}");
+        let stops = bands.stops();
+        let inner: Vec<f64> = stops[1..stops.len() - 1].iter().map(|s| s.value).collect();
+        assert!(inner.len() >= 4, "{preset}: {inner:?}");
+        let inside = |value: &f64| *value > range.0 && *value < range.1;
+        assert!(inner.iter().all(inside), "{preset}: {inner:?}");
         // Only the height preset gives a height layer. It has a sea split,
         // and it starts as a sea. Each other layer has one ramp, and it
         // starts at the minimum of its range.
@@ -2447,7 +2449,7 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
 
 #[test]
 fn the_view_options_menu_has_the_graticule_switch() {
-    use vale_app::ui::pad::raster::{ADD_LIMIT, RAMP, RIVERS};
+    use vale_app::ui::pad::raster::RIVERS;
     for size in BOARDS {
         let mut h = painted_pad(size);
         for view in WORLD_VIEWS {
@@ -2512,17 +2514,14 @@ fn the_view_options_menu_has_the_graticule_switch() {
                 break;
             }
             let card = panel(&h, Panel::Layers).unwrap();
-            // A drag on a row or on a heading scrolls. A drag on the bar of
-            // the band limits moves a limit.
+            // A drag up on a row or on the gradient scrolls.
             let inside = |p: &Pos2| p.y > card.top() + 60.0 && p.y < card.bottom() - 10.0;
-            let rows = [IMPORT_HEIGHTMAP, EXPORT_GEOTIFF, ADD_LIMIT];
-            let mut points: Vec<Pos2> = rows
+            let rows = [IMPORT_HEIGHTMAP, EXPORT_GEOTIFF, GRADIENT];
+            let points: Vec<Pos2> = rows
                 .into_iter()
                 .filter_map(|name| control(&h, name))
                 .map(|rect| rect.center())
                 .collect();
-            // The heading of the band limits is below the Ramp row.
-            points.extend(control(&h, RAMP).map(|rect| rect.center_bottom() + vec2(0.0, 20.0)));
             let from = points
                 .into_iter()
                 .filter(inside)
@@ -3218,7 +3217,9 @@ fn open_height(h: &mut Pad) -> RasterId {
 
 #[test]
 fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
-    use vale_app::ui::pad::raster::{ADD_LIMIT, RAMP, SHOW_AS, UNIT, swatch_name};
+    use vale_app::ui::pad::raster::{
+        COLOR, LAND_COLOR, REMOVE_STOP, SEA_COLOR, SHOW_AS, STOP_VALUE, UNIT,
+    };
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = painted_pad(size);
@@ -3232,26 +3233,228 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
             "{what}: a height layer has no unit row"
         );
         // The rows that are on the screen are inside the card.
-        for name in [LAYER_NAME, OPACITY, SHOW_AS, RAMP, ADD_LIMIT] {
+        for name in [LAYER_NAME, OPACITY, SHOW_AS, GRADIENT] {
             if let Some(rect) = control(&h, name) {
                 assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
             }
         }
-        if control(&h, RAMP).is_some() {
-            tap(&mut h, RAMP);
-            check_controls(&h, &format!("{what} with the colors of the ramp"));
-            if control(&h, &swatch_name(false, 0)).is_some() {
-                tap(&mut h, &swatch_name(false, 0));
-                check_controls(&h, &format!("{what} with the color picker"));
-            }
+        scroll_to_gradient(&mut h);
+        tap_handle(&mut h, 1);
+        assert_eq!(
+            h.state().globe.preview.selected,
+            Some((height, 1)),
+            "{what}"
+        );
+        check_controls(&h, &format!("{what} with a selected stop"));
+        for name in [STOP_VALUE, COLOR, REMOVE_STOP] {
+            assert!(control(&h, name).is_some(), "{what}: no {name}");
+        }
+        tap(&mut h, COLOR);
+        check_controls(&h, &format!("{what} with the color picker"));
+        // The stop at sea level has a swatch for each side and no field.
+        let sea = h.state().globe.map.bands.sea().unwrap();
+        tap_handle(&mut h, sea);
+        assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
+        check_controls(&h, &format!("{what} with the stop at sea level"));
+        for name in [SEA_COLOR, LAND_COLOR] {
+            assert!(control(&h, name).is_some(), "{what}: no {name}");
+        }
+        for name in [STOP_VALUE, REMOVE_STOP] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
         }
         assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
     }
 }
 
+/// A tap of a finger at a place.
+fn finger_tap(h: &mut Pad, pos: Pos2) {
+    touch(h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+}
+
+/// A tap of a finger on the handle of a stop.
+fn tap_handle(h: &mut Pad, index: usize) {
+    let pos = handle(h, index);
+    finger_tap(h, pos);
+}
+
+/// The whole area of the gradient control. A part of it can be out of the
+/// card.
+fn gradient_area(h: &Pad) -> Rect {
+    h.get_by_label(GRADIENT).rect()
+}
+
+/// The place of a value on the bar of the gradient control.
+fn on_bar(h: &Pad, value: f64) -> Pos2 {
+    let area = gradient_area(h);
+    let x = stop_x(area, &GRADIENT_PAD, &h.state().globe.map.bands, value);
+    pos2(x, area.top() + GRADIENT_PAD.bar / 2.0)
+}
+
+/// The place of the handle of a stop.
+fn handle(h: &Pad, index: usize) -> Pos2 {
+    let value = h.state().globe.map.bands.stops()[index].value;
+    let area = gradient_area(h);
+    let x = stop_x(area, &GRADIENT_PAD, &h.state().globe.map.bands, value);
+    pos2(
+        x,
+        area.top() + GRADIENT_PAD.bar + GRADIENT_PAD.handles / 2.0,
+    )
+}
+
+/// Scrolls the panel until the gradient control is near the top of the
+/// card, with a drag up on the margin at the left of the rows.
+fn scroll_to_gradient(h: &mut Pad) {
+    for _ in 0..8 {
+        let card = panel(h, Panel::Layers).unwrap();
+        let area = gradient_area(h);
+        if area.top() > card.top() + 40.0 && area.bottom() + 160.0 < card.bottom() {
+            return;
+        }
+        let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
+        let up = (area.top() - card.top() - 200.0).min(from.y - card.top() - 60.0);
+        drag(h, from, from - vec2(0.0, up), None);
+    }
+}
+
 #[test]
-fn a_tap_chooses_each_display_and_a_finger_moves_a_band_limit() {
-    use vale_app::ui::elevation::{BAR_LABEL, limit_y};
+fn a_tap_adds_a_stop_a_drag_moves_it_and_a_pull_down_removes_it() {
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let stops = |h: &Pad| h.state().globe.map.bands.stops().to_vec();
+    let before = stops(&h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    // A tap on the bar between two stops adds a stop there.
+    let (a, b) = (
+        on_bar(&h, before[sea + 1].value),
+        on_bar(&h, before[sea + 2].value),
+    );
+    let at = a.lerp(b, 0.5);
+    finger_tap(&mut h, at);
+    let added = stops(&h);
+    let index = sea + 2;
+    assert_eq!(added.len(), before.len() + 1);
+    assert!(added[index].value > before[sea + 1].value);
+    assert!(added[index].value < before[sea + 2].value);
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+
+    // A sideways drag on the handle moves the stop.
+    let from = handle(&h, index);
+    drag(&mut h, from, from + vec2(40.0, 0.0), None);
+    let moved = stops(&h)[index].value;
+    assert!(
+        moved > added[index].value,
+        "{moved} {:?} {from:?}",
+        added[index]
+    );
+    assert!(moved < added[index + 1].value, "{moved}");
+    assert_eq!(stops(&h).len(), added.len());
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+
+    // A pull down and back up keeps the stop.
+    let from = handle(&h, index);
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for dy in [10.0, 40.0, 80.0, 40.0, 10.0] {
+        touch(&mut h, egui::TouchPhase::Move, from + vec2(0.0, dy), None);
+        h.step();
+    }
+    touch(&mut h, egui::TouchPhase::End, from + vec2(0.0, 10.0), None);
+    h.run_steps(3);
+    assert_eq!(stops(&h).len(), added.len());
+
+    // A pull down far below the handles removes the stop.
+    let from = handle(&h, index);
+    drag(&mut h, from, from + vec2(0.0, 90.0), None);
+    assert_eq!(stops(&h), before);
+    assert_eq!(h.state().globe.preview.selected, None);
+
+    // A fixed stop does not move or go.
+    let from = handle(&h, sea);
+    drag(&mut h, from, from + vec2(20.0, 0.0), None);
+    let from = handle(&h, sea);
+    finger_tap(&mut h, from);
+    drag(&mut h, from, from + vec2(0.0, 90.0), None);
+    assert_eq!(stops(&h), before);
+}
+
+#[test]
+fn a_vertical_drag_on_the_gradient_scrolls_the_panel() {
+    use vale_app::ui::pad::raster::RIVERS;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let mut h = painted_pad(size);
+        open_height(&mut h);
+        scroll_to_gradient(&mut h);
+        let stops = h.state().globe.map.bands.stops().to_vec();
+        // A drag up on the bar scrolls up, and a drag down on a handle that
+        // is not selected scrolls back down.
+        for (what, index, dy) in [("bar", None, -30.0), ("handle", Some(1), 30.0)] {
+            let area = gradient_area(&h);
+            let from = match index {
+                Some(index) => handle(&h, index),
+                None => pos2(area.center().x, area.top() + GRADIENT_PAD.bar / 2.0),
+            };
+            let rivers = h.get_by_label(RIVERS).rect().top();
+            drag(&mut h, from, from + vec2(0.0, dy), None);
+            let moved = h.get_by_label(RIVERS).rect().top() - rivers;
+            assert!(moved * dy > 100.0, "{size:?} {what}: {moved}");
+            assert_eq!(h.state().globe.map.bands.stops(), stops, "{size:?} {what}");
+        }
+        assert_eq!(h.state().globe.preview.selected, None, "{size:?}");
+    }
+}
+
+#[test]
+fn a_tap_on_the_swatch_opens_the_color_picker_and_changes_the_stop() {
+    use vale_app::ui::pad::raster::COLOR;
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    tap_handle(&mut h, 1);
+    assert_eq!(h.state().globe.preview.selected, Some((height, 1)));
+    let before = h.state().globe.map.bands.stops()[1];
+    let swatch = control(&h, COLOR).unwrap();
+    let count = h.state().pad.controls.len();
+    tap(&mut h, COLOR);
+    // The picker is below the Color row: a field row, the color, the
+    // square of saturation and value, and the hue.
+    let card = panel(&h, Panel::Layers).unwrap();
+    let pos = pos2(card.center().x + 40.0, swatch.bottom() + 150.0);
+    assert!(card.contains(pos));
+    finger_tap(&mut h, pos);
+    let after = h.state().globe.map.bands.stops()[1];
+    assert_ne!(after.above, before.above);
+    assert_eq!(after.above, after.below);
+    assert_eq!(after.value, before.value);
+    // A second tap on the swatch closes the picker.
+    tap(&mut h, COLOR);
+    assert_eq!(h.state().pad.controls.len(), count);
+}
+
+#[test]
+fn a_typed_value_moves_the_selected_stop() {
+    use vale_app::ui::pad::raster::STOP_VALUE;
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    let index = sea + 1;
+    tap_handle(&mut h, index);
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    type_text(&mut h, STOP_VALUE, "1,23");
+    assert_eq!(h.state().globe.map.bands.stops()[index].value, 123.0);
+    // A value past the next stop stops short of it.
+    let next = h.state().globe.map.bands.stops()[index + 1].value;
+    type_text(&mut h, STOP_VALUE, "99999");
+    let value = h.state().globe.map.bands.stops()[index].value;
+    assert!(value < next && value > next - 2.0, "{value}");
+}
+
+#[test]
+fn a_tap_chooses_each_display() {
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
     let display = |h: &Pad| h.state().doc.project.raster(height).unwrap().display;
@@ -3264,32 +3467,13 @@ fn a_tap_chooses_each_display_and_a_finger_moves_a_band_limit() {
         tap(&mut h, name);
         assert_eq!(display(&h), shown, "{name}");
     }
-
-    let bar = h.get_by_label(BAR_LABEL).rect();
     let card = panel(&h, Panel::Layers).unwrap();
-    assert!(card.contains_rect(bar), "{bar:?} is not in {card:?}");
-    let bands = h.state().globe.map.bands.clone();
-    // The top limit moves up toward the top of the range.
-    let index = bands.limits().len() - 1;
-    let from = bands.limits()[index];
-    let to = (from + bands.max()) / 2.0 + 300.0;
-    let at = |meters: f64| pos2(bar.left() + 20.0, limit_y(bar, &bands, meters));
-    drag(&mut h, at(from), at(to), None);
-    let moved = h.state().globe.map.bands.limits()[index];
-    assert!(
-        (moved - to).abs() < 40.0,
-        "{from} moved to {moved}, not to {to}"
-    );
-    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
-    assert_eq!(
-        h.state().globe.map.bands.limits().len(),
-        bands.limits().len()
-    );
+    let area = gradient_area(&h);
+    assert!(card.contains_rect(area), "{area:?} is not in {card:?}");
 }
 
 #[test]
 fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame() {
-    use vale_app::ui::elevation::{BAR_LABEL, limit_y};
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[1]);
     let height = open_height(&mut h);
@@ -3330,25 +3514,25 @@ fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame(
     assert!(near(grey, [level; 3]), "{grey:?}");
     tap(&mut h, "Bands");
 
-    // Each frame of the drag of a band limit draws the globe with the
-    // limit of that frame.
-    let bar = h.get_by_label(BAR_LABEL).rect();
+    // Each frame of the drag of a stop draws the globe with the stop of
+    // that frame.
     let bands = h.state().globe.map.bands.clone();
-    let index = bands.limits().iter().position(|m| *m > meters).unwrap();
-    let (from, to) = (bands.limits()[index], bands.limits()[index - 1] + 50.0);
+    let index = bands.stops().iter().position(|s| s.value > meters).unwrap();
+    let to = bands.stops()[index - 1].value + 50.0;
     assert!(to < meters);
-    let at = |value: f64| pos2(bar.left() + 20.0, limit_y(bar, &bands, value));
+    let (from, to) = (handle(&h, index), on_bar(&h, to));
+    let to = pos2(to.x, from.y);
     let before = band_color(&h);
-    touch(&mut h, egui::TouchPhase::Start, at(from), None);
+    touch(&mut h, egui::TouchPhase::Start, from, None);
     h.step();
     for i in 1..=6 {
-        let pos = at(from + (to - from) * f64::from(i) / 6.0);
+        let pos = from.lerp(to, i as f32 / 6.0);
         touch(&mut h, egui::TouchPhase::Move, pos, None);
         h.step();
         let shown = center(&mut h);
         assert!(near(shown, band_color(&h)), "frame {i}: {shown:?}");
     }
-    touch(&mut h, egui::TouchPhase::End, at(to), None);
+    touch(&mut h, egui::TouchPhase::End, to, None);
     h.step();
     assert_ne!(band_color(&h), before);
 }

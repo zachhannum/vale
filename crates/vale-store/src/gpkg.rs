@@ -714,8 +714,8 @@ fn v10(tx: &Transaction) -> rusqlite::Result<()> {
 }
 
 /// The color stops of a raster. The stops of an older raster have the
-/// colors at the edges of its bands. The undo images of the rasters change,
-/// so the undo steps go.
+/// colors at the edges of its bands, and its band limits and ramps go. The
+/// undo images of the rasters change, so the undo steps go.
 fn v11(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN stops TEXT NOT NULL DEFAULT ''")?;
     let rows: Vec<(i64, String)> = {
@@ -743,7 +743,10 @@ fn v11(tx: &Transaction) -> rusqlite::Result<()> {
         )?;
     }
     tx.execute_batch(
-        "DELETE FROM vale_undo_record;
+        "ALTER TABLE vale_raster DROP COLUMN limits;
+         ALTER TABLE vale_raster DROP COLUMN ramp_sea;
+         ALTER TABLE vale_raster DROP COLUMN ramp_land;
+         DELETE FROM vale_undo_record;
          DELETE FROM vale_undo_tile;
          DELETE FROM vale_undo_step;",
     )
@@ -1198,14 +1201,6 @@ fn write_features(
     Ok(())
 }
 
-fn colors_text(colors: &[Rgb]) -> String {
-    let hex: Vec<String> = colors
-        .iter()
-        .map(|[r, g, b]| format!("{r:02x}{g:02x}{b:02x}"))
-        .collect();
-    hex.join(",")
-}
-
 fn parse_color(hex: &str) -> Option<Rgb> {
     let n = u32::from_str_radix(hex, 16).ok()?;
     (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some([
@@ -1220,11 +1215,6 @@ fn parse_colors(text: &str) -> Option<Vec<Rgb>> {
         .filter(|s| !s.is_empty())
         .map(parse_color)
         .collect()
-}
-
-fn limits_text(limits: &[f64]) -> String {
-    let numbers: Vec<String> = limits.iter().map(f64::to_string).collect();
-    numbers.join(",")
 }
 
 fn parse_limits(text: &str) -> Option<Vec<f64>> {
@@ -1315,14 +1305,13 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
     for r in &project.rasters {
         // A replaced row is a deleted row, and the tiles refer to the row.
         tx.execute(
-            "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base, limits,
-               ramp_sea, ramp_land, opacity, display, stops)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base,
+               opacity, display, stops)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT (id) DO UPDATE SET
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
-               base = excluded.base, limits = excluded.limits,
-               ramp_sea = excluded.ramp_sea, ramp_land = excluded.ramp_land,
+               base = excluded.base,
                opacity = excluded.opacity, display = excluded.display,
                stops = excluded.stops",
             params![
@@ -1332,9 +1321,6 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 r.value_min,
                 r.value_max,
                 r.base,
-                limits_text(&r.limits),
-                colors_text(&r.ramp_sea),
-                colors_text(&r.ramp_land),
                 f64::from(clamp_opacity(r.opacity)),
                 r.display.id(),
                 stops_text(&r.stops),
@@ -1412,8 +1398,7 @@ fn write_tiles(
 
 fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
     let mut rows = conn.prepare(
-        "SELECT id, face_size, unit, value_min, value_max, base, limits, ramp_sea, ramp_land,
-           opacity, display, stops
+        "SELECT id, face_size, unit, value_min, value_max, base, opacity, display, stops
          FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
@@ -1425,8 +1410,8 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
         let text = |i: usize| r.get::<_, String>(i);
         rasters.push(Raster {
             id: RasterId(id),
-            opacity: clamp_opacity(r.get::<_, f64>(9)? as f32),
-            display: RasterDisplay::from_id(&text(10)?).unwrap_or_default(),
+            opacity: clamp_opacity(r.get::<_, f64>(6)? as f32),
+            display: RasterDisplay::from_id(&text(7)?).unwrap_or_default(),
             face_size: u32::try_from(face_size)
                 .ok()
                 .filter(|&n| n > 0)
@@ -1435,10 +1420,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
             value_min: r.get(3)?,
             value_max: r.get(4)?,
             base: u16::try_from(base).map_err(|_| bad("base"))?,
-            limits: parse_limits(&text(6)?).ok_or_else(|| bad("band limits"))?,
-            ramp_sea: parse_colors(&text(7)?).ok_or_else(|| bad("ramp"))?,
-            ramp_land: parse_colors(&text(8)?).ok_or_else(|| bad("ramp"))?,
-            stops: parse_stops(&text(11)?),
+            stops: parse_stops(&text(8)?),
         });
     }
     Ok(rasters)
@@ -2134,6 +2116,15 @@ mod tests {
 
     /// A project with a heightmap and a second raster of another face size.
     /// The two raster layers are below the vector layers.
+    /// A stop of one color.
+    fn stop(value: f64) -> Stop {
+        Stop {
+            value,
+            below: [1, 2, 3],
+            above: [1, 2, 3],
+        }
+    }
+
     fn rasters() -> (Project, RasterId, RasterId) {
         let mut project = sample();
         let height = project.add_raster("Height".into(), 8192, "m".into(), -6000.0, 6000.0);
@@ -2147,9 +2138,6 @@ mod tests {
             value_min: -6000.0,
             value_max: 6000.0,
             base: 19114,
-            limits: vec![-4000.0, -0.1, 0.0, 1e-7, 1234.5678],
-            ramp_sea: vec![[0, 1, 2], [250, 128, 7]],
-            ramp_land: vec![[255, 255, 255]],
             stops: vec![
                 Stop {
                     value: -6000.0,
@@ -2227,7 +2215,7 @@ mod tests {
         // A save of the project alone keeps the tiles.
         let mut next = loaded.clone();
         next.world.name = "Other".into();
-        next.raster_mut(rain).unwrap().limits = vec![5.0];
+        next.set_raster_stops(rain, vec![stop(5.0)]);
         file.save(&next).unwrap();
         assert_eq!(tiles_of(&file, next.raster(rain).unwrap()), wet);
 
@@ -2564,8 +2552,8 @@ mod tests {
             assert_eq!((raster.value_min, raster.value_max), (0.0, 5000.0));
             assert_eq!((raster.base, raster.opacity), (7, 1.0));
             assert_eq!(raster.display, RasterDisplay::Bands);
-            assert_eq!(raster.limits, [250.0, 1000.0]);
-            assert_eq!(raster.ramp_sea, [[0, 1, 2]]);
+            let values: Vec<f64> = raster.stops.iter().map(|s| s.value).collect();
+            assert_eq!(values, [0.0, 250.0, 1000.0, 5000.0]);
         }
         assert_eq!(tiles_of(&file, loaded.raster(height).unwrap()), high);
         assert_eq!(tiles_of(&file, loaded.raster(rain).unwrap()), wet);
@@ -2581,9 +2569,6 @@ mod tests {
                 "value_min",
                 "value_max",
                 "base",
-                "limits",
-                "ramp_sea",
-                "ramp_land",
                 "opacity",
                 "display",
                 "stops"
@@ -2772,7 +2757,7 @@ mod tests {
         // The step of a new raster layer holds the layer and the raster.
         let rain = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
         let rain_layer = project.raster_layer(rain).unwrap().id;
-        project.raster_mut(rain).unwrap().limits = vec![250.0];
+        project.set_raster_stops(rain, vec![stop(250.0)]);
         project.move_layer(rain_layer, 2);
         project.set_layer_visible(rain_layer, false);
         file.save(&project).unwrap();
@@ -2818,7 +2803,7 @@ mod tests {
         assert_eq!(names(project), ["Height", "Land", "Rain", "Roads"]);
         let layer = project.raster_layer(rain).unwrap();
         assert_eq!((layer.id, layer.visible), (rain_layer, false));
-        assert_eq!(project.raster(rain).unwrap().limits, [250.0]);
+        assert_eq!(project.raster(rain).unwrap().stops, [stop(250.0)]);
         let mut sorted = wet.clone();
         sorted.sort_by_key(|(k, _)| (k.face, k.row, k.column));
         assert_eq!(tiles_of(&file, project.raster(rain).unwrap()), sorted);
@@ -2950,19 +2935,25 @@ mod tests {
         assert_eq!(loaded.raster(rain).unwrap().display, RasterDisplay::Bands);
     }
 
+    /// The band limits and the ramps of a raster before format version 11.
+    const V10_COLUMNS: &str = "ALTER TABLE vale_raster ADD COLUMN limits TEXT NOT NULL DEFAULT '';
+         ALTER TABLE vale_raster ADD COLUMN ramp_sea TEXT NOT NULL DEFAULT '';
+         ALTER TABLE vale_raster ADD COLUMN ramp_land TEXT NOT NULL DEFAULT '';";
+
     #[test]
     fn the_rasters_of_a_file_of_version_9_show_bands() {
         let dir = tempfile::tempdir().unwrap();
         let (mut project, height, rain) = rasters();
         project.set_raster_opacity(rain, 0.5);
-        // The limits of the height are not valid, so it gets no stops.
+        // The height has no band limits, so it gets no stops.
         project.set_raster_stops(height, Vec::new());
         drop(ProjectFile::create(&path(&dir), &project).unwrap());
         let conn = Connection::open(path(&dir)).unwrap();
-        conn.execute_batch(
+        conn.execute_batch(&format!(
             "ALTER TABLE vale_raster DROP COLUMN display;
-             ALTER TABLE vale_raster DROP COLUMN stops",
-        )
+             ALTER TABLE vale_raster DROP COLUMN stops;
+             {V10_COLUMNS}"
+        ))
         .unwrap();
         drop(conn);
         set_format_version(&dir, 9);
@@ -2984,8 +2975,11 @@ mod tests {
         let (project, height, rain) = rasters();
         drop(ProjectFile::create(&path(&dir), &project).unwrap());
         let conn = Connection::open(path(&dir)).unwrap();
-        conn.execute_batch("ALTER TABLE vale_raster DROP COLUMN stops")
-            .unwrap();
+        conn.execute_batch(&format!(
+            "ALTER TABLE vale_raster DROP COLUMN stops;
+             {V10_COLUMNS}"
+        ))
+        .unwrap();
         // The default bands of a height in meters.
         conn.execute(
             "UPDATE vale_raster SET limits = ?2, ramp_sea = ?3, ramp_land = ?4 WHERE id = ?1",
@@ -3482,18 +3476,6 @@ mod tests {
             .execute("UPDATE vale_raster_tile SET tile_column = 3, level = 1", [])
             .unwrap();
         assert!(load(&file, rain).unwrap_err().contains("key"));
-
-        file.conn
-            .execute(
-                "UPDATE vale_raster SET ramp_sea = '00ff0g' WHERE id = 0",
-                [],
-            )
-            .unwrap();
-        drop(file);
-        match ProjectFile::open(&path(&dir)) {
-            Err(StoreError::Corrupt(what)) => assert!(what.contains("ramp"), "{what}"),
-            other => panic!("{:?}", other.map(|x| x.1)),
-        }
     }
 
     /// Ground that does not compress.

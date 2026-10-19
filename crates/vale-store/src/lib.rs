@@ -226,12 +226,6 @@ pub struct Raster {
     pub value_max: f64,
     /// The pixel of each place that has no tile.
     pub base: u16,
-    /// The band limits, as values in ascending order.
-    pub limits: Vec<f64>,
-    /// The colors of the ramp below sea level.
-    pub ramp_sea: Vec<Rgb>,
-    /// The colors of the ramp above sea level.
-    pub ramp_land: Vec<Rgb>,
     /// The color stops of the ramp, in ascending order of value. An empty
     /// list gives the default bands of the range.
     pub stops: Vec<Stop>,
@@ -386,9 +380,6 @@ impl Project {
             value_min,
             value_max,
             base: 0,
-            limits: Vec::new(),
-            ramp_sea: Vec::new(),
-            ramp_land: Vec::new(),
             stops: Vec::new(),
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());

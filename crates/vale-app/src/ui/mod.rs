@@ -24,6 +24,7 @@ pub mod browser;
 pub mod canvas;
 pub mod elevation;
 pub mod globe;
+pub mod gradient;
 pub mod inspector;
 pub mod pad;
 pub mod panels;

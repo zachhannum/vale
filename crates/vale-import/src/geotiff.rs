@@ -459,9 +459,6 @@ mod tests {
             value_min: -40.0,
             value_max: 25.535,
             base: 0,
-            limits: Vec::new(),
-            ramp_sea: Vec::new(),
-            ramp_land: Vec::new(),
             stops: Vec::new(),
             opacity: 1.0,
         };

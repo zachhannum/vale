@@ -95,17 +95,25 @@ fn hit(
         Some(on) => egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name),
         None => egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name),
     });
+    if enabled {
+        push(ui, controls, rect, name);
+    }
+    resp
+}
+
+/// Adds a control to the list, unless a scroll area cuts it to less than
+/// the touch size.
+fn push(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str) {
     let whole = rect;
     let rect = rect.intersect(ui.clip_rect());
     let cut = |whole: f32, part: f32| part < TOUCH.min(whole);
     let cut = cut(whole.width(), rect.width()) || cut(whole.height(), rect.height());
-    if enabled && rect.is_positive() && !cut {
+    if rect.is_positive() && !cut {
         controls.push(Control {
             name: name.to_owned(),
             rect,
         });
     }
-    resp
 }
 
 /// The space between the highlight of a control and the edge of its touch
@@ -763,10 +771,7 @@ pub fn text_field(
         .text_color(color)
         .vertical_align(egui::Align::Center);
     let resp = ui.put(inner, edit);
-    controls.push(Control {
-        name: name.to_owned(),
-        rect: field,
-    });
+    push(ui, controls, field, name);
     resp
 }
 
@@ -907,10 +912,7 @@ pub fn value_field(
         .horizontal_align(egui::Align::RIGHT)
         .vertical_align(egui::Align::Center);
     let resp = ui.put(inner, edit);
-    controls.push(Control {
-        name: name.to_owned(),
-        rect: field,
-    });
+    push(ui, controls, field, name);
     resp
 }
 
@@ -989,6 +991,19 @@ pub fn tap_area(
     hit(ui, controls, rect, name, Sense::click(), enabled, None)
 }
 
+/// A rectangle that takes a tap and a drag.
+pub fn drag_area(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str) -> Response {
+    hit(
+        ui,
+        controls,
+        rect,
+        name,
+        Sense::click_and_drag(),
+        true,
+        None,
+    )
+}
+
 /// A button with a text on the accent color. Its right edge and its middle
 /// are at `right`.
 pub fn accent_button(
@@ -1058,4 +1073,169 @@ pub fn button_row_in(
         theme::CANVAS,
     );
     resp
+}
+
+/// The height of the square of saturation and value of the color picker.
+const PICKER_SQUARE: f32 = 180.0;
+/// The number of cells along each side of the meshes of the color picker.
+const PICKER_CELLS: usize = 24;
+
+/// The color as the code of six hex digits.
+pub fn hex_text(color: [u8; 3]) -> String {
+    format!("{:02X}{:02X}{:02X}", color[0], color[1], color[2])
+}
+
+/// The color of a code of six hex digits, with or without a `#` before it.
+pub fn parse_hex(text: &str) -> Option<[u8; 3]> {
+    let text = text.trim().trim_start_matches('#');
+    if text.len() != 6 || !text.is_ascii() {
+        return None;
+    }
+    let byte = |at: usize| u8::from_str_radix(&text[at..at + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// A color picker for a finger: a square of saturation and value, a strip
+/// of hues, and a field for the hex code. `name` starts the names of its
+/// controls. Returns true if the user changed the color.
+pub fn color_picker(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    color: &mut [u8; 3],
+) -> bool {
+    use egui::ecolor::Hsva;
+    // The hue stays while the color is grey, so it is kept between frames.
+    let id = ui.id().with(name).with("hsva");
+    let kept: Option<(Hsva, [u8; 3])> = ui.data(|data| data.get_temp(id));
+    let mut hsva = match kept {
+        Some((hsva, rgb)) if rgb == *color => hsva,
+        _ => Hsva::from_srgb(*color),
+    };
+    let before = *color;
+    let width = ui.available_width();
+    let fill = |h: f32, s: f32, v: f32| Color32::from(Hsva::new(h, s, v, 1.0));
+
+    let (square, _) = ui.allocate_exact_size(vec2(width, PICKER_SQUARE), Sense::hover());
+    let shade = format!("{name} shade");
+    let resp = hit(
+        ui,
+        controls,
+        square,
+        &shade,
+        Sense::click_and_drag(),
+        true,
+        None,
+    );
+    let mut moved = false;
+    if let Some(pos) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
+    {
+        hsva.s = ((pos.x - square.left()) / square.width()).clamp(0.0, 1.0);
+        hsva.v = (1.0 - (pos.y - square.top()) / square.height()).clamp(0.0, 1.0);
+        moved = true;
+    }
+    let mut mesh = egui::Mesh::default();
+    let n = PICKER_CELLS;
+    for row in 0..=n {
+        for col in 0..=n {
+            let (s, v) = (col as f32 / n as f32, 1.0 - row as f32 / n as f32);
+            let at = pos2(
+                square.left() + s * square.width(),
+                square.top() + (1.0 - v) * square.height(),
+            );
+            mesh.colored_vertex(at, fill(hsva.h, s, v));
+        }
+    }
+    let corner = |row: usize, col: usize| (row * (n + 1) + col) as u32;
+    for row in 0..n {
+        for col in 0..n {
+            let (a, b) = (corner(row, col), corner(row, col + 1));
+            let (c, d) = (corner(row + 1, col + 1), corner(row + 1, col));
+            mesh.add_triangle(a, b, c);
+            mesh.add_triangle(a, c, d);
+        }
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+    let at = pos2(
+        square.left() + hsva.s * square.width(),
+        square.top() + (1.0 - hsva.v) * square.height(),
+    );
+    ui.painter()
+        .circle_stroke(at, THUMB / 2.0, egui::Stroke::new(3.0, Color32::BLACK));
+    ui.painter()
+        .circle_stroke(at, THUMB / 2.0, egui::Stroke::new(1.5, Color32::WHITE));
+    ui.add_space(8.0);
+
+    let (strip, _) = ui.allocate_exact_size(vec2(width, TOUCH), Sense::hover());
+    let hue = format!("{name} hue");
+    let resp = hit(
+        ui,
+        controls,
+        strip,
+        &hue,
+        Sense::click_and_drag(),
+        true,
+        None,
+    );
+    if let Some(pos) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
+    {
+        hsva.h = ((pos.x - strip.left()) / strip.width()).clamp(0.0, 1.0);
+        moved = true;
+    }
+    let bar = strip.shrink2(vec2(0.0, 8.0));
+    let mut mesh = egui::Mesh::default();
+    for col in 0..=n {
+        let h = col as f32 / n as f32;
+        let x = bar.left() + h * bar.width();
+        mesh.colored_vertex(pos2(x, bar.top()), fill(h, 1.0, 1.0));
+        mesh.colored_vertex(pos2(x, bar.bottom()), fill(h, 1.0, 1.0));
+    }
+    for col in 0..n as u32 {
+        let at = 2 * col;
+        mesh.add_triangle(at, at + 1, at + 3);
+        mesh.add_triangle(at, at + 3, at + 2);
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+    let x = bar.left() + hsva.h * bar.width();
+    let thumb = Rect::from_center_size(pos2(x, strip.center().y), vec2(8.0, TOUCH - 8.0));
+    ui.painter().rect_filled(thumb, 3.0, theme::TEXT);
+    ui.painter().rect_stroke(
+        thumb,
+        3.0,
+        egui::Stroke::new(1.0, Color32::BLACK),
+        egui::StrokeKind::Outside,
+    );
+    if moved {
+        *color = hsva.to_srgb();
+    }
+
+    let text_id = ui.id().with(name).with("hex");
+    let mut text: String = ui
+        .data(|data| data.get_temp(text_id))
+        .unwrap_or_else(|| hex_text(*color));
+    let valid = parse_hex(&text).is_some();
+    let field = text_field(
+        ui,
+        controls,
+        &format!("{name} hex"),
+        "Hex",
+        None,
+        &mut text,
+        valid,
+    );
+    if field.changed()
+        && let Some(typed) = parse_hex(&text)
+    {
+        *color = typed;
+        hsva = Hsva::from_srgb(typed);
+    }
+    if field.has_focus() {
+        ui.data_mut(|data| data.insert_temp(text_id, text));
+    } else {
+        ui.data_mut(|data| data.remove::<String>(text_id));
+    }
+    ui.data_mut(|data| data.insert_temp(id, (hsva, *color)));
+    *color != before
 }

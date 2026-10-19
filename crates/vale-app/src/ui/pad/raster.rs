@@ -1,52 +1,46 @@
-//! The Style section of the panel of a raster layer: the display, the
-//! ramp, and the band limits.
+//! The Style section of the panel of a raster layer: the display and the
+//! color stops.
 
 use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId};
-use vale_terrain::{Bands, Rgb};
+use vale_terrain::{Bands, Rgb, Side};
 
 use super::geometry::TOUCH;
+use super::icons::{self, Icon};
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
-use crate::ui::{AppState, elevation};
+use crate::ui::{AppState, elevation, gradient};
 use crate::world;
 
 /// The name of the segmented control of the displays.
 pub const SHOW_AS: &str = "Show as";
-/// The name of the row that opens and closes the colors of the ramp.
-pub const RAMP: &str = "Ramp";
-/// The name of the field of the selected band limit.
-pub const LIMIT: &str = "Band limit";
-pub const ADD_LIMIT: &str = "Add a limit";
-pub const REMOVE_LIMIT: &str = "Remove the limit";
+/// The name of the field of the selected stop.
+pub const STOP_VALUE: &str = "Stop value";
+/// The name of the swatch of a stop.
+pub const COLOR: &str = "Color";
+/// The names of the swatches of the stop at sea level.
+pub const SEA_COLOR: &str = "Sea";
+pub const LAND_COLOR: &str = "Land";
+pub const REMOVE_STOP: &str = "Remove the stop";
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
 pub const RIVERS: &str = "Rivers";
 pub const RIVER_WIDTH: &str = "River width";
 
-/// A touch this near to a band limit takes the limit, in points.
-const GRAB: f32 = TOUCH / 2.0;
 /// The height of the heading of a section.
 const HEADING: f32 = 40.0;
+/// The place of the swatches in the Color row.
+const SWATCHES: f32 = 92.0;
 
 /// The state of the Style section of the iPad layout.
 #[derive(Default)]
 pub struct StyleState {
     /// The text of the unit field while the user types.
     unit: Option<(RasterId, String)>,
-    /// The text of the field of the selected limit while the user types.
-    limit: Option<(RasterId, usize, String)>,
-    /// The colors of the ramp of this layer are open.
-    ramp: Option<RasterId>,
-    /// The color of the ramp that the color picker edits: `true` for a sea
-    /// color, and the index of the color.
-    swatch: Option<(bool, usize)>,
-}
-
-/// The name of the swatch of a color of the ramp.
-pub fn swatch_name(sea: bool, index: usize) -> String {
-    let side = if sea { "Sea" } else { "Land" };
-    format!("{side} color {}", index + 1)
+    /// The text of the field of the selected stop while the user types.
+    value: Option<(RasterId, usize, String)>,
+    /// The color of a stop that the color picker edits.
+    swatch: Option<(RasterId, usize, Side)>,
 }
 
 /// The heading of a section of a panel.
@@ -81,8 +75,8 @@ pub fn unit_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
     state.pad.style.unit = Some((id, text));
 }
 
-/// The Style section: the display, the ramp, and the band limits, and then
-/// the rivers of a height layer.
+/// The Style section: the display and the color stops, and then the
+/// rivers of a height layer.
 pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -104,52 +98,21 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     let Some(bands) = globe.bands_mut(id) else {
         return;
     };
-    if ramp_row(ui, controls, bands).clicked() {
-        style.ramp = if style.ramp == Some(id) {
-            None
-        } else {
-            Some(id)
-        };
-        style.swatch = None;
-    }
-    if style.ramp == Some(id) {
-        ramp_colors(ui, controls, bands, &mut style.swatch);
-    }
-
-    heading(ui, "Band limits");
     let before = selected;
+    ui.add_space(8.0);
     ui.scope(|ui| {
         ui.visuals_mut().override_text_color = Some(theme::MUTE);
-        elevation::limit_bar(ui, bands, &mut selected, display, &unit, GRAB);
+        let m = &gradient::PAD;
+        gradient::editor(ui, Some(controls), m, bands, &mut selected, display, &unit);
     });
-    ui.add_space(8.0);
     if selected != before {
-        style.limit = None;
+        style.value = None;
+        style.swatch = None;
     }
-    let count = bands.limits().len();
-    match selected.filter(|index| *index < count) {
-        Some(index) => {
-            limit_field(ui, controls, bands, &mut style.limit, id, index, &unit);
-            if widgets::button_row_in(ui, controls, REMOVE_LIMIT, true, theme::raise()).clicked()
-                && bands.remove(index)
-            {
-                selected = None;
-                style.limit = None;
-            }
-        }
-        None => selected = None,
+    match selected {
+        Some(index) => stop_rows(ui, controls, bands, style, id, index, &unit, &mut selected),
+        None => note(ui, gradient::HINT),
     }
-    let full = bands.limits().len() + 1 >= vale_terrain::MAX_BANDS;
-    if widgets::button_row(ui, controls, ADD_LIMIT, !full).clicked() {
-        selected = bands.add(elevation::new_limit(bands));
-        style.limit = None;
-    }
-    let hint = if selected.is_some() {
-        "Each raster layer has its own band limits."
-    } else {
-        elevation::BAR_HINT
-    };
-    note(ui, hint);
 
     let preview = &mut state.globe.preview;
     preview.selected = selected.map(|index| (id, index));
@@ -180,124 +143,105 @@ fn color32(c: Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(c[0], c[1], c[2])
 }
 
-/// The Ramp row: the label, and the colors of the ramp from the lowest
-/// value at the left to the highest at the right. A tap opens the colors.
-fn ramp_row(ui: &mut egui::Ui, controls: &mut Controls, bands: &Bands) -> egui::Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-    let resp = widgets::tap_area(ui, controls, rect, RAMP, true);
-    let at = pos2(rect.left(), rect.center().y);
-    ui.painter()
-        .text(at, Align2::LEFT_CENTER, RAMP, theme::body(), theme::MUTE);
-    let strip = Rect::from_min_max(
-        pos2(rect.left() + 92.0, rect.center().y - 10.0),
-        pos2(rect.right(), rect.center().y + 10.0),
-    );
-    let x_of = |value: f64| {
-        let fraction = elevation::bar_fraction(bands, value) as f32;
-        strip.left() + fraction * strip.width()
-    };
-    let mut mesh = egui::Mesh::default();
-    for band in bands.bands() {
-        let (left, right) = (x_of(band.min), x_of(band.max));
-        let at = mesh.vertices.len() as u32;
-        let (low, high) = (color32(band.bottom), color32(band.top));
-        mesh.colored_vertex(pos2(left, strip.top()), low);
-        mesh.colored_vertex(pos2(right, strip.top()), high);
-        mesh.colored_vertex(pos2(right, strip.bottom()), high);
-        mesh.colored_vertex(pos2(left, strip.bottom()), low);
-        mesh.add_triangle(at, at + 1, at + 2);
-        mesh.add_triangle(at, at + 2, at + 3);
-    }
-    ui.painter().add(egui::Shape::mesh(mesh));
-    resp
-}
-
-/// The colors of the ramp as swatches. A tap on a swatch opens the color
-/// picker below the swatches.
-fn ramp_colors(
+/// The rows of the selected stop: its value, and its colors with the
+/// button that removes it. A tap on a swatch opens the color picker below.
+#[allow(clippy::too_many_arguments)]
+fn stop_rows(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     bands: &mut Bands,
-    swatch: &mut Option<(bool, usize)>,
+    style: &mut StyleState,
+    id: RasterId,
+    index: usize,
+    unit: &str,
+    selected: &mut Option<usize>,
 ) {
-    let split = bands.sea().is_some();
-    let sides: &[bool] = if split { &[true, false] } else { &[false] };
-    for &sea in sides {
-        let colors = if sea {
-            &bands.ramp.sea
-        } else {
-            &bands.ramp.land
+    let fixed = bands.fixed(index);
+    if fixed {
+        let span = bands.max() - bands.min();
+        let value = bands.stops()[index].value;
+        widgets::value_row(ui, "Value", &world::value_text(value, span, unit));
+    } else {
+        value_field(ui, controls, bands, &mut style.value, id, index, unit);
+    }
+
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let y = rect.center().y;
+    let at = pos2(rect.left(), y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, "Color", theme::body(), theme::MUTE);
+    let stop = bands.stops()[index];
+    let sides: &[(Side, &str)] = if bands.sea() == Some(index) {
+        &[(Side::Below, SEA_COLOR), (Side::Above, LAND_COLOR)]
+    } else {
+        &[(Side::Above, COLOR)]
+    };
+    let mut x = rect.left() + SWATCHES;
+    for &(side, name) in sides {
+        let place = Rect::from_min_size(pos2(x, y - TOUCH / 2.0), vec2(TOUCH, TOUCH));
+        let resp = widgets::tap_area(ui, controls, place, name, true);
+        let color = match side {
+            Side::Below => stop.below,
+            Side::Above => stop.above,
         };
-        let label = match (split, sea) {
-            (false, _) => "Colors",
-            (true, true) => "Sea",
-            (true, false) => "Land",
+        let open = style.swatch == Some((id, index, side));
+        let inner = place.shrink(widgets::HIGHLIGHT_INSET + 2.0);
+        let radius = theme::CONTROL_RADIUS - 2.0;
+        let painter = ui.painter();
+        painter.rect_filled(inner, radius, color32(color));
+        let stroke = match open {
+            true => egui::Stroke::new(2.0, theme::TEXT),
+            false => egui::Stroke::new(1.0, theme::divider()),
         };
-        let row = ui.available_width();
-        let per_row = ((row / TOUCH).floor() as usize).max(1);
-        let rows = colors.len().div_ceil(per_row).max(1);
-        let size = vec2(row, 22.0 + rows as f32 * TOUCH);
-        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-        let at = pos2(rect.left(), rect.top() + 11.0);
-        ui.painter()
-            .text(at, Align2::LEFT_CENTER, label, theme::small(), theme::MUTE);
-        for (index, color) in colors.iter().enumerate() {
-            let (col, line) = (index % per_row, index / per_row);
-            let min = pos2(
-                rect.left() + col as f32 * TOUCH,
-                rect.top() + 22.0 + line as f32 * TOUCH,
-            );
-            let place = Rect::from_min_size(min, vec2(TOUCH, TOUCH));
-            let name = swatch_name(sea, index);
-            let resp = widgets::tap_area(ui, controls, place, &name, true);
-            let on = *swatch == Some((sea, index));
-            let inner = place.shrink(widgets::HIGHLIGHT_INSET + 2.0);
-            ui.painter()
-                .rect_filled(inner, theme::CONTROL_RADIUS - 2.0, color32(*color));
-            if on {
-                let stroke = egui::Stroke::new(2.0, theme::TEXT);
-                ui.painter().rect_stroke(
-                    inner,
-                    theme::CONTROL_RADIUS - 2.0,
-                    stroke,
-                    egui::StrokeKind::Outside,
-                );
-            }
-            if resp.clicked() {
-                *swatch = if on { None } else { Some((sea, index)) };
-            }
+        painter.rect_stroke(inner, radius, stroke, egui::StrokeKind::Outside);
+        x = place.right() + 4.0;
+        if sides.len() > 1 {
+            let at = pos2(x, y);
+            let label = painter.text(at, Align2::LEFT_CENTER, name, theme::small(), theme::MUTE);
+            x = label.right() + 16.0;
+        }
+        if resp.clicked() {
+            style.swatch = if open { None } else { Some((id, index, side)) };
         }
     }
-    let Some((sea, index)) = *swatch else {
+    if !fixed {
+        let place = Rect::from_min_size(
+            pos2(rect.right() - TOUCH, y - TOUCH / 2.0),
+            vec2(TOUCH, TOUCH),
+        );
+        let resp = widgets::tap_area(ui, controls, place, REMOVE_STOP, true);
+        if resp.is_pointer_button_down_on() {
+            let back = place.shrink(widgets::HIGHLIGHT_INSET);
+            ui.painter()
+                .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+        }
+        icons::paint(ui.painter(), place, Icon::Close, 22.0, theme::WARN);
+        if resp.clicked() && bands.remove(index) {
+            *selected = None;
+            style.value = None;
+            style.swatch = None;
+            return;
+        }
+    }
+
+    let Some((_, _, side)) = style.swatch.filter(|s| s.0 == id && s.1 == index) else {
         return;
     };
-    let colors = if sea {
-        &mut bands.ramp.sea
-    } else {
-        &mut bands.ramp.land
-    };
-    let Some(color) = colors.get_mut(index) else {
-        *swatch = None;
-        return;
+    let color = match side {
+        Side::Below => stop.below,
+        Side::Above => stop.above,
     };
     ui.add_space(8.0);
-    ui.scope(|ui| {
-        let width = ui.available_width();
-        let spacing = ui.spacing_mut();
-        spacing.slider_width = width;
-        spacing.interact_size.y = TOUCH;
-        let mut picked = color32(*color);
-        let alpha = egui::color_picker::Alpha::Opaque;
-        if egui::color_picker::color_picker_color32(ui, &mut picked, alpha) {
-            *color = [picked.r(), picked.g(), picked.b()];
-        }
-    });
+    let mut picked = color;
+    if widgets::color_picker(ui, controls, COLOR, &mut picked) {
+        bands.set_color(index, side, picked);
+    }
     ui.add_space(8.0);
 }
 
-/// The field of the selected limit. The value changes when the text is a
-/// number.
-fn limit_field(
+/// The field of the value of the selected stop. The stop moves when the
+/// text is a number.
+fn value_field(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     bands: &mut Bands,
@@ -307,7 +251,7 @@ fn limit_field(
     unit: &str,
 ) {
     let span = bands.max() - bands.min();
-    let value = bands.limits()[index];
+    let value = bands.stops()[index].value;
     let shown = world::value_text(value, span, "");
     let mut edit = match text.take() {
         Some((of, at, edit)) if of == id && at == index => edit,
@@ -317,8 +261,8 @@ fn limit_field(
     let resp = widgets::value_field(
         ui,
         controls,
-        LIMIT,
-        LIMIT,
+        STOP_VALUE,
+        "Value",
         unit,
         &mut edit,
         parsed.is_some(),
@@ -356,5 +300,16 @@ mod tests {
         assert_eq!(parse_value("-3.5"), Some(-3.5));
         assert_eq!(parse_value("abc"), None);
         assert_eq!(parse_value("inf"), None);
+    }
+
+    #[test]
+    fn a_hex_code_gives_its_color() {
+        use super::widgets::{hex_text, parse_hex};
+        assert_eq!(parse_hex("#1A2b3C"), Some([0x1a, 0x2b, 0x3c]));
+        assert_eq!(parse_hex(" ff0000 "), Some([255, 0, 0]));
+        assert_eq!(parse_hex("ff00"), None);
+        assert_eq!(parse_hex("gg0000"), None);
+        assert_eq!(parse_hex("ÿÿÿ"), None);
+        assert_eq!(hex_text([1, 171, 255]), "01ABFF");
     }
 }

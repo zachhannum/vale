@@ -74,7 +74,7 @@ mod tests {
     fn each_band_starts_where_the_band_below_ends() {
         let bands = Bands::default();
         let (uniforms, count) = band_uniforms(&bands);
-        assert_eq!(count, bands.limits().len() + 1);
+        assert_eq!(count, bands.stops().len() - 1);
         assert_eq!(uniforms[0][0][3], 0.0);
         assert_eq!(uniforms[count - 1][1][3], 1.0);
         for pair in uniforms[..count].windows(2) {
