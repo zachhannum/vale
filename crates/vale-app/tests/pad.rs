@@ -184,8 +184,13 @@ fn check_controls(h: &Pad, what: &str) {
     let in_more = h.state().pad.more_rect.is_some();
     let in_add = h.state().pad.add_rect.is_some();
     let in_list = h.state().pad.projections_rect.is_some();
-    let popup =
-        in_menu || in_more || in_add || in_list || h.state().pad.view_options_rect.is_some();
+    let in_stop = h.state().pad.style.card.is_some();
+    let popup = in_menu
+        || in_more
+        || in_add
+        || in_list
+        || in_stop
+        || h.state().pad.view_options_rect.is_some();
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -220,13 +225,27 @@ fn check_controls(h: &Pad, what: &str) {
                     .contains(&name);
                 let rows = [NEW_RASTER, "Lines", "Points", "Polygons", IMPORT_HEIGHTMAP];
                 let add = in_add && rows.contains(&name);
-                menu || kind || more || add || (in_menu && name == "Projection")
+                let stop = in_stop
+                    && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
+                menu || kind || more || add || stop || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
     }
+}
+
+/// A control of the card of the selected stop.
+fn raster_stop(name: &str) -> bool {
+    use vale_app::ui::pad::raster;
+    [
+        raster::STOP_VALUE,
+        raster::SEA_COLOR,
+        raster::LAND_COLOR,
+        raster::REMOVE_STOP,
+    ]
+    .contains(&name)
 }
 
 #[test]
@@ -3246,12 +3265,16 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
             "{what}"
         );
         check_controls(&h, &format!("{what} with a selected stop"));
-        for name in [STOP_VALUE, COLOR, REMOVE_STOP] {
+        let shade = format!("{COLOR} shade");
+        for name in [STOP_VALUE, &shade, REMOVE_STOP] {
             assert!(control(&h, name).is_some(), "{what}: no {name}");
         }
-        tap(&mut h, COLOR);
-        check_controls(&h, &format!("{what} with the color picker"));
-        // The stop at sea level has a swatch for each side and no field.
+        let stop = h.state().pad.style.card.unwrap();
+        assert!(screen.contains_rect(stop), "{what}: {stop:?}");
+        if size.0 > size.1 {
+            assert!(stop.right() < card.left(), "{what}: {stop:?}");
+        }
+        // The stop at sea level has a choice of its two sides and no field.
         let sea = h.state().globe.map.bands.sea().unwrap();
         tap_handle(&mut h, sea);
         assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
@@ -3384,7 +3407,8 @@ fn a_tap_adds_a_stop_a_drag_moves_it_and_a_pull_down_removes_it() {
 #[test]
 fn a_vertical_drag_on_the_gradient_scrolls_the_panel() {
     use vale_app::ui::pad::raster::RIVERS;
-    for size in [BOARDS[0], BOARDS[3]] {
+    // On these boards, the panel is longer than its card.
+    for size in [BOARDS[2], BOARDS[3]] {
         let mut h = painted_pad(size);
         open_height(&mut h);
         scroll_to_gradient(&mut h);
@@ -3408,30 +3432,42 @@ fn a_vertical_drag_on_the_gradient_scrolls_the_panel() {
 }
 
 #[test]
-fn a_tap_on_the_swatch_opens_the_color_picker_and_changes_the_stop() {
+fn a_tap_on_a_stop_opens_its_card_and_a_tap_elsewhere_closes_it() {
     use vale_app::ui::pad::raster::COLOR;
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
     scroll_to_gradient(&mut h);
+    let shade = format!("{COLOR} shade");
+    let card = |h: &Pad| h.state().pad.style.card;
     tap_handle(&mut h, 1);
     assert_eq!(h.state().globe.preview.selected, Some((height, 1)));
+    // The card is at the left of the panel, at the height of the handle.
+    let stop = card(&h).unwrap();
+    let panel = panel(&h, Panel::Layers).unwrap();
+    assert!(stop.right() < panel.left(), "{stop:?}");
+    let y = handle(&h, 1).y;
+    assert!(stop.top() < y && y < stop.bottom(), "{stop:?}");
+    // A tap in the square of the picker changes the color of the stop.
     let before = h.state().globe.map.bands.stops()[1];
-    let swatch = control(&h, COLOR).unwrap();
-    let count = h.state().pad.controls.len();
-    tap(&mut h, COLOR);
-    // The picker is below the Color row: a field row, the color, the
-    // square of saturation and value, and the hue.
-    let card = panel(&h, Panel::Layers).unwrap();
-    let pos = pos2(card.center().x + 40.0, swatch.bottom() + 150.0);
-    assert!(card.contains(pos));
-    finger_tap(&mut h, pos);
+    let square = control(&h, &shade).unwrap();
+    finger_tap(&mut h, square.center() + vec2(40.0, 30.0));
     let after = h.state().globe.map.bands.stops()[1];
     assert_ne!(after.above, before.above);
     assert_eq!(after.above, after.below);
     assert_eq!(after.value, before.value);
-    // A second tap on the swatch closes the picker.
-    tap(&mut h, COLOR);
-    assert_eq!(h.state().pad.controls.len(), count);
+    assert_eq!(h.state().globe.preview.selected, Some((height, 1)));
+    // A second tap on the handle closes the card.
+    tap_handle(&mut h, 1);
+    assert_eq!(h.state().globe.preview.selected, None);
+    assert_eq!(card(&h), None);
+    assert!(control(&h, &shade).is_none());
+    // A tap at another place on the panel also closes the card.
+    tap_handle(&mut h, 1);
+    assert!(card(&h).is_some());
+    let area = gradient_area(&h);
+    finger_tap(&mut h, pos2(area.center().x, area.bottom() + 20.0));
+    assert_eq!(h.state().globe.preview.selected, None);
+    assert_eq!(card(&h), None);
 }
 
 #[test]

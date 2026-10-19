@@ -1,12 +1,12 @@
 //! The Style section of the panel of a raster layer: the display and the
 //! color stops.
 
-use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
+use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId};
-use vale_terrain::{Bands, Rgb, Side};
+use vale_terrain::{Bands, Side};
 
-use super::geometry::TOUCH;
-use super::icons::{self, Icon};
+use super::Panel;
+use super::geometry::{PAD, Rects};
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use crate::ui::{AppState, elevation, gradient};
@@ -16,11 +16,11 @@ use crate::world;
 pub const SHOW_AS: &str = "Show as";
 /// The name of the field of the selected stop.
 pub const STOP_VALUE: &str = "Stop value";
-/// The name of the swatch of a stop.
-pub const COLOR: &str = "Color";
-/// The names of the swatches of the stop at sea level.
+/// The names of the two sides of the stop at sea level.
 pub const SEA_COLOR: &str = "Sea";
 pub const LAND_COLOR: &str = "Land";
+/// The name of the color picker of the selected stop.
+pub const COLOR: &str = "Color";
 pub const REMOVE_STOP: &str = "Remove the stop";
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
@@ -29,8 +29,14 @@ pub const RIVER_WIDTH: &str = "River width";
 
 /// The height of the heading of a section.
 const HEADING: f32 = 40.0;
-/// The place of the swatches in the Color row.
-const SWATCHES: f32 = 92.0;
+/// The width of the card of the selected stop.
+const CARD_WIDTH: f32 = 300.0;
+/// The space between the card of the selected stop and the panel.
+const GAP: f32 = 14.0;
+/// The size of the point of the card of the selected stop.
+const POINT: f32 = 10.0;
+/// The space around the contents of the card of the selected stop.
+const CARD_PAD: f32 = 12.0;
 
 /// The state of the Style section of the iPad layout.
 #[derive(Default)]
@@ -39,8 +45,15 @@ pub struct StyleState {
     unit: Option<(RasterId, String)>,
     /// The text of the field of the selected stop while the user types.
     value: Option<(RasterId, usize, String)>,
-    /// The color of a stop that the color picker edits.
-    swatch: Option<(RasterId, usize, Side)>,
+    /// The side of the stop at sea level that the color picker edits.
+    side: Option<(RasterId, usize, Side)>,
+    /// The layer, the selected stop, its handle, and the gradient control
+    /// in this frame.
+    anchor: Option<(RasterId, usize, Pos2, Rect)>,
+    /// The height of the contents of the card of the selected stop.
+    height: Option<f32>,
+    /// The card of the selected stop in the last frame.
+    pub card: Option<Rect>,
 }
 
 /// The heading of a section of a panel.
@@ -76,7 +89,8 @@ pub fn unit_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 }
 
 /// The Style section: the display and the color stops, and then the
-/// rivers of a height layer.
+/// rivers of a height layer. The selected stop has a card next to the
+/// panel, which `stop_card` shows.
 pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -100,24 +114,30 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     };
     let before = selected;
     ui.add_space(8.0);
-    ui.scope(|ui| {
-        ui.visuals_mut().override_text_color = Some(theme::MUTE);
-        let m = &gradient::PAD;
-        gradient::editor(ui, Some(controls), m, bands, &mut selected, display, &unit);
-    });
+    let m = &gradient::PAD;
+    let resp = ui
+        .scope(|ui| {
+            ui.visuals_mut().override_text_color = Some(theme::MUTE);
+            gradient::editor(ui, Some(controls), m, bands, &mut selected, display, &unit)
+        })
+        .inner;
     if selected != before {
         style.value = None;
-        style.swatch = None;
+        style.side = None;
     }
-    match selected {
-        Some(index) => stop_rows(ui, controls, bands, style, id, index, &unit, &mut selected),
-        None => note(ui, gradient::HINT),
-    }
+    // The card hides while a finger drags a stop, so that the globe shows.
+    style.anchor = selected.filter(|_| !resp.dragged()).and_then(|index| {
+        let x = gradient::stop_x(resp.rect, m, bands, bands.stops()[index].value);
+        let at = pos2(x, gradient::handle_row(resp.rect, m).center().y);
+        ui.clip_rect()
+            .contains(at)
+            .then_some((id, index, at, resp.rect))
+    });
+    note(ui, gradient::HINT);
 
     let preview = &mut state.globe.preview;
     preview.selected = selected.map(|index| (id, index));
     if height {
-        heading(ui, "Rivers");
         widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
         let range = elevation::RIVER_WIDTH;
         let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
@@ -139,104 +159,173 @@ fn note(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
 }
 
-fn color32(c: Rgb) -> egui::Color32 {
-    egui::Color32::from_rgb(c[0], c[1], c[2])
-}
-
-/// The rows of the selected stop: its value, and its colors with the
-/// button that removes it. A tap on a swatch opens the color picker below.
-#[allow(clippy::too_many_arguments)]
-fn stop_rows(
-    ui: &mut egui::Ui,
+/// The card of the selected stop: its value, its color, and the button
+/// that removes it. The card is at the left of the panel and points at the
+/// handle of the stop. Above a sheet, the card is above the gradient. A
+/// touch outside the card and the gradient control closes the card. The
+/// card hides during a drag on the gradient control.
+pub fn stop_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
     controls: &mut Controls,
-    bands: &mut Bands,
-    style: &mut StyleState,
-    id: RasterId,
-    index: usize,
-    unit: &str,
-    selected: &mut Option<usize>,
+    rects: &Rects,
 ) {
-    let fixed = bands.fixed(index);
-    if fixed {
-        let span = bands.max() - bands.min();
-        let value = bands.stops()[index].value;
-        widgets::value_row(ui, "Value", &world::value_text(value, span, unit));
+    state.pad.style.card = None;
+    let Some((id, index, at, gradient)) = state.pad.style.anchor.take() else {
+        return;
+    };
+    let panel = state.pad.panels.iter().find(|(p, _)| *p == Panel::Layers);
+    let Some(&(_, panel)) = panel else {
+        return;
+    };
+    let Some(unit) = state.doc.project.raster(id).map(|r| r.unit.clone()) else {
+        return;
+    };
+    let sea = state
+        .globe
+        .bands_mut(id)
+        .is_some_and(|b| b.sea() == Some(index));
+    let fixed = state.globe.bands_mut(id).is_some_and(|b| b.fixed(index));
+    let guess = PANEL_ROW * if fixed { 4.0 } else { 5.0 } + 196.0 + 16.0;
+    let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
+    let size = vec2(CARD_WIDTH, height);
+
+    let screen = rects.screen;
+    let top = screen.top() + rects.bands.top + PAD;
+    let bottom = screen.bottom() - rects.bands.bottom - PAD;
+    let room = panel.left() - GAP - CARD_WIDTH - PAD;
+    let (rect, point) = if rects.sheet.is_none() && room >= screen.left() {
+        let y = (at.y - height / 2.0).clamp(top, (bottom - height).max(top));
+        let rect = Rect::from_min_size(pos2(panel.left() - GAP - CARD_WIDTH, y), size);
+        let y =
+            at.y.clamp(rect.top() + 2.0 * POINT, rect.bottom() - 2.0 * POINT);
+        let base = rect.right();
+        let point = [
+            pos2(base, y - POINT),
+            pos2(base + POINT, y),
+            pos2(base, y + POINT),
+        ];
+        (rect, point)
     } else {
-        value_field(ui, controls, bands, &mut style.value, id, index, unit);
+        let left = screen.left() + rects.bands.left + PAD;
+        let right = screen.right() - rects.bands.right - PAD;
+        let x = (at.x - CARD_WIDTH / 2.0).clamp(left, (right - CARD_WIDTH).max(left));
+        let above = gradient.top() - GAP - height;
+        let x_point = at.x.clamp(x + 2.0 * POINT, x + CARD_WIDTH - 2.0 * POINT);
+        if above >= top {
+            let rect = Rect::from_min_size(pos2(x, above), size);
+            let base = rect.bottom();
+            let point = [
+                pos2(x_point - POINT, base),
+                pos2(x_point, base + POINT),
+                pos2(x_point + POINT, base),
+            ];
+            (rect, point)
+        } else {
+            let rect = Rect::from_min_size(pos2(x, gradient.bottom() + GAP), size);
+            let base = rect.top();
+            let point = [
+                pos2(x_point + POINT, base),
+                pos2(x_point, base - POINT),
+                pos2(x_point - POINT, base),
+            ];
+            (rect, point)
+        }
+    };
+    state.pad.style.card = Some(rect);
+
+    let pressed = ctx.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    if pressed.is_some_and(|pos| !rect.contains(pos) && !gradient.contains(pos)) {
+        state.globe.preview.selected = None;
+        state.pad.style.value = None;
+        state.pad.style.side = None;
+        state.pad.style.card = None;
+        return;
     }
 
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-    let y = rect.center().y;
-    let at = pos2(rect.left(), y);
-    ui.painter()
-        .text(at, Align2::LEFT_CENTER, "Color", theme::body(), theme::MUTE);
-    let stop = bands.stops()[index];
-    let sides: &[(Side, &str)] = if bands.sea() == Some(index) {
-        &[(Side::Below, SEA_COLOR), (Side::Above, LAND_COLOR)]
-    } else {
-        &[(Side::Above, COLOR)]
+    let style = &mut state.pad.style;
+    let Some(bands) = state.globe.bands_mut(id) else {
+        return;
     };
-    let mut x = rect.left() + SWATCHES;
-    for &(side, name) in sides {
-        let place = Rect::from_min_size(pos2(x, y - TOUCH / 2.0), vec2(TOUCH, TOUCH));
-        let resp = widgets::tap_area(ui, controls, place, name, true);
-        let color = match side {
+    let mut removed = false;
+    let radius = theme::CARD_RADIUS.into();
+    let key = "pad-stop";
+    widgets::card(ctx, None, key, rect, Order::Foreground, radius, |ui| {
+        // The card covers the globe and other cards, so its fill is opaque.
+        let fill = theme::card(false).to_opaque();
+        ui.painter().rect_filled(rect, radius, fill);
+        let inner = rect.shrink(CARD_PAD);
+        let layout = egui::Layout::top_down(egui::Align::Min);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+        let ui = &mut ui;
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        let start = ui.cursor().top();
+
+        if fixed {
+            let span = bands.max() - bands.min();
+            let value = bands.stops()[index].value;
+            widgets::value_row(ui, "Value", &world::value_text(value, span, &unit));
+        } else {
+            value_field(ui, controls, bands, &mut style.value, id, index, &unit);
+        }
+        let side = match style.side {
+            Some((of, at, side)) if sea && of == id && at == index => side,
+            _ => Side::Above,
+        };
+        let side = if sea {
+            let names = [SEA_COLOR, LAND_COLOR];
+            let active = Some(usize::from(side == Side::Above));
+            match widgets::choice_row(ui, controls, COLOR, &names, active) {
+                Some(0) => Side::Below,
+                Some(_) => Side::Above,
+                None => side,
+            }
+        } else {
+            Side::Above
+        };
+        style.side = Some((id, index, side));
+        ui.add_space(8.0);
+        let stop = bands.stops()[index];
+        let mut picked = match side {
             Side::Below => stop.below,
             Side::Above => stop.above,
         };
-        let open = style.swatch == Some((id, index, side));
-        let inner = place.shrink(widgets::HIGHLIGHT_INSET + 2.0);
-        let radius = theme::CONTROL_RADIUS - 2.0;
-        let painter = ui.painter();
-        painter.rect_filled(inner, radius, color32(color));
-        let stroke = match open {
-            true => egui::Stroke::new(2.0, theme::TEXT),
-            false => egui::Stroke::new(1.0, theme::divider()),
-        };
-        painter.rect_stroke(inner, radius, stroke, egui::StrokeKind::Outside);
-        x = place.right() + 4.0;
-        if sides.len() > 1 {
-            let at = pos2(x, y);
-            let label = painter.text(at, Align2::LEFT_CENTER, name, theme::small(), theme::MUTE);
-            x = label.right() + 16.0;
+        if widgets::color_picker(ui, controls, COLOR, &mut picked) {
+            bands.set_color(index, side, picked);
         }
-        if resp.clicked() {
-            style.swatch = if open { None } else { Some((id, index, side)) };
-        }
-    }
-    if !fixed {
-        let place = Rect::from_min_size(
-            pos2(rect.right() - TOUCH, y - TOUCH / 2.0),
-            vec2(TOUCH, TOUCH),
-        );
-        let resp = widgets::tap_area(ui, controls, place, REMOVE_STOP, true);
-        if resp.is_pointer_button_down_on() {
-            let back = place.shrink(widgets::HIGHLIGHT_INSET);
+        if !fixed {
+            let (row, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+            let resp = widgets::tap_area(ui, controls, row, REMOVE_STOP, true);
+            if resp.is_pointer_button_down_on() {
+                let back = row.shrink(widgets::HIGHLIGHT_INSET);
+                ui.painter()
+                    .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+            }
+            let at = pos2(row.left(), row.center().y);
+            let text = "Remove stop";
             ui.painter()
-                .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+                .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::WARN);
+            removed = resp.clicked() && bands.remove(index);
         }
-        icons::paint(ui.painter(), place, Icon::Close, 22.0, theme::WARN);
-        if resp.clicked() && bands.remove(index) {
-            *selected = None;
-            style.value = None;
-            style.swatch = None;
-            return;
-        }
+        style.height = Some(ui.cursor().top() - start);
+    });
+    ctx.layer_painter(egui::LayerId::new(Order::Foreground, egui::Id::new(key)))
+        .add(egui::Shape::convex_polygon(
+            point.to_vec(),
+            theme::card(false).to_opaque(),
+            egui::Stroke::NONE,
+        ));
+    if removed {
+        state.globe.preview.selected = None;
+        state.pad.style.value = None;
+        state.pad.style.side = None;
     }
-
-    let Some((_, _, side)) = style.swatch.filter(|s| s.0 == id && s.1 == index) else {
-        return;
-    };
-    let color = match side {
-        Side::Below => stop.below,
-        Side::Above => stop.above,
-    };
-    ui.add_space(8.0);
-    let mut picked = color;
-    if widgets::color_picker(ui, controls, COLOR, &mut picked) {
-        bands.set_color(index, side, picked);
-    }
-    ui.add_space(8.0);
 }
 
 /// The field of the value of the selected stop. The stop moves when the

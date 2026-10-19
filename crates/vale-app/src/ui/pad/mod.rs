@@ -186,7 +186,7 @@ pub struct PadState {
     /// The height of the contents of each panel, by the key of the panel.
     heights: HashMap<&'static str, f32>,
     /// The Style section of the panel of a raster layer.
-    style: raster::StyleState,
+    pub style: raster::StyleState,
 }
 
 impl PadState {
@@ -323,6 +323,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             show_panel(&ctx, state, &mut controls, &rects, panel);
         }
     }
+    raster::stop_card(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);
     state.pad.center_rect = None;
     // With no view switch in the top row, the two buttons have their own card.
