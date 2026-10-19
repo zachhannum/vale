@@ -173,10 +173,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
 
-/// The switches of the globe that are not part of a layer. A height layer
-/// has rivers.
+/// The rivers of a height layer.
 fn view_controls(ui: &mut egui::Ui, preview: &mut Preview, height: bool) {
-    ui.checkbox(&mut preview.graticule, "Graticule");
     if height {
         ui.checkbox(&mut preview.rivers, "Rivers");
         let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");

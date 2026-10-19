@@ -177,6 +177,27 @@ fn globe_harness() -> Harness<'static, AppState> {
 }
 
 #[test]
+fn the_toolbar_toggles_the_graticule() {
+    let mut h = globe_harness();
+    h.state_mut()
+        .add_raster(RasterSpec::height("Height", 64))
+        .unwrap();
+    h.state_mut().globe.preview.panel = true;
+    h.run_steps(3);
+    // The panel of the height layer has the rivers, and the graticule is
+    // in the tool bar only.
+    assert!(h.query_by_label("Rivers").is_some());
+    assert_eq!(h.query_all_by_label("Graticule").count(), 1);
+    let before = h.state().globe.preview.graticule;
+    h.get_by_label("Graticule").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.preview.graticule, !before);
+    h.get_by_label("Graticule").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.preview.graticule, before);
+}
+
+#[test]
 fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
     let mut h = globe_harness();
     let height = RasterSpec::height("Height", 64);

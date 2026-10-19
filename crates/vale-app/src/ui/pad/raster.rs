@@ -21,7 +21,6 @@ pub const ADD_LIMIT: &str = "Add a limit";
 pub const REMOVE_LIMIT: &str = "Remove the limit";
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
-pub const GRATICULE: &str = "Graticule";
 pub const RIVERS: &str = "Rivers";
 pub const RIVER_WIDTH: &str = "River width";
 
@@ -83,7 +82,7 @@ pub fn unit_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 }
 
 /// The Style section: the display, the ramp, and the band limits, and then
-/// the switches of the globe.
+/// the rivers of a height layer.
 pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -152,11 +151,10 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     };
     note(ui, hint);
 
-    heading(ui, "Globe");
     let preview = &mut state.globe.preview;
     preview.selected = selected.map(|index| (id, index));
-    widgets::switch_row(ui, controls, GRATICULE, GRATICULE, &mut preview.graticule);
     if height {
+        heading(ui, "Rivers");
         widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
         let range = elevation::RIVER_WIDTH;
         let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));

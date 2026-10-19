@@ -12,9 +12,9 @@ use vale_app::session::Session;
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    ADD_LAYER, DELETE_LAYER, DELETE_RASTER, EXPORT_GEOTIFF, IMPORT_HEIGHTMAP, LAYER_NAME, LayerRef,
-    MORE, NEW_RASTER, OPACITY, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
-    brush_size_text, readout_text, theme,
+    ADD_LAYER, DELETE_LAYER, DELETE_RASTER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP,
+    LAYER_NAME, LayerRef, MORE, NEW_RASTER, OPACITY, Panel, RECENTER, RESET, VIEW_OPTIONS,
+    WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -35,6 +35,7 @@ const BOARDS: [(f32, f32); 4] = [
 ];
 /// The bands that the system uses at the top and at the bottom.
 const BANDS: (f32, f32) = (24.0, 20.0);
+const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
 
 /// Shows each raster layer, and a globe with no layers, with this display.
 fn show_as(state: &mut AppState, display: RasterDisplay) {
@@ -151,6 +152,7 @@ fn cards(h: &Pad) -> Vec<Rect> {
     cards.extend(pad.menu_rect);
     cards.extend(pad.more_rect);
     cards.extend(pad.add_rect);
+    cards.extend(pad.view_options_rect);
     cards
 }
 
@@ -180,7 +182,9 @@ fn check_controls(h: &Pad, what: &str) {
     let in_menu = h.state().pad.menu_rect.is_some();
     let in_more = h.state().pad.more_rect.is_some();
     let in_add = h.state().pad.add_rect.is_some();
-    let popup = in_menu || in_more || in_add || h.state().pad.projections_rect.is_some();
+    let in_list = h.state().pad.projections_rect.is_some();
+    let popup =
+        in_menu || in_more || in_add || in_list || h.state().pad.view_options_rect.is_some();
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -198,15 +202,16 @@ fn check_controls(h: &Pad, what: &str) {
         );
         for b in &controls[i + 1..] {
             assert_ne!(a.name, b.name, "{what}");
-            // The open menu, the open list of projections, the open menu of
-            // the More cell, and the open menu of the new layers cover the
-            // cards below them.
+            // The open menu, the open list of projections, the open view
+            // options, the open menu of the More cell, and the open menu of
+            // the new layers cover the cards below them.
             let row = |c: &vale_app::ui::pad::widgets::Control| {
                 let name = c.name.as_str();
                 let kind = vale_sphere::ProjectionKind::ALL
                     .iter()
                     .any(|k| k.name() == name);
-                let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
+                let menu =
+                    ["World", "Globe", "Flat", GRATICULE, "Maps", WORLDS_ROW].contains(&name);
                 let more = in_more
                     && [
                         "Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp",
@@ -2343,6 +2348,97 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
 }
 
 #[test]
+fn the_view_options_menu_has_the_graticule_switch() {
+    use vale_app::ui::pad::raster::{ADD_LIMIT, RAMP, RIVERS};
+    for size in BOARDS {
+        let mut h = painted_pad(size);
+        for view in WORLD_VIEWS {
+            let what = format!("{size:?} {view:?}");
+            h.state_mut().globe.world_view = view;
+            h.run_steps(2);
+            let rects = h.state().pad.rects.unwrap();
+            // The compact layout has the switch in the workspace menu.
+            let open = match rects.view {
+                Some(card) => {
+                    let button = control(&h, VIEW_OPTIONS).unwrap();
+                    assert!(card.contains_rect(button), "{what}");
+                    let right = card.right() - 4.0;
+                    assert!((button.right() - right).abs() <= 0.5, "{what}");
+                    assert!(card.right() + 12.0 <= rects.actions.left(), "{what}");
+                    VIEW_OPTIONS
+                }
+                None => {
+                    assert!(control(&h, VIEW_OPTIONS).is_none(), "{what}");
+                    "Workspace"
+                }
+            };
+            tap(&mut h, open);
+            if let Some(card) = rects.view {
+                let options = h.state().pad.view_options_rect.unwrap();
+                assert_eq!(options.top(), card.bottom() + 4.0, "{what}");
+                assert!(options.contains_rect(control(&h, GRATICULE).unwrap()));
+            }
+            check_controls(&h, &format!("{what} with the view options"));
+            let before = h.state().globe.preview.graticule;
+            tap(&mut h, GRATICULE);
+            assert_eq!(h.state().globe.preview.graticule, !before, "{what}");
+            tap(&mut h, GRATICULE);
+            assert_eq!(h.state().globe.preview.graticule, before, "{what}");
+            tap(&mut h, open);
+            let pad = &h.state().pad;
+            assert!(!pad.view_options && !pad.menu, "{what}");
+            assert!(control(&h, GRATICULE).is_none(), "{what}");
+
+            // The view options and the list of the projections exclude each
+            // other, and a press outside closes the view options.
+            if rects.view.is_some() && view == WorldView::Flat {
+                tap(&mut h, VIEW_OPTIONS);
+                tap(&mut h, "Projection");
+                let pad = &h.state().pad;
+                assert!(pad.projections && !pad.view_options, "{what}");
+                tap(&mut h, VIEW_OPTIONS);
+                let pad = &h.state().pad;
+                assert!(!pad.projections && pad.view_options, "{what}");
+                tap(&mut h, "Layers");
+                assert!(!h.state().pad.view_options, "{what}");
+                tap(&mut h, "Layers");
+            }
+        }
+
+        // The panel of the height layer has the rivers and no graticule.
+        open_height(&mut h);
+        let mut rivers = control(&h, RIVERS).is_some();
+        for _ in 0..8 {
+            assert!(control(&h, GRATICULE).is_none(), "{size:?}");
+            if rivers {
+                break;
+            }
+            let card = panel(&h, Panel::Layers).unwrap();
+            // A drag on a row or on a heading scrolls. A drag on the bar of
+            // the band limits moves a limit.
+            let inside = |p: &Pos2| p.y > card.top() + 60.0 && p.y < card.bottom() - 10.0;
+            let rows = [IMPORT_HEIGHTMAP, EXPORT_GEOTIFF, DELETE_RASTER, ADD_LIMIT];
+            let mut points: Vec<Pos2> = rows
+                .into_iter()
+                .filter_map(|name| control(&h, name))
+                .map(|rect| rect.center())
+                .collect();
+            // The heading of the band limits is below the Ramp row.
+            points.extend(control(&h, RAMP).map(|rect| rect.center_bottom() + vec2(0.0, 20.0)));
+            let from = points
+                .into_iter()
+                .filter(inside)
+                .max_by(|a, b| a.y.total_cmp(&b.y))
+                .unwrap_or_else(|| panic!("{size:?}: no row to drag"));
+            let to = pos2(from.x, (from.y - 400.0).max(40.0));
+            drag(&mut h, from, to, None);
+            rivers = control(&h, RIVERS).is_some();
+        }
+        assert!(rivers, "{size:?}: the panel has no rivers");
+    }
+}
+
+#[test]
 fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it() {
     for size in BOARDS {
         let mut h = pad(size);
@@ -2516,10 +2612,10 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 334.0))
+            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 382.0))
         );
         let tops = ["World", "Globe", "Maps"].map(|name| control(&h, name).unwrap().top());
-        assert_eq!(tops, [98.0, 146.0, 255.0]);
+        assert_eq!(tops, [98.0, 146.0, 303.0]);
         tap(&mut h, "Flat");
         assert!(!h.state().pad.menu);
         assert_eq!(h.state().globe.world_view, WorldView::Flat);
