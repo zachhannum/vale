@@ -1222,9 +1222,9 @@ fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
 }
 
 /// The panel of a raster layer: its name, the unit of a layer that is not a
-/// height layer, its value range, its face size, its opacity, the import
-/// into a height layer, the export, the button that deletes the layer, and
-/// the Style section.
+/// height layer, its value range, the size of its pixels on the ground, its
+/// opacity, the import into a height layer, the export, the button that
+/// deletes the layer, and the Style section.
 fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -1238,7 +1238,7 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         world::value_text(raster.value_min, span, ""),
         world::value_text(raster.value_max, span, &unit)
     );
-    let face_size = world::grouped(u64::from(raster.face_size));
+    let pixel_size = raster_form::pixel_size_text(raster.face_size, &state.doc.project.world);
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let of = LayerRef::Raster(id);
@@ -1257,7 +1257,7 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     state.pad.name = Some((of, text));
     raster::unit_row(ui, state, controls, id);
     widgets::value_row(ui, "Values", &range);
-    widgets::value_row(ui, "Face size", &face_size);
+    widgets::value_row(ui, "Pixel size", &pixel_size);
     let mut fraction = f64::from(opacity);
     let text = format!("{:.0}%", fraction * 100.0);
     if widgets::row_slider(ui, controls, OPACITY, "Opacity", &mut fraction, &text) {
