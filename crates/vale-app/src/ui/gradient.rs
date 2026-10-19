@@ -7,6 +7,7 @@ use vale_terrain::{Bands, Rgb};
 
 use super::elevation::{self, SNAPS};
 use super::pad::geometry::TOUCH;
+use super::pad::theme;
 use super::pad::widgets::{self, Controls};
 use crate::world;
 
@@ -17,6 +18,8 @@ pub const HINT: &str =
     "Tap the bar to add a stop. Drag a stop to move it, or pull it down to remove it.";
 /// A finger this far below the handle row removes the stop on release.
 pub const PULL: f32 = 36.0;
+/// The space between the bubble of a dragged value and the bar.
+const BUBBLE_GAP: f32 = 8.0;
 /// A tap on the bar this near to a stop selects the stop.
 const BAR_GRAB: f32 = 6.0;
 
@@ -321,7 +324,32 @@ pub fn editor(
         let x = stop_x(area, m, bands, bands.stops()[index].value);
         painter.text(pos2(x, y), Align2::CENTER_CENTER, "Sea level", font, text);
     }
+    if let Some(Gesture::Move { index, .. }) = gesture.filter(|_| resp.dragged()) {
+        let value = bands.stops()[index].value;
+        let x = stop_x(area, m, bands, value);
+        value_bubble(
+            ui,
+            resp.id,
+            pos2(x, bar.top()),
+            &world::value_text(value, span, unit),
+        );
+    }
     resp
+}
+
+/// The value of the stop that a finger drags, in a bubble above the bar, so
+/// that the finger does not cover it. `at` is the top of the bar at the stop.
+fn value_bubble(ui: &egui::Ui, id: egui::Id, at: Pos2, text: &str) {
+    let layer = egui::LayerId::new(egui::Order::Tooltip, id.with("value"));
+    let painter = ui.ctx().layer_painter(layer);
+    let galley = painter.layout_no_wrap(text.to_owned(), theme::body(), theme::TEXT);
+    let size = galley.size() + vec2(20.0, 10.0);
+    let screen = ui.ctx().content_rect();
+    let left = (at.x - size.x / 2.0).clamp(screen.left(), screen.right() - size.x);
+    let rect = Rect::from_min_size(pos2(left, at.y - BUBBLE_GAP - size.y), size);
+    painter.add(theme::shadow().as_shape(rect, theme::CONTROL_RADIUS));
+    painter.rect_filled(rect, theme::CONTROL_RADIUS, theme::card(false).to_opaque());
+    painter.galley(rect.center() - galley.size() / 2.0, galley, theme::TEXT);
 }
 
 fn luminance(c: Rgb) -> f32 {
