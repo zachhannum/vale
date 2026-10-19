@@ -322,6 +322,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     raster::stop_card(&ctx, state, &mut controls, &rects);
+    raster::reset_card(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);
     state.pad.center_rect = None;
     // With no view switch in the top row, the two buttons have their own card.

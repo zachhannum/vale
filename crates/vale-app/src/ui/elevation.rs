@@ -6,7 +6,7 @@ use vale_store::{RasterDisplay, RasterId};
 use vale_terrain::{Bands, Rgb, Side};
 
 use super::gradient::{self, DESKTOP};
-use super::{AppState, LayerRef};
+use super::{AppState, LayerRef, pad};
 use crate::globe::preview::Preview;
 use crate::world;
 
@@ -149,6 +149,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             if let Some(bands) = globe.bands_mut(id) {
                 gradient::editor(ui, None, &DESKTOP, bands, &mut chosen, display, &unit);
                 selected_stop(ui, bands, &mut chosen, &unit);
+                if reset_button(ui, bands, height) {
+                    chosen = None;
+                }
             }
             globe.preview.selected = chosen.map(|index| (id, index));
         });
@@ -164,6 +167,29 @@ fn view_controls(ui: &mut egui::Ui, preview: &mut Preview, height: bool) {
         let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
         ui.add_enabled(preview.rivers, width);
     }
+}
+
+/// The button that puts back the default color stops. Its menu asks
+/// first. Returns true after a reset.
+fn reset_button(ui: &mut egui::Ui, bands: &mut Bands, height: bool) -> bool {
+    let Some(default) = Bands::with_range(bands.min(), bands.max(), height) else {
+        return false;
+    };
+    let changed = default.stops() != bands.stops();
+    let mut reset = false;
+    ui.add_enabled_ui(changed, |ui| {
+        ui.menu_button(format!("{}…", pad::raster::RESET_STOPS), |ui| {
+            ui.label("Put back the default color stops? You cannot undo this.");
+            if ui.button(pad::raster::RESET).clicked() {
+                reset = true;
+                ui.close();
+            }
+        });
+    });
+    if reset {
+        *bands = default;
+    }
+    reset
 }
 
 /// The three displays as a row of buttons. Returns true if the user chose

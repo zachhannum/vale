@@ -22,6 +22,11 @@ pub const LAND_COLOR: &str = "Land";
 /// The name of the color picker of the selected stop.
 pub const COLOR: &str = "Color";
 pub const REMOVE_STOP: &str = "Remove the stop";
+/// The row that puts back the default color stops, and the button of the
+/// card that asks before it.
+pub const RESET_STOPS: &str = "Reset colors";
+pub const RESET: &str = "Reset";
+const RESET_TEXT: &str = "Put back the default color stops of this layer? You cannot undo this.";
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
 pub const RIVERS: &str = "Rivers";
@@ -54,6 +59,12 @@ pub struct StyleState {
     height: Option<f32>,
     /// The card of the selected stop in the last frame.
     pub card: Option<Rect>,
+    /// The layer whose card that asks before a reset is open.
+    reset: Option<RasterId>,
+    /// The layer and the reset row in this frame, while the card is open.
+    reset_anchor: Option<(RasterId, Rect)>,
+    /// The card that asks before a reset in the last frame.
+    pub reset_card: Option<Rect>,
 }
 
 /// The heading of a section of a panel.
@@ -134,6 +145,16 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
             .then_some((id, index, at, resp.rect))
     });
     note(ui, gradient::HINT);
+    let default = Bands::with_range(bands.min(), bands.max(), height);
+    let changed = default.as_ref().is_some_and(|d| d.stops() != bands.stops());
+    let row = widgets::text_row(ui, controls, RESET_STOPS, 0.0, false, changed);
+    if row.clicked() {
+        style.reset = (style.reset != Some(id)).then_some(id);
+    }
+    if !changed {
+        style.reset = None;
+    }
+    style.reset_anchor = (style.reset == Some(id)).then_some((id, row.rect));
 
     let preview = &mut state.globe.preview;
     preview.selected = selected.map(|index| (id, index));
@@ -188,59 +209,11 @@ pub fn stop_card(
     let fixed = state.globe.bands_mut(id).is_some_and(|b| b.fixed(index));
     let guess = PANEL_ROW * if fixed { 4.0 } else { 5.0 } + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
-    let size = vec2(CARD_WIDTH, height);
 
-    let screen = rects.screen;
-    let top = screen.top() + rects.bands.top + PAD;
-    let bottom = screen.bottom() - rects.bands.bottom - PAD;
-    let room = panel.left() - GAP - CARD_WIDTH - PAD;
-    let (rect, point) = if rects.sheet.is_none() && room >= screen.left() {
-        let y = (at.y - height / 2.0).clamp(top, (bottom - height).max(top));
-        let rect = Rect::from_min_size(pos2(panel.left() - GAP - CARD_WIDTH, y), size);
-        let y =
-            at.y.clamp(rect.top() + 2.0 * POINT, rect.bottom() - 2.0 * POINT);
-        let base = rect.right();
-        let point = [
-            pos2(base, y - POINT),
-            pos2(base + POINT, y),
-            pos2(base, y + POINT),
-        ];
-        (rect, point)
-    } else {
-        let left = screen.left() + rects.bands.left + PAD;
-        let right = screen.right() - rects.bands.right - PAD;
-        let x = (at.x - CARD_WIDTH / 2.0).clamp(left, (right - CARD_WIDTH).max(left));
-        let above = gradient.top() - GAP - height;
-        let x_point = at.x.clamp(x + 2.0 * POINT, x + CARD_WIDTH - 2.0 * POINT);
-        if above >= top {
-            let rect = Rect::from_min_size(pos2(x, above), size);
-            let base = rect.bottom();
-            let point = [
-                pos2(x_point - POINT, base),
-                pos2(x_point, base + POINT),
-                pos2(x_point + POINT, base),
-            ];
-            (rect, point)
-        } else {
-            let rect = Rect::from_min_size(pos2(x, gradient.bottom() + GAP), size);
-            let base = rect.top();
-            let point = [
-                pos2(x_point + POINT, base),
-                pos2(x_point, base - POINT),
-                pos2(x_point - POINT, base),
-            ];
-            (rect, point)
-        }
-    };
+    let (rect, point) = place(rects, panel, at, gradient, height);
     state.pad.style.card = Some(rect);
 
-    let pressed = ctx.input(|i| {
-        i.pointer
-            .any_pressed()
-            .then(|| i.pointer.interact_pos())
-            .flatten()
-    });
-    if pressed.is_some_and(|pos| !rect.contains(pos) && !gradient.contains(pos)) {
+    if pressed_outside(ctx, rect, gradient) {
         state.globe.preview.selected = None;
         state.pad.style.value = None;
         state.pad.style.side = None;
@@ -315,17 +288,146 @@ pub fn stop_card(
         }
         style.height = Some(ui.cursor().top() - start);
     });
+    paint_point(ctx, key, point);
+    if removed {
+        state.globe.preview.selected = None;
+        state.pad.style.value = None;
+        state.pad.style.side = None;
+    }
+}
+
+/// The place of a card next to the panel, and the point of the card. The
+/// card is at the left of the panel and points at `at`. Above a sheet, or
+/// with no room at the left, the card is above `avoid`, or below it if no
+/// room is above.
+fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rect, [Pos2; 3]) {
+    let size = vec2(CARD_WIDTH, height);
+    let screen = rects.screen;
+    let top = screen.top() + rects.bands.top + PAD;
+    let bottom = screen.bottom() - rects.bands.bottom - PAD;
+    let room = panel.left() - GAP - CARD_WIDTH - PAD;
+    if rects.sheet.is_none() && room >= screen.left() {
+        let y = (at.y - height / 2.0).clamp(top, (bottom - height).max(top));
+        let rect = Rect::from_min_size(pos2(panel.left() - GAP - CARD_WIDTH, y), size);
+        let y =
+            at.y.clamp(rect.top() + 2.0 * POINT, rect.bottom() - 2.0 * POINT);
+        let base = rect.right();
+        let point = [
+            pos2(base, y - POINT),
+            pos2(base + POINT, y),
+            pos2(base, y + POINT),
+        ];
+        return (rect, point);
+    }
+    let left = screen.left() + rects.bands.left + PAD;
+    let right = screen.right() - rects.bands.right - PAD;
+    let x = (at.x - CARD_WIDTH / 2.0).clamp(left, (right - CARD_WIDTH).max(left));
+    let above = avoid.top() - GAP - height;
+    let x_point = at.x.clamp(x + 2.0 * POINT, x + CARD_WIDTH - 2.0 * POINT);
+    if above >= top {
+        let rect = Rect::from_min_size(pos2(x, above), size);
+        let base = rect.bottom();
+        let point = [
+            pos2(x_point - POINT, base),
+            pos2(x_point, base + POINT),
+            pos2(x_point + POINT, base),
+        ];
+        (rect, point)
+    } else {
+        let rect = Rect::from_min_size(pos2(x, avoid.bottom() + GAP), size);
+        let base = rect.top();
+        let point = [
+            pos2(x_point + POINT, base),
+            pos2(x_point, base - POINT),
+            pos2(x_point - POINT, base),
+        ];
+        (rect, point)
+    }
+}
+
+/// A press in this frame outside `rect` and outside `keep`.
+fn pressed_outside(ctx: &egui::Context, rect: Rect, keep: Rect) -> bool {
+    let pressed = ctx.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    pressed.is_some_and(|pos| !rect.contains(pos) && !keep.contains(pos))
+}
+
+/// Paints the point of a card on the layer of the card.
+fn paint_point(ctx: &egui::Context, key: &str, point: [Pos2; 3]) {
     ctx.layer_painter(egui::LayerId::new(Order::Foreground, egui::Id::new(key)))
         .add(egui::Shape::convex_polygon(
             point.to_vec(),
             theme::card(false).to_opaque(),
             egui::Stroke::NONE,
         ));
-    if removed {
-        state.globe.preview.selected = None;
-        state.pad.style.value = None;
-        state.pad.style.side = None;
+}
+
+/// The card that asks before the reset of the color stops. It points at
+/// the reset row. A touch outside the card and the row closes it.
+pub fn reset_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    state.pad.style.reset_card = None;
+    let Some((id, row)) = state.pad.style.reset_anchor.take() else {
+        state.pad.style.reset = None;
+        return;
+    };
+    let panel = state.pad.panels.iter().find(|(p, _)| *p == Panel::Layers);
+    let Some(&(_, panel)) = panel else {
+        return;
+    };
+    let height = state
+        .doc
+        .project
+        .raster(id)
+        .is_some_and(crate::ui::is_height);
+    let font = theme::body();
+    let wrap = CARD_WIDTH - 2.0 * CARD_PAD;
+    let text = ctx.fonts_mut(|f| f.layout(RESET_TEXT.to_owned(), font, theme::MUTE, wrap));
+    let size = text.size().y + 12.0 + PANEL_ROW + 2.0 * CARD_PAD;
+    let at = pos2(row.left() + 40.0, row.center().y);
+    let (rect, point) = place(rects, panel, at, row, size);
+    if pressed_outside(ctx, rect, row) {
+        state.pad.style.reset = None;
+        return;
     }
+    state.pad.style.reset_card = Some(rect);
+    let mut reset = false;
+    let radius = theme::CARD_RADIUS.into();
+    let key = "pad-reset-stops";
+    widgets::card(ctx, None, key, rect, Order::Foreground, radius, |ui| {
+        ui.painter()
+            .rect_filled(rect, radius, theme::card(false).to_opaque());
+        let inner = rect.shrink(CARD_PAD);
+        let layout = egui::Layout::top_down(egui::Align::Min);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+        let ui = &mut ui;
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        let (place, _) = ui.allocate_exact_size(text.size(), Sense::hover());
+        ui.painter().galley(place.min, text, theme::MUTE);
+        ui.add_space(12.0);
+        reset = widgets::button_row_in(ui, controls, RESET, true, theme::WARN).clicked();
+    });
+    paint_point(ctx, key, point);
+    if !reset {
+        return;
+    }
+    state.pad.style.reset = None;
+    if let Some(bands) = state.globe.bands_mut(id)
+        && let Some(default) = Bands::with_range(bands.min(), bands.max(), height)
+    {
+        *bands = default;
+    }
+    state.globe.preview.selected = None;
+    state.pad.style.value = None;
+    state.pad.style.side = None;
 }
 
 /// The field of the value of the selected stop. The stop moves when the

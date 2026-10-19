@@ -184,7 +184,7 @@ fn check_controls(h: &Pad, what: &str) {
     let in_more = h.state().pad.more_rect.is_some();
     let in_add = h.state().pad.add_rect.is_some();
     let in_list = h.state().pad.projections_rect.is_some();
-    let in_stop = h.state().pad.style.card.is_some();
+    let in_stop = h.state().pad.style.card.is_some() || h.state().pad.style.reset_card.is_some();
     let popup = in_menu
         || in_more
         || in_add
@@ -244,6 +244,7 @@ fn raster_stop(name: &str) -> bool {
         raster::SEA_COLOR,
         raster::LAND_COLOR,
         raster::REMOVE_STOP,
+        raster::RESET,
     ]
     .contains(&name)
 }
@@ -3473,6 +3474,117 @@ fn a_tap_on_a_stop_opens_its_card_and_a_tap_elsewhere_closes_it() {
     finger_tap(&mut h, pos2(area.center().x, area.bottom() + 20.0));
     assert_eq!(h.state().globe.preview.selected, None);
     assert_eq!(card(&h), None);
+}
+
+/// The texts that the last frame painted, with their places.
+fn painted_texts(h: &Pad) -> Vec<(String, Rect)> {
+    fn visit(shape: &egui::Shape, texts: &mut Vec<(String, Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => {
+                texts.push((text.galley.text().to_owned(), text.visual_bounding_rect()));
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| visit(s, texts)),
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    for clipped in &h.output().shapes {
+        visit(&clipped.shape, &mut texts);
+    }
+    texts
+}
+
+#[test]
+fn a_dragged_stop_shows_its_value_above_the_bar() {
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    // The stop that can move the farthest to the right.
+    let bands = h.state().globe.map.bands.clone();
+    let stops = bands.stops();
+    let gap = |i: &usize| stops[i + 1].value - stops[*i].value;
+    let index = (1..stops.len() - 1)
+        .filter(|i| !bands.fixed(*i))
+        .max_by(|a, b| gap(a).total_cmp(&gap(b)))
+        .unwrap();
+    let (from, next) = (
+        handle(&h, index),
+        h.state().globe.map.bands.stops()[index + 1].value,
+    );
+    let to = pos2(on_bar(&h, next - 100.0).x, from.y);
+    let bar = gradient_area(&h).top();
+    let span = h.state().globe.map.bands.max() - h.state().globe.map.bands.min();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    let start = h.state().globe.map.bands.stops()[index].value;
+    let mut seen = 0;
+    for i in 1..=6 {
+        let pos = from.lerp(to, i as f32 / 6.0);
+        touch(&mut h, egui::TouchPhase::Move, pos, None);
+        h.step();
+        let value = h.state().globe.map.bands.stops()[index].value;
+        // The drag starts after a few points.
+        if value == start {
+            continue;
+        }
+        seen += 1;
+        let text = vale_app::world::value_text(value, span, "m");
+        let texts = painted_texts(&h);
+        let shown = texts.iter().find(|(t, _)| *t == text);
+        let (_, rect) = shown.unwrap_or_else(|| panic!("frame {i}: no {text} in {texts:?}"));
+        assert!(rect.bottom() < bar, "frame {i}: {rect:?}");
+        // The value is near the finger, so the finger does not hide it.
+        assert!(
+            (rect.center().x - pos.x).abs() < 60.0,
+            "frame {i}: {rect:?}"
+        );
+    }
+    assert!(seen >= 3, "{seen}");
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+    let value = h.state().globe.map.bands.stops()[index].value;
+    let text = vale_app::world::value_text(value, span, "m");
+    let above = |(t, r): &(String, Rect)| *t == text && r.bottom() < bar;
+    assert!(!painted_texts(&h).iter().any(above));
+}
+
+#[test]
+fn reset_colors_asks_first_and_puts_back_the_default_stops() {
+    use vale_app::ui::pad::raster::{RESET, RESET_STOPS};
+    let mut h = painted_pad(BOARDS[0]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let bands = h.state().globe.map.bands.clone();
+    let default = vale_terrain::Bands::with_range(bands.min(), bands.max(), true).unwrap();
+    let default = default.stops().to_vec();
+    let disabled = |h: &Pad| h.get_by_label(RESET_STOPS).accesskit_node().is_disabled();
+    // A new stop changes the stops.
+    let count = bands.stops().len();
+    let value = (bands.stops()[1].value + bands.stops()[2].value) / 2.0;
+    let at = on_bar(&h, value);
+    finger_tap(&mut h, at);
+    assert_eq!(h.state().globe.map.bands.stops().len(), count + 1);
+    // A second tap on the new stop clears the selection.
+    finger_tap(&mut h, at);
+    assert!(!disabled(&h));
+    // A tap on the row opens the card, and a tap outside closes it with no
+    // change.
+    tap(&mut h, RESET_STOPS);
+    let card = h.state().pad.style.reset_card.unwrap();
+    check_controls(&h, "with the card of the reset");
+    let panel = panel(&h, Panel::Layers).unwrap();
+    assert!(card.right() < panel.left(), "{card:?}");
+    finger_tap(&mut h, pos2(panel.left() + 6.0, panel.top() + 80.0));
+    assert_eq!(h.state().pad.style.reset_card, None);
+    assert_eq!(h.state().globe.map.bands.stops().len(), count + 1);
+    // The Reset button of the card puts back the default stops.
+    tap(&mut h, RESET_STOPS);
+    tap(&mut h, RESET);
+    assert_eq!(h.state().globe.map.bands.stops(), default);
+    assert_eq!(h.state().pad.style.reset_card, None);
+    assert_eq!(h.state().globe.preview.selected, None);
+    assert!(disabled(&h));
+    assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
 }
 
 #[test]
