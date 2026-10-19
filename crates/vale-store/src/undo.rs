@@ -17,7 +17,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use crate::gpkg::{Reader, StoreError, TileKey, corrupt, decode_geometry, encode_geometry};
 use crate::{
     Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
-    Units, Uuid, Value, World, clamp_opacity,
+    Stop, Units, Uuid, Value, World, clamp_opacity,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -453,10 +453,17 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     }
     out.extend_from_slice(&raster.opacity.to_le_bytes());
     put_bytes(out, raster.display.id().as_bytes());
+    put_u32(out, raster.stops.len());
+    for stop in &raster.stops {
+        put_f64(out, stop.value);
+        out.extend_from_slice(&stop.below);
+        out.extend_from_slice(&stop.above);
+    }
 }
 
 /// An image from format version 9 ends after the opacity, and its raster
-/// shows bands. An unknown display also gives bands.
+/// shows bands. An unknown display also gives bands. An image from format
+/// version 10 ends after the display, and its raster has no stops.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -474,6 +481,18 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         true => RasterDisplay::Bands,
         false => RasterDisplay::from_id(&string(r)?).unwrap_or_default(),
     };
+    let stops = match r.0.is_empty() {
+        true => Vec::new(),
+        false => (0..count(r)?)
+            .map(|_| {
+                Some(Stop {
+                    value: r.f64()?,
+                    below: r.take()?,
+                    above: r.take()?,
+                })
+            })
+            .collect::<Option<_>>()?,
+    };
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
@@ -486,6 +505,7 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         limits,
         ramp_sea,
         ramp_land,
+        stops,
     })
 }
 
@@ -643,6 +663,18 @@ mod tests {
         rain.ramp_land = vec![[1, 2, 3]];
         rain.opacity = 0.375;
         rain.display = RasterDisplay::Grey;
+        rain.stops = vec![
+            Stop {
+                value: 0.0,
+                below: [1, 2, 3],
+                above: [1, 2, 3],
+            },
+            Stop {
+                value: 250.5,
+                below: [4, 5, 6],
+                above: [7, 8, 9],
+            },
+        ];
         let rain = project.raster(id).unwrap();
         let mut out = Vec::new();
         put_raster(&mut out, rain);
@@ -659,10 +691,30 @@ mod tests {
         let rain = project.raster(id).unwrap();
         let mut out = Vec::new();
         put_raster(&mut out, rain);
-        out.truncate(out.len() - 4 - "gradient".len());
+        out.truncate(out.len() - 4 - 4 - "gradient".len());
         let old = raster(&mut Reader(&out)).unwrap();
         assert_eq!(old.display, RasterDisplay::Bands);
         assert_eq!(old.opacity, rain.opacity);
+    }
+
+    #[test]
+    fn a_raster_image_of_version_10_has_no_stops() {
+        let mut project = Project::new(World::default());
+        let id = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
+        project.set_raster_display(id, RasterDisplay::Gradient);
+        let stop = Stop {
+            value: 10.0,
+            below: [1, 2, 3],
+            above: [4, 5, 6],
+        };
+        project.set_raster_stops(id, vec![stop]);
+        let rain = project.raster(id).unwrap();
+        let mut out = Vec::new();
+        put_raster(&mut out, rain);
+        out.truncate(out.len() - 4 - 8 - 6);
+        let old = raster(&mut Reader(&out)).unwrap();
+        assert_eq!(old.display, RasterDisplay::Gradient);
+        assert!(old.stops.is_empty());
     }
 
     #[test]

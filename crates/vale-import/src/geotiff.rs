@@ -462,6 +462,7 @@ mod tests {
             limits: Vec::new(),
             ramp_sea: Vec::new(),
             ramp_land: Vec::new(),
+            stops: Vec::new(),
             opacity: 1.0,
         };
         let mut tags = GeoTiff::new(&world, Some(&raster), 4, 2);

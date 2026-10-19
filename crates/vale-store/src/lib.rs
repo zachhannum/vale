@@ -232,6 +232,19 @@ pub struct Raster {
     pub ramp_sea: Vec<Rgb>,
     /// The colors of the ramp above sea level.
     pub ramp_land: Vec<Rgb>,
+    /// The color stops of the ramp, in ascending order of value. An empty
+    /// list gives the default bands of the range.
+    pub stops: Vec<Stop>,
+}
+
+/// A color stop of the ramp of a raster: a value, the color just below it,
+/// and the color just above it. The two colors differ only at a hard stop,
+/// for example at sea level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stop {
+    pub value: f64,
+    pub below: Rgb,
+    pub above: Rgb,
 }
 
 /// An opacity from 0 to 1. A value that is not a number gives 1.
@@ -353,7 +366,7 @@ impl Project {
     /// bottom of a project with no raster layer. `value_min` is the value of
     /// pixel 0, and `value_max` is the value of pixel 65,535. The layer is
     /// visible, and the raster is opaque and shows bands. Its base is zero,
-    /// and its band limits and its ramp are empty.
+    /// and its band limits, its ramp, and its stops are empty.
     pub fn add_raster(
         &mut self,
         name: String,
@@ -376,6 +389,7 @@ impl Project {
             limits: Vec::new(),
             ramp_sea: Vec::new(),
             ramp_land: Vec::new(),
+            stops: Vec::new(),
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());
         let layer = Layer {
@@ -423,6 +437,11 @@ impl Project {
     /// Sets how the globe colors the values of a raster.
     pub fn set_raster_display(&mut self, id: RasterId, display: RasterDisplay) -> bool {
         self.raster_mut(id).map(|r| r.display = display).is_some()
+    }
+
+    /// Sets the color stops of a raster.
+    pub fn set_raster_stops(&mut self, id: RasterId, stops: Vec<Stop>) -> bool {
+        self.raster_mut(id).map(|r| r.stops = stops).is_some()
     }
 
     /// Sets the unit of the values of a raster.
