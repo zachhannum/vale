@@ -142,7 +142,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | --- | --- |
 | World | Radius, name, display units |
 | Source | Name of the imported file, extents, and the pixels of an imported image |
-| Raster | Face size, unit, value range, base level, color stops, display, opacity |
+| Raster | Face size, unit, value range, base level, color stops with their lines, display, opacity |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Thumbnail | A small picture of the globe, for the list of projects |
 | Layer | Name, type (raster, points, lines, or polygons), visibility, attribute schema, link to a source, to a raster, or to an in-app table |
@@ -305,6 +305,10 @@ While you paint, a shader shows the heightmap as stepped tints. Each color stop 
 
 The color stops and the display belong to the raster layer. The panel of the layer edits them in its Style section, with a gradient bar and the stops below it. The preview and the polygonize tool read the same stops, so the polygons match what you saw.
 
+Each color stop can also have a line, with a weight in points and a color. The card of the selected stop has a switch for the line, the weight, and the color. The globe and the flat map draw the line where the value crosses the stop, in the Bands display and in the Gradient display. The line has the same weight at each zoom. On a height layer, a line at sea level is the coast, and a line at another stop is a contour. Thus a height layer shows the coast and the contours with no vector step.
+
+A final map can use the stepped raster with its lines as the topography, in place of the topography polygons. Polygonize is then optional.
+
 ### Toolbox
 
 The toolbox is a searchable list of tools, open from every workspace. A tool takes one or more layers and a few parameters, and it writes a new layer. Polygonize is one tool in the list and not a button of its own.
@@ -328,7 +332,7 @@ All tools work on the sphere. They live in the core crates, so the command line 
 
 The polygonize tool traces the value of each color stop on each cube face, joins the outlines across face edges, and smooths them. It writes one polygon layer. It can also split the output at a value into two layers, for example Topography and Bathymetry at 0 m. Each polygon of a heightmap has an `elev_min` attribute, and a normal style rule colors it.
 
-The polygons are an output layer of the toolbox. When the heightmap changes, the layer shows that it is out of date, and you run the tool again. Map frames and export use the polygons and not the heightmap, so topography stays vector in PDF and SVG.
+The polygons are an output layer of the toolbox. When the heightmap changes, the layer shows that it is out of date, and you run the tool again. A map frame can use the polygons, so topography stays vector in PDF and SVG. It can also use the stepped raster with the lines of its stops.
 
 ### Lines
 
