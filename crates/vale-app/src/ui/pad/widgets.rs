@@ -803,6 +803,14 @@ pub fn text_field(
         .vertical_align(egui::Align::Center);
     let resp = ui.put(inner, edit);
     push(ui, controls, field, name);
+    // A long press focuses the field and shows the edit menu of the system,
+    // with Paste.
+    if resp.long_touched() {
+        resp.request_focus();
+        if let Some(at) = ui.input(|i| i.pointer.interact_pos()) {
+            crate::keyboard::edit_menu(at);
+        }
+    }
     resp
 }
 
@@ -1126,6 +1134,16 @@ pub fn parse_hex(text: &str) -> Option<[u8; 3]> {
     Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
+/// Selects the whole text of a text field.
+fn select_all(ctx: &egui::Context, id: egui::Id, chars: usize) {
+    use egui::text::{CCursor, CCursorRange};
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        let range = CCursorRange::two(CCursor::new(0), CCursor::new(chars));
+        state.cursor.set_char_range(Some(range));
+        state.store(ctx, id);
+    }
+}
+
 /// A color picker for a finger: a square of saturation and value, a strip
 /// of hues, and a field for the hex code. `name` starts the names of its
 /// controls. Returns true if the user changed the color.
@@ -1256,6 +1274,10 @@ pub fn color_picker(
         &mut text,
         valid,
     );
+    // A typed or pasted code takes the place of the whole code.
+    if field.gained_focus() {
+        select_all(ui.ctx(), field.id, text.chars().count());
+    }
     if field.changed()
         && let Some(typed) = parse_hex(&text)
     {

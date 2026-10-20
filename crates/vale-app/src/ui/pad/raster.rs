@@ -54,6 +54,8 @@ const CARD_WIDTH: f32 = 300.0;
 const GAP: f32 = 14.0;
 /// The size of the point of the card of the selected stop.
 const POINT: f32 = 10.0;
+/// The time, in seconds, that the card stays up after the keyboard goes.
+const KEYBOARD_HOLD: f64 = 0.4;
 /// The space around the contents of the card of the selected stop.
 const CARD_PAD: f32 = 12.0;
 
@@ -76,6 +78,8 @@ pub struct StyleState {
     /// How far the card of the selected stop went up for the keyboard in the
     /// last frame.
     lift: f32,
+    /// The last height of the keyboard that was not 0, and the time of it.
+    keyboard: (f32, f64),
     /// The layer whose card that asks before a reset is open.
     reset: Option<RasterId>,
     /// The layer and the reset row in this frame, while the card is open.
@@ -235,8 +239,23 @@ pub fn stop_card(
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
 
     let (rect, point) = place(rects, panel, at, gradient, height);
+    let fits = state
+        .pad
+        .style
+        .height
+        .map(|_| rect.height() >= height - 0.5);
     let top = rects.screen.top() + rects.bands.top + PAD;
-    let (lift, keyboard) = (state.pad.style.lift, state.pad.keyboard);
+    // A keyboard that goes away and comes back at once does not move the
+    // card.
+    let now = ctx.input(|i| i.time);
+    let mut keyboard = state.pad.keyboard;
+    if keyboard > 0.0 {
+        state.pad.style.keyboard = (keyboard, now);
+    } else if now - state.pad.style.keyboard.1 < KEYBOARD_HOLD {
+        keyboard = state.pad.style.keyboard.0;
+        ctx.request_repaint_after_secs(KEYBOARD_HOLD as f32);
+    }
+    let lift = state.pad.style.lift;
     let lift = widgets::keyboard_lift(ctx, rect, lift, keyboard, rects.screen, top);
     state.pad.style.lift = lift;
     // A card that went up for the keyboard does not point at the handle.
@@ -266,113 +285,122 @@ pub fn stop_card(
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
         let ui = &mut ui;
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        let start = ui.cursor().top();
+        // A card that is taller than the room on the screen scrolls. A card
+        // that fits has no scroll bar over its controls.
+        let scroll = egui::ScrollArea::vertical()
+            .id_salt("pad-stop-scroll")
+            .vscroll(fits.is_none_or(|fits| !fits))
+            .max_height(inner.height())
+            .auto_shrink([false, true]);
+        scroll.show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let start = ui.cursor().top();
 
-        if fixed {
-            let span = bands.max() - bands.min();
-            let value = bands.stops()[index].value;
-            widgets::value_row(ui, "Value", &world::value_text(value, span, &unit));
-        } else {
-            value_field(ui, controls, bands, &mut style.value, id, index, &unit);
-        }
-        let stop = bands.stops()[index];
-        let mut line = stop.line;
-        let mut changed = widgets::switch_row(ui, controls, LINE, "Line", &mut line.on);
-        let (lo, hi) = (*StopLine::WEIGHTS.start(), *StopLine::WEIGHTS.end());
-        let mut fraction = f64::from((line.weight - lo) / (hi - lo));
-        let text = format!("{} pt", weight_text(line.weight));
-        if widgets::row_slider(ui, controls, LINE_WEIGHT, "Weight", &mut fraction, &text) {
-            let weight = lo + fraction as f32 * (hi - lo);
-            line.weight = (weight / WEIGHT_STEP).round() * WEIGHT_STEP;
-            changed = true;
-        }
-        let active = Some(usize::from(!line.darker));
-        if let Some(choice) =
-            widgets::choice_row(ui, controls, LINE_SOURCE, &[DARKER, CUSTOM], active)
-        {
-            line.darker = choice == 0;
-            changed = true;
-        }
-        if line.darker {
-            let mut fraction = f64::from(line.darken);
-            let text = format!("{:.0}%", line.darken * 100.0);
-            if widgets::row_slider(ui, controls, DARKEN, "Darken", &mut fraction, &text) {
-                line.darken = ((fraction * 20.0).round() / 20.0) as f32;
+            if fixed {
+                let span = bands.max() - bands.min();
+                let value = bands.stops()[index].value;
+                widgets::value_row(ui, "Value", &world::value_text(value, span, &unit));
+            } else {
+                value_field(ui, controls, bands, &mut style.value, id, index, &unit);
+            }
+            let stop = bands.stops()[index];
+            let mut line = stop.line;
+            let mut changed = widgets::switch_row(ui, controls, LINE, "Line", &mut line.on);
+            let (lo, hi) = (*StopLine::WEIGHTS.start(), *StopLine::WEIGHTS.end());
+            let mut fraction = f64::from((line.weight - lo) / (hi - lo));
+            let text = format!("{} pt", weight_text(line.weight));
+            if widgets::row_slider(ui, controls, LINE_WEIGHT, "Weight", &mut fraction, &text) {
+                let weight = lo + fraction as f32 * (hi - lo);
+                line.weight = (weight / WEIGHT_STEP).round() * WEIGHT_STEP;
                 changed = true;
             }
-        }
-        let paint = match style.side {
-            Some((of, at, paint)) if of == id && at == index => paint,
-            _ => Paint::Fill(Side::Above),
-        };
-        // A darker line has no color of its own to pick.
-        let (names, paints): (&[&str], &[Paint]) = match (sea, line.darker) {
-            (true, false) => (
-                &[SEA_COLOR, LAND_COLOR, LINE_COLOR],
-                &[
-                    Paint::Fill(Side::Below),
-                    Paint::Fill(Side::Above),
-                    Paint::Line,
-                ],
-            ),
-            (true, true) => (
-                &[SEA_COLOR, LAND_COLOR],
-                &[Paint::Fill(Side::Below), Paint::Fill(Side::Above)],
-            ),
-            (false, false) => (
-                &[FILL_COLOR, LINE_COLOR],
-                &[Paint::Fill(Side::Above), Paint::Line],
-            ),
-            (false, true) => (&[FILL_COLOR], &[Paint::Fill(Side::Above)]),
-        };
-        let paint = match paint {
-            Paint::Fill(_) if !sea => Paint::Fill(Side::Above),
-            Paint::Line if line.darker => Paint::Fill(Side::Above),
-            paint => paint,
-        };
-        let active = paints.iter().position(|p| *p == paint);
-        let paint = match widgets::choice_row(ui, controls, COLOR, names, active) {
-            Some(i) => paints[i],
-            None => paint,
-        };
-        style.side = Some((id, index, paint));
-        ui.add_space(8.0);
-        let mut picked = match paint {
-            Paint::Fill(Side::Below) => stop.below,
-            Paint::Fill(Side::Above) => stop.above,
-            Paint::Line => line.color,
-        };
-        if widgets::color_picker(ui, controls, COLOR, &mut picked) {
-            match paint {
-                Paint::Fill(side) => {
-                    bands.set_color(index, side, picked);
-                }
-                Paint::Line => {
-                    line.color = picked;
+            let active = Some(usize::from(!line.darker));
+            if let Some(choice) =
+                widgets::choice_row(ui, controls, LINE_SOURCE, &[DARKER, CUSTOM], active)
+            {
+                line.darker = choice == 0;
+                changed = true;
+            }
+            if line.darker {
+                let mut fraction = f64::from(line.darken);
+                let text = format!("{:.0}%", line.darken * 100.0);
+                if widgets::row_slider(ui, controls, DARKEN, "Darken", &mut fraction, &text) {
+                    line.darken = ((fraction * 20.0).round() / 20.0) as f32;
                     changed = true;
                 }
             }
-        }
-        if changed {
-            bands.set_line(index, line);
-        }
-        if !fixed {
-            let (row, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-            let resp = widgets::tap_area(ui, controls, row, REMOVE_STOP, true);
-            if resp.is_pointer_button_down_on() {
-                let back = row.shrink(widgets::HIGHLIGHT_INSET);
-                ui.painter()
-                    .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+            let paint = match style.side {
+                Some((of, at, paint)) if of == id && at == index => paint,
+                _ => Paint::Fill(Side::Above),
+            };
+            // A darker line has no color of its own to pick.
+            let (names, paints): (&[&str], &[Paint]) = match (sea, line.darker) {
+                (true, false) => (
+                    &[SEA_COLOR, LAND_COLOR, LINE_COLOR],
+                    &[
+                        Paint::Fill(Side::Below),
+                        Paint::Fill(Side::Above),
+                        Paint::Line,
+                    ],
+                ),
+                (true, true) => (
+                    &[SEA_COLOR, LAND_COLOR],
+                    &[Paint::Fill(Side::Below), Paint::Fill(Side::Above)],
+                ),
+                (false, false) => (
+                    &[FILL_COLOR, LINE_COLOR],
+                    &[Paint::Fill(Side::Above), Paint::Line],
+                ),
+                (false, true) => (&[FILL_COLOR], &[Paint::Fill(Side::Above)]),
+            };
+            let paint = match paint {
+                Paint::Fill(_) if !sea => Paint::Fill(Side::Above),
+                Paint::Line if line.darker => Paint::Fill(Side::Above),
+                paint => paint,
+            };
+            let active = paints.iter().position(|p| *p == paint);
+            let paint = match widgets::choice_row(ui, controls, COLOR, names, active) {
+                Some(i) => paints[i],
+                None => paint,
+            };
+            style.side = Some((id, index, paint));
+            ui.add_space(8.0);
+            let mut picked = match paint {
+                Paint::Fill(Side::Below) => stop.below,
+                Paint::Fill(Side::Above) => stop.above,
+                Paint::Line => line.color,
+            };
+            if widgets::color_picker(ui, controls, COLOR, &mut picked) {
+                match paint {
+                    Paint::Fill(side) => {
+                        bands.set_color(index, side, picked);
+                    }
+                    Paint::Line => {
+                        line.color = picked;
+                        changed = true;
+                    }
+                }
             }
-            let at = pos2(row.left(), row.center().y);
-            let text = "Remove stop";
-            ui.painter()
-                .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::WARN);
-            removed = resp.clicked() && bands.remove(index);
-        }
-        style.height = Some(ui.cursor().top() - start);
+            if changed {
+                bands.set_line(index, line);
+            }
+            if !fixed {
+                let (row, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+                let resp = widgets::tap_area(ui, controls, row, REMOVE_STOP, true);
+                if resp.is_pointer_button_down_on() {
+                    let back = row.shrink(widgets::HIGHLIGHT_INSET);
+                    ui.painter()
+                        .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+                }
+                let at = pos2(row.left(), row.center().y);
+                let text = "Remove stop";
+                ui.painter()
+                    .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::WARN);
+                removed = resp.clicked() && bands.remove(index);
+            }
+            style.height = Some(ui.cursor().top() - start);
+        });
     });
     if lift == 0.0 {
         paint_point(ctx, key, point);
@@ -395,12 +423,13 @@ fn weight_text(weight: f32) -> String {
 /// with no room at the left, the card is above `avoid`, or below it if no
 /// room is above.
 fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rect, [Pos2; 3]) {
-    let size = vec2(CARD_WIDTH, height);
     let screen = rects.screen;
     let top = screen.top() + rects.bands.top + PAD;
     let bottom = screen.bottom() - rects.bands.bottom - PAD;
     let room = panel.left() - GAP - CARD_WIDTH - PAD;
     if rects.sheet.is_none() && room >= screen.left() {
+        let height = height.min(bottom - top);
+        let size = vec2(CARD_WIDTH, height);
         let y = (at.y - height / 2.0).clamp(top, (bottom - height).max(top));
         let rect = Rect::from_min_size(pos2(panel.left() - GAP - CARD_WIDTH, y), size);
         let y =
@@ -416,9 +445,17 @@ fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rec
     let left = screen.left() + rects.bands.left + PAD;
     let right = screen.right() - rects.bands.right - PAD;
     let x = (at.x - CARD_WIDTH / 2.0).clamp(left, (right - CARD_WIDTH).max(left));
+    // A card that fits nowhere goes where it has the most room, and it
+    // scrolls.
+    let (room_above, room_below) = (avoid.top() - GAP - top, bottom - avoid.bottom() - GAP);
+    let up = height <= room_above || room_above >= room_below;
+    let height = height
+        .min(if up { room_above } else { room_below })
+        .max(0.0);
+    let size = vec2(CARD_WIDTH, height);
     let above = avoid.top() - GAP - height;
     let x_point = at.x.clamp(x + 2.0 * POINT, x + CARD_WIDTH - 2.0 * POINT);
-    if above >= top {
+    if up {
         let rect = Rect::from_min_size(pos2(x, above), size);
         let base = rect.bottom();
         let point = [

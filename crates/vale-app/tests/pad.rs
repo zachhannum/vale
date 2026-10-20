@@ -3645,10 +3645,42 @@ fn the_card_of_a_stop_goes_up_so_that_the_keyboard_does_not_cover_a_field() {
     assert!(card(&h).top() >= screen.top());
     check_controls(&h, "the card of a stop above the keyboard");
 
-    // The card goes back down when the keyboard goes away.
-    h.state_mut().pad.keyboard = 0.0;
+    // A paste takes the place of the whole code.
+    h.event(egui::Event::Paste("#123456".into()));
     h.run_steps(2);
+    let stop = h.state().globe.map.bands.stops()[sea];
+    assert_eq!(stop.above, [0x12, 0x34, 0x56]);
+
+    // The card goes back down when the keyboard goes away, but not when the
+    // keyboard comes back at once.
+    let lifted = card(&h);
+    h.state_mut().pad.keyboard = 0.0;
+    h.step();
+    assert_eq!(card(&h), lifted);
+    h.state_mut().pad.keyboard = keyboard;
+    h.step();
+    assert_eq!(card(&h), lifted);
+    h.state_mut().pad.keyboard = 0.0;
+    h.run_steps(30);
     assert_eq!(card(&h), before);
+}
+
+#[test]
+fn a_long_press_on_a_text_field_gives_it_focus() {
+    use vale_app::ui::pad::raster::COLOR;
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    tap_handle(&mut h, sea);
+    let field = control(&h, &format!("{COLOR} hex")).unwrap();
+    assert!(h.ctx.memory(|m| m.focused()).is_none());
+    touch(&mut h, egui::TouchPhase::Start, field.center(), None);
+    h.run_steps(8);
+    touch(&mut h, egui::TouchPhase::End, field.center(), None);
+    h.run_steps(2);
+    assert!(h.ctx.memory(|m| m.focused()).is_some());
+    assert!(h.output().platform_output.ime.is_some());
 }
 
 /// The texts that the last frame painted, with their places.
