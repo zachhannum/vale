@@ -16,8 +16,8 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::gpkg::{Reader, StoreError, TileKey, corrupt, decode_geometry, encode_geometry};
 use crate::{
-    Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterId, Units, Uuid,
-    Value, World, clamp_opacity,
+    Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
+    Stop, Units, Uuid, Value, World, clamp_opacity,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -444,40 +444,44 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     put_f64(out, raster.value_min);
     put_f64(out, raster.value_max);
     put_u32(out, raster.base as usize);
-    put_u32(out, raster.limits.len());
-    for &limit in &raster.limits {
-        put_f64(out, limit);
-    }
-    for ramp in [&raster.ramp_sea, &raster.ramp_land] {
-        put_bytes(out, ramp.as_flattened());
-    }
     out.extend_from_slice(&raster.opacity.to_le_bytes());
+    put_bytes(out, raster.display.id().as_bytes());
+    put_u32(out, raster.stops.len());
+    for stop in &raster.stops {
+        put_f64(out, stop.value);
+        out.extend_from_slice(&stop.below);
+        out.extend_from_slice(&stop.above);
+    }
 }
 
+/// An unknown display gives bands.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
     let unit = string(r)?;
     let (value_min, value_max) = (r.f64()?, r.f64()?);
     let base = u16::try_from(r.u32()?).ok()?;
-    let limits = (0..count(r)?).map(|_| r.f64()).collect::<Option<_>>()?;
-    let mut ramp = || {
-        let (colors, rest) = bytes(r)?.as_chunks::<3>();
-        rest.is_empty().then(|| colors.to_vec())
-    };
-    let (ramp_sea, ramp_land) = (ramp()?, ramp()?);
     let opacity = clamp_opacity(f32::from_le_bytes(r.take()?));
+    let display = RasterDisplay::from_id(&string(r)?).unwrap_or_default();
+    let stops = (0..count(r)?)
+        .map(|_| {
+            Some(Stop {
+                value: r.f64()?,
+                below: r.take()?,
+                above: r.take()?,
+            })
+        })
+        .collect::<Option<_>>()?;
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
+        display,
         face_size,
         unit,
         value_min,
         value_max,
         base,
-        limits,
-        ramp_sea,
-        ramp_land,
+        stops,
     })
 }
 
@@ -631,9 +635,20 @@ mod tests {
         let mut project = Project::new(World::default());
         let id = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
         let rain = project.raster_mut(id).unwrap();
-        rain.limits = vec![250.0, 1000.0];
-        rain.ramp_land = vec![[1, 2, 3]];
         rain.opacity = 0.375;
+        rain.display = RasterDisplay::Grey;
+        rain.stops = vec![
+            Stop {
+                value: 0.0,
+                below: [1, 2, 3],
+                above: [1, 2, 3],
+            },
+            Stop {
+                value: 250.5,
+                below: [4, 5, 6],
+                above: [7, 8, 9],
+            },
+        ];
         let rain = project.raster(id).unwrap();
         let mut out = Vec::new();
         put_raster(&mut out, rain);

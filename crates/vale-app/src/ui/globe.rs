@@ -344,6 +344,19 @@ pub(super) fn canvas(
     background: egui::Color32,
     cards: bool,
 ) {
+    if let Some(rect) = canvas_input(ui, state, background) {
+        paint_canvas(ui, state, rect, background, cards);
+    }
+}
+
+/// Fills the free space of `ui` with the background and reads the input of
+/// the globe. Returns the rectangle of the canvas, or `None` if it is too
+/// small to draw.
+pub(super) fn canvas_input(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    background: egui::Color32,
+) -> Option<egui::Rect> {
     let now = Instant::now();
     let globe = &mut state.globe;
     globe.world_km = state.doc.project.world.radius_km;
@@ -354,7 +367,7 @@ pub(super) fn canvas(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, background);
     if rect.width() < 8.0 || rect.height() < 8.0 {
-        return;
+        return None;
     }
     let painting = brush_input(ui, rect, &resp, globe, now);
     match globe.world_view {
@@ -381,8 +394,21 @@ pub(super) fn canvas(
     let map = shown.and_then(|id| globe.display_map(id));
     let value = |(dir, map): (_, &vale_terrain::Heightmap)| map.bands.value(map.sample(dir));
     state.cursor_value = cursor.zip(map).map(value);
+    Some(rect)
+}
 
-    let more = globe.advance(now);
+/// Paints the globe into `rect`. A change of the state before this call
+/// shows in the same frame.
+pub(super) fn paint_canvas(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    rect: egui::Rect,
+    background: egui::Color32,
+    cards: bool,
+) {
+    let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect);
+    let globe = &mut state.globe;
+    let more = globe.advance(Instant::now());
     let pixels_per_point = ui.ctx().pixels_per_point();
     // The passes of the raster layers and the shapes of the vector layers
     // go to the painter in the draw order. The flat view draws no vector

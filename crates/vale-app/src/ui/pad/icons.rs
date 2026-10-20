@@ -37,6 +37,7 @@ pub enum Icon {
     Center,
     Reset,
     World,
+    Grid,
 }
 
 impl Icon {
@@ -81,6 +82,7 @@ impl Icon {
                 "M12 3c4.97 0 9 4.03 9 9s-4.03 9-9 9-9-4.03-9-9 4.03-9 9-9z\
                  M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18"
             }
+            Icon::Grid => "M12 3v18M3 12h18",
             Icon::Reset => {
                 "M4 4v5h5M4.5 9c1.4-3 4.2-5 7.5-5 4.4 0 8 3.6 8 8s-3.6 8-8 8c-3.5 0-6.5-2.2-7.6-5.4"
             }
@@ -96,6 +98,7 @@ impl Icon {
                 (19.0, 8.0, 2.0, true),
             ],
             Icon::Eye | Icon::EyeOff | Icon::Point => &[(12.0, 12.0, 3.0, false)],
+            Icon::Grid => &[(12.0, 12.0, 9.0, false)],
             Icon::More => &[
                 (5.0, 12.0, 1.5, true),
                 (12.0, 12.0, 1.5, true),
@@ -353,6 +356,8 @@ mod tests {
             Icon::Plus,
             Icon::Center,
             Icon::Reset,
+            Icon::World,
+            Icon::Grid,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

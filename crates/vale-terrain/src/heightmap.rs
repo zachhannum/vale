@@ -269,7 +269,7 @@ pub struct Heightmap {
     /// The rivers of a part of the sphere at a small scale. The carve mode
     /// and the ridge mode follow them where the window has them.
     window: Option<Arc<ChannelWindow>>,
-    /// The band limits and the color ramp of the preview.
+    /// The color stops of the preview.
     pub bands: Bands,
 }
 

@@ -353,8 +353,12 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if at.cover <= 0.0 {
         discard;
     }
-    let h = height(at.d).x;
-    let color = ground(h, fwidth(h), at.d, at.px) * at.shade;
+    // A derivative of the height is wrong where the pixels of a quad read
+    // different faces, so the width comes from the slope of the texels, as
+    // in `fs_flat`.
+    let h = height(at.d);
+    let width = length(h.yz) * u.params.x * (2.0 / PI) * at.px;
+    let color = ground(h.x, width, at.d, at.px) * at.shade;
     let alpha = u.layer.x;
     return vec4<f32>(color * alpha, alpha);
 }

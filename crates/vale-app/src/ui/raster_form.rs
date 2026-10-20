@@ -120,6 +120,15 @@ fn number_text(value: f64) -> String {
 /// The three values that describe a face size on a world: the ground that
 /// one pixel covers at the equator, the equirectangular world map with the
 /// same detail, and the memory of a layer with paint on each pixel.
+/// The size of one pixel of a raster layer on the ground, as a text.
+pub fn pixel_size_text(face_size: u32, world: &World) -> String {
+    let values = face_size_values(face_size, world.radius_km);
+    format!(
+        "about {}",
+        world::short_distance(values.km_per_pixel, world.units)
+    )
+}
+
 pub fn face_size_text(face_size: usize, world: &World) -> [String; 3] {
     let values = face_size_values(face_size as u32, world.radius_km);
     let ground = world::short_distance(values.km_per_pixel, world.units);
@@ -510,6 +519,12 @@ mod tests {
             units,
             ..World::default()
         }
+    }
+
+    #[test]
+    fn the_pixel_size_of_a_face_of_2048_on_earth_is_about_4_9_km() {
+        let earth = world(6371.0, Units::Metric);
+        assert_eq!(pixel_size_text(2048, &earth), "about 4.9 km");
     }
 
     #[test]

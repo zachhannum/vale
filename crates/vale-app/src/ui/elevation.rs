@@ -1,33 +1,28 @@
-//! The bands panel: the band limits and the color ramp of a raster layer.
+//! The style panel of the desktop: the display and the color stops of a
+//! raster layer.
 
 use eframe::egui;
-use vale_terrain::{Bands, Rgb};
+use vale_store::{RasterDisplay, RasterId};
+use vale_terrain::{Bands, Rgb, Side};
 
-use super::{AppState, LayerRef};
+use super::gradient::{self, DESKTOP};
+use super::{AppState, LayerRef, pad};
 use crate::globe::preview::Preview;
 use crate::world;
 
 /// The range of the factor of the width of a river line.
 pub const RIVER_WIDTH: std::ops::RangeInclusive<f32> = 0.25..=4.0;
 
-/// The name of the bar for a screen reader and for the tests.
-pub const BAR_LABEL: &str = "Band limits";
 /// The button of the tool bar that opens the panel.
-pub const PANEL: &str = "Bands";
+pub const PANEL: &str = "Layer style";
 
-const BAR_HEIGHT: f32 = 340.0;
-const BAR_WIDTH: f32 = 56.0;
-/// The space above and below the bar, so that a label at an end has room.
-const BAR_PAD: f32 = 10.0;
-/// A touch this near to a limit takes the limit, in points.
-const GRAB: f32 = 14.0;
-/// The number of the values of a range that a limit can land on when you
-/// add or drag it. A limit of a height lands on a multiple of 10 meters.
-const SNAPS: f64 = 1200.0;
+/// The number of the values of a range that a stop can land on when you
+/// add or drag it. A stop of a height lands on a multiple of 10 meters.
+pub const SNAPS: f64 = 1200.0;
 
 /// The place of a value on the bar, from 0 at the lowest to 1 at the
 /// highest. With a sea split, each side of sea level has a square root
-/// scale, so the limits near sea level have room. With no sea split, the
+/// scale, so the stops near sea level have room. With no sea split, the
 /// scale is linear.
 pub fn bar_fraction(bands: &Bands, value: f64) -> f64 {
     let (min, max) = (bands.min(), bands.max());
@@ -54,22 +49,42 @@ pub fn bar_value(bands: &Bands, fraction: f64) -> f64 {
     side * side * range
 }
 
-/// The bar inside the rectangle of the widget.
-fn bar_rect(rect: egui::Rect) -> egui::Rect {
-    egui::Rect::from_min_max(
-        rect.min + egui::vec2(0.0, BAR_PAD),
-        egui::pos2(rect.min.x + BAR_WIDTH, rect.max.y - BAR_PAD),
-    )
-}
-
-/// The screen height of a value on the bar of a widget.
-pub fn limit_y(rect: egui::Rect, bands: &Bands, value: f64) -> f32 {
-    let bar = bar_rect(rect);
-    bar.bottom() - bar_fraction(bands, value) as f32 * bar.height()
-}
-
 fn color32(c: Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(c[0], c[1], c[2])
+}
+
+/// The color of a value in the Grey display.
+fn grey(bands: &Bands, value: f64) -> egui::Color32 {
+    let level = (u32::from(bands.level(value)) * 255 / 65535) as u8;
+    egui::Color32::from_gray(level)
+}
+
+/// The colors of a band at its top and at its bottom in a display.
+pub fn band_colors(
+    bands: &Bands,
+    band: &vale_terrain::Band,
+    display: RasterDisplay,
+) -> (egui::Color32, egui::Color32) {
+    match display {
+        RasterDisplay::Bands => (color32(band.color), color32(band.color)),
+        RasterDisplay::Gradient => (color32(band.top), color32(band.bottom)),
+        RasterDisplay::Grey => (grey(bands, band.max), grey(bands, band.min)),
+    }
+}
+
+/// The names of the displays, in the order of `RasterDisplay::ALL`.
+pub const DISPLAYS: [&str; 3] = ["Bands", "Gradient", "Grey"];
+
+/// The name of a display.
+pub fn display_name(display: RasterDisplay) -> &'static str {
+    let index = RasterDisplay::ALL.iter().position(|d| *d == display);
+    DISPLAYS[index.unwrap_or(0)]
+}
+
+/// The selected color stop of a raster layer.
+pub fn selected(preview: &Preview, id: Option<RasterId>) -> Option<usize> {
+    let (of, index) = preview.selected?;
+    (Some(of) == id).then_some(index)
 }
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
@@ -79,173 +94,158 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::right("elevation")
         .default_size(210.0)
         .show(ui, |ui| {
-            let layer = state
-                .shown_raster()
-                .map(|raster| LayerRef::Raster(raster.id));
+            let raster = state.panel_raster().cloned();
+            let layer = raster.as_ref().map(|raster| LayerRef::Raster(raster.id));
             let layer = layer.and_then(|layer| state.layer_of(layer));
             let name = layer.map_or(PANEL.to_string(), |layer| layer.name.clone());
-            let unit = state.shown_unit().to_string();
             ui.heading(name);
-            let shown = state.shown_raster().map(|raster| raster.id);
-            let globe = &mut state.globe;
-            let mut preview = globe.preview;
-            let bands = shown.and_then(|id| globe.bands_mut(id));
-            if let Some(bands) = bands {
-                controls(ui, bands, &mut preview, &unit);
-            } else {
-                controls(ui, &mut globe.map.bands, &mut preview, &unit);
+            let Some(raster) = raster else {
+                let mut preview = state.globe.preview;
+                let (bands, unit) = (&mut state.globe.map.bands, super::HEIGHT_UNIT);
+                view_controls(ui, &mut preview, true);
+                display_choice(ui, &mut preview.display);
+                ui.separator();
+                let mut chosen = selected(&preview, None);
+                gradient::editor(
+                    ui,
+                    None,
+                    &DESKTOP,
+                    bands,
+                    &mut chosen,
+                    preview.display,
+                    unit,
+                );
+                selected_stop(ui, bands, &mut chosen, unit);
+                state.globe.preview = preview;
+                return;
+            };
+            let id = raster.id;
+            let height = super::is_height(&raster);
+            ui.horizontal(|ui| {
+                ui.label("Unit");
+                if height {
+                    ui.label(&raster.unit);
+                    return;
+                }
+                let mut unit = raster.unit.clone();
+                let field = ui.add(egui::TextEdit::singleline(&mut unit).desired_width(80.0));
+                field.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, UNIT)
+                });
+                if field.changed() {
+                    state.set_raster_unit(id, &unit);
+                }
+            });
+            view_controls(ui, &mut state.globe.preview, height);
+            ui.separator();
+            ui.label("Style");
+            let mut display = raster.display;
+            if display_choice(ui, &mut display) {
+                state.set_raster_display(id, display);
             }
-            globe.preview = preview;
+            let unit = raster.unit.clone();
+            let globe = &mut state.globe;
+            let mut chosen = selected(&globe.preview, Some(id));
+            if let Some(bands) = globe.bands_mut(id) {
+                gradient::editor(ui, None, &DESKTOP, bands, &mut chosen, display, &unit);
+                selected_stop(ui, bands, &mut chosen, &unit);
+                if reset_button(ui, bands, height) {
+                    chosen = None;
+                }
+            }
+            globe.preview.selected = chosen.map(|index| (id, index));
         });
 }
 
-/// The controls of the preview, and of the bands of one raster layer.
-/// `unit` is the unit of the values of the layer. A height in meters has
-/// rivers.
-pub(super) fn controls(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: &str) {
-    ui.checkbox(&mut preview.levels, "Levels");
-    ui.checkbox(&mut preview.graticule, "Graticule");
-    if unit == super::HEIGHT_UNIT {
+/// The name of the unit field.
+pub const UNIT: &str = "Unit";
+
+/// The rivers of a height layer.
+fn view_controls(ui: &mut egui::Ui, preview: &mut Preview, height: bool) {
+    if height {
         ui.checkbox(&mut preview.rivers, "Rivers");
         let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
         ui.add_enabled(preview.rivers, width);
     }
-    ui.separator();
-    limit_bar(ui, bands, preview, unit);
-    selected_limit(ui, bands, preview, unit);
-    ui.separator();
-    // A range with no sea split has one ramp.
-    if bands.sea().is_none() {
-        ui.label("Colors");
-        ui.horizontal_wrapped(|ui| {
-            for color in &mut bands.ramp.land {
-                ui.color_edit_button_srgb(color);
+}
+
+/// The button that puts back the default color stops. Its menu asks
+/// first. Returns true after a reset.
+fn reset_button(ui: &mut egui::Ui, bands: &mut Bands, height: bool) -> bool {
+    let Some(default) = Bands::with_range(bands.min(), bands.max(), height) else {
+        return false;
+    };
+    let changed = default.stops() != bands.stops();
+    let mut reset = false;
+    ui.add_enabled_ui(changed, |ui| {
+        ui.menu_button(format!("{}…", pad::raster::RESET_STOPS), |ui| {
+            ui.label("Put back the default color stops? You cannot undo this.");
+            if ui.button(pad::raster::RESET).clicked() {
+                reset = true;
+                ui.close();
             }
         });
-        return;
+    });
+    if reset {
+        *bands = default;
     }
-    ui.label("Land colors");
-    ui.horizontal_wrapped(|ui| {
-        for color in &mut bands.ramp.land {
-            ui.color_edit_button_srgb(color);
-        }
-    });
-    ui.label("Sea colors");
-    ui.horizontal_wrapped(|ui| {
-        for color in &mut bands.ramp.sea {
-            ui.color_edit_button_srgb(color);
-        }
-    });
+    reset
 }
 
-/// The bar with the bands and the limits. A tap on a free place adds a limit.
-/// A tap on a limit selects it, and a drag moves it.
-fn limit_bar(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: &str) {
-    let span = bands.max() - bands.min();
-    let snap = span / SNAPS;
-    let size = egui::vec2(ui.available_width(), BAR_HEIGHT);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, BAR_LABEL));
-    let bar = bar_rect(rect);
-    let scale = bands.clone();
-    let y_of = |value: f64| limit_y(rect, &scale, value);
-    let value_of = |y: f32| {
-        let value = bar_value(&scale, f64::from((bar.bottom() - y) / bar.height()));
-        (value / snap).round() * snap
-    };
-
-    let sea = bands.sea();
-    // The limit under a touch.
-    let near = |bands: &Bands, y: f32| {
-        let off = |m: &f64| (y_of(*m) - y).abs();
-        let limits = bands.limits().iter().enumerate();
-        let (index, m) = limits.min_by(|a, b| off(a.1).total_cmp(&off(b.1)))?;
-        (off(m) <= GRAB).then_some(index)
-    };
-    let press = ui.input(|i| i.pointer.press_origin());
-    if resp.drag_started()
-        && let Some(pos) = press
-    {
-        preview.selected = near(bands, pos.y).filter(|i| Some(*i) != sea);
-    }
-    if resp.dragged()
-        && let (Some(index), Some(pos)) = (preview.selected, resp.interact_pointer_pos())
-        && index < bands.limits().len()
-    {
-        bands.move_to(index, value_of(pos.y));
-    }
-    if resp.clicked()
-        && let Some(pos) = resp.interact_pointer_pos()
-    {
-        preview.selected = match near(bands, pos.y) {
-            Some(index) => Some(index).filter(|i| Some(*i) != sea),
-            None => bands.add(value_of(pos.y)),
-        };
-    }
-
-    let painter = ui.painter_at(rect);
-    for band in bands.bands() {
-        let (top, bottom) = (y_of(band.max), y_of(band.min));
-        let (high, low) = if preview.levels {
-            (band.color, band.color)
-        } else {
-            (band.top, band.bottom)
-        };
-        let mut mesh = egui::Mesh::default();
-        mesh.colored_vertex(egui::pos2(bar.left(), top), color32(high));
-        mesh.colored_vertex(egui::pos2(bar.right(), top), color32(high));
-        mesh.colored_vertex(egui::pos2(bar.right(), bottom), color32(low));
-        mesh.colored_vertex(egui::pos2(bar.left(), bottom), color32(low));
-        mesh.add_triangle(0, 1, 2);
-        mesh.add_triangle(0, 2, 3);
-        painter.add(egui::Shape::mesh(mesh));
-    }
-    let text = ui.visuals().text_color();
-    let strong = ui.visuals().strong_text_color();
-    for (index, &meters) in bands.limits().iter().enumerate() {
-        let y = y_of(meters);
-        let selected = preview.selected == Some(index);
-        let (width, color) = match (selected, Some(index) == sea) {
-            (true, _) => (3.0, strong),
-            (false, true) => (2.0, text),
-            (false, false) => (1.0, text),
-        };
-        let ends = [egui::pos2(bar.left(), y), egui::pos2(bar.right() + 8.0, y)];
-        painter.line_segment(ends, egui::Stroke::new(width, color));
-        let label = if Some(index) == sea {
-            "Sea level".to_string()
-        } else {
-            world::value_text(meters, span, unit)
-        };
-        painter.text(
-            egui::pos2(bar.right() + 12.0, y),
-            egui::Align2::LEFT_CENTER,
-            label,
-            egui::FontId::proportional(12.0),
-            color,
-        );
-    }
-}
-
-/// The controls of the selected limit.
-fn selected_limit(ui: &mut egui::Ui, bands: &mut Bands, preview: &mut Preview, unit: &str) {
-    let span = bands.max() - bands.min();
-    let count = bands.limits().len();
-    let Some(index) = preview.selected.filter(|i| *i < count) else {
-        preview.selected = None;
-        ui.weak("Tap the bar to add a limit. Drag a limit to move it.");
-        return;
-    };
+/// The three displays as a row of buttons. Returns true if the user chose
+/// another display.
+fn display_choice(ui: &mut egui::Ui, display: &mut RasterDisplay) -> bool {
+    let before = *display;
     ui.horizontal(|ui| {
-        let mut meters = bands.limits()[index];
-        let value = egui::DragValue::new(&mut meters)
-            .speed(span / SNAPS)
-            .suffix(format!(" {unit}"));
-        if ui.add(value).changed() {
-            bands.move_to(index, meters);
+        for (choice, name) in RasterDisplay::ALL.into_iter().zip(DISPLAYS) {
+            ui.selectable_value(display, choice, name);
         }
-        if ui.button("Remove").clicked() && bands.remove(index) {
-            preview.selected = None;
+    });
+    *display != before
+}
+
+/// The controls of the selected stop: its value, its colors, and a button
+/// that removes it.
+fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usize>, unit: &str) {
+    let span = bands.max() - bands.min();
+    let Some(index) = selected.filter(|i| *i < bands.stops().len()) else {
+        *selected = None;
+        ui.weak(gradient::HINT);
+        return;
+    };
+    let stop = bands.stops()[index];
+    let fixed = bands.fixed(index);
+    ui.horizontal(|ui| {
+        if fixed {
+            ui.label(world::value_text(stop.value, span, unit));
+        } else {
+            let mut value = stop.value;
+            let field = egui::DragValue::new(&mut value)
+                .speed(span / SNAPS)
+                .suffix(format!(" {unit}"));
+            if ui.add(field).changed() {
+                bands.move_to(index, value);
+            }
+        }
+        let sides: &[(Side, &str)] = if bands.sea() == Some(index) {
+            &[(Side::Below, "Sea"), (Side::Above, "Land")]
+        } else {
+            &[(Side::Above, "")]
+        };
+        for &(side, label) in sides {
+            let mut color = match side {
+                Side::Below => stop.below,
+                Side::Above => stop.above,
+            };
+            if !label.is_empty() {
+                ui.label(label);
+            }
+            if ui.color_edit_button_srgb(&mut color).changed() {
+                bands.set_color(index, side, color);
+            }
+        }
+        if !fixed && ui.button("Remove").clicked() && bands.remove(index) {
+            *selected = None;
         }
     });
 }

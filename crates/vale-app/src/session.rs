@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use vale_store::{
     Project, ProjectFile, Raster, RasterId, Restored, SaveStats, StoreError, TileChanges, TileKey,
 };
-use vale_terrain::{Bands, FACES, Heightmap, Ramp, reduced_face_size};
+use vale_terrain::{Bands, FACES, Heightmap, Stop, reduced_face_size};
 
 use crate::document::Document;
 use crate::files::Files;
@@ -522,52 +522,60 @@ fn record<'a>(project: &'a Project, id: RasterId, map: &Heightmap) -> Option<&'a
     raster.filter(|raster| raster.face_size as usize == map.face_size())
 }
 
-fn ramp_of(raster: &Raster) -> Ramp {
-    Ramp {
-        sea: raster.ramp_sea.clone(),
-        land: raster.ramp_land.clone(),
-    }
+fn stops_of(raster: &Raster) -> Vec<Stop> {
+    let stop = |s: &vale_store::Stop| Stop {
+        value: s.value,
+        below: s.below,
+        above: s.above,
+    };
+    raster.stops.iter().map(stop).collect()
 }
 
-/// The bands of a raster record. A record with no limits or with no ramp
-/// gets the bands that a new raster of its range has. A record with an empty
-/// range gets the range of a height in meters.
+/// The bands of a raster record. A record with no stops gets the stops that
+/// a new raster of its range has. A record with an empty range gets the
+/// bands of a height in meters.
 pub fn bands_of(raster: &Raster) -> Bands {
     let (min, max) = (raster.value_min, raster.value_max);
     let sea = crate::ui::is_height(raster);
-    Bands::from_range_parts(min, max, sea, &raster.limits, ramp_of(raster))
+    Bands::from_range_parts(min, max, sea, &stops_of(raster))
         .or_else(|| Bands::with_range(min, max, sea))
-        .or_else(|| Bands::from_parts(&raster.limits, ramp_of(raster)))
         .unwrap_or_default()
 }
 
-/// Puts the base level, the band limits, and the ramp of a raster record
-/// into the heightmap. The call makes no change for a save.
+/// Puts the base level and the color stops of a raster record into the
+/// heightmap. The call makes no change for a save.
 fn load_record(map: &mut Heightmap, raster: &Raster) {
     map.load_base(raster.base);
     let (min, max) = (raster.value_min, raster.value_max);
     let sea = crate::ui::is_height(raster);
-    let bands = Bands::from_range_parts(min, max, sea, &raster.limits, ramp_of(raster));
-    if let Some(bands) = bands {
+    if let Some(bands) = Bands::from_range_parts(min, max, sea, &stops_of(raster)) {
         map.bands = bands;
     }
 }
 
-/// Puts the base level, the value range, the band limits, and the ramp of
-/// a heightmap into its raster record. The unit, the opacity, and the face
-/// size of the record stay.
+/// Puts the base level, the value range, and the color stops of a heightmap
+/// into its raster record. The unit, the opacity, and the face size of the
+/// record stay.
 pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
     raster.value_min = map.bands.min();
     raster.value_max = map.bands.max();
     raster.base = map.base();
-    if raster.limits != map.bands.limits() {
-        raster.limits = map.bands.limits().to_vec();
-    }
-    if raster.ramp_sea != map.bands.ramp.sea {
-        raster.ramp_sea = map.bands.ramp.sea.clone();
-    }
-    if raster.ramp_land != map.bands.ramp.land {
-        raster.ramp_land = map.bands.ramp.land.clone();
+    let stops = map.bands.stops();
+    let same = raster.stops.len() == stops.len()
+        && raster
+            .stops
+            .iter()
+            .zip(stops)
+            .all(|(a, b)| a.value == b.value && a.below == b.below && a.above == b.above);
+    if !same {
+        raster.stops = stops
+            .iter()
+            .map(|s| vale_store::Stop {
+                value: s.value,
+                below: s.below,
+                above: s.above,
+            })
+            .collect();
     }
 }
 

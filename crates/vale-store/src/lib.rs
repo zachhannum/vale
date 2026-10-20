@@ -214,6 +214,8 @@ pub struct Raster {
     pub id: RasterId,
     /// How much the raster hides the layers below it, from 0 to 1.
     pub opacity: f32,
+    /// How the globe colors the values.
+    pub display: RasterDisplay,
     /// The number of pixels along the edge of a face.
     pub face_size: u32,
     /// The unit of the values, for example `m`.
@@ -224,12 +226,19 @@ pub struct Raster {
     pub value_max: f64,
     /// The pixel of each place that has no tile.
     pub base: u16,
-    /// The band limits, as values in ascending order.
-    pub limits: Vec<f64>,
-    /// The colors of the ramp below sea level.
-    pub ramp_sea: Vec<Rgb>,
-    /// The colors of the ramp above sea level.
-    pub ramp_land: Vec<Rgb>,
+    /// The color stops of the ramp, in ascending order of value. An empty
+    /// list gives the default bands of the range.
+    pub stops: Vec<Stop>,
+}
+
+/// A color stop of the ramp of a raster: a value, the color just below it,
+/// and the color just above it. The two colors differ only at a hard stop,
+/// for example at sea level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stop {
+    pub value: f64,
+    pub below: Rgb,
+    pub above: Rgb,
 }
 
 /// An opacity from 0 to 1. A value that is not a number gives 1.
@@ -238,6 +247,39 @@ pub(crate) fn clamp_opacity(opacity: f32) -> f32 {
         1.0
     } else {
         opacity.clamp(0.0, 1.0)
+    }
+}
+
+/// How the globe colors the values of a raster.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RasterDisplay {
+    /// A color for each band between two band limits.
+    #[default]
+    Bands,
+    /// A smooth ramp of colors.
+    Gradient,
+    /// Black at the lowest value and white at the highest.
+    Grey,
+}
+
+impl RasterDisplay {
+    pub const ALL: [RasterDisplay; 3] = [
+        RasterDisplay::Bands,
+        RasterDisplay::Gradient,
+        RasterDisplay::Grey,
+    ];
+
+    /// The name of the display in the project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            RasterDisplay::Bands => "bands",
+            RasterDisplay::Gradient => "gradient",
+            RasterDisplay::Grey => "grey",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<RasterDisplay> {
+        RasterDisplay::ALL.into_iter().find(|d| d.id() == id)
     }
 }
 
@@ -317,8 +359,8 @@ impl Project {
     /// raster. The layer goes directly above the top raster layer, or to the
     /// bottom of a project with no raster layer. `value_min` is the value of
     /// pixel 0, and `value_max` is the value of pixel 65,535. The layer is
-    /// visible, and the raster is opaque. Its base is zero, and its band
-    /// limits and its ramp are empty.
+    /// visible, and the raster is opaque and shows bands. Its base is zero,
+    /// and its band limits, its ramp, and its stops are empty.
     pub fn add_raster(
         &mut self,
         name: String,
@@ -332,14 +374,13 @@ impl Project {
         self.rasters.push(Raster {
             id,
             opacity: 1.0,
+            display: RasterDisplay::Bands,
             face_size,
             unit,
             value_min,
             value_max,
             base: 0,
-            limits: Vec::new(),
-            ramp_sea: Vec::new(),
-            ramp_land: Vec::new(),
+            stops: Vec::new(),
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());
         let layer = Layer {
@@ -382,6 +423,22 @@ impl Project {
     pub fn set_raster_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
         let raster = self.raster_mut(id);
         raster.map(|r| r.opacity = clamp_opacity(opacity)).is_some()
+    }
+
+    /// Sets how the globe colors the values of a raster.
+    pub fn set_raster_display(&mut self, id: RasterId, display: RasterDisplay) -> bool {
+        self.raster_mut(id).map(|r| r.display = display).is_some()
+    }
+
+    /// Sets the color stops of a raster.
+    pub fn set_raster_stops(&mut self, id: RasterId, stops: Vec<Stop>) -> bool {
+        self.raster_mut(id).map(|r| r.stops = stops).is_some()
+    }
+
+    /// Sets the unit of the values of a raster.
+    pub fn set_raster_unit(&mut self, id: RasterId, unit: &str) -> bool {
+        let raster = self.raster_mut(id);
+        raster.map(|r| r.unit = unit.to_string()).is_some()
     }
 
     /// Removes a raster and its layer. Its ID is not used again. The next
@@ -573,11 +630,18 @@ mod tests {
             assert!(p.set_raster_opacity(ids[1], given));
             assert_eq!(p.raster(ids[1]).unwrap().opacity, kept);
         }
+        assert_eq!(p.raster(ids[1]).unwrap().display, RasterDisplay::Bands);
+        assert!(p.set_raster_display(ids[1], RasterDisplay::Gradient));
+        assert_eq!(p.raster(ids[1]).unwrap().display, RasterDisplay::Gradient);
+        assert!(p.set_raster_unit(ids[1], "cm"));
+        assert_eq!(p.raster(ids[1]).unwrap().unit, "cm");
 
         assert!(p.remove_raster(ids[0]).is_some());
         assert!(p.remove_raster(ids[0]).is_none());
         assert!(p.raster_layer(ids[0]).is_none());
         assert!(!p.set_raster_opacity(ids[0], 0.5));
+        assert!(!p.set_raster_display(ids[0], RasterDisplay::Grey));
+        assert!(!p.set_raster_unit(ids[0], "m"));
         let d = p.add_raster("d".into(), 1024, String::new(), 0.0, 1.0);
         assert!(ids.iter().all(|id| d > *id));
         let rasters: Vec<RasterId> = p.rasters().iter().map(|r| r.id).collect();

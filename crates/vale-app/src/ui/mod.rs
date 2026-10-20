@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
-use vale_store::{Layer, LayerId, Project, Raster, RasterId, StoreError, World};
+use vale_store::{Layer, LayerId, Project, Raster, RasterDisplay, RasterId, StoreError, World};
 use vale_terrain::{Bands, Heightmap, Mode};
 
 use crate::document::Document;
@@ -24,6 +24,7 @@ pub mod browser;
 pub mod canvas;
 pub mod elevation;
 pub mod globe;
+pub mod gradient;
 pub mod inspector;
 pub mod pad;
 pub mod panels;
@@ -109,6 +110,25 @@ pub struct Note {
     /// The import or the export failed, or the import changed the shape of
     /// the image.
     pub warning: bool,
+    /// The raster layer of the import or the export. Only the panel of this
+    /// layer shows the note.
+    pub layer: Option<RasterId>,
+    /// The time and the pass of egui when a panel first showed the note,
+    /// and the last pass that showed it.
+    pub shown: Option<(f64, u64)>,
+    pub last_pass: u64,
+}
+
+impl Note {
+    pub fn new(text: String, warning: bool, layer: Option<RasterId>) -> Note {
+        Note {
+            text,
+            warning,
+            layer,
+            shown: None,
+            last_pass: 0,
+        }
+    }
 }
 
 /// True if the extension of the file is that of a PNG or TIFF image.
@@ -305,6 +325,9 @@ pub struct AppState {
     pub import_note: Option<Note>,
     /// The text of the last export of the heightmap.
     pub export_note: Option<Note>,
+    /// The raster layers of the last import and of the last export.
+    pub import_layer: Option<RasterId>,
+    pub export_layer: Option<RasterId>,
     /// True: a complete export goes to `share`.
     pub share_exports: bool,
     /// The file of a complete export that the host gives to the Files app.
@@ -372,6 +395,8 @@ impl AppState {
             status: String::new(),
             import_note: None,
             export_note: None,
+            import_layer: None,
+            export_layer: None,
             share_exports: false,
             share: None,
             world_form: None,
@@ -451,9 +476,14 @@ impl AppState {
         }
         let item = |layer: &Layer| match layer.raster() {
             Some(id) => {
-                let opacity = project.raster(id)?.opacity;
+                let raster = project.raster(id)?;
+                let (opacity, display) = (raster.opacity, raster.display);
                 let held = globe.holds(id);
-                held.then_some(StackItem::Raster { id, opacity })
+                held.then_some(StackItem::Raster {
+                    id,
+                    opacity,
+                    display,
+                })
             }
             None => Some(StackItem::Vector(layer.id)),
         };
@@ -713,6 +743,25 @@ impl AppState {
         set
     }
 
+    /// Sets how a raster layer colors its values on the globe.
+    pub fn set_raster_display(&mut self, id: RasterId, display: RasterDisplay) -> bool {
+        let set = self.doc.project.set_raster_display(id, display);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets the unit of the values of a raster layer. The unit of a height
+    /// layer stays, and no other layer gets that unit.
+    pub fn set_raster_unit(&mut self, id: RasterId, unit: &str) -> bool {
+        let unit = unit.trim();
+        let project = &mut self.doc.project;
+        let height = project.raster(id).is_none_or(is_height);
+        if height || unit == HEIGHT_UNIT {
+            return false;
+        }
+        project.set_raster_unit(id, unit)
+    }
+
     /// Moves a layer to this index of the draw order. Index 0 is the bottom.
     pub fn move_layer(&mut self, id: LayerId, to: usize) -> bool {
         let moved = self.doc.move_layer(id, to);
@@ -761,6 +810,16 @@ impl AppState {
         let layers = project.layers().iter().rev();
         let top = || layers.filter_map(Layer::raster).find(shows);
         project.raster(selected.or_else(top)?)
+    }
+
+    /// The raster layer of the desktop style panel: the selected
+    /// raster layer, or else the raster layer of the readout.
+    pub fn panel_raster(&self) -> Option<&Raster> {
+        let selected = self.selected_raster().filter(|id| self.globe.holds(*id));
+        match selected {
+            Some(id) => self.doc.project.raster(id),
+            None => self.shown_raster(),
+        }
     }
 
     /// The unit of the values of the raster layer of the readout. With no
@@ -1456,15 +1515,10 @@ impl AppState {
 
     /// Shows the result of an import of a heightmap.
     pub fn note_import(&mut self, result: ImportResult) {
+        let layer = self.import_layer;
         let note = match result {
-            Ok(info) => Note {
-                text: info.message(),
-                warning: !info.two_to_one,
-            },
-            Err(text) => Note {
-                text,
-                warning: true,
-            },
+            Ok(info) => Note::new(info.message(), !info.two_to_one, layer),
+            Err(text) => Note::new(text, true, layer),
         };
         self.status = note.text.clone();
         self.import_note = Some(note);
@@ -1481,15 +1535,9 @@ impl AppState {
                 if self.share_exports {
                     self.share = Some(info.path);
                 }
-                Note {
-                    text,
-                    warning: false,
-                }
+                Note::new(text, false, self.export_layer)
             }
-            Err(text) => Note {
-                text,
-                warning: true,
-            },
+            Err(text) => Note::new(text, true, self.export_layer),
         };
         self.status = note.text.clone();
         self.export_note = Some(note);
@@ -1502,8 +1550,7 @@ impl AppState {
             ExportEvent::Saved => {
                 let text = format!("Saved {} to Files", file_name(path));
                 self.status = text.clone();
-                let warning = false;
-                self.export_note = Some(Note { text, warning });
+                self.export_note = Some(Note::new(text, false, self.export_layer));
             }
             ExportEvent::Cancelled => {
                 let _ = std::fs::remove_file(path);
@@ -1525,6 +1572,7 @@ impl AppState {
     /// has only its reduced heightmap in the main memory gets its whole
     /// heightmap from the project file, so the file has the full detail.
     pub fn export_raster(&mut self, id: RasterId, path: PathBuf) {
+        self.export_layer = Some(id);
         let project = &self.doc.project;
         let Some(raster) = project.raster(id) else {
             return;
@@ -1597,6 +1645,7 @@ impl AppState {
                 if !self.globe.importing() {
                     let new = !self.doc.project.rasters().iter().any(is_height);
                     let id = self.select_height();
+                    self.import_layer = Some(id);
                     if new {
                         // The panel of the new layer shows the result.
                         self.pad.layer = Some(LayerRef::Raster(id));
@@ -1624,8 +1673,7 @@ impl AppState {
                         let name = file_name(&path);
                         let text = format!("cannot export {name}: no raster layer is selected");
                         self.status = text.clone();
-                        let warning = true;
-                        self.export_note = Some(Note { text, warning });
+                        self.export_note = Some(Note::new(text, true, None));
                     }
                 }
             }

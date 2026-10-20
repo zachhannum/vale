@@ -78,7 +78,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if flat {
                     flat_projection(ui, state);
                 }
-                ui.toggle_value(&mut state.globe.preview.greyscale, "Greyscale");
+                ui.toggle_value(&mut state.globe.preview.graticule, "Graticule");
                 ui.toggle_value(&mut state.globe.preview.panel, elevation::PANEL);
                 ui.toggle_value(&mut state.globe.debug, "Debug");
                 ui.separator();
@@ -127,7 +127,8 @@ fn named(resp: &egui::Response, kind: egui::WidgetType, on: bool, name: String) 
 
 /// The rows of the layers of each kind, with the top layer first. A
 /// checkbox shows or hides a layer, the name selects it, and the arrows
-/// move it in the draw order.
+/// move it in the draw order. The arrow at the end of the row of a raster
+/// layer opens its panel.
 fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
     let layers = state.doc.project.layers().iter().rev();
     let rows: Vec<_> = layers
@@ -175,6 +176,19 @@ fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
                 state.select(Some(layer));
             }
             ui.weak(kind);
+            if let LayerRef::Raster(_) = layer {
+                let open = ui.small_button("›");
+                named(
+                    &open,
+                    egui::WidgetType::Button,
+                    false,
+                    format!("Open {name}"),
+                );
+                if open.clicked() {
+                    state.select(Some(layer));
+                    state.globe.preview.panel = true;
+                }
+            }
         });
     }
 }

@@ -1,6 +1,6 @@
 //! The heightmap of a Vale world: a 16-bit cube map in tiles, and the brush
-//! that paints it. The heightmap owns the band limits and the color ramp of
-//! the elevation preview.
+//! that paints it. The heightmap owns the color stops of the elevation
+//! preview.
 //!
 //! With no features, the crate has no dependencies. It works in sphere
 //! directions and texels, and it knows nothing about the screen. The `gpu`
@@ -20,7 +20,7 @@ mod reduce;
 #[cfg(feature = "gpu")]
 mod tiles;
 
-pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Ramp, Rgb, SEA_LEVEL};
+pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Rgb, SEA_LEVEL, Side, Stop};
 pub use cube::{
     ELEV_MAX, ELEV_MIN, FACES, FaceSizeValues, face_dir, face_of, face_size_values,
     level_to_meters, meters_to_level, unwarp, warp,

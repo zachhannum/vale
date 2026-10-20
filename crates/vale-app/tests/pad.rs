@@ -9,18 +9,19 @@ use vale_app::globe::{StackItem, Tool, WorldView};
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
+use vale_app::ui::gradient::{GRADIENT, PAD as GRADIENT_PAD, stop_x};
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    ADD_LAYER, DELETE_LAYER, DELETE_RASTER, EXPORT_GEOTIFF, IMPORT_HEIGHTMAP, LAYER_NAME, LayerRef,
-    MORE, NEW_RASTER, OPACITY, Panel, RECENTER, RESET, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
+    ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LayerRef, MORE, NEW_RASTER,
+    OPACITY, Panel, RECENTER, RESET, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
     brush_size_text, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
 use vale_app::world::{radius_fraction, three_significant};
-use vale_store::{Units, World};
+use vale_store::{RasterDisplay, RasterId, Units, World};
 use vale_terrain::{Mode, meters_to_level};
 
 type Pad = Harness<'static, AppState>;
@@ -35,6 +36,16 @@ const BOARDS: [(f32, f32); 4] = [
 ];
 /// The bands that the system uses at the top and at the bottom.
 const BANDS: (f32, f32) = (24.0, 20.0);
+const WORLD_VIEWS: [WorldView; 2] = [WorldView::Globe, WorldView::Flat];
+
+/// Shows each raster layer, and a globe with no layers, with this display.
+fn show_as(state: &mut AppState, display: RasterDisplay) {
+    state.globe.preview.display = display;
+    let ids: Vec<RasterId> = state.doc.project.rasters().iter().map(|r| r.id).collect();
+    for id in ids {
+        state.set_raster_display(id, display);
+    }
+}
 
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
@@ -142,6 +153,7 @@ fn cards(h: &Pad) -> Vec<Rect> {
     cards.extend(pad.menu_rect);
     cards.extend(pad.more_rect);
     cards.extend(pad.add_rect);
+    cards.extend(pad.view_options_rect);
     cards
 }
 
@@ -167,11 +179,18 @@ fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
 fn check_controls(h: &Pad, what: &str) {
     let screen = h.state().pad.rects.unwrap().screen;
     let controls = &h.state().pad.controls;
-    assert!(controls.len() >= 8, "{what}: {} controls", controls.len());
+    assert!(controls.len() >= 7, "{what}: {} controls", controls.len());
     let in_menu = h.state().pad.menu_rect.is_some();
     let in_more = h.state().pad.more_rect.is_some();
     let in_add = h.state().pad.add_rect.is_some();
-    let popup = in_menu || in_more || in_add || h.state().pad.projections_rect.is_some();
+    let in_list = h.state().pad.projections_rect.is_some();
+    let in_stop = h.state().pad.style.card.is_some() || h.state().pad.style.reset_card.is_some();
+    let popup = in_menu
+        || in_more
+        || in_add
+        || in_list
+        || in_stop
+        || h.state().pad.view_options_rect.is_some();
     for (i, a) in controls.iter().enumerate() {
         let (name, rect) = (&a.name, a.rect);
         assert!(
@@ -189,15 +208,16 @@ fn check_controls(h: &Pad, what: &str) {
         );
         for b in &controls[i + 1..] {
             assert_ne!(a.name, b.name, "{what}");
-            // The open menu, the open list of projections, the open menu of
-            // the More cell, and the open menu of the new layers cover the
-            // cards below them.
+            // The open menu, the open list of projections, the open view
+            // options, the open menu of the More cell, and the open menu of
+            // the new layers cover the cards below them.
             let row = |c: &vale_app::ui::pad::widgets::Control| {
                 let name = c.name.as_str();
                 let kind = vale_sphere::ProjectionKind::ALL
                     .iter()
                     .any(|k| k.name() == name);
-                let menu = ["World", "Globe", "Flat", "Maps", WORLDS_ROW].contains(&name);
+                let menu =
+                    ["World", "Globe", "Flat", GRATICULE, "Maps", WORLDS_ROW].contains(&name);
                 let more = in_more
                     && [
                         "Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp",
@@ -205,13 +225,28 @@ fn check_controls(h: &Pad, what: &str) {
                     .contains(&name);
                 let rows = [NEW_RASTER, "Lines", "Points", "Polygons", IMPORT_HEIGHTMAP];
                 let add = in_add && rows.contains(&name);
-                menu || kind || more || add || (in_menu && name == "Projection")
+                let stop = in_stop
+                    && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
+                menu || kind || more || add || stop || (in_menu && name == "Projection")
             };
             let covered = popup && row(a) != row(b);
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
     }
+}
+
+/// A control of the card of the selected stop.
+fn raster_stop(name: &str) -> bool {
+    use vale_app::ui::pad::raster;
+    [
+        raster::STOP_VALUE,
+        raster::SEA_COLOR,
+        raster::LAND_COLOR,
+        raster::REMOVE_STOP,
+        raster::RESET,
+    ]
+    .contains(&name)
 }
 
 #[test]
@@ -269,7 +304,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         }
         check_controls(&h, &format!("{size:?} with the menu of the new layers"));
         tap(&mut h, "Lines");
-        for name in [LAYER_NAME, DELETE_LAYER, "Back to Layers", "Close Lines 1"] {
+        for name in [LAYER_NAME, "Back to Layers", "Close Lines 1"] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         check_controls(&h, &format!("{size:?} with the panel of a layer"));
@@ -612,13 +647,14 @@ fn each_preset_adds_a_layer_with_its_unit_and_its_range() {
         assert_eq!((raster.value_min, raster.value_max), range, "{preset}");
         assert_eq!(raster.face_size, 64, "{preset}");
         assert_eq!(raster_name(&h, raster.id), name);
-        // The bands of the layer have limits in the range.
+        // The bands of the layer have stops in the range.
         let bands = &state.globe.raster_map(raster.id).unwrap().bands;
         assert_eq!((bands.min(), bands.max()), range, "{preset}");
-        let limits = bands.limits();
-        assert!(limits.len() >= 4, "{preset}: {limits:?}");
-        let inside = |limit: &f64| *limit > range.0 && *limit < range.1;
-        assert!(limits.iter().all(inside), "{preset}: {limits:?}");
+        let stops = bands.stops();
+        let inner: Vec<f64> = stops[1..stops.len() - 1].iter().map(|s| s.value).collect();
+        assert!(inner.len() >= 4, "{preset}: {inner:?}");
+        let inside = |value: &f64| *value > range.0 && *value < range.1;
+        assert!(inner.iter().all(inside), "{preset}: {inner:?}");
         // Only the height preset gives a height layer. It has a sea split,
         // and it starts as a sea. Each other layer has one ramp, and it
         // starts at the minimum of its range.
@@ -839,7 +875,7 @@ fn the_values_of_a_raster_layer_have_the_unit_and_the_range_of_the_layer() {
 }
 
 #[test]
-fn the_panel_of_a_raster_layer_renames_and_deletes_the_layer() {
+fn the_panel_of_a_raster_layer_renames_the_layer_and_a_swipe_deletes_it() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
@@ -862,18 +898,8 @@ fn the_panel_of_a_raster_layer_renames_and_deletes_the_layer() {
         type_text(&mut h, LAYER_NAME, "  ");
         assert_eq!(raster_name(&h, height), "Ground");
 
-        // The sheet of a narrow screen scrolls to the button.
-        if control(&h, DELETE_RASTER).is_none() {
-            // The row of the values is below the name.
-            let from = control(&h, LAYER_NAME).unwrap().center_bottom() + vec2(0.0, 24.0);
-            drag(&mut h, from, from - vec2(0.0, 120.0), None);
-        }
-        let delete = control(&h, DELETE_RASTER).unwrap_or_else(|| panic!("{what}"));
-        assert!(
-            panel(&h, Panel::Layers).unwrap().contains_rect(delete),
-            "{what}"
-        );
-        tap(&mut h, DELETE_RASTER);
+        tap(&mut h, "Back to Layers");
+        swipe_and_delete(&mut h, "Ground");
         let state = h.state();
         assert!(state.doc.project.rasters().is_empty(), "{what}");
         assert!(state.globe.raster_map(height).is_none());
@@ -943,8 +969,8 @@ fn you_make_rename_hide_and_delete_a_layer() {
         tap(&mut h, "Show Coast");
         assert!(h.state().doc.visible(id));
 
-        tap(&mut h, "Open Coast");
-        tap(&mut h, DELETE_LAYER);
+        swipe(&mut h, "Coast", -70.0);
+        tap(&mut h, "Delete Coast");
         assert_eq!(
             layer_names(&h),
             ["Height", "Land", "Rivers", "Places"],
@@ -987,7 +1013,7 @@ fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
         let open = panel(&h, Panel::Layers).unwrap();
         assert_eq!(open.left_top(), list.left_top(), "{size:?}");
         assert_eq!(open.width(), list.width(), "{size:?}");
-        for name in ["Close Rivers", "Back to Layers", LAYER_NAME, DELETE_LAYER] {
+        for name in ["Close Rivers", "Back to Layers", LAYER_NAME] {
             assert!(control(&h, name).is_some(), "{size:?}: {name}");
         }
         assert!(control(&h, ADD_LAYER).is_none());
@@ -1249,6 +1275,119 @@ fn a_quick_drag_does_not_lift_a_row() {
     assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(rivers)));
 }
 
+/// A sideways drag of a finger on the row of a layer, from near the right
+/// end of its body.
+fn swipe(h: &mut Pad, name: &str, dx: f32) {
+    let body = control(h, &format!("Layer {name}")).unwrap_or_else(|| panic!("no row {name}"));
+    let from = body.right_center() - vec2(10.0, 0.0);
+    drag(h, from, from + vec2(dx, 0.0), None);
+}
+
+/// A swipe that opens a row, and a tap on its Delete button.
+fn swipe_and_delete(h: &mut Pad, name: &str) {
+    swipe(h, name, -70.0);
+    tap(h, &format!("Delete {name}"));
+}
+
+#[test]
+fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        tap(&mut h, "Layers");
+        assert!(control(&h, "Delete Rivers").is_none(), "{what}");
+        swipe(&mut h, "Rivers", -70.0);
+        let rivers = vector(&h, "Rivers");
+        let open = h.state().pad.swipe.unwrap();
+        assert_eq!((open.layer, open.moving), (rivers, false), "{what}");
+        let delete = control(&h, "Delete Rivers").unwrap_or_else(|| panic!("{what}"));
+        assert!(delete.width() >= 88.0 - 0.5, "{what}: {delete:?}");
+        // The eye and the arrow of the open row take no touch.
+        assert!(control(&h, "Hide Rivers").is_none(), "{what}");
+        assert!(control(&h, "Open Rivers").is_none(), "{what}");
+        assert!(control(&h, "Hide Land").is_some(), "{what}");
+        check_controls(&h, &format!("{what} with an open row"));
+        tap(&mut h, "Delete Rivers");
+        assert_eq!(layer_names(&h), ["Height", "Land", "Places"], "{what}");
+        assert_eq!(h.state().pad.swipe, None, "{what}");
+        step_and_save(&mut h, false);
+        h.state_mut().undo();
+        h.run_steps(2);
+        assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
+        assert!(control(&h, "Hide Rivers").is_some(), "{what}");
+
+        // A long swipe only opens the row, and it deletes nothing.
+        let height = h.state().doc.project.rasters()[0].id;
+        let width = panel(&h, Panel::Layers).unwrap().width();
+        swipe(&mut h, "Height", -0.9 * width);
+        assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
+        let open = h.state().pad.swipe.unwrap();
+        assert_eq!(open.offset, -88.0, "{what}");
+        tap(&mut h, "Delete Height");
+        assert!(h.state().doc.project.rasters().is_empty(), "{what}");
+        assert_eq!(layer_names(&h), ["Land", "Rivers", "Places"], "{what}");
+        step_and_save(&mut h, false);
+        h.state_mut().undo();
+        h.run_steps(2);
+        assert_eq!(raster_name(&h, height), "Height", "{what}");
+        assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
+    }
+}
+
+#[test]
+fn a_short_swipe_snaps_shut() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        swipe(&mut h, "Land", -30.0);
+        assert_eq!(h.state().pad.swipe, None, "{what}");
+        assert!(control(&h, "Delete Land").is_none(), "{what}");
+        assert!(control(&h, "Hide Land").is_some(), "{what}");
+        assert_eq!(layer_names(&h).len(), 4, "{what}");
+
+        // A tap on the body of an open row shuts it, and a press elsewhere
+        // shuts it.
+        swipe(&mut h, "Land", -70.0);
+        assert!(h.state().pad.swipe.is_some(), "{what}");
+        tap(&mut h, "Layer Land");
+        assert_eq!(h.state().pad.swipe, None, "{what}");
+        swipe(&mut h, "Land", -70.0);
+        tap(&mut h, "Layer Places");
+        assert_eq!(h.state().pad.swipe, None, "{what}");
+        assert!(control(&h, "Hide Land").is_some(), "{what}");
+        // Only one row is open.
+        swipe(&mut h, "Land", -70.0);
+        swipe(&mut h, "Places", -70.0);
+        let open = h.state().pad.swipe.map(|s| s.layer);
+        assert_eq!(open, Some(vector(&h, "Places")), "{what}");
+        assert!(control(&h, "Delete Land").is_none(), "{what}");
+        assert_eq!(layer_names(&h).len(), 4, "{what}");
+    }
+}
+
+#[test]
+fn a_vertical_drag_on_the_list_scrolls_and_opens_no_row() {
+    let mut h = pad(BOARDS[3]);
+    for _ in 0..12 {
+        h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
+    }
+    h.run_steps(2);
+    tap(&mut h, "Layers");
+    let top = control(&h, "Layer Height").unwrap().center().y;
+    let from = control(&h, "Layer Places").unwrap().center();
+    drag(&mut h, from, from - vec2(10.0, 150.0), None);
+    assert_eq!(h.state().pad.swipe, None);
+    assert_eq!(h.state().pad.reorder, None);
+    assert!(
+        control(&h, "Layer Height").is_none_or(|r| r.center().y < top - 50.0),
+        "the list did not scroll"
+    );
+    assert_eq!(layer_names(&h).len(), 16);
+    assert!(control(&h, "Delete Places").is_none());
+}
+
 /// Writes a 16-bit greyscale PNG with a slope from west to east.
 fn heightmap_file(name: &str, width: u32, height: u32) -> std::path::PathBuf {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/app/test-import");
@@ -1332,6 +1471,60 @@ fn the_import_row_is_off_while_an_import_runs() {
     assert!(control(&h, IMPORT_HEIGHTMAP).is_some());
     assert!(h.query_by_label_contains("Imported pad-busy.png").is_some());
     assert!(!h.state().import_note.as_ref().unwrap().warning);
+}
+
+#[test]
+fn the_note_of_an_import_shows_only_in_the_panel_of_its_layer_and_goes_away() {
+    use vale_app::ui::pad::NOTE_TIME;
+    let path = heightmap_file("pad-note.png", 512, 256);
+    let mut h = painted_pad(BOARDS[0]);
+    let rain = vale_app::ui::RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 64,
+    };
+    h.state_mut().add_raster(rain).unwrap();
+    h.run_steps(2);
+    tap(&mut h, "Layers");
+    tap(&mut h, "Open Height");
+    h.state_mut()
+        .run_action(Action::ImportHeightmap(path.clone()));
+    let start = std::time::Instant::now();
+    while h.state().globe.busy() {
+        assert!(start.elapsed().as_secs() < 30, "the import did not end");
+        h.step();
+    }
+    h.run_steps(2);
+    let note = |h: &Pad| h.query_by_label_contains("Imported pad-note.png").is_some();
+    assert!(note(&h));
+    // The panel of another raster layer does not show the note.
+    tap(&mut h, "Back to Layers");
+    tap(&mut h, "Open Rain");
+    assert!(!note(&h));
+    // The note went away when its panel closed.
+    assert_eq!(h.state().import_note, None);
+    tap(&mut h, "Back to Layers");
+    tap(&mut h, "Open Height");
+    assert!(!note(&h));
+
+    // A note with no warning goes away after a few seconds, and a warning
+    // stays while its panel is open.
+    for warning in [false, true] {
+        let text = format!("note {warning}");
+        let height = h.state().doc.project.rasters()[0].id;
+        let mut made = vale_app::ui::Note::new(text.clone(), warning, Some(height));
+        h.state_mut().import_note = Some(made.clone());
+        h.run_steps(2);
+        assert!(h.query_by_label(&text).is_some(), "{warning}");
+        let (time, pass) = h.state().import_note.as_ref().unwrap().shown.unwrap();
+        made.shown = Some((time - NOTE_TIME, pass));
+        made.last_pass = h.state().import_note.as_ref().unwrap().last_pass;
+        h.state_mut().import_note = Some(made);
+        h.run_steps(2);
+        assert_eq!(h.query_by_label(&text).is_some(), warning);
+    }
 }
 
 /// The layout with the open panel of the Height layer of a small heightmap.
@@ -1916,8 +2109,8 @@ fn blur_pad(level: impl Fn(f64) -> u16) -> Pad {
     let state = h.state_mut();
     state.pad.open(Panel::Brush);
     state.pad.open(Panel::Layers);
+    show_as(state, RasterDisplay::Grey);
     let globe = &mut state.globe;
-    globe.preview.greyscale = true;
     globe.preview.graticule = false;
     globe.view = GlobeView::centered(0.0, 0.0);
     globe.view.zoom = 3.0;
@@ -2334,6 +2527,95 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
 }
 
 #[test]
+fn the_view_options_menu_has_the_graticule_switch() {
+    use vale_app::ui::pad::raster::RIVERS;
+    for size in BOARDS {
+        let mut h = painted_pad(size);
+        for view in WORLD_VIEWS {
+            let what = format!("{size:?} {view:?}");
+            h.state_mut().globe.world_view = view;
+            h.run_steps(2);
+            let rects = h.state().pad.rects.unwrap();
+            // The compact layout has the switch in the workspace menu.
+            let open = match rects.view {
+                Some(card) => {
+                    let button = control(&h, VIEW_OPTIONS).unwrap();
+                    assert!(card.contains_rect(button), "{what}");
+                    let right = card.right() - 4.0;
+                    assert!((button.right() - right).abs() <= 0.5, "{what}");
+                    assert!(card.right() + 12.0 <= rects.actions.left(), "{what}");
+                    VIEW_OPTIONS
+                }
+                None => {
+                    assert!(control(&h, VIEW_OPTIONS).is_none(), "{what}");
+                    "Workspace"
+                }
+            };
+            tap(&mut h, open);
+            if let Some(card) = rects.view {
+                let options = h.state().pad.view_options_rect.unwrap();
+                assert_eq!(options.top(), card.bottom() + 4.0, "{what}");
+                assert!(options.contains_rect(control(&h, GRATICULE).unwrap()));
+            }
+            check_controls(&h, &format!("{what} with the view options"));
+            let before = h.state().globe.preview.graticule;
+            tap(&mut h, GRATICULE);
+            assert_eq!(h.state().globe.preview.graticule, !before, "{what}");
+            tap(&mut h, GRATICULE);
+            assert_eq!(h.state().globe.preview.graticule, before, "{what}");
+            tap(&mut h, open);
+            let pad = &h.state().pad;
+            assert!(!pad.view_options && !pad.menu, "{what}");
+            assert!(control(&h, GRATICULE).is_none(), "{what}");
+
+            // The view options and the list of the projections exclude each
+            // other, and a press outside closes the view options.
+            if rects.view.is_some() && view == WorldView::Flat {
+                tap(&mut h, VIEW_OPTIONS);
+                tap(&mut h, "Projection");
+                let pad = &h.state().pad;
+                assert!(pad.projections && !pad.view_options, "{what}");
+                tap(&mut h, VIEW_OPTIONS);
+                let pad = &h.state().pad;
+                assert!(!pad.projections && pad.view_options, "{what}");
+                tap(&mut h, "Layers");
+                assert!(!h.state().pad.view_options, "{what}");
+                tap(&mut h, "Layers");
+            }
+        }
+
+        // The panel of the height layer has the rivers and no graticule.
+        open_height(&mut h);
+        let mut rivers = control(&h, RIVERS).is_some();
+        for _ in 0..8 {
+            assert!(control(&h, GRATICULE).is_none(), "{size:?}");
+            if rivers {
+                break;
+            }
+            let card = panel(&h, Panel::Layers).unwrap();
+            // A drag up on a row or on the gradient scrolls.
+            let inside = |p: &Pos2| p.y > card.top() + 60.0 && p.y < card.bottom() - 10.0;
+            let rows = [IMPORT_HEIGHTMAP, EXPORT_GEOTIFF, GRADIENT];
+            let points: Vec<Pos2> = rows
+                .into_iter()
+                .filter_map(|name| control(&h, name))
+                .map(|rect| rect.center())
+                .collect();
+            let from = points
+                .into_iter()
+                .filter(inside)
+                .max_by(|a, b| a.y.total_cmp(&b.y))
+                // The margin at the left of the rows scrolls too.
+                .unwrap_or(pos2(card.left() + 6.0, card.bottom() - 40.0));
+            let to = pos2(from.x, (from.y - 400.0).max(40.0));
+            drag(&mut h, from, to, None);
+            rivers = control(&h, RIVERS).is_some();
+        }
+        assert!(rivers, "{size:?}: the panel has no rivers");
+    }
+}
+
+#[test]
 fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it() {
     for size in BOARDS {
         let mut h = pad(size);
@@ -2507,10 +2789,10 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 334.0))
+            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 382.0))
         );
         let tops = ["World", "Globe", "Maps"].map(|name| control(&h, name).unwrap().top());
-        assert_eq!(tops, [98.0, 146.0, 255.0]);
+        assert_eq!(tops, [98.0, 146.0, 303.0]);
         tap(&mut h, "Flat");
         assert!(!h.state().pad.menu);
         assert_eq!(h.state().globe.world_view, WorldView::Flat);
@@ -3003,4 +3285,489 @@ fn the_properties_of_the_world_apply_at_once_and_a_touch_does_not_reach_the_canv
     assert_eq!(h.state().doc.project.layers(), layers);
     tap(&mut h, "Close World");
     assert!(h.state().world_form.is_none());
+}
+
+/// Opens the panel of the height layer, and returns its ID.
+fn open_height(h: &mut Pad) -> RasterId {
+    tap(h, "Layers");
+    tap(h, "Open Height");
+    h.state().doc.project.rasters()[0].id
+}
+
+#[test]
+fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
+    use vale_app::ui::pad::raster::{
+        COLOR, LAND_COLOR, REMOVE_STOP, SEA_COLOR, SHOW_AS, STOP_VALUE, UNIT,
+    };
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        let height = open_height(&mut h);
+        check_controls(&h, &format!("{what} in the panel of a raster layer"));
+        let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+        let card = panel(&h, Panel::Layers).unwrap();
+        assert!(screen.contains_rect(card), "{what}: {card:?}");
+        assert!(
+            control(&h, UNIT).is_none(),
+            "{what}: a height layer has no unit row"
+        );
+        // The rows that are on the screen are inside the card.
+        for name in [LAYER_NAME, OPACITY, SHOW_AS, GRADIENT] {
+            if let Some(rect) = control(&h, name) {
+                assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
+            }
+        }
+        scroll_to_gradient(&mut h);
+        tap_handle(&mut h, 1);
+        assert_eq!(
+            h.state().globe.preview.selected,
+            Some((height, 1)),
+            "{what}"
+        );
+        check_controls(&h, &format!("{what} with a selected stop"));
+        let shade = format!("{COLOR} shade");
+        for name in [STOP_VALUE, &shade, REMOVE_STOP] {
+            assert!(control(&h, name).is_some(), "{what}: no {name}");
+        }
+        let stop = h.state().pad.style.card.unwrap();
+        assert!(screen.contains_rect(stop), "{what}: {stop:?}");
+        if size.0 > size.1 {
+            assert!(stop.right() < card.left(), "{what}: {stop:?}");
+        }
+        // The stop at sea level has a choice of its two sides and no field.
+        let sea = h.state().globe.map.bands.sea().unwrap();
+        tap_handle(&mut h, sea);
+        assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
+        check_controls(&h, &format!("{what} with the stop at sea level"));
+        for name in [SEA_COLOR, LAND_COLOR] {
+            assert!(control(&h, name).is_some(), "{what}: no {name}");
+        }
+        for name in [STOP_VALUE, REMOVE_STOP] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
+    }
+}
+
+/// A tap of a finger at a place.
+fn finger_tap(h: &mut Pad, pos: Pos2) {
+    touch(h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+}
+
+/// A tap of a finger on the handle of a stop.
+fn tap_handle(h: &mut Pad, index: usize) {
+    let pos = handle(h, index);
+    finger_tap(h, pos);
+}
+
+/// The whole area of the gradient control. A part of it can be out of the
+/// card.
+fn gradient_area(h: &Pad) -> Rect {
+    h.get_by_label(GRADIENT).rect()
+}
+
+/// The place of a value on the bar of the gradient control.
+fn on_bar(h: &Pad, value: f64) -> Pos2 {
+    let area = gradient_area(h);
+    let x = stop_x(area, &GRADIENT_PAD, &h.state().globe.map.bands, value);
+    pos2(x, area.top() + GRADIENT_PAD.bar / 2.0)
+}
+
+/// The place of the handle of a stop.
+fn handle(h: &Pad, index: usize) -> Pos2 {
+    let value = h.state().globe.map.bands.stops()[index].value;
+    let area = gradient_area(h);
+    let x = stop_x(area, &GRADIENT_PAD, &h.state().globe.map.bands, value);
+    pos2(
+        x,
+        area.top() + GRADIENT_PAD.bar + GRADIENT_PAD.handles / 2.0,
+    )
+}
+
+/// Scrolls the panel until the gradient control is near the top of the
+/// card, with a drag up on the margin at the left of the rows.
+fn scroll_to_gradient(h: &mut Pad) {
+    for _ in 0..8 {
+        let card = panel(h, Panel::Layers).unwrap();
+        let area = gradient_area(h);
+        if area.top() > card.top() + 40.0 && area.bottom() + 160.0 < card.bottom() {
+            return;
+        }
+        let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
+        let up = (area.top() - card.top() - 200.0).min(from.y - card.top() - 60.0);
+        drag(h, from, from - vec2(0.0, up), None);
+    }
+}
+
+#[test]
+fn a_tap_adds_a_stop_a_drag_moves_it_and_a_pull_down_removes_it() {
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let stops = |h: &Pad| h.state().globe.map.bands.stops().to_vec();
+    let before = stops(&h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    // A tap on the bar between two stops adds a stop there.
+    let (a, b) = (
+        on_bar(&h, before[sea + 1].value),
+        on_bar(&h, before[sea + 2].value),
+    );
+    let at = a.lerp(b, 0.5);
+    finger_tap(&mut h, at);
+    let added = stops(&h);
+    let index = sea + 2;
+    assert_eq!(added.len(), before.len() + 1);
+    assert!(added[index].value > before[sea + 1].value);
+    assert!(added[index].value < before[sea + 2].value);
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+
+    // A sideways drag on the handle moves the stop.
+    let from = handle(&h, index);
+    drag(&mut h, from, from + vec2(40.0, 0.0), None);
+    let moved = stops(&h)[index].value;
+    assert!(
+        moved > added[index].value,
+        "{moved} {:?} {from:?}",
+        added[index]
+    );
+    assert!(moved < added[index + 1].value, "{moved}");
+    assert_eq!(stops(&h).len(), added.len());
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+
+    // A pull down and back up keeps the stop.
+    let from = handle(&h, index);
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for dy in [10.0, 40.0, 80.0, 40.0, 10.0] {
+        touch(&mut h, egui::TouchPhase::Move, from + vec2(0.0, dy), None);
+        h.step();
+    }
+    touch(&mut h, egui::TouchPhase::End, from + vec2(0.0, 10.0), None);
+    h.run_steps(3);
+    assert_eq!(stops(&h).len(), added.len());
+
+    // A pull down far below the handles removes the stop.
+    let from = handle(&h, index);
+    drag(&mut h, from, from + vec2(0.0, 90.0), None);
+    assert_eq!(stops(&h), before);
+    assert_eq!(h.state().globe.preview.selected, None);
+
+    // A fixed stop does not move or go.
+    let from = handle(&h, sea);
+    drag(&mut h, from, from + vec2(20.0, 0.0), None);
+    let from = handle(&h, sea);
+    finger_tap(&mut h, from);
+    drag(&mut h, from, from + vec2(0.0, 90.0), None);
+    assert_eq!(stops(&h), before);
+}
+
+#[test]
+fn a_vertical_drag_on_the_gradient_scrolls_the_panel() {
+    use vale_app::ui::pad::raster::RIVERS;
+    // On these boards, the panel is longer than its card.
+    for size in [BOARDS[2], BOARDS[3]] {
+        let mut h = painted_pad(size);
+        open_height(&mut h);
+        scroll_to_gradient(&mut h);
+        let stops = h.state().globe.map.bands.stops().to_vec();
+        // A drag up on the bar scrolls up, and a drag down on a handle that
+        // is not selected scrolls back down.
+        for (what, index, dy) in [("bar", None, -30.0), ("handle", Some(1), 30.0)] {
+            let area = gradient_area(&h);
+            let from = match index {
+                Some(index) => handle(&h, index),
+                None => pos2(area.center().x, area.top() + GRADIENT_PAD.bar / 2.0),
+            };
+            let rivers = h.get_by_label(RIVERS).rect().top();
+            drag(&mut h, from, from + vec2(0.0, dy), None);
+            let moved = h.get_by_label(RIVERS).rect().top() - rivers;
+            assert!(moved * dy > 100.0, "{size:?} {what}: {moved}");
+            assert_eq!(h.state().globe.map.bands.stops(), stops, "{size:?} {what}");
+        }
+        assert_eq!(h.state().globe.preview.selected, None, "{size:?}");
+    }
+}
+
+#[test]
+fn a_tap_on_a_stop_opens_its_card_and_a_tap_elsewhere_closes_it() {
+    use vale_app::ui::pad::raster::COLOR;
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let shade = format!("{COLOR} shade");
+    let card = |h: &Pad| h.state().pad.style.card;
+    tap_handle(&mut h, 1);
+    assert_eq!(h.state().globe.preview.selected, Some((height, 1)));
+    // The card is at the left of the panel, at the height of the handle.
+    let stop = card(&h).unwrap();
+    let panel = panel(&h, Panel::Layers).unwrap();
+    assert!(stop.right() < panel.left(), "{stop:?}");
+    let y = handle(&h, 1).y;
+    assert!(stop.top() < y && y < stop.bottom(), "{stop:?}");
+    // A tap in the square of the picker changes the color of the stop.
+    let before = h.state().globe.map.bands.stops()[1];
+    let square = control(&h, &shade).unwrap();
+    finger_tap(&mut h, square.center() + vec2(40.0, 30.0));
+    let after = h.state().globe.map.bands.stops()[1];
+    assert_ne!(after.above, before.above);
+    assert_eq!(after.above, after.below);
+    assert_eq!(after.value, before.value);
+    assert_eq!(h.state().globe.preview.selected, Some((height, 1)));
+    // A second tap on the handle closes the card.
+    tap_handle(&mut h, 1);
+    assert_eq!(h.state().globe.preview.selected, None);
+    assert_eq!(card(&h), None);
+    assert!(control(&h, &shade).is_none());
+    // A tap at another place on the panel also closes the card.
+    tap_handle(&mut h, 1);
+    assert!(card(&h).is_some());
+    let area = gradient_area(&h);
+    finger_tap(&mut h, pos2(area.center().x, area.bottom() + 20.0));
+    assert_eq!(h.state().globe.preview.selected, None);
+    assert_eq!(card(&h), None);
+}
+
+/// The texts that the last frame painted, with their places.
+fn painted_texts(h: &Pad) -> Vec<(String, Rect)> {
+    fn visit(shape: &egui::Shape, texts: &mut Vec<(String, Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => {
+                texts.push((text.galley.text().to_owned(), text.visual_bounding_rect()));
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| visit(s, texts)),
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    for clipped in &h.output().shapes {
+        visit(&clipped.shape, &mut texts);
+    }
+    texts
+}
+
+#[test]
+fn a_dragged_stop_shows_its_value_above_the_bar() {
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    // The stop that can move the farthest to the right.
+    let bands = h.state().globe.map.bands.clone();
+    let stops = bands.stops();
+    let gap = |i: &usize| stops[i + 1].value - stops[*i].value;
+    let index = (1..stops.len() - 1)
+        .filter(|i| !bands.fixed(*i))
+        .max_by(|a, b| gap(a).total_cmp(&gap(b)))
+        .unwrap();
+    let (from, next) = (
+        handle(&h, index),
+        h.state().globe.map.bands.stops()[index + 1].value,
+    );
+    let to = pos2(on_bar(&h, next - 100.0).x, from.y);
+    let bar = gradient_area(&h).top();
+    let span = h.state().globe.map.bands.max() - h.state().globe.map.bands.min();
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    let start = h.state().globe.map.bands.stops()[index].value;
+    let mut seen = 0;
+    for i in 1..=6 {
+        let pos = from.lerp(to, i as f32 / 6.0);
+        touch(&mut h, egui::TouchPhase::Move, pos, None);
+        h.step();
+        let value = h.state().globe.map.bands.stops()[index].value;
+        // The drag starts after a few points.
+        if value == start {
+            continue;
+        }
+        seen += 1;
+        let text = vale_app::world::value_text(value, span, "m");
+        let texts = painted_texts(&h);
+        let shown = texts.iter().find(|(t, _)| *t == text);
+        let (_, rect) = shown.unwrap_or_else(|| panic!("frame {i}: no {text} in {texts:?}"));
+        assert!(rect.bottom() < bar, "frame {i}: {rect:?}");
+        // The value is near the finger, so the finger does not hide it.
+        assert!(
+            (rect.center().x - pos.x).abs() < 60.0,
+            "frame {i}: {rect:?}"
+        );
+    }
+    assert!(seen >= 3, "{seen}");
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+    let value = h.state().globe.map.bands.stops()[index].value;
+    let text = vale_app::world::value_text(value, span, "m");
+    let above = |(t, r): &(String, Rect)| *t == text && r.bottom() < bar;
+    assert!(!painted_texts(&h).iter().any(above));
+}
+
+#[test]
+fn reset_colors_asks_first_and_puts_back_the_default_stops() {
+    use vale_app::ui::pad::raster::{RESET, RESET_STOPS};
+    let mut h = painted_pad(BOARDS[0]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let bands = h.state().globe.map.bands.clone();
+    let default = vale_terrain::Bands::with_range(bands.min(), bands.max(), true).unwrap();
+    let default = default.stops().to_vec();
+    let disabled = |h: &Pad| h.get_by_label(RESET_STOPS).accesskit_node().is_disabled();
+    // A new stop changes the stops.
+    let count = bands.stops().len();
+    let value = (bands.stops()[1].value + bands.stops()[2].value) / 2.0;
+    let at = on_bar(&h, value);
+    finger_tap(&mut h, at);
+    assert_eq!(h.state().globe.map.bands.stops().len(), count + 1);
+    // A second tap on the new stop clears the selection.
+    finger_tap(&mut h, at);
+    assert!(!disabled(&h));
+    // A tap on the row opens the card, and a tap outside closes it with no
+    // change.
+    tap(&mut h, RESET_STOPS);
+    let card = h.state().pad.style.reset_card.unwrap();
+    check_controls(&h, "with the card of the reset");
+    let panel = panel(&h, Panel::Layers).unwrap();
+    assert!(card.right() < panel.left(), "{card:?}");
+    finger_tap(&mut h, pos2(panel.left() + 6.0, panel.top() + 80.0));
+    assert_eq!(h.state().pad.style.reset_card, None);
+    assert_eq!(h.state().globe.map.bands.stops().len(), count + 1);
+    // The Reset button of the card puts back the default stops.
+    tap(&mut h, RESET_STOPS);
+    tap(&mut h, RESET);
+    assert_eq!(h.state().globe.map.bands.stops(), default);
+    assert_eq!(h.state().pad.style.reset_card, None);
+    assert_eq!(h.state().globe.preview.selected, None);
+    assert!(disabled(&h));
+    assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
+}
+
+#[test]
+fn a_typed_value_moves_the_selected_stop() {
+    use vale_app::ui::pad::raster::STOP_VALUE;
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    let index = sea + 1;
+    tap_handle(&mut h, index);
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    type_text(&mut h, STOP_VALUE, "1,23");
+    assert_eq!(h.state().globe.map.bands.stops()[index].value, 123.0);
+    // A value past the next stop stops short of it.
+    let next = h.state().globe.map.bands.stops()[index + 1].value;
+    type_text(&mut h, STOP_VALUE, "99999");
+    let value = h.state().globe.map.bands.stops()[index].value;
+    assert!(value < next && value > next - 2.0, "{value}");
+}
+
+#[test]
+fn a_tap_chooses_each_display() {
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    let display = |h: &Pad| h.state().doc.project.raster(height).unwrap().display;
+    assert_eq!(display(&h), RasterDisplay::Bands);
+    for (name, shown) in [
+        ("Gradient", RasterDisplay::Gradient),
+        ("Grey", RasterDisplay::Grey),
+        ("Bands", RasterDisplay::Bands),
+    ] {
+        tap(&mut h, name);
+        assert_eq!(display(&h), shown, "{name}");
+    }
+    let card = panel(&h, Panel::Layers).unwrap();
+    let area = gradient_area(&h);
+    assert!(card.contains_rect(area), "{area:?} is not in {card:?}");
+}
+
+#[test]
+fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    let globe = &mut h.state_mut().globe;
+    globe.preview.graticule = false;
+    globe.preview.rivers = false;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    let meters = 1100.0;
+    globe.map.fill(meters_to_level(meters));
+    h.run_steps(3);
+    let center = |h: &mut Pad| {
+        let img = h.render().unwrap();
+        let c = h.state().globe.rect.center();
+        let p = img.get_pixel(c.x as u32, c.y as u32).0;
+        [p[0], p[1], p[2]]
+    };
+    let card = panel(&h, Panel::Layers).unwrap();
+    assert!(!card.contains(h.state().globe.rect.center()));
+    // The color of the band of the height in the Bands display.
+    let band_color = |h: &Pad| {
+        let bands = h.state().globe.map.bands.bands();
+        let band = bands.iter().find(|b| b.min <= meters && meters < b.max);
+        band.unwrap().color
+    };
+    let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 3);
+    assert!(near(center(&mut h), band_color(&h)));
+
+    // The frame of the tap on Grey draws the globe in grey.
+    let pos = control(&h, "Grey").unwrap().center();
+    touch(&mut h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, pos, None);
+    h.step();
+    let display = h.state().doc.project.raster(height).unwrap().display;
+    assert_eq!(display, RasterDisplay::Grey);
+    let level = (f32::from(meters_to_level(meters)) / 65535.0 * 255.0).round() as u8;
+    let grey = center(&mut h);
+    assert!(near(grey, [level; 3]), "{grey:?}");
+    tap(&mut h, "Bands");
+
+    // Each frame of the drag of a stop draws the globe with the stop of
+    // that frame.
+    let bands = h.state().globe.map.bands.clone();
+    let index = bands.stops().iter().position(|s| s.value > meters).unwrap();
+    let to = bands.stops()[index - 1].value + 50.0;
+    assert!(to < meters);
+    let (from, to) = (handle(&h, index), on_bar(&h, to));
+    let to = pos2(to.x, from.y);
+    let before = band_color(&h);
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for i in 1..=6 {
+        let pos = from.lerp(to, i as f32 / 6.0);
+        touch(&mut h, egui::TouchPhase::Move, pos, None);
+        h.step();
+        let shown = center(&mut h);
+        assert!(near(shown, band_color(&h)), "frame {i}: {shown:?}");
+    }
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    h.step();
+    assert_ne!(band_color(&h), before);
+}
+
+#[test]
+fn the_panel_of_a_layer_that_is_not_a_height_layer_changes_its_unit() {
+    use vale_app::ui::pad::raster::UNIT;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        let spec = vale_app::ui::RasterSpec {
+            name: "Rain".to_string(),
+            unit: "mm".to_string(),
+            min: 0.0,
+            max: 4000.0,
+            face_size: 128,
+        };
+        let rain = h.state_mut().add_raster(spec).unwrap();
+        h.run_steps(2);
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Rain");
+        check_controls(&h, &format!("{what} in the panel of Rain"));
+        let card = panel(&h, Panel::Layers).unwrap();
+        assert!(card.contains_rect(control(&h, UNIT).unwrap()), "{what}");
+        tap(&mut h, UNIT);
+        h.event(egui::Event::Text("/yr".to_string()));
+        h.run_steps(2);
+        let unit = &h.state().doc.project.raster(rain).unwrap().unit;
+        assert_eq!(unit, "mm/yr", "{what}");
+    }
 }

@@ -454,13 +454,12 @@ mod tests {
         let raster = vale_store::Raster {
             id: vale_store::RasterId(1),
             face_size: 16,
+            display: vale_store::RasterDisplay::Bands,
             unit: "<°C & more>".to_string(),
             value_min: -40.0,
             value_max: 25.535,
             base: 0,
-            limits: Vec::new(),
-            ramp_sea: Vec::new(),
-            ramp_land: Vec::new(),
+            stops: Vec::new(),
             opacity: 1.0,
         };
         let mut tags = GeoTiff::new(&world, Some(&raster), 4, 2);

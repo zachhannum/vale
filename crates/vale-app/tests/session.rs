@@ -3,9 +3,11 @@ use std::time::Instant;
 use vale_app::document::Document;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
 use vale_app::ui::{AppState, LayerRef, RasterSpec};
-use vale_store::{Project, ProjectFile, RasterId, Units, World};
+use vale_store::{Project, ProjectFile, RasterDisplay, RasterId, Units, World};
 use vale_terrain::math::lonlat_to_dir;
-use vale_terrain::{Bands, FACES, Heightmap, Limits, Mode, Stamp, TexelRect, meters_to_level};
+use vale_terrain::{
+    Bands, FACES, Heightmap, Limits, Mode, Side, Stamp, TexelRect, meters_to_level,
+};
 
 const BASE: u16 = 19114;
 
@@ -84,7 +86,7 @@ fn a_painted_world_opens_again_with_the_same_pixels() {
     paint(&mut map, -100.0, 5.0, 0.05);
     paint(&mut map, 0.0, 90.0, 0.1);
     map.bands.add(1234.5).unwrap();
-    map.bands.ramp.land[0] = [1, 2, 3];
+    map.bands.set_color(1, Side::Above, [1, 2, 3]);
     session
         .flush(&mut doc.project, &mut maps(&mut map))
         .unwrap();
@@ -283,7 +285,7 @@ fn one_hold_of_a_control_is_one_undo_step() {
 
     let start = Instant::now();
     for i in 0..3 {
-        map.bands.ramp.land[0] = [i as u8 + 1, 2, 3];
+        map.bands.set_color(1, Side::Above, [i as u8 + 1, 2, 3]);
         let now = start + 2 * SAVE_DELAY * i;
         let tick = session.tick(&mut doc.project, &mut maps(&mut map), true, now);
         assert_eq!(tick.unwrap(), Some(SAVE_DELAY));
@@ -610,7 +612,7 @@ fn the_project_file_stores_each_raster_layer() {
     let mut wet = Heightmap::new(512, 0);
     wet.bands = Bands::with_range(0.0, 4000.0, false).unwrap();
     wet.bands.add(250.0).unwrap();
-    wet.bands.ramp.land[0] = [1, 2, 3];
+    wet.bands.set_color(1, Side::Above, [1, 2, 3]);
     paint(&mut ground, 45.0, 35.3, 0.2);
     paint(&mut wet, -100.0, 5.0, 0.1);
     paint(&mut wet, 0.0, 90.0, 0.1);
@@ -640,14 +642,16 @@ fn the_project_file_stores_each_raster_layer() {
     assert_eq!((first.unit.as_str(), first.opacity), ("m", 1.0));
     assert_eq!((first.value_min, first.value_max), (-6000.0, 6000.0));
     assert_eq!(first.face_size, 1024);
-    assert_eq!(first.limits, ground.bands.limits());
-    assert!(first.limits.contains(&1234.5));
+    let values = |stops: &[vale_store::Stop]| stops.iter().map(|s| s.value).collect::<Vec<_>>();
+    let map_values = |bands: &Bands| bands.stops().iter().map(|s| s.value).collect::<Vec<_>>();
+    assert_eq!(values(&first.stops), map_values(&ground.bands));
+    assert!(values(&first.stops).contains(&1234.5));
     assert_eq!((second.unit.as_str(), second.opacity), ("mm", 0.25));
     assert_eq!((second.value_min, second.value_max), (0.0, 4000.0));
     assert_eq!(second.face_size, 512);
-    assert_eq!(second.limits, wet.bands.limits());
-    assert!(second.limits.contains(&250.0));
-    assert_eq!(second.ramp_land[0], [1, 2, 3]);
+    assert_eq!(values(&second.stops), map_values(&wet.bands));
+    assert!(values(&second.stops).contains(&250.0));
+    assert_eq!(second.stops[1].above, [1, 2, 3]);
 
     let loaded = session.load_maps().unwrap();
     assert_eq!(loaded.len(), 2);
@@ -1073,4 +1077,66 @@ fn the_export_of_a_layer_that_is_not_the_brush_layer_has_its_full_detail() {
     let (brush, other) = (std::fs::read(brush).unwrap(), std::fs::read(other).unwrap());
     assert!(brush.len() > 100_000, "{}", brush.len());
     assert!(brush == other, "the two files are not the same");
+}
+
+#[test]
+fn each_raster_layer_keeps_its_own_unit_ramp_band_limits_and_display() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    let height = state.add_height();
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 128,
+    };
+    let rain = state.add_raster(rain).unwrap();
+    let bands = |state: &AppState, id| state.globe.display_map(id).unwrap().bands.clone();
+    let height_bands = bands(&state, height);
+
+    assert!(state.set_raster_display(rain, RasterDisplay::Gradient));
+    assert!(state.set_raster_unit(rain, "mm/yr"));
+    let map = state.globe.bands_mut(rain).unwrap();
+    let index = map.add(1234.0).unwrap();
+    map.set_color(1, Side::Above, [1, 2, 3]);
+    // The unit of a height layer stays, and no other layer becomes one.
+    assert!(!state.set_raster_unit(height, "ft"));
+    assert!(!state.set_raster_unit(rain, "m"));
+    assert!(state.set_raster_display(height, RasterDisplay::Grey));
+    let rain_bands = bands(&state, rain);
+    assert_eq!(rain_bands.stops()[index].value, 1234.0);
+
+    // A change of the selection keeps the style of each layer.
+    state.select(Some(LayerRef::Raster(height)));
+    state.select(Some(LayerRef::Raster(rain)));
+    let raster = |state: &AppState, id| state.doc.project.raster(id).unwrap().clone();
+    assert_eq!(raster(&state, height).display, RasterDisplay::Grey);
+    assert_eq!(raster(&state, height).unit, "m");
+    assert_eq!(bands(&state, height), height_bands);
+    assert_eq!(raster(&state, rain).display, RasterDisplay::Gradient);
+    assert_eq!(raster(&state, rain).unit, "mm/yr");
+    assert_eq!(bands(&state, rain), rain_bands);
+
+    // A new layer saves the changes that wait, and the file keeps them.
+    let next = RasterSpec {
+        name: "Heat".to_string(),
+        unit: "K".to_string(),
+        min: 200.0,
+        max: 330.0,
+        face_size: 128,
+    };
+    state.add_raster(next).unwrap();
+    let (_, stored) = ProjectFile::open(&path).unwrap();
+    let (stored_height, stored_rain) =
+        (stored.raster(height).unwrap(), stored.raster(rain).unwrap());
+    assert_eq!(stored_height.display, RasterDisplay::Grey);
+    assert_eq!(stored_height.unit, "m");
+    assert_eq!(vale_app::session::bands_of(stored_height), height_bands);
+    assert_eq!(stored_rain.display, RasterDisplay::Gradient);
+    assert_eq!(stored_rain.unit, "mm/yr");
+    assert_eq!(vale_app::session::bands_of(stored_rain), rain_bands);
 }
