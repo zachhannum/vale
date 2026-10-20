@@ -25,9 +25,14 @@ pub const FILL_COLOR: &str = "Fill";
 pub const LINE_COLOR: &str = "Line";
 /// The name of the color picker of the selected stop.
 pub const COLOR: &str = "Color";
-/// The switch and the weight of the line of the selected stop.
+/// The switch, the weight, and the color source of the line of the selected
+/// stop, and the amount of the darker color.
 pub const LINE: &str = "Stop line";
 pub const LINE_WEIGHT: &str = "Line weight";
+pub const LINE_SOURCE: &str = "Line color";
+pub const DARKER: &str = "Darker";
+pub const CUSTOM: &str = "Custom";
+pub const DARKEN: &str = "Line darken";
 /// The step of the weight slider, in points.
 const WEIGHT_STEP: f32 = 0.25;
 pub const REMOVE_STOP: &str = "Remove the stop";
@@ -223,7 +228,7 @@ pub fn stop_card(
         .bands_mut(id)
         .is_some_and(|b| b.sea() == Some(index));
     let fixed = state.globe.bands_mut(id).is_some_and(|b| b.fixed(index));
-    let guess = PANEL_ROW * if fixed { 5.0 } else { 6.0 } + 196.0 + 16.0;
+    let guess = PANEL_ROW * if fixed { 7.0 } else { 8.0 } + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
 
     let (rect, point) = place(rects, panel, at, gradient, height);
@@ -273,23 +278,48 @@ pub fn stop_card(
             line.weight = (weight / WEIGHT_STEP).round() * WEIGHT_STEP;
             changed = true;
         }
+        let active = Some(usize::from(!line.darker));
+        if let Some(choice) =
+            widgets::choice_row(ui, controls, LINE_SOURCE, &[DARKER, CUSTOM], active)
+        {
+            line.darker = choice == 0;
+            changed = true;
+        }
+        if line.darker {
+            let mut fraction = f64::from(line.darken);
+            let text = format!("{:.0}%", line.darken * 100.0);
+            if widgets::row_slider(ui, controls, DARKEN, "Darken", &mut fraction, &text) {
+                line.darken = ((fraction * 20.0).round() / 20.0) as f32;
+                changed = true;
+            }
+        }
         let paint = match style.side {
             Some((of, at, paint)) if of == id && at == index => paint,
             _ => Paint::Fill(Side::Above),
         };
-        let (names, paints): (&[&str], &[Paint]) = if sea {
-            let paints = &[
-                Paint::Fill(Side::Below),
-                Paint::Fill(Side::Above),
-                Paint::Line,
-            ];
-            (&[SEA_COLOR, LAND_COLOR, LINE_COLOR], paints)
-        } else {
-            let paints = &[Paint::Fill(Side::Above), Paint::Line];
-            (&[FILL_COLOR, LINE_COLOR], paints)
+        // A darker line has no color of its own to pick.
+        let (names, paints): (&[&str], &[Paint]) = match (sea, line.darker) {
+            (true, false) => (
+                &[SEA_COLOR, LAND_COLOR, LINE_COLOR],
+                &[
+                    Paint::Fill(Side::Below),
+                    Paint::Fill(Side::Above),
+                    Paint::Line,
+                ],
+            ),
+            (true, true) => (
+                &[SEA_COLOR, LAND_COLOR],
+                &[Paint::Fill(Side::Below), Paint::Fill(Side::Above)],
+            ),
+            (false, false) => (
+                &[FILL_COLOR, LINE_COLOR],
+                &[Paint::Fill(Side::Above), Paint::Line],
+            ),
+            (false, true) => (&[FILL_COLOR], &[Paint::Fill(Side::Above)]),
         };
         let paint = match paint {
             Paint::Fill(_) if !sea => Paint::Fill(Side::Above),
+            Paint::Line if line.darker => Paint::Fill(Side::Above),
             paint => paint,
         };
         let active = paints.iter().position(|p| *p == paint);

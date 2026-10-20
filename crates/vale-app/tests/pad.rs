@@ -247,6 +247,10 @@ fn raster_stop(name: &str) -> bool {
         raster::LINE_COLOR,
         raster::LINE,
         raster::LINE_WEIGHT,
+        raster::LINE_SOURCE,
+        raster::DARKER,
+        raster::CUSTOM,
+        raster::DARKEN,
         raster::REMOVE_STOP,
         raster::RESET,
     ]
@@ -3589,6 +3593,30 @@ fn the_card_of_a_stop_sets_its_line() {
     let line = raster.stops[sea].line;
     let want = (true, 0.25, after.line.color);
     assert_eq!((line.on, line.weight, line.color), want);
+
+    // A darker line takes the sea color of the stop at sea level, and it has
+    // no color to pick.
+    use vale_app::ui::pad::raster::{CUSTOM, DARKEN, DARKER};
+    let darker = control(&h, DARKER).unwrap();
+    finger_tap(&mut h, darker.center());
+    assert!(stop(&h).line.darker);
+    assert!(control(&h, LINE_COLOR).is_none());
+    let slider = control(&h, DARKEN).unwrap();
+    drag(
+        &mut h,
+        slider.left_center(),
+        slider.right_center() + vec2(40.0, 0.0),
+        None,
+    );
+    assert_eq!(stop(&h).line.darken, 1.0);
+    let bands = &h.state().globe.map.bands;
+    assert_eq!(bands.line_color(sea), Some([0; 3]));
+    check_controls(&h, "the card of a stop with a darker line");
+    let custom = control(&h, CUSTOM).unwrap();
+    finger_tap(&mut h, custom.center());
+    assert!(!stop(&h).line.darker);
+    assert_eq!(stop(&h).line.color, after.line.color);
+    assert!(control(&h, DARKEN).is_none());
 }
 
 /// The texts that the last frame painted, with their places.

@@ -4053,6 +4053,7 @@ fn set_coast_line(h: &mut Harness<'static, AppState>, on: bool) {
         on,
         weight: LINE_WEIGHT,
         color: [0; 3],
+        ..StopLine::default()
     };
     assert!(bands.set_line(sea, line));
 }
@@ -4166,6 +4167,9 @@ fn the_desktop_panel_sets_the_line_of_the_selected_stop() {
     h.get_by_label(vale_app::ui::pad::raster::LINE).click();
     h.run_steps(2);
     assert!(h.state().globe.map.bands.stops()[sea].line.on);
+    h.get_by_label(vale_app::ui::pad::raster::DARKER).click();
+    h.run_steps(2);
+    assert!(h.state().globe.map.bands.stops()[sea].line.darker);
 }
 
 #[test]

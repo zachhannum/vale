@@ -74,9 +74,10 @@ pub type LineUniform = [[f32; 4]; 2];
 /// 0. `pixels_per_point` turns a weight in points into pixels.
 pub fn line_uniforms(bands: &Bands, pixels_per_point: f32) -> [LineUniform; MAX_BANDS + 1] {
     let mut out = [[[0.0; 4]; 2]; MAX_BANDS + 1];
-    for (slot, stop) in out.iter_mut().zip(bands.stops()) {
+    for (index, (slot, stop)) in out.iter_mut().zip(bands.stops()).enumerate() {
         let line = stop.line;
-        let [r, g, b] = line.color.map(|c| f32::from(c) / 255.0);
+        let color = bands.line_color(index).unwrap_or(line.color);
+        let [r, g, b] = color.map(|c| f32::from(c) / 255.0);
         let half = if line.on {
             0.5 * line.weight * pixels_per_point
         } else {
@@ -113,6 +114,7 @@ mod tests {
             on: true,
             weight: 1.5,
             color: [255, 0, 0],
+            ..StopLine::default()
         };
         bands.set_line(sea, line);
         bands.set_line(0, StopLine { on: false, ..line });
@@ -125,6 +127,14 @@ mod tests {
         assert_eq!(lines[0][0][3], 0.0);
         assert_eq!(lines[count][1][0], 1.0);
         assert!(lines[count + 1..].iter().all(|l| l[0][3] == 0.0));
+        // A darker line has the darker color of its stop.
+        let darker = StopLine {
+            darker: true,
+            darken: 1.0,
+            ..line
+        };
+        bands.set_line(sea, darker);
+        assert_eq!(line_uniforms(&bands, 2.0)[sea][0], [0.0, 0.0, 0.0, 1.5]);
     }
 
     #[test]

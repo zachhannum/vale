@@ -531,6 +531,8 @@ fn stops_of(raster: &Raster) -> Vec<Stop> {
             on: s.line.on,
             weight: s.line.weight,
             color: s.line.color,
+            darker: s.line.darker,
+            darken: s.line.darken,
         },
     };
     raster.stops.iter().map(stop).collect()
@@ -574,6 +576,8 @@ pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
                 && a.line.on == b.line.on
                 && a.line.weight == b.line.weight
                 && a.line.color == b.line.color
+                && a.line.darker == b.line.darker
+                && a.line.darken == b.line.darken
         });
     if !same {
         raster.stops = stops
@@ -586,6 +590,8 @@ pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
                     on: s.line.on,
                     weight: s.line.weight,
                     color: s.line.color,
+                    darker: s.line.darker,
+                    darken: s.line.darken,
                 },
             })
             .collect();

@@ -256,7 +256,23 @@ fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usi
             .speed(0.05)
             .suffix(" pt");
         changed |= ui.add(weight).changed();
-        changed |= ui.color_edit_button_srgb(&mut line.color).changed();
+        changed |= ui.checkbox(&mut line.darker, pad::raster::DARKER).changed();
+        if line.darker {
+            let darken = egui::DragValue::new(&mut line.darken)
+                .range(0.0..=1.0)
+                .speed(0.01)
+                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                .custom_parser(|t| {
+                    t.trim_end_matches('%')
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                        .map(|v| v / 100.0)
+                });
+            changed |= ui.add(darken).changed();
+        } else {
+            changed |= ui.color_edit_button_srgb(&mut line.color).changed();
+        }
         if changed && bands.stops().get(index).is_some() {
             bands.set_line(index, line);
         }

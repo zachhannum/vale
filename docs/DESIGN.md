@@ -305,7 +305,7 @@ While you paint, a shader shows the heightmap as stepped tints. Each color stop 
 
 The color stops and the display belong to the raster layer. The panel of the layer edits them in its Style section, with a gradient bar and the stops below it. The preview and the polygonize tool read the same stops, so the polygons match what you saw.
 
-Each color stop can also have a line, with a weight in points and a color. The card of the selected stop has a switch for the line, the weight, and the color. The globe and the flat map draw the line where the value crosses the stop, in the Bands display and in the Gradient display. The line has the same weight at each zoom. On a height layer, a line at sea level is the coast, and a line at another stop is a contour. Thus a height layer shows the coast and the contours with no vector step.
+Each color stop can also have a line, with a weight in points and a color. The color is a color that you pick, or the color of the stop made darker by an amount that you set. A darker line at sea level takes the sea color. The card of the selected stop has a switch for the line, the weight, and the color. The globe and the flat map draw the line where the value crosses the stop, in the Bands display and in the Gradient display. The line has the same weight at each zoom. On a height layer, a line at sea level is the coast, and a line at another stop is a contour. Thus a height layer shows the coast and the contours with no vector step.
 
 A final map can use the stepped raster with its lines as the topography, in place of the topography polygons. Polygonize is then optional.
 
