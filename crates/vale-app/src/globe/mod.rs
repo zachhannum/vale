@@ -44,6 +44,7 @@ use gpu::{
     Uniforms, Uploads,
 };
 use import::{ImportResult, Job, Step};
+use line::LineSettings;
 use math::{V3, angle};
 use nav::Nav;
 use preview::{Preview, band_uniforms};
@@ -95,11 +96,24 @@ const UPLIFT_ERODE_RATE: f64 = 12.0;
 /// An uplift stroke makes one weather stamp for this number of its stamps.
 const UPLIFT_WEATHER_EVERY: usize = 4;
 
+/// A stroke of the line tool.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineStroke {
+    pub screen: Vec<Pos2>,
+    /// The samples on the unit sphere.
+    pub dirs: Vec<V3>,
+    /// The points in one radian at the start of the stroke.
+    pub scale: f64,
+    /// The pen left the world, and the stroke takes no more samples.
+    off: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
     #[default]
     Navigate,
     Brush,
+    Line,
 }
 
 /// The way that the world workspace shows the world.
@@ -561,6 +575,13 @@ pub struct Globe {
     pub paintable: bool,
     pub preview: Preview,
     pub brush: BrushSettings,
+    pub line: LineSettings,
+    /// The line tool can draw: the selected layer is a visible line layer.
+    pub lineable: bool,
+    /// The stroke of the line tool while the pen is down.
+    line_stroke: Option<LineStroke>,
+    /// The last stroke of the line tool, for the layer.
+    line_done: Option<LineStroke>,
     /// The radius of the world, in kilometers. Set by the canvas each frame.
     pub world_km: f64,
     /// The seed of the world. Set by the canvas each frame.
@@ -637,6 +658,10 @@ impl Globe {
             display_budget: DISPLAY_BUDGET,
             epoch: 0,
             paint_wanted: true,
+            line: LineSettings::default(),
+            lineable: false,
+            line_stroke: None,
+            line_done: None,
             channels_sent: false,
             test_wanted: None,
             new_face_size: face_size,
@@ -1378,6 +1403,52 @@ impl Globe {
     /// not, a pen and the mouse move the view.
     pub fn brushing(&self) -> bool {
         self.tool == Tool::Brush && self.paintable
+    }
+
+    /// True if the line tool is the tool and it can draw in the selected
+    /// layer.
+    pub fn lining(&self) -> bool {
+        self.tool == Tool::Line && self.lineable
+    }
+
+    /// Starts a stroke of the line tool.
+    pub fn line_down(&mut self) {
+        self.line_stroke = Some(LineStroke {
+            screen: Vec::new(),
+            dirs: Vec::new(),
+            scale: self.radius(),
+            off: false,
+        });
+    }
+
+    /// Adds one sample to the stroke of the line tool. The stroke ends at
+    /// the first sample off the world.
+    pub fn line_sample(&mut self, pos: Pos2, dir: Option<V3>) {
+        let Some(stroke) = self.line_stroke.as_mut().filter(|s| !s.off) else {
+            return;
+        };
+        match dir {
+            Some(dir) => {
+                stroke.screen.push(pos);
+                stroke.dirs.push(dir);
+            }
+            None => stroke.off = !stroke.dirs.is_empty(),
+        }
+    }
+
+    /// Ends the stroke of the line tool. `take_line` gives it.
+    pub fn line_up(&mut self) {
+        self.line_done = self.line_stroke.take();
+    }
+
+    /// The stroke of the line tool while the pen is down, in screen points.
+    pub fn line_preview(&self) -> Option<&[Pos2]> {
+        self.line_stroke.as_ref().map(|s| s.screen.as_slice())
+    }
+
+    /// The last stroke of the line tool that ended.
+    pub fn take_line(&mut self) -> Option<LineStroke> {
+        self.line_done.take()
     }
 
     pub fn pen_down(&mut self) {

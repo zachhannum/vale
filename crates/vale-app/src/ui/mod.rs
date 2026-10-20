@@ -6,12 +6,16 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
-use vale_store::{Layer, LayerId, Project, Raster, RasterDisplay, RasterId, StoreError, World};
+use vale_store::{
+    Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
+    StoreError, World,
+};
 use vale_terrain::{Bands, Heightmap, Mode};
 
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, file_name};
+use crate::globe::line::{self, LineEdit};
 use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
@@ -357,8 +361,10 @@ pub struct AppState {
     pub system: SystemEvents,
     /// The whole heightmap that comes from the project file for the brush.
     loader: Option<Loader>,
-    /// The edit count of the globe at the last save.
+    /// The edit count at the last save.
     saved_edits: u64,
+    /// The number of strokes of the line tool.
+    line_edits: u64,
     /// The time of the last save, for the save mark.
     saved_at: Option<Instant>,
     /// The last save failed.
@@ -412,6 +418,7 @@ impl AppState {
             system: SystemEvents::default(),
             loader: None,
             saved_edits: 0,
+            line_edits: 0,
             saved_at: None,
             save_failed: false,
             resume: None,
@@ -512,6 +519,13 @@ impl AppState {
             globe.activate(active);
         }
         globe.set_paintable(paintable);
+        let line = LayerKind::Vector(GeometryKind::Line);
+        globe.lineable = match self.selected_layer {
+            Some(LayerRef::Vector(id)) => project
+                .layer(id)
+                .is_some_and(|l| l.kind == line && l.visible),
+            _ => false,
+        };
         if !height && brush::needs_height(globe.brush.mode) {
             globe.brush.mode = Mode::Raise;
         }
@@ -1022,13 +1036,14 @@ impl AppState {
     pub fn save_tick(&mut self, hold: bool, now: Instant) -> Option<Duration> {
         self.globe.set_memory_undo(!self.file_log());
         let resume_wait = self.resume_tick(hold, now);
+        let edits = self.edits();
         let session = self.session.as_mut()?;
         let saves = session.saves();
         let globe = &mut self.globe;
         let project = &mut self.doc.project;
-        let result = if globe.edits() != self.saved_edits {
+        let result = if edits != self.saved_edits {
             // The edit is one undo step, with no part of the next stroke.
-            self.saved_edits = globe.edits();
+            self.saved_edits = edits;
             save_session(session, project, globe).map(|()| None)
         } else {
             let hold = hold || globe.busy();
@@ -1078,6 +1093,7 @@ impl AppState {
     /// its end. The app calls this when it goes to the background.
     pub fn save_waiting(&mut self) -> Result<(), StoreError> {
         self.save_resume();
+        let edits = self.edits();
         let Some(session) = &mut self.session else {
             return Ok(());
         };
@@ -1085,7 +1101,7 @@ impl AppState {
         if globe.busy() {
             return Ok(());
         }
-        self.saved_edits = globe.edits();
+        self.saved_edits = edits;
         let saved = save_session(session, &mut self.doc.project, globe);
         // The system can stop the app in the background, so the project
         // file gets the working copy now.
@@ -1274,7 +1290,7 @@ impl AppState {
     /// Takes away the state of the UI that belongs to the last world.
     fn start_world(&mut self) {
         self.doc.frame.view = None;
-        self.saved_edits = self.globe.edits();
+        self.saved_edits = self.edits();
         self.selection = None;
         self.select(None);
         self.raster_form = None;
@@ -1499,6 +1515,40 @@ impl AppState {
         self.session = Some(session);
         self.start_world();
         self.show_world();
+    }
+
+    /// The number of strokes of the brush and of the line tool.
+    fn edits(&self) -> u64 {
+        self.globe.edits() + self.line_edits
+    }
+
+    /// Puts the last stroke of the line tool in the selected line layer. The
+    /// next save makes it one undo step.
+    pub fn poll_line(&mut self) {
+        let Some(stroke) = self.globe.take_line() else {
+            return;
+        };
+        let Some(id) = self.selected_vector() else {
+            return;
+        };
+        let Some(layer) = self.doc.project.layer(id) else {
+            return;
+        };
+        let smoothing = self.globe.line.smoothing;
+        let edit = line::commit(&layer.features, &stroke.dirs, stroke.scale, smoothing);
+        let project = &mut self.doc.project;
+        let done = match edit {
+            Some(LineEdit::New(geometry)) => {
+                project.add_feature(id, Feature::new(geometry, Default::default()))
+            }
+            Some(LineEdit::Extend { uuid, geometry }) => project.set_geometry(id, uuid, geometry),
+            None => false,
+        };
+        if done {
+            self.line_edits += 1;
+            self.pipeline.forget(id);
+            self.touch();
+        }
     }
 
     /// Marks the map as needing a new compose.

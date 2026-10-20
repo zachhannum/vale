@@ -20,6 +20,10 @@ use crate::world::{self, three_significant};
 pub const WORLD_BUTTON: &str = "World…";
 /// The button of the tool bar that exports the heightmap.
 pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
+/// The button of the line tool.
+pub const LINE_TOOL: &str = "Line";
+/// The slider of the smoothing of the line tool.
+pub const SMOOTHING: &str = "Smoothing";
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -44,15 +48,29 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
             if state.workspace == Workspace::Globe {
                 ui.separator();
-                // With no raster layer to paint, the tool is Navigate.
-                let (paintable, tool) = (state.globe.paintable, state.globe.tool);
-                let navigate = !paintable || tool == Tool::Navigate;
+                // With no layer for the tool, the tool is Navigate.
+                let globe = &mut state.globe;
+                let (paintable, lineable) = (globe.paintable, globe.lineable);
+                let navigate = !globe.brushing() && !globe.lining();
                 if ui.selectable_label(navigate, "Navigate").clicked() {
-                    state.globe.tool = Tool::Navigate;
+                    globe.tool = Tool::Navigate;
                 }
-                let brush = egui::Button::selectable(state.globe.brushing(), "Brush");
+                let brush = egui::Button::selectable(globe.brushing(), "Brush");
                 if ui.add_enabled(paintable, brush).clicked() {
-                    state.globe.tool = Tool::Brush;
+                    globe.tool = Tool::Brush;
+                }
+                let line = egui::Button::selectable(globe.lining(), LINE_TOOL);
+                if ui.add_enabled(lineable, line).clicked() {
+                    globe.tool = Tool::Line;
+                }
+                if globe.lining() {
+                    let mut percent = globe.line.smoothing * 100.0;
+                    let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
+                        .suffix(" %")
+                        .text(SMOOTHING);
+                    if ui.add(slider).changed() {
+                        globe.line.smoothing = percent / 100.0;
+                    }
                 }
                 // The menu stays open while the user works on the list.
                 let stay = egui::containers::menu::MenuConfig::new()
