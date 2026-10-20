@@ -4167,3 +4167,39 @@ fn the_desktop_panel_sets_the_line_of_the_selected_stop() {
     h.run_steps(2);
     assert!(h.state().globe.map.bands.stops()[sea].line.on);
 }
+
+#[test]
+fn a_stop_line_shows_only_where_the_values_cross_the_stop() {
+    let _gpu = one_gpu_test();
+    // Rough land from 150 m to 450 m, with many texels in one pixel. The slope
+    // of the texels is large, but no value crosses sea level.
+    const N: usize = 1024;
+    let mut h = line_harness(RasterDisplay::Bands, [0.0, 0.0, 1.0]);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(N);
+    let wave = |d: V3, f: f64, p: f64| {
+        (f * d[0] + p).sin() * (f * d[1] + 2.0 * p).cos() * (f * d[2] + 0.5 * p).sin()
+    };
+    for face in 0..6 {
+        for y in 0..N {
+            for x in 0..N {
+                let d = globe.map.texel_dir(face, x, y);
+                let fine = 90.0 * wave(d, 400.0, 0.3) + 60.0 * wave(d, 900.0, 1.1);
+                globe.map.set(face, x, y, meters_to_level(300.0 + fine));
+            }
+        }
+    }
+    globe.view = GlobeView::centered(20.0, 10.0);
+    let columns = line_columns(&mut h, "rough land");
+    let dark: f32 = columns.iter().sum();
+    assert!(dark < 1.0, "{dark}");
+
+    // A height at the stop is in the upper band, so flat land at sea level
+    // has no line.
+    let globe = &mut h.state_mut().globe;
+    let sea = globe.map.bands.level(0.0);
+    globe.map.fill(sea);
+    let columns = line_columns(&mut h, "flat land at sea level");
+    let dark: f32 = columns.iter().sum();
+    assert!(dark < 1.0, "{dark}");
+}

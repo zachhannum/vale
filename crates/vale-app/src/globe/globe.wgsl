@@ -166,11 +166,12 @@ fn place(d: vec3<f32>) -> Place {
     return Place(face, s * 0.5 + 0.5);
 }
 
-// The change of the height across one pixel. `slope` is the change across
-// one texel from `height`, and `dx` and `dy` are the change of the direction
-// from one pixel to the next. The texels of a face are not the same size, so
-// the slope goes through the place on the face and back to the sphere.
-fn pixel_width(d: vec3<f32>, slope: vec2<f32>, dx: vec3<f32>, dy: vec3<f32>) -> f32 {
+// The change of the height across one pixel in x and in y. `slope` is the
+// change across one texel from `height`, and `dx` and `dy` are the change of
+// the direction from one pixel to the next. The texels of a face are not the
+// same size, so the slope goes through the place on the face and back to the
+// sphere.
+fn pixel_slope(d: vec3<f32>, slope: vec2<f32>, dx: vec3<f32>, dy: vec3<f32>) -> vec2<f32> {
     let a = abs(d);
     var axis = 2;
     if a.x >= a.y && a.x >= a.z {
@@ -188,7 +189,13 @@ fn pixel_width(d: vec3<f32>, slope: vec2<f32>, dx: vec3<f32>, dy: vec3<f32>) -> 
     g[i] = k.x * inv;
     g[j] = k.y * inv;
     g[axis] = -dot(k, flat) * inv * sign(d[axis]);
-    return length(vec2<f32>(dot(g, dx), dot(g, dy)));
+    return vec2<f32>(dot(g, dx), dot(g, dy));
+}
+
+// The change of the direction across one pixel, uphill on the screen.
+fn uphill(s: vec2<f32>, dx: vec3<f32>, dy: vec3<f32>) -> vec3<f32> {
+    let n = s / max(length(s), 1e-12);
+    return n.x * dx + n.y * dy;
 }
 
 // The height at a world direction, from 0 to 1, with bilinear filtering. The
@@ -318,7 +325,7 @@ fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
 // The color of a layer in a world direction: the tint of the height, and the
 // rivers. `width` is the change of the height across one pixel. `pixel` is
 // the angle that one pixel covers there.
-fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32) -> vec3<f32> {
+fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, up: vec3<f32>) -> vec3<f32> {
     let mode = i32(u.params.z);
     var color = vec3<f32>(h);
     if mode != MODE_GREYSCALE {
@@ -330,7 +337,7 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32) -> vec3<f32> {
         color = mix(color, RIVER_COLOR, 0.9 * land * river(d, pixel));
     }
     if mode != MODE_GREYSCALE {
-        color = stop_lines(color, h, width);
+        color = stop_lines(color, h, width, d, up);
     }
     return color;
 }
@@ -338,8 +345,12 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32) -> vec3<f32> {
 // Draws the line of each stop where the height crosses its value. `width` is
 // the change of the height across one pixel, so the distance to the line in
 // pixels is the difference of the heights over `width`. A line thinner than
-// one pixel is one pixel wide and fainter.
-fn stop_lines(base: vec3<f32>, h: f32, width: f32) -> vec3<f32> {
+// one pixel is one pixel wide and fainter. Where a pixel covers many texels,
+// the slope of the texels does not tell the change across the line. Then the
+// heights one line width uphill and downhill must be on the two sides of the
+// value, and the distance comes from them. `up` is the change of the
+// direction across one pixel uphill.
+fn stop_lines(base: vec3<f32>, h: f32, width: f32, d: vec3<f32>, up: vec3<f32>) -> vec3<f32> {
     let w = max(width, 1e-9);
     var color = base;
     let count = i32(u.params.w) + 1;
@@ -349,8 +360,25 @@ fn stop_lines(base: vec3<f32>, h: f32, width: f32) -> vec3<f32> {
         if half <= 0.0 {
             continue;
         }
-        let distance = abs(h - line.at.x) / w;
-        let cover = clamp(max(half, 0.5) + 0.5 - distance, 0.0, 1.0) * min(2.0 * half, 1.0);
+        let at = line.at.x;
+        let reach = max(half, 0.5) + 0.5;
+        // The slope can be small at the pixel and large next to it.
+        if abs(h - at) / w >= 4.0 * reach {
+            continue;
+        }
+        let high = height(normalize(d + up * reach)).x;
+        let low = height(normalize(d - up * reach)).x;
+        // A height at the value is in the upper band, as in `tint`, so a
+        // flat place at the value has no line.
+        let below = h < at;
+        var distance = reach;
+        if (high < at) != below {
+            distance = min(distance, reach * abs(h - at) / max(abs(h - high), 1e-9));
+        }
+        if (low < at) != below {
+            distance = min(distance, reach * abs(h - at) / max(abs(h - low), 1e-9));
+        }
+        let cover = clamp(reach - distance, 0.0, 1.0) * min(2.0 * half, 1.0);
         color = mix(color, line.color.rgb, cover);
     }
     return color;
@@ -426,8 +454,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // different faces, so the width comes from the slope of the texels, as
     // in `fs_flat`.
     let h = height(at.d);
-    let width = pixel_width(at.d, h.yz, at.dx, at.dy);
-    let color = ground(h.x, width, at.d, at.px) * at.shade;
+    let slope = pixel_slope(at.d, h.yz, at.dx, at.dy);
+    let up = uphill(slope, at.dx, at.dy);
+    let color = ground(h.x, length(slope), at.d, at.px, up) * at.shade;
     let alpha = u.layer.x;
     return vec4<f32>(color * alpha, alpha);
 }
@@ -498,9 +527,11 @@ fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
     // 2 / PI of its texels in one radian.
     let h = height(d);
     let angle = max(length(dpdx(d)), length(dpdy(d)));
-    let width = pixel_width(d, h.yz, dpdx(d), dpdy(d));
+    let slope = pixel_slope(d, h.yz, dpdx(d), dpdy(d));
+    let up = uphill(slope, dpdx(d), dpdy(d));
+    let width = length(slope);
     let alpha = u.layer.x;
-    return vec4<f32>(ground(h.x, width, d, angle) * alpha, alpha);
+    return vec4<f32>(ground(h.x, width, d, angle, up) * alpha, alpha);
 }
 
 @fragment
