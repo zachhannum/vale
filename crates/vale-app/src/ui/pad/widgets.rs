@@ -312,25 +312,6 @@ pub fn vertical_slider(
     *fraction != before
 }
 
-/// The space between a field that has the keyboard and the keyboard.
-const KEYBOARD_GAP: f32 = 16.0;
-
-/// The layer of the widget that has the keyboard focus.
-pub fn focused_layer(ctx: &egui::Context) -> Option<egui::LayerId> {
-    let focused = ctx.memory(|m| m.focused())?;
-    ctx.read_response(focused).map(|r| r.layer_id)
-}
-
-/// The place of a card above a keyboard of height `keyboard` at the bottom
-/// of `screen`. The card moves up as little as it can, and it does not go
-/// above `top`. A card that is still too tall gets shorter.
-pub fn above_keyboard(card: Rect, keyboard: f32, screen: Rect, top: f32) -> Rect {
-    let limit = screen.bottom() - keyboard - KEYBOARD_GAP;
-    let height = card.height().min(limit - top).max(0.0);
-    let y = card.top().min(limit - height).max(top);
-    Rect::from_min_size(pos2(card.left(), y), vec2(card.width(), height))
-}
-
 /// A slider in a row of a panel: the name, the track, and the value.
 /// `label` is the name on screen. Returns true if the user moved it. A drag
 /// that starts up or down scrolls the panel and does not move the slider.
@@ -789,17 +770,505 @@ pub fn text_field(
         .font(theme::body())
         .text_color(color)
         .vertical_align(egui::Align::Center);
-    let resp = ui.put(inner, edit);
+    let mut resp = ui.put(inner, edit);
     push(ui, controls, field, name);
-    // A long press focuses the field and shows the edit menu of the system,
-    // with Paste.
     if resp.long_touched() {
-        resp.request_focus();
-        if let Some(at) = ui.input(|i| i.pointer.interact_pos()) {
-            crate::keyboard::edit_menu(at);
+        resp.surrender_focus();
+        open_edit_menu(ui.ctx(), resp.id, field);
+    }
+    match edit_menu(ui, controls, resp.id, field) {
+        Some(EditAction::Copy) => crate::clipboard::set(ui.ctx(), text),
+        Some(EditAction::Paste(pasted)) => {
+            *text = pasted.trim().to_owned();
+            resp.mark_changed();
         }
+        None => {}
     }
     resp
+}
+
+/// The names of the items of the edit menu of a field.
+pub const COPY: &str = "Copy";
+pub const PASTE: &str = "Paste";
+/// The width of an item of the edit menu.
+const EDIT_ITEM: f32 = 88.0;
+/// The space between the edit menu and its field.
+const EDIT_GAP: f32 = 6.0;
+
+/// The item of the edit menu that the user tapped.
+enum EditAction {
+    Copy,
+    Paste(String),
+}
+
+/// The field of the open edit menu, and the menu in the last frame.
+#[derive(Clone, Copy)]
+struct EditMenu {
+    field: egui::Id,
+    rect: Rect,
+}
+
+fn edit_menu_id() -> egui::Id {
+    egui::Id::new("pad-edit-menu")
+}
+
+/// Opens the edit menu of a field after a long press.
+fn open_edit_menu(ctx: &egui::Context, field: egui::Id, rect: Rect) {
+    let menu = EditMenu { field, rect };
+    ctx.data_mut(|data| data.insert_temp(edit_menu_id(), menu));
+}
+
+/// The open edit menu in the last frame. A press on it does not close the
+/// card of its field.
+pub fn edit_menu_rect(ctx: &egui::Context) -> Option<Rect> {
+    let menu: Option<EditMenu> = ctx.data(|data| data.get_temp(edit_menu_id()));
+    menu.map(|menu| menu.rect)
+}
+
+/// The edit menu of a field, with Copy and Paste, above the field or below
+/// it at the top of the screen. A press outside the menu closes it. The
+/// menu does not bring up the keyboard.
+fn edit_menu(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    field_id: egui::Id,
+    field: Rect,
+) -> Option<EditAction> {
+    let ctx = ui.ctx();
+    let menu: EditMenu = ctx.data(|data| data.get_temp(edit_menu_id()))?;
+    if menu.field != field_id {
+        return None;
+    }
+    let size = vec2(2.0 * EDIT_ITEM, TOUCH);
+    let screen = ctx.viewport_rect();
+    let x =
+        (field.center().x - size.x / 2.0).clamp(screen.left() + PAD, screen.right() - PAD - size.x);
+    let above = field.top() - EDIT_GAP - size.y;
+    let y = if above >= screen.top() + ROW {
+        above
+    } else {
+        field.bottom() + EDIT_GAP
+    };
+    let rect = Rect::from_min_size(pos2(x, y), size);
+    let pressed = ui.input(|i| {
+        i.pointer
+            .any_pressed()
+            .then(|| i.pointer.interact_pos())
+            .flatten()
+    });
+    if pressed.is_some_and(|pos| !rect.contains(pos)) {
+        ctx.data_mut(|data| data.remove::<EditMenu>(edit_menu_id()));
+        return None;
+    }
+    let mut action = None;
+    let can_paste = crate::clipboard::has_text();
+    let radius = theme::CONTROL_RADIUS.into();
+    card(
+        ctx,
+        None,
+        "pad-edit-menu",
+        rect,
+        egui::Order::Tooltip,
+        radius,
+        |ui| {
+            // The menu is lighter than the card below it.
+            let back = theme::card(false).to_opaque();
+            let back = back.lerp_to_gamma(theme::TEXT, 0.12);
+            ui.painter().rect_filled(rect, radius, back);
+            let border = egui::Stroke::new(1.0, theme::MUTE);
+            ui.painter()
+                .rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
+            let x = rect.center().x;
+            let divider = [pos2(x, rect.top() + 8.0), pos2(x, rect.bottom() - 8.0)];
+            ui.painter().line_segment(divider, border);
+            let items = [(COPY, true), (PASTE, can_paste)];
+            for (i, (item, enabled)) in items.into_iter().enumerate() {
+                let at = Rect::from_min_size(
+                    pos2(rect.left() + i as f32 * EDIT_ITEM, rect.top()),
+                    vec2(EDIT_ITEM, TOUCH),
+                );
+                let resp = hit(ui, controls, at, item, Sense::click(), enabled, None);
+                fill(ui, at, &resp, false);
+                let color = fade(theme::TEXT, enabled);
+                ui.painter().text(
+                    at.center(),
+                    Align2::CENTER_CENTER,
+                    item,
+                    theme::body(),
+                    color,
+                );
+                if resp.clicked() {
+                    action = Some(match i {
+                        0 => EditAction::Copy,
+                        _ => match crate::clipboard::get() {
+                            Some(text) => EditAction::Paste(text),
+                            None => continue,
+                        },
+                    });
+                }
+            }
+        },
+    );
+    if action.is_some() {
+        ctx.data_mut(|data| data.remove::<EditMenu>(edit_menu_id()));
+    } else {
+        let menu = EditMenu {
+            field: field_id,
+            rect,
+        };
+        ctx.data_mut(|data| data.insert_temp(edit_menu_id(), menu));
+    }
+    action
+}
+
+/// The keys of a keypad.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keys {
+    /// The digits of a hex code.
+    Hex,
+    /// The digits, the minus sign, and the decimal point of a number.
+    Number,
+}
+
+/// A key of a keypad.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Key {
+    Char(char),
+    Delete,
+    Done,
+}
+
+/// The names of the keys that delete a character and that close the
+/// keypad. The name of a key is the name of its field and the name of the
+/// key, for example `Color hex A`.
+pub const DELETE: &str = "Delete";
+pub const DONE: &str = "Done";
+
+impl Keys {
+    /// The rows of the keys, each with its width in columns.
+    fn rows(self) -> &'static [&'static [(Key, u8)]] {
+        use Key::{Char as C, Delete, Done};
+        match self {
+            Keys::Hex => &[
+                &[
+                    (C('1'), 1),
+                    (C('2'), 1),
+                    (C('3'), 1),
+                    (C('4'), 1),
+                    (C('5'), 1),
+                ],
+                &[
+                    (C('6'), 1),
+                    (C('7'), 1),
+                    (C('8'), 1),
+                    (C('9'), 1),
+                    (C('0'), 1),
+                ],
+                &[
+                    (C('A'), 1),
+                    (C('B'), 1),
+                    (C('C'), 1),
+                    (C('D'), 1),
+                    (C('E'), 1),
+                ],
+                &[(C('F'), 1), (Delete, 1), (Done, 3)],
+            ],
+            Keys::Number => &[
+                &[(C('7'), 1), (C('8'), 1), (C('9'), 1), (Delete, 1)],
+                &[(C('4'), 1), (C('5'), 1), (C('6'), 1), (C('-'), 1)],
+                &[(C('1'), 1), (C('2'), 1), (C('3'), 1), (C('.'), 1)],
+                &[(C('0'), 2), (Done, 2)],
+            ],
+        }
+    }
+
+    /// The most characters of a text.
+    fn max_chars(self) -> usize {
+        match self {
+            Keys::Hex => 6,
+            Keys::Number => 12,
+        }
+    }
+
+    /// A pasted text with only the characters of the keys.
+    fn clean(self, text: &str) -> String {
+        let text = text.trim();
+        let chars = match self {
+            Keys::Hex => text
+                .trim_start_matches('#')
+                .chars()
+                .filter(|c| c.is_ascii_hexdigit())
+                .map(|c| c.to_ascii_uppercase())
+                .collect::<String>(),
+            Keys::Number => text.to_owned(),
+        };
+        chars.chars().take(self.max_chars()).collect()
+    }
+}
+
+impl Key {
+    fn name(self) -> String {
+        match self {
+            Key::Char(c) => c.to_string(),
+            Key::Delete => DELETE.to_owned(),
+            Key::Done => DONE.to_owned(),
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Key::Char('-') => "\u{2212}".to_owned(),
+            Key::Char(c) => c.to_string(),
+            Key::Delete => DELETE.to_owned(),
+            Key::Done => DONE.to_owned(),
+        }
+    }
+}
+
+/// The text of the field of the open keypad.
+#[derive(Clone)]
+struct KeyEdit {
+    field: egui::Id,
+    name: String,
+    keys: Keys,
+    text: String,
+    /// The text is the text of the field before the edit. The next key
+    /// takes its place.
+    fresh: bool,
+    /// A key changed the text since the field read it.
+    changed: bool,
+}
+
+fn keypad_id() -> egui::Id {
+    egui::Id::new("pad-keypad")
+}
+
+fn key_edit(ctx: &egui::Context) -> Option<KeyEdit> {
+    ctx.data(|data| data.get_temp(keypad_id()))
+}
+
+fn set_key_edit(ctx: &egui::Context, edit: Option<KeyEdit>) {
+    ctx.data_mut(|data| match edit {
+        Some(edit) => {
+            data.insert_temp(keypad_id(), edit);
+        }
+        None => data.remove::<KeyEdit>(keypad_id()),
+    });
+}
+
+/// True if the keypad of a field is open.
+pub fn keypad_is_open(ctx: &egui::Context) -> bool {
+    key_edit(ctx).is_some()
+}
+
+/// Closes the keypad.
+pub fn close_keypad(ctx: &egui::Context) {
+    set_key_edit(ctx, None);
+}
+
+/// A row of a form with a field that a keypad edits in place of the
+/// keyboard of the system. A tap opens and closes the keypad, and a long
+/// press opens the edit menu. `shown` is the text while no keypad is open.
+/// The text has the warning color if it is not `valid`. A number is at the
+/// right of the row, with `suffix` after it. Returns the new text when a key
+/// or a paste changes it.
+#[allow(clippy::too_many_arguments)]
+pub fn key_field(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    suffix: &str,
+    shown: &str,
+    keys: Keys,
+    valid: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let ctx = ui.ctx().clone();
+    let id = ui.id().with(name);
+    let (field, right) = match keys {
+        Keys::Hex => (form_row(ui, label), false),
+        Keys::Number => {
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+            let at = pos2(rect.left(), rect.center().y);
+            ui.painter()
+                .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::MUTE);
+            let field = Rect::from_min_max(
+                pos2(rect.right() - FORM_VALUE, rect.center().y - TOUCH / 2.0),
+                pos2(rect.right(), rect.center().y + TOUCH / 2.0),
+            );
+            (field, true)
+        }
+    };
+    let resp = hit(ui, controls, field, name, Sense::click(), true, None);
+    let mut edit = key_edit(&ctx).filter(|edit| edit.field == id);
+    if resp.long_touched() {
+        open_edit_menu(&ctx, id, field);
+    } else if resp.clicked() {
+        edit = match edit {
+            Some(_) => None,
+            None => Some(KeyEdit {
+                field: id,
+                name: name.to_owned(),
+                keys,
+                text: shown.to_owned(),
+                fresh: true,
+                changed: false,
+            }),
+        };
+        set_key_edit(&ctx, edit.clone());
+    }
+    let mut out = None;
+    match edit_menu(ui, controls, id, field) {
+        Some(EditAction::Copy) => {
+            let text = edit.as_ref().map_or(shown, |edit| edit.text.as_str());
+            crate::clipboard::set(&ctx, text);
+        }
+        Some(EditAction::Paste(pasted)) => {
+            let text = keys.clean(&pasted);
+            if let Some(edit) = &mut edit {
+                edit.text = text.clone();
+                edit.fresh = false;
+                set_key_edit(&ctx, Some(edit.clone()));
+            }
+            out = Some(text);
+        }
+        None => {}
+    }
+    if let Some(edit) = edit.as_mut().filter(|edit| edit.changed) {
+        edit.changed = false;
+        out = Some(edit.text.clone());
+        set_key_edit(&ctx, Some(edit.clone()));
+    }
+
+    let painter = ui.painter();
+    let back = field.shrink(HIGHLIGHT_INSET);
+    if right {
+        if edit.is_some() {
+            painter.rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+        }
+    } else {
+        painter.rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+        if edit.is_some() {
+            let stroke = egui::Stroke::new(1.5, theme::ACCENT);
+            painter.rect_stroke(
+                back,
+                theme::CONTROL_RADIUS,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    let mut inner = field.shrink2(vec2(12.0, 0.0));
+    if right {
+        let at = pos2(inner.right(), inner.center().y);
+        painter.text(at, Align2::RIGHT_CENTER, suffix, theme::body(), theme::MUTE);
+        inner.max.x -= text_width(ui, suffix, theme::body()) + 6.0;
+    }
+    let text = edit.as_ref().map_or(shown, |edit| edit.text.as_str());
+    let color = if valid(text) {
+        theme::TEXT
+    } else {
+        theme::WARN
+    };
+    let galley = painter.layout_no_wrap(text.to_owned(), theme::body(), color);
+    let x = if right {
+        inner.right() - galley.size().x
+    } else {
+        inner.left()
+    };
+    let at = pos2(x, inner.center().y - galley.size().y / 2.0);
+    let shape = Rect::from_min_size(at, galley.size());
+    match &edit {
+        // The text that the next key replaces is selected.
+        Some(edit) if edit.fresh && !text.is_empty() => {
+            painter.rect_filled(shape.expand(2.0), 3.0, theme::ACCENT.gamma_multiply(0.45));
+        }
+        Some(_) => {
+            let x = if right {
+                inner.right() + 1.0
+            } else {
+                shape.right() + 1.0
+            };
+            let caret = Rect::from_center_size(pos2(x, inner.center().y), vec2(2.0, 22.0));
+            painter.rect_filled(caret, 1.0, theme::ACCENT);
+        }
+        None => {}
+    }
+    painter.galley(at, galley, color);
+    out
+}
+
+/// The keypad of the field whose keypad is open, `height` tall. Returns
+/// false and adds nothing if no keypad is open. A key changes the text of
+/// the field in this frame or the next one, as the field reads it.
+pub fn keypad(ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> bool {
+    let ctx = ui.ctx().clone();
+    let Some(mut edit) = key_edit(&ctx) else {
+        return false;
+    };
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let rows = edit.keys.rows();
+    let columns: u8 = rows[0].iter().map(|(_, span)| span).sum();
+    let width = rect.width() / f32::from(columns);
+    let tall = rect.height() / rows.len() as f32;
+    let mut done = false;
+    for (r, row) in rows.iter().enumerate() {
+        let mut column = 0;
+        for &(key, span) in row.iter() {
+            let at = Rect::from_min_size(
+                pos2(
+                    rect.left() + f32::from(column) * width,
+                    rect.top() + r as f32 * tall,
+                ),
+                vec2(f32::from(span) * width, tall),
+            );
+            column += span;
+            let name = format!("{} {}", edit.name, key.name());
+            let resp = hit(ui, controls, at, &name, Sense::click(), true, None);
+            let back = at.shrink(HIGHLIGHT_INSET);
+            let fill = match (resp.is_pointer_button_down_on(), key) {
+                (true, _) => theme::raise().gamma_multiply(2.0),
+                (false, Key::Done) => theme::ACCENT,
+                (false, _) => theme::raise(),
+            };
+            ui.painter().rect_filled(back, theme::CONTROL_RADIUS, fill);
+            let font = egui::FontId::proportional(theme::body().size + 2.0);
+            match key {
+                Key::Delete => icons::paint(ui.painter(), at, Icon::Delete, ICON, theme::TEXT),
+                _ => {
+                    let label = key.label();
+                    ui.painter()
+                        .text(at.center(), Align2::CENTER_CENTER, label, font, theme::TEXT);
+                }
+            }
+            if !resp.clicked() {
+                continue;
+            }
+            match key {
+                Key::Char(c) => {
+                    if edit.fresh {
+                        edit.text.clear();
+                    }
+                    if edit.text.chars().count() < edit.keys.max_chars() {
+                        edit.text.push(c);
+                    }
+                }
+                Key::Delete => {
+                    if edit.fresh {
+                        edit.text.clear();
+                    }
+                    edit.text.pop();
+                }
+                Key::Done => done = true,
+            }
+            edit.fresh = false;
+            edit.changed = true;
+            ctx.request_repaint();
+        }
+    }
+    set_key_edit(&ctx, (!done).then_some(edit));
+    true
 }
 
 /// A row of a form with a segmented control: choices of equal width on one
@@ -1122,16 +1591,6 @@ pub fn parse_hex(text: &str) -> Option<[u8; 3]> {
     Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
-/// Selects the whole text of a text field.
-fn select_all(ctx: &egui::Context, id: egui::Id, chars: usize) {
-    use egui::text::{CCursor, CCursorRange};
-    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
-        let range = CCursorRange::two(CCursor::new(0), CCursor::new(chars));
-        state.cursor.set_char_range(Some(range));
-        state.store(ctx, id);
-    }
-}
-
 /// A color picker for a finger: a square of saturation and value, a strip
 /// of hues, and a field for the hex code. `name` starts the names of its
 /// controls. Returns true if the user changed the color.
@@ -1153,129 +1612,117 @@ pub fn color_picker(
     let width = ui.available_width();
     let fill = |h: f32, s: f32, v: f32| Color32::from(Hsva::new(h, s, v, 1.0));
 
-    let (square, _) = ui.allocate_exact_size(vec2(width, PICKER_SQUARE), Sense::hover());
-    let shade = format!("{name} shade");
-    let resp = hit(
-        ui,
-        controls,
-        square,
-        &shade,
-        Sense::click_and_drag(),
-        true,
-        None,
-    );
-    let mut moved = false;
-    if let Some(pos) = resp.interact_pointer_pos()
-        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
-    {
-        hsva.s = ((pos.x - square.left()) / square.width()).clamp(0.0, 1.0);
-        hsva.v = (1.0 - (pos.y - square.top()) / square.height()).clamp(0.0, 1.0);
-        moved = true;
-    }
-    let mut mesh = egui::Mesh::default();
-    let n = PICKER_CELLS;
-    for row in 0..=n {
+    // The keypad of a field takes the place of the square and the strip.
+    if !keypad(ui, controls, PICKER_SQUARE + 8.0 + TOUCH) {
+        let (square, _) = ui.allocate_exact_size(vec2(width, PICKER_SQUARE), Sense::hover());
+        let shade = format!("{name} shade");
+        let resp = hit(
+            ui,
+            controls,
+            square,
+            &shade,
+            Sense::click_and_drag(),
+            true,
+            None,
+        );
+        let mut moved = false;
+        if let Some(pos) = resp.interact_pointer_pos()
+            && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
+        {
+            hsva.s = ((pos.x - square.left()) / square.width()).clamp(0.0, 1.0);
+            hsva.v = (1.0 - (pos.y - square.top()) / square.height()).clamp(0.0, 1.0);
+            moved = true;
+        }
+        let mut mesh = egui::Mesh::default();
+        let n = PICKER_CELLS;
+        for row in 0..=n {
+            for col in 0..=n {
+                let (s, v) = (col as f32 / n as f32, 1.0 - row as f32 / n as f32);
+                let at = pos2(
+                    square.left() + s * square.width(),
+                    square.top() + (1.0 - v) * square.height(),
+                );
+                mesh.colored_vertex(at, fill(hsva.h, s, v));
+            }
+        }
+        let corner = |row: usize, col: usize| (row * (n + 1) + col) as u32;
+        for row in 0..n {
+            for col in 0..n {
+                let (a, b) = (corner(row, col), corner(row, col + 1));
+                let (c, d) = (corner(row + 1, col + 1), corner(row + 1, col));
+                mesh.add_triangle(a, b, c);
+                mesh.add_triangle(a, c, d);
+            }
+        }
+        ui.painter().add(egui::Shape::mesh(mesh));
+        let at = pos2(
+            square.left() + hsva.s * square.width(),
+            square.top() + (1.0 - hsva.v) * square.height(),
+        );
+        ui.painter()
+            .circle_stroke(at, THUMB / 2.0, egui::Stroke::new(3.0, Color32::BLACK));
+        ui.painter()
+            .circle_stroke(at, THUMB / 2.0, egui::Stroke::new(1.5, Color32::WHITE));
+        ui.add_space(8.0);
+
+        let (strip, _) = ui.allocate_exact_size(vec2(width, TOUCH), Sense::hover());
+        let hue = format!("{name} hue");
+        let resp = hit(
+            ui,
+            controls,
+            strip,
+            &hue,
+            Sense::click_and_drag(),
+            true,
+            None,
+        );
+        if let Some(pos) = resp.interact_pointer_pos()
+            && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
+        {
+            hsva.h = ((pos.x - strip.left()) / strip.width()).clamp(0.0, 1.0);
+            moved = true;
+        }
+        let bar = strip.shrink2(vec2(0.0, 8.0));
+        let mut mesh = egui::Mesh::default();
         for col in 0..=n {
-            let (s, v) = (col as f32 / n as f32, 1.0 - row as f32 / n as f32);
-            let at = pos2(
-                square.left() + s * square.width(),
-                square.top() + (1.0 - v) * square.height(),
-            );
-            mesh.colored_vertex(at, fill(hsva.h, s, v));
+            let h = col as f32 / n as f32;
+            let x = bar.left() + h * bar.width();
+            mesh.colored_vertex(pos2(x, bar.top()), fill(h, 1.0, 1.0));
+            mesh.colored_vertex(pos2(x, bar.bottom()), fill(h, 1.0, 1.0));
+        }
+        for col in 0..n as u32 {
+            let at = 2 * col;
+            mesh.add_triangle(at, at + 1, at + 3);
+            mesh.add_triangle(at, at + 3, at + 2);
+        }
+        ui.painter().add(egui::Shape::mesh(mesh));
+        let x = bar.left() + hsva.h * bar.width();
+        let thumb = Rect::from_center_size(pos2(x, strip.center().y), vec2(8.0, TOUCH - 8.0));
+        ui.painter().rect_filled(thumb, 3.0, theme::TEXT);
+        ui.painter().rect_stroke(
+            thumb,
+            3.0,
+            egui::Stroke::new(1.0, Color32::BLACK),
+            egui::StrokeKind::Outside,
+        );
+        if moved {
+            *color = hsva.to_srgb();
         }
     }
-    let corner = |row: usize, col: usize| (row * (n + 1) + col) as u32;
-    for row in 0..n {
-        for col in 0..n {
-            let (a, b) = (corner(row, col), corner(row, col + 1));
-            let (c, d) = (corner(row + 1, col + 1), corner(row + 1, col));
-            mesh.add_triangle(a, b, c);
-            mesh.add_triangle(a, c, d);
-        }
-    }
-    ui.painter().add(egui::Shape::mesh(mesh));
-    let at = pos2(
-        square.left() + hsva.s * square.width(),
-        square.top() + (1.0 - hsva.v) * square.height(),
-    );
-    ui.painter()
-        .circle_stroke(at, THUMB / 2.0, egui::Stroke::new(3.0, Color32::BLACK));
-    ui.painter()
-        .circle_stroke(at, THUMB / 2.0, egui::Stroke::new(1.5, Color32::WHITE));
-    ui.add_space(8.0);
-
-    let (strip, _) = ui.allocate_exact_size(vec2(width, TOUCH), Sense::hover());
-    let hue = format!("{name} hue");
-    let resp = hit(
+    let hex = format!("{name} hex");
+    let typed = key_field(
         ui,
         controls,
-        strip,
-        &hue,
-        Sense::click_and_drag(),
-        true,
-        None,
-    );
-    if let Some(pos) = resp.interact_pointer_pos()
-        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
-    {
-        hsva.h = ((pos.x - strip.left()) / strip.width()).clamp(0.0, 1.0);
-        moved = true;
-    }
-    let bar = strip.shrink2(vec2(0.0, 8.0));
-    let mut mesh = egui::Mesh::default();
-    for col in 0..=n {
-        let h = col as f32 / n as f32;
-        let x = bar.left() + h * bar.width();
-        mesh.colored_vertex(pos2(x, bar.top()), fill(h, 1.0, 1.0));
-        mesh.colored_vertex(pos2(x, bar.bottom()), fill(h, 1.0, 1.0));
-    }
-    for col in 0..n as u32 {
-        let at = 2 * col;
-        mesh.add_triangle(at, at + 1, at + 3);
-        mesh.add_triangle(at, at + 3, at + 2);
-    }
-    ui.painter().add(egui::Shape::mesh(mesh));
-    let x = bar.left() + hsva.h * bar.width();
-    let thumb = Rect::from_center_size(pos2(x, strip.center().y), vec2(8.0, TOUCH - 8.0));
-    ui.painter().rect_filled(thumb, 3.0, theme::TEXT);
-    ui.painter().rect_stroke(
-        thumb,
-        3.0,
-        egui::Stroke::new(1.0, Color32::BLACK),
-        egui::StrokeKind::Outside,
-    );
-    if moved {
-        *color = hsva.to_srgb();
-    }
-
-    let text_id = ui.id().with(name).with("hex");
-    let mut text: String = ui
-        .data(|data| data.get_temp(text_id))
-        .unwrap_or_else(|| hex_text(*color));
-    let valid = parse_hex(&text).is_some();
-    let field = text_field(
-        ui,
-        controls,
-        &format!("{name} hex"),
+        &hex,
         "Hex",
-        None,
-        &mut text,
-        valid,
+        "",
+        &hex_text(*color),
+        Keys::Hex,
+        |text| parse_hex(text).is_some(),
     );
-    // A typed or pasted code takes the place of the whole code.
-    if field.gained_focus() {
-        select_all(ui.ctx(), field.id, text.chars().count());
-    }
-    if field.changed()
-        && let Some(typed) = parse_hex(&text)
-    {
+    if let Some(typed) = typed.as_deref().and_then(parse_hex) {
         *color = typed;
         hsva = Hsva::from_srgb(typed);
-    }
-    if field.has_focus() {
-        ui.data_mut(|data| data.insert_temp(text_id, text));
-    } else {
-        ui.data_mut(|data| data.remove::<String>(text_id));
     }
     ui.data_mut(|data| data.insert_temp(id, (hsva, *color)));
     *color != before

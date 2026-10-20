@@ -54,8 +54,6 @@ const CARD_WIDTH: f32 = 300.0;
 const GAP: f32 = 14.0;
 /// The size of the point of the card of the selected stop.
 const POINT: f32 = 10.0;
-/// The time, in seconds, that the card stays up after the keyboard goes.
-const KEYBOARD_HOLD: f64 = 0.4;
 /// The space around the contents of the card of the selected stop.
 const CARD_PAD: f32 = 12.0;
 
@@ -64,8 +62,8 @@ const CARD_PAD: f32 = 12.0;
 pub struct StyleState {
     /// The text of the unit field while the user types.
     unit: Option<(RasterId, String)>,
-    /// The text of the field of the selected stop while the user types.
-    value: Option<(RasterId, usize, String)>,
+    /// The layer and the stop of the card in the last frame.
+    stop: Option<(RasterId, usize)>,
     /// The color of the selected stop that the color picker edits.
     side: Option<(RasterId, usize, Paint)>,
     /// The layer, the selected stop, its handle, and the gradient control
@@ -75,8 +73,6 @@ pub struct StyleState {
     height: Option<f32>,
     /// The card of the selected stop in the last frame.
     pub card: Option<Rect>,
-    /// The last height of the keyboard that was not 0, and the time of it.
-    keyboard: (f32, f64),
     /// The layer whose card that asks before a reset is open.
     reset: Option<RasterId>,
     /// The layer and the reset row in this frame, while the card is open.
@@ -158,7 +154,6 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         })
         .inner;
     if selected != before {
-        style.value = None;
         style.side = None;
     }
     // The card hides while a finger drags a stop, so that the globe shows.
@@ -218,8 +213,15 @@ pub fn stop_card(
 ) {
     state.pad.style.card = None;
     let Some((id, index, at, gradient)) = state.pad.style.anchor.take() else {
+        // The keypad of a field of the card closes with the card.
+        if state.pad.style.stop.take().is_some() {
+            widgets::close_keypad(ctx);
+        }
         return;
     };
+    if state.pad.style.stop.replace((id, index)) != Some((id, index)) {
+        widgets::close_keypad(ctx);
+    }
     let panel = state.pad.panels.iter().find(|(p, _)| *p == Panel::Layers);
     let Some(&(_, panel)) = panel else {
         return;
@@ -235,33 +237,8 @@ pub fn stop_card(
     let guess = PANEL_ROW * if fixed { 7.0 } else { 8.0 } + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
 
-    let (placed, point) = place(rects, panel, at, gradient, height);
-    let top = rects.screen.top() + rects.bands.top + PAD;
-    // A keyboard that goes away and comes back at once does not move the
-    // card.
-    let now = ctx.input(|i| i.time);
-    let mut keyboard = state.pad.keyboard;
-    if keyboard > 0.0 {
-        state.pad.style.keyboard = (keyboard, now);
-    } else if now - state.pad.style.keyboard.1 < KEYBOARD_HOLD {
-        keyboard = state.pad.style.keyboard.0;
-        ctx.request_repaint_after_secs(KEYBOARD_HOLD as f32);
-    }
-    // While a field of the card has the keyboard, the card is above the
-    // keyboard, and it does not point at the handle.
+    let (rect, point) = place(rects, panel, at, gradient, height);
     let key = "pad-stop";
-    let layer = egui::LayerId::new(Order::Foreground, egui::Id::new(key));
-    let typing = keyboard > 0.0 && widgets::focused_layer(ctx) == Some(layer);
-    let rect = match typing {
-        true => {
-            // The card stays below the bars at the top.
-            let bars = [Some(rects.workspace), rects.view, Some(rects.actions)];
-            let bars = bars.into_iter().flatten().map(|r| r.bottom() + PAD);
-            let top = bars.fold(top, f32::max);
-            widgets::above_keyboard(placed, keyboard, rects.screen, top)
-        }
-        false => placed,
-    };
     let fits = state
         .pad
         .style
@@ -269,9 +246,9 @@ pub fn stop_card(
         .map(|_| rect.height() >= height - 0.5);
     state.pad.style.card = Some(rect);
 
-    if pressed_outside(ctx, rect, gradient) {
+    let menu = widgets::edit_menu_rect(ctx).unwrap_or(Rect::NOTHING);
+    if pressed_outside(ctx, rect, gradient) && pressed_outside(ctx, menu, Rect::NOTHING) {
         state.globe.preview.selected = None;
-        state.pad.style.value = None;
         state.pad.style.side = None;
         state.pad.style.card = None;
         return;
@@ -307,7 +284,7 @@ pub fn stop_card(
                 let value = bands.stops()[index].value;
                 widgets::value_row(ui, "Value", &world::value_text(value, span, &unit));
             } else {
-                value_field(ui, controls, bands, &mut style.value, id, index, &unit);
+                value_field(ui, controls, bands, index, &unit);
             }
             let stop = bands.stops()[index];
             let mut line = stop.line;
@@ -370,7 +347,7 @@ pub fn stop_card(
                 None => paint,
             };
             style.side = Some((id, index, paint));
-            ui.add_space(8.0);
+            ui.add_space(4.0);
             let mut picked = match paint {
                 Paint::Fill(Side::Below) => stop.below,
                 Paint::Fill(Side::Above) => stop.above,
@@ -406,21 +383,11 @@ pub fn stop_card(
                 removed = resp.clicked() && bands.remove(index);
             }
             style.height = Some(ui.cursor().top() - start);
-            // The field that has the keyboard stays in view.
-            let focused = ctx
-                .memory(|m| m.focused())
-                .and_then(|id| ctx.read_response(id));
-            if let Some(field) = focused.filter(|_| typing) {
-                ui.scroll_to_rect(field.rect.expand(4.0), None);
-            }
         });
     });
-    if rect == placed {
-        paint_point(ctx, key, point);
-    }
+    paint_point(ctx, key, point);
     if removed {
         state.globe.preview.selected = None;
-        state.pad.style.value = None;
         state.pad.style.side = None;
     }
 }
@@ -570,46 +537,27 @@ pub fn reset_card(
         *bands = default;
     }
     state.globe.preview.selected = None;
-    state.pad.style.value = None;
+
     state.pad.style.side = None;
 }
 
 /// The field of the value of the selected stop. The stop moves when the
-/// text is a number.
+/// typed text is a number.
 fn value_field(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     bands: &mut Bands,
-    text: &mut Option<(RasterId, usize, String)>,
-    id: RasterId,
     index: usize,
     unit: &str,
 ) {
     let span = bands.max() - bands.min();
-    let value = bands.stops()[index].value;
-    let shown = world::value_text(value, span, "");
-    let mut edit = match text.take() {
-        Some((of, at, edit)) if of == id && at == index => edit,
-        _ => shown.clone(),
-    };
-    let parsed = parse_value(&edit);
-    let resp = widgets::value_field(
-        ui,
-        controls,
-        STOP_VALUE,
-        "Value",
-        unit,
-        &mut edit,
-        parsed.is_some(),
-    );
-    if resp.changed()
-        && let Some(value) = parse_value(&edit)
-    {
+    let shown = world::value_text(bands.stops()[index].value, span, "");
+    let valid = |text: &str| parse_value(text).is_some();
+    let keys = widgets::Keys::Number;
+    let typed = widgets::key_field(ui, controls, STOP_VALUE, "Value", unit, &shown, keys, valid);
+    if let Some(value) = typed.as_deref().and_then(parse_value) {
         bands.move_to(index, value);
-    } else if !resp.has_focus() {
-        edit = shown;
     }
-    *text = Some((id, index, edit));
 }
 
 /// A number as the user types it, with or without the separators of the

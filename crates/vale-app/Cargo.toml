@@ -58,10 +58,6 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "block2",
 ] }
 block2 = "0.6.2"
-objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
-    "std",
-    "CFCGTypes",
-] }
 objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "std",
     "objc2-core-foundation",
@@ -77,11 +73,7 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "UIViewController",
     "UIDocumentPickerViewController",
     "UIApplication",
-    "UIEditMenuInteraction",
-    "UIGeometry",
-    "UIInteraction",
     "UIPasteboard",
-    "UIWindow",
 ] }
 objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = [
     "std",

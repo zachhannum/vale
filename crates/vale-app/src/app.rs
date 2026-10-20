@@ -33,13 +33,6 @@ struct ValeApp {
 }
 
 impl eframe::App for ValeApp {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        let pastes = crate::keyboard::take_pastes();
-        raw_input
-            .events
-            .extend(pastes.into_iter().map(egui::Event::Paste));
-    }
-
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let state = &mut *self.state.borrow_mut();
         state.poll_system();
@@ -269,8 +262,6 @@ pub fn run_window(
                     let queue = crate::pen::PenQueue::default();
                     app.state.borrow_mut().globe.pen.queue = Some(queue.clone());
                     crate::pen::uikit::install(handle.ui_view, cc.egui_ctx.clone(), queue);
-                    crate::keyboard::install(cc.egui_ctx.clone());
-                    crate::keyboard::install_paste(handle.ui_view, cc.egui_ctx.clone());
                     let (picked, ctx) = (app.picked.clone(), cc.egui_ctx.clone());
                     let exports = app.exports.clone();
                     app.picker = handle.ui_view_controller.and_then(|controller| {

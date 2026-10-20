@@ -185,7 +185,11 @@ fn check_controls(h: &Pad, what: &str) {
     let in_add = h.state().pad.add_rect.is_some();
     let in_list = h.state().pad.projections_rect.is_some();
     let in_stop = h.state().pad.style.card.is_some() || h.state().pad.style.reset_card.is_some();
-    let popup = in_menu
+    let in_edit = controls
+        .iter()
+        .any(|c| c.name == vale_app::ui::pad::widgets::COPY);
+    let popup = in_edit
+        || in_menu
         || in_more
         || in_add
         || in_list
@@ -229,7 +233,12 @@ fn check_controls(h: &Pad, what: &str) {
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
                 menu || kind || more || add || stop || (in_menu && name == "Projection")
             };
-            let covered = popup && row(a) != row(b);
+            // The edit menu of a field covers the controls below it.
+            let edit = |c: &vale_app::ui::pad::widgets::Control| {
+                use vale_app::ui::pad::widgets::{COPY, PASTE};
+                c.name == COPY || c.name == PASTE
+            };
+            let covered = popup && (row(a) != row(b) || edit(a) != edit(b));
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -3619,99 +3628,125 @@ fn the_card_of_a_stop_sets_its_line() {
     assert!(control(&h, DARKEN).is_none());
 }
 
+/// Opens the keypad of a field, taps the keys of `text`, and closes the
+/// keypad.
+fn type_keys(h: &mut Pad, field: &str, text: &str) {
+    use vale_app::ui::pad::widgets::DONE;
+    tap(h, field);
+    for c in text.chars() {
+        tap(h, &format!("{field} {c}"));
+    }
+    tap(h, &format!("{field} {DONE}"));
+}
+
+/// A long press of a finger on the middle of a control.
+fn long_press(h: &mut Pad, name: &str) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    touch(h, egui::TouchPhase::Start, rect.center(), None);
+    h.run_steps(8);
+    touch(h, egui::TouchPhase::End, rect.center(), None);
+    h.run_steps(2);
+}
+
+/// True if no text field has the keyboard.
+fn no_keyboard(h: &Pad) -> bool {
+    h.ctx.memory(|m| m.focused()).is_none() && h.output().platform_output.ime.is_none()
+}
+
 #[test]
-fn the_card_of_a_stop_goes_up_so_that_the_keyboard_does_not_cover_a_field() {
-    use vale_app::ui::pad::raster::COLOR;
+fn the_hex_keypad_sets_the_color_of_a_stop_and_the_card_stays_in_place() {
+    use vale_app::ui::pad::raster::{COLOR, DARKER, LINE};
+    use vale_app::ui::pad::widgets::DELETE;
     let mut h = painted_pad(BOARDS[1]);
     open_height(&mut h);
     scroll_to_gradient(&mut h);
     let sea = h.state().globe.map.bands.sea().unwrap();
     tap_handle(&mut h, sea);
+    // A darker line makes the card taller.
+    tap(&mut h, LINE);
+    tap(&mut h, DARKER);
     let card = |h: &Pad| h.state().pad.style.card.unwrap();
     let before = card(&h);
     let hex = format!("{COLOR} hex");
-    let field = control(&h, &hex).unwrap();
-    finger_tap(&mut h, field.center());
-    assert!(h.ctx.memory(|m| m.focused()).is_some());
-    let screen = h.ctx.viewport_rect();
-    let keyboard = 400.0;
-    assert!(field.bottom() > screen.bottom() - keyboard, "{field:?}");
+    let shade = format!("{COLOR} shade");
+    tap(&mut h, &hex);
+    assert!(no_keyboard(&h));
+    assert!(control(&h, &shade).is_none());
+    assert!(control(&h, &format!("{hex} A")).is_some());
+    assert_eq!(card(&h), before);
+    check_controls(&h, "the hex keypad of a stop");
 
-    h.state_mut().pad.keyboard = keyboard;
-    h.run_steps(2);
-    let field = control(&h, &hex).unwrap();
-    assert!(field.bottom() < screen.bottom() - keyboard, "{field:?}");
-    assert!(card(&h).top() < before.top());
-    assert!(card(&h).top() >= screen.top());
-    check_controls(&h, "the card of a stop above the keyboard");
+    // The first key takes the place of the whole code.
+    for key in ["1", "2", "A", "B", "3", "F"] {
+        tap(&mut h, &format!("{hex} {key}"));
+    }
+    let stop = |h: &Pad| h.state().globe.map.bands.stops()[sea];
+    assert_eq!(stop(&h).above, [0x12, 0xab, 0x3f]);
+    // A code that is too short does not change the color.
+    tap(&mut h, &format!("{hex} {DELETE}"));
+    assert_eq!(stop(&h).above, [0x12, 0xab, 0x3f]);
+    tap(&mut h, &format!("{hex} 0"));
+    assert_eq!(stop(&h).above, [0x12, 0xab, 0x30]);
 
-    // A paste takes the place of the whole code.
-    h.event(egui::Event::Paste("#123456".into()));
-    h.run_steps(2);
-    let stop = h.state().globe.map.bands.stops()[sea];
-    assert_eq!(stop.above, [0x12, 0x34, 0x56]);
-
-    // The card goes back down when the keyboard goes away, but not when the
-    // keyboard comes back at once.
-    let lifted = card(&h);
-    h.state_mut().pad.keyboard = 0.0;
-    h.step();
-    assert_eq!(card(&h), lifted);
-    h.state_mut().pad.keyboard = keyboard;
-    h.step();
-    assert_eq!(card(&h), lifted);
-    h.state_mut().pad.keyboard = 0.0;
-    h.run_steps(30);
+    // A second tap on the field closes the keypad.
+    tap(&mut h, &hex);
+    assert!(control(&h, &shade).is_some());
+    type_keys(&mut h, &hex, "00FF00");
+    assert_eq!(stop(&h).above, [0, 255, 0]);
+    assert!(control(&h, &shade).is_some());
     assert_eq!(card(&h), before);
 }
 
 #[test]
-fn a_tall_card_of_a_stop_scrolls_to_the_field_above_the_keyboard() {
-    use vale_app::ui::pad::raster::{COLOR, DARKER, LINE};
+fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
+    use vale_app::ui::pad::raster::COLOR;
+    use vale_app::ui::pad::widgets::{COPY, PASTE};
     let mut h = painted_pad(BOARDS[1]);
     open_height(&mut h);
     scroll_to_gradient(&mut h);
     let sea = h.state().globe.map.bands.sea().unwrap();
     tap_handle(&mut h, sea);
-    // A darker line adds the Darken row, so the card is taller.
-    let switch = control(&h, LINE).unwrap();
-    finger_tap(&mut h, switch.center());
-    let darker = control(&h, DARKER).unwrap();
-    finger_tap(&mut h, darker.center());
     let hex = format!("{COLOR} hex");
-    let field = control(&h, &hex).unwrap();
-    finger_tap(&mut h, field.center());
-    let screen = h.ctx.viewport_rect();
-    // A keyboard that leaves less room than the card.
-    let card = h.state().pad.style.card.unwrap();
-    let keyboard = screen.height() - card.height() + 100.0;
+    let code = vale_app::ui::pad::widgets::hex_text(h.state().globe.map.bands.stops()[sea].above);
+    long_press(&mut h, &hex);
+    assert!(no_keyboard(&h));
+    assert!(control(&h, COPY).is_some());
+    check_controls(&h, "the edit menu of a field");
+    tap(&mut h, COPY);
+    assert!(control(&h, COPY).is_none());
+    assert_eq!(vale_app::clipboard::get(), Some(code));
 
-    h.state_mut().pad.keyboard = keyboard;
-    h.run_steps(4);
-    let card = h.state().pad.style.card.unwrap();
-    assert!(card.bottom() <= screen.bottom() - keyboard, "{card:?}");
-    let field = control(&h, &hex).expect("the field shows");
-    assert!(field.bottom() <= screen.bottom() - keyboard, "{field:?}");
-    assert!(card.contains_rect(field), "{field:?} {card:?}");
-    check_controls(&h, "a tall card of a stop above the keyboard");
+    // A paste takes the place of the whole code, and the card stays open.
+    vale_app::clipboard::set(&h.ctx, " #123456 ");
+    long_press(&mut h, &hex);
+    tap(&mut h, PASTE);
+    assert!(no_keyboard(&h));
+    assert_eq!(
+        h.state().globe.map.bands.stops()[sea].above,
+        [0x12, 0x34, 0x56]
+    );
+    assert!(h.state().globe.preview.selected.is_some());
+
+    // A press outside the menu closes it.
+    long_press(&mut h, &hex);
+    let shade = control(&h, &format!("{COLOR} shade")).unwrap();
+    touch(&mut h, egui::TouchPhase::Start, shade.center(), None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, shade.center(), None);
+    h.run_steps(2);
+    assert!(control(&h, COPY).is_none());
 }
 
 #[test]
-fn a_long_press_on_a_text_field_gives_it_focus() {
-    use vale_app::ui::pad::raster::COLOR;
+fn a_paste_from_the_edit_menu_renames_a_layer() {
+    use vale_app::ui::pad::widgets::PASTE;
     let mut h = painted_pad(BOARDS[1]);
-    open_height(&mut h);
-    scroll_to_gradient(&mut h);
-    let sea = h.state().globe.map.bands.sea().unwrap();
-    tap_handle(&mut h, sea);
-    let field = control(&h, &format!("{COLOR} hex")).unwrap();
-    assert!(h.ctx.memory(|m| m.focused()).is_none());
-    touch(&mut h, egui::TouchPhase::Start, field.center(), None);
-    h.run_steps(8);
-    touch(&mut h, egui::TouchPhase::End, field.center(), None);
-    h.run_steps(2);
-    assert!(h.ctx.memory(|m| m.focused()).is_some());
-    assert!(h.output().platform_output.ime.is_some());
+    let height = open_height(&mut h);
+    vale_app::clipboard::set(&h.ctx, "Ridges");
+    long_press(&mut h, LAYER_NAME);
+    assert!(no_keyboard(&h));
+    tap(&mut h, PASTE);
+    assert_eq!(raster_name(&h, height), "Ridges");
 }
 
 /// The texts that the last frame painted, with their places.
@@ -3835,11 +3870,12 @@ fn a_typed_value_moves_the_selected_stop() {
     let index = sea + 1;
     tap_handle(&mut h, index);
     assert_eq!(h.state().globe.preview.selected, Some((height, index)));
-    type_text(&mut h, STOP_VALUE, "1,23");
+    type_keys(&mut h, STOP_VALUE, "123");
+    assert!(no_keyboard(&h));
     assert_eq!(h.state().globe.map.bands.stops()[index].value, 123.0);
     // A value past the next stop stops short of it.
     let next = h.state().globe.map.bands.stops()[index + 1].value;
-    type_text(&mut h, STOP_VALUE, "99999");
+    type_keys(&mut h, STOP_VALUE, "99999");
     let value = h.state().globe.map.bands.stops()[index].value;
     assert!(value < next && value > next - 2.0, "{value}");
 }

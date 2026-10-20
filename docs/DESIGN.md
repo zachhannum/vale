@@ -375,6 +375,8 @@ These rules apply to the layout:
 - On a raster layer with a unit other than `m`, the modes that move ground are disabled.
 - The pen paints. One finger turns the globe, and two fingers zoom it.
 - A tap of two fingers is undo, and a tap of three fingers is redo. The actions in the top row have an undo button and a redo button.
+- A long press on a text field opens a menu with Copy and Paste, and no keyboard. Paste replaces the whole text. On iPadOS, the system can ask for permission before a paste.
+- The value field and the hex field of the card of a color stop have a keypad in the card, in place of the keyboard of the system. A tap on the field opens the keypad in the place of the color picker, so the card does not move. The first key replaces the whole text. Done or a second tap on the field closes the keypad.
 
 The core crates have no UI dependency, so both platforms share them. The shell is egui on both platforms. The crate `vale-globe-proto` checked how well egui handles pen input and touch on iPad, and the section "Globe prototype" gives the results.
 
