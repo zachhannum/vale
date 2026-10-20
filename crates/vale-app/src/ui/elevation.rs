@@ -3,7 +3,7 @@
 
 use eframe::egui;
 use vale_store::{RasterDisplay, RasterId};
-use vale_terrain::{Bands, Rgb, Side};
+use vale_terrain::{Bands, Rgb, Side, StopLine};
 
 use super::gradient::{self, DESKTOP};
 use super::{AppState, LayerRef, pad};
@@ -246,6 +246,19 @@ fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usi
         }
         if !fixed && ui.button("Remove").clicked() && bands.remove(index) {
             *selected = None;
+        }
+    });
+    let mut line = stop.line;
+    ui.horizontal(|ui| {
+        let mut changed = ui.checkbox(&mut line.on, pad::raster::LINE).changed();
+        let weight = egui::DragValue::new(&mut line.weight)
+            .range(StopLine::WEIGHTS)
+            .speed(0.05)
+            .suffix(" pt");
+        changed |= ui.add(weight).changed();
+        changed |= ui.color_edit_button_srgb(&mut line.color).changed();
+        if changed && bands.stops().get(index).is_some() {
+            bands.set_line(index, line);
         }
     });
 }

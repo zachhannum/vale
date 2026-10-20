@@ -243,6 +243,10 @@ fn raster_stop(name: &str) -> bool {
         raster::STOP_VALUE,
         raster::SEA_COLOR,
         raster::LAND_COLOR,
+        raster::FILL_COLOR,
+        raster::LINE_COLOR,
+        raster::LINE,
+        raster::LINE_WEIGHT,
         raster::REMOVE_STOP,
         raster::RESET,
     ]
@@ -3528,6 +3532,63 @@ fn a_tap_on_a_stop_opens_its_card_and_a_tap_elsewhere_closes_it() {
     finger_tap(&mut h, pos2(area.center().x, area.bottom() + 20.0));
     assert_eq!(h.state().globe.preview.selected, None);
     assert_eq!(card(&h), None);
+}
+
+#[test]
+fn the_card_of_a_stop_sets_its_line() {
+    use vale_app::ui::pad::raster::{COLOR, LINE, LINE_COLOR, LINE_WEIGHT};
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    tap_handle(&mut h, sea);
+    assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
+    check_controls(&h, "the card of a stop");
+    let stop = |h: &Pad| h.state().globe.map.bands.stops()[sea];
+    let before = stop(&h);
+    assert!(!before.line.on);
+    assert!(!switch_is_on(&h, LINE));
+
+    let switch = control(&h, LINE).unwrap();
+    finger_tap(&mut h, switch.center());
+    assert!(stop(&h).line.on);
+    assert!(switch_is_on(&h, LINE));
+
+    // The weight goes in steps of a quarter point up to 8 points.
+    let slider = control(&h, LINE_WEIGHT).unwrap();
+    drag(
+        &mut h,
+        slider.left_center(),
+        slider.right_center() + vec2(40.0, 0.0),
+        None,
+    );
+    assert_eq!(stop(&h).line.weight, 8.0);
+    let slider = control(&h, LINE_WEIGHT).unwrap();
+    drag(
+        &mut h,
+        slider.right_center(),
+        slider.left_center() - vec2(40.0, 0.0),
+        None,
+    );
+    assert_eq!(stop(&h).line.weight, 0.25);
+
+    // With the line chosen, the picker sets the color of the line and not
+    // the colors of the stop.
+    let choice = control(&h, LINE_COLOR).unwrap();
+    finger_tap(&mut h, choice.center());
+    let square = control(&h, &format!("{COLOR} shade")).unwrap();
+    finger_tap(&mut h, square.center() + vec2(40.0, 30.0));
+    let after = stop(&h);
+    assert_ne!(after.line.color, before.line.color);
+    assert_eq!((after.below, after.above), (before.below, before.above));
+    assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
+
+    // The project gets the line with the stop.
+    let mut raster = h.state().doc.project.raster(height).unwrap().clone();
+    vale_app::session::sync_record(&mut raster, &h.state().globe.map);
+    let line = raster.stops[sea].line;
+    let want = (true, 0.25, after.line.color);
+    assert_eq!((line.on, line.weight, line.color), want);
 }
 
 /// The texts that the last frame painted, with their places.

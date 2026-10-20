@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId};
-use vale_terrain::{Bands, Side};
+use vale_terrain::{Bands, Side, StopLine};
 
 use super::Panel;
 use super::geometry::{PAD, Rects};
@@ -16,11 +16,20 @@ use crate::world;
 pub const SHOW_AS: &str = "Show as";
 /// The name of the field of the selected stop.
 pub const STOP_VALUE: &str = "Stop value";
-/// The names of the two sides of the stop at sea level.
+/// The names of the colors of a stop that the color picker edits: the two
+/// sides of the stop at sea level, the one color of each other stop, and the
+/// line.
 pub const SEA_COLOR: &str = "Sea";
 pub const LAND_COLOR: &str = "Land";
+pub const FILL_COLOR: &str = "Fill";
+pub const LINE_COLOR: &str = "Line";
 /// The name of the color picker of the selected stop.
 pub const COLOR: &str = "Color";
+/// The switch and the weight of the line of the selected stop.
+pub const LINE: &str = "Stop line";
+pub const LINE_WEIGHT: &str = "Line weight";
+/// The step of the weight slider, in points.
+const WEIGHT_STEP: f32 = 0.25;
 pub const REMOVE_STOP: &str = "Remove the stop";
 /// The row that puts back the default color stops, and the button of the
 /// card that asks before it.
@@ -50,8 +59,8 @@ pub struct StyleState {
     unit: Option<(RasterId, String)>,
     /// The text of the field of the selected stop while the user types.
     value: Option<(RasterId, usize, String)>,
-    /// The side of the stop at sea level that the color picker edits.
-    side: Option<(RasterId, usize, Side)>,
+    /// The color of the selected stop that the color picker edits.
+    side: Option<(RasterId, usize, Paint)>,
     /// The layer, the selected stop, its handle, and the gradient control
     /// in this frame.
     anchor: Option<(RasterId, usize, Pos2, Rect)>,
@@ -65,6 +74,13 @@ pub struct StyleState {
     reset_anchor: Option<(RasterId, Rect)>,
     /// The card that asks before a reset in the last frame.
     pub reset_card: Option<Rect>,
+}
+
+/// A color of a stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Paint {
+    Fill(Side),
+    Line,
 }
 
 /// The heading of a section of a panel.
@@ -207,7 +223,7 @@ pub fn stop_card(
         .bands_mut(id)
         .is_some_and(|b| b.sea() == Some(index));
     let fixed = state.globe.bands_mut(id).is_some_and(|b| b.fixed(index));
-    let guess = PANEL_ROW * if fixed { 4.0 } else { 5.0 } + 196.0 + 16.0;
+    let guess = PANEL_ROW * if fixed { 5.0 } else { 6.0 } + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
 
     let (rect, point) = place(rects, panel, at, gradient, height);
@@ -246,30 +262,61 @@ pub fn stop_card(
         } else {
             value_field(ui, controls, bands, &mut style.value, id, index, &unit);
         }
-        let side = match style.side {
-            Some((of, at, side)) if sea && of == id && at == index => side,
-            _ => Side::Above,
-        };
-        let side = if sea {
-            let names = [SEA_COLOR, LAND_COLOR];
-            let active = Some(usize::from(side == Side::Above));
-            match widgets::choice_row(ui, controls, COLOR, &names, active) {
-                Some(0) => Side::Below,
-                Some(_) => Side::Above,
-                None => side,
-            }
-        } else {
-            Side::Above
-        };
-        style.side = Some((id, index, side));
-        ui.add_space(8.0);
         let stop = bands.stops()[index];
-        let mut picked = match side {
-            Side::Below => stop.below,
-            Side::Above => stop.above,
+        let mut line = stop.line;
+        let mut changed = widgets::switch_row(ui, controls, LINE, "Line", &mut line.on);
+        let (lo, hi) = (*StopLine::WEIGHTS.start(), *StopLine::WEIGHTS.end());
+        let mut fraction = f64::from((line.weight - lo) / (hi - lo));
+        let text = format!("{} pt", weight_text(line.weight));
+        if widgets::row_slider(ui, controls, LINE_WEIGHT, "Weight", &mut fraction, &text) {
+            let weight = lo + fraction as f32 * (hi - lo);
+            line.weight = (weight / WEIGHT_STEP).round() * WEIGHT_STEP;
+            changed = true;
+        }
+        let paint = match style.side {
+            Some((of, at, paint)) if of == id && at == index => paint,
+            _ => Paint::Fill(Side::Above),
+        };
+        let (names, paints): (&[&str], &[Paint]) = if sea {
+            let paints = &[
+                Paint::Fill(Side::Below),
+                Paint::Fill(Side::Above),
+                Paint::Line,
+            ];
+            (&[SEA_COLOR, LAND_COLOR, LINE_COLOR], paints)
+        } else {
+            let paints = &[Paint::Fill(Side::Above), Paint::Line];
+            (&[FILL_COLOR, LINE_COLOR], paints)
+        };
+        let paint = match paint {
+            Paint::Fill(_) if !sea => Paint::Fill(Side::Above),
+            paint => paint,
+        };
+        let active = paints.iter().position(|p| *p == paint);
+        let paint = match widgets::choice_row(ui, controls, COLOR, names, active) {
+            Some(i) => paints[i],
+            None => paint,
+        };
+        style.side = Some((id, index, paint));
+        ui.add_space(8.0);
+        let mut picked = match paint {
+            Paint::Fill(Side::Below) => stop.below,
+            Paint::Fill(Side::Above) => stop.above,
+            Paint::Line => line.color,
         };
         if widgets::color_picker(ui, controls, COLOR, &mut picked) {
-            bands.set_color(index, side, picked);
+            match paint {
+                Paint::Fill(side) => {
+                    bands.set_color(index, side, picked);
+                }
+                Paint::Line => {
+                    line.color = picked;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            bands.set_line(index, line);
         }
         if !fixed {
             let (row, _) =
@@ -294,6 +341,12 @@ pub fn stop_card(
         state.pad.style.value = None;
         state.pad.style.side = None;
     }
+}
+
+/// A weight in points with no zeros at the end, for example `0.25` or `2`.
+fn weight_text(weight: f32) -> String {
+    let text = format!("{weight:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// The place of a card next to the panel, and the point of the card. The

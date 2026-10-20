@@ -4153,3 +4153,17 @@ fn a_change_of_a_stop_line_shows_in_the_same_frame() {
     set_coast_line(&mut h, true);
     assert_eq!(frame(&mut h), lined);
 }
+
+#[test]
+fn the_desktop_panel_sets_the_line_of_the_selected_stop() {
+    let mut h = harness();
+    h.get_by_label(vale_app::ui::elevation::PANEL).click();
+    h.run_steps(2);
+    let id = h.state().shown_raster().unwrap().id;
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    h.state_mut().globe.preview.selected = Some((id, sea));
+    h.run_steps(2);
+    h.get_by_label(vale_app::ui::pad::raster::LINE).click();
+    h.run_steps(2);
+    assert!(h.state().globe.map.bands.stops()[sea].line.on);
+}
