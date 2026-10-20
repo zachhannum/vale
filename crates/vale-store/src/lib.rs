@@ -621,7 +621,12 @@ mod tests {
     #[test]
     fn added_features_and_new_geometry() {
         let mut p = Project::new(World::default());
-        let a = p.add_layer("a".into(), GeometryKind::Point, None, vec![feature(&["mid"])]);
+        let a = p.add_layer(
+            "a".into(),
+            GeometryKind::Point,
+            None,
+            vec![feature(&["mid"])],
+        );
         assert!(p.add_feature(a, feature(&[])));
         assert!(p.add_feature(a, feature(&["alpha"])));
         let line = Feature::new(Geometry::Lines(vec![]), BTreeMap::new());

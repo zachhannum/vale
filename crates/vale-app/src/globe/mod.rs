@@ -22,6 +22,7 @@ pub mod export;
 pub mod flat;
 pub mod gpu;
 pub mod import;
+pub mod line;
 pub mod math;
 pub mod nav;
 pub mod preview;
