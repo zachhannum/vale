@@ -513,6 +513,52 @@ impl Project {
         self.layer_mut(id).map(|l| l.visible = visible).is_some()
     }
 
+    /// Adds a feature to a vector layer of the same geometry kind. The
+    /// feature gets each field of the layer, with `Null` for a field that it
+    /// did not have. A field that only the feature has becomes a field of the
+    /// layer.
+    pub fn add_feature(&mut self, id: LayerId, mut feature: Feature) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        if layer.geometry() != Some(feature.geometry.kind()) {
+            return false;
+        }
+        let new: Vec<String> = feature
+            .attributes
+            .keys()
+            .filter(|k| layer.fields.binary_search(k).is_err())
+            .cloned()
+            .collect();
+        for name in new {
+            let i = layer.fields.binary_search(&name).unwrap_err();
+            for f in &mut layer.features {
+                f.attributes.insert(name.clone(), Value::Null);
+            }
+            layer.fields.insert(i, name);
+        }
+        for name in &layer.fields {
+            if !feature.attributes.contains_key(name) {
+                feature.attributes.insert(name.clone(), Value::Null);
+            }
+        }
+        layer.features.push(feature);
+        true
+    }
+
+    /// Gives the feature with this UUID a new geometry of the same kind. The
+    /// feature keeps its UUID and its attributes.
+    pub fn set_geometry(&mut self, id: LayerId, uuid: Uuid, geometry: Geometry) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        if layer.geometry() != Some(geometry.kind()) {
+            return false;
+        }
+        let feature = layer.features.iter_mut().find(|f| f.uuid == uuid);
+        feature.map(|f| f.geometry = geometry).is_some()
+    }
+
     fn layer_mut(&mut self, id: LayerId) -> Option<&mut Layer> {
         self.layers.iter_mut().find(|l| l.id == id)
     }
@@ -570,6 +616,29 @@ mod tests {
         let features = &p.layer(a).unwrap().features;
         assert!(features.iter().all(|f| f.attributes.len() == 3));
         assert_ne!(features[0].uuid(), features[1].uuid());
+    }
+
+    #[test]
+    fn added_features_and_new_geometry() {
+        let mut p = Project::new(World::default());
+        let a = p.add_layer("a".into(), GeometryKind::Point, None, vec![feature(&["mid"])]);
+        assert!(p.add_feature(a, feature(&[])));
+        assert!(p.add_feature(a, feature(&["alpha"])));
+        let line = Feature::new(Geometry::Lines(vec![]), BTreeMap::new());
+        assert!(!p.add_feature(a, line));
+        assert!(!p.add_feature(LayerId(99), feature(&[])));
+        let layer = p.layer(a).unwrap();
+        assert_eq!(layer.fields, vec!["alpha", "mid"]);
+        assert_eq!(layer.features.len(), 3);
+        assert!(layer.features.iter().all(|f| f.attributes.len() == 2));
+
+        let uuid = layer.features[1].uuid();
+        let moved = Geometry::Points(vec![[5.0, 6.0]]);
+        assert!(p.set_geometry(a, uuid, moved.clone()));
+        assert!(!p.set_geometry(a, uuid, Geometry::Lines(vec![])));
+        assert!(!p.set_geometry(a, Uuid::new_v4(), moved.clone()));
+        let f = &p.layer(a).unwrap().features[1];
+        assert_eq!((f.uuid(), &f.geometry), (uuid, &moved));
     }
 
     #[test]
