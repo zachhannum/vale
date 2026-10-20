@@ -36,6 +36,32 @@ pub struct Stop {
     pub below: Rgb,
     /// The color at the value and just above it.
     pub above: Rgb,
+    /// The line where the value crosses the stop.
+    pub line: Line,
+}
+
+/// A line at a color stop. It keeps its weight and color while it is off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Line {
+    pub on: bool,
+    /// The weight, in points.
+    pub weight: f32,
+    pub color: Rgb,
+}
+
+impl Line {
+    /// The least and the largest weight, in points.
+    pub const WEIGHTS: std::ops::RangeInclusive<f32> = 0.25..=8.0;
+}
+
+impl Default for Line {
+    fn default() -> Self {
+        Line {
+            on: false,
+            weight: 1.0,
+            color: [40, 40, 40],
+        }
+    }
 }
 
 /// A side of a stop.
@@ -191,6 +217,7 @@ impl Bands {
                     value,
                     below,
                     above: above.unwrap_or(below),
+                    line: Line::default(),
                 }
             })
             .collect();
@@ -273,6 +300,7 @@ impl Bands {
             value,
             below: color,
             above: color,
+            line: Line::default(),
         };
         self.stops.insert(index, stop);
         Some(index)
@@ -317,6 +345,22 @@ impl Bands {
             Side::Below => stop.below = color,
             Side::Above => stop.above = color,
         }
+        true
+    }
+
+    /// Sets the line of a stop. The weight stays in `Line::WEIGHTS`. Returns
+    /// `false` for an index out of range.
+    pub fn set_line(&mut self, index: usize, line: Line) -> bool {
+        let Some(stop) = self.stops.get_mut(index) else {
+            return false;
+        };
+        let (lo, hi) = (*Line::WEIGHTS.start(), *Line::WEIGHTS.end());
+        let weight = if line.weight.is_nan() {
+            lo
+        } else {
+            line.weight.clamp(lo, hi)
+        };
+        stop.line = Line { weight, ..line };
         true
     }
 
@@ -374,6 +418,7 @@ mod tests {
             value,
             below: color,
             above: color,
+            line: Line::default(),
         }
     }
 
@@ -881,5 +926,35 @@ mod tests {
         assert_eq!(Bands::from_range_parts(-10.0, 4000.0, false, &hard), None);
         let land = plain(&[-10.0, 250.0, 4000.0]);
         assert_eq!(Bands::from_range_parts(-10.0, 4000.0, true, &land), None);
+    }
+
+    #[test]
+    fn each_stop_keeps_its_own_line() {
+        let mut bands = Bands::with_range(-1000.0, 4000.0, true).unwrap();
+        assert!(bands.stops().iter().all(|s| s.line == Line::default()));
+        let sea = bands.sea().unwrap();
+        let coast = Line {
+            on: true,
+            weight: 3.0,
+            color: [10, 20, 30],
+        };
+        assert!(bands.set_line(sea, coast));
+        assert_eq!(bands.stops()[sea].line, coast);
+        assert_eq!(bands.stops()[sea + 1].line, Line::default());
+
+        // The line moves with the stop, and a new stop has no line.
+        let index = bands.add(-600.0).unwrap();
+        assert!(index < sea + 1);
+        assert_eq!(bands.stops()[sea + 1].line, coast);
+        assert!(!bands.stops()[index].line.on);
+
+        // The weight stays in its range.
+        let heavy = Line {
+            weight: 100.0,
+            ..coast
+        };
+        assert!(bands.set_line(0, heavy));
+        assert_eq!(bands.stops()[0].line.weight, *Line::WEIGHTS.end());
+        assert!(!bands.set_line(99, coast));
     }
 }

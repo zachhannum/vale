@@ -20,7 +20,7 @@ mod reduce;
 #[cfg(feature = "gpu")]
 mod tiles;
 
-pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Rgb, SEA_LEVEL, Side, Stop};
+pub use bands::{Band, Bands, Line, MAX_BANDS, MIN_BAND, Rgb, SEA_LEVEL, Side, Stop};
 pub use cube::{
     ELEV_MAX, ELEV_MIN, FACES, FaceSizeValues, face_dir, face_of, face_size_values,
     level_to_meters, meters_to_level, unwarp, warp,
