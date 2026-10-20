@@ -47,7 +47,7 @@ use import::{ImportResult, Job, Step};
 use line::LineSettings;
 use math::{V3, angle};
 use nav::Nav;
-use preview::{Preview, band_uniforms};
+use preview::{Preview, band_uniforms, line_uniforms};
 use rivers::{Rivers, choose_window};
 use stats::Stats;
 use stroke_test::StrokeTest;
@@ -2392,6 +2392,10 @@ impl Globe {
             Some(layer) => band_uniforms(layer.bands),
             None => ([[[0.0; 4]; 3]; vale_terrain::MAX_BANDS], 0),
         };
+        let lines = match layer {
+            Some(layer) => line_uniforms(layer.bands, scale),
+            None => [[[0.0; 4]; 2]; vale_terrain::MAX_BANDS + 1],
+        };
         let color = |c: eframe::egui::Color32| {
             let [r, g, b] = [c.r(), c.g(), c.b()].map(|c| f32::from(c) / 255.0);
             [r, g, b, 1.0]
@@ -2423,6 +2427,7 @@ impl Globe {
             ground: color(crate::ui::pad::theme::GROUND),
             back: color(canvas.background),
             bands,
+            lines,
         }
     }
 

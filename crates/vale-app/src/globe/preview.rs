@@ -66,9 +66,32 @@ pub fn band_uniforms(bands: &Bands) -> ([BandUniform; MAX_BANDS], usize) {
     (out, list.len().min(MAX_BANDS))
 }
 
+/// The line of one stop in the layout of `globe.wgsl`: the color with half
+/// of the weight in pixels, then the value of the stop as a limit.
+pub type LineUniform = [[f32; 4]; 2];
+
+/// The lines of the stops for the shader. A line that is off has a weight of
+/// 0. `pixels_per_point` turns a weight in points into pixels.
+pub fn line_uniforms(bands: &Bands, pixels_per_point: f32) -> [LineUniform; MAX_BANDS + 1] {
+    let mut out = [[[0.0; 4]; 2]; MAX_BANDS + 1];
+    for (slot, stop) in out.iter_mut().zip(bands.stops()) {
+        let line = stop.line;
+        let [r, g, b] = line.color.map(|c| f32::from(c) / 255.0);
+        let half = if line.on {
+            0.5 * line.weight * pixels_per_point
+        } else {
+            0.0
+        };
+        let at = f32::from(bands.level(stop.value)) / 65535.0;
+        *slot = [[r, g, b, half], [at, 0.0, 0.0, 0.0]];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vale_terrain::StopLine;
 
     #[test]
     fn each_band_starts_where_the_band_below_ends() {
@@ -80,6 +103,28 @@ mod tests {
         for pair in uniforms[..count].windows(2) {
             assert_eq!(pair[0][1][3], pair[1][0][3]);
         }
+    }
+
+    #[test]
+    fn a_line_has_the_value_of_its_stop_and_a_weight_in_pixels() {
+        let mut bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        let line = StopLine {
+            on: true,
+            weight: 1.5,
+            color: [255, 0, 0],
+        };
+        bands.set_line(sea, line);
+        bands.set_line(0, StopLine { on: false, ..line });
+        let lines = line_uniforms(&bands, 2.0);
+        let (uniforms, count) = band_uniforms(&bands);
+        assert_eq!(
+            lines[sea],
+            [[1.0, 0.0, 0.0, 1.5], [uniforms[sea][0][3], 0.0, 0.0, 0.0]]
+        );
+        assert_eq!(lines[0][0][3], 0.0);
+        assert_eq!(lines[count][1][0], 1.0);
+        assert!(lines[count + 1..].iter().all(|l| l[0][3] == 0.0));
     }
 
     #[test]

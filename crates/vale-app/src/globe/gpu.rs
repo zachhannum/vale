@@ -18,7 +18,7 @@ use vale_terrain::{
 
 use super::backdrop::{Backdrop, Canvas, REDUCTION};
 use super::flat::{FlatMesh, Vertex};
-use super::preview::BandUniform;
+use super::preview::{BandUniform, LineUniform};
 
 /// The time between two polls of the device while GPU work is in flight.
 const POLL_STEP: Duration = Duration::from_micros(250);
@@ -44,6 +44,7 @@ pub struct Uniforms {
     /// The color of the canvas around the globe.
     pub back: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
+    pub lines: [LineUniform; MAX_BANDS + 1],
 }
 
 /// The mesh of the flat view on the GPU.
