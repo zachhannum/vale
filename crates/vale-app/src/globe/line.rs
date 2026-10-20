@@ -462,7 +462,7 @@ mod tests {
         // point at each sample is the hand.
         let n = 120;
         let wave = |x: f64| 6.0 * (x * std::f64::consts::TAU / 30.0).sin();
-        let jitter = |i: usize| if i % 2 == 0 { 0.5 } else { -0.5 };
+        let jitter = |i: usize| if i.is_multiple_of(2) { 0.5 } else { -0.5 };
         let samples: Vec<V3> = (0..=n)
             .map(|i| {
                 let x = i as f64;
@@ -605,7 +605,7 @@ mod tests {
         assert_eq!(chains(&crossing), vec![vec![0, 1]]);
         let old = feature(crossing);
         let edit = commit(
-            &[old.clone()],
+            std::slice::from_ref(&old),
             &stroke([-170.0, 0.0], [-160.0, 0.0], 20),
             SCALE,
             0.35,
