@@ -315,32 +315,20 @@ pub fn vertical_slider(
 /// The space between a field that has the keyboard and the keyboard.
 const KEYBOARD_GAP: f32 = 16.0;
 
-/// How far a card goes up so that its focused field is above the keyboard.
-/// `card` is the place of the card with no lift, and `lift` is the lift of
-/// the last frame. `keyboard` is the height of the keyboard at the bottom of
-/// `screen`. The card does not go above `top`.
-pub fn keyboard_lift(
-    ctx: &egui::Context,
-    card: Rect,
-    lift: f32,
-    keyboard: f32,
-    screen: Rect,
-    top: f32,
-) -> f32 {
-    if keyboard <= 0.0 {
-        return 0.0;
-    }
-    let focused = ctx
-        .memory(|m| m.focused())
-        .and_then(|id| ctx.read_response(id));
-    let Some(field) = focused.map(|r| r.rect.translate(vec2(0.0, lift))) else {
-        return 0.0;
-    };
-    if !card.expand(1.0).contains_rect(field) {
-        return 0.0;
-    }
-    let above = screen.bottom() - keyboard - KEYBOARD_GAP;
-    (field.bottom() - above).clamp(0.0, (card.top() - top).max(0.0))
+/// The layer of the widget that has the keyboard focus.
+pub fn focused_layer(ctx: &egui::Context) -> Option<egui::LayerId> {
+    let focused = ctx.memory(|m| m.focused())?;
+    ctx.read_response(focused).map(|r| r.layer_id)
+}
+
+/// The place of a card above a keyboard of height `keyboard` at the bottom
+/// of `screen`. The card moves up as little as it can, and it does not go
+/// above `top`. A card that is still too tall gets shorter.
+pub fn above_keyboard(card: Rect, keyboard: f32, screen: Rect, top: f32) -> Rect {
+    let limit = screen.bottom() - keyboard - KEYBOARD_GAP;
+    let height = card.height().min(limit - top).max(0.0);
+    let y = card.top().min(limit - height).max(top);
+    Rect::from_min_size(pos2(card.left(), y), vec2(card.width(), height))
 }
 
 /// A slider in a row of a panel: the name, the track, and the value.

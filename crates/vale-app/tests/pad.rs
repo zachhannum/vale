@@ -3666,6 +3666,37 @@ fn the_card_of_a_stop_goes_up_so_that_the_keyboard_does_not_cover_a_field() {
 }
 
 #[test]
+fn a_tall_card_of_a_stop_scrolls_to_the_field_above_the_keyboard() {
+    use vale_app::ui::pad::raster::{COLOR, DARKER, LINE};
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    tap_handle(&mut h, sea);
+    // A darker line adds the Darken row, so the card is taller.
+    let switch = control(&h, LINE).unwrap();
+    finger_tap(&mut h, switch.center());
+    let darker = control(&h, DARKER).unwrap();
+    finger_tap(&mut h, darker.center());
+    let hex = format!("{COLOR} hex");
+    let field = control(&h, &hex).unwrap();
+    finger_tap(&mut h, field.center());
+    let screen = h.ctx.viewport_rect();
+    // A keyboard that leaves less room than the card.
+    let card = h.state().pad.style.card.unwrap();
+    let keyboard = screen.height() - card.height() + 100.0;
+
+    h.state_mut().pad.keyboard = keyboard;
+    h.run_steps(4);
+    let card = h.state().pad.style.card.unwrap();
+    assert!(card.bottom() <= screen.bottom() - keyboard, "{card:?}");
+    let field = control(&h, &hex).expect("the field shows");
+    assert!(field.bottom() <= screen.bottom() - keyboard, "{field:?}");
+    assert!(card.contains_rect(field), "{field:?} {card:?}");
+    check_controls(&h, "a tall card of a stop above the keyboard");
+}
+
+#[test]
 fn a_long_press_on_a_text_field_gives_it_focus() {
     use vale_app::ui::pad::raster::COLOR;
     let mut h = painted_pad(BOARDS[1]);

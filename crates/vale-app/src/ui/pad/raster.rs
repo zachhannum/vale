@@ -75,9 +75,6 @@ pub struct StyleState {
     height: Option<f32>,
     /// The card of the selected stop in the last frame.
     pub card: Option<Rect>,
-    /// How far the card of the selected stop went up for the keyboard in the
-    /// last frame.
-    lift: f32,
     /// The last height of the keyboard that was not 0, and the time of it.
     keyboard: (f32, f64),
     /// The layer whose card that asks before a reset is open.
@@ -238,12 +235,7 @@ pub fn stop_card(
     let guess = PANEL_ROW * if fixed { 7.0 } else { 8.0 } + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
 
-    let (rect, point) = place(rects, panel, at, gradient, height);
-    let fits = state
-        .pad
-        .style
-        .height
-        .map(|_| rect.height() >= height - 0.5);
+    let (placed, point) = place(rects, panel, at, gradient, height);
     let top = rects.screen.top() + rects.bands.top + PAD;
     // A keyboard that goes away and comes back at once does not move the
     // card.
@@ -255,11 +247,26 @@ pub fn stop_card(
         keyboard = state.pad.style.keyboard.0;
         ctx.request_repaint_after_secs(KEYBOARD_HOLD as f32);
     }
-    let lift = state.pad.style.lift;
-    let lift = widgets::keyboard_lift(ctx, rect, lift, keyboard, rects.screen, top);
-    state.pad.style.lift = lift;
-    // A card that went up for the keyboard does not point at the handle.
-    let rect = rect.translate(vec2(0.0, -lift));
+    // While a field of the card has the keyboard, the card is above the
+    // keyboard, and it does not point at the handle.
+    let key = "pad-stop";
+    let layer = egui::LayerId::new(Order::Foreground, egui::Id::new(key));
+    let typing = keyboard > 0.0 && widgets::focused_layer(ctx) == Some(layer);
+    let rect = match typing {
+        true => {
+            // The card stays below the bars at the top.
+            let bars = [Some(rects.workspace), rects.view, Some(rects.actions)];
+            let bars = bars.into_iter().flatten().map(|r| r.bottom() + PAD);
+            let top = bars.fold(top, f32::max);
+            widgets::above_keyboard(placed, keyboard, rects.screen, top)
+        }
+        false => placed,
+    };
+    let fits = state
+        .pad
+        .style
+        .height
+        .map(|_| rect.height() >= height - 0.5);
     state.pad.style.card = Some(rect);
 
     if pressed_outside(ctx, rect, gradient) {
@@ -276,7 +283,6 @@ pub fn stop_card(
     };
     let mut removed = false;
     let radius = theme::CARD_RADIUS.into();
-    let key = "pad-stop";
     widgets::card(ctx, None, key, rect, Order::Foreground, radius, |ui| {
         // The card covers the globe and other cards, so its fill is opaque.
         let fill = theme::card(false).to_opaque();
@@ -400,9 +406,16 @@ pub fn stop_card(
                 removed = resp.clicked() && bands.remove(index);
             }
             style.height = Some(ui.cursor().top() - start);
+            // The field that has the keyboard stays in view.
+            let focused = ctx
+                .memory(|m| m.focused())
+                .and_then(|id| ctx.read_response(id));
+            if let Some(field) = focused.filter(|_| typing) {
+                ui.scroll_to_rect(field.rect.expand(4.0), None);
+            }
         });
     });
-    if lift == 0.0 {
+    if rect == placed {
         paint_point(ctx, key, point);
     }
     if removed {
