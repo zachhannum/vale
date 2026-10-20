@@ -228,6 +228,13 @@ impl Pipeline {
         Pipeline { cache: None }
     }
 
+    /// Projects the features of a layer again at the next compose.
+    pub fn forget(&mut self, id: LayerId) {
+        if let Some(cache) = &mut self.cache {
+            cache.layers.remove(&id);
+        }
+    }
+
     /// Brings the projection and the projected geometry up to date with the document.
     fn ensure(&mut self, doc: &Document) -> anyhow::Result<&mut Cache> {
         let spec = doc.frame.projection.normalized();

@@ -332,7 +332,13 @@ The polygons are an output layer of the toolbox. When the heightmap changes, the
 
 ### Lines
 
-A freehand line tool draws rivers, borders, and roads on the globe. The app smooths the stroke and stores it as a normal line feature.
+A freehand line tool draws rivers, borders, and roads on the globe. The app smooths the stroke and stores it as a normal line feature. The tool draws in the selected line layer, and each stroke is one undo step.
+
+The path of the stroke is a curve through the pen samples, so a fast stroke has no corners. A Gaussian filter then takes away the shake of the hand. One Smoothing control sets the width of the filter, from 0 to 8 points on the screen. The default is 35 percent. A slow stroke gives a sample at each point, so its detail stays. The width is on the screen, so you zoom in to draw finer detail. The ends of the stroke stay where the pen was.
+
+A stroke that starts within 12 points of the end of a line in the layer extends that line. The line keeps its UUID and its attributes, and the filter reads the end of the line, so the joint has no kink. Each other stroke makes a new feature.
+
+The app removes each vertex that is less than 0.1 points from the simpler line. Where the line crosses the 180 degree meridian, it has two parts. One part ends at 180 and the next part starts at -180, at the same latitude. Two vertices of a part are at most 45 degrees of longitude apart, so a renderer in longitude and latitude draws each step the short way. Where a line goes over a pole, it has two vertices at the pole, with the longitude of each side. The globe draws each step as a great-circle arc.
 
 ### Import
 
@@ -361,6 +367,7 @@ These rules apply to the layout:
 - The two sliders are 140 points high. In a short window they become shorter, down to 110 points, which fits an iPad that is 744 points high. In a window that is shorter than that, the card holds the Brush button alone, and the Brush panel holds the two sliders. If the tool strip and the Brush button do not fit, the tool strip scrolls.
 - The tool strip has six cells. The More cell opens a menu with the modes that have no cell.
 - The brush paints the selected raster layer, and the selection does not change the picture or the draw order. If the world has no layer, or the selected layer is not a raster layer, or the selected raster layer is hidden, the tool strip keeps its six cells. The brush cells, the More cell, and the card below the strip are then disabled, and the tool is Move.
+- If the selected layer is a visible line layer, the Line cell is in the place of the More cell. The Smoothing slider of the line tool is in the place of the Size slider, and the Brush panel holds the Smoothing slider. A selection does not change the tool, so you tap the Line cell to draw.
 - On a raster layer with a unit other than `m`, the modes that move ground are disabled.
 - The pen paints. One finger turns the globe, and two fingers zoom it.
 - A tap of two fingers is undo, and a tap of three fingers is redo. The actions in the top row have an undo button and a redo button.
@@ -598,7 +605,7 @@ The prototype leaves out the following.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
 - More than one map frame, the atlas, page templates, map furniture other than a scale bar, graticule labels, SVG export, and tiled raster export.
 - Conic and transverse projections, oblique aspects, projection suggestions, and Tissot circles.
-- All editing tools: point placement, attribute table, and vertex editing.
+- All editing tools other than the freehand line tool: point placement, attribute table, and vertex editing.
 - The GPU Vello backend. The prototype draws with `vello_cpu`.
 - Wholesale procedural world generation. This is a permanent non-goal.
 

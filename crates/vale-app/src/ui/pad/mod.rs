@@ -32,6 +32,11 @@ use widgets::{BODY_PAD, Controls, PANEL_ROW};
 
 /// The control of the tool strip that opens the menu of the other modes.
 pub const MORE: &str = "More";
+/// The cell of the line tool. It takes the place of More while a line
+/// layer is selected.
+pub const LINE: &str = "Line";
+/// The slider of the smoothing of the line tool.
+pub const SMOOTHING: &str = "Smoothing";
 /// The modes of the menu of the More cell.
 const MORE_MODES: [(&str, Icon, Mode); 7] = [
     ("Carve", Icon::Carve, Mode::Carve),
@@ -567,19 +572,20 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         globe.brush.mode = mode;
                     }
                 }
-                // The cell shows the mode of the menu that the brush has.
-                let chosen = MORE_MODES
-                    .into_iter()
-                    .find(|(_, _, mode)| globe.brushing() && globe.brush.mode == *mode);
-                let (label, icon) =
-                    chosen.map_or((MORE, Icon::More), |(name, icon, _)| (name, icon));
-                let active = chosen.is_some();
-                let more = widgets::tool_cell(ui, controls, MORE, label, icon, active, paint);
-                if more.clicked() {
-                    state.pad.more = !state.pad.more;
+                if globe.lineable {
+                    let active = globe.lining();
+                    let cell =
+                        widgets::tool_cell(ui, controls, LINE, LINE, Icon::Line, active, true);
+                    if cell.clicked() {
+                        globe.tool = Tool::Line;
+                    }
+                    state.pad.more = false;
+                    state.pad.more_cell = None;
+                } else {
+                    more_cell(ui, state, controls, paint);
                 }
-                state.pad.more_cell = Some(more.rect);
-                let active = !globe.brushing();
+                let globe = &mut state.globe;
+                let active = !globe.brushing() && !globe.lining();
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()
                 {
@@ -595,6 +601,21 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             }
         },
     );
+}
+
+/// The More cell. It shows the mode of the menu that the brush has.
+fn more_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, paint: bool) {
+    let globe = &state.globe;
+    let chosen = MORE_MODES
+        .into_iter()
+        .find(|(_, _, mode)| globe.brushing() && globe.brush.mode == *mode);
+    let (label, icon) = chosen.map_or((MORE, Icon::More), |(name, icon, _)| (name, icon));
+    let active = chosen.is_some();
+    let more = widgets::tool_cell(ui, controls, MORE, label, icon, active, paint);
+    if more.clicked() {
+        state.pad.more = !state.pad.more;
+    }
+    state.pad.more_cell = Some(more.rect);
 }
 
 /// Shows a value as a slider with a logarithmic scale.
@@ -665,13 +686,22 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         |ui| {
             let mut ui = padded(ui);
             let paint = state.globe.paintable;
+            let line = state.globe.lineable;
             if let BrushCard::Full(height) = rects.brush_card {
-                let mut slider = |name: &str, fraction: &mut f64, text: &str| {
-                    widgets::vertical_slider(&mut ui, controls, name, height, fraction, text, paint)
+                let mut slider = |name: &str, fraction: &mut f64, text: &str, on: bool| {
+                    widgets::vertical_slider(&mut ui, controls, name, height, fraction, text, on)
                 };
-                size_slider(state, |fraction, text| slider("Size", fraction, text));
-                percent_slider(&mut state.globe.brush.flow, FLOW, |fraction, text| {
-                    slider("Flow", fraction, text)
+                // With a line layer, the first slider is the smoothing of
+                // the line tool.
+                if line {
+                    percent_slider(&mut state.globe.line.smoothing, 0.0..=1.0, |f, text| {
+                        slider(SMOOTHING, f, text, true)
+                    });
+                } else {
+                    size_slider(state, |f, text| slider("Size", f, text, paint));
+                }
+                percent_slider(&mut state.globe.brush.flow, FLOW, |f, text| {
+                    slider("Flow", f, text, paint)
                 });
             }
             let open = state.pad.brush;
@@ -682,7 +712,7 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 "Brush",
                 Icon::Brush,
                 open,
-                paint,
+                paint || line,
             );
             if button.clicked() {
                 state.pad.toggle(Panel::Brush, rects.one_panel);
@@ -712,6 +742,7 @@ fn show_panel(
     }
     let name = name.as_deref().unwrap_or_default();
     let (key, title, back) = match (panel, layer) {
+        (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
         (Panel::Brush, _) => (panel.key(), "Brush", None),
         (Panel::Layers, Some(LayerRef::Raster(_))) => ("pad-layer", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
@@ -854,6 +885,17 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, travel: f
 
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
+    if state.globe.lineable {
+        percent_slider(
+            &mut state.globe.line.smoothing,
+            0.0..=1.0,
+            |fraction, text| {
+                let name = "Line smoothing";
+                widgets::row_slider(ui, controls, name, SMOOTHING, fraction, text)
+            },
+        );
+        return;
+    }
     let unit = state.shown_unit().to_string();
     size_slider(state, |fraction, text| {
         widgets::row_slider(ui, controls, "Brush size", "Size", fraction, text)

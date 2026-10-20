@@ -30,7 +30,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// Starts a stroke, or starts to pick the flatten level.
 fn press(globe: &mut Globe) {
-    if globe.pick_level && globe.brush.mode == Mode::Flatten {
+    if globe.lining() {
+        globe.line_down();
+    } else if globe.pick_level && globe.brush.mode == Mode::Flatten {
         globe.input.picking = true;
     } else {
         globe.pen_down();
@@ -38,7 +40,9 @@ fn press(globe: &mut Globe) {
 }
 
 fn release(globe: &mut Globe) {
-    if !std::mem::take(&mut globe.input.picking) {
+    if globe.line_preview().is_some() {
+        globe.line_up();
+    } else if !std::mem::take(&mut globe.input.picking) {
         globe.pen_up();
     }
 }
@@ -62,9 +66,11 @@ fn hover_input(globe: &mut Globe, events: &[(egui::Pos2, PenEvent)]) {
     }
 }
 
-/// Reads the pen and the mouse for the brush. In the brush tool, a pen and
-/// the primary mouse button paint a raster layer that the brush can paint. A touch with a force is a pen. With a pen
-/// queue, the pen comes from the queue and not from egui.
+/// Reads the pen and the mouse for the brush and the line tool. In the
+/// brush tool, a pen and the primary mouse button paint a raster layer that
+/// the brush can paint. In the line tool, they draw a line in the selected
+/// line layer. A touch with a force is a pen. With a pen queue, the pen
+/// comes from the queue and not from egui.
 fn brush_input(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -82,7 +88,8 @@ fn brush_input(
         .map(|e| (egui::pos2(e.pos[0] / zoom, e.pos[1] / zoom), e))
         .collect();
     hover_input(globe, &queue);
-    if !globe.brushing() || globe.format.is_none() || globe.importing() {
+    let brushing = globe.brushing() && globe.format.is_some();
+    if !(brushing || globe.lining()) || globe.importing() {
         if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
             release(globe);
             globe.pen.stats.up();
@@ -95,7 +102,9 @@ fn brush_input(
     let sample = |globe: &mut Globe, pos: egui::Pos2, flow: f64| {
         let dir = globe.unproject(pos);
         globe.input.pos = Some(pos);
-        if globe.input.picking {
+        if globe.lining() {
+            globe.line_sample(pos, dir);
+        } else if globe.input.picking {
             globe.pick(dir);
         } else {
             globe.pen_sample(Sample { dir, flow, radius }, now);
@@ -377,7 +386,8 @@ pub(super) fn canvas_input(
             globe.nav.update(ui, rect, &resp, &mut globe.flat, painting);
         }
     }
-    match history_input(ui, globe) {
+    state.poll_line();
+    match history_input(ui, &mut state.globe) {
         Some(true) => state.redo(),
         Some(false) => state.undo(),
         None => {}
@@ -407,6 +417,7 @@ pub(super) fn paint_canvas(
     cards: bool,
 ) {
     let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect);
+    let layer = state.selected_vector();
     let globe = &mut state.globe;
     let more = globe.advance(Instant::now());
     let pixels_per_point = ui.ctx().pixels_per_point();
@@ -460,6 +471,17 @@ pub(super) fn paint_canvas(
                 }
             }
         }
+    }
+    if let Some(line) = globe.line_preview() {
+        // The stroke of the layer, or a plain white one.
+        let entries = state.doc.frame.entries.iter();
+        let style = entries
+            .filter(|e| Some(e.layer) == layer)
+            .find_map(|e| e.style.stroke);
+        let stroke = style.map_or(egui::Stroke::new(2.0, egui::Color32::WHITE), |s| {
+            egui::Stroke::new((s.width as f32).max(1.0), color(s.color))
+        });
+        painter.line(line.to_vec(), stroke);
     }
     if globe.nav.active() || more {
         ui.ctx().request_repaint();

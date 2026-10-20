@@ -13,9 +13,9 @@ use vale_app::ui::gradient::{GRADIENT, PAD as GRADIENT_PAD, stop_x};
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LayerRef, MORE, NEW_RASTER,
-    OPACITY, Panel, RECENTER, RESET, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
-    brush_size_text, readout_text, theme,
+    ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
+    NEW_RASTER, OPACITY, Panel, RECENTER, RESET, SMOOTHING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS,
+    WORLDS_ROW, brush_size_text, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -3770,4 +3770,99 @@ fn the_panel_of_a_layer_that_is_not_a_height_layer_changes_its_unit() {
         let unit = &h.state().doc.project.raster(rain).unwrap().unit;
         assert_eq!(unit, "mm/yr", "{what}");
     }
+}
+
+/// The line features of a layer.
+fn line_features(h: &Pad, id: vale_store::LayerId) -> Vec<vale_store::Feature> {
+    h.state().doc.project.layer(id).unwrap().features.clone()
+}
+
+/// A pen stroke on the canvas, and the saves of the frames after it.
+fn line_stroke(h: &mut Pad, from: Pos2, to: Pos2) {
+    drag(h, from, to, Some(0.5));
+    for _ in 0..3 {
+        step_and_save(h, false);
+    }
+}
+
+#[test]
+fn the_line_cell_takes_the_place_of_more_for_a_line_layer() {
+    let mut h = pad(BOARDS[0]);
+    let more = control(&h, MORE).unwrap();
+    let rivers = vector(&h, "Rivers");
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    assert_eq!(control(&h, LINE), Some(more));
+    for name in ["Raise", "Lower", "Smooth", "Flatten", MORE, "Size", "Flow"] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    assert!(control(&h, SMOOTHING).is_some());
+    assert!(!h.state().globe.lining());
+    tap(&mut h, LINE);
+    assert_eq!(h.state().globe.tool, Tool::Line);
+    assert!(h.state().globe.lining());
+    // A finger turns the globe and draws no line.
+    let center = h.state().globe.rect.center();
+    let before = line_features(&h, rivers);
+    drag(&mut h, center, center + vec2(120.0, 0.0), None);
+    assert_eq!(line_features(&h, rivers), before);
+    // A layer of points has no line tool.
+    let places = vector(&h, "Places");
+    h.state_mut().select(Some(LayerRef::Vector(places)));
+    h.run_steps(2);
+    assert!(control(&h, LINE).is_none());
+    assert!(!h.state().globe.lining());
+}
+
+#[test]
+fn a_line_stroke_is_one_feature_that_undo_removes_and_a_stroke_from_its_end_extends_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let rivers = vector(&h, "Rivers");
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    tap(&mut h, LINE);
+    let before = line_features(&h, rivers);
+    let saved = saves(&h);
+
+    let center = h.state().globe.rect.center();
+    let (from, to) = (center + vec2(-150.0, 40.0), center + vec2(150.0, -40.0));
+    line_stroke(&mut h, from, to);
+    let after = line_features(&h, rivers);
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(after[..before.len()], before[..]);
+    let line = after.last().unwrap().clone();
+    assert!(before.iter().all(|f| f.uuid() != line.uuid()));
+    let vale_store::Geometry::Lines(parts) = &line.geometry else {
+        panic!("not a line");
+    };
+    assert_eq!(parts.len(), 1);
+    // The line runs from the start of the stroke to its end.
+    let globe = &h.state().globe;
+    let ends = [parts[0][0], parts[0][parts[0].len() - 1]];
+    let [start, end] = ends.map(|p| {
+        let dir = vale_app::globe::math::lonlat_to_dir(p[0], p[1]);
+        globe.view.project(globe.rect, dir).unwrap()
+    });
+    assert!(start.distance(from) < 0.5 && end.distance(to) < 0.5);
+    assert_eq!(saves(&h), saved + 1);
+
+    tap(&mut h, "Undo");
+    assert_eq!(line_features(&h, rivers), before);
+    tap(&mut h, "Redo");
+    assert_eq!(line_features(&h, rivers), after);
+
+    // A stroke that starts near the end of the line extends it.
+    line_stroke(&mut h, end + vec2(4.0, 3.0), end + vec2(60.0, 80.0));
+    let extended = line_features(&h, rivers);
+    assert_eq!(extended.len(), after.len());
+    let joined = extended.last().unwrap();
+    assert_eq!(joined.uuid(), line.uuid());
+    let vale_store::Geometry::Lines(joined_parts) = &joined.geometry else {
+        panic!("not a line");
+    };
+    assert_eq!(joined_parts[0][..parts[0].len()], parts[0][..]);
+    assert!(joined_parts[0].len() > parts[0].len());
+    tap(&mut h, "Undo");
+    assert_eq!(line_features(&h, rivers), after);
 }
