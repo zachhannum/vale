@@ -250,6 +250,11 @@ pub struct StopLine {
     /// The weight, in points.
     pub weight: f32,
     pub color: Rgb,
+    /// The line has the color of the stop, darker by `darken`, in place of
+    /// `color`.
+    pub darker: bool,
+    /// The part of the light that the darker color takes away, from 0 to 1.
+    pub darken: f32,
 }
 
 impl Default for StopLine {
@@ -258,6 +263,8 @@ impl Default for StopLine {
             on: false,
             weight: 1.0,
             color: [40, 40, 40],
+            darker: false,
+            darken: 0.5,
         }
     }
 }

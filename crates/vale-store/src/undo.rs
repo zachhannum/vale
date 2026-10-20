@@ -456,6 +456,8 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
         out.push(stop.line.on as u8);
         out.extend_from_slice(&stop.line.weight.to_le_bytes());
         out.extend_from_slice(&stop.line.color);
+        out.push(stop.line.darker as u8);
+        out.extend_from_slice(&stop.line.darken.to_le_bytes());
     }
 }
 
@@ -482,10 +484,15 @@ fn raster(r: &mut Reader) -> Option<Raster> {
     if !r.0.is_empty() {
         for stop in &mut stops {
             let [on]: [u8; 1] = r.take()?;
+            let weight = f32::from_le_bytes(r.take()?);
+            let color = r.take()?;
+            let [darker]: [u8; 1] = r.take()?;
             stop.line = StopLine {
                 on: on != 0,
-                weight: f32::from_le_bytes(r.take()?),
-                color: r.take()?,
+                weight,
+                color,
+                darker: darker != 0,
+                darken: f32::from_le_bytes(r.take()?),
             };
         }
     }
@@ -669,6 +676,8 @@ mod tests {
                     on: true,
                     weight: 2.5,
                     color: [10, 11, 12],
+                    darker: true,
+                    darken: 0.25,
                 },
             },
         ];
@@ -681,7 +690,7 @@ mod tests {
 
         // An image of version 11 ends after the stops, and its stops have
         // no line.
-        out.truncate(out.len() + 1 - 2 * 8);
+        out.truncate(out.len() + 1 - 2 * 13);
         let old = raster(&mut Reader(&out)).unwrap();
         assert!(old.stops.iter().all(|s| s.line == StopLine::default()));
         assert_eq!(old.stops[1].above, [7, 8, 9]);

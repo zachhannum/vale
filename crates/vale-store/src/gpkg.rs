@@ -1233,7 +1233,8 @@ fn parse_limits(text: &str) -> Option<Vec<f64>> {
 
 /// The stops as `value:rrggbb`, or as `value:rrggbb/rrggbb` for a stop with
 /// two colors, with commas between them. A stop with a line that is not the
-/// default line adds `|on:weight:rrggbb` or `|off:weight:rrggbb`.
+/// default line adds `|on:weight:rrggbb:color:darken`, with `off` for a line
+/// that is off and `darker` for a line with the darker color of the stop.
 fn stops_text(stops: &[Stop]) -> String {
     let hex = |[r, g, b]: Rgb| format!("{r:02x}{g:02x}{b:02x}");
     let items: Vec<String> = stops
@@ -1246,7 +1247,9 @@ fn stops_text(stops: &[Stop]) -> String {
             let line = s.line;
             if line != StopLine::default() {
                 let on = if line.on { "on" } else { "off" };
-                item += &format!("|{on}:{}:{}", line.weight, hex(line.color));
+                let color = if line.darker { "darker" } else { "color" };
+                let (weight, darken) = (line.weight, line.darken);
+                item += &format!("|{on}:{weight}:{}:{color}:{darken}", hex(line.color));
             }
             item
         })
@@ -1263,10 +1266,20 @@ fn parse_line(text: &str) -> Option<StopLine> {
     };
     let weight: f32 = parts.next()?.parse().ok().filter(|w: &f32| w.is_finite())?;
     let color = parse_color(parts.next()?)?;
-    parts
-        .next()
-        .is_none()
-        .then_some(StopLine { on, weight, color })
+    let darker = match parts.next()? {
+        "darker" => true,
+        "color" => false,
+        _ => return None,
+    };
+    let darken: f32 = parts.next()?.parse().ok().filter(|d: &f32| d.is_finite())?;
+    let line = StopLine {
+        on,
+        weight,
+        color,
+        darker,
+        darken,
+    };
+    parts.next().is_none().then_some(line)
 }
 
 /// The stops of `stops_text`. A text that is not valid, or with values that
@@ -3124,14 +3137,15 @@ mod tests {
             on: true,
             weight: 2.5,
             color: [16, 32, 48],
+            darker: true,
+            darken: 0.75,
         };
         lines[1].line.on = false;
         lines[1].line.weight = 0.25;
         let text = stops_text(&lines);
-        assert_eq!(
-            text,
-            "-0.1:000102|on:2.5:102030,0.0000001:fa8007/ffffff|off:0.25:282828"
-        );
+        let want = "-0.1:000102|on:2.5:102030:darker:0.75,\
+                    0.0000001:fa8007/ffffff|off:0.25:282828:color:0.5";
+        assert_eq!(text, want);
         assert_eq!(parse_stops(&text), lines);
         assert_eq!(parse_stops(""), []);
         assert_eq!(parse_stops("5:FFFFFF")[0].below, [255, 255, 255]);
@@ -3148,10 +3162,13 @@ mod tests {
             "5:ffffff,5:000000",
             "5:ffffff,oops",
             "5:ffffff|",
-            "5:ffffff|yes:1:ffffff",
-            "5:ffffff|on:inf:ffffff",
-            "5:ffffff|on:1:fffff",
-            "5:ffffff|on:1:ffffff:1",
+            "5:ffffff|yes:1:ffffff:color:0.5",
+            "5:ffffff|on:inf:ffffff:color:0.5",
+            "5:ffffff|on:1:fffff:color:0.5",
+            "5:ffffff|on:1:ffffff",
+            "5:ffffff|on:1:ffffff:dark:0.5",
+            "5:ffffff|on:1:ffffff:color:NaN",
+            "5:ffffff|on:1:ffffff:color:0.5:1",
         ] {
             assert_eq!(parse_stops(bad), [], "{bad}");
         }
@@ -3171,6 +3188,8 @@ mod tests {
                 on: true,
                 weight: 3.0,
                 color: [7, 8, 9],
+                darker: true,
+                darken: 0.25,
             },
         };
         assert!(project.set_raster_stops(height, vec![stop]));
