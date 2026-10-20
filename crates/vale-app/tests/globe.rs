@@ -4082,7 +4082,7 @@ fn line_columns(h: &mut Harness<'static, AppState>, name: &str) -> Vec<f32> {
 }
 
 /// Makes sure that each column has the same dark part, near `expected`.
-    );
+fn assert_even_line(columns: &[f32], expected: f32, what: &str) {
     for (x, &c) in columns.iter().enumerate() {
         assert!(
             (c - expected).abs() < 0.1 * expected,
