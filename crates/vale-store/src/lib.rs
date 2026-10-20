@@ -239,6 +239,27 @@ pub struct Stop {
     pub value: f64,
     pub below: Rgb,
     pub above: Rgb,
+    /// The line where the values cross the stop.
+    pub line: StopLine,
+}
+
+/// A line at a color stop. It keeps its weight and color while it is off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StopLine {
+    pub on: bool,
+    /// The weight, in points.
+    pub weight: f32,
+    pub color: Rgb,
+}
+
+impl Default for StopLine {
+    fn default() -> Self {
+        StopLine {
+            on: false,
+            weight: 1.0,
+            color: [40, 40, 40],
+        }
+    }
 }
 
 /// An opacity from 0 to 1. A value that is not a number gives 1.
