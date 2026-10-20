@@ -190,6 +190,8 @@ pub struct PadState {
     heights: HashMap<&'static str, f32>,
     /// The Style section of the panel of a raster layer.
     pub style: raster::StyleState,
+    /// The height of the keyboard at the bottom of the screen, in points.
+    pub keyboard: f32,
 }
 
 impl PadState {
@@ -266,6 +268,9 @@ pub fn readout_text(lonlat: Option<LonLat>, value: Option<&str>) -> String {
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
+    if cfg!(target_os = "ios") {
+        state.pad.keyboard = crate::keyboard::height();
+    }
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
     // the same frame.

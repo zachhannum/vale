@@ -262,6 +262,7 @@ pub fn run_window(
                     let queue = crate::pen::PenQueue::default();
                     app.state.borrow_mut().globe.pen.queue = Some(queue.clone());
                     crate::pen::uikit::install(handle.ui_view, cc.egui_ctx.clone(), queue);
+                    crate::keyboard::install(cc.egui_ctx.clone());
                     let (picked, ctx) = (app.picked.clone(), cc.egui_ctx.clone());
                     let exports = app.exports.clone();
                     app.picker = handle.ui_view_controller.and_then(|controller| {

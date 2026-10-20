@@ -312,6 +312,37 @@ pub fn vertical_slider(
     *fraction != before
 }
 
+/// The space between a field that has the keyboard and the keyboard.
+const KEYBOARD_GAP: f32 = 16.0;
+
+/// How far a card goes up so that its focused field is above the keyboard.
+/// `card` is the place of the card with no lift, and `lift` is the lift of
+/// the last frame. `keyboard` is the height of the keyboard at the bottom of
+/// `screen`. The card does not go above `top`.
+pub fn keyboard_lift(
+    ctx: &egui::Context,
+    card: Rect,
+    lift: f32,
+    keyboard: f32,
+    screen: Rect,
+    top: f32,
+) -> f32 {
+    if keyboard <= 0.0 {
+        return 0.0;
+    }
+    let focused = ctx
+        .memory(|m| m.focused())
+        .and_then(|id| ctx.read_response(id));
+    let Some(field) = focused.map(|r| r.rect.translate(vec2(0.0, lift))) else {
+        return 0.0;
+    };
+    if !card.expand(1.0).contains_rect(field) {
+        return 0.0;
+    }
+    let above = screen.bottom() - keyboard - KEYBOARD_GAP;
+    (field.bottom() - above).clamp(0.0, (card.top() - top).max(0.0))
+}
+
 /// A slider in a row of a panel: the name, the track, and the value.
 /// `label` is the name on screen. Returns true if the user moved it. A drag
 /// that starts up or down scrolls the panel and does not move the slider.

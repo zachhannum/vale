@@ -73,6 +73,9 @@ pub struct StyleState {
     height: Option<f32>,
     /// The card of the selected stop in the last frame.
     pub card: Option<Rect>,
+    /// How far the card of the selected stop went up for the keyboard in the
+    /// last frame.
+    lift: f32,
     /// The layer whose card that asks before a reset is open.
     reset: Option<RasterId>,
     /// The layer and the reset row in this frame, while the card is open.
@@ -232,6 +235,12 @@ pub fn stop_card(
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
 
     let (rect, point) = place(rects, panel, at, gradient, height);
+    let top = rects.screen.top() + rects.bands.top + PAD;
+    let (lift, keyboard) = (state.pad.style.lift, state.pad.keyboard);
+    let lift = widgets::keyboard_lift(ctx, rect, lift, keyboard, rects.screen, top);
+    state.pad.style.lift = lift;
+    // A card that went up for the keyboard does not point at the handle.
+    let rect = rect.translate(vec2(0.0, -lift));
     state.pad.style.card = Some(rect);
 
     if pressed_outside(ctx, rect, gradient) {
@@ -365,7 +374,9 @@ pub fn stop_card(
         }
         style.height = Some(ui.cursor().top() - start);
     });
-    paint_point(ctx, key, point);
+    if lift == 0.0 {
+        paint_point(ctx, key, point);
+    }
     if removed {
         state.globe.preview.selected = None;
         state.pad.style.value = None;

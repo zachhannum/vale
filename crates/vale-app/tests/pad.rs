@@ -3619,6 +3619,38 @@ fn the_card_of_a_stop_sets_its_line() {
     assert!(control(&h, DARKEN).is_none());
 }
 
+#[test]
+fn the_card_of_a_stop_goes_up_so_that_the_keyboard_does_not_cover_a_field() {
+    use vale_app::ui::pad::raster::COLOR;
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    tap_handle(&mut h, sea);
+    let card = |h: &Pad| h.state().pad.style.card.unwrap();
+    let before = card(&h);
+    let hex = format!("{COLOR} hex");
+    let field = control(&h, &hex).unwrap();
+    finger_tap(&mut h, field.center());
+    assert!(h.ctx.memory(|m| m.focused()).is_some());
+    let screen = h.ctx.viewport_rect();
+    let keyboard = 400.0;
+    assert!(field.bottom() > screen.bottom() - keyboard, "{field:?}");
+
+    h.state_mut().pad.keyboard = keyboard;
+    h.run_steps(2);
+    let field = control(&h, &hex).unwrap();
+    assert!(field.bottom() < screen.bottom() - keyboard, "{field:?}");
+    assert!(card(&h).top() < before.top());
+    assert!(card(&h).top() >= screen.top());
+    check_controls(&h, "the card of a stop above the keyboard");
+
+    // The card goes back down when the keyboard goes away.
+    h.state_mut().pad.keyboard = 0.0;
+    h.run_steps(2);
+    assert_eq!(card(&h), before);
+}
+
 /// The texts that the last frame painted, with their places.
 fn painted_texts(h: &Pad) -> Vec<(String, Rect)> {
     fn visit(shape: &egui::Shape, texts: &mut Vec<(String, Rect)>) {
