@@ -84,7 +84,10 @@ pub struct Band {
     /// The lower and upper value, in the unit of the layer.
     pub min: f64,
     pub max: f64,
-    /// The color of the whole band in the stepped preview.
+    /// The color of the whole band in the stepped preview. It is the color
+    /// of the stop at the edge of the band nearer sea level: the bottom edge
+    /// above sea level and with no sea split, and the top edge below sea
+    /// level.
     pub color: Rgb,
     /// The colors at `min` and at `max` in the smooth preview.
     pub bottom: Rgb,
@@ -397,15 +400,21 @@ impl Bands {
     }
 
     /// The bands from `min` to `max`, in ascending order. There is one band
-    /// fewer than there are stops. The color of a band is the color of the
-    /// gradient at its middle.
+    /// fewer than there are stops. Each stop gives its color to one band, so
+    /// the top stop and, with a sea split, the bottom stop give none. The
+    /// stop at sea level gives its two colors to the band on each side.
     pub fn bands(&self) -> Vec<Band> {
+        let sea = self.sea();
         self.stops
             .windows(2)
-            .map(|w| Band {
+            .enumerate()
+            .map(|(i, w)| Band {
                 min: w[0].value,
                 max: w[1].value,
-                color: mix(w[0].above, w[1].below, 0.5),
+                color: match sea {
+                    Some(sea) if i < sea => w[1].below,
+                    _ => w[0].above,
+                },
                 bottom: w[0].above,
                 top: w[1].below,
             })
@@ -606,18 +615,42 @@ mod tests {
     }
 
     #[test]
-    fn the_step_color_is_the_middle_of_the_gradient() {
+    fn the_step_color_is_the_color_of_one_stop() {
         let stops = [stop(0.0, [0, 0, 0]), stop(10.0, [101, 50, 3])];
         let bands = Bands::from_range_parts(0.0, 10.0, false, &stops).unwrap();
         let steps = bands.bands();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].bottom, [0, 0, 0]);
         assert_eq!(steps[0].top, [101, 50, 3]);
-        assert_eq!(steps[0].color, [51, 25, 2]);
+        assert_eq!(steps[0].color, [0, 0, 0]);
+    }
 
-        let bands = Bands::default();
-        for band in bands.bands() {
-            assert_eq!(band.color, mix(band.bottom, band.top, 0.5));
+    #[test]
+    fn each_stop_colors_one_band() {
+        let mut bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        let last = bands.stops().len() - 1;
+        let colors = |b: &Bands| b.bands().iter().map(|b| b.color).collect::<Vec<_>>();
+        let red = [255, 0, 0];
+        // Each stop and side, with the one band that it colors.
+        let mut cases = vec![
+            (sea, Side::Below, Some(sea - 1)),
+            (sea, Side::Above, Some(sea)),
+            (0, Side::Above, None),
+            (last, Side::Below, None),
+        ];
+        cases.extend((1..sea).map(|i| (i, Side::Above, Some(i - 1))));
+        cases.extend((sea + 1..last).map(|i| (i, Side::Above, Some(i))));
+        for (index, side, band) in cases {
+            let before = colors(&bands);
+            let mut changed = bands.clone();
+            changed.set_color(index, side, red);
+            let after = colors(&changed);
+            for (i, (a, b)) in before.iter().zip(&after).enumerate() {
+                let want = if Some(i) == band { red } else { *a };
+                assert_eq!(*b, want, "stop {index} {side:?}, band {i}");
+            }
+            bands = changed;
         }
     }
 

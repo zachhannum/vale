@@ -301,7 +301,7 @@ One stroke is one undo step. The step holds only the tiles that the stroke chang
 
 ### Stepped preview
 
-While you paint, a shader shows the heightmap as stepped tints. Each color stop of the layer is a value with a color, and each step goes from one stop to the next. This is the posterize and gradient overlay of the old workflow, live. Each raster layer has one of three displays. Bands is the stepped preview, and it fills each step with the color of the gradient at its middle. Gradient blends the colors between the stops. Grey is the plain greyscale. On a height layer, sea level is a fixed stop with a sea color and a land color.
+While you paint, a shader shows the heightmap as stepped tints. Each color stop of the layer is a value with a color, and each step goes from one stop to the next. This is the posterize and gradient overlay of the old workflow, live. Each raster layer has one of three displays. Bands is the stepped preview. Each step has the color of one stop, the stop at its edge nearer sea level. Above sea level, that is the stop at the bottom of the step, and below sea level, the stop at the top. A layer with no sea split uses the stop at the bottom. Thus a change to one stop changes one step. The stop at sea level gives its sea color to the step below it and its land color to the step above it. Gradient blends the colors between the stops. Grey is the plain greyscale. On a height layer, sea level is a fixed stop with a sea color and a land color.
 
 The color stops and the display belong to the raster layer. The panel of the layer edits them in its Style section, with a gradient bar and the stops below it. The preview and the polygonize tool read the same stops, so the polygons match what you saw.
 

@@ -1033,17 +1033,18 @@ fn a_change_of_a_stop_shows_in_the_same_frame() {
         let p = img.get_pixel(c.x as u32, c.y as u32).0;
         [p[0], p[1], p[2]]
     };
+    // The stop at 200 m colors the band at 300 m.
     let bands = &mut h.state_mut().globe.map.bands;
     let index = bands.stops().iter().position(|s| s.value == 200.0).unwrap();
-    bands.move_to(index, 400.0);
-    let moved = frame(&mut h);
-    assert_ne!(moved, before);
-    assert!(h.state_mut().globe.map.bands.remove(index));
+    assert!(bands.remove(index));
     let removed = frame(&mut h);
-    assert_ne!(removed, moved);
-    assert!(h.state_mut().globe.map.bands.add(250.0).is_some());
-    let added = frame(&mut h);
-    assert_ne!(added, removed);
+    assert_ne!(removed, before);
+    let added = h.state_mut().globe.map.bands.add(250.0).unwrap();
+    let shown = frame(&mut h);
+    assert_ne!(shown, removed);
+    h.state_mut().globe.map.bands.move_to(added, 400.0);
+    let moved = frame(&mut h);
+    assert_ne!(moved, shown);
 }
 
 #[test]
