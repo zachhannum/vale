@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId};
-use vale_terrain::{Bands, Side};
+use vale_terrain::{Bands, Side, StopLine};
 
 use super::Panel;
 use super::geometry::{PAD, Rects};
@@ -16,11 +16,25 @@ use crate::world;
 pub const SHOW_AS: &str = "Show as";
 /// The name of the field of the selected stop.
 pub const STOP_VALUE: &str = "Stop value";
-/// The names of the two sides of the stop at sea level.
+/// The names of the colors of a stop that the color picker edits: the two
+/// sides of the stop at sea level, the one color of each other stop, and the
+/// line.
 pub const SEA_COLOR: &str = "Sea";
 pub const LAND_COLOR: &str = "Land";
+pub const FILL_COLOR: &str = "Fill";
+pub const LINE_COLOR: &str = "Line";
 /// The name of the color picker of the selected stop.
 pub const COLOR: &str = "Color";
+/// The switch, the weight, and the color source of the line of the selected
+/// stop, and the amount of the darker color.
+pub const LINE: &str = "Stop line";
+pub const LINE_WEIGHT: &str = "Line weight";
+pub const LINE_SOURCE: &str = "Line color";
+pub const DARKER: &str = "Darker";
+pub const CUSTOM: &str = "Custom";
+pub const DARKEN: &str = "Line darken";
+/// The step of the weight slider, in points.
+const WEIGHT_STEP: f32 = 0.25;
 pub const REMOVE_STOP: &str = "Remove the stop";
 /// The row that puts back the default color stops, and the button of the
 /// card that asks before it.
@@ -48,10 +62,10 @@ const CARD_PAD: f32 = 12.0;
 pub struct StyleState {
     /// The text of the unit field while the user types.
     unit: Option<(RasterId, String)>,
-    /// The text of the field of the selected stop while the user types.
-    value: Option<(RasterId, usize, String)>,
-    /// The side of the stop at sea level that the color picker edits.
-    side: Option<(RasterId, usize, Side)>,
+    /// The layer and the stop of the card in the last frame.
+    stop: Option<(RasterId, usize)>,
+    /// The color of the selected stop that the color picker edits.
+    side: Option<(RasterId, usize, Paint)>,
     /// The layer, the selected stop, its handle, and the gradient control
     /// in this frame.
     anchor: Option<(RasterId, usize, Pos2, Rect)>,
@@ -65,6 +79,13 @@ pub struct StyleState {
     reset_anchor: Option<(RasterId, Rect)>,
     /// The card that asks before a reset in the last frame.
     pub reset_card: Option<Rect>,
+}
+
+/// A color of a stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Paint {
+    Fill(Side),
+    Line,
 }
 
 /// The heading of a section of a panel.
@@ -133,7 +154,6 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         })
         .inner;
     if selected != before {
-        style.value = None;
         style.side = None;
     }
     // The card hides while a finger drags a stop, so that the globe shows.
@@ -193,8 +213,15 @@ pub fn stop_card(
 ) {
     state.pad.style.card = None;
     let Some((id, index, at, gradient)) = state.pad.style.anchor.take() else {
+        // The keypad of a field of the card closes with the card.
+        if state.pad.style.stop.take().is_some() {
+            widgets::close_keypad(ctx);
+        }
         return;
     };
+    if state.pad.style.stop.replace((id, index)) != Some((id, index)) {
+        widgets::close_keypad(ctx);
+    }
     let panel = state.pad.panels.iter().find(|(p, _)| *p == Panel::Layers);
     let Some(&(_, panel)) = panel else {
         return;
@@ -207,15 +234,21 @@ pub fn stop_card(
         .bands_mut(id)
         .is_some_and(|b| b.sea() == Some(index));
     let fixed = state.globe.bands_mut(id).is_some_and(|b| b.fixed(index));
-    let guess = PANEL_ROW * if fixed { 4.0 } else { 5.0 } + 196.0 + 16.0;
+    let guess = PANEL_ROW * if fixed { 7.0 } else { 8.0 } + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
 
     let (rect, point) = place(rects, panel, at, gradient, height);
+    let key = "pad-stop";
+    let fits = state
+        .pad
+        .style
+        .height
+        .map(|_| rect.height() >= height - 0.5);
     state.pad.style.card = Some(rect);
 
-    if pressed_outside(ctx, rect, gradient) {
+    let menu = widgets::edit_menu_rect(ctx).unwrap_or(Rect::NOTHING);
+    if pressed_outside(ctx, rect, gradient) && pressed_outside(ctx, menu, Rect::NOTHING) {
         state.globe.preview.selected = None;
-        state.pad.style.value = None;
         state.pad.style.side = None;
         state.pad.style.card = None;
         return;
@@ -227,7 +260,6 @@ pub fn stop_card(
     };
     let mut removed = false;
     let radius = theme::CARD_RADIUS.into();
-    let key = "pad-stop";
     widgets::card(ctx, None, key, rect, Order::Foreground, radius, |ui| {
         // The card covers the globe and other cards, so its fill is opaque.
         let fill = theme::card(false).to_opaque();
@@ -236,64 +268,134 @@ pub fn stop_card(
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
         let ui = &mut ui;
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        let start = ui.cursor().top();
+        // A card that is taller than the room on the screen scrolls. A card
+        // that fits has no scroll bar over its controls.
+        let scroll = egui::ScrollArea::vertical()
+            .id_salt("pad-stop-scroll")
+            .vscroll(fits.is_none_or(|fits| !fits))
+            .max_height(inner.height())
+            .auto_shrink([false, true]);
+        scroll.show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let start = ui.cursor().top();
 
-        if fixed {
-            let span = bands.max() - bands.min();
-            let value = bands.stops()[index].value;
-            widgets::value_row(ui, "Value", &world::value_text(value, span, &unit));
-        } else {
-            value_field(ui, controls, bands, &mut style.value, id, index, &unit);
-        }
-        let side = match style.side {
-            Some((of, at, side)) if sea && of == id && at == index => side,
-            _ => Side::Above,
-        };
-        let side = if sea {
-            let names = [SEA_COLOR, LAND_COLOR];
-            let active = Some(usize::from(side == Side::Above));
-            match widgets::choice_row(ui, controls, COLOR, &names, active) {
-                Some(0) => Side::Below,
-                Some(_) => Side::Above,
-                None => side,
+            if fixed {
+                let span = bands.max() - bands.min();
+                let value = bands.stops()[index].value;
+                widgets::value_row(ui, "Value", &world::value_text(value, span, &unit));
+            } else {
+                value_field(ui, controls, bands, index, &unit);
             }
-        } else {
-            Side::Above
-        };
-        style.side = Some((id, index, side));
-        ui.add_space(8.0);
-        let stop = bands.stops()[index];
-        let mut picked = match side {
-            Side::Below => stop.below,
-            Side::Above => stop.above,
-        };
-        if widgets::color_picker(ui, controls, COLOR, &mut picked) {
-            bands.set_color(index, side, picked);
-        }
-        if !fixed {
-            let (row, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
-            let resp = widgets::tap_area(ui, controls, row, REMOVE_STOP, true);
-            if resp.is_pointer_button_down_on() {
-                let back = row.shrink(widgets::HIGHLIGHT_INSET);
+            let stop = bands.stops()[index];
+            let mut line = stop.line;
+            let mut changed = widgets::switch_row(ui, controls, LINE, "Line", &mut line.on);
+            let (lo, hi) = (*StopLine::WEIGHTS.start(), *StopLine::WEIGHTS.end());
+            let mut fraction = f64::from((line.weight - lo) / (hi - lo));
+            let text = format!("{} pt", weight_text(line.weight));
+            if widgets::row_slider(ui, controls, LINE_WEIGHT, "Weight", &mut fraction, &text) {
+                let weight = lo + fraction as f32 * (hi - lo);
+                line.weight = (weight / WEIGHT_STEP).round() * WEIGHT_STEP;
+                changed = true;
+            }
+            let active = Some(usize::from(!line.darker));
+            if let Some(choice) =
+                widgets::choice_row(ui, controls, LINE_SOURCE, &[DARKER, CUSTOM], active)
+            {
+                line.darker = choice == 0;
+                changed = true;
+            }
+            if line.darker {
+                let mut fraction = f64::from(line.darken);
+                let text = format!("{:.0}%", line.darken * 100.0);
+                if widgets::row_slider(ui, controls, DARKEN, "Darken", &mut fraction, &text) {
+                    line.darken = ((fraction * 20.0).round() / 20.0) as f32;
+                    changed = true;
+                }
+            }
+            let paint = match style.side {
+                Some((of, at, paint)) if of == id && at == index => paint,
+                _ => Paint::Fill(Side::Above),
+            };
+            // A darker line has no color of its own to pick.
+            let (names, paints): (&[&str], &[Paint]) = match (sea, line.darker) {
+                (true, false) => (
+                    &[SEA_COLOR, LAND_COLOR, LINE_COLOR],
+                    &[
+                        Paint::Fill(Side::Below),
+                        Paint::Fill(Side::Above),
+                        Paint::Line,
+                    ],
+                ),
+                (true, true) => (
+                    &[SEA_COLOR, LAND_COLOR],
+                    &[Paint::Fill(Side::Below), Paint::Fill(Side::Above)],
+                ),
+                (false, false) => (
+                    &[FILL_COLOR, LINE_COLOR],
+                    &[Paint::Fill(Side::Above), Paint::Line],
+                ),
+                (false, true) => (&[FILL_COLOR], &[Paint::Fill(Side::Above)]),
+            };
+            let paint = match paint {
+                Paint::Fill(_) if !sea => Paint::Fill(Side::Above),
+                Paint::Line if line.darker => Paint::Fill(Side::Above),
+                paint => paint,
+            };
+            let active = paints.iter().position(|p| *p == paint);
+            let paint = match widgets::choice_row(ui, controls, COLOR, names, active) {
+                Some(i) => paints[i],
+                None => paint,
+            };
+            style.side = Some((id, index, paint));
+            ui.add_space(4.0);
+            let mut picked = match paint {
+                Paint::Fill(Side::Below) => stop.below,
+                Paint::Fill(Side::Above) => stop.above,
+                Paint::Line => line.color,
+            };
+            if widgets::color_picker(ui, controls, COLOR, &mut picked) {
+                match paint {
+                    Paint::Fill(side) => {
+                        bands.set_color(index, side, picked);
+                    }
+                    Paint::Line => {
+                        line.color = picked;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                bands.set_line(index, line);
+            }
+            if !fixed {
+                let (row, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+                let resp = widgets::tap_area(ui, controls, row, REMOVE_STOP, true);
+                if resp.is_pointer_button_down_on() {
+                    let back = row.shrink(widgets::HIGHLIGHT_INSET);
+                    ui.painter()
+                        .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+                }
+                let at = pos2(row.left(), row.center().y);
+                let text = "Remove stop";
                 ui.painter()
-                    .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+                    .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::WARN);
+                removed = resp.clicked() && bands.remove(index);
             }
-            let at = pos2(row.left(), row.center().y);
-            let text = "Remove stop";
-            ui.painter()
-                .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::WARN);
-            removed = resp.clicked() && bands.remove(index);
-        }
-        style.height = Some(ui.cursor().top() - start);
+            style.height = Some(ui.cursor().top() - start);
+        });
     });
     paint_point(ctx, key, point);
     if removed {
         state.globe.preview.selected = None;
-        state.pad.style.value = None;
         state.pad.style.side = None;
     }
+}
+
+/// A weight in points with no zeros at the end, for example `0.25` or `2`.
+fn weight_text(weight: f32) -> String {
+    let text = format!("{weight:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// The place of a card next to the panel, and the point of the card. The
@@ -301,12 +403,13 @@ pub fn stop_card(
 /// with no room at the left, the card is above `avoid`, or below it if no
 /// room is above.
 fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rect, [Pos2; 3]) {
-    let size = vec2(CARD_WIDTH, height);
     let screen = rects.screen;
     let top = screen.top() + rects.bands.top + PAD;
     let bottom = screen.bottom() - rects.bands.bottom - PAD;
     let room = panel.left() - GAP - CARD_WIDTH - PAD;
     if rects.sheet.is_none() && room >= screen.left() {
+        let height = height.min(bottom - top);
+        let size = vec2(CARD_WIDTH, height);
         let y = (at.y - height / 2.0).clamp(top, (bottom - height).max(top));
         let rect = Rect::from_min_size(pos2(panel.left() - GAP - CARD_WIDTH, y), size);
         let y =
@@ -322,9 +425,17 @@ fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rec
     let left = screen.left() + rects.bands.left + PAD;
     let right = screen.right() - rects.bands.right - PAD;
     let x = (at.x - CARD_WIDTH / 2.0).clamp(left, (right - CARD_WIDTH).max(left));
+    // A card that fits nowhere goes where it has the most room, and it
+    // scrolls.
+    let (room_above, room_below) = (avoid.top() - GAP - top, bottom - avoid.bottom() - GAP);
+    let up = height <= room_above || room_above >= room_below;
+    let height = height
+        .min(if up { room_above } else { room_below })
+        .max(0.0);
+    let size = vec2(CARD_WIDTH, height);
     let above = avoid.top() - GAP - height;
     let x_point = at.x.clamp(x + 2.0 * POINT, x + CARD_WIDTH - 2.0 * POINT);
-    if above >= top {
+    if up {
         let rect = Rect::from_min_size(pos2(x, above), size);
         let base = rect.bottom();
         let point = [
@@ -426,46 +537,27 @@ pub fn reset_card(
         *bands = default;
     }
     state.globe.preview.selected = None;
-    state.pad.style.value = None;
+
     state.pad.style.side = None;
 }
 
 /// The field of the value of the selected stop. The stop moves when the
-/// text is a number.
+/// typed text is a number.
 fn value_field(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     bands: &mut Bands,
-    text: &mut Option<(RasterId, usize, String)>,
-    id: RasterId,
     index: usize,
     unit: &str,
 ) {
     let span = bands.max() - bands.min();
-    let value = bands.stops()[index].value;
-    let shown = world::value_text(value, span, "");
-    let mut edit = match text.take() {
-        Some((of, at, edit)) if of == id && at == index => edit,
-        _ => shown.clone(),
-    };
-    let parsed = parse_value(&edit);
-    let resp = widgets::value_field(
-        ui,
-        controls,
-        STOP_VALUE,
-        "Value",
-        unit,
-        &mut edit,
-        parsed.is_some(),
-    );
-    if resp.changed()
-        && let Some(value) = parse_value(&edit)
-    {
+    let shown = world::value_text(bands.stops()[index].value, span, "");
+    let valid = |text: &str| parse_value(text).is_some();
+    let keys = widgets::Keys::Number;
+    let typed = widgets::key_field(ui, controls, STOP_VALUE, "Value", unit, &shown, keys, valid);
+    if let Some(value) = typed.as_deref().and_then(parse_value) {
         bands.move_to(index, value);
-    } else if !resp.has_focus() {
-        edit = shown;
     }
-    *text = Some((id, index, edit));
 }
 
 /// A number as the user types it, with or without the separators of the

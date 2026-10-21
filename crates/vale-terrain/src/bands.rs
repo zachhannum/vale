@@ -36,6 +36,39 @@ pub struct Stop {
     pub below: Rgb,
     /// The color at the value and just above it.
     pub above: Rgb,
+    /// The line where the value crosses the stop.
+    pub line: StopLine,
+}
+
+/// A line at a color stop. It keeps its values while it is off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StopLine {
+    pub on: bool,
+    /// The weight, in points.
+    pub weight: f32,
+    pub color: Rgb,
+    /// The line has the color of the stop, darker by `darken`, in place of
+    /// `color`. The stop at sea level gives its sea color.
+    pub darker: bool,
+    /// The part of the light that the darker color takes away, from 0 to 1.
+    pub darken: f32,
+}
+
+impl StopLine {
+    /// The least and the largest weight, in points.
+    pub const WEIGHTS: std::ops::RangeInclusive<f32> = 0.25..=8.0;
+}
+
+impl Default for StopLine {
+    fn default() -> Self {
+        StopLine {
+            on: false,
+            weight: 1.0,
+            color: [40, 40, 40],
+            darker: false,
+            darken: 0.5,
+        }
+    }
 }
 
 /// A side of a stop.
@@ -51,7 +84,10 @@ pub struct Band {
     /// The lower and upper value, in the unit of the layer.
     pub min: f64,
     pub max: f64,
-    /// The color of the whole band in the stepped preview.
+    /// The color of the whole band in the stepped preview. It is the color
+    /// of the stop at the edge of the band nearer sea level: the bottom edge
+    /// above sea level and with no sea split, and the top edge below sea
+    /// level.
     pub color: Rgb,
     /// The colors at `min` and at `max` in the smooth preview.
     pub bottom: Rgb,
@@ -191,6 +227,7 @@ impl Bands {
                     value,
                     below,
                     above: above.unwrap_or(below),
+                    line: StopLine::default(),
                 }
             })
             .collect();
@@ -273,6 +310,7 @@ impl Bands {
             value,
             below: color,
             above: color,
+            line: StopLine::default(),
         };
         self.stops.insert(index, stop);
         Some(index)
@@ -320,16 +358,63 @@ impl Bands {
         true
     }
 
+    /// Sets the line of a stop. The weight stays in `StopLine::WEIGHTS`. Returns
+    /// `false` for an index out of range.
+    pub fn set_line(&mut self, index: usize, line: StopLine) -> bool {
+        let Some(stop) = self.stops.get_mut(index) else {
+            return false;
+        };
+        let (lo, hi) = (*StopLine::WEIGHTS.start(), *StopLine::WEIGHTS.end());
+        let weight = if line.weight.is_nan() {
+            lo
+        } else {
+            line.weight.clamp(lo, hi)
+        };
+        let darken = if line.darken.is_nan() {
+            0.0
+        } else {
+            line.darken.clamp(0.0, 1.0)
+        };
+        stop.line = StopLine {
+            weight,
+            darken,
+            ..line
+        };
+        true
+    }
+
+    /// The color of the line of a stop, or `None` for an index out of range.
+    pub fn line_color(&self, index: usize) -> Option<Rgb> {
+        let stop = self.stops.get(index)?;
+        let line = stop.line;
+        if !line.darker {
+            return Some(line.color);
+        }
+        let base = if self.sea() == Some(index) {
+            stop.below
+        } else {
+            stop.above
+        };
+        let keep = 1.0 - line.darken;
+        Some(base.map(|c| (f32::from(c) * keep).round() as u8))
+    }
+
     /// The bands from `min` to `max`, in ascending order. There is one band
-    /// fewer than there are stops. The color of a band is the color of the
-    /// gradient at its middle.
+    /// fewer than there are stops. Each stop gives its color to one band, so
+    /// the top stop and, with a sea split, the bottom stop give none. The
+    /// stop at sea level gives its two colors to the band on each side.
     pub fn bands(&self) -> Vec<Band> {
+        let sea = self.sea();
         self.stops
             .windows(2)
-            .map(|w| Band {
+            .enumerate()
+            .map(|(i, w)| Band {
                 min: w[0].value,
                 max: w[1].value,
-                color: mix(w[0].above, w[1].below, 0.5),
+                color: match sea {
+                    Some(sea) if i < sea => w[1].below,
+                    _ => w[0].above,
+                },
                 bottom: w[0].above,
                 top: w[1].below,
             })
@@ -374,6 +459,7 @@ mod tests {
             value,
             below: color,
             above: color,
+            line: StopLine::default(),
         }
     }
 
@@ -529,18 +615,42 @@ mod tests {
     }
 
     #[test]
-    fn the_step_color_is_the_middle_of_the_gradient() {
+    fn the_step_color_is_the_color_of_one_stop() {
         let stops = [stop(0.0, [0, 0, 0]), stop(10.0, [101, 50, 3])];
         let bands = Bands::from_range_parts(0.0, 10.0, false, &stops).unwrap();
         let steps = bands.bands();
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].bottom, [0, 0, 0]);
         assert_eq!(steps[0].top, [101, 50, 3]);
-        assert_eq!(steps[0].color, [51, 25, 2]);
+        assert_eq!(steps[0].color, [0, 0, 0]);
+    }
 
-        let bands = Bands::default();
-        for band in bands.bands() {
-            assert_eq!(band.color, mix(band.bottom, band.top, 0.5));
+    #[test]
+    fn each_stop_colors_one_band() {
+        let mut bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        let last = bands.stops().len() - 1;
+        let colors = |b: &Bands| b.bands().iter().map(|b| b.color).collect::<Vec<_>>();
+        let red = [255, 0, 0];
+        // Each stop and side, with the one band that it colors.
+        let mut cases = vec![
+            (sea, Side::Below, Some(sea - 1)),
+            (sea, Side::Above, Some(sea)),
+            (0, Side::Above, None),
+            (last, Side::Below, None),
+        ];
+        cases.extend((1..sea).map(|i| (i, Side::Above, Some(i - 1))));
+        cases.extend((sea + 1..last).map(|i| (i, Side::Above, Some(i))));
+        for (index, side, band) in cases {
+            let before = colors(&bands);
+            let mut changed = bands.clone();
+            changed.set_color(index, side, red);
+            let after = colors(&changed);
+            for (i, (a, b)) in before.iter().zip(&after).enumerate() {
+                let want = if Some(i) == band { red } else { *a };
+                assert_eq!(*b, want, "stop {index} {side:?}, band {i}");
+            }
+            bands = changed;
         }
     }
 
@@ -881,5 +991,77 @@ mod tests {
         assert_eq!(Bands::from_range_parts(-10.0, 4000.0, false, &hard), None);
         let land = plain(&[-10.0, 250.0, 4000.0]);
         assert_eq!(Bands::from_range_parts(-10.0, 4000.0, true, &land), None);
+    }
+
+    #[test]
+    fn each_stop_keeps_its_own_line() {
+        let mut bands = Bands::with_range(-1000.0, 4000.0, true).unwrap();
+        assert!(bands.stops().iter().all(|s| s.line == StopLine::default()));
+        let sea = bands.sea().unwrap();
+        let coast = StopLine {
+            on: true,
+            weight: 3.0,
+            color: [10, 20, 30],
+            ..StopLine::default()
+        };
+        assert!(bands.set_line(sea, coast));
+        assert_eq!(bands.stops()[sea].line, coast);
+        assert_eq!(bands.stops()[sea + 1].line, StopLine::default());
+
+        // The line moves with the stop, and a new stop has no line.
+        let index = bands.add(-600.0).unwrap();
+        assert!(index < sea + 1);
+        assert_eq!(bands.stops()[sea + 1].line, coast);
+        assert!(!bands.stops()[index].line.on);
+
+        // The weight stays in its range.
+        let heavy = StopLine {
+            weight: 100.0,
+            ..coast
+        };
+        assert!(bands.set_line(0, heavy));
+        assert_eq!(bands.stops()[0].line.weight, *StopLine::WEIGHTS.end());
+        assert!(!bands.set_line(99, coast));
+    }
+
+    #[test]
+    fn a_darker_line_takes_the_color_of_its_stop() {
+        let mut bands = Bands::with_range(-1000.0, 4000.0, true).unwrap();
+        let sea = bands.sea().unwrap();
+        let stop = bands.stops()[sea];
+        assert_ne!(stop.below, stop.above);
+        let line = StopLine {
+            on: true,
+            darker: true,
+            darken: 0.5,
+            ..StopLine::default()
+        };
+        bands.set_line(sea, line);
+        let half = |c: Rgb| c.map(|c| (f32::from(c) * 0.5).round() as u8);
+        assert_eq!(bands.line_color(sea), Some(half(stop.below)));
+        let land = bands.stops()[sea + 1];
+        bands.set_line(sea + 1, line);
+        assert_eq!(bands.line_color(sea + 1), Some(half(land.above)));
+
+        // The darker color follows the stop, and the amount stays in range.
+        bands.set_color(sea + 1, Side::Above, [200, 100, 50]);
+        assert_eq!(bands.line_color(sea + 1), Some([100, 50, 25]));
+        bands.set_line(
+            sea + 1,
+            StopLine {
+                darken: 3.0,
+                ..line
+            },
+        );
+        assert_eq!(bands.line_color(sea + 1), Some([0; 3]));
+        bands.set_line(
+            sea + 1,
+            StopLine {
+                darker: false,
+                ..line
+            },
+        );
+        assert_eq!(bands.line_color(sea + 1), Some(StopLine::default().color));
+        assert_eq!(bands.line_color(99), None);
     }
 }

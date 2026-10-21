@@ -17,7 +17,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use crate::gpkg::{Reader, StoreError, TileKey, corrupt, decode_geometry, encode_geometry};
 use crate::{
     Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
-    Stop, Units, Uuid, Value, World, clamp_opacity,
+    Stop, StopLine, Units, Uuid, Value, World, clamp_opacity,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -452,9 +452,16 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
         out.extend_from_slice(&stop.below);
         out.extend_from_slice(&stop.above);
     }
+    for stop in &raster.stops {
+        out.push(stop.line.on as u8);
+        out.extend_from_slice(&stop.line.weight.to_le_bytes());
+        out.extend_from_slice(&stop.line.color);
+        out.push(stop.line.darker as u8);
+        out.extend_from_slice(&stop.line.darken.to_le_bytes());
+    }
 }
 
-/// An unknown display gives bands.
+/// An unknown display gives bands. An image of version 11 has no lines.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -469,9 +476,26 @@ fn raster(r: &mut Reader) -> Option<Raster> {
                 value: r.f64()?,
                 below: r.take()?,
                 above: r.take()?,
+                line: StopLine::default(),
             })
         })
-        .collect::<Option<_>>()?;
+        .collect::<Option<Vec<_>>>()?;
+    let mut stops = stops;
+    if !r.0.is_empty() {
+        for stop in &mut stops {
+            let [on]: [u8; 1] = r.take()?;
+            let weight = f32::from_le_bytes(r.take()?);
+            let color = r.take()?;
+            let [darker]: [u8; 1] = r.take()?;
+            stop.line = StopLine {
+                on: on != 0,
+                weight,
+                color,
+                darker: darker != 0,
+                darken: f32::from_le_bytes(r.take()?),
+            };
+        }
+    }
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
@@ -642,11 +666,19 @@ mod tests {
                 value: 0.0,
                 below: [1, 2, 3],
                 above: [1, 2, 3],
+                line: StopLine::default(),
             },
             Stop {
                 value: 250.5,
                 below: [4, 5, 6],
                 above: [7, 8, 9],
+                line: StopLine {
+                    on: true,
+                    weight: 2.5,
+                    color: [10, 11, 12],
+                    darker: true,
+                    darken: 0.25,
+                },
             },
         ];
         let rain = project.raster(id).unwrap();
@@ -655,6 +687,13 @@ mod tests {
         assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
         out.pop();
         assert_eq!(raster(&mut Reader(&out)), None);
+
+        // An image of version 11 ends after the stops, and its stops have
+        // no line.
+        out.truncate(out.len() + 1 - 2 * 13);
+        let old = raster(&mut Reader(&out)).unwrap();
+        assert!(old.stops.iter().all(|s| s.line == StopLine::default()));
+        assert_eq!(old.stops[1].above, [7, 8, 9]);
     }
 
     #[test]

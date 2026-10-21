@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use vale_store::{
     Project, ProjectFile, Raster, RasterId, Restored, SaveStats, StoreError, TileChanges, TileKey,
 };
-use vale_terrain::{Bands, FACES, Heightmap, Stop, reduced_face_size};
+use vale_terrain::{Bands, FACES, Heightmap, Stop, StopLine, reduced_face_size};
 
 use crate::document::Document;
 use crate::files::Files;
@@ -527,6 +527,13 @@ fn stops_of(raster: &Raster) -> Vec<Stop> {
         value: s.value,
         below: s.below,
         above: s.above,
+        line: StopLine {
+            on: s.line.on,
+            weight: s.line.weight,
+            color: s.line.color,
+            darker: s.line.darker,
+            darken: s.line.darken,
+        },
     };
     raster.stops.iter().map(stop).collect()
 }
@@ -562,11 +569,16 @@ pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
     raster.base = map.base();
     let stops = map.bands.stops();
     let same = raster.stops.len() == stops.len()
-        && raster
-            .stops
-            .iter()
-            .zip(stops)
-            .all(|(a, b)| a.value == b.value && a.below == b.below && a.above == b.above);
+        && raster.stops.iter().zip(stops).all(|(a, b)| {
+            a.value == b.value
+                && a.below == b.below
+                && a.above == b.above
+                && a.line.on == b.line.on
+                && a.line.weight == b.line.weight
+                && a.line.color == b.line.color
+                && a.line.darker == b.line.darker
+                && a.line.darken == b.line.darken
+        });
     if !same {
         raster.stops = stops
             .iter()
@@ -574,6 +586,13 @@ pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
                 value: s.value,
                 below: s.below,
                 above: s.above,
+                line: vale_store::StopLine {
+                    on: s.line.on,
+                    weight: s.line.weight,
+                    color: s.line.color,
+                    darker: s.line.darker,
+                    darken: s.line.darken,
+                },
             })
             .collect();
     }

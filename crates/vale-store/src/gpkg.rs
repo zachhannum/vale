@@ -24,16 +24,16 @@ use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
     Feature, Geometry, GeometryKind, Layer, LayerId, LayerKind, LonLat, Project, Raster,
-    RasterDisplay, RasterId, Rgb, Stop, Units, Uuid, Value, World, clamp_opacity,
+    RasterDisplay, RasterId, Rgb, Stop, StopLine, Units, Uuid, Value, World, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 11;
+pub const FORMAT_VERSION: u32 = 12;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
 const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] =
-    &[v1, v2, undo::v3, v4, v5, v6, v7, v8, v9, v10, v11];
+    &[v1, v2, undo::v3, v4, v5, v6, v7, v8, v9, v10, v11, v12];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -708,6 +708,12 @@ fn v9(tx: &Transaction) -> rusqlite::Result<()> {
     ))
 }
 
+/// The lines of the color stops. A stop of an older file has no line, and
+/// its text and its undo images stay valid.
+fn v12(_: &Transaction) -> rusqlite::Result<()> {
+    Ok(())
+}
+
 /// The display of a raster. The rasters of an older file show bands.
 fn v10(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN display TEXT NOT NULL DEFAULT 'bands'")
@@ -811,12 +817,14 @@ fn v10_stops(unit: &str, min: f64, max: f64, limits: &str, sea: &str, land: &str
         value: min,
         below: bottom,
         above: bottom,
+        line: StopLine::default(),
     }];
     for (i, &value) in limits.iter().enumerate() {
         stops.push(Stop {
             value,
             below: edges(i).1,
             above: edges(i + 1).0,
+            line: StopLine::default(),
         });
     }
     let top = edges(limits.len()).1;
@@ -824,6 +832,7 @@ fn v10_stops(unit: &str, min: f64, max: f64, limits: &str, sea: &str, land: &str
         value: max,
         below: top,
         above: top,
+        line: StopLine::default(),
     });
     stops
 }
@@ -1223,23 +1232,64 @@ fn parse_limits(text: &str) -> Option<Vec<f64>> {
 }
 
 /// The stops as `value:rrggbb`, or as `value:rrggbb/rrggbb` for a stop with
-/// two colors, with commas between them.
+/// two colors, with commas between them. A stop with a line that is not the
+/// default line adds `|on:weight:rrggbb:color:darken`, with `off` for a line
+/// that is off and `darker` for a line with the darker color of the stop.
 fn stops_text(stops: &[Stop]) -> String {
     let hex = |[r, g, b]: Rgb| format!("{r:02x}{g:02x}{b:02x}");
     let items: Vec<String> = stops
         .iter()
-        .map(|s| match s.below == s.above {
-            true => format!("{}:{}", s.value, hex(s.below)),
-            false => format!("{}:{}/{}", s.value, hex(s.below), hex(s.above)),
+        .map(|s| {
+            let mut item = match s.below == s.above {
+                true => format!("{}:{}", s.value, hex(s.below)),
+                false => format!("{}:{}/{}", s.value, hex(s.below), hex(s.above)),
+            };
+            let line = s.line;
+            if line != StopLine::default() {
+                let on = if line.on { "on" } else { "off" };
+                let color = if line.darker { "darker" } else { "color" };
+                let (weight, darken) = (line.weight, line.darken);
+                item += &format!("|{on}:{weight}:{}:{color}:{darken}", hex(line.color));
+            }
+            item
         })
         .collect();
     items.join(",")
+}
+
+fn parse_line(text: &str) -> Option<StopLine> {
+    let mut parts = text.split(':');
+    let on = match parts.next()? {
+        "on" => true,
+        "off" => false,
+        _ => return None,
+    };
+    let weight: f32 = parts.next()?.parse().ok().filter(|w: &f32| w.is_finite())?;
+    let color = parse_color(parts.next()?)?;
+    let darker = match parts.next()? {
+        "darker" => true,
+        "color" => false,
+        _ => return None,
+    };
+    let darken: f32 = parts.next()?.parse().ok().filter(|d: &f32| d.is_finite())?;
+    let line = StopLine {
+        on,
+        weight,
+        color,
+        darker,
+        darken,
+    };
+    parts.next().is_none().then_some(line)
 }
 
 /// The stops of `stops_text`. A text that is not valid, or with values that
 /// are not finite and in ascending order, gives no stops.
 fn parse_stops(text: &str) -> Vec<Stop> {
     let stop = |item: &str| {
+        let (item, line) = match item.split_once('|') {
+            Some((item, line)) => (item, parse_line(line)?),
+            None => (item, StopLine::default()),
+        };
         let (value, colors) = item.split_once(':')?;
         let value: f64 = value.parse().ok().filter(|v: &f64| v.is_finite())?;
         let (below, above) = colors.split_once('/').unwrap_or((colors, colors));
@@ -1247,6 +1297,7 @@ fn parse_stops(text: &str) -> Vec<Stop> {
             value,
             below: parse_color(below)?,
             above: parse_color(above)?,
+            line,
         })
     };
     let stops: Option<Vec<Stop>> = text
@@ -2122,6 +2173,7 @@ mod tests {
             value,
             below: [1, 2, 3],
             above: [1, 2, 3],
+            line: StopLine::default(),
         }
     }
 
@@ -2143,16 +2195,19 @@ mod tests {
                     value: -6000.0,
                     below: [0, 1, 2],
                     above: [0, 1, 2],
+                    line: StopLine::default(),
                 },
                 Stop {
                     value: 1e-7,
                     below: [250, 128, 7],
                     above: [255, 255, 255],
+                    line: StopLine::default(),
                 },
                 Stop {
                     value: 1234.5678,
                     below: [16, 44, 92],
                     above: [16, 44, 92],
+                    line: StopLine::default(),
                 },
             ],
         };
@@ -3064,16 +3119,34 @@ mod tests {
                 value: -0.1,
                 below: [0, 1, 2],
                 above: [0, 1, 2],
+                line: StopLine::default(),
             },
             Stop {
                 value: 1e-7,
                 below: [250, 128, 7],
                 above: [255, 255, 255],
+                line: StopLine::default(),
             },
         ];
         let text = stops_text(&stops);
         assert_eq!(text, "-0.1:000102,0.0000001:fa8007/ffffff");
         assert_eq!(parse_stops(&text), stops);
+
+        let mut lines = stops.clone();
+        lines[0].line = StopLine {
+            on: true,
+            weight: 2.5,
+            color: [16, 32, 48],
+            darker: true,
+            darken: 0.75,
+        };
+        lines[1].line.on = false;
+        lines[1].line.weight = 0.25;
+        let text = stops_text(&lines);
+        let want = "-0.1:000102|on:2.5:102030:darker:0.75,\
+                    0.0000001:fa8007/ffffff|off:0.25:282828:color:0.5";
+        assert_eq!(text, want);
+        assert_eq!(parse_stops(&text), lines);
         assert_eq!(parse_stops(""), []);
         assert_eq!(parse_stops("5:FFFFFF")[0].below, [255, 255, 255]);
         for bad in [
@@ -3088,6 +3161,14 @@ mod tests {
             "5:ffffff,4:ffffff",
             "5:ffffff,5:000000",
             "5:ffffff,oops",
+            "5:ffffff|",
+            "5:ffffff|yes:1:ffffff:color:0.5",
+            "5:ffffff|on:inf:ffffff:color:0.5",
+            "5:ffffff|on:1:fffff:color:0.5",
+            "5:ffffff|on:1:ffffff",
+            "5:ffffff|on:1:ffffff:dark:0.5",
+            "5:ffffff|on:1:ffffff:color:NaN",
+            "5:ffffff|on:1:ffffff:color:0.5:1",
         ] {
             assert_eq!(parse_stops(bad), [], "{bad}");
         }
@@ -3099,11 +3180,22 @@ mod tests {
         let (mut project, height, _) = rasters();
         let before = project.raster(height).unwrap().stops.clone();
         let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
-        let stop = Stop {
+        let mut stop = Stop {
             value: 0.0,
             below: [1, 2, 3],
             above: [4, 5, 6],
+            line: StopLine {
+                on: true,
+                weight: 3.0,
+                color: [7, 8, 9],
+                darker: true,
+                darken: 0.25,
+            },
         };
+        assert!(project.set_raster_stops(height, vec![stop]));
+        file.save(&project).unwrap();
+        let lined = stop;
+        stop.line.weight = 0.5;
         assert!(project.set_raster_stops(height, vec![stop]));
         file.save(&project).unwrap();
         drop(file);
@@ -3111,6 +3203,8 @@ mod tests {
         let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded, project);
         assert_eq!(loaded.raster(height).unwrap().stops, [stop]);
+        file.undo().unwrap();
+        assert_eq!(file.project().raster(height).unwrap().stops, [lined]);
         file.undo().unwrap();
         assert_eq!(file.project().raster(height).unwrap().stops, before);
         drop(file);

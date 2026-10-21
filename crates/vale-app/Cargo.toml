@@ -73,6 +73,7 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "UIViewController",
     "UIDocumentPickerViewController",
     "UIApplication",
+    "UIPasteboard",
 ] }
 objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = [
     "std",

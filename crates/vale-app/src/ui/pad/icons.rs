@@ -38,6 +38,7 @@ pub enum Icon {
     Reset,
     World,
     Grid,
+    Delete,
 }
 
 impl Icon {
@@ -66,6 +67,7 @@ impl Icon {
             Icon::Toolbox => "M4 9h16v10H4zM9 9V6h6v3M4 14h16",
             Icon::Brush => "M5 4v16M12 4v16M19 4v16",
             Icon::Close => "M6 6l12 12M18 6L6 18",
+            Icon::Delete => "M9 6h12v12H9L3 12L9 6M12 9l6 6M18 9l-6 6",
             Icon::Back => "M15 6l-6 6 6 6",
             Icon::Down => "M6 9l6 6 6-6",
             Icon::Open => "M9 6l6 6-6 6",
@@ -358,6 +360,7 @@ mod tests {
             Icon::Reset,
             Icon::World,
             Icon::Grid,
+            Icon::Delete,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

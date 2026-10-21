@@ -16,8 +16,8 @@ use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
 use vale_style::{Color, Stroke};
 use vale_terrain::{
-    Bands, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, Stop, WindowHeights, channel_map,
-    level_to_meters, meters_to_level, window_channels,
+    Bands, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, Stop, StopLine, WindowHeights,
+    channel_map, level_to_meters, meters_to_level, window_channels,
 };
 
 /// Gives a range of heights one stop at each end and one at sea level. The
@@ -27,6 +27,7 @@ fn three_stops(bands: &mut Bands, colors: [[u8; 3]; 4]) {
         value,
         below,
         above,
+        line: StopLine::default(),
     };
     let (min, max) = (bands.min(), bands.max());
     let stops = [
@@ -1032,17 +1033,18 @@ fn a_change_of_a_stop_shows_in_the_same_frame() {
         let p = img.get_pixel(c.x as u32, c.y as u32).0;
         [p[0], p[1], p[2]]
     };
+    // The stop at 200 m colors the band at 300 m.
     let bands = &mut h.state_mut().globe.map.bands;
     let index = bands.stops().iter().position(|s| s.value == 200.0).unwrap();
-    bands.move_to(index, 400.0);
-    let moved = frame(&mut h);
-    assert_ne!(moved, before);
-    assert!(h.state_mut().globe.map.bands.remove(index));
+    assert!(bands.remove(index));
     let removed = frame(&mut h);
-    assert_ne!(removed, moved);
-    assert!(h.state_mut().globe.map.bands.add(250.0).is_some());
-    let added = frame(&mut h);
-    assert_ne!(added, removed);
+    assert_ne!(removed, before);
+    let added = h.state_mut().globe.map.bands.add(250.0).unwrap();
+    let shown = frame(&mut h);
+    assert_ne!(shown, removed);
+    h.state_mut().globe.map.bands.move_to(added, 400.0);
+    let moved = frame(&mut h);
+    assert_ne!(moved, shown);
 }
 
 #[test]
@@ -4015,4 +4017,206 @@ fn a_smaller_copy_takes_the_place_of_a_copy_with_no_frame_without_the_layer() {
     assert!(most < whole + whole / 2, "{most} of {whole}");
     assert!(close(middle(&mut h), [mean; 3]));
     assert!(h.state().globe.display_bytes() < whole);
+}
+
+/// The weight of the line of a stop, in pixels.
+const LINE_WEIGHT: f32 = 3.0;
+
+/// A globe whose heights rise along `axis`, so that the stop at sea level
+/// is the great circle at a right angle to `axis`. Only that stop has a
+/// line. Each color stop is white, so the line is the only dark color.
+fn line_harness(display: RasterDisplay, axis: V3) -> Harness<'static, AppState> {
+    const N: usize = 64;
+    let mut h = gpu_harness();
+    show_as(h.state_mut(), display);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(N);
+    globe.preview.graticule = false;
+    globe.preview.rivers = false;
+    three_stops(&mut globe.map.bands, [[255; 3]; 4]);
+    for face in 0..6 {
+        for y in 0..N {
+            for x in 0..N {
+                let d = globe.map.texel_dir(face, x, y);
+                let along: f64 = d.iter().zip(axis).map(|(a, b)| a * b).sum();
+                globe.map.set(face, x, y, meters_to_level(3000.0 * along));
+            }
+        }
+    }
+    set_coast_line(&mut h, true);
+    h
+}
+
+fn set_coast_line(h: &mut Harness<'static, AppState>, on: bool) {
+    let bands = &mut h.state_mut().globe.map.bands;
+    let sea = bands.sea().unwrap();
+    let line = StopLine {
+        on,
+        weight: LINE_WEIGHT,
+        color: [0; 3],
+        ..StopLine::default()
+    };
+    assert!(bands.set_line(sea, line));
+}
+
+/// The dark part of each column in the middle third of the canvas, in
+/// pixels. It is the change from the globe with no line.
+fn line_columns(h: &mut Harness<'static, AppState>, name: &str) -> Vec<f32> {
+    set_coast_line(h, false);
+    let plain = canvas_image(h);
+    set_coast_line(h, true);
+    let lined = canvas_image(h);
+    if std::env::var_os("VALE_LINE_IMAGES").is_some() {
+        lined.save(format!("/tmp/line-{name}.png")).unwrap();
+    }
+    let height = lined.height();
+    (lined.width() / 3..2 * lined.width() / 3)
+        .map(|x| {
+            (0..height)
+                .map(|y| {
+                    let a = f32::from(plain.get_pixel(x, y).0[0]).max(1.0);
+                    let b = f32::from(lined.get_pixel(x, y).0[0]);
+                    (a - b).max(0.0) / a
+                })
+                .sum()
+        })
+        .collect()
+}
+
+/// Makes sure that each column has the same dark part, near `expected`.
+fn assert_even_line(columns: &[f32], expected: f32, what: &str) {
+    for (x, &c) in columns.iter().enumerate() {
+        assert!(
+            (c - expected).abs() < 0.1 * expected,
+            "{what}: {c} at column {x}, not {expected}"
+        );
+    }
+}
+
+#[test]
+fn a_stop_line_has_the_same_weight_at_each_zoom_and_across_a_face_edge() {
+    let _gpu = one_gpu_test();
+    let mut h = line_harness(RasterDisplay::Bands, [0.0, 0.0, 1.0]);
+    // The equator crosses a face edge at 45 degrees of longitude.
+    for zoom in [1.0, 4.0, 15.0, 40.0] {
+        let globe = &mut h.state_mut().globe;
+        globe.view = GlobeView::centered(45.0, 0.0);
+        globe.view.zoom = zoom;
+        let what = format!("zoom {zoom}");
+        let columns = line_columns(&mut h, &what);
+        assert_even_line(&columns, LINE_WEIGHT, &what);
+    }
+}
+
+#[test]
+fn a_stop_line_shows_only_in_the_bands_display() {
+    let _gpu = one_gpu_test();
+    for display in [RasterDisplay::Gradient, RasterDisplay::Grey] {
+        let mut h = line_harness(display, [0.0, 0.0, 1.0]);
+        h.state_mut().globe.view = GlobeView::centered(45.0, 0.0);
+        let columns = line_columns(&mut h, &format!("{display:?}"));
+        assert!(
+            columns.iter().all(|&c| c < 0.01),
+            "{display:?}: {columns:?}"
+        );
+    }
+}
+
+#[test]
+fn a_stop_line_has_no_gap_at_a_cube_corner() {
+    let _gpu = one_gpu_test();
+    // The line goes through the corner at x, y, and z of 1.
+    let s = 6f64.sqrt();
+    let mut h = line_harness(RasterDisplay::Bands, [1.0 / s, 1.0 / s, -2.0 / s]);
+    let lat = (1.0 / 3f64.sqrt()).asin().to_degrees();
+    for zoom in [2.0, 15.0] {
+        let globe = &mut h.state_mut().globe;
+        globe.view = GlobeView::centered(45.0, lat);
+        globe.view.zoom = zoom;
+        let columns = line_columns(&mut h, &format!("corner-{zoom}"));
+        // The line goes straight through the corner, so each column has the
+        // same dark part, and it is more than the weight. The height filter
+        // bends the line a little within one texel of the corner.
+        let mut sorted = columns.clone();
+        sorted.sort_by(f32::total_cmp);
+        let median = sorted[sorted.len() / 2];
+        assert!(median >= LINE_WEIGHT * 0.9, "{median}");
+        for (x, &c) in columns.iter().enumerate() {
+            let what = format!("corner at zoom {zoom}: {c} at column {x}");
+            assert!((0.9 * median..1.3 * median).contains(&c), "{what}");
+        }
+    }
+}
+
+#[test]
+fn a_change_of_a_stop_line_shows_in_the_same_frame() {
+    let _gpu = one_gpu_test();
+    let mut h = line_harness(RasterDisplay::Bands, [0.0, 0.0, 1.0]);
+    h.state_mut().globe.view = GlobeView::centered(0.0, 0.0);
+    let frame = |h: &mut Harness<'static, AppState>| {
+        h.step();
+        let rect = h.state().globe.rect;
+        let img = h.render().unwrap();
+        let c = rect.center();
+        img.get_pixel(c.x as u32, c.y as u32).0[0]
+    };
+    let lined = frame(&mut h);
+    set_coast_line(&mut h, false);
+    let plain = frame(&mut h);
+    assert!(plain > lined + 100, "{plain} {lined}");
+    set_coast_line(&mut h, true);
+    assert_eq!(frame(&mut h), lined);
+}
+
+#[test]
+fn the_desktop_panel_sets_the_line_of_the_selected_stop() {
+    let mut h = harness();
+    h.get_by_label(vale_app::ui::elevation::PANEL).click();
+    h.run_steps(2);
+    let id = h.state().shown_raster().unwrap().id;
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    h.state_mut().globe.preview.selected = Some((id, sea));
+    h.run_steps(2);
+    h.get_by_label(vale_app::ui::pad::raster::LINE).click();
+    h.run_steps(2);
+    assert!(h.state().globe.map.bands.stops()[sea].line.on);
+    h.get_by_label(vale_app::ui::pad::raster::DARKER).click();
+    h.run_steps(2);
+    assert!(h.state().globe.map.bands.stops()[sea].line.darker);
+}
+
+#[test]
+fn a_stop_line_shows_only_where_the_values_cross_the_stop() {
+    let _gpu = one_gpu_test();
+    // Rough land from 150 m to 450 m, with many texels in one pixel. The slope
+    // of the texels is large, but no value crosses sea level.
+    const N: usize = 1024;
+    let mut h = line_harness(RasterDisplay::Bands, [0.0, 0.0, 1.0]);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(N);
+    let wave = |d: V3, f: f64, p: f64| {
+        (f * d[0] + p).sin() * (f * d[1] + 2.0 * p).cos() * (f * d[2] + 0.5 * p).sin()
+    };
+    for face in 0..6 {
+        for y in 0..N {
+            for x in 0..N {
+                let d = globe.map.texel_dir(face, x, y);
+                let fine = 90.0 * wave(d, 400.0, 0.3) + 60.0 * wave(d, 900.0, 1.1);
+                globe.map.set(face, x, y, meters_to_level(300.0 + fine));
+            }
+        }
+    }
+    globe.view = GlobeView::centered(20.0, 10.0);
+    let columns = line_columns(&mut h, "rough land");
+    let dark: f32 = columns.iter().sum();
+    assert!(dark < 1.0, "{dark}");
+
+    // A height at the stop is in the upper band, so flat land at sea level
+    // has no line.
+    let globe = &mut h.state_mut().globe;
+    let sea = globe.map.bands.level(0.0);
+    globe.map.fill(sea);
+    let columns = line_columns(&mut h, "flat land at sea level");
+    let dark: f32 = columns.iter().sum();
+    assert!(dark < 1.0, "{dark}");
 }

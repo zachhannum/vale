@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod clipboard;
 pub mod document;
 pub mod files;
 pub mod furniture;

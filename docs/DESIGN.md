@@ -142,7 +142,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | --- | --- |
 | World | Radius, name, display units |
 | Source | Name of the imported file, extents, and the pixels of an imported image |
-| Raster | Face size, unit, value range, base level, color stops, display, opacity |
+| Raster | Face size, unit, value range, base level, color stops with their lines, display, opacity |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Thumbnail | A small picture of the globe, for the list of projects |
 | Layer | Name, type (raster, points, lines, or polygons), visibility, attribute schema, link to a source, to a raster, or to an in-app table |
@@ -301,9 +301,13 @@ One stroke is one undo step. The step holds only the tiles that the stroke chang
 
 ### Stepped preview
 
-While you paint, a shader shows the heightmap as stepped tints. Each color stop of the layer is a value with a color, and each step goes from one stop to the next. This is the posterize and gradient overlay of the old workflow, live. Each raster layer has one of three displays. Bands is the stepped preview, and it fills each step with the color of the gradient at its middle. Gradient blends the colors between the stops. Grey is the plain greyscale. On a height layer, sea level is a fixed stop with a sea color and a land color.
+While you paint, a shader shows the heightmap as stepped tints. Each color stop of the layer is a value with a color, and each step goes from one stop to the next. This is the posterize and gradient overlay of the old workflow, live. Each raster layer has one of three displays. Bands is the stepped preview. Each step has the color of one stop, the stop at its edge nearer sea level. Above sea level, that is the stop at the bottom of the step, and below sea level, the stop at the top. A layer with no sea split uses the stop at the bottom. Thus a change to one stop changes one step. The stop at sea level gives its sea color to the step below it and its land color to the step above it. Gradient blends the colors between the stops. Grey is the plain greyscale. On a height layer, sea level is a fixed stop with a sea color and a land color.
 
 The color stops and the display belong to the raster layer. The panel of the layer edits them in its Style section, with a gradient bar and the stops below it. The preview and the polygonize tool read the same stops, so the polygons match what you saw.
+
+Each color stop can also have a line, with a weight in points and a color. The color is a color that you pick, or the color of the stop made darker by an amount that you set. A darker line at sea level takes the sea color. The card of the selected stop has a switch for the line, the weight, and the color. The globe and the flat map draw the line where the value crosses the stop, in the Bands display only. The line has the same weight at each zoom. On a height layer, a line at sea level is the coast, and a line at another stop is a contour. Thus a height layer shows the coast and the contours with no vector step.
+
+A final map can use the stepped raster with its lines as the topography, in place of the topography polygons. Polygonize is then optional.
 
 ### Toolbox
 
@@ -328,7 +332,7 @@ All tools work on the sphere. They live in the core crates, so the command line 
 
 The polygonize tool traces the value of each color stop on each cube face, joins the outlines across face edges, and smooths them. It writes one polygon layer. It can also split the output at a value into two layers, for example Topography and Bathymetry at 0 m. Each polygon of a heightmap has an `elev_min` attribute, and a normal style rule colors it.
 
-The polygons are an output layer of the toolbox. When the heightmap changes, the layer shows that it is out of date, and you run the tool again. Map frames and export use the polygons and not the heightmap, so topography stays vector in PDF and SVG.
+The polygons are an output layer of the toolbox. When the heightmap changes, the layer shows that it is out of date, and you run the tool again. A map frame can use the polygons, so topography stays vector in PDF and SVG. It can also use the stepped raster with the lines of its stops.
 
 ### Lines
 
@@ -371,6 +375,8 @@ These rules apply to the layout:
 - On a raster layer with a unit other than `m`, the modes that move ground are disabled.
 - The pen paints. One finger turns the globe, and two fingers zoom it.
 - A tap of two fingers is undo, and a tap of three fingers is redo. The actions in the top row have an undo button and a redo button.
+- A long press on a text field opens a menu with Copy and Paste, and no keyboard. Paste replaces the whole text. On iPadOS, the system can ask for permission before a paste.
+- The value field and the hex field of the card of a color stop have a keypad in the card, in place of the keyboard of the system. A tap on the field opens the keypad in the place of the color picker, so the card does not move. The first key replaces the whole text. Done or a second tap on the field closes the keypad.
 
 The core crates have no UI dependency, so both platforms share them. The shell is egui on both platforms. The crate `vale-globe-proto` checked how well egui handles pen input and touch on iPad, and the section "Globe prototype" gives the results.
 

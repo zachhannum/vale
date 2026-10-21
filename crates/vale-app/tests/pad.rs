@@ -185,7 +185,11 @@ fn check_controls(h: &Pad, what: &str) {
     let in_add = h.state().pad.add_rect.is_some();
     let in_list = h.state().pad.projections_rect.is_some();
     let in_stop = h.state().pad.style.card.is_some() || h.state().pad.style.reset_card.is_some();
-    let popup = in_menu
+    let in_edit = controls
+        .iter()
+        .any(|c| c.name == vale_app::ui::pad::widgets::COPY);
+    let popup = in_edit
+        || in_menu
         || in_more
         || in_add
         || in_list
@@ -229,7 +233,12 @@ fn check_controls(h: &Pad, what: &str) {
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
                 menu || kind || more || add || stop || (in_menu && name == "Projection")
             };
-            let covered = popup && row(a) != row(b);
+            // The edit menu of a field covers the controls below it.
+            let edit = |c: &vale_app::ui::pad::widgets::Control| {
+                use vale_app::ui::pad::widgets::{COPY, PASTE};
+                c.name == COPY || c.name == PASTE
+            };
+            let covered = popup && (row(a) != row(b) || edit(a) != edit(b));
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -243,6 +252,14 @@ fn raster_stop(name: &str) -> bool {
         raster::STOP_VALUE,
         raster::SEA_COLOR,
         raster::LAND_COLOR,
+        raster::FILL_COLOR,
+        raster::LINE_COLOR,
+        raster::LINE,
+        raster::LINE_WEIGHT,
+        raster::LINE_SOURCE,
+        raster::DARKER,
+        raster::CUSTOM,
+        raster::DARKEN,
         raster::REMOVE_STOP,
         raster::RESET,
     ]
@@ -3530,6 +3547,208 @@ fn a_tap_on_a_stop_opens_its_card_and_a_tap_elsewhere_closes_it() {
     assert_eq!(card(&h), None);
 }
 
+#[test]
+fn the_card_of_a_stop_sets_its_line() {
+    use vale_app::ui::pad::raster::{COLOR, LINE, LINE_COLOR, LINE_WEIGHT};
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    tap_handle(&mut h, sea);
+    assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
+    check_controls(&h, "the card of a stop");
+    let stop = |h: &Pad| h.state().globe.map.bands.stops()[sea];
+    let before = stop(&h);
+    assert!(!before.line.on);
+    assert!(!switch_is_on(&h, LINE));
+
+    let switch = control(&h, LINE).unwrap();
+    finger_tap(&mut h, switch.center());
+    assert!(stop(&h).line.on);
+    assert!(switch_is_on(&h, LINE));
+
+    // The weight goes in steps of a quarter point up to 8 points.
+    let slider = control(&h, LINE_WEIGHT).unwrap();
+    drag(
+        &mut h,
+        slider.left_center(),
+        slider.right_center() + vec2(40.0, 0.0),
+        None,
+    );
+    assert_eq!(stop(&h).line.weight, 8.0);
+    let slider = control(&h, LINE_WEIGHT).unwrap();
+    drag(
+        &mut h,
+        slider.right_center(),
+        slider.left_center() - vec2(40.0, 0.0),
+        None,
+    );
+    assert_eq!(stop(&h).line.weight, 0.25);
+
+    // With the line chosen, the picker sets the color of the line and not
+    // the colors of the stop.
+    let choice = control(&h, LINE_COLOR).unwrap();
+    finger_tap(&mut h, choice.center());
+    let square = control(&h, &format!("{COLOR} shade")).unwrap();
+    finger_tap(&mut h, square.center() + vec2(40.0, 30.0));
+    let after = stop(&h);
+    assert_ne!(after.line.color, before.line.color);
+    assert_eq!((after.below, after.above), (before.below, before.above));
+    assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
+
+    // The project gets the line with the stop.
+    let mut raster = h.state().doc.project.raster(height).unwrap().clone();
+    vale_app::session::sync_record(&mut raster, &h.state().globe.map);
+    let line = raster.stops[sea].line;
+    let want = (true, 0.25, after.line.color);
+    assert_eq!((line.on, line.weight, line.color), want);
+
+    // A darker line takes the sea color of the stop at sea level, and it has
+    // no color to pick.
+    use vale_app::ui::pad::raster::{CUSTOM, DARKEN, DARKER};
+    let darker = control(&h, DARKER).unwrap();
+    finger_tap(&mut h, darker.center());
+    assert!(stop(&h).line.darker);
+    assert!(control(&h, LINE_COLOR).is_none());
+    let slider = control(&h, DARKEN).unwrap();
+    drag(
+        &mut h,
+        slider.left_center(),
+        slider.right_center() + vec2(40.0, 0.0),
+        None,
+    );
+    assert_eq!(stop(&h).line.darken, 1.0);
+    let bands = &h.state().globe.map.bands;
+    assert_eq!(bands.line_color(sea), Some([0; 3]));
+    check_controls(&h, "the card of a stop with a darker line");
+    let custom = control(&h, CUSTOM).unwrap();
+    finger_tap(&mut h, custom.center());
+    assert!(!stop(&h).line.darker);
+    assert_eq!(stop(&h).line.color, after.line.color);
+    assert!(control(&h, DARKEN).is_none());
+}
+
+/// Opens the keypad of a field, taps the keys of `text`, and closes the
+/// keypad.
+fn type_keys(h: &mut Pad, field: &str, text: &str) {
+    use vale_app::ui::pad::widgets::DONE;
+    tap(h, field);
+    for c in text.chars() {
+        tap(h, &format!("{field} {c}"));
+    }
+    tap(h, &format!("{field} {DONE}"));
+}
+
+/// A long press of a finger on the middle of a control.
+fn long_press(h: &mut Pad, name: &str) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    touch(h, egui::TouchPhase::Start, rect.center(), None);
+    h.run_steps(8);
+    touch(h, egui::TouchPhase::End, rect.center(), None);
+    h.run_steps(2);
+}
+
+/// True if no text field has the keyboard.
+fn no_keyboard(h: &Pad) -> bool {
+    h.ctx.memory(|m| m.focused()).is_none() && h.output().platform_output.ime.is_none()
+}
+
+#[test]
+fn the_hex_keypad_sets_the_color_of_a_stop_and_the_card_stays_in_place() {
+    use vale_app::ui::pad::raster::{COLOR, DARKER, LINE};
+    use vale_app::ui::pad::widgets::DELETE;
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    tap_handle(&mut h, sea);
+    // A darker line makes the card taller.
+    tap(&mut h, LINE);
+    tap(&mut h, DARKER);
+    let card = |h: &Pad| h.state().pad.style.card.unwrap();
+    let before = card(&h);
+    let hex = format!("{COLOR} hex");
+    let shade = format!("{COLOR} shade");
+    tap(&mut h, &hex);
+    assert!(no_keyboard(&h));
+    assert!(control(&h, &shade).is_none());
+    assert!(control(&h, &format!("{hex} A")).is_some());
+    assert_eq!(card(&h), before);
+    check_controls(&h, "the hex keypad of a stop");
+
+    // The first key takes the place of the whole code.
+    for key in ["1", "2", "A", "B", "3", "F"] {
+        tap(&mut h, &format!("{hex} {key}"));
+    }
+    let stop = |h: &Pad| h.state().globe.map.bands.stops()[sea];
+    assert_eq!(stop(&h).above, [0x12, 0xab, 0x3f]);
+    // A code that is too short does not change the color.
+    tap(&mut h, &format!("{hex} {DELETE}"));
+    assert_eq!(stop(&h).above, [0x12, 0xab, 0x3f]);
+    tap(&mut h, &format!("{hex} 0"));
+    assert_eq!(stop(&h).above, [0x12, 0xab, 0x30]);
+
+    // A second tap on the field closes the keypad.
+    tap(&mut h, &hex);
+    assert!(control(&h, &shade).is_some());
+    type_keys(&mut h, &hex, "00FF00");
+    assert_eq!(stop(&h).above, [0, 255, 0]);
+    assert!(control(&h, &shade).is_some());
+    assert_eq!(card(&h), before);
+}
+
+#[test]
+fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
+    use vale_app::ui::pad::raster::COLOR;
+    use vale_app::ui::pad::widgets::{COPY, PASTE};
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    tap_handle(&mut h, sea);
+    let hex = format!("{COLOR} hex");
+    let code = vale_app::ui::pad::widgets::hex_text(h.state().globe.map.bands.stops()[sea].above);
+    long_press(&mut h, &hex);
+    assert!(no_keyboard(&h));
+    assert!(control(&h, COPY).is_some());
+    check_controls(&h, "the edit menu of a field");
+    tap(&mut h, COPY);
+    assert!(control(&h, COPY).is_none());
+    assert_eq!(vale_app::clipboard::get(), Some(code));
+
+    // A paste takes the place of the whole code, and the card stays open.
+    vale_app::clipboard::set(&h.ctx, " #123456 ");
+    long_press(&mut h, &hex);
+    tap(&mut h, PASTE);
+    assert!(no_keyboard(&h));
+    assert_eq!(
+        h.state().globe.map.bands.stops()[sea].above,
+        [0x12, 0x34, 0x56]
+    );
+    assert!(h.state().globe.preview.selected.is_some());
+
+    // A press outside the menu closes it.
+    long_press(&mut h, &hex);
+    let shade = control(&h, &format!("{COLOR} shade")).unwrap();
+    touch(&mut h, egui::TouchPhase::Start, shade.center(), None);
+    h.step();
+    touch(&mut h, egui::TouchPhase::End, shade.center(), None);
+    h.run_steps(2);
+    assert!(control(&h, COPY).is_none());
+}
+
+#[test]
+fn a_paste_from_the_edit_menu_renames_a_layer() {
+    use vale_app::ui::pad::widgets::PASTE;
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    vale_app::clipboard::set(&h.ctx, "Ridges");
+    long_press(&mut h, LAYER_NAME);
+    assert!(no_keyboard(&h));
+    tap(&mut h, PASTE);
+    assert_eq!(raster_name(&h, height), "Ridges");
+}
+
 /// The texts that the last frame painted, with their places.
 fn painted_texts(h: &Pad) -> Vec<(String, Rect)> {
     fn visit(shape: &egui::Shape, texts: &mut Vec<(String, Rect)>) {
@@ -3651,11 +3870,12 @@ fn a_typed_value_moves_the_selected_stop() {
     let index = sea + 1;
     tap_handle(&mut h, index);
     assert_eq!(h.state().globe.preview.selected, Some((height, index)));
-    type_text(&mut h, STOP_VALUE, "1,23");
+    type_keys(&mut h, STOP_VALUE, "123");
+    assert!(no_keyboard(&h));
     assert_eq!(h.state().globe.map.bands.stops()[index].value, 123.0);
     // A value past the next stop stops short of it.
     let next = h.state().globe.map.bands.stops()[index + 1].value;
-    type_text(&mut h, STOP_VALUE, "99999");
+    type_keys(&mut h, STOP_VALUE, "99999");
     let value = h.state().globe.map.bands.stops()[index].value;
     assert!(value < next && value > next - 2.0, "{value}");
 }
