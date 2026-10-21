@@ -225,14 +225,17 @@ fn band_color(i: i32, h: f32, mode: i32) -> vec3<f32> {
 }
 
 // The color of a height. `width` is the change of the height across one
-// pixel. It makes a band limit one pixel soft.
+// pixel. It makes a band limit one pixel soft, with the limit in the middle.
 fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
-    let w = max(width, 1e-6);
     var color = band_color(0, h, mode);
     let count = i32(u.params.w);
     for (var i = 1; i < count; i++) {
-        // A height at the limit is in the upper band.
-        let over = clamp((h - u.bands[i].bottom.a) / w + 1.0, 0.0, 1.0);
+        let at = u.bands[i].bottom.a;
+        // Flat ground at the limit is in the upper band.
+        var over = select(0.0, 1.0, h >= at);
+        if width > 1e-6 {
+            over = clamp((h - at) / width + 0.5, 0.0, 1.0);
+        }
         color = mix(color, band_color(i, h, mode), over);
     }
     return color;
