@@ -1606,11 +1606,9 @@ impl AppState {
         let colors = vale_terrain::swatches(width, height, &pixels);
         let max = vale_terrain::MAX_BANDS;
         match colors.len() {
-            0 => return Err(format!("{name}: The image has no blocks of color")),
+            0 => return Err(format!("{name}: No color blocks found.")),
             n if n > max => {
-                return Err(format!(
-                    "{name}: {n} blocks of color, but a layer has at most {max} bands"
-                ));
+                return Err(format!("{name}: {n} colors. The most is {max}."));
             }
             _ => {}
         }
@@ -1635,11 +1633,11 @@ impl AppState {
         part: vale_terrain::Part,
     ) -> Result<(), String> {
         let Some(ramp) = self.ramps.list().get(index) else {
-            return Err("The ramp is not there".to_owned());
+            return Err("The ramp is gone.".to_owned());
         };
         let colors = ramp.colors.clone();
         let Some(bands) = self.globe.bands_mut(id) else {
-            return Err("The layer has no color stops".to_owned());
+            return Err("The layer has no color stops.".to_owned());
         };
         let applied = if keep {
             bands.stretched_part(&colors, part)
@@ -1648,7 +1646,7 @@ impl AppState {
         };
         let Some(applied) = applied else {
             let count = colors.len();
-            return Err(format!("The value range has no room for {count} bands"));
+            return Err(format!("The range has no room for {count} bands."));
         };
         *bands = applied;
         self.globe.preview.selected = None;
@@ -1807,7 +1805,7 @@ impl AppState {
             Action::ImportRamp(id, path) => {
                 let note = match self.import_ramp(&path) {
                     Ok((name, count)) => {
-                        let text = format!("Added the ramp {name} with {count} colors");
+                        let text = format!("Added {name} ({count} colors)");
                         Note::new(text, false, Some(id))
                     }
                     Err(text) => Note::new(text, true, Some(id)),

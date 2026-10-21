@@ -44,11 +44,11 @@ pub const RESET_STOPS: &str = "Reset colors";
 pub const COLOR_RAMPS: &str = "Color ramps";
 pub const IMPORT_RAMP: &str = "Import ramp…";
 /// The text below the import row while the app has no ramps.
-pub const IMPORT_RAMP_HINT: &str = "Pick an image of a legend: a row of blocks of color, from the lowest band to the highest. Each world can use the ramp.";
+pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
 /// The buttons of the card of a ramp.
 pub const APPLY_RAMP: &str = "Apply";
-pub const DELETE_RAMP: &str = "Delete ramp";
-pub const REVERSE_RAMP: &str = "Reverse ramp";
+pub const DELETE_RAMP: &str = "Delete";
+pub const REVERSE_RAMP: &str = "Reverse";
 /// The longest name of a ramp row, in characters.
 const RAMP_NAME: usize = 20;
 /// The width and the height of the bar of a ramp row.
@@ -306,7 +306,7 @@ pub enum RampChoice {
 /// The parts of the bands, in the order of `PART_NAMES`.
 pub const PARTS: [Part; 3] = [Part::All, Part::Sea, Part::Land];
 /// The row of the part on the card of a ramp, and its choices.
-pub const RAMP_PART: &str = "Bands";
+pub const RAMP_PART: &str = "Apply to";
 pub const PART_NAMES: [&str; 3] = ["All", "Sea", "Land"];
 
 /// The number of bands of a part, and the name of the part with a space,
@@ -738,8 +738,8 @@ pub fn ramp_card(
         .ramp_part
         .unwrap_or(layer.part(&ramp.colors));
     let (bands, kind) = ramp_fit(layer, part);
-    let keep = format!("Keep {bands} {kind}bands");
-    let fresh = format!("Use {colors} {kind}bands");
+    let keep = format!("Fit to {bands} {kind}bands");
+    let fresh = format!("Make {colors} {kind}bands");
     let mut buttons: Vec<(&str, egui::Color32, RampChoice)> = if colors == bands {
         vec![(APPLY_RAMP, theme::ACCENT, RampChoice::Apply(true))]
     } else {
@@ -751,15 +751,7 @@ pub fn ramp_card(
     buttons.push((REVERSE_RAMP, theme::TEXT, RampChoice::Reverse));
     buttons.push((DELETE_RAMP, theme::WARN, RampChoice::Delete));
     let name = &ramp.name;
-    let mut text = format!("{name}: {colors} colors.");
-    if !kind.is_empty() {
-        text += &format!(" The ramp changes only the {kind}bands.");
-    }
-    if colors != bands {
-        text += &format!(
-            " The layer has {bands} {kind}bands. Keep them and stretch the ramp over them, or make one band for each color."
-        );
-    }
+    let text = format!("{name} · {colors} colors");
     let choice = if split { PANEL_ROW + 8.0 } else { 0.0 };
     let font = theme::body();
     let wrap = CARD_WIDTH - 2.0 * CARD_PAD;

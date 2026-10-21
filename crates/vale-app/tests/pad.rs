@@ -3888,10 +3888,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     // The import changes no layer.
     assert_eq!(h.state().globe.map.bands, before);
     assert_eq!(h.state().ramps.list().len(), 1);
-    assert!(
-        h.query_by_label("Added the ramp legend with 3 colors")
-            .is_some()
-    );
+    assert!(h.query_by_label("Added legend (3 colors)").is_some());
 
     // The layer has more bands than the ramp has colors, so the card offers
     // two ways.
@@ -3899,7 +3896,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     tap(&mut h, "legend");
     assert!(h.state().pad.style.ramp_card.is_some());
     check_controls(&h, "with the card of a ramp");
-    assert!(control(&h, &format!("Keep {bands} bands")).is_some());
+    assert!(control(&h, &format!("Fit to {bands} bands")).is_some());
     // A reverse keeps the card open, and a second reverse puts back the
     // order.
     tap(&mut h, REVERSE_RAMP);
@@ -3908,7 +3905,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     assert!(h.state().pad.style.ramp_card.is_some());
     tap(&mut h, REVERSE_RAMP);
     assert_eq!(h.state().ramps.list()[0].colors, colors);
-    tap(&mut h, "Use 3 bands");
+    tap(&mut h, "Make 3 bands");
     let found: Vec<_> = h
         .state()
         .globe
@@ -3937,9 +3934,9 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     check_controls(&h, "with the card of a land ramp");
     // The user can choose another part.
     tap(&mut h, "Sea");
-    assert!(control(&h, "Use 3 sea bands").is_some());
+    assert!(control(&h, "Make 3 sea bands").is_some());
     tap(&mut h, "Land");
-    tap(&mut h, "Use 3 land bands");
+    tap(&mut h, "Make 3 land bands");
     let found: Vec<_> = h
         .state()
         .globe

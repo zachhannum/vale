@@ -219,9 +219,9 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
             if colors == bands {
                 choose(ui, pad::raster::APPLY_RAMP, RampChoice::Apply(true));
             } else {
-                let keep = format!("Keep {bands} {kind}bands");
+                let keep = format!("Fit to {bands} {kind}bands");
                 choose(ui, &keep, RampChoice::Apply(true));
-                let fresh = format!("Use {colors} {kind}bands");
+                let fresh = format!("Make {colors} {kind}bands");
                 choose(ui, &fresh, RampChoice::Apply(false));
             }
             ui.separator();
