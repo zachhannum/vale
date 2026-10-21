@@ -1,8 +1,11 @@
 //! The flat view of the world workspace.
 
+mod lines;
+
 use eframe::egui::{self, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use lines::{canvas_image, show_as};
 use vale_app::document::Document;
 use vale_app::globe::flat::FlatView;
 use vale_app::globe::math::{V3, angle, lonlat_to_dir};
@@ -12,19 +15,10 @@ use vale_app::headless;
 use vale_app::ui::pad::{RECENTER, RESET};
 use vale_app::ui::{AppState, draw};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{RasterDisplay, RasterId};
+use vale_store::RasterDisplay;
 use vale_terrain::{Mode, meters_to_level};
 
 type App = Harness<'static, AppState>;
-
-/// Shows each raster layer, and a globe with no layers, with this display.
-fn show_as(state: &mut AppState, display: RasterDisplay) {
-    state.globe.preview.display = display;
-    let ids: Vec<RasterId> = state.doc.project.rasters().iter().map(|r| r.id).collect();
-    for id in ids {
-        state.set_raster_display(id, display);
-    }
-}
 
 fn state() -> AppState {
     let mut state = AppState::new(Document::sample()).unwrap();
@@ -124,17 +118,6 @@ fn stroke(h: &mut App, with_pen: bool) {
     }
     h.step();
     settle(h);
-}
-
-/// The frame without the pointer, cut to the canvas.
-fn canvas_image(h: &mut App) -> image::RgbaImage {
-    h.remove_cursor();
-    h.run_steps(2);
-    let rect = h.state().globe.rect;
-    let (x, y) = (rect.min.x.ceil() as u32, rect.min.y.ceil() as u32);
-    let (w, h_) = (rect.width().floor() as u32, rect.height().floor() as u32);
-    let frame = h.render().unwrap();
-    image::imageops::crop_imm(&frame, x, y, w - 1, h_ - 1).to_image()
 }
 
 /// The grey level of the canvas at a screen position.
@@ -553,4 +536,44 @@ fn the_flat_view_blends_the_raster_layers_by_their_opacity() {
     assert!(middle(&mut h).abs_diff(mean) <= 2, "{}", middle(&mut h));
     h.state_mut().set_raster_visible(rain, false);
     assert_eq!(middle(&mut h), ground.r());
+}
+
+/// Makes sure that the coast line of `ground` has its weight across the
+/// line and its middle on the band edge in the flat view, at each zoom: on
+/// the equator across a face edge, and on the circle of latitude through a
+/// cube corner.
+fn assert_flat_coasts(ground: fn(f64) -> f64, name: &str) {
+    let corner = (1.0f64 / 3.0).sqrt().asin().to_degrees();
+    for (place, lon, lat) in [("face edge", 45.0, 0.0), ("cube corner", 45.0, corner)] {
+        let z = lat.to_radians().sin();
+        let mut h = flat_harness();
+        lines::measured_scene(&mut h, 64, move |d| ground(d[2] - z));
+        for zoom in [1.0, 4.0, 15.0, 40.0] {
+            let globe = &mut h.state_mut().globe;
+            globe.flat = FlatView::new(spec(ProjectionKind::Equirectangular, 0.0, 0.0));
+            globe.flat.zoom = zoom;
+            globe.flat.look_at(lon, lat);
+            let what = format!("{name}, {place}, zoom {zoom}");
+            let found = lines::measure_across(&mut h, &what);
+            lines::assert_across(&found, 1.0, 20, &what);
+        }
+    }
+}
+
+#[test]
+fn a_stop_line_on_an_even_slope_has_its_weight_in_the_flat_view() {
+    let _gpu = one_gpu_test();
+    assert_flat_coasts(lines::even_slope, "even slope");
+}
+
+#[test]
+fn a_stop_line_next_to_a_flat_sea_has_its_weight_in_the_flat_view() {
+    let _gpu = one_gpu_test();
+    assert_flat_coasts(lines::flat_sea, "flat sea");
+}
+
+#[test]
+fn a_stop_line_next_to_flat_land_has_its_weight_in_the_flat_view() {
+    let _gpu = one_gpu_test();
+    assert_flat_coasts(lines::flat_land, "flat land");
 }
