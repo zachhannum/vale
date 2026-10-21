@@ -40,7 +40,7 @@ const CHANNEL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uint;
 
 /// The row size of a texture copy to a buffer is a multiple of this number,
 /// in bytes.
-const ROW_ALIGN: usize = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+pub(crate) const ROW_ALIGN: usize = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
 
 /// The values of one stamp on one face. The layout matches `stamp.wgsl`.
 ///
@@ -1090,6 +1090,18 @@ pub struct Readback {
 }
 
 impl Readback {
+    /// A readback of a buffer that holds each texel of `rect`, with rows of
+    /// `row_bytes`.
+    pub(crate) fn dense(buffer: wgpu::Buffer, rect: TexelRect, row_bytes: usize) -> Readback {
+        Readback {
+            buffer,
+            rect,
+            row_bytes,
+            base: 0,
+            holes: Vec::new(),
+        }
+    }
+
     /// Asks for the texels. Call it after the submit of the encoder. `done`
     /// gets the texels row by row, during a later poll of the device. If the
     /// device is lost, `done` does not run.
