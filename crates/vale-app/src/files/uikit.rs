@@ -9,7 +9,7 @@ use std::ptr::NonNull;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_foundation::{NSArray, NSURL, ns_string};
+use objc2_foundation::{NSArray, NSString, NSURL, ns_string};
 use objc2_ui_kit::{UIDocumentPickerDelegate, UIDocumentPickerViewController, UIViewController};
 use objc2_uniform_type_identifiers::UTType;
 
@@ -120,17 +120,29 @@ impl Picker {
         })
     }
 
-    /// Shows the PNG and TIFF files of the Files app.
-    pub fn pick_heightmap(&self) {
+    /// Shows the PNG and TIFF files of the Files app. Returns `false` if the
+    /// Files app cannot show now.
+    pub fn pick_heightmap(&self) -> bool {
+        self.pick(&[ns_string!("public.png"), ns_string!("public.tiff")])
+    }
+
+    /// Shows the PNG and JPEG files of the Files app. Returns `false` if the
+    /// Files app cannot show now.
+    pub fn pick_image(&self) -> bool {
+        self.pick(&[ns_string!("public.png"), ns_string!("public.jpeg")])
+    }
+
+    /// Shows the files of these types in the Files app.
+    fn pick(&self, types: &[&NSString]) -> bool {
         let Some(mtm) = MainThreadMarker::new() else {
-            return;
+            return false;
         };
         if self.presenter.presentedViewController().is_some() {
-            return;
+            return false;
         }
-        let types: Vec<Retained<UTType>> = [ns_string!("public.png"), ns_string!("public.tiff")]
-            .into_iter()
-            .filter_map(UTType::typeWithIdentifier)
+        let types: Vec<Retained<UTType>> = types
+            .iter()
+            .filter_map(|t| UTType::typeWithIdentifier(t))
             .collect();
         let types = NSArray::from_retained_slice(&types);
         let picker = UIDocumentPickerViewController::initForOpeningContentTypes_asCopy(
@@ -141,6 +153,7 @@ impl Picker {
         picker.setDelegate(Some(ProtocolObject::from_ref(&*self.delegate)));
         self.presenter
             .presentViewController_animated_completion(&picker, true, None);
+        true
     }
 
     /// Shows the Files app, which moves `path` to the place that the user

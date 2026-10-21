@@ -22,6 +22,9 @@ struct ValeApp {
     closing: bool,
     /// The files that the file picker of the system gave.
     picked: PickQueue,
+    /// The raster layer that gets the colors of the picked file. With no
+    /// layer, the picked file is a heightmap.
+    colors_for: Option<vale_store::RasterId>,
     /// The ends of the hand-offs of export files to the Files app.
     exports: ExportQueue,
     /// The export file that the Files app shows.
@@ -52,7 +55,10 @@ impl eframe::App for ValeApp {
         }
 
         for path in self.picked.take() {
-            state.run_action(Action::ImportHeightmap(path));
+            match self.colors_for.take() {
+                Some(id) => state.run_action(Action::ImportColors(id, path)),
+                None => state.run_action(Action::ImportHeightmap(path)),
+            }
         }
 
         for event in self.exports.take() {
@@ -85,8 +91,18 @@ impl eframe::App for ValeApp {
             match action {
                 #[cfg(target_os = "ios")]
                 Action::ImportHeightmapDialog => {
-                    if let Some(picker) = &self.picker {
-                        picker.pick_heightmap();
+                    if let Some(picker) = &self.picker
+                        && picker.pick_heightmap()
+                    {
+                        self.colors_for = None;
+                    }
+                }
+                #[cfg(target_os = "ios")]
+                Action::ImportColorsDialog(id) => {
+                    if let Some(picker) = &self.picker
+                        && picker.pick_image()
+                    {
+                        self.colors_for = Some(id);
                     }
                 }
                 // The export goes to a temporary file. The Files app moves it
@@ -133,6 +149,15 @@ impl eframe::App for ValeApp {
                         .pick_file();
                     if let Some(path) = picked {
                         state.run_action(Action::ImportHeightmap(path));
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
+                Action::ImportColorsDialog(id) => {
+                    let picked = rfd::FileDialog::new()
+                        .add_filter("Image", &["png", "jpg", "jpeg"])
+                        .pick_file();
+                    if let Some(path) = picked {
+                        state.run_action(Action::ImportColors(id, path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
@@ -220,6 +245,7 @@ pub fn run_window(
         smoke_frames,
         closing: false,
         picked: PickQueue::default(),
+        colors_for: None,
         exports: ExportQueue::default(),
         sharing: None,
         #[cfg(target_os = "ios")]

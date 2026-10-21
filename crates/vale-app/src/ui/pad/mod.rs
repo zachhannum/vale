@@ -1372,7 +1372,11 @@ fn note_text(
 /// last pass, because the user left its panel.
 fn expire_notes(ctx: &egui::Context, state: &mut AppState) {
     let pass = ctx.cumulative_pass_nr();
-    for note in [&mut state.import_note, &mut state.export_note] {
+    for note in [
+        &mut state.import_note,
+        &mut state.export_note,
+        &mut state.colors_note,
+    ] {
         if note
             .as_ref()
             .is_some_and(|n| n.shown.is_some() && n.last_pass < pass)

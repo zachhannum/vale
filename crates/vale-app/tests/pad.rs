@@ -3861,6 +3861,39 @@ fn reset_colors_asks_first_and_puts_back_the_default_stops() {
 }
 
 #[test]
+fn import_colors_gives_one_band_to_each_block_of_a_legend() {
+    use vale_app::ui::pad::raster::IMPORT_COLORS;
+    let mut h = painted_pad(BOARDS[0]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    tap(&mut h, IMPORT_COLORS);
+    assert!(
+        h.state()
+            .actions
+            .contains(&Action::ImportColorsDialog(height))
+    );
+    h.state_mut().actions.clear();
+
+    let colors = [[33, 113, 181], [116, 196, 118], [140, 81, 10]];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legend.png");
+    let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
+    legend.save(&path).unwrap();
+    h.state_mut().run_action(Action::ImportColors(height, path));
+    h.run();
+    let bands = h.state().globe.map.bands.bands();
+    let found: Vec<_> = bands.iter().map(|b| b.color).collect();
+    assert_eq!(found, colors);
+    assert!(h.query_by_label("Read 3 colors").is_some());
+
+    let path = dir.path().join("none.png");
+    h.state_mut().run_action(Action::ImportColors(height, path));
+    h.run();
+    assert!(h.state().colors_note.as_ref().is_some_and(|n| n.warning));
+    assert_eq!(h.state().globe.map.bands.bands().len(), 3);
+}
+
+#[test]
 fn a_typed_value_moves_the_selected_stop() {
     use vale_app::ui::pad::raster::STOP_VALUE;
     let mut h = painted_pad(BOARDS[1]);

@@ -6,7 +6,7 @@ use vale_store::{Raster, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, Rgb, Side, StopLine};
 
 use super::gradient::{self, DESKTOP};
-use super::{AppState, LayerRef, pad};
+use super::{Action, AppState, LayerRef, pad};
 use crate::globe::preview::Preview;
 use crate::world;
 
@@ -155,6 +155,21 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 }
             }
             globe.preview.selected = chosen.map(|index| (id, index));
+            let import = ui.button(pad::raster::IMPORT_COLORS);
+            if import
+                .on_hover_text(pad::raster::IMPORT_COLORS_HINT)
+                .clicked()
+            {
+                state.actions.push(Action::ImportColorsDialog(id));
+            }
+            if let Some(note) = state.colors_note.as_ref().filter(|n| n.layer == Some(id)) {
+                let color = if note.warning {
+                    ui.visuals().warn_fg_color
+                } else {
+                    ui.visuals().weak_text_color()
+                };
+                ui.label(egui::RichText::new(&note.text).color(color));
+            }
         });
 }
 

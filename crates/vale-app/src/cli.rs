@@ -131,6 +131,10 @@ pub struct Args {
     /// layer. A world with no height layer gets one.
     #[arg(long, value_name = "FILE")]
     pub import_heightmap: Option<PathBuf>,
+    /// Give the selected raster layer one band for each block of color of
+    /// this legend image, after `--import-heightmap`.
+    #[arg(long, value_name = "FILE")]
+    pub import_colors: Option<PathBuf>,
     /// Headless: export the first height layer of the project to a GeoTIFF
     /// file and exit.
     #[arg(long, value_name = "FILE", requires = "project")]
@@ -319,10 +323,27 @@ pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::
     apply_globe_view(args, &mut globe.view)
 }
 
-/// Applies `--import-heightmap`. `wait`: the import ends before the call
-/// returns, and a failure is an error. Without `wait`, the host starts the
-/// import at its first frame.
+/// Applies `--import-heightmap` and `--import-colors`. `wait`: the imports
+/// end before the call returns, and a failure is an error. Without `wait`,
+/// the host starts the imports at its first frame.
 pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<()> {
+    apply_heightmap(args, state, wait)?;
+    let Some(path) = &args.import_colors else {
+        return Ok(());
+    };
+    let id = state
+        .selected_raster()
+        .ok_or_else(|| anyhow!("--import-colors needs a raster layer"))?;
+    state.run_action(Action::ImportColors(id, path.clone()));
+    // The panel of the layer shows the result.
+    state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
+    match &state.colors_note {
+        Some(note) if wait && note.warning => bail!("{}", note.text),
+        _ => Ok(()),
+    }
+}
+
+fn apply_heightmap(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<()> {
     let Some(path) = &args.import_heightmap else {
         return Ok(());
     };

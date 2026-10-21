@@ -9,7 +9,7 @@ use super::Panel;
 use super::geometry::{PAD, Rects};
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
-use crate::ui::{AppState, elevation, gradient};
+use crate::ui::{Action, AppState, elevation, gradient};
 use crate::world;
 
 /// The name of the segmented control of the displays.
@@ -39,6 +39,10 @@ pub const REMOVE_STOP: &str = "Remove the stop";
 /// The row that puts back the default color stops, and the button of the
 /// card that asks before it.
 pub const RESET_STOPS: &str = "Reset colors";
+pub const IMPORT_COLORS: &str = "Import colors…";
+/// The text below the import row.
+pub const IMPORT_COLORS_HINT: &str =
+    "Pick an image of a legend: a row of blocks of color, from the lowest band to the highest.";
 pub const RESET: &str = "Reset";
 const RESET_TEXT: &str = "Put back the default color stops of this layer? You cannot undo this.";
 /// The name of the unit field.
@@ -82,6 +86,13 @@ pub struct StyleState {
     reset_anchor: Option<(RasterId, Rect)>,
     /// The card that asks before a reset in the last frame.
     pub reset_card: Option<Rect>,
+}
+
+impl StyleState {
+    /// Closes the color picker of the selected stop.
+    pub fn forget_color(&mut self) {
+        self.side = None;
+    }
 }
 
 /// A color of a stop.
@@ -179,6 +190,15 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         style.reset = None;
     }
     style.reset_anchor = (style.reset == Some(id)).then_some((id, row.rect));
+    if widgets::text_row(ui, controls, IMPORT_COLORS, 0.0, false, true).clicked() {
+        state.actions.push(Action::ImportColorsDialog(id));
+    }
+    match &state.colors_note {
+        Some(n) if n.layer == Some(id) => {
+            super::note_text(ui, None, &mut state.colors_note, Some(id))
+        }
+        _ => note(ui, IMPORT_COLORS_HINT),
+    }
 
     let preview = &mut state.globe.preview;
     preview.selected = selected.map(|index| (id, index));
