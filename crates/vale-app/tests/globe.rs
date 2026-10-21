@@ -4886,3 +4886,120 @@ fn the_switch_of_one_layer_does_not_change_the_other() {
     let img = canvas_image(&mut h);
     assert_shows_field(&h, &img, a);
 }
+
+/// The face size of the tests of features smaller than one pixel. A texel
+/// is about 0.3 px at the zoom of the whole globe.
+const FINE_FACE_SIZE: usize = 1024;
+
+/// A globe of sea with the colors of a measured line and the full detail.
+/// `land` gives the texels of face +x that are land.
+fn fine_globe(land: &[(usize, usize)]) -> Harness<'static, AppState> {
+    let axis = [0.0, 0.0, 1.0];
+    let mut h = measured_globe(axis, |_| -500.0);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(FINE_FACE_SIZE);
+    globe.map.fill(meters_to_level(-500.0));
+    for &(x, y) in land {
+        globe.map.set(0, x, y, meters_to_level(1000.0));
+    }
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, false, 2.0);
+    h
+}
+
+/// The largest difference of a color channel between two images, in a
+/// square of `half` pixels around the middle.
+fn largest_change(a: &image::RgbaImage, b: &image::RgbaImage, half: u32) -> u8 {
+    let (cx, cy) = (a.width() / 2, a.height() / 2);
+    let mut most = 0;
+    for y in cy - half..cy + half {
+        for x in cx - half..cx + half {
+            let (p, q) = (a.get_pixel(x, y).0, b.get_pixel(x, y).0);
+            for c in 0..3 {
+                most = most.max(p[c].abs_diff(q[c]));
+            }
+        }
+    }
+    most
+}
+
+#[test]
+fn an_island_smaller_than_one_pixel_has_no_line_and_no_land_color() {
+    let _gpu = one_gpu_test();
+    let middle = FINE_FACE_SIZE / 2;
+    let islands = [
+        vec![(middle, middle)],
+        vec![(middle, middle), (middle + 1, middle)],
+        vec![
+            (middle, middle),
+            (middle, middle + 1),
+            (middle + 1, middle),
+            (middle + 1, middle + 1),
+        ],
+    ];
+    let mut sea = fine_globe(&[]);
+    for island in islands {
+        let mut h = fine_globe(&island);
+        // The island moves across the pixel centers in steps of about 0.2 px.
+        for (lon, lat) in [
+            (0.0, 0.0),
+            (0.06, 0.0),
+            (0.0, 0.06),
+            (0.03, 0.09),
+            (0.09, 0.03),
+        ] {
+            let view = GlobeView::centered(lon, lat);
+            h.state_mut().globe.view = view;
+            sea.state_mut().globe.view = view;
+            let (shown, plain) = (canvas_image(&mut h), canvas_image(&mut sea));
+            let change = largest_change(&shown, &plain, 12);
+            assert!(change <= 2, "{island:?} at {lon}, {lat}: {change}");
+        }
+        // Closer, the island is larger than a pixel, and it shows.
+        let view = GlobeView {
+            zoom: 16.0,
+            ..GlobeView::centered(0.0, 0.0)
+        };
+        h.state_mut().globe.view = view;
+        sea.state_mut().globe.view = view;
+        let (shown, plain) = (canvas_image(&mut h), canvas_image(&mut sea));
+        assert!(largest_change(&shown, &plain, 12) > 100, "{island:?}");
+    }
+}
+
+#[test]
+fn a_ridge_narrower_than_one_pixel_has_no_line_and_no_land_color() {
+    let _gpu = one_gpu_test();
+    let middle = FINE_FACE_SIZE / 2;
+    let mut sea = fine_globe(&[]);
+    // A ridge of 2 texels across and 224 texels along, on the screen up and
+    // down or at a slant.
+    let up: Vec<(usize, usize)> = (middle - 112..middle + 112)
+        .flat_map(|y| [(middle, y), (middle + 1, y)])
+        .collect();
+    let slant: Vec<(usize, usize)> = (middle - 112..middle + 112)
+        .flat_map(|y| {
+            let x = (middle as i64 + (y as i64 - middle as i64) / 3) as usize;
+            [(x, y), (x + 1, y)]
+        })
+        .collect();
+    for ridge in [up, slant] {
+        let mut h = fine_globe(&ridge);
+        for lon in [0.0, 0.03, 0.06, 0.09] {
+            let view = GlobeView::centered(lon, 0.0);
+            h.state_mut().globe.view = view;
+            sea.state_mut().globe.view = view;
+            let (shown, plain) = (canvas_image(&mut h), canvas_image(&mut sea));
+            let change = largest_change(&shown, &plain, 12);
+            assert!(change <= 2, "{:?} at {lon}: {change}", ridge[0]);
+        }
+        let view = GlobeView {
+            zoom: 16.0,
+            ..GlobeView::centered(0.0, 0.0)
+        };
+        h.state_mut().globe.view = view;
+        sea.state_mut().globe.view = view;
+        let (shown, plain) = (canvas_image(&mut h), canvas_image(&mut sea));
+        assert!(largest_change(&shown, &plain, 12) > 100);
+    }
+}

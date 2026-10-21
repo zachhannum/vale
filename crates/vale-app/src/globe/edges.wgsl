@@ -1,6 +1,6 @@
 // The screen-space lines of the color stops, in passes before the layer
 // pass. The first pass writes the shown height of each pixel. The second
-// pass cuts each height to the range of its neighbors and finds the places
+// pass cuts away the features narrower than one pixel and finds the places
 // where the height crosses the value of a stop between two pixel centers.
 // The third pass gives each pixel the nearest of those places. The layer
 // pass then draws the band edges and the lines from the cut heights and the
@@ -13,7 +13,8 @@
 @group(3) @binding(0) var edge_raw: texture_2d<f32>;
 // The place that each pixel keeps from its own 4 pairs.
 @group(3) @binding(1) var edge_seeds: texture_2d<u32>;
-// The height of each pixel cut to the range of its 8 neighbors.
+// The height of each pixel with the features narrower than one pixel cut
+// away.
 @group(3) @binding(2) var edge_clean: texture_2d<f32>;
 // The nearest place of each pixel.
 @group(3) @binding(3) var edge_nearest: texture_2d<u32>;
@@ -82,29 +83,37 @@ fn raw_at(p: vec2<i32>) -> f32 {
     return textureLoad(edge_raw, p, 0).x;
 }
 
-// The height of a pixel cut to the range of its 8 neighbors, so that a
-// feature smaller than one pixel goes away. -1 off the ground.
+// The height of a pixel cut so that a feature narrower than one pixel goes
+// away: a peak or a ridge is cut down to the higher of two opposite
+// neighbors, and a pit or a valley is filled up to the lower of them. Each
+// of the 4 pairs of opposite neighbors cuts. -1 off the ground.
 fn clean_at(p: vec2<i32>) -> f32 {
     let h = raw_at(p);
     if h < 0.0 {
         return -1.0;
     }
-    var low = 2.0;
-    var high = -1.0;
-    for (var dy = -1; dy <= 1; dy++) {
-        for (var dx = -1; dx <= 1; dx++) {
-            if dx == 0 && dy == 0 {
-                continue;
-            }
-            let n = raw_at(p + vec2<i32>(dx, dy));
-            if n >= 0.0 {
-                low = min(low, n);
-                high = max(high, n);
-            }
+    var low = -1.0;
+    var high = 2.0;
+    let pairs = array<vec2<i32>, 4>(
+        vec2<i32>(1, 0),
+        vec2<i32>(0, 1),
+        vec2<i32>(1, 1),
+        vec2<i32>(1, -1),
+    );
+    for (var k = 0; k < 4; k++) {
+        let a = raw_at(p + pairs[k]);
+        let b = raw_at(p - pairs[k]);
+        if a >= 0.0 && b >= 0.0 {
+            low = max(low, min(a, b));
+            high = min(high, max(a, b));
         }
     }
-    if high < 0.0 {
-        return h;
+    // On a narrow ridge, the pair along the ridge is as high as the pixel
+    // and the pair across it is lower, so the pixel is below one pair and
+    // above another. The pixel takes the cut of the pair that it is
+    // farther from: a ridge goes down, and a valley fills up.
+    if low > high {
+        return select(low, high, h > 0.5 * (low + high));
     }
     return clamp(h, low, high);
 }
