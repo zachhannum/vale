@@ -399,6 +399,59 @@ impl Bands {
         Some(base.map(|c| (f32::from(c) * keep).round() as u8))
     }
 
+    /// The bands with one band of each color, from the lowest band to the
+    /// highest. With the same number of bands, the stops keep their values
+    /// and their lines. Otherwise, the stops have even spacing, and a sea
+    /// split divides the bands by the part of the range on each side of sea
+    /// level. Returns `None` if there are no colors, if there are more than
+    /// `MAX_BANDS`, or if the range has no room for the stops.
+    pub fn painted(&self, colors: &[Rgb]) -> Option<Bands> {
+        let n = colors.len();
+        if n == 0 || n > MAX_BANDS || (self.split && n < 2) {
+            return None;
+        }
+        let mut stops: Vec<Stop> = if n + 1 == self.stops.len() {
+            self.stops.clone()
+        } else {
+            let sides: Vec<(f64, f64, usize)> = if self.split {
+                let part = (SEA_LEVEL - self.min) / (self.max - self.min);
+                let sea = ((n as f64 * part).round() as usize).clamp(1, n - 1);
+                vec![(self.min, SEA_LEVEL, sea), (SEA_LEVEL, self.max, n - sea)]
+            } else {
+                vec![(self.min, self.max, n)]
+            };
+            let mut values = vec![self.min];
+            for (from, to, count) in sides {
+                let step = (to - from) / count as f64;
+                values.extend((1..count).map(|i| from + step * i as f64));
+                values.push(to);
+            }
+            values
+                .into_iter()
+                .map(|value| Stop {
+                    value,
+                    below: [0; 3],
+                    above: [0; 3],
+                    line: StopLine::default(),
+                })
+                .collect()
+        };
+        let sea = self
+            .split
+            .then(|| stops.partition_point(|s| s.value < SEA_LEVEL));
+        for (i, stop) in stops.iter_mut().enumerate() {
+            // Each band takes its color from the stop at its edge nearer sea
+            // level.
+            let (below, above) = match sea {
+                Some(sea) if i == sea => (colors[i - 1], colors[i]),
+                Some(sea) if i < sea => (colors[i.max(1) - 1], colors[i.max(1) - 1]),
+                _ => (colors[i.min(n - 1)], colors[i.min(n - 1)]),
+            };
+            (stop.below, stop.above) = (below, above);
+        }
+        Bands::from_range_parts(self.min, self.max, self.split, &stops)
+    }
+
     /// The bands from `min` to `max`, in ascending order. There is one band
     /// fewer than there are stops. Each stop gives its color to one band, so
     /// the top stop and, with a sea split, the bottom stop give none. The
@@ -1063,5 +1116,58 @@ mod tests {
         );
         assert_eq!(bands.line_color(sea + 1), Some(StopLine::default().color));
         assert_eq!(bands.line_color(99), None);
+    }
+
+    fn band_colors(bands: &Bands) -> Vec<Rgb> {
+        bands.bands().iter().map(|b| b.color).collect()
+    }
+
+    fn greys(n: usize) -> Vec<Rgb> {
+        (0..n).map(|i| [(i * 7) as u8; 3]).collect()
+    }
+
+    #[test]
+    fn painted_with_the_same_count_keeps_the_stops() {
+        let mut bands = Bands::default();
+        let line = StopLine {
+            on: true,
+            ..StopLine::default()
+        };
+        bands.set_line(3, line);
+        let colors = greys(bands.stops().len() - 1);
+        let painted = bands.painted(&colors).unwrap();
+        assert_eq!(values(&painted), values(&bands));
+        assert_eq!(band_colors(&painted), colors);
+        assert_eq!(painted.stops()[3].line, line);
+    }
+
+    #[test]
+    fn painted_splits_the_bands_at_sea_level() {
+        let bands = Bands::with_range(-1000.0, 3000.0, true).unwrap();
+        let colors = greys(4);
+        let painted = bands.painted(&colors).unwrap();
+        assert_eq!(values(&painted), [-1000.0, 0.0, 1000.0, 2000.0, 3000.0]);
+        assert_eq!(painted.sea(), Some(1));
+        assert_eq!(band_colors(&painted), colors);
+    }
+
+    #[test]
+    fn painted_with_no_split_has_even_spacing() {
+        let bands = Bands::with_range(0.0, 100.0, false).unwrap();
+        let colors = greys(5);
+        let painted = bands.painted(&colors).unwrap();
+        assert_eq!(values(&painted), [0.0, 20.0, 40.0, 60.0, 80.0, 100.0]);
+        assert_eq!(band_colors(&painted), colors);
+    }
+
+    #[test]
+    fn painted_refuses_too_few_or_too_many_colors() {
+        let bands = Bands::default();
+        assert!(bands.painted(&[]).is_none());
+        assert!(bands.painted(&greys(1)).is_none());
+        assert!(bands.painted(&greys(MAX_BANDS + 1)).is_none());
+        assert!(bands.painted(&greys(MAX_BANDS)).is_some());
+        let small = Bands::with_range(0.0, 4.0, false).unwrap();
+        assert!(small.painted(&greys(8)).is_none());
     }
 }

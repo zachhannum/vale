@@ -20,6 +20,7 @@ pub mod math;
 mod pyramid;
 mod reduce;
 mod smooth;
+mod swatch;
 #[cfg(feature = "gpu")]
 mod tiles;
 
@@ -45,5 +46,6 @@ pub use heightmap::{
 pub use pyramid::{FIELD_WGSL, GpuPyramid, pyramid_layout};
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use smooth::{Pyramid, level_size, max_level, next_level, pyramid_bytes, smoothing_level};
+pub use swatch::swatches;
 #[cfg(feature = "gpu")]
 pub use tiles::{GpuTiles, TILES_WGSL, tiles_layout};
