@@ -56,7 +56,7 @@ impl eframe::App for ValeApp {
 
         for path in self.picked.take() {
             match self.colors_for.take() {
-                Some(id) => state.run_action(Action::ImportColors(id, path)),
+                Some(id) => state.run_action(Action::ImportRamp(id, path)),
                 None => state.run_action(Action::ImportHeightmap(path)),
             }
         }
@@ -98,7 +98,7 @@ impl eframe::App for ValeApp {
                     }
                 }
                 #[cfg(target_os = "ios")]
-                Action::ImportColorsDialog(id) => {
+                Action::ImportRampDialog(id) => {
                     if let Some(picker) = &self.picker
                         && picker.pick_image()
                     {
@@ -152,12 +152,12 @@ impl eframe::App for ValeApp {
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
-                Action::ImportColorsDialog(id) => {
+                Action::ImportRampDialog(id) => {
                     let picked = rfd::FileDialog::new()
                         .add_filter("Image", &["png", "jpg", "jpeg"])
                         .pick_file();
                     if let Some(path) = picked {
-                        state.run_action(Action::ImportColors(id, path));
+                        state.run_action(Action::ImportRamp(id, path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]

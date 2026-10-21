@@ -106,7 +106,7 @@ fn run() -> anyhow::Result<u8> {
             // import. So the import runs after the renderer is there.
             let import = |state: &mut AppState| apply_import(&args, state, true);
             let (image, state) = headless::ui_png_with(state, size, ratio, import)?;
-            if args.import_heightmap.is_some() || args.import_colors.is_some() {
+            if args.import_heightmap.is_some() || args.import_ramp.is_some() {
                 println!("{}", state.status);
             }
             if let Some(parent) = path.parent()

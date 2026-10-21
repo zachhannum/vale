@@ -3861,16 +3861,16 @@ fn reset_colors_asks_first_and_puts_back_the_default_stops() {
 }
 
 #[test]
-fn import_colors_gives_one_band_to_each_block_of_a_legend() {
-    use vale_app::ui::pad::raster::IMPORT_COLORS;
+fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
+    use vale_app::ui::pad::raster::{DELETE_RAMP, IMPORT_RAMP};
     let mut h = painted_pad(BOARDS[0]);
     let height = open_height(&mut h);
     scroll_to_gradient(&mut h);
-    tap(&mut h, IMPORT_COLORS);
+    tap(&mut h, IMPORT_RAMP);
     assert!(
         h.state()
             .actions
-            .contains(&Action::ImportColorsDialog(height))
+            .contains(&Action::ImportRampDialog(height))
     );
     h.state_mut().actions.clear();
 
@@ -3879,18 +3879,49 @@ fn import_colors_gives_one_band_to_each_block_of_a_legend() {
     let path = dir.path().join("legend.png");
     let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
     legend.save(&path).unwrap();
-    h.state_mut().run_action(Action::ImportColors(height, path));
+    let before = h.state().globe.map.bands.clone();
+    h.state_mut().run_action(Action::ImportRamp(height, path));
     h.run();
-    let bands = h.state().globe.map.bands.bands();
-    let found: Vec<_> = bands.iter().map(|b| b.color).collect();
+    // The import changes no layer.
+    assert_eq!(h.state().globe.map.bands, before);
+    assert_eq!(h.state().ramps.list().len(), 1);
+    assert!(
+        h.query_by_label("Added the ramp legend with 3 colors")
+            .is_some()
+    );
+
+    // The layer has more bands than the ramp has colors, so the card offers
+    // two ways.
+    let bands = before.stops().len() - 1;
+    let card = panel(&h, Panel::Layers).unwrap();
+    let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
+    drag(&mut h, from, from - vec2(0.0, 300.0), None);
+    tap(&mut h, "legend");
+    assert!(h.state().pad.style.ramp_card.is_some());
+    check_controls(&h, "with the card of a ramp");
+    assert!(control(&h, &format!("Keep {bands} stops")).is_some());
+    tap(&mut h, "Use 3 bands");
+    let found: Vec<_> = h
+        .state()
+        .globe
+        .map
+        .bands
+        .bands()
+        .iter()
+        .map(|b| b.color)
+        .collect();
     assert_eq!(found, colors);
-    assert!(h.query_by_label("Read 3 colors").is_some());
+    assert_eq!(h.state().pad.style.ramp_card, None);
+
+    tap(&mut h, "legend");
+    tap(&mut h, DELETE_RAMP);
+    assert!(h.state().ramps.list().is_empty());
+    assert_eq!(h.state().globe.map.bands.bands().len(), 3);
 
     let path = dir.path().join("none.png");
-    h.state_mut().run_action(Action::ImportColors(height, path));
+    h.state_mut().run_action(Action::ImportRamp(height, path));
     h.run();
-    assert!(h.state().colors_note.as_ref().is_some_and(|n| n.warning));
-    assert_eq!(h.state().globe.map.bands.bands().len(), 3);
+    assert!(h.state().ramp_note.as_ref().is_some_and(|n| n.warning));
 }
 
 #[test]

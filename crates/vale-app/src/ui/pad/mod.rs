@@ -329,6 +329,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     expire_notes(&ctx, state);
     raster::stop_card(&ctx, state, &mut controls, &rects);
     raster::reset_card(&ctx, state, &mut controls, &rects);
+    raster::ramp_card(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);
     state.pad.center_rect = None;
     // With no view switch in the top row, the two buttons have their own card.
@@ -1375,7 +1376,7 @@ fn expire_notes(ctx: &egui::Context, state: &mut AppState) {
     for note in [
         &mut state.import_note,
         &mut state.export_note,
-        &mut state.colors_note,
+        &mut state.ramp_note,
     ] {
         if note
             .as_ref()
