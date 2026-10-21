@@ -401,9 +401,10 @@ impl Bands {
 
     /// The bands with one band of each color, from the lowest band to the
     /// highest. With the same number of bands, the stops keep their values
-    /// and their lines. Otherwise, the stops have even spacing, and a sea
-    /// split divides the bands by the part of the range on each side of sea
-    /// level. Returns `None` if there are no colors, if there are more than
+    /// and their lines. Otherwise, the stops have even spacing on each side
+    /// of sea level. The sea gets the first colors that are mostly blue, or
+    /// if all or none are, the part of the bands of its part of the range.
+    /// Returns `None` if there are no colors, if there are more than
     /// `MAX_BANDS`, or if the range has no room for the stops.
     pub fn painted(&self, colors: &[Rgb]) -> Option<Bands> {
         let n = colors.len();
@@ -414,8 +415,16 @@ impl Bands {
             self.stops.clone()
         } else {
             let sides: Vec<(f64, f64, usize)> = if self.split {
+                let blue = colors
+                    .iter()
+                    .take_while(|c| c[2] > c[0] && c[2] >= c[1])
+                    .count();
                 let part = (SEA_LEVEL - self.min) / (self.max - self.min);
-                let sea = ((n as f64 * part).round() as usize).clamp(1, n - 1);
+                let sea = if (1..n).contains(&blue) {
+                    blue
+                } else {
+                    ((n as f64 * part).round() as usize).clamp(1, n - 1)
+                };
                 vec![(self.min, SEA_LEVEL, sea), (SEA_LEVEL, self.max, n - sea)]
             } else {
                 vec![(self.min, self.max, n)]
@@ -1148,6 +1157,25 @@ mod tests {
         let painted = bands.painted(&colors).unwrap();
         assert_eq!(values(&painted), [-1000.0, 0.0, 1000.0, 2000.0, 3000.0]);
         assert_eq!(painted.sea(), Some(1));
+        assert_eq!(band_colors(&painted), colors);
+    }
+
+    #[test]
+    fn painted_gives_the_blue_colors_to_the_sea() {
+        let bands = Bands::default();
+        let colors = [
+            [33, 113, 181],
+            [199, 233, 192],
+            [116, 196, 118],
+            [35, 139, 69],
+            [140, 81, 10],
+        ];
+        let painted = bands.painted(&colors).unwrap();
+        let land = ELEV_MAX / 4.0;
+        assert_eq!(
+            values(&painted),
+            [ELEV_MIN, 0.0, land, 2.0 * land, 3.0 * land, ELEV_MAX]
+        );
         assert_eq!(band_colors(&painted), colors);
     }
 
