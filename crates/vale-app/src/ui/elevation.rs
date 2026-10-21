@@ -180,16 +180,33 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
     let Some(layer) = state.globe.bands_mut(id).map(|b| b.clone()) else {
         return;
     };
-    // The layer, the ramp, and the choice: keep the stops, one band for
-    // each color, or delete.
+    let split = layer.sea().is_some();
+    // The layer, the ramp, the part, and the choice: keep the stops, one
+    // band for each color, or delete.
     let mut chosen = None;
     for (index, ramp) in state.ramps.list().iter().enumerate() {
         let colors = ramp.colors.len();
-        let (bands, kind) = pad::raster::ramp_fit(&layer, &ramp.colors);
+        // The part that the user chose stays in the memory of egui.
+        let key = egui::Id::new(("ramp-part", id, index));
+        let picked: Option<usize> = ui.data(|d| d.get_temp(key));
+        let part = picked.map_or(layer.part(&ramp.colors), |i| pad::raster::PARTS[i]);
+        let (bands, kind) = pad::raster::ramp_fit(&layer, part);
         ui.menu_button(format!("{} ({colors})", ramp.name), |ui| {
+            if split {
+                ui.horizontal(|ui| {
+                    ui.label(pad::raster::RAMP_PART);
+                    for (i, name) in pad::raster::PART_NAMES.iter().enumerate() {
+                        let on = pad::raster::PARTS[i] == part;
+                        if ui.selectable_label(on, *name).clicked() {
+                            ui.data_mut(|d| d.insert_temp(key, i));
+                        }
+                    }
+                });
+                ui.separator();
+            }
             let mut choose = |ui: &mut egui::Ui, text: &str, choice: Option<bool>| {
                 if ui.button(text).clicked() {
-                    chosen = Some((index, choice));
+                    chosen = Some((index, part, choice));
                     ui.close();
                 }
             };
@@ -203,11 +220,11 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
             choose(ui, pad::raster::DELETE_RAMP, None);
         });
     }
-    let Some((index, choice)) = chosen else {
+    let Some((index, part, choice)) = chosen else {
         return;
     };
     let result = match choice {
-        Some(keep) => state.apply_ramp(id, index, keep),
+        Some(keep) => state.apply_ramp(id, index, keep, part),
         None => state.ramps.remove(index).map_err(|e| e.to_string()),
     };
     if let Err(text) = result {

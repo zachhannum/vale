@@ -345,7 +345,13 @@ pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Re
         }
         _ => {
             let last = state.ramps.list().len().saturating_sub(1);
-            if let Err(text) = state.apply_ramp(id, last, false) {
+            let colors = state.ramps.list().get(last).map(|r| r.colors.clone());
+            let part = state
+                .globe
+                .bands_mut(id)
+                .zip(colors)
+                .map_or(vale_terrain::Part::All, |(b, c)| b.part(&c));
+            if let Err(text) = state.apply_ramp(id, last, false, part) {
                 bail!("{text}");
             }
         }

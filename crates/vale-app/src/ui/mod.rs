@@ -1624,9 +1624,16 @@ impl AppState {
         Ok((ramp, count))
     }
 
-    /// Gives a raster layer the colors of a ramp. With `keep`, the layer
-    /// keeps its stops. Otherwise, it gets one band for each color.
-    pub fn apply_ramp(&mut self, id: RasterId, index: usize, keep: bool) -> Result<(), String> {
+    /// Gives the bands of a part of a raster layer the colors of a ramp.
+    /// With `keep`, the layer keeps its stops. Otherwise, the part gets one
+    /// band for each color.
+    pub fn apply_ramp(
+        &mut self,
+        id: RasterId,
+        index: usize,
+        keep: bool,
+        part: vale_terrain::Part,
+    ) -> Result<(), String> {
         let Some(ramp) = self.ramps.list().get(index) else {
             return Err("The ramp is not there".to_owned());
         };
@@ -1635,9 +1642,9 @@ impl AppState {
             return Err("The layer has no color stops".to_owned());
         };
         let applied = if keep {
-            bands.stretched(&colors)
+            bands.stretched_part(&colors, part)
         } else {
-            bands.painted(&colors)
+            bands.painted_part(&colors, part)
         };
         let Some(applied) = applied else {
             let count = colors.len();

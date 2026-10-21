@@ -98,6 +98,9 @@ pub struct StyleState {
     ramp_anchor: Option<Rect>,
     /// The card of a ramp in the last frame.
     pub ramp_card: Option<Rect>,
+    /// The part of the bands that the user chose on the card of a ramp.
+    /// `None`: the part that the colors of the ramp give.
+    ramp_part: Option<Part>,
 }
 
 impl StyleState {
@@ -226,6 +229,7 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         let row = ramp_row(ui, controls, &ramp.name, &ramp.colors, open);
         if row.clicked() {
             style.ramp = (!open).then_some((id, index));
+            style.ramp_part = None;
         }
         if style.ramp == Some((id, index)) {
             style.ramp_anchor = Some(row.rect);
@@ -274,10 +278,20 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     }
 }
 
-/// The number of bands that a ramp colors, and the name of their part with
-/// a space, or an empty name for all bands.
-pub fn ramp_fit(bands: &Bands, colors: &[vale_terrain::Rgb]) -> (usize, &'static str) {
-    let part = bands.part(colors);
+/// The parts of the bands, in the order of `PART_NAMES`.
+pub const PARTS: [Part; 3] = [Part::All, Part::Sea, Part::Land];
+/// The row of the part on the card of a ramp, and its choices.
+pub const RAMP_PART: &str = "Bands";
+pub const PART_NAMES: [&str; 3] = ["All", "Sea", "Land"];
+
+/// The number of bands of a part, and the name of the part with a space,
+/// or an empty name for all bands.
+pub fn ramp_fit(bands: &Bands, part: Part) -> (usize, &'static str) {
+    let part = if bands.sea().is_some() {
+        part
+    } else {
+        Part::All
+    };
     let kind = match part {
         Part::All => "",
         Part::Sea => "sea ",
@@ -689,9 +703,16 @@ pub fn ramp_card(
         return;
     };
     let colors = ramp.colors.len();
-    let Some((bands, kind)) = state.globe.bands_mut(id).map(|b| ramp_fit(b, &ramp.colors)) else {
+    let Some(layer) = state.globe.bands_mut(id) else {
         return;
     };
+    let split = layer.sea().is_some();
+    let part = state
+        .pad
+        .style
+        .ramp_part
+        .unwrap_or(layer.part(&ramp.colors));
+    let (bands, kind) = ramp_fit(layer, part);
     let keep = format!("Keep {bands} {kind}bands");
     let fresh = format!("Use {colors} {kind}bands");
     let buttons: Vec<(&str, egui::Color32)> = if colors == bands {
@@ -704,7 +725,7 @@ pub fn ramp_card(
         ]
     };
     let name = &ramp.name;
-    let mut text = format!("{name}: {colors} {kind}colors.");
+    let mut text = format!("{name}: {colors} colors.");
     if !kind.is_empty() {
         text += &format!(" The ramp changes only the {kind}bands.");
     }
@@ -713,10 +734,11 @@ pub fn ramp_card(
             " The layer has {bands} {kind}bands. Keep them and stretch the ramp over them, or make one band for each color."
         );
     }
+    let choice = if split { PANEL_ROW + 8.0 } else { 0.0 };
     let font = theme::body();
     let wrap = CARD_WIDTH - 2.0 * CARD_PAD;
     let text = ctx.fonts_mut(|f| f.layout(text, font, theme::MUTE, wrap));
-    let size = text.size().y + 12.0 + buttons.len() as f32 * PANEL_ROW + 2.0 * CARD_PAD;
+    let size = text.size().y + 12.0 + choice + buttons.len() as f32 * PANEL_ROW + 2.0 * CARD_PAD;
     let at = pos2(row.left() + 40.0, row.center().y);
     let (rect, point) = place(rects, panel, at, row, size);
     if pressed_outside(ctx, rect, row) {
@@ -725,6 +747,7 @@ pub fn ramp_card(
     }
     state.pad.style.ramp_card = Some(rect);
     let mut chosen = None;
+    let mut new_part = None;
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-ramp";
     widgets::card(ctx, None, key, rect, Order::Foreground, radius, |ui| {
@@ -738,6 +761,12 @@ pub fn ramp_card(
         let (place, _) = ui.allocate_exact_size(text.size(), Sense::hover());
         ui.painter().galley(place.min, text, theme::MUTE);
         ui.add_space(12.0);
+        if split {
+            let active = PARTS.iter().position(|p| *p == part);
+            let picked = widgets::choice_row(ui, controls, RAMP_PART, &PART_NAMES, active);
+            new_part = picked.map(|i| PARTS[i]);
+            ui.add_space(8.0);
+        }
         for (i, (name, fill)) in buttons.iter().enumerate() {
             if widgets::button_row_in(ui, controls, name, true, *fill).clicked() {
                 chosen = Some(i);
@@ -745,6 +774,9 @@ pub fn ramp_card(
         }
     });
     paint_point(ctx, key, point);
+    if new_part.is_some() {
+        state.pad.style.ramp_part = new_part;
+    }
     let Some(chosen) = chosen else {
         return;
     };
@@ -754,7 +786,7 @@ pub fn ramp_card(
         state.ramps.remove(index).map_err(|e| e.to_string())
     } else {
         // With as many colors as bands, the two ways are the same.
-        state.apply_ramp(id, index, chosen == 0)
+        state.apply_ramp(id, index, chosen == 0, part)
     };
     if let Err(text) = result {
         state.ramp_note = Some(crate::ui::Note::new(text, true, Some(id)));

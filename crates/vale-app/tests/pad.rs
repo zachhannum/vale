@@ -3927,6 +3927,10 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     h.run();
     tap(&mut h, "land");
     check_controls(&h, "with the card of a land ramp");
+    // The user can choose another part.
+    tap(&mut h, "Sea");
+    assert!(control(&h, "Use 3 sea bands").is_some());
+    tap(&mut h, "Land");
     tap(&mut h, "Use 3 land bands");
     let found: Vec<_> = h
         .state()
