@@ -12,7 +12,7 @@ use vale_terrain::Mode;
 use crate::globe::brush::{
     EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
-use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test};
+use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test, zoom_test};
 use crate::projects;
 use crate::world::{self, three_significant};
 
@@ -446,6 +446,15 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     if let Some(report) = &state.globe.test_report {
         ui.separator();
         ui.strong("Stroke test");
+        ui.label(report);
+    }
+    ui.separator();
+    let test = egui::Button::new("Run zoom test");
+    if ui.add_enabled(!state.globe.zoom_testing(), test).clicked() {
+        state.globe.start_zoom_test(zoom_test::SECONDS);
+    }
+    if let Some(report) = &state.globe.zoom_report {
+        ui.strong("Zoom test");
         ui.label(report);
     }
 }

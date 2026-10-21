@@ -33,6 +33,7 @@ pub mod stroke_test;
 pub mod thumbnail;
 pub mod vector;
 pub mod view;
+pub mod zoom_test;
 
 use crate::pen::Pen;
 use backdrop::Canvas;
@@ -53,6 +54,7 @@ use rivers::{Rivers, choose_window};
 use stats::Stats;
 use stroke_test::StrokeTest;
 use view::GlobeView;
+use zoom_test::ZoomTest;
 
 /// Texels on one edge of a cube face. The GPU texture holds six full faces.
 pub const FACE_SIZE: usize = 1024;
@@ -619,6 +621,8 @@ pub struct Globe {
     pub blur: bool,
     /// The text of the last stroke test.
     pub test_report: Option<String>,
+    /// The text of the last zoom test.
+    pub zoom_report: Option<String>,
     /// The changed texels that wait for the full heightmap on the GPU.
     pub uploads: Uploads,
     link: Link,
@@ -629,6 +633,7 @@ pub struct Globe {
     backlog: Backlog,
     strokes: u64,
     test: Option<StrokeTest>,
+    zoom_test: Option<ZoomTest>,
     rivers: Rivers,
     eroder: Eroder,
     /// The newest channel map that went to the GPU.
@@ -711,6 +716,7 @@ impl Globe {
             debug: false,
             blur: true,
             test_report: None,
+            zoom_report: None,
             uploads: Uploads::default(),
             link,
             events,
@@ -719,6 +725,7 @@ impl Globe {
             backlog: Backlog::default(),
             strokes: 0,
             test: None,
+            zoom_test: None,
             import: None,
             import_target: None,
             import_result: None,
@@ -2035,15 +2042,62 @@ impl Globe {
         }
     }
 
+    /// Starts the zoom test in the current view. It takes `seconds`.
+    pub fn start_zoom_test(&mut self, seconds: f64) {
+        self.zoom_test = Some(ZoomTest::new(self.zoom(), seconds));
+        self.zoom_report = None;
+    }
+
+    /// True while the zoom test runs.
+    pub fn zoom_testing(&self) -> bool {
+        self.zoom_test.is_some()
+    }
+
+    /// The zoom of the current view.
+    fn zoom(&self) -> f64 {
+        match self.world_view {
+            WorldView::Globe => self.view.zoom,
+            WorldView::Flat => self.flat.zoom,
+        }
+    }
+
+    fn set_zoom(&mut self, zoom: f64) {
+        match self.world_view {
+            WorldView::Globe => self.view.zoom = zoom.clamp(view::ZOOM_MIN, view::ZOOM_MAX),
+            WorldView::Flat => self.flat.zoom = zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX),
+        }
+    }
+
+    /// Sets the zoom of the frame that starts at `now`. Returns `true`
+    /// while the zoom test runs.
+    fn run_zoom_test(&mut self, now: Instant) -> bool {
+        let Some(mut test) = self.zoom_test.take() else {
+            return false;
+        };
+        match test.zoom(now) {
+            Some(zoom) => {
+                self.set_zoom(zoom);
+                self.zoom_test = Some(test);
+                true
+            }
+            None => {
+                self.set_zoom(test.saved);
+                self.zoom_report = Some(test.report());
+                false
+            }
+        }
+    }
+
     /// Runs the brush for one frame. `now` is the start of the frame. Returns
     /// `true` if the brush needs one more frame.
     pub fn advance(&mut self, now: Instant) -> bool {
+        let zooming = self.run_zoom_test(now);
         if self.format.is_none() {
             self.sync_maps();
             self.inputs.clear();
             self.pump_import(false);
             self.pump_export(false);
-            return self.import.is_some() || self.export.is_some();
+            return zooming || self.import.is_some() || self.export.is_some();
         }
         // The count comes first. A result that arrives after this line makes
         // one more frame.
@@ -2064,7 +2118,7 @@ impl Globe {
         self.uplift(now);
         self.send_stamps(now);
         let busy = self.busy() || self.loading();
-        in_flight || busy || self.rivers.pending() || self.export.is_some()
+        zooming || in_flight || busy || self.rivers.pending() || self.export.is_some()
     }
 
     fn read_events(&mut self) {

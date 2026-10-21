@@ -711,6 +711,32 @@ fn in_the_brush_tool_a_pen_paints_and_the_other_input_moves_the_globe() {
 }
 
 #[test]
+fn the_zoom_test_zooms_in_and_out_and_gives_the_frame_time() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    h.get_by_label("Debug").click();
+    h.run_steps(2);
+    let zoom = h.state().globe.view.zoom;
+    h.state_mut().globe.start_zoom_test(0.5);
+    let mut deepest = zoom;
+    for _ in 0..10_000 {
+        if !h.state().globe.zoom_testing() {
+            break;
+        }
+        h.run_steps(1);
+        deepest = deepest.max(h.state().globe.view.zoom);
+    }
+    let globe = &h.state().globe;
+    assert!(!globe.zoom_testing());
+    assert!(deepest > zoom * 10.0, "{deepest}");
+    assert_eq!(globe.view.zoom, zoom);
+    let report = globe.zoom_report.as_deref().unwrap();
+    assert!(report.contains(" frames, mean "), "{report}");
+    h.run_steps(2);
+    assert!(h.query_by_label("Zoom test").is_some());
+}
+
+#[test]
 fn the_stroke_test_runs_and_gives_the_stroke_delay() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();

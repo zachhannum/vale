@@ -225,6 +225,45 @@ pub fn stroke_test(
     report.ok_or_else(|| anyhow!("the stroke test gave no numbers"))
 }
 
+/// Runs the zoom test of the globe offscreen. Returns the text with the
+/// frame times. The frames run one after the other, with no display to
+/// wait for.
+#[cfg(not(target_os = "ios"))]
+pub fn zoom_test(
+    mut state: crate::ui::AppState,
+    size: (f64, f64),
+    pixel_ratio: f64,
+) -> anyhow::Result<String> {
+    state.workspace = crate::ui::Workspace::Globe;
+    let mut harness = ui_harness(state, size, pixel_ratio, hardware_setup());
+    let no_gpu = |e| anyhow!("cannot render the UI offscreen (no GPU adapter?): {e}");
+    for _ in 0..3 {
+        harness.step();
+        harness.render().map_err(no_gpu)?;
+    }
+    // The test starts when the heightmap is on the GPU.
+    for _ in 0..UPLOAD_STEPS {
+        let globe = &harness.state().globe;
+        if !globe.busy() && !globe.loading() {
+            break;
+        }
+        harness.step();
+        harness.render().map_err(no_gpu)?;
+    }
+    let globe = &mut harness.state_mut().globe;
+    globe.start_zoom_test(crate::globe::zoom_test::SECONDS);
+    let start = std::time::Instant::now();
+    while harness.state().globe.zoom_testing() {
+        if start.elapsed() > STROKE_TEST_LIMIT {
+            bail!("the zoom test did not end");
+        }
+        harness.step();
+        harness.render().map_err(no_gpu)?;
+    }
+    let report = harness.state_mut().globe.zoom_report.take();
+    report.ok_or_else(|| anyhow!("the zoom test gave no numbers"))
+}
+
 /// The most frames that a screenshot waits for the globe.
 #[cfg(not(target_os = "ios"))]
 const UPLOAD_STEPS: usize = 10_000;
