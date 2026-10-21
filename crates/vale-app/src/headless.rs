@@ -140,19 +140,30 @@ pub fn write_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 /// The UI on an offscreen wgpu renderer. `setup` picks the GPU adapter.
 #[cfg(not(target_os = "ios"))]
 pub fn ui_harness(
-    mut state: crate::ui::AppState,
+    state: crate::ui::AppState,
     size: (f64, f64),
     pixel_ratio: f64,
     setup: eframe::egui_wgpu::WgpuSetup,
+) -> egui_kittest::Harness<'static, crate::ui::AppState> {
+    let render_state = egui_kittest::wgpu::create_render_state(
+        setup,
+        eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+    );
+    ui_harness_on(state, size, pixel_ratio, render_state)
+}
+
+/// The UI on an offscreen wgpu renderer with this render state.
+#[cfg(not(target_os = "ios"))]
+pub fn ui_harness_on(
+    mut state: crate::ui::AppState,
+    size: (f64, f64),
+    pixel_ratio: f64,
+    render_state: eframe::egui_wgpu::RenderState,
 ) -> egui_kittest::Harness<'static, crate::ui::AppState> {
     state.headless = true;
     // The rivers of a change show in the next frame, so an image does not
     // depend on the time.
     state.globe.set_rivers_sync(true);
-    let render_state = egui_kittest::wgpu::create_render_state(
-        setup,
-        eframe::egui_wgpu::RendererOptions::PREDICTABLE,
-    );
     state.globe.attach(&render_state);
     egui_kittest::Harness::builder()
         .with_size(eframe::egui::vec2(size.0 as f32, size.1 as f32))

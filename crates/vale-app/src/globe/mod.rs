@@ -2590,6 +2590,7 @@ impl Globe {
                 }
                 None => [0.0; 4],
             },
+            edges: [0.0; 4],
             bands,
             lines,
         }
@@ -2740,10 +2741,16 @@ impl Globe {
                 job,
             })
         };
+        let clip = {
+            let r = self.rect * canvas.pixels_per_point;
+            [r.min.x, r.min.y, r.max.x, r.max.y]
+        };
         let plain = |pass, graticule, small| Draw {
             pass,
             source: None,
             rivers: false,
+            lines: false,
+            clip,
             uniforms: self.uniforms(canvas, None, graticule, small),
         };
         let layer = |item: &Item, small: bool| match item {
@@ -2751,6 +2758,11 @@ impl Globe {
                 pass: Pass::Layer(layer.key.layer),
                 source: Some(layer.key),
                 rivers: layer.rivers.is_some() && !small,
+                // The blurred copy has no lines of the stops.
+                lines: !small
+                    && layer.display == RasterDisplay::Bands
+                    && layer.bands.stops().iter().any(|stop| stop.line.on),
+                clip,
                 uniforms: self.uniforms(canvas, Some(layer), false, small),
             }),
             Item::Vector(_) => None,

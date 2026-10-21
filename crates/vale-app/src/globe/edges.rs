@@ -6,6 +6,11 @@
 //! A pixel keeps one place as a 32-bit payload, relative to the pixel. The
 //! layout matches `edges.wgsl`.
 
+use std::collections::HashMap;
+
+use eframe::egui_wgpu::wgpu;
+
+use super::gpu::LayerKey;
 use super::preview::LineUniform;
 
 /// The largest half weight of a line in pixels. A larger weight is cut to it,
@@ -97,6 +102,440 @@ pub fn rebase(payload: u32, step: [i32; 2]) -> Option<u32> {
     let mut seed = unpack(payload)?;
     seed.base = [seed.base[0] - step[0], seed.base[1] - step[1]];
     pack(seed)
+}
+
+const HEIGHTS: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+const PLACES: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
+
+/// The textures that the layers share, at the size of the render target.
+struct Scratch {
+    size: [u32; 2],
+    raw: wgpu::TextureView,
+    seeds: wgpu::TextureView,
+    /// The group that reads `raw`.
+    read_raw: wgpu::BindGroup,
+    /// The group that reads `seeds`.
+    read_seeds: wgpu::BindGroup,
+}
+
+/// The textures that the layer pass of one layer reads.
+struct Target {
+    size: [u32; 2],
+    clean: wgpu::TextureView,
+    nearest: wgpu::Texture,
+    nearest_view: wgpu::TextureView,
+    group: wgpu::BindGroup,
+}
+
+/// The mesh of the flat view.
+pub struct Mesh<'a> {
+    pub vertices: &'a wgpu::Buffer,
+    pub indices: &'a wgpu::Buffer,
+    pub count: u32,
+}
+
+/// The bind groups of the layer pass that the passes of the heights read.
+pub struct Groups<'a> {
+    pub uniforms: &'a wgpu::BindGroup,
+    pub tiles: &'a wgpu::BindGroup,
+    pub levels: &'a wgpu::BindGroup,
+}
+
+/// The pipelines and the textures of the lines of the stops.
+pub struct Edges {
+    layout: wgpu::BindGroupLayout,
+    heights: wgpu::RenderPipeline,
+    flat_heights: wgpu::RenderPipeline,
+    seeds: wgpu::RenderPipeline,
+    nearest: wgpu::RenderPipeline,
+    no_heights: wgpu::TextureView,
+    no_places: wgpu::TextureView,
+    /// The group of a layer pass with no lines.
+    none: wgpu::BindGroup,
+    scratch: Option<Scratch>,
+    targets: HashMap<LayerKey, Target>,
+}
+
+impl Edges {
+    /// `shader` holds `globe.wgsl` and `edges.wgsl`. `globe`, `tiles`, and
+    /// `levels` are the layouts of the first 3 groups of the layer pass, and
+    /// `vertex` is the layout of a vertex of the flat view.
+    pub fn new(
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
+        globe: &wgpu::BindGroupLayout,
+        tiles: &wgpu::BindGroupLayout,
+        levels: &wgpu::BindGroupLayout,
+        vertex: wgpu::VertexBufferLayout<'_>,
+    ) -> Edges {
+        let texture = |binding, sample_type| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let float = wgpu::TextureSampleType::Float { filterable: false };
+        let uint = wgpu::TextureSampleType::Uint;
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("edges"),
+            entries: &[
+                texture(0, float),
+                texture(1, uint),
+                texture(2, float),
+                texture(3, uint),
+            ],
+        });
+        let with_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("edge heights"),
+            bind_group_layouts: &[Some(globe), Some(tiles), Some(levels)],
+            immediate_size: 0,
+        });
+        let with_edges = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("edge places"),
+            bind_group_layouts: &[Some(globe), None, None, Some(&layout)],
+            immediate_size: 0,
+        });
+        let target = |format| {
+            Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })
+        };
+        let pipeline = |label,
+                        layout,
+                        vertex_entry,
+                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                        fragment,
+                        targets: &[Option<wgpu::ColorTargetState>]| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some(vertex_entry),
+                    buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some(fragment),
+                    targets,
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let heights = [target(HEIGHTS)];
+        let flat = [Some(vertex)];
+        let empty = |label, format| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            texture.create_view(&Default::default())
+        };
+        let no_heights = empty("no edge heights", HEIGHTS);
+        let no_places = empty("no edge places", PLACES);
+        let none = group(
+            device,
+            &layout,
+            [&no_heights, &no_places, &no_heights, &no_places],
+        );
+        Edges {
+            heights: pipeline(
+                "edge heights",
+                &with_tiles,
+                "vs_main",
+                &[],
+                "fs_heights",
+                &heights,
+            ),
+            flat_heights: pipeline(
+                "flat edge heights",
+                &with_tiles,
+                "vs_flat",
+                &flat,
+                "fs_flat_heights",
+                &heights,
+            ),
+            seeds: pipeline(
+                "edge seeds",
+                &with_edges,
+                "vs_main",
+                &[],
+                "fs_edge_seeds",
+                &[target(PLACES), target(HEIGHTS)],
+            ),
+            nearest: pipeline(
+                "edge nearest",
+                &with_edges,
+                "vs_main",
+                &[],
+                "fs_edge_nearest",
+                &[target(PLACES)],
+            ),
+            layout,
+            no_heights,
+            no_places,
+            none,
+            scratch: None,
+            targets: HashMap::new(),
+        }
+    }
+
+    /// The layout of the last group of the layer pass.
+    pub fn layout(&self) -> &wgpu::BindGroupLayout {
+        &self.layout
+    }
+
+    /// The last group of the layer pass of a layer.
+    pub fn group(&self, layer: LayerKey) -> &wgpu::BindGroup {
+        self.targets.get(&layer).map_or(&self.none, |t| &t.group)
+    }
+
+    /// Keeps the textures of the layers that `live` keeps.
+    pub fn retain(&mut self, live: impl Fn(&LayerKey) -> bool) {
+        self.targets.retain(|layer, _| live(layer));
+    }
+
+    /// Encodes the passes of the lines of one layer for a render target of
+    /// `size` pixels. `mesh` is the mesh of the flat view, or `None` on the
+    /// globe.
+    pub fn encode(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        layer: LayerKey,
+        size: [u32; 2],
+        groups: Groups<'_>,
+        mesh: Option<Mesh<'_>>,
+    ) {
+        let size = size.map(|s| s.max(1));
+        if self.scratch.as_ref().is_none_or(|s| s.size != size) {
+            self.scratch = None;
+            let raw = view(device, "edge raw", size, HEIGHTS);
+            let seeds = view(device, "edge seeds", size, PLACES);
+            let (h, p) = (&self.no_heights, &self.no_places);
+            self.scratch = Some(Scratch {
+                size,
+                read_raw: group(device, &self.layout, [&raw, p, h, p]),
+                read_seeds: group(device, &self.layout, [h, &seeds, h, p]),
+                raw,
+                seeds,
+            });
+        }
+        if self.targets.get(&layer).is_none_or(|t| t.size != size) {
+            self.targets.remove(&layer);
+            let clean = view(device, "edge clean", size, HEIGHTS);
+            let nearest = texture(device, "edge nearest", size, PLACES);
+            let nearest_view = nearest.create_view(&Default::default());
+            let (h, p) = (&self.no_heights, &self.no_places);
+            let group = group(device, &self.layout, [h, p, &clean, &nearest_view]);
+            let target = Target {
+                size,
+                clean,
+                nearest,
+                nearest_view,
+                group,
+            };
+            self.targets.insert(layer, target);
+        }
+        let scratch = self.scratch.as_ref().expect("made above");
+        let target = &self.targets[&layer];
+        let attachment = |view, clear: f64| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: clear,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })
+        };
+        let empty = f64::from(EMPTY);
+        {
+            let mut pass = begin(encoder, "edge heights", &[attachment(&scratch.raw, -1.0)]);
+            pass.set_bind_group(0, groups.uniforms, &[]);
+            pass.set_bind_group(1, groups.tiles, &[]);
+            pass.set_bind_group(2, groups.levels, &[]);
+            match &mesh {
+                None => {
+                    pass.set_pipeline(&self.heights);
+                    pass.draw(0..3, 0..1);
+                }
+                Some(mesh) => {
+                    pass.set_pipeline(&self.flat_heights);
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.count, 0, 0..1);
+                }
+            }
+        }
+        {
+            let targets = [
+                attachment(&scratch.seeds, empty),
+                attachment(&target.clean, -1.0),
+            ];
+            let mut pass = begin(encoder, "edge seeds", &targets);
+            pass.set_pipeline(&self.seeds);
+            pass.set_bind_group(0, groups.uniforms, &[]);
+            pass.set_bind_group(3, &scratch.read_raw, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        {
+            let mut pass = begin(
+                encoder,
+                "edge nearest",
+                &[attachment(&target.nearest_view, empty)],
+            );
+            pass.set_pipeline(&self.nearest);
+            pass.set_bind_group(0, groups.uniforms, &[]);
+            pass.set_bind_group(3, &scratch.read_seeds, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    /// The nearest places of each layer: the size and the payloads, row by
+    /// row. It waits for the GPU.
+    pub fn read_nearest(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Vec<(LayerKey, [u32; 2], Vec<u32>)> {
+        let read = |target| read_places(device, queue, target);
+        let found = self.targets.iter();
+        found
+            .filter_map(|(layer, target)| Some((*layer, target.size, read(target)?)))
+            .collect()
+    }
+}
+
+/// The payloads of the nearest places of a target, row by row.
+fn read_places(device: &wgpu::Device, queue: &wgpu::Queue, target: &Target) -> Option<Vec<u32>> {
+    let [w, h] = target.size;
+    let row = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("edge nearest readback"),
+        size: u64::from(row * h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        target.nearest.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        target.nearest.size(),
+    );
+    queue.submit([encoder.finish()]);
+    buffer.map_async(wgpu::MapMode::Read, .., |_| {});
+    let wait = wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    };
+    device.poll(wait).ok()?;
+    let bytes = buffer.slice(..).get_mapped_range().ok()?;
+    let rows = bytes.chunks(row as usize);
+    let payloads = rows
+        .flat_map(|r| r[..w as usize * 4].chunks(4))
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    Some(payloads)
+}
+
+fn begin<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    label: &str,
+    targets: &[Option<wgpu::RenderPassColorAttachment<'_>>],
+) -> wgpu::RenderPass<'a> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: targets,
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    })
+}
+
+fn texture(
+    device: &wgpu::Device,
+    label: &str,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
+}
+
+fn view(
+    device: &wgpu::Device,
+    label: &str,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+) -> wgpu::TextureView {
+    texture(device, label, size, format).create_view(&Default::default())
+}
+
+fn group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    views: [&wgpu::TextureView; 4],
+) -> wgpu::BindGroup {
+    let entries: [wgpu::BindGroupEntry<'_>; 4] = std::array::from_fn(|i| wgpu::BindGroupEntry {
+        binding: i as u32,
+        resource: wgpu::BindingResource::TextureView(views[i]),
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("edges"),
+        layout,
+        entries: &entries,
+    })
 }
 
 #[cfg(test)]

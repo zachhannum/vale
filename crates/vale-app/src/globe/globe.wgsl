@@ -57,6 +57,9 @@ struct Uniforms {
     back: vec4<f32>,
     // The level of the smooth field, and the coarsest level of the map.
     detail: vec4<f32>,
+    // 1 when the passes of `edges.wgsl` ran for this layer, then the radius
+    // of their search in pixels.
+    edges: vec4<f32>,
     // The bands, from the lowest to the highest.
     bands: array<Band, 32>,
     // The lines of the stops, from the lowest stop to the highest. There is

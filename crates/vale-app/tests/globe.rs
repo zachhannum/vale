@@ -1,5 +1,6 @@
 use clap::Parser;
 use eframe::egui::{self, Pos2, Vec2};
+use eframe::egui_wgpu;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::cli::{Args, apply_globe, apply_globe_view};
@@ -8,6 +9,7 @@ use vale_app::globe::brush::slerp;
 use vale_app::globe::math::{V3, angle, lonlat_to_dir};
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{FACE_SIZE, Tool};
+use vale_app::globe::{edges, gpu};
 use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::ui::gradient::{DESKTOP, GRADIENT, stop_x};
@@ -478,11 +480,20 @@ fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
 /// A harness with the wgpu renderer and a height layer that the brush
 /// paints. Each step renders, so each step runs the GPU work of the globe.
 fn gpu_harness() -> Harness<'static, AppState> {
+    gpu_harness_on(render_state())
+}
+
+fn render_state() -> egui_wgpu::RenderState {
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    egui_kittest::wgpu::create_render_state(setup, egui_wgpu::RendererOptions::PREDICTABLE)
+}
+
+/// A harness as `gpu_harness` on this render state.
+fn gpu_harness_on(render_state: egui_wgpu::RenderState) -> Harness<'static, AppState> {
     let mut state = state();
     state.globe.set_face_size(BRUSH_FACE_SIZE);
     state.add_height();
-    let setup = egui_kittest::wgpu::default_wgpu_setup();
-    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    let mut h = headless::ui_harness_on(state, (640.0, 480.0), 1.0, render_state);
     h.set_render_every_step(true);
     h.run_steps(3);
     h
@@ -4052,8 +4063,17 @@ const LINE_WEIGHT: f32 = 3.0;
 /// is the great circle at a right angle to `axis`. Only that stop has a
 /// line. Each color stop is white, so the line is the only dark color.
 fn line_harness(display: RasterDisplay, axis: V3) -> Harness<'static, AppState> {
+    line_harness_on(display, axis, render_state())
+}
+
+/// A harness as `line_harness` on this render state.
+fn line_harness_on(
+    display: RasterDisplay,
+    axis: V3,
+    render_state: egui_wgpu::RenderState,
+) -> Harness<'static, AppState> {
     const N: usize = 64;
-    let mut h = gpu_harness();
+    let mut h = gpu_harness_on(render_state);
     show_as(h.state_mut(), display);
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(N);
@@ -4131,6 +4151,44 @@ fn a_stop_line_has_the_same_weight_at_each_zoom_and_across_a_face_edge() {
         let what = format!("zoom {zoom}");
         let columns = line_columns(&mut h, &what);
         assert_even_line(&columns, LINE_WEIGHT, &what);
+    }
+}
+
+#[test]
+fn each_pixel_near_a_stop_line_finds_the_crossing_of_its_column() {
+    let _gpu = one_gpu_test();
+    let render_state = render_state();
+    let mut h = line_harness_on(RasterDisplay::Bands, [0.0, 0.0, 1.0], render_state.clone());
+    h.state_mut().globe.view = GlobeView::centered(0.0, 0.0);
+    h.state_mut().globe.view.zoom = 4.0;
+    canvas_image(&mut h);
+    let places = gpu::nearest_places(&render_state);
+    assert_eq!(places.len(), 1);
+    let (_, [width, _], payloads) = &places[0];
+    let (rect, view) = (h.state().globe.rect, h.state().globe.view);
+    let reach = (LINE_WEIGHT / 2.0).ceil() as i32 + 1;
+    let from = view.project(rect, lonlat_to_dir(-10.0, 0.0)).unwrap();
+    let to = view.project(rect, lonlat_to_dir(10.0, 0.0)).unwrap();
+    for x in (rect.width() / 3.0) as u32..(2.0 * rect.width() / 3.0) as u32 {
+        let x = x + rect.min.x as u32;
+        // The equator on the screen at the middle of the column.
+        let t = (x as f32 + 0.5 - from.x) / (to.x - from.x);
+        let line = from.y + t * (to.y - from.y);
+        let row = line.floor() as i32;
+        for y in row - reach..=row + reach {
+            let payload = payloads[y as usize * *width as usize + x as usize];
+            let seed = edges::unpack(payload).unwrap_or_else(|| panic!("no place at {x}, {y}"));
+            let step = if seed.axis { [0.0, 1.0] } else { [1.0, 0.0] };
+            let along = seed.t as f32 / edges::T_STEPS as f32;
+            let place = [
+                seed.base[0] as f32 + step[0] * along,
+                seed.base[1] as f32 + step[1] * along,
+            ];
+            let what = format!("{x}, {y}: {seed:?}, line at {line}");
+            assert!(place[0].abs() < 0.01, "{what}");
+            let found = y as f32 + 0.5 + place[1];
+            assert!((found - line).abs() < 0.25, "{what}");
+        }
     }
 }
 
