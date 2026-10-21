@@ -1,10 +1,10 @@
 // The screen-space lines of the color stops, in passes before the layer
 // pass. The first pass writes the shown height of each pixel. The second
-// pass cuts away the peaks and the pits smaller than one pixel and finds the places
-// where the height crosses the value of a stop between two pixel centers.
-// The third pass gives each pixel the nearest of those places. The layer
-// pass then draws the band edges and the lines from the cut heights and the
-// nearest places.
+// pass cuts away the peaks and the pits smaller than one pixel, and finds
+// the places where the height crosses the value of a stop between two pixel
+// centers. The third pass marks the blocks of pixels with a place, and the
+// fourth gives each pixel the nearest place. The layer pass then draws the
+// band edges and the lines from the cut heights and the nearest places.
 //
 // This file comes after `globe.wgsl` in the same module. The payload of a
 // place matches `edges.rs`.
@@ -17,10 +17,14 @@
 @group(3) @binding(2) var edge_clean: texture_2d<f32>;
 // The nearest place of each pixel.
 @group(3) @binding(3) var edge_nearest: texture_2d<u32>;
+// 1 for each block of `EDGE_BLOCK` pixels on a side with a place, 0 for one
+// with none.
+@group(3) @binding(4) var edge_blocks: texture_2d<u32>;
 
 const EDGE_EMPTY: u32 = 0xffffffffu;
 const EDGE_T_STEPS: f32 = 64.0;
 const EDGE_MAX_HALF: f32 = 29.0;
+const EDGE_BLOCK: i32 = 8;
 
 fn edge_pack(base: vec2<i32>, axis: u32, t: u32, stop: u32) -> u32 {
     let b = bitcast<vec2<u32>>(base) & vec2<u32>(63u);
@@ -160,6 +164,22 @@ fn fs_edge_seeds(@builtin(position) frag: vec4<f32>) -> SeedOut {
     return SeedOut(vec4<u32>(best, 0u, 0u, 0u), vec4<f32>(h, 0.0, 0.0, 0.0));
 }
 
+// 1 for a block of pixels with a place, and 0 for one with none.
+@fragment
+fn fs_edge_blocks(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<u32> {
+    let first = vec2<i32>(floor(frag.xy)) * EDGE_BLOCK;
+    let size = vec2<i32>(textureDimensions(edge_seeds));
+    var found = 0u;
+    for (var y = first.y; y < min(first.y + EDGE_BLOCK, size.y); y++) {
+        for (var x = first.x; x < min(first.x + EDGE_BLOCK, size.x); x++) {
+            if textureLoad(edge_seeds, vec2<i32>(x, y), 0).x != EDGE_EMPTY {
+                found = 1u;
+            }
+        }
+    }
+    return vec4<u32>(found, 0u, 0u, 0u);
+}
+
 // Each pixel takes the place that a line reaches farthest past it, from the
 // places that the pixels within the radius keep. The search is exact.
 @fragment
@@ -169,6 +189,16 @@ fn fs_edge_nearest(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<u32>
     let r = i32(u.edges.y);
     let lo = max(p - vec2<i32>(r), vec2<i32>(0));
     let hi = min(p + vec2<i32>(r), size - vec2<i32>(1));
+    // Most pixels are far from each line, and their blocks have no place.
+    var near = false;
+    for (var by = lo.y / EDGE_BLOCK; by <= hi.y / EDGE_BLOCK; by++) {
+        for (var bx = lo.x / EDGE_BLOCK; bx <= hi.x / EDGE_BLOCK; bx++) {
+            near = near || textureLoad(edge_blocks, vec2<i32>(bx, by), 0).x != 0u;
+        }
+    }
+    if !near {
+        return vec4<u32>(EDGE_EMPTY, 0u, 0u, 0u);
+    }
     var best = EDGE_EMPTY;
     var best_m = 1e9;
     for (var y = lo.y; y <= hi.y; y++) {

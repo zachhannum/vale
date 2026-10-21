@@ -104,6 +104,31 @@ pub fn rebase(payload: u32, step: [i32; 2]) -> Option<u32> {
     pack(seed)
 }
 
+/// The pixels on a side of a block of the pass that marks the blocks with a
+/// place. The value matches `edges.wgsl`.
+pub const BLOCK: u32 = 8;
+
+/// The scissor of a pass in pixels, as x, y, width, and height: `area` grown
+/// by `grow` pixels on each side, inside a target of `size`. `area` is the
+/// left, the top, the right, and the bottom. `None` when nothing is left.
+pub fn scissor(area: [f32; 4], grow: u32, size: [u32; 2]) -> Option<[u32; 4]> {
+    let g = grow as f32;
+    let x0 = (area[0] - g).floor().max(0.0) as u32;
+    let y0 = (area[1] - g).floor().max(0.0) as u32;
+    let x1 = ((area[2] + g).ceil().max(0.0) as u32).min(size[0]);
+    let y1 = ((area[3] + g).ceil().max(0.0) as u32).min(size[1]);
+    (x1 > x0 && y1 > y0).then(|| [x0, y0, x1 - x0, y1 - y0])
+}
+
+/// The scissor of the pass of the blocks for the scissor of the places.
+fn block_scissor(places: [u32; 4], blocks: [u32; 2]) -> [u32; 4] {
+    let x0 = places[0] / BLOCK;
+    let y0 = places[1] / BLOCK;
+    let x1 = (places[0] + places[2]).div_ceil(BLOCK).min(blocks[0]);
+    let y1 = (places[1] + places[3]).div_ceil(BLOCK).min(blocks[1]);
+    [x0, y0, x1 - x0, y1 - y0]
+}
+
 const HEIGHTS: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 const PLACES: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
@@ -112,10 +137,13 @@ struct Scratch {
     size: [u32; 2],
     raw: wgpu::TextureView,
     seeds: wgpu::TextureView,
+    blocks: wgpu::TextureView,
     /// The group that reads `raw`.
     read_raw: wgpu::BindGroup,
     /// The group that reads `seeds`.
     read_seeds: wgpu::BindGroup,
+    /// The group that reads `seeds` and `blocks`.
+    read_blocks: wgpu::BindGroup,
 }
 
 /// The textures that the layer pass of one layer reads.
@@ -134,6 +162,17 @@ pub struct Mesh<'a> {
     pub count: u32,
 }
 
+/// Where the passes of a layer run.
+pub struct Extent {
+    /// The size of the render target in pixels.
+    pub size: [u32; 2],
+    /// The part of the target that the layer pass can draw, in pixels: the
+    /// left, the top, the right, and the bottom.
+    pub area: [f32; 4],
+    /// The radius of the search for the nearest place, in pixels.
+    pub radius: u32,
+}
+
 /// The bind groups of the layer pass that the passes of the heights read.
 pub struct Groups<'a> {
     pub uniforms: &'a wgpu::BindGroup,
@@ -143,10 +182,14 @@ pub struct Groups<'a> {
 
 /// The pipelines and the textures of the lines of the stops.
 pub struct Edges {
+    /// The layout of the last group of the passes before the layer pass.
     layout: wgpu::BindGroupLayout,
+    /// The layout of the last group of the layer pass.
+    resolve: wgpu::BindGroupLayout,
     heights: wgpu::RenderPipeline,
     flat_heights: wgpu::RenderPipeline,
     seeds: wgpu::RenderPipeline,
+    blocks: wgpu::RenderPipeline,
     nearest: wgpu::RenderPipeline,
     no_heights: wgpu::TextureView,
     no_places: wgpu::TextureView,
@@ -180,14 +223,17 @@ impl Edges {
         };
         let float = wgpu::TextureSampleType::Float { filterable: false };
         let uint = wgpu::TextureSampleType::Uint;
+        // The passes before the layer pass read the heights, the places, and
+        // the blocks. The layer pass reads the cut heights and the nearest
+        // places, in a group of its own, so that it keeps under the limit of
+        // the textures of one pass.
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("edges"),
-            entries: &[
-                texture(0, float),
-                texture(1, uint),
-                texture(2, float),
-                texture(3, uint),
-            ],
+            entries: &[texture(0, float), texture(1, uint), texture(4, uint)],
+        });
+        let resolve = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("edge lines"),
+            entries: &[texture(2, float), texture(3, uint)],
         });
         let with_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("edge heights"),
@@ -255,11 +301,7 @@ impl Edges {
         };
         let no_heights = empty("no edge heights", HEIGHTS);
         let no_places = empty("no edge places", PLACES);
-        let none = group(
-            device,
-            &layout,
-            [&no_heights, &no_places, &no_heights, &no_places],
-        );
+        let none = group(device, &resolve, &[(2, &no_heights), (3, &no_places)]);
         Edges {
             heights: pipeline(
                 "edge heights",
@@ -285,6 +327,14 @@ impl Edges {
                 "fs_edge_seeds",
                 &[target(PLACES), target(HEIGHTS)],
             ),
+            blocks: pipeline(
+                "edge blocks",
+                &with_edges,
+                "vs_main",
+                &[],
+                "fs_edge_blocks",
+                &[target(PLACES)],
+            ),
             nearest: pipeline(
                 "edge nearest",
                 &with_edges,
@@ -294,6 +344,7 @@ impl Edges {
                 &[target(PLACES)],
             ),
             layout,
+            resolve,
             no_heights,
             no_places,
             none,
@@ -303,8 +354,8 @@ impl Edges {
     }
 
     /// The layout of the last group of the layer pass.
-    pub fn layout(&self) -> &wgpu::BindGroupLayout {
-        &self.layout
+    pub fn resolve_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.resolve
     }
 
     /// The last group of the layer pass of a layer.
@@ -325,22 +376,31 @@ impl Edges {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         layer: LayerKey,
-        size: [u32; 2],
+        extent: Extent,
         groups: Groups<'_>,
         mesh: Option<Mesh<'_>>,
     ) {
+        let Extent { size, area, radius } = extent;
         let size = size.map(|s| s.max(1));
         if self.scratch.as_ref().is_none_or(|s| s.size != size) {
             self.scratch = None;
             let raw = view(device, "edge raw", size, HEIGHTS);
             let seeds = view(device, "edge seeds", size, PLACES);
+            let blocks = view(
+                device,
+                "edge blocks",
+                size.map(|s| s.div_ceil(BLOCK)),
+                PLACES,
+            );
             let (h, p) = (&self.no_heights, &self.no_places);
             self.scratch = Some(Scratch {
                 size,
-                read_raw: group(device, &self.layout, [&raw, p, h, p]),
-                read_seeds: group(device, &self.layout, [h, &seeds, h, p]),
+                read_raw: group(device, &self.layout, &[(0, &raw), (1, p), (4, p)]),
+                read_seeds: group(device, &self.layout, &[(0, h), (1, &seeds), (4, p)]),
+                read_blocks: group(device, &self.layout, &[(0, h), (1, &seeds), (4, &blocks)]),
                 raw,
                 seeds,
+                blocks,
             });
         }
         if self.targets.get(&layer).is_none_or(|t| t.size != size) {
@@ -348,8 +408,7 @@ impl Edges {
             let clean = view(device, "edge clean", size, HEIGHTS);
             let nearest = texture(device, "edge nearest", size, PLACES);
             let nearest_view = nearest.create_view(&Default::default());
-            let (h, p) = (&self.no_heights, &self.no_places);
-            let group = group(device, &self.layout, [h, p, &clean, &nearest_view]);
+            let group = group(device, &self.resolve, &[(2, &clean), (3, &nearest_view)]);
             let target = Target {
                 size,
                 clean,
@@ -378,8 +437,24 @@ impl Edges {
             })
         };
         let empty = f64::from(EMPTY);
+        // The layer pass reads the cut heights up to 5 pixels past the
+        // nearest place, and the cut heights read the heights 2 pixels away.
+        let places = scissor(area, radius + 6, size);
+        let heights = scissor(area, radius + 8, size);
+        let nearest = scissor(area, 1, size);
+        let blocks = size.map(|s| s.div_ceil(BLOCK));
+        let clip = |pass: &mut wgpu::RenderPass<'_>, rect: Option<[u32; 4]>| match rect {
+            Some([x, y, w, h]) => {
+                pass.set_scissor_rect(x, y, w, h);
+                true
+            }
+            None => false,
+        };
         {
             let mut pass = begin(encoder, "edge heights", &[attachment(&scratch.raw, -1.0)]);
+            if !clip(&mut pass, heights) {
+                return;
+            }
             pass.set_bind_group(0, groups.uniforms, &[]);
             pass.set_bind_group(1, groups.tiles, &[]);
             pass.set_bind_group(2, groups.levels, &[]);
@@ -402,9 +477,18 @@ impl Edges {
                 attachment(&target.clean, -1.0),
             ];
             let mut pass = begin(encoder, "edge seeds", &targets);
+            clip(&mut pass, places);
             pass.set_pipeline(&self.seeds);
             pass.set_bind_group(0, groups.uniforms, &[]);
             pass.set_bind_group(3, &scratch.read_raw, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        if let Some(places) = places {
+            let mut pass = begin(encoder, "edge blocks", &[attachment(&scratch.blocks, 0.0)]);
+            clip(&mut pass, Some(block_scissor(places, blocks)));
+            pass.set_pipeline(&self.blocks);
+            pass.set_bind_group(0, groups.uniforms, &[]);
+            pass.set_bind_group(3, &scratch.read_seeds, &[]);
             pass.draw(0..3, 0..1);
         }
         {
@@ -413,9 +497,10 @@ impl Edges {
                 "edge nearest",
                 &[attachment(&target.nearest_view, empty)],
             );
+            clip(&mut pass, nearest);
             pass.set_pipeline(&self.nearest);
             pass.set_bind_group(0, groups.uniforms, &[]);
-            pass.set_bind_group(3, &scratch.read_seeds, &[]);
+            pass.set_bind_group(3, &scratch.read_blocks, &[]);
             pass.draw(0..3, 0..1);
         }
     }
@@ -525,12 +610,15 @@ fn view(
 fn group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    views: [&wgpu::TextureView; 4],
+    views: &[(u32, &wgpu::TextureView)],
 ) -> wgpu::BindGroup {
-    let entries: [wgpu::BindGroupEntry<'_>; 4] = std::array::from_fn(|i| wgpu::BindGroupEntry {
-        binding: i as u32,
-        resource: wgpu::BindingResource::TextureView(views[i]),
-    });
+    let entries: Vec<wgpu::BindGroupEntry<'_>> = views
+        .iter()
+        .map(|&(binding, view)| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        })
+        .collect();
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("edges"),
         layout,
@@ -541,6 +629,21 @@ fn group(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scissor_grows_the_area_and_stays_in_the_target() {
+        let size = [100, 80];
+        assert_eq!(
+            scissor([10.0, 20.0, 50.5, 60.0], 4, size),
+            Some([6, 16, 49, 48])
+        );
+        assert_eq!(
+            scissor([-5.0, 70.0, 120.0, 90.0], 2, size),
+            Some([0, 68, 100, 12])
+        );
+        assert_eq!(scissor([200.0, 0.0, 300.0, 10.0], 4, size), None);
+        assert_eq!(block_scissor([6, 16, 49, 48], [13, 10]), [0, 2, 7, 6]);
+    }
 
     fn line(half: f32) -> LineUniform {
         [[0.0, 0.0, 0.0, half], [0.5, 0.0, 0.0, 0.0]]

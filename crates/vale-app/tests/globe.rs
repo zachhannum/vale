@@ -4327,7 +4327,7 @@ fn a_change_of_the_heights_moves_the_line_in_the_same_frame() {
         "the frame of the change is not final"
     );
     let (rect, view) = (h.state().globe.rect, h.state().globe.view);
-    let lat = -(lift as f64).asin().to_degrees();
+    let lat = -f64::asin(lift).to_degrees();
     let coast = view.project(rect, lonlat_to_dir(0.0, lat)).unwrap();
     let (middle, count) = dark_rows(&h, &moved);
     assert!(count > 0);

@@ -239,7 +239,7 @@ impl Resources {
                 Some(&layout),
                 Some(&tiles),
                 Some(&levels),
-                Some(edges.layout()),
+                Some(edges.resolve_layout()),
             ],
             immediate_size: 0,
         });
@@ -536,8 +536,20 @@ impl Resources {
             tiles: &tiles,
             levels: &levels,
         };
+        // The canvas, and on the globe the box around its disk.
+        let mut area = draw.clip;
+        if !flat {
+            let [x, y, r, _] = draw.uniforms.globe;
+            area = [
+                area[0].max(x - r),
+                area[1].max(y - r),
+                area[2].min(x + r),
+                area[3].min(y + r),
+            ];
+        }
+        let extent = edges::Extent { size, area, radius };
         self.edges
-            .encode(device, encoder, layer, size, groups, mesh);
+            .encode(device, encoder, layer, extent, groups, mesh);
         Some(radius)
     }
 
