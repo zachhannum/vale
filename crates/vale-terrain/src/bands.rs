@@ -411,9 +411,10 @@ impl Bands {
         if n == 0 || n > MAX_BANDS || (self.split && n < 2) {
             return None;
         }
-        let mut stops: Vec<Stop> = if n + 1 == self.stops.len() {
-            self.stops.clone()
-        } else {
+        if n + 1 == self.stops.len() {
+            return self.stretched(colors);
+        }
+        let stops: Vec<Stop> = {
             let sides: Vec<(f64, f64, usize)> = if self.split {
                 let blue = colors
                     .iter()
@@ -445,6 +446,25 @@ impl Bands {
                 })
                 .collect()
         };
+        self.with_band_colors(stops, colors)
+    }
+
+    /// The bands with the same stops, values, and lines, and the colors of
+    /// a ramp. Each band takes the color at its middle along the ramp, so
+    /// with more bands than colors, a color repeats, and with fewer bands,
+    /// a color drops out. Returns `None` if there are no colors.
+    pub fn stretched(&self, colors: &[Rgb]) -> Option<Bands> {
+        let (n, m) = (colors.len(), self.stops.len() - 1);
+        if n == 0 {
+            return None;
+        }
+        let colors: Vec<Rgb> = (0..m).map(|i| colors[(2 * i + 1) * n / (2 * m)]).collect();
+        self.with_band_colors(self.stops.clone(), &colors)
+    }
+
+    /// These stops with one color for each band, from the lowest band.
+    fn with_band_colors(&self, mut stops: Vec<Stop>, colors: &[Rgb]) -> Option<Bands> {
+        let n = colors.len();
         let sea = self
             .split
             .then(|| stops.partition_point(|s| s.value < SEA_LEVEL));
@@ -1186,6 +1206,34 @@ mod tests {
         let painted = bands.painted(&colors).unwrap();
         assert_eq!(values(&painted), [0.0, 20.0, 40.0, 60.0, 80.0, 100.0]);
         assert_eq!(band_colors(&painted), colors);
+    }
+
+    #[test]
+    fn stretched_keeps_the_stops_and_takes_the_color_at_each_middle() {
+        let mut bands = Bands::with_range(0.0, 100.0, false).unwrap();
+        bands.set_line(
+            2,
+            StopLine {
+                on: true,
+                ..StopLine::default()
+            },
+        );
+        let before = bands.stops().to_vec();
+        let more = bands.stretched(&greys(4)).unwrap();
+        assert_eq!(values(&more), values(&bands));
+        assert_eq!(more.stops()[2].line, before[2].line);
+        let g = greys(4);
+        assert_eq!(
+            band_colors(&more),
+            [g[0], g[0], g[1], g[1], g[2], g[2], g[3], g[3]]
+        );
+        let fewer = bands.stretched(&greys(16)).unwrap();
+        let g = greys(16);
+        assert_eq!(
+            band_colors(&fewer),
+            [g[1], g[3], g[5], g[7], g[9], g[11], g[13], g[15]]
+        );
+        assert!(bands.stretched(&[]).is_none());
     }
 
     #[test]
