@@ -6,8 +6,8 @@
 // in greyscale. Each pass gives a color with its alpha multiplied in. The
 // face layout matches `cube.rs` of `vale-terrain`.
 //
-// The source of `tiles.wgsl` of `vale-terrain` comes before this file, and
-// each read of a level goes through its `tile_level`.
+// The sources of `tiles.wgsl` and `field.wgsl` of `vale-terrain` come before
+// this file. Each read of a level goes through their `field`.
 
 struct Band {
     // The color at the lower limit, then the lower limit, from 0 to 1.
@@ -55,6 +55,8 @@ struct Uniforms {
     ground: vec4<f32>,
     // The color of the canvas around the globe.
     back: vec4<f32>,
+    // The level of the smooth field, and the coarsest level of the map.
+    detail: vec4<f32>,
     // The bands, from the lowest to the highest.
     bands: array<Band, 32>,
     // The lines of the stops, from the lowest stop to the highest. There is
@@ -89,85 +91,8 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x, y, 0.0, 1.0);
 }
 
-fn load(face: i32, x: i32, y: i32) -> f32 {
-    return f32(tile_level(face, vec2<i32>(x, y))) / 65535.0;
-}
-
-// The flat face coordinate at the center of a texel. A texel past the face
-// gives the face edge.
-fn flat_at(i: i32) -> f32 {
-    let s = (f32(i) + 0.5) / u.params.x * 2.0 - 1.0;
-    return tan(clamp(s, -1.0, 1.0) * (PI / 4.0));
-}
-
-// The texel of the next face that touches a texel on a face edge. `x` or `y`
-// is one texel past the face.
-fn across(face: i32, x: i32, y: i32) -> f32 {
-    let n = i32(u.params.x);
-    let axis = face / 2;
-    // The point on the edge, next to the two texels.
-    var p: array<f32, 3>;
-    p[axis] = 1.0 - 2.0 * f32(face % 2);
-    p[(axis + 1) % 3] = flat_at(x);
-    p[(axis + 2) % 3] = flat_at(y);
-    var next = (axis + 1) % 3;
-    if y < 0 || y >= n {
-        next = (axis + 2) % 3;
-    }
-    var to = next * 2;
-    if p[next] < 0.0 {
-        to += 1;
-    }
-    let f = vec2<f32>(p[(next + 1) % 3], p[(next + 2) % 3]) / abs(p[next]);
-    let s = atan(f) * (4.0 / PI);
-    let i = vec2<i32>(floor((s * 0.5 + 0.5) * u.params.x));
-    let c = clamp(i, vec2<i32>(0), vec2<i32>(n - 1));
-    return load(to, c.x, c.y);
-}
-
-// The height of a texel, from 0 to 1. A texel one step past the face comes
-// from the next face, so the filter has no seam.
-fn texel(face: i32, x: i32, y: i32) -> f32 {
-    let last = i32(u.params.x) - 1;
-    let cx = clamp(x, 0, last);
-    let cy = clamp(y, 0, last);
-    if x == cx && y == cy {
-        return load(face, x, y);
-    }
-    if x != cx && y != cy {
-        // Three faces meet at a cube corner, so no texel is there. The mean
-        // of the three corner texels is the same from each face.
-        return (load(face, cx, cy) + across(face, x, cy) + across(face, cx, y)) / 3.0;
-    }
-    return across(face, x, y);
-}
-
-struct Place {
-    face: i32,
-    // The place on the face, from 0 to 1 along each axis.
-    at: vec2<f32>,
-}
-
-// The place of a world direction on its cube face.
-fn place(d: vec3<f32>) -> Place {
-    let a = abs(d);
-    var axis = 2;
-    if a.x >= a.y && a.x >= a.z {
-        axis = 0;
-    } else if a.y >= a.z {
-        axis = 1;
-    }
-    var face = axis * 2;
-    if d[axis] < 0.0 {
-        face += 1;
-    }
-    let flat = vec2<f32>(d[(axis + 1) % 3], d[(axis + 2) % 3]) / a[axis];
-    let s = atan(flat) * (4.0 / PI);
-    return Place(face, s * 0.5 + 0.5);
-}
-
 // The change of the height across one pixel in x and in y. `slope` is the
-// change across one texel from `height`, and `dx` and `dy` are the change of
+// change across one texel from `shown`, and `dx` and `dy` are the change of
 // the direction from one pixel to the next. The texels of a face are not the
 // same size, so the slope goes through the place on the face and back to the
 // sphere.
@@ -198,20 +123,11 @@ fn uphill(s: vec2<f32>, dx: vec3<f32>, dy: vec3<f32>) -> vec3<f32> {
     return n.x * dx + n.y * dy;
 }
 
-// The height at a world direction, from 0 to 1, with bilinear filtering. The
-// y and z parts are the change of the height across one texel.
-fn height(d: vec3<f32>) -> vec3<f32> {
-    let p = place(d);
-    let face = p.face;
-    let f = p.at * u.params.x - 0.5;
-    let i = vec2<i32>(floor(f));
-    let t = f - floor(f);
-    let h00 = texel(face, i.x, i.y);
-    let h10 = texel(face, i.x + 1, i.y);
-    let h01 = texel(face, i.x, i.y + 1);
-    let h11 = texel(face, i.x + 1, i.y + 1);
-    let slope = vec2<f32>(mix(h10 - h00, h11 - h01, t.y), mix(h01 - h00, h11 - h10, t.x));
-    return vec3<f32>(mix(mix(h00, h10, t.x), mix(h01, h11, t.x), t.y), slope);
+// The value of the layer at a world direction, from 0 to 1, at the level
+// of the smoothing. The y and z parts are the change of the value across one
+// texel.
+fn shown(d: vec3<f32>) -> vec3<f32> {
+    return field(d, u32(u.params.x), u.detail.x, u32(u.detail.y));
 }
 
 // The first two bytes of a texel of the channel map. A texel past the face gives
@@ -366,8 +282,8 @@ fn stop_lines(base: vec3<f32>, h: f32, width: f32, d: vec3<f32>, up: vec3<f32>) 
         if abs(h - at) / w >= 4.0 * reach {
             continue;
         }
-        let high = height(normalize(d + up * reach)).x;
-        let low = height(normalize(d - up * reach)).x;
+        let high = shown(normalize(d + up * reach)).x;
+        let low = shown(normalize(d - up * reach)).x;
         // A height at the value is in the upper band, as in `tint`, so a
         // flat place at the value has no line.
         let below = h < at;
@@ -453,7 +369,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // A derivative of the height is wrong where the pixels of a quad read
     // different faces, so the width comes from the slope of the texels, as
     // in `fs_flat`.
-    let h = height(at.d);
+    let h = shown(at.d);
     let slope = pixel_slope(at.d, h.yz, at.dx, at.dy);
     let up = uphill(slope, at.dx, at.dy);
     let color = ground(h.x, length(slope), at.d, at.px, up) * at.shade;
@@ -525,7 +441,7 @@ fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
     // A derivative of the height is wrong at an edge of a triangle of the
     // mesh, so the width comes from the slope of the texels. A face has
     // 2 / PI of its texels in one radian.
-    let h = height(d);
+    let h = shown(d);
     let angle = max(length(dpdx(d)), length(dpdy(d)));
     let slope = pixel_slope(d, h.yz, dpdx(d), dpdy(d));
     let up = uphill(slope, dpdx(d), dpdy(d));

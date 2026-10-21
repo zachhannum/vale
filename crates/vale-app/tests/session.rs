@@ -3,7 +3,7 @@ use std::time::Instant;
 use vale_app::document::Document;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
 use vale_app::ui::{AppState, LayerRef, RasterSpec};
-use vale_store::{Project, ProjectFile, RasterDisplay, RasterId, Units, World};
+use vale_store::{Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{
     Bands, FACES, Heightmap, Limits, Mode, Side, Stamp, TexelRect, meters_to_level,
@@ -1077,6 +1077,65 @@ fn the_export_of_a_layer_that_is_not_the_brush_layer_has_its_full_detail() {
     let (brush, other) = (std::fs::read(brush).unwrap(), std::fs::read(other).unwrap());
     assert!(brush.len() > 100_000, "{}", brush.len());
     assert!(brush == other, "the two files are not the same");
+}
+
+#[test]
+fn each_raster_layer_keeps_its_own_smoothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    let height = state.add_height();
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 128,
+    };
+    let rain = state.add_raster(rain).unwrap();
+    assert!(state.set_raster_smoothing(height, false));
+    assert!(state.set_raster_feature_size(rain, 5.0));
+    let off = Smoothing {
+        on: false,
+        feature_size: Smoothing::FEATURE_SIZE_DEFAULT,
+    };
+    let five = Smoothing {
+        on: true,
+        feature_size: 5.0,
+    };
+    let smoothing = |project: &Project, id| project.raster(id).unwrap().smoothing;
+    let check = |project: &Project, step: &str| {
+        assert_eq!(smoothing(project, height), off, "{step}");
+        assert_eq!(smoothing(project, rain), five, "{step}");
+    };
+
+    // The undo of a stroke after a save keeps the smoothing.
+    state.save_waiting().unwrap();
+    paint_layer(&mut state, rain, -100.0, 5.0);
+    state.undo();
+    check(&state.doc.project, "the undo of a stroke");
+    state.undo();
+    assert_eq!(smoothing(&state.doc.project, height), Smoothing::default());
+    state.redo();
+    check(&state.doc.project, "the redo");
+
+    // A new layer saves the changes that wait, and the file keeps them.
+    let next = RasterSpec {
+        name: "Heat".to_string(),
+        unit: "K".to_string(),
+        min: 200.0,
+        max: 330.0,
+        face_size: 128,
+    };
+    state.add_raster(next).unwrap();
+    let (_, stored) = ProjectFile::open(&path).unwrap();
+    check(&stored, "the file");
+    drop(state);
+    let mut doc = Document::empty();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    check(&doc.project, "the next start");
 }
 
 #[test]

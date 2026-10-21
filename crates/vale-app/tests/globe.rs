@@ -4220,3 +4220,396 @@ fn a_stop_line_shows_only_where_the_values_cross_the_stop() {
     let dark: f32 = columns.iter().sum();
     assert!(dark < 1.0, "{dark}");
 }
+
+/// The raster layer that the brush paints.
+fn brush_layer(h: &Harness<'static, AppState>) -> RasterId {
+    h.state().shown_raster().unwrap().id
+}
+
+/// Turns the smoothing of a raster layer on or off, with a feature size in
+/// points.
+fn set_smoothing(h: &mut Harness<'static, AppState>, id: RasterId, on: bool, points: f32) {
+    let state = h.state_mut();
+    assert!(state.set_raster_smoothing(id, on));
+    assert!(state.set_raster_feature_size(id, points));
+    h.step();
+}
+
+/// A GPU harness with a greyscale layer of noise with `n` texels on a face,
+/// at the zoom of the whole globe.
+fn smooth_harness(n: usize) -> Harness<'static, AppState> {
+    let mut h = gpu_harness();
+    show_as(h.state_mut(), RasterDisplay::Grey);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(n);
+    globe.preview.graticule = false;
+    globe.preview.rivers = false;
+    globe.view = GlobeView::centered(10.0, 20.0);
+    set_noise(&mut h, &[0, 1, 2, 3, 4, 5], 0);
+    h.run_steps(2);
+    h
+}
+
+/// The world direction at the middle of a pixel of `canvas_image`.
+fn pixel_dir(h: &Harness<'static, AppState>, px: u32, py: u32) -> V3 {
+    let min = h.state().globe.rect.min;
+    let pos = Pos2::new(
+        min.x.ceil() + px as f32 + 0.5,
+        min.y.ceil() + py as f32 + 0.5,
+    );
+    place(h, pos)
+}
+
+/// The grey of the field that the globe shows for a layer at a pixel of
+/// `canvas_image`.
+fn field_grey(h: &Harness<'static, AppState>, id: RasterId, px: u32, py: u32) -> f64 {
+    let dir = pixel_dir(h, px, py);
+    h.state().globe.shown_field(id, dir).unwrap() * 255.0
+}
+
+/// The pixels of a square of 7 by 7 pixels, 3 pixels apart, at the middle of
+/// an image.
+fn middle_pixels(img: &image::RgbaImage) -> Vec<(u32, u32)> {
+    let (cx, cy) = (img.width() / 2, img.height() / 2);
+    let mut out = Vec::new();
+    for j in -3..=3i32 {
+        for i in -3..=3i32 {
+            out.push(((cx as i32 + 3 * i) as u32, (cy as i32 + 3 * j) as u32));
+        }
+    }
+    out
+}
+
+/// Makes sure that each pixel shows the field of `shown_field`.
+fn assert_shows_field(h: &Harness<'static, AppState>, img: &image::RgbaImage, id: RasterId) {
+    for (px, py) in middle_pixels(img) {
+        let grey = f64::from(img.get_pixel(px, py).0[0]);
+        let field = field_grey(h, id, px, py);
+        assert!(
+            (grey - field).abs() <= 2.0,
+            "{grey} and {field} at {px}, {py}"
+        );
+    }
+}
+
+#[test]
+fn the_display_shows_the_smooth_field_and_the_switch_shows_the_full_detail() {
+    let _gpu = one_gpu_test();
+    let mut h = smooth_harness(512);
+    let id = brush_layer(&h);
+    let level = h.state().globe.smoothing_level(id);
+    assert!(level >= 1.0, "{level}");
+    let smooth = canvas_image(&mut h);
+    assert_shows_field(&h, &smooth, id);
+
+    set_smoothing(&mut h, id, false, 2.0);
+    assert_eq!(h.state().globe.smoothing_level(id), 0.0);
+    let full = canvas_image(&mut h);
+    assert_shows_field(&h, &full, id);
+    let pixels = middle_pixels(&full);
+    let differ: u32 = pixels
+        .iter()
+        .map(|&(x, y)| u32::from(smooth.get_pixel(x, y).0[0].abs_diff(full.get_pixel(x, y).0[0])))
+        .sum();
+    let mean = differ as f64 / pixels.len() as f64;
+    assert!(mean > 20.0, "{mean}");
+}
+
+#[test]
+fn a_size_of_zero_shows_the_full_detail() {
+    let _gpu = one_gpu_test();
+    let mut h = smooth_harness(512);
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, true, 0.0);
+    assert_eq!(h.state().globe.smoothing_level(id), 0.0);
+    let zero = canvas_image(&mut h);
+    set_smoothing(&mut h, id, false, 2.0);
+    let off = canvas_image(&mut h);
+    assert!(zero == off, "a size of zero is not the full detail");
+    set_smoothing(&mut h, id, true, 2.0);
+    assert!(canvas_image(&mut h) != off);
+}
+
+#[test]
+fn a_bump_smaller_than_the_feature_size_has_no_line_with_the_smoothing() {
+    const N: usize = 256;
+    let _gpu = one_gpu_test();
+    let mut h = line_harness(RasterDisplay::Bands, [0.0, 0.0, 1.0]);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(N);
+    globe.map.fill(meters_to_level(-500.0));
+    // Four texels above the sea at the middle of face +x.
+    for (x, y) in [(127, 127), (128, 127), (127, 128), (128, 128)] {
+        globe.map.set(0, x, y, meters_to_level(1000.0));
+    }
+    assert!(angle(globe.map.texel_dir(0, 128, 128), [1.0, 0.0, 0.0]) < 0.01);
+    globe.view = GlobeView::centered(0.0, 0.0);
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, true, 8.0);
+    let level = h.state().globe.smoothing_level(id);
+    assert!(level >= 2.0, "{level}");
+    let smooth: f32 = line_columns(&mut h, "smooth bump").iter().sum();
+    set_smoothing(&mut h, id, false, 8.0);
+    let full: f32 = line_columns(&mut h, "full bump").iter().sum();
+    assert!(full > 3.0, "{full}");
+    assert!(smooth < 0.5, "{smooth}");
+}
+
+/// A map of smooth waves over the sphere.
+fn set_waves(map: &mut vale_terrain::Heightmap) {
+    let n = map.face_size();
+    let axes = [[0.3, 0.8, 0.5], [-0.7, 0.2, 0.6], [0.5, -0.4, 0.75]];
+    for face in 0..6 {
+        for y in 0..n {
+            for x in 0..n {
+                let d = map.texel_dir(face, x, y);
+                let w: f64 = axes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| {
+                        (d.iter().zip(a).map(|(p, q)| p * q).sum::<f64>() * (9.0 + 4.0 * i as f64))
+                            .sin()
+                    })
+                    .sum();
+                map.set(face, x, y, (32768.0 + 9000.0 * w) as u16);
+            }
+        }
+    }
+}
+
+#[test]
+fn the_smooth_field_has_no_seam_at_a_face_edge_or_at_a_cube_corner() {
+    const N: usize = 256;
+    const HALF: u32 = 20;
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    show_as(h.state_mut(), RasterDisplay::Grey);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(N);
+    globe.preview.graticule = false;
+    globe.preview.rivers = false;
+    three_stops(&mut globe.map.bands, [[0; 3], [127; 3], [128; 3], [255; 3]]);
+    set_waves(&mut globe.map);
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, true, 8.0);
+    for x in [-1.0, 0.0, 1.0f64] {
+        for y in [-1.0, 0.0, 1.0f64] {
+            for z in [-1.0, 0.0, 1.0f64] {
+                if x.abs() + y.abs() + z.abs() < 2.0 {
+                    continue;
+                }
+                let lat = z.atan2(x.hypot(y)).to_degrees();
+                let lon = y.atan2(x).to_degrees();
+                let globe = &mut h.state_mut().globe;
+                globe.view = GlobeView::centered(lon, lat);
+                globe.view.zoom = 1.5;
+                show_as(h.state_mut(), RasterDisplay::Grey);
+                let grey = canvas_image(&mut h);
+                let level = h.state().globe.smoothing_level(id);
+                assert!(level >= 1.0, "{level}");
+                // The pixels around the place show the field of the CPU,
+                // which has no seam.
+                let (cx, cy) = (grey.width() / 2, grey.height() / 2);
+                let mut field = Vec::new();
+                for py in cy - HALF..=cy + HALF {
+                    for px in cx - HALF..=cx + HALF {
+                        let value = field_grey(&h, id, px, py);
+                        let shown = f64::from(grey.get_pixel(px, py).0[0]);
+                        let place = [x, y, z];
+                        assert!(
+                            (shown - value).abs() <= 2.0,
+                            "{shown} and {value} at {px}, {py}, {place:?}"
+                        );
+                        field.push(value);
+                    }
+                }
+                // The largest step of the field from a pixel to the next.
+                let side = (2 * HALF + 1) as usize;
+                let mut step = 0f64;
+                for j in 0..side {
+                    for i in 0..side {
+                        let v = field[j * side + i];
+                        if i + 1 < side {
+                            step = step.max((v - field[j * side + i + 1]).abs());
+                        }
+                        if j + 1 < side {
+                            step = step.max((v - field[(j + 1) * side + i]).abs());
+                        }
+                    }
+                }
+                // The Gradient display has grey stops, so its steps are near
+                // those of the field.
+                show_as(h.state_mut(), RasterDisplay::Gradient);
+                let img = canvas_image(&mut h);
+                let crop = image::imageops::crop_imm(
+                    &img,
+                    cx - HALF,
+                    cy - HALF,
+                    2 * HALF + 1,
+                    2 * HALF + 1,
+                )
+                .to_image();
+                let (largest, _) = largest_step(&crop);
+                let limit = (3.0 * step).ceil() as u8 + 3;
+                assert!(
+                    largest <= limit,
+                    "a step of {largest} at {:?}, limit {limit}",
+                    [x, y, z]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_detail_changes_with_no_jump_while_the_view_zooms() {
+    let _gpu = one_gpu_test();
+    let mut h = smooth_harness(512);
+    let id = brush_layer(&h);
+    // The places under the middle pixels at the first zoom.
+    let img = canvas_image(&mut h);
+    let pixels = middle_pixels(&img);
+    let dirs: Vec<V3> = pixels.iter().map(|&(x, y)| pixel_dir(&h, x, y)).collect();
+    let mut levels = Vec::new();
+    let mut fields: Vec<Vec<f64>> = Vec::new();
+    let mut zoom = 1.0;
+    while zoom < 2.2 {
+        h.state_mut().globe.view.zoom = zoom;
+        let img = canvas_image(&mut h);
+        // The display shows the field at each zoom.
+        assert_shows_field(&h, &img, id);
+        let globe = &h.state().globe;
+        levels.push(globe.smoothing_level(id));
+        fields.push(
+            dirs.iter()
+                .map(|d| globe.shown_field(id, *d).unwrap() * 255.0)
+                .collect(),
+        );
+        zoom *= 1.03;
+    }
+    // The levels cross a whole level.
+    let (first, last) = (levels[0], *levels.last().unwrap());
+    assert!(first > 1.5 && last < 1.0, "{first} {last}");
+    // A step of the zoom changes the level by log2(1.03), so a place
+    // changes by that part of the grey range at most.
+    let limit = 1.03f64.log2() * 255.0;
+    let mut total = 0.0;
+    for pair in fields.windows(2) {
+        for (a, b) in pair[0].iter().zip(&pair[1]) {
+            let step = (a - b).abs();
+            assert!(step <= limit, "a step of {step}, limit {limit}");
+            total += step;
+        }
+    }
+    assert!(total > 50.0, "{total}");
+}
+
+#[test]
+fn a_stroke_shows_in_the_smooth_display_while_the_pen_is_down() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    show_as(h.state_mut(), RasterDisplay::Grey);
+    h.state_mut().globe.preview.graticule = false;
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, true, 8.0);
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(1);
+    let level = h.state().globe.smoothing_level(id);
+    assert!(level >= 1.0, "{level}");
+    let before = canvas_image(&mut h);
+    let c = h.state().globe.rect.center();
+    let under = place(&h, c - Vec2::new(35.0, 0.0));
+    let base = h.state().globe.map.base();
+    let (from, to) = (c - Vec2::new(40.0, 0.0), c + Vec2::new(40.0, 0.0));
+    button(&mut h, egui::PointerButton::Primary, from, true);
+    h.step();
+    for i in 1..=8 {
+        h.event(egui::Event::PointerMoved(from.lerp(to, i as f32 / 8.0)));
+        h.step();
+    }
+    // The frame with the pen still down, cut as `canvas_image` cuts it.
+    let rect = h.state().globe.rect;
+    let (x0, y0) = (rect.min.x.ceil(), rect.min.y.ceil());
+    let frame = h.render().unwrap();
+    let during = image::imageops::crop_imm(
+        &frame,
+        x0 as u32,
+        y0 as u32,
+        before.width(),
+        before.height(),
+    )
+    .to_image();
+    // The CPU heightmap gets the stroke after the pen goes up.
+    assert!(h.state().globe.busy());
+    assert_eq!(h.state().globe.map.sample(under), base);
+    // A place under the stroke, far from the brush circle at the pen.
+    let at = from + Vec2::new(5.0, 0.0);
+    let (px, py) = ((at.x - x0) as u32, (at.y - y0) as u32);
+    let red = |img: &image::RgbaImage| img.get_pixel(px, py).0[0];
+    assert!(
+        red(&during) > red(&before) + 4,
+        "{} and {}",
+        red(&during),
+        red(&before)
+    );
+    button(&mut h, egui::PointerButton::Primary, to, false);
+    settle(&mut h);
+}
+
+#[test]
+fn the_readout_and_the_brush_read_the_full_detail_with_the_smoothing() {
+    let _gpu = one_gpu_test();
+    let mut h = smooth_harness(512);
+    let id = brush_layer(&h);
+    assert!(h.state().globe.smoothing_level(id) >= 1.0);
+    let c = h.state().globe.rect.center();
+    let mut differ = false;
+    for offset in [0.0, 7.0, 13.0, 21.0] {
+        let pos = c + Vec2::new(offset, offset / 2.0);
+        h.event(egui::Event::PointerMoved(pos));
+        h.step();
+        let dir = place(&h, pos);
+        let map = &h.state().globe.map;
+        let level = map.sample(dir);
+        assert_eq!(h.state().cursor_value, Some(map.bands.value(level)));
+        let shown = h.state().globe.shown_field(id, dir).unwrap();
+        differ |= (shown - f64::from(level) / 65535.0).abs() > 0.02;
+        h.state_mut().globe.pick(Some(dir));
+        assert_eq!(h.state().globe.brush.flatten_level, Some(level));
+    }
+    assert!(differ, "the smooth field is the full detail");
+}
+
+#[test]
+fn the_switch_of_one_layer_does_not_change_the_other() {
+    let _gpu = one_gpu_test();
+    let (mut h, ids) = layers_harness(&[LOW, HIGH]);
+    let (a, b) = (ids[0], ids[1]);
+    layer_noise(&mut h, a, 1);
+    layer_noise(&mut h, b, 2);
+    set_smoothing(&mut h, a, true, 8.0);
+    set_smoothing(&mut h, b, true, 8.0);
+    load(&mut h);
+    let dir = place(&h, h.state().globe.rect.center());
+    let globe = &h.state().globe;
+    let (level_a, field_a) = (globe.smoothing_level(a), globe.shown_field(a, dir).unwrap());
+    let (level_b, field_b) = (globe.smoothing_level(b), globe.shown_field(b, dir).unwrap());
+    assert!(level_a >= 1.0 && level_b >= 1.0, "{level_a} {level_b}");
+    let before = canvas_image(&mut h);
+
+    set_smoothing(&mut h, a, false, 8.0);
+    let after = canvas_image(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.smoothing_level(a), 0.0);
+    let full = vale_terrain::Pyramid::new(globe.display_map(a).unwrap()).field(dir, 0.0);
+    assert_eq!(globe.shown_field(a, dir), Some(full));
+    assert!(full != field_a);
+    assert_eq!(globe.smoothing_level(b), level_b);
+    assert_eq!(globe.shown_field(b, dir), Some(field_b));
+    assert!(after == before, "the top layer changed");
+
+    // With the top layer clear, the bottom layer shows its full detail.
+    h.state_mut().set_raster_opacity(b, 0.0);
+    let img = canvas_image(&mut h);
+    assert_shows_field(&h, &img, a);
+}

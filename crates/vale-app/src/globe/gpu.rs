@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use vale_store::RasterId;
 use vale_terrain::{
-    ChannelMap, ChannelWindow, ErodeStep, FACES, GpuHeightmap, GpuTiles, Heightmap, MAX_BANDS,
-    Readback, StampPlan, TILES_WGSL, TexelRect, tiles_layout,
+    ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid, GpuTiles,
+    Heightmap, MAX_BANDS, Readback, StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
 };
 
 use super::backdrop::{Backdrop, Canvas, REDUCTION};
@@ -43,6 +43,9 @@ pub struct Uniforms {
     pub ground: [f32; 4],
     /// The color of the canvas around the globe.
     pub back: [f32; 4],
+    /// The level of the smooth field that the layer shows, and the coarsest
+    /// level of its source.
+    pub detail: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
     pub lines: [LineUniform; MAX_BANDS + 1],
 }
@@ -156,6 +159,8 @@ struct Resources {
     full: Option<(MapKey, GpuHeightmap)>,
     /// The reduced copies that the globe draws.
     copies: HashMap<MapKey, GpuTiles>,
+    /// The smooth levels of each heightmap that the globe draws.
+    pyramids: HashMap<MapKey, GpuPyramid>,
     /// The channel map of each visible height layer.
     channels: HashMap<LayerKey, Channels>,
     channel_count: u64,
@@ -172,7 +177,7 @@ impl Resources {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("globe"),
             source: wgpu::ShaderSource::Wgsl(
-                format!("{TILES_WGSL}\n{}", include_str!("globe.wgsl")).into(),
+                format!("{TILES_WGSL}\n{FIELD_WGSL}\n{}", include_str!("globe.wgsl")).into(),
             ),
         });
         let texture = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
@@ -203,9 +208,10 @@ impl Resources {
             ],
         });
         let tiles = tiles_layout(device);
+        let levels = pyramid_layout(device);
         let with_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("globe"),
-            bind_group_layouts: &[Some(&layout), Some(&tiles)],
+            bind_group_layouts: &[Some(&layout), Some(&tiles), Some(&levels)],
             immediate_size: 0,
         });
         let no_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -296,6 +302,7 @@ impl Resources {
             slots: HashMap::new(),
             full: None,
             copies: HashMap::new(),
+            pyramids: HashMap::new(),
             channels: HashMap::new(),
             channel_count: 0,
             _poller: Poller::new(device.clone(), busy.clone()),
@@ -317,6 +324,14 @@ impl Resources {
             self.copies
                 .entry(*key)
                 .or_insert_with(|| GpuTiles::new(device, key.face_size, 0));
+        }
+        let full = frame.full.filter(|_| frame.smooth_full);
+        let smooth = |key: &MapKey| Some(*key) == full || frame.copies.contains(key);
+        self.pyramids.retain(|key, _| smooth(key));
+        for key in full.iter().chain(&frame.copies) {
+            self.pyramids
+                .entry(*key)
+                .or_insert_with(|| GpuPyramid::new(device, key.face_size));
         }
         let live = |pass: &Pass| match pass {
             Pass::Layer(layer) => {
@@ -386,12 +401,12 @@ impl Resources {
         self.channels.values().map(bytes).sum()
     }
 
-    /// The memory of the reduced copies, in bytes.
+    /// The memory of the reduced copies with their smooth levels, in bytes.
     fn copy_bytes(&self) -> u64 {
-        let bytes = self
-            .copies
-            .values()
-            .map(|tiles| tiles.memory_bytes() as u64);
+        let bytes = self.copies.iter().map(|(key, tiles)| {
+            let levels = self.pyramids.get(key).map_or(0, GpuPyramid::memory_bytes);
+            tiles.memory_bytes() as u64 + levels
+        });
         bytes.sum()
     }
 
@@ -483,15 +498,21 @@ impl Resources {
             None => &self.pipeline,
         };
         if kind.is_none() {
-            let tiles = match (draw.source, &self.full) {
-                (Some(source), Some((key, heights))) if source == *key => heights.tiles(),
-                (Some(source), _) => match self.copies.get(&source) {
+            let Some(source) = draw.source else {
+                return;
+            };
+            let tiles = match &self.full {
+                Some((key, heights)) if source == *key => heights.tiles(),
+                _ => match self.copies.get(&source) {
                     Some(tiles) => tiles.tiles(),
                     None => return,
                 },
-                (None, _) => return,
+            };
+            let Some(levels) = self.pyramids.get(&source) else {
+                return;
             };
             pass.set_bind_group(1, &tiles, &[]);
+            pass.set_bind_group(2, levels.bind_group(), &[]);
         }
         pass.set_bind_group(0, &slot.bind_group, &[]);
         pass.set_pipeline(pipeline);
@@ -815,6 +836,8 @@ pub struct Frame {
     pub full: Option<MapKey>,
     /// The reduced copies that the globe draws.
     pub copies: Vec<MapKey>,
+    /// The globe draws a layer from `full`, so it needs its smooth levels.
+    pub smooth_full: bool,
     /// The layers that have a channel map of their rivers.
     pub rivers: Vec<LayerKey>,
     /// `Some`: the canvas shows the flat view with this mesh.
@@ -859,6 +882,7 @@ struct Batch<'a> {
     heights: Option<&'a GpuHeightmap>,
     full: Option<MapKey>,
     copies: &'a HashMap<MapKey, GpuTiles>,
+    pyramids: &'a HashMap<MapKey, GpuPyramid>,
     link: &'a Link,
     encoder: Option<wgpu::CommandEncoder>,
     /// The stroke and the sample time of each stamp in the encoder.
@@ -947,9 +971,40 @@ impl Batch<'_> {
             let end = at + group;
             let touched = |face: &usize| plans[at..end].iter().any(|p| p.rects[*face].is_some());
             let passes = (0..FACES).filter(touched).count() as u32;
+            for plan in &plans[at..end] {
+                self.mark_full(&plan.rects);
+            }
             self.count_passes(samples[at].0, passes);
             self.stamps.extend(&samples[at..end]);
             at = end;
+        }
+    }
+
+    /// Marks texels of the full heightmap as changed in its smooth levels.
+    fn mark_full(&self, rects: &[Option<TexelRect>; FACES]) {
+        let Some(levels) = self.full.and_then(|key| self.pyramids.get(&key)) else {
+            return;
+        };
+        for (face, rect) in rects.iter().enumerate() {
+            if let Some(rect) = rect {
+                levels.mark(face as u32, *rect);
+            }
+        }
+    }
+
+    /// Changes the smooth levels of a heightmap for a reset or an upload.
+    fn levels_follow(&mut self, key: MapKey, op: &Op) {
+        let pyramids = self.pyramids;
+        let Some(levels) = pyramids.get(&key) else {
+            return;
+        };
+        match op {
+            Op::Reset(level) => {
+                let level = *level;
+                levels.clear(self.encoder(), level);
+            }
+            Op::Upload { face, rect, .. } => levels.mark(*face, *rect),
+            _ => {}
         }
     }
 
@@ -958,10 +1013,26 @@ impl Batch<'_> {
         let Some(tiles) = self.copies.get(&key) else {
             return;
         };
+        self.levels_follow(key, &op);
         match op {
             Op::Reset(level) => tiles.clear(self.queue, level),
             Op::Upload { face, rect, data } => tiles.upload(self.queue, face, rect, &data),
             _ => {}
+        }
+    }
+
+    /// Makes the dirty parts of the smooth levels of each heightmap.
+    fn update_levels(&mut self) {
+        let pyramids = self.pyramids;
+        for (key, levels) in pyramids {
+            let tiles = match self.heights {
+                Some(heights) if Some(*key) == self.full => heights.tiles(),
+                _ => match self.copies.get(key) {
+                    Some(tiles) => tiles.tiles(),
+                    None => continue,
+                },
+            };
+            levels.update(self.encoder(), &tiles);
         }
     }
 
@@ -970,6 +1041,9 @@ impl Batch<'_> {
         let Some(heights) = self.heights else {
             return;
         };
+        if let Some(key) = self.full {
+            self.levels_follow(key, &op);
+        }
         match op {
             Op::Reset(level) => {
                 // The change runs before the commands of the next submit, so
@@ -993,6 +1067,7 @@ impl Batch<'_> {
                 heights.begin_batch();
                 let added = heights.erode(queue, self.encoder(), &step);
                 debug_assert!(added, "an empty batch takes one step");
+                self.mark_full(&step.rects());
                 let passes = step.rects().iter().flatten().count() as u32;
                 self.count_passes(stroke, passes);
             }
@@ -1041,6 +1116,7 @@ fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, fram
         heights: res.full.as_ref().map(|(_, heights)| heights),
         full: frame.full,
         copies: &res.copies,
+        pyramids: &res.pyramids,
         link,
         encoder: None,
         stamps: Vec::new(),
@@ -1072,6 +1148,7 @@ fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, fram
         }
     }
     batch.stamp_run(&plans, &samples);
+    batch.update_levels();
     // This submit is before the submit of egui, so the frame shows the new
     // levels.
     batch.submit();

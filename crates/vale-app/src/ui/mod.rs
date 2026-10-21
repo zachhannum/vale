@@ -490,6 +490,7 @@ impl AppState {
                     id,
                     opacity,
                     display,
+                    smoothing: raster.smoothing,
                 })
             }
             None => Some(StackItem::Vector(layer.id)),
