@@ -17,6 +17,7 @@ use vale_terrain::{
 };
 
 use super::backdrop::{Backdrop, Canvas, REDUCTION};
+use super::edges::{self, Edges};
 use super::flat::{FlatMesh, Vertex};
 use super::preview::{BandUniform, LineUniform};
 
@@ -46,6 +47,9 @@ pub struct Uniforms {
     /// The level of the smooth field that the layer shows, and the coarsest
     /// level of its source.
     pub detail: [f32; 4],
+    /// 1 when the passes of the lines of the stops ran for this layer, then
+    /// the radius of their search in pixels.
+    pub edges: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
     pub lines: [LineUniform; MAX_BANDS + 1],
 }
@@ -164,6 +168,8 @@ struct Resources {
     /// The channel map of each visible height layer.
     channels: HashMap<LayerKey, Channels>,
     channel_count: u64,
+    /// The lines of the stops.
+    edges: Edges,
     _poller: Poller,
 }
 
@@ -177,7 +183,12 @@ impl Resources {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("globe"),
             source: wgpu::ShaderSource::Wgsl(
-                format!("{TILES_WGSL}\n{FIELD_WGSL}\n{}", include_str!("globe.wgsl")).into(),
+                format!(
+                    "{TILES_WGSL}\n{FIELD_WGSL}\n{}\n{}",
+                    include_str!("globe.wgsl"),
+                    include_str!("edges.wgsl")
+                )
+                .into(),
             ),
         });
         let texture = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
@@ -209,9 +220,27 @@ impl Resources {
         });
         let tiles = tiles_layout(device);
         let levels = pyramid_layout(device);
+        let vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: size_of::<Vertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3],
+        };
+        let edges = Edges::new(
+            device,
+            &shader,
+            &layout,
+            &tiles,
+            &levels,
+            vertex_layout.clone(),
+        );
         let with_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("globe"),
-            bind_group_layouts: &[Some(&layout), Some(&tiles), Some(&levels)],
+            bind_group_layouts: &[
+                Some(&layout),
+                Some(&tiles),
+                Some(&levels),
+                Some(edges.resolve_layout()),
+            ],
             immediate_size: 0,
         });
         let no_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -219,11 +248,6 @@ impl Resources {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let vertex_layout = wgpu::VertexBufferLayout {
-            array_stride: size_of::<Vertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3],
-        };
         let pipeline = |label, layout, vertex, fragment, flat: bool| {
             let buffers = [Some(vertex_layout.clone())];
             let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
@@ -305,6 +329,7 @@ impl Resources {
             pyramids: HashMap::new(),
             channels: HashMap::new(),
             channel_count: 0,
+            edges,
             _poller: Poller::new(device.clone(), busy.clone()),
         }
     }
@@ -341,6 +366,7 @@ impl Resources {
             Pass::Ground | Pass::Graticule | Pass::Rim => true,
         };
         self.slots.retain(|(pass, _), _| live(pass));
+        self.edges.retain(|layer| live(&Pass::Layer(*layer)));
         self.channels
             .retain(|layer, _| frame.rivers.contains(layer));
     }
@@ -468,6 +494,65 @@ impl Resources {
         queue.write_buffer(&slot.buffer, 0, bytemuck::bytes_of(&draw.uniforms));
     }
 
+    /// The groups of the heightmap that a layer pass reads: its tiles and
+    /// its smooth levels. `None`: the GPU does not have them.
+    fn layer_groups(&self, draw: &Draw) -> Option<(wgpu::BindGroup, wgpu::BindGroup)> {
+        let source = draw.source?;
+        let tiles = match &self.full {
+            Some((key, heights)) if source == *key => heights.tiles(),
+            _ => self.copies.get(&source)?.tiles(),
+        };
+        Some((tiles, self.pyramids.get(&source)?.bind_group().clone()))
+    }
+
+    /// Encodes the passes of the lines of the stops of a layer pass, for a
+    /// render target of `size` pixels. Returns the radius of their search,
+    /// or `None` when the pass draws no lines.
+    fn encode_edges(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        draw: &Draw,
+        size: [u32; 2],
+        flat: bool,
+    ) -> Option<u32> {
+        let Pass::Layer(layer) = draw.pass else {
+            return None;
+        };
+        let radius = edges::radius(edges::max_half(&draw.uniforms.lines)).filter(|_| draw.lines)?;
+        let (tiles, levels) = self.layer_groups(draw)?;
+        let uniforms = self.slots.get(&(draw.pass, false))?.bind_group.clone();
+        let mesh = match (&self.mesh, flat) {
+            (_, false) => None,
+            (Some(mesh), true) => Some(edges::Mesh {
+                vertices: &mesh.vertices,
+                indices: &mesh.indices,
+                count: mesh.count,
+            }),
+            (None, true) => return None,
+        };
+        let groups = edges::Groups {
+            uniforms: &uniforms,
+            tiles: &tiles,
+            levels: &levels,
+        };
+        // The canvas, and on the globe the box around its disk.
+        let mut area = draw.clip;
+        if !flat {
+            let [x, y, r, _] = draw.uniforms.globe;
+            area = [
+                area[0].max(x - r),
+                area[1].max(y - r),
+                area[2].min(x + r),
+                area[3].min(y + r),
+            ];
+        }
+        let extent = edges::Extent { size, area, radius };
+        self.edges
+            .encode(device, encoder, layer, extent, groups, mesh);
+        Some(radius)
+    }
+
     /// Draws one pass on the globe, or on the mesh of the flat view. `screen`
     /// is the size of the render target in pixels.
     fn draw(
@@ -497,22 +582,13 @@ impl Resources {
             None if flat => &self.flat_pipeline,
             None => &self.pipeline,
         };
-        if kind.is_none() {
-            let Some(source) = draw.source else {
-                return;
-            };
-            let tiles = match &self.full {
-                Some((key, heights)) if source == *key => heights.tiles(),
-                _ => match self.copies.get(&source) {
-                    Some(tiles) => tiles.tiles(),
-                    None => return,
-                },
-            };
-            let Some(levels) = self.pyramids.get(&source) else {
+        if let Pass::Layer(layer) = draw.pass {
+            let Some((tiles, levels)) = self.layer_groups(draw) else {
                 return;
             };
             pass.set_bind_group(1, &tiles, &[]);
-            pass.set_bind_group(2, levels.bind_group(), &[]);
+            pass.set_bind_group(2, &levels, &[]);
+            pass.set_bind_group(3, self.edges.group(layer), &[]);
         }
         pass.set_bind_group(0, &slot.bind_group, &[]);
         pass.set_pipeline(pipeline);
@@ -854,6 +930,10 @@ pub struct Draw {
     pub source: Option<MapKey>,
     /// The pass draws the rivers of its layer.
     pub rivers: bool,
+    /// The layer pass draws the lines of its stops.
+    pub lines: bool,
+    /// The canvas in pixels: the left, the top, the right, and the bottom.
+    pub clip: [f32; 4],
     pub uniforms: Uniforms,
 }
 
@@ -1189,7 +1269,14 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             Job::Draw(draw) => {
                 let mut draw = **draw;
                 draw.uniforms.screen = [size[0] as f32, size[1] as f32, 0.0, 0.0];
+                // A write to the queue lands before each pass of the frame,
+                // so the passes of the lines and the layer pass all read the
+                // second write, with the radius.
                 res.write(device, queue, &draw, false);
+                if let Some(radius) = res.encode_edges(device, egui_encoder, &draw, size, flat) {
+                    draw.uniforms.edges = [1.0, radius as f32, 0.0, 0.0];
+                    res.write(device, queue, &draw, false);
+                }
             }
             Job::Backdrop(canvas, draws) => {
                 let small = size.map(|s| s.max(1).div_ceil(REDUCTION));
@@ -1226,6 +1313,20 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         let flat = self.frame.flat.is_some();
         res.draw(render_pass, draw, false, flat, info.screen_size_px);
     }
+}
+
+/// The nearest places of the lines of the stops of each layer, from the
+/// last frame that drew them: the size of the render target and a payload
+/// for each pixel, row by row. It waits for the GPU.
+pub fn nearest_places(
+    render_state: &egui_wgpu::RenderState,
+) -> Vec<(LayerKey, [u32; 2], Vec<u32>)> {
+    let renderer = render_state.renderer.read();
+    let Some(res) = renderer.callback_resources.get::<Resources>() else {
+        return Vec::new();
+    };
+    let (device, queue) = (&render_state.device, &render_state.queue);
+    res.edges.read_nearest(device, queue)
 }
 
 #[cfg(test)]

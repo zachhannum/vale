@@ -1,13 +1,21 @@
+mod lines;
+
 use clap::Parser;
 use eframe::egui::{self, Pos2, Vec2};
+use eframe::egui_wgpu;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
+use lines::{
+    LINE_WEIGHT, LineColumn, MEASURE_COLORS, canvas_image, even_slope, flat_land, flat_sea,
+    measure_line, set_coast_line, set_heights, set_top_line, show_as, three_stops,
+};
 use vale_app::cli::{Args, apply_globe, apply_globe_view};
 use vale_app::document::Document;
 use vale_app::globe::brush::slerp;
 use vale_app::globe::math::{V3, angle, lonlat_to_dir};
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{FACE_SIZE, Tool};
+use vale_app::globe::{edges, gpu};
 use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::ui::gradient::{DESKTOP, GRADIENT, stop_x};
@@ -16,36 +24,9 @@ use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
 use vale_style::{Color, Stroke};
 use vale_terrain::{
-    Bands, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, Stop, StopLine, WindowHeights,
-    channel_map, level_to_meters, meters_to_level, window_channels,
+    Bands, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, StopLine, WindowHeights, channel_map,
+    level_to_meters, meters_to_level, window_channels,
 };
-
-/// Gives a range of heights one stop at each end and one at sea level. The
-/// colors go from the lowest value to the highest, with two at sea level.
-fn three_stops(bands: &mut Bands, colors: [[u8; 3]; 4]) {
-    let stop = |value, below, above| Stop {
-        value,
-        below,
-        above,
-        line: StopLine::default(),
-    };
-    let (min, max) = (bands.min(), bands.max());
-    let stops = [
-        stop(min, colors[0], colors[0]),
-        stop(0.0, colors[1], colors[2]),
-        stop(max, colors[3], colors[3]),
-    ];
-    *bands = Bands::from_range_parts(min, max, true, &stops).unwrap();
-}
-
-/// Shows each raster layer, and a globe with no layers, with this display.
-fn show_as(state: &mut AppState, display: RasterDisplay) {
-    state.globe.preview.display = display;
-    let ids: Vec<RasterId> = state.doc.project.rasters().iter().map(|r| r.id).collect();
-    for id in ids {
-        state.set_raster_display(id, display);
-    }
-}
 
 /// The sample world with its vector layers hidden, so that each place of the
 /// globe shows the heightmap.
@@ -478,11 +459,29 @@ fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
 /// A harness with the wgpu renderer and a height layer that the brush
 /// paints. Each step renders, so each step runs the GPU work of the globe.
 fn gpu_harness() -> Harness<'static, AppState> {
+    gpu_harness_on(render_state())
+}
+
+fn render_state() -> egui_wgpu::RenderState {
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    egui_kittest::wgpu::create_render_state(setup, egui_wgpu::RendererOptions::PREDICTABLE)
+}
+
+/// A harness as `gpu_harness` on this render state.
+fn gpu_harness_on(render_state: egui_wgpu::RenderState) -> Harness<'static, AppState> {
+    gpu_harness_at(render_state, 1.0)
+}
+
+/// A harness as `gpu_harness` with `pixels_per_point`.
+fn gpu_harness_at(
+    render_state: egui_wgpu::RenderState,
+    pixels_per_point: f64,
+) -> Harness<'static, AppState> {
     let mut state = state();
     state.globe.set_face_size(BRUSH_FACE_SIZE);
     state.add_height();
-    let setup = egui_kittest::wgpu::default_wgpu_setup();
-    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    let size = (640.0, 480.0);
+    let mut h = headless::ui_harness_on(state, size, pixels_per_point, render_state);
     h.set_render_every_step(true);
     h.run_steps(3);
     h
@@ -513,17 +512,6 @@ fn mouse_stroke(h: &mut Harness<'static, AppState>) -> Pos2 {
     button(h, egui::PointerButton::Primary, to, false);
     h.step();
     c
-}
-
-/// The frame without the pointer, cut to the canvas of the globe.
-fn canvas_image(h: &mut Harness<'static, AppState>) -> image::RgbaImage {
-    h.remove_cursor();
-    h.run_steps(2);
-    let rect = h.state().globe.rect;
-    let (x, y) = (rect.min.x.ceil() as u32, rect.min.y.ceil() as u32);
-    let (w, h_) = (rect.width().floor() as u32, rect.height().floor() as u32);
-    let frame = h.render().unwrap();
-    image::imageops::crop_imm(&frame, x, y, w - 1, h_ - 1).to_image()
 }
 
 #[test]
@@ -4045,44 +4033,62 @@ fn a_smaller_copy_takes_the_place_of_a_copy_with_no_frame_without_the_layer() {
     assert!(h.state().globe.display_bytes() < whole);
 }
 
-/// The weight of the line of a stop, in pixels.
-const LINE_WEIGHT: f32 = 3.0;
-
 /// A globe whose heights rise along `axis`, so that the stop at sea level
 /// is the great circle at a right angle to `axis`. Only that stop has a
 /// line. Each color stop is white, so the line is the only dark color.
 fn line_harness(display: RasterDisplay, axis: V3) -> Harness<'static, AppState> {
+    line_harness_on(display, axis, render_state())
+}
+
+/// A harness as `line_harness` on this render state.
+fn line_harness_on(
+    display: RasterDisplay,
+    axis: V3,
+    render_state: egui_wgpu::RenderState,
+) -> Harness<'static, AppState> {
+    let white = [[255; 3]; 4];
+    line_globe(display, axis, render_state, white, |along| 3000.0 * along)
+}
+
+/// A globe whose heights in meters are `height` of the distance along
+/// `axis`, with the colors of `three_stops`. Only the stop at sea level has
+/// a line.
+fn line_globe(
+    display: RasterDisplay,
+    axis: V3,
+    render_state: egui_wgpu::RenderState,
+    colors: [[u8; 3]; 4],
+    height: impl Fn(f64) -> f64,
+) -> Harness<'static, AppState> {
     const N: usize = 64;
-    let mut h = gpu_harness();
+    let mut h = gpu_harness_on(render_state);
     show_as(h.state_mut(), display);
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(N);
     globe.preview.graticule = false;
     globe.preview.rivers = false;
-    three_stops(&mut globe.map.bands, [[255; 3]; 4]);
-    for face in 0..6 {
-        for y in 0..N {
-            for x in 0..N {
-                let d = globe.map.texel_dir(face, x, y);
-                let along: f64 = d.iter().zip(axis).map(|(a, b)| a * b).sum();
-                globe.map.set(face, x, y, meters_to_level(3000.0 * along));
-            }
-        }
-    }
+    three_stops(&mut globe.map.bands, colors);
+    set_heights(&mut globe.map, |d| {
+        height(d.iter().zip(axis).map(|(a, b)| a * b).sum())
+    });
     set_coast_line(&mut h, true);
     h
 }
 
-fn set_coast_line(h: &mut Harness<'static, AppState>, on: bool) {
-    let bands = &mut h.state_mut().globe.map.bands;
-    let sea = bands.sea().unwrap();
-    let line = StopLine {
-        on,
-        weight: LINE_WEIGHT,
-        color: [0; 3],
-        ..StopLine::default()
-    };
-    assert!(bands.set_line(sea, line));
+/// A globe with the colors of a measured line, whose heights in meters are
+/// `height` of the distance along `axis`. The highest stop
+/// has a line, and no height crosses it, so the image with no coast line
+/// draws the band edges in the same way.
+fn measured_globe(axis: V3, height: impl Fn(f64) -> f64) -> Harness<'static, AppState> {
+    let mut h = line_globe(
+        RasterDisplay::Bands,
+        axis,
+        render_state(),
+        MEASURE_COLORS,
+        height,
+    );
+    set_top_line(&mut h);
+    h
 }
 
 /// The dark part of each column in the middle third of the canvas, in
@@ -4109,28 +4115,117 @@ fn line_columns(h: &mut Harness<'static, AppState>, name: &str) -> Vec<f32> {
         .collect()
 }
 
-/// Makes sure that each column has the same dark part, near `expected`.
-fn assert_even_line(columns: &[f32], expected: f32, what: &str) {
-    for (x, &c) in columns.iter().enumerate() {
-        assert!(
-            (c - expected).abs() < 0.1 * expected,
-            "{what}: {c} at column {x}, not {expected}"
-        );
+#[test]
+fn each_pixel_near_a_stop_line_finds_the_crossing_of_its_column() {
+    let _gpu = one_gpu_test();
+    let render_state = render_state();
+    let mut h = line_harness_on(RasterDisplay::Bands, [0.0, 0.0, 1.0], render_state.clone());
+    h.state_mut().globe.view = GlobeView::centered(0.0, 0.0);
+    h.state_mut().globe.view.zoom = 4.0;
+    canvas_image(&mut h);
+    let places = gpu::nearest_places(&render_state);
+    assert_eq!(places.len(), 1);
+    let (_, [width, _], payloads) = &places[0];
+    let (rect, view) = (h.state().globe.rect, h.state().globe.view);
+    let reach = (LINE_WEIGHT / 2.0).ceil() as i32 + 1;
+    let from = view.project(rect, lonlat_to_dir(-10.0, 0.0)).unwrap();
+    let to = view.project(rect, lonlat_to_dir(10.0, 0.0)).unwrap();
+    for x in (rect.width() / 3.0) as u32..(2.0 * rect.width() / 3.0) as u32 {
+        let x = x + rect.min.x as u32;
+        // The equator on the screen at the middle of the column.
+        let t = (x as f32 + 0.5 - from.x) / (to.x - from.x);
+        let line = from.y + t * (to.y - from.y);
+        let row = line.floor() as i32;
+        for y in row - reach..=row + reach {
+            let payload = payloads[y as usize * *width as usize + x as usize];
+            let seed = edges::unpack(payload).unwrap_or_else(|| panic!("no place at {x}, {y}"));
+            let step = if seed.axis { [0.0, 1.0] } else { [1.0, 0.0] };
+            let along = seed.t as f32 / edges::T_STEPS as f32;
+            let place = [
+                seed.base[0] as f32 + step[0] * along,
+                seed.base[1] as f32 + step[1] * along,
+            ];
+            let what = format!("{x}, {y}: {seed:?}, line at {line}");
+            assert!(place[0].abs() < 0.01, "{what}");
+            let found = y as f32 + 0.5 + place[1];
+            assert!((found - line).abs() < 0.25, "{what}");
+        }
+    }
+}
+
+/// The axis of a coast that is level on the screen at the middle of the
+/// canvas, along the rows of the texels.
+const LEVEL: V3 = [0.0, 0.0, 1.0];
+/// The axis of a coast at a slant to the screen and to the texels. Next to
+/// flat ground, the coast is a staircase of the texels, so only an even
+/// slope has a straight coast at a slant.
+const SLANT: V3 = [0.0, 0.287_347, 0.957_826];
+
+/// Measures the coast line of a `measured_globe` of each axis. Returns the
+/// columns with the slope of the line on the screen.
+fn measure_coasts(axes: &[V3], height: fn(f64) -> f64, name: &str) -> Vec<(Vec<LineColumn>, f32)> {
+    axes.iter()
+        .enumerate()
+        .map(|(i, &axis)| {
+            let mut h = measured_globe(axis, height);
+            h.state_mut().globe.view = GlobeView::centered(0.0, 0.11);
+            let columns = measure_line(&mut h, &format!("{name}-{i}"));
+            let (first, last) = (&columns[0], &columns[columns.len() - 1]);
+            let slope = (last.center - first.center) / (columns.len() - 1) as f32;
+            (columns, slope)
+        })
+        .collect()
+}
+
+/// Makes sure that the line of each column has the weight of the stop
+/// across the line, within 0.25 px.
+fn assert_line_weight(axes: &[V3], height: fn(f64) -> f64, name: &str) {
+    for (columns, slope) in measure_coasts(axes, height, name) {
+        let across = 1.0 / (1.0 + slope * slope).sqrt();
+        for (x, c) in columns.iter().enumerate() {
+            let weight = c.weight * across;
+            let what = format!("{name}, slope {slope}: {weight} at column {x}, {c:?}");
+            assert!((weight - LINE_WEIGHT).abs() < 0.25, "{what}");
+        }
     }
 }
 
 #[test]
-fn a_stop_line_has_the_same_weight_at_each_zoom_and_across_a_face_edge() {
+fn a_stop_line_on_an_even_slope_has_its_weight() {
     let _gpu = one_gpu_test();
-    let mut h = line_harness(RasterDisplay::Bands, [0.0, 0.0, 1.0]);
-    // The equator crosses a face edge at 45 degrees of longitude.
-    for zoom in [1.0, 4.0, 15.0, 40.0] {
-        let globe = &mut h.state_mut().globe;
-        globe.view = GlobeView::centered(45.0, 0.0);
-        globe.view.zoom = zoom;
-        let what = format!("zoom {zoom}");
-        let columns = line_columns(&mut h, &what);
-        assert_even_line(&columns, LINE_WEIGHT, &what);
+    assert_line_weight(&[LEVEL, SLANT], even_slope, "even slope");
+}
+
+#[test]
+fn a_stop_line_next_to_a_flat_sea_has_its_weight() {
+    let _gpu = one_gpu_test();
+    assert_line_weight(&[LEVEL], flat_sea, "flat sea");
+}
+
+#[test]
+fn a_stop_line_next_to_flat_land_has_its_weight() {
+    let _gpu = one_gpu_test();
+    assert_line_weight(&[LEVEL], flat_land, "flat land");
+}
+
+#[test]
+fn the_middle_of_a_stop_line_is_on_the_band_edge() {
+    let _gpu = one_gpu_test();
+    type Ground = fn(f64) -> f64;
+    let cases: [(&[V3], Ground, &str); 3] = [
+        (&[LEVEL, SLANT], even_slope, "even slope"),
+        (&[LEVEL], flat_sea, "flat sea"),
+        (&[LEVEL], flat_land, "flat land"),
+    ];
+    for (axes, height, name) in cases {
+        for (columns, slope) in measure_coasts(axes, height, name) {
+            let across = 1.0 / (1.0 + slope * slope).sqrt();
+            for (x, c) in columns.iter().enumerate() {
+                let off = (c.center - c.edge) * across;
+                let what = format!("{name}, slope {slope}: {off} at column {x}, {c:?}");
+                assert!(off.abs() < 0.25, "{what}");
+            }
+        }
     }
 }
 
@@ -4192,6 +4287,76 @@ fn a_change_of_a_stop_line_shows_in_the_same_frame() {
     assert!(plain > lined + 100, "{plain} {lined}");
     set_coast_line(&mut h, true);
     assert_eq!(frame(&mut h), lined);
+}
+
+/// The next frame and its image.
+fn next_frame(h: &mut Harness<'static, AppState>) -> image::RgbaImage {
+    h.step();
+    h.render().unwrap()
+}
+
+/// The middle and the number of the dark pixels in the column at the middle
+/// of the canvas, within 40 rows of the middle.
+fn dark_rows(h: &Harness<'static, AppState>, img: &image::RgbaImage) -> (f32, usize) {
+    let c = h.state().globe.rect.center();
+    let (x, y) = (c.x as u32, c.y as u32);
+    let rows: Vec<u32> = (y - 40..y + 40)
+        .filter(|&y| img.get_pixel(x, y).0[0] < 128)
+        .collect();
+    let sum: u32 = rows.iter().sum();
+    (sum as f32 / rows.len().max(1) as f32 + 0.5, rows.len())
+}
+
+#[test]
+fn a_change_of_the_heights_moves_the_line_in_the_same_frame() {
+    let _gpu = one_gpu_test();
+    let mut h = measured_globe([0.0, 0.0, 1.0], even_slope);
+    h.state_mut().globe.view = GlobeView {
+        zoom: 4.0,
+        ..GlobeView::centered(0.0, 0.0)
+    };
+    h.run_steps(3);
+    let before = next_frame(&mut h);
+    // The ground rises, and the coast moves to the south.
+    let lift = 0.01;
+    set_heights(&mut h.state_mut().globe.map, |d| even_slope(d[2] + lift));
+    let moved = next_frame(&mut h);
+    assert!(moved != before);
+    assert!(
+        moved == next_frame(&mut h),
+        "the frame of the change is not final"
+    );
+    let (rect, view) = (h.state().globe.rect, h.state().globe.view);
+    let lat = -f64::asin(lift).to_degrees();
+    let coast = view.project(rect, lonlat_to_dir(0.0, lat)).unwrap();
+    let (middle, count) = dark_rows(&h, &moved);
+    assert!(count > 0);
+    assert!((middle - coast.y).abs() < 1.0, "{middle}, not {}", coast.y);
+}
+
+#[test]
+fn a_change_of_the_weight_of_a_line_shows_in_the_same_frame() {
+    let _gpu = one_gpu_test();
+    let mut h = measured_globe([0.0, 0.0, 1.0], even_slope);
+    h.state_mut().globe.view = GlobeView::centered(0.0, 0.11);
+    h.run_steps(3);
+    let first = next_frame(&mut h);
+    let (_, thin) = dark_rows(&h, &first);
+    assert_eq!(thin, LINE_WEIGHT as usize);
+    let bands = &mut h.state_mut().globe.map.bands;
+    let line = StopLine {
+        on: true,
+        weight: 8.0,
+        color: [0; 3],
+        ..StopLine::default()
+    };
+    assert!(bands.set_line(bands.sea().unwrap(), line));
+    let wide = next_frame(&mut h);
+    assert_eq!(dark_rows(&h, &wide).1, 8);
+    assert!(
+        wide == next_frame(&mut h),
+        "the frame of the change is not final"
+    );
 }
 
 #[test]
@@ -4638,4 +4803,529 @@ fn the_switch_of_one_layer_does_not_change_the_other() {
     h.state_mut().set_raster_opacity(b, 0.0);
     let img = canvas_image(&mut h);
     assert_shows_field(&h, &img, a);
+}
+
+/// The face size of the tests of features smaller than one pixel. A texel
+/// is about 0.3 px at the zoom of the whole globe.
+const FINE_FACE_SIZE: usize = 1024;
+
+/// A globe of sea with the colors of a measured line and the full detail.
+/// `land` gives the texels of face +x that are land.
+fn fine_globe(land: &[(usize, usize)]) -> Harness<'static, AppState> {
+    let axis = [0.0, 0.0, 1.0];
+    let mut h = measured_globe(axis, |_| -500.0);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(FINE_FACE_SIZE);
+    globe.map.fill(meters_to_level(-500.0));
+    for &(x, y) in land {
+        globe.map.set(0, x, y, meters_to_level(1000.0));
+    }
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, false, 2.0);
+    h
+}
+
+/// The largest difference of a color channel between two images, in a
+/// square of `half` pixels around the middle.
+fn largest_change(a: &image::RgbaImage, b: &image::RgbaImage, half: u32) -> u8 {
+    let (cx, cy) = (a.width() / 2, a.height() / 2);
+    let mut most = 0;
+    for y in cy - half..cy + half {
+        for x in cx - half..cx + half {
+            let (p, q) = (a.get_pixel(x, y).0, b.get_pixel(x, y).0);
+            for c in 0..3 {
+                most = most.max(p[c].abs_diff(q[c]));
+            }
+        }
+    }
+    most
+}
+
+#[test]
+fn an_island_smaller_than_one_pixel_has_no_line_and_no_land_color() {
+    let _gpu = one_gpu_test();
+    let middle = FINE_FACE_SIZE / 2;
+    let islands = [
+        vec![(middle, middle)],
+        vec![(middle, middle), (middle + 1, middle)],
+        vec![
+            (middle, middle),
+            (middle, middle + 1),
+            (middle + 1, middle),
+            (middle + 1, middle + 1),
+        ],
+    ];
+    let mut sea = fine_globe(&[]);
+    for island in islands {
+        let mut h = fine_globe(&island);
+        // The island moves across the pixel centers in steps of about 0.2 px.
+        for (lon, lat) in [
+            (0.0, 0.0),
+            (0.06, 0.0),
+            (0.0, 0.06),
+            (0.03, 0.09),
+            (0.09, 0.03),
+        ] {
+            let view = GlobeView::centered(lon, lat);
+            h.state_mut().globe.view = view;
+            sea.state_mut().globe.view = view;
+            let (shown, plain) = (canvas_image(&mut h), canvas_image(&mut sea));
+            let change = largest_change(&shown, &plain, 12);
+            assert!(change <= 2, "{island:?} at {lon}, {lat}: {change}");
+        }
+        // Closer, the island is larger than a pixel, and it shows.
+        let view = GlobeView {
+            zoom: 16.0,
+            ..GlobeView::centered(0.0, 0.0)
+        };
+        h.state_mut().globe.view = view;
+        sea.state_mut().globe.view = view;
+        let (shown, plain) = (canvas_image(&mut h), canvas_image(&mut sea));
+        assert!(largest_change(&shown, &plain, 12) > 100, "{island:?}");
+    }
+}
+
+/// A shape of land on the screen, in pixels of the whole frame.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    /// A corner at `tip`, open toward the angle `toward` in radians, with
+    /// half of its angle `half`. Convex: land inside the corner. Concave:
+    /// sea inside.
+    Corner {
+        tip: [f64; 2],
+        toward: f64,
+        half: f64,
+        convex: bool,
+    },
+    /// A channel of sea of `width` through land along the angle `along`,
+    /// or a ridge of land through sea.
+    Channel {
+        at: [f64; 2],
+        along: f64,
+        width: f64,
+        sea: bool,
+    },
+    /// A round island.
+    Island { at: [f64; 2], radius: f64 },
+    /// Land above a coast with bends 2 to 3 px across, about the row `y`.
+    Jagged { y: f64 },
+}
+
+impl Shape {
+    /// A signed distance in pixels, positive on land. It is exact near the
+    /// coast on each side.
+    fn land(&self, p: [f64; 2]) -> f64 {
+        match *self {
+            Shape::Corner {
+                tip,
+                toward,
+                half,
+                convex,
+            } => {
+                let q = [p[0] - tip[0], p[1] - tip[1]];
+                // The normals of the two sides, toward the inside.
+                let (a, b) = (toward + half, toward - half);
+                let n1 = [a.sin(), -a.cos()];
+                let n2 = [-b.sin(), b.cos()];
+                let f = (q[0] * n1[0] + q[1] * n1[1]).min(q[0] * n2[0] + q[1] * n2[1]);
+                if convex { f } else { -f }
+            }
+            Shape::Channel {
+                at,
+                along,
+                width,
+                sea,
+            } => {
+                let n = [-along.sin(), along.cos()];
+                let f = ((p[0] - at[0]) * n[0] + (p[1] - at[1]) * n[1]).abs() - width / 2.0;
+                if sea { f } else { -f }
+            }
+            Shape::Island { at, radius } => radius - (p[0] - at[0]).hypot(p[1] - at[1]),
+            Shape::Jagged { .. } => self.jagged(p[0])[0] - p[1],
+        }
+    }
+
+    /// The row of a `Jagged` coast at a column, and its slope.
+    fn jagged(&self, x: f64) -> [f64; 2] {
+        let Shape::Jagged { y } = *self else {
+            unreachable!("only a jagged coast has rows");
+        };
+        let waves = [(0.8, 12.0, 0.3), (1.2, 19.0, 1.1), (2.0, 31.0, 2.0)];
+        let mut out = [y, 0.0];
+        for (a, length, phase) in waves {
+            let k = std::f64::consts::TAU / length;
+            out[0] += a * (k * x + phase).sin();
+            out[1] += a * k * (k * x + phase).cos();
+        }
+        out
+    }
+
+    /// The distance in pixels to the coast.
+    fn coast(&self, p: [f64; 2]) -> f64 {
+        let ray = |o: [f64; 2], e: [f64; 2]| {
+            let q = [p[0] - o[0], p[1] - o[1]];
+            let t = (q[0] * e[0] + q[1] * e[1]).max(0.0);
+            ((q[0] - t * e[0]).powi(2) + (q[1] - t * e[1]).powi(2)).sqrt()
+        };
+        match *self {
+            Shape::Corner {
+                tip, toward, half, ..
+            } => {
+                let (a, b) = (toward + half, toward - half);
+                ray(tip, [a.cos(), a.sin()]).min(ray(tip, [b.cos(), b.sin()]))
+            }
+            Shape::Channel { .. } | Shape::Island { .. } => self.land(p).abs(),
+            Shape::Jagged { .. } => (-64..=64)
+                .map(|k| {
+                    let x = p[0] + f64::from(k) / 16.0;
+                    (x - p[0]).hypot(self.jagged(x)[0] - p[1])
+                })
+                .fold(f64::MAX, f64::min),
+        }
+    }
+}
+
+/// The land and the ink of each pixel of a frame, from 0 to 1.
+struct Cover {
+    width: u32,
+    land: Vec<f64>,
+    ink: Vec<f64>,
+}
+
+impl Cover {
+    /// The value at a place, from the 4 pixel centers around it.
+    fn at(values: &[f64], width: u32, p: [f64; 2]) -> f64 {
+        let (x, y) = (p[0] - 0.5, p[1] - 0.5);
+        let (i, j) = (x.floor(), y.floor());
+        let (s, t) = (x - i, y - j);
+        let v = |a: f64, b: f64| values[(b as u32 * width + a as u32) as usize];
+        let top = v(i, j) * (1.0 - s) + v(i + 1.0, j) * s;
+        let bottom = v(i, j + 1.0) * (1.0 - s) + v(i + 1.0, j + 1.0) * s;
+        top * (1.0 - t) + bottom * t
+    }
+
+    /// The places along a line where `values` crosses 0.5, as distances
+    /// from `from` along `dir`.
+    fn crossings(&self, ink: bool, from: [f64; 2], dir: [f64; 2], reach: f64) -> Vec<f64> {
+        let values = if ink { &self.ink } else { &self.land };
+        let mut out = Vec::new();
+        let mut last: Option<(f64, f64)> = None;
+        let mut s = -reach;
+        while s <= reach {
+            let v = Cover::at(
+                values,
+                self.width,
+                [from[0] + s * dir[0], from[1] + s * dir[1]],
+            );
+            if let Some((ls, lv)) = last
+                && (lv < 0.5) != (v < 0.5)
+            {
+                out.push(ls + (0.5 - lv) / (v - lv) * (s - ls));
+            }
+            last = Some((s, v));
+            s += 0.01;
+        }
+        out
+    }
+}
+
+/// The cover of the ideal picture of a shape: each pixel has the part of
+/// its square on land, and the part within `half` of the coast.
+fn ideal_cover(shape: Shape, width: u32, height: u32, half: f64) -> Cover {
+    const N: u32 = 8;
+    let mut land = vec![0.0; (width * height) as usize];
+    let mut ink = land.clone();
+    for y in 0..height {
+        for x in 0..width {
+            let i = (y * width + x) as usize;
+            if shape.coast([x as f64 + 0.5, y as f64 + 0.5]) > half + 2.0 {
+                land[i] = f64::from(shape.land([x as f64 + 0.5, y as f64 + 0.5]) > 0.0);
+                continue;
+            }
+            for sy in 0..N {
+                for sx in 0..N {
+                    let p = [
+                        x as f64 + (f64::from(sx) + 0.5) / f64::from(N),
+                        y as f64 + (f64::from(sy) + 0.5) / f64::from(N),
+                    ];
+                    let k = 1.0 / f64::from(N * N);
+                    if shape.land(p) > 0.0 {
+                        land[i] += k;
+                    }
+                    if shape.coast(p) <= half {
+                        ink[i] += k;
+                    }
+                }
+            }
+        }
+    }
+    Cover { width, land, ink }
+}
+
+/// The cover of a shape on the globe, with the full detail of a fine face.
+fn drawn_cover(shape: Shape) -> Cover {
+    let axis = [0.0, 0.0, 1.0];
+    let mut h = measured_globe(axis, |_| -500.0);
+    let view = GlobeView::centered(0.0, 0.0);
+    let rect = h.state().globe.rect;
+    let globe = &mut h.state_mut().globe;
+    globe.view = view;
+    globe.set_face_size(FINE_FACE_SIZE);
+    globe.map.fill(meters_to_level(-500.0));
+    let r = view.radius(rect);
+    let c = rect.center();
+    for y in 0..FINE_FACE_SIZE {
+        for x in 0..FINE_FACE_SIZE {
+            let v = view.rot.mul_vec(globe.map.texel_dir(0, x, y));
+            let p = [f64::from(c.x) + v[0] * r, f64::from(c.y) - v[1] * r];
+            let m = (30.0 * shape.land(p)).clamp(-1000.0, 1000.0);
+            globe.map.set(0, x, y, meters_to_level(m));
+        }
+    }
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, false, 2.0);
+    let frame = |h: &mut Harness<'static, AppState>| {
+        h.remove_cursor();
+        h.run_steps(2);
+        h.render().unwrap()
+    };
+    set_coast_line(&mut h, false);
+    let plain = frame(&mut h);
+    set_coast_line(&mut h, true);
+    let lined = frame(&mut h);
+    let mut land = Vec::new();
+    let mut ink = Vec::new();
+    for (a, b) in plain.pixels().zip(lined.pixels()) {
+        let red = f64::from(a.0[0]).max(1.0);
+        land.push(f64::from(a.0[1]) / red);
+        ink.push(((red - f64::from(b.0[0])) / red).max(0.0));
+    }
+    Cover {
+        width: plain.width(),
+        land,
+        ink,
+    }
+}
+
+/// The tips of the shapes on the screen: off the pixel centers by different
+/// parts of a pixel, with an angle of the shape.
+fn tips(rect: egui::Rect) -> [([f64; 2], f64); 2] {
+    let c = rect.center();
+    let (x, y) = (f64::from(c.x), f64::from(c.y));
+    [
+        ([x + 0.3, y + 0.17], 30f64.to_radians()),
+        ([x + 0.71, y + 0.55], 75f64.to_radians()),
+    ]
+}
+
+/// The canvas of the measured globe.
+fn measured_rect() -> egui::Rect {
+    measured_globe([0.0, 0.0, 1.0], |_| -500.0)
+        .state()
+        .globe
+        .rect
+}
+
+/// The size of the frame of the GPU harness.
+const FRAME: (u32, u32) = (640, 480);
+
+#[test]
+fn a_corner_keeps_its_point_and_the_round_end_of_its_line() {
+    let _gpu = one_gpu_test();
+    let half = f64::from(LINE_WEIGHT) / 2.0;
+    for (tip, toward) in tips(measured_rect()) {
+        for (degrees, convex) in [(90.0, true), (45.0, true), (90.0, false), (45.0, false)] {
+            let angle = f64::to_radians(degrees) / 2.0;
+            let shape = Shape::Corner {
+                tip,
+                toward,
+                half: angle,
+                convex,
+            };
+            let drawn = drawn_cover(shape);
+            let ideal = ideal_cover(shape, FRAME.0, FRAME.1, half);
+            // Along the line through the middle of the corner.
+            let dir = [toward.cos(), toward.sin()];
+            let what = format!("{degrees} degrees, convex {convex}, at {tip:?}");
+            let edge = |c: &Cover| {
+                let x = c.crossings(false, tip, dir, 7.0);
+                assert_eq!(x.len(), 1, "{what}: {x:?}");
+                x[0]
+            };
+            let (a, b) = (edge(&drawn), edge(&ideal));
+            assert!((a - b).abs() < 0.25, "{what}: edge at {a}, not {b}");
+            let ink = |c: &Cover| {
+                let x = c.crossings(true, tip, dir, 7.0);
+                assert_eq!(x.len(), 2, "{what}: {x:?}");
+                [x[0], x[1]]
+            };
+            let (a, b) = (ink(&drawn), ink(&ideal));
+            for k in 0..2 {
+                let off = (a[k] - b[k]).abs();
+                assert!(off < 0.25, "{what}: line ends at {a:?}, not {b:?}");
+            }
+        }
+    }
+}
+
+/// Makes sure that a channel has its width and the width of its lines in
+/// each row, within 0.25 px.
+fn assert_channel(width: f64, sea: bool) {
+    let half = f64::from(LINE_WEIGHT) / 2.0;
+    for (at, toward) in tips(measured_rect()) {
+        // About up and down on the screen.
+        let along = toward + 50f64.to_radians();
+        let shape = Shape::Channel {
+            at,
+            along,
+            width,
+            sea,
+        };
+        let drawn = drawn_cover(shape);
+        let ideal = ideal_cover(shape, FRAME.0, FRAME.1, half);
+        let n = [-along.sin(), along.cos()];
+        for k in -10..=10 {
+            let from = [
+                at[0] + f64::from(k) * along.cos(),
+                at[1] + f64::from(k) * along.sin(),
+            ];
+            let span = |c: &Cover, ink: bool| {
+                let x = c.crossings(ink, from, n, 8.0);
+                assert!(x.len() >= 2, "{width}, sea {sea}, row {k}: {x:?}");
+                x[x.len() - 1] - x[0]
+            };
+            for ink in [false, true] {
+                let (a, b) = (span(&drawn, ink), span(&ideal, ink));
+                let what = format!("{width}, sea {sea}, ink {ink}, row {k}: {a}, not {b}");
+                assert!((a - b).abs() < 0.25, "{what}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_inlet_has_its_width_and_its_lines() {
+    let _gpu = one_gpu_test();
+    assert_channel(1.5, true);
+    assert_channel(3.0, true);
+}
+
+#[test]
+fn a_ridge_two_pixels_wide_has_its_width_and_its_lines() {
+    let _gpu = one_gpu_test();
+    assert_channel(2.0, false);
+}
+
+#[test]
+fn the_line_around_a_small_island_has_its_weight() {
+    let _gpu = one_gpu_test();
+    let half = f64::from(LINE_WEIGHT) / 2.0;
+    for ((at, _), radius) in tips(measured_rect()).into_iter().zip([6.0, 9.5]) {
+        let shape = Shape::Island { at, radius };
+        let drawn = drawn_cover(shape);
+        let ideal = ideal_cover(shape, FRAME.0, FRAME.1, half);
+        for ray in 0..64 {
+            let a = f64::from(ray) * std::f64::consts::TAU / 64.0;
+            let dir = [a.cos(), a.sin()];
+            let from = [at[0] + radius * dir[0], at[1] + radius * dir[1]];
+            let what = format!("radius {radius}, ray {ray}");
+            let ink = |c: &Cover| {
+                let x = c.crossings(true, from, dir, half + 2.0);
+                assert_eq!(x.len(), 2, "{what}: {x:?}");
+                x[1] - x[0]
+            };
+            let (w, ideal_w) = (ink(&drawn), ink(&ideal));
+            assert!(
+                (w - ideal_w).abs() < 0.25,
+                "{what}: weight {w}, not {ideal_w}"
+            );
+            let edge = |c: &Cover| c.crossings(false, from, dir, 1.5);
+            let (e, ideal_e) = (edge(&drawn), edge(&ideal));
+            assert_eq!(e.len(), 1, "{what}: {e:?}");
+            assert!(
+                (e[0] - ideal_e[0]).abs() < 0.25,
+                "{what}: edge {e:?}, not {ideal_e:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_line_of_a_jagged_coast_has_its_weight_and_no_spikes() {
+    let _gpu = one_gpu_test();
+    let half = f64::from(LINE_WEIGHT) / 2.0;
+    let c = measured_rect().center();
+    let (cx, cy) = (f64::from(c.x), f64::from(c.y));
+    let shape = Shape::Jagged { y: cy + 0.3 };
+    let drawn = drawn_cover(shape);
+    for k in -240..=240 {
+        let x = cx + f64::from(k) / 4.0;
+        let [y, slope] = shape.jagged(x);
+        let n = 1.0 / (1.0 + slope * slope).sqrt();
+        let found = drawn.crossings(true, [x, y], [slope * n, -n], half + 3.0);
+        let what = format!("column {x}: {found:?}");
+        let [a, b] = found[..] else {
+            panic!("{what}");
+        };
+        assert!((b - a - 2.0 * half).abs() < 0.25, "{what}");
+        assert!(((a + b) / 2.0).abs() < 0.25, "{what}");
+    }
+    // Each pixel that the line covers more than half is within half of the
+    // weight of the coast.
+    for py in (cy - 12.0) as u32..(cy + 12.0) as u32 {
+        for px in (cx - 60.0) as u32..(cx + 60.0) as u32 {
+            let ink = drawn.ink[(py * drawn.width + px) as usize];
+            let d = shape.coast([f64::from(px) + 0.5, f64::from(py) + 0.5]);
+            assert!(ink <= 0.5 || d < half + 0.25, "{px}, {py}: {ink} at {d}");
+        }
+    }
+}
+
+/// The places of the coasts at each zoom: on the equator across a face
+/// edge, and on the circle of latitude through a cube corner. Each has the
+/// longitude and the latitude of the middle of the view, in degrees.
+const COAST_PLACES: [(&str, f64, f64); 2] = [
+    ("face edge", 45.0, 0.0),
+    ("cube corner", 45.0, 35.264_389_682_754_654),
+];
+
+const ZOOMS: [f64; 4] = [1.0, 4.0, 15.0, 40.0];
+
+/// Makes sure that the coast line of `ground` has its weight across the
+/// line and its middle on the band edge on the globe, at each zoom and
+/// place, with 1 and 2 pixels per point.
+fn assert_globe_coasts(ground: fn(f64) -> f64, name: &str) {
+    for scale in [1.0, 2.0] {
+        for (place, lon, lat) in COAST_PLACES {
+            let z = lat.to_radians().sin();
+            let mut h = gpu_harness_at(render_state(), scale);
+            lines::measured_scene(&mut h, 64, move |d| ground(d[2] - z));
+            for zoom in ZOOMS {
+                let globe = &mut h.state_mut().globe;
+                globe.view = GlobeView::centered(lon, lat);
+                globe.view.zoom = zoom;
+                let what = format!("{name}, {place}, zoom {zoom}, {scale} px per point");
+                let found = lines::measure_across(&mut h, &what);
+                lines::assert_across(&found, scale, 20, &what);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_stop_line_on_an_even_slope_has_its_weight_at_each_zoom() {
+    let _gpu = one_gpu_test();
+    assert_globe_coasts(even_slope, "even slope");
+}
+
+#[test]
+fn a_stop_line_next_to_a_flat_sea_has_its_weight_at_each_zoom() {
+    let _gpu = one_gpu_test();
+    assert_globe_coasts(flat_sea, "flat sea");
+}
+
+#[test]
+fn a_stop_line_next_to_flat_land_has_its_weight_at_each_zoom() {
+    let _gpu = one_gpu_test();
+    assert_globe_coasts(flat_land, "flat land");
 }
