@@ -4096,17 +4096,29 @@ fn assert_even_line(columns: &[f32], expected: f32, what: &str) {
 #[test]
 fn a_stop_line_has_the_same_weight_at_each_zoom_and_across_a_face_edge() {
     let _gpu = one_gpu_test();
-    for display in [RasterDisplay::Bands, RasterDisplay::Gradient] {
+    let mut h = line_harness(RasterDisplay::Bands, [0.0, 0.0, 1.0]);
+    // The equator crosses a face edge at 45 degrees of longitude.
+    for zoom in [1.0, 4.0, 15.0, 40.0] {
+        let globe = &mut h.state_mut().globe;
+        globe.view = GlobeView::centered(45.0, 0.0);
+        globe.view.zoom = zoom;
+        let what = format!("zoom {zoom}");
+        let columns = line_columns(&mut h, &what);
+        assert_even_line(&columns, LINE_WEIGHT, &what);
+    }
+}
+
+#[test]
+fn a_stop_line_shows_only_in_the_bands_display() {
+    let _gpu = one_gpu_test();
+    for display in [RasterDisplay::Gradient, RasterDisplay::Grey] {
         let mut h = line_harness(display, [0.0, 0.0, 1.0]);
-        // The equator crosses a face edge at 45 degrees of longitude.
-        for zoom in [1.0, 4.0, 15.0, 40.0] {
-            let globe = &mut h.state_mut().globe;
-            globe.view = GlobeView::centered(45.0, 0.0);
-            globe.view.zoom = zoom;
-            let what = format!("{display:?} at zoom {zoom}");
-            let columns = line_columns(&mut h, &what);
-            assert_even_line(&columns, LINE_WEIGHT, &what);
-        }
+        h.state_mut().globe.view = GlobeView::centered(45.0, 0.0);
+        let columns = line_columns(&mut h, &format!("{display:?}"));
+        assert!(
+            columns.iter().all(|&c| c < 0.01),
+            "{display:?}: {columns:?}"
+        );
     }
 }
 

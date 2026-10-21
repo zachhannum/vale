@@ -336,7 +336,7 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, up: vec3<f32>) -> vec3<f
         let land = clamp((h - u.flat.x) / max(width, 1e-6) + 1.0, 0.0, 1.0);
         color = mix(color, RIVER_COLOR, 0.9 * land * river(d, pixel));
     }
-    if mode != MODE_GREYSCALE {
+    if mode != MODE_GREYSCALE && mode != MODE_SMOOTH {
         color = stop_lines(color, h, width, d, up);
     }
     return color;
