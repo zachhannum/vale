@@ -4072,6 +4072,20 @@ fn line_harness_on(
     axis: V3,
     render_state: egui_wgpu::RenderState,
 ) -> Harness<'static, AppState> {
+    let white = [[255; 3]; 4];
+    line_globe(display, axis, render_state, white, |along| 3000.0 * along)
+}
+
+/// A globe whose heights in meters are `height` of the distance along
+/// `axis`, with the colors of `three_stops`. Only the stop at sea level has
+/// a line.
+fn line_globe(
+    display: RasterDisplay,
+    axis: V3,
+    render_state: egui_wgpu::RenderState,
+    colors: [[u8; 3]; 4],
+    height: impl Fn(f64) -> f64,
+) -> Harness<'static, AppState> {
     const N: usize = 64;
     let mut h = gpu_harness_on(render_state);
     show_as(h.state_mut(), display);
@@ -4079,18 +4093,101 @@ fn line_harness_on(
     globe.set_face_size(N);
     globe.preview.graticule = false;
     globe.preview.rivers = false;
-    three_stops(&mut globe.map.bands, [[255; 3]; 4]);
+    three_stops(&mut globe.map.bands, colors);
     for face in 0..6 {
         for y in 0..N {
             for x in 0..N {
                 let d = globe.map.texel_dir(face, x, y);
                 let along: f64 = d.iter().zip(axis).map(|(a, b)| a * b).sum();
-                globe.map.set(face, x, y, meters_to_level(3000.0 * along));
+                globe.map.set(face, x, y, meters_to_level(height(along)));
             }
         }
     }
     set_coast_line(&mut h, true);
     h
+}
+
+/// The colors of a measured line: red everywhere, with green on land.
+const MEASURE_COLORS: [[u8; 3]; 4] = [[255, 0, 0], [255, 0, 0], [255, 255, 0], [255, 255, 0]];
+
+/// A globe with the colors of a measured line, whose heights in meters are
+/// `height` of the distance along `axis`. The highest stop
+/// has a line, and no height crosses it, so the image with no coast line
+/// draws the band edges in the same way.
+fn measured_globe(axis: V3, height: impl Fn(f64) -> f64) -> Harness<'static, AppState> {
+    let mut h = line_globe(
+        RasterDisplay::Bands,
+        axis,
+        render_state(),
+        MEASURE_COLORS,
+        height,
+    );
+    let bands = &mut h.state_mut().globe.map.bands;
+    let top = bands.stops().len() - 1;
+    let line = StopLine {
+        on: true,
+        weight: LINE_WEIGHT,
+        color: [0; 3],
+        ..StopLine::default()
+    };
+    assert!(bands.set_line(top, line));
+    h
+}
+
+/// The measures of a line in one column of the canvas, in pixels from the
+/// top of the canvas image.
+#[derive(Debug)]
+struct LineColumn {
+    /// The dark part of the column.
+    weight: f32,
+    /// The middle of the dark part.
+    center: f32,
+    /// The band edge, from the land color of the image with no line.
+    edge: f32,
+}
+
+/// Measures the coast line of a `measured_globe` in each column of the
+/// middle third of the canvas. The coast goes across the canvas, with land
+/// above it.
+fn measure_line(h: &mut Harness<'static, AppState>, name: &str) -> Vec<LineColumn> {
+    set_coast_line(h, false);
+    let plain = canvas_image(h);
+    set_coast_line(h, true);
+    let lined = canvas_image(h);
+    if std::env::var_os("VALE_LINE_IMAGES").is_some() {
+        lined.save(format!("/tmp/line-{name}.png")).unwrap();
+    }
+    let ink = |x, y| {
+        let a = f32::from(plain.get_pixel(x, y).0[0]).max(1.0);
+        let b = f32::from(lined.get_pixel(x, y).0[0]);
+        (a - b).max(0.0) / a
+    };
+    let height = lined.height();
+    (lined.width() / 3..2 * lined.width() / 3)
+        .map(|x| {
+            let dark: Vec<u32> = (0..height).filter(|&y| ink(x, y) > 0.02).collect();
+            let (first, last) = match (dark.first(), dark.last()) {
+                (Some(&a), Some(&b)) => (a, b),
+                _ => (height / 2, height / 2),
+            };
+            let rows = first.saturating_sub(8)..(last + 9).min(height);
+            let weight: f32 = rows.clone().map(|y| ink(x, y)).sum();
+            let moment: f32 = rows.clone().map(|y| ink(x, y) * (y as f32 + 0.5)).sum();
+            // The shade of the globe darkens red and green alike.
+            let land: f32 = rows
+                .clone()
+                .map(|y| {
+                    let [r, g, _, _] = plain.get_pixel(x, y).0;
+                    f32::from(g) / f32::from(r).max(1.0)
+                })
+                .sum();
+            LineColumn {
+                weight,
+                center: moment / weight.max(1e-6),
+                edge: rows.start as f32 + land,
+            }
+        })
+        .collect()
 }
 
 fn set_coast_line(h: &mut Harness<'static, AppState>, on: bool) {
@@ -4129,11 +4226,12 @@ fn line_columns(h: &mut Harness<'static, AppState>, name: &str) -> Vec<f32> {
         .collect()
 }
 
-/// Makes sure that each column has the same dark part, near `expected`.
+/// Makes sure that each column has the same dark part, within 0.25 px of
+/// `expected`.
 fn assert_even_line(columns: &[f32], expected: f32, what: &str) {
     for (x, &c) in columns.iter().enumerate() {
         assert!(
-            (c - expected).abs() < 0.1 * expected,
+            (c - expected).abs() < 0.25,
             "{what}: {c} at column {x}, not {expected}"
         );
     }
@@ -4188,6 +4286,97 @@ fn each_pixel_near_a_stop_line_finds_the_crossing_of_its_column() {
             assert!(place[0].abs() < 0.01, "{what}");
             let found = y as f32 + 0.5 + place[1];
             assert!((found - line).abs() < 0.25, "{what}");
+        }
+    }
+}
+
+/// The heights of an even slope, in meters, at a distance along an axis.
+fn even_slope(along: f64) -> f64 {
+    3000.0 * along
+}
+
+/// A slope down to a flat sea just below sea level.
+fn flat_sea(along: f64) -> f64 {
+    if along < 0.0 { -5.0 } else { 3000.0 * along }
+}
+
+/// A slope up to flat land just above sea level.
+fn flat_land(along: f64) -> f64 {
+    if along > 0.0 { 5.0 } else { 3000.0 * along }
+}
+
+/// The axis of a coast that is level on the screen at the middle of the
+/// canvas, along the rows of the texels.
+const LEVEL: V3 = [0.0, 0.0, 1.0];
+/// The axis of a coast at a slant to the screen and to the texels. Next to
+/// flat ground, the coast is a staircase of the texels, so only an even
+/// slope has a straight coast at a slant.
+const SLANT: V3 = [0.0, 0.287_347, 0.957_826];
+
+/// Measures the coast line of a `measured_globe` of each axis. Returns the
+/// columns with the slope of the line on the screen.
+fn measure_coasts(axes: &[V3], height: fn(f64) -> f64, name: &str) -> Vec<(Vec<LineColumn>, f32)> {
+    axes.iter()
+        .enumerate()
+        .map(|(i, &axis)| {
+            let mut h = measured_globe(axis, height);
+            h.state_mut().globe.view = GlobeView::centered(0.0, 0.11);
+            let columns = measure_line(&mut h, &format!("{name}-{i}"));
+            let (first, last) = (&columns[0], &columns[columns.len() - 1]);
+            let slope = (last.center - first.center) / (columns.len() - 1) as f32;
+            (columns, slope)
+        })
+        .collect()
+}
+
+/// Makes sure that the line of each column has the weight of the stop
+/// across the line, within 0.25 px.
+fn assert_line_weight(axes: &[V3], height: fn(f64) -> f64, name: &str) {
+    for (columns, slope) in measure_coasts(axes, height, name) {
+        let across = 1.0 / (1.0 + slope * slope).sqrt();
+        for (x, c) in columns.iter().enumerate() {
+            let weight = c.weight * across;
+            let what = format!("{name}, slope {slope}: {weight} at column {x}, {c:?}");
+            assert!((weight - LINE_WEIGHT).abs() < 0.25, "{what}");
+        }
+    }
+}
+
+#[test]
+fn a_stop_line_on_an_even_slope_has_its_weight() {
+    let _gpu = one_gpu_test();
+    assert_line_weight(&[LEVEL, SLANT], even_slope, "even slope");
+}
+
+#[test]
+fn a_stop_line_next_to_a_flat_sea_has_its_weight() {
+    let _gpu = one_gpu_test();
+    assert_line_weight(&[LEVEL], flat_sea, "flat sea");
+}
+
+#[test]
+fn a_stop_line_next_to_flat_land_has_its_weight() {
+    let _gpu = one_gpu_test();
+    assert_line_weight(&[LEVEL], flat_land, "flat land");
+}
+
+#[test]
+fn the_middle_of_a_stop_line_is_on_the_band_edge() {
+    let _gpu = one_gpu_test();
+    type Ground = fn(f64) -> f64;
+    let cases: [(&[V3], Ground, &str); 3] = [
+        (&[LEVEL, SLANT], even_slope, "even slope"),
+        (&[LEVEL], flat_sea, "flat sea"),
+        (&[LEVEL], flat_land, "flat land"),
+    ];
+    for (axes, height, name) in cases {
+        for (columns, slope) in measure_coasts(axes, height, name) {
+            let across = 1.0 / (1.0 + slope * slope).sqrt();
+            for (x, c) in columns.iter().enumerate() {
+                let off = (c.center - c.edge) * across;
+                let what = format!("{name}, slope {slope}: {off} at column {x}, {c:?}");
+                assert!(off.abs() < 0.25, "{what}");
+            }
         }
     }
 }

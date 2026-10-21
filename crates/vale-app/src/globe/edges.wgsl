@@ -2,7 +2,9 @@
 // pass. The first pass writes the shown height of each pixel. The second
 // pass cuts each height to the range of its neighbors and finds the places
 // where the height crosses the value of a stop between two pixel centers.
-// The third pass gives each pixel the nearest of those places.
+// The third pass gives each pixel the nearest of those places. The layer
+// pass then draws the band edges and the lines from the cut heights and the
+// nearest places.
 //
 // This file comes after `globe.wgsl` in the same module. The payload of a
 // place matches `edges.rs`.
@@ -185,4 +187,124 @@ fn fs_edge_nearest(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<u32>
         }
     }
     return vec4<u32>(best, 0u, 0u, 0u);
+}
+
+// The cut height of a pixel, or -1 off the ground.
+fn clean_px(p: vec2<i32>) -> f32 {
+    let size = vec2<i32>(textureDimensions(edge_clean));
+    if any(p < vec2<i32>(0)) || any(p >= size) {
+        return -1.0;
+    }
+    return textureLoad(edge_clean, p, 0).x;
+}
+
+// The distance from a pixel center to the band edge at `at`, toward a
+// neighbor with the height `q`, in pixels. Large if the edge is not there.
+fn edge_toward(c: f32, q: f32, at: f32, side: bool) -> f32 {
+    if q < 0.0 || (q >= at) == side {
+        return 1e9;
+    }
+    return clamp((at - c) / (q - c), 0.0, 1.0);
+}
+
+// The tint of a pixel from the cut heights. Each band edge is the line
+// where the height between the pixel centers crosses the limit, and it is
+// one pixel soft. `h` and `width` give the tint where there is no cut
+// height.
+fn tint_screen(p: vec2<i32>, h: f32, width: f32, mode: i32) -> vec3<f32> {
+    let c = clean_px(p);
+    if c < 0.0 {
+        return tint(h, width, mode);
+    }
+    let left = clean_px(p - vec2<i32>(1, 0));
+    let right = clean_px(p + vec2<i32>(1, 0));
+    let up = clean_px(p - vec2<i32>(0, 1));
+    let down = clean_px(p + vec2<i32>(0, 1));
+    var color = band_color(0, c, mode);
+    let count = i32(u.params.w);
+    for (var i = 1; i < count; i++) {
+        let at = u.bands[i].bottom.a;
+        // A height at the limit is in the upper band.
+        let side = c >= at;
+        let tx = min(edge_toward(c, left, at, side), edge_toward(c, right, at, side));
+        let ty = min(edge_toward(c, up, at, side), edge_toward(c, down, at, side));
+        // The distance to the line through the two crossings.
+        var d = min(tx, ty);
+        if tx < 1e8 && ty < 1e8 {
+            d = tx * ty / max(sqrt(tx * tx + ty * ty), 1e-9);
+        }
+        let over = select(clamp(0.5 - d, 0.0, 1.0), clamp(0.5 + d, 0.0, 1.0), side);
+        color = mix(color, band_color(i, c, mode), over);
+    }
+    return color;
+}
+
+// The place where the height crosses `at` on the edge from `pa` to `pb`.
+fn crossing(pa: vec2<f32>, ha: f32, pb: vec2<f32>, hb: f32, at: f32) -> vec2<f32> {
+    return pa + (pb - pa) * clamp((at - ha) / (hb - ha), 0.0, 1.0);
+}
+
+// The distance from the pixel center to the segment from `a` to `b`.
+fn segment_distance(a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let t = clamp(-dot(a, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
+    return length(a + ab * t);
+}
+
+// The color of the line at a pixel, and the part of the pixel that it
+// covers. The band edge goes through the nearest place, on a segment in
+// one of the two cells of 4 pixel centers that share its pair. Where a cell
+// has the edge on all 4 sides, the mean of its corners decides how the
+// edge goes through it.
+fn line_cover(p: vec2<i32>) -> vec4<f32> {
+    let seed = textureLoad(edge_nearest, p, 0).x;
+    if seed == EDGE_EMPTY {
+        return vec4<f32>(0.0);
+    }
+    let stop = edge_stop(seed);
+    let half = edge_half(stop);
+    let at = u.lines[stop].at.x;
+    let step = edge_step(edge_axis(seed));
+    let pa = vec2<f32>(edge_base(seed));
+    let pb = pa + step;
+    let ha = clean_px(p + vec2<i32>(pa));
+    let hb = clean_px(p + vec2<i32>(pb));
+    let sa = ha >= at;
+    let sb = hb >= at;
+    var x = edge_place(seed);
+    var valid = ha >= 0.0 && hb >= 0.0 && sa != sb;
+    if valid {
+        x = crossing(pa, ha, pb, hb, at);
+    }
+    var dist = length(x);
+    let across = vec2<f32>(step.y, step.x);
+    for (var k = 0; k < 2 && valid; k++) {
+        let pc = pa + across * f32(2 * k - 1);
+        let pd = pc + step;
+        let hc = clean_px(p + vec2<i32>(pc));
+        let hd = clean_px(p + vec2<i32>(pd));
+        if hc < 0.0 || hd < 0.0 {
+            continue;
+        }
+        let sc = hc >= at;
+        let sd = hd >= at;
+        var y = x;
+        if sa != sc && sb != sd && sc != sd {
+            let middle = (ha + hb + hc + hd) * 0.25 >= at;
+            if sa != middle {
+                y = crossing(pa, ha, pc, hc, at);
+            } else {
+                y = crossing(pb, hb, pd, hd, at);
+            }
+        } else if sa != sc {
+            y = crossing(pa, ha, pc, hc, at);
+        } else if sb != sd {
+            y = crossing(pb, hb, pd, hd, at);
+        } else {
+            y = crossing(pc, hc, pd, hd, at);
+        }
+        dist = min(dist, segment_distance(x, y));
+    }
+    let cover = clamp(max(half, 0.5) + 0.5 - dist, 0.0, 1.0) * min(2.0 * half, 1.0);
+    return vec4<f32>(u.lines[stop].color.rgb, cover);
 }

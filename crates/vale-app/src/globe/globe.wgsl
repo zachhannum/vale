@@ -120,12 +120,6 @@ fn pixel_slope(d: vec3<f32>, slope: vec2<f32>, dx: vec3<f32>, dy: vec3<f32>) -> 
     return vec2<f32>(dot(g, dx), dot(g, dy));
 }
 
-// The change of the direction across one pixel, uphill on the screen.
-fn uphill(s: vec2<f32>, dx: vec3<f32>, dy: vec3<f32>) -> vec3<f32> {
-    let n = s / max(length(s), 1e-12);
-    return n.x * dx + n.y * dy;
-}
-
 // The value of the layer at a world direction, from 0 to 1, at the level
 // of the smoothing. The y and z parts are the change of the value across one
 // texel.
@@ -244,13 +238,19 @@ fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
     return color;
 }
 
-// The color of a layer in a world direction: the tint of the height, and the
-// rivers. `width` is the change of the height across one pixel. `pixel` is
-// the angle that one pixel covers there.
-fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, up: vec3<f32>) -> vec3<f32> {
+// The color of a layer in a world direction: the tint of the height, the
+// rivers, and the lines of the stops. `width` is the change of the height
+// across one pixel. `pixel` is the angle that one pixel covers there.
+// `frag` is the place of the pixel on the render target. When the passes of
+// `edges.wgsl` ran, the band edges and the lines come from their textures.
+fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, frag: vec2<f32>) -> vec3<f32> {
     let mode = i32(u.params.z);
+    let p = vec2<i32>(floor(frag));
+    let screen = u.edges.x > 0.5;
     var color = vec3<f32>(h);
-    if mode != MODE_GREYSCALE {
+    if screen {
+        color = tint_screen(p, h, width, mode);
+    } else if mode != MODE_GREYSCALE {
         color = tint(h, width, mode);
     }
     if u.flat.y > 0.5 {
@@ -258,50 +258,9 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, up: vec3<f32>) -> vec3<f
         let land = clamp((h - u.flat.x) / max(width, 1e-6) + 1.0, 0.0, 1.0);
         color = mix(color, RIVER_COLOR, 0.9 * land * river(d, pixel));
     }
-    if mode != MODE_GREYSCALE && mode != MODE_SMOOTH {
-        color = stop_lines(color, h, width, d, up);
-    }
-    return color;
-}
-
-// Draws the line of each stop where the height crosses its value. `width` is
-// the change of the height across one pixel, so the distance to the line in
-// pixels is the difference of the heights over `width`. A line thinner than
-// one pixel is one pixel wide and fainter. Where a pixel covers many texels,
-// the slope of the texels does not tell the change across the line. Then the
-// heights one line width uphill and downhill must be on the two sides of the
-// value, and the distance comes from them. `up` is the change of the
-// direction across one pixel uphill.
-fn stop_lines(base: vec3<f32>, h: f32, width: f32, d: vec3<f32>, up: vec3<f32>) -> vec3<f32> {
-    let w = max(width, 1e-9);
-    var color = base;
-    let count = i32(u.params.w) + 1;
-    for (var i = 0; i < count; i++) {
-        let line = u.lines[i];
-        let half = line.color.a;
-        if half <= 0.0 {
-            continue;
-        }
-        let at = line.at.x;
-        let reach = max(half, 0.5) + 0.5;
-        // The slope can be small at the pixel and large next to it.
-        if abs(h - at) / w >= 4.0 * reach {
-            continue;
-        }
-        let high = shown(normalize(d + up * reach)).x;
-        let low = shown(normalize(d - up * reach)).x;
-        // A height at the value is in the upper band, as in `tint`, so a
-        // flat place at the value has no line.
-        let below = h < at;
-        var distance = reach;
-        if (high < at) != below {
-            distance = min(distance, reach * abs(h - at) / max(abs(h - high), 1e-9));
-        }
-        if (low < at) != below {
-            distance = min(distance, reach * abs(h - at) / max(abs(h - low), 1e-9));
-        }
-        let cover = clamp(reach - distance, 0.0, 1.0) * min(2.0 * half, 1.0);
-        color = mix(color, line.color.rgb, cover);
+    if screen {
+        let line = line_cover(p);
+        color = mix(color, line.rgb, line.a);
     }
     return color;
 }
@@ -377,8 +336,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // in `fs_flat`.
     let h = shown(at.d);
     let slope = pixel_slope(at.d, h.yz, at.dx, at.dy);
-    let up = uphill(slope, at.dx, at.dy);
-    let color = ground(h.x, length(slope), at.d, at.px, up) * at.shade;
+    let color = ground(h.x, length(slope), at.d, at.px, frag.xy) * at.shade;
     let alpha = u.layer.x;
     return vec4<f32>(color * alpha, alpha);
 }
@@ -450,10 +408,9 @@ fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
     let h = shown(d);
     let angle = max(length(dpdx(d)), length(dpdy(d)));
     let slope = pixel_slope(d, h.yz, dpdx(d), dpdy(d));
-    let up = uphill(slope, dpdx(d), dpdy(d));
     let width = length(slope);
     let alpha = u.layer.x;
-    return vec4<f32>(ground(h.x, width, d, angle, up) * alpha, alpha);
+    return vec4<f32>(ground(h.x, width, d, angle, in.position.xy) * alpha, alpha);
 }
 
 @fragment
