@@ -4103,6 +4103,14 @@ fn the_style_section_has_the_smoothing_and_the_minimum_feature_size() {
             assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
         }
         check_controls(&h, &format!("{what} with the smoothing"));
+        let image = h.render().unwrap();
+        std::fs::create_dir_all("../../target/app").unwrap();
+        image
+            .save(format!(
+                "../../target/app/test-pad-smoothing-{}.png",
+                size.0
+            ))
+            .unwrap();
 
         // A tap at the left end of the slider gives a size of zero.
         let slider = control(&h, FEATURE_SIZE).unwrap();

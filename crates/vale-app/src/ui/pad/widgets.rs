@@ -334,7 +334,10 @@ pub fn row_slider(
         true,
         None,
     );
-    let left = rect.left() + 72.0 + THUMB / 2.0;
+    let label = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), theme::body(), theme::TEXT);
+    let left = rect.left() + (label.size().x + 16.0).max(72.0) + THUMB / 2.0;
     let right = rect.right() - 56.0 - THUMB / 2.0;
     let before = *fraction;
     let scroll_id = resp.id.with("scroll");
@@ -357,8 +360,8 @@ pub fn row_slider(
     let filled = Rect::from_min_max(whole.min, pos2(x, y + 3.0));
     track(ui, whole, filled, pos2(x, y));
     let painter = ui.painter();
-    let at = pos2(rect.left(), y);
-    painter.text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    let at = pos2(rect.left(), y - label.size().y / 2.0);
+    painter.galley(at, label, theme::TEXT);
     let at = pos2(rect.right(), y);
     painter.text(at, Align2::RIGHT_CENTER, value, theme::mono(), theme::MUTE);
     *fraction != before
