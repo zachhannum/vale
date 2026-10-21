@@ -17,7 +17,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use crate::gpkg::{Reader, StoreError, TileKey, corrupt, decode_geometry, encode_geometry};
 use crate::{
     Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
-    Stop, StopLine, Units, Uuid, Value, World, clamp_opacity,
+    Smoothing, Stop, StopLine, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -459,9 +459,12 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
         out.push(stop.line.darker as u8);
         out.extend_from_slice(&stop.line.darken.to_le_bytes());
     }
+    out.extend_from_slice(&raster.smoothing.feature_size.to_le_bytes());
+    out.push(raster.smoothing.on as u8);
 }
 
-/// An unknown display gives bands. An image of version 11 has no lines.
+/// An unknown display gives bands. An image of version 11 has no lines. An
+/// image of version 11 or 12 has no smoothing, and gets the default.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -481,6 +484,7 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         })
         .collect::<Option<Vec<_>>>()?;
     let mut stops = stops;
+    let mut smoothing = Smoothing::default();
     if !r.0.is_empty() {
         for stop in &mut stops {
             let [on]: [u8; 1] = r.take()?;
@@ -496,6 +500,14 @@ fn raster(r: &mut Reader) -> Option<Raster> {
             };
         }
     }
+    if !r.0.is_empty() {
+        let feature_size = clamp_feature_size(f32::from_le_bytes(r.take()?));
+        let [on]: [u8; 1] = r.take()?;
+        smoothing = Smoothing {
+            on: on != 0,
+            feature_size,
+        };
+    }
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
@@ -506,6 +518,7 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         value_max,
         base,
         stops,
+        smoothing,
     })
 }
 
@@ -661,6 +674,10 @@ mod tests {
         let rain = project.raster_mut(id).unwrap();
         rain.opacity = 0.375;
         rain.display = RasterDisplay::Grey;
+        rain.smoothing = Smoothing {
+            on: false,
+            feature_size: 3.25,
+        };
         rain.stops = vec![
             Stop {
                 value: 0.0,
@@ -688,12 +705,33 @@ mod tests {
         out.pop();
         assert_eq!(raster(&mut Reader(&out)), None);
 
+        // An image of version 12 ends after the lines, and it gets the
+        // default smoothing.
+        out.truncate(out.len() + 1 - 5);
+        let old = raster(&mut Reader(&out)).unwrap();
+        assert_eq!(old.smoothing, Smoothing::default());
+        assert_eq!(old.stops, rain.stops);
+
         // An image of version 11 ends after the stops, and its stops have
         // no line.
-        out.truncate(out.len() + 1 - 2 * 13);
+        out.truncate(out.len() - 2 * 13);
         let old = raster(&mut Reader(&out)).unwrap();
         assert!(old.stops.iter().all(|s| s.line == StopLine::default()));
         assert_eq!(old.stops[1].above, [7, 8, 9]);
+        assert_eq!(old.smoothing, Smoothing::default());
+    }
+
+    #[test]
+    fn a_raster_image_of_version_12_with_no_stops_gets_the_default_smoothing() {
+        let mut project = Project::new(World::default());
+        let id = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
+        project.set_raster_smoothing(id, false);
+        let mut out = Vec::new();
+        put_raster(&mut out, project.raster(id).unwrap());
+        assert!(!raster(&mut Reader(&out)).unwrap().smoothing.on);
+        out.truncate(out.len() - 5);
+        let old = raster(&mut Reader(&out)).unwrap();
+        assert_eq!(old.smoothing, Smoothing::default());
     }
 
     #[test]

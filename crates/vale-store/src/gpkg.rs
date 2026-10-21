@@ -24,16 +24,17 @@ use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
     Feature, Geometry, GeometryKind, Layer, LayerId, LayerKind, LonLat, Project, Raster,
-    RasterDisplay, RasterId, Rgb, Stop, StopLine, Units, Uuid, Value, World, clamp_opacity,
+    RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine, Units, Uuid, Value, World,
+    clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 12;
+pub const FORMAT_VERSION: u32 = 13;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
 const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] =
-    &[v1, v2, undo::v3, v4, v5, v6, v7, v8, v9, v10, v11, v12];
+    &[v1, v2, undo::v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -714,6 +715,15 @@ fn v12(_: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The smoothing of a raster. The rasters of an older file get the default
+/// smoothing, and so do their undo images.
+fn v13(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE vale_raster ADD COLUMN smooth INTEGER NOT NULL DEFAULT 1;
+         ALTER TABLE vale_raster ADD COLUMN feature_size REAL NOT NULL DEFAULT 2;",
+    )
+}
+
 /// The display of a raster. The rasters of an older file show bands.
 fn v10(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN display TEXT NOT NULL DEFAULT 'bands'")
@@ -1357,14 +1367,15 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
         // A replaced row is a deleted row, and the tiles refer to the row.
         tx.execute(
             "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base,
-               opacity, display, stops)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+               opacity, display, stops, smooth, feature_size)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT (id) DO UPDATE SET
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
                base = excluded.base,
                opacity = excluded.opacity, display = excluded.display,
-               stops = excluded.stops",
+               stops = excluded.stops, smooth = excluded.smooth,
+               feature_size = excluded.feature_size",
             params![
                 r.id.0,
                 r.face_size,
@@ -1375,6 +1386,8 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 f64::from(clamp_opacity(r.opacity)),
                 r.display.id(),
                 stops_text(&r.stops),
+                r.smoothing.on,
+                f64::from(clamp_feature_size(r.smoothing.feature_size)),
             ],
         )?;
     }
@@ -1449,7 +1462,8 @@ fn write_tiles(
 
 fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
     let mut rows = conn.prepare(
-        "SELECT id, face_size, unit, value_min, value_max, base, opacity, display, stops
+        "SELECT id, face_size, unit, value_min, value_max, base, opacity, display, stops,
+           smooth, feature_size
          FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
@@ -1472,6 +1486,10 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
             value_max: r.get(4)?,
             base: u16::try_from(base).map_err(|_| bad("base"))?,
             stops: parse_stops(&text(8)?),
+            smoothing: Smoothing {
+                on: r.get::<_, i64>(9)? != 0,
+                feature_size: clamp_feature_size(r.get::<_, f64>(10)? as f32),
+            },
         });
     }
     Ok(rasters)
@@ -2210,6 +2228,7 @@ mod tests {
                     line: StopLine::default(),
                 },
             ],
+            smoothing: Smoothing::default(),
         };
         (project, height, rain)
     }
@@ -2626,7 +2645,9 @@ mod tests {
                 "base",
                 "opacity",
                 "display",
-                "stops"
+                "stops",
+                "smooth",
+                "feature_size"
             ]
         );
 
@@ -2990,6 +3011,70 @@ mod tests {
         assert_eq!(loaded.raster(rain).unwrap().display, RasterDisplay::Bands);
     }
 
+    /// Removes the smoothing of the rasters, as in a file before format
+    /// version 13.
+    const V12_DROP: &str = "ALTER TABLE vale_raster DROP COLUMN smooth;
+         ALTER TABLE vale_raster DROP COLUMN feature_size;";
+
+    #[test]
+    fn the_file_keeps_the_smoothing_of_each_raster() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, rain) = rasters();
+        assert!(project.set_raster_feature_size(height, 0.75));
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert!(project.set_raster_smoothing(height, false));
+        file.save(&project).unwrap();
+        assert!(project.set_raster_feature_size(rain, 6.5));
+        file.save(&project).unwrap();
+        drop(file);
+
+        let smoothing = |p: &Project, id| p.raster(id).unwrap().smoothing;
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        let off = Smoothing {
+            on: false,
+            feature_size: 0.75,
+        };
+        let big = Smoothing {
+            on: true,
+            feature_size: 6.5,
+        };
+        assert_eq!(smoothing(&loaded, height), off);
+        assert_eq!(smoothing(&loaded, rain), big);
+
+        // An undo puts back the old size, and then the old switch.
+        let on = Smoothing { on: true, ..off };
+        file.undo().unwrap();
+        assert_eq!(smoothing(file.project(), rain), Smoothing::default());
+        assert_eq!(smoothing(file.project(), height), off);
+        file.undo().unwrap();
+        assert_eq!(smoothing(file.project(), height), on);
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(smoothing(&loaded, height), on);
+        assert_eq!(smoothing(&loaded, rain), Smoothing::default());
+        file.redo().unwrap();
+        file.redo().unwrap();
+        assert_eq!(file.project(), &project);
+        drop(file);
+
+        // A file before version 13 gives the default smoothing.
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(V12_DROP).unwrap();
+        drop(conn);
+        set_format_version(&dir, 12);
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert!(
+            loaded
+                .rasters()
+                .iter()
+                .all(|r| r.smoothing == Smoothing::default())
+        );
+        // The undo images of version 13 stay valid.
+        assert!(file.can_undo());
+    }
+
     /// The band limits and the ramps of a raster before format version 11.
     const V10_COLUMNS: &str = "ALTER TABLE vale_raster ADD COLUMN limits TEXT NOT NULL DEFAULT '';
          ALTER TABLE vale_raster ADD COLUMN ramp_sea TEXT NOT NULL DEFAULT '';
@@ -3007,6 +3092,7 @@ mod tests {
         conn.execute_batch(&format!(
             "ALTER TABLE vale_raster DROP COLUMN display;
              ALTER TABLE vale_raster DROP COLUMN stops;
+             {V12_DROP}
              {V10_COLUMNS}"
         ))
         .unwrap();
@@ -3032,6 +3118,7 @@ mod tests {
         let conn = Connection::open(path(&dir)).unwrap();
         conn.execute_batch(&format!(
             "ALTER TABLE vale_raster DROP COLUMN stops;
+             {V12_DROP}
              {V10_COLUMNS}"
         ))
         .unwrap();
