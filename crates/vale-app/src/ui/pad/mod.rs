@@ -137,6 +137,9 @@ impl Panel {
 pub struct PadState {
     /// The Brush panel is open.
     pub brush: bool,
+    /// The Layers panel shows the page of the color ramps of the raster
+    /// layer of `layer`.
+    pub ramps: bool,
     /// The panel at the right: Layers, Toolbox, or none.
     pub right: Option<Panel>,
     /// The layer that the Layers panel shows. `None`: the panel shows the
@@ -735,6 +738,10 @@ fn show_panel(
         state.pad.layer = None;
     }
     let layer = state.pad.layer.filter(|_| panel == Panel::Layers);
+    if panel == Panel::Layers && !matches!(layer, Some(LayerRef::Raster(_))) {
+        state.pad.ramps = false;
+    }
+    let ramps = panel == Panel::Layers && state.pad.ramps;
     // The panel of a raster layer has the controls of the selected layer.
     if let Some(LayerRef::Raster(_)) = layer
         && state.selected_layer != layer
@@ -745,6 +752,9 @@ fn show_panel(
     let (key, title, back) = match (panel, layer) {
         (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
         (Panel::Brush, _) => (panel.key(), "Brush", None),
+        (Panel::Layers, Some(LayerRef::Raster(_))) if ramps => {
+            ("pad-ramps", raster::COLOR_RAMPS, Some(name))
+        }
         (Panel::Layers, Some(LayerRef::Raster(_))) => ("pad-layer", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
         (Panel::Layers, None) => (panel.key(), "Layers", None),
@@ -812,7 +822,9 @@ fn show_panel(
                     state.pad.add = !state.pad.add;
                 }
             }
-            if row.back {
+            if row.back && ramps {
+                state.pad.ramps = false;
+            } else if row.back {
                 state.pad.layer = None;
             }
             if row.close {
@@ -846,6 +858,9 @@ fn show_panel(
                         ui.spacing_mut().item_spacing.y = 6.0;
                         match (panel, layer) {
                             (Panel::Brush, _) => brush_body(ui, state, controls),
+                            (Panel::Layers, Some(LayerRef::Raster(id))) if ramps => {
+                                raster::ramps_body(ui, state, controls, id);
+                            }
                             (Panel::Layers, Some(LayerRef::Raster(id))) => {
                                 raster_body(ui, state, controls, id);
                             }

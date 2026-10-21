@@ -39,12 +39,16 @@ pub const REMOVE_STOP: &str = "Remove the stop";
 /// The row that puts back the default color stops, and the button of the
 /// card that asks before it.
 pub const RESET_STOPS: &str = "Reset colors";
+/// The row of the Style section that opens the page of the color ramps, and
+/// the title of the page.
+pub const COLOR_RAMPS: &str = "Color ramps";
 pub const IMPORT_RAMP: &str = "Import ramp…";
 /// The text below the import row while the app has no ramps.
 pub const IMPORT_RAMP_HINT: &str = "Pick an image of a legend: a row of blocks of color, from the lowest band to the highest. Each world can use the ramp.";
 /// The buttons of the card of a ramp.
 pub const APPLY_RAMP: &str = "Apply";
 pub const DELETE_RAMP: &str = "Delete ramp";
+pub const REVERSE_RAMP: &str = "Reverse ramp";
 /// The longest name of a ramp row, in characters.
 const RAMP_NAME: usize = 20;
 /// The width and the height of the bar of a ramp row.
@@ -205,6 +209,30 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         style.reset = None;
     }
     style.reset_anchor = (style.reset == Some(id)).then_some((id, row.rect));
+    let row = widgets::text_row(ui, controls, COLOR_RAMPS, 0.0, false, true);
+    widgets::paint_open(ui, row.rect);
+    if row.clicked() {
+        state.pad.ramps = true;
+    }
+
+    let preview = &mut state.globe.preview;
+    preview.selected = selected.map(|index| (id, index));
+    if height {
+        widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
+        let range = elevation::RIVER_WIDTH;
+        let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
+        let mut fraction = (f64::from(preview.river_width) - low) / (high - low);
+        let text = format!("{:.2}×", preview.river_width);
+        if widgets::row_slider(ui, controls, RIVER_WIDTH, "Width", &mut fraction, &text) {
+            preview.river_width = (low + fraction * (high - low)) as f32;
+        }
+    }
+}
+
+/// The page of the color ramps of the Layers panel: the import, and one row
+/// for each ramp. A tap on a row opens the card of the ramp, which
+/// `ramp_card` shows.
+pub fn ramps_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     if widgets::text_row(ui, controls, IMPORT_RAMP, 0.0, false, true).clicked() {
         state.actions.push(Action::ImportRampDialog(id));
     }
@@ -235,19 +263,6 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
             style.ramp_anchor = Some(row.rect);
         }
     }
-
-    let preview = &mut state.globe.preview;
-    preview.selected = selected.map(|index| (id, index));
-    if height {
-        widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
-        let range = elevation::RIVER_WIDTH;
-        let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
-        let mut fraction = (f64::from(preview.river_width) - low) / (high - low);
-        let text = format!("{:.2}×", preview.river_width);
-        if widgets::row_slider(ui, controls, RIVER_WIDTH, "Width", &mut fraction, &text) {
-            preview.river_width = (low + fraction * (high - low)) as f32;
-        }
-    }
 }
 
 /// The switch of the smoothing, and the minimum feature size while the
@@ -276,6 +291,16 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         let size = (fraction as f32 * max / WEIGHT_STEP).round() * WEIGHT_STEP;
         state.set_raster_feature_size(id, size);
     }
+}
+
+/// A button of the card of a ramp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RampChoice {
+    /// With `true`, the layer keeps its stops. With as many colors as
+    /// bands, the two ways are the same.
+    Apply(bool),
+    Reverse,
+    Delete,
 }
 
 /// The parts of the bands, in the order of `PART_NAMES`.
@@ -715,15 +740,16 @@ pub fn ramp_card(
     let (bands, kind) = ramp_fit(layer, part);
     let keep = format!("Keep {bands} {kind}bands");
     let fresh = format!("Use {colors} {kind}bands");
-    let buttons: Vec<(&str, egui::Color32)> = if colors == bands {
-        vec![(APPLY_RAMP, theme::ACCENT), (DELETE_RAMP, theme::WARN)]
+    let mut buttons: Vec<(&str, egui::Color32, RampChoice)> = if colors == bands {
+        vec![(APPLY_RAMP, theme::ACCENT, RampChoice::Apply(true))]
     } else {
         vec![
-            (&keep, theme::ACCENT),
-            (&fresh, theme::ACCENT),
-            (DELETE_RAMP, theme::WARN),
+            (&keep, theme::ACCENT, RampChoice::Apply(true)),
+            (&fresh, theme::ACCENT, RampChoice::Apply(false)),
         ]
     };
+    buttons.push((REVERSE_RAMP, theme::TEXT, RampChoice::Reverse));
+    buttons.push((DELETE_RAMP, theme::WARN, RampChoice::Delete));
     let name = &ramp.name;
     let mut text = format!("{name}: {colors} colors.");
     if !kind.is_empty() {
@@ -767,9 +793,9 @@ pub fn ramp_card(
             new_part = picked.map(|i| PARTS[i]);
             ui.add_space(8.0);
         }
-        for (i, (name, fill)) in buttons.iter().enumerate() {
+        for (name, fill, choice) in &buttons {
             if widgets::button_row_in(ui, controls, name, true, *fill).clicked() {
-                chosen = Some(i);
+                chosen = Some(*choice);
             }
         }
     });
@@ -780,13 +806,14 @@ pub fn ramp_card(
     let Some(chosen) = chosen else {
         return;
     };
-    state.pad.style.ramp = None;
-    let delete = chosen + 1 == buttons.len();
-    let result = if delete {
-        state.ramps.remove(index).map_err(|e| e.to_string())
-    } else {
-        // With as many colors as bands, the two ways are the same.
-        state.apply_ramp(id, index, chosen == 0, part)
+    // The card stays open after a reverse, so that the bar shows it.
+    if chosen != RampChoice::Reverse {
+        state.pad.style.ramp = None;
+    }
+    let result = match chosen {
+        RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part),
+        RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
+        RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
     };
     if let Err(text) = result {
         state.ramp_note = Some(crate::ui::Note::new(text, true, Some(id)));

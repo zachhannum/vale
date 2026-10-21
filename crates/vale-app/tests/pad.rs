@@ -3862,10 +3862,13 @@ fn reset_colors_asks_first_and_puts_back_the_default_stops() {
 
 #[test]
 fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
-    use vale_app::ui::pad::raster::{DELETE_RAMP, IMPORT_RAMP};
+    use vale_app::ui::pad::raster::{COLOR_RAMPS, DELETE_RAMP, IMPORT_RAMP, REVERSE_RAMP};
     let mut h = painted_pad(BOARDS[0]);
     let height = open_height(&mut h);
     scroll_to_gradient(&mut h);
+    // The ramps have their own page in the Layers panel.
+    tap(&mut h, COLOR_RAMPS);
+    assert!(h.state().pad.ramps);
     tap(&mut h, IMPORT_RAMP);
     assert!(
         h.state()
@@ -3893,13 +3896,18 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     // The layer has more bands than the ramp has colors, so the card offers
     // two ways.
     let bands = before.stops().len() - 1;
-    let card = panel(&h, Panel::Layers).unwrap();
-    let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
-    drag(&mut h, from, from - vec2(0.0, 300.0), None);
     tap(&mut h, "legend");
     assert!(h.state().pad.style.ramp_card.is_some());
     check_controls(&h, "with the card of a ramp");
     assert!(control(&h, &format!("Keep {bands} bands")).is_some());
+    // A reverse keeps the card open, and a second reverse puts back the
+    // order.
+    tap(&mut h, REVERSE_RAMP);
+    let reversed: Vec<_> = colors.iter().rev().copied().collect();
+    assert_eq!(h.state().ramps.list()[0].colors, reversed);
+    assert!(h.state().pad.style.ramp_card.is_some());
+    tap(&mut h, REVERSE_RAMP);
+    assert_eq!(h.state().ramps.list()[0].colors, colors);
     tap(&mut h, "Use 3 bands");
     let found: Vec<_> = h
         .state()
@@ -3947,6 +3955,11 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     h.state_mut().run_action(Action::ImportRamp(height, path));
     h.run();
     assert!(h.state().ramp_note.as_ref().is_some_and(|n| n.warning));
+
+    // The back arrow goes back to the panel of the layer.
+    tap(&mut h, "Back to Height");
+    assert!(!h.state().pad.ramps);
+    assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
 }
 
 #[test]

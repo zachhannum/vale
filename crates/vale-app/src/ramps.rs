@@ -59,6 +59,14 @@ impl Ramps {
         Ok(name)
     }
 
+    /// Reverses the order of the colors of a ramp.
+    pub fn reverse(&mut self, index: usize) -> std::io::Result<()> {
+        if let Some(ramp) = self.list.get_mut(index) {
+            ramp.colors.reverse();
+        }
+        self.write()
+    }
+
     pub fn remove(&mut self, index: usize) -> std::io::Result<()> {
         if index < self.list.len() {
             self.list.remove(index);
@@ -134,6 +142,10 @@ mod tests {
         let mut again = Ramps::default();
         again.open(Some(dir.path()));
         assert_eq!(again.list(), ramps.list());
+        again.reverse(0).unwrap();
+        let mut reversed = Ramps::default();
+        reversed.open(Some(dir.path()));
+        assert_eq!(reversed.list()[0].colors, [[250, 128, 0], [1, 2, 3]]);
         again.remove(0).unwrap();
         let mut third = Ramps::default();
         third.open(Some(dir.path()));

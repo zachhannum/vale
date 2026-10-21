@@ -676,6 +676,15 @@ pub fn text_row(
     resp
 }
 
+/// Paints the arrow of a row that opens a page, at the right of the row.
+pub fn paint_open(ui: &egui::Ui, row: Rect) {
+    let rect = Rect::from_center_size(
+        pos2(row.right() - ICON / 2.0, row.center().y),
+        vec2(ICON, ICON),
+    );
+    icons::paint(ui.painter(), rect, Icon::Open, ICON, theme::MUTE);
+}
+
 /// A row of a form that is one choice of a list: a title at the left, and
 /// lines of small text at the right that tell what the choice gives. The
 /// row that is `on` has a mark. `name` is the name of the control.
