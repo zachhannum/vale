@@ -24,7 +24,7 @@ use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
 use vale_style::{Color, Stroke};
 use vale_terrain::{
-    Bands, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, WindowHeights, channel_map,
+    Bands, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, StopLine, WindowHeights, channel_map,
     level_to_meters, meters_to_level, window_channels,
 };
 
@@ -4287,6 +4287,76 @@ fn a_change_of_a_stop_line_shows_in_the_same_frame() {
     assert!(plain > lined + 100, "{plain} {lined}");
     set_coast_line(&mut h, true);
     assert_eq!(frame(&mut h), lined);
+}
+
+/// The next frame and its image.
+fn next_frame(h: &mut Harness<'static, AppState>) -> image::RgbaImage {
+    h.step();
+    h.render().unwrap()
+}
+
+/// The middle and the number of the dark pixels in the column at the middle
+/// of the canvas, within 40 rows of the middle.
+fn dark_rows(h: &Harness<'static, AppState>, img: &image::RgbaImage) -> (f32, usize) {
+    let c = h.state().globe.rect.center();
+    let (x, y) = (c.x as u32, c.y as u32);
+    let rows: Vec<u32> = (y - 40..y + 40)
+        .filter(|&y| img.get_pixel(x, y).0[0] < 128)
+        .collect();
+    let sum: u32 = rows.iter().sum();
+    (sum as f32 / rows.len().max(1) as f32 + 0.5, rows.len())
+}
+
+#[test]
+fn a_change_of_the_heights_moves_the_line_in_the_same_frame() {
+    let _gpu = one_gpu_test();
+    let mut h = measured_globe([0.0, 0.0, 1.0], even_slope);
+    h.state_mut().globe.view = GlobeView {
+        zoom: 4.0,
+        ..GlobeView::centered(0.0, 0.0)
+    };
+    h.run_steps(3);
+    let before = next_frame(&mut h);
+    // The ground rises, and the coast moves to the south.
+    let lift = 0.01;
+    set_heights(&mut h.state_mut().globe.map, |d| even_slope(d[2] + lift));
+    let moved = next_frame(&mut h);
+    assert!(moved != before);
+    assert!(
+        moved == next_frame(&mut h),
+        "the frame of the change is not final"
+    );
+    let (rect, view) = (h.state().globe.rect, h.state().globe.view);
+    let lat = -(lift as f64).asin().to_degrees();
+    let coast = view.project(rect, lonlat_to_dir(0.0, lat)).unwrap();
+    let (middle, count) = dark_rows(&h, &moved);
+    assert!(count > 0);
+    assert!((middle - coast.y).abs() < 1.0, "{middle}, not {}", coast.y);
+}
+
+#[test]
+fn a_change_of_the_weight_of_a_line_shows_in_the_same_frame() {
+    let _gpu = one_gpu_test();
+    let mut h = measured_globe([0.0, 0.0, 1.0], even_slope);
+    h.state_mut().globe.view = GlobeView::centered(0.0, 0.11);
+    h.run_steps(3);
+    let first = next_frame(&mut h);
+    let (_, thin) = dark_rows(&h, &first);
+    assert_eq!(thin, LINE_WEIGHT as usize);
+    let bands = &mut h.state_mut().globe.map.bands;
+    let line = StopLine {
+        on: true,
+        weight: 8.0,
+        color: [0; 3],
+        ..StopLine::default()
+    };
+    assert!(bands.set_line(bands.sea().unwrap(), line));
+    let wide = next_frame(&mut h);
+    assert_eq!(dark_rows(&h, &wide).1, 8);
+    assert!(
+        wide == next_frame(&mut h),
+        "the frame of the change is not final"
+    );
 }
 
 #[test]
