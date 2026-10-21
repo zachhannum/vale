@@ -2,7 +2,7 @@
 //! raster layer.
 
 use eframe::egui;
-use vale_store::{RasterDisplay, RasterId};
+use vale_store::{Raster, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, Rgb, Side, StopLine};
 
 use super::gradient::{self, DESKTOP};
@@ -143,6 +143,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             if display_choice(ui, &mut display) {
                 state.set_raster_display(id, display);
             }
+            smoothing(ui, state, &raster);
             let unit = raster.unit.clone();
             let globe = &mut state.globe;
             let mut chosen = selected(&globe.preview, Some(id));
@@ -166,6 +167,28 @@ fn view_controls(ui: &mut egui::Ui, preview: &mut Preview, height: bool) {
         ui.checkbox(&mut preview.rivers, "Rivers");
         let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
         ui.add_enabled(preview.rivers, width);
+    }
+}
+
+/// The switch of the smoothing of a raster layer and its minimum feature
+/// size.
+fn smoothing(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
+    let mut smoothing = raster.smoothing;
+    if ui
+        .checkbox(&mut smoothing.on, pad::raster::SMOOTHING)
+        .changed()
+    {
+        state.set_raster_smoothing(raster.id, smoothing.on);
+    }
+    let size = egui::Slider::new(
+        &mut smoothing.feature_size,
+        0.0..=Smoothing::FEATURE_SIZE_MAX,
+    )
+    .step_by(0.25)
+    .suffix(" pt")
+    .text(pad::raster::FEATURE_SIZE);
+    if ui.add_enabled(smoothing.on, size).changed() {
+        state.set_raster_feature_size(raster.id, smoothing.feature_size);
     }
 }
 

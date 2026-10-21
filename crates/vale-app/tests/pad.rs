@@ -4086,3 +4086,47 @@ fn a_line_stroke_is_one_feature_that_undo_removes_and_a_stroke_from_its_end_exte
     tap(&mut h, "Undo");
     assert_eq!(line_features(&h, rivers), after);
 }
+
+#[test]
+fn the_style_section_has_the_smoothing_and_the_minimum_feature_size() {
+    use vale_app::ui::pad::raster::{FEATURE_SIZE, SMOOTHING};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        let height = open_height(&mut h);
+        let smoothing = |h: &Pad| h.state().doc.project.raster(height).unwrap().smoothing;
+        assert!(smoothing(&h).on, "{what}");
+        scroll_to(&mut h, FEATURE_SIZE);
+        let card = panel(&h, Panel::Layers).unwrap();
+        for name in [SMOOTHING, FEATURE_SIZE] {
+            let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
+            assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
+        }
+        check_controls(&h, &format!("{what} with the smoothing"));
+
+        // A tap at the left end of the slider gives a size of zero.
+        let slider = control(&h, FEATURE_SIZE).unwrap();
+        finger_tap(&mut h, pos2(slider.left() + 1.0, slider.center().y));
+        assert_eq!(smoothing(&h).feature_size, 0.0, "{what}");
+
+        tap(&mut h, SMOOTHING);
+        assert!(!smoothing(&h).on, "{what}");
+        assert!(control(&h, FEATURE_SIZE).is_none(), "{what}");
+        tap(&mut h, SMOOTHING);
+        assert!(smoothing(&h).on, "{what}");
+    }
+}
+
+/// Scrolls the panel of a layer until a control is inside the card, with a
+/// drag up on the margin at the left of the rows.
+fn scroll_to(h: &mut Pad, name: &str) {
+    for _ in 0..8 {
+        let card = panel(h, Panel::Layers).unwrap();
+        let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
+        if control(h, name).is_some_and(inside) {
+            return;
+        }
+        let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
+        drag(h, from, from - vec2(0.0, 200.0), None);
+    }
+}

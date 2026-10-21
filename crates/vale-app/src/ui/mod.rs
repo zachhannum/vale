@@ -764,6 +764,20 @@ impl AppState {
         set
     }
 
+    /// Turns the smoothing of a raster layer on or off.
+    pub fn set_raster_smoothing(&mut self, id: RasterId, on: bool) -> bool {
+        let set = self.doc.project.set_raster_smoothing(id, on);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets the minimum feature size of a raster layer, in points.
+    pub fn set_raster_feature_size(&mut self, id: RasterId, points: f32) -> bool {
+        let set = self.doc.project.set_raster_feature_size(id, points);
+        self.sync_globe();
+        set
+    }
+
     /// Sets the unit of the values of a raster layer. The unit of a height
     /// layer stays, and no other layer gets that unit.
     pub fn set_raster_unit(&mut self, id: RasterId, unit: &str) -> bool {
