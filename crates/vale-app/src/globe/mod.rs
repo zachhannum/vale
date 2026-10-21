@@ -4,15 +4,16 @@
 use std::collections::VecDeque;
 use std::f64::consts::{FRAC_PI_2, PI};
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
-use vale_store::{LayerId, RasterDisplay, RasterId};
+use vale_store::{LayerId, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{
-    Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, SEA_LEVEL, Stamp,
-    TexelRect, Window, WindowHeights, meters_to_level, reduced_cap, reduced_face_size,
+    Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, Pyramid, SEA_LEVEL,
+    Stamp, TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap,
+    reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -32,6 +33,7 @@ pub mod stroke_test;
 pub mod thumbnail;
 pub mod vector;
 pub mod view;
+pub mod zoom_test;
 
 use crate::pen::Pen;
 use backdrop::Canvas;
@@ -52,6 +54,7 @@ use rivers::{Rivers, choose_window};
 use stats::Stats;
 use stroke_test::StrokeTest;
 use view::GlobeView;
+use zoom_test::ZoomTest;
 
 /// Texels on one edge of a cube face. The GPU texture holds six full faces.
 pub const FACE_SIZE: usize = 1024;
@@ -233,11 +236,12 @@ fn union(a: Option<TexelRect>, b: TexelRect) -> TexelRect {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StackItem {
     /// A raster layer, how much it hides the layers below it, from 0 to 1,
-    /// and how it colors its values.
+    /// how it colors its values, and how it smooths them by the scale.
     Raster {
         id: RasterId,
         opacity: f32,
         display: RasterDisplay,
+        smoothing: Smoothing,
     },
     Vector(LayerId),
 }
@@ -340,6 +344,26 @@ struct Layer {
 fn reduction(face_size: usize, reduced: &Heightmap) -> usize {
     let factor = face_size.div_ceil(reduced.face_size());
     factor.max(1).next_power_of_two()
+}
+
+/// The smooth levels of a copy of `map` on the GPU with a face of
+/// `face_size` texels. The copy has the texels that `Uploads::send` sends.
+fn copy_pyramid(map: &Heightmap, face_size: u32) -> Pyramid {
+    let factor = map.face_size().div_ceil(face_size as usize).max(1);
+    let factor = factor.next_power_of_two();
+    if factor == 1 {
+        return Pyramid::new(map);
+    }
+    let mut copy = Heightmap::new(face_size as usize, map.base());
+    copy.set_undo_steps(false);
+    let mut data = Vec::new();
+    for (face, rect) in map.allocated_rects() {
+        let rect = rect.reduced(factor);
+        data.clear();
+        map.read_reduced(face, rect, factor, &mut data);
+        copy.store_rect(face, rect, &data);
+    }
+    Pyramid::new(&copy)
 }
 
 /// The reduced heightmap of a whole heightmap with a face larger than
@@ -597,6 +621,8 @@ pub struct Globe {
     pub blur: bool,
     /// The text of the last stroke test.
     pub test_report: Option<String>,
+    /// The text of the last zoom test.
+    pub zoom_report: Option<String>,
     /// The changed texels that wait for the full heightmap on the GPU.
     pub uploads: Uploads,
     link: Link,
@@ -607,6 +633,7 @@ pub struct Globe {
     backlog: Backlog,
     strokes: u64,
     test: Option<StrokeTest>,
+    zoom_test: Option<ZoomTest>,
     rivers: Rivers,
     eroder: Eroder,
     /// The newest channel map that went to the GPU.
@@ -627,6 +654,10 @@ pub struct Globe {
     export_result: Option<ExportResult>,
     edits: u64,
     memory_undo: bool,
+    /// The smooth levels on the CPU of the heightmaps on the GPU that the
+    /// globe draws, made when `shown_field` asks for them. A change of a
+    /// heightmap removes them.
+    fields: Mutex<Vec<(MapKey, Arc<Pyramid>)>>,
 }
 
 impl Default for Globe {
@@ -685,6 +716,7 @@ impl Globe {
             debug: false,
             blur: true,
             test_report: None,
+            zoom_report: None,
             uploads: Uploads::default(),
             link,
             events,
@@ -693,6 +725,7 @@ impl Globe {
             backlog: Backlog::default(),
             strokes: 0,
             test: None,
+            zoom_test: None,
             import: None,
             import_target: None,
             import_result: None,
@@ -700,6 +733,7 @@ impl Globe {
             export_result: None,
             edits: 0,
             memory_undo: true,
+            fields: Mutex::default(),
         };
         globe.begin_full();
         globe
@@ -1055,6 +1089,7 @@ impl Globe {
         pixels: Option<&[u16]>,
     ) {
         let budget = self.uploads.budget;
+        self.forget_fields();
         if let Some(layer) = self.layer_mut(id).filter(|_| face < FACES) {
             layer.restore_tile(column, row, face, pixels, budget);
         }
@@ -1492,6 +1527,70 @@ impl Globe {
         }
     }
 
+    /// The smoothing of a raster layer in the list of layers. A layer that
+    /// is not in the list has the default smoothing.
+    fn smoothing(&self, id: RasterId) -> Smoothing {
+        let stack = self.stack.as_deref().unwrap_or_default();
+        let found = stack.iter().find_map(|item| match *item {
+            StackItem::Raster {
+                id: of, smoothing, ..
+            } if of == id => Some(smoothing),
+            _ => None,
+        });
+        found.unwrap_or_default()
+    }
+
+    /// The level of the smooth field for a source of `face_size` texels at
+    /// the zoom of the view. 0 is the full detail.
+    fn level_of(&self, smoothing: Smoothing, face_size: u32) -> f64 {
+        if !smoothing.on {
+            return 0.0;
+        }
+        smoothing_level(f64::from(smoothing.feature_size), self.radius(), face_size)
+    }
+
+    /// The level of the smooth field that the globe shows for a raster
+    /// layer at the zoom of the view. 0 is the full detail, and so is a
+    /// layer that the globe does not draw.
+    pub fn smoothing_level(&self, id: RasterId) -> f64 {
+        let Some(key) = self.source(id) else {
+            return 0.0;
+        };
+        self.level_of(self.smoothing(id), key.face_size)
+    }
+
+    /// The value that the globe shows for a raster layer at a direction,
+    /// from 0 to 1 as a level of the heightmap over 65,535. It is the field
+    /// of `smoothing_level`, from the same heightmap as the GPU. `None`:
+    /// the globe does not draw the layer.
+    pub fn shown_field(&self, id: RasterId, dir: V3) -> Option<f64> {
+        let key = self.source(id)?;
+        let map = match self.draws_full(id) {
+            true => &self.map,
+            false => self.display_map(id)?,
+        };
+        let level = self.level_of(self.smoothing(id), key.face_size);
+        let mut fields = self.fields.lock().expect("no panic holds the lock");
+        let found = fields
+            .iter()
+            .find(|(of, _)| *of == key)
+            .map(|(_, p)| p.clone());
+        let pyramid = found.unwrap_or_else(|| {
+            let pyramid = Arc::new(copy_pyramid(map, key.face_size));
+            fields.retain(|(of, _)| of.layer != key.layer);
+            fields.push((key, pyramid.clone()));
+            pyramid
+        });
+        Some(pyramid.field(dir, level))
+    }
+
+    fn forget_fields(&mut self) {
+        self.fields
+            .get_mut()
+            .expect("no panic holds the lock")
+            .clear();
+    }
+
     /// True while a stroke, a stroke test, or an import is not complete,
     /// texels wait for the full heightmap on the GPU, or the brush waits for
     /// another raster layer.
@@ -1646,6 +1745,9 @@ impl Globe {
         let gpu = self.format.is_some();
         let budget = self.uploads.budget;
         let changes = gpu::take_changes(&mut self.map);
+        if changes.reset || !changes.rects.is_empty() {
+            self.forget_fields();
+        }
         if gpu {
             if changes.reset {
                 self.uploads.restart();
@@ -1667,6 +1769,12 @@ impl Globe {
                 layer.changed(Some(&self.map), &changes, budget);
             } else if let Some(map) = &mut layer.full {
                 let changes = gpu::take_changes(map);
+                if changes.reset || !changes.rects.is_empty() {
+                    self.fields
+                        .get_mut()
+                        .expect("no panic holds the lock")
+                        .clear();
+                }
                 layer.changed(None, &changes, budget);
             }
         }
@@ -1934,15 +2042,62 @@ impl Globe {
         }
     }
 
+    /// Starts the zoom test in the current view. It takes `seconds`.
+    pub fn start_zoom_test(&mut self, seconds: f64) {
+        self.zoom_test = Some(ZoomTest::new(self.zoom(), seconds));
+        self.zoom_report = None;
+    }
+
+    /// True while the zoom test runs.
+    pub fn zoom_testing(&self) -> bool {
+        self.zoom_test.is_some()
+    }
+
+    /// The zoom of the current view.
+    fn zoom(&self) -> f64 {
+        match self.world_view {
+            WorldView::Globe => self.view.zoom,
+            WorldView::Flat => self.flat.zoom,
+        }
+    }
+
+    fn set_zoom(&mut self, zoom: f64) {
+        match self.world_view {
+            WorldView::Globe => self.view.zoom = zoom.clamp(view::ZOOM_MIN, view::ZOOM_MAX),
+            WorldView::Flat => self.flat.zoom = zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX),
+        }
+    }
+
+    /// Sets the zoom of the frame that starts at `now`. Returns `true`
+    /// while the zoom test runs.
+    fn run_zoom_test(&mut self, now: Instant) -> bool {
+        let Some(mut test) = self.zoom_test.take() else {
+            return false;
+        };
+        match test.zoom(now) {
+            Some(zoom) => {
+                self.set_zoom(zoom);
+                self.zoom_test = Some(test);
+                true
+            }
+            None => {
+                self.set_zoom(test.saved);
+                self.zoom_report = Some(test.report());
+                false
+            }
+        }
+    }
+
     /// Runs the brush for one frame. `now` is the start of the frame. Returns
     /// `true` if the brush needs one more frame.
     pub fn advance(&mut self, now: Instant) -> bool {
+        let zooming = self.run_zoom_test(now);
         if self.format.is_none() {
             self.sync_maps();
             self.inputs.clear();
             self.pump_import(false);
             self.pump_export(false);
-            return self.import.is_some() || self.export.is_some();
+            return zooming || self.import.is_some() || self.export.is_some();
         }
         // The count comes first. A result that arrives after this line makes
         // one more frame.
@@ -1963,7 +2118,7 @@ impl Globe {
         self.uplift(now);
         self.send_stamps(now);
         let busy = self.busy() || self.loading();
-        in_flight || busy || self.rivers.pending() || self.export.is_some()
+        zooming || in_flight || busy || self.rivers.pending() || self.export.is_some()
     }
 
     fn read_events(&mut self) {
@@ -2426,6 +2581,14 @@ impl Globe {
             layer: [layer.map_or(1.0, |layer| layer.opacity), 0.0, 0.0, 0.0],
             ground: color(crate::ui::pad::theme::GROUND),
             back: color(canvas.background),
+            detail: match layer {
+                Some(layer) => {
+                    let size = layer.key.face_size;
+                    let level = self.level_of(layer.smoothing, size) as f32;
+                    [level, max_level(size) as f32, 0.0, 0.0]
+                }
+                None => [0.0; 4],
+            },
             bands,
             lines,
         }
@@ -2517,6 +2680,7 @@ impl Globe {
                     bands: &self.map.bands,
                     opacity: 1.0,
                     display,
+                    smoothing: Smoothing::default(),
                     rivers: rivers(key.layer, display),
                     window: true,
                 }));
@@ -2529,6 +2693,7 @@ impl Globe {
                             id,
                             opacity,
                             display,
+                            smoothing,
                         } => {
                             let source = self.source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
@@ -2537,6 +2702,7 @@ impl Globe {
                                     bands: &map.bands,
                                     opacity: opacity.clamp(0.0, 1.0),
                                     display,
+                                    smoothing,
                                     rivers: rivers(key.layer, display),
                                     window: !key.display,
                                 }));
@@ -2554,6 +2720,9 @@ impl Globe {
             format,
             link: self.link.clone(),
             full: self.full,
+            smooth_full: items
+                .iter()
+                .any(|item| matches!(item, Item::Raster(layer) if Some(layer.key) == self.full)),
             copies: {
                 let layers = self.layers.iter();
                 let keys = |l: &Layer| [l.copy.as_ref().map(|copy| copy.key), l.old_copy];
@@ -2633,6 +2802,7 @@ struct LayerDraw<'a> {
     bands: &'a Bands,
     opacity: f32,
     display: RasterDisplay,
+    smoothing: Smoothing,
     /// The size of the channel map of the rivers of the layer. `None`: the
     /// pass draws no rivers.
     rivers: Option<usize>,

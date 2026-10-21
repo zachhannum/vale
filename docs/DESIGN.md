@@ -142,7 +142,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | --- | --- |
 | World | Radius, name, display units |
 | Source | Name of the imported file, extents, and the pixels of an imported image |
-| Raster | Face size, unit, value range, base level, color stops with their lines, display, opacity |
+| Raster | Face size, unit, value range, base level, color stops with their lines, display, smoothing, opacity |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Thumbnail | A small picture of the globe, for the list of projects |
 | Layer | Name, type (raster, points, lines, or polygons), visibility, attribute schema, link to a source, to a raster, or to an in-app table |
@@ -287,7 +287,7 @@ These numbers are for an Earth-size world.
 | 4,096 | 16,384 × 8,192 | 2.4 km | 410 | 201 MB |
 | 8,192 | 32,768 × 16,384 | 1.2 km | 820 | 805 MB |
 
-The app keeps the memory of many layers low in the way of other paint programs. The tiles that you do not paint are on disk, and the screen uses a smaller copy. The selected raster layer has its tiles at the full face size, in main memory and on the GPU. Each other raster layer has a copy with a face of 2,048 pixels at most, and the app draws that copy. Such a layer looks softer when you zoom in, until you select it. A layer with a face of 2,048 pixels or less always shows in full detail. The copies of the visible layers on the GPU use 256 MB at most. If they need more, each copy gets a smaller face. A hidden layer has no copy on the GPU. When you select a raster layer, the app loads its tiles from the working copy of the project, and the copy shows until the tiles are there.
+The app keeps the memory of many layers low in the way of other paint programs. The tiles that you do not paint are on disk, and the screen uses a smaller copy. The selected raster layer has its tiles at the full face size, in main memory and on the GPU. Each other raster layer has a copy with a face of 2,048 pixels at most, and the app draws that copy. Such a layer looks softer when you zoom in, until you select it. A layer with a face of 2,048 pixels or less always shows in full detail. The copies of the visible layers on the GPU use 256 MB at most, with their pyramids. The pyramid of a layer uses a third of the memory of a dense copy of the layer. If they need more, each copy gets a smaller face. A hidden layer has no copy on the GPU. When you select a raster layer, the app loads its tiles from the working copy of the project, and the copy shows until the tiles are there.
 
 You can change the face size of a raster layer later. The app then resamples each painted tile. For a smaller size, each new pixel is the mean of the pixels that it covers. For a larger size, the app interpolates between the pixels, which adds no detail. The change is one edit, so undo brings the old tiles back.
 
@@ -306,6 +306,12 @@ While you paint, a shader shows the heightmap as stepped tints. Each color stop 
 The color stops and the display belong to the raster layer. The panel of the layer edits them in its Style section, with a gradient bar and the stops below it. The preview and the polygonize tool read the same stops, so the polygons match what you saw.
 
 Each color stop can also have a line, with a weight in points and a color. The color is a color that you pick, or the color of the stop made darker by an amount that you set. A darker line at sea level takes the sea color. The card of the selected stop has a switch for the line, the weight, and the color. The globe and the flat map draw the line where the value crosses the stop, in the Bands display only. The line has the same weight at each zoom. On a height layer, a line at sea level is the coast, and a line at another stop is a contour. Thus a height layer shows the coast and the contours with no vector step.
+
+The display smooths the field of a raster layer by the scale, so the detail follows the zoom. Each raster layer has a minimum feature size in points, from 0 to 8, and the default is 2. The app turns the size into a distance on the ground at the current zoom, and it smooths the field over that distance. A size of 0 shows the full detail. The fills, the lines at the color stops, and the snap target of a color stop all come from the same smoothed field, so they always agree.
+
+The GPU keeps a pyramid of the field. A pyramid is a stack of levels, and each texel of a level is the mean of 2 by 2 texels of the level below. The shader reads the two levels that are nearest to the distance and blends them, so the detail changes with no jump while you zoom. A read near a face edge takes the texels past the edge from the next face, so the field has no seam. A brush stroke updates the levels under its texels in the same frame. The CPU makes the same levels with the same integer math, for the snap target.
+
+The heightmap does not change, and the readout and the brush use the full detail. Each raster layer has a switch that turns its smoothing on and off on the globe and in the flat view, so you can paint one layer with the full detail in view. The project keeps the switch and the size of each layer. A map frame and its export always use the smoothing.
 
 A final map can use the stepped raster with its lines as the topography, in place of the topography polygons. Polygonize is then optional.
 

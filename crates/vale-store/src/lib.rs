@@ -229,6 +229,42 @@ pub struct Raster {
     /// The color stops of the ramp, in ascending order of value. An empty
     /// list gives the default bands of the range.
     pub stops: Vec<Stop>,
+    /// How the globe smooths the values by the scale.
+    pub smoothing: Smoothing,
+}
+
+/// The smoothing of the values of a raster by the scale. It keeps its size
+/// while it is off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Smoothing {
+    pub on: bool,
+    /// The minimum feature size, in points. 0 gives the full detail.
+    pub feature_size: f32,
+}
+
+impl Smoothing {
+    /// The largest feature size, in points.
+    pub const FEATURE_SIZE_MAX: f32 = 8.0;
+    pub const FEATURE_SIZE_DEFAULT: f32 = 2.0;
+}
+
+impl Default for Smoothing {
+    fn default() -> Self {
+        Smoothing {
+            on: true,
+            feature_size: Smoothing::FEATURE_SIZE_DEFAULT,
+        }
+    }
+}
+
+/// A feature size from 0 to the largest size. A value that is not finite
+/// gives the default size.
+pub(crate) fn clamp_feature_size(points: f32) -> f32 {
+    if points.is_finite() {
+        points.clamp(0.0, Smoothing::FEATURE_SIZE_MAX)
+    } else {
+        Smoothing::FEATURE_SIZE_DEFAULT
+    }
 }
 
 /// A color stop of the ramp of a raster: a value, the color just below it,
@@ -409,6 +445,7 @@ impl Project {
             value_max,
             base: 0,
             stops: Vec::new(),
+            smoothing: Smoothing::default(),
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());
         let layer = Layer {
@@ -456,6 +493,20 @@ impl Project {
     /// Sets how the globe colors the values of a raster.
     pub fn set_raster_display(&mut self, id: RasterId, display: RasterDisplay) -> bool {
         self.raster_mut(id).map(|r| r.display = display).is_some()
+    }
+
+    /// Turns the smoothing of a raster on or off.
+    pub fn set_raster_smoothing(&mut self, id: RasterId, on: bool) -> bool {
+        self.raster_mut(id).map(|r| r.smoothing.on = on).is_some()
+    }
+
+    /// Sets the minimum feature size of the smoothing of a raster, in
+    /// points. A value outside 0 to the largest size gets the nearest limit.
+    pub fn set_raster_feature_size(&mut self, id: RasterId, points: f32) -> bool {
+        let size = clamp_feature_size(points);
+        self.raster_mut(id)
+            .map(|r| r.smoothing.feature_size = size)
+            .is_some()
     }
 
     /// Sets the color stops of a raster.
@@ -737,6 +788,21 @@ mod tests {
         assert_eq!(p.raster(ids[1]).unwrap().display, RasterDisplay::Gradient);
         assert!(p.set_raster_unit(ids[1], "cm"));
         assert_eq!(p.raster(ids[1]).unwrap().unit, "cm");
+        assert_eq!(p.raster(ids[1]).unwrap().smoothing, Smoothing::default());
+        assert!(p.set_raster_smoothing(ids[1], false));
+        assert!(!p.raster(ids[1]).unwrap().smoothing.on);
+        let max = Smoothing::FEATURE_SIZE_MAX;
+        for (given, kept) in [
+            (3.5, 3.5),
+            (0.0, 0.0),
+            (20.0, max),
+            (-1.0, 0.0),
+            (f32::NAN, 2.0),
+            (f32::INFINITY, 2.0),
+        ] {
+            assert!(p.set_raster_feature_size(ids[1], given));
+            assert_eq!(p.raster(ids[1]).unwrap().smoothing.feature_size, kept);
+        }
 
         assert!(p.remove_raster(ids[0]).is_some());
         assert!(p.remove_raster(ids[0]).is_none());
@@ -744,6 +810,8 @@ mod tests {
         assert!(!p.set_raster_opacity(ids[0], 0.5));
         assert!(!p.set_raster_display(ids[0], RasterDisplay::Grey));
         assert!(!p.set_raster_unit(ids[0], "m"));
+        assert!(!p.set_raster_smoothing(ids[0], true));
+        assert!(!p.set_raster_feature_size(ids[0], 1.0));
         let d = p.add_raster("d".into(), 1024, String::new(), 0.0, 1.0);
         assert!(ids.iter().all(|id| d > *id));
         let rasters: Vec<RasterId> = p.rasters().iter().map(|r| r.id).collect();

@@ -5,6 +5,7 @@
 
 use crate::cube::FACES;
 use crate::heightmap::TILE_SIZE;
+use crate::smooth::pyramid_bytes;
 
 /// The largest face sizes of a copy, from the first choice to the last.
 const CAPS: [u32; 3] = [2048, 1024, 512];
@@ -27,18 +28,20 @@ pub fn reduced_face_size(face_size: u32, cap: u32) -> u32 {
     face_size.div_ceil(reduction_factor(face_size, cap))
 }
 
-/// An estimate of the tile memory of the copy of a layer on the GPU, in
-/// bytes. The layer has `face_size` texels along one side of a face, and
-/// `tiles` of its tiles of `TILE_SIZE` hold memory.
+/// An estimate of the memory of the copy of a layer on the GPU, in bytes:
+/// its tiles and its smooth levels. The layer has `face_size` texels along
+/// one side of a face, and `tiles` of its tiles of `TILE_SIZE` hold memory.
 ///
 /// The estimate is for tiles that are next to each other. Then
-/// `factor * factor` tiles of the layer go to one tile of the copy.
+/// `factor * factor` tiles of the layer go to one tile of the copy. The
+/// smooth levels take memory for each texel.
 pub fn reduced_bytes(face_size: u32, tiles: usize, cap: u32) -> u64 {
     let factor = u64::from(reduction_factor(face_size, cap));
     let per_side = u64::from(reduced_face_size(face_size, cap)).div_ceil(TILE_SIZE as u64);
     let all = FACES as u64 * per_side * per_side;
     let tiles = (tiles as u64).div_ceil(factor * factor).min(all);
-    tiles * (TILE_SIZE * TILE_SIZE * size_of::<u16>()) as u64
+    let levels = pyramid_bytes(reduced_face_size(face_size, cap));
+    tiles * (TILE_SIZE * TILE_SIZE * size_of::<u16>()) as u64 + levels
 }
 
 /// The largest face size of the copies of the layers that the globe shows:
@@ -82,22 +85,40 @@ mod tests {
         assert_eq!(reduced_face_size(4097, 2048), 1025);
     }
 
+    /// The smooth levels of a face of 2048, 1024, and 512 texels.
+    const LEVELS_2048: u64 = 16_777_152;
+    const LEVELS_1024: u64 = 4_194_240;
+    const LEVELS_512: u64 = 1_048_512;
+
     #[test]
-    fn the_bytes_of_a_copy_come_from_the_tiles_of_the_layer() {
+    fn the_bytes_of_a_copy_come_from_its_tiles_and_its_levels() {
+        // The levels 1 to 9 of a face of 2048 have 1024 to 4 texels along
+        // one side.
+        let texels: u64 = (2..=10).map(|j| 4u64.pow(j)).sum();
+        assert_eq!(pyramid_bytes(2048), 6 * 2 * texels);
+        assert_eq!(pyramid_bytes(2048), LEVELS_2048);
+        assert_eq!(pyramid_bytes(1024), LEVELS_1024);
+        assert_eq!(pyramid_bytes(512), LEVELS_512);
         // A layer of 8192 with memory in each tile has 6 * 32 * 32 tiles.
-        assert_eq!(reduced_bytes(8192, 6144, 2048), 384 * TILE_BYTES);
-        assert_eq!(reduced_bytes(8192, 6144, 1024), 96 * TILE_BYTES);
-        assert_eq!(reduced_bytes(8192, 6144, 512), 24 * TILE_BYTES);
-        assert_eq!(reduced_bytes(8192, 0, 2048), 0);
-        assert_eq!(reduced_bytes(8192, 17, 2048), 2 * TILE_BYTES);
+        assert_eq!(
+            reduced_bytes(8192, 6144, 2048),
+            384 * TILE_BYTES + LEVELS_2048
+        );
+        assert_eq!(
+            reduced_bytes(8192, 6144, 1024),
+            96 * TILE_BYTES + LEVELS_1024
+        );
+        assert_eq!(reduced_bytes(8192, 6144, 512), 24 * TILE_BYTES + LEVELS_512);
+        assert_eq!(reduced_bytes(8192, 0, 2048), LEVELS_2048);
+        assert_eq!(reduced_bytes(8192, 17, 2048), 2 * TILE_BYTES + LEVELS_2048);
         // A face of 1024 keeps its tiles at a cap of 2048.
-        assert_eq!(reduced_bytes(1024, 40, 2048), 40 * TILE_BYTES);
+        assert_eq!(reduced_bytes(1024, 40, 2048), 40 * TILE_BYTES + LEVELS_1024);
     }
 
     #[test]
     fn the_cap_goes_down_as_the_budget_fills() {
         let layer = (8192, 6144);
-        let one = 384 * TILE_BYTES;
+        let one = 384 * TILE_BYTES + LEVELS_2048;
         assert_eq!(reduced_cap(&[], 0), 2048);
         assert_eq!(reduced_cap(&[layer], one), 2048);
         assert_eq!(reduced_cap(&[layer; 2], 2 * one), 2048);
@@ -107,6 +128,7 @@ mod tests {
         // Nothing fits, and no layer is left out.
         assert_eq!(reduced_cap(&[layer; 100], one), 512);
         // Layers with little paint leave the budget free.
-        assert_eq!(reduced_cap(&[(8192, 160); 30], one), 2048);
+        assert_eq!(reduced_cap(&[(8192, 160); 3], one), 2048);
+        assert_eq!(reduced_cap(&[(8192, 160); 4], one), 1024);
     }
 }

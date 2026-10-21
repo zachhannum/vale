@@ -139,6 +139,10 @@ pub struct Args {
     /// and exit.
     #[arg(long)]
     pub stroke_test: bool,
+    /// Headless: zoom the globe in and out, print the frame times, and
+    /// exit.
+    #[arg(long)]
+    pub zoom_test: bool,
     /// Open the window, draw N frames, and exit with code 0.
     #[arg(long, value_name = "N")]
     pub smoke_frames: Option<u32>,

@@ -35,7 +35,8 @@ fn run() -> anyhow::Result<u8> {
         || args.screenshot.is_some()
         || !args.probe.is_empty()
         || args.report
-        || args.stroke_test;
+        || args.stroke_test
+        || args.zoom_test;
     let new_state = |doc, face_size| -> anyhow::Result<AppState> {
         let mut state = AppState::new(doc)?;
         // A new world gets a file next to the project file.
@@ -77,6 +78,10 @@ fn run() -> anyhow::Result<u8> {
     if args.stroke_test {
         let state = new_state(doc.clone(), FACE_SIZE)?;
         print!("{}", headless::stroke_test(state, size, ratio)?);
+    }
+    if args.zoom_test {
+        let state = new_state(doc.clone(), FACE_SIZE)?;
+        println!("{}", headless::zoom_test(state, size, ratio)?);
     }
 
     let mut composed = None;

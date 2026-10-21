@@ -2,7 +2,7 @@
 //! color stops.
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, pos2, vec2};
-use vale_store::{RasterDisplay, RasterId};
+use vale_store::{RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, Side, StopLine};
 
 use super::Panel;
@@ -43,6 +43,9 @@ pub const RESET: &str = "Reset";
 const RESET_TEXT: &str = "Put back the default color stops of this layer? You cannot undo this.";
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
+/// The switch of the smoothing and the slider of the minimum feature size.
+pub const SMOOTHING: &str = "Smoothing";
+pub const FEATURE_SIZE: &str = "Feature size";
 pub const RIVERS: &str = "Rivers";
 pub const RIVER_WIDTH: &str = "River width";
 
@@ -137,6 +140,7 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         state.set_raster_display(id, RasterDisplay::ALL[index]);
     }
     let display = state.doc.project.raster(id).map_or(display, |r| r.display);
+    smoothing(ui, state, controls, id);
 
     let style = &mut state.pad.style;
     let globe = &mut state.globe;
@@ -187,6 +191,34 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         if widgets::row_slider(ui, controls, RIVER_WIDTH, "Width", &mut fraction, &text) {
             preview.river_width = (low + fraction * (high - low)) as f32;
         }
+    }
+}
+
+/// The switch of the smoothing, and the minimum feature size while the
+/// switch is on.
+fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+    let Some(mut smoothing) = state.doc.project.raster(id).map(|r| r.smoothing) else {
+        return;
+    };
+    if widgets::switch_row(ui, controls, SMOOTHING, SMOOTHING, &mut smoothing.on) {
+        state.set_raster_smoothing(id, smoothing.on);
+    }
+    if !smoothing.on {
+        return;
+    }
+    let max = Smoothing::FEATURE_SIZE_MAX;
+    let mut fraction = f64::from(smoothing.feature_size / max);
+    let text = format!("{} pt", weight_text(smoothing.feature_size));
+    if widgets::row_slider(
+        ui,
+        controls,
+        FEATURE_SIZE,
+        "Min. feature",
+        &mut fraction,
+        &text,
+    ) {
+        let size = (fraction as f32 * max / WEIGHT_STEP).round() * WEIGHT_STEP;
+        state.set_raster_feature_size(id, size);
     }
 }
 

@@ -455,6 +455,7 @@ mod tests {
             id: vale_store::RasterId(1),
             face_size: 16,
             display: vale_store::RasterDisplay::Bands,
+            smoothing: vale_store::Smoothing::default(),
             unit: "<°C & more>".to_string(),
             value_min: -40.0,
             value_max: 25.535,

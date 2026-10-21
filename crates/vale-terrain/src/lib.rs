@@ -1,11 +1,11 @@
 //! The heightmap of a Vale world: a 16-bit cube map in tiles, and the brush
 //! that paints it. The heightmap owns the color stops of the elevation
-//! preview.
+//! preview. Coarser levels of the map smooth the display at a small scale.
 //!
 //! With no features, the crate has no dependencies. It works in sphere
 //! directions and texels, and it knows nothing about the screen. The `gpu`
 //! feature adds a copy of the heightmap in wgpu textures, and the same brush
-//! as a shader.
+//! and the coarser levels as a shader.
 
 mod bands;
 mod cube;
@@ -16,7 +16,10 @@ mod flow;
 mod gpu;
 mod heightmap;
 pub mod math;
+#[cfg(feature = "gpu")]
+mod pyramid;
 mod reduce;
+mod smooth;
 #[cfg(feature = "gpu")]
 mod tiles;
 
@@ -38,6 +41,9 @@ pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, TILE_SIZE, TexelRect,
     UNDO_MEMORY_LIMIT, talus_levels,
 };
+#[cfg(feature = "gpu")]
+pub use pyramid::{FIELD_WGSL, GpuPyramid, pyramid_layout};
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
+pub use smooth::{Pyramid, level_size, max_level, next_level, pyramid_bytes, smoothing_level};
 #[cfg(feature = "gpu")]
 pub use tiles::{GpuTiles, TILES_WGSL, tiles_layout};

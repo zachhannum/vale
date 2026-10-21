@@ -4,10 +4,10 @@ use std::sync::{Arc, OnceLock, mpsc};
 
 use vale_terrain::math::{V3, dot, lonlat_to_dir};
 use vale_terrain::{
-    ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FlowMap, GROUP_STAMPS,
-    GpuHeightmap, GpuTiles, Heightmap, Limits, Mode, OuterFlow, Readback, STAMP_SLOTS, Stamp,
-    StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map,
-    tiles_layout, window_channels,
+    ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FIELD_WGSL, FlowMap,
+    GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, Limits, Mode, OuterFlow, Pyramid,
+    Readback, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS,
+    Window, WindowHeights, channel_map, pyramid_layout, tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -2431,4 +2431,379 @@ fn a_group_has_one_pair_of_limits() {
     assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
     let after = levels(&cpu);
     assert!(after != stamped([low; 6]) && after != stamped([free; 6]));
+}
+
+/// The levels from 1 up of a pyramid on the GPU, face by face.
+fn read_levels(gpu: &Gpu, pyramid: &GpuPyramid) -> Vec<Vec<Vec<u16>>> {
+    (1..=pyramid.max_level())
+        .map(|k| gpu.read_with(|enc, face| pyramid.read_level(&gpu.device, enc, k, face)))
+        .collect()
+}
+
+/// The same levels on the CPU.
+fn cpu_levels(cpu: &Heightmap) -> Vec<Vec<Vec<u16>>> {
+    let pyramid = Pyramid::new(cpu);
+    (1..=pyramid.max_level())
+        .map(|k| (0..FACES).map(|f| pyramid.face(k, f).to_vec()).collect())
+        .collect()
+}
+
+/// A map in tiles with the texels of `cpu`, and its pyramid after a full
+/// update.
+fn tiles_and_pyramid(gpu: &Gpu, cpu: &Heightmap, tile: usize) -> (GpuTiles, GpuPyramid) {
+    let n = cpu.face_size();
+    let tiles = GpuTiles::with_tile_size(&gpu.device, n as u32, tile, cpu.base());
+    for face in 0..FACES {
+        let mut data = Vec::new();
+        cpu.read_rect(face, full(n), &mut data);
+        tiles.upload(&gpu.queue, face as u32, full(n), &data);
+    }
+    let pyramid = GpuPyramid::new(&gpu.device, n as u32);
+    let mut enc = gpu.encoder();
+    pyramid.update(&mut enc, &tiles.tiles());
+    gpu.submit(enc);
+    (tiles, pyramid)
+}
+
+#[test]
+fn gpu_levels_match_the_cpu_levels() {
+    let gpu = gpu();
+    for (n, tile) in [(64, 16), (44, 16), (8, 256)] {
+        let cpu = hills(n);
+        let (_tiles, pyramid) = tiles_and_pyramid(gpu, &cpu, tile);
+        let levels = read_levels(gpu, &pyramid);
+        assert!(!levels.is_empty());
+        assert!(levels == cpu_levels(&cpu), "face size {n}");
+    }
+}
+
+#[test]
+fn a_cleared_pyramid_holds_the_base_level() {
+    let gpu = gpu();
+    let pyramid = GpuPyramid::new(&gpu.device, 32);
+    let mut enc = gpu.encoder();
+    pyramid.clear(&mut enc, 4321);
+    gpu.submit(enc);
+    let levels = read_levels(gpu, &pyramid);
+    assert_eq!(levels.len(), 3);
+    for (k, faces) in levels.iter().enumerate() {
+        let m = 32 >> (k + 1);
+        assert!(faces.iter().all(|f| *f == vec![4321; m * m]));
+    }
+}
+
+#[test]
+fn an_update_after_stamps_matches_a_full_build() {
+    let gpu = gpu();
+    let mut cpu = hills(64);
+    let map = gpu.copy_of(&cpu);
+    let pyramid = GpuPyramid::new(&gpu.device, 64);
+    let mut enc = gpu.encoder();
+    pyramid.update(&mut enc, &map.tiles());
+    gpu.submit(enc);
+    let before = read_levels(gpu, &pyramid);
+
+    // A stroke across the edge of faces 0 and 2, and over the corner of
+    // faces 0, 2, and 4, and one stamp inside face 1.
+    let stamps: Vec<_> = [(45.0, 5.0), (44.0, 20.0), (45.0, 35.26), (-163.0, -12.0)]
+        .iter()
+        .map(|&(lon, lat)| stamp(lonlat_to_dir(lon, lat), 0.08, 1.0, Mode::Flatten))
+        .collect();
+    let old = gpu.read_all(&map);
+    gpu.stamp(&map, &mut cpu, &stamps);
+    // Mark the smallest rectangle of the changed texels of each face, so a
+    // level that misses a texel of it shows.
+    let mut marked = 0;
+    for (face, (old, new)) in old.iter().zip(&gpu.read_all(&map)).enumerate() {
+        let changed: Vec<_> = (0..64 * 64).filter(|&i| old[i] != new[i]).collect();
+        if changed.is_empty() {
+            continue;
+        }
+        let xs = changed.iter().map(|i| i % 64);
+        let ys = changed.iter().map(|i| i / 64);
+        let rect = TexelRect {
+            x0: xs.clone().min().unwrap(),
+            y0: ys.clone().min().unwrap(),
+            x1: xs.max().unwrap() + 1,
+            y1: ys.max().unwrap() + 1,
+        };
+        pyramid.mark(face as u32, rect);
+        marked += 1;
+    }
+    assert!(marked >= 4);
+    let mut enc = gpu.encoder();
+    pyramid.update(&mut enc, &map.tiles());
+    gpu.submit(enc);
+    let after = read_levels(gpu, &pyramid);
+    assert!(after != before);
+
+    let mut read = Heightmap::new(64, 0);
+    for (face, levels) in gpu.read_all(&map).iter().enumerate() {
+        read.store_rect(face, full(64), levels);
+    }
+    assert!(after == cpu_levels(&read));
+}
+
+/// A shader that writes `field` at a list of points, one pixel each.
+const FIELD_TEST_WGSL: &str = "
+struct Params {
+    n: u32,
+    max_level: u32,
+}
+
+@group(0) @binding(0) var<uniform> params: Params;
+// The direction and the lod of each pixel.
+@group(0) @binding(1) var<storage, read> points: array<vec4<f32>>;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let at = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(at * 2.0 - 1.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = points[u32(at.x)];
+    return vec4<f32>(field(p.xyz, params.n, p.w, params.max_level).x, 0.0, 0.0, 1.0);
+}
+";
+
+fn buffer(gpu: &Gpu, usage: wgpu::BufferUsages, bytes: &[u8]) -> wgpu::Buffer {
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bytes.len() as u64,
+        usage: usage | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    gpu.queue.write_buffer(&buffer, 0, bytes);
+    buffer
+}
+
+fn fragment_buffer(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+/// The values of `field` in the shader at each point: a direction and a lod.
+fn shader_field(
+    gpu: &Gpu,
+    tiles: &GpuTiles,
+    pyramid: &GpuPyramid,
+    points: &[[f32; 4]],
+) -> Vec<f32> {
+    let device = &gpu.device;
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            fragment_buffer(0, wgpu::BufferBindingType::Uniform),
+            fragment_buffer(1, wgpu::BufferBindingType::Storage { read_only: true }),
+        ],
+    });
+    let params: Vec<u8> = [pyramid.face_size(), pyramid.max_level()]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let params = buffer(gpu, wgpu::BufferUsages::UNIFORM, &params);
+    let bytes: Vec<u8> = points
+        .iter()
+        .flatten()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let points_buffer = buffer(gpu, wgpu::BufferUsages::STORAGE, &bytes);
+    let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: params.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: points_buffer.as_entire_binding(),
+            },
+        ],
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(
+            format!("{TILES_WGSL}\n{FIELD_WGSL}\n{FIELD_TEST_WGSL}").into(),
+        ),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[
+            Some(&layout),
+            Some(&tiles_layout(device)),
+            Some(&pyramid_layout(device)),
+        ],
+        immediate_size: 0,
+    });
+    let format = wgpu::TextureFormat::R32Float;
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(format.into())],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    let size = wgpu::Extent3d {
+        width: points.len() as u32,
+        height: 1,
+        depth_or_array_layers: 1,
+    };
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    let row_bytes =
+        (points.len() * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+    let out = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: row_bytes as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = gpu.encoder();
+    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: None,
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations::default(),
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    pass.set_pipeline(&pipeline);
+    pass.set_bind_group(0, &group, &[]);
+    pass.set_bind_group(1, &tiles.tiles(), &[]);
+    pass.set_bind_group(2, pyramid.bind_group(), &[]);
+    pass.draw(0..3, 0..1);
+    drop(pass);
+    enc.copy_texture_to_buffer(
+        target.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &out,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row_bytes as u32),
+                rows_per_image: None,
+            },
+        },
+        size,
+    );
+    gpu.submit(enc);
+    let (sender, receiver) = mpsc::channel();
+    out.map_async(wgpu::MapMode::Read, .., move |result| {
+        sender.send(result).expect("the test waits");
+    });
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("the device answers");
+    receiver
+        .recv()
+        .expect("the readback runs")
+        .expect("the buffer maps");
+    let bytes = out.get_mapped_range(..).expect("the buffer is mapped");
+    let values = bytes[..points.len() * 4].as_chunks::<4>().0;
+    values.iter().map(|b| f32::from_le_bytes(*b)).collect()
+}
+
+/// Directions at the face middles, on and next to the face edges, at and
+/// next to the cube corners, and at other places.
+fn test_directions() -> Vec<V3> {
+    let unit = |d: V3| {
+        let l = dot(d, d).sqrt();
+        [d[0] / l, d[1] / l, d[2] / l]
+    };
+    let mut dirs = Vec::new();
+    for axis in 0..3 {
+        for sign in [1.0, -1.0] {
+            let mut d = [0.0; 3];
+            d[axis] = sign;
+            dirs.push(d);
+        }
+        for (a, b) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            for t in [0.0, 0.37, -0.81] {
+                let mut d = [0.0; 3];
+                d[axis] = t;
+                d[(axis + 1) % 3] = a;
+                d[(axis + 2) % 3] = b;
+                dirs.push(unit(d));
+                d[(axis + 1) % 3] = a * 1.004;
+                dirs.push(unit(d));
+            }
+        }
+    }
+    for i in 0..8 {
+        let s = |bit: usize| if i & bit == 0 { 1.0 } else { -1.0 };
+        dirs.push(unit([s(1), s(2), s(4)]));
+        dirs.push(unit([s(1) * 1.01, s(2), s(4) * 0.995]));
+    }
+    for i in 0..20 {
+        let (lon, lat) = (i as f64 * 37.0 - 180.0, (i as f64 * 1.7).sin() * 80.0);
+        dirs.push(lonlat_to_dir(lon, lat));
+    }
+    dirs
+}
+
+#[test]
+fn the_shader_field_matches_the_cpu_field() {
+    let gpu = gpu();
+    let cpu = hills(64);
+    let (tiles, pyramid) = tiles_and_pyramid(gpu, &cpu, 16);
+    let lods = [-1.0, 0.0, 0.3, 1.0, 1.5, 2.75, 4.0, 7.0];
+    let mut points = Vec::new();
+    for d in test_directions() {
+        for lod in lods {
+            points.push([d[0] as f32, d[1] as f32, d[2] as f32, lod]);
+        }
+    }
+    let values = shader_field(gpu, &tiles, &pyramid, &points);
+    let field = Pyramid::new(&cpu);
+    let all: Vec<u16> = (0..FACES).flat_map(|f| field.face(0, f).to_vec()).collect();
+    let (low, high) = (all.iter().min().unwrap(), all.iter().max().unwrap());
+    let range = f64::from(high - low) / 65535.0;
+    for (point, value) in points.iter().zip(values) {
+        let d = [point[0], point[1], point[2]].map(f64::from);
+        let expected = field.field(d, f64::from(point[3]));
+        let difference = (f64::from(value) - expected).abs();
+        assert!(
+            difference <= 1e-3 * range,
+            "{point:?}: the shader gives {value}, the CPU gives {expected}"
+        );
+    }
 }
