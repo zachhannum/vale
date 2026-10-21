@@ -177,7 +177,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 /// One menu for each color ramp, with the ways to apply it and its delete.
 fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
     state.open_ramps();
-    let Some(bands) = state.globe.bands_mut(id).map(|b| b.stops().len() - 1) else {
+    let Some(layer) = state.globe.bands_mut(id).map(|b| b.clone()) else {
         return;
     };
     // The layer, the ramp, and the choice: keep the stops, one band for
@@ -185,6 +185,7 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
     let mut chosen = None;
     for (index, ramp) in state.ramps.list().iter().enumerate() {
         let colors = ramp.colors.len();
+        let (bands, kind) = pad::raster::ramp_fit(&layer, &ramp.colors);
         ui.menu_button(format!("{} ({colors})", ramp.name), |ui| {
             let mut choose = |ui: &mut egui::Ui, text: &str, choice: Option<bool>| {
                 if ui.button(text).clicked() {
@@ -195,8 +196,8 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
             if colors == bands {
                 choose(ui, pad::raster::APPLY_RAMP, Some(true));
             } else {
-                choose(ui, &format!("Keep {bands} stops"), Some(true));
-                choose(ui, &format!("Use {colors} bands"), Some(false));
+                choose(ui, &format!("Keep {bands} {kind}bands"), Some(true));
+                choose(ui, &format!("Use {colors} {kind}bands"), Some(false));
             }
             ui.separator();
             choose(ui, pad::raster::DELETE_RAMP, None);

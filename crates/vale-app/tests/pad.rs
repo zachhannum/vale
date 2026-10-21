@@ -3899,7 +3899,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     tap(&mut h, "legend");
     assert!(h.state().pad.style.ramp_card.is_some());
     check_controls(&h, "with the card of a ramp");
-    assert!(control(&h, &format!("Keep {bands} stops")).is_some());
+    assert!(control(&h, &format!("Keep {bands} bands")).is_some());
     tap(&mut h, "Use 3 bands");
     let found: Vec<_> = h
         .state()
@@ -3917,6 +3917,27 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     tap(&mut h, DELETE_RAMP);
     assert!(h.state().ramps.list().is_empty());
     assert_eq!(h.state().globe.map.bands.bands().len(), 3);
+
+    // A ramp with no blue colors changes only the land.
+    let land = [[116, 196, 118], [140, 81, 10], [246, 244, 240]];
+    let path = dir.path().join("land.png");
+    let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(land[x as usize / 30]));
+    legend.save(&path).unwrap();
+    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.run();
+    tap(&mut h, "land");
+    check_controls(&h, "with the card of a land ramp");
+    tap(&mut h, "Use 3 land bands");
+    let found: Vec<_> = h
+        .state()
+        .globe
+        .map
+        .bands
+        .bands()
+        .iter()
+        .map(|b| b.color)
+        .collect();
+    assert_eq!(found, [colors[0], land[0], land[1], land[2]]);
 
     let path = dir.path().join("none.png");
     h.state_mut().run_action(Action::ImportRamp(height, path));

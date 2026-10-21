@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId, Smoothing};
-use vale_terrain::{Bands, Side, StopLine};
+use vale_terrain::{Bands, Part, Side, StopLine};
 
 use super::Panel;
 use super::geometry::{PAD, Rects};
@@ -272,6 +272,18 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         let size = (fraction as f32 * max / WEIGHT_STEP).round() * WEIGHT_STEP;
         state.set_raster_feature_size(id, size);
     }
+}
+
+/// The number of bands that a ramp colors, and the name of their part with
+/// a space, or an empty name for all bands.
+pub fn ramp_fit(bands: &Bands, colors: &[vale_terrain::Rgb]) -> (usize, &'static str) {
+    let part = bands.part(colors);
+    let kind = match part {
+        Part::All => "",
+        Part::Sea => "sea ",
+        Part::Land => "land ",
+    };
+    (bands.part_bands(part).len(), kind)
 }
 
 /// The row of a color ramp: its name, and a bar of its colors at the right.
@@ -677,11 +689,11 @@ pub fn ramp_card(
         return;
     };
     let colors = ramp.colors.len();
-    let Some(bands) = state.globe.bands_mut(id).map(|b| b.stops().len() - 1) else {
+    let Some((bands, kind)) = state.globe.bands_mut(id).map(|b| ramp_fit(b, &ramp.colors)) else {
         return;
     };
-    let keep = format!("Keep {bands} stops");
-    let fresh = format!("Use {colors} bands");
+    let keep = format!("Keep {bands} {kind}bands");
+    let fresh = format!("Use {colors} {kind}bands");
     let buttons: Vec<(&str, egui::Color32)> = if colors == bands {
         vec![(APPLY_RAMP, theme::ACCENT), (DELETE_RAMP, theme::WARN)]
     } else {
@@ -691,14 +703,16 @@ pub fn ramp_card(
             (DELETE_RAMP, theme::WARN),
         ]
     };
-    let text = if colors == bands {
-        format!("{}: {colors} colors.", ramp.name)
-    } else {
-        format!(
-            "{}: {colors} colors. The layer has {bands} bands. Keep the stops and stretch the ramp over them, or make one band for each color.",
-            ramp.name
-        )
-    };
+    let name = &ramp.name;
+    let mut text = format!("{name}: {colors} {kind}colors.");
+    if !kind.is_empty() {
+        text += &format!(" The ramp changes only the {kind}bands.");
+    }
+    if colors != bands {
+        text += &format!(
+            " The layer has {bands} {kind}bands. Keep them and stretch the ramp over them, or make one band for each color."
+        );
+    }
     let font = theme::body();
     let wrap = CARD_WIDTH - 2.0 * CARD_PAD;
     let text = ctx.fonts_mut(|f| f.layout(text, font, theme::MUTE, wrap));
