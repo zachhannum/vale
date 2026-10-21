@@ -442,13 +442,19 @@ impl Bands {
     /// its part of the range. Returns `None` if there are no colors, if there
     /// are too many bands, or if the range has no room for the stops.
     pub fn painted(&self, colors: &[Rgb]) -> Option<Bands> {
+        self.painted_part(colors, self.part(colors))
+    }
+
+    /// `painted` for a part that the user chose. With no sea split, each
+    /// part is all bands.
+    pub fn painted_part(&self, colors: &[Rgb], part: Part) -> Option<Bands> {
         let n = colors.len();
         if n == 0 || n > MAX_BANDS {
             return None;
         }
-        let part = self.part(colors);
+        let part = if self.split { part } else { Part::All };
         if n == self.part_bands(part).len() {
-            return self.stretched(colors);
+            return self.stretched_part(colors, part);
         }
         let fresh = |value: f64| Stop {
             value,
@@ -513,11 +519,17 @@ impl Bands {
     /// repeats, and with fewer bands, a color drops out. The bands of the
     /// other part do not change. Returns `None` if there are no colors.
     pub fn stretched(&self, colors: &[Rgb]) -> Option<Bands> {
+        self.stretched_part(colors, self.part(colors))
+    }
+
+    /// `stretched` for a part that the user chose. With no sea split, each
+    /// part is all bands.
+    pub fn stretched_part(&self, colors: &[Rgb], part: Part) -> Option<Bands> {
         let n = colors.len();
         if n == 0 {
             return None;
         }
-        let part = self.part(colors);
+        let part = if self.split { part } else { Part::All };
         let range = self.part_bands(part);
         let m = range.len();
         let mut all: Vec<Rgb> = self.bands().iter().map(|b| b.color).collect();
@@ -1278,6 +1290,23 @@ mod tests {
             band_colors(&stretched)[sea..],
             [g[0], g[0], g[0], g[1], g[1], g[1], g[1]]
         );
+    }
+
+    #[test]
+    fn a_chosen_part_overrides_the_colors() {
+        let bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        // Grey is a land color, but the user chose the sea.
+        let painted = bands.painted_part(&greys(2), Part::Sea).unwrap();
+        assert_eq!(values(&painted)[..3], [ELEV_MIN, ELEV_MIN / 2.0, 0.0]);
+        assert_eq!(painted.stops()[3..], bands.stops()[sea + 1..]);
+        assert_eq!(band_colors(&painted)[..2], greys(2));
+        let stretched = bands.stretched_part(&greys(2), Part::Sea).unwrap();
+        assert_eq!(stretched.stops()[sea + 1..], bands.stops()[sea + 1..]);
+        // With no sea split, a part is all bands.
+        let plain = Bands::with_range(0.0, 100.0, false).unwrap();
+        let all = plain.painted_part(&greys(2), Part::Land).unwrap();
+        assert_eq!(values(&all), [0.0, 50.0, 100.0]);
     }
 
     fn greys(n: usize) -> Vec<Rgb> {
