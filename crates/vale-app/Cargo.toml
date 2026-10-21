@@ -24,10 +24,10 @@ anyhow.workspace = true
 kurbo.workspace = true
 bytemuck = "1.25.2"
 earcut = "0.4.11"
+image.workspace = true
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 egui_kittest.workspace = true
-image.workspace = true
 rfd.workspace = true
 
 [dev-dependencies]
