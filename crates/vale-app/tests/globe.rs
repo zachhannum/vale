@@ -4967,39 +4967,343 @@ fn an_island_smaller_than_one_pixel_has_no_line_and_no_land_color() {
     }
 }
 
-#[test]
-fn a_ridge_narrower_than_one_pixel_has_no_line_and_no_land_color() {
-    let _gpu = one_gpu_test();
-    let middle = FINE_FACE_SIZE / 2;
-    let mut sea = fine_globe(&[]);
-    // A ridge of 2 texels across and 224 texels along, on the screen up and
-    // down or at a slant.
-    let up: Vec<(usize, usize)> = (middle - 112..middle + 112)
-        .flat_map(|y| [(middle, y), (middle + 1, y)])
-        .collect();
-    let slant: Vec<(usize, usize)> = (middle - 112..middle + 112)
-        .flat_map(|y| {
-            let x = (middle as i64 + (y as i64 - middle as i64) / 3) as usize;
-            [(x, y), (x + 1, y)]
-        })
-        .collect();
-    for ridge in [up, slant] {
-        let mut h = fine_globe(&ridge);
-        for lon in [0.0, 0.03, 0.06, 0.09] {
-            let view = GlobeView::centered(lon, 0.0);
-            h.state_mut().globe.view = view;
-            sea.state_mut().globe.view = view;
-            let (shown, plain) = (canvas_image(&mut h), canvas_image(&mut sea));
-            let change = largest_change(&shown, &plain, 12);
-            assert!(change <= 2, "{:?} at {lon}: {change}", ridge[0]);
+/// A shape of land on the screen, in pixels of the whole frame.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    /// A corner at `tip`, open toward the angle `toward` in radians, with
+    /// half of its angle `half`. Convex: land inside the corner. Concave:
+    /// sea inside.
+    Corner {
+        tip: [f64; 2],
+        toward: f64,
+        half: f64,
+        convex: bool,
+    },
+    /// A channel of sea of `width` through land along the angle `along`,
+    /// or a ridge of land through sea.
+    Channel {
+        at: [f64; 2],
+        along: f64,
+        width: f64,
+        sea: bool,
+    },
+    /// A round island.
+    Island { at: [f64; 2], radius: f64 },
+}
+
+impl Shape {
+    /// A signed distance in pixels, positive on land. It is exact near the
+    /// coast on each side.
+    fn land(&self, p: [f64; 2]) -> f64 {
+        match *self {
+            Shape::Corner {
+                tip,
+                toward,
+                half,
+                convex,
+            } => {
+                let q = [p[0] - tip[0], p[1] - tip[1]];
+                // The normals of the two sides, toward the inside.
+                let (a, b) = (toward + half, toward - half);
+                let n1 = [a.sin(), -a.cos()];
+                let n2 = [-b.sin(), b.cos()];
+                let f = (q[0] * n1[0] + q[1] * n1[1]).min(q[0] * n2[0] + q[1] * n2[1]);
+                if convex { f } else { -f }
+            }
+            Shape::Channel {
+                at,
+                along,
+                width,
+                sea,
+            } => {
+                let n = [-along.sin(), along.cos()];
+                let f = ((p[0] - at[0]) * n[0] + (p[1] - at[1]) * n[1]).abs() - width / 2.0;
+                if sea { f } else { -f }
+            }
+            Shape::Island { at, radius } => radius - (p[0] - at[0]).hypot(p[1] - at[1]),
         }
-        let view = GlobeView {
-            zoom: 16.0,
-            ..GlobeView::centered(0.0, 0.0)
+    }
+
+    /// The distance in pixels to the coast.
+    fn coast(&self, p: [f64; 2]) -> f64 {
+        let ray = |o: [f64; 2], e: [f64; 2]| {
+            let q = [p[0] - o[0], p[1] - o[1]];
+            let t = (q[0] * e[0] + q[1] * e[1]).max(0.0);
+            ((q[0] - t * e[0]).powi(2) + (q[1] - t * e[1]).powi(2)).sqrt()
         };
-        h.state_mut().globe.view = view;
-        sea.state_mut().globe.view = view;
-        let (shown, plain) = (canvas_image(&mut h), canvas_image(&mut sea));
-        assert!(largest_change(&shown, &plain, 12) > 100);
+        match *self {
+            Shape::Corner {
+                tip, toward, half, ..
+            } => {
+                let (a, b) = (toward + half, toward - half);
+                ray(tip, [a.cos(), a.sin()]).min(ray(tip, [b.cos(), b.sin()]))
+            }
+            Shape::Channel { .. } | Shape::Island { .. } => self.land(p).abs(),
+        }
+    }
+}
+
+/// The land and the ink of each pixel of a frame, from 0 to 1.
+struct Cover {
+    width: u32,
+    land: Vec<f64>,
+    ink: Vec<f64>,
+}
+
+impl Cover {
+    /// The value at a place, from the 4 pixel centers around it.
+    fn at(values: &[f64], width: u32, p: [f64; 2]) -> f64 {
+        let (x, y) = (p[0] - 0.5, p[1] - 0.5);
+        let (i, j) = (x.floor(), y.floor());
+        let (s, t) = (x - i, y - j);
+        let v = |a: f64, b: f64| values[(b as u32 * width + a as u32) as usize];
+        let top = v(i, j) * (1.0 - s) + v(i + 1.0, j) * s;
+        let bottom = v(i, j + 1.0) * (1.0 - s) + v(i + 1.0, j + 1.0) * s;
+        top * (1.0 - t) + bottom * t
+    }
+
+    /// The places along a line where `values` crosses 0.5, as distances
+    /// from `from` along `dir`.
+    fn crossings(&self, ink: bool, from: [f64; 2], dir: [f64; 2], reach: f64) -> Vec<f64> {
+        let values = if ink { &self.ink } else { &self.land };
+        let mut out = Vec::new();
+        let mut last: Option<(f64, f64)> = None;
+        let mut s = -reach;
+        while s <= reach {
+            let v = Cover::at(
+                values,
+                self.width,
+                [from[0] + s * dir[0], from[1] + s * dir[1]],
+            );
+            if let Some((ls, lv)) = last
+                && (lv < 0.5) != (v < 0.5)
+            {
+                out.push(ls + (0.5 - lv) / (v - lv) * (s - ls));
+            }
+            last = Some((s, v));
+            s += 0.01;
+        }
+        out
+    }
+}
+
+/// The cover of the ideal picture of a shape: each pixel has the part of
+/// its square on land, and the part within `half` of the coast.
+fn ideal_cover(shape: Shape, width: u32, height: u32, half: f64) -> Cover {
+    const N: u32 = 8;
+    let mut land = vec![0.0; (width * height) as usize];
+    let mut ink = land.clone();
+    for y in 0..height {
+        for x in 0..width {
+            let i = (y * width + x) as usize;
+            if shape.coast([x as f64 + 0.5, y as f64 + 0.5]) > half + 2.0 {
+                land[i] = f64::from(shape.land([x as f64 + 0.5, y as f64 + 0.5]) > 0.0);
+                continue;
+            }
+            for sy in 0..N {
+                for sx in 0..N {
+                    let p = [
+                        x as f64 + (f64::from(sx) + 0.5) / f64::from(N),
+                        y as f64 + (f64::from(sy) + 0.5) / f64::from(N),
+                    ];
+                    let k = 1.0 / f64::from(N * N);
+                    if shape.land(p) > 0.0 {
+                        land[i] += k;
+                    }
+                    if shape.coast(p) <= half {
+                        ink[i] += k;
+                    }
+                }
+            }
+        }
+    }
+    Cover { width, land, ink }
+}
+
+/// The cover of a shape on the globe, with the full detail of a fine face.
+fn drawn_cover(shape: Shape) -> Cover {
+    let axis = [0.0, 0.0, 1.0];
+    let mut h = measured_globe(axis, |_| -500.0);
+    let view = GlobeView::centered(0.0, 0.0);
+    let rect = h.state().globe.rect;
+    let globe = &mut h.state_mut().globe;
+    globe.view = view;
+    globe.set_face_size(FINE_FACE_SIZE);
+    globe.map.fill(meters_to_level(-500.0));
+    let r = view.radius(rect);
+    let c = rect.center();
+    for y in 0..FINE_FACE_SIZE {
+        for x in 0..FINE_FACE_SIZE {
+            let v = view.rot.mul_vec(globe.map.texel_dir(0, x, y));
+            let p = [f64::from(c.x) + v[0] * r, f64::from(c.y) - v[1] * r];
+            let m = (30.0 * shape.land(p)).clamp(-1000.0, 1000.0);
+            globe.map.set(0, x, y, meters_to_level(m));
+        }
+    }
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, false, 2.0);
+    let frame = |h: &mut Harness<'static, AppState>| {
+        h.remove_cursor();
+        h.run_steps(2);
+        h.render().unwrap()
+    };
+    set_coast_line(&mut h, false);
+    let plain = frame(&mut h);
+    set_coast_line(&mut h, true);
+    let lined = frame(&mut h);
+    let mut land = Vec::new();
+    let mut ink = Vec::new();
+    for (a, b) in plain.pixels().zip(lined.pixels()) {
+        let red = f64::from(a.0[0]).max(1.0);
+        land.push(f64::from(a.0[1]) / red);
+        ink.push(((red - f64::from(b.0[0])) / red).max(0.0));
+    }
+    Cover {
+        width: plain.width(),
+        land,
+        ink,
+    }
+}
+
+/// The tips of the shapes on the screen: off the pixel centers by different
+/// parts of a pixel, with an angle of the shape.
+fn tips(rect: egui::Rect) -> [([f64; 2], f64); 2] {
+    let c = rect.center();
+    let (x, y) = (f64::from(c.x), f64::from(c.y));
+    [
+        ([x + 0.3, y + 0.17], 30f64.to_radians()),
+        ([x + 0.71, y + 0.55], 75f64.to_radians()),
+    ]
+}
+
+/// The canvas of the measured globe.
+fn measured_rect() -> egui::Rect {
+    measured_globe([0.0, 0.0, 1.0], |_| -500.0)
+        .state()
+        .globe
+        .rect
+}
+
+/// The size of the frame of the GPU harness.
+const FRAME: (u32, u32) = (640, 480);
+
+#[test]
+fn a_corner_keeps_its_point_and_the_round_end_of_its_line() {
+    let _gpu = one_gpu_test();
+    let half = f64::from(LINE_WEIGHT) / 2.0;
+    for (tip, toward) in tips(measured_rect()) {
+        for (degrees, convex) in [(90.0, true), (45.0, true), (90.0, false), (45.0, false)] {
+            let angle = f64::to_radians(degrees) / 2.0;
+            let shape = Shape::Corner {
+                tip,
+                toward,
+                half: angle,
+                convex,
+            };
+            let drawn = drawn_cover(shape);
+            let ideal = ideal_cover(shape, FRAME.0, FRAME.1, half);
+            // Along the line through the middle of the corner.
+            let dir = [toward.cos(), toward.sin()];
+            let what = format!("{degrees} degrees, convex {convex}, at {tip:?}");
+            let edge = |c: &Cover| {
+                let x = c.crossings(false, tip, dir, 7.0);
+                assert_eq!(x.len(), 1, "{what}: {x:?}");
+                x[0]
+            };
+            let (a, b) = (edge(&drawn), edge(&ideal));
+            assert!((a - b).abs() < 0.25, "{what}: edge at {a}, not {b}");
+            let ink = |c: &Cover| {
+                let x = c.crossings(true, tip, dir, 7.0);
+                assert_eq!(x.len(), 2, "{what}: {x:?}");
+                [x[0], x[1]]
+            };
+            let (a, b) = (ink(&drawn), ink(&ideal));
+            for k in 0..2 {
+                let off = (a[k] - b[k]).abs();
+                assert!(off < 0.25, "{what}: line ends at {a:?}, not {b:?}");
+            }
+        }
+    }
+}
+
+/// Makes sure that a channel has its width and the width of its lines in
+/// each row, within 0.25 px.
+fn assert_channel(width: f64, sea: bool) {
+    let half = f64::from(LINE_WEIGHT) / 2.0;
+    for (at, toward) in tips(measured_rect()) {
+        // About up and down on the screen.
+        let along = toward + 50f64.to_radians();
+        let shape = Shape::Channel {
+            at,
+            along,
+            width,
+            sea,
+        };
+        let drawn = drawn_cover(shape);
+        let ideal = ideal_cover(shape, FRAME.0, FRAME.1, half);
+        let n = [-along.sin(), along.cos()];
+        for k in -10..=10 {
+            let from = [
+                at[0] + f64::from(k) * along.cos(),
+                at[1] + f64::from(k) * along.sin(),
+            ];
+            let span = |c: &Cover, ink: bool| {
+                let x = c.crossings(ink, from, n, 8.0);
+                assert!(x.len() >= 2, "{width}, sea {sea}, row {k}: {x:?}");
+                x[x.len() - 1] - x[0]
+            };
+            for ink in [false, true] {
+                let (a, b) = (span(&drawn, ink), span(&ideal, ink));
+                let what = format!("{width}, sea {sea}, ink {ink}, row {k}: {a}, not {b}");
+                assert!((a - b).abs() < 0.25, "{what}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_inlet_has_its_width_and_its_lines() {
+    let _gpu = one_gpu_test();
+    assert_channel(1.5, true);
+    assert_channel(3.0, true);
+}
+
+#[test]
+fn a_ridge_two_pixels_wide_has_its_width_and_its_lines() {
+    let _gpu = one_gpu_test();
+    assert_channel(2.0, false);
+}
+
+#[test]
+fn the_line_around_a_small_island_has_its_weight() {
+    let _gpu = one_gpu_test();
+    let half = f64::from(LINE_WEIGHT) / 2.0;
+    for ((at, _), radius) in tips(measured_rect()).into_iter().zip([6.0, 9.5]) {
+        let shape = Shape::Island { at, radius };
+        let drawn = drawn_cover(shape);
+        let ideal = ideal_cover(shape, FRAME.0, FRAME.1, half);
+        for ray in 0..64 {
+            let a = f64::from(ray) * std::f64::consts::TAU / 64.0;
+            let dir = [a.cos(), a.sin()];
+            let from = [at[0] + radius * dir[0], at[1] + radius * dir[1]];
+            let what = format!("radius {radius}, ray {ray}");
+            let ink = |c: &Cover| {
+                let x = c.crossings(true, from, dir, half + 2.0);
+                assert_eq!(x.len(), 2, "{what}: {x:?}");
+                x[1] - x[0]
+            };
+            let (w, ideal_w) = (ink(&drawn), ink(&ideal));
+            assert!(
+                (w - ideal_w).abs() < 0.25,
+                "{what}: weight {w}, not {ideal_w}"
+            );
+            let edge = |c: &Cover| c.crossings(false, from, dir, 1.5);
+            let (e, ideal_e) = (edge(&drawn), edge(&ideal));
+            assert_eq!(e.len(), 1, "{what}: {e:?}");
+            assert!(
+                (e[0] - ideal_e[0]).abs() < 0.25,
+                "{what}: edge {e:?}, not {ideal_e:?}"
+            );
+        }
     }
 }

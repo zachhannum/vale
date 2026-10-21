@@ -1,6 +1,6 @@
 // The screen-space lines of the color stops, in passes before the layer
 // pass. The first pass writes the shown height of each pixel. The second
-// pass cuts away the features narrower than one pixel and finds the places
+// pass cuts away the peaks and the pits smaller than one pixel and finds the places
 // where the height crosses the value of a stop between two pixel centers.
 // The third pass gives each pixel the nearest of those places. The layer
 // pass then draws the band edges and the lines from the cut heights and the
@@ -13,8 +13,7 @@
 @group(3) @binding(0) var edge_raw: texture_2d<f32>;
 // The place that each pixel keeps from its own 4 pairs.
 @group(3) @binding(1) var edge_seeds: texture_2d<u32>;
-// The height of each pixel with the features narrower than one pixel cut
-// away.
+// The height of each pixel cut to the range of its 8 neighbors.
 @group(3) @binding(2) var edge_clean: texture_2d<f32>;
 // The nearest place of each pixel.
 @group(3) @binding(3) var edge_nearest: texture_2d<u32>;
@@ -83,37 +82,29 @@ fn raw_at(p: vec2<i32>) -> f32 {
     return textureLoad(edge_raw, p, 0).x;
 }
 
-// The height of a pixel cut so that a feature narrower than one pixel goes
-// away: a peak or a ridge is cut down to the higher of two opposite
-// neighbors, and a pit or a valley is filled up to the lower of them. Each
-// of the 4 pairs of opposite neighbors cuts. -1 off the ground.
+// The height of a pixel cut to the range of its 8 neighbors, so that a
+// peak or a pit smaller than one pixel goes away. -1 off the ground.
 fn clean_at(p: vec2<i32>) -> f32 {
     let h = raw_at(p);
     if h < 0.0 {
         return -1.0;
     }
-    var low = -1.0;
-    var high = 2.0;
-    let pairs = array<vec2<i32>, 4>(
-        vec2<i32>(1, 0),
-        vec2<i32>(0, 1),
-        vec2<i32>(1, 1),
-        vec2<i32>(1, -1),
-    );
-    for (var k = 0; k < 4; k++) {
-        let a = raw_at(p + pairs[k]);
-        let b = raw_at(p - pairs[k]);
-        if a >= 0.0 && b >= 0.0 {
-            low = max(low, min(a, b));
-            high = min(high, max(a, b));
+    var low = 2.0;
+    var high = -1.0;
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let n = raw_at(p + vec2<i32>(dx, dy));
+            if n >= 0.0 {
+                low = min(low, n);
+                high = max(high, n);
+            }
         }
     }
-    // On a narrow ridge, the pair along the ridge is as high as the pixel
-    // and the pair across it is lower, so the pixel is below one pair and
-    // above another. The pixel takes the cut of the pair that it is
-    // farther from: a ridge goes down, and a valley fills up.
-    if low > high {
-        return select(low, high, h > 0.5 * (low + high));
+    if high < 0.0 {
+        return h;
     }
     return clamp(h, low, high);
 }
@@ -260,11 +251,79 @@ fn segment_distance(a: vec2<f32>, b: vec2<f32>) -> f32 {
     return length(a + ab * t);
 }
 
+// A cell has the 4 pixel centers from `c` to `c + (1, 1)`. Its sides are 0
+// and 1 along x, at the rows of `c` and `c + (0, 1)`, and 2 and 3 along y,
+// at the columns of `c` and `c + (1, 0)`.
+fn side_base(c: vec2<i32>, k: i32) -> vec2<i32> {
+    return c + vec2<i32>(select(0, 1, k == 3), select(0, 1, k == 1));
+}
+
+fn side_step(k: i32) -> vec2<i32> {
+    return select(vec2<i32>(0, 1), vec2<i32>(1, 0), k < 2);
+}
+
+// The cell on the other side of side `k`.
+fn next_cell(c: vec2<i32>, k: i32) -> vec2<i32> {
+    let away = array<vec2<i32>, 4>(
+        vec2<i32>(0, -1),
+        vec2<i32>(0, 1),
+        vec2<i32>(-1, 0),
+        vec2<i32>(1, 0),
+    );
+    return c + away[k];
+}
+
+// The side where the band edge leaves a cell that it enters at side `k`, or
+// -1 off the ground. Where the edge crosses all 4 sides, the mean of the
+// corners decides how it goes through.
+fn exit_side(c: vec2<i32>, k: i32, at: f32) -> i32 {
+    let h00 = clean_px(c);
+    let h10 = clean_px(c + vec2<i32>(1, 0));
+    let h01 = clean_px(c + vec2<i32>(0, 1));
+    let h11 = clean_px(c + vec2<i32>(1, 1));
+    if min(min(h00, h10), min(h01, h11)) < 0.0 {
+        return -1;
+    }
+    let s00 = h00 >= at;
+    let s10 = h10 >= at;
+    let s01 = h01 >= at;
+    let s11 = h11 >= at;
+    let crossed = array<bool, 4>(s00 != s10, s01 != s11, s00 != s01, s10 != s11);
+    if crossed[0] && crossed[1] && crossed[2] && crossed[3] {
+        let middle = (h00 + h10 + h01 + h11) * 0.25 >= at;
+        // Each corner on the other side of the middle has the edge across
+        // its two sides.
+        let first_alone = array<bool, 4>(s00 != middle, s01 != middle, s00 != middle, s10 != middle);
+        let pair_first = array<i32, 4>(2, 2, 0, 0);
+        let pair_second = array<i32, 4>(3, 3, 1, 1);
+        if first_alone[k] {
+            return pair_first[k];
+        }
+        return pair_second[k];
+    }
+    for (var e = 0; e < 4; e++) {
+        if e != k && crossed[e] {
+            return e;
+        }
+    }
+    return -1;
+}
+
+// The place where the band edge crosses side `k` of a cell, from the
+// center of pixel `p`.
+fn side_crossing(c: vec2<i32>, k: i32, at: f32, p: vec2<i32>) -> vec2<f32> {
+    let a = side_base(c, k);
+    let b = a + side_step(k);
+    let pa = vec2<f32>(a - p);
+    return crossing(pa, clean_px(a), pa + vec2<f32>(side_step(k)), clean_px(b), at);
+}
+
 // The color of the line at a pixel, and the part of the pixel that it
-// covers. The band edge goes through the nearest place, on a segment in
-// one of the two cells of 4 pixel centers that share its pair. Where a cell
-// has the edge on all 4 sides, the mean of its corners decides how the
-// edge goes through it.
+// covers. The band edge goes through the nearest place, and on through the
+// next 3 cells on each side, as a chain of segments. Where the chain turns
+// by more than 70 degrees, the segments that cut the
+// corner give way to the 2 outer segments, carried on to where they meet,
+// so a sharp corner keeps its point.
 fn line_cover(p: vec2<i32>) -> vec4<f32> {
     let seed = textureLoad(edge_nearest, p, 0).x;
     if seed == EDGE_EMPTY {
@@ -273,46 +332,67 @@ fn line_cover(p: vec2<i32>) -> vec4<f32> {
     let stop = edge_stop(seed);
     let half = edge_half(stop);
     let at = u.lines[stop].at.x;
-    let step = edge_step(edge_axis(seed));
-    let pa = vec2<f32>(edge_base(seed));
-    let pb = pa + step;
-    let ha = clean_px(p + vec2<i32>(pa));
-    let hb = clean_px(p + vec2<i32>(pb));
-    let sa = ha >= at;
-    let sb = hb >= at;
-    var x = edge_place(seed);
-    var valid = ha >= 0.0 && hb >= 0.0 && sa != sb;
-    if valid {
-        x = crossing(pa, ha, pb, hb, at);
-    }
-    var dist = length(x);
-    let across = vec2<f32>(step.y, step.x);
-    for (var k = 0; k < 2 && valid; k++) {
-        let pc = pa + across * f32(2 * k - 1);
-        let pd = pc + step;
-        let hc = clean_px(p + vec2<i32>(pc));
-        let hd = clean_px(p + vec2<i32>(pd));
-        if hc < 0.0 || hd < 0.0 {
-            continue;
-        }
-        let sc = hc >= at;
-        let sd = hd >= at;
-        var y = x;
-        if sa != sc && sb != sd && sc != sd {
-            let middle = (ha + hb + hc + hd) * 0.25 >= at;
-            if sa != middle {
-                y = crossing(pa, ha, pc, hc, at);
-            } else {
-                y = crossing(pb, hb, pd, hd, at);
+    let axis = edge_axis(seed);
+    let base = p + edge_base(seed);
+    let step = vec2<i32>(edge_step(axis));
+    let ha = clean_px(base);
+    let hb = clean_px(base + step);
+    var pts: array<vec2<f32>, 7>;
+    pts[3] = edge_place(seed);
+    var first = 3;
+    var last = 3;
+    if ha >= 0.0 && hb >= 0.0 && (ha >= at) != (hb >= at) {
+        let pa = vec2<f32>(edge_base(seed));
+        pts[3] = crossing(pa, ha, pa + vec2<f32>(step), hb, at);
+        let across = vec2<i32>(step.y, step.x);
+        // The cell on each side of the pair, and the side of each cell that
+        // the pair is.
+        let a_side = select(2, 0, axis == 0u);
+        for (var way = 0; way < 2; way++) {
+            var c = select(base - across, base, way == 0);
+            var k = a_side + select(1, 0, way == 0);
+            for (var n = 0; n < 3; n++) {
+                let leave = exit_side(c, k, at);
+                if leave < 0 {
+                    break;
+                }
+                let y = side_crossing(c, leave, at, p);
+                if way == 0 {
+                    last += 1;
+                    pts[last] = y;
+                } else {
+                    first -= 1;
+                    pts[first] = y;
+                }
+                c = next_cell(c, leave);
+                k = leave ^ 1;
             }
-        } else if sa != sc {
-            y = crossing(pa, ha, pc, hc, at);
-        } else if sb != sd {
-            y = crossing(pb, hb, pd, hd, at);
-        } else {
-            y = crossing(pc, hc, pd, hd, at);
         }
-        dist = min(dist, segment_distance(x, y));
+    }
+    var dist = length(pts[3]);
+    for (var i = first; i < last; i++) {
+        dist = min(dist, segment_distance(pts[i], pts[i + 1]));
+    }
+    for (var i = first; i < last - 2; i++) {
+        for (var j = i + 2; j < last; j++) {
+            let di = pts[i + 1] - pts[i];
+            let dj = pts[j + 1] - pts[j];
+            let li = length(di);
+            let lj = length(dj);
+            if li < 1e-3 || lj < 1e-3 || dot(di, dj) > 0.34 * li * lj {
+                continue;
+            }
+            let turn = di.x * dj.y - di.y * dj.x;
+            let gap = pts[j] - pts[i + 1];
+            let t = (gap.x * dj.y - gap.y * dj.x) / turn;
+            let v = (di.x * gap.y - di.y * gap.x) / turn;
+            if t < 0.0 || v < 0.0 || t * li > 3.0 || v * lj > 3.0 {
+                continue;
+            }
+            let corner = pts[i + 1] + di * t;
+            dist = min(dist, segment_distance(pts[i + 1], corner));
+            dist = min(dist, segment_distance(corner, pts[j]));
+        }
     }
     let cover = clamp(max(half, 0.5) + 0.5 - dist, 0.0, 1.0) * min(2.0 * half, 1.0);
     return vec4<f32>(u.lines[stop].color.rgb, cover);
