@@ -18,6 +18,7 @@ use vale_terrain::{
 
 pub mod backdrop;
 pub mod brush;
+pub mod edges;
 pub mod erode;
 pub mod export;
 pub mod flat;
