@@ -78,6 +78,16 @@ pub enum Side {
     Above,
 }
 
+/// The bands that a ramp of colors colors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    All,
+    /// The bands below sea level.
+    Sea,
+    /// The bands above sea level.
+    Land,
+}
+
 /// One step of the preview, from one stop to the next.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Band {
@@ -399,6 +409,164 @@ impl Bands {
         Some(base.map(|c| (f32::from(c) * keep).round() as u8))
     }
 
+    /// The bands that a ramp colors. With a sea split, a ramp with no
+    /// colors that are mostly blue is a land ramp, and a ramp with only such
+    /// colors is a sea ramp.
+    pub fn part(&self, colors: &[Rgb]) -> Part {
+        if !self.split {
+            return Part::All;
+        }
+        match colors.iter().filter(|c| is_blue(**c)).count() {
+            0 => Part::Land,
+            blue if blue == colors.len() => Part::Sea,
+            _ => Part::All,
+        }
+    }
+
+    /// The indices of the bands of a part.
+    pub fn part_bands(&self, part: Part) -> std::ops::Range<usize> {
+        let m = self.stops.len() - 1;
+        match (part, self.sea()) {
+            (Part::Sea, Some(sea)) => 0..sea,
+            (Part::Land, Some(sea)) => sea..m,
+            _ => 0..m,
+        }
+    }
+
+    /// The bands with one band of each color, from the lowest band to the
+    /// highest, in the part of the ramp. The bands of the other part do not
+    /// change. With the same number of bands, the stops keep their values
+    /// and their lines. Otherwise, the stops of the part have even spacing.
+    /// A ramp for all bands with a sea split gives the sea its first colors
+    /// that are mostly blue, or if there are none, the part of the bands of
+    /// its part of the range. Returns `None` if there are no colors, if there
+    /// are too many bands, or if the range has no room for the stops.
+    pub fn painted(&self, colors: &[Rgb]) -> Option<Bands> {
+        self.painted_part(colors, self.part(colors))
+    }
+
+    /// `painted` for a part that the user chose. With no sea split, each
+    /// part is all bands.
+    pub fn painted_part(&self, colors: &[Rgb], part: Part) -> Option<Bands> {
+        let n = colors.len();
+        if n == 0 || n > MAX_BANDS {
+            return None;
+        }
+        let part = if self.split { part } else { Part::All };
+        if n == self.part_bands(part).len() {
+            return self.stretched_part(colors, part);
+        }
+        let fresh = |value: f64| Stop {
+            value,
+            below: [0; 3],
+            above: [0; 3],
+            line: StopLine::default(),
+        };
+        // The values between `from` and `to` for `count` even bands.
+        let inner = |from: f64, to: f64, count: usize| {
+            let step = (to - from) / count as f64;
+            (1..count).map(move |i| from + step * i as f64)
+        };
+        let old: Vec<Rgb> = self.bands().iter().map(|b| b.color).collect();
+        let sea = self.sea().unwrap_or_default();
+        let (stops, all): (Vec<Stop>, Vec<Rgb>) = match part {
+            Part::All => {
+                if self.split && n < 2 {
+                    return None;
+                }
+                let sides: Vec<(f64, f64, usize)> = if self.split {
+                    let blue = colors.iter().take_while(|c| is_blue(**c)).count();
+                    let part = (SEA_LEVEL - self.min) / (self.max - self.min);
+                    let sea = if (1..n).contains(&blue) {
+                        blue
+                    } else {
+                        ((n as f64 * part).round() as usize).clamp(1, n - 1)
+                    };
+                    vec![(self.min, SEA_LEVEL, sea), (SEA_LEVEL, self.max, n - sea)]
+                } else {
+                    vec![(self.min, self.max, n)]
+                };
+                let mut values = vec![self.min];
+                for (from, to, count) in sides {
+                    values.extend(inner(from, to, count));
+                    values.push(to);
+                }
+                (values.into_iter().map(fresh).collect(), colors.to_vec())
+            }
+            Part::Sea => {
+                let stops = std::iter::once(self.stops[0])
+                    .chain(inner(self.min, SEA_LEVEL, n).map(fresh))
+                    .chain(self.stops[sea..].iter().copied())
+                    .collect();
+                (stops, [colors, &old[sea..]].concat())
+            }
+            Part::Land => {
+                let stops = self.stops[..=sea]
+                    .iter()
+                    .copied()
+                    .chain(inner(SEA_LEVEL, self.max, n).map(fresh))
+                    .chain(self.stops.last().copied())
+                    .collect();
+                (stops, [&old[..sea], colors].concat())
+            }
+        };
+        self.with_band_colors(stops, &all, part)
+    }
+
+    /// The bands with the same stops, values, and lines, and the colors of
+    /// a ramp over the bands of its part. Each band takes the color at its
+    /// middle along the ramp, so with more bands than colors, a color
+    /// repeats, and with fewer bands, a color drops out. The bands of the
+    /// other part do not change. Returns `None` if there are no colors.
+    pub fn stretched(&self, colors: &[Rgb]) -> Option<Bands> {
+        self.stretched_part(colors, self.part(colors))
+    }
+
+    /// `stretched` for a part that the user chose. With no sea split, each
+    /// part is all bands.
+    pub fn stretched_part(&self, colors: &[Rgb], part: Part) -> Option<Bands> {
+        let n = colors.len();
+        if n == 0 {
+            return None;
+        }
+        let part = if self.split { part } else { Part::All };
+        let range = self.part_bands(part);
+        let m = range.len();
+        let mut all: Vec<Rgb> = self.bands().iter().map(|b| b.color).collect();
+        for (k, i) in range.enumerate() {
+            all[i] = colors[(2 * k + 1) * n / (2 * m)];
+        }
+        self.with_band_colors(self.stops.clone(), &all, part)
+    }
+
+    /// These stops with one color for each band, from the lowest band. Only
+    /// the stops of `part` change.
+    fn with_band_colors(&self, mut stops: Vec<Stop>, colors: &[Rgb], part: Part) -> Option<Bands> {
+        let n = colors.len();
+        let sea = self
+            .split
+            .then(|| stops.partition_point(|s| s.value < SEA_LEVEL));
+        for (i, stop) in stops.iter_mut().enumerate() {
+            // Each band takes its color from the stop at its edge nearer sea
+            // level.
+            let (below, above) = match sea {
+                Some(sea) if i == sea => (colors[i - 1], colors[i]),
+                Some(sea) if i < sea => (colors[i.max(1) - 1], colors[i.max(1) - 1]),
+                _ => (colors[i.min(n - 1)], colors[i.min(n - 1)]),
+            };
+            let sea = sea.unwrap_or_default();
+            match part {
+                Part::All => (stop.below, stop.above) = (below, above),
+                Part::Sea if i < sea => (stop.below, stop.above) = (below, above),
+                Part::Sea if i == sea => stop.below = below,
+                Part::Land if i > sea => (stop.below, stop.above) = (below, above),
+                Part::Land if i == sea => stop.above = above,
+                _ => {}
+            }
+        }
+        Bands::from_range_parts(self.min, self.max, self.split, &stops)
+    }
+
     /// The bands from `min` to `max`, in ascending order. There is one band
     /// fewer than there are stops. Each stop gives its color to one band, so
     /// the top stop and, with a sea split, the bottom stop give none. The
@@ -420,6 +588,11 @@ impl Bands {
             })
             .collect()
     }
+}
+
+/// Whether a color is mostly blue.
+fn is_blue(c: Rgb) -> bool {
+    c[2] > c[0] && c[2] >= c[1]
 }
 
 /// Whether a range has a sea split.
@@ -1063,5 +1236,177 @@ mod tests {
         );
         assert_eq!(bands.line_color(sea + 1), Some(StopLine::default().color));
         assert_eq!(bands.line_color(99), None);
+    }
+
+    fn band_colors(bands: &Bands) -> Vec<Rgb> {
+        bands.bands().iter().map(|b| b.color).collect()
+    }
+
+    const BLUE: Rgb = [0, 0, 200];
+
+    #[test]
+    fn a_land_ramp_changes_only_the_land() {
+        let bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        assert_eq!(bands.part(&greys(3)), Part::Land);
+        let painted = bands.painted(&greys(3)).unwrap();
+        assert_eq!(painted.stops()[..sea], bands.stops()[..sea]);
+        assert_eq!(painted.stops()[sea].below, bands.stops()[sea].below);
+        let third = ELEV_MAX / 3.0;
+        assert_eq!(values(&painted)[sea..], [0.0, third, 2.0 * third, ELEV_MAX]);
+        let old = band_colors(&bands);
+        assert_eq!(band_colors(&painted), [&old[..sea], &greys(3)].concat());
+    }
+
+    #[test]
+    fn a_land_ramp_and_a_sea_ramp_color_one_layer() {
+        let bands = Bands::default();
+        let deep: Vec<Rgb> = (0..4).map(|i| [10, 20 * i, 200]).collect();
+        let painted = bands.painted(&greys(3)).unwrap();
+        assert_eq!(painted.part(&deep), Part::Sea);
+        let both = painted.painted(&deep).unwrap();
+        let half = ELEV_MIN / 4.0;
+        assert_eq!(
+            values(&both)[..5],
+            [ELEV_MIN, 3.0 * half, 2.0 * half, half, 0.0]
+        );
+        // The stop at sea level takes the sea color, and the land does not
+        // change.
+        let sea = bands.sea().unwrap();
+        assert_eq!(both.stops()[4].above, painted.stops()[sea].above);
+        assert_eq!(both.stops()[5..], painted.stops()[sea + 1..]);
+        assert_eq!(band_colors(&both), [&deep[..], &greys(3)].concat());
+    }
+
+    #[test]
+    fn a_stretched_land_ramp_keeps_the_sea() {
+        let bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        let stretched = bands.stretched(&greys(2)).unwrap();
+        assert_eq!(values(&stretched), values(&bands));
+        assert_eq!(stretched.stops()[..sea], bands.stops()[..sea]);
+        let g = greys(2);
+        assert_eq!(
+            band_colors(&stretched)[sea..],
+            [g[0], g[0], g[0], g[1], g[1], g[1], g[1]]
+        );
+    }
+
+    #[test]
+    fn a_chosen_part_overrides_the_colors() {
+        let bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        // Grey is a land color, but the user chose the sea.
+        let painted = bands.painted_part(&greys(2), Part::Sea).unwrap();
+        assert_eq!(values(&painted)[..3], [ELEV_MIN, ELEV_MIN / 2.0, 0.0]);
+        assert_eq!(painted.stops()[3..], bands.stops()[sea + 1..]);
+        assert_eq!(band_colors(&painted)[..2], greys(2));
+        let stretched = bands.stretched_part(&greys(2), Part::Sea).unwrap();
+        assert_eq!(stretched.stops()[sea + 1..], bands.stops()[sea + 1..]);
+        // With no sea split, a part is all bands.
+        let plain = Bands::with_range(0.0, 100.0, false).unwrap();
+        let all = plain.painted_part(&greys(2), Part::Land).unwrap();
+        assert_eq!(values(&all), [0.0, 50.0, 100.0]);
+    }
+
+    fn greys(n: usize) -> Vec<Rgb> {
+        (0..n).map(|i| [(i * 7) as u8; 3]).collect()
+    }
+
+    #[test]
+    fn painted_with_the_same_count_keeps_the_stops() {
+        let mut bands = Bands::default();
+        let line = StopLine {
+            on: true,
+            ..StopLine::default()
+        };
+        bands.set_line(3, line);
+        // A blue color makes a ramp for all bands.
+        let mut colors = greys(bands.stops().len() - 1);
+        colors[0] = BLUE;
+        let painted = bands.painted(&colors).unwrap();
+        assert_eq!(values(&painted), values(&bands));
+        assert_eq!(band_colors(&painted), colors);
+        assert_eq!(painted.stops()[3].line, line);
+    }
+
+    #[test]
+    fn painted_splits_the_bands_at_sea_level() {
+        let bands = Bands::with_range(-1000.0, 3000.0, true).unwrap();
+        let mut colors = greys(4);
+        colors[3] = BLUE;
+        let painted = bands.painted(&colors).unwrap();
+        assert_eq!(values(&painted), [-1000.0, 0.0, 1000.0, 2000.0, 3000.0]);
+        assert_eq!(painted.sea(), Some(1));
+        assert_eq!(band_colors(&painted), colors);
+    }
+
+    #[test]
+    fn painted_gives_the_blue_colors_to_the_sea() {
+        let bands = Bands::default();
+        let colors = [
+            [33, 113, 181],
+            [199, 233, 192],
+            [116, 196, 118],
+            [35, 139, 69],
+            [140, 81, 10],
+        ];
+        let painted = bands.painted(&colors).unwrap();
+        let land = ELEV_MAX / 4.0;
+        assert_eq!(
+            values(&painted),
+            [ELEV_MIN, 0.0, land, 2.0 * land, 3.0 * land, ELEV_MAX]
+        );
+        assert_eq!(band_colors(&painted), colors);
+    }
+
+    #[test]
+    fn painted_with_no_split_has_even_spacing() {
+        let bands = Bands::with_range(0.0, 100.0, false).unwrap();
+        let colors = greys(5);
+        let painted = bands.painted(&colors).unwrap();
+        assert_eq!(values(&painted), [0.0, 20.0, 40.0, 60.0, 80.0, 100.0]);
+        assert_eq!(band_colors(&painted), colors);
+    }
+
+    #[test]
+    fn stretched_keeps_the_stops_and_takes_the_color_at_each_middle() {
+        let mut bands = Bands::with_range(0.0, 100.0, false).unwrap();
+        bands.set_line(
+            2,
+            StopLine {
+                on: true,
+                ..StopLine::default()
+            },
+        );
+        let before = bands.stops().to_vec();
+        let more = bands.stretched(&greys(4)).unwrap();
+        assert_eq!(values(&more), values(&bands));
+        assert_eq!(more.stops()[2].line, before[2].line);
+        let g = greys(4);
+        assert_eq!(
+            band_colors(&more),
+            [g[0], g[0], g[1], g[1], g[2], g[2], g[3], g[3]]
+        );
+        let fewer = bands.stretched(&greys(16)).unwrap();
+        let g = greys(16);
+        assert_eq!(
+            band_colors(&fewer),
+            [g[1], g[3], g[5], g[7], g[9], g[11], g[13], g[15]]
+        );
+        assert!(bands.stretched(&[]).is_none());
+    }
+
+    #[test]
+    fn painted_refuses_too_few_or_too_many_colors() {
+        let bands = Bands::default();
+        assert!(bands.painted(&[]).is_none());
+        assert!(bands.painted(&greys(MAX_BANDS + 1)).is_none());
+        // The sea keeps its bands, so the land has no room for so many.
+        assert!(bands.painted(&greys(MAX_BANDS)).is_none());
+        let plain = Bands::with_range(0.0, 100.0, false).unwrap();
+        assert!(plain.painted(&greys(MAX_BANDS)).is_some());
+        let small = Bands::with_range(0.0, 4.0, false).unwrap();
+        assert!(small.painted(&greys(8)).is_none());
     }
 }

@@ -1,15 +1,15 @@
 //! The Style section of the panel of a raster layer: the display and the
 //! color stops.
 
-use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, pos2, vec2};
+use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId, Smoothing};
-use vale_terrain::{Bands, Side, StopLine};
+use vale_terrain::{Bands, Part, Side, StopLine};
 
 use super::Panel;
 use super::geometry::{PAD, Rects};
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
-use crate::ui::{AppState, elevation, gradient};
+use crate::ui::{Action, AppState, elevation, gradient};
 use crate::world;
 
 /// The name of the segmented control of the displays.
@@ -39,6 +39,20 @@ pub const REMOVE_STOP: &str = "Remove the stop";
 /// The row that puts back the default color stops, and the button of the
 /// card that asks before it.
 pub const RESET_STOPS: &str = "Reset colors";
+/// The row of the Style section that opens the page of the color ramps, and
+/// the title of the page.
+pub const COLOR_RAMPS: &str = "Color ramps";
+pub const IMPORT_RAMP: &str = "Import ramp…";
+/// The text below the import row while the app has no ramps.
+pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
+/// The buttons of the card of a ramp.
+pub const APPLY_RAMP: &str = "Apply";
+pub const DELETE_RAMP: &str = "Delete";
+pub const REVERSE_RAMP: &str = "Reverse";
+/// The longest name of a ramp row, in characters.
+const RAMP_NAME: usize = 20;
+/// The width and the height of the bar of a ramp row.
+const RAMP_BAR: Vec2 = vec2(96.0, 14.0);
 pub const RESET: &str = "Reset";
 const RESET_TEXT: &str = "Put back the default color stops of this layer? You cannot undo this.";
 /// The name of the unit field.
@@ -82,6 +96,22 @@ pub struct StyleState {
     reset_anchor: Option<(RasterId, Rect)>,
     /// The card that asks before a reset in the last frame.
     pub reset_card: Option<Rect>,
+    /// The layer and the ramp whose card is open.
+    ramp: Option<(RasterId, usize)>,
+    /// The row of the ramp in this frame, while its card is open.
+    ramp_anchor: Option<Rect>,
+    /// The card of a ramp in the last frame.
+    pub ramp_card: Option<Rect>,
+    /// The part of the bands that the user chose on the card of a ramp.
+    /// `None`: the part that the colors of the ramp give.
+    ramp_part: Option<Part>,
+}
+
+impl StyleState {
+    /// Closes the color picker of the selected stop.
+    pub fn forget_color(&mut self) {
+        self.side = None;
+    }
 }
 
 /// A color of a stop.
@@ -179,6 +209,11 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         style.reset = None;
     }
     style.reset_anchor = (style.reset == Some(id)).then_some((id, row.rect));
+    let row = widgets::text_row(ui, controls, COLOR_RAMPS, 0.0, false, true);
+    widgets::paint_open(ui, row.rect);
+    if row.clicked() {
+        state.pad.ramps = true;
+    }
 
     let preview = &mut state.globe.preview;
     preview.selected = selected.map(|index| (id, index));
@@ -190,6 +225,42 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         let text = format!("{:.2}×", preview.river_width);
         if widgets::row_slider(ui, controls, RIVER_WIDTH, "Width", &mut fraction, &text) {
             preview.river_width = (low + fraction * (high - low)) as f32;
+        }
+    }
+}
+
+/// The page of the color ramps of the Layers panel: the import, and one row
+/// for each ramp. A tap on a row opens the card of the ramp, which
+/// `ramp_card` shows.
+pub fn ramps_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+    if widgets::text_row(ui, controls, IMPORT_RAMP, 0.0, false, true).clicked() {
+        state.actions.push(Action::ImportRampDialog(id));
+    }
+    state.open_ramps();
+    match &state.ramp_note {
+        Some(n) if n.layer == Some(id) => {
+            super::note_text(ui, None, &mut state.ramp_note, Some(id))
+        }
+        _ if state.ramps.list().is_empty() => note(ui, IMPORT_RAMP_HINT),
+        _ => {}
+    }
+    let style = &mut state.pad.style;
+    style.ramp_anchor = None;
+    if style
+        .ramp
+        .is_some_and(|(layer, i)| layer != id || i >= state.ramps.list().len())
+    {
+        style.ramp = None;
+    }
+    for (index, ramp) in state.ramps.list().iter().enumerate() {
+        let open = style.ramp == Some((id, index));
+        let row = ramp_row(ui, controls, &ramp.name, &ramp.colors, open);
+        if row.clicked() {
+            style.ramp = (!open).then_some((id, index));
+            style.ramp_part = None;
+        }
+        if style.ramp == Some((id, index)) {
+            style.ramp_anchor = Some(row.rect);
         }
     }
 }
@@ -220,6 +291,69 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         let size = (fraction as f32 * max / WEIGHT_STEP).round() * WEIGHT_STEP;
         state.set_raster_feature_size(id, size);
     }
+}
+
+/// A button of the card of a ramp.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RampChoice {
+    /// With `true`, the layer keeps its stops. With as many colors as
+    /// bands, the two ways are the same.
+    Apply(bool),
+    Reverse,
+    Delete,
+}
+
+/// The parts of the bands, in the order of `PART_NAMES`.
+pub const PARTS: [Part; 3] = [Part::All, Part::Sea, Part::Land];
+/// The row of the part on the card of a ramp, and its choices.
+pub const RAMP_PART: &str = "Apply to";
+pub const PART_NAMES: [&str; 3] = ["All", "Sea", "Land"];
+
+/// The number of bands of a part, and the name of the part with a space,
+/// or an empty name for all bands.
+pub fn ramp_fit(bands: &Bands, part: Part) -> (usize, &'static str) {
+    let part = if bands.sea().is_some() {
+        part
+    } else {
+        Part::All
+    };
+    let kind = match part {
+        Part::All => "",
+        Part::Sea => "sea ",
+        Part::Land => "land ",
+    };
+    (bands.part_bands(part).len(), kind)
+}
+
+/// The row of a color ramp: its name, and a bar of its colors at the right.
+fn ramp_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    colors: &[vale_terrain::Rgb],
+    open: bool,
+) -> egui::Response {
+    let short: String = if name.chars().count() > RAMP_NAME {
+        name.chars().take(RAMP_NAME - 1).chain(['…']).collect()
+    } else {
+        name.to_owned()
+    };
+    let row = widgets::text_row(ui, controls, &short, 0.0, open, true);
+    let bar = Rect::from_min_size(
+        pos2(
+            row.rect.right() - RAMP_BAR.x,
+            row.rect.center().y - RAMP_BAR.y / 2.0,
+        ),
+        RAMP_BAR,
+    );
+    let step = bar.width() / colors.len().max(1) as f32;
+    for (i, c) in colors.iter().enumerate() {
+        let left = bar.left() + step * i as f32;
+        let block = Rect::from_x_y_ranges(left..=left + step, bar.y_range());
+        let color = egui::Color32::from_rgb(c[0], c[1], c[2]);
+        ui.painter().rect_filled(block, 0.0, color);
+    }
+    row
 }
 
 /// A small muted text across the panel.
@@ -571,6 +705,111 @@ pub fn reset_card(
     state.globe.preview.selected = None;
 
     state.pad.style.side = None;
+}
+
+/// The card of the ramp of a row. If the ramp has as many colors as the
+/// layer has bands, the card applies it. Otherwise, the layer keeps its
+/// stops, or it gets one band for each color. A touch outside the card and
+/// the row closes it.
+pub fn ramp_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    state.pad.style.ramp_card = None;
+    let (Some((id, index)), Some(row)) = (state.pad.style.ramp, state.pad.style.ramp_anchor.take())
+    else {
+        state.pad.style.ramp = None;
+        return;
+    };
+    let panel = state.pad.panels.iter().find(|(p, _)| *p == Panel::Layers);
+    let (Some(&(_, panel)), Some(ramp)) = (panel, state.ramps.list().get(index)) else {
+        return;
+    };
+    let colors = ramp.colors.len();
+    let Some(layer) = state.globe.bands_mut(id) else {
+        return;
+    };
+    let split = layer.sea().is_some();
+    let part = state
+        .pad
+        .style
+        .ramp_part
+        .unwrap_or(layer.part(&ramp.colors));
+    let (bands, kind) = ramp_fit(layer, part);
+    let keep = format!("Fit to {bands} {kind}bands");
+    let fresh = format!("Make {colors} {kind}bands");
+    let mut buttons: Vec<(&str, egui::Color32, RampChoice)> = if colors == bands {
+        vec![(APPLY_RAMP, theme::ACCENT, RampChoice::Apply(true))]
+    } else {
+        vec![
+            (&keep, theme::ACCENT, RampChoice::Apply(true)),
+            (&fresh, theme::ACCENT, RampChoice::Apply(false)),
+        ]
+    };
+    buttons.push((REVERSE_RAMP, theme::TEXT, RampChoice::Reverse));
+    buttons.push((DELETE_RAMP, theme::WARN, RampChoice::Delete));
+    let name = &ramp.name;
+    let text = format!("{name} · {colors} colors");
+    let choice = if split { PANEL_ROW + 8.0 } else { 0.0 };
+    let font = theme::body();
+    let wrap = CARD_WIDTH - 2.0 * CARD_PAD;
+    let text = ctx.fonts_mut(|f| f.layout(text, font, theme::MUTE, wrap));
+    let size = text.size().y + 12.0 + choice + buttons.len() as f32 * PANEL_ROW + 2.0 * CARD_PAD;
+    let at = pos2(row.left() + 40.0, row.center().y);
+    let (rect, point) = place(rects, panel, at, row, size);
+    if pressed_outside(ctx, rect, row) {
+        state.pad.style.ramp = None;
+        return;
+    }
+    state.pad.style.ramp_card = Some(rect);
+    let mut chosen = None;
+    let mut new_part = None;
+    let radius = theme::CARD_RADIUS.into();
+    let key = "pad-ramp";
+    widgets::card(ctx, None, key, rect, Order::Foreground, radius, |ui| {
+        ui.painter()
+            .rect_filled(rect, radius, theme::card(false).to_opaque());
+        let inner = rect.shrink(CARD_PAD);
+        let layout = egui::Layout::top_down(egui::Align::Min);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+        let ui = &mut ui;
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        let (place, _) = ui.allocate_exact_size(text.size(), Sense::hover());
+        ui.painter().galley(place.min, text, theme::MUTE);
+        ui.add_space(12.0);
+        if split {
+            let active = PARTS.iter().position(|p| *p == part);
+            let picked = widgets::choice_row(ui, controls, RAMP_PART, &PART_NAMES, active);
+            new_part = picked.map(|i| PARTS[i]);
+            ui.add_space(8.0);
+        }
+        for (name, fill, choice) in &buttons {
+            if widgets::button_row_in(ui, controls, name, true, *fill).clicked() {
+                chosen = Some(*choice);
+            }
+        }
+    });
+    paint_point(ctx, key, point);
+    if new_part.is_some() {
+        state.pad.style.ramp_part = new_part;
+    }
+    let Some(chosen) = chosen else {
+        return;
+    };
+    // The card stays open after a reverse, so that the bar shows it.
+    if chosen != RampChoice::Reverse {
+        state.pad.style.ramp = None;
+    }
+    let result = match chosen {
+        RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part),
+        RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
+        RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
+    };
+    if let Err(text) = result {
+        state.ramp_note = Some(crate::ui::Note::new(text, true, Some(id)));
+    }
 }
 
 /// The field of the value of the selected stop. The stop moves when the

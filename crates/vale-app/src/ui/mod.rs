@@ -46,6 +46,12 @@ pub enum Action {
     /// Imports this equirectangular image into a height layer. A world with
     /// no height layer gets one.
     ImportHeightmap(PathBuf),
+    /// Asks for a legend image for a new color ramp. The panel of this
+    /// raster layer shows the result.
+    ImportRampDialog(RasterId),
+    /// Adds the colors of the blocks of this legend image to the color
+    /// ramps. The panel of this raster layer shows the result.
+    ImportRamp(RasterId, PathBuf),
     /// Asks for the file of an export of the selected raster layer.
     ExportHeightmapDialog,
     /// Exports the selected raster layer to this GeoTIFF file.
@@ -329,6 +335,10 @@ pub struct AppState {
     pub import_note: Option<Note>,
     /// The text of the last export of the heightmap.
     pub export_note: Option<Note>,
+    /// The color ramps of the app.
+    pub ramps: crate::ramps::Ramps,
+    /// The text of the last import of a color ramp.
+    pub ramp_note: Option<Note>,
     /// The raster layers of the last import and of the last export.
     pub import_layer: Option<RasterId>,
     pub export_layer: Option<RasterId>,
@@ -401,6 +411,8 @@ impl AppState {
             status: String::new(),
             import_note: None,
             export_note: None,
+            ramps: Default::default(),
+            ramp_note: None,
             import_layer: None,
             export_layer: None,
             share_exports: false,
@@ -1578,6 +1590,70 @@ impl AppState {
         }
     }
 
+    /// Reads the ramps of the folder of the state, if the folder changed.
+    pub fn open_ramps(&mut self) {
+        self.ramps.open(self.projects.state_dir());
+    }
+
+    /// Adds the colors of the blocks of a legend image to the ramps, and
+    /// returns the name of the ramp and the number of colors.
+    fn import_ramp(&mut self, path: &Path) -> Result<(String, usize), String> {
+        let name = file_name(path);
+        let image = image::open(path).map_err(|e| format!("{name}: {e}"))?;
+        let image = image.to_rgb8();
+        let (width, height) = (image.width() as usize, image.height() as usize);
+        let pixels: Vec<[u8; 3]> = image.pixels().map(|p| p.0).collect();
+        let colors = vale_terrain::swatches(width, height, &pixels);
+        let max = vale_terrain::MAX_BANDS;
+        match colors.len() {
+            0 => return Err(format!("{name}: No color blocks found.")),
+            n if n > max => {
+                return Err(format!("{name}: {n} colors. The most is {max}."));
+            }
+            _ => {}
+        }
+        let count = colors.len();
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+        self.open_ramps();
+        let ramp = self
+            .ramps
+            .add(stem.as_deref().unwrap_or("Ramp"), colors)
+            .map_err(|e| format!("{name}: {e}"))?;
+        Ok((ramp, count))
+    }
+
+    /// Gives the bands of a part of a raster layer the colors of a ramp.
+    /// With `keep`, the layer keeps its stops. Otherwise, the part gets one
+    /// band for each color.
+    pub fn apply_ramp(
+        &mut self,
+        id: RasterId,
+        index: usize,
+        keep: bool,
+        part: vale_terrain::Part,
+    ) -> Result<(), String> {
+        let Some(ramp) = self.ramps.list().get(index) else {
+            return Err("The ramp is gone.".to_owned());
+        };
+        let colors = ramp.colors.clone();
+        let Some(bands) = self.globe.bands_mut(id) else {
+            return Err("The layer has no color stops.".to_owned());
+        };
+        let applied = if keep {
+            bands.stretched_part(&colors, part)
+        } else {
+            bands.painted_part(&colors, part)
+        };
+        let Some(applied) = applied else {
+            let count = colors.len();
+            return Err(format!("The range has no room for {count} bands."));
+        };
+        *bands = applied;
+        self.globe.preview.selected = None;
+        self.pad.style.forget_color();
+        Ok(())
+    }
+
     /// Shows the result of an import of a heightmap.
     pub fn note_import(&mut self, result: ImportResult) {
         let layer = self.import_layer;
@@ -1726,6 +1802,17 @@ impl AppState {
                 }
                 self.poll_import();
             }
+            Action::ImportRamp(id, path) => {
+                let note = match self.import_ramp(&path) {
+                    Ok((name, count)) => {
+                        let text = format!("Added {name} ({count} colors)");
+                        Note::new(text, false, Some(id))
+                    }
+                    Err(text) => Note::new(text, true, Some(id)),
+                };
+                self.status = note.text.clone();
+                self.ramp_note = Some(note);
+            }
             Action::ExportHeightmap(path) => {
                 self.export_note = None;
                 let project = &self.doc.project;
@@ -1769,6 +1856,7 @@ impl AppState {
             Action::OpenDialog
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog
+            | Action::ImportRampDialog(_)
             | Action::ExportHeightmapDialog
             | Action::OpenProjectDialog => {}
         }

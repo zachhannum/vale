@@ -3861,6 +3861,105 @@ fn reset_colors_asks_first_and_puts_back_the_default_stops() {
 }
 
 #[test]
+fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
+    use vale_app::ui::pad::raster::{COLOR_RAMPS, DELETE_RAMP, IMPORT_RAMP, REVERSE_RAMP};
+    let mut h = painted_pad(BOARDS[0]);
+    let height = open_height(&mut h);
+    scroll_to_gradient(&mut h);
+    // The ramps have their own page in the Layers panel.
+    tap(&mut h, COLOR_RAMPS);
+    assert!(h.state().pad.ramps);
+    tap(&mut h, IMPORT_RAMP);
+    assert!(
+        h.state()
+            .actions
+            .contains(&Action::ImportRampDialog(height))
+    );
+    h.state_mut().actions.clear();
+
+    let colors = [[33, 113, 181], [116, 196, 118], [140, 81, 10]];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legend.png");
+    let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
+    legend.save(&path).unwrap();
+    let before = h.state().globe.map.bands.clone();
+    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.run();
+    // The import changes no layer.
+    assert_eq!(h.state().globe.map.bands, before);
+    assert_eq!(h.state().ramps.list().len(), 1);
+    assert!(h.query_by_label("Added legend (3 colors)").is_some());
+
+    // The layer has more bands than the ramp has colors, so the card offers
+    // two ways.
+    let bands = before.stops().len() - 1;
+    tap(&mut h, "legend");
+    assert!(h.state().pad.style.ramp_card.is_some());
+    check_controls(&h, "with the card of a ramp");
+    assert!(control(&h, &format!("Fit to {bands} bands")).is_some());
+    // A reverse keeps the card open, and a second reverse puts back the
+    // order.
+    tap(&mut h, REVERSE_RAMP);
+    let reversed: Vec<_> = colors.iter().rev().copied().collect();
+    assert_eq!(h.state().ramps.list()[0].colors, reversed);
+    assert!(h.state().pad.style.ramp_card.is_some());
+    tap(&mut h, REVERSE_RAMP);
+    assert_eq!(h.state().ramps.list()[0].colors, colors);
+    tap(&mut h, "Make 3 bands");
+    let found: Vec<_> = h
+        .state()
+        .globe
+        .map
+        .bands
+        .bands()
+        .iter()
+        .map(|b| b.color)
+        .collect();
+    assert_eq!(found, colors);
+    assert_eq!(h.state().pad.style.ramp_card, None);
+
+    tap(&mut h, "legend");
+    tap(&mut h, DELETE_RAMP);
+    assert!(h.state().ramps.list().is_empty());
+    assert_eq!(h.state().globe.map.bands.bands().len(), 3);
+
+    // A ramp with no blue colors changes only the land.
+    let land = [[116, 196, 118], [140, 81, 10], [246, 244, 240]];
+    let path = dir.path().join("land.png");
+    let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(land[x as usize / 30]));
+    legend.save(&path).unwrap();
+    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.run();
+    tap(&mut h, "land");
+    check_controls(&h, "with the card of a land ramp");
+    // The user can choose another part.
+    tap(&mut h, "Sea");
+    assert!(control(&h, "Make 3 sea bands").is_some());
+    tap(&mut h, "Land");
+    tap(&mut h, "Make 3 land bands");
+    let found: Vec<_> = h
+        .state()
+        .globe
+        .map
+        .bands
+        .bands()
+        .iter()
+        .map(|b| b.color)
+        .collect();
+    assert_eq!(found, [colors[0], land[0], land[1], land[2]]);
+
+    let path = dir.path().join("none.png");
+    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.run();
+    assert!(h.state().ramp_note.as_ref().is_some_and(|n| n.warning));
+
+    // The back arrow goes back to the panel of the layer.
+    tap(&mut h, "Back to Height");
+    assert!(!h.state().pad.ramps);
+    assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
+}
+
+#[test]
 fn a_typed_value_moves_the_selected_stop() {
     use vale_app::ui::pad::raster::STOP_VALUE;
     let mut h = painted_pad(BOARDS[1]);

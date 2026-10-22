@@ -6,7 +6,8 @@ use vale_store::{Raster, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, Rgb, Side, StopLine};
 
 use super::gradient::{self, DESKTOP};
-use super::{AppState, LayerRef, pad};
+use super::pad::raster::RampChoice;
+use super::{Action, AppState, LayerRef, pad};
 use crate::globe::preview::Preview;
 use crate::world;
 
@@ -155,7 +156,90 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 }
             }
             globe.preview.selected = chosen.map(|index| (id, index));
+            ui.menu_button(pad::raster::COLOR_RAMPS, |ui| {
+                let import = ui.button(pad::raster::IMPORT_RAMP);
+                if import
+                    .on_hover_text(pad::raster::IMPORT_RAMP_HINT)
+                    .clicked()
+                {
+                    state.actions.push(Action::ImportRampDialog(id));
+                    ui.close();
+                }
+                ramp_menus(ui, state, id);
+            });
+            if let Some(note) = state.ramp_note.as_ref().filter(|n| n.layer == Some(id)) {
+                let color = if note.warning {
+                    ui.visuals().warn_fg_color
+                } else {
+                    ui.visuals().weak_text_color()
+                };
+                ui.label(egui::RichText::new(&note.text).color(color));
+            }
         });
+}
+
+/// One menu for each color ramp, with the ways to apply it, its reverse,
+/// and its delete.
+fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
+    state.open_ramps();
+    let Some(layer) = state.globe.bands_mut(id).map(|b| b.clone()) else {
+        return;
+    };
+    let split = layer.sea().is_some();
+    let mut chosen = None;
+    for (index, ramp) in state.ramps.list().iter().enumerate() {
+        let colors = ramp.colors.len();
+        // The part that the user chose stays in the memory of egui.
+        let key = egui::Id::new(("ramp-part", id, index));
+        let picked: Option<usize> = ui.data(|d| d.get_temp(key));
+        let part = picked.map_or(layer.part(&ramp.colors), |i| pad::raster::PARTS[i]);
+        let (bands, kind) = pad::raster::ramp_fit(&layer, part);
+        ui.menu_button(format!("{} ({colors})", ramp.name), |ui| {
+            if split {
+                ui.horizontal(|ui| {
+                    ui.label(pad::raster::RAMP_PART);
+                    for (i, name) in pad::raster::PART_NAMES.iter().enumerate() {
+                        let on = pad::raster::PARTS[i] == part;
+                        if ui.selectable_label(on, *name).clicked() {
+                            ui.data_mut(|d| d.insert_temp(key, i));
+                        }
+                    }
+                });
+                ui.separator();
+            }
+            let mut choose = |ui: &mut egui::Ui, text: &str, choice: RampChoice| {
+                if ui.button(text).clicked() {
+                    chosen = Some((index, part, choice));
+                    // The menu stays open after a reverse.
+                    if choice != RampChoice::Reverse {
+                        ui.close();
+                    }
+                }
+            };
+            if colors == bands {
+                choose(ui, pad::raster::APPLY_RAMP, RampChoice::Apply(true));
+            } else {
+                let keep = format!("Fit to {bands} {kind}bands");
+                choose(ui, &keep, RampChoice::Apply(true));
+                let fresh = format!("Make {colors} {kind}bands");
+                choose(ui, &fresh, RampChoice::Apply(false));
+            }
+            ui.separator();
+            choose(ui, pad::raster::REVERSE_RAMP, RampChoice::Reverse);
+            choose(ui, pad::raster::DELETE_RAMP, RampChoice::Delete);
+        });
+    }
+    let Some((index, part, choice)) = chosen else {
+        return;
+    };
+    let result = match choice {
+        RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part),
+        RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
+        RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
+    };
+    if let Err(text) = result {
+        state.ramp_note = Some(super::Note::new(text, true, Some(id)));
+    }
 }
 
 /// The name of the unit field.
