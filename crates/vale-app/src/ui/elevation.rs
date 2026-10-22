@@ -289,7 +289,7 @@ fn reset_button(ui: &mut egui::Ui, bands: &mut Bands, height: bool) -> bool {
     let Some(default) = Bands::with_range(bands.min(), bands.max(), height) else {
         return false;
     };
-    let changed = default.stops() != bands.stops();
+    let changed = default != *bands;
     let mut reset = false;
     ui.add_enabled_ui(changed, |ui| {
         ui.menu_button(format!("{}…", pad::raster::RESET_STOPS), |ui| {
@@ -318,24 +318,30 @@ fn display_choice(ui: &mut egui::Ui, display: &mut RasterDisplay) -> bool {
     *display != before
 }
 
-/// The controls of the selected stop: its value, its colors, and a button
-/// that removes it.
-/// The list of the stops, with the highest value first. A click on a row
-/// selects the stop, and a second click clears the selection.
+/// The name of the color button and of the value field of the selected
+/// band.
+pub const BAND_COLOR: &str = "Band color";
+pub const BAND_VALUE: &str = "Lower edge";
+/// The button that removes the stop at the lower edge of the selected band.
+pub const REMOVE: &str = "Remove stop";
+
+/// The list of the bands, with the highest band first. A row shows the
+/// color of the band, the value of its lower edge, and the line at that
+/// edge. A click on a row selects the band, and a second click clears the
+/// selection.
 fn stop_list(ui: &mut egui::Ui, bands: &Bands, selected: &mut Option<usize>, unit: &str) {
     let span = bands.max() - bands.min();
     let scroll = egui::ScrollArea::vertical()
         .id_salt("stop-list")
         .max_height(STOP_LIST);
     scroll.show(ui, |ui| {
-        for (index, stop) in bands.stops().iter().enumerate().rev() {
+        let stops = bands.stops();
+        for (index, color) in bands.colors().iter().enumerate().rev() {
             ui.horizontal(|ui| {
                 let (swatch, _) =
                     ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
-                let [r, g, b] = bands.colors()[index.min(bands.colors().len() - 1)];
-                ui.painter()
-                    .rect_filled(swatch, 2.0, egui::Color32::from_rgb(r, g, b));
-                let mut text = world::value_text(stop.value, span, unit);
+                ui.painter().rect_filled(swatch, 2.0, color32(*color));
+                let mut text = world::value_text(stops[index].value, span, unit);
                 if bands.sea() == Some(index) {
                     text.push_str("  Sea level");
                 }
@@ -348,21 +354,43 @@ fn stop_list(ui: &mut egui::Ui, bands: &Bands, selected: &mut Option<usize>, uni
                 if row.clicked() {
                     *selected = (!on).then_some(index);
                 }
+                if let Some(line) = bands.line_color(index).filter(|_| stops[index].line.on) {
+                    let (mark, _) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 12.0), egui::Sense::hover());
+                    let width = stops[index].line.weight.clamp(1.0, 4.0);
+                    let stroke = egui::Stroke::new(width, color32(line));
+                    ui.painter().hline(mark.x_range(), mark.center().y, stroke);
+                }
             });
         }
     });
 }
 
+/// The controls of the selected band, as on the card of a band: its color,
+/// the value of its lower edge, the line at that edge, and the button that
+/// removes that stop. The lowest band has only its color.
 fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usize>, unit: &str) {
     let span = bands.max() - bands.min();
-    let Some(index) = selected.filter(|i| *i < bands.stops().len()) else {
+    let Some(index) = selected.filter(|i| *i < bands.colors().len()) else {
         *selected = None;
         ui.weak(gradient::HINT);
         return;
     };
     let stop = bands.stops()[index];
     let fixed = bands.fixed(index);
+    let lowest = index == 0;
     ui.horizontal(|ui| {
+        let mut color = bands.colors()[index];
+        let button = ui.color_edit_button_srgb(&mut color);
+        button.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::ColorButton, true, BAND_COLOR)
+        });
+        if button.changed() {
+            bands.set_color(index, color);
+        }
+        if lowest {
+            return;
+        }
         if fixed {
             ui.label(world::value_text(stop.value, span, unit));
         } else {
@@ -370,20 +398,21 @@ fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usi
             let field = egui::DragValue::new(&mut value)
                 .speed(span / SNAPS)
                 .suffix(format!(" {unit}"));
-            if ui.add(field).changed() {
+            let field = ui.add(field);
+            field.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, BAND_VALUE)
+            });
+            if field.changed() {
                 bands.move_to(index, value);
             }
-        }
-        if let Some(&color) = bands.colors().get(index) {
-            let mut color = color;
-            if ui.color_edit_button_srgb(&mut color).changed() {
-                bands.set_color(index, color);
+            if ui.button(REMOVE).clicked() && bands.remove(index) {
+                *selected = None;
             }
         }
-        if !fixed && ui.button("Remove").clicked() && bands.remove(index) {
-            *selected = None;
-        }
     });
+    if lowest || selected.is_none() {
+        return;
+    }
     let mut line = stop.line;
     ui.horizontal(|ui| {
         let mut changed = ui.checkbox(&mut line.on, pad::raster::LINE).changed();
@@ -392,7 +421,7 @@ fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usi
             .speed(0.05)
             .suffix(" pt");
         changed |= ui.add(weight).changed();
-        if changed && bands.stops().get(index).is_some() {
+        if changed {
             bands.set_line(index, line);
         }
     });
@@ -414,7 +443,7 @@ fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usi
         } else {
             changed |= ui.color_edit_button_srgb(&mut line.color).changed();
         }
-        if changed && bands.stops().get(index).is_some() {
+        if changed {
             bands.set_line(index, line);
         }
     });

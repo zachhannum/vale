@@ -4439,17 +4439,20 @@ fn the_desktop_panel_sets_the_line_of_the_selected_stop() {
 }
 
 #[test]
-fn a_click_on_a_row_of_the_desktop_list_selects_its_stop() {
+fn the_desktop_list_has_one_row_per_band_with_the_card_controls() {
+    use vale_app::ui::elevation::{BAND_COLOR, BAND_VALUE, REMOVE};
+    use vale_app::ui::pad::raster::LINE;
     let mut h = harness();
     h.get_by_label(vale_app::ui::elevation::PANEL).click();
     h.run_steps(2);
     let id = h.state().shown_raster().unwrap().id;
-    let count = h.state().globe.map.bands.stops().len();
-    // The list has one row for each stop, with the highest value first.
+    let count = h.state().globe.map.bands.colors().len();
+    // The list has one row for each band, with the highest band first.
     let top = |h: &Harness<AppState>, i: usize| h.get_by_label(&band_row(i)).rect().top();
     for i in 1..count {
         assert!(top(&h, i) < top(&h, i - 1));
     }
+    assert!(h.query_by_label(&band_row(count)).is_none());
     let sea = h.state().globe.map.bands.sea().unwrap();
     h.get_by_label(&band_row(sea)).click();
     h.run_steps(2);
@@ -4457,6 +4460,32 @@ fn a_click_on_a_row_of_the_desktop_list_selects_its_stop() {
     h.get_by_label(&band_row(sea)).click();
     h.run_steps(2);
     assert_eq!(h.state().globe.preview.selected, None);
+
+    // The selected band has the controls of its card: the band at sea level
+    // has no value field and no remove, and the lowest band has only its
+    // color.
+    let controls = |h: &Harness<AppState>| {
+        [BAND_COLOR, BAND_VALUE, LINE, REMOVE].map(|name| h.query_by_label(name).is_some())
+    };
+    for (band, want) in [
+        (sea + 2, [true, true, true, true]),
+        (sea, [true, false, true, false]),
+        (0, [true, false, false, false]),
+    ] {
+        h.get_by_label(&band_row(band)).click();
+        h.run_steps(2);
+        assert_eq!(h.state().globe.preview.selected, Some((id, band)));
+        assert_eq!(controls(&h), want, "{band}");
+    }
+    // The remove joins the band with the band below, which keeps its color.
+    let before = h.state().globe.map.bands.colors().to_vec();
+    h.get_by_label(&band_row(sea + 2)).click();
+    h.run_steps(2);
+    h.get_by_label(REMOVE).click();
+    h.run_steps(2);
+    let mut want = before.clone();
+    want.remove(sea + 2);
+    assert_eq!(h.state().globe.map.bands.colors(), want);
 }
 
 #[test]
