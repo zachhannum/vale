@@ -300,6 +300,25 @@ impl Bands {
         mix(a.above, b.below, (value - a.value) / (b.value - a.value))
     }
 
+    /// The color of the stepped preview at a value. A value at `max` or above
+    /// is in the peak step, with the color of the top stop. A value below
+    /// `min` gets the color of the lowest band.
+    pub fn step_color(&self, value: f64) -> Rgb {
+        let last = self.stops.len() - 1;
+        if value >= self.max {
+            return self.stops[last].above;
+        }
+        let i = self
+            .stops
+            .partition_point(|s| s.value <= value)
+            .clamp(1, last)
+            - 1;
+        match self.sea() {
+            Some(sea) if i < sea => self.stops[i + 1].below,
+            _ => self.stops[i].above,
+        }
+    }
+
     /// Adds a stop with the color of the gradient at its value, and returns
     /// its index. Returns `None` if the value is less than `MIN_BAND` from
     /// another stop, if it is not finite, or if the list is full.
@@ -570,6 +589,7 @@ impl Bands {
     /// The bands from `min` to `max`, in ascending order. There is one band
     /// fewer than there are stops. Each stop gives its color to one band, so
     /// the top stop and, with a sea split, the bottom stop give none. The
+    /// top stop colors the peak step of `step_color` in their place. The
     /// stop at sea level gives its two colors to the band on each side.
     pub fn bands(&self) -> Vec<Band> {
         let sea = self.sea();
@@ -825,6 +845,28 @@ mod tests {
             }
             bands = changed;
         }
+    }
+
+    #[test]
+    fn the_top_stop_colors_the_peak() {
+        let mut bands = Bands::default();
+        let last = bands.stops().len() - 1;
+        bands.set_color(last, Side::Above, [255, 0, 0]);
+        assert_eq!(bands.step_color(bands.max()), [255, 0, 0]);
+        let top = bands.bands()[last - 1];
+        assert_ne!(top.color, [255, 0, 0]);
+        assert_eq!(bands.step_color(bands.max() - 1.0), top.color);
+    }
+
+    #[test]
+    fn the_step_color_matches_the_bands() {
+        let bands = Bands::default();
+        for band in bands.bands() {
+            for value in [band.min, (band.min + band.max) / 2.0] {
+                assert_eq!(bands.step_color(value), band.color, "{value}");
+            }
+        }
+        assert_eq!(bands.step_color(bands.min() - 1.0), bands.bands()[0].color);
     }
 
     #[test]
