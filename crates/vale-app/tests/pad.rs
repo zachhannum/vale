@@ -3315,8 +3315,7 @@ fn open_height(h: &mut Pad) -> RasterId {
 #[test]
 fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
     use vale_app::ui::pad::raster::{
-        COLOR, COLOR_RAMPS, COLOR_STOPS, LAND_COLOR, REMOVE_STOP, RESET_STOPS, SEA_COLOR, SHOW_AS,
-        STOP_VALUE, UNIT,
+        COLOR, COLOR_RAMPS, COLOR_STOPS, LINE, REMOVE_STOP, RESET_STOPS, SHOW_AS, STOP_VALUE, UNIT,
     };
     for size in BOARDS {
         let what = format!("{size:?}");
@@ -3369,13 +3368,13 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
         if size.0 > size.1 {
             assert!(stop.right() < card.left(), "{what}: {stop:?}");
         }
-        // The stop at sea level has a choice of its two sides and no field.
+        // The band above sea level has a line at the coast and no field.
         let sea = h.state().globe.map.bands.sea().unwrap();
         show_stop(&mut h, sea);
         tap_handle(&mut h, sea);
         assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
         check_controls(&h, &format!("{what} with the stop at sea level"));
-        for name in [SEA_COLOR, LAND_COLOR] {
+        for name in [LINE, &shade] {
             assert!(control(&h, name).is_some(), "{what}: no {name}");
         }
         for name in [STOP_VALUE, REMOVE_STOP] {
@@ -3758,13 +3757,13 @@ fn a_tap_on_a_handle_opens_the_card_of_its_stop_and_a_tap_elsewhere_closes_it() 
     let y = stop_rect(&h, 1).center().y;
     assert!(stop.top() < y && y < stop.bottom(), "{stop:?}");
     // A tap in the square of the picker changes the color of the stop.
-    let before = h.state().globe.map.bands.stops()[1];
+    let bands = |h: &Pad| h.state().globe.map.bands.clone();
+    let before = bands(&h);
     let square = control(&h, &shade).unwrap();
     finger_tap(&mut h, square.center() + vec2(40.0, 30.0));
-    let after = h.state().globe.map.bands.stops()[1];
-    assert_ne!(after.above, before.above);
-    assert_eq!(after.above, after.below);
-    assert_eq!(after.value, before.value);
+    let after = bands(&h);
+    assert_ne!(after.colors()[1], before.colors()[1]);
+    assert_eq!(after.stops()[1].value, before.stops()[1].value);
     assert_eq!(h.state().globe.preview.selected, Some((height, 1)));
     // A second tap on the handle closes the card.
     tap_handle(&mut h, 1);
@@ -3795,7 +3794,9 @@ fn the_card_of_a_stop_sets_its_line() {
     assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
     check_controls(&h, "the card of a stop");
     let stop = |h: &Pad| h.state().globe.map.bands.stops()[sea];
+    let colors = |h: &Pad| h.state().globe.map.bands.colors().to_vec();
     let before = stop(&h);
+    let colors_before = colors(&h);
     assert!(!before.line.on);
     assert!(!switch_is_on(&h, LINE));
 
@@ -3830,7 +3831,7 @@ fn the_card_of_a_stop_sets_its_line() {
     finger_tap(&mut h, square.center() + vec2(40.0, 30.0));
     let after = stop(&h);
     assert_ne!(after.line.color, before.line.color);
-    assert_eq!((after.below, after.above), (before.below, before.above));
+    assert_eq!(colors(&h), colors_before);
     assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
 
     // The project gets the line with the stop.
@@ -3924,19 +3925,19 @@ fn the_hex_keypad_sets_the_color_of_a_stop_and_the_card_stays_in_place() {
     for key in ["1", "2", "A", "B", "3", "F"] {
         tap(&mut h, &format!("{hex} {key}"));
     }
-    let stop = |h: &Pad| h.state().globe.map.bands.stops()[sea];
-    assert_eq!(stop(&h).above, [0x12, 0xab, 0x3f]);
+    let stop = |h: &Pad| h.state().globe.map.bands.colors()[sea];
+    assert_eq!(stop(&h), [0x12, 0xab, 0x3f]);
     // A code that is too short does not change the color.
     tap(&mut h, &format!("{hex} {DELETE}"));
-    assert_eq!(stop(&h).above, [0x12, 0xab, 0x3f]);
+    assert_eq!(stop(&h), [0x12, 0xab, 0x3f]);
     tap(&mut h, &format!("{hex} 0"));
-    assert_eq!(stop(&h).above, [0x12, 0xab, 0x30]);
+    assert_eq!(stop(&h), [0x12, 0xab, 0x30]);
 
     // A second tap on the field closes the keypad.
     tap(&mut h, &hex);
     assert!(control(&h, &shade).is_some());
     type_keys(&mut h, &hex, "00FF00");
-    assert_eq!(stop(&h).above, [0, 255, 0]);
+    assert_eq!(stop(&h), [0, 255, 0]);
     assert!(control(&h, &shade).is_some());
     assert_eq!(card(&h), before);
 }
@@ -3953,7 +3954,7 @@ fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
     show_stop(&mut h, sea);
     tap_handle(&mut h, sea);
     let hex = format!("{COLOR} hex");
-    let code = vale_app::ui::pad::widgets::hex_text(h.state().globe.map.bands.stops()[sea].above);
+    let code = vale_app::ui::pad::widgets::hex_text(h.state().globe.map.bands.colors()[sea]);
     long_press(&mut h, &hex);
     assert!(no_keyboard(&h));
     assert!(control(&h, COPY).is_some());
@@ -3967,10 +3968,7 @@ fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
     long_press(&mut h, &hex);
     tap(&mut h, PASTE);
     assert!(no_keyboard(&h));
-    assert_eq!(
-        h.state().globe.map.bands.stops()[sea].above,
-        [0x12, 0x34, 0x56]
-    );
+    assert_eq!(h.state().globe.map.bands.colors()[sea], [0x12, 0x34, 0x56]);
     assert!(h.state().globe.preview.selected.is_some());
 
     // A press outside the menu closes it.

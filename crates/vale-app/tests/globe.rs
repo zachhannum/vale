@@ -7,7 +7,8 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use lines::{
     LINE_WEIGHT, LineColumn, MEASURE_COLORS, canvas_image, even_slope, flat_land, flat_sea,
-    measure_line, set_coast_line, set_heights, set_top_line, show_as, three_stops,
+    grey_bands, measure_line, measure_stops, set_coast_line, set_heights, set_top_line, show_as,
+    two_bands,
 };
 use vale_app::cli::{Args, apply_globe, apply_globe_view};
 use vale_app::document::Document;
@@ -970,7 +971,7 @@ fn the_ramp_has_separate_colors_above_and_below_sea_level() {
     let _gpu = one_gpu_test();
     let mut h = preview_harness();
     let bands = &mut h.state_mut().globe.map.bands;
-    three_stops(bands, [[0, 0, 100], [0, 0, 250], [100, 0, 0], [250, 0, 0]]);
+    two_bands(bands, [0, 0, 200], [200, 0, 0]);
     for meters in [-5000.0, -1500.0, -100.0] {
         let [r, g, b] = color_at(&mut h, meters);
         assert!(r <= 2 && g <= 2 && b >= 98, "{meters}: {:?}", [r, g, b]);
@@ -1028,11 +1029,33 @@ fn the_gradient_display_has_a_smooth_ramp() {
     assert_eq!(display, RasterDisplay::Gradient);
     let (low, high) = (color_at(&mut h, 1200.0), color_at(&mut h, 1800.0));
     assert_ne!(low, high);
-    // The ramp still has a cut at sea level.
-    let bands = h.state().globe.map.bands.bands();
-    let sea = h.state().globe.map.bands.sea().unwrap();
-    assert!(close(color_at(&mut h, 0.0), bands[sea].bottom));
-    assert!(close(color_at(&mut h, -1.0), bands[sea - 1].top));
+    let map = h.state().globe.map.bands.clone();
+    let bands = map.bands();
+    let band = |m: f64| *bands.iter().find(|b| b.min <= m && m < b.max).unwrap();
+    // The color at the middle of a band is the color of the band, and the
+    // color between two middles follows the blend.
+    for meters in [1500.0, 1200.0, 1800.0, 2400.0, 2600.0, -1500.0, -600.0] {
+        let shown = color_at(&mut h, meters);
+        let want = band(meters).gradient_at(meters);
+        assert!(close(shown, want), "{meters}: {shown:?} and {want:?}");
+    }
+    assert!(close(color_at(&mut h, 1500.0), band(1500.0).color));
+    // An inner edge has no step.
+    let (below, above) = (color_at(&mut h, 1999.0), color_at(&mut h, 2001.0));
+    assert!(close(below, above), "{below:?} and {above:?}");
+    // From an end of the range to the middle of the band at that end, the
+    // color does not change.
+    let colors = map.colors();
+    for meters in [-5900.0, -5100.0] {
+        assert!(close(color_at(&mut h, meters), colors[0]), "{meters}");
+    }
+    for meters in [5100.0, 5900.0] {
+        assert!(close(color_at(&mut h, meters), colors[colors.len() - 1]));
+    }
+    // Sea level is a hard edge between the two bands next to it.
+    let sea = map.sea().unwrap();
+    assert!(close(color_at(&mut h, 1.0), colors[sea]));
+    assert!(close(color_at(&mut h, -1.0), colors[sea - 1]));
 }
 
 #[test]
@@ -1055,7 +1078,11 @@ fn a_change_of_a_stop_shows_in_the_same_frame() {
     assert!(bands.remove(index));
     let removed = frame(&mut h);
     assert_ne!(removed, before);
-    let added = h.state_mut().globe.map.bands.add(250.0).unwrap();
+    // The new band from 250 m keeps the color until it gets its own.
+    let bands = &mut h.state_mut().globe.map.bands;
+    let added = bands.add(250.0).unwrap();
+    assert_eq!(frame(&mut h), removed);
+    h.state_mut().globe.map.bands.set_color(added, [255, 0, 0]);
     let shown = frame(&mut h);
     assert_ne!(shown, removed);
     h.state_mut().globe.map.bands.move_to(added, 400.0);
@@ -1147,9 +1174,8 @@ fn the_gradient_shows_no_seam_at_a_face_edge_or_at_a_cube_corner() {
 }
 
 /// Makes sure that the globe shows no seam at the 8 corners and at the
-/// middles of the 12 edges of the cube, in a display. The Gradient display
-/// has grey stops at the ends and at sea level, so its colors are near the
-/// Grey display.
+/// middles of the 12 edges of the cube, in a display. The bands are grey,
+/// so the colors of the Gradient display are near the Grey display.
 fn assert_no_seam(display: RasterDisplay) {
     const N: usize = 16;
     const ZOOM: f64 = 15.0;
@@ -1159,7 +1185,7 @@ fn assert_no_seam(display: RasterDisplay) {
     globe.set_face_size(N);
     globe.preview.graticule = false;
     globe.preview.rivers = false;
-    three_stops(&mut globe.map.bands, [[0; 3], [127; 3], [128; 3], [255; 3]]);
+    grey_bands(&mut globe.map.bands);
     for face in 0..6 {
         for y in 0..N {
             for x in 0..N {
@@ -3868,7 +3894,7 @@ fn each_visible_height_layer_shows_its_rivers() {
     set_layer_island(&mut h, east, 40.0, 0.0);
     for id in [west, east] {
         let bands = h.state_mut().globe.bands_mut(id).unwrap();
-        three_stops(bands, [[90; 3], [120; 3], [150, 140, 120], [230, 220, 200]]);
+        two_bands(bands, [120; 3], [150, 140, 120]);
     }
     // The top layer is one half clear, so the layer below it shows.
     h.state_mut().set_raster_opacity(east, 0.5);
@@ -4050,18 +4076,18 @@ fn line_harness_on(
     axis: V3,
     render_state: egui_wgpu::RenderState,
 ) -> Harness<'static, AppState> {
-    let white = [[255; 3]; 4];
+    let white = [[255; 3]; 3];
     line_globe(display, axis, render_state, white, |along| 3000.0 * along)
 }
 
 /// A globe whose heights in meters are `height` of the distance along
-/// `axis`, with the colors of `three_stops`. Only the stop at sea level has
+/// `axis`, with the stops of `measure_stops`. Only the stop at sea level has
 /// a line.
 fn line_globe(
     display: RasterDisplay,
     axis: V3,
     render_state: egui_wgpu::RenderState,
-    colors: [[u8; 3]; 4],
+    colors: [[u8; 3]; 3],
     height: impl Fn(f64) -> f64,
 ) -> Harness<'static, AppState> {
     const N: usize = 64;
@@ -4071,7 +4097,7 @@ fn line_globe(
     globe.set_face_size(N);
     globe.preview.graticule = false;
     globe.preview.rivers = false;
-    three_stops(&mut globe.map.bands, colors);
+    measure_stops(&mut globe.map.bands, colors);
     set_heights(&mut globe.map, |d| {
         height(d.iter().zip(axis).map(|(a, b)| a * b).sum())
     });
@@ -4469,6 +4495,59 @@ fn a_stop_line_shows_only_where_the_values_cross_the_stop() {
     assert!(dark < 1.0, "{dark}");
 }
 
+#[test]
+fn no_line_draws_at_the_top_of_the_range() {
+    use vale_app::globe::preview::line_uniforms;
+    use vale_terrain::Stop;
+    let _gpu = one_gpu_test();
+    // Ground that rises to the top of the range and stays there, with no
+    // coast line.
+    let top = |along: f64| (12000.0 * along).min(vale_terrain::ELEV_MAX);
+    let white = [[255; 3]; 3];
+    let mut h = line_globe(
+        RasterDisplay::Bands,
+        [0.0, 0.0, 1.0],
+        render_state(),
+        white,
+        top,
+    );
+    set_coast_line(&mut h, false);
+    h.state_mut().globe.view = GlobeView::centered(0.0, 60.0);
+    let plain = canvas_image(&mut h);
+
+    // The stop at the top refuses a line, and a copy with a line there
+    // drops it.
+    let line = StopLine {
+        on: true,
+        weight: LINE_WEIGHT,
+        color: [0; 3],
+        ..StopLine::default()
+    };
+    let bands = &mut h.state_mut().globe.map.bands;
+    let last = bands.stops().len() - 1;
+    assert!(!bands.set_line(last, line));
+    let mut stops: Vec<Stop> = bands.stops().to_vec();
+    stops[last].line = line;
+    let copy = Bands::from_range_parts(bands.min(), bands.max(), true, &stops, bands.colors());
+    *bands = copy.unwrap();
+    assert!(!bands.stops()[last].line.on);
+    assert_eq!(line_uniforms(bands, 2.0)[last][0][3], 0.0);
+    let lined = canvas_image(&mut h);
+    assert!(plain == lined, "a line shows at the top of the range");
+
+    // A line at the stop below the top shows on the slope.
+    let bands = &mut h.state_mut().globe.map.bands;
+    let inner = last - 1;
+    assert!(bands.set_line(inner, line));
+    let inner_lined = canvas_image(&mut h);
+    let dark = inner_lined
+        .pixels()
+        .zip(plain.pixels())
+        .filter(|(a, b)| u16::from(a.0[0]) + 40 < u16::from(b.0[0]))
+        .count();
+    assert!(dark > 20, "{dark}");
+}
+
 /// The raster layer that the brush paints.
 fn brush_layer(h: &Harness<'static, AppState>) -> RasterId {
     h.state().shown_raster().unwrap().id
@@ -4636,7 +4715,7 @@ fn the_smooth_field_has_no_seam_at_a_face_edge_or_at_a_cube_corner() {
     globe.set_face_size(N);
     globe.preview.graticule = false;
     globe.preview.rivers = false;
-    three_stops(&mut globe.map.bands, [[0; 3], [127; 3], [128; 3], [255; 3]]);
+    grey_bands(&mut globe.map.bands);
     set_waves(&mut globe.map);
     let id = brush_layer(&h);
     set_smoothing(&mut h, id, true, 8.0);
@@ -4685,8 +4764,8 @@ fn the_smooth_field_has_no_seam_at_a_face_edge_or_at_a_cube_corner() {
                         }
                     }
                 }
-                // The Gradient display has grey stops, so its steps are near
-                // those of the field.
+                // The bands are grey, so the steps of the Gradient display
+                // are near those of the field.
                 show_as(h.state_mut(), RasterDisplay::Gradient);
                 let img = canvas_image(&mut h);
                 let crop = image::imageops::crop_imm(

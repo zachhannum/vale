@@ -522,11 +522,10 @@ fn record<'a>(project: &'a Project, id: RasterId, map: &Heightmap) -> Option<&'a
     raster.filter(|raster| raster.face_size as usize == map.face_size())
 }
 
-fn stops_of(raster: &Raster) -> Vec<Stop> {
+/// The stops and the band colors of a raster record.
+fn stops_of(raster: &Raster) -> (Vec<Stop>, &[vale_terrain::Rgb]) {
     let stop = |s: &vale_store::Stop| Stop {
         value: s.value,
-        below: s.below,
-        above: s.above,
         line: StopLine {
             on: s.line.on,
             weight: s.line.weight,
@@ -535,7 +534,16 @@ fn stops_of(raster: &Raster) -> Vec<Stop> {
             darken: s.line.darken,
         },
     };
-    raster.stops.iter().map(stop).collect()
+    (raster.stops.iter().map(stop).collect(), &raster.colors)
+}
+
+/// The bands of a raster record, or `None` if its stops or colors break a
+/// rule of `Bands::from_range_parts`.
+fn record_bands(raster: &Raster) -> Option<Bands> {
+    let (min, max) = (raster.value_min, raster.value_max);
+    let sea = crate::ui::is_height(raster);
+    let (stops, colors) = stops_of(raster);
+    Bands::from_range_parts(min, max, sea, &stops, colors)
 }
 
 /// The bands of a raster record. A record with no stops gets the stops that
@@ -544,7 +552,7 @@ fn stops_of(raster: &Raster) -> Vec<Stop> {
 pub fn bands_of(raster: &Raster) -> Bands {
     let (min, max) = (raster.value_min, raster.value_max);
     let sea = crate::ui::is_height(raster);
-    Bands::from_range_parts(min, max, sea, &stops_of(raster))
+    record_bands(raster)
         .or_else(|| Bands::with_range(min, max, sea))
         .unwrap_or_default()
 }
@@ -553,16 +561,14 @@ pub fn bands_of(raster: &Raster) -> Bands {
 /// heightmap. The call makes no change for a save.
 fn load_record(map: &mut Heightmap, raster: &Raster) {
     map.load_base(raster.base);
-    let (min, max) = (raster.value_min, raster.value_max);
-    let sea = crate::ui::is_height(raster);
-    if let Some(bands) = Bands::from_range_parts(min, max, sea, &stops_of(raster)) {
+    if let Some(bands) = record_bands(raster) {
         map.bands = bands;
     }
 }
 
-/// Puts the base level, the value range, and the color stops of a heightmap
-/// into its raster record. The unit, the opacity, and the face size of the
-/// record stay.
+/// Puts the base level, the value range, the color stops, and the band
+/// colors of a heightmap into its raster record. The unit, the opacity, and
+/// the face size of the record stay.
 pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
     raster.value_min = map.bands.min();
     raster.value_max = map.bands.max();
@@ -571,8 +577,6 @@ pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
     let same = raster.stops.len() == stops.len()
         && raster.stops.iter().zip(stops).all(|(a, b)| {
             a.value == b.value
-                && a.below == b.below
-                && a.above == b.above
                 && a.line.on == b.line.on
                 && a.line.weight == b.line.weight
                 && a.line.color == b.line.color
@@ -584,8 +588,6 @@ pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
             .iter()
             .map(|s| vale_store::Stop {
                 value: s.value,
-                below: s.below,
-                above: s.above,
                 line: vale_store::StopLine {
                     on: s.line.on,
                     weight: s.line.weight,
@@ -595,6 +597,9 @@ pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
                 },
             })
             .collect();
+    }
+    if raster.colors != map.bands.colors() {
+        raster.colors = map.bands.colors().to_vec();
     }
 }
 

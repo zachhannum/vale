@@ -45,7 +45,7 @@ pub fn mode(display: RasterDisplay) -> f32 {
 
 /// One band in the layout of `globe.wgsl`: the color at the lower limit with
 /// the limit, the color at the upper limit with the limit, and the color of
-/// the step. A limit is a level divided by the highest level.
+/// the band with its middle. A limit is a level divided by the highest level.
 pub type BandUniform = [[f32; 4]; 3];
 
 /// The bands for the shader, and their count.
@@ -60,7 +60,7 @@ pub fn band_uniforms(bands: &Bands) -> ([BandUniform; MAX_BANDS], usize) {
         *slot = [
             entry(band.bottom, band.min),
             entry(band.top, band.max),
-            entry(band.color, band.min),
+            entry(band.color, (band.min + band.max) / 2.0),
         ];
     }
     (out, list.len().min(MAX_BANDS))
@@ -70,15 +70,16 @@ pub fn band_uniforms(bands: &Bands) -> ([BandUniform; MAX_BANDS], usize) {
 /// of the weight in pixels, then the value of the stop as a limit.
 pub type LineUniform = [[f32; 4]; 2];
 
-/// The lines of the stops for the shader. A line that is off has a weight of
-/// 0. `pixels_per_point` turns a weight in points into pixels.
+/// The lines of the stops for the shader. A line that is off and a stop at
+/// an end of the range have a weight of 0. `pixels_per_point` turns a weight
+/// in points into pixels.
 pub fn line_uniforms(bands: &Bands, pixels_per_point: f32) -> [LineUniform; MAX_BANDS + 1] {
     let mut out = [[[0.0; 4]; 2]; MAX_BANDS + 1];
     for (index, (slot, stop)) in out.iter_mut().zip(bands.stops()).enumerate() {
         let line = stop.line;
-        let color = bands.line_color(index).unwrap_or(line.color);
-        let [r, g, b] = color.map(|c| f32::from(c) / 255.0);
-        let half = if line.on {
+        let color = bands.line_color(index);
+        let [r, g, b] = color.unwrap_or(line.color).map(|c| f32::from(c) / 255.0);
+        let half = if line.on && color.is_some() {
             0.5 * line.weight * pixels_per_point
         } else {
             0.0
@@ -127,6 +128,9 @@ mod tests {
         assert_eq!(lines[0][0][3], 0.0);
         assert_eq!(lines[count][1][0], 1.0);
         assert!(lines[count + 1..].iter().all(|l| l[0][3] == 0.0));
+        // The middle of a band is halfway between its limits.
+        let mid = (uniforms[sea][0][3] + uniforms[sea][1][3]) / 2.0;
+        assert!((uniforms[sea][2][3] - mid).abs() < 1e-4);
         // A darker line has the darker color of its stop.
         let darker = StopLine {
             darker: true,
@@ -135,6 +139,29 @@ mod tests {
         };
         bands.set_line(sea, darker);
         assert_eq!(line_uniforms(&bands, 2.0)[sea][0], [0.0, 0.0, 0.0, 1.5]);
+    }
+
+    #[test]
+    fn the_ends_of_the_range_have_no_line() {
+        let bands = Bands::default();
+        let last = bands.stops().len() - 1;
+        let line = StopLine {
+            on: true,
+            ..StopLine::default()
+        };
+        let mut stops = bands.stops().to_vec();
+        stops[0].line = line;
+        stops[last].line = line;
+        let mut copy = bands.clone();
+        // The ends refuse a line, and a copy with lines at the ends drops them.
+        assert!(!copy.set_line(0, line) && !copy.set_line(last, line));
+        let parts = Bands::from_range_parts(bands.min(), bands.max(), true, &stops, bands.colors())
+            .unwrap();
+        for b in [&copy, &parts] {
+            let lines = line_uniforms(b, 2.0);
+            assert_eq!(lines[0][0][3], 0.0);
+            assert_eq!(lines[last][0][3], 0.0);
+        }
     }
 
     #[test]

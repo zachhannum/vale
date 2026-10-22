@@ -14,25 +14,48 @@ pub type App = Harness<'static, AppState>;
 /// The weight of the line of a stop, in points.
 pub const LINE_WEIGHT: f32 = 3.0;
 
-/// The colors of a measured line: red everywhere, with green on land.
-pub const MEASURE_COLORS: [[u8; 3]; 4] = [[255, 0, 0], [255, 0, 0], [255, 255, 0], [255, 255, 0]];
+/// The band colors of a measured line, from the lowest band: red in the
+/// sea, and yellow on land.
+pub const MEASURE_COLORS: [[u8; 3]; 3] = [[255, 0, 0], [255, 255, 0], [255, 255, 0]];
+/// The stop of a measured scene above all of its heights, in meters.
+pub const TOP_STOP: f64 = 5000.0;
 
-/// Gives a range of heights one stop at each end and one at sea level. The
-/// colors go from the lowest value to the highest, with two at sea level.
-pub fn three_stops(bands: &mut Bands, colors: [[u8; 3]; 4]) {
-    let stop = |value, below, above| Stop {
+/// Gives a range stops at its ends and at `values`, and the band colors
+/// `colors`, from the lowest band. With `sea`, the values are heights.
+pub fn set_stops(bands: &mut Bands, sea: bool, values: &[f64], colors: &[[u8; 3]]) {
+    let stop = |value| Stop {
         value,
-        below,
-        above,
         line: StopLine::default(),
     };
     let (min, max) = (bands.min(), bands.max());
-    let stops = [
-        stop(min, colors[0], colors[0]),
-        stop(0.0, colors[1], colors[2]),
-        stop(max, colors[3], colors[3]),
-    ];
-    *bands = Bands::from_range_parts(min, max, true, &stops).unwrap();
+    let all = [&[min][..], values, &[max]].concat();
+    let stops: Vec<Stop> = all.into_iter().map(stop).collect();
+    *bands = Bands::from_range_parts(min, max, sea, &stops, colors).unwrap();
+}
+
+/// Gives a range of heights a stop at sea level, with one band below it and
+/// one band above it.
+pub fn two_bands(bands: &mut Bands, sea: [u8; 3], land: [u8; 3]) {
+    set_stops(bands, true, &[0.0], &[sea, land]);
+}
+
+/// Gives a range 32 bands of even height with no sea split. Each band has
+/// the grey of the level at its middle, so the Gradient display is near the
+/// Grey display.
+pub fn grey_bands(bands: &mut Bands) {
+    let (min, max) = (bands.min(), bands.max());
+    let n = vale_terrain::MAX_BANDS;
+    let at = |i: usize| min + (max - min) * i as f64 / n as f64;
+    let values: Vec<f64> = (1..n).map(at).collect();
+    let grey = |i: usize| [((i as f64 + 0.5) / n as f64 * 255.0).round() as u8; 3];
+    let colors: Vec<[u8; 3]> = (0..n).map(grey).collect();
+    set_stops(bands, false, &values, &colors);
+}
+
+/// Gives a range of heights the stops of a measured line: sea level and
+/// `TOP_STOP`, with `colors`.
+pub fn measure_stops(bands: &mut Bands, colors: [[u8; 3]; 3]) {
+    set_stops(bands, true, &[0.0, TOP_STOP], &colors);
 }
 
 /// Shows each raster layer, and a globe with no layers, with this display.
@@ -139,11 +162,13 @@ pub fn flat_land(along: f64) -> f64 {
     if along > 0.0 { 5.0 } else { 3000.0 * along }
 }
 
-/// Gives the highest stop a line. No height crosses it, so the image with
-/// no coast line draws the band edges in the same way as the image with it.
+/// Gives the stop at `TOP_STOP` a line. No height crosses it, so the image
+/// with no coast line draws the band edges in the same way as the image
+/// with it.
 pub fn set_top_line(h: &mut App) {
     let bands = &mut h.state_mut().globe.map.bands;
-    let top = bands.stops().len() - 1;
+    let top = bands.stops().iter().position(|s| s.value == TOP_STOP);
+    let top = top.unwrap();
     let line = StopLine {
         on: true,
         weight: LINE_WEIGHT,
@@ -168,14 +193,14 @@ pub fn set_heights(map: &mut Heightmap, height: impl Fn(V3) -> f64) {
 
 /// Shows the brush layer in bands with the colors of a measured line, with
 /// `height` of each direction in meters on a face of `face_size` texels.
-/// Only the stop at sea level and the highest stop have a line.
+/// Only the stop at sea level and the stop at `TOP_STOP` have a line.
 pub fn measured_scene(h: &mut App, face_size: usize, height: impl Fn(V3) -> f64) {
     show_as(h.state_mut(), RasterDisplay::Bands);
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(face_size);
     globe.preview.graticule = false;
     globe.preview.rivers = false;
-    three_stops(&mut globe.map.bands, MEASURE_COLORS);
+    measure_stops(&mut globe.map.bands, MEASURE_COLORS);
     set_heights(&mut globe.map, height);
     set_coast_line(h, true);
     set_top_line(h);

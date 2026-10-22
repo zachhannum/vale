@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId, Smoothing};
-use vale_terrain::{Bands, MAX_BANDS, Part, Side, StopLine};
+use vale_terrain::{Bands, MAX_BANDS, Part, StopLine};
 
 use super::geometry::{PAD, Rects};
 use super::theme;
@@ -123,7 +123,7 @@ impl StyleState {
 /// A color of a stop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Paint {
-    Fill(Side),
+    Fill,
     Line,
 }
 
@@ -434,10 +434,6 @@ pub fn stop_card(
     let Some(unit) = state.doc.project.raster(id).map(|r| r.unit.clone()) else {
         return;
     };
-    let sea = state
-        .globe
-        .bands_mut(id)
-        .is_some_and(|b| b.sea() == Some(index));
     let fixed = state.globe.bands_mut(id).is_some_and(|b| b.fixed(index));
     let guess = PANEL_ROW * if fixed { 7.0 } else { 8.0 } + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
@@ -519,33 +515,15 @@ pub fn stop_card(
             }
             let paint = match style.side {
                 Some((of, at, paint)) if of == id && at == index => paint,
-                _ => Paint::Fill(Side::Above),
+                _ => Paint::Fill,
             };
             // A darker line has no color of its own to pick.
-            let (names, paints): (&[&str], &[Paint]) = match (sea, line.darker) {
-                (true, false) => (
-                    &[SEA_COLOR, LAND_COLOR, LINE_COLOR],
-                    &[
-                        Paint::Fill(Side::Below),
-                        Paint::Fill(Side::Above),
-                        Paint::Line,
-                    ],
-                ),
-                (true, true) => (
-                    &[SEA_COLOR, LAND_COLOR],
-                    &[Paint::Fill(Side::Below), Paint::Fill(Side::Above)],
-                ),
-                (false, false) => (
-                    &[FILL_COLOR, LINE_COLOR],
-                    &[Paint::Fill(Side::Above), Paint::Line],
-                ),
-                (false, true) => (&[FILL_COLOR], &[Paint::Fill(Side::Above)]),
+            let (names, paints): (&[&str], &[Paint]) = if line.darker {
+                (&[FILL_COLOR], &[Paint::Fill])
+            } else {
+                (&[FILL_COLOR, LINE_COLOR], &[Paint::Fill, Paint::Line])
             };
-            let paint = match paint {
-                Paint::Fill(_) if !sea => Paint::Fill(Side::Above),
-                Paint::Line if line.darker => Paint::Fill(Side::Above),
-                paint => paint,
-            };
+            let paint = if line.darker { Paint::Fill } else { paint };
             let active = paints.iter().position(|p| *p == paint);
             let paint = match widgets::choice_row(ui, controls, COLOR, names, active) {
                 Some(i) => paints[i],
@@ -553,15 +531,15 @@ pub fn stop_card(
             };
             style.side = Some((id, index, paint));
             ui.add_space(4.0);
+            let band = index.min(bands.colors().len() - 1);
             let mut picked = match paint {
-                Paint::Fill(Side::Below) => stop.below,
-                Paint::Fill(Side::Above) => stop.above,
+                Paint::Fill => bands.colors()[band],
                 Paint::Line => line.color,
             };
             if widgets::color_picker(ui, controls, COLOR, &mut picked) {
                 match paint {
-                    Paint::Fill(side) => {
-                        bands.set_color(index, side, picked);
+                    Paint::Fill => {
+                        bands.set_color(band, picked);
                     }
                     Paint::Line => {
                         line.color = picked;

@@ -3,7 +3,7 @@
 
 use eframe::egui;
 use vale_store::{Raster, RasterDisplay, RasterId, Smoothing};
-use vale_terrain::{Bands, Rgb, Side, StopLine};
+use vale_terrain::{Bands, Rgb, StopLine};
 
 use super::gradient::{self, DESKTOP};
 use super::pad::raster::RampChoice;
@@ -330,7 +330,7 @@ fn stop_list(ui: &mut egui::Ui, bands: &Bands, selected: &mut Option<usize>, uni
             ui.horizontal(|ui| {
                 let (swatch, _) =
                     ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
-                let [r, g, b] = stop.above;
+                let [r, g, b] = bands.colors()[index.min(bands.colors().len() - 1)];
                 ui.painter()
                     .rect_filled(swatch, 2.0, egui::Color32::from_rgb(r, g, b));
                 let mut text = world::value_text(stop.value, span, unit);
@@ -372,21 +372,10 @@ fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usi
                 bands.move_to(index, value);
             }
         }
-        let sides: &[(Side, &str)] = if bands.sea() == Some(index) {
-            &[(Side::Below, "Sea"), (Side::Above, "Land")]
-        } else {
-            &[(Side::Above, "")]
-        };
-        for &(side, label) in sides {
-            let mut color = match side {
-                Side::Below => stop.below,
-                Side::Above => stop.above,
-            };
-            if !label.is_empty() {
-                ui.label(label);
-            }
+        if let Some(&color) = bands.colors().get(index) {
+            let mut color = color;
             if ui.color_edit_button_srgb(&mut color).changed() {
-                bands.set_color(index, side, color);
+                bands.set_color(index, color);
             }
         }
         if !fixed && ui.button("Remove").clicked() && bands.remove(index) {

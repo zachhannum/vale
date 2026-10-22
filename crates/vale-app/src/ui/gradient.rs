@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Response, Sense, Vec2, pos2, vec2};
 use vale_store::RasterDisplay;
-use vale_terrain::{Bands, Rgb, Stop};
+use vale_terrain::{Bands, Rgb};
 
 use super::elevation::{self, SNAPS};
 use super::pad::geometry::TOUCH;
@@ -238,7 +238,6 @@ pub fn editor(
     let painter = ui.painter();
     let visuals = ui.visuals();
     let (text, strong) = (visuals.text_color(), visuals.strong_text_color());
-    let sea = bands.sea();
     for (index, stop) in bands.stops().iter().enumerate() {
         let x = stop_x(area, m, bands, stop.value);
         let on = *selected == Some(index);
@@ -253,15 +252,7 @@ pub fn editor(
         }
         let rect = Rect::from_center_size(center, tab);
         let stroke = handle_stroke(on, text, strong);
-        paint_handle(
-            painter,
-            rect,
-            stop,
-            Some(index) == sea,
-            false,
-            stroke,
-            alpha,
-        );
+        paint_handle(painter, rect, stop_fill(bands, index), stroke, alpha);
     }
 
     labels(ui, area, m, bands, unit);
@@ -527,7 +518,8 @@ pub fn column(
         let rect = Rect::from_center_size(handle, tab);
         let stroke = handle_stroke(on, text, strong);
         let is_sea = Some(index) == sea;
-        paint_handle(painter, rect, stop, is_sea, true, stroke, 1.0);
+        let fill = stop_fill(bands, index);
+        paint_handle(painter, rect, fill, stroke, 1.0);
 
         let leader = egui::Stroke::new(1.0, if on { strong } else { text.gamma_multiply(0.5) });
         let (from, to) = (
@@ -548,7 +540,7 @@ pub fn column(
             Vec2::splat(m.swatch),
         );
         let outline = egui::Stroke::new(1.0, Color32::from_black_alpha(90));
-        paint_handle(painter, swatch, stop, is_sea, true, outline, 1.0);
+        paint_handle(painter, swatch, fill, outline, 1.0);
         let at = pos2(swatch.right() + 12.0, row.center().y);
         let value = world::value_text(stop.value, span, unit);
         let label = painter.text(at, Align2::LEFT_CENTER, value, theme::body(), theme::TEXT);
@@ -726,64 +718,19 @@ fn paint_ticks(ui: &egui::Ui, bar: Rect, bands: &Bands, vertical: bool) {
     }
 }
 
-/// The handle of a stop, or a swatch of its color. The handle of the stop
-/// at sea level shows the sea color below the stop and the land color
-/// above it: at the left and the right of a horizontal handle, and at the
-/// bottom and the top of a vertical one.
-fn paint_handle(
-    painter: &egui::Painter,
-    rect: Rect,
-    stop: &Stop,
-    sea: bool,
-    vertical: bool,
-    stroke: egui::Stroke,
-    alpha: f32,
-) {
+/// The handle of a stop, or a swatch of a band, in the color `fill`.
+fn paint_handle(painter: &egui::Painter, rect: Rect, fill: Rgb, stroke: egui::Stroke, alpha: f32) {
     let radius = 3.0;
-    let fill = |c: Rgb| color32(c).gamma_multiply(alpha);
-    if sea {
-        let r = radius as u8;
-        let (low, high, low_corners, high_corners) = match vertical {
-            true => {
-                let (top, bottom) = rect.split_top_bottom_at_y(rect.center().y);
-                let top_corners = egui::CornerRadius {
-                    nw: r,
-                    ne: r,
-                    sw: 0,
-                    se: 0,
-                };
-                let bottom_corners = egui::CornerRadius {
-                    nw: 0,
-                    ne: 0,
-                    sw: r,
-                    se: r,
-                };
-                (bottom, top, bottom_corners, top_corners)
-            }
-            false => {
-                let (left, right) = rect.split_left_right_at_x(rect.center().x);
-                let left_corners = egui::CornerRadius {
-                    nw: r,
-                    sw: r,
-                    ne: 0,
-                    se: 0,
-                };
-                let right_corners = egui::CornerRadius {
-                    nw: 0,
-                    sw: 0,
-                    ne: r,
-                    se: r,
-                };
-                (left, right, left_corners, right_corners)
-            }
-        };
-        painter.rect_filled(low, low_corners, fill(stop.below));
-        painter.rect_filled(high, high_corners, fill(stop.above));
-    } else {
-        painter.rect_filled(rect, radius, fill(stop.above));
-    }
+    painter.rect_filled(rect, radius, color32(fill).gamma_multiply(alpha));
     let stroke = egui::Stroke::new(stroke.width, stroke.color.gamma_multiply(alpha));
     painter.rect_stroke(rect, radius, stroke, egui::StrokeKind::Outside);
+}
+
+/// The color of the band above a stop. The top stop has the color of the
+/// band below it.
+fn stop_fill(bands: &Bands, index: usize) -> Rgb {
+    let colors = bands.colors();
+    colors[index.min(colors.len() - 1)]
 }
 
 fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
