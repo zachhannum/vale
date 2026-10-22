@@ -542,18 +542,18 @@ pub(super) fn paint_canvas(
             }
         }
     }
+    // The stroke of the layer, or a plain white one.
+    let entries = state.doc.frame.entries.iter();
+    let style = entries
+        .filter(|e| Some(e.layer) == layer)
+        .find_map(|e| e.style.stroke);
+    let stroke = style.map_or(egui::Stroke::new(2.0, egui::Color32::WHITE), |s| {
+        egui::Stroke::new((s.width as f32).max(1.0), color(s.color))
+    });
+    if let Some(highlight) = globe.snap_highlight() {
+        snap_highlight(&painter, rect, globe, &highlight, stroke.width + 4.0);
+    }
     if let Some(line) = globe.line_preview() {
-        // The stroke of the layer, or a plain white one.
-        let entries = state.doc.frame.entries.iter();
-        let style = entries
-            .filter(|e| Some(e.layer) == layer)
-            .find_map(|e| e.style.stroke);
-        let stroke = style.map_or(egui::Stroke::new(2.0, egui::Color32::WHITE), |s| {
-            egui::Stroke::new((s.width as f32).max(1.0), color(s.color))
-        });
-        if let Some(highlight) = globe.snap_highlight() {
-            snap_highlight(&painter, rect, globe, &highlight, stroke.width + 4.0);
-        }
         painter.line(line.to_vec(), stroke);
     }
     if globe.nav.active() || more {

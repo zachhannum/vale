@@ -330,6 +330,19 @@ impl Targets {
         })
     }
 
+    /// The point where a stroke from `p` starts, at `scale` points per
+    /// radian: the end of a line in the layer `layer` that the stroke
+    /// extends, or the position that `p` snaps to. A pen that hovers shows
+    /// it before the stroke.
+    pub fn start(&self, layer: LayerId, p: V3, scale: f64, s: &SnapSettings) -> Option<V3> {
+        match self.line_end(layer, p, JOIN / scale) {
+            Some((_, end)) => Some(end),
+            None => self
+                .snap(p, s.distance / scale, s, None)
+                .map(|snap| snap.dir),
+        }
+    }
+
     /// The line end in the layer `layer` that is nearest to `p`, within
     /// `reach` radians.
     pub fn line_end(&self, layer: LayerId, p: V3, reach: f64) -> Option<(Uuid, V3)> {
@@ -725,6 +738,8 @@ pub struct Tracer {
     free: Vec<V3>,
     lock: Option<Lock>,
     point: Option<V3>,
+    /// The end of the line that the stroke extends.
+    joined: Option<V3>,
 }
 
 impl Tracer {
@@ -742,6 +757,7 @@ impl Tracer {
             free: Vec::new(),
             lock: None,
             point: None,
+            joined: None,
         }
     }
 
@@ -754,18 +770,21 @@ impl Tracer {
         let step = self.last.map_or(0.0, |l| angle(l, p));
         let first = self.last.is_none();
         self.last = Some(p);
-        if !self.settings.on {
-            self.free.push(p);
-            return;
-        }
         if first {
             self.free.push(p);
-            if let Some((uuid, _)) = self.targets.line_end(self.layer, p, JOIN / self.scale) {
+            if let Some((uuid, end)) = self.targets.line_end(self.layer, p, JOIN / self.scale) {
                 // The join wins over a snap.
                 self.exclude = Some(uuid);
+                self.joined = Some(end);
+                return;
+            }
+            if !self.settings.on {
                 return;
             }
             self.snap_end(true);
+        } else if !self.settings.on {
+            self.free.push(p);
+            return;
         } else if self.lock.is_some() {
             self.follow(p, step);
             return;
@@ -784,7 +803,13 @@ impl Tracer {
                 point: Some(layer.path(lock.path).point_at(lock.s)),
             });
         }
-        self.point.map(|p| Highlight {
+        // The end of the line that the stroke extends shows while the pen
+        // is near it.
+        let joined = self.joined.filter(|&j| {
+            let last = self.last.expect("a sample after the join");
+            angle(last, j) <= JOIN / self.scale
+        });
+        self.point.or(joined).map(|p| Highlight {
             span: Vec::new(),
             point: Some(p),
         })

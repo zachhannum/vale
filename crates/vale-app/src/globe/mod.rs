@@ -1511,8 +1511,22 @@ impl Globe {
     }
 
     /// The target that the stroke of the line tool snaps to or traces now.
+    /// Before the stroke, it is the point where a stroke from the pen or
+    /// the mouse starts.
     pub fn snap_highlight(&self) -> Option<Highlight> {
-        self.line_stroke.as_ref()?.tracer.as_ref()?.highlight()
+        if let Some(stroke) = &self.line_stroke {
+            return stroke.tracer.as_ref()?.highlight();
+        }
+        if !self.lining() {
+            return None;
+        }
+        let dir = self.unproject(self.input.pos?)?;
+        let targets = self.targets.as_ref()?;
+        let point = targets.start(self.line_layer?, dir, self.radius(), &self.snap)?;
+        Some(Highlight {
+            span: Vec::new(),
+            point: Some(point),
+        })
     }
 
     /// The stroke of the line tool while the pen is down, in screen points.
@@ -2865,11 +2879,59 @@ struct LayerDraw<'a> {
 #[cfg(test)]
 mod tests {
     use eframe::egui::Vec2;
-    use vale_store::{Geometry, GeometryKind};
+    use vale_store::{Geometry, GeometryKind, LonLat};
 
     use super::*;
+    use math::lonlat_to_dir;
     use snap::LayerTargets;
     use snap::tests::{layer, pen};
+
+    #[test]
+    fn a_hover_shows_where_the_stroke_starts() {
+        let line = |id: u32, part: Vec<LonLat>| {
+            layer(id, GeometryKind::Line, vec![Geometry::Lines(vec![part])])
+        };
+        let ours = line(9, vec![[0.0, 0.0], [10.0, 0.0]]);
+        let other = line(1, vec![[0.0, 5.0], [5.0, 5.0], [10.0, 5.0]]);
+        let built = [&ours, &other].map(|l| Arc::new(LayerTargets::build(l.id, l)));
+        let mut globe = Globe {
+            rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(300.0 / 0.45)),
+            view: GlobeView::centered(5.0, 0.0),
+            line_layer: Some(LayerId(9)),
+            lineable: true,
+            tool: Tool::Line,
+            ..Globe::default()
+        };
+        globe.set_targets(Some(Arc::new(Targets::new(built.to_vec()))));
+        let at = |globe: &Globe, lon: f64, lat: f64| {
+            globe.view.project(globe.rect, lonlat_to_dir(lon, lat))
+        };
+        let lit = |globe: &mut Globe, lon: f64, lat: f64| {
+            globe.input.pos = at(globe, lon, lat);
+            globe.snap_highlight().and_then(|h| h.point)
+        };
+        let near = |p: Option<V3>, lon: f64, lat: f64| {
+            p.is_some_and(|p| angle(p, lonlat_to_dir(lon, lat)) < 1e-9)
+        };
+        // Near the end of a line in the layer: the stroke extends it.
+        assert!(near(lit(&mut globe, 10.5, 0.5), 10.0, 0.0));
+        // Near a vertex of another layer: the start snaps to it.
+        assert!(near(lit(&mut globe, 5.3, 5.3), 5.0, 5.0));
+        // Far from each target.
+        assert_eq!(lit(&mut globe, 5.0, 20.0), None);
+        // With snapping off, only the end of a line shows.
+        globe.snap.on = false;
+        assert_eq!(lit(&mut globe, 5.3, 5.3), None);
+        assert!(near(lit(&mut globe, 10.5, 0.5), 10.0, 0.0));
+        // While the stroke starts at that end, the end shows.
+        globe.line_down();
+        globe.line_sample(Pos2::ZERO, Some(lonlat_to_dir(10.5, 0.5)));
+        assert!(near(
+            globe.snap_highlight().and_then(|h| h.point),
+            10.0,
+            0.0
+        ));
+    }
 
     #[test]
     fn the_highlight_shows_the_traced_span() {

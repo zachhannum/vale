@@ -362,7 +362,7 @@ When the pen comes within the snap distance of an edge, the stroke locks on and 
 
 The traced part goes from the first to the last pen sample within a quarter of the snap distance of the target. It has a copy of each stored vertex of the target, so the two features share the border exactly. The app does not smooth or simplify the traced part. Before and after the traced part, the stroke blends from the pen to the target, so it meets the target at the angle of the pen. Each free part has its own smoothing, and its ends stay on the target.
 
-A stroke that starts at the end of a line in the same layer extends that line, and it does not trace that line. The target shows a highlight in the accent color while a stroke snaps or traces.
+A stroke that starts at the end of a line in the same layer extends that line, and it does not trace that line. The target shows a highlight in the accent color while a stroke snaps or traces. Before a stroke, a pen that hovers or a mouse shows the point where the stroke will start: the end of the line that it extends, or the snapped position.
 
 The line tool has a Snap switch on the brush card. The sheet has the Snapping switch, a switch for each target type, and the snap distance. The settings are not saved in the project.
 
