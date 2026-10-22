@@ -19,7 +19,7 @@ use vale_app::globe::{FACE_SIZE, Tool};
 use vale_app::globe::{edges, gpu};
 use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
-use vale_app::ui::gradient::{DESKTOP, GRADIENT, stop_row, stop_x};
+use vale_app::ui::gradient::{DESKTOP, GRADIENT, band_row, stop_x};
 use vale_app::ui::{AppState, LayerRef, RasterSpec, Workspace, draw};
 use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
@@ -4446,15 +4446,15 @@ fn a_click_on_a_row_of_the_desktop_list_selects_its_stop() {
     let id = h.state().shown_raster().unwrap().id;
     let count = h.state().globe.map.bands.stops().len();
     // The list has one row for each stop, with the highest value first.
-    let top = |h: &Harness<AppState>, i: usize| h.get_by_label(&stop_row(i)).rect().top();
+    let top = |h: &Harness<AppState>, i: usize| h.get_by_label(&band_row(i)).rect().top();
     for i in 1..count {
         assert!(top(&h, i) < top(&h, i - 1));
     }
     let sea = h.state().globe.map.bands.sea().unwrap();
-    h.get_by_label(&stop_row(sea)).click();
+    h.get_by_label(&band_row(sea)).click();
     h.run_steps(2);
     assert_eq!(h.state().globe.preview.selected, Some((id, sea)));
-    h.get_by_label(&stop_row(sea)).click();
+    h.get_by_label(&band_row(sea)).click();
     h.run_steps(2);
     assert_eq!(h.state().globe.preview.selected, None);
 }

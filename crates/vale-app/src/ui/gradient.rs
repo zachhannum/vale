@@ -100,7 +100,8 @@ enum Gesture {
         index: usize,
         lifted: bool,
     },
-    /// Pulls the selected stop down to remove it.
+    /// Pulls the stop at the lower edge of the selected band down to
+    /// remove it.
     Pull {
         index: usize,
         lifted: bool,
@@ -112,9 +113,10 @@ fn color32(c: Rgb) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
 }
 
-/// The gradient control. A tap on a handle or near a stop on the bar
-/// selects the stop, or clears the selection if the stop is selected. A
-/// tap at another place on the bar adds a stop. A drag that
+/// The gradient control. `selected` is a band. A tap on a handle or near a
+/// stop on the bar selects the band above the stop, or clears the selection
+/// if the band is selected. A tap on the stop at the top does nothing. A tap
+/// at another place on the bar adds a stop. A drag that
 /// starts sideways on a handle moves the stop, and a drag that starts down
 /// on the selected handle pulls it off. A release far below the handles
 /// removes the stop. Each other drag scrolls the panel. With `controls`,
@@ -138,7 +140,7 @@ pub fn editor(
             resp
         }
     };
-    if selected.is_some_and(|i| i >= bands.stops().len()) {
+    if selected.is_some_and(|i| i >= bands.colors().len()) {
         *selected = None;
     }
     let bar = bar_rect(area, m);
@@ -222,13 +224,19 @@ pub fn editor(
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let xs = xs(bands);
-        let toggle = |index: Option<usize>| index.filter(|i| *selected != Some(*i));
-        if pos.y >= row.top() {
-            *selected = toggle(hit(&xs, pos.x, m.cap));
-        } else if let Some(index) = hit(&xs, pos.x, BAR_GRAB) {
-            *selected = toggle(Some(index));
-        } else if let Some(index) = bands.add(value_of(bands, pos.x)) {
-            *selected = Some(index);
+        let on = if pos.y >= row.top() {
+            Some(hit(&xs, pos.x, m.cap))
+        } else {
+            hit(&xs, pos.x, BAR_GRAB).map(Some)
+        };
+        match on {
+            Some(Some(index)) => *selected = tap_band(bands, *selected, index),
+            Some(None) => *selected = None,
+            None => {
+                if let Some(index) = bands.add(value_of(bands, pos.x)) {
+                    *selected = Some(index);
+                }
+            }
         }
     }
     let lifted = lifted.filter(|_| resp.dragged());
@@ -366,8 +374,10 @@ pub struct ColumnParts {
 }
 
 impl ColumnParts {
-    /// The parts in `area`. The ends of the bar are at the middle of the
-    /// first row and of the last row.
+    /// The parts in `area`. The area has one row of space above the rows,
+    /// for the value of the top of the range. The top of the bar is at the
+    /// middle of that space, and the bottom of the bar is at the middle of
+    /// the last row.
     pub fn new(area: Rect, m: &Column) -> ColumnParts {
         let ends = m.row / 2.0;
         let bar = Rect::from_min_max(
@@ -378,7 +388,10 @@ impl ColumnParts {
             pos2(bar.right(), area.top()),
             pos2(bar.right() + m.tab_on.x + 6.0, area.bottom()),
         );
-        let rows = Rect::from_min_max(pos2(handles.right() + m.gutter, area.top()), area.max);
+        let rows = Rect::from_min_max(
+            pos2(handles.right() + m.gutter, area.top() + m.row),
+            area.max,
+        );
         ColumnParts { bar, handles, rows }
     }
 
@@ -393,7 +406,7 @@ impl ColumnParts {
         pos2(self.handles.center().x, self.stop_y(bands, value))
     }
 
-    /// The row of the stop `index` of `count`. The row of the highest stop
+    /// The row of the band `index` of `count`. The row of the highest band
     /// is at the top.
     pub fn row(&self, m: &Column, count: usize, index: usize) -> Rect {
         let top = self.rows.top() + (count - 1 - index) as f32 * m.row;
@@ -401,18 +414,30 @@ impl ColumnParts {
     }
 }
 
-/// The name of the row of a stop. The lowest stop is "Stop 1".
-pub fn stop_row(index: usize) -> String {
-    format!("Stop {}", index + 1)
+/// The name of the row of a band. The lowest band is "Band 1".
+pub fn band_row(index: usize) -> String {
+    format!("Band {}", index + 1)
+}
+
+/// The band that a tap on the stop `index` selects: the band above the
+/// stop, or no band if that band is selected. A tap on the stop at the top
+/// does not change the selection.
+fn tap_band(bands: &Bands, selected: Option<usize>, index: usize) -> Option<usize> {
+    if index + 1 == bands.stops().len() {
+        return selected;
+    }
+    (selected != Some(index)).then_some(index)
 }
 
 /// The control of the page of the color stops: a vertical bar with a
-/// handle for each stop, and a row for each stop at the right of it, with
-/// the highest value at the top. A leader line joins each handle to its
-/// row. A tap on a row or a handle selects the stop, and a drag on a handle
-/// moves it. A tap on the bar away from the handles adds a stop. Each
-/// other drag scrolls the panel. The response is that of the bar and the
-/// handles.
+/// handle for each stop, and a row for each band at the right of it, with
+/// the highest band at the top. A row shows the stop at the lower edge of
+/// its band, and a leader line joins the handle of that stop to the row.
+/// `selected` is a band. A tap on a row, or on the handle at the lower edge
+/// of a band, selects the band. A tap on the handle at the top does
+/// nothing. A drag on a handle moves the stop. A tap on the bar away from
+/// the handles adds a stop. Each other drag scrolls the panel. The response
+/// is that of the bar and the handles.
 pub fn column(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -422,8 +447,8 @@ pub fn column(
     display: RasterDisplay,
     unit: &str,
 ) -> (Response, ColumnParts) {
-    let count = bands.stops().len();
-    let size = vec2(ui.available_width(), m.row * count as f32);
+    let count = bands.colors().len();
+    let size = vec2(ui.available_width(), m.row * (count + 1) as f32);
     let (area, _) = ui.allocate_exact_size(size, Sense::hover());
     let parts = ColumnParts::new(area, m);
     let grab = parts.bar.union(parts.handles);
@@ -431,14 +456,12 @@ pub fn column(
     if selected.is_some_and(|i| i >= count) {
         *selected = None;
     }
-    let toggle =
-        |selected: &Option<usize>, index: Option<usize>| index.filter(|i| *selected != Some(*i));
     let mut rows = Vec::with_capacity(count);
     for index in 0..count {
         let rect = parts.row(m, count, index);
-        let row = widgets::tap_area(ui, controls, rect, &stop_row(index), true);
+        let row = widgets::tap_area(ui, controls, rect, &band_row(index), true);
         if row.clicked() {
-            *selected = toggle(selected, Some(index));
+            *selected = (*selected != Some(index)).then_some(index);
         }
         rows.push((rect, row.is_pointer_button_down_on()));
     }
@@ -489,12 +512,19 @@ pub fn column(
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let ys = ys(bands);
-        if pos.x >= parts.handles.left() {
-            *selected = toggle(selected, hit(&ys, pos.y, m.cap));
-        } else if let Some(index) = hit(&ys, pos.y, BAR_GRAB) {
-            *selected = toggle(selected, Some(index));
-        } else if let Some(index) = bands.add(value_of(bands, pos.y)) {
-            *selected = Some(index);
+        let on = if pos.x >= parts.handles.left() {
+            Some(hit(&ys, pos.y, m.cap))
+        } else {
+            hit(&ys, pos.y, BAR_GRAB).map(Some)
+        };
+        match on {
+            Some(Some(index)) => *selected = tap_band(bands, *selected, index),
+            Some(None) => *selected = None,
+            None => {
+                if let Some(index) = bands.add(value_of(bands, pos.y)) {
+                    *selected = Some(index);
+                }
+            }
         }
     }
 
@@ -505,28 +535,36 @@ pub fn column(
     let (text, strong) = (visuals.text_color(), visuals.strong_text_color());
     let sea = bands.sea();
     let span = bands.max() - bands.min();
-    // A stop that `add` put in this frame has no row yet.
-    for (index, stop) in bands.stops().iter().enumerate().take(rows.len()) {
+    let bend = m.gutter / 4.0;
+    for (index, stop) in bands.stops().iter().enumerate() {
         let on = *selected == Some(index);
-        let (row, down) = rows[index];
+        let tab = if on { m.tab_on } else { m.tab };
+        let rect = Rect::from_center_size(parts.handle(bands, stop.value), tab);
+        let stroke = handle_stroke(on, text, strong);
+        paint_handle(painter, rect, stop_fill(bands, index), stroke, 1.0);
+    }
+    // The top of the range has no row. Its value is next to its handle.
+    let at = pos2(
+        parts.rows.left() + bend + 6.0 + m.swatch + 12.0,
+        parts.stop_y(bands, bands.max()),
+    );
+    let max = world::value_text(bands.max(), span, unit);
+    painter.text(at, Align2::LEFT_CENTER, max, theme::small(), theme::MUTE);
+    // A band that `add` put in this frame has no row yet.
+    for (index, &(row, down)) in rows.iter().enumerate() {
+        let stop = bands.stops()[index];
+        let on = *selected == Some(index);
         if on || down {
             let back = row.shrink2(vec2(0.0, widgets::HIGHLIGHT_INSET));
             painter.rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
         }
         let handle = parts.handle(bands, stop.value);
         let tab = if on { m.tab_on } else { m.tab };
-        let rect = Rect::from_center_size(handle, tab);
-        let stroke = handle_stroke(on, text, strong);
-        let is_sea = Some(index) == sea;
-        let fill = stop_fill(bands, index);
-        paint_handle(painter, rect, fill, stroke, 1.0);
-
         let leader = egui::Stroke::new(1.0, if on { strong } else { text.gamma_multiply(0.5) });
         let (from, to) = (
-            pos2(rect.right(), handle.y),
+            pos2(handle.x + tab.x / 2.0, handle.y),
             pos2(row.left(), row.center().y),
         );
-        let bend = m.gutter / 4.0;
         let line = vec![
             from,
             pos2(parts.handles.right(), from.y),
@@ -540,11 +578,11 @@ pub fn column(
             Vec2::splat(m.swatch),
         );
         let outline = egui::Stroke::new(1.0, Color32::from_black_alpha(90));
-        paint_handle(painter, swatch, fill, outline, 1.0);
+        paint_handle(painter, swatch, bands.colors()[index], outline, 1.0);
         let at = pos2(swatch.right() + 12.0, row.center().y);
         let value = world::value_text(stop.value, span, unit);
         let label = painter.text(at, Align2::LEFT_CENTER, value, theme::body(), theme::TEXT);
-        if is_sea {
+        if Some(index) == sea {
             let at = pos2(label.right() + 8.0, row.center().y);
             painter.text(
                 at,
@@ -613,7 +651,7 @@ pub fn widest_gap_value(bands: &Bands) -> f64 {
     snap_value(bands, middle)
 }
 
-/// The outline of a handle: strong on the selected stop.
+/// The outline of a handle: strong at the lower edge of the selected band.
 fn handle_stroke(on: bool, text: Color32, strong: Color32) -> egui::Stroke {
     if on {
         egui::Stroke::new(2.0, strong)
@@ -665,16 +703,18 @@ fn paint_bar(
         if high_a <= low_a {
             continue;
         }
-        let (high, low) = elevation::band_colors(bands, &band, display);
         let mut cuts: Vec<f32> = corners
             .iter()
             .copied()
             .filter(|a| *a > low_a && *a < high_a)
             .collect();
-        cuts.push(low_a);
-        cuts.push(high_a);
+        // The Gradient display has the color of the band at its middle.
+        cuts.extend([low_a, a_of((band.min + band.max) / 2.0), high_a]);
         cuts.sort_by(f32::total_cmp);
-        let color = |a: f32| lerp(low, high, (a - low_a) / (high_a - low_a));
+        let color = |a: f32| {
+            let value = elevation::bar_value(bands, f64::from(a / len));
+            elevation::band_color_at(bands, &band, display, value)
+        };
         for pair in cuts.windows(2) {
             let first = mesh.vertices.len() as u32;
             for a in [pair[0], pair[1]] {
@@ -733,12 +773,6 @@ fn stop_fill(bands: &Bands, index: usize) -> Rgb {
     colors[index.min(colors.len() - 1)]
 }
 
-fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
-    let t = t.clamp(0.0, 1.0);
-    let c = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
-    Color32::from_rgb(c(a.r(), b.r()), c(a.g(), b.g()), c(a.b(), b.b()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -771,19 +805,21 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_go_from_the_highest_stop_down_and_meet_the_ends_of_the_bar() {
+    fn the_rows_go_from_the_highest_band_down_and_meet_the_ends_of_the_bar() {
         let bands = Bands::with_range(-6000.0, 6000.0, true).unwrap();
         let m = &COLUMN;
-        let count = bands.stops().len();
-        let area = Rect::from_min_size(pos2(0.0, 100.0), vec2(300.0, m.row * count as f32));
+        let count = bands.colors().len();
+        let size = vec2(300.0, m.row * (count + 1) as f32);
+        let area = Rect::from_min_size(pos2(0.0, 100.0), size);
         let parts = ColumnParts::new(area, m);
         let top = parts.row(m, count, count - 1);
         let bottom = parts.row(m, count, 0);
-        assert_eq!(top.top(), area.top());
+        assert_eq!(top.top(), area.top() + m.row);
         assert_eq!(bottom.bottom(), area.bottom());
         assert_eq!(top.height(), m.row);
-        let (lowest, highest) = (bands.stops()[0].value, bands.stops()[count - 1].value);
-        assert_eq!(parts.stop_y(&bands, highest), top.center().y);
+        let (lowest, highest) = (bands.min(), bands.max());
+        // The top of the range is one row above the middle of the top row.
+        assert_eq!(parts.stop_y(&bands, highest), top.center().y - m.row);
         assert_eq!(parts.stop_y(&bands, lowest), bottom.center().y);
         // The handles go up as the values go up.
         let ys: Vec<f32> = bands

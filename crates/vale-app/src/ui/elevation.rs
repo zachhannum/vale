@@ -63,16 +63,18 @@ fn grey(bands: &Bands, value: f64) -> egui::Color32 {
     egui::Color32::from_gray(level)
 }
 
-/// The colors of a band at its top and at its bottom in a display.
-pub fn band_colors(
+/// The color of a value in a band in a display.
+pub fn band_color_at(
     bands: &Bands,
     band: &vale_terrain::Band,
     display: RasterDisplay,
-) -> (egui::Color32, egui::Color32) {
+    value: f64,
+) -> egui::Color32 {
+    let value = value.clamp(band.min, band.max);
     match display {
-        RasterDisplay::Bands => (color32(band.color), color32(band.color)),
-        RasterDisplay::Gradient => (color32(band.top), color32(band.bottom)),
-        RasterDisplay::Grey => (grey(bands, band.max), grey(bands, band.min)),
+        RasterDisplay::Bands => color32(band.color),
+        RasterDisplay::Gradient => color32(band.gradient_at(value)),
+        RasterDisplay::Grey => grey(bands, value),
     }
 }
 
@@ -339,7 +341,7 @@ fn stop_list(ui: &mut egui::Ui, bands: &Bands, selected: &mut Option<usize>, uni
                 }
                 let on = *selected == Some(index);
                 let row = ui.selectable_label(on, text);
-                let name = gradient::stop_row(index);
+                let name = gradient::band_row(index);
                 row.widget_info(|| {
                     egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, &name)
                 });
