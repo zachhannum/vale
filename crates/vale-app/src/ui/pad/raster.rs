@@ -5,10 +5,10 @@ use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, Part, Side, StopLine};
 
-use super::Panel;
 use super::geometry::{PAD, Rects};
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
+use super::{Page, Panel};
 use crate::ui::{Action, AppState, elevation, gradient};
 use crate::world;
 
@@ -42,6 +42,11 @@ pub const RESET_STOPS: &str = "Reset colors";
 /// The row of the Style section that opens the page of the color ramps, and
 /// the title of the page.
 pub const COLOR_RAMPS: &str = "Color ramps";
+/// The row of the Style section that opens the page of the color stops,
+/// and the title of the page.
+pub const COLOR_STOPS: &str = "Color stops";
+/// The row of the page of the color stops that adds a stop.
+pub const ADD_STOP: &str = "Add stop";
 pub const IMPORT_RAMP: &str = "Import ramp…";
 /// The text below the import row while the app has no ramps.
 pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
@@ -173,32 +178,23 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     smoothing(ui, state, controls, id);
 
     let style = &mut state.pad.style;
-    let globe = &mut state.globe;
-    let mut selected = elevation::selected(&globe.preview, Some(id));
-    let Some(bands) = globe.bands_mut(id) else {
+    let Some(bands) = state.globe.bands_mut(id) else {
         return;
     };
-    let before = selected;
     ui.add_space(8.0);
-    let m = &gradient::PAD;
-    let resp = ui
-        .scope(|ui| {
-            ui.visuals_mut().override_text_color = Some(theme::MUTE);
-            gradient::editor(ui, Some(controls), m, bands, &mut selected, display, &unit)
-        })
-        .inner;
-    if selected != before {
-        style.side = None;
-    }
-    // The card hides while a finger drags a stop, so that the globe shows.
-    style.anchor = selected.filter(|_| !resp.dragged()).and_then(|index| {
-        let x = gradient::stop_x(resp.rect, m, bands, bands.stops()[index].value);
-        let at = pos2(x, gradient::handle_row(resp.rect, m).center().y);
-        ui.clip_rect()
-            .contains(at)
-            .then_some((id, index, at, resp.rect))
+    ui.scope(|ui| {
+        ui.visuals_mut().override_text_color = Some(theme::MUTE);
+        gradient::strip(ui, &gradient::PAD, bands, display, &unit);
     });
-    note(ui, gradient::HINT);
+    let row = widgets::text_row(ui, controls, COLOR_STOPS, 0.0, false, true);
+    widgets::paint_open(ui, row.rect);
+    let count = bands.stops().len().to_string();
+    let at = pos2(row.rect.right() - widgets::ICON - 8.0, row.rect.center().y);
+    ui.painter()
+        .text(at, Align2::RIGHT_CENTER, count, theme::body(), theme::MUTE);
+    if row.clicked() {
+        state.pad.page = Some(Page::Stops);
+    }
     let default = Bands::with_range(bands.min(), bands.max(), height);
     let changed = default.as_ref().is_some_and(|d| d.stops() != bands.stops());
     let row = widgets::text_row(ui, controls, RESET_STOPS, 0.0, false, changed);
@@ -212,11 +208,10 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     let row = widgets::text_row(ui, controls, COLOR_RAMPS, 0.0, false, true);
     widgets::paint_open(ui, row.rect);
     if row.clicked() {
-        state.pad.ramps = true;
+        state.pad.page = Some(Page::Ramps);
     }
 
     let preview = &mut state.globe.preview;
-    preview.selected = selected.map(|index| (id, index));
     if height {
         widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
         let range = elevation::RIVER_WIDTH;
@@ -227,6 +222,55 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
             preview.river_width = (low + fraction * (high - low)) as f32;
         }
     }
+}
+
+/// The page of the color stops of the Layers panel: the row that adds a
+/// stop, and the gradient control with a row for each stop. A tap on a row
+/// opens the card of the stop, which `stop_card` shows.
+pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+    let Some(raster) = state.doc.project.raster(id) else {
+        return;
+    };
+    let (display, unit) = (raster.display, raster.unit.clone());
+    let style = &mut state.pad.style;
+    let globe = &mut state.globe;
+    let mut selected = elevation::selected(&globe.preview, Some(id));
+    let Some(bands) = globe.bands_mut(id) else {
+        return;
+    };
+    let before = selected;
+    let value = gradient::widest_gap_value(bands);
+    let free = bands.clone().add(value).is_some();
+    let row = widgets::text_row(ui, controls, ADD_STOP, 0.0, false, free);
+    if row.clicked()
+        && let Some(index) = bands.add(value)
+    {
+        selected = Some(index);
+    }
+    ui.add_space(8.0);
+    let m = &gradient::COLUMN;
+    let (resp, parts) = ui
+        .scope(|ui| {
+            ui.visuals_mut().override_text_color = Some(theme::MUTE);
+            gradient::column(ui, controls, m, bands, &mut selected, display, &unit)
+        })
+        .inner;
+    if selected != before {
+        style.side = None;
+    }
+    // The card hides while a finger drags a stop, so that the globe shows.
+    let count = bands.stops().len();
+    let area = parts.bar.union(parts.rows);
+    style.anchor = selected
+        .filter(|i| !resp.dragged() && *i < count)
+        .and_then(|index| {
+            let row = parts.row(m, count, index);
+            let at = pos2(row.left(), row.center().y);
+            let keep = area.intersect(ui.clip_rect());
+            ui.clip_rect().contains(at).then_some((id, index, at, keep))
+        });
+    note(ui, gradient::COLUMN_HINT);
+    globe.preview.selected = selected.map(|index| (id, index));
 }
 
 /// The page of the color ramps of the Layers panel: the import, and one row

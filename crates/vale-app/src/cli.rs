@@ -53,6 +53,10 @@ pub struct Args {
     /// Open the form of a new raster layer.
     #[arg(long)]
     pub raster_form: bool,
+    /// With --layout pad and --panel layers: open the page of the color stops
+    /// of the selected raster layer.
+    #[arg(long)]
+    pub stops_page: bool,
     /// Open the form of a new world or of the world of the project.
     #[arg(long, value_enum, value_name = "FORM")]
     pub world_form: Option<FormMode>,
@@ -328,6 +332,17 @@ pub fn apply_globe(args: &Args, globe: &mut Globe, face_size: usize) -> anyhow::
 /// the host starts the imports at its first frame.
 pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<()> {
     apply_heightmap(args, state, wait)?;
+    apply_ramp(args, state, wait)?;
+    if args.stops_page
+        && let Some(id) = state.selected_raster()
+    {
+        state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
+        state.pad.page = Some(crate::ui::pad::Page::Stops);
+    }
+    Ok(())
+}
+
+fn apply_ramp(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<()> {
     let Some(path) = &args.import_ramp else {
         return Ok(());
     };

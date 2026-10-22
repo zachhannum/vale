@@ -16,6 +16,8 @@ pub const GRADIENT: &str = "Color stops";
 /// The text below the control when no stop is selected.
 pub const HINT: &str =
     "Tap the bar to add a stop. Drag a stop to move it, or pull it down to remove it.";
+/// The text below the control of the page of the color stops.
+pub const COLUMN_HINT: &str = "Tap the bar to add a stop. Drag a handle to move its stop.";
 /// A finger this far below the handle row removes the stop on release.
 pub const PULL: f32 = 36.0;
 /// The space between the bubble of a dragged value and the bar.
@@ -415,7 +417,7 @@ pub fn column(
     selected: &mut Option<usize>,
     display: RasterDisplay,
     unit: &str,
-) -> Response {
+) -> (Response, ColumnParts) {
     let count = bands.stops().len();
     let size = vec2(ui.available_width(), m.row * count as f32);
     let (area, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -565,7 +567,7 @@ pub fn column(
             &world::value_text(bands.stops()[index].value, span, unit),
         );
     }
-    resp
+    (resp, parts)
 }
 
 /// The value of the stop that a finger drags, in a bubble next to the bar,
