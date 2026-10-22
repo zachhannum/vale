@@ -4291,6 +4291,44 @@ fn reset_colors_asks_first_and_puts_back_the_default_stops() {
 }
 
 #[test]
+fn an_imported_ramp_gives_one_color_per_band() {
+    use vale_terrain::Part;
+    let mut h = painted_pad(BOARDS[0]);
+    let height = open_height(&mut h);
+    let colors = [[200, 30, 30], [30, 200, 30], [30, 30, 200]];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legend.png");
+    let legend = image::RgbImage::from_fn(90, 12, |x, _| image::Rgb(colors[x as usize / 30]));
+    legend.save(&path).unwrap();
+    h.state_mut().run_action(Action::ImportRamp(height, path));
+    h.run();
+    let before = h.state().globe.map.bands.clone();
+    let count = before.colors().len();
+    assert!(count > colors.len());
+
+    // A fit keeps the stops, and each band takes the color at its middle
+    // along the ramp.
+    h.state_mut()
+        .apply_ramp(height, 0, true, Part::All)
+        .unwrap();
+    let bands = h.state().globe.map.bands.clone();
+    assert_eq!(bands.stops(), before.stops());
+    assert_eq!(bands.colors().len(), count);
+    let want: Vec<[u8; 3]> = (0..count)
+        .map(|k| colors[(2 * k + 1) * 3 / (2 * count)])
+        .collect();
+    assert_eq!(bands.colors(), want);
+    let shown: Vec<[u8; 3]> = bands.bands().iter().map(|b| b.color).collect();
+    assert_eq!(shown, want);
+
+    // A ramp with new stops gives one band for each color.
+    h.state_mut()
+        .apply_ramp(height, 0, false, Part::All)
+        .unwrap();
+    assert_eq!(h.state().globe.map.bands.colors(), colors);
+}
+
+#[test]
 fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     use vale_app::ui::pad::raster::{COLOR_RAMPS, DELETE_RAMP, IMPORT_RAMP, REVERSE_RAMP};
     let mut h = painted_pad(BOARDS[0]);
