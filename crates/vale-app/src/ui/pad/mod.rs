@@ -141,14 +141,21 @@ impl Panel {
     }
 }
 
+/// A page of the panel of a raster layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    Ramps,
+    Stops,
+}
+
 /// The state of the iPad layout.
 #[derive(Default)]
 pub struct PadState {
     /// The Brush panel is open.
     pub brush: bool,
-    /// The Layers panel shows the page of the color ramps of the raster
-    /// layer of `layer`.
-    pub ramps: bool,
+    /// The page of the panel of the raster layer of `layer` that the Layers
+    /// panel shows.
+    pub page: Option<Page>,
     /// The panel at the right: Layers, Toolbox, or none.
     pub right: Option<Panel>,
     /// The layer that the Layers panel shows. `None`: the panel shows the
@@ -764,9 +771,9 @@ fn show_panel(
     }
     let layer = state.pad.layer.filter(|_| panel == Panel::Layers);
     if panel == Panel::Layers && !matches!(layer, Some(LayerRef::Raster(_))) {
-        state.pad.ramps = false;
+        state.pad.page = None;
     }
-    let ramps = panel == Panel::Layers && state.pad.ramps;
+    let page = state.pad.page.filter(|_| panel == Panel::Layers);
     // The panel of a raster layer has the controls of the selected layer.
     if let Some(LayerRef::Raster(_)) = layer
         && state.selected_layer != layer
@@ -777,8 +784,11 @@ fn show_panel(
     let (key, title, back) = match (panel, layer) {
         (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
         (Panel::Brush, _) => (panel.key(), "Brush", None),
-        (Panel::Layers, Some(LayerRef::Raster(_))) if ramps => {
-            ("pad-ramps", raster::COLOR_RAMPS, Some(name))
+        (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
+            ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
+        }
+        (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Stops) => {
+            ("pad-stops", raster::COLOR_STOPS, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) => ("pad-layer", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
@@ -847,8 +857,11 @@ fn show_panel(
                     state.pad.add = !state.pad.add;
                 }
             }
-            if row.back && ramps {
-                state.pad.ramps = false;
+            if row.back && page == Some(Page::Ramps) {
+                state.pad.page = Some(Page::Stops);
+            } else if row.back && page.is_some() {
+                state.pad.page = None;
+                state.globe.preview.selected = None;
             } else if row.back {
                 state.pad.layer = None;
             }
@@ -883,12 +896,11 @@ fn show_panel(
                         ui.spacing_mut().item_spacing.y = 6.0;
                         match (panel, layer) {
                             (Panel::Brush, _) => brush_body(ui, state, controls),
-                            (Panel::Layers, Some(LayerRef::Raster(id))) if ramps => {
-                                raster::ramps_body(ui, state, controls, id);
-                            }
-                            (Panel::Layers, Some(LayerRef::Raster(id))) => {
-                                raster_body(ui, state, controls, id);
-                            }
+                            (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
+                                Some(Page::Ramps) => raster::ramps_body(ui, state, controls, id),
+                                Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
+                                None => raster_body(ui, state, controls, id),
+                            },
                             (Panel::Layers, Some(LayerRef::Vector(id))) => {
                                 vector_body(ui, state, controls, id);
                             }

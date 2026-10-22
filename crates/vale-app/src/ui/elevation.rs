@@ -14,6 +14,9 @@ use crate::world;
 /// The range of the factor of the width of a river line.
 pub const RIVER_WIDTH: std::ops::RangeInclusive<f32> = 0.25..=4.0;
 
+/// The most height of the list of the stops.
+const STOP_LIST: f32 = 240.0;
+
 /// The button of the tool bar that opens the panel.
 pub const PANEL: &str = "Layer style";
 
@@ -116,6 +119,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                     preview.display,
                     unit,
                 );
+                stop_list(ui, bands, &mut chosen, unit);
                 selected_stop(ui, bands, &mut chosen, unit);
                 state.globe.preview = preview;
                 return;
@@ -150,6 +154,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             let mut chosen = selected(&globe.preview, Some(id));
             if let Some(bands) = globe.bands_mut(id) {
                 gradient::editor(ui, None, &DESKTOP, bands, &mut chosen, display, &unit);
+                stop_list(ui, bands, &mut chosen, &unit);
                 selected_stop(ui, bands, &mut chosen, &unit);
                 if reset_button(ui, bands, height) {
                     chosen = None;
@@ -313,6 +318,39 @@ fn display_choice(ui: &mut egui::Ui, display: &mut RasterDisplay) -> bool {
 
 /// The controls of the selected stop: its value, its colors, and a button
 /// that removes it.
+/// The list of the stops, with the highest value first. A click on a row
+/// selects the stop, and a second click clears the selection.
+fn stop_list(ui: &mut egui::Ui, bands: &Bands, selected: &mut Option<usize>, unit: &str) {
+    let span = bands.max() - bands.min();
+    let scroll = egui::ScrollArea::vertical()
+        .id_salt("stop-list")
+        .max_height(STOP_LIST);
+    scroll.show(ui, |ui| {
+        for (index, stop) in bands.stops().iter().enumerate().rev() {
+            ui.horizontal(|ui| {
+                let (swatch, _) =
+                    ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
+                let [r, g, b] = stop.above;
+                ui.painter()
+                    .rect_filled(swatch, 2.0, egui::Color32::from_rgb(r, g, b));
+                let mut text = world::value_text(stop.value, span, unit);
+                if bands.sea() == Some(index) {
+                    text.push_str("  Sea level");
+                }
+                let on = *selected == Some(index);
+                let row = ui.selectable_label(on, text);
+                let name = gradient::stop_row(index);
+                row.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, &name)
+                });
+                if row.clicked() {
+                    *selected = (!on).then_some(index);
+                }
+            });
+        }
+    });
+}
+
 fn selected_stop(ui: &mut egui::Ui, bands: &mut Bands, selected: &mut Option<usize>, unit: &str) {
     let span = bands.max() - bands.min();
     let Some(index) = selected.filter(|i| *i < bands.stops().len()) else {

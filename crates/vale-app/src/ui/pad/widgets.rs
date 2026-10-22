@@ -21,7 +21,7 @@ pub type Controls = Vec<Control>;
 
 /// The padding at each side of the text of a segment.
 const SEGMENT_PAD: f32 = 14.0;
-const ICON: f32 = 22.0;
+pub const ICON: f32 = 22.0;
 const THUMB: f32 = 26.0;
 /// The height of a row in a panel.
 pub const PANEL_ROW: f32 = 48.0;

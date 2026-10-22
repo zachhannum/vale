@@ -3,12 +3,12 @@
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId, Smoothing};
-use vale_terrain::{Bands, Part, Side, StopLine};
+use vale_terrain::{Bands, MAX_BANDS, Part, Side, StopLine};
 
-use super::Panel;
 use super::geometry::{PAD, Rects};
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
+use super::{Page, Panel};
 use crate::ui::{Action, AppState, elevation, gradient};
 use crate::world;
 
@@ -42,6 +42,12 @@ pub const RESET_STOPS: &str = "Reset colors";
 /// The row of the Style section that opens the page of the color ramps, and
 /// the title of the page.
 pub const COLOR_RAMPS: &str = "Color ramps";
+/// The row of the Style section that opens the page of the color stops,
+/// and the title of the page.
+pub const COLOR_STOPS: &str = "Color stops";
+/// The text of the page of the color stops when the layer has the most
+/// bands.
+pub const FULL: &str = "Maximum of 32 bands reached.";
 pub const IMPORT_RAMP: &str = "Import ramp…";
 /// The text below the import row while the app has no ramps.
 pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
@@ -172,6 +178,47 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     let display = state.doc.project.raster(id).map_or(display, |r| r.display);
     smoothing(ui, state, controls, id);
 
+    let Some(bands) = state.globe.bands_mut(id) else {
+        return;
+    };
+    ui.add_space(8.0);
+    let strip = ui
+        .scope(|ui| {
+            ui.visuals_mut().override_text_color = Some(theme::MUTE);
+            let m = &gradient::PAD;
+            gradient::strip(ui, controls, COLOR_STOPS, m, bands, display, &unit)
+        })
+        .inner;
+    if strip.clicked() {
+        state.pad.page = Some(Page::Stops);
+    }
+    ui.add_space(8.0);
+
+    let preview = &mut state.globe.preview;
+    if height {
+        widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
+        let range = elevation::RIVER_WIDTH;
+        let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
+        let mut fraction = (f64::from(preview.river_width) - low) / (high - low);
+        let text = format!("{:.2}×", preview.river_width);
+        if widgets::row_slider(ui, controls, RIVER_WIDTH, "Width", &mut fraction, &text) {
+            preview.river_width = (low + fraction * (high - low)) as f32;
+        }
+    }
+}
+
+/// The page of the color stops of the Layers panel: the gradient control
+/// with a row for each stop, the reset row, and the row of the color
+/// ramps. A tap on a stop opens its card, which `stop_card` shows.
+pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+    let Some(raster) = state.doc.project.raster(id) else {
+        return;
+    };
+    let (display, unit, height) = (
+        raster.display,
+        raster.unit.clone(),
+        crate::ui::is_height(raster),
+    );
     let style = &mut state.pad.style;
     let globe = &mut state.globe;
     let mut selected = elevation::selected(&globe.preview, Some(id));
@@ -179,26 +226,30 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         return;
     };
     let before = selected;
-    ui.add_space(8.0);
-    let m = &gradient::PAD;
-    let resp = ui
+    let m = &gradient::COLUMN;
+    let (resp, parts) = ui
         .scope(|ui| {
             ui.visuals_mut().override_text_color = Some(theme::MUTE);
-            gradient::editor(ui, Some(controls), m, bands, &mut selected, display, &unit)
+            gradient::column(ui, controls, m, bands, &mut selected, display, &unit)
         })
         .inner;
     if selected != before {
         style.side = None;
     }
     // The card hides while a finger drags a stop, so that the globe shows.
-    style.anchor = selected.filter(|_| !resp.dragged()).and_then(|index| {
-        let x = gradient::stop_x(resp.rect, m, bands, bands.stops()[index].value);
-        let at = pos2(x, gradient::handle_row(resp.rect, m).center().y);
-        ui.clip_rect()
-            .contains(at)
-            .then_some((id, index, at, resp.rect))
-    });
-    note(ui, gradient::HINT);
+    let count = bands.stops().len();
+    let area = parts.bar.union(parts.rows);
+    style.anchor = selected
+        .filter(|i| !resp.dragged() && *i < count)
+        .and_then(|index| {
+            let at = parts.row(m, count, index).left_center();
+            let keep = area.intersect(ui.clip_rect());
+            ui.clip_rect().contains(at).then_some((id, index, at, keep))
+        });
+    if count > MAX_BANDS {
+        note(ui, FULL);
+    }
+
     let default = Bands::with_range(bands.min(), bands.max(), height);
     let changed = default.as_ref().is_some_and(|d| d.stops() != bands.stops());
     let row = widgets::text_row(ui, controls, RESET_STOPS, 0.0, false, changed);
@@ -212,21 +263,9 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     let row = widgets::text_row(ui, controls, COLOR_RAMPS, 0.0, false, true);
     widgets::paint_open(ui, row.rect);
     if row.clicked() {
-        state.pad.ramps = true;
+        state.pad.page = Some(Page::Ramps);
     }
-
-    let preview = &mut state.globe.preview;
-    preview.selected = selected.map(|index| (id, index));
-    if height {
-        widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
-        let range = elevation::RIVER_WIDTH;
-        let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
-        let mut fraction = (f64::from(preview.river_width) - low) / (high - low);
-        let text = format!("{:.2}×", preview.river_width);
-        if widgets::row_slider(ui, controls, RIVER_WIDTH, "Width", &mut fraction, &text) {
-            preview.river_width = (low + fraction * (high - low)) as f32;
-        }
-    }
+    state.globe.preview.selected = selected.map(|index| (id, index));
 }
 
 /// The page of the color ramps of the Layers panel: the import, and one row
