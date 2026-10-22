@@ -22,6 +22,7 @@ pub const WORLD_BUTTON: &str = "World…";
 pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 /// The button of the line tool.
 pub const LINE_TOOL: &str = "Line";
+/// The button of the polygon tool.
 pub const POLYGON_TOOL: &str = "Polygon";
 /// The slider of the smoothing of the line tool.
 pub const SMOOTHING: &str = "Smoothing";
@@ -67,13 +68,16 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if ui.add_enabled(paintable, brush).clicked() {
                     globe.tool = Tool::Brush;
                 }
-                let line = egui::Button::selectable(globe.lining(), LINE_TOOL);
-                if ui.add_enabled(lineable, line).clicked() {
-                    globe.tool = Tool::Line;
-                }
-                let polygon = egui::Button::selectable(globe.filling(), POLYGON_TOOL);
-                if ui.add_enabled(globe.fillable, polygon).clicked() {
-                    globe.tool = Tool::Polygon;
+                // A polygon layer has the polygon tool in the place of the
+                // line tool.
+                let (name, tool) = if globe.fillable {
+                    (POLYGON_TOOL, Tool::Polygon)
+                } else {
+                    (LINE_TOOL, Tool::Line)
+                };
+                let draw = egui::Button::selectable(globe.drawing(), name);
+                if ui.add_enabled(lineable || globe.fillable, draw).clicked() {
+                    globe.tool = tool;
                 }
                 if globe.drawing() {
                     let mut percent = globe.line.smoothing * 100.0;
