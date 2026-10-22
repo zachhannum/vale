@@ -13,7 +13,8 @@ use lines::{
 use vale_app::cli::{Args, apply_globe, apply_globe_view};
 use vale_app::document::Document;
 use vale_app::globe::brush::slerp;
-use vale_app::globe::math::{V3, angle, lonlat_to_dir};
+use vale_app::globe::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale as scale_v};
+use vale_app::globe::snap::Run;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{FACE_SIZE, Tool};
 use vale_app::globe::{edges, gpu};
@@ -5493,4 +5494,92 @@ fn a_stop_line_next_to_a_flat_sea_has_its_weight_at_each_zoom() {
 fn a_stop_line_next_to_flat_land_has_its_weight_at_each_zoom() {
     let _gpu = one_gpu_test();
     assert_globe_coasts(flat_land, "flat land");
+}
+
+#[test]
+fn a_trace_of_the_coast_follows_the_line_that_the_globe_shows() {
+    let _gpu = one_gpu_test();
+    let mut h = gpu_harness();
+    show_as(h.state_mut(), RasterDisplay::Bands);
+    let id = brush_layer(&h);
+    let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
+    h.state_mut().select(Some(LayerRef::Vector(lines)));
+    h.state_mut().globe.tool = Tool::Line;
+    load(&mut h);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(512);
+    // The coast winds 6 degrees north and south of the equator. The other
+    // stops are 19 degrees or more from it.
+    set_heights(&mut globe.map, |d| {
+        600.0 * d[2] + 60.0 * (8.0 * d[1].atan2(d[0])).sin()
+    });
+    globe.view = GlobeView::centered(16.0, 0.0);
+    set_smoothing(&mut h, id, true, 4.0);
+    load(&mut h);
+    assert!(h.state().globe.lining());
+    let mut levels = Vec::new();
+    for zoom in [1.0, 2.5] {
+        h.state_mut().globe.view.zoom = zoom;
+        h.run_steps(2);
+        let globe = &mut h.state_mut().globe;
+        let lod = globe.smoothing_level(id);
+        assert!(lod > 0.2 && lod.fract() > 0.0, "{lod}");
+        levels.push(lod);
+        let level = f64::from(globe.display_map(id).unwrap().bands.level(0.0)) / 65535.0;
+        let scale = globe.radius();
+        let coast = |lon: f64, pts: f64| {
+            let lat = (-0.1 * (8.0 * lon.to_radians()).sin()).asin().to_degrees();
+            lonlat_to_dir(lon, lat + (pts / scale).to_degrees())
+        };
+        // The pen comes in from the north where the coast goes east, goes
+        // along the coast 2 points north of it with a wiggle, and goes away.
+        let mut samples = Vec::new();
+        for i in 0..=20 {
+            samples.push(coast(11.25, 20.0 - 0.9 * f64::from(i)));
+        }
+        for i in 0..=200 {
+            let wiggle = (f64::from(i) * 0.3).sin();
+            samples.push(coast(11.25 + 0.05 * f64::from(i), 2.0 + wiggle));
+        }
+        for i in 1..=20 {
+            samples.push(coast(21.25 + 0.05 * f64::from(i), 2.0 + 2.0 * f64::from(i)));
+        }
+        globe.line_down();
+        for &d in &samples {
+            let pos = globe.view.project(globe.rect, d).unwrap();
+            globe.line_sample(pos, Some(d));
+        }
+        globe.line_up();
+        let stroke = globe.take_line().unwrap();
+        let kinds: String = stroke
+            .runs
+            .iter()
+            .map(|r| match r {
+                Run::Free(_) => 'F',
+                Run::Traced(_) => 'T',
+            })
+            .collect();
+        assert_eq!(kinds, "FTF", "zoom {zoom}");
+        let Run::Traced(trace) = &stroke.runs[1] else {
+            panic!("not a trace");
+        };
+        let line: Vec<V3> = trace.iter().map(|v| v.dir()).collect();
+        assert!(line.len() > 2);
+        // The field of the globe crosses the stop within 0.01 points of
+        // each traced vertex. The two ends of the trace and the middle of
+        // each segment are on the simplified line, within 0.15 points.
+        let globe = &h.state().globe;
+        let up = |d: V3| globe.shown_field(id, d).unwrap() >= level;
+        let last = line.len() - 1;
+        for (i, w) in line.windows(2).enumerate() {
+            let across = normalize(cross(w[0], w[1]));
+            let mid = normalize(add(w[0], w[1]));
+            let end = |k: usize| if k == 0 || k == last { 0.15 } else { 0.01 };
+            for (d, pts) in [(w[0], end(i)), (w[1], end(i + 1)), (mid, 0.15)] {
+                let side = |k: f64| normalize(add(d, scale_v(across, k * pts / scale)));
+                assert_ne!(up(side(1.0)), up(side(-1.0)), "zoom {zoom}");
+            }
+        }
+    }
+    assert!(levels[0] > levels[1] + 1.0);
 }
