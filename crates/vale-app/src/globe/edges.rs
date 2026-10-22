@@ -157,6 +157,8 @@ struct Target {
     nearest: wgpu::Texture,
     nearest_view: wgpu::TextureView,
     group: wgpu::BindGroup,
+    /// The inputs of the last passes.
+    inputs: Option<u64>,
 }
 
 /// The mesh of the flat view.
@@ -175,6 +177,9 @@ pub struct Extent {
     pub area: [f32; 4],
     /// The radius of the search for the nearest place, in pixels.
     pub radius: u32,
+    /// A hash of all that the passes read. The passes do not run again
+    /// while it stays the same.
+    pub inputs: u64,
 }
 
 /// The bind groups of the layer pass that the passes of the heights read.
@@ -202,6 +207,8 @@ pub struct Edges {
     none: wgpu::BindGroup,
     scratch: Option<Scratch>,
     targets: HashMap<LayerKey, Target>,
+    /// The count of the runs of the passes.
+    runs: u64,
 }
 
 impl Edges {
@@ -369,6 +376,7 @@ impl Edges {
             none,
             scratch: None,
             targets: HashMap::new(),
+            runs: 0,
         }
     }
 
@@ -382,6 +390,11 @@ impl Edges {
         self.targets.get(&layer).map_or(&self.none, |t| &t.group)
     }
 
+    /// The count of the runs of the passes of all layers.
+    pub fn runs(&self) -> u64 {
+        self.runs
+    }
+
     /// Keeps the textures of the layers that `live` keeps.
     pub fn retain(&mut self, live: impl Fn(&LayerKey) -> bool) {
         self.targets.retain(|layer, _| live(layer));
@@ -389,7 +402,8 @@ impl Edges {
 
     /// Encodes the passes of the lines of one layer for a render target of
     /// `size` pixels. `mesh` is the mesh of the flat view, or `None` on the
-    /// globe.
+    /// globe. If the inputs are those of the last passes of the layer, the
+    /// textures of the layer stay and no pass runs.
     pub fn encode(
         &mut self,
         device: &wgpu::Device,
@@ -399,7 +413,12 @@ impl Edges {
         groups: Groups<'_>,
         mesh: Option<Mesh<'_>>,
     ) {
-        let Extent { size, area, radius } = extent;
+        let Extent {
+            size,
+            area,
+            radius,
+            inputs,
+        } = extent;
         let size = size.map(|s| s.max(1));
         if self.scratch.as_ref().is_none_or(|s| s.size != size) {
             self.scratch = None;
@@ -441,9 +460,16 @@ impl Edges {
                 clean,
                 nearest,
                 nearest_view,
+                inputs: None,
             };
             self.targets.insert(layer, target);
         }
+        let target = self.targets.get_mut(&layer).expect("made above");
+        if target.inputs == Some(inputs) {
+            return;
+        }
+        target.inputs = Some(inputs);
+        self.runs += 1;
         let scratch = self.scratch.as_ref().expect("made above");
         let target = &self.targets[&layer];
         let attachment = |view, clear: f64| {

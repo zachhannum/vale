@@ -4335,6 +4335,38 @@ fn a_change_of_the_heights_moves_the_line_in_the_same_frame() {
 }
 
 #[test]
+fn a_frame_with_no_change_does_not_run_the_passes_of_the_lines() {
+    let _gpu = one_gpu_test();
+    let render_state = render_state();
+    let mut h = line_harness_on(RasterDisplay::Bands, [0.0, 0.0, 1.0], render_state.clone());
+    h.state_mut().globe.view = GlobeView::centered(0.0, 0.0);
+    h.run_steps(3);
+    let first = next_frame(&mut h);
+    let runs = gpu::line_runs(&render_state);
+    assert!(runs > 0);
+    for _ in 0..3 {
+        assert!(next_frame(&mut h) == first);
+    }
+    assert_eq!(gpu::line_runs(&render_state), runs);
+    // A change of the heights, of the view, or of a line runs the passes.
+    set_heights(&mut h.state_mut().globe.map, |d| 3000.0 * (d[2] + 0.01));
+    next_frame(&mut h);
+    let lifted = gpu::line_runs(&render_state);
+    assert!(lifted > runs);
+    h.state_mut().globe.view = GlobeView::centered(0.0, 0.5);
+    next_frame(&mut h);
+    let turned = gpu::line_runs(&render_state);
+    assert!(turned > lifted);
+    let bands = &mut h.state_mut().globe.map.bands;
+    let sea = bands.sea().unwrap();
+    let mut line = bands.stops()[sea].line;
+    line.weight *= 2.0;
+    assert!(bands.set_line(sea, line));
+    next_frame(&mut h);
+    assert!(gpu::line_runs(&render_state) > turned);
+}
+
+#[test]
 fn a_change_of_the_weight_of_a_line_shows_in_the_same_frame() {
     let _gpu = one_gpu_test();
     let mut h = measured_globe([0.0, 0.0, 1.0], even_slope);
