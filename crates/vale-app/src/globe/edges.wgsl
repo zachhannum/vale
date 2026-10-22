@@ -1,15 +1,17 @@
 // The screen-space lines of the color stops, in passes before the layer
 // pass. The first pass writes the shown height of each pixel. The second
-// pass cuts away the peaks and the pits smaller than one pixel, and finds
-// the places where the height crosses the value of a stop between two pixel
-// centers. The third pass marks the blocks of pixels with a place, and the
-// fourth gives each pixel the nearest place. The layer pass then draws the
-// band edges and the lines from the cut heights and the nearest places.
+// pass cuts away the peaks and the pits smaller than one pixel. The third
+// finds the places where the height crosses the value of a stop between two
+// pixel centers. The fourth pass marks the blocks of pixels with a place,
+// and the fifth gives each pixel the nearest place. The layer pass then
+// draws the band edges and the lines from the cut heights and the nearest
+// places, with the shown heights of the first pass.
 //
 // This file comes after `globe.wgsl` in the same module. The payload of a
 // place matches `edges.rs`.
 
-// The shown height of each pixel, or -1 off the ground.
+// The shown height of each pixel and its change across one pixel, or -1 off
+// the ground.
 @group(3) @binding(0) var edge_raw: texture_2d<f32>;
 // The place that each pixel keeps from its own 4 pairs.
 @group(3) @binding(1) var edge_seeds: texture_2d<u32>;
@@ -70,12 +72,22 @@ fn fs_heights(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if at.cover <= 0.0 {
         discard;
     }
-    return vec4<f32>(shown(at.d).x, 0.0, 0.0, 0.0);
+    return vec4<f32>(disk_height(at), 0.0, 0.0);
 }
 
 @fragment
 fn fs_flat_heights(in: FlatVertex) -> @location(0) vec4<f32> {
-    return vec4<f32>(shown(normalize(in.dir)).x, 0.0, 0.0, 0.0);
+    let d = normalize(in.dir);
+    return vec4<f32>(flat_height(d, dpdx(d), dpdy(d)), 0.0, 0.0);
+}
+
+// The shown height of a pixel and its change across one pixel, from the
+// first pass. The height is -1 where the first pass did not run.
+fn edge_shown(frag: vec2<f32>) -> vec2<f32> {
+    if u.edges.x < 0.5 {
+        return vec2<f32>(-1.0, 0.0);
+    }
+    return textureLoad(edge_raw, vec2<i32>(floor(frag)), 0).xy;
 }
 
 fn raw_at(p: vec2<i32>) -> f32 {
@@ -88,10 +100,12 @@ fn raw_at(p: vec2<i32>) -> f32 {
 
 // The height of a pixel cut to the range of its 8 neighbors, so that a
 // peak or a pit smaller than one pixel goes away. -1 off the ground.
-fn clean_at(p: vec2<i32>) -> f32 {
+@fragment
+fn fs_edge_clean(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(floor(frag.xy));
     let h = raw_at(p);
     if h < 0.0 {
-        return -1.0;
+        return vec4<f32>(-1.0, 0.0, 0.0, 0.0);
     }
     var low = 2.0;
     var high = -1.0;
@@ -108,60 +122,84 @@ fn clean_at(p: vec2<i32>) -> f32 {
         }
     }
     if high < 0.0 {
-        return h;
+        return vec4<f32>(h, 0.0, 0.0, 0.0);
     }
-    return clamp(h, low, high);
+    return vec4<f32>(clamp(h, low, high), 0.0, 0.0, 0.0);
 }
 
-struct SeedOut {
-    @location(0) seed: vec4<u32>,
-    @location(1) clean: vec4<f32>,
+// The lowest and the highest of a height and the heights of its neighbors
+// on the ground.
+fn edge_range(c: f32, n: vec4<f32>) -> vec2<f32> {
+    var lo = c;
+    var hi = c;
+    for (var k = 0; k < 4; k++) {
+        if n[k] >= 0.0 {
+            lo = min(lo, n[k]);
+            hi = max(hi, n[k]);
+        }
+    }
+    return vec2<f32>(lo, hi);
+}
+
+// The cut heights of the 4 neighbors of a pixel: to the right, to the
+// left, down, and up.
+fn clean_around(p: vec2<i32>) -> vec4<f32> {
+    return vec4<f32>(
+        clean_px(p + vec2<i32>(1, 0)),
+        clean_px(p - vec2<i32>(1, 0)),
+        clean_px(p + vec2<i32>(0, 1)),
+        clean_px(p - vec2<i32>(0, 1)),
+    );
 }
 
 // Each pixel keeps the place of its 4 pairs that a line reaches farthest
 // past. A height at the value of a stop is on the upper side, so flat
 // ground at the value has no place.
 @fragment
-fn fs_edge_seeds(@builtin(position) frag: vec4<f32>) -> SeedOut {
+fn fs_edge_seeds(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<u32> {
     let p = vec2<i32>(floor(frag.xy));
-    let h = clean_at(p);
+    let h = clean_px(p);
     var best = EDGE_EMPTY;
     var best_m = 1e9;
-    if h >= 0.0 {
-        let count = u32(u.params.w) + 1u;
+    if h < 0.0 {
+        return vec4<u32>(best, 0u, 0u, 0u);
+    }
+    let around = clean_around(p);
+    let range = edge_range(h, around);
+    let count = u32(u.params.w) + 1u;
+    for (var i = 0u; i < count; i++) {
+        let half = edge_half(i);
+        let at = u.lines[i].at.x;
+        // No pair crosses a value outside the range.
+        if half <= 0.0 || at <= range.x || at > range.y {
+            continue;
+        }
         for (var k = 0u; k < 4u; k++) {
-            let axis = k / 2u;
-            let dir = select(1, -1, k % 2u == 1u);
-            let off = vec2<i32>(edge_step(axis)) * dir;
-            let q = clean_at(p + off);
+            let q = around[k];
             if q < 0.0 {
                 continue;
             }
+            let axis = k / 2u;
+            let dir = select(1, -1, k % 2u == 1u);
+            let off = vec2<i32>(edge_step(axis)) * dir;
             let base = min(off, vec2<i32>(0));
             let first = select(h, q, dir < 0);
             let second = select(q, h, dir < 0);
-            for (var i = 0u; i < count; i++) {
-                let half = edge_half(i);
-                if half <= 0.0 {
-                    continue;
-                }
-                let at = u.lines[i].at.x;
-                if (first >= at) == (second >= at) {
-                    continue;
-                }
-                let t = clamp((at - first) / (second - first), 0.0, 1.0);
-                let steps = u32(round(t * EDGE_T_STEPS));
-                let place = vec2<f32>(base) + edge_step(axis) * f32(steps) / EDGE_T_STEPS;
-                let m = length(place) - half;
-                // On a tie, the higher stop wins.
-                if m <= best_m {
-                    best_m = m;
-                    best = edge_pack(base, axis, steps, i);
-                }
+            if (first >= at) == (second >= at) {
+                continue;
+            }
+            let t = clamp((at - first) / (second - first), 0.0, 1.0);
+            let steps = u32(round(t * EDGE_T_STEPS));
+            let place = vec2<f32>(base) + edge_step(axis) * f32(steps) / EDGE_T_STEPS;
+            let m = length(place) - half;
+            // On a tie, the higher stop wins.
+            if m <= best_m {
+                best_m = m;
+                best = edge_pack(base, axis, steps, i);
             }
         }
     }
-    return SeedOut(vec4<u32>(best, 0u, 0u, 0u), vec4<f32>(h, 0.0, 0.0, 0.0));
+    return vec4<u32>(best, 0u, 0u, 0u);
 }
 
 // 1 for a block of pixels with a place, and 0 for one with none.
@@ -246,14 +284,26 @@ fn tint_screen(p: vec2<i32>, h: f32, width: f32, mode: i32) -> vec3<f32> {
     if c < 0.0 {
         return tint(h, width, mode);
     }
-    let left = clean_px(p - vec2<i32>(1, 0));
-    let right = clean_px(p + vec2<i32>(1, 0));
-    let up = clean_px(p - vec2<i32>(0, 1));
-    let down = clean_px(p + vec2<i32>(0, 1));
-    var color = band_color(0, c, mode);
+    let around = clean_around(p);
+    let right = around.x;
+    let left = around.y;
+    let down = around.z;
+    let up = around.w;
+    let range = edge_range(c, around);
     let count = i32(u.params.w);
-    for (var i = 1; i < count; i++) {
+    // The pixel and its neighbors are at or above each limit below
+    // `first`, so the color starts as the color of the band below `first`.
+    // A limit above the range has no edge at the pixel.
+    var first = 1;
+    while first < count && u.bands[first].bottom.a <= range.x {
+        first++;
+    }
+    var color = band_color(first - 1, c, mode);
+    for (var i = first; i < count; i++) {
         let at = u.bands[i].bottom.a;
+        if at > range.y {
+            break;
+        }
         // A height at the limit is in the upper band.
         let side = c >= at;
         let tx = min(edge_toward(c, left, at, side), edge_toward(c, right, at, side));
@@ -294,13 +344,8 @@ fn side_step(k: i32) -> vec2<i32> {
 
 // The cell on the other side of side `k`.
 fn next_cell(c: vec2<i32>, k: i32) -> vec2<i32> {
-    let away = array<vec2<i32>, 4>(
-        vec2<i32>(0, -1),
-        vec2<i32>(0, 1),
-        vec2<i32>(-1, 0),
-        vec2<i32>(1, 0),
-    );
-    return c + away[k];
+    let away = (k & 1) * 2 - 1;
+    return c + select(vec2<i32>(away, 0), vec2<i32>(0, away), k < 2);
 }
 
 // The side where the band edge leaves a cell that it enters at side `k`, or
@@ -318,25 +363,23 @@ fn exit_side(c: vec2<i32>, k: i32, at: f32) -> i32 {
     let s10 = h10 >= at;
     let s01 = h01 >= at;
     let s11 = h11 >= at;
-    let crossed = array<bool, 4>(s00 != s10, s01 != s11, s00 != s01, s10 != s11);
-    if crossed[0] && crossed[1] && crossed[2] && crossed[3] {
+    // One bit for each side that the edge crosses.
+    let crossed = u32(s00 != s10) | (u32(s01 != s11) << 1u) | (u32(s00 != s01) << 2u)
+        | (u32(s10 != s11) << 3u);
+    if crossed == 15u {
         let middle = (h00 + h10 + h01 + h11) * 0.25 >= at;
-        // Each corner on the other side of the middle has the edge across
-        // its two sides.
-        let first_alone = array<bool, 4>(s00 != middle, s01 != middle, s00 != middle, s10 != middle);
-        let pair_first = array<i32, 4>(2, 2, 0, 0);
-        let pair_second = array<i32, 4>(3, 3, 1, 1);
-        if first_alone[k] {
-            return pair_first[k];
-        }
-        return pair_second[k];
+        // The corner between side `k` and the first side of the other
+        // axis. If it is on the other side of the middle, the edge goes
+        // across its two sides.
+        let corner = select(select(s10, s01, k == 1), s00, k == 0 || k == 2);
+        let first = select(0, 2, k < 2);
+        return select(first + 1, first, corner != middle);
     }
-    for (var e = 0; e < 4; e++) {
-        if e != k && crossed[e] {
-            return e;
-        }
+    let rest = crossed & ~(1u << u32(k));
+    if rest == 0u {
+        return -1;
     }
-    return -1;
+    return i32(firstTrailingBit(rest));
 }
 
 // The place where the band edge crosses side `k` of a cell, from the
@@ -348,12 +391,62 @@ fn side_crossing(c: vec2<i32>, k: i32, at: f32, p: vec2<i32>) -> vec2<f32> {
     return crossing(pa, clean_px(a), pa + vec2<f32>(side_step(k)), clean_px(b), at);
 }
 
+// The next 3 places where the band edge crosses a side, from the cell `c`
+// that it enters at side `k`, from the center of pixel `p`. Past the end
+// of the edge, each place is the last place, or `start`.
+struct Walk {
+    a: vec2<f32>,
+    b: vec2<f32>,
+    c: vec2<f32>,
+}
+
+fn walk(c: vec2<i32>, k: i32, at: f32, p: vec2<i32>, start: vec2<f32>) -> Walk {
+    var out = Walk(start, start, start);
+    var cell = c;
+    var side = k;
+    for (var n = 0; n < 3; n++) {
+        let leave = exit_side(cell, side, at);
+        if leave < 0 {
+            break;
+        }
+        let y = side_crossing(cell, leave, at, p);
+        out.a = select(out.a, y, n == 0);
+        out.b = select(out.b, y, n <= 1);
+        out.c = y;
+        cell = next_cell(cell, leave);
+        side = leave ^ 1;
+    }
+    return out;
+}
+
+// The distance from the pixel center to the corner where the segments from
+// `a0` to `a1` and from `b0` to `b1` meet, if they turn by more than 70
+// degrees and meet within 3 pixels.
+fn corner_distance(a0: vec2<f32>, a1: vec2<f32>, b0: vec2<f32>, b1: vec2<f32>) -> f32 {
+    let di = a1 - a0;
+    let dj = b1 - b0;
+    let li = length(di);
+    let lj = length(dj);
+    if li < 1e-3 || lj < 1e-3 || dot(di, dj) > 0.34 * li * lj {
+        return 1e9;
+    }
+    let turn = di.x * dj.y - di.y * dj.x;
+    let gap = b0 - a1;
+    let t = (gap.x * dj.y - gap.y * dj.x) / turn;
+    let v = (di.x * gap.y - di.y * gap.x) / turn;
+    if t < 0.0 || v < 0.0 || t * li > 3.0 || v * lj > 3.0 {
+        return 1e9;
+    }
+    let corner = a1 + di * t;
+    return min(segment_distance(a1, corner), segment_distance(corner, b0));
+}
+
 // The color of the line at a pixel, and the part of the pixel that it
 // covers. The band edge goes through the nearest place, and on through the
 // next 3 cells on each side, as a chain of segments. Where the chain turns
-// by more than 70 degrees, the segments that cut the
-// corner give way to the 2 outer segments, carried on to where they meet,
-// so a sharp corner keeps its point.
+// by more than 70 degrees, the segments that cut the corner give way to the
+// 2 outer segments, carried on to where they meet, so a sharp corner keeps
+// its point.
 fn line_cover(p: vec2<i32>) -> vec4<f32> {
     let seed = textureLoad(edge_nearest, p, 0).x;
     if seed == EDGE_EMPTY {
@@ -367,63 +460,44 @@ fn line_cover(p: vec2<i32>) -> vec4<f32> {
     let step = vec2<i32>(edge_step(axis));
     let ha = clean_px(base);
     let hb = clean_px(base + step);
-    var pts: array<vec2<f32>, 7>;
-    pts[3] = edge_place(seed);
-    var first = 3;
-    var last = 3;
+    var mid = edge_place(seed);
+    var ahead = Walk(mid, mid, mid);
+    var back = ahead;
     if ha >= 0.0 && hb >= 0.0 && (ha >= at) != (hb >= at) {
         let pa = vec2<f32>(edge_base(seed));
-        pts[3] = crossing(pa, ha, pa + vec2<f32>(step), hb, at);
+        mid = crossing(pa, ha, pa + vec2<f32>(step), hb, at);
         let across = vec2<i32>(step.y, step.x);
         // The cell on each side of the pair, and the side of each cell that
         // the pair is.
         let a_side = select(2, 0, axis == 0u);
-        for (var way = 0; way < 2; way++) {
-            var c = select(base - across, base, way == 0);
-            var k = a_side + select(1, 0, way == 0);
-            for (var n = 0; n < 3; n++) {
-                let leave = exit_side(c, k, at);
-                if leave < 0 {
-                    break;
-                }
-                let y = side_crossing(c, leave, at, p);
-                if way == 0 {
-                    last += 1;
-                    pts[last] = y;
-                } else {
-                    first -= 1;
-                    pts[first] = y;
-                }
-                c = next_cell(c, leave);
-                k = leave ^ 1;
-            }
-        }
+        ahead = walk(base, a_side, at, p, mid);
+        back = walk(base - across, a_side + 1, at, p, mid);
     }
-    var dist = length(pts[3]);
-    for (var i = first; i < last; i++) {
-        dist = min(dist, segment_distance(pts[i], pts[i + 1]));
-    }
-    for (var i = first; i < last - 2; i++) {
-        for (var j = i + 2; j < last; j++) {
-            let di = pts[i + 1] - pts[i];
-            let dj = pts[j + 1] - pts[j];
-            let li = length(di);
-            let lj = length(dj);
-            if li < 1e-3 || lj < 1e-3 || dot(di, dj) > 0.34 * li * lj {
-                continue;
-            }
-            let turn = di.x * dj.y - di.y * dj.x;
-            let gap = pts[j] - pts[i + 1];
-            let t = (gap.x * dj.y - gap.y * dj.x) / turn;
-            let v = (di.x * gap.y - di.y * gap.x) / turn;
-            if t < 0.0 || v < 0.0 || t * li > 3.0 || v * lj > 3.0 {
-                continue;
-            }
-            let corner = pts[i + 1] + di * t;
-            dist = min(dist, segment_distance(pts[i + 1], corner));
-            dist = min(dist, segment_distance(corner, pts[j]));
-        }
-    }
+    // The chain, in order. Past an end of the edge, the segments have no
+    // length.
+    let p0 = back.c;
+    let p1 = back.b;
+    let p2 = back.a;
+    let p4 = ahead.a;
+    let p5 = ahead.b;
+    let p6 = ahead.c;
+    var dist = length(mid);
+    dist = min(dist, segment_distance(p0, p1));
+    dist = min(dist, segment_distance(p1, p2));
+    dist = min(dist, segment_distance(p2, mid));
+    dist = min(dist, segment_distance(mid, p4));
+    dist = min(dist, segment_distance(p4, p5));
+    dist = min(dist, segment_distance(p5, p6));
+    dist = min(dist, corner_distance(p0, p1, p2, mid));
+    dist = min(dist, corner_distance(p0, p1, mid, p4));
+    dist = min(dist, corner_distance(p0, p1, p4, p5));
+    dist = min(dist, corner_distance(p0, p1, p5, p6));
+    dist = min(dist, corner_distance(p1, p2, mid, p4));
+    dist = min(dist, corner_distance(p1, p2, p4, p5));
+    dist = min(dist, corner_distance(p1, p2, p5, p6));
+    dist = min(dist, corner_distance(p2, mid, p4, p5));
+    dist = min(dist, corner_distance(p2, mid, p5, p6));
+    dist = min(dist, corner_distance(mid, p4, p5, p6));
     let cover = clamp(max(half, 0.5) + 0.5 - dist, 0.0, 1.0) * min(2.0 * half, 1.0);
     return vec4<f32>(u.lines[stop].color.rgb, cover);
 }

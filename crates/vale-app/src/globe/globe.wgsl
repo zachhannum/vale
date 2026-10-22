@@ -325,18 +325,33 @@ fn disk(frag: vec4<f32>) -> Disk {
     return Disk(cover, mix(0.80, 1.0, pow(v.z, 0.6)), d, px, px / coslat, dx, dy);
 }
 
+// The value of the layer at a place of the disk, and its change across one
+// pixel. A derivative of the height is wrong where the pixels of a quad
+// read different faces, so the change comes from the slope of the texels.
+fn disk_height(at: Disk) -> vec2<f32> {
+    let h = shown(at.d);
+    return vec2<f32>(h.x, length(pixel_slope(at.d, h.yz, at.dx, at.dy)));
+}
+
+// The value of the layer at a direction of the flat view, and its change
+// across one pixel, from the change of the direction across one pixel. A
+// face has 2 / PI of its texels in one radian.
+fn flat_height(d: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>) -> vec2<f32> {
+    let h = shown(d);
+    return vec2<f32>(h.x, length(pixel_slope(d, h.yz, dx, dy)));
+}
+
 @fragment
 fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let at = disk(frag);
     if at.cover <= 0.0 {
         discard;
     }
-    // A derivative of the height is wrong where the pixels of a quad read
-    // different faces, so the width comes from the slope of the texels, as
-    // in `fs_flat`.
-    let h = shown(at.d);
-    let slope = pixel_slope(at.d, h.yz, at.dx, at.dy);
-    let color = ground(h.x, length(slope), at.d, at.px, frag.xy) * at.shade;
+    var h = edge_shown(frag.xy);
+    if h.x < 0.0 {
+        h = disk_height(at);
+    }
+    let color = ground(h.x, h.y, at.d, at.px, frag.xy) * at.shade;
     let alpha = u.layer.x;
     return vec4<f32>(color * alpha, alpha);
 }
@@ -402,15 +417,17 @@ fn flat_widths(d: vec3<f32>) -> vec2<f32> {
 @fragment
 fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
     let d = normalize(in.dir);
+    let dx = dpdx(d);
+    let dy = dpdy(d);
     // A derivative of the height is wrong at an edge of a triangle of the
-    // mesh, so the width comes from the slope of the texels. A face has
-    // 2 / PI of its texels in one radian.
-    let h = shown(d);
-    let angle = max(length(dpdx(d)), length(dpdy(d)));
-    let slope = pixel_slope(d, h.yz, dpdx(d), dpdy(d));
-    let width = length(slope);
+    // mesh, so the width comes from the slope of the texels.
+    var h = edge_shown(in.position.xy);
+    if h.x < 0.0 {
+        h = flat_height(d, dx, dy);
+    }
+    let angle = max(length(dx), length(dy));
     let alpha = u.layer.x;
-    return vec4<f32>(ground(h.x, width, d, angle, in.position.xy) * alpha, alpha);
+    return vec4<f32>(ground(h.x, h.y, d, angle, in.position.xy) * alpha, alpha);
 }
 
 @fragment

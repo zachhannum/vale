@@ -130,16 +130,15 @@ fn block_scissor(places: [u32; 4], blocks: [u32; 2]) -> [u32; 4] {
 }
 
 const HEIGHTS: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+/// A shown height and its change across one pixel.
+const SHOWN: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
 const PLACES: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
 /// The textures that the layers share, at the size of the render target.
 struct Scratch {
     size: [u32; 2],
-    raw: wgpu::TextureView,
     seeds: wgpu::TextureView,
     blocks: wgpu::TextureView,
-    /// The group that reads `raw`.
-    read_raw: wgpu::BindGroup,
     /// The group that reads `seeds`.
     read_seeds: wgpu::BindGroup,
     /// The group that reads `seeds` and `blocks`.
@@ -149,10 +148,17 @@ struct Scratch {
 /// The textures that the layer pass of one layer reads.
 struct Target {
     size: [u32; 2],
+    raw: wgpu::TextureView,
     clean: wgpu::TextureView,
+    /// The group that reads `raw`.
+    read_raw: wgpu::BindGroup,
+    /// The group that reads `clean`.
+    read_clean: wgpu::BindGroup,
     nearest: wgpu::Texture,
     nearest_view: wgpu::TextureView,
     group: wgpu::BindGroup,
+    /// The inputs of the last passes.
+    inputs: Option<u64>,
 }
 
 /// The mesh of the flat view.
@@ -171,6 +177,9 @@ pub struct Extent {
     pub area: [f32; 4],
     /// The radius of the search for the nearest place, in pixels.
     pub radius: u32,
+    /// A hash of all that the passes read. The passes do not run again
+    /// while it stays the same.
+    pub inputs: u64,
 }
 
 /// The bind groups of the layer pass that the passes of the heights read.
@@ -188,6 +197,7 @@ pub struct Edges {
     resolve: wgpu::BindGroupLayout,
     heights: wgpu::RenderPipeline,
     flat_heights: wgpu::RenderPipeline,
+    clean: wgpu::RenderPipeline,
     seeds: wgpu::RenderPipeline,
     blocks: wgpu::RenderPipeline,
     nearest: wgpu::RenderPipeline,
@@ -197,6 +207,8 @@ pub struct Edges {
     none: wgpu::BindGroup,
     scratch: Option<Scratch>,
     targets: HashMap<LayerKey, Target>,
+    /// The count of the runs of the passes.
+    runs: u64,
 }
 
 impl Edges {
@@ -223,17 +235,22 @@ impl Edges {
         };
         let float = wgpu::TextureSampleType::Float { filterable: false };
         let uint = wgpu::TextureSampleType::Uint;
-        // The passes before the layer pass read the heights, the places, and
-        // the blocks. The layer pass reads the cut heights and the nearest
-        // places, in a group of its own, so that it keeps under the limit of
-        // the textures of one pass.
+        // The passes before the layer pass read the heights, the places, the
+        // cut heights, and the blocks. The layer pass reads the heights, the
+        // cut heights, and the nearest places, in a group of its own, so
+        // that it keeps under the limit of the textures of one pass.
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("edges"),
-            entries: &[texture(0, float), texture(1, uint), texture(4, uint)],
+            entries: &[
+                texture(0, float),
+                texture(1, uint),
+                texture(2, float),
+                texture(4, uint),
+            ],
         });
         let resolve = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("edge lines"),
-            entries: &[texture(2, float), texture(3, uint)],
+            entries: &[texture(0, float), texture(2, float), texture(3, uint)],
         });
         let with_tiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("edge heights"),
@@ -280,7 +297,7 @@ impl Edges {
                 cache: None,
             })
         };
-        let heights = [target(HEIGHTS)];
+        let heights = [target(SHOWN)];
         let flat = [Some(vertex)];
         let empty = |label, format| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -301,7 +318,8 @@ impl Edges {
         };
         let no_heights = empty("no edge heights", HEIGHTS);
         let no_places = empty("no edge places", PLACES);
-        let none = group(device, &resolve, &[(2, &no_heights), (3, &no_places)]);
+        let h = &no_heights;
+        let none = group(device, &resolve, &[(0, h), (2, h), (3, &no_places)]);
         Edges {
             heights: pipeline(
                 "edge heights",
@@ -319,13 +337,21 @@ impl Edges {
                 "fs_flat_heights",
                 &heights,
             ),
+            clean: pipeline(
+                "edge clean",
+                &with_edges,
+                "vs_main",
+                &[],
+                "fs_edge_clean",
+                &[target(HEIGHTS)],
+            ),
             seeds: pipeline(
                 "edge seeds",
                 &with_edges,
                 "vs_main",
                 &[],
                 "fs_edge_seeds",
-                &[target(PLACES), target(HEIGHTS)],
+                &[target(PLACES)],
             ),
             blocks: pipeline(
                 "edge blocks",
@@ -350,6 +376,7 @@ impl Edges {
             none,
             scratch: None,
             targets: HashMap::new(),
+            runs: 0,
         }
     }
 
@@ -363,6 +390,11 @@ impl Edges {
         self.targets.get(&layer).map_or(&self.none, |t| &t.group)
     }
 
+    /// The count of the runs of the passes of all layers.
+    pub fn runs(&self) -> u64 {
+        self.runs
+    }
+
     /// Keeps the textures of the layers that `live` keeps.
     pub fn retain(&mut self, live: impl Fn(&LayerKey) -> bool) {
         self.targets.retain(|layer, _| live(layer));
@@ -370,7 +402,8 @@ impl Edges {
 
     /// Encodes the passes of the lines of one layer for a render target of
     /// `size` pixels. `mesh` is the mesh of the flat view, or `None` on the
-    /// globe.
+    /// globe. If the inputs are those of the last passes of the layer, the
+    /// textures of the layer stay and no pass runs.
     pub fn encode(
         &mut self,
         device: &wgpu::Device,
@@ -380,11 +413,15 @@ impl Edges {
         groups: Groups<'_>,
         mesh: Option<Mesh<'_>>,
     ) {
-        let Extent { size, area, radius } = extent;
+        let Extent {
+            size,
+            area,
+            radius,
+            inputs,
+        } = extent;
         let size = size.map(|s| s.max(1));
         if self.scratch.as_ref().is_none_or(|s| s.size != size) {
             self.scratch = None;
-            let raw = view(device, "edge raw", size, HEIGHTS);
             let seeds = view(device, "edge seeds", size, PLACES);
             let blocks = view(
                 device,
@@ -393,31 +430,46 @@ impl Edges {
                 PLACES,
             );
             let (h, p) = (&self.no_heights, &self.no_places);
+            let read = |seeds, blocks| [(0, h), (1, seeds), (2, h), (4, blocks)];
             self.scratch = Some(Scratch {
                 size,
-                read_raw: group(device, &self.layout, &[(0, &raw), (1, p), (4, p)]),
-                read_seeds: group(device, &self.layout, &[(0, h), (1, &seeds), (4, p)]),
-                read_blocks: group(device, &self.layout, &[(0, h), (1, &seeds), (4, &blocks)]),
-                raw,
+                read_seeds: group(device, &self.layout, &read(&seeds, p)),
+                read_blocks: group(device, &self.layout, &read(&seeds, &blocks)),
                 seeds,
                 blocks,
             });
         }
         if self.targets.get(&layer).is_none_or(|t| t.size != size) {
             self.targets.remove(&layer);
+            let raw = view(device, "edge raw", size, SHOWN);
             let clean = view(device, "edge clean", size, HEIGHTS);
             let nearest = texture(device, "edge nearest", size, PLACES);
             let nearest_view = nearest.create_view(&Default::default());
-            let group = group(device, &self.resolve, &[(2, &clean), (3, &nearest_view)]);
+            let (h, p) = (&self.no_heights, &self.no_places);
+            let read = |raw, clean| [(0, raw), (1, p), (2, clean), (4, p)];
             let target = Target {
                 size,
+                read_raw: group(device, &self.layout, &read(&raw, h)),
+                read_clean: group(device, &self.layout, &read(h, &clean)),
+                group: group(
+                    device,
+                    &self.resolve,
+                    &[(0, &raw), (2, &clean), (3, &nearest_view)],
+                ),
+                raw,
                 clean,
                 nearest,
                 nearest_view,
-                group,
+                inputs: None,
             };
             self.targets.insert(layer, target);
         }
+        let target = self.targets.get_mut(&layer).expect("made above");
+        if target.inputs == Some(inputs) {
+            return;
+        }
+        target.inputs = Some(inputs);
+        self.runs += 1;
         let scratch = self.scratch.as_ref().expect("made above");
         let target = &self.targets[&layer];
         let attachment = |view, clear: f64| {
@@ -438,8 +490,10 @@ impl Edges {
         };
         let empty = f64::from(EMPTY);
         // The layer pass reads the cut heights up to 5 pixels past the
-        // nearest place, and the cut heights read the heights 2 pixels away.
+        // nearest place. A place reads the cut heights 1 pixel away, and a
+        // cut height reads the heights 1 pixel away.
         let places = scissor(area, radius + 6, size);
+        let clean = scissor(area, radius + 7, size);
         let heights = scissor(area, radius + 8, size);
         let nearest = scissor(area, 1, size);
         let blocks = size.map(|s| s.div_ceil(BLOCK));
@@ -451,7 +505,7 @@ impl Edges {
             None => false,
         };
         {
-            let mut pass = begin(encoder, "edge heights", &[attachment(&scratch.raw, -1.0)]);
+            let mut pass = begin(encoder, "edge heights", &[attachment(&target.raw, -1.0)]);
             if !clip(&mut pass, heights) {
                 return;
             }
@@ -472,15 +526,19 @@ impl Edges {
             }
         }
         {
-            let targets = [
-                attachment(&scratch.seeds, empty),
-                attachment(&target.clean, -1.0),
-            ];
-            let mut pass = begin(encoder, "edge seeds", &targets);
+            let mut pass = begin(encoder, "edge clean", &[attachment(&target.clean, -1.0)]);
+            clip(&mut pass, clean);
+            pass.set_pipeline(&self.clean);
+            pass.set_bind_group(0, groups.uniforms, &[]);
+            pass.set_bind_group(3, &target.read_raw, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        {
+            let mut pass = begin(encoder, "edge seeds", &[attachment(&scratch.seeds, empty)]);
             clip(&mut pass, places);
             pass.set_pipeline(&self.seeds);
             pass.set_bind_group(0, groups.uniforms, &[]);
-            pass.set_bind_group(3, &scratch.read_raw, &[]);
+            pass.set_bind_group(3, &target.read_clean, &[]);
             pass.draw(0..3, 0..1);
         }
         if let Some(places) = places {

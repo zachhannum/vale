@@ -2,6 +2,7 @@
 //! globe.
 
 use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -170,6 +171,9 @@ struct Resources {
     channel_count: u64,
     /// The lines of the stops.
     edges: Edges,
+    /// The count of the changes of the heightmaps on the GPU and of the
+    /// mesh of the flat view.
+    version: u64,
     _poller: Poller,
 }
 
@@ -330,6 +334,7 @@ impl Resources {
             channels: HashMap::new(),
             channel_count: 0,
             edges,
+            version: 0,
             _poller: Poller::new(device.clone(), busy.clone()),
         }
     }
@@ -337,7 +342,10 @@ impl Resources {
     /// Makes the heightmaps on the GPU those of the frame. A heightmap with
     /// another key goes away, and a new one starts with no texels.
     fn sync(&mut self, device: &wgpu::Device, frame: &Frame) {
+        let before = (self.copies.len(), self.pyramids.len());
+        let mut changed = false;
         if self.full.as_ref().map(|(key, _)| *key) != frame.full {
+            changed = true;
             // The old heightmap goes away before the new one takes memory.
             self.full = None;
             self.full = frame
@@ -345,18 +353,25 @@ impl Resources {
                 .map(|key| (key, GpuHeightmap::new(device, key.face_size)));
         }
         self.copies.retain(|key, _| frame.copies.contains(key));
+        changed |= self.copies.len() != before.0;
         for key in &frame.copies {
-            self.copies
-                .entry(*key)
-                .or_insert_with(|| GpuTiles::new(device, key.face_size, 0));
+            self.copies.entry(*key).or_insert_with(|| {
+                changed = true;
+                GpuTiles::new(device, key.face_size, 0)
+            });
         }
         let full = frame.full.filter(|_| frame.smooth_full);
         let smooth = |key: &MapKey| Some(*key) == full || frame.copies.contains(key);
         self.pyramids.retain(|key, _| smooth(key));
+        changed |= self.pyramids.len() != before.1;
         for key in full.iter().chain(&frame.copies) {
-            self.pyramids
-                .entry(*key)
-                .or_insert_with(|| GpuPyramid::new(device, key.face_size));
+            self.pyramids.entry(*key).or_insert_with(|| {
+                changed = true;
+                GpuPyramid::new(device, key.face_size)
+            });
+        }
+        if changed {
+            self.version += 1;
         }
         let live = |pass: &Pass| match pass {
             Pass::Layer(layer) => {
@@ -547,7 +562,19 @@ impl Resources {
                 area[3].min(y + r),
             ];
         }
-        let extent = edges::Extent { size, area, radius };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let key = (
+            bytemuck::bytes_of(&draw.uniforms),
+            draw.source,
+            self.version,
+        );
+        (key, size, area.map(f32::to_bits), radius).hash(&mut hasher);
+        let extent = edges::Extent {
+            size,
+            area,
+            radius,
+            inputs: hasher.finish(),
+        };
         self.edges
             .encode(device, encoder, layer, extent, groups, mesh);
         Some(radius)
@@ -1179,6 +1206,9 @@ fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, fram
     res.sync(device, frame);
     let link = &frame.link;
     let mut ops = std::mem::take(&mut *link.ops.lock().expect("no panic holds the lock"));
+    if !ops.is_empty() {
+        res.version += 1;
+    }
     // The channel maps of the layers are for the picture only, so their
     // order in the queue has no effect.
     ops.retain(|(map, op)| match op {
@@ -1262,6 +1292,7 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
             && res.mesh.as_ref().is_none_or(|m| m.spec != mesh.spec)
         {
             res.mesh = Some(GpuMesh::new(device, mesh));
+            res.version += 1;
         }
         let size = screen_descriptor.size_in_pixels;
         let flat = frame.flat.is_some();
@@ -1313,6 +1344,13 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         let flat = self.frame.flat.is_some();
         res.draw(render_pass, draw, false, flat, info.screen_size_px);
     }
+}
+
+/// The count of the runs of the passes of the lines of the stops.
+pub fn line_runs(render_state: &egui_wgpu::RenderState) -> u64 {
+    let renderer = render_state.renderer.read();
+    let res = renderer.callback_resources.get::<Resources>();
+    res.map_or(0, |res| res.edges.runs())
 }
 
 /// The nearest places of the lines of the stops of each layer, from the
