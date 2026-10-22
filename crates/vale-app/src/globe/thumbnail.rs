@@ -76,6 +76,18 @@ mod tests {
     }
 
     #[test]
+    fn the_picture_shows_the_peak_in_the_color_of_the_top_stop() {
+        let mut map = Heightmap::new(64, u16::MAX);
+        let last = map.bands.stops().len() - 1;
+        map.bands
+            .set_color(last, vale_terrain::Side::Above, [255, 0, 0]);
+        let t = render(&[(&map, 1.0)], &GlobeView::centered(0.0, 0.0), 64);
+        let at = ((32 * t.width + 32) * 4) as usize;
+        let [r, g, b] = [t.rgba[at], t.rgba[at + 1], t.rgba[at + 2]];
+        assert!(r >= 250 && g <= 2 && b <= 2, "{:?}", [r, g, b]);
+    }
+
+    #[test]
     fn the_picture_of_the_globe_blends_the_raster_layers() {
         let middle = |t: &Thumbnail| {
             let at = ((32 * t.width + 32) * 4) as usize;
