@@ -107,6 +107,7 @@ cargo run --release -p vale-app -- --project path/to/world.gpkg --export-heightm
 | `--zoom <F>` | Zoom factor on the fitted view, on the globe and on the map |
 | `--face-size <N>` | Pixels on one edge of a face of a raster layer that the app makes with no choice from you, for example at an import. The form of a new raster layer also offers this size and starts on it. With no flag, the window uses 8192 and a run without a window uses 1024. A raster layer of a project file keeps its own face size. |
 | `--raster-form` | Open the form of a new raster layer at the start |
+| `--stops-page` | With `--panel layers`, open the page of the color stops of the selected raster layer |
 | `--import-heightmap <FILE>` | Import this equirectangular PNG or TIFF heightmap into the globe |
 | `--export-heightmap <FILE>` | Export the first height layer of the project file of `--project` to this GeoTIFF file, and exit |
 | `--size <WxH>` | Size in points. The default is 1280x800. |
