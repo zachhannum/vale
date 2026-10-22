@@ -1148,7 +1148,7 @@ fn the_gradient_adds_moves_and_removes_a_stop() {
         h.step();
         assert_eq!(h.state().globe.preview.selected, selected);
     }
-    h.get_by_label("Remove").click();
+    h.get_by_label(vale_app::ui::elevation::REMOVE).click();
     h.step();
     assert_eq!(stops(&h).len(), count);
 }
