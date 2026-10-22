@@ -461,6 +461,7 @@ mod tests {
             value_max: 25.535,
             base: 0,
             stops: Vec::new(),
+            colors: Vec::new(),
             opacity: 1.0,
         };
         let mut tags = GeoTiff::new(&world, Some(&raster), 4, 2);
