@@ -29,6 +29,7 @@ pub mod math;
 pub mod nav;
 pub mod preview;
 pub mod rivers;
+pub mod snap;
 pub mod stats;
 pub mod stroke_test;
 pub mod thumbnail;

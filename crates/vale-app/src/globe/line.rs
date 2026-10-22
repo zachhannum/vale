@@ -7,7 +7,8 @@
 
 use vale_store::{Feature, Geometry, LonLat, Uuid};
 
-use super::math::{V3, add, angle, cross, dir_to_lonlat, dot, lonlat_to_dir, normalize, scale};
+use super::math::{V3, add, angle, dir_to_lonlat, lonlat_to_dir, normalize, scale};
+use super::snap::distance_to_arc;
 
 /// The smoothing of a new line tool, from 0 to 1.
 pub const DEFAULT_SMOOTHING: f64 = 0.35;
@@ -218,22 +219,6 @@ fn simplify(path: &[V3], tolerance: f64) -> Vec<V3> {
         .collect()
 }
 
-/// The angle from `p` to the nearest point of the short arc from `a` to `b`.
-fn distance_to_arc(p: V3, a: V3, b: V3) -> f64 {
-    let n = cross(a, b);
-    let len = dot(n, n).sqrt();
-    if len < 1e-15 {
-        return angle(p, a);
-    }
-    let n = scale(n, 1.0 / len);
-    // The point is beside the arc when it is on the inner side of both ends.
-    if dot(cross(a, p), n) >= 0.0 && dot(cross(p, b), n) >= 0.0 {
-        dot(p, n).abs().asin()
-    } else {
-        angle(p, a).min(angle(p, b))
-    }
-}
-
 fn arc_length(path: &[V3]) -> f64 {
     path.windows(2).map(|w| angle(w[0], w[1])).sum()
 }
@@ -356,7 +341,7 @@ fn nearest_end(features: &[Feature], p: V3, reach: f64) -> Option<Join> {
 
 /// The parts of a line in runs where each part starts at the end of the one
 /// before. A line that crosses the 180 degree meridian is one run.
-fn chains(parts: &[Vec<LonLat>]) -> Vec<Vec<usize>> {
+pub(super) fn chains(parts: &[Vec<LonLat>]) -> Vec<Vec<usize>> {
     let dir = |p: LonLat| lonlat_to_dir(p[0], p[1]);
     let touches = |a: usize, b: usize| {
         let (Some(&end), Some(&start)) = (parts[a].last(), parts[b].first()) else {
@@ -415,6 +400,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::globe::math::{cross, dot};
 
     /// Points per radian: a sphere with a radius of 300 points on screen.
     const SCALE: f64 = 300.0;
