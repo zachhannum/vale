@@ -127,6 +127,31 @@ fn fs_edge_clean(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4<f32>(clamp(h, low, high), 0.0, 0.0, 0.0);
 }
 
+// The lowest and the highest of a height and the heights of its neighbors
+// on the ground.
+fn edge_range(c: f32, n: vec4<f32>) -> vec2<f32> {
+    var lo = c;
+    var hi = c;
+    for (var k = 0; k < 4; k++) {
+        if n[k] >= 0.0 {
+            lo = min(lo, n[k]);
+            hi = max(hi, n[k]);
+        }
+    }
+    return vec2<f32>(lo, hi);
+}
+
+// The cut heights of the 4 neighbors of a pixel: to the right, to the
+// left, down, and up.
+fn clean_around(p: vec2<i32>) -> vec4<f32> {
+    return vec4<f32>(
+        clean_px(p + vec2<i32>(1, 0)),
+        clean_px(p - vec2<i32>(1, 0)),
+        clean_px(p + vec2<i32>(0, 1)),
+        clean_px(p - vec2<i32>(0, 1)),
+    );
+}
+
 // Each pixel keeps the place of its 4 pairs that a line reaches farthest
 // past. A height at the value of a stop is on the upper side, so flat
 // ground at the value has no place.
@@ -136,37 +161,41 @@ fn fs_edge_seeds(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<u32> {
     let h = clean_px(p);
     var best = EDGE_EMPTY;
     var best_m = 1e9;
-    if h >= 0.0 {
-        let count = u32(u.params.w) + 1u;
+    if h < 0.0 {
+        return vec4<u32>(best, 0u, 0u, 0u);
+    }
+    let around = clean_around(p);
+    let range = edge_range(h, around);
+    let count = u32(u.params.w) + 1u;
+    for (var i = 0u; i < count; i++) {
+        let half = edge_half(i);
+        let at = u.lines[i].at.x;
+        // No pair crosses a value outside the range.
+        if half <= 0.0 || at <= range.x || at > range.y {
+            continue;
+        }
         for (var k = 0u; k < 4u; k++) {
-            let axis = k / 2u;
-            let dir = select(1, -1, k % 2u == 1u);
-            let off = vec2<i32>(edge_step(axis)) * dir;
-            let q = clean_px(p + off);
+            let q = around[k];
             if q < 0.0 {
                 continue;
             }
+            let axis = k / 2u;
+            let dir = select(1, -1, k % 2u == 1u);
+            let off = vec2<i32>(edge_step(axis)) * dir;
             let base = min(off, vec2<i32>(0));
             let first = select(h, q, dir < 0);
             let second = select(q, h, dir < 0);
-            for (var i = 0u; i < count; i++) {
-                let half = edge_half(i);
-                if half <= 0.0 {
-                    continue;
-                }
-                let at = u.lines[i].at.x;
-                if (first >= at) == (second >= at) {
-                    continue;
-                }
-                let t = clamp((at - first) / (second - first), 0.0, 1.0);
-                let steps = u32(round(t * EDGE_T_STEPS));
-                let place = vec2<f32>(base) + edge_step(axis) * f32(steps) / EDGE_T_STEPS;
-                let m = length(place) - half;
-                // On a tie, the higher stop wins.
-                if m <= best_m {
-                    best_m = m;
-                    best = edge_pack(base, axis, steps, i);
-                }
+            if (first >= at) == (second >= at) {
+                continue;
+            }
+            let t = clamp((at - first) / (second - first), 0.0, 1.0);
+            let steps = u32(round(t * EDGE_T_STEPS));
+            let place = vec2<f32>(base) + edge_step(axis) * f32(steps) / EDGE_T_STEPS;
+            let m = length(place) - half;
+            // On a tie, the higher stop wins.
+            if m <= best_m {
+                best_m = m;
+                best = edge_pack(base, axis, steps, i);
             }
         }
     }
@@ -255,14 +284,26 @@ fn tint_screen(p: vec2<i32>, h: f32, width: f32, mode: i32) -> vec3<f32> {
     if c < 0.0 {
         return tint(h, width, mode);
     }
-    let left = clean_px(p - vec2<i32>(1, 0));
-    let right = clean_px(p + vec2<i32>(1, 0));
-    let up = clean_px(p - vec2<i32>(0, 1));
-    let down = clean_px(p + vec2<i32>(0, 1));
-    var color = band_color(0, c, mode);
+    let around = clean_around(p);
+    let right = around.x;
+    let left = around.y;
+    let down = around.z;
+    let up = around.w;
+    let range = edge_range(c, around);
     let count = i32(u.params.w);
-    for (var i = 1; i < count; i++) {
+    // The pixel and its neighbors are at or above each limit below
+    // `first`, so the color starts as the color of the band below `first`.
+    // A limit above the range has no edge at the pixel.
+    var first = 1;
+    while first < count && u.bands[first].bottom.a <= range.x {
+        first++;
+    }
+    var color = band_color(first - 1, c, mode);
+    for (var i = first; i < count; i++) {
         let at = u.bands[i].bottom.a;
+        if at > range.y {
+            break;
+        }
         // A height at the limit is in the upper band.
         let side = c >= at;
         let tx = min(edge_toward(c, left, at, side), edge_toward(c, right, at, side));
