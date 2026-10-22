@@ -7,7 +7,8 @@
 
 use vale_store::{Feature, Geometry, LonLat, Uuid};
 
-use super::math::{V3, add, angle, cross, dir_to_lonlat, dot, lonlat_to_dir, normalize, scale};
+use super::math::{V3, add, angle, dir_to_lonlat, lonlat_to_dir, normalize, scale};
+use super::snap::{PathVertex, Run, append, distance_to_arc};
 
 /// The smoothing of a new line tool, from 0 to 1.
 pub const DEFAULT_SMOOTHING: f64 = 0.35;
@@ -51,22 +52,40 @@ pub enum LineEdit {
 }
 
 /// The edit that a stroke makes in a line layer with these features. The
-/// samples are on the unit sphere. A stroke that is too short gives `None`.
-pub fn commit(features: &[Feature], samples: &[V3], scale: f64, strength: f64) -> Option<LineEdit> {
-    let first = *samples.first()?;
+/// runs come from a `Tracer`. A stroke that is too short gives `None`.
+pub fn commit(features: &[Feature], runs: &[Run], scale: f64, strength: f64) -> Option<LineEdit> {
+    let first = runs.iter().find_map(|r| match r {
+        Run::Free(samples) => samples.first().copied(),
+        Run::Traced(path) => path.first().map(PathVertex::dir),
+    })?;
     let join = nearest_end(features, first, JOIN / scale);
     let sigma = SIGMA * strength.clamp(0.0, 1.0) / scale;
-    let mut samples = samples.to_vec();
-    let mut prefix = Vec::new();
+    let mut path = Vec::new();
     if let Some(join) = &join {
-        samples[0] = join.end;
-        prefix = tail(&dirs(&join.parts), 3.0 * sigma);
+        let chain = &join.parts[join.parts.len() - 1];
+        path.push(PathVertex::Exact(chain[chain.len() - 1]));
     }
-    let path = smooth(&samples, &prefix, scale, strength);
-    if arc_length(&path) < MIN_LENGTH / scale {
+    for (i, run) in runs.iter().enumerate() {
+        match run {
+            Run::Free(samples) if !samples.is_empty() => {
+                let mut samples = samples.clone();
+                let mut prefix = Vec::new();
+                if let Some(join) = join.as_ref().filter(|_| i == 0) {
+                    samples[0] = join.end;
+                    prefix = tail(&dirs(&join.parts), 3.0 * sigma);
+                }
+                let smooth = smooth(&samples, &prefix, scale, strength);
+                append(&mut path, smooth.into_iter().map(PathVertex::Free));
+            }
+            Run::Free(_) => {}
+            Run::Traced(traced) => append(&mut path, traced.iter().copied()),
+        }
+    }
+    let dirs: Vec<V3> = path.iter().map(PathVertex::dir).collect();
+    if arc_length(&dirs) < MIN_LENGTH / scale {
         return None;
     }
-    let mut new = to_parts(&path);
+    let mut new = to_parts_exact(&path);
     let Some(join) = join else {
         return Some(LineEdit::New(Geometry::Lines(new)));
     };
@@ -83,7 +102,7 @@ pub fn commit(features: &[Feature], samples: &[V3], scale: f64, strength: f64) -
 }
 
 /// The smooth path of a stroke. It starts at the first sample and ends at
-/// the last one. `prefix` is the end of a line that the stroke extends, and
+/// the last one, at the same positions. `prefix` is the end of a line that the stroke extends, and
 /// it ends at the first sample. The filter reads it, so the joint has no
 /// kink, but the path does not include it.
 pub fn smooth(samples: &[V3], prefix: &[V3], scale: f64, strength: f64) -> Vec<V3> {
@@ -92,6 +111,14 @@ pub fn smooth(samples: &[V3], prefix: &[V3], scale: f64, strength: f64) -> Vec<V
         if kept.last().is_none_or(|&k| angle(k, s) >= MIN_STEP / scale) {
             kept.push(s);
         }
+    }
+    if let Some(&last) = samples.last()
+        && kept.last() != Some(&last)
+    {
+        if kept.len() > 1 {
+            kept.pop();
+        }
+        kept.push(last);
     }
     let step = SPACING / scale;
     let mut points = resample(prefix, step);
@@ -157,6 +184,9 @@ fn resample(path: &[V3], step: f64) -> Vec<V3> {
     let last = path[path.len() - 1];
     if angle(out[out.len() - 1], last) > step * 1e-3 {
         out.push(last);
+    } else if out.len() > 1 {
+        let n = out.len();
+        out[n - 1] = last;
     }
     out
 }
@@ -218,22 +248,6 @@ fn simplify(path: &[V3], tolerance: f64) -> Vec<V3> {
         .collect()
 }
 
-/// The angle from `p` to the nearest point of the short arc from `a` to `b`.
-fn distance_to_arc(p: V3, a: V3, b: V3) -> f64 {
-    let n = cross(a, b);
-    let len = dot(n, n).sqrt();
-    if len < 1e-15 {
-        return angle(p, a);
-    }
-    let n = scale(n, 1.0 / len);
-    // The point is beside the arc when it is on the inner side of both ends.
-    if dot(cross(a, p), n) >= 0.0 && dot(cross(p, b), n) >= 0.0 {
-        dot(p, n).abs().asin()
-    } else {
-        angle(p, a).min(angle(p, b))
-    }
-}
-
 fn arc_length(path: &[V3]) -> f64 {
     path.windows(2).map(|w| angle(w[0], w[1])).sum()
 }
@@ -246,15 +260,75 @@ fn arc_length(path: &[V3]) -> f64 {
 /// the path goes over a pole, the part has two vertices at the pole, with
 /// the longitudes of each side.
 pub fn to_parts(path: &[V3]) -> Vec<Vec<LonLat>> {
-    let Some(&first) = path.first() else {
+    let path: Vec<PathVertex> = path.iter().map(|&d| PathVertex::Free(d)).collect();
+    to_parts_exact(&path)
+}
+
+/// The stored parts of a path, as `to_parts` makes them. An exact vertex
+/// keeps its stored position. A step between two exact vertices is a step
+/// of a target, and it stays as the target stores it. Two exact vertices at
+/// one place on the 180 degree meridian end a part and start the next one.
+/// Two exact vertices at a pole stay in one part.
+pub fn to_parts_exact(path: &[PathVertex]) -> Vec<Vec<LonLat>> {
+    let Some(first) = path.first() else {
         return Vec::new();
     };
-    let mut parts = vec![vec![lonlat(first)]];
+    let mut parts = vec![vec![stored(first)]];
     for w in path.windows(2) {
-        segment(w[0], w[1], 0, &mut parts);
+        let (PathVertex::Exact(a), PathVertex::Exact(b)) = (w[0], w[1]) else {
+            step(w[0], w[1], &mut parts);
+            continue;
+        };
+        // The step before can end at the other side of the seam.
+        if parts[parts.len() - 1].last() != Some(&a) {
+            parts.push(vec![a]);
+        }
+        let here = angle(w[0].dir(), w[1].dir()) < 1e-9;
+        if here && a[0].abs() == 180.0 && b[0] == -a[0] {
+            parts.push(vec![b]);
+        } else if here || (b[0] - a[0]).abs() <= MAX_DLON {
+            push(&mut parts, b);
+        } else {
+            step(w[0], w[1], &mut parts);
+        }
     }
     parts.retain(|p| p.len() > 1);
     parts
+}
+
+fn stored(v: &PathVertex) -> LonLat {
+    match *v {
+        PathVertex::Exact(p) => p,
+        PathVertex::Free(d) => lonlat(d),
+    }
+}
+
+/// Adds a step that is not a step of a target. An exact end keeps its
+/// stored position. At the 180 degree meridian, it keeps the side of the
+/// part.
+fn step(a: PathVertex, b: PathVertex, parts: &mut Vec<Vec<LonLat>>) {
+    let mut new = vec![vec![lonlat(a.dir())]];
+    segment(a.dir(), b.dir(), 0, &mut new);
+    // A step that ends on the meridian can give a part with no length.
+    let mut rest: Vec<Vec<LonLat>> = new.drain(1..).collect();
+    rest.retain(|p| {
+        let d = lonlat_to_dir(p[0][0], p[0][1]);
+        p.iter().any(|q| angle(d, lonlat_to_dir(q[0], q[1])) > 1e-9)
+    });
+    for &p in &new[0][1..] {
+        push(parts, p);
+    }
+    parts.extend(rest);
+    if let PathVertex::Exact(b) = b {
+        let part = parts.last_mut().expect("a part");
+        let end = part.last_mut().expect("a vertex");
+        let lon = if end[0].abs() == 180.0 && b[0].abs() == 180.0 {
+            end[0]
+        } else {
+            b[0]
+        };
+        *end = [lon, b[1]];
+    }
 }
 
 fn segment(a: V3, b: V3, depth: u32, parts: &mut Vec<Vec<LonLat>>) {
@@ -356,7 +430,7 @@ fn nearest_end(features: &[Feature], p: V3, reach: f64) -> Option<Join> {
 
 /// The parts of a line in runs where each part starts at the end of the one
 /// before. A line that crosses the 180 degree meridian is one run.
-fn chains(parts: &[Vec<LonLat>]) -> Vec<Vec<usize>> {
+pub(super) fn chains(parts: &[Vec<LonLat>]) -> Vec<Vec<usize>> {
     let dir = |p: LonLat| lonlat_to_dir(p[0], p[1]);
     let touches = |a: usize, b: usize| {
         let (Some(&end), Some(&start)) = (parts[a].last(), parts[b].first()) else {
@@ -414,7 +488,14 @@ fn tail(path: &[V3], len: f64) -> Vec<V3> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use std::sync::Arc;
+
+    use vale_store::{GeometryKind, Layer};
+
     use super::*;
+    use crate::globe::math::{cross, dot};
+    use crate::globe::snap::SnapSettings;
+    use crate::globe::snap::tests as snap_test;
 
     /// Points per radian: a sphere with a radius of 300 points on screen.
     const SCALE: f64 = 300.0;
@@ -493,6 +574,10 @@ mod tests {
         assert!(angle(path[path.len() - 1], samples[2]) < 1e-12);
     }
 
+    fn free(samples: Vec<V3>) -> Vec<Run> {
+        vec![Run::Free(samples)]
+    }
+
     fn stroke(from: LonLat, to: LonLat, n: usize) -> Vec<V3> {
         let (a, b) = (lonlat_to_dir(from[0], from[1]), lonlat_to_dir(to[0], to[1]));
         (0..=n).map(|i| lerp(a, b, i as f64 / n as f64)).collect()
@@ -519,7 +604,13 @@ mod tests {
 
     #[test]
     fn a_line_across_180_degrees_has_two_parts_that_meet_there() {
-        let edit = commit(&[], &stroke([170.0, 10.0], [-170.0, 10.0], 40), SCALE, 0.35).unwrap();
+        let edit = commit(
+            &[],
+            &free(stroke([170.0, 10.0], [-170.0, 10.0], 40)),
+            SCALE,
+            0.35,
+        )
+        .unwrap();
         let parts = lines(&edit);
         assert_eq!(parts.len(), 2);
         let (end, start) = (parts[0][parts[0].len() - 1], parts[1][0]);
@@ -530,7 +621,13 @@ mod tests {
         assert!(parts[1].iter().all(|p| p[0] <= -170.0 + 1e-9));
         assert!(steps_are_short(parts));
         // The other way.
-        let edit = commit(&[], &stroke([-170.0, 0.0], [170.0, 0.0], 40), SCALE, 0.35).unwrap();
+        let edit = commit(
+            &[],
+            &free(stroke([-170.0, 0.0], [170.0, 0.0], 40)),
+            SCALE,
+            0.35,
+        )
+        .unwrap();
         let parts = lines(&edit);
         assert_eq!(parts[0][parts[0].len() - 1][0], -180.0);
         assert_eq!(parts[1][0][0], 180.0);
@@ -538,7 +635,13 @@ mod tests {
 
     #[test]
     fn a_line_over_a_pole_has_short_steps() {
-        let edit = commit(&[], &stroke([20.0, 80.0], [-160.0, 80.0], 40), SCALE, 0.35).unwrap();
+        let edit = commit(
+            &[],
+            &free(stroke([20.0, 80.0], [-160.0, 80.0], 40)),
+            SCALE,
+            0.35,
+        )
+        .unwrap();
         let parts = lines(&edit);
         assert!(steps_are_short(parts));
         // The path goes over the pole and comes down the other side.
@@ -574,7 +677,7 @@ mod tests {
         let features = [other, old.clone()];
         // From near the end at (10, 0) to the east.
         let from = [10.0 + near.to_degrees(), 0.0];
-        let edit = commit(&features, &stroke(from, [20.0, 2.0], 20), SCALE, 0.35).unwrap();
+        let edit = commit(&features, &free(stroke(from, [20.0, 2.0], 20)), SCALE, 0.35).unwrap();
         let LineEdit::Extend { uuid, .. } = &edit else {
             panic!("a new line");
         };
@@ -586,13 +689,19 @@ mod tests {
 
         // From near the start at (0, 0) to the west: the line turns round.
         let from = [-near.to_degrees(), 0.0];
-        let edit = commit(&features, &stroke(from, [-10.0, 0.0], 20), SCALE, 0.35).unwrap();
+        let edit = commit(
+            &features,
+            &free(stroke(from, [-10.0, 0.0], 20)),
+            SCALE,
+            0.35,
+        )
+        .unwrap();
         let parts = lines(&edit);
         assert_eq!(parts[0][..2], [[10.0, 0.0], [0.0, 0.0]]);
 
         // From far away: a new line.
         let from = [10.0 + (3.0 * near).to_degrees(), 0.0];
-        let edit = commit(&features, &stroke(from, [20.0, 0.0], 20), SCALE, 0.35).unwrap();
+        let edit = commit(&features, &free(stroke(from, [20.0, 0.0], 20)), SCALE, 0.35).unwrap();
         assert!(matches!(edit, LineEdit::New(_)));
     }
 
@@ -606,7 +715,7 @@ mod tests {
         let old = feature(crossing);
         let edit = commit(
             std::slice::from_ref(&old),
-            &stroke([-170.0, 0.0], [-160.0, 0.0], 20),
+            &free(stroke([-170.0, 0.0], [-160.0, 0.0], 20)),
             SCALE,
             0.35,
         )
@@ -620,7 +729,188 @@ mod tests {
     #[test]
     fn a_tap_makes_no_line() {
         let p = lonlat_to_dir(0.0, 0.0);
-        assert_eq!(commit(&[], &[p, p], SCALE, 0.35), None);
+        assert_eq!(commit(&[], &free(vec![p, p]), SCALE, 0.35), None);
         assert_eq!(commit(&[], &[], SCALE, 0.35), None);
+    }
+
+    /// The edit of a pen stroke in an empty line layer, or in `layer`.
+    fn draw(
+        target: &[Layer],
+        layer: Option<&Layer>,
+        way: &[LonLat],
+        noise: f64,
+    ) -> (Vec<Run>, LineEdit) {
+        let mut all = target.to_vec();
+        all.extend(layer.cloned());
+        let t = Arc::new(snap_test::targets(&all));
+        let id = layer.map_or(9, |l| l.id.0);
+        let runs = snap_test::trace(&t, &snap_test::pen(way, noise), SnapSettings::default(), id);
+        let features = layer.map_or(&[][..], |l| &l.features[..]);
+        let edit = commit(features, &runs, SCALE, 0.35).expect("a line");
+        (runs, edit)
+    }
+
+    /// The positions of `want` follow each other in one part.
+    fn has_run(parts: &[Vec<LonLat>], want: &[LonLat]) -> bool {
+        parts
+            .iter()
+            .any(|p| p.windows(want.len()).any(|w| w == want))
+    }
+
+    /// Two parts meet at the seam with these positions.
+    fn has_seam(parts: &[Vec<LonLat>], end: LonLat, start: LonLat) -> bool {
+        parts
+            .windows(2)
+            .any(|w| w[0][w[0].len() - 1] == end && w[1][0] == start)
+    }
+
+    fn line_layer(id: u32, parts: Vec<Vec<Vec<LonLat>>>) -> Layer {
+        let geometries = parts.into_iter().map(Geometry::Lines).collect();
+        snap_test::layer(id, GeometryKind::Line, geometries)
+    }
+
+    fn polygon_layer(id: u32, rings: Vec<Vec<LonLat>>) -> Layer {
+        let geometries = rings
+            .into_iter()
+            .map(|r| Geometry::Polygons(vec![vec![r]]))
+            .collect();
+        snap_test::layer(id, GeometryKind::Polygon, geometries)
+    }
+
+    #[test]
+    fn a_traced_line_shares_the_vertices_of_its_target() {
+        let shared = [[3.3333333, 0.4], [6.789, -0.3], [10.0101, 0.2]];
+        let mut ring = vec![[0.1234567, 0.0]];
+        ring.extend(shared);
+        ring.extend([[13.5, 0.0], [13.5, -10.0], [0.1234567, -10.0]]);
+        let target = polygon_layer(1, vec![ring.clone()]);
+        let way = [[0.5, 6.0], [0.6, 0.1], [14.5, 0.1], [14.5, 8.0]];
+        let (runs, edit) = draw(&[target], None, &way, 0.3);
+        assert_eq!(snap_test::kinds(&runs), "FTF");
+        let parts = lines(&edit);
+        assert_eq!(parts.len(), 1);
+        assert!(has_run(parts, &shared), "{parts:?}");
+        // The entry and the exit are on the edges of the target.
+        let all = &parts[0];
+        let at = all.iter().position(|p| *p == shared[0]).unwrap();
+        let on = |p: LonLat, a: LonLat, b: LonLat| {
+            let d = |p: LonLat| lonlat_to_dir(p[0], p[1]);
+            distance_to_arc(d(p), d(a), d(b)) < 1e-9
+        };
+        assert!(on(all[at - 1], ring[0], shared[0]));
+        assert!(on(all[at + shared.len()], shared[2], ring[4]));
+    }
+
+    #[test]
+    fn a_stroke_meets_its_target_at_the_angle_of_the_pen() {
+        let part = (-10..=20).map(|i| [3.0 * f64::from(i), 0.0]).collect();
+        let target = line_layer(1, vec![vec![part]]);
+        // The pen comes in and goes out at about 10 degrees.
+        let way = [[-28.0, 5.3], [-2.0, 0.0], [20.0, 0.0], [50.0, 5.3]];
+        let (runs, edit) = draw(&[target], None, &way, 0.0);
+        assert_eq!(snap_test::kinds(&runs), "FTF");
+        let parts = lines(&edit);
+        assert_eq!(parts.len(), 1);
+        let path: Vec<V3> = parts[0].iter().map(|p| lonlat_to_dir(p[0], p[1])).collect();
+        let worst = turns(&path).into_iter().fold(0.0, f64::max);
+        assert!(worst < 10.0, "a turn of {worst} degrees");
+    }
+
+    #[test]
+    fn a_stroke_from_a_line_end_extends_it_while_it_traces_another() {
+        let a = vec![vec![[0.0, 0.0], [10.0, 0.0]]];
+        let b = vec![vec![
+            [13.0, 0.0],
+            [15.0, 0.0],
+            [18.0, 0.0],
+            [21.0, 0.0],
+            [30.0, 0.0],
+        ]];
+        let layer = line_layer(1, vec![a, b]);
+        let uuid_a = layer.features[0].uuid();
+        let way = [[10.0, 0.0], [24.0, 0.0], [24.0, 8.0]];
+        let (runs, edit) = draw(&[], Some(&layer), &way, 0.3);
+        assert_eq!(snap_test::kinds(&runs), "FTF");
+        let LineEdit::Extend { uuid, .. } = &edit else {
+            panic!("a new line");
+        };
+        assert_eq!(*uuid, uuid_a);
+        let parts = lines(&edit);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0][..2], [[0.0, 0.0], [10.0, 0.0]]);
+        // The blend into the other line covers about 2.3 degrees.
+        assert!(has_run(parts, &[[18.0, 0.0], [21.0, 0.0]]));
+
+        // Back along the line itself: no trace.
+        let (runs, edit) = draw(
+            &[],
+            Some(&layer),
+            &[[10.0, 0.0], [2.0, 0.0], [2.0, 8.0]],
+            0.3,
+        );
+        assert!(!snap_test::kinds(&runs).contains('T'));
+        assert!(matches!(edit, LineEdit::Extend { uuid, .. } if uuid == uuid_a));
+    }
+
+    #[test]
+    fn a_trace_across_180_keeps_both_seam_vertices() {
+        // A line in two parts.
+        let parts = vec![
+            vec![[170.0, 5.0], [175.0, 5.0], [180.0, 5.0]],
+            vec![[-180.0, 5.0], [-175.0, 5.0], [-170.0, 5.0]],
+        ];
+        let target = line_layer(1, vec![parts]);
+        let way = [[171.0, 10.0], [171.5, 5.0], [189.0, 5.0], [189.0, 12.0]];
+        let (runs, edit) = draw(&[target], None, &way, 0.3);
+        assert_eq!(snap_test::kinds(&runs), "FTF");
+        let parts = lines(&edit);
+        assert!(has_run(parts, &[[175.0, 5.0], [180.0, 5.0]]));
+        assert!(has_run(parts, &[[-180.0, 5.0], [-175.0, 5.0]]));
+        assert!(has_seam(parts, [180.0, 5.0], [-180.0, 5.0]), "{parts:?}");
+        assert!(steps_are_short(parts));
+
+        // A polygon cut into two rings.
+        let east = vec![
+            [170.0, 0.0],
+            [180.0, 0.0],
+            [180.0, 10.0],
+            [170.0, 10.0],
+            [170.0, 0.0],
+        ];
+        let west = vec![
+            [-180.0, 0.0],
+            [-170.0, 0.0],
+            [-170.0, 10.0],
+            [-180.0, 10.0],
+            [-180.0, 0.0],
+        ];
+        let target = polygon_layer(1, vec![east, west]);
+        let way = [[172.0, 15.0], [173.0, 10.0], [187.0, 10.0], [187.0, 16.0]];
+        let (runs, edit) = draw(&[target], None, &way, 0.3);
+        assert_eq!(snap_test::kinds(&runs), "FTF");
+        assert_eq!(snap_test::exact(&runs), [[180.0, 10.0], [-180.0, 10.0]]);
+        let parts = lines(&edit);
+        assert!(has_seam(parts, [180.0, 10.0], [-180.0, 10.0]), "{parts:?}");
+        assert!(steps_are_short(parts));
+    }
+
+    #[test]
+    fn a_trace_over_a_pole_keeps_both_pole_vertices() {
+        let part = vec![
+            [10.0, 80.0],
+            [10.0, 85.0],
+            [10.0, 90.0],
+            [-170.0, 90.0],
+            [-170.0, 85.0],
+            [-170.0, 80.0],
+        ];
+        let target = line_layer(1, vec![vec![part.clone()]]);
+        // A latitude past 90 is on the other side of the pole.
+        let way = [[10.0, 70.0], [10.0, 98.0], [50.0, 98.0]];
+        let (runs, edit) = draw(&[target], None, &way, 0.0);
+        assert_eq!(snap_test::kinds(&runs), "FTF");
+        assert!(snap_test::exact(&runs).windows(2).any(|w| w == &part[2..4]));
+        let parts = lines(&edit);
+        assert!(has_run(parts, &part[1..5]), "{parts:?}");
     }
 }

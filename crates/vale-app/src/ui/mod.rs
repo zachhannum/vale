@@ -1,6 +1,8 @@
 //! The UI: state, actions, and the draw function.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -16,6 +18,7 @@ use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, file_name};
 use crate::globe::line::{self, LineEdit};
+use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
@@ -375,6 +378,14 @@ pub struct AppState {
     saved_edits: u64,
     /// The number of strokes of the line tool.
     line_edits: u64,
+    /// The count of the undo steps, the redo steps, and the worlds that open.
+    history: u64,
+    /// The key of the snap targets of the globe. The targets change when it
+    /// changes.
+    targets_key: Option<TargetsKey>,
+    /// The snap targets of each visible vector layer, with the fingerprint
+    /// of the layer.
+    layer_targets: HashMap<LayerId, (u64, Arc<LayerTargets>)>,
     /// The time of the last save, for the save mark.
     saved_at: Option<Instant>,
     /// The last save failed.
@@ -383,6 +394,15 @@ pub struct AppState {
     resume: Option<Resume>,
     /// The time of the last write of the state for the next start.
     resume_at: Option<Instant>,
+}
+
+/// What the snap targets of the globe come from.
+#[derive(Debug, PartialEq)]
+struct TargetsKey {
+    /// The visible vector layers, with the count of their features.
+    layers: Vec<(LayerId, usize)>,
+    edits: u64,
+    history: u64,
 }
 
 impl AppState {
@@ -431,6 +451,9 @@ impl AppState {
             loader: None,
             saved_edits: 0,
             line_edits: 0,
+            history: 0,
+            targets_key: None,
+            layer_targets: HashMap::new(),
             saved_at: None,
             save_failed: false,
             resume: None,
@@ -533,12 +556,15 @@ impl AppState {
         }
         globe.set_paintable(paintable);
         let line = LayerKind::Vector(GeometryKind::Line);
-        globe.lineable = match self.selected_layer {
-            Some(LayerRef::Vector(id)) => project
-                .layer(id)
-                .is_some_and(|l| l.kind == line && l.visible),
-            _ => false,
+        globe.line_layer = match self.selected_layer {
+            Some(LayerRef::Vector(id)) => Some(id).filter(|&id| {
+                project
+                    .layer(id)
+                    .is_some_and(|l| l.kind == line && l.visible)
+            }),
+            _ => None,
         };
+        globe.lineable = globe.line_layer.is_some();
         if !height && brush::needs_height(globe.brush.mode) {
             globe.brush.mode = Mode::Raise;
         }
@@ -1039,6 +1065,7 @@ impl AppState {
         };
         match result.and_then(|_| self.restore_rasters()) {
             Ok(()) => {
+                self.history += 1;
                 let gone = |id| self.doc.layer(id).is_none();
                 if self.selection.is_some_and(|s| gone(s.layer)) {
                     self.selection = None;
@@ -1318,6 +1345,7 @@ impl AppState {
     fn start_world(&mut self) {
         self.doc.frame.view = None;
         self.saved_edits = self.edits();
+        self.history += 1;
         self.selection = None;
         self.select(None);
         self.raster_form = None;
@@ -1549,6 +1577,37 @@ impl AppState {
         self.globe.edits() + self.line_edits
     }
 
+    /// Builds the snap targets of the visible vector layers again if a layer
+    /// changed. Only the layers that changed build again.
+    pub fn refresh_targets(&mut self) {
+        let layers = self.doc.project.layers().iter();
+        let vectors: Vec<&Layer> = layers
+            .filter(|l| l.visible && l.raster().is_none())
+            .collect();
+        let key = TargetsKey {
+            layers: vectors.iter().map(|l| (l.id, l.features.len())).collect(),
+            edits: self.edits(),
+            history: self.history,
+        };
+        if self.targets_key.as_ref() == Some(&key) {
+            return;
+        }
+        let mut cache = std::mem::take(&mut self.layer_targets);
+        let mut targets = Vec::new();
+        for layer in vectors {
+            let print = LayerTargets::fingerprint(layer);
+            let built = match cache.remove(&layer.id) {
+                Some((old, built)) if old == print => built,
+                _ => Arc::new(LayerTargets::build(layer.id, layer)),
+            };
+            targets.push(built.clone());
+            self.layer_targets.insert(layer.id, (print, built));
+        }
+        let targets = (!targets.is_empty()).then(|| Arc::new(Targets::new(targets)));
+        self.globe.set_targets(targets);
+        self.targets_key = Some(key);
+    }
+
     /// Puts the last stroke of the line tool in the selected line layer. The
     /// next save makes it one undo step.
     pub fn poll_line(&mut self) {
@@ -1562,7 +1621,7 @@ impl AppState {
             return;
         };
         let smoothing = self.globe.line.smoothing;
-        let edit = line::commit(&layer.features, &stroke.dirs, stroke.scale, smoothing);
+        let edit = line::commit(&layer.features, &stroke.runs, stroke.scale, smoothing);
         let project = &mut self.doc.project;
         let done = match edit {
             Some(LineEdit::New(geometry)) => {

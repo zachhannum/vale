@@ -29,6 +29,7 @@ pub mod math;
 pub mod nav;
 pub mod preview;
 pub mod rivers;
+pub mod snap;
 pub mod stats;
 pub mod stroke_test;
 pub mod thumbnail;
@@ -52,6 +53,7 @@ use math::{V3, angle};
 use nav::Nav;
 use preview::{Preview, band_uniforms, line_uniforms};
 use rivers::{Rivers, choose_window};
+use snap::{Highlight, Run, SnapSettings, Targets, Tracer};
 use stats::Stats;
 use stroke_test::StrokeTest;
 use view::GlobeView;
@@ -101,7 +103,6 @@ const UPLIFT_ERODE_RATE: f64 = 12.0;
 const UPLIFT_WEATHER_EVERY: usize = 4;
 
 /// A stroke of the line tool.
-#[derive(Clone, Debug, PartialEq)]
 pub struct LineStroke {
     pub screen: Vec<Pos2>,
     /// The samples on the unit sphere.
@@ -110,6 +111,10 @@ pub struct LineStroke {
     pub scale: f64,
     /// The pen left the world, and the stroke takes no more samples.
     off: bool,
+    /// Snaps and traces the stroke while the pen is down.
+    tracer: Option<Tracer>,
+    /// The parts of the stroke after the pen comes up.
+    pub runs: Vec<Run>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -603,6 +608,12 @@ pub struct Globe {
     pub line: LineSettings,
     /// The line tool can draw: the selected layer is a visible line layer.
     pub lineable: bool,
+    /// The selected line layer, the layer that the line tool draws in.
+    pub line_layer: Option<LayerId>,
+    /// The snap settings of the tools that edit vector layers.
+    pub snap: SnapSettings,
+    /// The snap targets of the visible vector layers.
+    targets: Option<Arc<Targets>>,
     /// The stroke of the line tool while the pen is down.
     line_stroke: Option<LineStroke>,
     /// The last stroke of the line tool, for the layer.
@@ -692,6 +703,9 @@ impl Globe {
             paint_wanted: true,
             line: LineSettings::default(),
             lineable: false,
+            line_layer: None,
+            snap: SnapSettings::default(),
+            targets: None,
             line_stroke: None,
             line_done: None,
             channels_sent: false,
@@ -1447,13 +1461,23 @@ impl Globe {
         self.tool == Tool::Line && self.lineable
     }
 
+    /// Sets the snap targets of the visible vector layers.
+    pub fn set_targets(&mut self, targets: Option<Arc<Targets>>) {
+        self.targets = targets;
+    }
+
     /// Starts a stroke of the line tool.
     pub fn line_down(&mut self) {
+        let scale = self.radius();
+        let targets = self.targets.clone().zip(self.line_layer);
+        let tracer = targets.map(|(t, layer)| Tracer::new(t, self.snap, scale, layer));
         self.line_stroke = Some(LineStroke {
             screen: Vec::new(),
             dirs: Vec::new(),
-            scale: self.radius(),
+            scale,
             off: false,
+            tracer,
+            runs: Vec::new(),
         });
     }
 
@@ -1467,6 +1491,9 @@ impl Globe {
             Some(dir) => {
                 stroke.screen.push(pos);
                 stroke.dirs.push(dir);
+                if let Some(tracer) = &mut stroke.tracer {
+                    tracer.push(dir);
+                }
             }
             None => stroke.off = !stroke.dirs.is_empty(),
         }
@@ -1474,7 +1501,32 @@ impl Globe {
 
     /// Ends the stroke of the line tool. `take_line` gives it.
     pub fn line_up(&mut self) {
-        self.line_done = self.line_stroke.take();
+        self.line_done = self.line_stroke.take().map(|mut stroke| {
+            stroke.runs = match stroke.tracer.take() {
+                Some(tracer) => tracer.finish(),
+                None => vec![Run::Free(stroke.dirs.clone())],
+            };
+            stroke
+        });
+    }
+
+    /// The target that the stroke of the line tool snaps to or traces now.
+    /// Before the stroke, it is the point where a stroke from the pen or
+    /// the mouse starts.
+    pub fn snap_highlight(&self) -> Option<Highlight> {
+        if let Some(stroke) = &self.line_stroke {
+            return stroke.tracer.as_ref()?.highlight();
+        }
+        if !self.lining() {
+            return None;
+        }
+        let dir = self.unproject(self.input.pos?)?;
+        let targets = self.targets.as_ref()?;
+        let point = targets.start(self.line_layer?, dir, self.radius(), &self.snap)?;
+        Some(Highlight {
+            span: Vec::new(),
+            point: Some(point),
+        })
     }
 
     /// The stroke of the line tool while the pen is down, in screen points.
@@ -2822,4 +2874,106 @@ struct LayerDraw<'a> {
     /// The pass reads the full heightmap, so it has the window of small
     /// rivers.
     window: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::Vec2;
+    use vale_store::{Geometry, GeometryKind, LonLat};
+
+    use super::*;
+    use math::lonlat_to_dir;
+    use snap::LayerTargets;
+    use snap::tests::{layer, pen};
+
+    #[test]
+    fn a_hover_shows_where_the_stroke_starts() {
+        let line = |id: u32, part: Vec<LonLat>| {
+            layer(id, GeometryKind::Line, vec![Geometry::Lines(vec![part])])
+        };
+        let ours = line(9, vec![[0.0, 0.0], [10.0, 0.0]]);
+        let other = line(1, vec![[0.0, 5.0], [5.0, 5.0], [10.0, 5.0]]);
+        let built = [&ours, &other].map(|l| Arc::new(LayerTargets::build(l.id, l)));
+        let mut globe = Globe {
+            rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(300.0 / 0.45)),
+            view: GlobeView::centered(5.0, 0.0),
+            line_layer: Some(LayerId(9)),
+            lineable: true,
+            tool: Tool::Line,
+            ..Globe::default()
+        };
+        globe.set_targets(Some(Arc::new(Targets::new(built.to_vec()))));
+        let at = |globe: &Globe, lon: f64, lat: f64| {
+            globe.view.project(globe.rect, lonlat_to_dir(lon, lat))
+        };
+        let lit = |globe: &mut Globe, lon: f64, lat: f64| {
+            globe.input.pos = at(globe, lon, lat);
+            globe.snap_highlight().and_then(|h| h.point)
+        };
+        let near = |p: Option<V3>, lon: f64, lat: f64| {
+            p.is_some_and(|p| angle(p, lonlat_to_dir(lon, lat)) < 1e-9)
+        };
+        // Near the end of a line in the layer: the stroke extends it.
+        assert!(near(lit(&mut globe, 10.5, 0.5), 10.0, 0.0));
+        // Near a vertex of another layer: the start snaps to it.
+        assert!(near(lit(&mut globe, 5.3, 5.3), 5.0, 5.0));
+        // Far from each target.
+        assert_eq!(lit(&mut globe, 5.0, 20.0), None);
+        // With snapping off, only the end of a line shows.
+        globe.snap.on = false;
+        assert_eq!(lit(&mut globe, 5.3, 5.3), None);
+        assert!(near(lit(&mut globe, 10.5, 0.5), 10.0, 0.0));
+        // While the stroke starts at that end, the end shows.
+        globe.line_down();
+        globe.line_sample(Pos2::ZERO, Some(lonlat_to_dir(10.5, 0.5)));
+        assert!(near(
+            globe.snap_highlight().and_then(|h| h.point),
+            10.0,
+            0.0
+        ));
+    }
+
+    #[test]
+    fn the_highlight_shows_the_traced_span() {
+        let part = (0..=10).map(|i| [3.0 * f64::from(i), 0.0]).collect();
+        let river = layer(1, GeometryKind::Line, vec![Geometry::Lines(vec![part])]);
+        let targets = Targets::new(vec![Arc::new(LayerTargets::build(river.id, &river))]);
+        // A globe of 300 points radius.
+        let mut globe = Globe {
+            rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(300.0 / 0.45)),
+            view: GlobeView::centered(15.0, 0.0),
+            line_layer: Some(LayerId(9)),
+            lineable: true,
+            tool: Tool::Line,
+            ..Globe::default()
+        };
+        globe.set_targets(Some(Arc::new(targets)));
+        globe.line_down();
+        let samples = pen(&[[0.0, 6.0], [4.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.0);
+        let mut traced = false;
+        let mut left = false;
+        for &p in &samples {
+            globe.line_sample(Pos2::ZERO, Some(p));
+            let lit = globe.snap_highlight().filter(|h| h.span.len() > 1);
+            if let Some(h) = lit {
+                traced = true;
+                assert!(h.point.is_some());
+                assert!(h.span.iter().all(|d| d[2].abs() < 1e-9));
+            } else if traced {
+                left = true;
+            }
+        }
+        assert!(traced, "no highlight while the stroke traces");
+        assert!(left, "the highlight stays after the stroke leaves");
+        assert!(globe.snap_highlight().is_none());
+        globe.line_up();
+        assert!(globe.snap_highlight().is_none());
+        let stroke = globe.take_line().expect("a stroke");
+        assert!(
+            stroke
+                .runs
+                .iter()
+                .any(|r| matches!(r, Run::Traced(v) if v.len() > 1))
+        );
+    }
 }
