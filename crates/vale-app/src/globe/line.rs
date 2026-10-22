@@ -784,7 +784,7 @@ mod tests {
         ring.extend(shared);
         ring.extend([[13.5, 0.0], [13.5, -10.0], [0.1234567, -10.0]]);
         let target = polygon_layer(1, vec![ring.clone()]);
-        let way = [[1.0, 6.0], [1.5, 0.1], [12.0, 0.1], [12.0, 8.0]];
+        let way = [[0.5, 6.0], [0.6, 0.1], [14.5, 0.1], [14.5, 8.0]];
         let (runs, edit) = draw(&[target], None, &way, 0.3);
         assert_eq!(snap_test::kinds(&runs), "FTF");
         let parts = lines(&edit);
@@ -799,6 +799,21 @@ mod tests {
         };
         assert!(on(all[at - 1], ring[0], shared[0]));
         assert!(on(all[at + shared.len()], shared[2], ring[4]));
+    }
+
+    #[test]
+    fn a_stroke_meets_its_target_at_the_angle_of_the_pen() {
+        let part = (-10..=20).map(|i| [3.0 * f64::from(i), 0.0]).collect();
+        let target = line_layer(1, vec![vec![part]]);
+        // The pen comes in and goes out at about 10 degrees.
+        let way = [[-28.0, 5.3], [-2.0, 0.0], [20.0, 0.0], [50.0, 5.3]];
+        let (runs, edit) = draw(&[target], None, &way, 0.0);
+        assert_eq!(snap_test::kinds(&runs), "FTF");
+        let parts = lines(&edit);
+        assert_eq!(parts.len(), 1);
+        let path: Vec<V3> = parts[0].iter().map(|p| lonlat_to_dir(p[0], p[1])).collect();
+        let worst = turns(&path).into_iter().fold(0.0, f64::max);
+        assert!(worst < 10.0, "a turn of {worst} degrees");
     }
 
     #[test]
@@ -823,10 +838,8 @@ mod tests {
         let parts = lines(&edit);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0][..2], [[0.0, 0.0], [10.0, 0.0]]);
-        assert!(has_run(
-            parts,
-            &[[13.0, 0.0], [15.0, 0.0], [18.0, 0.0], [21.0, 0.0]]
-        ));
+        // The blend into the other line covers about 2.3 degrees.
+        assert!(has_run(parts, &[[18.0, 0.0], [21.0, 0.0]]));
 
         // Back along the line itself: no trace.
         let (runs, edit) = draw(
@@ -847,7 +860,7 @@ mod tests {
             vec![[-180.0, 5.0], [-175.0, 5.0], [-170.0, 5.0]],
         ];
         let target = line_layer(1, vec![parts]);
-        let way = [[172.0, 10.0], [173.0, 5.0], [187.0, 5.0], [187.0, 12.0]];
+        let way = [[171.0, 10.0], [171.5, 5.0], [189.0, 5.0], [189.0, 12.0]];
         let (runs, edit) = draw(&[target], None, &way, 0.3);
         assert_eq!(snap_test::kinds(&runs), "FTF");
         let parts = lines(&edit);
@@ -896,8 +909,8 @@ mod tests {
         let way = [[10.0, 70.0], [10.0, 98.0], [50.0, 98.0]];
         let (runs, edit) = draw(&[target], None, &way, 0.0);
         assert_eq!(snap_test::kinds(&runs), "FTF");
-        assert_eq!(snap_test::exact(&runs), part[..5]);
+        assert!(snap_test::exact(&runs).windows(2).any(|w| w == &part[2..4]));
         let parts = lines(&edit);
-        assert!(has_run(parts, &part[..5]), "{parts:?}");
+        assert!(has_run(parts, &part[1..5]), "{parts:?}");
     }
 }

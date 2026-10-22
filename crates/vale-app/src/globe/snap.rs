@@ -36,6 +36,9 @@ pub const RELEASE: f64 = 2.0;
 /// A trace shorter than this, in points, is free. A stroke that crosses a
 /// target does not trace it.
 pub const MIN_TRACE: f64 = 8.0;
+/// A sample within this part of the snap distance is on the target. The
+/// rest of the snap distance is for the blends into and out of a trace.
+const ON: f64 = 0.25;
 /// A trace keeps its direction after this many points.
 const TURN: f64 = 2.0;
 /// An edge shorter than this has no length.
@@ -789,7 +792,7 @@ impl Tracer {
 
     /// The runs of the stroke.
     pub fn finish(mut self) -> Vec<Run> {
-        if !self.release() && self.settings.on {
+        if !self.release(false) && self.settings.on {
             self.snap_end(false);
         }
         self.flush();
@@ -861,14 +864,21 @@ impl Tracer {
                 dist = d;
             }
         }
-        if dist > RELEASE * reach && self.release() {
-            self.free.push(p);
+        if dist > RELEASE * reach {
+            self.release(true);
         }
     }
 
     /// Ends the trace, and gives true when it makes a traced run. A short
-    /// trace gives its samples back to the free run.
-    fn release(&mut self) -> bool {
+    /// trace gives its samples back to the free run. `away` is true when
+    /// the pen moved away from the target.
+    ///
+    /// The traced run goes from the first to the last sample that is on the
+    /// target. Before it and after it, the stroke blends from the pen to
+    /// the target over the samples that are within the snap distance. So
+    /// the stroke meets the target at the angle of the pen. A stroke that
+    /// starts or ends on the target has no blend there.
+    fn release(&mut self, away: bool) -> bool {
         let Some(lock) = self.lock.take() else {
             return false;
         };
@@ -877,13 +887,60 @@ impl Tracer {
             return false;
         }
         let trace = lock.vertices(self.targets.layer(lock.layer));
-        let entry = trace[0].dir();
+        let dirs: Vec<V3> = trace.iter().map(PathVertex::dir).collect();
+        let cum = cumulative(&dirs);
+        let total = cum[cum.len() - 1];
+        let reach = self.reach();
+        let near = along(&dirs, &cum, &lock.raw, 4.0 * reach);
+        let on = |&(_, d): &(f64, f64)| d <= ON * reach;
+        let nearest = (0..near.len())
+            .min_by(|&i, &j| near[i].1.total_cmp(&near[j].1))
+            .expect("a sample");
+        let first = near.iter().position(on).unwrap_or(nearest);
+        let last = near.iter().rposition(on).unwrap_or(nearest);
+        let blends = !self.free.is_empty();
+        let t_in = if blends { near[first].0 } else { 0.0 };
+        let t_out = if away { near[last].0.max(t_in) } else { total };
+        // The blends go to the samples that are a snap distance away.
+        let far_in = (0..first).rev().find(|&i| near[i].1 >= reach).unwrap_or(0);
+        let far_out = (last..near.len())
+            .find(|&i| near[i].1 >= reach)
+            .unwrap_or(near.len() - 1);
+        let weight = |x: f64| {
+            let x = x.clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        if blends {
+            let from = near[far_in].0;
+            for (i, (&p, &(t, _))) in lock.raw.iter().zip(&near).enumerate().take(first) {
+                let w = if i < far_in || t_in <= from {
+                    0.0
+                } else {
+                    weight((t - from) / (t_in - from))
+                };
+                self.free.push(slerp(p, point_at(&dirs, &cum, t), w));
+            }
+        }
+        let entry = point_at(&dirs, &cum, t_in);
         if self.free.last().is_none_or(|&l| angle(l, entry) >= ZERO) {
             self.free.push(entry);
         }
         self.flush();
-        self.free = vec![trace[trace.len() - 1].dir()];
-        self.runs.push(Run::Traced(trace));
+        let run = cut(&trace, &cum, t_in, t_out);
+        self.free = vec![run[run.len() - 1].dir()];
+        self.runs.push(Run::Traced(run));
+        if away {
+            let to = near[far_out].0;
+            let samples = lock.raw.iter().zip(&near).enumerate().skip(last + 1);
+            for (i, (&p, &(t, _))) in samples {
+                let w = if i > far_out || to <= t_out {
+                    0.0
+                } else {
+                    weight((to - t) / (to - t_out))
+                };
+                self.free.push(slerp(p, point_at(&dirs, &cum, t), w));
+            }
+        }
         true
     }
 
@@ -893,6 +950,82 @@ impl Tracer {
             self.runs.push(Run::Free(free));
         }
     }
+}
+
+/// The arc length of a path at each of its vertices.
+fn cumulative(path: &[V3]) -> Vec<f64> {
+    let mut out = vec![0.0];
+    for w in path.windows(2) {
+        out.push(out[out.len() - 1] + angle(w[0], w[1]));
+    }
+    out
+}
+
+/// The point of a path at the arc length `t`.
+fn point_at(path: &[V3], cum: &[f64], t: f64) -> V3 {
+    if path.len() < 2 {
+        return path[0];
+    }
+    let j = cum.partition_point(|&c| c <= t).clamp(1, path.len() - 1);
+    let len = cum[j] - cum[j - 1];
+    if len < ZERO {
+        return path[j];
+    }
+    slerp(
+        path[j - 1],
+        path[j],
+        ((t - cum[j - 1]) / len).clamp(0.0, 1.0),
+    )
+}
+
+/// The arc length along a path of the nearest point to each sample, and
+/// the distance of the sample from the path. The arc length only goes
+/// forward, and it looks ahead at most `window` for each sample.
+fn along(path: &[V3], cum: &[f64], samples: &[V3], window: f64) -> Vec<(f64, f64)> {
+    let (mut k, mut t) = (0, 0.0);
+    let mut out = Vec::with_capacity(samples.len());
+    for &p in samples {
+        let mut best: Option<(f64, f64, usize)> = None;
+        let mut j = k;
+        while j + 1 < path.len() && cum[j] <= t + window {
+            let (_, a, d) = project(p, path[j], path[j + 1]);
+            if best.is_none_or(|b| d < b.0) {
+                best = Some((d, (cum[j] + a).max(t), j));
+            }
+            j += 1;
+        }
+        let d = match best {
+            Some((d, s, j)) => {
+                (t, k) = (s, j);
+                d
+            }
+            None => angle(p, path[0]),
+        };
+        out.push((t, d));
+    }
+    out
+}
+
+/// The part of a traced path from the arc length `a` to `b`. A cut end is
+/// a free vertex, and the vertices between stay as they are.
+fn cut(path: &[PathVertex], cum: &[f64], a: f64, b: f64) -> Vec<PathVertex> {
+    let dirs: Vec<V3> = path.iter().map(PathVertex::dir).collect();
+    let total = cum[cum.len() - 1];
+    let (start, end) = (a <= 0.0, b >= total);
+    let mut out = Vec::new();
+    if start {
+        out.push(path[0]);
+    } else {
+        out.push(PathVertex::Free(point_at(&dirs, cum, a)));
+    }
+    let inner = (1..path.len() - 1).filter(|&i| (start || cum[i] > a) && (end || cum[i] < b));
+    append(&mut out, inner.map(|i| path[i]));
+    if end {
+        append(&mut out, [path[path.len() - 1]]);
+    } else {
+        append(&mut out, [PathVertex::Free(point_at(&dirs, cum, b))]);
+    }
+    out
 }
 
 /// The cell of a direction: the face, then the row and the column of
@@ -1221,9 +1354,9 @@ pub(super) mod tests {
         let samples = pen(&[[0.0, 6.0], [4.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.5);
         let runs = trace(&t, &samples, SnapSettings::default(), 9);
         assert_eq!(kinds(&runs), "FTF");
+        // The blends cover about 2.3 degrees at each end.
         let lons: Vec<f64> = exact(&runs).iter().map(|p| p[0]).collect();
-        assert_eq!(lons[..6], [3.0, 6.0, 9.0, 12.0, 15.0, 18.0]);
-        assert!(lons.len() <= 7);
+        assert_eq!(lons, [6.0, 9.0, 12.0, 15.0, 18.0]);
         // The runs meet.
         let Run::Traced(trace) = &runs[1] else {
             panic!("not a trace");
@@ -1300,7 +1433,8 @@ pub(super) mod tests {
         way.extend([[52.0, 37.8], [52.0, 45.0]]);
         let runs = trace(&t, &pen(&way, 0.3), SnapSettings::default(), 9);
         assert_eq!(kinds(&runs), "FTF");
-        assert_eq!(exact(&runs), part[..4]);
+        // The blend into the target takes the first vertex.
+        assert_eq!(exact(&runs), part[1..4]);
     }
 
     #[test]
