@@ -18,7 +18,6 @@ pub fn render(layers: &[(&Heightmap, f32)], view: &GlobeView, size: u32) -> Thum
     let view = GlobeView { zoom: 1.0, ..*view };
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::splat(size as f32));
     let radius = view.radius(rect) as f32;
-    let bands: Vec<_> = layers.iter().map(|(map, _)| map.bands.bands()).collect();
     let ground = crate::ui::pad::theme::GROUND;
     let ground = [ground.r(), ground.g(), ground.b()].map(f32::from);
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
@@ -31,10 +30,9 @@ pub fn render(layers: &[(&Heightmap, f32)], view: &GlobeView, size: u32) -> Thum
                 continue;
             };
             let mut color = ground;
-            for ((map, opacity), bands) in layers.iter().zip(&bands) {
+            for (map, opacity) in layers {
                 let value = map.bands.value(map.sample(dir));
-                let band = bands.iter().find(|b| value < b.max).or(bands.last());
-                let top = band.map_or([128; 3], |b| b.color).map(f32::from);
+                let top = map.bands.step_color(value).map(f32::from);
                 let opacity = opacity.clamp(0.0, 1.0);
                 color = std::array::from_fn(|c| color[c] + (top[c] - color[c]) * opacity);
             }

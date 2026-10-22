@@ -997,6 +997,21 @@ fn the_preview_shows_the_color_of_the_band() {
 }
 
 #[test]
+fn the_ground_at_the_top_has_the_color_of_the_top_stop() {
+    let _gpu = one_gpu_test();
+    let mut h = preview_harness();
+    let bands = &mut h.state_mut().globe.map.bands;
+    let last = bands.stops().len() - 1;
+    bands.set_color(last, vale_terrain::Side::Above, [255, 0, 0]);
+    let top = *bands.bands().last().unwrap();
+    h.state_mut().globe.map.fill(u16::MAX);
+    let color = middle(&mut h);
+    assert!(close(color, [255, 0, 0]), "{color:?}");
+    let color = color_at(&mut h, top.max - 100.0);
+    assert!(close(color, top.color), "{color:?}");
+}
+
+#[test]
 fn the_grey_display_shows_the_plain_greyscale() {
     let _gpu = one_gpu_test();
     let mut h = preview_harness();

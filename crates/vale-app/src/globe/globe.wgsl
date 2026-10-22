@@ -21,7 +21,8 @@ struct Band {
 struct StopLine {
     // The color, then half of the weight in pixels. A weight of 0 is no line.
     color: vec4<f32>,
-    // The value of the stop, from 0 to 1, in x.
+    // The value of the stop, from 0 to 1, in x. The color of the ground at
+    // the value in yzw.
     at: vec4<f32>,
 }
 
@@ -221,19 +222,28 @@ fn band_color(i: i32, h: f32, mode: i32) -> vec3<f32> {
     return mix(band.bottom.rgb, band.top.rgb, clamp(t, 0.0, 1.0));
 }
 
+// The color of step `i`. Step `count` is the peak: the ground at the top
+// stop, with the color of that stop.
+fn step_color(i: i32, h: f32, mode: i32) -> vec3<f32> {
+    if i == i32(u.params.w) {
+        return u.lines[i].at.yzw;
+    }
+    return band_color(i, h, mode);
+}
+
 // The color of a height. `width` is the change of the height across one
 // pixel. It makes a band limit one pixel soft, with the limit in the middle.
 fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
     var color = band_color(0, h, mode);
     let count = i32(u.params.w);
-    for (var i = 1; i < count; i++) {
-        let at = u.bands[i].bottom.a;
+    for (var i = 1; i <= count; i++) {
+        let at = u.lines[i].at.x;
         // Flat ground at the limit is in the upper band.
         var over = select(0.0, 1.0, h >= at);
         if width > 1e-6 {
             over = clamp((h - at) / width + 0.5, 0.0, 1.0);
         }
-        color = mix(color, band_color(i, h, mode), over);
+        color = mix(color, step_color(i, h, mode), over);
     }
     return color;
 }

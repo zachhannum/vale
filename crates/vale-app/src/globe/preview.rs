@@ -67,7 +67,9 @@ pub fn band_uniforms(bands: &Bands) -> ([BandUniform; MAX_BANDS], usize) {
 }
 
 /// The line of one stop in the layout of `globe.wgsl`: the color with half
-/// of the weight in pixels, then the value of the stop as a limit.
+/// of the weight in pixels, then the value of the stop as a limit with the
+/// color of the ground at that value. The shader reads that color for the
+/// peak step of the top stop only.
 pub type LineUniform = [[f32; 4]; 2];
 
 /// The lines of the stops for the shader. A line that is off has a weight of
@@ -84,7 +86,8 @@ pub fn line_uniforms(bands: &Bands, pixels_per_point: f32) -> [LineUniform; MAX_
             0.0
         };
         let at = f32::from(bands.level(stop.value)) / 65535.0;
-        *slot = [[r, g, b, half], [at, 0.0, 0.0, 0.0]];
+        let [fr, fg, fb] = stop.above.map(|c| f32::from(c) / 255.0);
+        *slot = [[r, g, b, half], [at, fr, fg, fb]];
     }
     out
 }
@@ -107,6 +110,15 @@ mod tests {
     }
 
     #[test]
+    fn the_top_line_has_the_color_of_the_peak() {
+        let mut bands = Bands::default();
+        let last = bands.stops().len() - 1;
+        bands.set_color(last, vale_terrain::Side::Above, [255, 0, 0]);
+        let lines = line_uniforms(&bands, 1.0);
+        assert_eq!(lines[last][1], [1.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
     fn a_line_has_the_value_of_its_stop_and_a_weight_in_pixels() {
         let mut bands = Bands::default();
         let sea = bands.sea().unwrap();
@@ -120,10 +132,8 @@ mod tests {
         bands.set_line(0, StopLine { on: false, ..line });
         let lines = line_uniforms(&bands, 2.0);
         let (uniforms, count) = band_uniforms(&bands);
-        assert_eq!(
-            lines[sea],
-            [[1.0, 0.0, 0.0, 1.5], [uniforms[sea][0][3], 0.0, 0.0, 0.0]]
-        );
+        assert_eq!(lines[sea][0], [1.0, 0.0, 0.0, 1.5]);
+        assert_eq!(lines[sea][1][0], uniforms[sea][0][3]);
         assert_eq!(lines[0][0][3], 0.0);
         assert_eq!(lines[count][1][0], 1.0);
         assert!(lines[count + 1..].iter().all(|l| l[0][3] == 0.0));

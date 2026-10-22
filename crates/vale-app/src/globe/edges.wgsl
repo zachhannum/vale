@@ -292,15 +292,16 @@ fn tint_screen(p: vec2<i32>, h: f32, width: f32, mode: i32) -> vec3<f32> {
     let range = edge_range(c, around);
     let count = i32(u.params.w);
     // The pixel and its neighbors are at or above each limit below
-    // `first`, so the color starts as the color of the band below `first`.
-    // A limit above the range has no edge at the pixel.
+    // `first`, so the color starts as the color of the step below `first`.
+    // A limit above the range has no edge at the pixel. The last limit is
+    // the edge of the peak.
     var first = 1;
-    while first < count && u.bands[first].bottom.a <= range.x {
+    while first <= count && u.lines[first].at.x <= range.x {
         first++;
     }
-    var color = band_color(first - 1, c, mode);
-    for (var i = first; i < count; i++) {
-        let at = u.bands[i].bottom.a;
+    var color = step_color(first - 1, c, mode);
+    for (var i = first; i <= count; i++) {
+        let at = u.lines[i].at.x;
         if at > range.y {
             break;
         }
@@ -314,7 +315,7 @@ fn tint_screen(p: vec2<i32>, h: f32, width: f32, mode: i32) -> vec3<f32> {
             d = tx * ty / max(sqrt(tx * tx + ty * ty), 1e-9);
         }
         let over = select(clamp(0.5 - d, 0.0, 1.0), clamp(0.5 + d, 0.0, 1.0), side);
-        color = mix(color, band_color(i, c, mode), over);
+        color = mix(color, step_color(i, c, mode), over);
     }
     return color;
 }
