@@ -14,8 +14,9 @@ use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
-    NEW_RASTER, OPACITY, Panel, RECENTER, RESET, SMOOTHING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS,
-    WORLDS_ROW, brush_size_text, readout_text, theme,
+    NEW_RASTER, OPACITY, Panel, RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
+    SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text,
+    readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -4235,5 +4236,174 @@ fn scroll_to(h: &mut Pad, name: &str) {
         }
         let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
         drag(h, from, from - vec2(0.0, 200.0), None);
+    }
+}
+
+/// A click of the mouse on the middle of a control.
+fn click(h: &mut Pad, name: &str) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let pos = rect.center();
+    h.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run_steps(2);
+}
+
+/// A tap of the pen on the middle of a control.
+fn pen_tap(h: &mut Pad, name: &str) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let pos = rect.center();
+    touch(h, egui::TouchPhase::Start, pos, Some(0.5));
+    h.step();
+    touch(h, egui::TouchPhase::End, pos, Some(0.5));
+    h.run_steps(3);
+}
+
+/// The layout with the line tool in a new line layer. The rivers stay
+/// visible.
+fn line_pad(size: (f32, f32)) -> (Pad, vale_store::LayerId) {
+    let mut h = pad(size);
+    let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
+    h.state_mut().select(Some(LayerRef::Vector(lines)));
+    h.run_steps(2);
+    tap(&mut h, LINE);
+    assert!(h.state().globe.lining());
+    (h, lines)
+}
+
+#[test]
+fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, _) = line_pad(size);
+        if matches!(h.state().pad.rects.unwrap().brush_card, BrushCard::Full(_)) {
+            assert!(h.state().globe.snap.on, "{what}");
+            tap(&mut h, SNAP);
+            assert!(!h.state().globe.snap.on, "{what}");
+            pen_tap(&mut h, SNAP);
+            assert!(h.state().globe.snap.on, "{what}");
+            click(&mut h, SNAP);
+            assert!(!h.state().globe.snap.on, "{what}");
+            tap(&mut h, SNAP);
+        }
+        tap(&mut h, "Brush settings");
+        check_controls(&h, &format!("{what} with the snap controls"));
+        let image = h.render().unwrap();
+        std::fs::create_dir_all("../../target/app").unwrap();
+        let path = format!("../../target/app/test-pad-snap-{}.png", size.0);
+        image.save(path).unwrap();
+        let snap = |h: &Pad| {
+            let s = h.state().globe.snap;
+            [s.on, s.vertices, s.edges]
+        };
+        for (i, name) in [SNAPPING, SNAP_VERTICES, SNAP_EDGES]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(snap(&h)[i], "{what}: {name}");
+            tap(&mut h, name);
+            assert!(!snap(&h)[i], "{what}: {name} after a finger");
+            pen_tap(&mut h, name);
+            assert!(snap(&h)[i], "{what}: {name} after a pen");
+            click(&mut h, name);
+            assert!(!snap(&h)[i], "{what}: {name} after a mouse");
+            tap(&mut h, name);
+        }
+        let slider = control(&h, SNAP_DISTANCE).unwrap();
+        let y = slider.center().y;
+        finger_tap(&mut h, pos2(slider.left() + 1.0, y));
+        assert_eq!(h.state().globe.snap.distance, 4.0, "{what}");
+        drag(
+            &mut h,
+            pos2(slider.left() + 1.0, y),
+            pos2(slider.right() - 1.0, y),
+            None,
+        );
+        assert_eq!(h.state().globe.snap.distance, 32.0, "{what}");
+    }
+}
+
+/// A pen stroke through screen points, with a sample each 3 points.
+fn pen_path(h: &mut Pad, points: &[Pos2]) {
+    touch(h, egui::TouchPhase::Start, points[0], Some(0.5));
+    h.step();
+    for pair in points.windows(2) {
+        let n = (pair[0].distance(pair[1]) / 3.0).ceil().max(1.0) as usize;
+        for i in 1..=n {
+            let pos = pair[0].lerp(pair[1], i as f32 / n as f32);
+            touch(h, egui::TouchPhase::Move, pos, Some(0.5));
+            h.step();
+        }
+    }
+    touch(
+        h,
+        egui::TouchPhase::End,
+        points[points.len() - 1],
+        Some(0.5),
+    );
+    h.run_steps(3);
+}
+
+/// Draws along the longest river, a few points to one side. Returns the
+/// river vertices that the stroke goes along, and the new line.
+fn stroke_along_a_river(snap: bool) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
+    let (mut h, lines) = line_pad(BOARDS[0]);
+    h.state_mut().globe.snap.on = snap;
+    let rivers = vector(&h, "Rivers");
+    let longest = line_features(&h, rivers)
+        .into_iter()
+        .filter_map(|f| match f.geometry {
+            vale_store::Geometry::Lines(parts) => parts.into_iter().next(),
+            _ => None,
+        })
+        .max_by_key(|part| part.len())
+        .unwrap();
+    let mid = longest.len() / 2;
+    let way = longest[mid - 3..=mid + 3].to_vec();
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(way[3][0], way[3][1]);
+    let dir = |p: [f64; 2]| vale_app::globe::math::lonlat_to_dir(p[0], p[1]);
+    let span = |g: &vale_app::globe::Globe| {
+        let a = g.view.project(g.rect, dir(way[0])).unwrap();
+        let b = g.view.project(g.rect, dir(way[6])).unwrap();
+        a.distance(b)
+    };
+    globe.view.zoom = (300.0 / f64::from(span(globe))).min(40.0);
+    h.run_steps(2);
+    let globe = &h.state().globe;
+    let points: Vec<Pos2> = way
+        .iter()
+        .map(|&p| globe.view.project(globe.rect, dir(p)).unwrap() + vec2(0.0, 3.0))
+        .collect();
+    let before = line_features(&h, lines).len();
+    pen_path(&mut h, &points);
+    let after = line_features(&h, lines);
+    assert_eq!(after.len(), before + 1);
+    let vale_store::Geometry::Lines(parts) = &after[before].geometry else {
+        panic!("not a line");
+    };
+    (way, parts.concat())
+}
+
+#[test]
+fn a_pen_stroke_along_a_river_traces_it() {
+    let (way, line) = stroke_along_a_river(true);
+    for p in &way[1..way.len() - 1] {
+        assert!(line.contains(p), "{p:?} is not in {line:?}");
+    }
+}
+
+#[test]
+fn with_snapping_off_a_stroke_along_a_river_does_not_trace_it() {
+    let (way, line) = stroke_along_a_river(false);
+    for p in &way {
+        assert!(!line.contains(p), "{p:?} is in the line");
     }
 }

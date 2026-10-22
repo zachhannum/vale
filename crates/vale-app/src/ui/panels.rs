@@ -12,7 +12,7 @@ use vale_terrain::Mode;
 use crate::globe::brush::{
     EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
-use crate::globe::{Globe, Tool, WorldView, rivers, stats, stroke_test, zoom_test};
+use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
 use crate::world::{self, three_significant};
 
@@ -24,6 +24,13 @@ pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 pub const LINE_TOOL: &str = "Line";
 /// The slider of the smoothing of the line tool.
 pub const SMOOTHING: &str = "Smoothing";
+/// The check box that turns all snapping on and off.
+pub const SNAP: &str = "Snap";
+/// The menu of the snap targets and the snap distance.
+pub const SNAP_OPTIONS: &str = "Snap options";
+pub const SNAP_VERTICES: &str = "Snap to vertices";
+pub const SNAP_EDGES: &str = "Snap to edges";
+pub const SNAP_DISTANCE: &str = "Snap distance";
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -71,6 +78,17 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     if ui.add(slider).changed() {
                         globe.line.smoothing = percent / 100.0;
                     }
+                    let snap = &mut globe.snap;
+                    ui.checkbox(&mut snap.on, SNAP);
+                    ui.menu_button(SNAP_OPTIONS, |ui| {
+                        ui.checkbox(&mut snap.vertices, SNAP_VERTICES);
+                        ui.checkbox(&mut snap.edges, SNAP_EDGES);
+                        let slider = egui::Slider::new(&mut snap.distance, snap::DISTANCE_RANGE)
+                            .step_by(1.0)
+                            .suffix(" pt")
+                            .text(SNAP_DISTANCE);
+                        ui.add(slider);
+                    });
                 }
                 // The menu stays open while the user works on the list.
                 let stay = egui::containers::menu::MenuConfig::new()

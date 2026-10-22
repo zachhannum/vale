@@ -15,6 +15,7 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::brush::{
     EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
+use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds_of};
 use crate::world;
@@ -26,7 +27,7 @@ pub mod raster;
 pub mod theme;
 pub mod widgets;
 
-use geometry::{BrushCard, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
+use geometry::{BrushCard, CELL, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
 use icons::Icon;
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
 
@@ -37,6 +38,14 @@ pub const MORE: &str = "More";
 pub const LINE: &str = "Line";
 /// The slider of the smoothing of the line tool.
 pub const SMOOTHING: &str = "Smoothing";
+/// The button of the brush card that turns all snapping on and off.
+pub const SNAP: &str = "Snap";
+/// The switch of the sheet that turns all snapping on and off.
+pub const SNAPPING: &str = "Snapping";
+pub const SNAP_VERTICES: &str = "Snap to vertices";
+pub const SNAP_EDGES: &str = "Snap to edges";
+/// The slider of the snap distance, in points.
+pub const SNAP_DISTANCE: &str = "Snap distance";
 /// The modes of the menu of the More cell.
 const MORE_MODES: [(&str, Icon, Mode); 7] = [
     ("Carve", Icon::Carve, Mode::Carve),
@@ -695,18 +704,34 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 let mut slider = |name: &str, fraction: &mut f64, text: &str, on: bool| {
                     widgets::vertical_slider(&mut ui, controls, name, height, fraction, text, on)
                 };
-                // With a line layer, the first slider is the smoothing of
-                // the line tool.
+                // With a line layer, the card has the smoothing of the line
+                // tool and the snap button.
                 if line {
+                    let height = 2.0 * height - CELL.1;
                     percent_slider(&mut state.globe.line.smoothing, 0.0..=1.0, |f, text| {
-                        slider(SMOOTHING, f, text, true)
+                        widgets::vertical_slider(
+                            &mut ui, controls, SMOOTHING, height, f, text, true,
+                        )
                     });
+                    let snap = &mut state.globe.snap.on;
+                    let cell = widgets::tool_cell(
+                        &mut ui,
+                        controls,
+                        SNAP,
+                        SNAP,
+                        Icon::Magnet,
+                        *snap,
+                        true,
+                    );
+                    if cell.clicked() {
+                        *snap = !*snap;
+                    }
                 } else {
                     size_slider(state, |f, text| slider("Size", f, text, paint));
+                    percent_slider(&mut state.globe.brush.flow, FLOW, |f, text| {
+                        slider("Flow", f, text, paint)
+                    });
                 }
-                percent_slider(&mut state.globe.brush.flow, FLOW, |f, text| {
-                    slider("Flow", f, text, paint)
-                });
             }
             let open = state.pad.brush;
             let button = widgets::tool_cell(
@@ -910,6 +935,29 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
                 widgets::row_slider(ui, controls, name, SMOOTHING, fraction, text)
             },
         );
+        let snap = &mut state.globe.snap;
+        widgets::switch_row(ui, controls, SNAPPING, SNAPPING, &mut snap.on);
+        widgets::switch_row(
+            ui,
+            controls,
+            SNAP_VERTICES,
+            SNAP_VERTICES,
+            &mut snap.vertices,
+        );
+        widgets::switch_row(ui, controls, SNAP_EDGES, SNAP_EDGES, &mut snap.edges);
+        let (low, high) = (*snap::DISTANCE_RANGE.start(), *snap::DISTANCE_RANGE.end());
+        let mut fraction = (snap.distance - low) / (high - low);
+        let text = format!("{:.0} pt", snap.distance);
+        if widgets::row_slider(
+            ui,
+            controls,
+            SNAP_DISTANCE,
+            "Distance",
+            &mut fraction,
+            &text,
+        ) {
+            snap.distance = (low + fraction * (high - low)).round();
+        }
         return;
     }
     let unit = state.shown_unit().to_string();
