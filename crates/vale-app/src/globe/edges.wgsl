@@ -1,15 +1,17 @@
 // The screen-space lines of the color stops, in passes before the layer
 // pass. The first pass writes the shown height of each pixel. The second
-// pass cuts away the peaks and the pits smaller than one pixel, and finds
-// the places where the height crosses the value of a stop between two pixel
-// centers. The third pass marks the blocks of pixels with a place, and the
-// fourth gives each pixel the nearest place. The layer pass then draws the
-// band edges and the lines from the cut heights and the nearest places.
+// pass cuts away the peaks and the pits smaller than one pixel. The third
+// finds the places where the height crosses the value of a stop between two
+// pixel centers. The fourth pass marks the blocks of pixels with a place,
+// and the fifth gives each pixel the nearest place. The layer pass then
+// draws the band edges and the lines from the cut heights and the nearest
+// places, with the shown heights of the first pass.
 //
 // This file comes after `globe.wgsl` in the same module. The payload of a
 // place matches `edges.rs`.
 
-// The shown height of each pixel, or -1 off the ground.
+// The shown height of each pixel and its change across one pixel, or -1 off
+// the ground.
 @group(3) @binding(0) var edge_raw: texture_2d<f32>;
 // The place that each pixel keeps from its own 4 pairs.
 @group(3) @binding(1) var edge_seeds: texture_2d<u32>;
@@ -70,12 +72,22 @@ fn fs_heights(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if at.cover <= 0.0 {
         discard;
     }
-    return vec4<f32>(shown(at.d).x, 0.0, 0.0, 0.0);
+    return vec4<f32>(disk_height(at), 0.0, 0.0);
 }
 
 @fragment
 fn fs_flat_heights(in: FlatVertex) -> @location(0) vec4<f32> {
-    return vec4<f32>(shown(normalize(in.dir)).x, 0.0, 0.0, 0.0);
+    let d = normalize(in.dir);
+    return vec4<f32>(flat_height(d, dpdx(d), dpdy(d)), 0.0, 0.0);
+}
+
+// The shown height of a pixel and its change across one pixel, from the
+// first pass. The height is -1 where the first pass did not run.
+fn edge_shown(frag: vec2<f32>) -> vec2<f32> {
+    if u.edges.x < 0.5 {
+        return vec2<f32>(-1.0, 0.0);
+    }
+    return textureLoad(edge_raw, vec2<i32>(floor(frag)), 0).xy;
 }
 
 fn raw_at(p: vec2<i32>) -> f32 {
@@ -88,10 +100,12 @@ fn raw_at(p: vec2<i32>) -> f32 {
 
 // The height of a pixel cut to the range of its 8 neighbors, so that a
 // peak or a pit smaller than one pixel goes away. -1 off the ground.
-fn clean_at(p: vec2<i32>) -> f32 {
+@fragment
+fn fs_edge_clean(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(floor(frag.xy));
     let h = raw_at(p);
     if h < 0.0 {
-        return -1.0;
+        return vec4<f32>(-1.0, 0.0, 0.0, 0.0);
     }
     var low = 2.0;
     var high = -1.0;
@@ -108,23 +122,18 @@ fn clean_at(p: vec2<i32>) -> f32 {
         }
     }
     if high < 0.0 {
-        return h;
+        return vec4<f32>(h, 0.0, 0.0, 0.0);
     }
-    return clamp(h, low, high);
-}
-
-struct SeedOut {
-    @location(0) seed: vec4<u32>,
-    @location(1) clean: vec4<f32>,
+    return vec4<f32>(clamp(h, low, high), 0.0, 0.0, 0.0);
 }
 
 // Each pixel keeps the place of its 4 pairs that a line reaches farthest
 // past. A height at the value of a stop is on the upper side, so flat
 // ground at the value has no place.
 @fragment
-fn fs_edge_seeds(@builtin(position) frag: vec4<f32>) -> SeedOut {
+fn fs_edge_seeds(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<u32> {
     let p = vec2<i32>(floor(frag.xy));
-    let h = clean_at(p);
+    let h = clean_px(p);
     var best = EDGE_EMPTY;
     var best_m = 1e9;
     if h >= 0.0 {
@@ -133,7 +142,7 @@ fn fs_edge_seeds(@builtin(position) frag: vec4<f32>) -> SeedOut {
             let axis = k / 2u;
             let dir = select(1, -1, k % 2u == 1u);
             let off = vec2<i32>(edge_step(axis)) * dir;
-            let q = clean_at(p + off);
+            let q = clean_px(p + off);
             if q < 0.0 {
                 continue;
             }
@@ -161,7 +170,7 @@ fn fs_edge_seeds(@builtin(position) frag: vec4<f32>) -> SeedOut {
             }
         }
     }
-    return SeedOut(vec4<u32>(best, 0u, 0u, 0u), vec4<f32>(h, 0.0, 0.0, 0.0));
+    return vec4<u32>(best, 0u, 0u, 0u);
 }
 
 // 1 for a block of pixels with a place, and 0 for one with none.
