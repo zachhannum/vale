@@ -18,6 +18,7 @@ use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, file_name};
 use crate::globe::line::{self, LineEdit};
+use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
 use crate::headless;
@@ -555,16 +556,24 @@ impl AppState {
             globe.activate(active);
         }
         globe.set_paintable(paintable);
-        let line = LayerKind::Vector(GeometryKind::Line);
-        globe.line_layer = match self.selected_layer {
-            Some(LayerRef::Vector(id)) => Some(id).filter(|&id| {
-                project
-                    .layer(id)
-                    .is_some_and(|l| l.kind == line && l.visible)
-            }),
+        let drawn = match self.selected_layer {
+            Some(LayerRef::Vector(id)) => project
+                .layer(id)
+                .filter(|l| l.visible)
+                .map(|l| (id, l.kind)),
             _ => None,
         };
-        globe.lineable = globe.line_layer.is_some();
+        let kind = |k: GeometryKind| drawn.filter(|d| d.1 == LayerKind::Vector(k));
+        let (line, polygon) = (kind(GeometryKind::Line), kind(GeometryKind::Polygon));
+        globe.draw_layer = line.or(polygon).map(|d| d.0);
+        globe.lineable = line.is_some();
+        globe.fillable = polygon.is_some();
+        // A drawing tool stays a drawing tool in a layer of the other kind.
+        globe.tool = match globe.tool {
+            Tool::Line if globe.fillable => Tool::Polygon,
+            Tool::Polygon if globe.lineable => Tool::Line,
+            tool => tool,
+        };
         if !height && brush::needs_height(globe.brush.mode) {
             globe.brush.mode = Mode::Raise;
         }
@@ -1608,8 +1617,8 @@ impl AppState {
         self.targets_key = Some(key);
     }
 
-    /// Puts the last stroke of the line tool in the selected line layer. The
-    /// next save makes it one undo step.
+    /// Puts the last stroke of the line tool or the polygon tool in the
+    /// selected layer. The next save makes it one undo step.
     pub fn poll_line(&mut self) {
         let Some(stroke) = self.globe.take_line() else {
             return;
@@ -1621,7 +1630,12 @@ impl AppState {
             return;
         };
         let smoothing = self.globe.line.smoothing;
-        let edit = line::commit(&layer.features, &stroke.runs, stroke.scale, smoothing);
+        let edit = match layer.geometry() {
+            Some(GeometryKind::Polygon) => {
+                polygon::commit(&stroke.runs, stroke.scale, smoothing).map(LineEdit::New)
+            }
+            _ => line::commit(&layer.features, &stroke.runs, stroke.scale, smoothing),
+        };
         let project = &mut self.doc.project;
         let done = match edit {
             Some(LineEdit::New(geometry)) => {

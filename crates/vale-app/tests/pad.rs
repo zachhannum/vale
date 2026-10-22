@@ -14,9 +14,9 @@ use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
-    NEW_RASTER, OPACITY, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
-    SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text,
-    readout_text, theme,
+    NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE,
+    SNAP_EDGES, SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
+    brush_size_text, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -4440,6 +4440,101 @@ fn a_line_stroke_is_one_feature_that_undo_removes_and_a_stroke_from_its_end_exte
     assert!(joined_parts[0].len() > parts[0].len());
     tap(&mut h, "Undo");
     assert_eq!(line_features(&h, rivers), after);
+}
+
+#[test]
+fn the_polygon_cell_takes_the_place_of_more_for_a_polygon_layer() {
+    let mut h = pad(BOARDS[0]);
+    let more = control(&h, MORE).unwrap();
+    let areas = h
+        .state_mut()
+        .doc
+        .add_layer(vale_store::GeometryKind::Polygon);
+    h.state_mut().select(Some(LayerRef::Vector(areas)));
+    h.run_steps(2);
+    assert_eq!(control(&h, POLYGON), Some(more));
+    assert!(control(&h, LINE).is_none());
+    assert!(control(&h, SMOOTHING).is_some());
+    assert!(!h.state().globe.filling());
+    tap(&mut h, POLYGON);
+    assert_eq!(h.state().globe.tool, Tool::Polygon);
+    assert!(h.state().globe.filling());
+    // In a line layer, the tool draws lines.
+    let rivers = vector(&h, "Rivers");
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    assert!(h.state().globe.lining());
+    h.state_mut().select(Some(LayerRef::Vector(areas)));
+    h.run_steps(2);
+    assert!(h.state().globe.filling());
+}
+
+#[test]
+fn a_polygon_stroke_is_one_feature_that_undo_removes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let areas = h
+        .state_mut()
+        .doc
+        .add_layer(vale_store::GeometryKind::Polygon);
+    h.state_mut().select(Some(LayerRef::Vector(areas)));
+    h.step();
+    let now = std::time::Instant::now();
+    h.state_mut().save_tick(false, now);
+    h.state_mut()
+        .save_tick(false, now + std::time::Duration::from_secs(5));
+    tap(&mut h, POLYGON);
+    h.state_mut().globe.snap.on = false;
+    let saved = saves(&h);
+
+    // Three sides of a square. The polygon closes the fourth side.
+    let c = h.state().globe.rect.center();
+    let corners = [
+        vec2(-80.0, -80.0),
+        vec2(-80.0, 80.0),
+        vec2(80.0, 80.0),
+        vec2(80.0, -80.0),
+    ];
+    pen_path(&mut h, &corners.map(|v| c + v));
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    let after = line_features(&h, areas);
+    assert_eq!(after.len(), 1);
+    let vale_store::Geometry::Polygons(polygons) = &after[0].geometry else {
+        panic!("not a polygon");
+    };
+    assert_eq!(polygons.len(), 1);
+    // The fourth side is the short arc between the ends of the stroke, and
+    // the middle of the square is inside.
+    use vale_app::globe::math::{cross, dot, lonlat_to_dir, normalize};
+    let globe = &h.state().globe;
+    let dirs: Vec<[f64; 3]> = polygons[0][0]
+        .iter()
+        .map(|p| lonlat_to_dir(p[0], p[1]))
+        .collect();
+    let ring: Vec<Pos2> = dirs
+        .iter()
+        .map(|&d| globe.view.project(globe.rect, d).unwrap())
+        .collect();
+    let at = |v: egui::Vec2| ring.iter().position(|p| p.distance(c + v) < 0.5);
+    let (start, end) = (at(corners[0]).unwrap(), at(corners[3]).unwrap());
+    let normal = normalize(cross(dirs[end], dirs[start]));
+    let n = ring.len() - 1;
+    let mut k = end;
+    while k != start {
+        assert!(dot(dirs[k], normal).abs() < 1e-9, "{ring:?}");
+        k = (k + 1) % n;
+    }
+    let middle = globe.view.unproject(globe.rect, c).unwrap();
+    let rings = [vale_app::globe::vector::ring(&polygons[0][0], false)];
+    assert!(vale_app::globe::vector::contains(&rings, middle));
+    assert_eq!(saves(&h), saved + 1);
+
+    tap(&mut h, "Undo");
+    assert!(line_features(&h, areas).is_empty());
+    tap(&mut h, "Redo");
+    assert_eq!(line_features(&h, areas), after);
 }
 
 #[test]
