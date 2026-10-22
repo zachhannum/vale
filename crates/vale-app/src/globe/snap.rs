@@ -1,5 +1,6 @@
 //! Snapping and tracing. A snap moves a position to the nearest vertex or
-//! edge of a vector feature.
+//! edge of a vector feature. A trace makes a stroke follow an edge. The
+//! traced part has the stored vertices of the target.
 //!
 //! Distances in points are on the screen. `scale` is the number of points in
 //! one radian of the sphere, so a snap has the same reach at each zoom.
@@ -13,7 +14,7 @@ use std::sync::Arc;
 use vale_store::{Geometry, GeometryKind, Layer, LayerId, LonLat, Uuid};
 use vale_terrain::{face_of, warp};
 
-use super::line::chains;
+use super::line::{JOIN, chains};
 use super::math::{V3, angle, cross, dot, length, lonlat_to_dir, normalize, scale};
 
 /// The snap distance of a new project, in points.
@@ -30,8 +31,17 @@ const STEP: f64 = CELL / 4.0;
 const CELL_SPAN: f64 = 2.0 * CELL;
 /// A query wider than this reads each edge.
 const WIDE: f64 = 0.5;
+/// The trace leaves its target at this many times the snap distance.
+pub const RELEASE: f64 = 2.0;
+/// A trace shorter than this, in points, is free. A stroke that crosses a
+/// target does not trace it.
+pub const MIN_TRACE: f64 = 8.0;
+/// A trace keeps its direction after this many points.
+const TURN: f64 = 2.0;
 /// An edge shorter than this has no length.
 const ZERO: f64 = 1e-12;
+/// Two points nearer than this are at the same place.
+const SAME: f64 = 1e-9;
 
 /// The snap settings of a project.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -241,6 +251,10 @@ impl LayerTargets {
         self.layer
     }
 
+    pub(super) fn path(&self, i: usize) -> &TargetPath {
+        &self.paths[i]
+    }
+
     /// The target edges and the points that can be within `reach` of `p`.
     fn near(&self, p: V3, reach: f64) -> (Vec<u32>, Vec<u32>) {
         let Some(cells) = cells_near(p, reach) else {
@@ -283,7 +297,6 @@ impl Targets {
         Targets { layers }
     }
 
-    #[cfg(test)]
     pub(super) fn layer(&self, i: usize) -> &LayerTargets {
         &self.layers[i]
     }
@@ -390,6 +403,498 @@ impl Targets {
     }
 }
 
+impl TargetPath {
+    fn closed(&self) -> bool {
+        self.dirs.len() > 1 && self.cum.len() > self.dirs.len()
+    }
+
+    fn total(&self) -> f64 {
+        self.cum[self.cum.len() - 1]
+    }
+
+    /// The edge or the vertex of an index that counts on past the end of a
+    /// ring, and the arc length of the laps before it.
+    fn wrap(&self, k: i64) -> (usize, f64) {
+        if !self.closed() {
+            return (k as usize, 0.0);
+        }
+        let m = self.edges() as i64;
+        (
+            k.rem_euclid(m) as usize,
+            k.div_euclid(m) as f64 * self.total(),
+        )
+    }
+
+    /// The edge at the arc length `s`. On a ring, `s` counts on past the end.
+    fn edge_at(&self, s: f64) -> i64 {
+        let m = self.edges();
+        let (lap, local) = if self.closed() {
+            let lap = (s / self.total()).floor();
+            (lap as i64, s - lap * self.total())
+        } else {
+            (0, s)
+        };
+        let k = self.cum[..m]
+            .partition_point(|&c| c <= local)
+            .saturating_sub(1);
+        lap * m as i64 + k as i64
+    }
+
+    fn vertex_s(&self, v: i64) -> f64 {
+        let (i, lap) = self.wrap(v);
+        lap + self.cum[i]
+    }
+
+    fn point_at(&self, s: f64) -> V3 {
+        let (k, lap) = self.wrap(self.edge_at(s));
+        let (a, b) = self.ends(k);
+        let len = self.len(k);
+        if len < ZERO {
+            return a;
+        }
+        slerp(a, b, ((s - lap - self.cum[k]) / len).clamp(0.0, 1.0))
+    }
+
+    /// The part of the path around the edge `k0` that a trace can follow,
+    /// as the arc lengths of its ends. Each end is true when it is a cut or
+    /// the end of a line. On a ring with no cut, the part is a little
+    /// shorter than one lap each way from `from`.
+    fn span(&self, k0: i64, from: f64) -> (f64, bool, f64, bool) {
+        let m = self.edges() as i64;
+        let cut = |k: i64| self.cut(self.wrap(k).0);
+        if self.closed() {
+            let (mut lo, mut hi) = (k0, k0);
+            while hi - k0 < m && !cut(hi + 1) {
+                hi += 1;
+            }
+            while k0 - lo < m && !cut(lo - 1) {
+                lo -= 1;
+            }
+            if hi - k0 >= m {
+                let lap = self.total() - SAME;
+                return (from - lap, false, from + lap, false);
+            }
+            return (self.vertex_s(lo), true, self.vertex_s(hi + 1), true);
+        }
+        let (mut lo, mut hi) = (k0, k0);
+        while hi + 1 < m && !cut(hi + 1) {
+            hi += 1;
+        }
+        while lo > 0 && !cut(lo - 1) {
+            lo -= 1;
+        }
+        (self.vertex_s(lo), true, self.vertex_s(hi + 1), true)
+    }
+
+    /// The point of the path between the arc lengths `a` and `b` that is
+    /// nearest to `p`: its arc length and its distance.
+    fn nearest(&self, p: V3, a: f64, b: f64) -> (f64, f64) {
+        let mut best = (a, angle(p, self.point_at(a)));
+        for k in self.edge_at(a)..=self.edge_at(b) {
+            let (i, lap) = self.wrap(k);
+            if !self.target(i) {
+                continue;
+            }
+            let (x, y) = self.ends(i);
+            let s = (lap + self.cum[i] + project(p, x, y).1).clamp(a, b);
+            let d = angle(p, self.point_at(s));
+            if d < best.1 {
+                best = (s, d);
+            }
+        }
+        best
+    }
+
+    /// The vertices of a trace from the arc length `from` to `to`. The
+    /// stored vertices between them come verbatim. An end at a vertex is
+    /// that vertex.
+    fn trace(&self, from: f64, to: f64) -> Vec<PathVertex> {
+        let (lo, hi) = (from.min(to), from.max(to));
+        let n = self.dirs.len() as i64;
+        let mut vs: Vec<i64> = (self.edge_at(lo) - 1..=self.edge_at(hi) + 2)
+            .filter(|&v| self.closed() || (0..n).contains(&v))
+            .filter(|&v| (lo - SAME..=hi + SAME).contains(&self.vertex_s(v)))
+            .collect();
+        if to < from {
+            vs.reverse();
+        }
+        let near = |v: i64, s: f64| (self.vertex_s(v) - s).abs() < SAME;
+        let exact = |v: i64| PathVertex::Exact(self.ll[self.wrap(v).0 % n as usize]);
+        let start = vs.iter().take_while(|&&v| near(v, from)).last();
+        let mut out =
+            vec![start.map_or_else(|| PathVertex::Free(self.point_at(from)), |&v| exact(v))];
+        if hi - lo < SAME {
+            return out;
+        }
+        let end = vs.iter().rev().take_while(|&&v| near(v, to)).last();
+        out.extend(
+            vs.iter()
+                .filter(|&&v| !near(v, from) && !near(v, to))
+                .map(|&v| exact(v)),
+        );
+        out.push(end.map_or_else(|| PathVertex::Free(self.point_at(to)), |&v| exact(v)));
+        out
+    }
+}
+
+/// A vertex of the path of a stroke.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PathVertex {
+    /// A new position, on the unit sphere.
+    Free(V3),
+    /// A stored vertex of a target. It keeps its stored position.
+    Exact(LonLat),
+}
+
+impl PathVertex {
+    pub fn dir(&self) -> V3 {
+        match *self {
+            PathVertex::Free(d) => d,
+            PathVertex::Exact(p) => lonlat_to_dir(p[0], p[1]),
+        }
+    }
+}
+
+/// A part of a stroke. Each run starts where the run before it ends.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Run {
+    /// Pen samples, for the tool to smooth.
+    Free(Vec<V3>),
+    /// A part that follows a target, or a vertex that an end snaps to. The
+    /// tool keeps it as it is.
+    Traced(Vec<PathVertex>),
+}
+
+/// What the globe shows while a stroke snaps or traces.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Highlight {
+    /// The traced part.
+    pub span: Vec<V3>,
+    /// The position that the pen snaps to.
+    pub point: Option<V3>,
+}
+
+/// Adds vertices to a path. Where two vertices are at one place, one stays,
+/// the exact one when there is one. Two different exact vertices at one
+/// place both stay, as at a seam or a pole.
+pub(super) fn append(path: &mut Vec<PathVertex>, more: impl IntoIterator<Item = PathVertex>) {
+    for v in more {
+        let Some(last) = path.last_mut() else {
+            path.push(v);
+            continue;
+        };
+        if angle(last.dir(), v.dir()) >= ZERO {
+            path.push(v);
+            continue;
+        }
+        match (*last, v) {
+            (PathVertex::Exact(a), PathVertex::Exact(b)) if a != b => path.push(v),
+            (PathVertex::Free(_), PathVertex::Exact(_)) => *last = v,
+            _ => {}
+        }
+    }
+}
+
+/// A part of a trace on one path, as arc lengths.
+#[derive(Clone, Copy, Debug)]
+struct Piece {
+    path: usize,
+    from: f64,
+    to: f64,
+}
+
+/// A stroke that follows a target.
+struct Lock {
+    layer: usize,
+    /// The parts of the trace on the paths before this one.
+    done: Vec<Piece>,
+    path: usize,
+    from: f64,
+    s: f64,
+    /// 1 or -1 when the trace has a direction, else 0.
+    dir: f64,
+    lo: f64,
+    lo_end: bool,
+    hi: f64,
+    hi_end: bool,
+    /// The samples since the lock.
+    raw: Vec<V3>,
+}
+
+impl Lock {
+    fn new(hit: &Hit, path: &TargetPath, raw: Vec<V3>) -> Lock {
+        let (lo, lo_end, hi, hi_end) = path.span(hit.k as i64, hit.s);
+        Lock {
+            layer: hit.layer,
+            done: Vec::new(),
+            path: hit.path,
+            from: hit.s,
+            s: hit.s,
+            dir: 0.0,
+            lo,
+            lo_end,
+            hi,
+            hi_end,
+            raw,
+        }
+    }
+
+    fn pieces(&self) -> impl Iterator<Item = Piece> + '_ {
+        let current = Piece {
+            path: self.path,
+            from: self.from,
+            to: self.s,
+        };
+        self.done.iter().copied().chain([current])
+    }
+
+    fn length(&self) -> f64 {
+        self.pieces().map(|p| (p.to - p.from).abs()).sum()
+    }
+
+    fn vertices(&self, layer: &LayerTargets) -> Vec<PathVertex> {
+        let mut out = Vec::new();
+        for p in self.pieces() {
+            append(&mut out, layer.path(p.path).trace(p.from, p.to));
+        }
+        out
+    }
+
+    /// Moves the trace on to another path at the end of this one, when the
+    /// pen goes on past the end. The other path has a vertex at the end.
+    /// Gives the distance of the pen from the other path.
+    fn go_on(
+        &mut self,
+        layer: &LayerTargets,
+        p: V3,
+        side: f64,
+        exclude: Option<Uuid>,
+    ) -> Option<f64> {
+        let path = layer.path(self.path);
+        let end_s = if side > 0.0 { self.hi } else { self.lo };
+        let end = path.point_at(end_s);
+        let came = path.wrap(path.edge_at(end_s - side * ZERO)).0;
+        let mut best: Option<(f64, usize, usize, f64, f64)> = None;
+        for e in layer.near(end, SAME).0 {
+            let (i, k) = layer.edges[e as usize];
+            let (i, k) = (i as usize, k as usize);
+            let other = layer.path(i);
+            if (i, k) == (self.path, came) || Some(other.uuid) == exclude {
+                continue;
+            }
+            let (a, b) = other.ends(k);
+            let (_, along, dist) = project(p, a, b);
+            for (v, dir, away) in [(a, 1.0, along), (b, -1.0, other.len(k) - along)] {
+                if angle(v, end) > SAME || away <= ZERO || best.is_some_and(|x| x.0 <= dist) {
+                    continue;
+                }
+                best = Some((dist, i, k, dir, along));
+            }
+        }
+        let (dist, i, k, dir, along) = best?;
+        self.done.push(Piece {
+            path: self.path,
+            from: self.from,
+            to: end_s,
+        });
+        let other = layer.path(i);
+        self.path = i;
+        self.from = other.cum[if dir > 0.0 { k } else { k + 1 }];
+        self.s = other.cum[k] + along;
+        self.dir = dir;
+        (self.lo, self.lo_end, self.hi, self.hi_end) = other.span(k as i64, self.from);
+        Some(dist)
+    }
+}
+
+/// Makes the runs of a stroke from its pen samples. A stroke that comes
+/// near an edge follows it, and it leaves the edge when the pen moves away.
+/// The first and the last sample snap to a position.
+pub struct Tracer {
+    targets: Arc<Targets>,
+    settings: SnapSettings,
+    scale: f64,
+    layer: LayerId,
+    /// The line that the stroke extends. It is not a target.
+    exclude: Option<Uuid>,
+    last: Option<V3>,
+    runs: Vec<Run>,
+    free: Vec<V3>,
+    lock: Option<Lock>,
+    point: Option<V3>,
+}
+
+impl Tracer {
+    /// A tracer for a stroke at `scale` points per radian. A stroke that
+    /// starts at the end of a line in the layer `layer` extends that line.
+    pub fn new(targets: Arc<Targets>, settings: SnapSettings, scale: f64, layer: LayerId) -> Self {
+        Tracer {
+            targets,
+            settings,
+            scale,
+            layer,
+            exclude: None,
+            last: None,
+            runs: Vec::new(),
+            free: Vec::new(),
+            lock: None,
+            point: None,
+        }
+    }
+
+    fn reach(&self) -> f64 {
+        self.settings.distance / self.scale
+    }
+
+    /// Adds a pen sample, on the unit sphere.
+    pub fn push(&mut self, p: V3) {
+        let step = self.last.map_or(0.0, |l| angle(l, p));
+        let first = self.last.is_none();
+        self.last = Some(p);
+        if !self.settings.on {
+            self.free.push(p);
+            return;
+        }
+        if first {
+            self.free.push(p);
+            if let Some((uuid, _)) = self.targets.line_end(self.layer, p, JOIN / self.scale) {
+                // The join wins over a snap.
+                self.exclude = Some(uuid);
+                return;
+            }
+            self.snap_end(true);
+        } else if self.lock.is_some() {
+            self.follow(p, step);
+            return;
+        } else {
+            self.free.push(p);
+        }
+        self.try_lock(p);
+    }
+
+    /// The target that the stroke follows or snaps to now.
+    pub fn highlight(&self) -> Option<Highlight> {
+        if let Some(lock) = &self.lock {
+            let layer = self.targets.layer(lock.layer);
+            return Some(Highlight {
+                span: lock.vertices(layer).iter().map(PathVertex::dir).collect(),
+                point: Some(layer.path(lock.path).point_at(lock.s)),
+            });
+        }
+        self.point.map(|p| Highlight {
+            span: Vec::new(),
+            point: Some(p),
+        })
+    }
+
+    /// The runs of the stroke.
+    pub fn finish(mut self) -> Vec<Run> {
+        if !self.release() && self.settings.on {
+            self.snap_end(false);
+        }
+        self.flush();
+        self.runs
+    }
+
+    /// Snaps the last free point. A vertex adds a run of the exact vertex.
+    fn snap_end(&mut self, start: bool) {
+        let Some(&p) = self.free.last() else {
+            return;
+        };
+        let Some(snap) = self.targets.snap(p, self.reach(), &self.settings, None) else {
+            return;
+        };
+        *self.free.last_mut().expect("a free point") = snap.dir;
+        if let Some(ll) = snap.exact {
+            let vertex = Run::Traced(vec![PathVertex::Exact(ll)]);
+            if !start {
+                self.flush();
+            }
+            self.runs.push(vertex);
+        }
+    }
+
+    fn try_lock(&mut self, p: V3) {
+        let reach = self.reach();
+        self.point = self
+            .targets
+            .snap(p, reach, &self.settings, self.exclude)
+            .map(|s| s.dir);
+        if !self.settings.edges {
+            return;
+        }
+        let Some(hit) = self.targets.edge(p, reach, self.exclude) else {
+            return;
+        };
+        let raw = vec![self.free.pop().expect("a free point")];
+        let path = self.targets.layer(hit.layer).path(hit.path);
+        self.lock = Some(Lock::new(&hit, path, raw));
+        self.point = None;
+    }
+
+    /// Moves the trace on along its target, or leaves the target.
+    fn follow(&mut self, p: V3, step: f64) {
+        let reach = self.reach();
+        let turn = TURN / self.scale;
+        let targets = Arc::clone(&self.targets);
+        let lock = self.lock.as_mut().expect("a lock");
+        lock.raw.push(p);
+        let layer = targets.layer(lock.layer);
+        let path = layer.path(lock.path);
+        // The pen goes from the target, or along it, but it does not jump
+        // to another part of it.
+        let w = step + 2.0 * reach;
+        let (s, mut dist) = path.nearest(p, (lock.s - w).max(lock.lo), (lock.s + w).min(lock.hi));
+        if lock.dir == 0.0 {
+            lock.s = s;
+            if (s - lock.from).abs() > turn {
+                lock.dir = (s - lock.from).signum();
+            }
+        } else if (s - lock.s) * lock.dir > 0.0 {
+            lock.s = s;
+        }
+        let at_hi = lock.hi_end && lock.dir >= 0.0 && lock.s >= lock.hi - ZERO;
+        let at_lo = lock.lo_end && lock.dir <= 0.0 && lock.s <= lock.lo + ZERO;
+        if at_hi || at_lo {
+            let side = if at_hi { 1.0 } else { -1.0 };
+            if let Some(d) = lock.go_on(layer, p, side, self.exclude) {
+                dist = d;
+            }
+        }
+        if dist > RELEASE * reach && self.release() {
+            self.free.push(p);
+        }
+    }
+
+    /// Ends the trace, and gives true when it makes a traced run. A short
+    /// trace gives its samples back to the free run.
+    fn release(&mut self) -> bool {
+        let Some(lock) = self.lock.take() else {
+            return false;
+        };
+        if lock.length() < MIN_TRACE / self.scale {
+            self.free.extend(lock.raw);
+            return false;
+        }
+        let trace = lock.vertices(self.targets.layer(lock.layer));
+        let entry = trace[0].dir();
+        if self.free.last().is_none_or(|&l| angle(l, entry) >= ZERO) {
+            self.free.push(entry);
+        }
+        self.flush();
+        self.free = vec![trace[trace.len() - 1].dir()];
+        self.runs.push(Run::Traced(trace));
+        true
+    }
+
+    fn flush(&mut self) {
+        let free = std::mem::take(&mut self.free);
+        if free.len() > 1 {
+            self.runs.push(Run::Free(free));
+        }
+    }
+}
+
 /// The cell of a direction: the face, then the row and the column of
 /// equal-angle cells.
 fn cell(d: V3) -> u32 {
@@ -482,7 +987,7 @@ pub(super) fn distance_to_arc(p: V3, a: V3, b: V3) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeMap;
 
     use vale_store::{Feature, LayerKind};
@@ -652,5 +1157,174 @@ mod tests {
                 assert_eq!(found, scan, "reach {reach}");
             }
         }
+    }
+
+    /// Pen samples along a path in longitude and latitude, about 0.5
+    /// points apart, with a wiggle of `noise` degrees in latitude.
+    pub(crate) fn pen(way: &[LonLat], noise: f64) -> Vec<V3> {
+        let mut out = vec![dir(way[0][0], way[0][1])];
+        for w in way.windows(2) {
+            let (dx, dy) = (w[1][0] - w[0][0], w[1][1] - w[0][1]);
+            let n = ((dx * dx + dy * dy).sqrt() / 0.1).ceil() as usize;
+            for j in 1..=n {
+                let t = j as f64 / n as f64;
+                let wiggle = noise * (out.len() as f64 * 1.3).sin();
+                out.push(dir(w[0][0] + dx * t, w[0][1] + dy * t + wiggle));
+            }
+        }
+        out
+    }
+
+    pub(crate) fn trace(t: &Arc<Targets>, samples: &[V3], s: SnapSettings, layer: u32) -> Vec<Run> {
+        let mut tracer = Tracer::new(Arc::clone(t), s, SCALE, LayerId(layer));
+        for &p in samples {
+            tracer.push(p);
+        }
+        tracer.finish()
+    }
+
+    /// F for a free run, T for a traced run, V for a snapped vertex.
+    pub(crate) fn kinds(runs: &[Run]) -> String {
+        runs.iter()
+            .map(|r| match r {
+                Run::Free(_) => 'F',
+                Run::Traced(v) if v.len() == 1 => 'V',
+                Run::Traced(_) => 'T',
+            })
+            .collect()
+    }
+
+    /// The exact vertices of the traced runs.
+    pub(crate) fn exact(runs: &[Run]) -> Vec<LonLat> {
+        let mut out = Vec::new();
+        for r in runs {
+            if let Run::Traced(v) = r {
+                for p in v {
+                    if let PathVertex::Exact(ll) = p {
+                        out.push(*ll);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn equator() -> Layer {
+        let part = (0..=10).map(|i| [3.0 * f64::from(i), 0.0]).collect();
+        layer(1, GeometryKind::Line, vec![Geometry::Lines(vec![part])])
+    }
+
+    #[test]
+    fn a_stroke_follows_a_line_and_leaves_it() {
+        let t = Arc::new(targets(&[equator()]));
+        // The wiggle is about 3 points each way.
+        let samples = pen(&[[0.0, 6.0], [4.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.5);
+        let runs = trace(&t, &samples, SnapSettings::default(), 9);
+        assert_eq!(kinds(&runs), "FTF");
+        let lons: Vec<f64> = exact(&runs).iter().map(|p| p[0]).collect();
+        assert_eq!(lons[..6], [3.0, 6.0, 9.0, 12.0, 15.0, 18.0]);
+        assert!(lons.len() <= 7);
+        // The runs meet.
+        let Run::Traced(trace) = &runs[1] else {
+            panic!("not a trace");
+        };
+        let (Run::Free(a), Run::Free(b)) = (&runs[0], &runs[2]) else {
+            panic!("not free");
+        };
+        assert_eq!(a[a.len() - 1], trace[0].dir());
+        assert_eq!(b[0], trace[trace.len() - 1].dir());
+        // The last free run goes to the pen.
+        assert_eq!(b[b.len() - 1], samples[samples.len() - 1]);
+    }
+
+    #[test]
+    fn a_stroke_follows_a_polygon_ring_past_its_start() {
+        let ring = vec![
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [0.0, 0.0],
+        ];
+        let l = layer(
+            1,
+            GeometryKind::Polygon,
+            vec![Geometry::Polygons(vec![vec![ring]])],
+        );
+        let t = Arc::new(targets(&[l]));
+        let way = [
+            [5.0, -5.0],
+            [5.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, -5.0],
+        ];
+        let runs = trace(&t, &pen(&way, 0.3), SnapSettings::default(), 9);
+        assert_eq!(kinds(&runs), "FTF");
+        assert_eq!(
+            exact(&runs),
+            [[10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]]
+        );
+    }
+
+    #[test]
+    fn a_short_crossing_does_not_trace() {
+        let t = Arc::new(targets(&[equator()]));
+        let samples = pen(&[[4.0, -5.0], [5.0, 5.0]], 0.0);
+        let runs = trace(&t, &samples, SnapSettings::default(), 9);
+        assert_eq!(runs, [Run::Free(samples)]);
+    }
+
+    #[test]
+    fn a_trace_across_a_face_edge_is_continuous() {
+        // The middle vertex is a corner of the cube.
+        let corner = (1f64 / 2f64.sqrt()).atan().to_degrees();
+        let part = vec![
+            [35.0, 30.0],
+            [40.0, 33.0],
+            [45.0, corner],
+            [50.0, 37.0],
+            [55.0, 39.0],
+        ];
+        let l = layer(
+            1,
+            GeometryKind::Line,
+            vec![Geometry::Lines(vec![part.clone()])],
+        );
+        let t = Arc::new(targets(&[l]));
+        let mut way = vec![[30.0, 35.0]];
+        way.extend_from_slice(&part[..4]);
+        way.extend([[52.0, 37.8], [52.0, 45.0]]);
+        let runs = trace(&t, &pen(&way, 0.3), SnapSettings::default(), 9);
+        assert_eq!(kinds(&runs), "FTF");
+        assert_eq!(exact(&runs), part[..4]);
+    }
+
+    #[test]
+    fn each_switch_turns_off_its_target_kind() {
+        let t = Arc::new(targets(&[equator()]));
+        let reach = DEFAULT_DISTANCE / SCALE;
+        let near_vertex = north(9.0, 0.0, 4.0, SCALE);
+        let near_edge = north(10.5, 0.0, 10.0, SCALE);
+        let on = SnapSettings::default();
+        let snap = |p: V3, s: SnapSettings| t.snap(p, reach, &s, None).map(|s| s.kind);
+        assert_eq!(snap(near_vertex, on), Some(Kind::Vertex));
+        let no_vertices = SnapSettings {
+            vertices: false,
+            ..on
+        };
+        assert_eq!(snap(near_vertex, no_vertices), Some(Kind::Edge));
+        let no_edges = SnapSettings { edges: false, ..on };
+        assert_eq!(snap(near_vertex, no_edges), Some(Kind::Vertex));
+        assert_eq!(snap(near_edge, no_edges), None);
+        let off = SnapSettings { on: false, ..on };
+        assert_eq!(snap(near_vertex, off), None);
+
+        let samples = pen(&[[0.0, 6.0], [4.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.5);
+        assert_eq!(kinds(&trace(&t, &samples, no_edges, 9)), "F");
+        assert_eq!(trace(&t, &samples, off, 9), [Run::Free(samples)]);
     }
 }
