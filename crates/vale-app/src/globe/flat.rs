@@ -173,6 +173,11 @@ impl FlatView {
         (w / self.bounds.width()).min(h / self.bounds.height()) * self.zoom
     }
 
+    /// The width of the whole map on screen, in points.
+    pub fn map_width(&self, rect: Rect) -> f32 {
+        (self.bounds.width() * self.scale(rect)) as f32
+    }
+
     fn point_at(&self, rect: Rect, pos: Pos2) -> Point {
         let (s, d) = (self.scale(rect), pos - rect.center());
         Point::new(

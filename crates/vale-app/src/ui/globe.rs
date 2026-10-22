@@ -12,15 +12,19 @@ use vale_terrain::Mode;
 
 use crate::document::Document;
 use crate::globe::backdrop::Canvas;
-use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow};
-use crate::globe::math::{dir_to_lonlat, lonlat_to_dir};
+use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
+use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Painting, Tap, on_canvas};
+use crate::globe::snap::Highlight;
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
 use crate::globe::{Globe, Paint, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
+use crate::ui::pad::theme;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
+/// The largest angle between two drawn points of a highlight on the flat map.
+const FLAT_STEP: f64 = std::f64::consts::PI / 180.0;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CentralPanel::default()
@@ -255,6 +259,69 @@ fn color(c: vale_style::Color) -> egui::Color32 {
 }
 
 /// Draws one vector layer over the globe.
+/// Draws the target that a stroke snaps to or traces.
+fn snap_highlight(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    globe: &Globe,
+    highlight: &Highlight,
+    width: f32,
+) {
+    let [r, g, b, _] = theme::ACCENT.to_array();
+    let color = egui::Color32::from_rgba_unmultiplied(r, g, b, 160);
+    let stroke = egui::Stroke::new(width, color);
+    let point = match globe.world_view {
+        WorldView::Globe => {
+            let view = &globe.view;
+            let radius = view.radius(rect);
+            let step = vector::step(radius * f64::from(painter.ctx().pixels_per_point()));
+            let center = rect.center();
+            for part in vector::clip_line(&view.rot, &highlight.span, step) {
+                let to_screen = |p: &vector::P2| {
+                    egui::pos2(
+                        center.x + (p[0] * radius) as f32,
+                        center.y - (p[1] * radius) as f32,
+                    )
+                };
+                painter.line(part.iter().map(to_screen).collect(), stroke);
+            }
+            highlight.point.and_then(|p| view.project(rect, p))
+        }
+        WorldView::Flat => {
+            let flat = &globe.flat;
+            let mut part: Vec<egui::Pos2> = Vec::new();
+            let mut parts = Vec::new();
+            for pair in highlight.span.windows(2) {
+                let n = (angle(pair[0], pair[1]) / FLAT_STEP).ceil().max(1.0) as usize;
+                let start = usize::from(!part.is_empty());
+                for i in start..=n {
+                    let d = slerp(pair[0], pair[1], i as f64 / n as f64);
+                    match flat.project(rect, d) {
+                        Some(pos) => {
+                            let jump = part.last().is_some_and(|last: &egui::Pos2| {
+                                (pos.x - last.x).abs() > flat.map_width(rect) / 2.0
+                            });
+                            if jump {
+                                parts.push(std::mem::take(&mut part));
+                            }
+                            part.push(pos);
+                        }
+                        None => parts.push(std::mem::take(&mut part)),
+                    }
+                }
+            }
+            parts.push(part);
+            for part in parts.into_iter().filter(|p| p.len() > 1) {
+                painter.line(part, stroke);
+            }
+            highlight.point.and_then(|p| flat.project(rect, p))
+        }
+    };
+    if let Some(pos) = point {
+        painter.circle_stroke(pos, 6.0, stroke);
+    }
+}
+
 fn vector_layer(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -367,6 +434,9 @@ pub(super) fn canvas_input(
     background: egui::Color32,
 ) -> Option<egui::Rect> {
     let now = Instant::now();
+    if state.globe.lining() && state.globe.line_preview().is_none() {
+        state.refresh_targets();
+    }
     let globe = &mut state.globe;
     globe.world_km = state.doc.project.world.radius_km;
     globe.world_seed = state.doc.project.world.seed;
@@ -481,6 +551,9 @@ pub(super) fn paint_canvas(
         let stroke = style.map_or(egui::Stroke::new(2.0, egui::Color32::WHITE), |s| {
             egui::Stroke::new((s.width as f32).max(1.0), color(s.color))
         });
+        if let Some(highlight) = globe.snap_highlight() {
+            snap_highlight(&painter, rect, globe, &highlight, stroke.width + 4.0);
+        }
         painter.line(line.to_vec(), stroke);
     }
     if globe.nav.active() || more {
