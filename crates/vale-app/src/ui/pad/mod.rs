@@ -156,6 +156,8 @@ pub struct PadState {
     /// The page of the panel of the raster layer of `layer` that the Layers
     /// panel shows.
     pub page: Option<Page>,
+    /// The most height of the body of the panel in this frame.
+    pub body: f32,
     /// The panel at the right: Layers, Toolbox, or none.
     pub right: Option<Panel>,
     /// The layer that the Layers panel shows. `None`: the panel shows the
@@ -785,7 +787,7 @@ fn show_panel(
         (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
         (Panel::Brush, _) => (panel.key(), "Brush", None),
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
-            ("pad-ramps", raster::COLOR_RAMPS, Some(name))
+            ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Stops) => {
             ("pad-stops", raster::COLOR_STOPS, Some(name))
@@ -857,7 +859,9 @@ fn show_panel(
                     state.pad.add = !state.pad.add;
                 }
             }
-            if row.back && page.is_some() {
+            if row.back && page == Some(Page::Ramps) {
+                state.pad.page = Some(Page::Stops);
+            } else if row.back && page.is_some() {
                 state.pad.page = None;
                 state.globe.preview.selected = None;
             } else if row.back {
@@ -878,6 +882,7 @@ fn show_panel(
                 rect.bottom()
             };
             let most = (bottom - ui.cursor().top()).max(0.0);
+            state.pad.body = most;
             let out = egui::ScrollArea::vertical()
                 .id_salt(key)
                 .scroll_source(scroll)
