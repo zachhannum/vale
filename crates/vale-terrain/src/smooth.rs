@@ -268,25 +268,24 @@ const MAX_BLOCKS: usize = 256;
 impl LocalPyramid {
     /// The levels of a copy of `map` with a face of `face_size` texels, as
     /// the GPU has it. `map` is a snapshot, so a later change to the
-    /// heightmap does not change it.
-    pub fn new(map: Heightmap, face_size: u32) -> LocalPyramid {
+    /// heightmap does not change it. `None`: the copy is not a reduction of
+    /// `map` by a power of two.
+    pub fn new(map: Heightmap, face_size: u32) -> Option<LocalPyramid> {
         let factor = map
             .face_size()
             .div_ceil(face_size as usize)
             .max(1)
             .next_power_of_two();
-        assert_eq!(
-            map.face_size().div_ceil(factor),
-            face_size as usize,
-            "the copy is a reduction of the map"
-        );
-        LocalPyramid {
+        if map.face_size().div_ceil(factor) != face_size as usize {
+            return None;
+        }
+        Some(LocalPyramid {
             map,
             factor,
             face_size,
             blocks: Mutex::new(HashMap::new()),
             filled: AtomicU64::new(0),
-        }
+        })
     }
 
     /// The value that the display shows at a direction, from 0 to 1. See
@@ -599,7 +598,7 @@ mod tests {
                 copy.store_rect(face, rect, &data);
             }
             let full = Pyramid::new(&copy);
-            let local = LocalPyramid::new(map.snapshot(), size as u32);
+            let local = LocalPyramid::new(map.snapshot(), size as u32).unwrap();
             let mut dirs = Vec::new();
             // Random directions, and directions near face edges and corners.
             let mut seed = 7u64;

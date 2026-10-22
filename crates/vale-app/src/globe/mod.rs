@@ -1547,7 +1547,7 @@ impl Globe {
         let mut old = std::mem::take(&mut self.stops);
         for key in keys {
             let built = match old.iter().position(|s| s.0 == key) {
-                Some(i) => old.swap_remove(i).1,
+                Some(i) => Some(old.swap_remove(i).1),
                 None => {
                     let map = match self.draws_full(key.id) {
                         true => &self.map,
@@ -1556,16 +1556,14 @@ impl Globe {
                     let levels = key.levels.iter().map(|&l| f64::from(l) / 65535.0);
                     let face_size = key.key.face_size;
                     let snapshot = map.snapshot();
-                    Arc::new(StopTargets::new(
-                        key.id,
-                        snapshot,
-                        face_size,
-                        key.smoothing,
-                        levels,
-                    ))
+                    let built =
+                        StopTargets::new(key.id, snapshot, face_size, key.smoothing, levels);
+                    built.map(Arc::new)
                 }
             };
-            self.stops.push((key, built));
+            if let Some(built) = built {
+                self.stops.push((key, built));
+            }
         }
         self.join_targets();
     }

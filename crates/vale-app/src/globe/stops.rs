@@ -43,22 +43,23 @@ impl StopTargets {
     /// The targets of the stops at `levels` of a raster layer. `map` is a
     /// snapshot of the heightmap, and the GPU has a copy of it with a face
     /// of `face_size` texels. A level at an end of the range has no line.
+    /// `None`: the copy is not a reduction of `map`.
     pub fn new(
         raster: RasterId,
         map: Heightmap,
         face_size: u32,
         smoothing: Smoothing,
         levels: impl IntoIterator<Item = f64>,
-    ) -> Self {
+    ) -> Option<Self> {
         let mut levels: Vec<f64> = levels.into_iter().filter(|&l| l > 0.0 && l < 1.0).collect();
         levels.sort_by(f64::total_cmp);
         levels.dedup();
-        StopTargets {
+        Some(StopTargets {
             raster,
-            field: LocalPyramid::new(map, face_size),
+            field: LocalPyramid::new(map, face_size)?,
             smoothing,
             levels,
-        }
+        })
     }
 
     pub fn raster(&self) -> RasterId {
@@ -490,13 +491,7 @@ mod tests {
             on: true,
             feature_size: 2.0,
         };
-        Arc::new(StopTargets::new(
-            RASTER,
-            cap(c),
-            512,
-            smoothing,
-            [level(radius)],
-        ))
+        Arc::new(StopTargets::new(RASTER, cap(c), 512, smoothing, [level(radius)]).unwrap())
     }
 
     fn targets(stop: &Arc<StopTargets>, vectors: &[vale_store::Layer]) -> Arc<Targets> {
