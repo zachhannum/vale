@@ -20,7 +20,7 @@ use vale_app::ui::pad::{
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
-use vale_app::ui::{Action, AppState, Layout, Workspace, draw};
+use vale_app::ui::{Action, AppState, Layout, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
 use vale_store::{RasterDisplay, RasterId, Units, World};
 use vale_terrain::{Mode, meters_to_level};
@@ -4895,6 +4895,52 @@ fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
             None,
         );
         assert_eq!(h.state().globe.snap.distance, 32.0, "{what}");
+    }
+}
+
+#[test]
+fn the_snap_sheet_has_a_switch_for_the_stops_of_each_raster_layer() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let rain = vale_app::ui::RasterSpec {
+            name: "Rain".to_string(),
+            unit: "mm".to_string(),
+            min: 0.0,
+            max: 4000.0,
+            face_size: 256,
+        };
+        h.state_mut().add_raster(rain).unwrap();
+        let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
+        h.state_mut().select(Some(LayerRef::Vector(lines)));
+        h.run_steps(2);
+        tap(&mut h, LINE);
+        assert!(h.state().globe.lining(), "{what}");
+        tap(&mut h, "Brush settings");
+        let rasters = panels::raster_layers(h.state());
+        assert_eq!(rasters.len(), 2, "{what}");
+        for (id, name) in rasters {
+            let name = panels::snap_stops_name(&name);
+            let on = |h: &Pad| h.state().globe.snap.stops(id);
+            assert!(on(&h), "{what}: {name}");
+            tap(&mut h, &name);
+            assert!(!on(&h), "{what}: {name} after a finger");
+            pen_tap(&mut h, &name);
+            assert!(on(&h), "{what}: {name} after a pen");
+            click(&mut h, &name);
+            assert!(!on(&h), "{what}: {name} after a mouse");
+            tap(&mut h, &name);
+            assert!(on(&h), "{what}: {name}");
+        }
+        check_controls(&h, &format!("{what} with the switches of the stops"));
+        let image = h.render().unwrap();
+        std::fs::create_dir_all("../../target/app").unwrap();
+        image
+            .save(format!(
+                "../../target/app/test-pad-snap-stops-{}.png",
+                size.0
+            ))
+            .unwrap();
     }
 }
 
