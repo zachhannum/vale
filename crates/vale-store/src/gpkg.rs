@@ -29,12 +29,26 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 13;
+pub const FORMAT_VERSION: u32 = 14;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] =
-    &[v1, v2, undo::v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
+    v1,
+    v2,
+    undo::v3,
+    v4,
+    v5,
+    v6,
+    v7,
+    v8,
+    v9,
+    v10,
+    v11,
+    v12,
+    v13,
+    v14,
+];
 
 /// `GPKG` in ASCII.
 const APPLICATION_ID: i64 = 0x4750_4B47;
@@ -748,7 +762,7 @@ fn v11(tx: &Transaction) -> rusqlite::Result<()> {
                     &r.get::<_, String>(5)?,
                     &r.get::<_, String>(6)?,
                 );
-                Ok((r.get(0)?, stops_text(&stops)))
+                Ok((r.get(0)?, v13_stops_text(&stops)))
             })?
             .collect::<rusqlite::Result<_>>()?
     };
@@ -773,7 +787,7 @@ fn v11(tx: &Transaction) -> rusqlite::Result<()> {
 /// on both sides of 0 has a sea split: 0 is a limit, and the bands below it
 /// use the sea side of the ramp. Bands that the app of version 10 did not
 /// take give no stops, and the app then uses the default of the range.
-fn v10_stops(unit: &str, min: f64, max: f64, limits: &str, sea: &str, land: &str) -> Vec<Stop> {
+fn v10_stops(unit: &str, min: f64, max: f64, limits: &str, sea: &str, land: &str) -> Vec<V13Stop> {
     const MAX_BANDS: usize = 32;
     const MIN_BAND: f64 = 1.0;
     let parts = (parse_limits(limits), parse_colors(sea), parse_colors(land));
@@ -823,14 +837,14 @@ fn v10_stops(unit: &str, min: f64, max: f64, limits: &str, sea: &str, land: &str
         (at(0.0), at(1.0))
     };
     let bottom = edges(0).0;
-    let mut stops = vec![Stop {
+    let mut stops = vec![V13Stop {
         value: min,
         below: bottom,
         above: bottom,
         line: StopLine::default(),
     }];
     for (i, &value) in limits.iter().enumerate() {
-        stops.push(Stop {
+        stops.push(V13Stop {
             value,
             below: edges(i).1,
             above: edges(i + 1).0,
@@ -838,13 +852,147 @@ fn v10_stops(unit: &str, min: f64, max: f64, limits: &str, sea: &str, land: &str
         });
     }
     let top = edges(limits.len()).1;
-    stops.push(Stop {
+    stops.push(V13Stop {
         value: max,
         below: top,
         above: top,
         line: StopLine::default(),
     });
     stops
+}
+
+/// One color for each band of a raster. The stops of an older raster have
+/// two colors, and each band takes one of them as the app of version 13
+/// did. The undo images of the rasters change in the same way.
+fn v14(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN colors TEXT NOT NULL DEFAULT ''")?;
+    let rows: Vec<(i64, String, String)> = {
+        let mut select =
+            tx.prepare("SELECT id, unit, value_min, value_max, stops FROM vale_raster")?;
+        select
+            .query_map([], |r| {
+                let old = v13_parse_stops(&r.get::<_, String>(4)?);
+                let (stops, colors) =
+                    v14_bands(&r.get::<_, String>(1)?, r.get(2)?, r.get(3)?, &old);
+                Ok((r.get(0)?, stops_text(&stops), colors_text(&colors)))
+            })?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (id, stops, colors) in rows {
+        tx.execute(
+            "UPDATE vale_raster SET stops = ?1, colors = ?2 WHERE id = ?3",
+            params![stops, colors, id],
+        )?;
+    }
+    undo::v14(tx)
+}
+
+/// A stop of format version 13: a value, the color just below it, the color
+/// just above it, and a line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct V13Stop {
+    pub value: f64,
+    pub below: Rgb,
+    pub above: Rgb,
+    pub line: StopLine,
+}
+
+/// The stops and the band colors of format version 14 from the stops of
+/// version 13. A height in meters with values on both sides of 0 has a sea
+/// split. A band below the stop at sea level takes the color below its
+/// upper stop, and any other band takes the color above its lower stop. The
+/// stops at the ends lose their lines. A darker line keeps its color as a
+/// line of one color if the band above its stop now has another color.
+/// Stops that the app of version 13 did not take give no stops.
+pub(crate) fn v14_bands(unit: &str, min: f64, max: f64, old: &[V13Stop]) -> (Vec<Stop>, Vec<Rgb>) {
+    let split = unit == "m" && min < 0.0 && 0.0 < max;
+    let sea = old.iter().position(|s| s.value == 0.0).filter(|_| split);
+    let valid = old.len() >= 2
+        && (!split || sea.is_some())
+        && old
+            .iter()
+            .enumerate()
+            .all(|(i, s)| s.below == s.above || Some(i) == sea);
+    if !valid {
+        return (Vec::new(), Vec::new());
+    }
+    let colors: Vec<Rgb> = (0..old.len() - 1)
+        .map(|i| match sea {
+            Some(sea) if i < sea => old[i + 1].below,
+            _ => old[i].above,
+        })
+        .collect();
+    let last = old.len() - 1;
+    let stops = old
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let mut line = s.line;
+            let base = if Some(i) == sea { s.below } else { s.above };
+            if i == 0 || i == last {
+                line = StopLine::default();
+            } else if line.darker && base != colors[i] {
+                let keep = 1.0 - line.darken;
+                line.darker = false;
+                line.color = base.map(|c| (f32::from(c) * keep).round() as u8);
+            }
+            Stop {
+                value: s.value,
+                line,
+            }
+        })
+        .collect();
+    (stops, colors)
+}
+
+/// The stops of format version 13 as text, as `v13_parse_stops` reads them.
+fn v13_stops_text(stops: &[V13Stop]) -> String {
+    let items: Vec<String> = stops
+        .iter()
+        .map(|s| {
+            let mut item = match s.below == s.above {
+                true => format!("{}:{}", s.value, hex(s.below)),
+                false => format!("{}:{}/{}", s.value, hex(s.below), hex(s.above)),
+            };
+            if s.line != StopLine::default() {
+                item += &format!("|{}", line_text(s.line));
+            }
+            item
+        })
+        .collect();
+    items.join(",")
+}
+
+/// The stops of format version 13: `value:rrggbb`, or `value:rrggbb/rrggbb`
+/// for a stop with two colors, each with an optional line as in
+/// `stops_text`. A text that is not valid, or with values that are not in
+/// ascending order, gives no stops.
+pub(crate) fn v13_parse_stops(text: &str) -> Vec<V13Stop> {
+    let stop = |item: &str| {
+        let (item, line) = match item.split_once('|') {
+            Some((item, line)) => (item, parse_line(line)?),
+            None => (item, StopLine::default()),
+        };
+        let (value, colors) = item.split_once(':')?;
+        let value: f64 = value.parse().ok().filter(|v: &f64| v.is_finite())?;
+        let (below, above) = colors.split_once('/').unwrap_or((colors, colors));
+        Some(V13Stop {
+            value,
+            below: parse_color(below)?,
+            above: parse_color(above)?,
+            line,
+        })
+    };
+    let stops: Option<Vec<V13Stop>> = text
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(stop)
+        .collect();
+    let stops = stops.unwrap_or_default();
+    match stops.windows(2).all(|w| w[0].value < w[1].value) {
+        true => stops,
+        false => Vec::new(),
+    }
 }
 
 /// The color at `t` along colors with even spacing, as the app of format
@@ -1241,27 +1389,33 @@ fn parse_limits(text: &str) -> Option<Vec<f64>> {
     numbers.map(|s| s.parse().ok()).collect()
 }
 
-/// The stops as `value:rrggbb`, or as `value:rrggbb/rrggbb` for a stop with
-/// two colors, with commas between them. A stop with a line that is not the
-/// default line adds `|on:weight:rrggbb:color:darken`, with `off` for a line
-/// that is off and `darker` for a line with the darker color of the stop.
+fn hex([r, g, b]: Rgb) -> String {
+    format!("{r:02x}{g:02x}{b:02x}")
+}
+
+/// The colors as `rrggbb`, with commas between them.
+fn colors_text(colors: &[Rgb]) -> String {
+    let items: Vec<String> = colors.iter().map(|&c| hex(c)).collect();
+    items.join(",")
+}
+
+/// A line as `on:weight:rrggbb:color:darken`, with `off` for a line that is
+/// off and `darker` for a line with the darker color of the band.
+fn line_text(line: StopLine) -> String {
+    let on = if line.on { "on" } else { "off" };
+    let color = if line.darker { "darker" } else { "color" };
+    let (weight, darken) = (line.weight, line.darken);
+    format!("{on}:{weight}:{}:{color}:{darken}", hex(line.color))
+}
+
+/// The stops as values with commas between them. A stop with a line that is
+/// not the default line adds `|` and the text of its line.
 fn stops_text(stops: &[Stop]) -> String {
-    let hex = |[r, g, b]: Rgb| format!("{r:02x}{g:02x}{b:02x}");
     let items: Vec<String> = stops
         .iter()
-        .map(|s| {
-            let mut item = match s.below == s.above {
-                true => format!("{}:{}", s.value, hex(s.below)),
-                false => format!("{}:{}/{}", s.value, hex(s.below), hex(s.above)),
-            };
-            let line = s.line;
-            if line != StopLine::default() {
-                let on = if line.on { "on" } else { "off" };
-                let color = if line.darker { "darker" } else { "color" };
-                let (weight, darken) = (line.weight, line.darken);
-                item += &format!("|{on}:{weight}:{}:{color}:{darken}", hex(line.color));
-            }
-            item
+        .map(|s| match s.line == StopLine::default() {
+            true => s.value.to_string(),
+            false => format!("{}|{}", s.value, line_text(s.line)),
         })
         .collect();
     items.join(",")
@@ -1296,19 +1450,12 @@ fn parse_line(text: &str) -> Option<StopLine> {
 /// are not finite and in ascending order, gives no stops.
 fn parse_stops(text: &str) -> Vec<Stop> {
     let stop = |item: &str| {
-        let (item, line) = match item.split_once('|') {
-            Some((item, line)) => (item, parse_line(line)?),
+        let (value, line) = match item.split_once('|') {
+            Some((value, line)) => (value, parse_line(line)?),
             None => (item, StopLine::default()),
         };
-        let (value, colors) = item.split_once(':')?;
         let value: f64 = value.parse().ok().filter(|v: &f64| v.is_finite())?;
-        let (below, above) = colors.split_once('/').unwrap_or((colors, colors));
-        Some(Stop {
-            value,
-            below: parse_color(below)?,
-            above: parse_color(above)?,
-            line,
-        })
+        Some(Stop { value, line })
     };
     let stops: Option<Vec<Stop>> = text
         .split(',')
@@ -1319,6 +1466,16 @@ fn parse_stops(text: &str) -> Vec<Stop> {
     match stops.windows(2).all(|w| w[0].value < w[1].value) {
         true => stops,
         false => Vec::new(),
+    }
+}
+
+/// The stops and the band colors of a raster. Colors that are not valid, or
+/// not one fewer than the stops, give no stops and no colors.
+fn parse_bands(stops: &str, colors: &str) -> (Vec<Stop>, Vec<Rgb>) {
+    let stops = parse_stops(stops);
+    match parse_colors(colors) {
+        Some(colors) if colors.len() + 1 == stops.len() => (stops, colors),
+        _ => (Vec::new(), Vec::new()),
     }
 }
 
@@ -1367,14 +1524,15 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
         // A replaced row is a deleted row, and the tiles refer to the row.
         tx.execute(
             "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base,
-               opacity, display, stops, smooth, feature_size)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+               opacity, display, stops, colors, smooth, feature_size)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT (id) DO UPDATE SET
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
                base = excluded.base,
                opacity = excluded.opacity, display = excluded.display,
-               stops = excluded.stops, smooth = excluded.smooth,
+               stops = excluded.stops, colors = excluded.colors,
+               smooth = excluded.smooth,
                feature_size = excluded.feature_size",
             params![
                 r.id.0,
@@ -1386,6 +1544,7 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 f64::from(clamp_opacity(r.opacity)),
                 r.display.id(),
                 stops_text(&r.stops),
+                colors_text(&r.colors),
                 r.smoothing.on,
                 f64::from(clamp_feature_size(r.smoothing.feature_size)),
             ],
@@ -1463,7 +1622,7 @@ fn write_tiles(
 fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
     let mut rows = conn.prepare(
         "SELECT id, face_size, unit, value_min, value_max, base, opacity, display, stops,
-           smooth, feature_size
+           colors, smooth, feature_size
          FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
@@ -1473,6 +1632,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
         let bad = |what: &str| corrupt(format!("the {what} of raster {id}"));
         let (face_size, base): (i64, i64) = (r.get(1)?, r.get(5)?);
         let text = |i: usize| r.get::<_, String>(i);
+        let (stops, colors) = parse_bands(&text(8)?, &text(9)?);
         rasters.push(Raster {
             id: RasterId(id),
             opacity: clamp_opacity(r.get::<_, f64>(6)? as f32),
@@ -1485,10 +1645,11 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
             value_min: r.get(3)?,
             value_max: r.get(4)?,
             base: u16::try_from(base).map_err(|_| bad("base"))?,
-            stops: parse_stops(&text(8)?),
+            stops,
+            colors,
             smoothing: Smoothing {
-                on: r.get::<_, i64>(9)? != 0,
-                feature_size: clamp_feature_size(r.get::<_, f64>(10)? as f32),
+                on: r.get::<_, i64>(10)? != 0,
+                feature_size: clamp_feature_size(r.get::<_, f64>(11)? as f32),
             },
         });
     }
@@ -2183,18 +2344,16 @@ mod tests {
         }
     }
 
-    /// A project with a heightmap and a second raster of another face size.
-    /// The two raster layers are below the vector layers.
-    /// A stop of one color.
+    /// A stop with no line.
     fn stop(value: f64) -> Stop {
         Stop {
             value,
-            below: [1, 2, 3],
-            above: [1, 2, 3],
             line: StopLine::default(),
         }
     }
 
+    /// A project with a heightmap and a second raster of another face size.
+    /// The two raster layers are below the vector layers.
     fn rasters() -> (Project, RasterId, RasterId) {
         let mut project = sample();
         let height = project.add_raster("Height".into(), 8192, "m".into(), -6000.0, 6000.0);
@@ -2209,25 +2368,20 @@ mod tests {
             value_max: 6000.0,
             base: 19114,
             stops: vec![
-                Stop {
-                    value: -6000.0,
-                    below: [0, 1, 2],
-                    above: [0, 1, 2],
-                    line: StopLine::default(),
-                },
+                stop(-6000.0),
                 Stop {
                     value: 1e-7,
-                    below: [250, 128, 7],
-                    above: [255, 255, 255],
-                    line: StopLine::default(),
+                    line: StopLine {
+                        on: true,
+                        weight: 2.5,
+                        color: [7, 8, 9],
+                        darker: false,
+                        darken: 0.25,
+                    },
                 },
-                Stop {
-                    value: 1234.5678,
-                    below: [16, 44, 92],
-                    above: [16, 44, 92],
-                    line: StopLine::default(),
-                },
+                stop(1234.5678),
             ],
+            colors: vec![[0, 1, 2], [250, 128, 7]],
             smoothing: Smoothing::default(),
         };
         (project, height, rain)
@@ -2289,7 +2443,7 @@ mod tests {
         // A save of the project alone keeps the tiles.
         let mut next = loaded.clone();
         next.world.name = "Other".into();
-        next.set_raster_stops(rain, vec![stop(5.0)]);
+        next.set_raster_stops(rain, vec![stop(5.0)], Vec::new());
         file.save(&next).unwrap();
         assert_eq!(tiles_of(&file, next.raster(rain).unwrap()), wet);
 
@@ -2628,6 +2782,7 @@ mod tests {
             assert_eq!(raster.display, RasterDisplay::Bands);
             let values: Vec<f64> = raster.stops.iter().map(|s| s.value).collect();
             assert_eq!(values, [0.0, 250.0, 1000.0, 5000.0]);
+            assert_eq!(raster.colors, [[255; 3]; 3]);
         }
         assert_eq!(tiles_of(&file, loaded.raster(height).unwrap()), high);
         assert_eq!(tiles_of(&file, loaded.raster(rain).unwrap()), wet);
@@ -2647,7 +2802,8 @@ mod tests {
                 "display",
                 "stops",
                 "smooth",
-                "feature_size"
+                "feature_size",
+                "colors"
             ]
         );
 
@@ -2833,7 +2989,7 @@ mod tests {
         // The step of a new raster layer holds the layer and the raster.
         let rain = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
         let rain_layer = project.raster_layer(rain).unwrap().id;
-        project.set_raster_stops(rain, vec![stop(250.0)]);
+        project.set_raster_stops(rain, vec![stop(250.0)], Vec::new());
         project.move_layer(rain_layer, 2);
         project.set_layer_visible(rain_layer, false);
         file.save(&project).unwrap();
@@ -3011,9 +3167,10 @@ mod tests {
         assert_eq!(loaded.raster(rain).unwrap().display, RasterDisplay::Bands);
     }
 
-    /// Removes the smoothing of the rasters, as in a file before format
-    /// version 13.
-    const V12_DROP: &str = "ALTER TABLE vale_raster DROP COLUMN smooth;
+    /// Removes the band colors and the smoothing of the rasters, as in a file
+    /// before format version 13.
+    const V12_DROP: &str = "ALTER TABLE vale_raster DROP COLUMN colors;
+         ALTER TABLE vale_raster DROP COLUMN smooth;
          ALTER TABLE vale_raster DROP COLUMN feature_size;";
 
     #[test]
@@ -3086,7 +3243,7 @@ mod tests {
         let (mut project, height, rain) = rasters();
         project.set_raster_opacity(rain, 0.5);
         // The height has no band limits, so it gets no stops.
-        project.set_raster_stops(height, Vec::new());
+        project.set_raster_stops(height, Vec::new(), Vec::new());
         drop(ProjectFile::create(&path(&dir), &project).unwrap());
         let conn = Connection::open(path(&dir)).unwrap();
         conn.execute_batch(&format!(
@@ -3143,8 +3300,8 @@ mod tests {
 
         let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
-        let stops = &loaded.raster(height).unwrap().stops;
-        let values: Vec<f64> = stops.iter().map(|s| s.value).collect();
+        let raster = loaded.raster(height).unwrap();
+        let values: Vec<f64> = raster.stops.iter().map(|s| s.value).collect();
         assert_eq!(
             values,
             [
@@ -3152,24 +3309,19 @@ mod tests {
                 3000.0, 4000.0, 6000.0
             ]
         );
-        assert_eq!(
-            (stops[0].below, stops[0].above),
-            ([16, 44, 92], [16, 44, 92])
-        );
-        assert_eq!(
-            (stops[1].below, stops[1].above),
-            ([51, 80, 122], [51, 80, 122])
-        );
-        let sea = stops[5];
-        assert_eq!((sea.below, sea.above), ([190, 222, 240], [108, 164, 100]));
-        assert_eq!(stops[12].below, [246, 244, 240]);
-        assert!(stops.iter().filter(|s| s.below != s.above).eq([&sea]));
+        // A band below sea level has the color at its top, and a band above
+        // it has the color at its bottom.
+        let colors = &raster.colors;
+        assert_eq!(colors.len(), 12);
+        assert_eq!(colors[0], [51, 80, 122]);
+        assert_eq!(colors[4], [190, 222, 240]);
+        assert_eq!(colors[5], [108, 164, 100]);
         // A raster with no limits gets the default of its range.
         assert!(loaded.raster(rain).unwrap().stops.is_empty());
-        assert!(
-            strings(&file.conn, "SELECT stops FROM vale_raster WHERE id = 0")[0]
-                .starts_with("-6000:102c5c,-4000:33507a,")
-        );
+        assert!(loaded.raster(rain).unwrap().colors.is_empty());
+        let row = "SELECT stops || ' ' || colors FROM vale_raster WHERE id = 0";
+        assert!(strings(&file.conn, row)[0].starts_with("-6000,-4000,"));
+        assert!(strings(&file.conn, row)[0].contains(" 33507a,"));
         let count = "SELECT COUNT(*) FROM vale_undo_step";
         assert_eq!(
             file.conn
@@ -3201,64 +3353,93 @@ mod tests {
 
     #[test]
     fn stops_round_trip_as_text() {
-        let stops = vec![
-            Stop {
-                value: -0.1,
-                below: [0, 1, 2],
-                above: [0, 1, 2],
-                line: StopLine::default(),
-            },
-            Stop {
-                value: 1e-7,
-                below: [250, 128, 7],
-                above: [255, 255, 255],
-                line: StopLine::default(),
-            },
-        ];
+        let mut stops = vec![stop(-0.1), stop(1e-7)];
         let text = stops_text(&stops);
-        assert_eq!(text, "-0.1:000102,0.0000001:fa8007/ffffff");
+        assert_eq!(text, "-0.1,0.0000001");
         assert_eq!(parse_stops(&text), stops);
 
-        let mut lines = stops.clone();
-        lines[0].line = StopLine {
+        stops[0].line = StopLine {
             on: true,
             weight: 2.5,
             color: [16, 32, 48],
             darker: true,
             darken: 0.75,
         };
-        lines[1].line.on = false;
-        lines[1].line.weight = 0.25;
-        let text = stops_text(&lines);
-        let want = "-0.1:000102|on:2.5:102030:darker:0.75,\
-                    0.0000001:fa8007/ffffff|off:0.25:282828:color:0.5";
+        stops[1].line.on = false;
+        stops[1].line.weight = 0.25;
+        let text = stops_text(&stops);
+        let want = "-0.1|on:2.5:102030:darker:0.75,0.0000001|off:0.25:282828:color:0.5";
         assert_eq!(text, want);
-        assert_eq!(parse_stops(&text), lines);
+        assert_eq!(parse_stops(&text), stops);
         assert_eq!(parse_stops(""), []);
-        assert_eq!(parse_stops("5:FFFFFF")[0].below, [255, 255, 255]);
         for bad in [
-            "5",
-            "5:fffff",
-            "5:ffffff/",
-            "5:ffffff/fffffff",
-            "x:ffffff",
-            "inf:ffffff",
-            "NaN:ffffff",
-            "5:+fffff",
-            "5:ffffff,4:ffffff",
-            "5:ffffff,5:000000",
-            "5:ffffff,oops",
-            "5:ffffff|",
-            "5:ffffff|yes:1:ffffff:color:0.5",
-            "5:ffffff|on:inf:ffffff:color:0.5",
-            "5:ffffff|on:1:fffff:color:0.5",
-            "5:ffffff|on:1:ffffff",
-            "5:ffffff|on:1:ffffff:dark:0.5",
-            "5:ffffff|on:1:ffffff:color:NaN",
-            "5:ffffff|on:1:ffffff:color:0.5:1",
+            "x",
+            "inf",
+            "NaN",
+            "5:ffffff",
+            "5,4",
+            "5,5",
+            "5,oops",
+            "5|",
+            "5|yes:1:ffffff:color:0.5",
+            "5|on:inf:ffffff:color:0.5",
+            "5|on:1:fffff:color:0.5",
+            "5|on:1:ffffff",
+            "5|on:1:ffffff:dark:0.5",
+            "5|on:1:ffffff:color:NaN",
+            "5|on:1:ffffff:color:0.5:1",
         ] {
             assert_eq!(parse_stops(bad), [], "{bad}");
         }
+
+        let colors = [[0, 1, 2], [250, 128, 7]];
+        assert_eq!(colors_text(&colors), "000102,fa8007");
+        assert_eq!(
+            parse_bands("0,1,2", "000102,FA8007"),
+            (vec![stop(0.0), stop(1.0), stop(2.0)], colors.to_vec())
+        );
+        assert_eq!(parse_bands("", ""), (vec![], vec![]));
+        // The colors must be valid, and one fewer than the stops.
+        for (stops, colors) in [
+            ("0,1", ""),
+            ("0,1", "000102,000102"),
+            ("0,1", "00010"),
+            ("0", "000102"),
+        ] {
+            assert_eq!(
+                parse_bands(stops, colors),
+                (vec![], vec![]),
+                "{stops} {colors}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_file_keeps_the_band_colors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, _) = rasters();
+        let before = project.raster(height).unwrap().clone();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let colors = vec![[9, 8, 7], [6, 5, 4]];
+        assert!(project.set_raster_stops(height, before.stops.clone(), colors.clone()));
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(loaded.raster(height).unwrap().colors, colors);
+        file.undo().unwrap();
+        assert_eq!(file.project().raster(height).unwrap(), &before);
+        drop(file);
+
+        // A count of colors that does not match the stops gives no stops.
+        let conn = Connection::open(path(&dir)).unwrap();
+        let more = "UPDATE vale_raster SET colors = colors || ',000000' WHERE id = ?1";
+        conn.execute(more, [height.0]).unwrap();
+        drop(conn);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let raster = loaded.raster(height).unwrap();
+        assert!(raster.stops.is_empty() && raster.colors.is_empty());
     }
 
     #[test]
@@ -3267,10 +3448,8 @@ mod tests {
         let (mut project, height, _) = rasters();
         let before = project.raster(height).unwrap().stops.clone();
         let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
-        let mut stop = Stop {
+        let mut middle = Stop {
             value: 0.0,
-            below: [1, 2, 3],
-            above: [4, 5, 6],
             line: StopLine {
                 on: true,
                 weight: 3.0,
@@ -3279,24 +3458,173 @@ mod tests {
                 darken: 0.25,
             },
         };
-        assert!(project.set_raster_stops(height, vec![stop]));
+        let colors = vec![[1, 2, 3], [4, 5, 6]];
+        let stops = |middle| vec![stop(-6000.0), middle, stop(6000.0)];
+        assert!(project.set_raster_stops(height, stops(middle), colors.clone()));
         file.save(&project).unwrap();
-        let lined = stop;
-        stop.line.weight = 0.5;
-        assert!(project.set_raster_stops(height, vec![stop]));
+        let lined = middle;
+        middle.line.weight = 0.5;
+        assert!(project.set_raster_stops(height, stops(middle), colors.clone()));
         file.save(&project).unwrap();
         drop(file);
 
         let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded, project);
-        assert_eq!(loaded.raster(height).unwrap().stops, [stop]);
+        assert_eq!(loaded.raster(height).unwrap().stops, stops(middle));
         file.undo().unwrap();
-        assert_eq!(file.project().raster(height).unwrap().stops, [lined]);
+        assert_eq!(file.project().raster(height).unwrap().stops, stops(lined));
         file.undo().unwrap();
         assert_eq!(file.project().raster(height).unwrap().stops, before);
         drop(file);
         let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded.raster(height).unwrap().stops, before);
+    }
+
+    /// A stop of format version 13 with two colors and no line.
+    fn v13_stop(value: f64, below: Rgb, above: Rgb) -> V13Stop {
+        V13Stop {
+            value,
+            below,
+            above,
+            line: StopLine::default(),
+        }
+    }
+
+    #[test]
+    fn version_13_stops_become_band_colors() {
+        let (a, b, c, d, e) = ([1, 1, 1], [2, 2, 2], [200, 100, 50], [4, 4, 4], [5, 5, 5]);
+        let darker = StopLine {
+            on: true,
+            darker: true,
+            darken: 0.25,
+            ..StopLine::default()
+        };
+        let mut sea = vec![
+            v13_stop(-100.0, a, a),
+            v13_stop(-50.0, b, b),
+            v13_stop(0.0, c, d),
+            v13_stop(50.0, e, e),
+            v13_stop(100.0, a, a),
+        ];
+        sea[0].line = darker;
+        sea[1].line = darker;
+        sea[2].line = darker;
+        sea[3].line = darker;
+        sea[4].line.on = true;
+
+        // A sea split: a band below sea level takes the color at its top.
+        let (stops, colors) = v14_bands("m", -100.0, 100.0, &sea);
+        assert_eq!(colors, [b, c, d, e]);
+        let values: Vec<f64> = stops.iter().map(|s| s.value).collect();
+        assert_eq!(values, [-100.0, -50.0, 0.0, 50.0, 100.0]);
+        // The ends have no line.
+        assert_eq!(stops[0].line, StopLine::default());
+        assert_eq!(stops[4].line, StopLine::default());
+        // A darker line keeps its old color where the band above it has
+        // another color now.
+        let custom = |color| StopLine {
+            darker: false,
+            color,
+            ..darker
+        };
+        assert_eq!(stops[1].line, custom([2, 2, 2]));
+        assert_eq!(stops[2].line, custom([150, 75, 38]));
+        assert_eq!(stops[3].line, darker);
+
+        // Land only, and a range of other values: a band takes the color at
+        // its bottom.
+        let land = [
+            v13_stop(0.0, a, a),
+            v13_stop(50.0, b, b),
+            v13_stop(100.0, c, c),
+        ];
+        assert_eq!(v14_bands("m", 0.0, 100.0, &land).1, [a, b]);
+        assert_eq!(v14_bands("mm", 0.0, 100.0, &land).1, [a, b]);
+        let rain = [
+            v13_stop(-100.0, a, a),
+            v13_stop(0.0, b, b),
+            v13_stop(100.0, c, c),
+        ];
+        assert_eq!(v14_bands("mm", -100.0, 100.0, &rain).1, [a, b]);
+
+        // Stops that the old app did not take give no stops.
+        let none = (vec![], vec![]);
+        let no_sea = [
+            v13_stop(-100.0, a, a),
+            v13_stop(50.0, b, b),
+            v13_stop(100.0, c, c),
+        ];
+        assert_eq!(v14_bands("m", -100.0, 100.0, &no_sea), none);
+        let two = [
+            v13_stop(0.0, a, a),
+            v13_stop(50.0, b, c),
+            v13_stop(100.0, c, c),
+        ];
+        assert_eq!(v14_bands("m", 0.0, 100.0, &two), none);
+        assert_eq!(v14_bands("mm", -100.0, 100.0, &sea), none);
+        assert_eq!(v14_bands("m", -100.0, 100.0, &sea[..1]), none);
+        assert_eq!(v14_bands("m", -100.0, 100.0, &[]), none);
+
+        // A file of version 13.
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let id = project.add_raster("Height".into(), 1000, "m".into(), -100.0, 100.0);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch("ALTER TABLE vale_raster DROP COLUMN colors")
+            .unwrap();
+        let old = "UPDATE vale_raster SET stops = ?2 WHERE id = ?1";
+        conn.execute(old, params![id.0, v13_stops_text(&sea)])
+            .unwrap();
+        drop(conn);
+        set_format_version(&dir, 13);
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        let raster = loaded.raster(id).unwrap();
+        assert_eq!((&raster.stops, &raster.colors), (&stops, &colors));
+    }
+
+    #[test]
+    fn a_version_13_undo_image_keeps_its_band_colors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let id = project.add_raster("Height".into(), 1000, "m".into(), -100.0, 100.0);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        project.set_raster_opacity(id, 0.5);
+        file.save(&project).unwrap();
+        drop(file);
+
+        // The image of the raster before the edit, with stops of version 13.
+        let (a, b, c) = ([1, 1, 1], [2, 2, 2], [3, 3, 3]);
+        let old = [
+            v13_stop(-100.0, a, a),
+            v13_stop(0.0, b, c),
+            v13_stop(100.0, a, a),
+        ];
+        let mut before = Project::new(World::default());
+        before.add_raster("Height".into(), 1000, "m".into(), -100.0, 100.0);
+        let image = undo::image_v13(before.raster(id).unwrap(), &old);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch("ALTER TABLE vale_raster DROP COLUMN colors")
+            .unwrap();
+        let set = "UPDATE vale_undo_record SET data = ?1 WHERE kind = 'raster'";
+        assert_eq!(conn.execute(set, [&image]).unwrap(), 1);
+        drop(conn);
+        set_format_version(&dir, 13);
+
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        let sizes = "SELECT bytes = (SELECT SUM(LENGTH(data)) FROM vale_undo_record) \
+                     FROM vale_undo_step";
+        assert!(
+            file.conn
+                .query_row(sizes, [], |r| r.get::<_, bool>(0))
+                .unwrap()
+        );
+        file.undo().unwrap();
+        let raster = file.project().raster(id).unwrap();
+        assert_eq!(raster.opacity, 1.0);
+        assert_eq!(raster.stops, [stop(-100.0), stop(0.0), stop(100.0)]);
+        assert_eq!(raster.colors, [b, c]);
     }
 
     /// QGIS lists the tables of `gpkg_contents` that have features. A raster
