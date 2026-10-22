@@ -47,7 +47,7 @@ pub const COLOR_RAMPS: &str = "Color ramps";
 pub const COLOR_STOPS: &str = "Color stops";
 /// The text of the page of the color stops when the layer has the most
 /// bands.
-pub const FULL: &str = "This layer has the most bands, 32.";
+pub const FULL: &str = "Maximum of 32 bands reached.";
 pub const IMPORT_RAMP: &str = "Import ramp…";
 /// The text below the import row while the app has no ramps.
 pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
