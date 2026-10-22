@@ -16,6 +16,7 @@ use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, file_name};
 use crate::globe::line::{self, LineEdit};
+use crate::globe::snap::Run;
 use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
@@ -1562,7 +1563,8 @@ impl AppState {
             return;
         };
         let smoothing = self.globe.line.smoothing;
-        let edit = line::commit(&layer.features, &stroke.dirs, stroke.scale, smoothing);
+        let runs = [Run::Free(stroke.dirs)];
+        let edit = line::commit(&layer.features, &runs, stroke.scale, smoothing);
         let project = &mut self.doc.project;
         let done = match edit {
             Some(LineEdit::New(geometry)) => {
