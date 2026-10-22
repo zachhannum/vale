@@ -1,21 +1,23 @@
 //! Snapping and tracing. A snap moves a position to the nearest vertex or
-//! edge of a vector feature. A trace makes a stroke follow an edge. The
-//! traced part has the stored vertices of the target.
+//! edge of a vector feature, or to the line of a color stop. A trace makes a
+//! stroke follow an edge or such a line. The traced part of an edge has the
+//! stored vertices of the target.
 //!
 //! Distances in points are on the screen. `scale` is the number of points in
 //! one radian of the sphere, so a snap has the same reach at each zoom.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::f64::consts::FRAC_PI_2;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use vale_store::{Geometry, GeometryKind, Layer, LayerId, LonLat, Uuid};
+use vale_store::{Geometry, GeometryKind, Layer, LayerId, LonLat, RasterId, Uuid};
 use vale_terrain::{face_of, warp};
 
 use super::line::{JOIN, chains};
 use super::math::{V3, angle, cross, dot, length, lonlat_to_dir, normalize, scale};
+use super::stops::{self, StopHit, StopLock, StopTargets};
 
 /// The snap distance of a new project, in points.
 pub const DEFAULT_DISTANCE: f64 = 12.0;
@@ -47,7 +49,7 @@ const ZERO: f64 = 1e-12;
 const SAME: f64 = 1e-9;
 
 /// The snap settings of a project.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SnapSettings {
     /// The control that turns all snapping on and off.
     pub on: bool,
@@ -57,6 +59,23 @@ pub struct SnapSettings {
     pub edges: bool,
     /// The reach of a snap, in points.
     pub distance: f64,
+    /// The raster layers whose color stops are not targets.
+    pub stops_off: BTreeSet<RasterId>,
+}
+
+impl SnapSettings {
+    /// True if the color stops of the raster layer `id` are targets.
+    pub fn stops(&self, id: RasterId) -> bool {
+        !self.stops_off.contains(&id)
+    }
+
+    /// Makes the color stops of the raster layer `id` targets or not.
+    pub fn set_stops(&mut self, id: RasterId, on: bool) {
+        match on {
+            true => self.stops_off.remove(&id),
+            false => self.stops_off.insert(id),
+        };
+    }
 }
 
 impl Default for SnapSettings {
@@ -66,6 +85,7 @@ impl Default for SnapSettings {
             vertices: true,
             edges: true,
             distance: DEFAULT_DISTANCE,
+            stops_off: BTreeSet::new(),
         }
     }
 }
@@ -75,6 +95,22 @@ impl Default for SnapSettings {
 pub enum Kind {
     Vertex,
     Edge,
+    /// The line of a color stop.
+    Stop,
+}
+
+/// The target of a snap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Source {
+    Feature {
+        layer: LayerId,
+        feature: Uuid,
+    },
+    /// The index of a stop between the two ends of the range.
+    Stop {
+        raster: RasterId,
+        stop: usize,
+    },
 }
 
 /// A snapped position.
@@ -85,8 +121,7 @@ pub struct Snap {
     pub kind: Kind,
     /// The stored position of a vertex.
     pub exact: Option<LonLat>,
-    pub layer: LayerId,
-    pub feature: Uuid,
+    pub source: Source,
 }
 
 /// The vertices and edges of the features of one vector layer, with an
@@ -290,44 +325,103 @@ pub(super) struct Hit {
     pub(super) dist: f64,
 }
 
-/// The targets of the visible vector layers.
+/// The nearest point on an edge or on the line of a color stop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum LineHit {
+    Edge(Hit),
+    Stop(StopHit),
+}
+
+impl LineHit {
+    fn dir(&self) -> V3 {
+        match self {
+            LineHit::Edge(h) => h.dir,
+            LineHit::Stop(h) => h.dir,
+        }
+    }
+}
+
+/// The targets of the visible vector layers and of the color stops of the
+/// raster layers.
 pub struct Targets {
     layers: Vec<Arc<LayerTargets>>,
+    stops: Vec<Arc<StopTargets>>,
 }
 
 impl Targets {
-    pub fn new(layers: Vec<Arc<LayerTargets>>) -> Self {
-        Targets { layers }
+    pub fn new(layers: Vec<Arc<LayerTargets>>, stops: Vec<Arc<StopTargets>>) -> Self {
+        Targets { layers, stops }
+    }
+
+    pub fn layers(&self) -> &[Arc<LayerTargets>] {
+        &self.layers
+    }
+
+    pub fn stops(&self) -> &[Arc<StopTargets>] {
+        &self.stops
     }
 
     pub(super) fn layer(&self, i: usize) -> &LayerTargets {
         &self.layers[i]
     }
 
-    /// The position that `p` snaps to, within `reach` radians. A vertex
-    /// wins over an edge. The feature `exclude` is not a target.
-    pub fn snap(&self, p: V3, reach: f64, s: &SnapSettings, exclude: Option<Uuid>) -> Option<Snap> {
+    /// The position that `p` snaps to at `scale` points per radian. A
+    /// vertex wins over an edge and a color stop, and of an edge and a
+    /// color stop, the nearer one wins. The feature `exclude` is not a
+    /// target.
+    pub fn snap(&self, p: V3, scale: f64, s: &SnapSettings, exclude: Option<Uuid>) -> Option<Snap> {
         if !s.on {
             return None;
         }
-        let (hit, kind) =
-            if let Some(h) = s.vertices.then(|| self.vertex(p, reach, exclude)).flatten() {
-                (h, Kind::Vertex)
-            } else {
-                (
-                    s.edges.then(|| self.edge(p, reach, exclude)).flatten()?,
-                    Kind::Edge,
-                )
-            };
+        let reach = s.distance / scale;
+        let vertex = s.vertices.then(|| self.vertex(p, reach, exclude)).flatten();
+        let (hit, kind) = match vertex {
+            Some(h) => (h, Kind::Vertex),
+            None => match self.line(p, scale, s, exclude)? {
+                LineHit::Edge(h) => (h, Kind::Edge),
+                LineHit::Stop(h) => {
+                    let layer = &self.stops[h.layer];
+                    return Some(Snap {
+                        dir: h.dir,
+                        kind: Kind::Stop,
+                        exact: None,
+                        source: Source::Stop {
+                            raster: layer.raster(),
+                            stop: h.level,
+                        },
+                    });
+                }
+            },
+        };
         let layer = &self.layers[hit.layer];
         let path = &layer.paths[hit.path];
         Some(Snap {
             dir: hit.dir,
             kind,
             exact: (kind == Kind::Vertex).then(|| path.ll[hit.k]),
-            layer: layer.layer,
-            feature: path.uuid,
+            source: Source::Feature {
+                layer: layer.layer,
+                feature: path.uuid,
+            },
         })
+    }
+
+    /// The nearer of the nearest point on an edge and on the line of a
+    /// color stop, within the snap distance.
+    pub(super) fn line(
+        &self,
+        p: V3,
+        scale: f64,
+        s: &SnapSettings,
+        exclude: Option<Uuid>,
+    ) -> Option<LineHit> {
+        let reach = s.distance / scale;
+        let edge = s.edges.then(|| self.edge(p, reach, exclude)).flatten();
+        let within = edge.map_or(reach, |e| e.dist);
+        match stops::snap(&self.stops, |r| s.stops(r), p, scale, within) {
+            Some(stop) if edge.is_none_or(|e| stop.dist < e.dist) => Some(LineHit::Stop(stop)),
+            _ => edge.map(LineHit::Edge),
+        }
     }
 
     /// The point where a stroke from `p` starts, at `scale` points per
@@ -337,9 +431,7 @@ impl Targets {
     pub fn start(&self, layer: LayerId, p: V3, scale: f64, s: &SnapSettings) -> Option<V3> {
         match self.line_end(layer, p, JOIN / scale) {
             Some((_, end)) => Some(end),
-            None => self
-                .snap(p, s.distance / scale, s, None)
-                .map(|snap| snap.dir),
+            None => self.snap(p, scale, s, None).map(|snap| snap.dir),
         }
     }
 
@@ -619,8 +711,8 @@ struct Piece {
     to: f64,
 }
 
-/// A stroke that follows a target.
-struct Lock {
+/// A stroke that follows an edge.
+struct PathLock {
     layer: usize,
     /// The parts of the trace on the paths before this one.
     done: Vec<Piece>,
@@ -637,10 +729,10 @@ struct Lock {
     raw: Vec<V3>,
 }
 
-impl Lock {
-    fn new(hit: &Hit, path: &TargetPath, raw: Vec<V3>) -> Lock {
+impl PathLock {
+    fn new(hit: &Hit, path: &TargetPath, raw: Vec<V3>) -> PathLock {
         let (lo, lo_end, hi, hi_end) = path.span(hit.k as i64, hit.s);
-        Lock {
+        PathLock {
             layer: hit.layer,
             done: Vec::new(),
             path: hit.path,
@@ -723,6 +815,44 @@ impl Lock {
     }
 }
 
+/// A stroke that follows a target.
+enum Lock {
+    Path(PathLock),
+    Stop(StopLock),
+}
+
+impl Lock {
+    fn length(&self) -> f64 {
+        match self {
+            Lock::Path(l) => l.length(),
+            Lock::Stop(l) => l.length(),
+        }
+    }
+
+    fn vertices(&self, targets: &Targets) -> Vec<PathVertex> {
+        match self {
+            Lock::Path(l) => l.vertices(targets.layer(l.layer)),
+            Lock::Stop(l) => l.vertices(),
+        }
+    }
+
+    /// The point of the trace now.
+    fn point(&self, targets: &Targets) -> V3 {
+        match self {
+            Lock::Path(l) => targets.layer(l.layer).path(l.path).point_at(l.s),
+            Lock::Stop(l) => l.point(),
+        }
+    }
+
+    /// The samples since the lock.
+    fn raw(&mut self) -> &mut Vec<V3> {
+        match self {
+            Lock::Path(l) => &mut l.raw,
+            Lock::Stop(l) => &mut l.raw,
+        }
+    }
+}
+
 /// Makes the runs of a stroke from its pen samples. A stroke that comes
 /// near an edge follows it, and it leaves the edge when the pen moves away.
 /// The first and the last sample snap to a position.
@@ -797,10 +927,13 @@ impl Tracer {
     /// The target that the stroke follows or snaps to now.
     pub fn highlight(&self) -> Option<Highlight> {
         if let Some(lock) = &self.lock {
-            let layer = self.targets.layer(lock.layer);
             return Some(Highlight {
-                span: lock.vertices(layer).iter().map(PathVertex::dir).collect(),
-                point: Some(layer.path(lock.path).point_at(lock.s)),
+                span: lock
+                    .vertices(&self.targets)
+                    .iter()
+                    .map(PathVertex::dir)
+                    .collect(),
+                point: Some(lock.point(&self.targets)),
             });
         }
         // The end of the line that the stroke extends shows while the pen
@@ -829,7 +962,7 @@ impl Tracer {
         let Some(&p) = self.free.last() else {
             return;
         };
-        let Some(snap) = self.targets.snap(p, self.reach(), &self.settings, None) else {
+        let Some(snap) = self.targets.snap(p, self.scale, &self.settings, None) else {
             return;
         };
         *self.free.last_mut().expect("a free point") = snap.dir;
@@ -843,20 +976,32 @@ impl Tracer {
     }
 
     fn try_lock(&mut self, p: V3) {
-        let reach = self.reach();
-        self.point = self
-            .targets
-            .snap(p, reach, &self.settings, self.exclude)
-            .map(|s| s.dir);
-        if !self.settings.edges {
-            return;
-        }
-        let Some(hit) = self.targets.edge(p, reach, self.exclude) else {
+        let (s, targets) = (&self.settings, &self.targets);
+        let vertex = s
+            .vertices
+            .then(|| targets.vertex(p, self.reach(), self.exclude))
+            .flatten();
+        let line = targets.line(p, self.scale, s, self.exclude);
+        self.point = vertex.map(|v| v.dir).or(line.map(|l| l.dir()));
+        let Some(line) = line else {
             return;
         };
-        let raw = vec![self.free.pop().expect("a free point")];
-        let path = self.targets.layer(hit.layer).path(hit.path);
-        self.lock = Some(Lock::new(&hit, path, raw));
+        let raw = || vec![*self.free.last().expect("a free point")];
+        let lock = match line {
+            LineHit::Edge(hit) => {
+                let path = targets.layer(hit.layer).path(hit.path);
+                Lock::Path(PathLock::new(&hit, path, raw()))
+            }
+            LineHit::Stop(hit) => {
+                let layer = &targets.stops[hit.layer];
+                match StopLock::new(layer, &hit, self.scale, raw()) {
+                    Some(lock) => Lock::Stop(lock),
+                    None => return,
+                }
+            }
+        };
+        self.free.pop();
+        self.lock = Some(lock);
         self.point = None;
     }
 
@@ -865,7 +1010,17 @@ impl Tracer {
         let reach = self.reach();
         let turn = TURN / self.scale;
         let targets = Arc::clone(&self.targets);
-        let lock = self.lock.as_mut().expect("a lock");
+        let lock = match self.lock.as_mut().expect("a lock") {
+            Lock::Path(lock) => lock,
+            Lock::Stop(lock) => {
+                lock.raw.push(p);
+                let layer = &targets.stops[lock.layer];
+                if lock.follow(layer, p, step, reach, turn) > RELEASE * reach {
+                    self.release(true);
+                }
+                return;
+            }
+        };
         lock.raw.push(p);
         let layer = targets.layer(lock.layer);
         let path = layer.path(lock.path);
@@ -904,19 +1059,20 @@ impl Tracer {
     /// the stroke meets the target at the angle of the pen. A stroke that
     /// starts or ends on the target has no blend there.
     fn release(&mut self, away: bool) -> bool {
-        let Some(lock) = self.lock.take() else {
+        let Some(mut lock) = self.lock.take() else {
             return false;
         };
+        let raw = std::mem::take(lock.raw());
         if lock.length() < MIN_TRACE / self.scale {
-            self.free.extend(lock.raw);
+            self.free.extend(raw);
             return false;
         }
-        let trace = lock.vertices(self.targets.layer(lock.layer));
+        let trace = lock.vertices(&self.targets);
         let dirs: Vec<V3> = trace.iter().map(PathVertex::dir).collect();
         let cum = cumulative(&dirs);
         let total = cum[cum.len() - 1];
         let reach = self.reach();
-        let near = along(&dirs, &cum, &lock.raw, 4.0 * reach);
+        let near = along(&dirs, &cum, &raw, 4.0 * reach);
         let on = |&(_, d): &(f64, f64)| d <= ON * reach;
         let nearest = (0..near.len())
             .min_by(|&i, &j| near[i].1.total_cmp(&near[j].1))
@@ -937,7 +1093,7 @@ impl Tracer {
         };
         if blends {
             let from = near[far_in].0;
-            for (i, (&p, &(t, _))) in lock.raw.iter().zip(&near).enumerate().take(first) {
+            for (i, (&p, &(t, _))) in raw.iter().zip(&near).enumerate().take(first) {
                 let w = if i < far_in || t_in <= from {
                     0.0
                 } else {
@@ -956,7 +1112,7 @@ impl Tracer {
         self.runs.push(Run::Traced(run));
         if away {
             let to = near[far_out].0;
-            let samples = lock.raw.iter().zip(&near).enumerate().skip(last + 1);
+            let samples = raw.iter().zip(&near).enumerate().skip(last + 1);
             for (i, (&p, &(t, _))) in samples {
                 let w = if i > far_out || to <= t_out {
                     0.0
@@ -1176,6 +1332,7 @@ pub(super) mod tests {
                 .iter()
                 .map(|l| Arc::new(LayerTargets::build(l.id, l)))
                 .collect(),
+            Vec::new(),
         )
     }
 
@@ -1218,10 +1375,9 @@ pub(super) mod tests {
         let t = targets(&[points, lines.clone(), polygons]);
         let s = SnapSettings::default();
         for scale in [SCALE, 4.0 * SCALE] {
-            let reach = s.distance / scale;
             // A point.
             let snap = t
-                .snap(north(40.0, 0.0, 8.0, scale), reach, &s, None)
+                .snap(north(40.0, 0.0, 8.0, scale), scale, &s, None)
                 .unwrap();
             assert_eq!((snap.kind, snap.exact), (Kind::Vertex, Some([40.0, 0.0])));
             // A line vertex wins over the nearer edge.
@@ -1229,26 +1385,33 @@ pub(super) mod tests {
                 10.0 + (4.0 / scale).to_degrees(),
                 (5.0 / scale).to_degrees(),
             );
-            let snap = t.snap(p, reach, &s, None).unwrap();
+            let snap = t.snap(p, scale, &s, None).unwrap();
             assert_eq!(snap.exact, Some([10.0, 0.0]));
-            assert_eq!(snap.feature, lines.features[0].uuid());
+            let feature = lines.features[0].uuid();
+            assert_eq!(
+                snap.source,
+                Source::Feature {
+                    layer: lines.id,
+                    feature
+                }
+            );
             // An edge, away from the vertices.
             let snap = t
-                .snap(north(5.0, 0.0, 8.0, scale), reach, &s, None)
+                .snap(north(5.0, 0.0, 8.0, scale), scale, &s, None)
                 .unwrap();
             assert_eq!(snap.kind, Kind::Edge);
             assert!(angle(snap.dir, dir(5.0, 0.0)) < 1e-12);
             // A polygon vertex and a polygon edge.
             let snap = t
-                .snap(north(-10.0, 10.0, 8.0, scale), reach, &s, None)
+                .snap(north(-10.0, 10.0, 8.0, scale), scale, &s, None)
                 .unwrap();
             assert_eq!(snap.exact, Some([-10.0, 10.0]));
             let p = dir(-10.0 + (8.0 / scale).to_degrees(), 0.0);
-            let snap = t.snap(p, reach, &s, None).unwrap();
+            let snap = t.snap(p, scale, &s, None).unwrap();
             assert_eq!(snap.kind, Kind::Edge);
             // Nothing outside the reach.
-            assert_eq!(t.snap(north(5.0, 0.0, 13.0, scale), reach, &s, None), None);
-            assert_eq!(t.snap(north(40.0, 0.0, 13.0, scale), reach, &s, None), None);
+            assert_eq!(t.snap(north(5.0, 0.0, 13.0, scale), scale, &s, None), None);
+            assert_eq!(t.snap(north(40.0, 0.0, 13.0, scale), scale, &s, None), None);
         }
     }
 
@@ -1465,22 +1628,24 @@ pub(super) mod tests {
     #[test]
     fn each_switch_turns_off_its_target_kind() {
         let t = Arc::new(targets(&[equator()]));
-        let reach = DEFAULT_DISTANCE / SCALE;
         let near_vertex = north(9.0, 0.0, 4.0, SCALE);
         let near_edge = north(10.5, 0.0, 10.0, SCALE);
         let on = SnapSettings::default();
-        let snap = |p: V3, s: SnapSettings| t.snap(p, reach, &s, None).map(|s| s.kind);
-        assert_eq!(snap(near_vertex, on), Some(Kind::Vertex));
+        let snap = |p: V3, s: &SnapSettings| t.snap(p, SCALE, s, None).map(|s| s.kind);
+        assert_eq!(snap(near_vertex, &on), Some(Kind::Vertex));
         let no_vertices = SnapSettings {
             vertices: false,
-            ..on
+            ..on.clone()
         };
-        assert_eq!(snap(near_vertex, no_vertices), Some(Kind::Edge));
-        let no_edges = SnapSettings { edges: false, ..on };
-        assert_eq!(snap(near_vertex, no_edges), Some(Kind::Vertex));
-        assert_eq!(snap(near_edge, no_edges), None);
+        assert_eq!(snap(near_vertex, &no_vertices), Some(Kind::Edge));
+        let no_edges = SnapSettings {
+            edges: false,
+            ..on.clone()
+        };
+        assert_eq!(snap(near_vertex, &no_edges), Some(Kind::Vertex));
+        assert_eq!(snap(near_edge, &no_edges), None);
         let off = SnapSettings { on: false, ..on };
-        assert_eq!(snap(near_vertex, off), None);
+        assert_eq!(snap(near_vertex, &off), None);
 
         let samples = pen(&[[0.0, 6.0], [4.0, 0.0], [20.0, 0.0], [24.0, 8.0]], 0.5);
         assert_eq!(kinds(&trace(&t, &samples, no_edges, 9)), "F");

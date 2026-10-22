@@ -221,7 +221,7 @@ fn filter(points: &[V3], k: usize, sigma: f64) -> Vec<V3> {
 
 /// The path with the vertices that are within `tolerance` of the simpler
 /// line removed (Douglas and Peucker).
-fn simplify(path: &[V3], tolerance: f64) -> Vec<V3> {
+pub(super) fn simplify(path: &[V3], tolerance: f64) -> Vec<V3> {
     if path.len() < 3 {
         return path.to_vec();
     }

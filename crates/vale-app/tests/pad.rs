@@ -4868,7 +4868,7 @@ fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
         let path = format!("../../target/app/test-pad-snap-{}.png", size.0);
         image.save(path).unwrap();
         let snap = |h: &Pad| {
-            let s = h.state().globe.snap;
+            let s = &h.state().globe.snap;
             [s.on, s.vertices, s.edges]
         };
         for (i, name) in [SNAPPING, SNAP_VERTICES, SNAP_EDGES]
