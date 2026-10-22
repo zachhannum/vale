@@ -350,7 +350,23 @@ The path of the stroke is a curve through the pen samples, so a fast stroke has 
 
 A stroke that starts within 12 points of the end of a line in the layer extends that line. The line keeps its UUID and its attributes, and the filter reads the end of the line, so the joint has no kink. Each other stroke makes a new feature.
 
-The app removes each vertex that is less than 0.1 points from the simpler line. Where the line crosses the 180 degree meridian, it has two parts. One part ends at 180 and the next part starts at -180, at the same latitude. Two vertices of a part are at most 45 degrees of longitude apart, so a renderer in longitude and latitude draws each step the short way. Where a line goes over a pole, it has two vertices at the pole, with the longitude of each side. The globe draws each step as a great-circle arc.
+In a free part of the stroke, the app removes each vertex that is less than 0.1 points from the simpler line. Where the line crosses the 180 degree meridian, it has two parts. One part ends at 180 and the next part starts at -180, at the same latitude. Two vertices of a part are at most 45 degrees of longitude apart, so a renderer in longitude and latitude draws each step the short way. Where a line goes over a pole, it has two vertices at the pole, with the longitude of each side. The globe draws each step as a great-circle arc.
+
+### Snapping and tracing
+
+The vector tools share one snap service. A snap moves a position to the nearest target within the snap distance. A trace makes a freehand stroke follow a target. The targets are the vertices and the edges of the features in each visible vector layer. A vertex wins over an edge. Later targets are the color stops of a raster layer, and the ridges and valleys.
+
+The snap distance is in points on the screen, from 4 to 32, and the default is 12. It is the same at each zoom. The start and the end of a stroke snap to a target.
+
+When the pen comes within the snap distance of an edge, the stroke locks on and follows the line or the ring of the target. The trace only moves forward along the target, and it can go on past a cut at the 180 degree meridian. When the pen moves more than two times the snap distance away, the stroke is free again. A trace that is shorter than 8 points becomes free stroke again, so a stroke that crosses a line does not follow it.
+
+The traced part has a copy of each stored vertex of the target, so the two features share the border exactly. The app does not smooth or simplify the traced part. Each free part has its own smoothing, and its ends stay on the target.
+
+A stroke that starts at the end of a line in the same layer extends that line, and it does not trace that line. The target shows a highlight in the accent color while a stroke snaps or traces.
+
+The line tool has a Snap switch on the brush card. The sheet has the Snapping switch, a switch for each target type, and the snap distance. The settings are not saved in the project.
+
+The service has two parts. A position snap gives the snapped point, the feature, and the stored vertex. A tracer takes the pen samples of a stroke and gives free parts and traced parts. Point placement, vertex editing, and the polygon tool use the same two parts.
 
 ### Import
 
