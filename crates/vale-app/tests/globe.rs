@@ -1019,7 +1019,9 @@ fn the_gradient_display_has_a_smooth_ramp() {
     // Two heights in the band from 1000 m to 2000 m.
     let (low, high) = (color_at(&mut h, 1200.0), color_at(&mut h, 1800.0));
     assert_eq!(low, high);
-    h.get_by_label("Gradient").click();
+    // The choice of the display has the name of the gradient control.
+    let role = egui::accesskit::Role::Button;
+    h.get_by_role_and_label(role, "Gradient").click();
     h.step();
     let id = h.state().shown_raster().unwrap().id;
     let display = h.state().doc.project.raster(id).unwrap().display;
@@ -1068,7 +1070,9 @@ fn the_gradient_adds_moves_and_removes_a_stop() {
     h.run_steps(2);
     let id = h.state().shown_raster().unwrap().id;
     let count = h.state().globe.map.bands.stops().len();
-    let rect = h.get_by_label(GRADIENT).rect();
+    // The choice of the display, a button, has the same name.
+    let role = egui::accesskit::Role::Unknown;
+    let rect = h.get_by_role_and_label(role, GRADIENT).rect();
     let bands = Bands::default();
     let x = |meters: f64| stop_x(rect, &DESKTOP, &bands, meters);
     let on_bar = |meters: f64| Pos2::new(x(meters), rect.top() + DESKTOP.bar / 2.0);

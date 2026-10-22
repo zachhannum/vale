@@ -3315,7 +3315,8 @@ fn open_height(h: &mut Pad) -> RasterId {
 #[test]
 fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
     use vale_app::ui::pad::raster::{
-        ADD_STOP, COLOR, COLOR_STOPS, LAND_COLOR, REMOVE_STOP, SEA_COLOR, SHOW_AS, STOP_VALUE, UNIT,
+        COLOR, COLOR_RAMPS, COLOR_STOPS, LAND_COLOR, REMOVE_STOP, RESET_STOPS, SEA_COLOR, SHOW_AS,
+        STOP_VALUE, UNIT,
     };
     for size in BOARDS {
         let what = format!("{size:?}");
@@ -3339,7 +3340,7 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
         check_controls(&h, &format!("{what} on the page of the color stops"));
         let card = panel(&h, Panel::Layers).unwrap();
         assert!(screen.contains_rect(card), "{what}: {card:?}");
-        for name in [ADD_STOP, GRADIENT] {
+        for name in [GRADIENT, RESET_STOPS, COLOR_RAMPS] {
             if let Some(rect) = control(&h, name) {
                 assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
             }
@@ -3385,44 +3386,47 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
 }
 
 #[test]
-fn the_style_section_has_a_row_for_the_color_stops_and_no_handles() {
-    use vale_app::ui::pad::raster::{ADD_STOP, COLOR_STOPS};
+fn the_style_section_has_a_strip_of_the_color_stops_and_no_rows_of_them() {
+    use vale_app::ui::pad::raster::{COLOR_RAMPS, COLOR_STOPS, RESET_STOPS};
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = painted_pad(size);
         open_height(&mut h);
         scroll_to_row(&mut h, COLOR_STOPS);
-        check_controls(&h, &format!("{what} at the color stops row"));
-        // The one control of the name is the row, with no drag area.
+        check_controls(&h, &format!("{what} at the strip of the color stops"));
+        // The one control of the name is the strip, with no drag area.
         assert_eq!(h.query_all_by_label(COLOR_STOPS).count(), 1, "{what}");
-        let row = control(&h, COLOR_STOPS).unwrap_or_else(|| panic!("{what}: no row"));
-        assert!(row.height() < 2.0 * COLUMN.row, "{what}: {row:?}");
+        let strip = control(&h, COLOR_STOPS).unwrap_or_else(|| panic!("{what}: no strip"));
+        assert!(strip.height() < 2.0 * COLUMN.row, "{what}: {strip:?}");
         assert!(h.query_by_label(&stop_row(0)).is_none(), "{what}");
-        assert!(control(&h, ADD_STOP).is_none(), "{what}");
-        // The row shows the count of the stops.
-        let count = h.state().globe.map.bands.stops().len().to_string();
-        let shown = painted_texts(&h)
-            .into_iter()
-            .any(|(t, r)| t == count && row.contains(r.center()));
-        assert!(shown, "{what}: no count in the row");
+        for name in [RESET_STOPS, COLOR_RAMPS] {
+            assert!(h.query_by_label(name).is_none(), "{what}: {name}");
+        }
     }
 }
 
 #[test]
-fn the_color_stops_row_opens_the_page_and_the_back_button_closes_it() {
-    use vale_app::ui::pad::raster::{ADD_STOP, COLOR_STOPS};
+fn a_tap_on_the_strip_opens_the_page_and_back_from_the_ramps_goes_to_it() {
+    use vale_app::ui::pad::raster::{COLOR_RAMPS, COLOR_STOPS, RESET_STOPS};
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
     scroll_to_row(&mut h, COLOR_STOPS);
     tap(&mut h, COLOR_STOPS);
     assert_eq!(h.state().pad.page, Some(Page::Stops));
-    assert!(control(&h, ADD_STOP).is_some());
     let count = h.state().globe.map.bands.stops().len();
     for index in 0..count {
         assert!(h.query_by_label(&stop_row(index)).is_some(), "{index}");
     }
     check_controls(&h, "on the page of the color stops");
-    // The back button closes the page and clears the selection.
+    // The back button of the ramps goes back to the page of the stops.
+    scroll_to_row(&mut h, COLOR_RAMPS);
+    assert!(control(&h, RESET_STOPS).is_some());
+    tap(&mut h, COLOR_RAMPS);
+    assert_eq!(h.state().pad.page, Some(Page::Ramps));
+    tap(&mut h, &format!("Back to {COLOR_STOPS}"));
+    assert_eq!(h.state().pad.page, Some(Page::Stops));
+    // The back button of the stops closes the page and clears the
+    // selection.
     show_stop(&mut h, 1);
     let row = stop_rect(&h, 1).center();
     finger_tap(&mut h, row);
@@ -3431,7 +3435,7 @@ fn the_color_stops_row_opens_the_page_and_the_back_button_closes_it() {
     assert_eq!(h.state().pad.page, None);
     assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
     assert_eq!(h.state().globe.preview.selected, None);
-    assert!(control(&h, ADD_STOP).is_none());
+    assert!(h.query_by_label(RESET_STOPS).is_none());
     assert!(h.query_by_label(&stop_row(0)).is_none());
 }
 
@@ -3703,19 +3707,37 @@ fn a_tap_on_a_row_opens_the_card_of_its_stop_and_a_second_tap_closes_it() {
 }
 
 #[test]
-fn the_add_stop_row_adds_a_stop_in_the_widest_gap_and_selects_it() {
-    use vale_app::ui::pad::raster::ADD_STOP;
+fn a_tap_on_the_bar_adds_a_stop_until_the_layer_has_the_most_bands() {
+    use vale_app::ui::pad::raster::{FULL, RESET_STOPS};
+    use vale_terrain::MAX_BANDS;
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
     open_stops(&mut h);
+    let has_note = |h: &Pad| painted_texts(h).iter().any(|(t, _)| t == FULL);
+    assert!(!has_note(&h));
+    // A tap in the widest gap of the bar adds a stop there.
     let before = h.state().globe.map.bands.clone();
     let value = widest_gap_value(&before);
-    tap(&mut h, ADD_STOP);
-    let stops = h.state().globe.map.bands.stops();
+    scroll_to_y(&mut h, |h| on_bar(h, value).y);
+    let at = on_bar(&h, value);
+    finger_tap(&mut h, at);
+    let stops = h.state().globe.map.bands.stops().to_vec();
     assert_eq!(stops.len(), before.stops().len() + 1);
-    let index = stops.iter().position(|s| s.value == value).unwrap();
+    let index = stops.iter().position(|s| (s.value - value).abs() < 50.0);
+    let index = index.unwrap_or_else(|| panic!("no stop near {value}: {stops:?}"));
     assert_eq!(h.state().globe.preview.selected, Some((height, index)));
     assert!(h.state().pad.style.card.is_some());
+    // With the most bands, the page shows a note, and a tap adds no stop.
+    tap_handle(&mut h, index);
+    add_stops(&mut h, MAX_BANDS + 1);
+    scroll_to_row(&mut h, RESET_STOPS);
+    assert!(has_note(&h));
+    check_controls(&h, "on the page of a full layer");
+    let value = widest_gap_value(&h.state().globe.map.bands);
+    scroll_to_y(&mut h, |h| on_bar(h, value).y);
+    let at = on_bar(&h, value);
+    finger_tap(&mut h, at);
+    assert_eq!(h.state().globe.map.bands.stops().len(), MAX_BANDS + 1);
 }
 
 #[test]
@@ -3752,12 +3774,11 @@ fn a_tap_on_a_handle_opens_the_card_of_its_stop_and_a_tap_elsewhere_closes_it() 
     // A tap at another place on the panel also closes the card.
     tap_handle(&mut h, 1);
     assert!(card(&h).is_some());
-    let below = pos2(
-        panel.center().x,
-        h.get_by_label(GRADIENT).rect().bottom() + 20.0,
-    );
-    assert!(panel.contains(below), "{below:?}");
-    finger_tap(&mut h, below);
+    // The margin at the left of the bar has no control.
+    let parts = column_parts(&h);
+    let left = pos2(panel.left() + 6.0, stop_rect(&h, 1).center().y);
+    assert!(left.x < parts.bar.left(), "{left:?}");
+    finger_tap(&mut h, left);
     assert_eq!(h.state().globe.preview.selected, None);
     assert_eq!(card(&h), None);
 }
@@ -4047,7 +4068,7 @@ fn a_dragged_stop_shows_its_value_left_of_the_bar() {
 
 #[test]
 fn reset_colors_asks_first_and_puts_back_the_default_stops() {
-    use vale_app::ui::pad::raster::{ADD_STOP, RESET, RESET_STOPS};
+    use vale_app::ui::pad::raster::{RESET, RESET_STOPS};
     let mut h = painted_pad(BOARDS[0]);
     let height = open_height(&mut h);
     let bands = h.state().globe.map.bands.clone();
@@ -4057,9 +4078,15 @@ fn reset_colors_asks_first_and_puts_back_the_default_stops() {
     // A new stop changes the stops.
     let count = bands.stops().len();
     open_stops(&mut h);
-    tap(&mut h, ADD_STOP);
+    let value = widest_gap_value(&bands);
+    scroll_to_y(&mut h, |h| on_bar(h, value).y);
+    let at = on_bar(&h, value);
+    finger_tap(&mut h, at);
     assert_eq!(h.state().globe.map.bands.stops().len(), count + 1);
-    tap(&mut h, "Back to Height");
+    // A second tap on its handle closes its card.
+    let (_, index) = h.state().globe.preview.selected.unwrap();
+    tap_handle(&mut h, index);
+    assert_eq!(h.state().globe.preview.selected, None);
     scroll_to_row(&mut h, RESET_STOPS);
     assert!(!disabled(&h));
     // A tap on the row opens the card, and a tap outside closes it with no
@@ -4080,6 +4107,7 @@ fn reset_colors_asks_first_and_puts_back_the_default_stops() {
     assert_eq!(h.state().globe.preview.selected, None);
     assert!(disabled(&h));
     assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
+    assert_eq!(h.state().pad.page, Some(Page::Stops));
 }
 
 #[test]
@@ -4087,6 +4115,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     use vale_app::ui::pad::raster::{COLOR_RAMPS, DELETE_RAMP, IMPORT_RAMP, REVERSE_RAMP};
     let mut h = painted_pad(BOARDS[0]);
     let height = open_height(&mut h);
+    open_stops(&mut h);
     scroll_to_row(&mut h, COLOR_RAMPS);
     // The ramps have their own page in the Layers panel.
     tap(&mut h, COLOR_RAMPS);
@@ -4175,9 +4204,9 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     h.run();
     assert!(h.state().ramp_note.as_ref().is_some_and(|n| n.warning));
 
-    // The back arrow goes back to the panel of the layer.
-    tap(&mut h, "Back to Height");
-    assert_eq!(h.state().pad.page, None);
+    // The back arrow goes back to the page of the color stops.
+    tap(&mut h, "Back to Color stops");
+    assert_eq!(h.state().pad.page, Some(Page::Stops));
     assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
 }
 
