@@ -352,6 +352,14 @@ A stroke that starts within 12 points of the end of a line in the layer extends 
 
 In a free part of the stroke, the app removes each vertex that is less than 0.1 points from the simpler line. Where the line crosses the 180 degree meridian, it has two parts. One part ends at 180 and the next part starts at -180, at the same latitude. Two vertices of a part are at most 45 degrees of longitude apart, so a renderer in longitude and latitude draws each step the short way. Where a line goes over a pole, it has two vertices at the pole, with the longitude of each side. The globe draws each step as a great-circle arc.
 
+### Polygons
+
+A freehand polygon tool draws forests, deserts, lakes, and other areas on the globe. The tool draws in the selected polygon layer. Each stroke makes one new feature, and each stroke is one undo step. The stroke has the smoothing of the line tool. It uses the snap service, so a part of the outline can trace a coast or a border.
+
+The short arc of a great circle between the two ends of the stroke closes the ring. Each new edge gets a vertex at each degree of arc, so the flat map draws the same shape as the globe. Where the ring crosses itself, the polygon holds each area that the ring goes around. The area outside is the largest area between the parts of the ring, so the polygon has no holes. Two areas that touch at one point are two polygons of the feature.
+
+Where the ring crosses the 180 degree meridian, the feature has a polygon on each side, with an edge along the meridian. A ring around a pole goes along the meridian to the pole and then along the pole. Each ring is closed and goes counterclockwise in longitude and latitude, and no two of its edges cross.
+
 ### Snapping and tracing
 
 The vector tools share one snap service. A snap moves a position to the nearest target within the snap distance. A trace makes a freehand stroke follow a target. The targets are the vertices and the edges of the features in each visible vector layer. A vertex wins over an edge. Later targets are the color stops of a raster layer, and the ridges and valleys.
@@ -364,7 +372,7 @@ The traced part goes from the first to the last pen sample within a quarter of t
 
 A stroke that starts at the end of a line in the same layer extends that line, and it does not trace that line. The target shows a highlight in the accent color while a stroke snaps or traces. Before a stroke, a pen that hovers or a mouse shows the point where the stroke will start: the end of the line that it extends, or the snapped position.
 
-The line tool has a Snap switch on the brush card. The sheet has the Snapping switch, a switch for each target type, and the snap distance. The settings are not saved in the project.
+The line tool and the polygon tool have a Snap switch on the brush card. The sheet has the Snapping switch, a switch for each target type, and the snap distance. The settings are not saved in the project.
 
 The service has two parts. A position snap gives the snapped point, the feature, and the stored vertex. A tracer takes the pen samples of a stroke and gives free parts and traced parts. Point placement, vertex editing, and the polygon tool use the same two parts.
 
@@ -395,7 +403,7 @@ These rules apply to the layout:
 - The two sliders are 140 points high. In a short window they become shorter, down to 110 points, which fits an iPad that is 744 points high. In a window that is shorter than that, the card holds the Brush button alone, and the Brush panel holds the two sliders. If the tool strip and the Brush button do not fit, the tool strip scrolls.
 - The tool strip has six cells. The More cell opens a menu with the modes that have no cell.
 - The brush paints the selected raster layer, and the selection does not change the picture or the draw order. If the world has no layer, or the selected layer is not a raster layer, or the selected raster layer is hidden, the tool strip keeps its six cells. The brush cells, the More cell, and the card below the strip are then disabled, and the tool is Move.
-- If the selected layer is a visible line layer, the Line cell is in the place of the More cell. The Smoothing slider of the line tool is in the place of the Size slider, and the Brush panel holds the Smoothing slider. A selection does not change the tool, so you tap the Line cell to draw.
+- If the selected layer is a visible line layer, the Line cell is in the place of the More cell. The Smoothing slider of the line tool is in the place of the Size slider, and the Brush panel holds the Smoothing slider. If the selected layer is a visible polygon layer, the Polygon cell is in that place, with the same controls. A selection does not change the tool, so you tap the cell to draw. If the line tool is the tool and you select a polygon layer, the tool changes to the polygon tool, and the other way.
 - On a raster layer with a unit other than `m`, the modes that move ground are disabled.
 - The pen paints. One finger turns the globe, and two fingers zoom it.
 - A tap of two fingers is undo, and a tap of three fingers is redo. The actions in the top row have an undo button and a redo button.
@@ -515,7 +523,7 @@ The app has seven editing tools in version 1.
 
 - Heightmap painting on the globe.
 - The toolbox, with polygonize and five other tools.
-- Freehand lines on the globe.
+- Freehand lines and polygons on the globe.
 - Point placement with an attribute form, for cities, landmarks, and other named places.
 - An attribute table with sort, filter, and bulk edit.
 - Line and polygon editing by vertex, with snapping and a smooth operation.
@@ -635,7 +643,7 @@ The prototype leaves out the following.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
 - More than one map frame, the atlas, page templates, map furniture other than a scale bar, graticule labels, SVG export, and tiled raster export.
 - Conic and transverse projections, oblique aspects, projection suggestions, and Tissot circles.
-- All editing tools other than the freehand line tool: point placement, attribute table, and vertex editing.
+- All editing tools other than the freehand line tool and the freehand polygon tool: point placement, attribute table, and vertex editing.
 - The GPU Vello backend. The prototype draws with `vello_cpu`.
 - Wholesale procedural world generation. This is a permanent non-goal.
 
