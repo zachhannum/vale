@@ -27,6 +27,7 @@ pub mod import;
 pub mod line;
 pub mod math;
 pub mod nav;
+pub mod polygon;
 pub mod preview;
 pub mod rivers;
 pub mod snap;
