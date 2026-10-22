@@ -46,9 +46,8 @@ pub const COLOR_RAMPS: &str = "Color ramps";
 /// and the title of the page.
 pub const COLOR_STOPS: &str = "Color stops";
 /// The text of the page of the color stops when the layer has the most
-/// bands, and its height.
+/// bands.
 pub const FULL: &str = "This layer has the most bands, 32.";
-const FULL_NOTE: f32 = 30.0;
 pub const IMPORT_RAMP: &str = "Import ramp…";
 /// The text below the import row while the app has no ramps.
 pub const IMPORT_RAMP_HINT: &str = "A row of color blocks, lowest band first.";
@@ -208,9 +207,9 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     }
 }
 
-/// The page of the color stops of the Layers panel: the gradient control,
-/// which fills the height of the panel, the reset row, and the row of the
-/// color ramps. A tap on a stop opens its card, which `stop_card` shows.
+/// The page of the color stops of the Layers panel: the gradient control
+/// with a row for each stop, the reset row, and the row of the color
+/// ramps. A tap on a stop opens its card, which `stop_card` shows.
 pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -220,7 +219,6 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         raster.unit.clone(),
         crate::ui::is_height(raster),
     );
-    let body = state.pad.body;
     let style = &mut state.pad.style;
     let globe = &mut state.globe;
     let mut selected = elevation::selected(&globe.preview, Some(id));
@@ -228,37 +226,27 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         return;
     };
     let before = selected;
-    let full = bands.stops().len() > MAX_BANDS;
-    let spacing = ui.spacing().item_spacing.y;
-    let used = ui.cursor().top() - ui.max_rect().top();
-    let below = 2.0 * PANEL_ROW + 3.0 * spacing + if full { FULL_NOTE } else { 0.0 } + 10.0;
     let m = &gradient::COLUMN;
-    let tall = (body - used - below).max(4.0 * m.row);
     let (resp, parts) = ui
         .scope(|ui| {
             ui.visuals_mut().override_text_color = Some(theme::MUTE);
-            gradient::column(ui, controls, m, bands, &mut selected, display, &unit, tall)
+            gradient::column(ui, controls, m, bands, &mut selected, display, &unit)
         })
         .inner;
     if selected != before {
         style.side = None;
     }
     // The card hides while a finger drags a stop, so that the globe shows.
-    // It points at the row of the stop, or at its handle if the row does
-    // not show.
     let count = bands.stops().len();
     let area = parts.bar.union(parts.rows);
     style.anchor = selected
         .filter(|i| !resp.dragged() && *i < count)
         .and_then(|index| {
-            let at = match parts.shows(m, count, index) {
-                true => parts.row(m, count, index).left_center(),
-                false => parts.handle(bands, bands.stops()[index].value),
-            };
+            let at = parts.row(m, count, index).left_center();
             let keep = area.intersect(ui.clip_rect());
             ui.clip_rect().contains(at).then_some((id, index, at, keep))
         });
-    if full {
+    if count > MAX_BANDS {
         note(ui, FULL);
     }
 

@@ -156,8 +156,6 @@ pub struct PadState {
     /// The page of the panel of the raster layer of `layer` that the Layers
     /// panel shows.
     pub page: Option<Page>,
-    /// The most height of the body of the panel in this frame.
-    pub body: f32,
     /// The panel at the right: Layers, Toolbox, or none.
     pub right: Option<Panel>,
     /// The layer that the Layers panel shows. `None`: the panel shows the
@@ -882,7 +880,6 @@ fn show_panel(
                 rect.bottom()
             };
             let most = (bottom - ui.cursor().top()).max(0.0);
-            state.pad.body = most;
             let out = egui::ScrollArea::vertical()
                 .id_salt(key)
                 .scroll_source(scroll)

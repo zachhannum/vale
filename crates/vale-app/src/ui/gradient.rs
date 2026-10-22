@@ -371,17 +371,14 @@ pub const COLUMN: Column = Column {
 pub struct ColumnParts {
     pub bar: Rect,
     pub handles: Rect,
-    /// The part of the control that shows the rows.
     pub rows: Rect,
-    /// How far the rows are scrolled up.
-    pub scroll: f32,
 }
 
 impl ColumnParts {
-    /// The parts in `area`, with the rows scrolled up by `scroll`. The bar
-    /// fills the height of `area`.
-    pub fn new(area: Rect, m: &Column, scroll: f32) -> ColumnParts {
-        let ends = m.tab_on.y / 2.0;
+    /// The parts in `area`. The ends of the bar are at the middle of the
+    /// first row and of the last row.
+    pub fn new(area: Rect, m: &Column) -> ColumnParts {
+        let ends = m.row / 2.0;
         let bar = Rect::from_min_max(
             pos2(area.left(), area.top() + ends),
             pos2(area.left() + m.bar, area.bottom() - ends),
@@ -391,12 +388,7 @@ impl ColumnParts {
             pos2(bar.right() + m.tab_on.x + 6.0, area.bottom()),
         );
         let rows = Rect::from_min_max(pos2(handles.right() + m.gutter, area.top()), area.max);
-        ColumnParts {
-            bar,
-            handles,
-            rows,
-            scroll,
-        }
+        ColumnParts { bar, handles, rows }
     }
 
     /// The screen height of a value on the bar.
@@ -411,28 +403,10 @@ impl ColumnParts {
     }
 
     /// The row of the stop `index` of `count`. The row of the highest stop
-    /// is at the top. A row can be out of `rows`.
+    /// is at the top.
     pub fn row(&self, m: &Column, count: usize, index: usize) -> Rect {
-        let top = self.rows.top() - self.scroll + (count - 1 - index) as f32 * m.row;
+        let top = self.rows.top() + (count - 1 - index) as f32 * m.row;
         Rect::from_min_size(pos2(self.rows.left(), top), vec2(self.rows.width(), m.row))
-    }
-
-    /// The row of a stop shows in `rows`.
-    pub fn shows(&self, m: &Column, count: usize, index: usize) -> bool {
-        self.rows.contains(self.row(m, count, index).center())
-    }
-
-    /// The most scroll of `count` rows.
-    pub fn most_scroll(&self, m: &Column, count: usize) -> f32 {
-        (count as f32 * m.row - self.rows.height()).max(0.0)
-    }
-
-    /// The scroll that shows the row of the stop `index`, with the least
-    /// change from the current scroll.
-    pub fn reveal(&self, m: &Column, count: usize, index: usize) -> f32 {
-        let top = (count - 1 - index) as f32 * m.row;
-        let low = top + m.row - self.rows.height();
-        self.scroll.clamp(low.max(0.0), top.max(0.0))
     }
 }
 
@@ -441,18 +415,13 @@ pub fn stop_row(index: usize) -> String {
     format!("Stop {}", index + 1)
 }
 
-/// The name of the area of the rows, which a drag scrolls.
-pub const STOP_ROWS: &str = "Stop rows";
-
 /// The control of the page of the color stops: a vertical bar with a
-/// handle for each stop, and a list of rows at the right of it, one row for
-/// each stop, with the highest value at the top. The bar is `height` tall
-/// and does not scroll. A drag on the rows scrolls them. A leader line
-/// joins each handle to its row while the row shows. A tap on a row or a
-/// handle selects the stop, and a drag on a handle moves it. A selected
-/// stop scrolls its row into view. A tap on the bar away from the handles
-/// adds a stop. The response is that of the bar and the handles.
-#[allow(clippy::too_many_arguments)]
+/// handle for each stop, and a row for each stop at the right of it, with
+/// the highest value at the top. A leader line joins each handle to its
+/// row. A tap on a row or a handle selects the stop, and a drag on a handle
+/// moves it. A tap on the bar away from the handles adds a stop. Each
+/// other drag scrolls the panel. The response is that of the bar and the
+/// handles.
 pub fn column(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -461,44 +430,26 @@ pub fn column(
     selected: &mut Option<usize>,
     display: RasterDisplay,
     unit: &str,
-    height: f32,
 ) -> (Response, ColumnParts) {
     let count = bands.stops().len();
-    let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    let scroll_id = ui.id().with(STOP_ROWS);
-    let scroll: f32 = ui.data(|data| data.get_temp(scroll_id)).unwrap_or(0.0);
-    let mut parts = ColumnParts::new(area, m, scroll);
-    parts.scroll = parts.scroll.clamp(0.0, parts.most_scroll(m, count));
+    let size = vec2(ui.available_width(), m.row * count as f32);
+    let (area, _) = ui.allocate_exact_size(size, Sense::hover());
+    let parts = ColumnParts::new(area, m);
     let grab = parts.bar.union(parts.handles);
     let resp = widgets::drag_area(ui, controls, grab, GRADIENT);
-    let list = widgets::drag_area(ui, controls, parts.rows, STOP_ROWS);
     if selected.is_some_and(|i| i >= count) {
         *selected = None;
     }
-    let before = *selected;
     let toggle =
         |selected: &Option<usize>, index: Option<usize>| index.filter(|i| *selected != Some(*i));
     let mut rows = Vec::with_capacity(count);
-    let mut tapped = false;
     for index in 0..count {
         let rect = parts.row(m, count, index);
-        let shown = rect.intersect(parts.rows);
-        let mut down = false;
-        if shown.height() > 0.0 {
-            let row = widgets::tap_area(ui, controls, shown, &stop_row(index), true);
-            if row.clicked() {
-                *selected = toggle(selected, Some(index));
-                tapped = true;
-            }
-            down = row.is_pointer_button_down_on();
+        let row = widgets::tap_area(ui, controls, rect, &stop_row(index), true);
+        if row.clicked() {
+            *selected = toggle(selected, Some(index));
         }
-        rows.push((rect, down));
-    }
-    if list.dragged() {
-        parts.scroll -= list.drag_delta().y;
-    }
-    if list.hovered() {
-        parts.scroll -= ui.input(|i| i.smooth_scroll_delta.y);
+        rows.push((rect, row.is_pointer_button_down_on()));
     }
 
     let bar = parts.bar;
@@ -515,24 +466,30 @@ pub fn column(
             .filter(|p| p.x >= parts.handles.left())
             .and_then(|p| hit(&ys(bands), p.y, m.cap))
             .filter(|i| !bands.fixed(*i));
-        if let Some(index) = on {
-            *selected = Some(index);
-            let gesture = Gesture::Move {
-                index,
-                lifted: false,
-            };
-            ui.data_mut(|data| data.insert_temp(gesture_id, gesture));
-        }
+        let gesture = match on {
+            Some(index) => {
+                *selected = Some(index);
+                Gesture::Move {
+                    index,
+                    lifted: false,
+                }
+            }
+            None => Gesture::Scroll,
+        };
+        ui.data_mut(|data| data.insert_temp(gesture_id, gesture));
     }
     let gesture: Option<Gesture> = ui.data(|data| data.get_temp(gesture_id));
     let mut moving = None;
-    if resp.dragged()
-        && let Some(Gesture::Move { index, .. }) = gesture
-    {
-        if let Some(pos) = resp.interact_pointer_pos() {
-            bands.move_to(index, value_of(bands, pos.y));
+    if resp.dragged() {
+        match gesture {
+            Some(Gesture::Move { index, .. }) => {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    bands.move_to(index, value_of(bands, pos.y));
+                }
+                moving = Some(index);
+            }
+            _ => ui.scroll_with_delta(vec2(0.0, resp.drag_delta().y)),
         }
-        moving = Some(index);
     }
     if resp.drag_stopped() {
         ui.data_mut(|data| data.remove::<Gesture>(gesture_id));
@@ -549,33 +506,21 @@ pub fn column(
             *selected = Some(index);
         }
     }
-    let count = bands.stops().len();
-    parts.scroll = parts.scroll.clamp(0.0, parts.most_scroll(m, count));
-    // A stop that the bar selects scrolls its row into view.
-    if let Some(index) = *selected
-        && (*selected != before || moving.is_some())
-        && !tapped
-    {
-        parts.scroll = parts.reveal(m, count, index);
-    }
-    ui.data_mut(|data| data.insert_temp(scroll_id, parts.scroll));
 
     paint_bar(ui, bar, m.radius, bands, display, true);
     paint_ticks(ui, bar, bands, true);
     let painter = ui.painter();
-    let clipped = painter.with_clip_rect(parts.rows.intersect(painter.clip_rect()));
     let visuals = ui.visuals();
     let (text, strong) = (visuals.text_color(), visuals.strong_text_color());
     let sea = bands.sea();
     let span = bands.max() - bands.min();
-    for (index, stop) in bands.stops().iter().enumerate() {
+    // A stop that `add` put in this frame has no row yet.
+    for (index, stop) in bands.stops().iter().enumerate().take(rows.len()) {
         let on = *selected == Some(index);
-        let row = parts.row(m, count, index);
-        // A stop that `add` put in this frame has no tap area yet.
-        let down = rows.get(index).is_some_and(|(_, down)| *down) && rows.len() == count;
+        let (row, down) = rows[index];
         if on || down {
             let back = row.shrink2(vec2(0.0, widgets::HIGHLIGHT_INSET));
-            clipped.rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+            painter.rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
         }
         let handle = parts.handle(bands, stop.value);
         let tab = if on { m.tab_on } else { m.tab };
@@ -584,36 +529,32 @@ pub fn column(
         let is_sea = Some(index) == sea;
         paint_handle(painter, rect, stop, is_sea, true, stroke, 1.0);
 
+        let leader = egui::Stroke::new(1.0, if on { strong } else { text.gamma_multiply(0.5) });
+        let (from, to) = (
+            pos2(rect.right(), handle.y),
+            pos2(row.left(), row.center().y),
+        );
         let bend = m.gutter / 4.0;
-        if parts.shows(m, count, index) {
-            let leader = egui::Stroke::new(1.0, if on { strong } else { text.gamma_multiply(0.5) });
-            let (from, to) = (
-                pos2(rect.right(), handle.y),
-                pos2(row.left(), row.center().y),
-            );
-            let line = vec![
-                from,
-                pos2(parts.handles.right(), from.y),
-                pos2(to.x - bend, to.y),
-                pos2(to.x + bend, to.y),
-            ];
-            painter.add(egui::Shape::line(line, leader));
-        }
-        if !row.intersects(parts.rows) {
-            continue;
-        }
+        let line = vec![
+            from,
+            pos2(parts.handles.right(), from.y),
+            pos2(to.x - bend, to.y),
+            pos2(to.x + bend, to.y),
+        ];
+        painter.add(egui::Shape::line(line, leader));
+
         let swatch = Rect::from_center_size(
             pos2(row.left() + bend + 6.0 + m.swatch / 2.0, row.center().y),
             Vec2::splat(m.swatch),
         );
         let outline = egui::Stroke::new(1.0, Color32::from_black_alpha(90));
-        paint_handle(&clipped, swatch, stop, is_sea, true, outline, 1.0);
+        paint_handle(painter, swatch, stop, is_sea, true, outline, 1.0);
         let at = pos2(swatch.right() + 12.0, row.center().y);
         let value = world::value_text(stop.value, span, unit);
-        let label = clipped.text(at, Align2::LEFT_CENTER, value, theme::body(), theme::TEXT);
+        let label = painter.text(at, Align2::LEFT_CENTER, value, theme::body(), theme::TEXT);
         if is_sea {
             let at = pos2(label.right() + 8.0, row.center().y);
-            clipped.text(
+            painter.text(
                 at,
                 Align2::LEFT_CENTER,
                 "Sea level",
@@ -626,7 +567,7 @@ pub fn column(
             let right = row.right() - 8.0;
             let width = stop.line.weight.clamp(1.0, 6.0);
             let line = [pos2(right - 32.0, y), pos2(right, y)];
-            clipped.line_segment(line, egui::Stroke::new(width, color32(color)));
+            painter.line_segment(line, egui::Stroke::new(width, color32(color)));
         }
     }
     if let Some(index) = moving {
@@ -883,20 +824,20 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_go_from_the_highest_stop_down_and_the_bar_fills_the_area() {
+    fn the_rows_go_from_the_highest_stop_down_and_meet_the_ends_of_the_bar() {
         let bands = Bands::with_range(-6000.0, 6000.0, true).unwrap();
         let m = &COLUMN;
         let count = bands.stops().len();
-        let area = Rect::from_min_size(pos2(0.0, 100.0), vec2(300.0, 200.0));
-        let parts = ColumnParts::new(area, m, 0.0);
+        let area = Rect::from_min_size(pos2(0.0, 100.0), vec2(300.0, m.row * count as f32));
+        let parts = ColumnParts::new(area, m);
         let top = parts.row(m, count, count - 1);
+        let bottom = parts.row(m, count, 0);
         assert_eq!(top.top(), area.top());
+        assert_eq!(bottom.bottom(), area.bottom());
         assert_eq!(top.height(), m.row);
-        assert!(parts.row(m, count, count - 2).top() == top.bottom());
         let (lowest, highest) = (bands.stops()[0].value, bands.stops()[count - 1].value);
-        assert_eq!(parts.stop_y(&bands, highest), parts.bar.top());
-        assert_eq!(parts.stop_y(&bands, lowest), parts.bar.bottom());
-        assert!(parts.bar.top() >= area.top() && parts.bar.bottom() <= area.bottom());
+        assert_eq!(parts.stop_y(&bands, highest), top.center().y);
+        assert_eq!(parts.stop_y(&bands, lowest), bottom.center().y);
         // The handles go up as the values go up.
         let ys: Vec<f32> = bands
             .stops()
@@ -906,27 +847,5 @@ mod tests {
         assert!(ys.windows(2).all(|w| w[1] < w[0]));
         assert!(parts.bar.right() <= parts.handles.left());
         assert!(parts.handles.right() < parts.rows.left());
-    }
-
-    #[test]
-    fn a_scroll_shows_a_row_with_the_least_change() {
-        let m = &COLUMN;
-        let count = 20;
-        let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 5.0 * m.row));
-        let parts = ColumnParts::new(area, m, 0.0);
-        assert_eq!(parts.most_scroll(m, count), 15.0 * m.row);
-        // The highest row shows at the start, and the lowest does not.
-        assert!(parts.shows(m, count, count - 1));
-        assert!(!parts.shows(m, count, 0));
-        // The lowest row goes to the bottom of the list.
-        let scroll = parts.reveal(m, count, 0);
-        assert_eq!(scroll, 15.0 * m.row);
-        let parts = ColumnParts::new(area, m, scroll);
-        assert!(parts.shows(m, count, 0));
-        assert_eq!(parts.row(m, count, 0).bottom(), area.bottom());
-        // A row that shows does not move the list.
-        assert_eq!(parts.reveal(m, count, 2), scroll);
-        // The highest row goes to the top of the list.
-        assert_eq!(parts.reveal(m, count, count - 1), 0.0);
     }
 }
