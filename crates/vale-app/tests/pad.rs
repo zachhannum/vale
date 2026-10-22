@@ -9,12 +9,12 @@ use vale_app::globe::{StackItem, Tool, WorldView};
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
-use vale_app::ui::gradient::{GRADIENT, PAD as GRADIENT_PAD, stop_x};
+use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, stop_row, widest_gap_value};
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
-    NEW_RASTER, OPACITY, Panel, RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
+    NEW_RASTER, OPACITY, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
     SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text,
     readout_text, theme,
 };
@@ -2546,7 +2546,7 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
 
 #[test]
 fn the_view_options_menu_has_the_graticule_switch() {
-    use vale_app::ui::pad::raster::RIVERS;
+    use vale_app::ui::pad::raster::{self, RIVERS};
     for size in BOARDS {
         let mut h = painted_pad(size);
         for view in WORLD_VIEWS {
@@ -2613,7 +2613,7 @@ fn the_view_options_menu_has_the_graticule_switch() {
             let card = panel(&h, Panel::Layers).unwrap();
             // A drag up on a row or on the gradient scrolls.
             let inside = |p: &Pos2| p.y > card.top() + 60.0 && p.y < card.bottom() - 10.0;
-            let rows = [IMPORT_HEIGHTMAP, EXPORT_GEOTIFF, GRADIENT];
+            let rows = [IMPORT_HEIGHTMAP, EXPORT_GEOTIFF, raster::COLOR_STOPS];
             let points: Vec<Pos2> = rows
                 .into_iter()
                 .filter_map(|name| control(&h, name))
@@ -3315,7 +3315,7 @@ fn open_height(h: &mut Pad) -> RasterId {
 #[test]
 fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
     use vale_app::ui::pad::raster::{
-        COLOR, LAND_COLOR, REMOVE_STOP, SEA_COLOR, SHOW_AS, STOP_VALUE, UNIT,
+        ADD_STOP, COLOR, COLOR_STOPS, LAND_COLOR, REMOVE_STOP, SEA_COLOR, SHOW_AS, STOP_VALUE, UNIT,
     };
     for size in BOARDS {
         let what = format!("{size:?}");
@@ -3330,12 +3330,21 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
             "{what}: a height layer has no unit row"
         );
         // The rows that are on the screen are inside the card.
-        for name in [LAYER_NAME, OPACITY, SHOW_AS, GRADIENT] {
+        for name in [LAYER_NAME, OPACITY, SHOW_AS, COLOR_STOPS] {
             if let Some(rect) = control(&h, name) {
                 assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
             }
         }
-        scroll_to_gradient(&mut h);
+        open_stops(&mut h);
+        check_controls(&h, &format!("{what} on the page of the color stops"));
+        let card = panel(&h, Panel::Layers).unwrap();
+        assert!(screen.contains_rect(card), "{what}: {card:?}");
+        for name in [ADD_STOP, GRADIENT] {
+            if let Some(rect) = control(&h, name) {
+                assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
+            }
+        }
+        show_stop(&mut h, 1);
         tap_handle(&mut h, 1);
         assert_eq!(
             h.state().globe.preview.selected,
@@ -3344,8 +3353,15 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
         );
         check_controls(&h, &format!("{what} with a selected stop"));
         let shade = format!("{COLOR} shade");
-        for name in [STOP_VALUE, &shade, REMOVE_STOP] {
+        for name in [STOP_VALUE, &shade] {
             assert!(control(&h, name).is_some(), "{what}: no {name}");
+        }
+        // Above a sheet, the card has less room and scrolls.
+        if h.state().pad.rects.unwrap().sheet.is_none() {
+            assert!(
+                control(&h, REMOVE_STOP).is_some(),
+                "{what}: no {REMOVE_STOP}"
+            );
         }
         let stop = h.state().pad.style.card.unwrap();
         assert!(screen.contains_rect(stop), "{what}: {stop:?}");
@@ -3354,6 +3370,7 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
         }
         // The stop at sea level has a choice of its two sides and no field.
         let sea = h.state().globe.map.bands.sea().unwrap();
+        show_stop(&mut h, sea);
         tap_handle(&mut h, sea);
         assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
         check_controls(&h, &format!("{what} with the stop at sea level"));
@@ -3367,11 +3384,153 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
     }
 }
 
+#[test]
+fn the_style_section_has_a_row_for_the_color_stops_and_no_handles() {
+    use vale_app::ui::pad::raster::{ADD_STOP, COLOR_STOPS};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        open_height(&mut h);
+        scroll_to_row(&mut h, COLOR_STOPS);
+        check_controls(&h, &format!("{what} at the color stops row"));
+        // The one control of the name is the row, with no drag area.
+        assert_eq!(h.query_all_by_label(COLOR_STOPS).count(), 1, "{what}");
+        let row = control(&h, COLOR_STOPS).unwrap_or_else(|| panic!("{what}: no row"));
+        assert!(row.height() < 2.0 * COLUMN.row, "{what}: {row:?}");
+        assert!(h.query_by_label(&stop_row(0)).is_none(), "{what}");
+        assert!(control(&h, ADD_STOP).is_none(), "{what}");
+        // The row shows the count of the stops.
+        let count = h.state().globe.map.bands.stops().len().to_string();
+        let shown = painted_texts(&h)
+            .into_iter()
+            .any(|(t, r)| t == count && row.contains(r.center()));
+        assert!(shown, "{what}: no count in the row");
+    }
+}
+
+#[test]
+fn the_color_stops_row_opens_the_page_and_the_back_button_closes_it() {
+    use vale_app::ui::pad::raster::{ADD_STOP, COLOR_STOPS};
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_row(&mut h, COLOR_STOPS);
+    tap(&mut h, COLOR_STOPS);
+    assert_eq!(h.state().pad.page, Some(Page::Stops));
+    assert!(control(&h, ADD_STOP).is_some());
+    let count = h.state().globe.map.bands.stops().len();
+    for index in 0..count {
+        assert!(h.query_by_label(&stop_row(index)).is_some(), "{index}");
+    }
+    check_controls(&h, "on the page of the color stops");
+    // The back button closes the page and clears the selection.
+    show_stop(&mut h, 1);
+    let row = stop_rect(&h, 1).center();
+    finger_tap(&mut h, row);
+    assert_eq!(h.state().globe.preview.selected, Some((height, 1)));
+    tap(&mut h, "Back to Height");
+    assert_eq!(h.state().pad.page, None);
+    assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
+    assert_eq!(h.state().globe.preview.selected, None);
+    assert!(control(&h, ADD_STOP).is_none());
+    assert!(h.query_by_label(&stop_row(0)).is_none());
+}
+
+#[test]
+fn twenty_stops_have_rows_of_touch_size_with_the_highest_at_the_top() {
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    add_stops(&mut h, 20);
+    open_stops(&mut h);
+    check_controls(&h, "on the page of 20 color stops");
+    let rows: Vec<Rect> = (0..20).map(|i| stop_rect(&h, i)).collect();
+    for (index, row) in rows.iter().enumerate() {
+        assert!(row.height() >= 44.0, "{index}: {row:?}");
+    }
+    for (index, pair) in rows.windows(2).enumerate() {
+        assert!(pair[1].bottom() <= pair[0].top() + 0.5, "{index}: {pair:?}");
+    }
+}
+
+/// The lines that the last frame painted, as lists of points.
+fn painted_lines(h: &Pad) -> Vec<Vec<Pos2>> {
+    fn visit(shape: &egui::Shape, lines: &mut Vec<Vec<Pos2>>) {
+        match shape {
+            egui::Shape::Path(path) => lines.push(path.points.clone()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| visit(s, lines)),
+            _ => {}
+        }
+    }
+    let mut lines = Vec::new();
+    for clipped in &h.output().shapes {
+        visit(&clipped.shape, &mut lines);
+    }
+    lines
+}
+
+#[test]
+fn each_handle_is_at_its_value_and_its_line_goes_to_its_row_with_no_crossing() {
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    add_stops(&mut h, 20);
+    open_stops(&mut h);
+    show_stop(&mut h, 10);
+    let card = panel(&h, Panel::Layers).unwrap();
+    let parts = column_parts(&h);
+    let bands = h.state().globe.map.bands.clone();
+    let lines = painted_lines(&h);
+    let mut ends = Vec::new();
+    for (index, stop) in bands.stops().iter().enumerate() {
+        let (at, row) = (parts.handle(&bands, stop.value), stop_rect(&h, index));
+        assert!(parts.bar.top() - 0.5 <= at.y && at.y <= parts.bar.bottom() + 0.5);
+        if !(card.contains(at) && card.contains(row.center())) {
+            continue;
+        }
+        // The leader line goes from the handle to the middle of the row.
+        let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+        let leader = lines.iter().find(|line| {
+            let (first, last) = (line[0], line[line.len() - 1]);
+            line.len() == 4
+                && near(first.y, at.y)
+                && near(last.y, row.center().y)
+                && first.x < row.left()
+                && last.x > row.left()
+        });
+        assert!(leader.is_some(), "{index}: no line from {at:?} to {row:?}");
+        ends.push((at.y, row.center().y));
+    }
+    assert!(ends.len() >= 5, "{ends:?}");
+    // A higher stop has a higher handle and a higher row.
+    for pair in ends.windows(2) {
+        assert!(pair[1].0 < pair[0].0 && pair[1].1 < pair[0].1, "{pair:?}");
+    }
+    // The lowest stop is at the bottom of the bar and the highest at the top.
+    let stops = bands.stops();
+    let (low, high) = (stops[0].value, stops[stops.len() - 1].value);
+    assert!((parts.stop_y(&bands, low) - parts.bar.bottom()).abs() < 0.5);
+    assert!((parts.stop_y(&bands, high) - parts.bar.top()).abs() < 0.5);
+}
+
 /// A tap of a finger at a place.
 fn finger_tap(h: &mut Pad, pos: Pos2) {
     touch(h, egui::TouchPhase::Start, pos, None);
     h.step();
     touch(h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+}
+
+/// Opens the page of the color stops of the open raster layer.
+fn open_stops(h: &mut Pad) {
+    h.state_mut().pad.page = Some(Page::Stops);
+    h.run_steps(3);
+}
+
+/// Adds stops to the height layer until it has `count`.
+fn add_stops(h: &mut Pad, count: usize) {
+    let bands = &mut h.state_mut().globe.map.bands;
+    while bands.stops().len() < count {
+        let value = widest_gap_value(bands);
+        bands.add(value).expect("a free value");
+    }
     h.run_steps(3);
 }
 
@@ -3381,127 +3540,143 @@ fn tap_handle(h: &mut Pad, index: usize) {
     finger_tap(h, pos);
 }
 
-/// The whole area of the gradient control. A part of it can be out of the
-/// card.
-fn gradient_area(h: &Pad) -> Rect {
-    h.get_by_label(GRADIENT).rect()
+/// The parts of the control of the page of the color stops. A part of them
+/// can be out of the card.
+fn column_parts(h: &Pad) -> ColumnParts {
+    let grab = h.get_by_label(GRADIENT).rect();
+    let right = stop_rect(h, 0).right();
+    let area = Rect::from_min_max(grab.min, pos2(right, grab.bottom()));
+    ColumnParts::new(area, &COLUMN)
 }
 
-/// The place of a value on the bar of the gradient control.
+/// The row of a stop on the page of the color stops.
+fn stop_rect(h: &Pad, index: usize) -> Rect {
+    h.get_by_label(&stop_row(index)).rect()
+}
+
+/// The place of a value on the bar of the page of the color stops.
 fn on_bar(h: &Pad, value: f64) -> Pos2 {
-    let area = gradient_area(h);
-    let x = stop_x(area, &GRADIENT_PAD, &h.state().globe.map.bands, value);
-    pos2(x, area.top() + GRADIENT_PAD.bar / 2.0)
+    let parts = column_parts(h);
+    let y = parts.stop_y(&h.state().globe.map.bands, value);
+    pos2(parts.bar.center().x, y)
 }
 
-/// The place of the handle of a stop.
+/// The middle of the handle of a stop.
 fn handle(h: &Pad, index: usize) -> Pos2 {
-    let value = h.state().globe.map.bands.stops()[index].value;
-    let area = gradient_area(h);
-    let x = stop_x(area, &GRADIENT_PAD, &h.state().globe.map.bands, value);
-    pos2(
-        x,
-        area.top() + GRADIENT_PAD.bar + GRADIENT_PAD.handles / 2.0,
-    )
+    let bands = &h.state().globe.map.bands;
+    column_parts(h).handle(bands, bands.stops()[index].value)
 }
 
-/// Scrolls the panel until the gradient control is near the top of the
-/// card, with a drag up on the margin at the left of the rows.
-fn scroll_to_gradient(h: &mut Pad) {
+/// Scrolls the Layers panel until the height `y` is near the middle of the
+/// card, with drags on the margin at the left of the rows.
+fn scroll_to_y(h: &mut Pad, y: impl Fn(&Pad) -> f32) {
     for _ in 0..8 {
         let card = panel(h, Panel::Layers).unwrap();
-        let area = gradient_area(h);
-        if area.top() > card.top() + 40.0 && area.bottom() + 160.0 < card.bottom() {
+        let at = y(h);
+        if card.top() + 120.0 < at && at < card.bottom() - 120.0 {
             return;
         }
-        let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
-        let up = (area.top() - card.top() - 200.0).min(from.y - card.top() - 60.0);
-        drag(h, from, from - vec2(0.0, up), None);
+        let from = pos2(card.left() + 6.0, card.center().y);
+        let reach = from.y - card.top() - 60.0;
+        let dy = (card.center().y - at).clamp(-reach, reach);
+        drag(h, from, from + vec2(0.0, dy), None);
     }
 }
 
+/// Scrolls the Layers panel until a row is near the middle of the card.
+fn scroll_to_row(h: &mut Pad, name: &str) {
+    scroll_to_y(h, |h| h.get_by_label(name).rect().center().y);
+}
+
+/// Scrolls the page of the color stops until the handle of a stop is near
+/// the middle of the card.
+fn show_stop(h: &mut Pad, index: usize) {
+    scroll_to_y(h, |h| handle(h, index).y);
+}
+
 #[test]
-fn a_tap_adds_a_stop_a_drag_moves_it_and_a_pull_down_removes_it() {
+fn a_tap_on_the_bar_adds_a_stop_a_vertical_drag_moves_it_and_the_card_removes_it() {
+    use vale_app::ui::pad::raster::REMOVE_STOP;
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
-    scroll_to_gradient(&mut h);
+    open_stops(&mut h);
     let stops = |h: &Pad| h.state().globe.map.bands.stops().to_vec();
     let before = stops(&h);
     let sea = h.state().globe.map.bands.sea().unwrap();
+    // The two stops with the widest gap on the bar.
+    let gap = |h: &Pad, i: &usize| handle(h, *i).y - handle(h, i + 1).y;
+    let low = (0..before.len() - 1)
+        .max_by(|a, b| gap(&h, a).total_cmp(&gap(&h, b)))
+        .unwrap();
+    show_stop(&mut h, low);
     // A tap on the bar between two stops adds a stop there.
     let (a, b) = (
-        on_bar(&h, before[sea + 1].value),
-        on_bar(&h, before[sea + 2].value),
+        on_bar(&h, before[low].value),
+        on_bar(&h, before[low + 1].value),
     );
-    let at = a.lerp(b, 0.5);
-    finger_tap(&mut h, at);
+    assert!(a.y - b.y > 40.0, "{a:?} {b:?}");
+    finger_tap(&mut h, a.lerp(b, 0.5));
     let added = stops(&h);
-    let index = sea + 2;
+    let index = low + 1;
     assert_eq!(added.len(), before.len() + 1);
-    assert!(added[index].value > before[sea + 1].value);
-    assert!(added[index].value < before[sea + 2].value);
+    assert!(added[index].value > before[low].value);
+    assert!(added[index].value < before[low + 1].value);
     assert_eq!(h.state().globe.preview.selected, Some((height, index)));
 
-    // A sideways drag on the handle moves the stop.
+    // A drag up on the handle moves the stop up, and the page does not
+    // scroll.
+    let row = stop_rect(&h, index);
     let from = handle(&h, index);
-    drag(&mut h, from, from + vec2(40.0, 0.0), None);
+    let up = (from.y - on_bar(&h, added[index + 1].value).y) / 2.0;
+    drag(&mut h, from, from - vec2(0.0, up), None);
     let moved = stops(&h)[index].value;
-    assert!(
-        moved > added[index].value,
-        "{moved} {:?} {from:?}",
-        added[index]
-    );
+    assert!(moved > added[index].value, "{moved} {:?}", added[index]);
     assert!(moved < added[index + 1].value, "{moved}");
     assert_eq!(stops(&h).len(), added.len());
     assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    assert_eq!(stop_rect(&h, index), row);
 
-    // A pull down and back up keeps the stop.
-    let from = handle(&h, index);
-    touch(&mut h, egui::TouchPhase::Start, from, None);
-    h.step();
-    for dy in [10.0, 40.0, 80.0, 40.0, 10.0] {
-        touch(&mut h, egui::TouchPhase::Move, from + vec2(0.0, dy), None);
-        h.step();
-    }
-    touch(&mut h, egui::TouchPhase::End, from + vec2(0.0, 10.0), None);
-    h.run_steps(3);
-    assert_eq!(stops(&h).len(), added.len());
-
-    // A pull down far below the handles removes the stop.
-    let from = handle(&h, index);
-    drag(&mut h, from, from + vec2(0.0, 90.0), None);
+    // The button of the card removes the stop.
+    tap(&mut h, REMOVE_STOP);
     assert_eq!(stops(&h), before);
     assert_eq!(h.state().globe.preview.selected, None);
 
-    // A fixed stop does not move or go.
+    // A drag on a fixed stop does not move it.
     let from = handle(&h, sea);
-    drag(&mut h, from, from + vec2(20.0, 0.0), None);
-    let from = handle(&h, sea);
-    finger_tap(&mut h, from);
-    drag(&mut h, from, from + vec2(0.0, 90.0), None);
+    drag(&mut h, from, from - vec2(0.0, 30.0), None);
     assert_eq!(stops(&h), before);
 }
 
 #[test]
-fn a_vertical_drag_on_the_gradient_scrolls_the_panel() {
-    use vale_app::ui::pad::raster::RIVERS;
-    // On these boards, the panel is longer than its card.
+fn a_vertical_drag_on_the_bar_or_on_a_row_scrolls_the_page() {
+    // With 20 stops, the page is longer than its card.
     for size in [BOARDS[2], BOARDS[3]] {
         let mut h = painted_pad(size);
         open_height(&mut h);
-        scroll_to_gradient(&mut h);
+        add_stops(&mut h, 20);
+        open_stops(&mut h);
         let stops = h.state().globe.map.bands.stops().to_vec();
-        // A drag up on the bar scrolls up, and a drag down on a handle that
-        // is not selected scrolls back down.
-        for (what, index, dy) in [("bar", None, -30.0), ("handle", Some(1), 30.0)] {
-            let area = gradient_area(&h);
-            let from = match index {
-                Some(index) => handle(&h, index),
-                None => pos2(area.center().x, area.top() + GRADIENT_PAD.bar / 2.0),
-            };
-            let rivers = h.get_by_label(RIVERS).rect().top();
+        let card = panel(&h, Panel::Layers).unwrap();
+        let inside = |y: f32| card.top() + 80.0 < y && y < card.bottom() - 80.0;
+        // A place on the bar far from the handles.
+        let ys: Vec<f32> = (0..stops.len()).map(|i| handle(&h, i).y).collect();
+        let bar = column_parts(&h).bar.center().x;
+        let gap = ys
+            .windows(2)
+            .map(|w| (w[0] + w[1]) / 2.0)
+            .find(|y| inside(*y))
+            .unwrap();
+        let on_bar = pos2(bar, gap);
+        let row = (0..stops.len())
+            .map(|i| stop_rect(&h, i).center())
+            .find(|p| inside(p.y))
+            .unwrap();
+        // A drag up on the bar scrolls up, and a drag down on a row scrolls
+        // back down.
+        for (what, from, dy) in [("bar", on_bar, -30.0), ("row", row, 30.0)] {
+            let top = stop_rect(&h, 0).top();
             drag(&mut h, from, from + vec2(0.0, dy), None);
-            let moved = h.get_by_label(RIVERS).rect().top() - rivers;
+            let moved = stop_rect(&h, 0).top() - top;
             assert!(moved * dy > 100.0, "{size:?} {what}: {moved}");
             assert_eq!(h.state().globe.map.bands.stops(), stops, "{size:?} {what}");
         }
@@ -3510,20 +3685,55 @@ fn a_vertical_drag_on_the_gradient_scrolls_the_panel() {
 }
 
 #[test]
-fn a_tap_on_a_stop_opens_its_card_and_a_tap_elsewhere_closes_it() {
+fn a_tap_on_a_row_opens_the_card_of_its_stop_and_a_second_tap_closes_it() {
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    open_stops(&mut h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    let index = sea + 1;
+    show_stop(&mut h, index);
+    let row = stop_rect(&h, index);
+    finger_tap(&mut h, row.center());
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    let stop = h.state().pad.style.card.unwrap();
+    assert!(stop.top() < row.center().y && row.center().y < stop.bottom());
+    finger_tap(&mut h, row.center());
+    assert_eq!(h.state().globe.preview.selected, None);
+    assert_eq!(h.state().pad.style.card, None);
+}
+
+#[test]
+fn the_add_stop_row_adds_a_stop_in_the_widest_gap_and_selects_it() {
+    use vale_app::ui::pad::raster::ADD_STOP;
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    open_stops(&mut h);
+    let before = h.state().globe.map.bands.clone();
+    let value = widest_gap_value(&before);
+    tap(&mut h, ADD_STOP);
+    let stops = h.state().globe.map.bands.stops();
+    assert_eq!(stops.len(), before.stops().len() + 1);
+    let index = stops.iter().position(|s| s.value == value).unwrap();
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    assert!(h.state().pad.style.card.is_some());
+}
+
+#[test]
+fn a_tap_on_a_handle_opens_the_card_of_its_stop_and_a_tap_elsewhere_closes_it() {
     use vale_app::ui::pad::raster::COLOR;
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
-    scroll_to_gradient(&mut h);
+    open_stops(&mut h);
+    show_stop(&mut h, 1);
     let shade = format!("{COLOR} shade");
     let card = |h: &Pad| h.state().pad.style.card;
     tap_handle(&mut h, 1);
     assert_eq!(h.state().globe.preview.selected, Some((height, 1)));
-    // The card is at the left of the panel, at the height of the handle.
+    // The card is at the left of the panel, at the height of the row.
     let stop = card(&h).unwrap();
     let panel = panel(&h, Panel::Layers).unwrap();
     assert!(stop.right() < panel.left(), "{stop:?}");
-    let y = handle(&h, 1).y;
+    let y = stop_rect(&h, 1).center().y;
     assert!(stop.top() < y && y < stop.bottom(), "{stop:?}");
     // A tap in the square of the picker changes the color of the stop.
     let before = h.state().globe.map.bands.stops()[1];
@@ -3542,8 +3752,12 @@ fn a_tap_on_a_stop_opens_its_card_and_a_tap_elsewhere_closes_it() {
     // A tap at another place on the panel also closes the card.
     tap_handle(&mut h, 1);
     assert!(card(&h).is_some());
-    let area = gradient_area(&h);
-    finger_tap(&mut h, pos2(area.center().x, area.bottom() + 20.0));
+    let below = pos2(
+        panel.center().x,
+        h.get_by_label(GRADIENT).rect().bottom() + 20.0,
+    );
+    assert!(panel.contains(below), "{below:?}");
+    finger_tap(&mut h, below);
     assert_eq!(h.state().globe.preview.selected, None);
     assert_eq!(card(&h), None);
 }
@@ -3553,8 +3767,9 @@ fn the_card_of_a_stop_sets_its_line() {
     use vale_app::ui::pad::raster::{COLOR, LINE, LINE_COLOR, LINE_WEIGHT};
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
-    scroll_to_gradient(&mut h);
+    open_stops(&mut h);
     let sea = h.state().globe.map.bands.sea().unwrap();
+    show_stop(&mut h, sea);
     tap_handle(&mut h, sea);
     assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
     check_controls(&h, "the card of a stop");
@@ -3640,6 +3855,12 @@ fn type_keys(h: &mut Pad, field: &str, text: &str) {
     tap(h, &format!("{field} {DONE}"));
 }
 
+/// Holds the clipboard, which all tests share.
+fn one_clipboard_test() -> std::sync::MutexGuard<'static, ()> {
+    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A long press of a finger on the middle of a control.
 fn long_press(h: &mut Pad, name: &str) {
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
@@ -3660,8 +3881,9 @@ fn the_hex_keypad_sets_the_color_of_a_stop_and_the_card_stays_in_place() {
     use vale_app::ui::pad::widgets::DELETE;
     let mut h = painted_pad(BOARDS[1]);
     open_height(&mut h);
-    scroll_to_gradient(&mut h);
+    open_stops(&mut h);
     let sea = h.state().globe.map.bands.sea().unwrap();
+    show_stop(&mut h, sea);
     tap_handle(&mut h, sea);
     // A darker line makes the card taller.
     tap(&mut h, LINE);
@@ -3700,12 +3922,14 @@ fn the_hex_keypad_sets_the_color_of_a_stop_and_the_card_stays_in_place() {
 
 #[test]
 fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
+    let _clipboard = one_clipboard_test();
     use vale_app::ui::pad::raster::COLOR;
     use vale_app::ui::pad::widgets::{COPY, PASTE};
     let mut h = painted_pad(BOARDS[1]);
     open_height(&mut h);
-    scroll_to_gradient(&mut h);
+    open_stops(&mut h);
     let sea = h.state().globe.map.bands.sea().unwrap();
+    show_stop(&mut h, sea);
     tap_handle(&mut h, sea);
     let hex = format!("{COLOR} hex");
     let code = vale_app::ui::pad::widgets::hex_text(h.state().globe.map.bands.stops()[sea].above);
@@ -3740,6 +3964,7 @@ fn a_long_press_on_a_field_opens_copy_and_paste_with_no_keyboard() {
 
 #[test]
 fn a_paste_from_the_edit_menu_renames_a_layer() {
+    let _clipboard = one_clipboard_test();
     use vale_app::ui::pad::widgets::PASTE;
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
@@ -3769,25 +3994,23 @@ fn painted_texts(h: &Pad) -> Vec<(String, Rect)> {
 }
 
 #[test]
-fn a_dragged_stop_shows_its_value_above_the_bar() {
+fn a_dragged_stop_shows_its_value_left_of_the_bar() {
     let mut h = painted_pad(BOARDS[1]);
     open_height(&mut h);
-    scroll_to_gradient(&mut h);
-    // The stop that can move the farthest to the right.
+    open_stops(&mut h);
+    // The stop that can move the farthest up.
     let bands = h.state().globe.map.bands.clone();
     let stops = bands.stops();
-    let gap = |i: &usize| stops[i + 1].value - stops[*i].value;
+    let gap = |h: &Pad, i: &usize| handle(h, *i).y - handle(h, i + 1).y;
     let index = (1..stops.len() - 1)
         .filter(|i| !bands.fixed(*i))
-        .max_by(|a, b| gap(a).total_cmp(&gap(b)))
+        .max_by(|a, b| gap(&h, a).total_cmp(&gap(&h, b)))
         .unwrap();
-    let (from, next) = (
-        handle(&h, index),
-        h.state().globe.map.bands.stops()[index + 1].value,
-    );
-    let to = pos2(on_bar(&h, next - 100.0).x, from.y);
-    let bar = gradient_area(&h).top();
-    let span = h.state().globe.map.bands.max() - h.state().globe.map.bands.min();
+    show_stop(&mut h, index);
+    let (from, next) = (handle(&h, index), handle(&h, index + 1).y);
+    let to = pos2(from.x, (next + 10.0).max(from.y - 150.0));
+    let bar = column_parts(&h).bar.left();
+    let span = bands.max() - bands.min();
     touch(&mut h, egui::TouchPhase::Start, from, None);
     h.step();
     let start = h.state().globe.map.bands.stops()[index].value;
@@ -3804,13 +4027,13 @@ fn a_dragged_stop_shows_its_value_above_the_bar() {
         seen += 1;
         let text = vale_app::world::value_text(value, span, "m");
         let texts = painted_texts(&h);
-        let shown = texts.iter().find(|(t, _)| *t == text);
+        let shown = texts.iter().find(|(t, r)| *t == text && r.right() < bar);
         let (_, rect) = shown.unwrap_or_else(|| panic!("frame {i}: no {text} in {texts:?}"));
-        assert!(rect.bottom() < bar, "frame {i}: {rect:?}");
-        // The value is near the finger, so the finger does not hide it.
+        // The value is at the height of the finger, so the finger does not
+        // hide it.
         assert!(
-            (rect.center().x - pos.x).abs() < 60.0,
-            "frame {i}: {rect:?}"
+            (rect.center().y - pos.y).abs() < 30.0,
+            "frame {i}: {rect:?} {pos:?}"
         );
     }
     assert!(seen >= 3, "{seen}");
@@ -3818,28 +4041,26 @@ fn a_dragged_stop_shows_its_value_above_the_bar() {
     h.run_steps(3);
     let value = h.state().globe.map.bands.stops()[index].value;
     let text = vale_app::world::value_text(value, span, "m");
-    let above = |(t, r): &(String, Rect)| *t == text && r.bottom() < bar;
-    assert!(!painted_texts(&h).iter().any(above));
+    let left = |(t, r): &(String, Rect)| *t == text && r.right() < bar;
+    assert!(!painted_texts(&h).iter().any(left));
 }
 
 #[test]
 fn reset_colors_asks_first_and_puts_back_the_default_stops() {
-    use vale_app::ui::pad::raster::{RESET, RESET_STOPS};
+    use vale_app::ui::pad::raster::{ADD_STOP, RESET, RESET_STOPS};
     let mut h = painted_pad(BOARDS[0]);
     let height = open_height(&mut h);
-    scroll_to_gradient(&mut h);
     let bands = h.state().globe.map.bands.clone();
     let default = vale_terrain::Bands::with_range(bands.min(), bands.max(), true).unwrap();
     let default = default.stops().to_vec();
     let disabled = |h: &Pad| h.get_by_label(RESET_STOPS).accesskit_node().is_disabled();
     // A new stop changes the stops.
     let count = bands.stops().len();
-    let value = (bands.stops()[1].value + bands.stops()[2].value) / 2.0;
-    let at = on_bar(&h, value);
-    finger_tap(&mut h, at);
+    open_stops(&mut h);
+    tap(&mut h, ADD_STOP);
     assert_eq!(h.state().globe.map.bands.stops().len(), count + 1);
-    // A second tap on the new stop clears the selection.
-    finger_tap(&mut h, at);
+    tap(&mut h, "Back to Height");
+    scroll_to_row(&mut h, RESET_STOPS);
     assert!(!disabled(&h));
     // A tap on the row opens the card, and a tap outside closes it with no
     // change.
@@ -3866,10 +4087,10 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     use vale_app::ui::pad::raster::{COLOR_RAMPS, DELETE_RAMP, IMPORT_RAMP, REVERSE_RAMP};
     let mut h = painted_pad(BOARDS[0]);
     let height = open_height(&mut h);
-    scroll_to_gradient(&mut h);
+    scroll_to_row(&mut h, COLOR_RAMPS);
     // The ramps have their own page in the Layers panel.
     tap(&mut h, COLOR_RAMPS);
-    assert!(h.state().pad.ramps);
+    assert_eq!(h.state().pad.page, Some(Page::Ramps));
     tap(&mut h, IMPORT_RAMP);
     assert!(
         h.state()
@@ -3956,7 +4177,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
 
     // The back arrow goes back to the panel of the layer.
     tap(&mut h, "Back to Height");
-    assert!(!h.state().pad.ramps);
+    assert_eq!(h.state().pad.page, None);
     assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(height)));
 }
 
@@ -3965,9 +4186,10 @@ fn a_typed_value_moves_the_selected_stop() {
     use vale_app::ui::pad::raster::STOP_VALUE;
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
-    scroll_to_gradient(&mut h);
+    open_stops(&mut h);
     let sea = h.state().globe.map.bands.sea().unwrap();
     let index = sea + 1;
+    show_stop(&mut h, index);
     tap_handle(&mut h, index);
     assert_eq!(h.state().globe.preview.selected, Some((height, index)));
     type_keys(&mut h, STOP_VALUE, "123");
@@ -3995,8 +4217,10 @@ fn a_tap_chooses_each_display() {
         assert_eq!(display(&h), shown, "{name}");
     }
     let card = panel(&h, Panel::Layers).unwrap();
-    let area = gradient_area(&h);
-    assert!(card.contains_rect(area), "{area:?} is not in {card:?}");
+    let row = h
+        .get_by_label(vale_app::ui::pad::raster::COLOR_STOPS)
+        .rect();
+    assert!(card.contains_rect(row), "{row:?} is not in {card:?}");
 }
 
 #[test]
@@ -4047,8 +4271,10 @@ fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame(
     let index = bands.stops().iter().position(|s| s.value > meters).unwrap();
     let to = bands.stops()[index - 1].value + 50.0;
     assert!(to < meters);
+    open_stops(&mut h);
+    show_stop(&mut h, index);
     let (from, to) = (handle(&h, index), on_bar(&h, to));
-    let to = pos2(to.x, from.y);
+    let to = pos2(from.x, to.y);
     let before = band_color(&h);
     touch(&mut h, egui::TouchPhase::Start, from, None);
     h.step();
