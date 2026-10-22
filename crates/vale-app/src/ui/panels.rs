@@ -22,6 +22,8 @@ pub const WORLD_BUTTON: &str = "World…";
 pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 /// The button of the line tool.
 pub const LINE_TOOL: &str = "Line";
+/// The button of the polygon tool.
+pub const POLYGON_TOOL: &str = "Polygon";
 /// The slider of the smoothing of the line tool.
 pub const SMOOTHING: &str = "Smoothing";
 /// The check box that turns all snapping on and off.
@@ -58,7 +60,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 // With no layer for the tool, the tool is Navigate.
                 let globe = &mut state.globe;
                 let (paintable, lineable) = (globe.paintable, globe.lineable);
-                let navigate = !globe.brushing() && !globe.lining();
+                let navigate = !globe.brushing() && !globe.drawing();
                 if ui.selectable_label(navigate, "Navigate").clicked() {
                     globe.tool = Tool::Navigate;
                 }
@@ -66,11 +68,18 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if ui.add_enabled(paintable, brush).clicked() {
                     globe.tool = Tool::Brush;
                 }
-                let line = egui::Button::selectable(globe.lining(), LINE_TOOL);
-                if ui.add_enabled(lineable, line).clicked() {
-                    globe.tool = Tool::Line;
+                // A polygon layer has the polygon tool in the place of the
+                // line tool.
+                let (name, tool) = if globe.fillable {
+                    (POLYGON_TOOL, Tool::Polygon)
+                } else {
+                    (LINE_TOOL, Tool::Line)
+                };
+                let draw = egui::Button::selectable(globe.drawing(), name);
+                if ui.add_enabled(lineable || globe.fillable, draw).clicked() {
+                    globe.tool = tool;
                 }
-                if globe.lining() {
+                if globe.drawing() {
                     let mut percent = globe.line.smoothing * 100.0;
                     let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
                         .suffix(" %")

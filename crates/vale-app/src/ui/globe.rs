@@ -34,7 +34,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// Starts a stroke, or starts to pick the flatten level.
 fn press(globe: &mut Globe) {
-    if globe.lining() {
+    if globe.drawing() {
         globe.line_down();
     } else if globe.pick_level && globe.brush.mode == Mode::Flatten {
         globe.input.picking = true;
@@ -93,7 +93,7 @@ fn brush_input(
         .collect();
     hover_input(globe, &queue);
     let brushing = globe.brushing() && globe.format.is_some();
-    if !(brushing || globe.lining()) || globe.importing() {
+    if !(brushing || globe.drawing()) || globe.importing() {
         if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
             release(globe);
             globe.pen.stats.up();
@@ -106,7 +106,7 @@ fn brush_input(
     let sample = |globe: &mut Globe, pos: egui::Pos2, flow: f64| {
         let dir = globe.unproject(pos);
         globe.input.pos = Some(pos);
-        if globe.lining() {
+        if globe.drawing() {
             globe.line_sample(pos, dir);
         } else if globe.input.picking {
             globe.pick(dir);
@@ -434,7 +434,7 @@ pub(super) fn canvas_input(
     background: egui::Color32,
 ) -> Option<egui::Rect> {
     let now = Instant::now();
-    if state.globe.lining() && state.globe.line_preview().is_none() {
+    if state.globe.drawing() && state.globe.line_preview().is_none() {
         state.refresh_targets();
     }
     let globe = &mut state.globe;
@@ -554,7 +554,12 @@ pub(super) fn paint_canvas(
         snap_highlight(&painter, rect, globe, &highlight, stroke.width + 4.0);
     }
     if let Some(line) = globe.line_preview() {
-        painter.line(line.to_vec(), stroke);
+        let mut line = line.to_vec();
+        // The stroke of the polygon tool closes.
+        if globe.filling() && line.len() > 2 {
+            line.push(line[0]);
+        }
+        painter.line(line, stroke);
     }
     if globe.nav.active() || more {
         ui.ctx().request_repaint();

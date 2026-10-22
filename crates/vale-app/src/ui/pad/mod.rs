@@ -36,7 +36,10 @@ pub const MORE: &str = "More";
 /// The cell of the line tool. It takes the place of More while a line
 /// layer is selected.
 pub const LINE: &str = "Line";
-/// The slider of the smoothing of the line tool.
+/// The cell of the polygon tool. It takes the place of More while a
+/// polygon layer is selected.
+pub const POLYGON: &str = "Polygon";
+/// The slider of the smoothing of the line tool and the polygon tool.
 pub const SMOOTHING: &str = "Smoothing";
 /// The button of the brush card that turns all snapping on and off.
 pub const SNAP: &str = "Snap";
@@ -592,12 +595,18 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         globe.brush.mode = mode;
                     }
                 }
-                if globe.lineable {
-                    let active = globe.lining();
-                    let cell =
-                        widgets::tool_cell(ui, controls, LINE, LINE, Icon::Line, active, true);
+                let draw = if globe.lineable {
+                    Some((LINE, Icon::Line, Tool::Line))
+                } else if globe.fillable {
+                    Some((POLYGON, Icon::Polygon, Tool::Polygon))
+                } else {
+                    None
+                };
+                if let Some((name, icon, tool)) = draw {
+                    let active = globe.drawing();
+                    let cell = widgets::tool_cell(ui, controls, name, name, icon, active, true);
                     if cell.clicked() {
-                        globe.tool = Tool::Line;
+                        globe.tool = tool;
                     }
                     state.pad.more = false;
                     state.pad.more_cell = None;
@@ -605,7 +614,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     more_cell(ui, state, controls, paint);
                 }
                 let globe = &mut state.globe;
-                let active = !globe.brushing() && !globe.lining();
+                let active = !globe.brushing() && !globe.drawing();
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()
                 {
@@ -706,13 +715,13 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         |ui| {
             let mut ui = padded(ui);
             let paint = state.globe.paintable;
-            let line = state.globe.lineable;
+            let line = state.globe.lineable || state.globe.fillable;
             if let BrushCard::Full(height) = rects.brush_card {
                 let mut slider = |name: &str, fraction: &mut f64, text: &str, on: bool| {
                     widgets::vertical_slider(&mut ui, controls, name, height, fraction, text, on)
                 };
-                // With a line layer, the card has the smoothing of the line
-                // tool and the snap button.
+                // With a line or polygon layer, the card has the smoothing
+                // of the tool and the snap button.
                 if line {
                     let height = 2.0 * height - CELL.1;
                     percent_slider(&mut state.globe.line.smoothing, 0.0..=1.0, |f, text| {
@@ -783,6 +792,7 @@ fn show_panel(
     let name = name.as_deref().unwrap_or_default();
     let (key, title, back) = match (panel, layer) {
         (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
+        (Panel::Brush, _) if state.globe.fillable => (panel.key(), POLYGON, None),
         (Panel::Brush, _) => (panel.key(), "Brush", None),
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
@@ -938,7 +948,7 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, travel: f
 
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    if state.globe.lineable {
+    if state.globe.lineable || state.globe.fillable {
         percent_slider(
             &mut state.globe.line.smoothing,
             0.0..=1.0,

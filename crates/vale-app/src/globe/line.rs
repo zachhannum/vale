@@ -764,7 +764,7 @@ mod tests {
             .any(|w| w[0][w[0].len() - 1] == end && w[1][0] == start)
     }
 
-    fn line_layer(id: u32, parts: Vec<Vec<Vec<LonLat>>>) -> Layer {
+    fn draw_layer(id: u32, parts: Vec<Vec<Vec<LonLat>>>) -> Layer {
         let geometries = parts.into_iter().map(Geometry::Lines).collect();
         snap_test::layer(id, GeometryKind::Line, geometries)
     }
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn a_stroke_meets_its_target_at_the_angle_of_the_pen() {
         let part = (-10..=20).map(|i| [3.0 * f64::from(i), 0.0]).collect();
-        let target = line_layer(1, vec![vec![part]]);
+        let target = draw_layer(1, vec![vec![part]]);
         // The pen comes in and goes out at about 10 degrees.
         let way = [[-28.0, 5.3], [-2.0, 0.0], [20.0, 0.0], [50.0, 5.3]];
         let (runs, edit) = draw(&[target], None, &way, 0.0);
@@ -826,7 +826,7 @@ mod tests {
             [21.0, 0.0],
             [30.0, 0.0],
         ]];
-        let layer = line_layer(1, vec![a, b]);
+        let layer = draw_layer(1, vec![a, b]);
         let uuid_a = layer.features[0].uuid();
         let way = [[10.0, 0.0], [24.0, 0.0], [24.0, 8.0]];
         let (runs, edit) = draw(&[], Some(&layer), &way, 0.3);
@@ -859,7 +859,7 @@ mod tests {
             vec![[170.0, 5.0], [175.0, 5.0], [180.0, 5.0]],
             vec![[-180.0, 5.0], [-175.0, 5.0], [-170.0, 5.0]],
         ];
-        let target = line_layer(1, vec![parts]);
+        let target = draw_layer(1, vec![parts]);
         let way = [[171.0, 10.0], [171.5, 5.0], [189.0, 5.0], [189.0, 12.0]];
         let (runs, edit) = draw(&[target], None, &way, 0.3);
         assert_eq!(snap_test::kinds(&runs), "FTF");
@@ -904,7 +904,7 @@ mod tests {
             [-170.0, 85.0],
             [-170.0, 80.0],
         ];
-        let target = line_layer(1, vec![vec![part.clone()]]);
+        let target = draw_layer(1, vec![vec![part.clone()]]);
         // A latitude past 90 is on the other side of the pole.
         let way = [[10.0, 70.0], [10.0, 98.0], [50.0, 98.0]];
         let (runs, edit) = draw(&[target], None, &way, 0.0);

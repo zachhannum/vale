@@ -27,6 +27,7 @@ pub mod import;
 pub mod line;
 pub mod math;
 pub mod nav;
+pub mod polygon;
 pub mod preview;
 pub mod rivers;
 pub mod snap;
@@ -102,7 +103,7 @@ const UPLIFT_ERODE_RATE: f64 = 12.0;
 /// An uplift stroke makes one weather stamp for this number of its stamps.
 const UPLIFT_WEATHER_EVERY: usize = 4;
 
-/// A stroke of the line tool.
+/// A stroke of the line tool or the polygon tool.
 pub struct LineStroke {
     pub screen: Vec<Pos2>,
     /// The samples on the unit sphere.
@@ -123,6 +124,7 @@ pub enum Tool {
     Navigate,
     Brush,
     Line,
+    Polygon,
 }
 
 /// The way that the world workspace shows the world.
@@ -608,15 +610,19 @@ pub struct Globe {
     pub line: LineSettings,
     /// The line tool can draw: the selected layer is a visible line layer.
     pub lineable: bool,
-    /// The selected line layer, the layer that the line tool draws in.
-    pub line_layer: Option<LayerId>,
+    /// The polygon tool can draw: the selected layer is a visible polygon
+    /// layer.
+    pub fillable: bool,
+    /// The selected line or polygon layer, the layer that the line tool or
+    /// the polygon tool draws in.
+    pub draw_layer: Option<LayerId>,
     /// The snap settings of the tools that edit vector layers.
     pub snap: SnapSettings,
     /// The snap targets of the visible vector layers.
     targets: Option<Arc<Targets>>,
-    /// The stroke of the line tool while the pen is down.
+    /// The stroke of the line or polygon tool while the pen is down.
     line_stroke: Option<LineStroke>,
-    /// The last stroke of the line tool, for the layer.
+    /// The last stroke of the line or polygon tool, for the layer.
     line_done: Option<LineStroke>,
     /// The radius of the world, in kilometers. Set by the canvas each frame.
     pub world_km: f64,
@@ -703,7 +709,8 @@ impl Globe {
             paint_wanted: true,
             line: LineSettings::default(),
             lineable: false,
-            line_layer: None,
+            fillable: false,
+            draw_layer: None,
             snap: SnapSettings::default(),
             targets: None,
             line_stroke: None,
@@ -1461,15 +1468,26 @@ impl Globe {
         self.tool == Tool::Line && self.lineable
     }
 
+    /// True if the polygon tool is the tool and it can draw in the selected
+    /// layer.
+    pub fn filling(&self) -> bool {
+        self.tool == Tool::Polygon && self.fillable
+    }
+
+    /// True if the line tool or the polygon tool can draw now.
+    pub fn drawing(&self) -> bool {
+        self.lining() || self.filling()
+    }
+
     /// Sets the snap targets of the visible vector layers.
     pub fn set_targets(&mut self, targets: Option<Arc<Targets>>) {
         self.targets = targets;
     }
 
-    /// Starts a stroke of the line tool.
+    /// Starts a stroke of the line or polygon tool.
     pub fn line_down(&mut self) {
         let scale = self.radius();
-        let targets = self.targets.clone().zip(self.line_layer);
+        let targets = self.targets.clone().zip(self.draw_layer);
         let tracer = targets.map(|(t, layer)| Tracer::new(t, self.snap, scale, layer));
         self.line_stroke = Some(LineStroke {
             screen: Vec::new(),
@@ -1481,7 +1499,7 @@ impl Globe {
         });
     }
 
-    /// Adds one sample to the stroke of the line tool. The stroke ends at
+    /// Adds one sample to the stroke of the line or polygon tool. The stroke ends at
     /// the first sample off the world.
     pub fn line_sample(&mut self, pos: Pos2, dir: Option<V3>) {
         let Some(stroke) = self.line_stroke.as_mut().filter(|s| !s.off) else {
@@ -1499,7 +1517,7 @@ impl Globe {
         }
     }
 
-    /// Ends the stroke of the line tool. `take_line` gives it.
+    /// Ends the stroke of the line or polygon tool. `take_line` gives it.
     pub fn line_up(&mut self) {
         self.line_done = self.line_stroke.take().map(|mut stroke| {
             stroke.runs = match stroke.tracer.take() {
@@ -1510,31 +1528,31 @@ impl Globe {
         });
     }
 
-    /// The target that the stroke of the line tool snaps to or traces now.
+    /// The target that the stroke of the line or polygon tool snaps to or traces now.
     /// Before the stroke, it is the point where a stroke from the pen or
     /// the mouse starts.
     pub fn snap_highlight(&self) -> Option<Highlight> {
         if let Some(stroke) = &self.line_stroke {
             return stroke.tracer.as_ref()?.highlight();
         }
-        if !self.lining() {
+        if !self.drawing() {
             return None;
         }
         let dir = self.unproject(self.input.pos?)?;
         let targets = self.targets.as_ref()?;
-        let point = targets.start(self.line_layer?, dir, self.radius(), &self.snap)?;
+        let point = targets.start(self.draw_layer?, dir, self.radius(), &self.snap)?;
         Some(Highlight {
             span: Vec::new(),
             point: Some(point),
         })
     }
 
-    /// The stroke of the line tool while the pen is down, in screen points.
+    /// The stroke of the line or polygon tool while the pen is down, in screen points.
     pub fn line_preview(&self) -> Option<&[Pos2]> {
         self.line_stroke.as_ref().map(|s| s.screen.as_slice())
     }
 
-    /// The last stroke of the line tool that ended.
+    /// The last stroke of the line or polygon tool that ended.
     pub fn take_line(&mut self) -> Option<LineStroke> {
         self.line_done.take()
     }
@@ -2897,7 +2915,7 @@ mod tests {
         let mut globe = Globe {
             rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(300.0 / 0.45)),
             view: GlobeView::centered(5.0, 0.0),
-            line_layer: Some(LayerId(9)),
+            draw_layer: Some(LayerId(9)),
             lineable: true,
             tool: Tool::Line,
             ..Globe::default()
@@ -2942,7 +2960,7 @@ mod tests {
         let mut globe = Globe {
             rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(300.0 / 0.45)),
             view: GlobeView::centered(15.0, 0.0),
-            line_layer: Some(LayerId(9)),
+            draw_layer: Some(LayerId(9)),
             lineable: true,
             tool: Tool::Line,
             ..Globe::default()
