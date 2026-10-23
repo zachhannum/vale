@@ -155,6 +155,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 state.set_raster_display(id, display);
             }
             smoothing(ui, state, &raster);
+            let mut lines = raster.lines;
+            if ui.checkbox(&mut lines, pad::raster::BAND_LINES).changed() {
+                state.set_raster_lines(id, lines);
+            }
             if height {
                 hillshade(ui, state, &raster);
             }

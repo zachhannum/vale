@@ -247,7 +247,7 @@ fn union(a: Option<TexelRect>, b: TexelRect) -> TexelRect {
 pub enum StackItem {
     /// A raster layer, how much it hides the layers below it, from 0 to 1,
     /// how it colors its values, how it smooths them by the scale, and
-    /// whether it shows its rivers.
+    /// whether it shows its rivers and the lines of its stops.
     Raster {
         id: RasterId,
         opacity: f32,
@@ -256,6 +256,7 @@ pub enum StackItem {
         /// The hillshade. It is off for a layer that is not a height layer.
         hillshade: Hillshade,
         rivers: bool,
+        lines: bool,
     },
     Vector(LayerId),
 }
@@ -2732,7 +2733,7 @@ impl Globe {
             None => ([[[0.0; 4]; 3]; vale_terrain::MAX_BANDS], 0),
         };
         let lines = match layer {
-            Some(layer) if self.preview.lines => line_uniforms(layer.bands, scale),
+            Some(layer) if layer.lines => line_uniforms(layer.bands, scale),
             _ => [[[0.0; 4]; 2]; vale_terrain::MAX_BANDS + 1],
         };
         let color = |c: eframe::egui::Color32| {
@@ -2888,6 +2889,7 @@ impl Globe {
                     hillshade: Hillshade::default(),
                     rivers: rivers(key.layer, display, self.preview.rivers),
                     window: true,
+                    lines: true,
                 }));
             }
             Some(stack) => {
@@ -2901,6 +2903,7 @@ impl Globe {
                             smoothing,
                             hillshade,
                             rivers: on,
+                            lines,
                         } => {
                             let source = self.source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
@@ -2913,6 +2916,7 @@ impl Globe {
                                     hillshade,
                                     rivers: rivers(key.layer, display, on),
                                     window: !key.display,
+                                    lines,
                                 }));
                             }
                         }
@@ -2966,7 +2970,7 @@ impl Globe {
                 rivers: layer.rivers.is_some() && !small,
                 // The blurred copy has no lines of the stops.
                 lines: !small
-                    && self.preview.lines
+                    && layer.lines
                     && layer.display == RasterDisplay::Bands
                     && layer.bands.stops().iter().any(|stop| stop.line.on),
                 clip,
@@ -3042,6 +3046,8 @@ struct LayerDraw<'a> {
     /// The pass reads the full heightmap, so it has the window of small
     /// rivers.
     window: bool,
+    /// The pass draws the lines of the stops.
+    lines: bool,
 }
 
 #[cfg(test)]

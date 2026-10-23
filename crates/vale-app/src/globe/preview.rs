@@ -13,8 +13,6 @@ pub struct Preview {
     /// Draws the rivers over the colors of a globe with no list of layers.
     /// A raster layer of the list has its own switch.
     pub rivers: bool,
-    /// Draws the lines of the stops. The switch is not saved.
-    pub lines: bool,
     /// The factor of the width of a river line on screen.
     pub river_width: f32,
     /// The elevation panel is open.
@@ -30,7 +28,6 @@ impl Default for Preview {
             display: RasterDisplay::Bands,
             graticule: true,
             rivers: true,
-            lines: true,
             river_width: 1.0,
             panel: false,
             selected: None,

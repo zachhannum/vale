@@ -4476,9 +4476,9 @@ fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame(
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[1]);
     let height = open_height(&mut h);
+    assert!(h.state_mut().set_raster_rivers(height, false));
     let globe = &mut h.state_mut().globe;
     globe.preview.graticule = false;
-    globe.preview.rivers = false;
     globe.view = GlobeView::centered(0.0, 0.0);
     let meters = 1100.0;
     globe.map.fill(meters_to_level(meters));
@@ -4791,6 +4791,27 @@ fn the_style_section_has_the_smoothing_and_the_minimum_feature_size() {
         assert!(control(&h, FEATURE_SIZE).is_none(), "{what}");
         tap(&mut h, SMOOTHING);
         assert!(smoothing(&h).on, "{what}");
+    }
+}
+
+#[test]
+fn the_style_section_has_the_switch_of_the_band_lines() {
+    use vale_app::ui::pad::raster::BAND_LINES;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        let height = open_height(&mut h);
+        let lines = |h: &Pad| h.state().doc.project.raster(height).unwrap().lines;
+        assert!(lines(&h), "{what}");
+        scroll_to(&mut h, BAND_LINES);
+        let card = panel(&h, Panel::Layers).unwrap();
+        let rect = control(&h, BAND_LINES).unwrap_or_else(|| panic!("{what}: no switch"));
+        assert!(card.contains_rect(rect), "{what}: the switch is {rect:?}");
+        check_controls(&h, &format!("{what} with the band lines"));
+        tap(&mut h, BAND_LINES);
+        assert!(!lines(&h), "{what}");
+        tap(&mut h, BAND_LINES);
+        assert!(lines(&h), "{what}");
     }
 }
 

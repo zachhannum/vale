@@ -531,6 +531,7 @@ impl AppState {
                     smoothing: raster.smoothing,
                     hillshade,
                     rivers: raster.rivers,
+                    lines: raster.lines,
                 })
             }
             None => Some(StackItem::Vector(layer.id)),
@@ -875,6 +876,13 @@ impl AppState {
     /// Sets the shade color of the hillshade of a raster layer.
     pub fn set_raster_hillshade_color(&mut self, id: RasterId, color: Rgb) -> bool {
         let set = self.doc.project.set_raster_hillshade_color(id, color);
+        self.sync_globe();
+        set
+    }
+
+    /// Turns the lines of the stops of a raster layer on or off.
+    pub fn set_raster_lines(&mut self, id: RasterId, on: bool) -> bool {
+        let set = self.doc.project.set_raster_lines(id, on);
         self.sync_globe();
         set
     }

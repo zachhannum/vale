@@ -4298,7 +4298,8 @@ fn the_switch_of_the_band_lines_hides_the_lines_and_their_passes() {
     let on = line_columns(&mut h, "lines-on");
     assert!(on.iter().all(|&c| c > 0.5), "{on:?}");
 
-    h.state_mut().globe.preview.lines = false;
+    let id = brush_layer(&h);
+    assert!(h.state_mut().set_raster_lines(id, false));
     let off = line_columns(&mut h, "lines-off");
     assert!(off.iter().all(|&c| c < 0.01), "{off:?}");
     // A change of the heights runs no passes of the lines.
@@ -4307,7 +4308,7 @@ fn the_switch_of_the_band_lines_hides_the_lines_and_their_passes() {
     next_frame(&mut h);
     assert_eq!(gpu::line_runs(&render_state), runs);
 
-    h.state_mut().globe.preview.lines = true;
+    assert!(h.state_mut().set_raster_lines(id, true));
     let back = line_columns(&mut h, "lines-back");
     assert!(back.iter().all(|&c| c > 0.5), "{back:?}");
 }
