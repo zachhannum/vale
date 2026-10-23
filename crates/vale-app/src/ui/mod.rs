@@ -10,7 +10,7 @@ use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
     Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
-    StoreError, World,
+    Rgb, StoreError, World,
 };
 use vale_terrain::{Bands, Heightmap, Mode};
 
@@ -522,11 +522,14 @@ impl AppState {
                 let raster = project.raster(id)?;
                 let (opacity, display) = (raster.opacity, raster.display);
                 let held = globe.holds(id);
+                let mut hillshade = raster.hillshade;
+                hillshade.on &= is_height(raster);
                 held.then_some(StackItem::Raster {
                     id,
                     opacity,
                     display,
                     smoothing: raster.smoothing,
+                    hillshade,
                 })
             }
             None => Some(StackItem::Vector(layer.id)),
@@ -815,6 +818,62 @@ impl AppState {
     /// Turns the smoothing of a raster layer on or off.
     pub fn set_raster_smoothing(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_smoothing(id, on);
+        self.sync_globe();
+        set
+    }
+
+    /// Turns the hillshade of a raster layer on or off.
+    pub fn set_raster_hillshade(&mut self, id: RasterId, on: bool) -> bool {
+        let set = self.doc.project.set_raster_hillshade(id, on);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets how much the hillshade of a raster layer hides its colors, from
+    /// 0 to 1.
+    pub fn set_raster_hillshade_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
+        let set = self.doc.project.set_raster_hillshade_opacity(id, opacity);
+        self.sync_globe();
+        set
+    }
+
+    /// Turns the highlights of the hillshade of a raster layer on or off.
+    pub fn set_raster_hillshade_highlights(&mut self, id: RasterId, on: bool) -> bool {
+        let set = self.doc.project.set_raster_hillshade_highlights(id, on);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets the direction of the light of the hillshade of a raster layer,
+    /// in degrees clockwise from north.
+    pub fn set_raster_hillshade_azimuth(&mut self, id: RasterId, azimuth: f32) -> bool {
+        let set = self.doc.project.set_raster_hillshade_azimuth(id, azimuth);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets the height of the light of the hillshade of a raster layer, in
+    /// degrees above the ground.
+    pub fn set_raster_hillshade_altitude(&mut self, id: RasterId, altitude: f32) -> bool {
+        let set = self.doc.project.set_raster_hillshade_altitude(id, altitude);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets how much the hillshade of a raster layer makes the slopes
+    /// steeper.
+    pub fn set_raster_hillshade_exaggeration(&mut self, id: RasterId, exaggeration: f32) -> bool {
+        let set = self
+            .doc
+            .project
+            .set_raster_hillshade_exaggeration(id, exaggeration);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets the shade color of the hillshade of a raster layer.
+    pub fn set_raster_hillshade_color(&mut self, id: RasterId, color: Rgb) -> bool {
+        let set = self.doc.project.set_raster_hillshade_color(id, color);
         self.sync_globe();
         set
     }

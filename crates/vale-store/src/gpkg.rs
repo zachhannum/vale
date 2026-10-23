@@ -23,13 +23,13 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
-    Feature, Geometry, GeometryKind, Layer, LayerId, LayerKind, LonLat, Project, Raster,
+    Feature, Geometry, GeometryKind, Hillshade, Layer, LayerId, LayerKind, LonLat, Project, Raster,
     RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine, Units, Uuid, Value, World,
     clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 14;
+pub const FORMAT_VERSION: u32 = 16;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -48,6 +48,8 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v12,
     v13,
     v14,
+    v15,
+    v16,
 ];
 
 /// `GPKG` in ASCII.
@@ -736,6 +738,38 @@ fn v13(tx: &Transaction) -> rusqlite::Result<()> {
         "ALTER TABLE vale_raster ADD COLUMN smooth INTEGER NOT NULL DEFAULT 1;
          ALTER TABLE vale_raster ADD COLUMN feature_size REAL NOT NULL DEFAULT 2;",
     )
+}
+
+/// The hillshade of a raster. The rasters of an older file get the default
+/// hillshade, and so do their undo images.
+fn v15(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "ALTER TABLE vale_raster ADD COLUMN hillshade INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE vale_raster ADD COLUMN hillshade_opacity REAL NOT NULL DEFAULT 0.5;",
+    )
+}
+
+/// The highlights, the light, the relief, and the shade color of the
+/// hillshade. A file of version 15 can already have some of the columns,
+/// and the step adds each column that it does not have.
+fn v16(tx: &Transaction) -> rusqlite::Result<()> {
+    const COLUMNS: [(&str, &str); 5] = [
+        ("hillshade_highlights", "INTEGER NOT NULL DEFAULT 1"),
+        ("hillshade_azimuth", "REAL NOT NULL DEFAULT 315"),
+        ("hillshade_altitude", "REAL NOT NULL DEFAULT 45"),
+        ("hillshade_exaggeration", "REAL NOT NULL DEFAULT 1"),
+        ("hillshade_color", "TEXT NOT NULL DEFAULT '000000'"),
+    ];
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_raster') WHERE name = ?1";
+    for (name, kind) in COLUMNS {
+        let count: i64 = tx.query_row(sql, [name], |r| r.get(0))?;
+        if count == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE vale_raster ADD COLUMN {name} {kind};"
+            ))?;
+        }
+    }
+    Ok(())
 }
 
 /// The display of a raster. The rasters of an older file show bands.
@@ -1521,11 +1555,15 @@ fn remove_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError>
 /// Writes the raster records.
 fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     for r in &project.rasters {
+        let shade = r.hillshade.clamped();
         // A replaced row is a deleted row, and the tiles refer to the row.
         tx.execute(
             "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base,
-               opacity, display, stops, colors, smooth, feature_size)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+               opacity, display, stops, colors, smooth, feature_size, hillshade,
+               hillshade_opacity, hillshade_highlights, hillshade_azimuth,
+               hillshade_altitude, hillshade_exaggeration, hillshade_color)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+               ?16, ?17, ?18, ?19)
              ON CONFLICT (id) DO UPDATE SET
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
@@ -1533,7 +1571,14 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                opacity = excluded.opacity, display = excluded.display,
                stops = excluded.stops, colors = excluded.colors,
                smooth = excluded.smooth,
-               feature_size = excluded.feature_size",
+               feature_size = excluded.feature_size,
+               hillshade = excluded.hillshade,
+               hillshade_opacity = excluded.hillshade_opacity,
+               hillshade_highlights = excluded.hillshade_highlights,
+               hillshade_azimuth = excluded.hillshade_azimuth,
+               hillshade_altitude = excluded.hillshade_altitude,
+               hillshade_exaggeration = excluded.hillshade_exaggeration,
+               hillshade_color = excluded.hillshade_color",
             params![
                 r.id.0,
                 r.face_size,
@@ -1547,6 +1592,13 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 colors_text(&r.colors),
                 r.smoothing.on,
                 f64::from(clamp_feature_size(r.smoothing.feature_size)),
+                shade.on,
+                f64::from(shade.opacity),
+                shade.highlights,
+                f64::from(shade.azimuth),
+                f64::from(shade.altitude),
+                f64::from(shade.exaggeration),
+                hex(shade.color),
             ],
         )?;
     }
@@ -1622,7 +1674,9 @@ fn write_tiles(
 fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
     let mut rows = conn.prepare(
         "SELECT id, face_size, unit, value_min, value_max, base, opacity, display, stops,
-           colors, smooth, feature_size
+           colors, smooth, feature_size, hillshade, hillshade_opacity,
+           hillshade_highlights, hillshade_azimuth, hillshade_altitude,
+           hillshade_exaggeration, hillshade_color
          FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
@@ -1651,6 +1705,16 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
                 on: r.get::<_, i64>(10)? != 0,
                 feature_size: clamp_feature_size(r.get::<_, f64>(11)? as f32),
             },
+            hillshade: Hillshade {
+                on: r.get::<_, i64>(12)? != 0,
+                opacity: r.get::<_, f64>(13)? as f32,
+                highlights: r.get::<_, i64>(14)? != 0,
+                azimuth: r.get::<_, f64>(15)? as f32,
+                altitude: r.get::<_, f64>(16)? as f32,
+                exaggeration: r.get::<_, f64>(17)? as f32,
+                color: parse_color(&text(18)?).unwrap_or_default(),
+            }
+            .clamped(),
         });
     }
     Ok(rasters)
@@ -2383,6 +2447,7 @@ mod tests {
             ],
             colors: vec![[0, 1, 2], [250, 128, 7]],
             smoothing: Smoothing::default(),
+            hillshade: Hillshade::default(),
         };
         (project, height, rain)
     }
@@ -2803,7 +2868,14 @@ mod tests {
                 "stops",
                 "smooth",
                 "feature_size",
-                "colors"
+                "colors",
+                "hillshade",
+                "hillshade_opacity",
+                "hillshade_highlights",
+                "hillshade_azimuth",
+                "hillshade_altitude",
+                "hillshade_exaggeration",
+                "hillshade_color"
             ]
         );
 
@@ -3167,6 +3239,139 @@ mod tests {
         assert_eq!(loaded.raster(rain).unwrap().display, RasterDisplay::Bands);
     }
 
+    /// Removes the hillshade of the rasters, as in a file before format
+    /// version 15.
+    const V14_DROP: &str = "ALTER TABLE vale_raster DROP COLUMN hillshade;
+         ALTER TABLE vale_raster DROP COLUMN hillshade_opacity;
+         ALTER TABLE vale_raster DROP COLUMN hillshade_highlights;
+         ALTER TABLE vale_raster DROP COLUMN hillshade_azimuth;
+         ALTER TABLE vale_raster DROP COLUMN hillshade_altitude;
+         ALTER TABLE vale_raster DROP COLUMN hillshade_exaggeration;
+         ALTER TABLE vale_raster DROP COLUMN hillshade_color;";
+
+    #[test]
+    fn the_file_keeps_the_hillshade_of_each_raster() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, rain) = rasters();
+        assert!(project.set_raster_hillshade_opacity(height, 0.75));
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert!(project.set_raster_hillshade(height, true));
+        assert!(project.set_raster_hillshade_highlights(height, false));
+        assert!(project.set_raster_hillshade_azimuth(height, 90.0));
+        assert!(project.set_raster_hillshade_altitude(height, 30.0));
+        assert!(project.set_raster_hillshade_exaggeration(height, 2.5));
+        assert!(project.set_raster_hillshade_color(height, [40, 20, 80]));
+        file.save(&project).unwrap();
+        assert!(project.set_raster_hillshade_opacity(rain, 0.25));
+        file.save(&project).unwrap();
+        drop(file);
+
+        let hillshade = |p: &Project, id| p.raster(id).unwrap().hillshade;
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        let on = Hillshade {
+            on: true,
+            opacity: 0.75,
+            highlights: false,
+            azimuth: 90.0,
+            altitude: 30.0,
+            exaggeration: 2.5,
+            color: [40, 20, 80],
+        };
+        let light = Hillshade {
+            opacity: 0.25,
+            ..Hillshade::default()
+        };
+        assert_eq!(hillshade(&loaded, height), on);
+        assert_eq!(hillshade(&loaded, rain), light);
+
+        // An undo puts back the old opacity, and then the old switches and
+        // the old light, relief, and color.
+        let off = Hillshade {
+            opacity: 0.75,
+            ..Hillshade::default()
+        };
+        file.undo().unwrap();
+        assert_eq!(hillshade(file.project(), rain), Hillshade::default());
+        assert_eq!(hillshade(file.project(), height), on);
+        file.undo().unwrap();
+        assert_eq!(hillshade(file.project(), height), off);
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(hillshade(&loaded, height), off);
+        assert_eq!(hillshade(&loaded, rain), Hillshade::default());
+        file.redo().unwrap();
+        file.redo().unwrap();
+        assert_eq!(file.project(), &project);
+        drop(file);
+
+        // A value outside its range in the file gets the nearest limit, and a
+        // bad color gives black.
+        let conn = Connection::open(path(&dir)).unwrap();
+        let set = "UPDATE vale_raster SET hillshade_opacity = 7, hillshade_altitude = 120,
+                     hillshade_exaggeration = 0, hillshade_color = 'zz' WHERE id = ?1";
+        conn.execute(set, [rain.0]).unwrap();
+        drop(conn);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let read = hillshade(&loaded, rain);
+        assert_eq!(read.opacity, 1.0);
+        assert_eq!((read.altitude, read.exaggeration), (85.0, 0.25));
+        assert_eq!(read.color, [0, 0, 0]);
+
+        // A file before version 15 gives the default hillshade.
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(V14_DROP).unwrap();
+        drop(conn);
+        set_format_version(&dir, 14);
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert!(
+            loaded
+                .rasters()
+                .iter()
+                .all(|r| r.hillshade == Hillshade::default())
+        );
+        // The undo images of version 15 stay valid.
+        assert!(file.can_undo());
+    }
+
+    /// A file of version 15 with only some of the hillshade columns, as an
+    /// early build of version 15 wrote it, gets the other columns.
+    #[test]
+    fn a_file_of_version_15_gets_the_missing_hillshade_columns() {
+        let missing = [
+            "hillshade_highlights",
+            "hillshade_azimuth",
+            "hillshade_altitude",
+            "hillshade_exaggeration",
+            "hillshade_color",
+        ];
+        for kept in [0, 1, 5] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut project, height, _) = rasters();
+            assert!(project.set_raster_hillshade(height, true));
+            assert!(project.set_raster_hillshade_opacity(height, 0.75));
+            drop(ProjectFile::create(&path(&dir), &project).unwrap());
+            let conn = Connection::open(path(&dir)).unwrap();
+            for name in &missing[kept..] {
+                let drop_sql = format!("ALTER TABLE vale_raster DROP COLUMN {name}");
+                conn.execute_batch(&drop_sql).unwrap();
+            }
+            drop(conn);
+            set_format_version(&dir, 15);
+
+            let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+            assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+            let shade = loaded.raster(height).unwrap().hillshade;
+            let want = Hillshade {
+                on: true,
+                opacity: 0.75,
+                ..Hillshade::default()
+            };
+            assert_eq!(shade, want, "{kept} kept");
+        }
+    }
+
     /// Removes the band colors and the smoothing of the rasters, as in a file
     /// before format version 13.
     const V12_DROP: &str = "ALTER TABLE vale_raster DROP COLUMN colors;
@@ -3217,7 +3422,8 @@ mod tests {
 
         // A file before version 13 gives the default smoothing.
         let conn = Connection::open(path(&dir)).unwrap();
-        conn.execute_batch(V12_DROP).unwrap();
+        conn.execute_batch(&format!("{V14_DROP} {V12_DROP}"))
+            .unwrap();
         drop(conn);
         set_format_version(&dir, 12);
         let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
@@ -3249,6 +3455,7 @@ mod tests {
         conn.execute_batch(&format!(
             "ALTER TABLE vale_raster DROP COLUMN display;
              ALTER TABLE vale_raster DROP COLUMN stops;
+             {V14_DROP}
              {V12_DROP}
              {V10_COLUMNS}"
         ))
@@ -3275,6 +3482,7 @@ mod tests {
         let conn = Connection::open(path(&dir)).unwrap();
         conn.execute_batch(&format!(
             "ALTER TABLE vale_raster DROP COLUMN stops;
+             {V14_DROP}
              {V12_DROP}
              {V10_COLUMNS}"
         ))
@@ -3571,8 +3779,10 @@ mod tests {
         let id = project.add_raster("Height".into(), 1000, "m".into(), -100.0, 100.0);
         drop(ProjectFile::create(&path(&dir), &project).unwrap());
         let conn = Connection::open(path(&dir)).unwrap();
-        conn.execute_batch("ALTER TABLE vale_raster DROP COLUMN colors")
-            .unwrap();
+        conn.execute_batch(&format!(
+            "{V14_DROP} ALTER TABLE vale_raster DROP COLUMN colors"
+        ))
+        .unwrap();
         let old = "UPDATE vale_raster SET stops = ?2 WHERE id = ?1";
         conn.execute(old, params![id.0, v13_stops_text(&sea)])
             .unwrap();
@@ -3605,8 +3815,10 @@ mod tests {
         before.add_raster("Height".into(), 1000, "m".into(), -100.0, 100.0);
         let image = undo::image_v13(before.raster(id).unwrap(), &old);
         let conn = Connection::open(path(&dir)).unwrap();
-        conn.execute_batch("ALTER TABLE vale_raster DROP COLUMN colors")
-            .unwrap();
+        conn.execute_batch(&format!(
+            "{V14_DROP} ALTER TABLE vale_raster DROP COLUMN colors"
+        ))
+        .unwrap();
         let set = "UPDATE vale_undo_record SET data = ?1 WHERE kind = 'raster'";
         assert_eq!(conn.execute(set, [&image]).unwrap(), 1);
         drop(conn);

@@ -18,8 +18,9 @@ use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
 };
 use crate::{
-    Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
-    Smoothing, Stop, StopLine, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
+    Feature, GeometryKind, Hillshade, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay,
+    RasterId, Smoothing, Stop, StopLine, Units, Uuid, Value, World, clamp_feature_size,
+    clamp_opacity,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -494,6 +495,13 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     }
     out.extend_from_slice(&raster.smoothing.feature_size.to_le_bytes());
     out.push(raster.smoothing.on as u8);
+    out.extend_from_slice(&raster.hillshade.opacity.to_le_bytes());
+    out.push(raster.hillshade.on as u8);
+    out.push(raster.hillshade.highlights as u8);
+    out.extend_from_slice(&raster.hillshade.azimuth.to_le_bytes());
+    out.extend_from_slice(&raster.hillshade.altitude.to_le_bytes());
+    out.extend_from_slice(&raster.hillshade.exaggeration.to_le_bytes());
+    out.extend_from_slice(&raster.hillshade.color);
 }
 
 /// A raster image of format version 13 with the stops `old`.
@@ -555,7 +563,34 @@ fn smoothing(r: &mut Reader) -> Option<Smoothing> {
     })
 }
 
-/// An unknown display gives bands.
+/// The length of the hillshade at the end of a raster image.
+#[cfg(test)]
+const HILLSHADE_LEN: usize = 4 + 2 + 3 * 4 + 3;
+
+/// An image of an early build of version 15 ends after the switch, or after
+/// the highlights, and gets the defaults of the rest.
+fn hillshade(r: &mut Reader) -> Option<Hillshade> {
+    let mut h = Hillshade {
+        opacity: f32::from_le_bytes(r.take()?),
+        ..Hillshade::default()
+    };
+    let [on]: [u8; 1] = r.take()?;
+    h.on = on != 0;
+    if !r.0.is_empty() {
+        let [highlights]: [u8; 1] = r.take()?;
+        h.highlights = highlights != 0;
+    }
+    if !r.0.is_empty() {
+        h.azimuth = f32::from_le_bytes(r.take()?);
+        h.altitude = f32::from_le_bytes(r.take()?);
+        h.exaggeration = f32::from_le_bytes(r.take()?);
+        h.color = r.take()?;
+    }
+    Some(h.clamped())
+}
+
+/// An unknown display gives bands. An image of format version 14 ends after
+/// the smoothing, and gets the default hillshade.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -576,6 +611,10 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         .map(|_| r.take())
         .collect::<Option<Vec<_>>>()?;
     let smoothing = smoothing(r)?;
+    let hillshade = match r.0.is_empty() {
+        true => Hillshade::default(),
+        false => hillshade(r)?,
+    };
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
@@ -588,13 +627,14 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         stops,
         colors,
         smoothing,
+        hillshade,
     })
 }
 
 /// A raster image of format version 11, 12, or 13, with its stops and band
 /// colors as `gpkg::v14_bands` gives them. An unknown display gives bands.
 /// An image of version 11 has no lines. An image of version 11 or 12 has no
-/// smoothing, and gets the default.
+/// smoothing, and gets the default. Each gets the default hillshade.
 fn raster_v13(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -635,6 +675,7 @@ fn raster_v13(r: &mut Reader) -> Option<Raster> {
         stops,
         colors,
         smoothing: smooth,
+        hillshade: Hillshade::default(),
     })
 }
 
@@ -821,12 +862,58 @@ mod tests {
 
     #[test]
     fn a_raster_image_keeps_the_values_and_the_opacity() {
-        let rain = rain();
+        let mut rain = rain();
+        rain.hillshade = Hillshade {
+            on: true,
+            opacity: 0.375,
+            highlights: false,
+            azimuth: 45.0,
+            altitude: 60.0,
+            exaggeration: 3.0,
+            color: [30, 60, 90],
+        };
         let mut out = Vec::new();
         put_raster(&mut out, &rain);
-        assert_eq!(raster(&mut Reader(&out)), Some(rain));
+        assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
         out.pop();
         assert_eq!(raster(&mut Reader(&out)), None);
+
+        // An image of version 14 ends after the smoothing, and it gets the
+        // default hillshade.
+        out.truncate(out.len() + 1 - HILLSHADE_LEN);
+        let old = raster(&mut Reader(&out)).unwrap();
+        assert_eq!(old.hillshade, Hillshade::default());
+        assert_eq!(old.smoothing, rain.smoothing);
+    }
+
+    #[test]
+    fn a_raster_image_of_an_early_build_gets_the_default_light() {
+        let mut rain = rain();
+        rain.hillshade = Hillshade {
+            on: true,
+            opacity: 0.375,
+            highlights: false,
+            azimuth: 90.0,
+            ..Hillshade::default()
+        };
+        let mut full = Vec::new();
+        put_raster(&mut full, &rain);
+        let light = HILLSHADE_LEN - 4 - 2;
+        // The image ends after the highlights.
+        let out = &full[..full.len() - light];
+        let shade = raster(&mut Reader(out)).unwrap().hillshade;
+        let want = Hillshade {
+            azimuth: Hillshade::AZIMUTH_DEFAULT,
+            ..rain.hillshade
+        };
+        assert_eq!(shade, want);
+        // The image ends after the switch.
+        let out = &full[..full.len() - light - 1];
+        let shade = raster(&mut Reader(out)).unwrap().hillshade;
+        assert!(shade.highlights);
+        assert_eq!((shade.on, shade.opacity), (true, 0.375));
+        // An image that ends inside the light is not valid.
+        assert_eq!(raster(&mut Reader(&full[..full.len() - 1])), None);
     }
 
     #[test]
@@ -837,7 +924,7 @@ mod tests {
         put_raster(&mut out, &rain);
         assert_eq!(raster(&mut Reader(&out)).unwrap().colors, rain.colors);
         // An image with a color that ends early is not valid.
-        out.truncate(out.len() - 5 - 1);
+        out.truncate(out.len() - HILLSHADE_LEN - 5 - 1);
         assert_eq!(raster(&mut Reader(&out)), None);
     }
 

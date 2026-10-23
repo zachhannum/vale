@@ -1,6 +1,7 @@
 //! The project model and its GeoPackage file: a world, its layers, and their features.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::RangeInclusive;
 
 pub use uuid::Uuid;
 
@@ -234,6 +235,82 @@ pub struct Raster {
     pub colors: Vec<Rgb>,
     /// How the globe smooths the values by the scale.
     pub smoothing: Smoothing,
+    /// The shade of the slopes over the colors.
+    pub hillshade: Hillshade,
+}
+
+/// The hillshade of a height layer. It keeps its opacity and its highlights
+/// while it is off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hillshade {
+    pub on: bool,
+    /// How much the shade hides the colors, from 0 to 1.
+    pub opacity: f32,
+    /// The slopes toward the light get lighter. Without the highlights, only
+    /// the slopes away from the light change.
+    pub highlights: bool,
+    /// The direction of the light, in degrees clockwise from north, from 0 up
+    /// to 360.
+    pub azimuth: f32,
+    /// The height of the light, in degrees above the ground.
+    pub altitude: f32,
+    /// It makes the slopes steeper, on top of the change by the zoom.
+    pub exaggeration: f32,
+    /// The shade color. The slopes away from the light blend toward it.
+    pub color: Rgb,
+}
+
+impl Hillshade {
+    pub const OPACITY_DEFAULT: f32 = 0.5;
+    pub const AZIMUTH_DEFAULT: f32 = 315.0;
+    pub const ALTITUDE_DEFAULT: f32 = 45.0;
+    pub const EXAGGERATION_DEFAULT: f32 = 1.0;
+    pub const ALTITUDES: RangeInclusive<f32> = 5.0..=85.0;
+    pub const EXAGGERATIONS: RangeInclusive<f32> = 0.25..=4.0;
+
+    /// The hillshade with each value in its range. A value that is not a
+    /// number gives the default. An infinite azimuth also gives the default.
+    pub fn clamped(self) -> Hillshade {
+        let azimuth = match self.azimuth.is_finite() {
+            true => self.azimuth.rem_euclid(360.0),
+            false => Hillshade::AZIMUTH_DEFAULT,
+        };
+        // The remainder of a value just below 0 rounds up to 360.
+        let azimuth = if azimuth < 360.0 { azimuth } else { 0.0 };
+        let clamp = |value: f32, range: RangeInclusive<f32>, default: f32| match value.is_nan() {
+            true => default,
+            false => value.clamp(*range.start(), *range.end()),
+        };
+        Hillshade {
+            opacity: clamp_opacity(self.opacity),
+            azimuth,
+            altitude: clamp(
+                self.altitude,
+                Hillshade::ALTITUDES,
+                Hillshade::ALTITUDE_DEFAULT,
+            ),
+            exaggeration: clamp(
+                self.exaggeration,
+                Hillshade::EXAGGERATIONS,
+                Hillshade::EXAGGERATION_DEFAULT,
+            ),
+            ..self
+        }
+    }
+}
+
+impl Default for Hillshade {
+    fn default() -> Self {
+        Hillshade {
+            on: false,
+            opacity: Hillshade::OPACITY_DEFAULT,
+            highlights: true,
+            azimuth: Hillshade::AZIMUTH_DEFAULT,
+            altitude: Hillshade::ALTITUDE_DEFAULT,
+            exaggeration: Hillshade::EXAGGERATION_DEFAULT,
+            color: [0, 0, 0],
+        }
+    }
 }
 
 /// The smoothing of the values of a raster by the scale. It keeps its size
@@ -446,6 +523,7 @@ impl Project {
             stops: Vec::new(),
             colors: Vec::new(),
             smoothing: Smoothing::default(),
+            hillshade: Hillshade::default(),
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());
         let layer = Layer {
@@ -506,6 +584,76 @@ impl Project {
         let size = clamp_feature_size(points);
         self.raster_mut(id)
             .map(|r| r.smoothing.feature_size = size)
+            .is_some()
+    }
+
+    /// Turns the hillshade of a raster on or off.
+    pub fn set_raster_hillshade(&mut self, id: RasterId, on: bool) -> bool {
+        self.raster_mut(id).map(|r| r.hillshade.on = on).is_some()
+    }
+
+    /// Sets the opacity of the hillshade of a raster. A value outside 0 to 1
+    /// gets the nearest limit.
+    pub fn set_raster_hillshade_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
+        let opacity = clamp_opacity(opacity);
+        self.raster_mut(id)
+            .map(|r| r.hillshade.opacity = opacity)
+            .is_some()
+    }
+
+    /// Turns the highlights of the hillshade of a raster on or off.
+    pub fn set_raster_hillshade_highlights(&mut self, id: RasterId, on: bool) -> bool {
+        self.raster_mut(id)
+            .map(|r| r.hillshade.highlights = on)
+            .is_some()
+    }
+
+    /// Sets the direction of the light of the hillshade of a raster. An
+    /// azimuth outside 0 to 360 turns into the same direction.
+    pub fn set_raster_hillshade_azimuth(&mut self, id: RasterId, azimuth: f32) -> bool {
+        self.raster_mut(id)
+            .map(|r| {
+                r.hillshade = Hillshade {
+                    azimuth,
+                    ..r.hillshade
+                }
+                .clamped()
+            })
+            .is_some()
+    }
+
+    /// Sets the height of the light of the hillshade of a raster. A value
+    /// outside the range gets the nearest limit.
+    pub fn set_raster_hillshade_altitude(&mut self, id: RasterId, altitude: f32) -> bool {
+        self.raster_mut(id)
+            .map(|r| {
+                r.hillshade = Hillshade {
+                    altitude,
+                    ..r.hillshade
+                }
+                .clamped()
+            })
+            .is_some()
+    }
+
+    /// Sets the exaggeration of the hillshade of a raster. A value outside the
+    /// range gets the nearest limit.
+    pub fn set_raster_hillshade_exaggeration(&mut self, id: RasterId, exaggeration: f32) -> bool {
+        self.raster_mut(id)
+            .map(|r| {
+                r.hillshade = Hillshade {
+                    exaggeration,
+                    ..r.hillshade
+                }
+                .clamped()
+            })
+            .is_some()
+    }
+
+    /// Sets the shade color of the hillshade of a raster.
+    pub fn set_raster_hillshade_color(&mut self, id: RasterId, color: Rgb) -> bool {
+        self.raster_mut(id)
+            .map(|r| r.hillshade.color = color)
             .is_some()
     }
 
@@ -806,6 +954,37 @@ mod tests {
             assert!(p.set_raster_feature_size(ids[1], given));
             assert_eq!(p.raster(ids[1]).unwrap().smoothing.feature_size, kept);
         }
+        assert_eq!(p.raster(ids[1]).unwrap().hillshade, Hillshade::default());
+        assert!(p.set_raster_hillshade(ids[1], true));
+        assert!(p.raster(ids[1]).unwrap().hillshade.on);
+        for (given, kept) in [(0.25, 0.25), (7.0, 1.0), (-1.0, 0.0), (f32::NAN, 1.0)] {
+            assert!(p.set_raster_hillshade_opacity(ids[1], given));
+            assert_eq!(p.raster(ids[1]).unwrap().hillshade.opacity, kept);
+        }
+        assert!(p.raster(ids[1]).unwrap().hillshade.on);
+        assert!(p.raster(ids[1]).unwrap().hillshade.highlights);
+        assert!(p.set_raster_hillshade_highlights(ids[1], false));
+        assert!(!p.raster(ids[1]).unwrap().hillshade.highlights);
+        let shade = |p: &Project| p.raster(ids[1]).unwrap().hillshade;
+        for (given, kept) in [
+            (-45.0, 315.0),
+            (720.0, 0.0),
+            (f32::NAN, 315.0),
+            (90.0, 90.0),
+        ] {
+            assert!(p.set_raster_hillshade_azimuth(ids[1], given));
+            assert_eq!(shade(&p).azimuth, kept);
+        }
+        for (given, kept) in [(0.0, 5.0), (90.0, 85.0), (30.0, 30.0)] {
+            assert!(p.set_raster_hillshade_altitude(ids[1], given));
+            assert_eq!(shade(&p).altitude, kept);
+        }
+        for (given, kept) in [(0.0, 0.25), (10.0, 4.0), (f32::NAN, 1.0), (2.0, 2.0)] {
+            assert!(p.set_raster_hillshade_exaggeration(ids[1], given));
+            assert_eq!(shade(&p).exaggeration, kept);
+        }
+        assert!(p.set_raster_hillshade_color(ids[1], [10, 20, 30]));
+        assert_eq!(shade(&p).color, [10, 20, 30]);
 
         assert!(p.remove_raster(ids[0]).is_some());
         assert!(p.remove_raster(ids[0]).is_none());
@@ -815,6 +994,13 @@ mod tests {
         assert!(!p.set_raster_unit(ids[0], "m"));
         assert!(!p.set_raster_smoothing(ids[0], true));
         assert!(!p.set_raster_feature_size(ids[0], 1.0));
+        assert!(!p.set_raster_hillshade(ids[0], true));
+        assert!(!p.set_raster_hillshade_opacity(ids[0], 0.5));
+        assert!(!p.set_raster_hillshade_highlights(ids[0], false));
+        assert!(!p.set_raster_hillshade_azimuth(ids[0], 90.0));
+        assert!(!p.set_raster_hillshade_altitude(ids[0], 30.0));
+        assert!(!p.set_raster_hillshade_exaggeration(ids[0], 2.0));
+        assert!(!p.set_raster_hillshade_color(ids[0], [1, 2, 3]));
         let d = p.add_raster("d".into(), 1024, String::new(), 0.0, 1.0);
         assert!(ids.iter().all(|id| d > *id));
         let rasters: Vec<RasterId> = p.rasters().iter().map(|r| r.id).collect();

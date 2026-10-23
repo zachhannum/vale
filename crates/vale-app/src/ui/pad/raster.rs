@@ -2,7 +2,7 @@
 //! color stops.
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
-use vale_store::{RasterDisplay, RasterId, Smoothing};
+use vale_store::{Hillshade, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, MAX_BANDS, Part, StopLine};
 
 use super::geometry::{PAD, Rects};
@@ -64,6 +64,19 @@ pub const UNIT: &str = "Unit";
 /// The switch of the smoothing and the slider of the minimum feature size.
 pub const SMOOTHING: &str = "Smoothing";
 pub const FEATURE_SIZE: &str = "Feature size";
+/// The row of the Style section that opens the page of the hillshade, and
+/// the title of the page.
+pub const HILLSHADE: &str = "Hillshade";
+/// The controls of the page of the hillshade.
+pub const HILLSHADE_ON: &str = "Hillshade switch";
+pub const HILLSHADE_OPACITY: &str = "Hillshade opacity";
+pub const HILLSHADE_HIGHLIGHTS: &str = "Hillshade highlights";
+pub const HILLSHADE_AZIMUTH: &str = "Light direction";
+pub const HILLSHADE_ALTITUDE: &str = "Light height";
+pub const HILLSHADE_RELIEF: &str = "Relief";
+pub const HILLSHADE_COLOR: &str = "Shade color";
+/// The size of the swatch of the shade color.
+const SWATCH: f32 = 24.0;
 pub const RIVERS: &str = "Rivers";
 pub const RIVER_WIDTH: &str = "River width";
 
@@ -109,6 +122,10 @@ pub struct StyleState {
     /// The part of the bands that the user chose on the card of a ramp.
     /// `None`: the part that the colors of the ramp give.
     ramp_part: Option<Part>,
+    /// The layer whose color picker of the shade color is open.
+    shade_color: Option<RasterId>,
+    /// The color picker of the shade color showed in this frame.
+    shade_shown: bool,
 }
 
 impl StyleState {
@@ -158,7 +175,7 @@ pub fn unit_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 }
 
 /// The Style section: the display and the color stops, and then the
-/// rivers of a height layer.
+/// hillshade and the rivers of a height layer.
 pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -191,6 +208,13 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     }
     ui.add_space(8.0);
 
+    if height {
+        let on = state.doc.project.raster(id).is_some_and(|r| r.hillshade.on);
+        let value = if on { "On" } else { "Off" };
+        if widgets::open_row(ui, controls, HILLSHADE, value).clicked() {
+            state.pad.page = Some(Page::Hillshade);
+        }
+    }
     let preview = &mut state.globe.preview;
     if height {
         widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
@@ -257,9 +281,7 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         style.reset = None;
     }
     style.reset_anchor = (style.reset == Some(id)).then_some((id, row.rect));
-    let row = widgets::text_row(ui, controls, COLOR_RAMPS, 0.0, false, true);
-    widgets::paint_open(ui, row.rect);
-    if row.clicked() {
+    if widgets::open_row(ui, controls, COLOR_RAMPS, "").clicked() {
         state.pad.page = Some(Page::Ramps);
     }
     state.globe.preview.selected = selected.map(|index| (id, index));
@@ -326,6 +348,106 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     ) {
         let size = (fraction as f32 * max / WEIGHT_STEP).round() * WEIGHT_STEP;
         state.set_raster_feature_size(id, size);
+    }
+}
+
+/// The page of the hillshade of the Layers panel: the switch, and while the
+/// hillshade is on, its opacity, its highlights, its light, its relief, and
+/// its shade color. A tap on the shade color opens a color picker below it.
+pub fn hillshade_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: RasterId,
+) {
+    let Some(raster) = state.doc.project.raster(id) else {
+        return;
+    };
+    if !crate::ui::is_height(raster) {
+        state.pad.page = None;
+        return;
+    }
+    let mut hillshade = raster.hillshade;
+    if widgets::switch_row(ui, controls, HILLSHADE_ON, HILLSHADE, &mut hillshade.on) {
+        state.set_raster_hillshade(id, hillshade.on);
+    }
+    if !hillshade.on {
+        return;
+    }
+    let mut fraction = f64::from(hillshade.opacity);
+    let text = format!("{:.0}%", fraction * 100.0);
+    let name = HILLSHADE_OPACITY;
+    if widgets::row_slider(ui, controls, name, "Opacity", &mut fraction, &text) {
+        // The steps are whole percents.
+        let opacity = ((fraction * 100.0).round() / 100.0) as f32;
+        state.set_raster_hillshade_opacity(id, opacity);
+    }
+    let name = HILLSHADE_HIGHLIGHTS;
+    if widgets::switch_row(ui, controls, name, "Highlights", &mut hillshade.highlights) {
+        state.set_raster_hillshade_highlights(id, hillshade.highlights);
+    }
+
+    let name = HILLSHADE_AZIMUTH;
+    if widgets::compass_row(ui, controls, name, name, &mut hillshade.azimuth) {
+        state.set_raster_hillshade_azimuth(id, hillshade.azimuth);
+    }
+
+    // The steps of the light height are whole degrees.
+    let range = Hillshade::ALTITUDES;
+    let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
+    let mut fraction = (f64::from(hillshade.altitude) - low) / (high - low);
+    let text = format!("{:.0}\u{b0}", hillshade.altitude);
+    let name = HILLSHADE_ALTITUDE;
+    if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
+        let altitude = (low + fraction * (high - low)).round() as f32;
+        state.set_raster_hillshade_altitude(id, altitude);
+    }
+
+    // The relief slider has a log scale, with 1 at the middle. The steps
+    // are hundredths.
+    let low = f64::from(*Hillshade::EXAGGERATIONS.start());
+    let mut fraction = (f64::from(hillshade.exaggeration) / low).log2() / 4.0;
+    let text = format!("{:.2}\u{d7}", hillshade.exaggeration);
+    let name = HILLSHADE_RELIEF;
+    if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
+        let exaggeration = (low * (4.0 * fraction).exp2() * 100.0).round() / 100.0;
+        state.set_raster_hillshade_exaggeration(id, exaggeration as f32);
+    }
+
+    let open = state.pad.style.shade_color == Some(id);
+    let row = widgets::text_row(ui, controls, HILLSHADE_COLOR, 0.0, open, true);
+    let [r, g, b] = hillshade.color;
+    let swatch = Rect::from_center_size(
+        pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
+        vec2(SWATCH, SWATCH),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(swatch, 6.0, egui::Color32::from_rgb(r, g, b));
+    let stroke = egui::Stroke::new(1.0, theme::divider());
+    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    if row.clicked() {
+        state.pad.style.shade_color = (!open).then_some(id);
+        if open {
+            widgets::close_keypad(ui.ctx());
+        }
+    }
+    if state.pad.style.shade_color == Some(id) {
+        ui.add_space(4.0);
+        let mut color = hillshade.color;
+        if widgets::color_picker(ui, controls, HILLSHADE_COLOR, &mut color) {
+            state.set_raster_hillshade_color(id, color);
+        }
+        state.pad.style.shade_shown = true;
+    }
+}
+
+/// Closes the color picker of the shade color when it did not show in this
+/// frame, with the keypad of its field.
+pub fn shade_color_frame(ctx: &egui::Context, state: &mut AppState) {
+    let style = &mut state.pad.style;
+    let shown = std::mem::take(&mut style.shade_shown);
+    if !shown && style.shade_color.take().is_some() {
+        widgets::close_keypad(ctx);
     }
 }
 

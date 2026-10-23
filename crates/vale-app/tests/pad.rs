@@ -11,6 +11,7 @@ use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
 use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
+use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
@@ -22,7 +23,7 @@ use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
-use vale_store::{RasterDisplay, RasterId, Units, World};
+use vale_store::{Hillshade, RasterDisplay, RasterId, Units, World};
 use vale_terrain::{Mode, meters_to_level};
 
 type Pad = Harness<'static, AppState>;
@@ -4790,6 +4791,214 @@ fn the_style_section_has_the_smoothing_and_the_minimum_feature_size() {
         assert!(control(&h, FEATURE_SIZE).is_none(), "{what}");
         tap(&mut h, SMOOTHING);
         assert!(smoothing(&h).on, "{what}");
+    }
+}
+
+/// The controls of the page of the hillshade, from the top.
+const HILLSHADE_PAGE: [&str; 7] = [
+    raster::HILLSHADE_ON,
+    raster::HILLSHADE_OPACITY,
+    raster::HILLSHADE_HIGHLIGHTS,
+    raster::HILLSHADE_AZIMUTH,
+    raster::HILLSHADE_ALTITUDE,
+    raster::HILLSHADE_RELIEF,
+    raster::HILLSHADE_COLOR,
+];
+
+/// A pad of `size` with the page of the hillshade of the height layer open
+/// and the hillshade on.
+fn hillshade_page(size: (f32, f32)) -> (Pad, RasterId) {
+    let mut h = painted_pad(size);
+    let height = open_height(&mut h);
+    scroll_to(&mut h, raster::HILLSHADE);
+    tap(&mut h, raster::HILLSHADE);
+    tap(&mut h, raster::HILLSHADE_ON);
+    (h, height)
+}
+
+fn hillshade_of(h: &Pad, id: RasterId) -> Hillshade {
+    h.state().doc.project.raster(id).unwrap().hillshade
+}
+
+#[test]
+fn the_hillshade_row_of_a_height_layer_opens_its_page() {
+    use raster::{COLOR_STOPS, HILLSHADE};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        open_height(&mut h);
+        scroll_to(&mut h, HILLSHADE);
+        let card = panel(&h, Panel::Layers).unwrap();
+        let rect = control(&h, HILLSHADE).unwrap_or_else(|| panic!("{what}: no row"));
+        assert!(card.contains_rect(rect), "{what}: the row is {rect:?}");
+        for name in HILLSHADE_PAGE {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+        tap(&mut h, HILLSHADE);
+        assert_eq!(h.state().pad.page, Some(Page::Hillshade), "{what}");
+        tap(&mut h, "Back to Height");
+        assert_eq!(h.state().pad.page, None, "{what}");
+
+        // A layer that is not a height layer has no hillshade.
+        let spec = vale_app::ui::RasterSpec {
+            name: "Rain".to_string(),
+            unit: "mm".to_string(),
+            min: 0.0,
+            max: 4000.0,
+            face_size: 128,
+        };
+        let rain = h.state_mut().add_raster(spec).unwrap();
+        h.state_mut().pad.layer = Some(LayerRef::Raster(rain));
+        h.run_steps(2);
+        scroll_to(&mut h, COLOR_STOPS);
+        assert!(control(&h, COLOR_STOPS).is_some(), "{what}");
+        assert!(control(&h, HILLSHADE).is_none(), "{what}");
+    }
+}
+
+#[test]
+fn the_hillshade_page_has_each_control_inside_the_card() {
+    use raster::{HILLSHADE, HILLSHADE_HIGHLIGHTS, HILLSHADE_ON, HILLSHADE_OPACITY};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        let height = open_height(&mut h);
+        scroll_to(&mut h, HILLSHADE);
+        tap(&mut h, HILLSHADE);
+        assert!(!hillshade_of(&h, height).on, "{what}");
+        for name in &HILLSHADE_PAGE[1..] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+        tap(&mut h, HILLSHADE_ON);
+        assert!(hillshade_of(&h, height).on, "{what}");
+        for name in HILLSHADE_PAGE {
+            scroll_to(&mut h, name);
+            let card = panel(&h, Panel::Layers).unwrap();
+            let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
+            assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
+            check_controls(&h, &format!("{what} at {name}"));
+        }
+        let image = h.render().unwrap();
+        std::fs::create_dir_all("../../target/app").unwrap();
+        image
+            .save(format!(
+                "../../target/app/test-pad-hillshade-{}.png",
+                size.0
+            ))
+            .unwrap();
+
+        // A tap at the left end of the opacity slider gives zero.
+        scroll_to_row(&mut h, HILLSHADE_OPACITY);
+        let slider = control(&h, HILLSHADE_OPACITY).unwrap();
+        finger_tap(&mut h, pos2(slider.left() + 1.0, slider.center().y));
+        assert_eq!(hillshade_of(&h, height).opacity, 0.0, "{what}");
+        let slider = control(&h, HILLSHADE_OPACITY).unwrap();
+        finger_tap(&mut h, slider.center());
+        let opacity = hillshade_of(&h, height).opacity;
+        assert!(opacity > 0.0, "{what}: {opacity}");
+
+        // The highlights start on, and a tap turns them off.
+        assert!(hillshade_of(&h, height).highlights, "{what}");
+        tap(&mut h, HILLSHADE_HIGHLIGHTS);
+        assert!(!hillshade_of(&h, height).highlights, "{what}");
+
+        // The switch hides the rows, and the layer keeps their values.
+        scroll_to_row(&mut h, HILLSHADE_ON);
+        tap(&mut h, HILLSHADE_ON);
+        let off = Hillshade {
+            on: false,
+            opacity,
+            highlights: false,
+            ..Hillshade::default()
+        };
+        assert_eq!(hillshade_of(&h, height), off, "{what}");
+        for name in &HILLSHADE_PAGE[1..] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+    }
+}
+
+#[test]
+fn a_tap_on_the_compass_dial_sets_the_light_direction() {
+    use raster::HILLSHADE_AZIMUTH;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let (mut h, height) = hillshade_page(size);
+        scroll_to_row(&mut h, HILLSHADE_AZIMUTH);
+        let r = control(&h, HILLSHADE_AZIMUTH).unwrap();
+        let center = r.center();
+        let azimuth = |h: &Pad| hillshade_of(h, height).azimuth;
+        assert_eq!(azimuth(&h), 315.0, "{what}");
+        finger_tap(&mut h, pos2(r.right() - 4.0, center.y));
+        assert_eq!(azimuth(&h), 90.0, "{what}");
+        finger_tap(&mut h, pos2(center.x, r.top() + 4.0));
+        assert_eq!(azimuth(&h), 0.0, "{what}");
+        drag(
+            &mut h,
+            pos2(r.right() - 4.0, center.y),
+            pos2(center.x, r.bottom() - 4.0),
+            None,
+        );
+        assert_eq!(azimuth(&h), 180.0, "{what}");
+        // A tap near a compass point snaps to it.
+        let a = 47.0_f32.to_radians();
+        finger_tap(&mut h, center + 60.0 * vec2(a.sin(), -a.cos()));
+        assert_eq!(azimuth(&h), 45.0, "{what}");
+    }
+}
+
+#[test]
+fn the_hillshade_sliders_set_the_light_height_and_the_relief() {
+    use raster::{HILLSHADE_ALTITUDE, HILLSHADE_RELIEF};
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let (mut h, height) = hillshade_page(size);
+        // The track of a slider with a short label starts 72 points right
+        // of the row, and ends 56 points left of its end, inside the half
+        // of the thumb.
+        let ends = |h: &Pad, name: &str| {
+            let slider = control(h, name).unwrap();
+            let y = slider.center().y;
+            let left = pos2(slider.left() + 1.0, y);
+            let right = pos2(slider.right() - 1.0, y);
+            let middle = (slider.left() + 72.0 + slider.right() - 56.0) / 2.0;
+            (left, pos2(middle, y), right)
+        };
+        scroll_to(&mut h, HILLSHADE_RELIEF);
+        let (left, _, right) = ends(&h, HILLSHADE_ALTITUDE);
+        finger_tap(&mut h, left);
+        assert_eq!(hillshade_of(&h, height).altitude, 5.0, "{what}");
+        finger_tap(&mut h, right);
+        assert_eq!(hillshade_of(&h, height).altitude, 85.0, "{what}");
+
+        let (left, middle, _) = ends(&h, HILLSHADE_RELIEF);
+        finger_tap(&mut h, left);
+        assert_eq!(hillshade_of(&h, height).exaggeration, 0.25, "{what}");
+        finger_tap(&mut h, middle);
+        assert_eq!(hillshade_of(&h, height).exaggeration, 1.0, "{what}");
+    }
+}
+
+#[test]
+fn the_shade_color_row_opens_the_color_picker() {
+    use raster::HILLSHADE_COLOR;
+    let (hue, shade) = ("Shade color hue", "Shade color shade");
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let (mut h, height) = hillshade_page(size);
+        scroll_to(&mut h, HILLSHADE_COLOR);
+        assert!(control(&h, hue).is_none(), "{what}");
+        tap(&mut h, HILLSHADE_COLOR);
+        scroll_to(&mut h, hue);
+        assert!(control(&h, hue).is_some(), "{what}");
+        let square = control(&h, shade).unwrap_or_else(|| panic!("{what}: no square"));
+        finger_tap(&mut h, square.right_top() + vec2(-4.0, 4.0));
+        let color = hillshade_of(&h, height).color;
+        assert_ne!(color, [0, 0, 0], "{what}");
+        scroll_to_row(&mut h, HILLSHADE_COLOR);
+        tap(&mut h, HILLSHADE_COLOR);
+        assert!(control(&h, hue).is_none(), "{what}");
+        assert_eq!(hillshade_of(&h, height).color, color, "{what}");
     }
 }
 

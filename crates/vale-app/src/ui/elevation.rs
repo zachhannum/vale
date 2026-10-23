@@ -2,7 +2,7 @@
 //! raster layer.
 
 use eframe::egui;
-use vale_store::{Raster, RasterDisplay, RasterId, Smoothing};
+use vale_store::{Hillshade, Raster, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, Rgb, StopLine};
 
 use super::gradient::{self, DESKTOP};
@@ -151,6 +151,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 state.set_raster_display(id, display);
             }
             smoothing(ui, state, &raster);
+            if height {
+                hillshade(ui, state, &raster);
+            }
             let unit = raster.unit.clone();
             let globe = &mut state.globe;
             let mut chosen = selected(&globe.preview, Some(id));
@@ -281,6 +284,59 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     if ui.add_enabled(smoothing.on, size).changed() {
         state.set_raster_feature_size(raster.id, smoothing.feature_size);
     }
+}
+
+/// The switch of the hillshade of a height layer, its opacity, and its
+/// highlights.
+fn hillshade(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
+    let mut hillshade = raster.hillshade;
+    if ui
+        .checkbox(&mut hillshade.on, pad::raster::HILLSHADE)
+        .changed()
+    {
+        state.set_raster_hillshade(raster.id, hillshade.on);
+    }
+    let mut percent = (hillshade.opacity * 100.0).round();
+    let opacity = egui::Slider::new(&mut percent, 0.0..=100.0)
+        .step_by(1.0)
+        .suffix(" %")
+        .text(pad::raster::HILLSHADE_OPACITY);
+    if ui.add_enabled(hillshade.on, opacity).changed() {
+        state.set_raster_hillshade_opacity(raster.id, percent / 100.0);
+    }
+    let highlights = egui::Checkbox::new(&mut hillshade.highlights, "Highlights");
+    if ui.add_enabled(hillshade.on, highlights).changed() {
+        state.set_raster_hillshade_highlights(raster.id, hillshade.highlights);
+    }
+    let azimuth = egui::Slider::new(&mut hillshade.azimuth, 0.0..=360.0)
+        .step_by(1.0)
+        .suffix("\u{b0}")
+        .text(pad::raster::HILLSHADE_AZIMUTH);
+    if ui.add_enabled(hillshade.on, azimuth).changed() {
+        state.set_raster_hillshade_azimuth(raster.id, hillshade.azimuth);
+    }
+    let altitude = egui::Slider::new(&mut hillshade.altitude, Hillshade::ALTITUDES)
+        .step_by(1.0)
+        .suffix("\u{b0}")
+        .text(pad::raster::HILLSHADE_ALTITUDE);
+    if ui.add_enabled(hillshade.on, altitude).changed() {
+        state.set_raster_hillshade_altitude(raster.id, hillshade.altitude);
+    }
+    let relief = egui::Slider::new(&mut hillshade.exaggeration, Hillshade::EXAGGERATIONS)
+        .logarithmic(true)
+        .suffix("\u{d7}")
+        .text(pad::raster::HILLSHADE_RELIEF);
+    if ui.add_enabled(hillshade.on, relief).changed() {
+        state.set_raster_hillshade_exaggeration(raster.id, hillshade.exaggeration);
+    }
+    ui.add_enabled_ui(hillshade.on, |ui| {
+        ui.horizontal(|ui| {
+            if ui.color_edit_button_srgb(&mut hillshade.color).changed() {
+                state.set_raster_hillshade_color(raster.id, hillshade.color);
+            }
+            ui.label(pad::raster::HILLSHADE_COLOR);
+        });
+    });
 }
 
 /// The button that puts back the default color stops. Its menu asks
