@@ -234,6 +234,29 @@ pub struct Raster {
     pub colors: Vec<Rgb>,
     /// How the globe smooths the values by the scale.
     pub smoothing: Smoothing,
+    /// The shade of the slopes over the colors.
+    pub hillshade: Hillshade,
+}
+
+/// The hillshade of a height layer. It keeps its opacity while it is off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hillshade {
+    pub on: bool,
+    /// How much the shade hides the colors, from 0 to 1.
+    pub opacity: f32,
+}
+
+impl Hillshade {
+    pub const OPACITY_DEFAULT: f32 = 0.5;
+}
+
+impl Default for Hillshade {
+    fn default() -> Self {
+        Hillshade {
+            on: false,
+            opacity: Hillshade::OPACITY_DEFAULT,
+        }
+    }
 }
 
 /// The smoothing of the values of a raster by the scale. It keeps its size
@@ -446,6 +469,7 @@ impl Project {
             stops: Vec::new(),
             colors: Vec::new(),
             smoothing: Smoothing::default(),
+            hillshade: Hillshade::default(),
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());
         let layer = Layer {
@@ -506,6 +530,20 @@ impl Project {
         let size = clamp_feature_size(points);
         self.raster_mut(id)
             .map(|r| r.smoothing.feature_size = size)
+            .is_some()
+    }
+
+    /// Turns the hillshade of a raster on or off.
+    pub fn set_raster_hillshade(&mut self, id: RasterId, on: bool) -> bool {
+        self.raster_mut(id).map(|r| r.hillshade.on = on).is_some()
+    }
+
+    /// Sets the opacity of the hillshade of a raster. A value outside 0 to 1
+    /// gets the nearest limit.
+    pub fn set_raster_hillshade_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
+        let opacity = clamp_opacity(opacity);
+        self.raster_mut(id)
+            .map(|r| r.hillshade.opacity = opacity)
             .is_some()
     }
 
@@ -806,6 +844,14 @@ mod tests {
             assert!(p.set_raster_feature_size(ids[1], given));
             assert_eq!(p.raster(ids[1]).unwrap().smoothing.feature_size, kept);
         }
+        assert_eq!(p.raster(ids[1]).unwrap().hillshade, Hillshade::default());
+        assert!(p.set_raster_hillshade(ids[1], true));
+        assert!(p.raster(ids[1]).unwrap().hillshade.on);
+        for (given, kept) in [(0.25, 0.25), (7.0, 1.0), (-1.0, 0.0), (f32::NAN, 1.0)] {
+            assert!(p.set_raster_hillshade_opacity(ids[1], given));
+            assert_eq!(p.raster(ids[1]).unwrap().hillshade.opacity, kept);
+        }
+        assert!(p.raster(ids[1]).unwrap().hillshade.on);
 
         assert!(p.remove_raster(ids[0]).is_some());
         assert!(p.remove_raster(ids[0]).is_none());
@@ -815,6 +861,8 @@ mod tests {
         assert!(!p.set_raster_unit(ids[0], "m"));
         assert!(!p.set_raster_smoothing(ids[0], true));
         assert!(!p.set_raster_feature_size(ids[0], 1.0));
+        assert!(!p.set_raster_hillshade(ids[0], true));
+        assert!(!p.set_raster_hillshade_opacity(ids[0], 0.5));
         let d = p.add_raster("d".into(), 1024, String::new(), 0.0, 1.0);
         assert!(ids.iter().all(|id| d > *id));
         let rasters: Vec<RasterId> = p.rasters().iter().map(|r| r.id).collect();

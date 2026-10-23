@@ -18,8 +18,9 @@ use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
 };
 use crate::{
-    Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
-    Smoothing, Stop, StopLine, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
+    Feature, GeometryKind, Hillshade, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay,
+    RasterId, Smoothing, Stop, StopLine, Units, Uuid, Value, World, clamp_feature_size,
+    clamp_opacity,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -494,6 +495,8 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     }
     out.extend_from_slice(&raster.smoothing.feature_size.to_le_bytes());
     out.push(raster.smoothing.on as u8);
+    out.extend_from_slice(&raster.hillshade.opacity.to_le_bytes());
+    out.push(raster.hillshade.on as u8);
 }
 
 /// A raster image of format version 13 with the stops `old`.
@@ -555,7 +558,17 @@ fn smoothing(r: &mut Reader) -> Option<Smoothing> {
     })
 }
 
-/// An unknown display gives bands.
+fn hillshade(r: &mut Reader) -> Option<Hillshade> {
+    let opacity = clamp_opacity(f32::from_le_bytes(r.take()?));
+    let [on]: [u8; 1] = r.take()?;
+    Some(Hillshade {
+        on: on != 0,
+        opacity,
+    })
+}
+
+/// An unknown display gives bands. An image of format version 14 ends after
+/// the smoothing, and gets the default hillshade.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -576,6 +589,10 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         .map(|_| r.take())
         .collect::<Option<Vec<_>>>()?;
     let smoothing = smoothing(r)?;
+    let hillshade = match r.0.is_empty() {
+        true => Hillshade::default(),
+        false => hillshade(r)?,
+    };
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
@@ -588,13 +605,14 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         stops,
         colors,
         smoothing,
+        hillshade,
     })
 }
 
 /// A raster image of format version 11, 12, or 13, with its stops and band
 /// colors as `gpkg::v14_bands` gives them. An unknown display gives bands.
 /// An image of version 11 has no lines. An image of version 11 or 12 has no
-/// smoothing, and gets the default.
+/// smoothing, and gets the default. Each gets the default hillshade.
 fn raster_v13(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -635,6 +653,7 @@ fn raster_v13(r: &mut Reader) -> Option<Raster> {
         stops,
         colors,
         smoothing: smooth,
+        hillshade: Hillshade::default(),
     })
 }
 
@@ -821,12 +840,23 @@ mod tests {
 
     #[test]
     fn a_raster_image_keeps_the_values_and_the_opacity() {
-        let rain = rain();
+        let mut rain = rain();
+        rain.hillshade = Hillshade {
+            on: true,
+            opacity: 0.375,
+        };
         let mut out = Vec::new();
         put_raster(&mut out, &rain);
-        assert_eq!(raster(&mut Reader(&out)), Some(rain));
+        assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
         out.pop();
         assert_eq!(raster(&mut Reader(&out)), None);
+
+        // An image of version 14 ends after the smoothing, and it gets the
+        // default hillshade.
+        out.truncate(out.len() + 1 - 5);
+        let old = raster(&mut Reader(&out)).unwrap();
+        assert_eq!(old.hillshade, Hillshade::default());
+        assert_eq!(old.smoothing, rain.smoothing);
     }
 
     #[test]
@@ -837,7 +867,7 @@ mod tests {
         put_raster(&mut out, &rain);
         assert_eq!(raster(&mut Reader(&out)).unwrap().colors, rain.colors);
         // An image with a color that ends early is not valid.
-        out.truncate(out.len() - 5 - 1);
+        out.truncate(out.len() - 5 - 5 - 1);
         assert_eq!(raster(&mut Reader(&out)), None);
     }
 
