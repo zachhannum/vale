@@ -457,6 +457,7 @@ mod tests {
             display: vale_store::RasterDisplay::Bands,
             smoothing: vale_store::Smoothing::default(),
             hillshade: vale_store::Hillshade::default(),
+            rivers: true,
             unit: "<°C & more>".to_string(),
             value_min: -40.0,
             value_max: 25.535,

@@ -502,6 +502,7 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     out.extend_from_slice(&raster.hillshade.altitude.to_le_bytes());
     out.extend_from_slice(&raster.hillshade.exaggeration.to_le_bytes());
     out.extend_from_slice(&raster.hillshade.color);
+    out.push(raster.rivers as u8);
 }
 
 /// A raster image of format version 13 with the stops `old`.
@@ -590,7 +591,8 @@ fn hillshade(r: &mut Reader) -> Option<Hillshade> {
 }
 
 /// An unknown display gives bands. An image of format version 14 ends after
-/// the smoothing, and gets the default hillshade.
+/// the smoothing, and gets the default hillshade. An image of a version
+/// before 17 has no switch of the rivers, and shows them.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -615,6 +617,11 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         true => Hillshade::default(),
         false => hillshade(r)?,
     };
+    let mut rivers = true;
+    if !r.0.is_empty() {
+        let [on]: [u8; 1] = r.take()?;
+        rivers = on != 0;
+    }
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
@@ -628,6 +635,7 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         colors,
         smoothing,
         hillshade,
+        rivers,
     })
 }
 
@@ -676,6 +684,7 @@ fn raster_v13(r: &mut Reader) -> Option<Raster> {
         colors,
         smoothing: smooth,
         hillshade: Hillshade::default(),
+        rivers: true,
     })
 }
 
@@ -857,6 +866,7 @@ mod tests {
             },
         ];
         rain.colors = vec![[1, 2, 3], [4, 5, 6]];
+        rain.rivers = false;
         rain.clone()
     }
 
@@ -875,6 +885,14 @@ mod tests {
         let mut out = Vec::new();
         put_raster(&mut out, &rain);
         assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
+        // An image of version 16 ends after the hillshade, and it shows the
+        // rivers.
+        out.pop();
+        let shown = Raster {
+            rivers: true,
+            ..rain.clone()
+        };
+        assert_eq!(raster(&mut Reader(&out)), Some(shown));
         out.pop();
         assert_eq!(raster(&mut Reader(&out)), None);
 
@@ -898,6 +916,7 @@ mod tests {
         };
         let mut full = Vec::new();
         put_raster(&mut full, &rain);
+        full.pop();
         let light = HILLSHADE_LEN - 4 - 2;
         // The image ends after the highlights.
         let out = &full[..full.len() - light];
@@ -924,7 +943,7 @@ mod tests {
         put_raster(&mut out, &rain);
         assert_eq!(raster(&mut Reader(&out)).unwrap().colors, rain.colors);
         // An image with a color that ends early is not valid.
-        out.truncate(out.len() - HILLSHADE_LEN - 5 - 1);
+        out.truncate(out.len() - 1 - HILLSHADE_LEN - 5 - 1);
         assert_eq!(raster(&mut Reader(&out)), None);
     }
 
@@ -953,7 +972,11 @@ mod tests {
         ];
         let mut out = Vec::new();
         put_raster_v13(&mut out, &rain, &old);
-        assert_eq!(raster_v13(&mut Reader(&out)), Some(rain.clone()));
+        let shown = Raster {
+            rivers: true,
+            ..rain.clone()
+        };
+        assert_eq!(raster_v13(&mut Reader(&out)), Some(shown));
         out.pop();
         assert_eq!(raster_v13(&mut Reader(&out)), None);
 
