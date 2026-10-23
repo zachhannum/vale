@@ -50,10 +50,12 @@ struct Uniforms {
     // number of channel texels along one side of the window, and the factor
     // of the width of a river line.
     rivers: vec4<f32>,
-    // The opacity of the layer and of its hillshade, from 0 to 1, the height
-    // of the range of the values over the radius of the world, and the
-    // radius of the world in meters.
+    // The opacity of the layer, from 0 to 1.
     layer: vec4<f32>,
+    // The opacity of the hillshade, from 0 to 1, 1 for the highlights, the
+    // height of the range of the values over the radius of the world, and
+    // the radius of the world in meters.
+    shade: vec4<f32>,
     // The color of the ground below the layers.
     ground: vec4<f32>,
     // The color of the canvas around the globe.
@@ -255,7 +257,8 @@ const LIGHT: vec3<f32> = vec3<f32>(-0.5, 0.5, 0.70710678);
 const RELIEF_REF_M: f32 = 100.0;
 
 // The shade of the slope at a world direction, from 0 to 1. Flat ground has
-// 0.5. `pixel` is the angle that one pixel covers there.
+// 0.5. Without the highlights, the shade is 0.5 at most. `pixel` is the
+// angle that one pixel covers there.
 fn hillshade(d: vec3<f32>, pixel: f32) -> f32 {
     var east = cross(vec3<f32>(0.0, 0.0, 1.0), d);
     if length(east) < 1e-5 {
@@ -268,10 +271,11 @@ fn hillshade(d: vec3<f32>, pixel: f32) -> f32 {
     let a = max(pixel, PI * 0.5 / u.params.x * exp2(u.detail.x));
     let gx = shown(normalize(d + east * a)).x - shown(normalize(d - east * a)).x;
     let gy = shown(normalize(d + north * a)).x - shown(normalize(d - north * a)).x;
-    let z = max(1.0, sqrt(pixel * u.layer.w / RELIEF_REF_M));
-    let s = vec2<f32>(gx, gy) / (2.0 * a) * u.layer.z * z;
+    let z = max(1.0, sqrt(pixel * u.shade.w / RELIEF_REF_M));
+    let s = vec2<f32>(gx, gy) / (2.0 * a) * u.shade.z * z;
     let n = normalize(vec3<f32>(-s, 1.0));
-    return clamp(0.5 + dot(n, LIGHT) - LIGHT.z, 0.0, 1.0);
+    let top = select(0.5, 1.0, u.shade.y > 0.5);
+    return clamp(0.5 + dot(n, LIGHT) - LIGHT.z, 0.0, top);
 }
 
 // The soft light blend of a grey `s` over the color `b`, as in the W3C
@@ -299,8 +303,8 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, frag: vec2<f32>) -> vec3
     } else if mode != MODE_GREYSCALE {
         color = tint(h, width, mode);
     }
-    if u.layer.y > 0.0 {
-        color = mix(color, soft_light(color, hillshade(d, pixel)), u.layer.y);
+    if u.shade.x > 0.0 {
+        color = mix(color, soft_light(color, hillshade(d, pixel)), u.shade.x);
     }
     if u.flat.y > 0.5 {
         // A river stops at the coast.

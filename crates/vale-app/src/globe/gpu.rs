@@ -39,10 +39,12 @@ pub struct Uniforms {
     pub screen: [f32; 4],
     pub window: [f32; 4],
     pub rivers: [f32; 4],
-    /// The opacity of the layer and of its hillshade, from 0 to 1, the
+    /// The opacity of the layer, from 0 to 1.
+    pub layer: [f32; 4],
+    /// The opacity of the hillshade, from 0 to 1, 1 for the highlights, the
     /// height of the range of the values over the radius of the world, and
     /// the radius of the world in meters.
-    pub layer: [f32; 4],
+    pub shade: [f32; 4],
     /// The color of the ground below the layers.
     pub ground: [f32; 4],
     /// The color of the canvas around the globe.

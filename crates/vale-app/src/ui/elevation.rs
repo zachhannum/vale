@@ -286,7 +286,8 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     }
 }
 
-/// The switch of the hillshade of a height layer and its opacity.
+/// The switch of the hillshade of a height layer, its opacity, and its
+/// highlights.
 fn hillshade(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     let mut hillshade = raster.hillshade;
     if ui
@@ -302,6 +303,10 @@ fn hillshade(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
         .text(pad::raster::HILLSHADE_OPACITY);
     if ui.add_enabled(hillshade.on, opacity).changed() {
         state.set_raster_hillshade_opacity(raster.id, percent / 100.0);
+    }
+    let highlights = egui::Checkbox::new(&mut hillshade.highlights, "Highlights");
+    if ui.add_enabled(hillshade.on, highlights).changed() {
+        state.set_raster_hillshade_highlights(raster.id, hillshade.highlights);
     }
 }
 

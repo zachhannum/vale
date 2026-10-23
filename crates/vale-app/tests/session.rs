@@ -1184,14 +1184,18 @@ fn each_raster_layer_keeps_its_own_hillshade() {
     assert!(state.set_raster_hillshade(height, true));
     assert!(state.set_raster_hillshade_opacity(height, 0.3));
     assert!(state.set_raster_hillshade_opacity(rain, 0.8));
+    assert!(state.set_raster_hillshade_highlights(rain, false));
     let shaded = Hillshade {
         on: true,
         opacity: 0.3,
+        highlights: true,
     };
-    // A layer keeps the opacity of its hillshade while the hillshade is off.
+    // A layer keeps the opacity and the highlights of its hillshade while
+    // the hillshade is off.
     let kept = Hillshade {
         on: false,
         opacity: 0.8,
+        highlights: false,
     };
     let hillshade = |project: &Project, id| project.raster(id).unwrap().hillshade;
     let check = |project: &Project, step: &str| {

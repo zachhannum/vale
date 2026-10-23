@@ -4795,7 +4795,9 @@ fn the_style_section_has_the_smoothing_and_the_minimum_feature_size() {
 
 #[test]
 fn the_style_section_of_a_height_layer_has_the_hillshade_and_its_opacity() {
-    use vale_app::ui::pad::raster::{COLOR_STOPS, HILLSHADE, HILLSHADE_OPACITY};
+    use vale_app::ui::pad::raster::{
+        COLOR_STOPS, HILLSHADE, HILLSHADE_HIGHLIGHTS, HILLSHADE_OPACITY,
+    };
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = painted_pad(size);
@@ -4807,12 +4809,13 @@ fn the_style_section_of_a_height_layer_has_the_hillshade_and_its_opacity() {
         let rect = control(&h, HILLSHADE).unwrap_or_else(|| panic!("{what}: no switch"));
         assert!(card.contains_rect(rect), "{what}: the switch is {rect:?}");
         assert!(control(&h, HILLSHADE_OPACITY).is_none(), "{what}");
+        assert!(control(&h, HILLSHADE_HIGHLIGHTS).is_none(), "{what}");
 
         tap(&mut h, HILLSHADE);
         assert!(hillshade(&h).on, "{what}");
-        scroll_to(&mut h, HILLSHADE_OPACITY);
+        scroll_to(&mut h, HILLSHADE_HIGHLIGHTS);
         let card = panel(&h, Panel::Layers).unwrap();
-        for name in [HILLSHADE, HILLSHADE_OPACITY] {
+        for name in [HILLSHADE, HILLSHADE_OPACITY, HILLSHADE_HIGHLIGHTS] {
             let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
             assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
         }
@@ -4827,10 +4830,21 @@ fn the_style_section_of_a_height_layer_has_the_hillshade_and_its_opacity() {
         let opacity = hillshade(&h).opacity;
         assert!(opacity > 0.0, "{what}: {opacity}");
 
-        // The switch hides the slider, and the layer keeps the opacity.
+        // The highlights start on, and a tap turns them off.
+        assert!(hillshade(&h).highlights, "{what}");
+        tap(&mut h, HILLSHADE_HIGHLIGHTS);
+        assert!(!hillshade(&h).highlights, "{what}");
+
+        // The switch hides the rows, and the layer keeps their values.
         tap(&mut h, HILLSHADE);
-        assert_eq!(hillshade(&h), Hillshade { on: false, opacity }, "{what}");
+        let off = Hillshade {
+            on: false,
+            opacity,
+            highlights: false,
+        };
+        assert_eq!(hillshade(&h), off, "{what}");
         assert!(control(&h, HILLSHADE_OPACITY).is_none(), "{what}");
+        assert!(control(&h, HILLSHADE_HIGHLIGHTS).is_none(), "{what}");
 
         // A layer that is not a height layer has no hillshade.
         let spec = vale_app::ui::RasterSpec {

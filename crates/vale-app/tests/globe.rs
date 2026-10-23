@@ -5668,6 +5668,26 @@ fn the_hillshade_lights_the_slopes_to_the_northwest_and_keeps_flat_ground() {
 }
 
 #[test]
+fn a_hillshade_without_highlights_only_darkens() {
+    let _gpu = one_gpu_test();
+    let mut h = hill_harness();
+    let id = brush_layer(&h);
+    let off = canvas_image(&mut h);
+    set_hillshade(&mut h, id, true, 1.0);
+    let lit = canvas_image(&mut h);
+    assert!(h.state_mut().set_raster_hillshade_highlights(id, false));
+    h.step();
+    let on = canvas_image(&mut h);
+    let [northwest, southeast, flat] = hill_changes(&h, &off, &on);
+    assert_eq!(northwest, 0);
+    assert!(southeast <= -4, "{southeast}");
+    assert!(flat.abs() <= 1, "{flat}");
+    // The slopes away from the light have the same shade as with the
+    // highlights.
+    assert_eq!(hill_changes(&h, &off, &lit)[1], southeast);
+}
+
+#[test]
 fn a_hillshade_with_no_opacity_is_the_same_as_none() {
     let _gpu = one_gpu_test();
     let mut h = hill_harness();

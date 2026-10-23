@@ -254,6 +254,8 @@ pub enum StackItem {
         smoothing: Smoothing,
         /// The opacity of the hillshade, 0 for none.
         hillshade: f32,
+        /// The hillshade makes the slopes toward the light lighter.
+        highlights: bool,
     },
     Vector(LayerId),
 }
@@ -2751,14 +2753,16 @@ impl Globe {
             screen: [0.0; 4],
             window,
             rivers: [cell as f32, window_size, self.preview.river_width, 0.0],
-            layer: match layer {
+            layer: [layer.map_or(1.0, |layer| layer.opacity), 0.0, 0.0, 0.0],
+            shade: match layer {
                 Some(layer) => {
                     let radius_m = self.world_km * 1000.0;
                     let range = layer.bands.max() - layer.bands.min();
                     let relief = (range / radius_m) as f32;
-                    [layer.opacity, layer.hillshade, relief, radius_m as f32]
+                    let highlights = if layer.highlights { 1.0 } else { 0.0 };
+                    [layer.hillshade, highlights, relief, radius_m as f32]
                 }
-                None => [1.0, 0.0, 0.0, 0.0],
+                None => [0.0; 4],
             },
             ground: color(crate::ui::pad::theme::GROUND),
             back: color(canvas.background),
@@ -2864,6 +2868,7 @@ impl Globe {
                     display,
                     smoothing: Smoothing::default(),
                     hillshade: 0.0,
+                    highlights: true,
                     rivers: rivers(key.layer, display),
                     window: true,
                 }));
@@ -2878,6 +2883,7 @@ impl Globe {
                             display,
                             smoothing,
                             hillshade,
+                            highlights,
                         } => {
                             let source = self.source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
@@ -2888,6 +2894,7 @@ impl Globe {
                                     display,
                                     smoothing,
                                     hillshade: hillshade.clamp(0.0, 1.0),
+                                    highlights,
                                     rivers: rivers(key.layer, display),
                                     window: !key.display,
                                 }));
@@ -3001,6 +3008,8 @@ struct LayerDraw<'a> {
     smoothing: Smoothing,
     /// The opacity of the hillshade, 0 for none.
     hillshade: f32,
+    /// The hillshade makes the slopes toward the light lighter.
+    highlights: bool,
     /// The size of the channel map of the rivers of the layer. `None`: the
     /// pass draws no rivers.
     rivers: Option<usize>,

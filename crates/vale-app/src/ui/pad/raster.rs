@@ -64,9 +64,11 @@ pub const UNIT: &str = "Unit";
 /// The switch of the smoothing and the slider of the minimum feature size.
 pub const SMOOTHING: &str = "Smoothing";
 pub const FEATURE_SIZE: &str = "Feature size";
-/// The switch of the hillshade and the slider of its opacity.
+/// The switch of the hillshade, the slider of its opacity, and the switch of
+/// its highlights.
 pub const HILLSHADE: &str = "Hillshade";
 pub const HILLSHADE_OPACITY: &str = "Hillshade opacity";
+pub const HILLSHADE_HIGHLIGHTS: &str = "Hillshade highlights";
 pub const RIVERS: &str = "Rivers";
 pub const RIVER_WIDTH: &str = "River width";
 
@@ -335,7 +337,8 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     }
 }
 
-/// The switch of the hillshade, and its opacity while the switch is on.
+/// The switch of the hillshade, and its opacity and highlights while the
+/// switch is on.
 fn hillshade(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(mut hillshade) = state.doc.project.raster(id).map(|r| r.hillshade) else {
         return;
@@ -353,6 +356,10 @@ fn hillshade(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         // The steps are whole percents.
         let opacity = ((fraction * 100.0).round() / 100.0) as f32;
         state.set_raster_hillshade_opacity(id, opacity);
+    }
+    let name = HILLSHADE_HIGHLIGHTS;
+    if widgets::switch_row(ui, controls, name, "Highlights", &mut hillshade.highlights) {
+        state.set_raster_hillshade_highlights(id, hillshade.highlights);
     }
 }
 
