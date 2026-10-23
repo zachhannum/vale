@@ -9,6 +9,7 @@ use vale_store::{GeometryKind, Layer, LayerId, LayerKind, RasterId};
 use vale_terrain::Mode;
 
 pub use super::LayerRef;
+use super::point_form;
 use super::raster_form::{self, RasterForm};
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
@@ -39,6 +40,9 @@ pub const LINE: &str = "Line";
 /// The cell of the polygon tool. It takes the place of More while a
 /// polygon layer is selected.
 pub const POLYGON: &str = "Polygon";
+/// The cell of the point tool. It takes the place of More while a point
+/// layer is selected.
+pub const POINT: &str = "Point";
 /// The slider of the smoothing of the line tool and the polygon tool.
 pub const SMOOTHING: &str = "Smoothing";
 /// The button of the brush card that turns all snapping on and off.
@@ -392,6 +396,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
+    point_form::pad(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
         globe::paint_canvas(ui, state, rect, theme::CANVAS, true);
     }
@@ -601,11 +606,13 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     Some((LINE, Icon::Line, Tool::Line))
                 } else if globe.fillable {
                     Some((POLYGON, Icon::Polygon, Tool::Polygon))
+                } else if globe.pointable {
+                    Some((POINT, Icon::Point, Tool::Point))
                 } else {
                     None
                 };
                 if let Some((name, icon, tool)) = draw {
-                    let active = globe.drawing();
+                    let active = globe.editing();
                     let cell = widgets::tool_cell(ui, controls, name, name, icon, active, true);
                     if cell.clicked() {
                         globe.tool = tool;
@@ -616,7 +623,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     more_cell(ui, state, controls, paint);
                 }
                 let globe = &mut state.globe;
-                let active = !globe.brushing() && !globe.drawing();
+                let active = !globe.brushing() && !globe.editing();
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()
                 {
@@ -718,19 +725,23 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             let mut ui = padded(ui);
             let paint = state.globe.paintable;
             let line = state.globe.lineable || state.globe.fillable;
+            let vector = line || state.globe.pointable;
             if let BrushCard::Full(height) = rects.brush_card {
                 let mut slider = |name: &str, fraction: &mut f64, text: &str, on: bool| {
                     widgets::vertical_slider(&mut ui, controls, name, height, fraction, text, on)
                 };
-                // With a line or polygon layer, the card has the smoothing
-                // of the tool and the snap button.
-                if line {
-                    let height = 2.0 * height - CELL.1;
-                    percent_slider(&mut state.globe.line.smoothing, 0.0..=1.0, |f, text| {
-                        widgets::vertical_slider(
-                            &mut ui, controls, SMOOTHING, height, f, text, true,
-                        )
-                    });
+                // With a vector layer, the card has the snap button. With a
+                // line or polygon layer, it also has the smoothing of the
+                // tool.
+                if vector {
+                    if line {
+                        let height = 2.0 * height - CELL.1;
+                        percent_slider(&mut state.globe.line.smoothing, 0.0..=1.0, |f, text| {
+                            widgets::vertical_slider(
+                                &mut ui, controls, SMOOTHING, height, f, text, true,
+                            )
+                        });
+                    }
                     let snap = &mut state.globe.snap.on;
                     let cell = widgets::tool_cell(
                         &mut ui,
@@ -795,6 +806,7 @@ fn show_panel(
     let (key, title, back) = match (panel, layer) {
         (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
         (Panel::Brush, _) if state.globe.fillable => (panel.key(), POLYGON, None),
+        (Panel::Brush, _) if state.globe.pointable => (panel.key(), POINT, None),
         (Panel::Brush, _) => (panel.key(), "Brush", None),
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
@@ -956,15 +968,18 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, travel: f
 
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    if state.globe.lineable || state.globe.fillable {
-        percent_slider(
-            &mut state.globe.line.smoothing,
-            0.0..=1.0,
-            |fraction, text| {
-                let name = "Line smoothing";
-                widgets::row_slider(ui, controls, name, SMOOTHING, fraction, text)
-            },
-        );
+    let line = state.globe.lineable || state.globe.fillable;
+    if line || state.globe.pointable {
+        if line {
+            percent_slider(
+                &mut state.globe.line.smoothing,
+                0.0..=1.0,
+                |fraction, text| {
+                    let name = "Line smoothing";
+                    widgets::row_slider(ui, controls, name, SMOOTHING, fraction, text)
+                },
+            );
+        }
         let rasters = panels::raster_layers(state);
         let snap = &mut state.globe.snap;
         widgets::switch_row(ui, controls, SNAPPING, SNAPPING, &mut snap.on);

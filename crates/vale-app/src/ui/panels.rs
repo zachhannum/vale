@@ -24,6 +24,8 @@ pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 pub const LINE_TOOL: &str = "Line";
 /// The button of the polygon tool.
 pub const POLYGON_TOOL: &str = "Polygon";
+/// The button of the point tool.
+pub const POINT_TOOL: &str = "Point";
 /// The slider of the smoothing of the line tool.
 pub const SMOOTHING: &str = "Smoothing";
 /// The check box that turns all snapping on and off.
@@ -74,7 +76,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 // With no layer for the tool, the tool is Navigate.
                 let globe = &mut state.globe;
                 let (paintable, lineable) = (globe.paintable, globe.lineable);
-                let navigate = !globe.brushing() && !globe.drawing();
+                let navigate = !globe.brushing() && !globe.editing();
                 if ui.selectable_label(navigate, "Navigate").clicked() {
                     globe.tool = Tool::Navigate;
                 }
@@ -83,23 +85,28 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     globe.tool = Tool::Brush;
                 }
                 // A polygon layer has the polygon tool in the place of the
-                // line tool.
+                // line tool, and a point layer has the point tool.
                 let (name, tool) = if globe.fillable {
                     (POLYGON_TOOL, Tool::Polygon)
+                } else if globe.pointable {
+                    (POINT_TOOL, Tool::Point)
                 } else {
                     (LINE_TOOL, Tool::Line)
                 };
-                let draw = egui::Button::selectable(globe.drawing(), name);
-                if ui.add_enabled(lineable || globe.fillable, draw).clicked() {
+                let draw = egui::Button::selectable(globe.editing(), name);
+                let able = lineable || globe.fillable || globe.pointable;
+                if ui.add_enabled(able, draw).clicked() {
                     globe.tool = tool;
                 }
-                if globe.drawing() {
-                    let mut percent = globe.line.smoothing * 100.0;
-                    let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
-                        .suffix(" %")
-                        .text(SMOOTHING);
-                    if ui.add(slider).changed() {
-                        globe.line.smoothing = percent / 100.0;
+                if globe.editing() {
+                    if globe.drawing() {
+                        let mut percent = globe.line.smoothing * 100.0;
+                        let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
+                            .suffix(" %")
+                            .text(SMOOTHING);
+                        if ui.add(slider).changed() {
+                            globe.line.smoothing = percent / 100.0;
+                        }
                     }
                     let rasters = raster_layers(state);
                     let snap = &mut state.globe.snap;
