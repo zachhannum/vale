@@ -149,6 +149,7 @@ impl Panel {
 pub enum Page {
     Ramps,
     Stops,
+    Hillshade,
 }
 
 /// The state of the iPad layout.
@@ -350,6 +351,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
+    raster::shade_color_frame(&ctx, state);
     raster::reset_card(&ctx, state, &mut controls, &rects);
     raster::ramp_card(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);
@@ -800,6 +802,9 @@ fn show_panel(
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Stops) => {
             ("pad-stops", raster::COLOR_STOPS, Some(name))
         }
+        (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Hillshade) => {
+            ("pad-hillshade", raster::HILLSHADE, Some(name))
+        }
         (Panel::Layers, Some(LayerRef::Raster(_))) => ("pad-layer", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
         (Panel::Layers, None) => (panel.key(), "Layers", None),
@@ -909,6 +914,9 @@ fn show_panel(
                             (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
                                 Some(Page::Ramps) => raster::ramps_body(ui, state, controls, id),
                                 Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
+                                Some(Page::Hillshade) => {
+                                    raster::hillshade_body(ui, state, controls, id);
+                                }
                                 None => raster_body(ui, state, controls, id),
                             },
                             (Panel::Layers, Some(LayerRef::Vector(id))) => {
