@@ -14,7 +14,9 @@ use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
-use crate::gpkg::{Reader, StoreError, TileKey, corrupt, decode_geometry, encode_geometry};
+use crate::gpkg::{
+    Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
+};
 use crate::{
     Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
     Smoothing, Stop, StopLine, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
@@ -301,7 +303,7 @@ pub(crate) fn state(conn: &rusqlite::Connection) -> Result<(bool, bool, u64), St
 }
 
 /// Sets the size of a step from its images.
-fn measure(tx: &Transaction, step: i64) -> Result<(), StoreError> {
+fn measure(tx: &Transaction, step: i64) -> rusqlite::Result<()> {
     tx.execute(
         "UPDATE vale_undo_step SET bytes =
            (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM vale_undo_record WHERE step_id = ?1)
@@ -437,6 +439,37 @@ fn world(r: &mut Reader) -> Option<World> {
     })
 }
 
+/// The raster images of the log get one color for each band, as the
+/// rasters of the file do.
+pub(crate) fn v14(tx: &Transaction) -> rusqlite::Result<()> {
+    let rows: Vec<(i64, u32, Vec<u8>)> = tx
+        .prepare(
+            "SELECT step_id, id, data FROM vale_undo_record
+             WHERE kind = ?1 AND data IS NOT NULL",
+        )?
+        .query_map([RASTER], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut update = tx.prepare(
+        "UPDATE vale_undo_record SET data = ?4 WHERE step_id = ?1 AND kind = ?2 AND id = ?3",
+    )?;
+    let mut steps = std::collections::BTreeSet::new();
+    for (step, id, blob) in rows {
+        // A damaged image stays, and an undo of its step gives an error.
+        let payload = unpack(&blob);
+        let Some(old) = payload.and_then(|p| raster_v13(&mut Reader(&p))) else {
+            continue;
+        };
+        let mut out = Vec::new();
+        put_raster(&mut out, &old);
+        update.execute(params![step, RASTER, id, pack(&out)])?;
+        steps.insert(step);
+    }
+    for step in steps {
+        measure(tx, step)?;
+    }
+    Ok(())
+}
+
 fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     put_u32(out, raster.id.0 as usize);
     put_u32(out, raster.face_size as usize);
@@ -449,10 +482,38 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     put_u32(out, raster.stops.len());
     for stop in &raster.stops {
         put_f64(out, stop.value);
+        out.push(stop.line.on as u8);
+        out.extend_from_slice(&stop.line.weight.to_le_bytes());
+        out.extend_from_slice(&stop.line.color);
+        out.push(stop.line.darker as u8);
+        out.extend_from_slice(&stop.line.darken.to_le_bytes());
+    }
+    put_u32(out, raster.colors.len());
+    for color in &raster.colors {
+        out.extend_from_slice(color);
+    }
+    out.extend_from_slice(&raster.smoothing.feature_size.to_le_bytes());
+    out.push(raster.smoothing.on as u8);
+}
+
+/// A raster image of format version 13 with the stops `old`.
+#[cfg(test)]
+fn put_raster_v13(out: &mut Vec<u8>, raster: &Raster, old: &[V13Stop]) {
+    put_u32(out, raster.id.0 as usize);
+    put_u32(out, raster.face_size as usize);
+    put_bytes(out, raster.unit.as_bytes());
+    put_f64(out, raster.value_min);
+    put_f64(out, raster.value_max);
+    put_u32(out, raster.base as usize);
+    out.extend_from_slice(&raster.opacity.to_le_bytes());
+    put_bytes(out, raster.display.id().as_bytes());
+    put_u32(out, old.len());
+    for stop in old {
+        put_f64(out, stop.value);
         out.extend_from_slice(&stop.below);
         out.extend_from_slice(&stop.above);
     }
-    for stop in &raster.stops {
+    for stop in old {
         out.push(stop.line.on as u8);
         out.extend_from_slice(&stop.line.weight.to_le_bytes());
         out.extend_from_slice(&stop.line.color);
@@ -463,8 +524,38 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     out.push(raster.smoothing.on as u8);
 }
 
-/// An unknown display gives bands. An image of version 11 has no lines. An
-/// image of version 11 or 12 has no smoothing, and gets the default.
+/// The packed raster image of format version 13 with the stops `old`.
+#[cfg(test)]
+pub(crate) fn image_v13(raster: &Raster, old: &[V13Stop]) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_raster_v13(&mut out, raster, old);
+    pack(&out)
+}
+
+fn line(r: &mut Reader) -> Option<StopLine> {
+    let [on]: [u8; 1] = r.take()?;
+    let weight = f32::from_le_bytes(r.take()?);
+    let color = r.take()?;
+    let [darker]: [u8; 1] = r.take()?;
+    Some(StopLine {
+        on: on != 0,
+        weight,
+        color,
+        darker: darker != 0,
+        darken: f32::from_le_bytes(r.take()?),
+    })
+}
+
+fn smoothing(r: &mut Reader) -> Option<Smoothing> {
+    let feature_size = clamp_feature_size(f32::from_le_bytes(r.take()?));
+    let [on]: [u8; 1] = r.take()?;
+    Some(Smoothing {
+        on: on != 0,
+        feature_size,
+    })
+}
+
+/// An unknown display gives bands.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -477,37 +568,14 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         .map(|_| {
             Some(Stop {
                 value: r.f64()?,
-                below: r.take()?,
-                above: r.take()?,
-                line: StopLine::default(),
+                line: line(r)?,
             })
         })
         .collect::<Option<Vec<_>>>()?;
-    let mut stops = stops;
-    let mut smoothing = Smoothing::default();
-    if !r.0.is_empty() {
-        for stop in &mut stops {
-            let [on]: [u8; 1] = r.take()?;
-            let weight = f32::from_le_bytes(r.take()?);
-            let color = r.take()?;
-            let [darker]: [u8; 1] = r.take()?;
-            stop.line = StopLine {
-                on: on != 0,
-                weight,
-                color,
-                darker: darker != 0,
-                darken: f32::from_le_bytes(r.take()?),
-            };
-        }
-    }
-    if !r.0.is_empty() {
-        let feature_size = clamp_feature_size(f32::from_le_bytes(r.take()?));
-        let [on]: [u8; 1] = r.take()?;
-        smoothing = Smoothing {
-            on: on != 0,
-            feature_size,
-        };
-    }
+    let colors = (0..count(r)?)
+        .map(|_| r.take())
+        .collect::<Option<Vec<_>>>()?;
+    let smoothing = smoothing(r)?;
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
@@ -518,7 +586,55 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         value_max,
         base,
         stops,
+        colors,
         smoothing,
+    })
+}
+
+/// A raster image of format version 11, 12, or 13, with its stops and band
+/// colors as `gpkg::v14_bands` gives them. An unknown display gives bands.
+/// An image of version 11 has no lines. An image of version 11 or 12 has no
+/// smoothing, and gets the default.
+fn raster_v13(r: &mut Reader) -> Option<Raster> {
+    let id = RasterId(r.u32()?);
+    let face_size = r.u32()?;
+    let unit = string(r)?;
+    let (value_min, value_max) = (r.f64()?, r.f64()?);
+    let base = u16::try_from(r.u32()?).ok()?;
+    let opacity = clamp_opacity(f32::from_le_bytes(r.take()?));
+    let display = RasterDisplay::from_id(&string(r)?).unwrap_or_default();
+    let mut old = (0..count(r)?)
+        .map(|_| {
+            Some(V13Stop {
+                value: r.f64()?,
+                below: r.take()?,
+                above: r.take()?,
+                line: StopLine::default(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let mut smooth = Smoothing::default();
+    if !r.0.is_empty() {
+        for stop in &mut old {
+            stop.line = line(r)?;
+        }
+    }
+    if !r.0.is_empty() {
+        smooth = smoothing(r)?;
+    }
+    let (stops, colors) = v14_bands(&unit, value_min, value_max, &old);
+    r.0.is_empty().then_some(Raster {
+        id,
+        opacity,
+        display,
+        face_size,
+        unit,
+        value_min,
+        value_max,
+        base,
+        stops,
+        colors,
+        smoothing: smooth,
     })
 }
 
@@ -667,8 +783,9 @@ mod tests {
         assert_eq!(layer(&mut Reader(&out)), Some((1, hidden.clone())));
     }
 
-    #[test]
-    fn a_raster_image_keeps_the_values_and_the_opacity() {
+    /// A raster with values, an opacity, a display, smoothing, stops, and
+    /// band colors that are not the defaults.
+    fn rain() -> Raster {
         let mut project = Project::new(World::default());
         let id = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
         let rain = project.raster_mut(id).unwrap();
@@ -681,14 +798,10 @@ mod tests {
         rain.stops = vec![
             Stop {
                 value: 0.0,
-                below: [1, 2, 3],
-                above: [1, 2, 3],
                 line: StopLine::default(),
             },
             Stop {
                 value: 250.5,
-                below: [4, 5, 6],
-                above: [7, 8, 9],
                 line: StopLine {
                     on: true,
                     weight: 2.5,
@@ -697,41 +810,90 @@ mod tests {
                     darken: 0.25,
                 },
             },
+            Stop {
+                value: 5000.0,
+                line: StopLine::default(),
+            },
         ];
-        let rain = project.raster(id).unwrap();
+        rain.colors = vec![[1, 2, 3], [4, 5, 6]];
+        rain.clone()
+    }
+
+    #[test]
+    fn a_raster_image_keeps_the_values_and_the_opacity() {
+        let rain = rain();
         let mut out = Vec::new();
-        put_raster(&mut out, rain);
-        assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
+        put_raster(&mut out, &rain);
+        assert_eq!(raster(&mut Reader(&out)), Some(rain));
         out.pop();
         assert_eq!(raster(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn an_undo_image_keeps_the_band_colors() {
+        let mut rain = rain();
+        rain.colors = vec![[255, 0, 128], [7, 7, 7]];
+        let mut out = Vec::new();
+        put_raster(&mut out, &rain);
+        assert_eq!(raster(&mut Reader(&out)).unwrap().colors, rain.colors);
+        // An image with a color that ends early is not valid.
+        out.truncate(out.len() - 5 - 1);
+        assert_eq!(raster(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn a_raster_image_of_version_13_gets_band_colors() {
+        let rain = rain();
+        let old = [
+            V13Stop {
+                value: 0.0,
+                below: [1, 2, 3],
+                above: [1, 2, 3],
+                line: StopLine::default(),
+            },
+            V13Stop {
+                value: 250.5,
+                below: [4, 5, 6],
+                above: [4, 5, 6],
+                line: rain.stops[1].line,
+            },
+            V13Stop {
+                value: 5000.0,
+                below: [7, 8, 9],
+                above: [7, 8, 9],
+                line: StopLine::default(),
+            },
+        ];
+        let mut out = Vec::new();
+        put_raster_v13(&mut out, &rain, &old);
+        assert_eq!(raster_v13(&mut Reader(&out)), Some(rain.clone()));
+        out.pop();
+        assert_eq!(raster_v13(&mut Reader(&out)), None);
 
         // An image of version 12 ends after the lines, and it gets the
         // default smoothing.
         out.truncate(out.len() + 1 - 5);
-        let old = raster(&mut Reader(&out)).unwrap();
-        assert_eq!(old.smoothing, Smoothing::default());
-        assert_eq!(old.stops, rain.stops);
+        let v12 = raster_v13(&mut Reader(&out)).unwrap();
+        assert_eq!(v12.smoothing, Smoothing::default());
+        assert_eq!((&v12.stops, &v12.colors), (&rain.stops, &rain.colors));
 
         // An image of version 11 ends after the stops, and its stops have
         // no line.
-        out.truncate(out.len() - 2 * 13);
-        let old = raster(&mut Reader(&out)).unwrap();
-        assert!(old.stops.iter().all(|s| s.line == StopLine::default()));
-        assert_eq!(old.stops[1].above, [7, 8, 9]);
-        assert_eq!(old.smoothing, Smoothing::default());
-    }
+        out.truncate(out.len() - 3 * 13);
+        let v11 = raster_v13(&mut Reader(&out)).unwrap();
+        assert!(v11.stops.iter().all(|s| s.line == StopLine::default()));
+        assert_eq!(v11.colors, rain.colors);
+        assert_eq!(v11.smoothing, Smoothing::default());
 
-    #[test]
-    fn a_raster_image_of_version_12_with_no_stops_gets_the_default_smoothing() {
-        let mut project = Project::new(World::default());
-        let id = project.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 5000.0);
-        project.set_raster_smoothing(id, false);
+        // With no stops, an image of version 12 is one of version 13 with
+        // no smoothing.
         let mut out = Vec::new();
-        put_raster(&mut out, project.raster(id).unwrap());
-        assert!(!raster(&mut Reader(&out)).unwrap().smoothing.on);
+        put_raster_v13(&mut out, &rain, &[]);
+        assert!(!raster_v13(&mut Reader(&out)).unwrap().smoothing.on);
         out.truncate(out.len() - 5);
-        let old = raster(&mut Reader(&out)).unwrap();
+        let old = raster_v13(&mut Reader(&out)).unwrap();
         assert_eq!(old.smoothing, Smoothing::default());
+        assert!(old.stops.is_empty() && old.colors.is_empty());
     }
 
     #[test]

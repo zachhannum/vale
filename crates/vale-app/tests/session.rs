@@ -5,9 +5,7 @@ use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, w
 use vale_app::ui::{AppState, LayerRef, RasterSpec};
 use vale_store::{Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World};
 use vale_terrain::math::lonlat_to_dir;
-use vale_terrain::{
-    Bands, FACES, Heightmap, Limits, Mode, Side, Stamp, TexelRect, meters_to_level,
-};
+use vale_terrain::{Bands, FACES, Heightmap, Limits, Mode, Stamp, TexelRect, meters_to_level};
 
 const BASE: u16 = 19114;
 
@@ -86,7 +84,7 @@ fn a_painted_world_opens_again_with_the_same_pixels() {
     paint(&mut map, -100.0, 5.0, 0.05);
     paint(&mut map, 0.0, 90.0, 0.1);
     map.bands.add(1234.5).unwrap();
-    map.bands.set_color(1, Side::Above, [1, 2, 3]);
+    map.bands.set_color(1, [1, 2, 3]);
     session
         .flush(&mut doc.project, &mut maps(&mut map))
         .unwrap();
@@ -285,7 +283,7 @@ fn one_hold_of_a_control_is_one_undo_step() {
 
     let start = Instant::now();
     for i in 0..3 {
-        map.bands.set_color(1, Side::Above, [i as u8 + 1, 2, 3]);
+        map.bands.set_color(1, [i as u8 + 1, 2, 3]);
         let now = start + 2 * SAVE_DELAY * i;
         let tick = session.tick(&mut doc.project, &mut maps(&mut map), true, now);
         assert_eq!(tick.unwrap(), Some(SAVE_DELAY));
@@ -311,6 +309,33 @@ fn one_hold_of_a_control_is_one_undo_step() {
     // The step before the hold is the stroke.
     assert!(session.undo(&mut doc, &mut maps(&mut map)).unwrap());
     assert!(!session.can_undo());
+}
+
+#[test]
+fn undo_restores_a_band_color() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let (mut session, mut doc, mut map) = start(&path);
+    paint(&mut map, 45.0, 35.3, 0.2);
+    session
+        .flush(&mut doc.project, &mut maps(&mut map))
+        .unwrap();
+    let before = map.bands.clone();
+    assert!(map.bands.set_color(2, [1, 2, 3]));
+    session
+        .flush(&mut doc.project, &mut maps(&mut map))
+        .unwrap();
+    let colors = |path: &std::path::Path| {
+        let project = ProjectFile::open(path).unwrap().1;
+        project.rasters()[0].colors.clone()
+    };
+    assert_eq!(colors(&path)[2], [1, 2, 3]);
+
+    assert!(session.undo(&mut doc, &mut maps(&mut map)).unwrap());
+    assert_eq!(map.bands, before);
+    assert_eq!(colors(&path), before.colors());
+    assert!(session.redo(&mut doc, &mut maps(&mut map)).unwrap());
+    assert_eq!(map.bands.colors()[2], [1, 2, 3]);
 }
 
 #[test]
@@ -612,7 +637,7 @@ fn the_project_file_stores_each_raster_layer() {
     let mut wet = Heightmap::new(512, 0);
     wet.bands = Bands::with_range(0.0, 4000.0, false).unwrap();
     wet.bands.add(250.0).unwrap();
-    wet.bands.set_color(1, Side::Above, [1, 2, 3]);
+    wet.bands.set_color(1, [1, 2, 3]);
     paint(&mut ground, 45.0, 35.3, 0.2);
     paint(&mut wet, -100.0, 5.0, 0.1);
     paint(&mut wet, 0.0, 90.0, 0.1);
@@ -651,7 +676,7 @@ fn the_project_file_stores_each_raster_layer() {
     assert_eq!(second.face_size, 512);
     assert_eq!(values(&second.stops), map_values(&wet.bands));
     assert!(values(&second.stops).contains(&250.0));
-    assert_eq!(second.stops[1].above, [1, 2, 3]);
+    assert_eq!(second.colors[1], [1, 2, 3]);
 
     let loaded = session.load_maps().unwrap();
     assert_eq!(loaded.len(), 2);
@@ -1161,7 +1186,7 @@ fn each_raster_layer_keeps_its_own_unit_ramp_band_limits_and_display() {
     assert!(state.set_raster_unit(rain, "mm/yr"));
     let map = state.globe.bands_mut(rain).unwrap();
     let index = map.add(1234.0).unwrap();
-    map.set_color(1, Side::Above, [1, 2, 3]);
+    map.set_color(1, [1, 2, 3]);
     // The unit of a height layer stays, and no other layer becomes one.
     assert!(!state.set_raster_unit(height, "ft"));
     assert!(!state.set_raster_unit(rain, "m"));

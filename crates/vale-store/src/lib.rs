@@ -226,9 +226,12 @@ pub struct Raster {
     pub value_max: f64,
     /// The pixel of each place that has no tile.
     pub base: u16,
-    /// The color stops of the ramp, in ascending order of value. An empty
-    /// list gives the default bands of the range.
+    /// The stops at the edges of the bands, in ascending order of value. An
+    /// empty list gives the default bands of the range.
     pub stops: Vec<Stop>,
+    /// The color of each band, from the lowest band up. There is one color
+    /// fewer than stops. Band `i` runs from stop `i` to stop `i + 1`.
+    pub colors: Vec<Rgb>,
     /// How the globe smooths the values by the scale.
     pub smoothing: Smoothing,
 }
@@ -267,14 +270,10 @@ pub(crate) fn clamp_feature_size(points: f32) -> f32 {
     }
 }
 
-/// A color stop of the ramp of a raster: a value, the color just below it,
-/// and the color just above it. The two colors differ only at a hard stop,
-/// for example at sea level.
+/// A stop at the edge of two bands of a raster.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stop {
     pub value: f64,
-    pub below: Rgb,
-    pub above: Rgb,
     /// The line where the values cross the stop.
     pub line: StopLine,
 }
@@ -286,8 +285,8 @@ pub struct StopLine {
     /// The weight, in points.
     pub weight: f32,
     pub color: Rgb,
-    /// The line has the color of the stop, darker by `darken`, in place of
-    /// `color`.
+    /// The line has the color of the band above the stop, darker by
+    /// `darken`, in place of `color`.
     pub darker: bool,
     /// The part of the light that the darker color takes away, from 0 to 1.
     pub darken: f32,
@@ -424,7 +423,7 @@ impl Project {
     /// bottom of a project with no raster layer. `value_min` is the value of
     /// pixel 0, and `value_max` is the value of pixel 65,535. The layer is
     /// visible, and the raster is opaque and shows bands. Its base is zero,
-    /// and its band limits, its ramp, and its stops are empty.
+    /// and it has no stops and no colors.
     pub fn add_raster(
         &mut self,
         name: String,
@@ -445,6 +444,7 @@ impl Project {
             value_max,
             base: 0,
             stops: Vec::new(),
+            colors: Vec::new(),
             smoothing: Smoothing::default(),
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());
@@ -509,9 +509,12 @@ impl Project {
             .is_some()
     }
 
-    /// Sets the color stops of a raster.
-    pub fn set_raster_stops(&mut self, id: RasterId, stops: Vec<Stop>) -> bool {
-        self.raster_mut(id).map(|r| r.stops = stops).is_some()
+    /// Sets the stops and the band colors of a raster.
+    pub fn set_raster_stops(&mut self, id: RasterId, stops: Vec<Stop>, colors: Vec<Rgb>) -> bool {
+        let raster = self.raster_mut(id);
+        raster
+            .map(|r| (r.stops, r.colors) = (stops, colors))
+            .is_some()
     }
 
     /// Sets the unit of the values of a raster.

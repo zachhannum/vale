@@ -14,7 +14,8 @@ struct Band {
     bottom: vec4<f32>,
     // The color at the upper limit, then the upper limit.
     top: vec4<f32>,
-    // The color of the whole step.
+    // The color of the band, then the middle of the band. The smooth mode
+    // has this color at the middle.
     solid: vec4<f32>,
 }
 
@@ -217,8 +218,13 @@ fn band_color(i: i32, h: f32, mode: i32) -> vec3<f32> {
     if mode != MODE_SMOOTH {
         return band.solid.rgb;
     }
-    let t = (h - band.bottom.a) / max(band.top.a - band.bottom.a, 1e-6);
-    return mix(band.bottom.rgb, band.top.rgb, clamp(t, 0.0, 1.0));
+    let mid = band.solid.a;
+    if h < mid {
+        let t = (h - band.bottom.a) / max(mid - band.bottom.a, 1e-6);
+        return mix(band.bottom.rgb, band.solid.rgb, clamp(t, 0.0, 1.0));
+    }
+    let t = (h - mid) / max(band.top.a - mid, 1e-6);
+    return mix(band.solid.rgb, band.top.rgb, clamp(t, 0.0, 1.0));
 }
 
 // The color of a height. `width` is the change of the height across one

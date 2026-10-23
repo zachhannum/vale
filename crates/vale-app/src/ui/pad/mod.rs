@@ -349,7 +349,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     expire_notes(&ctx, state);
-    raster::stop_card(&ctx, state, &mut controls, &rects);
+    raster::band_card(&ctx, state, &mut controls, &rects);
     raster::reset_card(&ctx, state, &mut controls, &rects);
     raster::ramp_card(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);

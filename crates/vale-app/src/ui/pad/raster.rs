@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use vale_store::{RasterDisplay, RasterId, Smoothing};
-use vale_terrain::{Bands, MAX_BANDS, Part, Side, StopLine};
+use vale_terrain::{Bands, MAX_BANDS, Part, StopLine};
 
 use super::geometry::{PAD, Rects};
 use super::theme;
@@ -14,19 +14,17 @@ use crate::world;
 
 /// The name of the segmented control of the displays.
 pub const SHOW_AS: &str = "Show as";
-/// The name of the field of the selected stop.
+/// The name of the field of the value of the lower edge of the selected
+/// band.
 pub const STOP_VALUE: &str = "Stop value";
-/// The names of the colors of a stop that the color picker edits: the two
-/// sides of the stop at sea level, the one color of each other stop, and the
-/// line.
-pub const SEA_COLOR: &str = "Sea";
-pub const LAND_COLOR: &str = "Land";
+/// The names of the colors that the color picker edits: the band, and the
+/// line at its lower edge.
 pub const FILL_COLOR: &str = "Fill";
 pub const LINE_COLOR: &str = "Line";
-/// The name of the color picker of the selected stop.
+/// The name of the color picker of the selected band.
 pub const COLOR: &str = "Color";
-/// The switch, the weight, and the color source of the line of the selected
-/// stop, and the amount of the darker color.
+/// The switch, the weight, and the color source of the line at the lower
+/// edge of the selected band, and the amount of the darker color.
 pub const LINE: &str = "Stop line";
 pub const LINE_WEIGHT: &str = "Line weight";
 pub const LINE_SOURCE: &str = "Line color";
@@ -71,13 +69,13 @@ pub const RIVER_WIDTH: &str = "River width";
 
 /// The height of the heading of a section.
 const HEADING: f32 = 40.0;
-/// The width of the card of the selected stop.
+/// The width of the card of the selected band.
 const CARD_WIDTH: f32 = 300.0;
-/// The space between the card of the selected stop and the panel.
+/// The space between the card of the selected band and the panel.
 const GAP: f32 = 14.0;
-/// The size of the point of the card of the selected stop.
+/// The size of the point of the card of the selected band.
 const POINT: f32 = 10.0;
-/// The space around the contents of the card of the selected stop.
+/// The space around the contents of the card of the selected band.
 const CARD_PAD: f32 = 12.0;
 
 /// The state of the Style section of the iPad layout.
@@ -85,16 +83,16 @@ const CARD_PAD: f32 = 12.0;
 pub struct StyleState {
     /// The text of the unit field while the user types.
     unit: Option<(RasterId, String)>,
-    /// The layer and the stop of the card in the last frame.
+    /// The layer and the band of the card in the last frame.
     stop: Option<(RasterId, usize)>,
-    /// The color of the selected stop that the color picker edits.
+    /// The color of the selected band that the color picker edits.
     side: Option<(RasterId, usize, Paint)>,
-    /// The layer, the selected stop, its handle, and the gradient control
-    /// in this frame.
+    /// The layer, the selected band, the left of its row, and the gradient
+    /// control in this frame.
     anchor: Option<(RasterId, usize, Pos2, Rect)>,
-    /// The height of the contents of the card of the selected stop.
+    /// The height of the contents of the card of the selected band.
     height: Option<f32>,
-    /// The card of the selected stop in the last frame.
+    /// The card of the selected band in the last frame.
     pub card: Option<Rect>,
     /// The layer whose card that asks before a reset is open.
     reset: Option<RasterId>,
@@ -114,16 +112,16 @@ pub struct StyleState {
 }
 
 impl StyleState {
-    /// Closes the color picker of the selected stop.
+    /// Closes the color picker of the selected band.
     pub fn forget_color(&mut self) {
         self.side = None;
     }
 }
 
-/// A color of a stop.
+/// A color of the card of a band.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Paint {
-    Fill(Side),
+    Fill,
     Line,
 }
 
@@ -160,8 +158,7 @@ pub fn unit_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 }
 
 /// The Style section: the display and the color stops, and then the
-/// rivers of a height layer. The selected stop has a card next to the
-/// panel, which `stop_card` shows.
+/// rivers of a height layer.
 pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -208,8 +205,8 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
 }
 
 /// The page of the color stops of the Layers panel: the gradient control
-/// with a row for each stop, the reset row, and the row of the color
-/// ramps. A tap on a stop opens its card, which `stop_card` shows.
+/// with a row for each band, the reset row, and the row of the color
+/// ramps. A tap on a band opens its card, which `band_card` shows.
 pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -237,7 +234,7 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         style.side = None;
     }
     // The card hides while a finger drags a stop, so that the globe shows.
-    let count = bands.stops().len();
+    let count = bands.colors().len();
     let area = parts.bar.union(parts.rows);
     style.anchor = selected
         .filter(|i| !resp.dragged() && *i < count)
@@ -246,12 +243,12 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
             let keep = area.intersect(ui.clip_rect());
             ui.clip_rect().contains(at).then_some((id, index, at, keep))
         });
-    if count > MAX_BANDS {
+    if count >= MAX_BANDS {
         note(ui, FULL);
     }
 
     let default = Bands::with_range(bands.min(), bands.max(), height);
-    let changed = default.as_ref().is_some_and(|d| d.stops() != bands.stops());
+    let changed = default.as_ref().is_some_and(|d| d != bands);
     let row = widgets::text_row(ui, controls, RESET_STOPS, 0.0, false, changed);
     if row.clicked() {
         style.reset = (style.reset != Some(id)).then_some(id);
@@ -405,12 +402,13 @@ fn note(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
 }
 
-/// The card of the selected stop: its value, its color, and the button
-/// that removes it. The card is at the left of the panel and points at the
-/// handle of the stop. Above a sheet, the card is above the gradient. A
+/// The card of the selected band: its color, and the value and the line of
+/// its lower edge, with the button that removes that stop. The lowest band
+/// has only its color. The card is at the left of the panel and points at
+/// the row of the band. Above a sheet, the card is above the gradient. A
 /// touch outside the card and the gradient control closes the card. The
 /// card hides during a drag on the gradient control.
-pub fn stop_card(
+pub fn band_card(
     ctx: &egui::Context,
     state: &mut AppState,
     controls: &mut Controls,
@@ -434,12 +432,14 @@ pub fn stop_card(
     let Some(unit) = state.doc.project.raster(id).map(|r| r.unit.clone()) else {
         return;
     };
-    let sea = state
-        .globe
-        .bands_mut(id)
-        .is_some_and(|b| b.sea() == Some(index));
+    let lowest = index == 0;
     let fixed = state.globe.bands_mut(id).is_some_and(|b| b.fixed(index));
-    let guess = PANEL_ROW * if fixed { 7.0 } else { 8.0 } + 196.0 + 16.0;
+    let rows = match (lowest, fixed) {
+        (true, _) => 0.0,
+        (false, true) => 6.0,
+        (false, false) => 7.0,
+    };
+    let guess = PANEL_ROW * rows + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
 
     let (rect, point) = place(rects, panel, at, gradient, height);
@@ -484,84 +484,50 @@ pub fn stop_card(
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let start = ui.cursor().top();
 
-            if fixed {
-                let span = bands.max() - bands.min();
-                let value = bands.stops()[index].value;
-                widgets::value_row(ui, "Value", &world::value_text(value, span, &unit));
-            } else {
-                value_field(ui, controls, bands, index, &unit);
-            }
-            let stop = bands.stops()[index];
-            let mut line = stop.line;
-            let mut changed = widgets::switch_row(ui, controls, LINE, "Line", &mut line.on);
-            let (lo, hi) = (*StopLine::WEIGHTS.start(), *StopLine::WEIGHTS.end());
-            let mut fraction = f64::from((line.weight - lo) / (hi - lo));
-            let text = format!("{} pt", weight_text(line.weight));
-            if widgets::row_slider(ui, controls, LINE_WEIGHT, "Weight", &mut fraction, &text) {
-                let weight = lo + fraction as f32 * (hi - lo);
-                line.weight = (weight / WEIGHT_STEP).round() * WEIGHT_STEP;
-                changed = true;
-            }
-            let active = Some(usize::from(!line.darker));
-            if let Some(choice) =
-                widgets::choice_row(ui, controls, LINE_SOURCE, &[DARKER, CUSTOM], active)
-            {
-                line.darker = choice == 0;
-                changed = true;
-            }
-            if line.darker {
-                let mut fraction = f64::from(line.darken);
-                let text = format!("{:.0}%", line.darken * 100.0);
-                if widgets::row_slider(ui, controls, DARKEN, "Darken", &mut fraction, &text) {
-                    line.darken = ((fraction * 20.0).round() / 20.0) as f32;
-                    changed = true;
+            let mut line = bands.stops()[index].line;
+            let mut changed = false;
+            if !lowest {
+                if fixed {
+                    let span = bands.max() - bands.min();
+                    let value = bands.stops()[index].value;
+                    widgets::value_row(ui, "Value", &world::value_text(value, span, &unit));
+                } else {
+                    value_field(ui, controls, bands, index, &unit);
                 }
+                changed |= line_controls(ui, controls, &mut line);
             }
-            let paint = match style.side {
-                Some((of, at, paint)) if of == id && at == index => paint,
-                _ => Paint::Fill(Side::Above),
-            };
             // A darker line has no color of its own to pick.
-            let (names, paints): (&[&str], &[Paint]) = match (sea, line.darker) {
-                (true, false) => (
-                    &[SEA_COLOR, LAND_COLOR, LINE_COLOR],
-                    &[
-                        Paint::Fill(Side::Below),
-                        Paint::Fill(Side::Above),
-                        Paint::Line,
-                    ],
-                ),
-                (true, true) => (
-                    &[SEA_COLOR, LAND_COLOR],
-                    &[Paint::Fill(Side::Below), Paint::Fill(Side::Above)],
-                ),
-                (false, false) => (
-                    &[FILL_COLOR, LINE_COLOR],
-                    &[Paint::Fill(Side::Above), Paint::Line],
-                ),
-                (false, true) => (&[FILL_COLOR], &[Paint::Fill(Side::Above)]),
+            let paints: &[Paint] = if lowest || line.darker {
+                &[Paint::Fill]
+            } else {
+                &[Paint::Fill, Paint::Line]
             };
-            let paint = match paint {
-                Paint::Fill(_) if !sea => Paint::Fill(Side::Above),
-                Paint::Line if line.darker => Paint::Fill(Side::Above),
-                paint => paint,
+            let paint = match style.side {
+                Some((of, at, paint)) if of == id && at == index && paints.contains(&paint) => {
+                    paint
+                }
+                _ => Paint::Fill,
             };
-            let active = paints.iter().position(|p| *p == paint);
-            let paint = match widgets::choice_row(ui, controls, COLOR, names, active) {
-                Some(i) => paints[i],
-                None => paint,
+            let paint = if paints.len() > 1 {
+                let active = paints.iter().position(|p| *p == paint);
+                let names = [FILL_COLOR, LINE_COLOR];
+                match widgets::choice_row(ui, controls, COLOR, &names, active) {
+                    Some(i) => paints[i],
+                    None => paint,
+                }
+            } else {
+                paint
             };
             style.side = Some((id, index, paint));
             ui.add_space(4.0);
             let mut picked = match paint {
-                Paint::Fill(Side::Below) => stop.below,
-                Paint::Fill(Side::Above) => stop.above,
+                Paint::Fill => bands.colors()[index],
                 Paint::Line => line.color,
             };
             if widgets::color_picker(ui, controls, COLOR, &mut picked) {
                 match paint {
-                    Paint::Fill(side) => {
-                        bands.set_color(index, side, picked);
+                    Paint::Fill => {
+                        bands.set_color(index, picked);
                     }
                     Paint::Line => {
                         line.color = picked;
@@ -595,6 +561,35 @@ pub fn stop_card(
         state.globe.preview.selected = None;
         state.pad.style.side = None;
     }
+}
+
+/// The switch, the weight, and the color source of a line. Returns true if
+/// the line changed.
+fn line_controls(ui: &mut egui::Ui, controls: &mut Controls, line: &mut StopLine) -> bool {
+    let mut changed = widgets::switch_row(ui, controls, LINE, "Line", &mut line.on);
+    let (lo, hi) = (*StopLine::WEIGHTS.start(), *StopLine::WEIGHTS.end());
+    let mut fraction = f64::from((line.weight - lo) / (hi - lo));
+    let text = format!("{} pt", weight_text(line.weight));
+    if widgets::row_slider(ui, controls, LINE_WEIGHT, "Weight", &mut fraction, &text) {
+        let weight = lo + fraction as f32 * (hi - lo);
+        line.weight = (weight / WEIGHT_STEP).round() * WEIGHT_STEP;
+        changed = true;
+    }
+    let active = Some(usize::from(!line.darker));
+    if let Some(choice) = widgets::choice_row(ui, controls, LINE_SOURCE, &[DARKER, CUSTOM], active)
+    {
+        line.darker = choice == 0;
+        changed = true;
+    }
+    if line.darker {
+        let mut fraction = f64::from(line.darken);
+        let text = format!("{:.0}%", line.darken * 100.0);
+        if widgets::row_slider(ui, controls, DARKEN, "Darken", &mut fraction, &text) {
+            line.darken = ((fraction * 20.0).round() / 20.0) as f32;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// A weight in points with no zeros at the end, for example `0.25` or `2`.
@@ -851,8 +846,8 @@ pub fn ramp_card(
     }
 }
 
-/// The field of the value of the selected stop. The stop moves when the
-/// typed text is a number.
+/// The field of the value of a stop. The stop moves when the typed text is
+/// a number.
 fn value_field(
     ui: &mut egui::Ui,
     controls: &mut Controls,

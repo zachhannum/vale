@@ -24,7 +24,7 @@ mod swatch;
 #[cfg(feature = "gpu")]
 mod tiles;
 
-pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Part, Rgb, SEA_LEVEL, Side, Stop, StopLine};
+pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Part, Rgb, SEA_LEVEL, Stop, StopLine};
 pub use cube::{
     ELEV_MAX, ELEV_MIN, FACES, FaceSizeValues, face_dir, face_of, face_size_values,
     level_to_meters, meters_to_level, unwarp, warp,
