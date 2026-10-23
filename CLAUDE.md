@@ -92,13 +92,15 @@ A feature session keeps its context small on purpose.
 - Use one branch for each issue: `feat/<issue>-slug`, `fix/<issue>-slug`, or `chore/<issue>-slug`.
 - Write `Closes #N` in the PR description. Before you ask for review, make sure that each item of the "done when" list is true.
 - Do not wrap PR and issue bodies. Write one line for each paragraph and each list item, with blank lines between them. GitHub shows a single newline as a line break.
-- Before you push, run these commands and make sure that all three succeed:
+- Before you push, run these commands for each crate that the change touches, and make sure that all three succeed. Replace `<crate>` with the name of the crate.
 
   ```sh
   cargo fmt --all --check
-  cargo clippy --workspace --all-targets
-  cargo test --workspace
+  cargo clippy -p <crate> --all-targets
+  cargo test -p <crate>
   ```
+
+- If a crate has more than one test file, you can run only the test files that cover the change, for example `cargo test -p vale-app --test pad`. Do not run `cargo test --workspace` before a push. The full run is the work of CI.
 
 - If the PR has CI runs, watch them with `gh run watch`. After they pass, ask for review.
 - Claude does not merge. A person reviews and merges each PR.
