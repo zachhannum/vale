@@ -29,7 +29,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 15;
+pub const FORMAT_VERSION: u32 = 16;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -49,6 +49,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v13,
     v14,
     v15,
+    v16,
 ];
 
 /// `GPKG` in ASCII.
@@ -744,13 +745,31 @@ fn v13(tx: &Transaction) -> rusqlite::Result<()> {
 fn v15(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(
         "ALTER TABLE vale_raster ADD COLUMN hillshade INTEGER NOT NULL DEFAULT 0;
-         ALTER TABLE vale_raster ADD COLUMN hillshade_opacity REAL NOT NULL DEFAULT 0.5;
-         ALTER TABLE vale_raster ADD COLUMN hillshade_highlights INTEGER NOT NULL DEFAULT 1;
-         ALTER TABLE vale_raster ADD COLUMN hillshade_azimuth REAL NOT NULL DEFAULT 315;
-         ALTER TABLE vale_raster ADD COLUMN hillshade_altitude REAL NOT NULL DEFAULT 45;
-         ALTER TABLE vale_raster ADD COLUMN hillshade_exaggeration REAL NOT NULL DEFAULT 1;
-         ALTER TABLE vale_raster ADD COLUMN hillshade_color TEXT NOT NULL DEFAULT '000000';",
+         ALTER TABLE vale_raster ADD COLUMN hillshade_opacity REAL NOT NULL DEFAULT 0.5;",
     )
+}
+
+/// The highlights, the light, the relief, and the shade color of the
+/// hillshade. A file of version 15 can already have some of the columns,
+/// and the step adds each column that it does not have.
+fn v16(tx: &Transaction) -> rusqlite::Result<()> {
+    const COLUMNS: [(&str, &str); 5] = [
+        ("hillshade_highlights", "INTEGER NOT NULL DEFAULT 1"),
+        ("hillshade_azimuth", "REAL NOT NULL DEFAULT 315"),
+        ("hillshade_altitude", "REAL NOT NULL DEFAULT 45"),
+        ("hillshade_exaggeration", "REAL NOT NULL DEFAULT 1"),
+        ("hillshade_color", "TEXT NOT NULL DEFAULT '000000'"),
+    ];
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_raster') WHERE name = ?1";
+    for (name, kind) in COLUMNS {
+        let count: i64 = tx.query_row(sql, [name], |r| r.get(0))?;
+        if count == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE vale_raster ADD COLUMN {name} {kind};"
+            ))?;
+        }
+    }
+    Ok(())
 }
 
 /// The display of a raster. The rasters of an older file show bands.
@@ -3314,6 +3333,43 @@ mod tests {
         );
         // The undo images of version 15 stay valid.
         assert!(file.can_undo());
+    }
+
+    /// A file of version 15 with only some of the hillshade columns, as an
+    /// early build of version 15 wrote it, gets the other columns.
+    #[test]
+    fn a_file_of_version_15_gets_the_missing_hillshade_columns() {
+        let missing = [
+            "hillshade_highlights",
+            "hillshade_azimuth",
+            "hillshade_altitude",
+            "hillshade_exaggeration",
+            "hillshade_color",
+        ];
+        for kept in [0, 1, 5] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut project, height, _) = rasters();
+            assert!(project.set_raster_hillshade(height, true));
+            assert!(project.set_raster_hillshade_opacity(height, 0.75));
+            drop(ProjectFile::create(&path(&dir), &project).unwrap());
+            let conn = Connection::open(path(&dir)).unwrap();
+            for name in &missing[kept..] {
+                let drop_sql = format!("ALTER TABLE vale_raster DROP COLUMN {name}");
+                conn.execute_batch(&drop_sql).unwrap();
+            }
+            drop(conn);
+            set_format_version(&dir, 15);
+
+            let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+            assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+            let shade = loaded.raster(height).unwrap().hillshade;
+            let want = Hillshade {
+                on: true,
+                opacity: 0.75,
+                ..Hillshade::default()
+            };
+            assert_eq!(shade, want, "{kept} kept");
+        }
     }
 
     /// Removes the band colors and the smoothing of the rasters, as in a file

@@ -567,21 +567,26 @@ fn smoothing(r: &mut Reader) -> Option<Smoothing> {
 #[cfg(test)]
 const HILLSHADE_LEN: usize = 4 + 2 + 3 * 4 + 3;
 
+/// An image of an early build of version 15 ends after the switch, or after
+/// the highlights, and gets the defaults of the rest.
 fn hillshade(r: &mut Reader) -> Option<Hillshade> {
-    let opacity = f32::from_le_bytes(r.take()?);
-    let [on, highlights]: [u8; 2] = r.take()?;
-    Some(
-        Hillshade {
-            on: on != 0,
-            opacity,
-            highlights: highlights != 0,
-            azimuth: f32::from_le_bytes(r.take()?),
-            altitude: f32::from_le_bytes(r.take()?),
-            exaggeration: f32::from_le_bytes(r.take()?),
-            color: r.take()?,
-        }
-        .clamped(),
-    )
+    let mut h = Hillshade {
+        opacity: f32::from_le_bytes(r.take()?),
+        ..Hillshade::default()
+    };
+    let [on]: [u8; 1] = r.take()?;
+    h.on = on != 0;
+    if !r.0.is_empty() {
+        let [highlights]: [u8; 1] = r.take()?;
+        h.highlights = highlights != 0;
+    }
+    if !r.0.is_empty() {
+        h.azimuth = f32::from_le_bytes(r.take()?);
+        h.altitude = f32::from_le_bytes(r.take()?);
+        h.exaggeration = f32::from_le_bytes(r.take()?);
+        h.color = r.take()?;
+    }
+    Some(h.clamped())
 }
 
 /// An unknown display gives bands. An image of format version 14 ends after
@@ -879,6 +884,36 @@ mod tests {
         let old = raster(&mut Reader(&out)).unwrap();
         assert_eq!(old.hillshade, Hillshade::default());
         assert_eq!(old.smoothing, rain.smoothing);
+    }
+
+    #[test]
+    fn a_raster_image_of_an_early_build_gets_the_default_light() {
+        let mut rain = rain();
+        rain.hillshade = Hillshade {
+            on: true,
+            opacity: 0.375,
+            highlights: false,
+            azimuth: 90.0,
+            ..Hillshade::default()
+        };
+        let mut full = Vec::new();
+        put_raster(&mut full, &rain);
+        let light = HILLSHADE_LEN - 4 - 2;
+        // The image ends after the highlights.
+        let out = &full[..full.len() - light];
+        let shade = raster(&mut Reader(out)).unwrap().hillshade;
+        let want = Hillshade {
+            azimuth: Hillshade::AZIMUTH_DEFAULT,
+            ..rain.hillshade
+        };
+        assert_eq!(shade, want);
+        // The image ends after the switch.
+        let out = &full[..full.len() - light - 1];
+        let shade = raster(&mut Reader(out)).unwrap().hillshade;
+        assert!(shade.highlights);
+        assert_eq!((shade.on, shade.opacity), (true, 0.375));
+        // An image that ends inside the light is not valid.
+        assert_eq!(raster(&mut Reader(&full[..full.len() - 1])), None);
     }
 
     #[test]
