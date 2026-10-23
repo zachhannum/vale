@@ -450,6 +450,7 @@ mod tests {
 
     use super::*;
     use crate::globe::math::lonlat_to_dir;
+    use crate::globe::polygon;
     use crate::globe::snap::tests::{kinds, layer, pen};
     use crate::globe::snap::{Kind, LayerTargets, Run, SnapSettings, Source, Targets, Tracer};
 
@@ -651,6 +652,34 @@ mod tests {
         let samples = pen(&[[4.0, -5.0], [5.0, 5.0]], 0.0);
         let runs = run(&all, &samples, SnapSettings::default());
         assert_eq!(runs, [Run::Free(samples)]);
+    }
+
+    #[test]
+    fn a_polygon_traces_the_line_of_a_stop() {
+        let c = lonlat_to_dir(0.0, 90.0);
+        let t = stop(c, 90.0);
+        let all = targets(&t, &[]);
+        // A shape south of the line, with its north side on the line.
+        let way = [
+            [0.5, -6.0],
+            [0.6, -0.1],
+            [9.6, -0.1],
+            [9.6, -6.0],
+            [0.5, -6.0],
+        ];
+        let runs = run(&all, &pen(&way, 0.3), SnapSettings::default());
+        assert!(kinds(&runs).contains('T'));
+        let Some(Geometry::Polygons(p)) = polygon::commit(&runs, SCALE, 0.35) else {
+            panic!("no polygon");
+        };
+        assert_eq!(p.len(), 1);
+        let on: Vec<LonLat> = p[0][0]
+            .iter()
+            .filter(|ll| on_line(&t, lonlat_to_dir(ll[0], ll[1]), c, SCALE))
+            .copied()
+            .collect();
+        assert!(on.len() > 2, "{on:?}");
+        assert!(on.iter().any(|ll| ll[0] < 3.0) && on.iter().any(|ll| ll[0] > 7.0));
     }
 
     #[test]
