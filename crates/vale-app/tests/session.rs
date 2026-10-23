@@ -1185,11 +1185,18 @@ fn each_raster_layer_keeps_its_own_hillshade() {
     assert!(state.set_raster_hillshade_opacity(height, 0.3));
     assert!(state.set_raster_hillshade_opacity(rain, 0.8));
     assert!(state.set_raster_hillshade_highlights(rain, false));
+    assert!(state.set_raster_hillshade_azimuth(height, 225.0));
+    assert!(state.set_raster_hillshade_altitude(height, 30.0));
+    assert!(state.set_raster_hillshade_exaggeration(height, 2.5));
+    assert!(state.set_raster_hillshade_color(height, [40, 60, 110]));
     let shaded = Hillshade {
         on: true,
         opacity: 0.3,
         highlights: true,
-        ..Hillshade::default()
+        azimuth: 225.0,
+        altitude: 30.0,
+        exaggeration: 2.5,
+        color: [40, 60, 110],
     };
     // A layer keeps the opacity and the highlights of its hillshade while
     // the hillshade is off.
