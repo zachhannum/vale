@@ -458,6 +458,7 @@ mod tests {
             smoothing: vale_store::Smoothing::default(),
             hillshade: vale_store::Hillshade::default(),
             rivers: true,
+            lines: true,
             unit: "<°C & more>".to_string(),
             value_min: -40.0,
             value_max: 25.535,

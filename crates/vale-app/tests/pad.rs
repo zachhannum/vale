@@ -14,10 +14,10 @@ use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    ADD_LAYER, BAND_LINES, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef,
-    MORE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP,
-    SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS,
-    WORLDS_ROW, brush_size_text, readout_text, theme,
+    ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
+    NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE,
+    SNAP_EDGES, SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
+    brush_size_text, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -222,10 +222,8 @@ fn check_controls(h: &Pad, what: &str) {
                 let kind = vale_sphere::ProjectionKind::ALL
                     .iter()
                     .any(|k| k.name() == name);
-                let menu = [
-                    "World", "Globe", "Flat", GRATICULE, BAND_LINES, "Maps", WORLDS_ROW,
-                ]
-                .contains(&name);
+                let menu =
+                    ["World", "Globe", "Flat", GRATICULE, "Maps", WORLDS_ROW].contains(&name);
                 let more = in_more
                     && [
                         "Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp",
@@ -2546,7 +2544,7 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
 }
 
 #[test]
-fn the_view_options_menu_has_the_graticule_and_band_line_switches() {
+fn the_view_options_menu_has_the_graticule_switch() {
     use vale_app::ui::pad::raster::{self, RIVERS};
     for size in BOARDS {
         let mut h = painted_pad(size);
@@ -2582,15 +2580,6 @@ fn the_view_options_menu_has_the_graticule_and_band_line_switches() {
             assert_eq!(h.state().globe.preview.graticule, !before, "{what}");
             tap(&mut h, GRATICULE);
             assert_eq!(h.state().globe.preview.graticule, before, "{what}");
-            if rects.view.is_some() {
-                let options = h.state().pad.view_options_rect.unwrap();
-                assert!(options.contains_rect(control(&h, BAND_LINES).unwrap()));
-            }
-            assert!(h.state().globe.preview.lines, "{what}");
-            tap(&mut h, BAND_LINES);
-            assert!(!h.state().globe.preview.lines, "{what}");
-            tap(&mut h, BAND_LINES);
-            assert!(h.state().globe.preview.lines, "{what}");
             tap(&mut h, open);
             let pad = &h.state().pad;
             assert!(!pad.view_options && !pad.menu, "{what}");
@@ -2817,10 +2806,10 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 430.0))
+            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 382.0))
         );
         let tops = ["World", "Globe", "Maps"].map(|name| control(&h, name).unwrap().top());
-        assert_eq!(tops, [98.0, 146.0, 351.0]);
+        assert_eq!(tops, [98.0, 146.0, 303.0]);
         tap(&mut h, "Flat");
         assert!(!h.state().pad.menu);
         assert_eq!(h.state().globe.world_view, WorldView::Flat);
@@ -4487,9 +4476,9 @@ fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame(
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[1]);
     let height = open_height(&mut h);
-    assert!(h.state_mut().set_raster_rivers(height, false));
     let globe = &mut h.state_mut().globe;
     globe.preview.graticule = false;
+    globe.preview.rivers = false;
     globe.view = GlobeView::centered(0.0, 0.0);
     let meters = 1100.0;
     globe.map.fill(meters_to_level(meters));
