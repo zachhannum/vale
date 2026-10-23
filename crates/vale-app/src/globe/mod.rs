@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
-use vale_store::{LayerId, RasterDisplay, RasterId, Smoothing};
+use vale_store::{Hillshade, LayerId, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{
     Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, Pyramid, SEA_LEVEL,
     Stamp, TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap,
@@ -252,10 +252,8 @@ pub enum StackItem {
         opacity: f32,
         display: RasterDisplay,
         smoothing: Smoothing,
-        /// The opacity of the hillshade, 0 for none.
-        hillshade: f32,
-        /// The hillshade makes the slopes toward the light lighter.
-        highlights: bool,
+        /// The hillshade. It is off for a layer that is not a height layer.
+        hillshade: Hillshade,
     },
     Vector(LayerId),
 }
@@ -2759,8 +2757,18 @@ impl Globe {
                     let radius_m = self.world_km * 1000.0;
                     let range = layer.bands.max() - layer.bands.min();
                     let relief = (range / radius_m) as f32;
-                    let highlights = if layer.highlights { 1.0 } else { 0.0 };
-                    [layer.hillshade, highlights, relief, radius_m as f32]
+                    let h = &layer.hillshade;
+                    let opacity = if h.on { h.opacity.clamp(0.0, 1.0) } else { 0.0 };
+                    let highlights = if h.highlights { 1.0 } else { 0.0 };
+                    [opacity, highlights, relief, radius_m as f32]
+                }
+                None => [0.0; 4],
+            },
+            light: layer.map_or([0.0, 0.0, 1.0, 1.0], |layer| light(&layer.hillshade)),
+            shadow: match layer {
+                Some(layer) => {
+                    let [r, g, b] = layer.hillshade.color;
+                    color(eframe::egui::Color32::from_rgb(r, g, b))
                 }
                 None => [0.0; 4],
             },
@@ -2867,8 +2875,7 @@ impl Globe {
                     opacity: 1.0,
                     display,
                     smoothing: Smoothing::default(),
-                    hillshade: 0.0,
-                    highlights: true,
+                    hillshade: Hillshade::default(),
                     rivers: rivers(key.layer, display),
                     window: true,
                 }));
@@ -2883,7 +2890,6 @@ impl Globe {
                             display,
                             smoothing,
                             hillshade,
-                            highlights,
                         } => {
                             let source = self.source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
@@ -2893,8 +2899,7 @@ impl Globe {
                                     opacity: opacity.clamp(0.0, 1.0),
                                     display,
                                     smoothing,
-                                    hillshade: hillshade.clamp(0.0, 1.0),
-                                    highlights,
+                                    hillshade,
                                     rivers: rivers(key.layer, display),
                                     window: !key.display,
                                 }));
@@ -2998,6 +3003,18 @@ impl Globe {
     }
 }
 
+/// The light of a hillshade for the shader: its direction in east, north,
+/// and up, and the exaggeration of the slopes.
+fn light(h: &Hillshade) -> [f32; 4] {
+    let (az, alt) = (h.azimuth.to_radians(), h.altitude.to_radians());
+    [
+        az.sin() * alt.cos(),
+        az.cos() * alt.cos(),
+        alt.sin(),
+        h.exaggeration,
+    ]
+}
+
 /// One raster layer in a frame.
 struct LayerDraw<'a> {
     /// The heightmap on the GPU that the pass reads.
@@ -3006,10 +3023,7 @@ struct LayerDraw<'a> {
     opacity: f32,
     display: RasterDisplay,
     smoothing: Smoothing,
-    /// The opacity of the hillshade, 0 for none.
-    hillshade: f32,
-    /// The hillshade makes the slopes toward the light lighter.
-    highlights: bool,
+    hillshade: Hillshade,
     /// The size of the channel map of the rivers of the layer. `None`: the
     /// pass draws no rivers.
     rivers: Option<usize>,
@@ -3027,6 +3041,16 @@ mod tests {
     use math::lonlat_to_dir;
     use snap::LayerTargets;
     use snap::tests::{layer, pen};
+
+    #[test]
+    fn the_default_light_is_from_the_northwest_and_45_degrees_up() {
+        let [east, north, up, exaggeration] = light(&Hillshade::default());
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(near(east, -0.5), "{east}");
+        assert!(near(north, 0.5), "{north}");
+        assert!(near(up, std::f32::consts::FRAC_1_SQRT_2), "{up}");
+        assert_eq!(exaggeration, 1.0);
+    }
 
     #[test]
     fn a_hover_shows_where_the_stroke_starts() {

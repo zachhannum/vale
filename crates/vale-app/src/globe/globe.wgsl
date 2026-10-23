@@ -56,6 +56,11 @@ struct Uniforms {
     // height of the range of the values over the radius of the world, and
     // the radius of the world in meters.
     shade: vec4<f32>,
+    // The direction of the light of the hillshade in east, north, and up,
+    // and the exaggeration of the slopes.
+    light: vec4<f32>,
+    // The shade color of the hillshade.
+    shadow: vec4<f32>,
     // The color of the ground below the layers.
     ground: vec4<f32>,
     // The color of the canvas around the globe.
@@ -248,9 +253,6 @@ fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
     return color;
 }
 
-// The light of the hillshade, in east, north, and up: from the northwest,
-// 45 degrees up.
-const LIGHT: vec3<f32> = vec3<f32>(-0.5, 0.5, 0.70710678);
 // The ground size of one pixel, in meters, that shows the slopes at their
 // true height. A larger pixel makes the slopes steeper by the square root of
 // the ratio, so the relief shows at each scale.
@@ -272,20 +274,28 @@ fn hillshade(d: vec3<f32>, pixel: f32) -> f32 {
     let gx = shown(normalize(d + east * a)).x - shown(normalize(d - east * a)).x;
     let gy = shown(normalize(d + north * a)).x - shown(normalize(d - north * a)).x;
     let z = max(1.0, sqrt(pixel * u.shade.w / RELIEF_REF_M));
-    let s = vec2<f32>(gx, gy) / (2.0 * a) * u.shade.z * z;
+    let s = vec2<f32>(gx, gy) / (2.0 * a) * u.shade.z * z * u.light.w;
     let n = normalize(vec3<f32>(-s, 1.0));
     let top = select(0.5, 1.0, u.shade.y > 0.5);
-    return clamp(0.5 + dot(n, LIGHT) - LIGHT.z, 0.0, top);
+    return clamp(0.5 + dot(n, u.light.xyz) - u.light.z, 0.0, top);
 }
 
-// The soft light blend of a grey `s` over the color `b`, as in the W3C
-// compositing rules. A grey of 0.5 keeps the color.
-fn soft_light(b: vec3<f32>, s: f32) -> vec3<f32> {
-    if s <= 0.5 {
-        return b - (1.0 - 2.0 * s) * b * (1.0 - b);
+// The blend color of a shade `s`: below 0.5, a mix of the shade color and
+// grey, so the slopes away from the light blend toward the shade color.
+fn shade_blend(s: f32) -> vec3<f32> {
+    if s >= 0.5 {
+        return vec3<f32>(s);
     }
+    return mix(u.shadow.rgb, vec3<f32>(0.5), 2.0 * s);
+}
+
+// The soft light blend of `s` over the color `b`, as in the W3C compositing
+// rules. A grey of 0.5 keeps the color.
+fn soft_light(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    let dark = b - (1.0 - 2.0 * s) * b * (1.0 - b);
     let dd = select(sqrt(b), ((16.0 * b - 12.0) * b + 4.0) * b, b <= vec3<f32>(0.25));
-    return b + (2.0 * s - 1.0) * (dd - b);
+    let light = b + (2.0 * s - 1.0) * (dd - b);
+    return select(light, dark, s <= vec3<f32>(0.5));
 }
 
 // The color of a layer in a world direction: the tint of the height, the
@@ -304,7 +314,7 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, frag: vec2<f32>) -> vec3
         color = tint(h, width, mode);
     }
     if u.shade.x > 0.0 {
-        color = mix(color, soft_light(color, hillshade(d, pixel)), u.shade.x);
+        color = mix(color, soft_light(color, shade_blend(hillshade(d, pixel))), u.shade.x);
     }
     if u.flat.y > 0.5 {
         // A river stops at the coast.

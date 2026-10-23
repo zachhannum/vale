@@ -5619,20 +5619,32 @@ fn set_hillshade(h: &mut Harness<'static, AppState>, id: RasterId, on: bool, opa
     h.step();
 }
 
-/// The grey of `canvas_image` at the middle of the canvas plus `east` and
+/// The color of `canvas_image` at the middle of the canvas plus `east` and
 /// `north` radians of the view. The place at the middle is the top of the
 /// bump.
+fn rgb_near_middle(
+    h: &Harness<'static, AppState>,
+    img: &image::RgbaImage,
+    east: f64,
+    north: f64,
+) -> [i32; 3] {
+    let globe = &h.state().globe;
+    let (rect, scale) = (globe.rect, globe.radius());
+    let at = rect.center() + Vec2::new((east * scale) as f32, (-north * scale) as f32);
+    let (x, y) = (at.x - rect.min.x.ceil(), at.y - rect.min.y.ceil());
+    let [r, g, b, _] = img.get_pixel(x as u32, y as u32).0;
+    [r, g, b].map(i32::from)
+}
+
+/// The grey of `canvas_image` at the middle of the canvas plus `east` and
+/// `north` radians of the view.
 fn grey_near_middle(
     h: &Harness<'static, AppState>,
     img: &image::RgbaImage,
     east: f64,
     north: f64,
 ) -> i32 {
-    let globe = &h.state().globe;
-    let (rect, scale) = (globe.rect, globe.radius());
-    let at = rect.center() + Vec2::new((east * scale) as f32, (-north * scale) as f32);
-    let (x, y) = (at.x - rect.min.x.ceil(), at.y - rect.min.y.ceil());
-    i32::from(img.get_pixel(x as u32, y as u32).0[0])
+    rgb_near_middle(h, img, east, north)[0]
 }
 
 /// The change of the grey from `off` to `on` on the northwest side of the
@@ -5685,6 +5697,73 @@ fn a_hillshade_without_highlights_only_darkens() {
     // The slopes away from the light have the same shade as with the
     // highlights.
     assert_eq!(hill_changes(&h, &off, &lit)[1], southeast);
+}
+
+/// The changes of `hill_changes` with the hillshade on at opacity 1, after
+/// `set` changes the hillshade.
+fn hill_changes_with(set: impl FnOnce(&mut AppState, RasterId)) -> [i32; 3] {
+    let mut h = hill_harness();
+    let id = brush_layer(&h);
+    let off = canvas_image(&mut h);
+    set_hillshade(&mut h, id, true, 1.0);
+    set(h.state_mut(), id);
+    h.step();
+    let on = canvas_image(&mut h);
+    hill_changes(&h, &off, &on)
+}
+
+#[test]
+fn a_light_from_the_southeast_lights_the_other_side() {
+    let _gpu = one_gpu_test();
+    let [northwest, southeast, flat] = hill_changes_with(|state, id| {
+        assert!(state.set_raster_hillshade_azimuth(id, 135.0));
+    });
+    assert!(northwest <= -4, "{northwest}");
+    assert!(southeast >= 4, "{southeast}");
+    assert!(flat.abs() <= 1, "{flat}");
+}
+
+#[test]
+fn a_lower_light_gives_a_stronger_shade() {
+    let _gpu = one_gpu_test();
+    let high = hill_changes_with(|_, _| {})[1];
+    let low = hill_changes_with(|state, id| {
+        assert!(state.set_raster_hillshade_altitude(id, 15.0));
+    })[1];
+    assert!(low.abs() >= high.abs() + 2, "{low} {high}");
+}
+
+#[test]
+fn a_larger_relief_gives_a_stronger_shade() {
+    let _gpu = one_gpu_test();
+    let one = hill_changes_with(|_, _| {})[1];
+    let two = hill_changes_with(|state, id| {
+        assert!(state.set_raster_hillshade_exaggeration(id, 2.0));
+    })[1];
+    assert!(two.abs() >= one.abs() + 2, "{two} {one}");
+}
+
+#[test]
+fn a_shade_color_tints_the_shadows() {
+    let _gpu = one_gpu_test();
+    let mut h = hill_harness();
+    let id = brush_layer(&h);
+    let off = canvas_image(&mut h);
+    set_hillshade(&mut h, id, true, 1.0);
+    assert!(h.state_mut().set_raster_hillshade_color(id, [0, 0, 255]));
+    h.step();
+    let on = canvas_image(&mut h);
+    let side = HILL_WIDTH / 2.0;
+    let far = 4.0 * HILL_WIDTH;
+    let [r, _, b] = rgb_near_middle(&h, &on, side, -side);
+    assert!(b > r + 4, "southeast {r} {b}");
+    let [r, _, b] = rgb_near_middle(&h, &on, -side, side);
+    assert!((r - b).abs() <= 1, "northwest {r} {b}");
+    let flat = rgb_near_middle(&h, &on, far, -far * 0.75);
+    let flat_off = rgb_near_middle(&h, &off, far, -far * 0.75);
+    for (a, b) in flat.iter().zip(flat_off) {
+        assert!((a - b).abs() <= 1, "flat {flat:?} {flat_off:?}");
+    }
 }
 
 #[test]
