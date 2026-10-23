@@ -246,7 +246,8 @@ fn union(a: Option<TexelRect>, b: TexelRect) -> TexelRect {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StackItem {
     /// A raster layer, how much it hides the layers below it, from 0 to 1,
-    /// how it colors its values, and how it smooths them by the scale.
+    /// how it colors its values, how it smooths them by the scale, and
+    /// whether it shows its rivers and the lines of its stops.
     Raster {
         id: RasterId,
         opacity: f32,
@@ -254,6 +255,8 @@ pub enum StackItem {
         smoothing: Smoothing,
         /// The hillshade. It is off for a layer that is not a height layer.
         hillshade: Hillshade,
+        rivers: bool,
+        lines: bool,
     },
     Vector(LayerId),
 }
@@ -1166,7 +1169,8 @@ impl Globe {
         let sync = self.rivers.sync();
         for at in 0..self.layers.len() {
             let layer = &self.layers[at];
-            let wanted = layer.height && self.visible(layer.id) && Some(layer.id) != self.raster;
+            let wanted =
+                layer.height && self.shows_rivers(layer.id) && Some(layer.id) != self.raster;
             let wanted = wanted && self.format.is_some();
             if wanted == layer.rivers.is_some() {
                 continue;
@@ -1226,6 +1230,14 @@ impl Globe {
         stack
             .into_iter()
             .any(|item| matches!(item, StackItem::Raster { id: of, .. } if *of == id))
+    }
+
+    /// The layer is in the list of visible layers, and its rivers are on.
+    fn shows_rivers(&self, id: RasterId) -> bool {
+        let stack = self.stack.iter().flatten();
+        stack
+            .into_iter()
+            .any(|item| matches!(item, StackItem::Raster { id: of, rivers: true, .. } if *of == id))
     }
 
     /// The largest face size of a reduced copy by the estimate of the
@@ -2721,8 +2733,8 @@ impl Globe {
             None => ([[[0.0; 4]; 3]; vale_terrain::MAX_BANDS], 0),
         };
         let lines = match layer {
-            Some(layer) => line_uniforms(layer.bands, scale),
-            None => [[[0.0; 4]; 2]; vale_terrain::MAX_BANDS + 1],
+            Some(layer) if layer.lines => line_uniforms(layer.bands, scale),
+            _ => [[[0.0; 4]; 2]; vale_terrain::MAX_BANDS + 1],
         };
         let color = |c: eframe::egui::Color32| {
             let [r, g, b] = [c.r(), c.g(), c.b()].map(|c| f32::from(c) / 255.0);
@@ -2808,7 +2820,7 @@ impl Globe {
         let key = |layer| MapKey { layer, ..NO_MAP };
         let mut out = Vec::new();
         let brush = match (self.raster, &self.stack) {
-            (Some(id), _) if self.visible(id) => Some(LayerKey::Raster(id)),
+            (Some(id), _) if self.shows_rivers(id) => Some(LayerKey::Raster(id)),
             (None, None) => Some(LayerKey::Solo),
             _ => None,
         };
@@ -2851,11 +2863,10 @@ impl Globe {
     pub fn paint(&mut self, canvas: Canvas, blur: bool) -> Option<Vec<Paint>> {
         let format = self.format?;
         self.queue_changes();
-        let show_rivers = self.preview.rivers;
         let river_layers = self.send_rivers();
-        let rivers = |layer: LayerKey, display: RasterDisplay| {
+        let rivers = |layer: LayerKey, display: RasterDisplay, on: bool| {
             let found = river_layers.iter().find(|(of, _)| *of == layer);
-            let shown = show_rivers && display != RasterDisplay::Grey;
+            let shown = on && display != RasterDisplay::Grey;
             found.map(|(_, size)| *size).filter(|_| shown)
         };
 
@@ -2876,8 +2887,9 @@ impl Globe {
                     display,
                     smoothing: Smoothing::default(),
                     hillshade: Hillshade::default(),
-                    rivers: rivers(key.layer, display),
+                    rivers: rivers(key.layer, display, self.preview.rivers),
                     window: true,
+                    lines: true,
                 }));
             }
             Some(stack) => {
@@ -2890,6 +2902,8 @@ impl Globe {
                             display,
                             smoothing,
                             hillshade,
+                            rivers: on,
+                            lines,
                         } => {
                             let source = self.source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
@@ -2900,8 +2914,9 @@ impl Globe {
                                     display,
                                     smoothing,
                                     hillshade,
-                                    rivers: rivers(key.layer, display),
+                                    rivers: rivers(key.layer, display, on),
                                     window: !key.display,
+                                    lines,
                                 }));
                             }
                         }
@@ -2955,6 +2970,7 @@ impl Globe {
                 rivers: layer.rivers.is_some() && !small,
                 // The blurred copy has no lines of the stops.
                 lines: !small
+                    && layer.lines
                     && layer.display == RasterDisplay::Bands
                     && layer.bands.stops().iter().any(|stop| stop.line.on),
                 clip,
@@ -3030,6 +3046,8 @@ struct LayerDraw<'a> {
     /// The pass reads the full heightmap, so it has the window of small
     /// rivers.
     window: bool,
+    /// The pass draws the lines of the stops.
+    lines: bool,
 }
 
 #[cfg(test)]

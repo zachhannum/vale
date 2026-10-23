@@ -237,6 +237,10 @@ pub struct Raster {
     pub smoothing: Smoothing,
     /// The shade of the slopes over the colors.
     pub hillshade: Hillshade,
+    /// The globe draws the rivers of a height raster.
+    pub rivers: bool,
+    /// The globe draws the lines of the stops.
+    pub lines: bool,
 }
 
 /// The hillshade of a height layer. It keeps its opacity and its highlights
@@ -524,6 +528,8 @@ impl Project {
             colors: Vec::new(),
             smoothing: Smoothing::default(),
             hillshade: Hillshade::default(),
+            rivers: true,
+            lines: true,
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());
         let layer = Layer {
@@ -571,6 +577,16 @@ impl Project {
     /// Sets how the globe colors the values of a raster.
     pub fn set_raster_display(&mut self, id: RasterId, display: RasterDisplay) -> bool {
         self.raster_mut(id).map(|r| r.display = display).is_some()
+    }
+
+    /// Turns the rivers of a raster on or off.
+    pub fn set_raster_rivers(&mut self, id: RasterId, on: bool) -> bool {
+        self.raster_mut(id).map(|r| r.rivers = on).is_some()
+    }
+
+    /// Turns the lines of the stops of a raster on or off.
+    pub fn set_raster_lines(&mut self, id: RasterId, on: bool) -> bool {
+        self.raster_mut(id).map(|r| r.lines = on).is_some()
     }
 
     /// Turns the smoothing of a raster on or off.

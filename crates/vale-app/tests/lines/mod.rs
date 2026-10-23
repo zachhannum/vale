@@ -67,6 +67,15 @@ pub fn show_as(state: &mut AppState, display: RasterDisplay) {
     }
 }
 
+/// Hides the rivers of each raster layer, and of a globe with no layers.
+pub fn hide_rivers(state: &mut AppState) {
+    state.globe.preview.rivers = false;
+    let ids: Vec<RasterId> = state.doc.project.rasters().iter().map(|r| r.id).collect();
+    for id in ids {
+        state.set_raster_rivers(id, false);
+    }
+}
+
 /// The frame without the pointer, cut to the canvas.
 pub fn canvas_image(h: &mut App) -> image::RgbaImage {
     h.remove_cursor();
@@ -196,10 +205,10 @@ pub fn set_heights(map: &mut Heightmap, height: impl Fn(V3) -> f64) {
 /// Only the stop at sea level and the stop at `TOP_STOP` have a line.
 pub fn measured_scene(h: &mut App, face_size: usize, height: impl Fn(V3) -> f64) {
     show_as(h.state_mut(), RasterDisplay::Bands);
+    hide_rivers(h.state_mut());
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(face_size);
     globe.preview.graticule = false;
-    globe.preview.rivers = false;
     measure_stops(&mut globe.map.bands, MEASURE_COLORS);
     set_heights(&mut globe.map, height);
     set_coast_line(h, true);

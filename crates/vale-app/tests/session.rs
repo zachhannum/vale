@@ -1240,6 +1240,30 @@ fn each_raster_layer_keeps_its_own_hillshade() {
 }
 
 #[test]
+fn each_height_layer_keeps_its_own_switches_of_the_rivers_and_the_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    let off = state.add_height();
+    let on = state.add_height();
+    assert!(state.set_raster_rivers(off, false));
+    assert!(state.set_raster_lines(on, false));
+    let rivers = |project: &Project, id| project.raster(id).unwrap().rivers;
+    let lines = |project: &Project, id| project.raster(id).unwrap().lines;
+    state.save_waiting().unwrap();
+    drop(state);
+
+    let mut doc = Document::empty();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert!(!rivers(&doc.project, off));
+    assert!(rivers(&doc.project, on));
+    assert!(lines(&doc.project, off));
+    assert!(!lines(&doc.project, on));
+}
+
+#[test]
 fn each_raster_layer_keeps_its_own_unit_ramp_band_limits_and_display() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");

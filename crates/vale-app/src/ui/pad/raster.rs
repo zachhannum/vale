@@ -78,6 +78,8 @@ pub const HILLSHADE_COLOR: &str = "Shade color";
 /// The size of the swatch of the shade color.
 const SWATCH: f32 = 24.0;
 pub const RIVERS: &str = "Rivers";
+/// The switch of the lines of the stops of a raster layer.
+pub const BAND_LINES: &str = "Band lines";
 pub const RIVER_WIDTH: &str = "River width";
 
 /// The height of the heading of a section.
@@ -207,6 +209,12 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         state.pad.page = Some(Page::Stops);
     }
     ui.add_space(8.0);
+    let Some(mut lines) = state.doc.project.raster(id).map(|r| r.lines) else {
+        return;
+    };
+    if widgets::switch_row(ui, controls, BAND_LINES, BAND_LINES, &mut lines) {
+        state.set_raster_lines(id, lines);
+    }
 
     if height {
         let on = state.doc.project.raster(id).is_some_and(|r| r.hillshade.on);
@@ -215,9 +223,14 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
             state.pad.page = Some(Page::Hillshade);
         }
     }
-    let preview = &mut state.globe.preview;
+    let Some(mut rivers) = state.doc.project.raster(id).map(|r| r.rivers) else {
+        return;
+    };
     if height {
-        widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
+        if widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut rivers) {
+            state.set_raster_rivers(id, rivers);
+        }
+        let preview = &mut state.globe.preview;
         let range = elevation::RIVER_WIDTH;
         let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
         let mut fraction = (f64::from(preview.river_width) - low) / (high - low);

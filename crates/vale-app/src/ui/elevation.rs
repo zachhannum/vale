@@ -108,7 +108,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             let Some(raster) = raster else {
                 let mut preview = state.globe.preview;
                 let (bands, unit) = (&mut state.globe.map.bands, super::HEIGHT_UNIT);
-                view_controls(ui, &mut preview, true);
+                ui.checkbox(&mut preview.rivers, pad::raster::RIVERS);
+                let on = preview.rivers;
+                river_width(ui, &mut preview, on);
                 display_choice(ui, &mut preview.display);
                 ui.separator();
                 let mut chosen = selected(&preview, None);
@@ -143,7 +145,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                     state.set_raster_unit(id, &unit);
                 }
             });
-            view_controls(ui, &mut state.globe.preview, height);
+            if height {
+                rivers(ui, state, &raster);
+            }
             ui.separator();
             ui.label("Style");
             let mut display = raster.display;
@@ -151,6 +155,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 state.set_raster_display(id, display);
             }
             smoothing(ui, state, &raster);
+            let mut lines = raster.lines;
+            if ui.checkbox(&mut lines, pad::raster::BAND_LINES).changed() {
+                state.set_raster_lines(id, lines);
+            }
             if height {
                 hillshade(ui, state, &raster);
             }
@@ -255,13 +263,19 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
 
-/// The rivers of a height layer.
-fn view_controls(ui: &mut egui::Ui, preview: &mut Preview, height: bool) {
-    if height {
-        ui.checkbox(&mut preview.rivers, "Rivers");
-        let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
-        ui.add_enabled(preview.rivers, width);
+/// The switch of the rivers of a height layer, and the width of all rivers.
+fn rivers(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
+    let mut on = raster.rivers;
+    if ui.checkbox(&mut on, pad::raster::RIVERS).changed() {
+        state.set_raster_rivers(raster.id, on);
     }
+    river_width(ui, &mut state.globe.preview, on);
+}
+
+/// The slider of the width of the rivers.
+fn river_width(ui: &mut egui::Ui, preview: &mut Preview, enabled: bool) {
+    let width = egui::Slider::new(&mut preview.river_width, RIVER_WIDTH).text("River width");
+    ui.add_enabled(enabled, width);
 }
 
 /// The switch of the smoothing of a raster layer and its minimum feature

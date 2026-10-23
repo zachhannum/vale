@@ -7,8 +7,8 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use lines::{
     LINE_WEIGHT, LineColumn, MEASURE_COLORS, canvas_image, even_slope, flat_land, flat_sea,
-    grey_bands, measure_line, measure_stops, set_coast_line, set_heights, set_top_line, show_as,
-    two_bands,
+    grey_bands, hide_rivers, measure_line, measure_stops, set_coast_line, set_heights,
+    set_top_line, show_as, two_bands,
 };
 use vale_app::cli::{Args, apply_globe, apply_globe_view};
 use vale_app::document::Document;
@@ -1182,10 +1182,10 @@ fn assert_no_seam(display: RasterDisplay) {
     const ZOOM: f64 = 15.0;
     let mut h = gpu_harness();
     show_as(h.state_mut(), display);
+    hide_rivers(h.state_mut());
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(N);
     globe.preview.graticule = false;
-    globe.preview.rivers = false;
     grey_bands(&mut globe.map.bands);
     for face in 0..6 {
         for y in 0..N {
@@ -1636,7 +1636,7 @@ fn rivers_show_on_the_globe_and_a_switch_hides_them() {
 
     h.get_by_label("Rivers").click();
     h.run_steps(2);
-    assert!(!h.state().globe.preview.rivers);
+    assert!(!h.state().panel_raster().unwrap().rivers);
     let off = canvas_image(&mut h);
     save(&off, "rivers-off");
     assert_eq!(river_pixels(&h, &off), 0);
@@ -3941,10 +3941,25 @@ fn each_visible_height_layer_shows_its_rivers() {
         "{other:?} and {again:?}"
     );
 
-    // The switch hides the rivers of each layer.
-    h.state_mut().globe.preview.rivers = false;
+    // Each layer has its own switch of the rivers. A layer with its rivers
+    // off has no channel map.
+    assert!(h.state_mut().set_raster_rivers(west, false));
+    load(&mut h);
+    let east_only = river_halves(&mut h);
+    assert!(east_only[0] == 0 && east_only[1] > 40, "{east_only:?}");
+    assert_eq!(h.state().globe.river_bytes(), one);
+    assert!(h.state_mut().set_raster_rivers(east, false));
+    load(&mut h);
     assert_eq!(river_halves(&mut h), [0, 0]);
+    // A global switch does not change the rivers of a layer.
     h.state_mut().globe.preview.rivers = true;
+    load(&mut h);
+    assert_eq!(river_halves(&mut h), [0, 0]);
+    assert!(h.state_mut().set_raster_rivers(west, true));
+    assert!(h.state_mut().set_raster_rivers(east, true));
+    load(&mut h);
+    let back = river_halves(&mut h);
+    assert!(back[0] > 40 && back[1] > 40, "{back:?}");
 
     // A layer that is not a height has no rivers and no channel map.
     h.state_mut().remove_raster(west);
@@ -4094,10 +4109,10 @@ fn line_globe(
     const N: usize = 64;
     let mut h = gpu_harness_on(render_state);
     show_as(h.state_mut(), display);
+    hide_rivers(h.state_mut());
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(N);
     globe.preview.graticule = false;
-    globe.preview.rivers = false;
     measure_stops(&mut globe.map.bands, colors);
     set_heights(&mut globe.map, |d| {
         height(d.iter().zip(axis).map(|(a, b)| a * b).sum())
@@ -4272,6 +4287,30 @@ fn a_stop_line_shows_only_in_the_bands_display() {
             "{display:?}: {columns:?}"
         );
     }
+}
+
+#[test]
+fn the_switch_of_the_band_lines_hides_the_lines_and_their_passes() {
+    let _gpu = one_gpu_test();
+    let render_state = render_state();
+    let mut h = line_harness_on(RasterDisplay::Bands, [0.0, 0.0, 1.0], render_state.clone());
+    h.state_mut().globe.view = GlobeView::centered(45.0, 0.0);
+    let on = line_columns(&mut h, "lines-on");
+    assert!(on.iter().all(|&c| c > 0.5), "{on:?}");
+
+    let id = brush_layer(&h);
+    assert!(h.state_mut().set_raster_lines(id, false));
+    let off = line_columns(&mut h, "lines-off");
+    assert!(off.iter().all(|&c| c < 0.01), "{off:?}");
+    // A change of the heights runs no passes of the lines.
+    let runs = gpu::line_runs(&render_state);
+    set_heights(&mut h.state_mut().globe.map, |d| 3000.0 * (d[2] + 0.01));
+    next_frame(&mut h);
+    assert_eq!(gpu::line_runs(&render_state), runs);
+
+    assert!(h.state_mut().set_raster_lines(id, true));
+    let back = line_columns(&mut h, "lines-back");
+    assert!(back.iter().all(|&c| c > 0.5), "{back:?}");
 }
 
 #[test]
@@ -4597,10 +4636,10 @@ fn set_smoothing(h: &mut Harness<'static, AppState>, id: RasterId, on: bool, poi
 fn smooth_harness(n: usize) -> Harness<'static, AppState> {
     let mut h = gpu_harness();
     show_as(h.state_mut(), RasterDisplay::Grey);
+    hide_rivers(h.state_mut());
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(n);
     globe.preview.graticule = false;
-    globe.preview.rivers = false;
     globe.view = GlobeView::centered(10.0, 20.0);
     set_noise(&mut h, &[0, 1, 2, 3, 4, 5], 0);
     h.run_steps(2);
@@ -4741,10 +4780,10 @@ fn the_smooth_field_has_no_seam_at_a_face_edge_or_at_a_cube_corner() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
     show_as(h.state_mut(), RasterDisplay::Grey);
+    hide_rivers(h.state_mut());
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(N);
     globe.preview.graticule = false;
-    globe.preview.rivers = false;
     grey_bands(&mut globe.map.bands);
     set_waves(&mut globe.map);
     let id = brush_layer(&h);
@@ -5599,10 +5638,10 @@ fn hill(d: V3, top: f64) -> f64 {
 fn hill_harness() -> Harness<'static, AppState> {
     let mut h = gpu_harness();
     show_as(h.state_mut(), RasterDisplay::Grey);
+    hide_rivers(h.state_mut());
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(FINE_FACE_SIZE);
     globe.preview.graticule = false;
-    globe.preview.rivers = false;
     globe.view = GlobeView::centered(0.0, 0.0);
     globe.view.zoom = 4.0;
     set_heights(&mut globe.map, |d| hill(d, 4000.0));

@@ -10,7 +10,8 @@ pub struct Preview {
     /// the list has its own display.
     pub display: RasterDisplay,
     pub graticule: bool,
-    /// Draws the rivers over the colors.
+    /// Draws the rivers over the colors of a globe with no list of layers.
+    /// A raster layer of the list has its own switch.
     pub rivers: bool,
     /// The factor of the width of a river line on screen.
     pub river_width: f32,
