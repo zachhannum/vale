@@ -2,7 +2,7 @@
 //! raster layer.
 
 use eframe::egui;
-use vale_store::{Raster, RasterDisplay, RasterId, Smoothing};
+use vale_store::{Hillshade, Raster, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, Rgb, StopLine};
 
 use super::gradient::{self, DESKTOP};
@@ -308,6 +308,35 @@ fn hillshade(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     if ui.add_enabled(hillshade.on, highlights).changed() {
         state.set_raster_hillshade_highlights(raster.id, hillshade.highlights);
     }
+    let azimuth = egui::Slider::new(&mut hillshade.azimuth, 0.0..=360.0)
+        .step_by(1.0)
+        .suffix("\u{b0}")
+        .text(pad::raster::HILLSHADE_AZIMUTH);
+    if ui.add_enabled(hillshade.on, azimuth).changed() {
+        state.set_raster_hillshade_azimuth(raster.id, hillshade.azimuth);
+    }
+    let altitude = egui::Slider::new(&mut hillshade.altitude, Hillshade::ALTITUDES)
+        .step_by(1.0)
+        .suffix("\u{b0}")
+        .text(pad::raster::HILLSHADE_ALTITUDE);
+    if ui.add_enabled(hillshade.on, altitude).changed() {
+        state.set_raster_hillshade_altitude(raster.id, hillshade.altitude);
+    }
+    let relief = egui::Slider::new(&mut hillshade.exaggeration, Hillshade::EXAGGERATIONS)
+        .logarithmic(true)
+        .suffix("\u{d7}")
+        .text(pad::raster::HILLSHADE_RELIEF);
+    if ui.add_enabled(hillshade.on, relief).changed() {
+        state.set_raster_hillshade_exaggeration(raster.id, hillshade.exaggeration);
+    }
+    ui.add_enabled_ui(hillshade.on, |ui| {
+        ui.horizontal(|ui| {
+            if ui.color_edit_button_srgb(&mut hillshade.color).changed() {
+                state.set_raster_hillshade_color(raster.id, hillshade.color);
+            }
+            ui.label(pad::raster::HILLSHADE_COLOR);
+        });
+    });
 }
 
 /// The button that puts back the default color stops. Its menu asks
