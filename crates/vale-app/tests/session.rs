@@ -1189,6 +1189,7 @@ fn each_raster_layer_keeps_its_own_hillshade() {
         on: true,
         opacity: 0.3,
         highlights: true,
+        ..Hillshade::default()
     };
     // A layer keeps the opacity and the highlights of its hillshade while
     // the hillshade is off.
@@ -1196,6 +1197,7 @@ fn each_raster_layer_keeps_its_own_hillshade() {
         on: false,
         opacity: 0.8,
         highlights: false,
+        ..Hillshade::default()
     };
     let hillshade = |project: &Project, id| project.raster(id).unwrap().hillshade;
     let check = |project: &Project, step: &str| {

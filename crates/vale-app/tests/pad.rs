@@ -4841,6 +4841,7 @@ fn the_style_section_of_a_height_layer_has_the_hillshade_and_its_opacity() {
             on: false,
             opacity,
             highlights: false,
+            ..Hillshade::default()
         };
         assert_eq!(hillshade(&h), off, "{what}");
         assert!(control(&h, HILLSHADE_OPACITY).is_none(), "{what}");

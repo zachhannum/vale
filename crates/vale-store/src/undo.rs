@@ -498,6 +498,10 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     out.extend_from_slice(&raster.hillshade.opacity.to_le_bytes());
     out.push(raster.hillshade.on as u8);
     out.push(raster.hillshade.highlights as u8);
+    out.extend_from_slice(&raster.hillshade.azimuth.to_le_bytes());
+    out.extend_from_slice(&raster.hillshade.altitude.to_le_bytes());
+    out.extend_from_slice(&raster.hillshade.exaggeration.to_le_bytes());
+    out.extend_from_slice(&raster.hillshade.color);
 }
 
 /// A raster image of format version 13 with the stops `old`.
@@ -559,14 +563,25 @@ fn smoothing(r: &mut Reader) -> Option<Smoothing> {
     })
 }
 
+/// The length of the hillshade at the end of a raster image.
+#[cfg(test)]
+const HILLSHADE_LEN: usize = 4 + 2 + 3 * 4 + 3;
+
 fn hillshade(r: &mut Reader) -> Option<Hillshade> {
-    let opacity = clamp_opacity(f32::from_le_bytes(r.take()?));
+    let opacity = f32::from_le_bytes(r.take()?);
     let [on, highlights]: [u8; 2] = r.take()?;
-    Some(Hillshade {
-        on: on != 0,
-        opacity,
-        highlights: highlights != 0,
-    })
+    Some(
+        Hillshade {
+            on: on != 0,
+            opacity,
+            highlights: highlights != 0,
+            azimuth: f32::from_le_bytes(r.take()?),
+            altitude: f32::from_le_bytes(r.take()?),
+            exaggeration: f32::from_le_bytes(r.take()?),
+            color: r.take()?,
+        }
+        .clamped(),
+    )
 }
 
 /// An unknown display gives bands. An image of format version 14 ends after
@@ -847,6 +862,10 @@ mod tests {
             on: true,
             opacity: 0.375,
             highlights: false,
+            azimuth: 45.0,
+            altitude: 60.0,
+            exaggeration: 3.0,
+            color: [30, 60, 90],
         };
         let mut out = Vec::new();
         put_raster(&mut out, &rain);
@@ -856,7 +875,7 @@ mod tests {
 
         // An image of version 14 ends after the smoothing, and it gets the
         // default hillshade.
-        out.truncate(out.len() + 1 - 6);
+        out.truncate(out.len() + 1 - HILLSHADE_LEN);
         let old = raster(&mut Reader(&out)).unwrap();
         assert_eq!(old.hillshade, Hillshade::default());
         assert_eq!(old.smoothing, rain.smoothing);
@@ -870,7 +889,7 @@ mod tests {
         put_raster(&mut out, &rain);
         assert_eq!(raster(&mut Reader(&out)).unwrap().colors, rain.colors);
         // An image with a color that ends early is not valid.
-        out.truncate(out.len() - 5 - 5 - 1);
+        out.truncate(out.len() - HILLSHADE_LEN - 5 - 1);
         assert_eq!(raster(&mut Reader(&out)), None);
     }
 
