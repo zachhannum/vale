@@ -64,6 +64,9 @@ pub const UNIT: &str = "Unit";
 /// The switch of the smoothing and the slider of the minimum feature size.
 pub const SMOOTHING: &str = "Smoothing";
 pub const FEATURE_SIZE: &str = "Feature size";
+/// The switch of the hillshade and the slider of its opacity.
+pub const HILLSHADE: &str = "Hillshade";
+pub const HILLSHADE_OPACITY: &str = "Hillshade opacity";
 pub const RIVERS: &str = "Rivers";
 pub const RIVER_WIDTH: &str = "River width";
 
@@ -158,7 +161,7 @@ pub fn unit_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 }
 
 /// The Style section: the display and the color stops, and then the
-/// rivers of a height layer.
+/// hillshade and the rivers of a height layer.
 pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -191,6 +194,9 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     }
     ui.add_space(8.0);
 
+    if height {
+        hillshade(ui, state, controls, id);
+    }
     let preview = &mut state.globe.preview;
     if height {
         widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
@@ -326,6 +332,27 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     ) {
         let size = (fraction as f32 * max / WEIGHT_STEP).round() * WEIGHT_STEP;
         state.set_raster_feature_size(id, size);
+    }
+}
+
+/// The switch of the hillshade, and its opacity while the switch is on.
+fn hillshade(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+    let Some(mut hillshade) = state.doc.project.raster(id).map(|r| r.hillshade) else {
+        return;
+    };
+    if widgets::switch_row(ui, controls, HILLSHADE, HILLSHADE, &mut hillshade.on) {
+        state.set_raster_hillshade(id, hillshade.on);
+    }
+    if !hillshade.on {
+        return;
+    }
+    let mut fraction = f64::from(hillshade.opacity);
+    let text = format!("{:.0}%", fraction * 100.0);
+    let name = HILLSHADE_OPACITY;
+    if widgets::row_slider(ui, controls, name, "Opacity", &mut fraction, &text) {
+        // The steps are whole percents.
+        let opacity = ((fraction * 100.0).round() / 100.0) as f32;
+        state.set_raster_hillshade_opacity(id, opacity);
     }
 }
 

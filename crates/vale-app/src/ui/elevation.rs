@@ -151,6 +151,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 state.set_raster_display(id, display);
             }
             smoothing(ui, state, &raster);
+            if height {
+                hillshade(ui, state, &raster);
+            }
             let unit = raster.unit.clone();
             let globe = &mut state.globe;
             let mut chosen = selected(&globe.preview, Some(id));
@@ -280,6 +283,25 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     .text(pad::raster::FEATURE_SIZE);
     if ui.add_enabled(smoothing.on, size).changed() {
         state.set_raster_feature_size(raster.id, smoothing.feature_size);
+    }
+}
+
+/// The switch of the hillshade of a height layer and its opacity.
+fn hillshade(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
+    let mut hillshade = raster.hillshade;
+    if ui
+        .checkbox(&mut hillshade.on, pad::raster::HILLSHADE)
+        .changed()
+    {
+        state.set_raster_hillshade(raster.id, hillshade.on);
+    }
+    let mut percent = (hillshade.opacity * 100.0).round();
+    let opacity = egui::Slider::new(&mut percent, 0.0..=100.0)
+        .step_by(1.0)
+        .suffix(" %")
+        .text(pad::raster::HILLSHADE_OPACITY);
+    if ui.add_enabled(hillshade.on, opacity).changed() {
+        state.set_raster_hillshade_opacity(raster.id, percent / 100.0);
     }
 }
 
