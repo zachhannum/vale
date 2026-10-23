@@ -1562,11 +1562,11 @@ impl Globe {
         let Some(Some(dir)) = self.point_press.take() else {
             return;
         };
-        let reach = self.snap.distance / self.radius();
+        let scale = self.radius();
         let snap = self
             .targets
             .as_ref()
-            .and_then(|t| t.snap(dir, reach, &self.snap, None));
+            .and_then(|t| t.snap(dir, scale, &self.snap, None));
         self.point_done = Some(match snap {
             Some(snap) => PlacedPoint {
                 dir: snap.dir,
@@ -1594,7 +1594,7 @@ impl Globe {
 
     /// Makes the snap targets of the color stops again where a raster layer
     /// changed. Each raster layer that the globe draws in the Bands display
-    /// has targets while the line tool or the polygon tool is the tool.
+    /// has targets while a tool that edits a vector layer is the tool.
     pub fn refresh_stops(&mut self) {
         let mut keys = Vec::new();
         let stack = self.stack.as_deref().unwrap_or_default();
@@ -1618,7 +1618,7 @@ impl Globe {
             let (Some(key), Some(map)) = (self.source(id), self.display_map(id)) else {
                 continue;
             };
-            if !self.drawing() || display != RasterDisplay::Bands {
+            if !self.editing() || display != RasterDisplay::Bands {
                 continue;
             }
             let bands = &map.bands;
