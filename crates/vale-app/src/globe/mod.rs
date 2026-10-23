@@ -1520,6 +1520,7 @@ impl Globe {
                     opacity,
                     display,
                     smoothing,
+                    ..
                 } => Some((id, opacity, display, smoothing)),
                 StackItem::Vector(_) => None,
             })
