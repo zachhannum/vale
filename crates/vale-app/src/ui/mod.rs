@@ -522,11 +522,16 @@ impl AppState {
                 let raster = project.raster(id)?;
                 let (opacity, display) = (raster.opacity, raster.display);
                 let held = globe.holds(id);
+                let hillshade = match is_height(raster) && raster.hillshade.on {
+                    true => raster.hillshade.opacity,
+                    false => 0.0,
+                };
                 held.then_some(StackItem::Raster {
                     id,
                     opacity,
                     display,
                     smoothing: raster.smoothing,
+                    hillshade,
                 })
             }
             None => Some(StackItem::Vector(layer.id)),
@@ -815,6 +820,21 @@ impl AppState {
     /// Turns the smoothing of a raster layer on or off.
     pub fn set_raster_smoothing(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_smoothing(id, on);
+        self.sync_globe();
+        set
+    }
+
+    /// Turns the hillshade of a raster layer on or off.
+    pub fn set_raster_hillshade(&mut self, id: RasterId, on: bool) -> bool {
+        let set = self.doc.project.set_raster_hillshade(id, on);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets how much the hillshade of a raster layer hides its colors, from
+    /// 0 to 1.
+    pub fn set_raster_hillshade_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
+        let set = self.doc.project.set_raster_hillshade_opacity(id, opacity);
         self.sync_globe();
         set
     }

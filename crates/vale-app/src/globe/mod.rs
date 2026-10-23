@@ -252,6 +252,8 @@ pub enum StackItem {
         opacity: f32,
         display: RasterDisplay,
         smoothing: Smoothing,
+        /// The opacity of the hillshade, 0 for none.
+        hillshade: f32,
     },
     Vector(LayerId),
 }
@@ -2748,7 +2750,15 @@ impl Globe {
             screen: [0.0; 4],
             window,
             rivers: [cell as f32, window_size, self.preview.river_width, 0.0],
-            layer: [layer.map_or(1.0, |layer| layer.opacity), 0.0, 0.0, 0.0],
+            layer: match layer {
+                Some(layer) => {
+                    let radius_m = self.world_km * 1000.0;
+                    let range = layer.bands.max() - layer.bands.min();
+                    let relief = (range / radius_m) as f32;
+                    [layer.opacity, layer.hillshade, relief, radius_m as f32]
+                }
+                None => [1.0, 0.0, 0.0, 0.0],
+            },
             ground: color(crate::ui::pad::theme::GROUND),
             back: color(canvas.background),
             detail: match layer {
@@ -2852,6 +2862,7 @@ impl Globe {
                     opacity: 1.0,
                     display,
                     smoothing: Smoothing::default(),
+                    hillshade: 0.0,
                     rivers: rivers(key.layer, display),
                     window: true,
                 }));
@@ -2865,6 +2876,7 @@ impl Globe {
                             opacity,
                             display,
                             smoothing,
+                            hillshade,
                         } => {
                             let source = self.source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
@@ -2874,6 +2886,7 @@ impl Globe {
                                     opacity: opacity.clamp(0.0, 1.0),
                                     display,
                                     smoothing,
+                                    hillshade: hillshade.clamp(0.0, 1.0),
                                     rivers: rivers(key.layer, display),
                                     window: !key.display,
                                 }));
@@ -2985,6 +2998,8 @@ struct LayerDraw<'a> {
     opacity: f32,
     display: RasterDisplay,
     smoothing: Smoothing,
+    /// The opacity of the hillshade, 0 for none.
+    hillshade: f32,
     /// The size of the channel map of the rivers of the layer. `None`: the
     /// pass draws no rivers.
     rivers: Option<usize>,

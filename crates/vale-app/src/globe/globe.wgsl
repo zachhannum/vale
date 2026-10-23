@@ -50,7 +50,9 @@ struct Uniforms {
     // number of channel texels along one side of the window, and the factor
     // of the width of a river line.
     rivers: vec4<f32>,
-    // The opacity of the layer, from 0 to 1.
+    // The opacity of the layer and of its hillshade, from 0 to 1, the height
+    // of the range of the values over the radius of the world, and the
+    // radius of the world in meters.
     layer: vec4<f32>,
     // The color of the ground below the layers.
     ground: vec4<f32>,
@@ -244,8 +246,46 @@ fn tint(h: f32, width: f32, mode: i32) -> vec3<f32> {
     return color;
 }
 
+// The light of the hillshade, in east, north, and up: from the northwest,
+// 45 degrees up.
+const LIGHT: vec3<f32> = vec3<f32>(-0.5, 0.5, 0.70710678);
+// The ground size of one pixel, in meters, that shows the slopes at their
+// true height. A larger pixel makes the slopes steeper by the square root of
+// the ratio, so the relief shows at each scale.
+const RELIEF_REF_M: f32 = 100.0;
+
+// The shade of the slope at a world direction, from 0 to 1. Flat ground has
+// 0.5. `pixel` is the angle that one pixel covers there.
+fn hillshade(d: vec3<f32>, pixel: f32) -> f32 {
+    var east = cross(vec3<f32>(0.0, 0.0, 1.0), d);
+    if length(east) < 1e-5 {
+        east = vec3<f32>(0.0, 1.0, 0.0);
+    }
+    east = normalize(east);
+    let north = cross(d, east);
+    // The step is one pixel, or one texel of the shown level if that is
+    // larger.
+    let a = max(pixel, PI * 0.5 / u.params.x * exp2(u.detail.x));
+    let gx = shown(normalize(d + east * a)).x - shown(normalize(d - east * a)).x;
+    let gy = shown(normalize(d + north * a)).x - shown(normalize(d - north * a)).x;
+    let z = max(1.0, sqrt(pixel * u.layer.w / RELIEF_REF_M));
+    let s = vec2<f32>(gx, gy) / (2.0 * a) * u.layer.z * z;
+    let n = normalize(vec3<f32>(-s, 1.0));
+    return clamp(0.5 + dot(n, LIGHT) - LIGHT.z, 0.0, 1.0);
+}
+
+// The soft light blend of a grey `s` over the color `b`, as in the W3C
+// compositing rules. A grey of 0.5 keeps the color.
+fn soft_light(b: vec3<f32>, s: f32) -> vec3<f32> {
+    if s <= 0.5 {
+        return b - (1.0 - 2.0 * s) * b * (1.0 - b);
+    }
+    let dd = select(sqrt(b), ((16.0 * b - 12.0) * b + 4.0) * b, b <= vec3<f32>(0.25));
+    return b + (2.0 * s - 1.0) * (dd - b);
+}
+
 // The color of a layer in a world direction: the tint of the height, the
-// rivers, and the lines of the stops. `width` is the change of the height
+// hillshade, the rivers, and the lines of the stops. `width` is the change of the height
 // across one pixel. `pixel` is the angle that one pixel covers there.
 // `frag` is the place of the pixel on the render target. When the passes of
 // `edges.wgsl` ran, the band edges and the lines come from their textures.
@@ -258,6 +298,9 @@ fn ground(h: f32, width: f32, d: vec3<f32>, pixel: f32, frag: vec2<f32>) -> vec3
         color = tint_screen(p, h, width, mode);
     } else if mode != MODE_GREYSCALE {
         color = tint(h, width, mode);
+    }
+    if u.layer.y > 0.0 {
+        color = mix(color, soft_light(color, hillshade(d, pixel)), u.layer.y);
     }
     if u.flat.y > 0.5 {
         // A river stops at the coast.
