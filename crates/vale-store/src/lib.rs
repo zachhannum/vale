@@ -805,6 +805,28 @@ impl Project {
         feature.map(|f| f.geometry = geometry).is_some()
     }
 
+    /// Sets attribute values of the feature with this UUID. A name that is
+    /// not a field of the layer is ignored.
+    pub fn set_attributes(
+        &mut self,
+        id: LayerId,
+        uuid: Uuid,
+        values: impl IntoIterator<Item = (String, Value)>,
+    ) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        let Some(feature) = layer.features.iter_mut().find(|f| f.uuid == uuid) else {
+            return false;
+        };
+        for (name, value) in values {
+            if layer.fields.binary_search(&name).is_ok() {
+                feature.attributes.insert(name, value);
+            }
+        }
+        true
+    }
+
     fn layer_mut(&mut self, id: LayerId) -> Option<&mut Layer> {
         self.layers.iter_mut().find(|l| l.id == id)
     }
@@ -890,6 +912,16 @@ mod tests {
         assert!(!p.set_geometry(a, Uuid::new_v4(), moved.clone()));
         let f = &p.layer(a).unwrap().features[1];
         assert_eq!((f.uuid(), &f.geometry), (uuid, &moved));
+
+        let values = [
+            ("alpha".to_string(), Value::Text("A".into())),
+            ("beta".to_string(), Value::Number(1.0)),
+        ];
+        assert!(p.set_attributes(a, uuid, values.clone()));
+        assert!(!p.set_attributes(a, Uuid::new_v4(), values));
+        let f = &p.layer(a).unwrap().features[1];
+        assert_eq!(f.attributes["alpha"], Value::Text("A".into()));
+        assert!(!f.attributes.contains_key("beta"));
     }
 
     #[test]
