@@ -957,6 +957,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
                 widgets::row_slider(ui, controls, name, SMOOTHING, fraction, text)
             },
         );
+        let rasters = panels::raster_layers(state);
         let snap = &mut state.globe.snap;
         widgets::switch_row(ui, controls, SNAPPING, SNAPPING, &mut snap.on);
         widgets::switch_row(
@@ -967,6 +968,13 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             &mut snap.vertices,
         );
         widgets::switch_row(ui, controls, SNAP_EDGES, SNAP_EDGES, &mut snap.edges);
+        for (id, name) in rasters {
+            let mut on = snap.stops(id);
+            let (control, label) = (panels::snap_stops_name(&name), format!("Stops of {name}"));
+            if widgets::switch_row(ui, controls, &control, &label, &mut on) {
+                snap.set_stops(id, on);
+            }
+        }
         let (low, high) = (*snap::DISTANCE_RANGE.start(), *snap::DISTANCE_RANGE.end());
         let mut fraction = (snap.distance - low) / (high - low);
         let text = format!("{:.0} pt", snap.distance);

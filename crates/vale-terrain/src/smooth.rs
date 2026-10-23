@@ -6,7 +6,10 @@
 //! the mip levels of a texture do. `field.wgsl` reads the same values on the
 //! GPU.
 
+use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_4, PI};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::cube::{FACES, face_of, unwarp, warp};
 use crate::heightmap::{Heightmap, TexelRect};
@@ -118,6 +121,43 @@ impl Pyramid {
         let m = level_size(self.face_size, level) as usize;
         self.levels[level as usize][face][y * m + x]
     }
+}
+
+impl Pyramid {
+    /// The bilinear value at a direction at one level, from 0 to 1.
+    pub fn bilinear(&self, level: u32, d: V3) -> f64 {
+        Levels::bilinear(self, level, d)
+    }
+
+    /// The value that the display shows at a direction, from 0 to 1. See
+    /// `Levels::field`.
+    pub fn field(&self, d: V3, lod: f64) -> f64 {
+        Levels::field(self, d, lod)
+    }
+}
+
+impl Levels for Pyramid {
+    fn face_size(&self) -> u32 {
+        self.face_size
+    }
+
+    fn max_level(&self) -> u32 {
+        (self.levels.len() - 1) as u32
+    }
+
+    fn get(&self, level: u32, face: usize, x: usize, y: usize) -> u16 {
+        Pyramid::get(self, level, face, x, y)
+    }
+}
+
+/// The levels of a pyramid, and the field that the display shows from them.
+pub(crate) trait Levels {
+    fn face_size(&self) -> u32;
+
+    fn max_level(&self) -> u32;
+
+    /// The level of one texel. The texel is on the face.
+    fn get(&self, level: u32, face: usize, x: usize, y: usize) -> u16;
 
     fn load(&self, level: u32, face: usize, x: i64, y: i64) -> f64 {
         f64::from(self.get(level, face, x as usize, y as usize)) / 65535.0
@@ -126,7 +166,7 @@ impl Pyramid {
     /// The texel of the next face that touches a texel on a face edge. `x`
     /// or `y` is one texel past the face.
     fn across(&self, level: u32, face: usize, x: i64, y: i64) -> f64 {
-        let m = i64::from(level_size(self.face_size, level));
+        let m = i64::from(level_size(self.face_size(), level));
         let flat_at = |i: i64| {
             let s = (i as f64 + 0.5) / m as f64 * 2.0 - 1.0;
             unwarp(s.clamp(-1.0, 1.0))
@@ -154,7 +194,7 @@ impl Pyramid {
     /// comes from the next face, and a texel past a cube corner is the mean
     /// of the three corner texels.
     fn texel(&self, level: u32, face: usize, x: i64, y: i64) -> f64 {
-        let last = i64::from(level_size(self.face_size, level)) - 1;
+        let last = i64::from(level_size(self.face_size(), level)) - 1;
         let (cx, cy) = (x.clamp(0, last), y.clamp(0, last));
         if x == cx && y == cy {
             return self.load(level, face, x, y);
@@ -169,8 +209,8 @@ impl Pyramid {
     }
 
     /// The bilinear value at a direction at one level, from 0 to 1.
-    pub fn bilinear(&self, level: u32, d: V3) -> f64 {
-        let m = f64::from(level_size(self.face_size, level));
+    fn bilinear(&self, level: u32, d: V3) -> f64 {
+        let m = f64::from(level_size(self.face_size(), level));
         let (face, a, b) = face_of(d);
         let f = [
             (warp(a) * 0.5 + 0.5) * m - 0.5,
@@ -190,7 +230,7 @@ impl Pyramid {
     /// of 0 or less is the bilinear map. Between two whole levels, the value
     /// is the blend of the bilinear values of both. A `lod` past the
     /// coarsest level is that level.
-    pub fn field(&self, d: V3, lod: f64) -> f64 {
+    fn field(&self, d: V3, lod: f64) -> f64 {
         if lod.is_nan() || lod <= 0.0 {
             return self.bilinear(0, d);
         }
@@ -203,6 +243,135 @@ impl Pyramid {
         let t = lod - f64::from(k);
         let a = self.bilinear(k, d);
         a + (self.bilinear(k + 1, d) - a) * t
+    }
+}
+
+/// The levels of `Pyramid` of a reduced copy of a heightmap, made only for
+/// the blocks of texels that a read reaches. The texels are the same as in
+/// the full pyramid of the copy.
+pub struct LocalPyramid {
+    map: Heightmap,
+    /// The reduction of `map` to the copy, a power of two.
+    factor: usize,
+    face_size: u32,
+    blocks: Mutex<HashMap<BlockKey, Arc<[u16]>>>,
+    filled: AtomicU64,
+}
+
+/// A block of a `LocalPyramid`: the level, the face, and the column and the
+/// row of the block.
+type BlockKey = (u32, usize, usize, usize);
+
+/// The largest number of blocks in the cache of a `LocalPyramid`.
+const MAX_BLOCKS: usize = 256;
+
+impl LocalPyramid {
+    /// The levels of a copy of `map` with a face of `face_size` texels, as
+    /// the GPU has it. `map` is a snapshot, so a later change to the
+    /// heightmap does not change it. `None`: the copy is not a reduction of
+    /// `map` by a power of two.
+    pub fn new(map: Heightmap, face_size: u32) -> Option<LocalPyramid> {
+        let factor = map
+            .face_size()
+            .div_ceil(face_size as usize)
+            .max(1)
+            .next_power_of_two();
+        if map.face_size().div_ceil(factor) != face_size as usize {
+            return None;
+        }
+        Some(LocalPyramid {
+            map,
+            factor,
+            face_size,
+            blocks: Mutex::new(HashMap::new()),
+            filled: AtomicU64::new(0),
+        })
+    }
+
+    /// The value that the display shows at a direction, from 0 to 1. See
+    /// `Levels::field`.
+    pub fn field(&self, d: V3, lod: f64) -> f64 {
+        Levels::field(self, d, lod)
+    }
+
+    pub fn face_size(&self) -> u32 {
+        self.face_size
+    }
+
+    /// The number of blocks that the pyramid made.
+    pub fn filled(&self) -> u64 {
+        self.filled.load(Ordering::Relaxed)
+    }
+
+    /// The number of texels along one side of a block at `level`. A block
+    /// covers 64 texels of the copy or more.
+    fn block(level: u32) -> usize {
+        (64usize >> level.min(6)).max(2)
+    }
+
+    /// The texels of one block at `level`, row by row: each texel of the
+    /// level from the column `bx * side` and the row `by * side`, up to the
+    /// end of the face.
+    fn fill(&self, level: u32, face: usize, bx: usize, by: usize) -> Arc<[u16]> {
+        self.filled.fetch_add(1, Ordering::Relaxed);
+        let side = Self::block(level);
+        let m = level_size(self.face_size, level) as usize;
+        let (x0, y0) = (bx * side, by * side);
+        let (x1, y1) = ((x0 + side).min(m), (y0 + side).min(m));
+        let rect = TexelRect {
+            x0: x0 << level,
+            y0: y0 << level,
+            x1: x1 << level,
+            y1: y1 << level,
+        };
+        let mut data = Vec::new();
+        self.map.read_reduced(face, rect, self.factor, &mut data);
+        let (mut w, mut h) = (rect.x1 - rect.x0, rect.y1 - rect.y0);
+        for _ in 0..level {
+            let mut next = Vec::with_capacity(w * h / 4);
+            for y in (0..h).step_by(2) {
+                for x in (0..w).step_by(2) {
+                    let sum = u32::from(data[y * w + x])
+                        + u32::from(data[y * w + x + 1])
+                        + u32::from(data[(y + 1) * w + x])
+                        + u32::from(data[(y + 1) * w + x + 1]);
+                    next.push(((sum + 2) / 4) as u16);
+                }
+            }
+            (data, w, h) = (next, w / 2, h / 2);
+        }
+        data.into()
+    }
+}
+
+impl Levels for LocalPyramid {
+    fn face_size(&self) -> u32 {
+        self.face_size
+    }
+
+    fn max_level(&self) -> u32 {
+        max_level(self.face_size)
+    }
+
+    fn get(&self, level: u32, face: usize, x: usize, y: usize) -> u16 {
+        let side = Self::block(level);
+        let key = (level, face, x / side, y / side);
+        let mut blocks = self.blocks.lock().expect("no panic holds the lock");
+        let block = match blocks.get(&key) {
+            Some(block) => block.clone(),
+            None => {
+                let block = self.fill(level, face, key.2, key.3);
+                if blocks.len() >= MAX_BLOCKS {
+                    blocks.clear();
+                }
+                blocks.insert(key, block.clone());
+                block
+            }
+        };
+        drop(blocks);
+        let m = level_size(self.face_size, level) as usize;
+        let width = (key.2 * side + side).min(m) - key.2 * side;
+        block[(y % side) * width + x % side]
     }
 }
 
@@ -408,6 +577,51 @@ mod tests {
                     "a step of {worst} at {at:?} along {along:?}, lod {lod}, limit {limit}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_local_pyramid_has_the_levels_of_the_copy() {
+        for (n, size) in [(40, 40), (80, 40), (64, 16)] {
+            let map = waves(n);
+            let factor = n / size;
+            let mut copy = Heightmap::new(size, map.base());
+            let rect = TexelRect {
+                x0: 0,
+                y0: 0,
+                x1: size,
+                y1: size,
+            };
+            for face in 0..FACES {
+                let mut data = Vec::new();
+                map.read_reduced(face, rect, factor, &mut data);
+                copy.store_rect(face, rect, &data);
+            }
+            let full = Pyramid::new(&copy);
+            let local = LocalPyramid::new(map.snapshot(), size as u32).unwrap();
+            let mut dirs = Vec::new();
+            // Random directions, and directions near face edges and corners.
+            let mut seed = 7u64;
+            let mut next = || {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+            };
+            for _ in 0..300 {
+                dirs.push(normalize([next(), next(), next()]));
+            }
+            for _ in 0..100 {
+                let e = 1e-3 * next();
+                dirs.push(normalize([1.0, 1.0 + e, next()]));
+                dirs.push(normalize([-1.0, 1.0 + e, -1.0 - e * 0.5]));
+            }
+            for lod in [0.0, 0.4, 1.7, 3.0, 9.0] {
+                for &d in &dirs {
+                    assert_eq!(local.field(d, lod), full.field(d, lod), "{n} {lod} {d:?}");
+                }
+            }
+            assert!(local.filled() > 0);
         }
     }
 }

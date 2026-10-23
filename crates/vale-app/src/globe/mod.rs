@@ -32,6 +32,7 @@ pub mod preview;
 pub mod rivers;
 pub mod snap;
 pub mod stats;
+pub mod stops;
 pub mod stroke_test;
 pub mod thumbnail;
 pub mod vector;
@@ -56,6 +57,7 @@ use preview::{Preview, band_uniforms, line_uniforms};
 use rivers::{Rivers, choose_window};
 use snap::{Highlight, Run, SnapSettings, Targets, Tracer};
 use stats::Stats;
+use stops::StopTargets;
 use stroke_test::StrokeTest;
 use view::GlobeView;
 use zoom_test::ZoomTest;
@@ -619,6 +621,11 @@ pub struct Globe {
     /// The snap settings of the tools that edit vector layers.
     pub snap: SnapSettings,
     /// The snap targets of the visible vector layers.
+    vectors: Option<Arc<Targets>>,
+    /// The snap targets of the color stops of the raster layers that the
+    /// globe draws, while the line tool or the polygon tool is the tool.
+    stops: Vec<(StopKey, Arc<StopTargets>)>,
+    /// The snap targets of the vector layers and of the color stops.
     targets: Option<Arc<Targets>>,
     /// The stroke of the line or polygon tool while the pen is down.
     line_stroke: Option<LineStroke>,
@@ -678,6 +685,16 @@ pub struct Globe {
     fields: Mutex<Vec<(MapKey, Arc<Pyramid>)>>,
 }
 
+/// What the snap targets of the color stops of a raster layer come from.
+#[derive(Clone, Debug, PartialEq)]
+struct StopKey {
+    id: RasterId,
+    key: MapKey,
+    edits: u64,
+    levels: Vec<u16>,
+    smoothing: Smoothing,
+}
+
 impl Default for Globe {
     fn default() -> Globe {
         Globe::with_face_size(FACE_SIZE)
@@ -712,6 +729,8 @@ impl Globe {
             fillable: false,
             draw_layer: None,
             snap: SnapSettings::default(),
+            vectors: None,
+            stops: Vec::new(),
             targets: None,
             line_stroke: None,
             line_done: None,
@@ -1481,14 +1500,92 @@ impl Globe {
 
     /// Sets the snap targets of the visible vector layers.
     pub fn set_targets(&mut self, targets: Option<Arc<Targets>>) {
-        self.targets = targets;
+        self.vectors = targets;
+        self.join_targets();
+    }
+
+    /// Makes the snap targets of the color stops again where a raster layer
+    /// changed. Each raster layer that the globe draws in the Bands display
+    /// has targets while the line tool or the polygon tool is the tool.
+    pub fn refresh_stops(&mut self) {
+        let mut keys = Vec::new();
+        let stack = self.stack.as_deref().unwrap_or_default();
+        let drawn: Vec<(RasterId, f32, RasterDisplay, Smoothing)> = stack
+            .iter()
+            .filter_map(|item| match *item {
+                StackItem::Raster {
+                    id,
+                    opacity,
+                    display,
+                    smoothing,
+                } => Some((id, opacity, display, smoothing)),
+                StackItem::Vector(_) => None,
+            })
+            .filter(|&(id, ..)| self.source(id).is_some())
+            .collect();
+        // The layers below the top layer that hides them do not show.
+        let start = drawn.iter().rposition(|l| l.1 >= 1.0).unwrap_or(0);
+        for &(id, _, display, smoothing) in &drawn[start..] {
+            let (Some(key), Some(map)) = (self.source(id), self.display_map(id)) else {
+                continue;
+            };
+            if !self.drawing() || display != RasterDisplay::Bands {
+                continue;
+            }
+            let bands = &map.bands;
+            keys.push(StopKey {
+                id,
+                key,
+                edits: self.edits,
+                levels: bands.stops().iter().map(|s| bands.level(s.value)).collect(),
+                smoothing,
+            });
+        }
+        if keys.len() == self.stops.len() && keys.iter().zip(&self.stops).all(|(k, s)| *k == s.0) {
+            return;
+        }
+        let mut old = std::mem::take(&mut self.stops);
+        for key in keys {
+            let built = match old.iter().position(|s| s.0 == key) {
+                Some(i) => Some(old.swap_remove(i).1),
+                None => {
+                    let map = match self.draws_full(key.id) {
+                        true => &self.map,
+                        false => self.display_map(key.id).expect("a drawn layer"),
+                    };
+                    let levels = key.levels.iter().map(|&l| f64::from(l) / 65535.0);
+                    let face_size = key.key.face_size;
+                    let snapshot = map.snapshot();
+                    let built =
+                        StopTargets::new(key.id, snapshot, face_size, key.smoothing, levels);
+                    built.map(Arc::new)
+                }
+            };
+            if let Some(built) = built {
+                self.stops.push((key, built));
+            }
+        }
+        self.join_targets();
+    }
+
+    fn join_targets(&mut self) {
+        let stops: Vec<_> = self.stops.iter().map(|s| s.1.clone()).collect();
+        self.targets = match (&self.vectors, stops.is_empty()) {
+            (None, true) => None,
+            (Some(vectors), true) => Some(vectors.clone()),
+            (vectors, false) => {
+                let layers = vectors.as_ref().map(|v| v.layers().to_vec());
+                Some(Arc::new(Targets::new(layers.unwrap_or_default(), stops)))
+            }
+        };
     }
 
     /// Starts a stroke of the line or polygon tool.
     pub fn line_down(&mut self) {
         let scale = self.radius();
         let targets = self.targets.clone().zip(self.draw_layer);
-        let tracer = targets.map(|(t, layer)| Tracer::new(t, self.snap, scale, layer));
+        let snap = &self.snap;
+        let tracer = targets.map(|(t, layer)| Tracer::new(t, snap.clone(), scale, layer));
         self.line_stroke = Some(LineStroke {
             screen: Vec::new(),
             dirs: Vec::new(),
@@ -1656,6 +1753,8 @@ impl Globe {
     }
 
     fn forget_fields(&mut self) {
+        self.stops.clear();
+        self.join_targets();
         self.fields
             .get_mut()
             .expect("no panic holds the lock")
@@ -2920,7 +3019,7 @@ mod tests {
             tool: Tool::Line,
             ..Globe::default()
         };
-        globe.set_targets(Some(Arc::new(Targets::new(built.to_vec()))));
+        globe.set_targets(Some(Arc::new(Targets::new(built.to_vec(), Vec::new()))));
         let at = |globe: &Globe, lon: f64, lat: f64| {
             globe.view.project(globe.rect, lonlat_to_dir(lon, lat))
         };
@@ -2955,7 +3054,10 @@ mod tests {
     fn the_highlight_shows_the_traced_span() {
         let part = (0..=10).map(|i| [3.0 * f64::from(i), 0.0]).collect();
         let river = layer(1, GeometryKind::Line, vec![Geometry::Lines(vec![part])]);
-        let targets = Targets::new(vec![Arc::new(LayerTargets::build(river.id, &river))]);
+        let targets = Targets::new(
+            vec![Arc::new(LayerTargets::build(river.id, &river))],
+            Vec::new(),
+        );
         // A globe of 300 points radius.
         let mut globe = Globe {
             rect: Rect::from_min_size(Pos2::ZERO, Vec2::splat(300.0 / 0.45)),

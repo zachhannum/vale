@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{GeometryKind, World};
+use vale_store::{GeometryKind, RasterId, World};
 
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
@@ -33,6 +33,20 @@ pub const SNAP_OPTIONS: &str = "Snap options";
 pub const SNAP_VERTICES: &str = "Snap to vertices";
 pub const SNAP_EDGES: &str = "Snap to edges";
 pub const SNAP_DISTANCE: &str = "Snap distance";
+
+/// The name of the switch that makes the color stops of a raster layer
+/// snap targets.
+pub fn snap_stops_name(layer: &str) -> String {
+    format!("Snap to the stops of {layer}")
+}
+
+/// The raster layers of the project, with their names, in the list order.
+pub fn raster_layers(state: &AppState) -> Vec<(RasterId, String)> {
+    let layers = state.doc.project.layers().iter();
+    layers
+        .filter_map(|l| Some((l.raster()?, l.name.clone())))
+        .collect()
+}
 
 pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::top("toolbar").show(ui, |ui| {
@@ -87,11 +101,18 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     if ui.add(slider).changed() {
                         globe.line.smoothing = percent / 100.0;
                     }
-                    let snap = &mut globe.snap;
+                    let rasters = raster_layers(state);
+                    let snap = &mut state.globe.snap;
                     ui.checkbox(&mut snap.on, SNAP);
                     ui.menu_button(SNAP_OPTIONS, |ui| {
                         ui.checkbox(&mut snap.vertices, SNAP_VERTICES);
                         ui.checkbox(&mut snap.edges, SNAP_EDGES);
+                        for (id, name) in &rasters {
+                            let mut on = snap.stops(*id);
+                            if ui.checkbox(&mut on, snap_stops_name(name)).changed() {
+                                snap.set_stops(*id, on);
+                            }
+                        }
                         let slider = egui::Slider::new(&mut snap.distance, snap::DISTANCE_RANGE)
                             .step_by(1.0)
                             .suffix(" pt")

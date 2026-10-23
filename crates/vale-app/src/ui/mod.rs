@@ -1586,9 +1586,11 @@ impl AppState {
         self.globe.edits() + self.line_edits
     }
 
-    /// Builds the snap targets of the visible vector layers again if a layer
-    /// changed. Only the layers that changed build again.
+    /// Builds the snap targets of the visible vector layers and of the color
+    /// stops again if a layer changed. Only the layers that changed build
+    /// again.
     pub fn refresh_targets(&mut self) {
+        self.globe.refresh_stops();
         let layers = self.doc.project.layers().iter();
         let vectors: Vec<&Layer> = layers
             .filter(|l| l.visible && l.raster().is_none())
@@ -1612,7 +1614,7 @@ impl AppState {
             targets.push(built.clone());
             self.layer_targets.insert(layer.id, (print, built));
         }
-        let targets = (!targets.is_empty()).then(|| Arc::new(Targets::new(targets)));
+        let targets = (!targets.is_empty()).then(|| Arc::new(Targets::new(targets, Vec::new())));
         self.globe.set_targets(targets);
         self.targets_key = Some(key);
     }

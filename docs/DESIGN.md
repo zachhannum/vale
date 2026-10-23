@@ -311,7 +311,7 @@ Each color stop can also have a line, with a weight in points and a color. The c
 
 The display smooths the field of a raster layer by the scale, so the detail follows the zoom. Each raster layer has a minimum feature size in points, from 0 to 8, and the default is 2. The app turns the size into a distance on the ground at the current zoom, and it smooths the field over that distance. A size of 0 shows the full detail. The fills, the lines at the color stops, and the snap target of a color stop all come from the same smoothed field, so they always agree.
 
-The GPU keeps a pyramid of the field. A pyramid is a stack of levels, and each texel of a level is the mean of 2 by 2 texels of the level below. The shader reads the two levels that are nearest to the distance and blends them, so the detail changes with no jump while you zoom. A read near a face edge takes the texels past the edge from the next face, so the field has no seam. A brush stroke updates the levels under its texels in the same frame. The CPU makes the same levels with the same integer math, for the snap target.
+The GPU keeps a pyramid of the field. A pyramid is a stack of levels, and each texel of a level is the mean of 2 by 2 texels of the level below. The shader reads the two levels that are nearest to the distance and blends them, so the detail changes with no jump while you zoom. A read near a face edge takes the texels past the edge from the next face, so the field has no seam. A brush stroke updates the levels under its texels in the same frame. For the snap target, the CPU makes the same levels with the same integer math, only for the blocks of texels near the pen.
 
 The heightmap does not change, and the readout and the brush use the full detail. Each raster layer has a switch that turns its smoothing on and off on the globe and in the flat view, so you can paint one layer with the full detail in view. The project keeps the switch and the size of each layer. A map frame and its export always use the smoothing.
 
@@ -362,17 +362,21 @@ Where the ring crosses the 180 degree meridian, the feature has a polygon on eac
 
 ### Snapping and tracing
 
-The vector tools share one snap service. A snap moves a position to the nearest target within the snap distance. A trace makes a freehand stroke follow a target. The targets are the vertices and the edges of the features in each visible vector layer. A vertex wins over an edge. Later targets are the color stops of a raster layer, and the ridges and valleys.
+The vector tools share one snap service. A snap moves a position to the nearest target within the snap distance. A trace makes a freehand stroke follow a target. The targets are the vertices and the edges of the features in each visible vector layer. The color stops of each raster layer that the globe shows in the Bands display are targets too. A vertex wins over an edge or a color stop. Of an edge and a color stop, the nearer one wins. Later targets are the ridges and valleys.
 
 The snap distance is in points on the screen, from 4 to 32, and the default is 12. It is the same at each zoom. The start and the end of a stroke snap to a target.
 
 When the pen comes within the snap distance of an edge, the stroke locks on and follows the line or the ring of the target. The trace only moves forward along the target, and it can go on past a cut at the 180 degree meridian. When the pen moves more than two times the snap distance away, the stroke is free again. A trace that is shorter than 8 points becomes free stroke again, so a stroke that crosses a line does not follow it.
 
-The traced part goes from the first to the last pen sample within a quarter of the snap distance of the target. It has a copy of each stored vertex of the target, so the two features share the border exactly. The app does not smooth or simplify the traced part. Before and after the traced part, the stroke blends from the pen to the target, so it meets the target at the angle of the pen. Each free part has its own smoothing, and its ends stay on the target.
+The traced part goes from the first to the last pen sample within a quarter of the snap distance of the target. It has a copy of each stored vertex of the target, so the two features share the border exactly. The app does not smooth the traced part. Before and after the traced part, the stroke blends from the pen to the target, so it meets the target at the angle of the pen. Each free part has its own smoothing, and its ends stay on the target.
 
 A stroke that starts at the end of a line in the same layer extends that line, and it does not trace that line. The target shows a highlight in the accent color while a stroke snaps or traces. Before a stroke, a pen that hovers or a mouse shows the point where the stroke will start: the end of the line that it extends, or the snapped position.
 
-The line tool and the polygon tool have a Snap switch on the brush card. The sheet has the Snapping switch, a switch for each target type, and the snap distance. The settings are not saved in the project.
+The target of a color stop is the line where the field of the layer crosses the value of the stop. Each stop between the two ends of the range is a target, with a line or without one, because it is the edge of a step. The target comes from the same smoothed field at the current zoom as the steps and the lines. The app reads the field only near the pen.
+
+A position snaps to the nearest point where the field crosses a stop. A trace walks along the line in steps of half a point, and each step goes back onto the line. The field has no seam, so the trace has no gap at a face edge or at a cube corner. The trace of a color stop has no stored vertices, and the app removes each vertex that is less than 0.1 points from the simpler line.
+
+The line tool and the polygon tool have a Snap switch on the brush card. The sheet has the Snapping switch, a switch for each target type, a switch for the color stops of each raster layer, and the snap distance. The settings are not saved in the project.
 
 The service has two parts. A position snap gives the snapped point, the feature, and the stored vertex. A tracer takes the pen samples of a stroke and gives free parts and traced parts. Point placement, vertex editing, and the polygon tool use the same two parts.
 
