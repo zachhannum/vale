@@ -1,6 +1,6 @@
 //! The controls of the iPad layout. Each one is at least 44 points on each side.
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Response, Sense, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Response, Sense, pos2, vec2};
 
 use eframe::egui_wgpu::wgpu;
 
@@ -683,6 +683,139 @@ pub fn paint_open(ui: &egui::Ui, row: Rect) {
         vec2(ICON, ICON),
     );
     icons::paint(ui.painter(), rect, Icon::Open, ICON, theme::MUTE);
+}
+
+/// A row that opens a page: the name at the left, and `value` and an arrow
+/// at the right.
+pub fn open_row(ui: &mut egui::Ui, controls: &mut Controls, name: &str, value: &str) -> Response {
+    let resp = text_row(ui, controls, name, 0.0, false, true);
+    let row = resp.rect;
+    if !value.is_empty() {
+        let at = pos2(row.right() - ICON - 8.0, row.center().y);
+        ui.painter()
+            .text(at, Align2::RIGHT_CENTER, value, theme::body(), theme::MUTE);
+    }
+    paint_open(ui, row);
+    resp
+}
+
+/// The size of the square of a compass dial.
+const DIAL: f32 = 4.0 * TOUCH;
+
+/// The angle of a place on a compass dial, in whole degrees clockwise from
+/// the top, from 0 up to 360. An angle within 3 degrees of a compass point
+/// snaps to it. `None`: the place is too near the center to give an angle.
+pub fn compass_angle(center: Pos2, at: Pos2) -> Option<f32> {
+    const DEAD: f32 = 16.0;
+    let d = at - center;
+    if d.length() < DEAD {
+        return None;
+    }
+    let degrees = d.x.atan2(-d.y).to_degrees().round();
+    let point = (degrees / 45.0).round() * 45.0;
+    let degrees = if (degrees - point).abs() <= 3.0 {
+        point
+    } else {
+        degrees
+    };
+    Some(degrees.rem_euclid(360.0))
+}
+
+/// The name of the compass point nearest to an angle in degrees.
+fn compass_point(degrees: f32) -> &'static str {
+    const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    POINTS[((degrees / 45.0).round() as i32).rem_euclid(8) as usize]
+}
+
+/// A compass dial that sets a direction: a label, then a dial with a handle
+/// at `degrees`, clockwise from north. A drag or a tap on the dial moves the
+/// handle. Returns `true` when the direction changes.
+pub fn compass_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    degrees: &mut f32,
+) -> bool {
+    let width = ui.available_width();
+    let (line, _) = ui.allocate_exact_size(vec2(width, PANEL_ROW), Sense::hover());
+    let at = pos2(line.left(), line.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    let (area, _) = ui.allocate_exact_size(vec2(width, DIAL), Sense::hover());
+    let square = Rect::from_center_size(area.center(), vec2(DIAL, DIAL));
+    let resp = hit(
+        ui,
+        controls,
+        square,
+        name,
+        Sense::click_and_drag(),
+        true,
+        None,
+    );
+    let center = square.center();
+    let before = *degrees;
+    if let Some(pos) = resp.interact_pointer_pos()
+        && (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
+        && let Some(angle) = compass_angle(center, pos)
+    {
+        *degrees = angle;
+    }
+    ui.add_space(8.0);
+
+    let r = DIAL / 2.0 - 22.0;
+    let painter = ui.painter();
+    let dir = |deg: f32| {
+        let a = deg.to_radians();
+        vec2(a.sin(), -a.cos())
+    };
+    painter.circle_filled(center, r + 14.0, theme::track());
+    painter.circle_stroke(center, r, egui::Stroke::new(1.0, theme::divider()));
+    for step in 0..24 {
+        let deg = step as f32 * 15.0;
+        let long = step % 3 == 0;
+        let inner = if long { r - 8.0 } else { r - 4.0 };
+        let width = if long { 1.5 } else { 1.0 };
+        painter.line_segment(
+            [center + dir(deg) * inner, center + dir(deg) * r],
+            egui::Stroke::new(width, theme::MUTE),
+        );
+    }
+    for (deg, point) in [(0.0, "N"), (90.0, "E"), (180.0, "S"), (270.0, "W")] {
+        let at = center + dir(deg) * (r - 16.0);
+        painter.text(
+            at,
+            Align2::CENTER_CENTER,
+            point,
+            theme::small(),
+            theme::MUTE,
+        );
+    }
+    let handle = center + dir(*degrees) * r;
+    painter.line_segment([center, handle], egui::Stroke::new(2.0, theme::ACCENT));
+    painter.circle_filled(
+        handle + vec2(0.0, 1.0),
+        THUMB / 2.0 + 1.0,
+        Color32::from_black_alpha(70),
+    );
+    painter.circle_filled(handle, THUMB / 2.0, theme::TEXT);
+    painter.circle_filled(center, 22.0, theme::track());
+    let text = format!("{:.0}\u{b0}", *degrees);
+    painter.text(
+        center - vec2(0.0, 6.0),
+        Align2::CENTER_CENTER,
+        text,
+        theme::mono(),
+        theme::TEXT,
+    );
+    painter.text(
+        center + vec2(0.0, 10.0),
+        Align2::CENTER_CENTER,
+        compass_point(*degrees),
+        theme::small(),
+        theme::MUTE,
+    );
+    *degrees != before
 }
 
 /// A row of a form that is one choice of a list: a title at the left, and
@@ -1738,4 +1871,27 @@ pub fn color_picker(
     }
     ui.data_mut(|data| data.insert_temp(id, (hsva, *color)));
     *color != before
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_place_on_the_compass_dial_gives_its_angle() {
+        let c = pos2(100.0, 100.0);
+        assert_eq!(compass_angle(c, pos2(105.0, 90.0)), None);
+        assert_eq!(compass_angle(c, pos2(100.0, 40.0)), Some(0.0));
+        assert_eq!(compass_angle(c, pos2(160.0, 100.0)), Some(90.0));
+        assert_eq!(compass_angle(c, pos2(100.0, 160.0)), Some(180.0));
+        assert_eq!(compass_angle(c, pos2(40.0, 100.0)), Some(270.0));
+        // 2 degrees off a compass point snaps to it, 5 degrees does not.
+        let at = |deg: f32| {
+            let a = deg.to_radians();
+            c + 60.0 * vec2(a.sin(), -a.cos())
+        };
+        assert_eq!(compass_angle(c, at(47.0)), Some(45.0));
+        assert_eq!(compass_angle(c, at(358.0)), Some(0.0));
+        assert_eq!(compass_angle(c, at(50.0)), Some(50.0));
+    }
 }

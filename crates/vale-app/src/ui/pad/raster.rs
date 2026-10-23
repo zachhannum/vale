@@ -265,9 +265,7 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         style.reset = None;
     }
     style.reset_anchor = (style.reset == Some(id)).then_some((id, row.rect));
-    let row = widgets::text_row(ui, controls, COLOR_RAMPS, 0.0, false, true);
-    widgets::paint_open(ui, row.rect);
-    if row.clicked() {
+    if widgets::open_row(ui, controls, COLOR_RAMPS, "").clicked() {
         state.pad.page = Some(Page::Ramps);
     }
     state.globe.preview.selected = selected.map(|index| (id, index));
