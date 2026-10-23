@@ -372,6 +372,16 @@ The short arc of a great circle between the two ends of the stroke closes the ri
 
 Where the ring crosses the 180 degree meridian, the feature has a polygon on each side, with an edge along the meridian. A ring around a pole goes along the meridian to the pole and then along the pole. Each ring is closed and goes counterclockwise in longitude and latitude, and no two of its edges cross.
 
+### Points
+
+The point tool places cities, landmarks, and other named places in the selected point layer. A tap of the pen or a click of the mouse places one point, and a finger turns the globe. The point snaps to the targets of the snap service. A point that snaps to a vertex gets the stored position of the vertex.
+
+The tap opens the attribute form of the point. The form has a text field for each field of the layer. A layer with no fields gets a `name` field, and its points get labels from it. The type of a field comes from the values of the other features. A text that is not a value of that type stays text. An empty field is null.
+
+The first field has the keyboard focus. Return goes to the next field, and on the last field it closes the form. The next tap also closes the form and places the next point, so ten points take ten taps and ten names. The point and its values are one undo step. Undo, a change of the tool, and a change of the layer close the form first. A ring in the accent color marks the point of the open form.
+
+On the iPad, the form is a card near the top of the screen. The card is not modal, so the pen can place the next point. The app does not know the height of the on-screen keyboard. It takes the top of the keyboard at 45 percent of the screen height in landscape, and at 62 percent in portrait. If the new point is under the card or under that line, the globe turns, so the point is between them.
+
 ### Snapping and tracing
 
 The vector tools share one snap service. A snap moves a position to the nearest target within the snap distance. A trace makes a freehand stroke follow a target. The targets are the vertices and the edges of the features in each visible vector layer. The color stops of each raster layer that the globe shows in the Bands display are targets too. A vertex wins over an edge or a color stop. Of an edge and a color stop, the nearer one wins. Later targets are the ridges and valleys.
@@ -388,7 +398,7 @@ The target of a color stop is the line where the field of the layer crosses the 
 
 A position snaps to the nearest point where the field crosses a stop. A trace walks along the line in steps of half a point, and each step goes back onto the line. The field has no seam, so the trace has no gap at a face edge or at a cube corner. The trace of a color stop has no stored vertices, and the app removes each vertex that is less than 0.1 points from the simpler line.
 
-The line tool and the polygon tool have a Snap switch on the brush card. The sheet has the Snapping switch, a switch for each target type, a switch for the color stops of each raster layer, and the snap distance. The settings are not saved in the project.
+The line tool, the polygon tool, and the point tool have a Snap switch on the brush card. The sheet has the Snapping switch, a switch for each target type, a switch for the color stops of each raster layer, and the snap distance. The settings are not saved in the project.
 
 The service has two parts. A position snap gives the snapped point, the feature, and the stored vertex. A tracer takes the pen samples of a stroke and gives free parts and traced parts. Point placement, vertex editing, and the polygon tool use the same two parts.
 
@@ -419,7 +429,7 @@ These rules apply to the layout:
 - The two sliders are 140 points high. In a short window they become shorter, down to 110 points, which fits an iPad that is 744 points high. In a window that is shorter than that, the card holds the Brush button alone, and the Brush panel holds the two sliders. If the tool strip and the Brush button do not fit, the tool strip scrolls.
 - The tool strip has six cells. The More cell opens a menu with the modes that have no cell.
 - The brush paints the selected raster layer, and the selection does not change the picture or the draw order. If the world has no layer, or the selected layer is not a raster layer, or the selected raster layer is hidden, the tool strip keeps its six cells. The brush cells, the More cell, and the card below the strip are then disabled, and the tool is Move.
-- If the selected layer is a visible line layer, the Line cell is in the place of the More cell. The Smoothing slider of the line tool is in the place of the Size slider, and the Brush panel holds the Smoothing slider. If the selected layer is a visible polygon layer, the Polygon cell is in that place, with the same controls. A selection does not change the tool, so you tap the cell to draw. If the line tool is the tool and you select a polygon layer, the tool changes to the polygon tool, and the other way.
+- If the selected layer is a visible line layer, the Line cell is in the place of the More cell. The Smoothing slider of the line tool is in the place of the Size slider, and the Brush panel holds the Smoothing slider. If the selected layer is a visible polygon layer, the Polygon cell is in that place, with the same controls. A selection does not change the tool, so you tap the cell to draw. If the selected layer is a visible point layer, the Point cell is in that place. The card then has the Snap button and no Smoothing slider. If the tool of one vector layer kind is the tool and you select a vector layer of another kind, the tool changes to the tool of that kind.
 - On a raster layer with a unit other than `m`, the modes that move ground are disabled.
 - The pen paints. One finger turns the globe, and two fingers zoom it.
 - A tap of two fingers is undo, and a tap of three fingers is redo. The actions in the top row have an undo button and a redo button.
@@ -453,7 +463,7 @@ These rules apply to the layout:
 - Selected tools, segments, tabs, and rows have the same tint of the accent color.
 - Each tool and each action shows its name and its key in a tooltip, and the menus show the keys too.
 - The keys of the World tools are R for Raise, F for Lower, S for Smooth, E for Flatten, L for Line, and H for the hand. B opens the Brush panel. The keys of the Maps tools are V for Select, H for the hand, P for Point, A for Vertex, and T for Label. In the Labels mode, ] and [ go to the next and the previous label, Return pins a label, and Delete hides it.
-- A form, for example "New world" or "Export", is a sheet of the window.
+- A form, for example "New world" or "Export", is a sheet of the window. The attribute form of a new point is a window at the top of the canvas, and the canvas takes the next click.
 - The start screen has a sidebar with the places and the recent worlds, and a grid of cards. The tool bar has a search field, the sort order, a switch between a grid and a list, and "New world…". The menu of a card holds "Open", "Rename…", "Make a copy", "Show in Finder", and "Delete…".
 - The left mouse button and the pen paint. The middle button, or Space with the left button, turns the globe, and the wheel zooms. The brush outline follows the pointer and a hovering pen.
 
@@ -659,7 +669,7 @@ The prototype leaves out the following.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
 - More than one map frame, the atlas, page templates, map furniture other than a scale bar, graticule labels, SVG export, and tiled raster export.
 - Conic and transverse projections, oblique aspects, projection suggestions, and Tissot circles.
-- All editing tools other than the freehand line tool and the freehand polygon tool: point placement, attribute table, and vertex editing.
+- All editing tools other than the freehand line tool, the freehand polygon tool, and point placement: the attribute table and vertex editing.
 - The GPU Vello backend. The prototype draws with `vello_cpu`.
 - Wholesale procedural world generation. This is a permanent non-goal.
 
