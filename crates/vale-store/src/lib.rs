@@ -238,12 +238,16 @@ pub struct Raster {
     pub hillshade: Hillshade,
 }
 
-/// The hillshade of a height layer. It keeps its opacity while it is off.
+/// The hillshade of a height layer. It keeps its opacity and its highlights
+/// while it is off.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hillshade {
     pub on: bool,
     /// How much the shade hides the colors, from 0 to 1.
     pub opacity: f32,
+    /// The slopes toward the light get lighter. Without the highlights, only
+    /// the slopes away from the light change.
+    pub highlights: bool,
 }
 
 impl Hillshade {
@@ -255,6 +259,7 @@ impl Default for Hillshade {
         Hillshade {
             on: false,
             opacity: Hillshade::OPACITY_DEFAULT,
+            highlights: true,
         }
     }
 }
@@ -544,6 +549,13 @@ impl Project {
         let opacity = clamp_opacity(opacity);
         self.raster_mut(id)
             .map(|r| r.hillshade.opacity = opacity)
+            .is_some()
+    }
+
+    /// Turns the highlights of the hillshade of a raster on or off.
+    pub fn set_raster_hillshade_highlights(&mut self, id: RasterId, on: bool) -> bool {
+        self.raster_mut(id)
+            .map(|r| r.hillshade.highlights = on)
             .is_some()
     }
 
@@ -852,6 +864,9 @@ mod tests {
             assert_eq!(p.raster(ids[1]).unwrap().hillshade.opacity, kept);
         }
         assert!(p.raster(ids[1]).unwrap().hillshade.on);
+        assert!(p.raster(ids[1]).unwrap().hillshade.highlights);
+        assert!(p.set_raster_hillshade_highlights(ids[1], false));
+        assert!(!p.raster(ids[1]).unwrap().hillshade.highlights);
 
         assert!(p.remove_raster(ids[0]).is_some());
         assert!(p.remove_raster(ids[0]).is_none());
@@ -863,6 +878,7 @@ mod tests {
         assert!(!p.set_raster_feature_size(ids[0], 1.0));
         assert!(!p.set_raster_hillshade(ids[0], true));
         assert!(!p.set_raster_hillshade_opacity(ids[0], 0.5));
+        assert!(!p.set_raster_hillshade_highlights(ids[0], false));
         let d = p.add_raster("d".into(), 1024, String::new(), 0.0, 1.0);
         assert!(ids.iter().all(|id| d > *id));
         let rasters: Vec<RasterId> = p.rasters().iter().map(|r| r.id).collect();

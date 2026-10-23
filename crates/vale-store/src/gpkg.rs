@@ -744,7 +744,8 @@ fn v13(tx: &Transaction) -> rusqlite::Result<()> {
 fn v15(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(
         "ALTER TABLE vale_raster ADD COLUMN hillshade INTEGER NOT NULL DEFAULT 0;
-         ALTER TABLE vale_raster ADD COLUMN hillshade_opacity REAL NOT NULL DEFAULT 0.5;",
+         ALTER TABLE vale_raster ADD COLUMN hillshade_opacity REAL NOT NULL DEFAULT 0.5;
+         ALTER TABLE vale_raster ADD COLUMN hillshade_highlights INTEGER NOT NULL DEFAULT 1;",
     )
 }
 
@@ -1535,8 +1536,8 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
         tx.execute(
             "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base,
                opacity, display, stops, colors, smooth, feature_size, hillshade,
-               hillshade_opacity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+               hillshade_opacity, hillshade_highlights)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT (id) DO UPDATE SET
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
@@ -1546,7 +1547,8 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                smooth = excluded.smooth,
                feature_size = excluded.feature_size,
                hillshade = excluded.hillshade,
-               hillshade_opacity = excluded.hillshade_opacity",
+               hillshade_opacity = excluded.hillshade_opacity,
+               hillshade_highlights = excluded.hillshade_highlights",
             params![
                 r.id.0,
                 r.face_size,
@@ -1562,6 +1564,7 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 f64::from(clamp_feature_size(r.smoothing.feature_size)),
                 r.hillshade.on,
                 f64::from(clamp_opacity(r.hillshade.opacity)),
+                r.hillshade.highlights,
             ],
         )?;
     }
@@ -1637,7 +1640,8 @@ fn write_tiles(
 fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
     let mut rows = conn.prepare(
         "SELECT id, face_size, unit, value_min, value_max, base, opacity, display, stops,
-           colors, smooth, feature_size, hillshade, hillshade_opacity
+           colors, smooth, feature_size, hillshade, hillshade_opacity,
+           hillshade_highlights
          FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
@@ -1669,6 +1673,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
             hillshade: Hillshade {
                 on: r.get::<_, i64>(12)? != 0,
                 opacity: clamp_opacity(r.get::<_, f64>(13)? as f32),
+                highlights: r.get::<_, i64>(14)? != 0,
             },
         });
     }
@@ -2825,7 +2830,8 @@ mod tests {
                 "feature_size",
                 "colors",
                 "hillshade",
-                "hillshade_opacity"
+                "hillshade_opacity",
+                "hillshade_highlights"
             ]
         );
 
@@ -3192,7 +3198,8 @@ mod tests {
     /// Removes the hillshade of the rasters, as in a file before format
     /// version 15.
     const V14_DROP: &str = "ALTER TABLE vale_raster DROP COLUMN hillshade;
-         ALTER TABLE vale_raster DROP COLUMN hillshade_opacity;";
+         ALTER TABLE vale_raster DROP COLUMN hillshade_opacity;
+         ALTER TABLE vale_raster DROP COLUMN hillshade_highlights;";
 
     #[test]
     fn the_file_keeps_the_hillshade_of_each_raster() {
@@ -3201,6 +3208,7 @@ mod tests {
         assert!(project.set_raster_hillshade_opacity(height, 0.75));
         let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
         assert!(project.set_raster_hillshade(height, true));
+        assert!(project.set_raster_hillshade_highlights(height, false));
         file.save(&project).unwrap();
         assert!(project.set_raster_hillshade_opacity(rain, 0.25));
         file.save(&project).unwrap();
@@ -3212,16 +3220,22 @@ mod tests {
         let on = Hillshade {
             on: true,
             opacity: 0.75,
+            highlights: false,
         };
         let light = Hillshade {
             on: false,
             opacity: 0.25,
+            highlights: true,
         };
         assert_eq!(hillshade(&loaded, height), on);
         assert_eq!(hillshade(&loaded, rain), light);
 
-        // An undo puts back the old opacity, and then the old switch.
-        let off = Hillshade { on: false, ..on };
+        // An undo puts back the old opacity, and then the old switches.
+        let off = Hillshade {
+            on: false,
+            highlights: true,
+            ..on
+        };
         file.undo().unwrap();
         assert_eq!(hillshade(file.project(), rain), Hillshade::default());
         assert_eq!(hillshade(file.project(), height), on);

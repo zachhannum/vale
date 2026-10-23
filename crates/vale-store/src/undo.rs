@@ -497,6 +497,7 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     out.push(raster.smoothing.on as u8);
     out.extend_from_slice(&raster.hillshade.opacity.to_le_bytes());
     out.push(raster.hillshade.on as u8);
+    out.push(raster.hillshade.highlights as u8);
 }
 
 /// A raster image of format version 13 with the stops `old`.
@@ -560,10 +561,11 @@ fn smoothing(r: &mut Reader) -> Option<Smoothing> {
 
 fn hillshade(r: &mut Reader) -> Option<Hillshade> {
     let opacity = clamp_opacity(f32::from_le_bytes(r.take()?));
-    let [on]: [u8; 1] = r.take()?;
+    let [on, highlights]: [u8; 2] = r.take()?;
     Some(Hillshade {
         on: on != 0,
         opacity,
+        highlights: highlights != 0,
     })
 }
 
@@ -844,6 +846,7 @@ mod tests {
         rain.hillshade = Hillshade {
             on: true,
             opacity: 0.375,
+            highlights: false,
         };
         let mut out = Vec::new();
         put_raster(&mut out, &rain);
@@ -853,7 +856,7 @@ mod tests {
 
         // An image of version 14 ends after the smoothing, and it gets the
         // default hillshade.
-        out.truncate(out.len() + 1 - 5);
+        out.truncate(out.len() + 1 - 6);
         let old = raster(&mut Reader(&out)).unwrap();
         assert_eq!(old.hillshade, Hillshade::default());
         assert_eq!(old.smoothing, rain.smoothing);
