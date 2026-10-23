@@ -5583,3 +5583,147 @@ fn a_trace_of_the_coast_follows_the_line_that_the_globe_shows() {
     }
     assert!(levels[0] > levels[1] + 1.0);
 }
+
+/// The width of the bump of `hill_harness`, in radians.
+const HILL_WIDTH: f64 = 0.035;
+
+/// The height of a bump at the place of longitude 0 and latitude 0, from 0
+/// to `top`.
+fn hill(d: V3, top: f64) -> f64 {
+    let t = angle(d, [1.0, 0.0, 0.0]) / HILL_WIDTH;
+    top * (-t * t).exp()
+}
+
+/// A GPU harness of a greyscale height layer with a bump of 4000 m at the
+/// middle of the view, with no smoothing.
+fn hill_harness() -> Harness<'static, AppState> {
+    let mut h = gpu_harness();
+    show_as(h.state_mut(), RasterDisplay::Grey);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(FINE_FACE_SIZE);
+    globe.preview.graticule = false;
+    globe.preview.rivers = false;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.view.zoom = 4.0;
+    set_heights(&mut globe.map, |d| hill(d, 4000.0));
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, false, 2.0);
+    h
+}
+
+/// Sets the hillshade of a raster layer.
+fn set_hillshade(h: &mut Harness<'static, AppState>, id: RasterId, on: bool, opacity: f32) {
+    let state = h.state_mut();
+    assert!(state.set_raster_hillshade(id, on));
+    assert!(state.set_raster_hillshade_opacity(id, opacity));
+    h.step();
+}
+
+/// The grey of `canvas_image` at the middle of the canvas plus `east` and
+/// `north` radians of the view. The place at the middle is the top of the
+/// bump.
+fn grey_near_middle(
+    h: &Harness<'static, AppState>,
+    img: &image::RgbaImage,
+    east: f64,
+    north: f64,
+) -> i32 {
+    let globe = &h.state().globe;
+    let (rect, scale) = (globe.rect, globe.radius());
+    let at = rect.center() + Vec2::new((east * scale) as f32, (-north * scale) as f32);
+    let (x, y) = (at.x - rect.min.x.ceil(), at.y - rect.min.y.ceil());
+    i32::from(img.get_pixel(x as u32, y as u32).0[0])
+}
+
+/// The change of the grey from `off` to `on` on the northwest side of the
+/// bump, on its southeast side, and on flat ground.
+fn hill_changes(
+    h: &Harness<'static, AppState>,
+    off: &image::RgbaImage,
+    on: &image::RgbaImage,
+) -> [i32; 3] {
+    let side = HILL_WIDTH / 2.0;
+    let far = 4.0 * HILL_WIDTH;
+    let change =
+        |east, north| grey_near_middle(h, on, east, north) - grey_near_middle(h, off, east, north);
+    [
+        change(-side, side),
+        change(side, -side),
+        change(far, -far * 0.75),
+    ]
+}
+
+#[test]
+fn the_hillshade_lights_the_slopes_to_the_northwest_and_keeps_flat_ground() {
+    let _gpu = one_gpu_test();
+    let mut h = hill_harness();
+    let id = brush_layer(&h);
+    let off = canvas_image(&mut h);
+    set_hillshade(&mut h, id, true, 1.0);
+    let on = canvas_image(&mut h);
+    let [northwest, southeast, flat] = hill_changes(&h, &off, &on);
+    assert!(northwest >= 4, "{northwest}");
+    assert!(southeast <= -4, "{southeast}");
+    assert!(flat.abs() <= 1, "{flat}");
+}
+
+#[test]
+fn a_hillshade_with_no_opacity_is_the_same_as_none() {
+    let _gpu = one_gpu_test();
+    let mut h = hill_harness();
+    let id = brush_layer(&h);
+    let off = canvas_image(&mut h);
+    set_hillshade(&mut h, id, true, 0.0);
+    assert!(
+        canvas_image(&mut h) == off,
+        "the hillshade changed the image"
+    );
+    set_hillshade(&mut h, id, true, 0.5);
+    assert!(canvas_image(&mut h) != off, "the hillshade did not show");
+}
+
+#[test]
+fn the_hillshade_shows_in_the_flat_view() {
+    let _gpu = one_gpu_test();
+    let mut h = hill_harness();
+    let id = brush_layer(&h);
+    let globe = &mut h.state_mut().globe;
+    globe.world_view = vale_app::globe::WorldView::Flat;
+    globe.flat.zoom = 4.0;
+    let off = canvas_image(&mut h);
+    set_hillshade(&mut h, id, true, 1.0);
+    let on = canvas_image(&mut h);
+    let [northwest, southeast, flat] = hill_changes(&h, &off, &on);
+    assert!(northwest >= 4, "{northwest}");
+    assert!(southeast <= -4, "{southeast}");
+    assert!(flat.abs() <= 1, "{flat}");
+}
+
+#[test]
+fn a_layer_that_is_not_a_height_layer_has_no_hillshade() {
+    let _gpu = one_gpu_test();
+    let mut state = state();
+    // A range as large as the world, so a hillshade of the bump would be
+    // strong.
+    let spec = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 1.0e6,
+        face_size: FINE_FACE_SIZE,
+    };
+    let id = state.add_raster(spec).unwrap();
+    state.set_raster_display(id, RasterDisplay::Grey);
+    state.set_raster_smoothing(id, false);
+    set_heights(state.globe.raster_map_mut(id).unwrap(), |d| hill(d, 4000.0));
+    let globe = &mut state.globe;
+    globe.preview.graticule = false;
+    globe.view = GlobeView::centered(0.0, 0.0);
+    globe.view.zoom = 4.0;
+    let mut h = headless::ui_harness_on(state, (640.0, 480.0), 1.0, render_state());
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    let off = canvas_image(&mut h);
+    set_hillshade(&mut h, id, true, 1.0);
+    assert!(canvas_image(&mut h) == off, "the layer has a hillshade");
+}
