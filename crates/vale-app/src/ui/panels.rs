@@ -145,6 +145,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     flat_projection(ui, state);
                 }
                 ui.toggle_value(&mut state.globe.preview.graticule, "Graticule");
+                let lines = &mut state.globe.preview.lines;
+                ui.toggle_value(lines, pad::BAND_LINES);
                 ui.toggle_value(&mut state.globe.preview.panel, elevation::PANEL);
                 ui.toggle_value(&mut state.globe.debug, "Debug");
                 ui.separator();

@@ -215,9 +215,14 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
             state.pad.page = Some(Page::Hillshade);
         }
     }
-    let preview = &mut state.globe.preview;
+    let Some(mut rivers) = state.doc.project.raster(id).map(|r| r.rivers) else {
+        return;
+    };
     if height {
-        widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut preview.rivers);
+        if widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut rivers) {
+            state.set_raster_rivers(id, rivers);
+        }
+        let preview = &mut state.globe.preview;
         let range = elevation::RIVER_WIDTH;
         let (low, high) = (f64::from(*range.start()), f64::from(*range.end()));
         let mut fraction = (f64::from(preview.river_width) - low) / (high - low);

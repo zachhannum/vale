@@ -267,6 +267,9 @@ pub const PROJECTION: &str = "Projection";
 pub const VIEW_OPTIONS: &str = "View options";
 /// The switch of the view options that shows the graticule.
 pub const GRATICULE: &str = "Graticule";
+/// The switch of the view options that shows the lines of the stops of the
+/// raster layers.
+pub const BAND_LINES: &str = "Band lines";
 /// The width that the button of the view options and its line add to the
 /// view card.
 const OPTIONS_LEAD: f32 = TOUCH + 9.0;
@@ -1774,13 +1777,13 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     );
 }
 
-/// The view options: a card below the view switch with the switch of the
-/// graticule.
+/// The view options: a card below the view switch with the switches of the
+/// graticule and the band lines.
 fn view_options(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let Some(view) = rects.view else {
         return;
     };
-    let size = vec2(geometry::MENU_WIDTH, 10.0 + PANEL_ROW + 10.0);
+    let size = vec2(geometry::MENU_WIDTH, 10.0 + 2.0 * PANEL_ROW + 10.0);
     let min = pos2(view.right() - size.x, view.bottom() + PAD);
     let rect = Rect::from_min_size(min, size);
     state.pad.view_options_rect = Some(rect);
@@ -1817,6 +1820,13 @@ fn view_options(ctx: &egui::Context, state: &mut AppState, controls: &mut Contro
                 GRATICULE,
                 &mut preview.graticule,
             );
+            widgets::switch_row(
+                &mut ui,
+                controls,
+                BAND_LINES,
+                BAND_LINES,
+                &mut preview.lines,
+            );
         },
     );
 }
@@ -1825,8 +1835,8 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
     let compact = rects.class == WidthClass::Compact;
     let flat = state.globe.world_view == WorldView::Flat;
     let rows = match (compact, flat) {
-        (true, true) => 8.0,
-        (true, false) => 7.0,
+        (true, true) => 9.0,
+        (true, false) => 8.0,
         (false, _) => 3.0,
     };
     let rules = if compact { 2.0 } else { 1.0 };
@@ -1885,6 +1895,7 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
                 }
                 let preview = &mut state.globe.preview;
                 widgets::switch_row(ui, controls, GRATICULE, GRATICULE, &mut preview.graticule);
+                widgets::switch_row(ui, controls, BAND_LINES, BAND_LINES, &mut preview.lines);
             }
             rule(ui);
             if widgets::text_row(ui, controls, WORKSPACES[1], 0.0, false, true).clicked() {

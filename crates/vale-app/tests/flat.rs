@@ -414,7 +414,7 @@ fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
 
     h.get_by_label("Rivers").click();
     h.run_steps(2);
-    assert!(!h.state().globe.preview.rivers);
+    assert!(!h.state().panel_raster().unwrap().rivers);
     let off = canvas_image(&mut h);
     assert_eq!(river_pixels(&h, &off), 0);
 }
