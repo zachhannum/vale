@@ -3,7 +3,9 @@ use std::time::Instant;
 use vale_app::document::Document;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
 use vale_app::ui::{AppState, LayerRef, RasterSpec};
-use vale_store::{Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World};
+use vale_store::{
+    Hillshade, Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World,
+};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{Bands, FACES, Heightmap, Limits, Mode, Stamp, TexelRect, meters_to_level};
 
@@ -1143,6 +1145,67 @@ fn each_raster_layer_keeps_its_own_smoothing() {
     check(&state.doc.project, "the undo of a stroke");
     state.undo();
     assert_eq!(smoothing(&state.doc.project, height), Smoothing::default());
+    state.redo();
+    check(&state.doc.project, "the redo");
+
+    // A new layer saves the changes that wait, and the file keeps them.
+    let next = RasterSpec {
+        name: "Heat".to_string(),
+        unit: "K".to_string(),
+        min: 200.0,
+        max: 330.0,
+        face_size: 128,
+    };
+    state.add_raster(next).unwrap();
+    let (_, stored) = ProjectFile::open(&path).unwrap();
+    check(&stored, "the file");
+    drop(state);
+    let mut doc = Document::empty();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    check(&doc.project, "the next start");
+}
+
+#[test]
+fn each_raster_layer_keeps_its_own_hillshade() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    let height = state.add_height();
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 128,
+    };
+    let rain = state.add_raster(rain).unwrap();
+    assert!(state.set_raster_hillshade(height, true));
+    assert!(state.set_raster_hillshade_opacity(height, 0.3));
+    assert!(state.set_raster_hillshade_opacity(rain, 0.8));
+    let shaded = Hillshade {
+        on: true,
+        opacity: 0.3,
+    };
+    // A layer keeps the opacity of its hillshade while the hillshade is off.
+    let kept = Hillshade {
+        on: false,
+        opacity: 0.8,
+    };
+    let hillshade = |project: &Project, id| project.raster(id).unwrap().hillshade;
+    let check = |project: &Project, step: &str| {
+        assert_eq!(hillshade(project, height), shaded, "{step}");
+        assert_eq!(hillshade(project, rain), kept, "{step}");
+    };
+
+    // The undo of a stroke after a save keeps the hillshade.
+    state.save_waiting().unwrap();
+    paint_layer(&mut state, rain, -100.0, 5.0);
+    state.undo();
+    check(&state.doc.project, "the undo of a stroke");
+    state.undo();
+    assert_eq!(hillshade(&state.doc.project, height), Hillshade::default());
     state.redo();
     check(&state.doc.project, "the redo");
 
