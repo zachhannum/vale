@@ -33,7 +33,7 @@ Version 1 does not include the items that follow.
 
 - Wholesale procedural world generation. This is a permanent non-goal, because the app presents a world that you designed. The Warp mode of the brush uses noise under the brush only.
 - A general painting or illustration tool. The app paints one thing, the heightmap. Photoshop and Illustrator keep color artwork and textures.
-- Hillshade, erosion, and other terrain effects. The app prototype tests live rivers, a Carve mode, an Erode mode, a Weather mode, and an Uplift mode of the brush. Those modes erode only where you paint. The prototype also tests a Ridge mode, which raises the land between the rivers, and a Deposit mode, which fills pits and valley floors. The prototype also tests a Warp mode, which moves the ground under the brush by a noise field.
+- Erosion and other terrain effects. The app prototype tests live rivers, a Carve mode, an Erode mode, a Weather mode, and an Uplift mode of the brush. Those modes erode only where you paint. The prototype also tests a Ridge mode, which raises the land between the rivers, and a Deposit mode, which fills pits and valley floors. The prototype also tests a Warp mode, which moves the ground under the brush by a noise field.
 - Time-based data such as historical borders, and non-spherical worlds. These items come after version 1.
 - Real-world GIS analysis such as routing or geocoding.
 - Web and phone versions.
@@ -314,6 +314,8 @@ The display smooths the field of a raster layer by the scale, so the detail foll
 The GPU keeps a pyramid of the field. A pyramid is a stack of levels, and each texel of a level is the mean of 2 by 2 texels of the level below. The shader reads the two levels that are nearest to the distance and blends them, so the detail changes with no jump while you zoom. A read near a face edge takes the texels past the edge from the next face, so the field has no seam. A brush stroke updates the levels under its texels in the same frame. For the snap target, the CPU makes the same levels with the same integer math, only for the blocks of texels near the pen.
 
 The heightmap does not change, and the readout and the brush use the full detail. Each raster layer has a switch that turns its smoothing on and off on the globe and in the flat view, so you can paint one layer with the full detail in view. The project keeps the switch and the size of each layer. A map frame and its export always use the smoothing.
+
+A height layer can show a hillshade over its colors. A hillshade is a grey shade of the slopes, with a light from the northwest, 45 degrees above the ground. North is the north of the world at each place, so the shade stays on the ground while you turn the globe. The shade blends with the colors in the soft-light mode. Flat ground keeps its color, slopes toward the light get lighter, and slopes away from the light get darker. The hillshade has a switch and an opacity, and the project keeps both. It comes from the same smoothed field as the fills, in each display, on the globe and in the flat view. The rivers and the lines at the stops go over it. When you zoom out, the app makes the slopes steeper, so the relief shows at each zoom.
 
 A final map can use the stepped raster with its lines as the topography, in place of the topography polygons. Polygonize is then optional.
 
