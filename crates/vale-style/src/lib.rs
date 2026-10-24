@@ -6,8 +6,8 @@ mod rule;
 
 pub use json::{STYLE_VERSION, StyleError};
 pub use rule::{
-    Extent, METERS_PER_POINT, Paint, Rule, StrokeSymbolizer, Style, Symbolizer, extent_of,
-    scale_denominator,
+    Extent, METERS_PER_POINT, Paint, RasterSymbolizer, Rule, StrokeSymbolizer, Style, Symbolizer,
+    extent_of, scale_denominator,
 };
 pub use vale_render::Color;
 use vale_store::GeometryKind;
@@ -124,6 +124,55 @@ impl LayerStyle {
         }
     }
 
+    /// The style of a raster layer: one rule with `colors`.
+    pub fn raster(colors: RasterSymbolizer) -> Self {
+        LayerStyle {
+            style: Style {
+                rules: vec![Rule::new("Colors", vec![Symbolizer::Raster(colors)])],
+            },
+            label: LabelStyle {
+                enabled: false,
+                field: None,
+                priority_field: None,
+                size: 11.0,
+                color: Color::rgb(40, 40, 40),
+                italic: false,
+            },
+        }
+    }
+
+    /// The first raster symbolizer, in rule order.
+    pub fn raster_symbolizer(&self) -> Option<&RasterSymbolizer> {
+        self.style
+            .rules
+            .iter()
+            .flat_map(|r| &r.symbolizers)
+            .find_map(|s| match s {
+                Symbolizer::Raster(r) => Some(r),
+                _ => None,
+            })
+    }
+
+    /// Replaces the first raster symbolizer, or adds a rule with `colors` if the style has none.
+    pub fn set_raster_symbolizer(&mut self, colors: RasterSymbolizer) {
+        let first = self
+            .style
+            .rules
+            .iter_mut()
+            .flat_map(|r| &mut r.symbolizers)
+            .find_map(|s| match s {
+                Symbolizer::Raster(r) => Some(r),
+                _ => None,
+            });
+        match first {
+            Some(r) => *r = colors,
+            None => self
+                .style
+                .rules
+                .push(Rule::new("Colors", vec![Symbolizer::Raster(colors)])),
+        }
+    }
+
     /// True if the style is one rule with no filter, no scale range, and no expression. The simple controls edit only such a style.
     pub fn is_simple(&self) -> bool {
         match self.style.rules.as_slice() {
@@ -157,7 +206,7 @@ impl LayerStyle {
             .find_map(|s| match s {
                 Symbolizer::Fill { color } => Some(Some(color.fallback)),
                 Symbolizer::Marker { fill, .. } => Some(fill.as_ref().map(|c| c.fallback)),
-                Symbolizer::Stroke(_) => None,
+                Symbolizer::Stroke(_) | Symbolizer::Raster(_) => None,
             })
             .flatten()
     }
@@ -197,7 +246,7 @@ impl LayerStyle {
                 Symbolizer::Marker { stroke, .. } => {
                     Some(stroke.as_ref().map(StrokeSymbolizer::fallback))
                 }
-                Symbolizer::Fill { .. } => None,
+                Symbolizer::Fill { .. } | Symbolizer::Raster(_) => None,
             })
             .flatten()
     }

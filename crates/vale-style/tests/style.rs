@@ -234,3 +234,74 @@ fn json_errors() {
     });
     assert!(LayerStyle::from_json(&extra).is_ok());
 }
+
+fn colors() -> vale_style::RasterSymbolizer {
+    use vale_store::{RasterDisplay, Stop, StopLine};
+    let line = StopLine {
+        on: true,
+        weight: 1.5,
+        color: [10, 20, 30],
+        darker: true,
+        darken: 0.25,
+    };
+    vale_style::RasterSymbolizer {
+        display: RasterDisplay::Grey,
+        opacity: 0.375,
+        stops: vec![
+            Stop {
+                value: -100.0,
+                line: StopLine::default(),
+            },
+            Stop { value: 0.0, line },
+            Stop {
+                value: 250.5,
+                line: StopLine::default(),
+            },
+        ],
+        colors: vec![[1, 2, 3], [200, 210, 220]],
+    }
+}
+
+#[test]
+fn a_raster_style_round_trips() {
+    let style = LayerStyle::raster(colors());
+    let back = LayerStyle::from_json(&style.to_json()).unwrap();
+    assert_eq!(back, style);
+    assert_eq!(back.raster_symbolizer(), Some(&colors()));
+}
+
+#[test]
+fn a_raster_symbolizer_draws_no_paint() {
+    let style = LayerStyle::raster(colors());
+    assert_eq!(style.style.constant_paints(1.0), Some(Vec::new()));
+    assert!(paints(&style.style, &river("x", 1.0), 1.0).is_empty());
+}
+
+#[test]
+fn set_raster_symbolizer_replaces_the_first() {
+    let mut style = LayerStyle::raster(colors());
+    let mut other = colors();
+    other.opacity = 1.0;
+    style.set_raster_symbolizer(other.clone());
+    assert_eq!(style.style.rules.len(), 1);
+    assert_eq!(style.raster_symbolizer(), Some(&other));
+    let mut line = LayerStyle::default_for(GeometryKind::Line, 0, &[]);
+    line.set_raster_symbolizer(other.clone());
+    assert_eq!(line.style.rules.len(), 2);
+    assert_eq!(line.raster_symbolizer(), Some(&other));
+}
+
+#[test]
+fn wrong_raster_stops_do_not_load() {
+    let mut unsorted = colors();
+    unsorted.stops.swap(0, 1);
+    let mut short = colors();
+    short.colors.pop();
+    for bad in [unsorted, short] {
+        let json = LayerStyle::raster(bad).to_json();
+        assert!(matches!(
+            LayerStyle::from_json(&json),
+            Err(StyleError::Invalid(_))
+        ));
+    }
+}

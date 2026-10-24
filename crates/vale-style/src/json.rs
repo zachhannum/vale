@@ -5,9 +5,12 @@
 use std::fmt;
 
 use serde_json::{Map, Value as Json, json};
+use vale_store::{RasterDisplay, Rgb, Stop, StopLine};
 
 use crate::expr::{Filter, FromValue, Property};
-use crate::{Color, LabelStyle, LayerStyle, Rule, StrokeSymbolizer, Style, Symbolizer};
+use crate::{
+    Color, LabelStyle, LayerStyle, RasterSymbolizer, Rule, StrokeSymbolizer, Style, Symbolizer,
+};
 
 /// The version of the style JSON that this build writes and reads.
 pub const STYLE_VERSION: u64 = 1;
@@ -99,6 +102,7 @@ fn rule_json(r: &Rule) -> Json {
 fn symbolizer_json(s: &Symbolizer) -> Json {
     match s {
         Symbolizer::Fill { color } => json!({ "type": "fill", "color": color_json(color) }),
+        Symbolizer::Raster(r) => raster_json(r),
         Symbolizer::Stroke(s) => {
             let mut m = stroke_json(s);
             m.insert("type".into(), json!("stroke"));
@@ -190,6 +194,7 @@ fn read_symbolizer(j: &Json) -> Result<Symbolizer, StyleError> {
                 Some(_) => return Err(invalid("a marker stroke is not an object")),
             },
         }),
+        Some("raster") => Ok(Symbolizer::Raster(read_raster(m)?)),
         Some(t) => Err(invalid(format!("unknown symbolizer {t}"))),
         None => Err(invalid("a symbolizer has no type")),
     }
@@ -245,5 +250,121 @@ fn read_label(m: &Map<String, Json>) -> Result<LabelStyle, StyleError> {
         size: m.get("size").and_then(Json::as_f64).unwrap_or(11.0),
         color,
         italic: m.get("italic").and_then(Json::as_bool).unwrap_or(false),
+    })
+}
+
+fn rgb_json(c: Rgb) -> Json {
+    json!(Color::rgb(c[0], c[1], c[2]).to_hex())
+}
+
+fn read_rgb(j: Option<&Json>) -> Option<Rgb> {
+    let c = Color::from_hex(j?.as_str()?)?;
+    (c.a == 255).then_some([c.r, c.g, c.b])
+}
+
+fn display_name(d: RasterDisplay) -> &'static str {
+    match d {
+        RasterDisplay::Bands => "bands",
+        RasterDisplay::Gradient => "gradient",
+        RasterDisplay::Grey => "grey",
+    }
+}
+
+fn raster_json(r: &RasterSymbolizer) -> Json {
+    let stops: Vec<Json> = r
+        .stops
+        .iter()
+        .map(|s| {
+            let l = &s.line;
+            json!({
+                "value": s.value,
+                "line": {
+                    "on": l.on,
+                    "weight": f64::from(l.weight),
+                    "color": rgb_json(l.color),
+                    "darker": l.darker,
+                    "darken": f64::from(l.darken),
+                },
+            })
+        })
+        .collect();
+    let colors: Vec<Json> = r.colors.iter().map(|c| rgb_json(*c)).collect();
+    json!({
+        "type": "raster",
+        "display": display_name(r.display),
+        "opacity": f64::from(r.opacity),
+        "stops": stops,
+        "colors": colors,
+    })
+}
+
+fn read_line(j: Option<&Json>) -> Result<StopLine, StyleError> {
+    let d = StopLine::default();
+    let Some(j) = j else { return Ok(d) };
+    let m = j
+        .as_object()
+        .ok_or_else(|| invalid("a stop line is not an object"))?;
+    let number = |k: &str, d: f32| m.get(k).and_then(Json::as_f64).map_or(d, |v| v as f32);
+    let flag = |k: &str, d: bool| m.get(k).and_then(Json::as_bool).unwrap_or(d);
+    Ok(StopLine {
+        on: flag("on", d.on),
+        weight: number("weight", d.weight),
+        color: match m.get("color") {
+            None => d.color,
+            c => read_rgb(c).ok_or_else(|| invalid("a stop line has no valid color"))?,
+        },
+        darker: flag("darker", d.darker),
+        darken: number("darken", d.darken),
+    })
+}
+
+fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
+    let display = match m.get("display").and_then(Json::as_str) {
+        Some("bands") => RasterDisplay::Bands,
+        Some("gradient") => RasterDisplay::Gradient,
+        Some("grey") => RasterDisplay::Grey,
+        _ => return Err(invalid("a raster has no valid display")),
+    };
+    let opacity = m.get("opacity").and_then(Json::as_f64).unwrap_or(1.0) as f32;
+    let opacity = if opacity.is_nan() {
+        1.0
+    } else {
+        opacity.clamp(0.0, 1.0)
+    };
+    let stops = m
+        .get("stops")
+        .and_then(Json::as_array)
+        .ok_or_else(|| invalid("a raster has no stops"))?
+        .iter()
+        .map(|j| {
+            let value = j
+                .get("value")
+                .and_then(Json::as_f64)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| invalid("a stop has no valid value"))?;
+            Ok(Stop {
+                value,
+                line: read_line(j.get("line"))?,
+            })
+        })
+        .collect::<Result<Vec<_>, StyleError>>()?;
+    if stops.len() < 2 || stops.windows(2).any(|w| w[0].value >= w[1].value) {
+        return Err(invalid("the stops of a raster are not in ascending order"));
+    }
+    let colors = m
+        .get("colors")
+        .and_then(Json::as_array)
+        .ok_or_else(|| invalid("a raster has no colors"))?
+        .iter()
+        .map(|j| read_rgb(Some(j)).ok_or_else(|| invalid("a band has no valid color")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if colors.len() + 1 != stops.len() {
+        return Err(invalid("a raster needs one color fewer than stops"));
+    }
+    Ok(RasterSymbolizer {
+        display,
+        opacity,
+        stops,
+        colors,
     })
 }

@@ -324,7 +324,9 @@ fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
                 continue;
             }
             for (k, symbolizer) in rule.symbolizers.iter().enumerate() {
-                let paint = symbolizer.resolve(&ctx);
+                let Some(paint) = symbolizer.resolve(&ctx) else {
+                    continue;
+                };
                 let at = *index.entry((*r, k, paint_key(&paint))).or_insert_with(|| {
                     out.push(Batch {
                         order: (*r, k),

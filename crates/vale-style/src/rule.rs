@@ -1,5 +1,7 @@
 //! Rule-based styles.
 
+use vale_store::{RasterDisplay, Rgb, Stop};
+
 use crate::expr::{Context, Filter, Property};
 use crate::{Color, Stroke};
 
@@ -49,6 +51,20 @@ pub enum Symbolizer {
         fill: Option<Property<Color>>,
         stroke: Option<StrokeSymbolizer>,
     },
+    /// The colors of a raster layer.
+    Raster(RasterSymbolizer),
+}
+
+/// The colors of a raster layer. A raster layer draws with the first raster symbolizer of its style. The filter and the scale range of its rule do not apply.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RasterSymbolizer {
+    pub display: RasterDisplay,
+    /// From 0 to 1.
+    pub opacity: f32,
+    /// The stops at the edges of the bands, in ascending order of value, with the two end stops.
+    pub stops: Vec<Stop>,
+    /// The color of each band, from the lowest band up. There is one color fewer than stops.
+    pub colors: Vec<Rgb>,
 }
 
 /// A symbolizer with the values for one feature.
@@ -101,10 +117,12 @@ impl StrokeSymbolizer {
 }
 
 impl Symbolizer {
-    pub fn resolve(&self, ctx: &Context) -> Paint {
-        match self {
+    /// The paint for the feature of `ctx`. A raster symbolizer has none.
+    pub fn resolve(&self, ctx: &Context) -> Option<Paint> {
+        Some(match self {
             Symbolizer::Fill { color } => Paint::Fill(color.eval(ctx)),
             Symbolizer::Stroke(s) => Paint::Stroke(s.resolve(ctx)),
+            Symbolizer::Raster(_) => return None,
             Symbolizer::Marker {
                 radius,
                 fill,
@@ -114,7 +132,7 @@ impl Symbolizer {
                 fill: fill.as_ref().map(|c| c.eval(ctx)),
                 stroke: stroke.as_ref().map(|s| s.resolve(ctx)),
             },
-        }
+        })
     }
 
     /// True if no property is an expression.
@@ -122,6 +140,7 @@ impl Symbolizer {
         match self {
             Symbolizer::Fill { color } => color.is_constant(),
             Symbolizer::Stroke(s) => s.is_constant(),
+            Symbolizer::Raster(_) => true,
             Symbolizer::Marker {
                 radius,
                 fill,
@@ -135,10 +154,11 @@ impl Symbolizer {
     }
 
     /// The paint from the fallbacks.
-    fn fallback(&self) -> Paint {
-        match self {
+    fn fallback(&self) -> Option<Paint> {
+        Some(match self {
             Symbolizer::Fill { color } => Paint::Fill(color.fallback),
             Symbolizer::Stroke(s) => Paint::Stroke(s.fallback()),
+            Symbolizer::Raster(_) => return None,
             Symbolizer::Marker {
                 radius,
                 fill,
@@ -148,7 +168,7 @@ impl Symbolizer {
                 fill: fill.as_ref().map(|c| c.fallback),
                 stroke: stroke.as_ref().map(StrokeSymbolizer::fallback),
             },
-        }
+        })
     }
 }
 
@@ -185,7 +205,7 @@ impl Style {
     /// Appends the paints of the feature of `ctx` to `out`, from bottom to top.
     pub fn paints(&self, ctx: &Context, out: &mut Vec<Paint>) {
         for rule in self.rules.iter().filter(|r| r.matches(ctx)) {
-            out.extend(rule.symbolizers.iter().map(|s| s.resolve(ctx)));
+            out.extend(rule.symbolizers.iter().filter_map(|s| s.resolve(ctx)));
         }
     }
 
@@ -196,7 +216,7 @@ impl Style {
             if !rule.filter.is_all() || !rule.symbolizers.iter().all(Symbolizer::is_constant) {
                 return None;
             }
-            out.extend(rule.symbolizers.iter().map(Symbolizer::fallback));
+            out.extend(rule.symbolizers.iter().filter_map(Symbolizer::fallback));
         }
         Some(out)
     }
