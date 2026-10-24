@@ -44,8 +44,8 @@ The app has one main workflow with four steps, and every design choice in this d
 
 1. Define the world. You set the radius, the name, and the display units.
 2. Draw the world. You paint the heightmap on the globe, run the polygonize tool to get topography polygons, and draw rivers and borders as lines. You can also import equirectangular vector or raster files that you made in other tools.
-3. Make regional maps. You draw a map frame over a region, select a projection, place data such as cities, apply styles, and generate labels from attributes. The app draws the graticule (the grid of latitude and longitude lines).
-4. Export the atlas. You order the map frames into pages and export all of them with shared styles.
+3. Make maps. A map shows the layers of the world in one projection. You select the projection, turn layers on and off, and change the styles for that map. You place data such as cities and generate labels from attributes.
+4. Make the atlas. You put maps into map frames on pages, set the scale and the extent of each frame, and add the title, the legend, and the scale bar. A frame draws the graticule (the grid of latitude and longitude lines). You order the pages and export all of them.
 
 The first start of the app opens on a start screen that lists the projects. A later start opens the project of the last run at its last view. If the last run ended on the start screen, the app opens there. Each project shows a small picture of its globe, the name of its world, and the date of its last change. From the start screen you make a new world, open a project, rename it, make a copy, and delete it. The app asks before it deletes a project. On the desktop, the File menu has the same actions and a list of the recent projects.
 
@@ -122,9 +122,9 @@ An unpublished tenth crate, `vale-globe-proto`, is a prototype that tests pen dr
 
 The published crate names take a `vale-` prefix, for example `vale-labeler` and `vale-sphere`. The plain name `vale` is taken on crates.io by an unrelated validation library.
 
-Each map frame runs the same pipeline, on screen and at export.
+Each map frame runs the same pipeline, on screen and at export. The view of a map in the Maps workspace runs it too.
 
-1. Query. The store returns the features that intersect the frame region.
+1. Query. The store returns the features of the visible layers that intersect the extent of the frame.
 2. Resample and clip. The sphere crate adds points along each line so that it curves correctly, and it cuts geometry at the edge of the projection.
 3. Project. PROJ converts longitude and latitude to page coordinates.
 4. Style. The rules turn each feature into symbols.
@@ -149,9 +149,12 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Style | Ordered rules of one layer, stored as JSON |
 | Label class | Text expression, font, placement rules, priority |
-| Map frame | Region, projection, scale, page size, style overrides, label classes |
+| Map | Name, projection, a switch for each layer, style overrides, label classes |
+| Page | Page size, page template, furniture |
+| Map frame | Page, map, place and size on the page, center, scale, rotation, border, graticule |
 | Override | One manual change, keyed by map frame, feature ID, and label class |
-| Atlas | Ordered list of map frames and page templates |
+| Page template | Page size, margins, positions of the furniture |
+| Atlas | Ordered list of pages |
 
 The order of the layer records is the draw order. The first layer is at the bottom.
 
@@ -173,7 +176,7 @@ The pixels of a tile are one compressed blob, and the compression loses nothing.
 
 A save writes the tiles that changed and removes the tiles that have no pixels now. The tiles and the Raster record go to the file in one transaction. If a raster gets a new face size, the save removes its old tiles.
 
-Overrides belong to a map frame and not to the feature. A label that you move on the regional map stays where the engine put it on the world map.
+Overrides belong to a map frame and not to the feature. A label that you move in one frame stays where the engine put it in each other frame, also in another frame of the same map.
 
 Each edit is one SQLite transaction with an entry in an undo log table. Undo and redo then work across sessions, and a crash cannot leave a half-written project.
 
@@ -205,7 +208,7 @@ The display units are kilometers or miles. They apply to a distance on the groun
 
 A projection in the app is a PROJ string plus a name. A custom projection is a preset that you edit and save, so the app needs no projection math of its own.
 
-When you draw a map frame, the app suggests a projection from the shape and latitude of the region.
+When you make a map, you can draw a region on the globe. The app then suggests a projection from the shape and latitude of the region, and it opens the map on that region. The map does not keep the region.
 
 | Region | Suggested projection | PROJ name |
 | --- | --- | --- |
@@ -218,13 +221,13 @@ When you draw a map frame, the app suggests a projection from the shape and lati
 | Polar region | Polar stereographic | stere |
 | Globe view | Orthographic | ortho |
 
-For the two conic projections, the app sets the standard parallels at one sixth and five sixths of the latitude range. That is a common rule that keeps scale error low across the frame.
+For the two conic projections, the app sets the standard parallels at one sixth and five sixths of the latitude range. That is a common rule that keeps scale error low across the region.
 
 The projection editor exposes the parameters that matter: center, standard parallels, and rotation. An oblique aspect (a projection tilted so that its center line follows the region) uses the PROJ `ob_tran` wrapper.
 
-The editor shows distortion while you edit. It draws Tissot circles (equal circles on the sphere that show local stretch after projection) and prints the scale error at the frame corners.
+The editor shows distortion while you edit. It draws Tissot circles (equal circles on the sphere that show local stretch after projection) and prints the scale error at the corners of the view.
 
-The sphere crate generates graticule lines on the sphere and sends them through the same pipeline as features. The interval follows the map scale, and the labels sit where each line meets the frame edge.
+The sphere crate generates graticule lines on the sphere and sends them through the same pipeline as features. The graticule belongs to the map frame. The frame turns it on or off and holds its style. The interval follows the scale of the frame, and the labels sit where each line meets the frame edge. The Maps workspace and the globe show a graticule as a view option, and that graticule is not in an export.
 
 A scale bar is correct only where the projection keeps scale. The app measures the scale bar at the frame center and states that in the bar's properties.
 
@@ -240,7 +243,7 @@ An imported file is a layer. You add it from the Layers panel, and the panel of 
 
 If a full-globe file is not twice as wide as it is tall, the panel shows a warning. A wrong aspect ratio is the most common import error.
 
-After you edit the file in Photoshop or Illustrator, the command Replace from file on the layer loads the file again. The layer keeps its extents, styles, and overrides, and the app draws all map frames again.
+After you edit the file in Photoshop or Illustrator, the command Replace from file on the layer loads the file again. The layer keeps its extents, styles, and overrides, and the app draws all maps again.
 
 Stable identity is the hard part when you replace a vector file. For SVG, the app maps each layer by name and each feature by its element ID. If an element has no ID, the app matches features by geometry, and a large edit can then break the match. The app reports each lost match after a replace.
 
@@ -252,7 +255,7 @@ The app has two answers. A regional source with partial extents draws over the w
 
 ## Drawing on the globe
 
-The world view is a globe that you rotate, in the orthographic projection. You draw on it directly. All drawing tools work in sphere coordinates, so the same tools also work in a map frame of any projection. A switch shows the world as a flat map, and the same tools work there.
+The world view is a globe that you rotate, in the orthographic projection. You draw on it directly. All drawing tools work in sphere coordinates, so the same tools also work in a map of any projection. A switch shows the world as a flat map, and the same tools work there.
 
 This removes the main pain of the old workflow. You no longer paint on an equirectangular image, where shapes stretch toward the poles. You no longer paint in several projections and join the parts.
 
@@ -313,7 +316,7 @@ The display smooths the field of a raster layer by the scale, so the detail foll
 
 The GPU keeps a pyramid of the field. A pyramid is a stack of levels, and each texel of a level is the mean of 2 by 2 texels of the level below. The shader reads the two levels that are nearest to the distance and blends them, so the detail changes with no jump while you zoom. A read near a face edge takes the texels past the edge from the next face, so the field has no seam. A brush stroke updates the levels under its texels in the same frame. For the snap target, the CPU makes the same levels with the same integer math, only for the blocks of texels near the pen.
 
-The heightmap does not change, and the readout and the brush use the full detail. Each raster layer has a switch that turns its smoothing on and off on the globe and in the flat view, so you can paint one layer with the full detail in view. The project keeps the switch and the size of each layer. A map frame and its export always use the smoothing.
+The heightmap does not change, and the readout and the brush use the full detail. Each raster layer has a switch that turns its smoothing on and off on the globe and in the flat view, so you can paint one layer with the full detail in view. The project keeps the switch and the size of each layer. A map, a map frame, and an export always use the smoothing.
 
 A height layer can show a hillshade over its colors. A hillshade is a shade of the slopes, with a light from one direction. North is the north of the world at each place, so the shade stays on the ground while you turn the globe. The shade blends with the colors in the soft-light mode. Flat ground keeps its color, slopes toward the light get lighter, and slopes away from the light get darker. The hillshade comes from the same smoothed field as the fills, in each display, on the globe and in the flat view. The rivers and the lines at the stops go over it. When you zoom out, the app makes the slopes steeper, so the relief shows at each zoom.
 
@@ -342,7 +345,7 @@ Version 1 has six tools.
 | Smooth | Lines or polygons | The same layer with smoother outlines |
 | Simplify | Lines or polygons | The same layer with fewer points |
 | Dissolve | Polygons, an attribute | Polygons joined where the attribute is equal |
-| Clip | A layer, a polygon or map frame | The part of the layer inside the shape |
+| Clip | A layer, a polygon or the extent of a map frame | The part of the layer inside the shape |
 
 The output layer keeps a record of the tool, its inputs, and its parameters. When an input changes, the layer shows that it is out of date, and you run the tool again with one action.
 
@@ -352,7 +355,7 @@ All tools work on the sphere. They live in the core crates, so the command line 
 
 The polygonize tool traces the value of each color stop on each cube face, joins the outlines across face edges, and smooths them. It writes one polygon layer. It can also split the output at a value into two layers, for example Topography and Bathymetry at 0 m. Each polygon of a heightmap has an `elev_min` attribute, and a normal style rule colors it.
 
-The polygons are an output layer of the toolbox. When the heightmap changes, the layer shows that it is out of date, and you run the tool again. A map frame can use the polygons, so topography stays vector in PDF and SVG. It can also use the stepped raster with the lines of its stops.
+The polygons are an output layer of the toolbox. When the heightmap changes, the layer shows that it is out of date, and you run the tool again. A map can use the polygons, so topography stays vector in PDF and SVG. It can also use the stepped raster with the lines of its stops.
 
 ### Lines
 
@@ -452,7 +455,7 @@ The desktop layout has the workspaces, switches, tools, and panels of the iPad l
 
 The window has five places, from top to bottom:
 
-- The title bar and the tool bar are one bar. At the left, it holds the window buttons, the name of the world, the name of the file with the save mark, and the workspace switch. At the center, it holds the view switch in the World workspace, the map frame menu and the mode switch in the Maps workspace, and the page controls and "Export…" in the Atlas workspace. At the right, it holds undo, redo, and the button that shows or hides the dock. These actions are the same in each workspace.
+- The title bar and the tool bar are one bar. At the left, it holds the window buttons, the name of the world, the name of the file with the save mark, and the workspace switch. At the center, it holds the view switch in the World workspace, the map menu and the mode switch in the Maps workspace, and the page controls and "Export…" in the Atlas workspace. At the right, it holds undo, redo, and the button that shows or hides the dock. These actions are the same in each workspace.
 - The options bar holds the settings of the active tool. For a brush mode, these are the Size slider, the Flow slider, the Hardness slider, a pressure switch, and the button "Brush…". That button opens the Brush panel as a popover.
 - The tool rail at the left edge holds the tools and the More button.
 - The canvas is between the tool rail and the dock.
@@ -479,13 +482,13 @@ On Windows and Linux, the menus are a row at the top of the window, and the wind
 
 ## Styling model
 
-A style is an ordered list of rules. Each rule has a filter, a scale range, and one or more symbolizers (instructions that draw a feature). This is the QGIS rule-based model, and it lets one style serve all map frames.
+A style is an ordered list of rules. Each rule has a filter, a scale range, and one or more symbolizers (instructions that draw a feature). This is the QGIS rule-based model, and it lets one style serve all maps.
 
 A filter is an expression on attributes, for example `population > 50000 and kind = 'city'`. Each symbolizer property can also be an expression, so the line width of a river can come from a `flow` attribute.
 
 The same expression language serves filters, style properties, label text, and the attribute table. `docs/EXPRESSIONS.md` has its grammar and its functions.
 
-Each layer has one style. You edit it in the panel of the layer, from each workspace. The globe, the flat view, and each map frame draw the layer with that style. A map frame can override single properties without a copy of the full style.
+Each layer has one style. You edit it in the panel of the layer, from each workspace. The globe, the flat view, and each map draw the layer with that style. A map can override single properties without a copy of the full style. A change to the style of the layer shows in each map, and each override stays.
 
 The symbolizers must give enough artistic range that the output does not look like a survey map.
 
@@ -497,7 +500,7 @@ The symbolizers must give enough artistic range that the output does not look li
 | Point symbol | SVG symbol with size and rotation from attributes |
 | Scatter | Symbols spread inside a polygon, for forests and mountain ranges |
 | Raster | Color ramp, smooth or stepped, opacity, blend mode |
-| Page | Paper texture and a frame border |
+| Page | Paper texture |
 
 Textures and blend modes become raster images in PDF and SVG output. All other symbolizers stay vector.
 
@@ -533,11 +536,23 @@ The test set is real-world data, for example Natural Earth, rendered to images a
 
 Clean-room has a strict meaning here. The design comes from published research and from the public description of Maplex behavior in Esri documentation. No one on the project reads Esri code or decompiles Esri software. The starting points are Imhof's rules for name placement (1975) and the label placement study by Christensen, Marks, and Shieber (1995).
 
-## Map frames and atlas export
+## Maps and the atlas
 
-A map frame is a saved view of the world: a region, a projection, a scale, a page size, style overrides, and label classes. An atlas is an ordered list of map frames with page templates.
+The atlas has three levels: maps, pages, and map frames.
 
-A page template holds the map furniture (the items around the map). Version 1 has a title, a legend, a scale bar, graticule labels, a north arrow, and a locator map. The locator map is a small world map that marks the frame region, and the app generates it from the frame.
+A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. In the Maps workspace you pan and zoom a map freely. Each map has one projection center. For another center, you copy the map and change the projection of the copy.
+
+The Maps workspace has the modes Projection, Labels, and Data. In that workspace, the eye of a row of the Layers panel is the switch of that layer in the open map.
+
+A page is one page of the atlas. It has a page size, its map frames, and its furniture (the items around the maps). The page size has presets and a free value, with units. Version 1 has a title, a legend, a scale bar, and a north arrow.
+
+A map frame is a box on a page that shows one map. The frame holds its place and size on the page, and the center, the scale, and the rotation of the map in the box. The extent of the frame comes from the box and the view. A frame also holds its border and its graticule. One map can be in no frame, or in many frames on one or many pages. Thus an inset or an island chain is many frames on one page. A locator map is a map in a small frame, for example in the orthographic projection with a fill for the region of the main map.
+
+Each scale bar, north arrow, and legend links to one frame of its page. A new item links to the largest frame.
+
+In the Atlas workspace, you move and resize a frame on the page, and you pan, zoom, and rotate the map in it. When you select a frame, the panel shows the frame and the map that it shows. You edit the projection, the layer switches, and the style overrides of that map there. A change to a map shows in each frame of that map.
+
+A page template holds the page size, the margins, and the positions of the furniture. Many pages share one template, so the atlas has one look. The atlas is the ordered list of the pages.
 
 The atlas exports to three formats.
 
@@ -579,11 +594,11 @@ The labeling prototype came first, and it is done. The work after it has eleven 
 | 1 | Globe and heightmap painting | You paint a heightmap on the globe with Apple Pencil or a pen tablet, in the real app. |
 | 2 | Projects and storage | The world that you paint is a project file that you can close, open again, and move between devices. |
 | 3 | Toolbox and freehand lines | The toolbox turns the heightmap into topography polygons, and you draw rivers and borders as lines. |
-| 4 | Map frames and projections | You draw a map frame on the globe, and the app shows that region in a projection that fits it. |
+| 4 | Maps, frames, and projections | You make a map in a projection that fits its region, and you place it in frames on a page. |
 | 5 | Vector data editing | You place cities and other points, edit attributes, and edit lines and polygons by vertex. |
 | 6 | Styling | Rule-based styles draw all symbolizers of version 1 on screen and in PDF. |
 | 7 | Labeling in the app | Labels come from attributes, polygon labels and fallbacks work, and manual changes stay. |
-| 8 | Atlas and export | An atlas of map frames exports as a multi-page PDF, SVG files, and raster files. |
+| 8 | Atlas and export | An atlas of pages exports as a multi-page PDF, SVG files, and raster files. |
 | 9 | Import | Files from other tools come in as layers, and a replaced file keeps its extents, styles, and overrides. |
 | 10 | Version 1 release | Version 1 is in the App Store and on the three desktop platforms. |
 
@@ -594,7 +609,7 @@ No phase is a command-line tool alone. Five command-line tools stay, and each on
 - `vale-labeler-demo` is the regression test of the labeler.
 - In phase 2, the flag `--export-heightmap` of `vale-app` exports the first height layer of a project file as an equirectangular GeoTIFF.
 - In phase 3, a command runs a toolbox tool on a project file.
-- In phase 4, a command renders one map frame of a custom-radius world to PDF, with clipping and a graticule.
+- In phase 4, a command renders one page of a custom-radius world to PDF, with its frames clipped and a graticule.
 - In phase 8, a command exports the atlas as a multi-page PDF.
 
 The app prototype covers a thin part of phases 2, 4, 6, 8, and 9. It does not finish any of them.
