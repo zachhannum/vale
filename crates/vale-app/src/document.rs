@@ -5,7 +5,7 @@ use std::path::Path;
 use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
 use vale_sphere::ProjectionSpec;
-use vale_store::{GeometryKind, Layer, LayerId, Project, Units, World};
+use vale_store::{Field, FieldType, GeometryKind, Layer, LayerId, Project, Units, World};
 use vale_style::{Color, LayerStyle, MapStyle, Stroke};
 
 use crate::view::View;
@@ -159,7 +159,8 @@ impl Document {
     }
 
     /// Adds an empty layer on top. Its name is the kind and the first number
-    /// that no layer of the project has, for example "Lines 2".
+    /// that no layer of the project has, for example "Lines 2". A point
+    /// layer gets a `name` text field, and its points get labels from it.
     pub fn add_layer(&mut self, kind: GeometryKind) -> LayerId {
         let noun = match kind {
             GeometryKind::Point => "Points",
@@ -171,6 +172,10 @@ impl Document {
             .find(|name| self.project.layers().iter().all(|l| &l.name != name))
             .expect("a free number");
         let id = self.project.add_layer(name, kind, None, Vec::new());
+        if kind == GeometryKind::Point {
+            self.project
+                .add_field(id, Field::new("name", FieldType::Text));
+        }
         self.sync_entries();
         id
     }
@@ -190,7 +195,7 @@ impl Document {
                 Some(i) => old.swap_remove(i),
                 None => LayerEntry {
                     layer: layer.id,
-                    style: LayerStyle::default_for(kind, *ordinal, &layer.fields),
+                    style: LayerStyle::default_for(kind, *ordinal, &layer.field_names()),
                 },
             };
             *ordinal += 1;
@@ -268,6 +273,23 @@ impl Document {
     pub fn rename_layer(&mut self, id: LayerId, name: &str) -> bool {
         let name = name.trim();
         !name.is_empty() && self.project.rename_layer(id, name.to_string())
+    }
+
+    /// Gives a field of a vector layer a new name. The label field and the
+    /// priority field of the style keep the field.
+    pub fn rename_field(&mut self, id: LayerId, old: &str, new: &str) -> bool {
+        if !self.project.rename_field(id, old, new) {
+            return false;
+        }
+        if let Some(entry) = self.entry_mut(id) {
+            let label = &mut entry.style.label;
+            for field in [&mut label.field, &mut label.priority_field] {
+                if field.as_deref() == Some(old) {
+                    *field = Some(new.to_string());
+                }
+            }
+        }
+        true
     }
 
     pub fn set_visible(&mut self, id: LayerId, visible: bool) -> bool {

@@ -22,6 +22,7 @@ use crate::session::{WorldFile, worlds_of};
 use crate::world;
 
 pub mod browser;
+pub mod fields;
 pub mod geometry;
 pub mod icons;
 pub mod raster;
@@ -148,12 +149,16 @@ impl Panel {
     }
 }
 
-/// A page of the panel of a raster layer.
+/// A page of the panel of a layer. A raster layer has the pages of its
+/// style, and a vector layer has the pages of its fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Ramps,
     Stops,
     Hillshade,
+    /// The field with this index.
+    Field(usize),
+    NewField,
 }
 
 /// The state of the iPad layout.
@@ -161,9 +166,11 @@ pub enum Page {
 pub struct PadState {
     /// The Brush panel is open.
     pub brush: bool,
-    /// The page of the panel of the raster layer of `layer` that the Layers
-    /// panel shows.
+    /// The page of the panel of the layer of `layer` that the Layers panel
+    /// shows.
     pub page: Option<Page>,
+    /// The texts of the open page of a field.
+    field: Option<fields::Draft>,
     /// The panel at the right: Layers, Toolbox, or none.
     pub right: Option<Panel>,
     /// The layer that the Layers panel shows. `None`: the panel shows the
@@ -788,14 +795,29 @@ fn show_panel(
 ) {
     let shown = state.pad.layer.and_then(|layer| state.layer_of(layer));
     let name = shown.map(|layer| layer.name.clone());
+    let field_count = shown.map_or(0, |layer| layer.fields.len());
+    let field_name = match state.pad.page {
+        Some(Page::Field(i)) => shown.and_then(|layer| layer.fields.get(i)),
+        _ => None,
+    }
+    .map(|field| field.name.clone());
     if name.is_none() {
         state.pad.layer = None;
     }
     let layer = state.pad.layer.filter(|_| panel == Panel::Layers);
-    if panel == Panel::Layers && !matches!(layer, Some(LayerRef::Raster(_))) {
+    let fits = match (layer, state.pad.page) {
+        (Some(LayerRef::Raster(_)), Some(Page::Ramps | Page::Stops | Page::Hillshade)) => true,
+        (Some(LayerRef::Vector(_)), Some(Page::NewField)) => true,
+        (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
+        _ => false,
+    };
+    if panel == Panel::Layers && !fits {
         state.pad.page = None;
     }
     let page = state.pad.page.filter(|_| panel == Panel::Layers);
+    if panel == Panel::Layers && !matches!(page, Some(Page::Field(_) | Page::NewField)) {
+        state.pad.field = None;
+    }
     // The panel of a raster layer has the controls of the selected layer.
     if let Some(LayerRef::Raster(_)) = layer
         && state.selected_layer != layer
@@ -818,6 +840,14 @@ fn show_panel(
             ("pad-hillshade", raster::HILLSHADE, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) => ("pad-layer", name, Some("Layers")),
+        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
+            ("pad-new-field", fields::NEW_FIELD, Some(name))
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Field(_))) => (
+            "pad-field",
+            field_name.as_deref().unwrap_or_default(),
+            Some(name),
+        ),
         (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
         (Panel::Layers, None) => (panel.key(), "Layers", None),
         (Panel::Toolbox, _) => (panel.key(), "Toolbox", None),
@@ -929,11 +959,17 @@ fn show_panel(
                                 Some(Page::Hillshade) => {
                                     raster::hillshade_body(ui, state, controls, id);
                                 }
-                                None => raster_body(ui, state, controls, id),
+                                _ => raster_body(ui, state, controls, id),
                             },
-                            (Panel::Layers, Some(LayerRef::Vector(id))) => {
-                                vector_body(ui, state, controls, id);
-                            }
+                            (Panel::Layers, Some(LayerRef::Vector(id))) => match page {
+                                Some(Page::NewField) => {
+                                    fields::new_field_body(ui, state, controls, id);
+                                }
+                                Some(Page::Field(i)) => {
+                                    fields::field_body(ui, state, controls, id, i);
+                                }
+                                _ => vector_body(ui, state, controls, id),
+                            },
                             (Panel::Layers, None) => layers_body(ui, state, controls),
                             (Panel::Toolbox, _) => toolbox_body(ui, state),
                         }
@@ -1412,8 +1448,8 @@ fn add_menu(
     );
 }
 
-/// The panel of a vector layer: its name, its kind, and the number of its
-/// features.
+/// The panel of a vector layer: its name, its kind, the number of its
+/// features, and its fields.
 fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(layer) = state.doc.layer(id) else {
         return;
@@ -1444,6 +1480,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
     widgets::value_row(ui, "Features", &features);
+    fields::list(ui, state, controls, id);
 }
 
 /// A note with no warning goes away after this time, in seconds.

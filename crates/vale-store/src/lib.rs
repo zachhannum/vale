@@ -63,6 +63,150 @@ impl Value {
     }
 }
 
+/// The largest whole number that a field holds exactly.
+const WHOLE_MAX: f64 = 9_007_199_254_740_992.0;
+
+/// The type of the values of a field.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FieldType {
+    Text,
+    /// A whole number. Its values are `Value::Number` with a whole value.
+    Integer,
+    /// A decimal number.
+    Real,
+    Bool,
+}
+
+impl FieldType {
+    pub const ALL: [FieldType; 4] = [
+        FieldType::Text,
+        FieldType::Integer,
+        FieldType::Real,
+        FieldType::Bool,
+    ];
+
+    /// The name of the type in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            FieldType::Text => "Text",
+            FieldType::Integer => "Whole number",
+            FieldType::Real => "Decimal number",
+            FieldType::Bool => "True or false",
+        }
+    }
+
+    /// The name of the type in the project file.
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            FieldType::Text => "text",
+            FieldType::Integer => "integer",
+            FieldType::Real => "number",
+            FieldType::Bool => "bool",
+        }
+    }
+
+    pub(crate) fn from_id(id: &str) -> Option<FieldType> {
+        FieldType::ALL.into_iter().find(|t| t.id() == id)
+    }
+
+    /// The value of this type that the text gives. Text that is not a value
+    /// of the type gives `None`.
+    pub fn parse(self, text: &str) -> Option<Value> {
+        let number = || text.trim().parse::<f64>().ok().filter(|n| !n.is_nan());
+        match self {
+            FieldType::Text => Some(Value::Text(text.to_string())),
+            FieldType::Integer => number()
+                .filter(|n| n.fract() == 0.0 && n.abs() <= WHOLE_MAX)
+                .map(Value::Number),
+            FieldType::Real => number().map(Value::Number),
+            FieldType::Bool => match text.trim().to_lowercase().as_str() {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                _ => None,
+            },
+        }
+    }
+
+    /// The value of this type that is nearest to the value. A value that has
+    /// no such value gives `Null`.
+    pub fn convert(self, value: &Value) -> Value {
+        let number = |n: f64| match self {
+            FieldType::Integer => {
+                let n = n.round();
+                (n.abs() <= WHOLE_MAX).then_some(Value::Number(n))
+            }
+            _ => (!n.is_nan()).then_some(Value::Number(n)),
+        };
+        let converted = match (self, value) {
+            (_, Value::Null) => None,
+            (FieldType::Text, Value::Text(_)) => Some(value.clone()),
+            (FieldType::Text, _) => value.label().map(Value::Text),
+            (FieldType::Bool, Value::Bool(_)) => Some(value.clone()),
+            (FieldType::Bool, Value::Number(n)) => Some(Value::Bool(*n != 0.0)),
+            (FieldType::Bool, Value::Text(s)) => self.parse(s),
+            (_, Value::Bool(b)) => Some(Value::Number(*b as u8 as f64)),
+            (_, Value::Number(n)) => number(*n),
+            (_, Value::Text(s)) => FieldType::Real.parse(s).and_then(|v| number(v.as_f64()?)),
+        };
+        converted.unwrap_or(Value::Null)
+    }
+}
+
+/// One field of the attribute schema of a layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Field {
+    pub name: String,
+    pub kind: FieldType,
+    /// The value of the field in a new feature.
+    pub default: Value,
+}
+
+impl Field {
+    /// A field with no default value.
+    pub fn new(name: impl Into<String>, kind: FieldType) -> Field {
+        Field {
+            name: name.into(),
+            kind,
+            default: Value::Null,
+        }
+    }
+}
+
+/// The fields of an import, sorted by name. Each type is the type of all the
+/// values of its field. A field with values of more than one type, or with
+/// no values, is text. Each value turns into a value of the type of its
+/// field, and each feature gets each field.
+pub(crate) fn infer_fields(features: &mut [Feature]) -> Vec<Field> {
+    let names: BTreeSet<&String> = features.iter().flat_map(|f| f.attributes.keys()).collect();
+    let fields: Vec<Field> = names
+        .into_iter()
+        .map(|name| {
+            let mut kinds = features
+                .iter()
+                .filter_map(|f| match f.attributes.get(name)? {
+                    Value::Null => None,
+                    Value::Bool(_) => Some(FieldType::Bool),
+                    Value::Number(_) => Some(FieldType::Real),
+                    Value::Text(_) => Some(FieldType::Text),
+                });
+            let first = kinds.next().unwrap_or(FieldType::Text);
+            let kind = match kinds.all(|k| k == first) {
+                true => first,
+                false => FieldType::Text,
+            };
+            Field::new(name.clone(), kind)
+        })
+        .collect();
+    for f in features {
+        for field in &fields {
+            let value = f.attributes.get(&field.name).unwrap_or(&Value::Null);
+            let value = field.kind.convert(value);
+            f.attributes.insert(field.name.clone(), value);
+        }
+    }
+    fields
+}
+
 /// The kind of geometry that a layer holds.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GeometryKind {
@@ -179,8 +323,10 @@ pub struct Layer {
     pub visible: bool,
     /// The name of the imported file.
     pub source: Option<String>,
-    /// Attribute names, sorted, no duplicates.
-    pub fields: Vec<String>,
+    /// The attribute schema, in order. No two fields have the same name.
+    /// Each feature has a value for each field, and each value is `Null` or
+    /// a value of the type of its field.
+    pub fields: Vec<Field>,
     /// A feature ID is its index here.
     pub features: Vec<Feature>,
 }
@@ -200,6 +346,34 @@ impl Layer {
             LayerKind::Vector(_) => None,
             LayerKind::Raster(id) => Some(id),
         }
+    }
+
+    /// The field with this name.
+    pub fn field(&self, name: &str) -> Option<&Field> {
+        self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// The index of the field with this name.
+    pub fn field_index(&self, name: &str) -> Option<usize> {
+        self.fields.iter().position(|f| f.name == name)
+    }
+
+    /// The names of the fields, in order.
+    pub fn field_names(&self) -> Vec<String> {
+        self.fields.iter().map(|f| f.name.clone()).collect()
+    }
+
+    /// True if a field can have this name. The name is not blank, and it is
+    /// not `fid`, `geom`, or `uuid`. No field other than `except` has the
+    /// name. The check ignores case.
+    pub fn name_free(&self, name: &str, except: Option<&str>) -> bool {
+        let lower = name.to_lowercase();
+        !name.trim().is_empty()
+            && !["fid", "geom", "uuid"].contains(&lower.as_str())
+            && !self
+                .fields
+                .iter()
+                .any(|f| Some(f.name.as_str()) != except && f.name.to_lowercase() == lower)
     }
 }
 
@@ -695,8 +869,11 @@ impl Project {
         Some(self.rasters.remove(i))
     }
 
-    /// Adds a layer on top and returns its ID. Each feature gets each field
-    /// of the layer, with `Null` for a field that it did not have.
+    /// Adds a layer on top and returns its ID. Each attribute name of the
+    /// features is a field, in the order of the names. All the values of a
+    /// field give its type. A field with values of more than one type is
+    /// text. Each feature gets each field, with `Null` for a field that it
+    /// did not have.
     pub fn add_layer(
         &mut self,
         name: String,
@@ -706,15 +883,7 @@ impl Project {
     ) -> LayerId {
         let id = LayerId(self.next_id);
         self.next_id += 1;
-        let fields: BTreeSet<&String> = features.iter().flat_map(|f| f.attributes.keys()).collect();
-        let fields: Vec<String> = fields.into_iter().cloned().collect();
-        for f in &mut features {
-            for name in &fields {
-                if !f.attributes.contains_key(name) {
-                    f.attributes.insert(name.clone(), Value::Null);
-                }
-            }
-        }
+        let fields = infer_fields(&mut features);
         self.layers.push(Layer {
             id,
             name,
@@ -760,9 +929,9 @@ impl Project {
     }
 
     /// Adds a feature to a vector layer of the same geometry kind. The
-    /// feature gets each field of the layer, with `Null` for a field that it
-    /// did not have. A field that only the feature has becomes a field of the
-    /// layer.
+    /// feature gets the default value of each field that it does not have.
+    /// Each value turns into a value of the type of its field. An attribute
+    /// that is not a field of the layer is ignored.
     pub fn add_feature(&mut self, id: LayerId, mut feature: Feature) -> bool {
         let Some(layer) = self.layer_mut(id) else {
             return false;
@@ -770,25 +939,109 @@ impl Project {
         if layer.geometry() != Some(feature.geometry.kind()) {
             return false;
         }
-        let new: Vec<String> = feature
-            .attributes
-            .keys()
-            .filter(|k| layer.fields.binary_search(k).is_err())
-            .cloned()
-            .collect();
-        for name in new {
-            let i = layer.fields.binary_search(&name).unwrap_err();
-            for f in &mut layer.features {
-                f.attributes.insert(name.clone(), Value::Null);
-            }
-            layer.fields.insert(i, name);
-        }
-        for name in &layer.fields {
-            if !feature.attributes.contains_key(name) {
-                feature.attributes.insert(name.clone(), Value::Null);
-            }
+        let mut given = std::mem::take(&mut feature.attributes);
+        for field in &layer.fields {
+            let value = match given.remove(&field.name) {
+                Some(value) => field.kind.convert(&value),
+                None => field.default.clone(),
+            };
+            feature.attributes.insert(field.name.clone(), value);
         }
         layer.features.push(feature);
+        true
+    }
+
+    /// Adds a field at the end of the schema of a vector layer. Each feature
+    /// gets `Null` in the field. The default value turns into a value of the
+    /// type of the field. The name must be free.
+    pub fn add_field(&mut self, id: LayerId, mut field: Field) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        if layer.geometry().is_none() || !layer.name_free(&field.name, None) {
+            return false;
+        }
+        field.default = field.kind.convert(&field.default);
+        for f in &mut layer.features {
+            f.attributes.insert(field.name.clone(), Value::Null);
+        }
+        layer.fields.push(field);
+        true
+    }
+
+    /// Gives a field a new name. Each feature keeps its value. The new name
+    /// must be free.
+    pub fn rename_field(&mut self, id: LayerId, old: &str, new: &str) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        let Some(i) = layer.field_index(old) else {
+            return false;
+        };
+        if old == new || !layer.name_free(new, Some(old)) {
+            return false;
+        }
+        layer.fields[i].name = new.to_string();
+        for f in &mut layer.features {
+            let value = f.attributes.remove(old).unwrap_or(Value::Null);
+            f.attributes.insert(new.to_string(), value);
+        }
+        true
+    }
+
+    /// Removes a field and its values.
+    pub fn remove_field(&mut self, id: LayerId, name: &str) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        let Some(i) = layer.field_index(name) else {
+            return false;
+        };
+        layer.fields.remove(i);
+        for f in &mut layer.features {
+            f.attributes.remove(name);
+        }
+        true
+    }
+
+    /// Gives a field a new type. Each value and the default value turn into
+    /// values of the new type, as `FieldType::convert` gives them.
+    pub fn set_field_type(&mut self, id: LayerId, name: &str, kind: FieldType) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        let Some(i) = layer.field_index(name) else {
+            return false;
+        };
+        let field = &mut layer.fields[i];
+        if field.kind == kind {
+            return false;
+        }
+        field.kind = kind;
+        field.default = kind.convert(&field.default);
+        for f in &mut layer.features {
+            if let Some(value) = f.attributes.get_mut(name) {
+                *value = kind.convert(value);
+            }
+        }
+        true
+    }
+
+    /// Sets the default value of a field. The value turns into a value of
+    /// the type of the field.
+    pub fn set_field_default(&mut self, id: LayerId, name: &str, value: Value) -> bool {
+        let Some(layer) = self.layer_mut(id) else {
+            return false;
+        };
+        let Some(i) = layer.field_index(name) else {
+            return false;
+        };
+        let field = &mut layer.fields[i];
+        let value = field.kind.convert(&value);
+        if field.default == value {
+            return false;
+        }
+        field.default = value;
         true
     }
 
@@ -805,8 +1058,9 @@ impl Project {
         feature.map(|f| f.geometry = geometry).is_some()
     }
 
-    /// Sets attribute values of the feature with this UUID. A name that is
-    /// not a field of the layer is ignored.
+    /// Sets attribute values of the feature with this UUID. Each value turns
+    /// into a value of the type of its field. A name that is not a field of
+    /// the layer is ignored.
     pub fn set_attributes(
         &mut self,
         id: LayerId,
@@ -820,8 +1074,8 @@ impl Project {
             return false;
         };
         for (name, value) in values {
-            if layer.fields.binary_search(&name).is_ok() {
-                feature.attributes.insert(name, value);
+            if let Some(field) = layer.fields.iter().find(|f| f.name == name) {
+                feature.attributes.insert(name, field.kind.convert(&value));
             }
         }
         true
@@ -879,7 +1133,7 @@ mod tests {
         );
         let b = p.add_layer("b".into(), GeometryKind::Point, None, vec![]);
         assert!(b > a);
-        assert_eq!(p.layer(a).unwrap().fields, vec!["alpha", "mid", "zeta"]);
+        assert_eq!(p.layer(a).unwrap().field_names(), ["alpha", "mid", "zeta"]);
         assert_eq!(p.layers().len(), 2);
         let features = &p.layer(a).unwrap().features;
         assert!(features.iter().all(|f| f.attributes.len() == 3));
@@ -896,14 +1150,15 @@ mod tests {
             vec![feature(&["mid"])],
         );
         assert!(p.add_feature(a, feature(&[])));
+        // An attribute that is not a field is ignored.
         assert!(p.add_feature(a, feature(&["alpha"])));
         let line = Feature::new(Geometry::Lines(vec![]), BTreeMap::new());
         assert!(!p.add_feature(a, line));
         assert!(!p.add_feature(LayerId(99), feature(&[])));
         let layer = p.layer(a).unwrap();
-        assert_eq!(layer.fields, vec!["alpha", "mid"]);
+        assert_eq!(layer.field_names(), ["mid"]);
         assert_eq!(layer.features.len(), 3);
-        assert!(layer.features.iter().all(|f| f.attributes.len() == 2));
+        assert!(layer.features.iter().all(|f| f.attributes.len() == 1));
 
         let uuid = layer.features[1].uuid();
         let moved = Geometry::Points(vec![[5.0, 6.0]]);
@@ -914,14 +1169,204 @@ mod tests {
         assert_eq!((f.uuid(), &f.geometry), (uuid, &moved));
 
         let values = [
-            ("alpha".to_string(), Value::Text("A".into())),
+            ("mid".to_string(), Value::Number(2.0)),
             ("beta".to_string(), Value::Number(1.0)),
         ];
         assert!(p.set_attributes(a, uuid, values.clone()));
         assert!(!p.set_attributes(a, Uuid::new_v4(), values));
         let f = &p.layer(a).unwrap().features[1];
-        assert_eq!(f.attributes["alpha"], Value::Text("A".into()));
+        // The value turns into a value of the type of the field.
+        assert_eq!(f.attributes["mid"], Value::Text("2".into()));
         assert!(!f.attributes.contains_key("beta"));
+    }
+
+    fn text(s: &str) -> Value {
+        Value::Text(s.to_string())
+    }
+
+    #[test]
+    fn text_parses_as_a_value_of_each_type() {
+        use FieldType::*;
+        assert_eq!(Text.parse(" a b "), Some(text(" a b ")));
+        assert_eq!(Integer.parse(" 42 "), Some(Value::Number(42.0)));
+        assert_eq!(Integer.parse("-7"), Some(Value::Number(-7.0)));
+        assert_eq!(
+            Integer.parse("9007199254740992"),
+            Some(Value::Number(WHOLE_MAX))
+        );
+        for bad in ["2.5", "9007199254740994", "inf", "NaN", "x", ""] {
+            assert_eq!(Integer.parse(bad), None, "{bad}");
+        }
+        assert_eq!(Real.parse("2.5"), Some(Value::Number(2.5)));
+        assert_eq!(Real.parse("-inf"), Some(Value::Number(f64::NEG_INFINITY)));
+        assert_eq!(Real.parse("NaN"), None);
+        assert_eq!(Real.parse("x"), None);
+        assert_eq!(Bool.parse("TRUE"), Some(Value::Bool(true)));
+        assert_eq!(Bool.parse(" False"), Some(Value::Bool(false)));
+        assert_eq!(Bool.parse("yes"), None);
+        assert_eq!(Bool.parse("1"), None);
+        assert_eq!(FieldType::ALL.map(FieldType::label)[1], "Whole number");
+        for kind in FieldType::ALL {
+            assert_eq!(FieldType::from_id(kind.id()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn a_value_converts_to_each_type() {
+        use FieldType::*;
+        let n = Value::Number;
+        for kind in FieldType::ALL {
+            assert_eq!(kind.convert(&Value::Null), Value::Null);
+        }
+        assert_eq!(Text.convert(&Value::Bool(true)), text("true"));
+        assert_eq!(Text.convert(&n(3.0)), text("3"));
+        assert_eq!(Text.convert(&n(2.5)), text("2.5"));
+        assert_eq!(Text.convert(&text("")), text(""));
+        assert_eq!(Integer.convert(&Value::Bool(true)), n(1.0));
+        assert_eq!(Integer.convert(&n(2.5)), n(3.0));
+        assert_eq!(Integer.convert(&n(-2.4)), n(-2.0));
+        assert_eq!(Integer.convert(&n(f64::INFINITY)), Value::Null);
+        assert_eq!(Integer.convert(&text(" 2.4 ")), n(2.0));
+        assert_eq!(Integer.convert(&text("x")), Value::Null);
+        assert_eq!(Real.convert(&Value::Bool(false)), n(0.0));
+        assert_eq!(Real.convert(&text("1.25")), n(1.25));
+        assert_eq!(Real.convert(&n(f64::NAN)), Value::Null);
+        assert_eq!(Real.convert(&text("")), Value::Null);
+        assert_eq!(Bool.convert(&n(0.0)), Value::Bool(false));
+        assert_eq!(Bool.convert(&n(-3.0)), Value::Bool(true));
+        assert_eq!(Bool.convert(&text("true")), Value::Bool(true));
+        assert_eq!(Bool.convert(&text("maybe")), Value::Null);
+    }
+
+    #[test]
+    fn an_import_gets_a_type_for_each_field() {
+        let mut p = Project::new(World::default());
+        let point = |pairs: &[(&str, Value)]| {
+            let attributes = pairs.iter().map(|(k, v)| (k.to_string(), v.clone()));
+            Feature::new(Geometry::Points(vec![]), attributes.collect())
+        };
+        let a = p.add_layer(
+            "a".into(),
+            GeometryKind::Point,
+            None,
+            vec![
+                point(&[
+                    ("flag", Value::Bool(true)),
+                    ("pop", Value::Number(3.0)),
+                    ("any", Value::Number(1.5)),
+                    ("none", Value::Null),
+                ]),
+                point(&[
+                    ("flag", Value::Null),
+                    ("pop", Value::Number(0.5)),
+                    ("any", Value::Bool(false)),
+                    ("name", text("Oslo")),
+                ]),
+            ],
+        );
+        let layer = p.layer(a).unwrap();
+        let kinds: Vec<(&str, FieldType)> = layer
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("any", FieldType::Text),
+                ("flag", FieldType::Bool),
+                ("name", FieldType::Text),
+                ("none", FieldType::Text),
+                ("pop", FieldType::Real),
+            ]
+        );
+        assert!(layer.fields.iter().all(|f| f.default == Value::Null));
+        let any: Vec<&Value> = layer
+            .features
+            .iter()
+            .map(|f| &f.attributes["any"])
+            .collect();
+        assert_eq!(any, [&text("1.5"), &text("false")]);
+        assert_eq!(layer.features[0].attributes["name"], Value::Null);
+    }
+
+    #[test]
+    fn the_schema_of_a_layer_changes() {
+        let mut p = Project::new(World::default());
+        let a = p.add_layer("a".into(), GeometryKind::Point, None, vec![]);
+        let point = || Feature::new(Geometry::Points(vec![]), BTreeMap::new());
+        assert!(p.add_feature(a, point()));
+        let pop = Field {
+            default: text("12.6"),
+            ..Field::new("pop", FieldType::Integer)
+        };
+        assert!(p.add_field(a, Field::new("name", FieldType::Text)));
+        assert!(p.add_field(a, pop));
+        // A name that is not free is refused.
+        for name in ["NAME", " ", "", "FID", "geom", "Uuid"] {
+            assert!(!p.add_field(a, Field::new(name, FieldType::Text)), "{name}");
+        }
+        let layer = p.layer(a).unwrap();
+        assert_eq!(layer.field_names(), ["name", "pop"]);
+        assert_eq!(layer.field("pop").unwrap().default, Value::Number(13.0));
+        assert_eq!(layer.field_index("pop"), Some(1));
+        assert_eq!(layer.features[0].attributes["pop"], Value::Null);
+        assert!(layer.name_free("Pop", Some("pop")));
+        assert!(!layer.name_free("Pop", Some("name")));
+
+        // A new feature gets the default value of each field it does not have.
+        let mut given = point();
+        given.attributes.insert("name".into(), Value::Bool(true));
+        assert!(p.add_feature(a, given));
+        let f = &p.layer(a).unwrap().features[1];
+        assert_eq!(f.attributes["name"], text("true"));
+        assert_eq!(f.attributes["pop"], Value::Number(13.0));
+
+        assert!(p.rename_field(a, "pop", "population"));
+        assert!(!p.rename_field(a, "pop", "x"));
+        assert!(!p.rename_field(a, "name", "Population"));
+        assert!(!p.rename_field(a, "name", "name"));
+        assert!(p.rename_field(a, "name", "Name"));
+        let layer = p.layer(a).unwrap();
+        assert_eq!(layer.field_names(), ["Name", "population"]);
+        assert_eq!(
+            layer.features[1].attributes.keys().collect::<Vec<_>>(),
+            ["Name", "population"]
+        );
+
+        assert!(p.set_field_type(a, "population", FieldType::Bool));
+        assert!(!p.set_field_type(a, "population", FieldType::Bool));
+        assert!(!p.set_field_type(a, "pop", FieldType::Text));
+        let layer = p.layer(a).unwrap();
+        assert_eq!(
+            layer.field("population").unwrap().default,
+            Value::Bool(true)
+        );
+        assert_eq!(
+            layer.features[1].attributes["population"],
+            Value::Bool(true)
+        );
+        assert_eq!(layer.features[0].attributes["population"], Value::Null);
+
+        assert!(p.set_field_default(a, "Name", Value::Number(5.0)));
+        assert!(!p.set_field_default(a, "Name", text("5")));
+        assert!(!p.set_field_default(a, "x", Value::Null));
+        assert_eq!(
+            p.layer(a).unwrap().field("Name").unwrap().default,
+            text("5")
+        );
+
+        assert!(p.remove_field(a, "Name"));
+        assert!(!p.remove_field(a, "Name"));
+        let layer = p.layer(a).unwrap();
+        assert_eq!(layer.field_names(), ["population"]);
+        assert!(layer.features.iter().all(|f| f.attributes.len() == 1));
+
+        // A raster layer has no fields.
+        let rain = p.add_raster("Rain".into(), 1000, "mm".into(), 0.0, 1.0);
+        let rain = p.raster_layer(rain).unwrap().id;
+        assert!(!p.add_field(rain, Field::new("x", FieldType::Text)));
+        assert!(!p.add_field(LayerId(99), Field::new("x", FieldType::Text)));
     }
 
     #[test]

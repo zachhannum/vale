@@ -18,9 +18,9 @@ use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
 };
 use crate::{
-    Feature, GeometryKind, Hillshade, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay,
-    RasterId, Smoothing, Stop, StopLine, Units, Uuid, Value, World, clamp_feature_size,
-    clamp_opacity,
+    Feature, Field, FieldType, GeometryKind, Hillshade, Layer, LayerId, LayerKind, Project, Raster,
+    RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid, Value, World,
+    clamp_feature_size, clamp_opacity, infer_fields,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -724,7 +724,7 @@ fn put_layer(out: &mut Vec<u8>, position: usize, layer: &Layer) {
     put_bytes(out, layer.source.as_deref().unwrap_or_default().as_bytes());
     put_u32(out, layer.fields.len());
     for field in &layer.fields {
-        put_bytes(out, field.as_bytes());
+        put_bytes(out, field.name.as_bytes());
     }
     put_u32(out, layer.features.len());
     for feature in &layer.features {
@@ -733,24 +733,46 @@ fn put_layer(out: &mut Vec<u8>, position: usize, layer: &Layer) {
         put_u32(out, feature.attributes.len());
         for (name, value) in &feature.attributes {
             put_bytes(out, name.as_bytes());
-            match value {
-                Value::Null => out.push(0),
-                Value::Bool(b) => out.extend_from_slice(&[1, *b as u8]),
-                Value::Number(n) => {
-                    out.push(2);
-                    put_f64(out, *n);
-                }
-                Value::Text(s) => {
-                    out.push(3);
-                    put_bytes(out, s.as_bytes());
-                }
-            }
+            put_value(out, value);
         }
     }
     out.push(layer.visible as u8);
+    for field in &layer.fields {
+        let kind = FieldType::ALL.iter().position(|k| *k == field.kind);
+        out.push(kind.expect("a field type") as u8);
+        put_value(out, &field.default);
+    }
 }
 
-/// A layer and its place in the project.
+fn put_value(out: &mut Vec<u8>, value: &Value) {
+    match value {
+        Value::Null => out.push(0),
+        Value::Bool(b) => out.extend_from_slice(&[1, *b as u8]),
+        Value::Number(n) => {
+            out.push(2);
+            put_f64(out, *n);
+        }
+        Value::Text(s) => {
+            out.push(3);
+            put_bytes(out, s.as_bytes());
+        }
+    }
+}
+
+fn value(r: &mut Reader) -> Option<Value> {
+    let [tag] = r.take()?;
+    Some(match tag {
+        0 => Value::Null,
+        1 => Value::Bool(r.take::<1>()? == [1]),
+        2 => Value::Number(r.f64()?),
+        3 => Value::Text(string(r)?),
+        _ => return None,
+    })
+}
+
+/// A layer and its place in the project. An image of a format before
+/// version 19 ends after the visibility. Its fields get their types as an
+/// import gives them, and the values turn into values of those types.
 fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
     let position = count(r)?;
     let id = LayerId(r.u32()?);
@@ -762,7 +784,7 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
     let [has_source] = r.take()?;
     let source = string(r)?;
     let source = (has_source == 1).then_some(source);
-    let fields = (0..count(r)?).map(|_| string(r)).collect::<Option<_>>()?;
+    let names: Vec<String> = (0..count(r)?).map(|_| string(r)).collect::<Option<_>>()?;
     let mut features = Vec::new();
     for _ in 0..count(r)? {
         let uuid = Uuid::from_bytes(r.take()?);
@@ -773,19 +795,34 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
         let mut attributes = std::collections::BTreeMap::new();
         for _ in 0..count(r)? {
             let name = string(r)?;
-            let [tag] = r.take()?;
-            let value = match tag {
-                0 => Value::Null,
-                1 => Value::Bool(r.take::<1>()? == [1]),
-                2 => Value::Number(r.f64()?),
-                3 => Value::Text(string(r)?),
-                _ => return None,
-            };
-            attributes.insert(name, value);
+            attributes.insert(name, value(r)?);
         }
         features.push(Feature::with_uuid(uuid, geometry, attributes));
     }
     let visible = r.take::<1>()? == [1];
+    let fields = match r.0.is_empty() {
+        true => {
+            let inferred = infer_fields(&mut features);
+            names
+                .into_iter()
+                .map(|name| {
+                    let kind = inferred.iter().find(|f| f.name == name).map(|f| f.kind);
+                    Field::new(name, kind.unwrap_or(FieldType::Text))
+                })
+                .collect()
+        }
+        false => names
+            .into_iter()
+            .map(|name| {
+                let [kind] = r.take()?;
+                Some(Field {
+                    name,
+                    kind: *FieldType::ALL.get(kind as usize)?,
+                    default: value(r)?,
+                })
+            })
+            .collect::<Option<_>>()?,
+    };
     let layer = Layer {
         id,
         name,
@@ -826,6 +863,82 @@ mod tests {
         assert_eq!(layer(&mut Reader(&out)), Some((0, hidden.clone())));
         out.pop();
         assert_eq!(layer(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn a_layer_image_keeps_the_type_and_the_default_of_each_field() {
+        let mut project = Project::new(World::default());
+        let id = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let fields = [
+            Field {
+                default: Value::Text("?".into()),
+                ..Field::new("name", FieldType::Text)
+            },
+            Field {
+                default: Value::Number(3.0),
+                ..Field::new("pop", FieldType::Integer)
+            },
+            Field::new("area", FieldType::Real),
+            Field {
+                default: Value::Bool(true),
+                ..Field::new("capital", FieldType::Bool)
+            },
+        ];
+        for field in fields {
+            assert!(project.add_field(id, field));
+        }
+        let point = Feature::new(crate::Geometry::Points(vec![]), Default::default());
+        assert!(project.add_feature(id, point));
+        let towns = project.layer(id).unwrap();
+        let mut out = Vec::new();
+        put_layer(&mut out, 0, towns);
+        assert_eq!(layer(&mut Reader(&out)), Some((0, towns.clone())));
+        // An image that ends inside the schema is not valid.
+        out.pop();
+        assert_eq!(layer(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn a_layer_image_of_version_18_gets_the_types_of_an_import() {
+        let attributes = |pairs: [(&str, Value); 3]| {
+            pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+        };
+        let point = |pairs| Feature::new(crate::Geometry::Points(vec![]), attributes(pairs));
+        let mut project = Project::new(World::default());
+        let id = project.add_layer(
+            "Towns".into(),
+            GeometryKind::Point,
+            None,
+            vec![
+                point([
+                    ("any", Value::Number(1.0)),
+                    ("flag", Value::Bool(true)),
+                    ("pop", Value::Number(2.0)),
+                ]),
+                point([
+                    ("any", Value::Bool(false)),
+                    ("flag", Value::Null),
+                    ("pop", Value::Number(0.5)),
+                ]),
+            ],
+        );
+        let towns = project.layer(id).unwrap();
+        // An old image ends after the visibility, and its values have
+        // their own types.
+        let mut old = towns.clone();
+        old.features[0]
+            .attributes
+            .insert("any".into(), Value::Number(1.0));
+        old.features[1]
+            .attributes
+            .insert("any".into(), Value::Bool(false));
+        let mut out = Vec::new();
+        put_layer(&mut out, 2, &old);
+        // Each field has a type byte and a null default.
+        out.truncate(out.len() - 2 * old.fields.len());
+        assert_eq!(layer(&mut Reader(&out)), Some((2, towns.clone())));
+        let kinds: Vec<FieldType> = towns.fields.iter().map(|f| f.kind).collect();
+        assert_eq!(kinds, [FieldType::Text, FieldType::Bool, FieldType::Real]);
     }
 
     #[test]

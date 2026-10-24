@@ -1,17 +1,15 @@
 //! The attribute form of a point that the point tool placed.
 
 use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
-use vale_store::{Feature, Geometry, Layer, LayerId, Uuid, Value};
+use vale_store::{Feature, FieldType, Geometry, GeometryKind, LayerId, Uuid, Value};
 
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
-use super::{AppState, Workspace, save_session};
+use super::{AppState, Workspace};
 use crate::globe::PlacedPoint;
 use crate::globe::math::{V3, dir_to_lonlat};
 
-/// The field of a layer with no fields.
-pub const NAME_FIELD: &str = "name";
 /// The button of the desktop form that closes it.
 pub const DONE: &str = "Done";
 const WIDTH: f32 = 360.0;
@@ -21,69 +19,28 @@ const CARD: &str = "point-form";
 /// screen.
 const POINT_GAP: f32 = 24.0;
 
-/// The type of the values of a field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Text,
-    Number,
-    Bool,
-}
-
-impl Kind {
-    /// The type of the values that the features of the layer have in the
-    /// field. A field with no values, or with values of more than one type,
-    /// is text.
-    fn of(layer: &Layer, name: &str) -> Kind {
-        let mut kinds = layer
-            .features
-            .iter()
-            .filter_map(|f| match f.attributes.get(name)? {
-                Value::Null => None,
-                Value::Bool(_) => Some(Kind::Bool),
-                Value::Number(_) => Some(Kind::Number),
-                Value::Text(_) => Some(Kind::Text),
-            });
-        let Some(first) = kinds.next() else {
-            return Kind::Text;
-        };
-        if kinds.all(|k| k == first) {
-            first
-        } else {
-            Kind::Text
-        }
-    }
-}
-
 /// One field of the form.
 pub struct FormField {
     pub name: String,
-    kind: Kind,
+    kind: FieldType,
     pub text: String,
 }
 
 impl FormField {
-    /// The value of the text. An empty text is `Null`. A text that is not
-    /// a value of the type of the field stays text.
+    /// The value of the text. An empty text, and a text that is not a value
+    /// of the type of the field, give `Null`.
     fn value(&self) -> Value {
         let text = self.text.trim();
         if text.is_empty() {
             return Value::Null;
         }
-        match self.kind {
-            Kind::Number => text.parse().map(Value::Number).ok(),
-            Kind::Bool => match text.to_lowercase().as_str() {
-                "true" => Some(Value::Bool(true)),
-                "false" => Some(Value::Bool(false)),
-                _ => None,
-            },
-            Kind::Text => None,
-        }
-        .unwrap_or_else(|| Value::Text(text.to_owned()))
+        self.kind.parse(text).unwrap_or(Value::Null)
     }
 
     /// True if the text is a value of the type of the field.
     fn valid(&self) -> bool {
-        self.kind == Kind::Text || !matches!(self.value(), Value::Text(_))
+        let text = self.text.trim();
+        text.is_empty() || self.kind.parse(text).is_some()
     }
 }
 
@@ -108,7 +65,9 @@ impl PointForm {
 
 impl AppState {
     /// Puts the last point of the point tool in the selected point layer
-    /// and opens its form. The form of the point before closes.
+    /// and opens its form. The form of the point before closes. The point
+    /// gets the default value of each field. A layer with no fields opens
+    /// no form.
     pub fn poll_point(&mut self) {
         let Some(point) = self.globe.take_point() else {
             return;
@@ -120,33 +79,28 @@ impl AppState {
         let Some(layer) = self.doc.project.layer(id) else {
             return;
         };
-        let named = layer.fields.is_empty();
-        let names = match named {
-            true => vec![NAME_FIELD.to_owned()],
-            false => layer.fields.clone(),
-        };
-        let fields: Vec<FormField> = names
-            .into_iter()
-            .map(|name| FormField {
-                kind: Kind::of(layer, &name),
-                name,
-                text: String::new(),
+        if layer.geometry() != Some(GeometryKind::Point) {
+            return;
+        }
+        let fields: Vec<FormField> = layer
+            .fields
+            .iter()
+            .map(|field| FormField {
+                kind: field.kind,
+                name: field.name.clone(),
+                text: field.default.label().unwrap_or_default(),
             })
             .collect();
         let PlacedPoint { dir, exact } = point;
         let lonlat = exact.unwrap_or_else(|| dir_to_lonlat(dir).into());
-        let attributes = fields.iter().map(|f| (f.name.clone(), Value::Null));
-        let feature = Feature::new(Geometry::Points(vec![lonlat]), attributes.collect());
+        let feature = Feature::new(Geometry::Points(vec![lonlat]), Default::default());
         let uuid = feature.uuid();
         if !self.doc.project.add_feature(id, feature) {
             return;
         }
-        // A layer that gets the name field labels its points with it.
-        let entry = self.doc.frame.entries.iter_mut().find(|e| e.layer == id);
-        let label = entry.map(|e| &mut e.style.label).filter(|_| named);
-        if let Some(label) = label.filter(|l| l.field.is_none()) {
-            label.field = Some(NAME_FIELD.to_owned());
-            label.enabled = true;
+        if fields.is_empty() {
+            self.end_vector_edit(id);
+            return;
         }
         self.pipeline.forget(id);
         self.touch();
@@ -181,31 +135,24 @@ impl AppState {
         self.doc
             .project
             .set_attributes(form.layer, form.feature, values);
-        self.pipeline.forget(form.layer);
-        self.touch();
-        self.line_edits += 1;
-        // The next point must not join this undo step.
-        let edits = self.edits();
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        self.saved_edits = edits;
-        match save_session(session, &mut self.doc.project, &mut self.globe) {
-            Ok(()) => self.saved_at = Some(std::time::Instant::now()),
-            Err(e) => {
-                self.save_failed = true;
-                self.status = format!("The project did not save: {e}");
-            }
-        }
+        self.end_vector_edit(form.layer);
     }
 }
 
-/// The field that gets the focus in this frame. A press or a release of
-/// the pointer in this frame takes the focus away, so the field waits for
-/// a frame with neither.
+/// True if a field can take the focus in this frame. A press or a release
+/// of the pointer in this frame takes the focus away, so the field waits
+/// for a frame with neither.
+pub fn can_take_focus(ctx: &egui::Context) -> bool {
+    !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released())
+}
+
+/// The field that gets the focus in this frame.
 fn take_focus(ctx: &egui::Context, form: &mut PointForm) -> Option<usize> {
-    let pointer = ctx.input(|i| i.pointer.any_down() || i.pointer.any_released());
-    if pointer { None } else { form.focus.take() }
+    if can_take_focus(ctx) {
+        form.focus.take()
+    } else {
+        None
+    }
 }
 
 /// The top of the on-screen keyboard of an iPad. The app does not know the

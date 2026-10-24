@@ -23,13 +23,13 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
-    Feature, Geometry, GeometryKind, Hillshade, Layer, LayerId, LayerKind, LonLat, Project, Raster,
-    RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine, Units, Uuid, Value, World,
-    clamp_feature_size, clamp_opacity,
+    Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Layer, LayerId, LayerKind,
+    LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine, Units, Uuid,
+    Value, World, clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 18;
+pub const FORMAT_VERSION: u32 = 19;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -52,6 +52,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v16,
     v17,
     v18,
+    v19,
 ];
 
 /// `GPKG` in ASCII.
@@ -786,6 +787,45 @@ fn v18(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN lines INTEGER NOT NULL DEFAULT 1")
 }
 
+/// The default value of a field, and the whole number type. A column of an
+/// older file with values of more than one type becomes a text column. A
+/// file of version 18 can already have the default values.
+fn v19(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_field') WHERE name = 'default_value'";
+    let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
+    if count == 0 {
+        tx.execute_batch("ALTER TABLE vale_field ADD COLUMN default_value")?;
+    }
+    let mixed: Vec<(String, String)> = tx
+        .prepare(
+            "SELECT l.table_name, f.column_name FROM vale_field f
+             JOIN vale_layer l ON l.id = f.layer_id WHERE f.kind = 'mixed'",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (table, column) in mixed {
+        let (table, column) = (quote(&table), quote(&column));
+        let cells: Vec<(i64, SqlValue)> = {
+            let mut select = tx.prepare(&format!("SELECT fid, {column} FROM {table}"))?;
+            // A cell that the old format cannot read stays as it is.
+            let rows = select.query_map([], |r| {
+                let cell = r.get_ref(1)?;
+                let cell = match old_mixed(cell) {
+                    Some(value) => write_value(FieldType::Text, &value),
+                    None => SqlValue::from(cell),
+                };
+                Ok((r.get(0)?, cell))
+            })?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let update = format!("UPDATE {table} SET {column} = ?1 WHERE fid = ?2");
+        for (fid, cell) in cells {
+            tx.execute(&update, params![cell, fid])?;
+        }
+    }
+    tx.execute_batch("UPDATE vale_field SET kind = 'text' WHERE kind = 'mixed'")
+}
+
 /// The display of a raster. The rasters of an older file show bands.
 fn v10(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN display TEXT NOT NULL DEFAULT 'bands'")
@@ -1220,99 +1260,69 @@ fn column_names(fields: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// How the values of one field are stored in its column.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum FieldKind {
-    Bool,
-    Number,
-    Text,
-    /// Values of more than one type, or a number that is not finite. The
-    /// column is text, and the first character of each cell gives the type.
-    Mixed,
+fn column_type(kind: FieldType) -> &'static str {
+    match kind {
+        FieldType::Text => "TEXT",
+        FieldType::Integer => "INTEGER",
+        FieldType::Real => "DOUBLE",
+        FieldType::Bool => "BOOLEAN",
+    }
 }
 
-impl FieldKind {
-    const ALL: [FieldKind; 4] = [
-        FieldKind::Bool,
-        FieldKind::Number,
-        FieldKind::Text,
-        FieldKind::Mixed,
-    ];
-
-    fn name(self) -> &'static str {
-        match self {
-            FieldKind::Bool => "bool",
-            FieldKind::Number => "number",
-            FieldKind::Text => "text",
-            FieldKind::Mixed => "mixed",
-        }
+/// The cell of a value of a field of this type.
+fn write_value(kind: FieldType, value: &Value) -> SqlValue {
+    match kind.convert(value) {
+        Value::Null => SqlValue::Null,
+        Value::Bool(b) => SqlValue::Integer(b as i64),
+        Value::Number(n) if kind == FieldType::Integer => SqlValue::Integer(n as i64),
+        Value::Number(n) => SqlValue::Real(n),
+        Value::Text(s) => SqlValue::Text(s),
     }
+}
 
-    fn column_type(self) -> &'static str {
-        match self {
-            FieldKind::Bool => "BOOLEAN",
-            FieldKind::Number => "DOUBLE",
-            FieldKind::Text | FieldKind::Mixed => "TEXT",
-        }
+/// The value of a cell of a field of this type. A cell of another type
+/// turns into a value of the type, as `FieldType::convert` gives it.
+fn read_value(kind: FieldType, cell: ValueRef) -> Option<Value> {
+    let value = match cell {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::Number(i as f64),
+        ValueRef::Real(n) => Value::Number(n),
+        ValueRef::Text(s) => Value::Text(std::str::from_utf8(s).ok()?.into()),
+        ValueRef::Blob(_) => return None,
+    };
+    Some(kind.convert(&value))
+}
+
+/// The `DEFAULT` clause of the column of a field, or nothing.
+fn default_clause(field: &Field) -> String {
+    match field.kind.convert(&field.default) {
+        Value::Null => String::new(),
+        Value::Bool(b) => format!(" DEFAULT {}", b as u8),
+        Value::Number(n) if !n.is_finite() => String::new(),
+        Value::Number(n) if field.kind == FieldType::Integer => format!(" DEFAULT {}", n as i64),
+        Value::Number(n) => format!(" DEFAULT {n:?}"),
+        Value::Text(s) => format!(" DEFAULT '{}'", s.replace('\'', "''")),
     }
+}
 
-    fn of(layer: &Layer, field: &str) -> FieldKind {
-        let mut kind = None;
-        for value in layer
-            .features
-            .iter()
-            .filter_map(|f| f.attributes.get(field))
-        {
-            let this = match value {
-                Value::Null => continue,
-                Value::Bool(_) => FieldKind::Bool,
-                Value::Number(n) if n.is_finite() => FieldKind::Number,
-                Value::Number(_) => FieldKind::Mixed,
-                Value::Text(_) => FieldKind::Text,
-            };
-            match kind {
-                None => kind = Some(this),
-                Some(k) if k == this => {}
-                Some(_) => return FieldKind::Mixed,
+/// The value of a cell of a column of a format before version 19 with
+/// values of more than one type. The first character of each cell gives
+/// the type.
+fn old_mixed(cell: ValueRef) -> Option<Value> {
+    Some(match cell {
+        ValueRef::Null => Value::Null,
+        ValueRef::Text(s) => {
+            let s = std::str::from_utf8(s).ok()?;
+            let rest = s.get(1..)?;
+            match s.as_bytes()[0] {
+                b'B' => Value::Bool(rest == "1"),
+                b'N' => Value::Number(rest.parse().ok()?),
+                b'T' => Value::Text(rest.into()),
+                _ => return None,
             }
         }
-        kind.unwrap_or(FieldKind::Text)
-    }
-
-    fn write(self, value: &Value) -> SqlValue {
-        match (self, value) {
-            (_, Value::Null) => SqlValue::Null,
-            (FieldKind::Mixed, Value::Bool(b)) => SqlValue::Text(format!("B{}", *b as u8)),
-            (FieldKind::Mixed, Value::Number(n)) => SqlValue::Text(format!("N{n:?}")),
-            (FieldKind::Mixed, Value::Text(s)) => SqlValue::Text(format!("T{s}")),
-            (_, Value::Bool(b)) => SqlValue::Integer(*b as i64),
-            (_, Value::Number(n)) => SqlValue::Real(*n),
-            (_, Value::Text(s)) => SqlValue::Text(s.clone()),
-        }
-    }
-
-    fn read(self, cell: ValueRef) -> Option<Value> {
-        Some(match (self, cell) {
-            (_, ValueRef::Null) => Value::Null,
-            (FieldKind::Bool, ValueRef::Integer(i)) => Value::Bool(i != 0),
-            (FieldKind::Number, ValueRef::Real(n)) => Value::Number(n),
-            (FieldKind::Number, ValueRef::Integer(i)) => Value::Number(i as f64),
-            (FieldKind::Text, ValueRef::Text(s)) => {
-                Value::Text(std::str::from_utf8(s).ok()?.into())
-            }
-            (FieldKind::Mixed, ValueRef::Text(s)) => {
-                let s = std::str::from_utf8(s).ok()?;
-                let rest = s.get(1..)?;
-                match s.as_bytes()[0] {
-                    b'B' => Value::Bool(rest == "1"),
-                    b'N' => Value::Number(rest.parse().ok()?),
-                    b'T' => Value::Text(rest.into()),
-                    _ => return None,
-                }
-            }
-            _ => return None,
-        })
-    }
+        _ => return None,
+    })
 }
 
 fn geometry_type(kind: GeometryKind) -> &'static str {
@@ -1355,12 +1365,7 @@ fn write_features(
     kind: GeometryKind,
     table: &str,
 ) -> Result<(), StoreError> {
-    let columns = column_names(&layer.fields);
-    let kinds: Vec<FieldKind> = layer
-        .fields
-        .iter()
-        .map(|f| FieldKind::of(layer, f))
-        .collect();
+    let columns = column_names(&layer.field_names());
     let mut create = format!(
         "CREATE TABLE {} (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, geom {}, \
          uuid TEXT NOT NULL UNIQUE",
@@ -1368,13 +1373,26 @@ fn write_features(
         geometry_type(kind)
     );
     let mut insert = format!("INSERT INTO {} (fid, geom, uuid", quote(table));
-    for (i, (column, kind)) in columns.iter().zip(&kinds).enumerate() {
+    for (i, (column, field)) in columns.iter().zip(&layer.fields).enumerate() {
         tx.execute(
-            "INSERT INTO vale_field (layer_id, position, name, column_name, kind)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![layer.id.0, i as i64, layer.fields[i], column, kind.name()],
+            "INSERT INTO vale_field
+               (layer_id, position, name, column_name, kind, default_value)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                layer.id.0,
+                i as i64,
+                field.name,
+                column,
+                field.kind.id(),
+                write_value(field.kind, &field.default)
+            ],
         )?;
-        create += &format!(", {} {}", quote(column), kind.column_type());
+        create += &format!(
+            ", {} {}{}",
+            quote(column),
+            column_type(field.kind),
+            default_clause(field)
+        );
         insert += &format!(", {}", quote(column));
     }
     create += ")";
@@ -1407,9 +1425,9 @@ fn write_features(
             SqlValue::Blob(encode_geometry(&feature.geometry)),
             SqlValue::Text(feature.uuid().to_string()),
         ];
-        for (field, kind) in layer.fields.iter().zip(&kinds) {
-            let value = feature.attributes.get(field).unwrap_or(&Value::Null);
-            row.push(kind.write(value));
+        for field in &layer.fields {
+            let value = feature.attributes.get(&field.name).unwrap_or(&Value::Null);
+            row.push(write_value(field.kind, value));
         }
         insert.execute(params_from_iter(row))?;
     }
@@ -1825,20 +1843,24 @@ fn load_features(
     table: &str,
 ) -> Result<(), StoreError> {
     let mut select = "SELECT geom, uuid".to_string();
-    let mut kinds = Vec::new();
     let mut fields = conn.prepare(
-        "SELECT name, column_name, kind FROM vale_field WHERE layer_id = ?1 ORDER BY position",
+        "SELECT name, column_name, kind, default_value FROM vale_field WHERE layer_id = ?1
+         ORDER BY position",
     )?;
     let mut fields = fields.query([layer.id.0])?;
     while let Some(r) = fields.next()? {
+        let name: String = r.get(0)?;
         let column: String = r.get(1)?;
         let kind: String = r.get(2)?;
-        let kind = FieldKind::ALL
-            .into_iter()
-            .find(|k| k.name() == kind)
-            .ok_or_else(|| corrupt(format!("field kind {kind:?}")))?;
-        layer.fields.push(r.get(0)?);
-        kinds.push(kind);
+        let kind =
+            FieldType::from_id(&kind).ok_or_else(|| corrupt(format!("field kind {kind:?}")))?;
+        let default = read_value(kind, r.get_ref(3)?)
+            .ok_or_else(|| corrupt(format!("the default value of field {name:?}")))?;
+        layer.fields.push(Field {
+            name,
+            kind,
+            default,
+        });
         select += &format!(", {}", quote(&column));
     }
     select += &format!(" FROM {} ORDER BY fid", quote(table));
@@ -1851,11 +1873,10 @@ fn load_features(
         let uuid: String = r.get(1)?;
         let uuid = Uuid::parse_str(&uuid).map_err(|_| corrupt(format!("UUID {uuid:?}")))?;
         let mut attributes = BTreeMap::new();
-        for (i, (field, kind)) in layer.fields.iter().zip(&kinds).enumerate() {
-            let value = kind
-                .read(r.get_ref(i + 2)?)
-                .ok_or_else(|| corrupt(format!("a value of field {field:?}")))?;
-            attributes.insert(field.clone(), value);
+        for (i, field) in layer.fields.iter().enumerate() {
+            let value = read_value(field.kind, r.get_ref(i + 2)?)
+                .ok_or_else(|| corrupt(format!("a value of field {:?}", field.name)))?;
+            attributes.insert(field.name.clone(), value);
         }
         layer
             .features
@@ -2264,7 +2285,7 @@ mod tests {
                 "fid_1 DOUBLE 0",
                 "name_1 TEXT 0",
                 "nothing TEXT 0",
-                "odd \"quote\" TEXT 0",
+                "odd \"quote\" DOUBLE 0",
                 "pop DOUBLE 0",
             ]
         );
@@ -2281,6 +2302,143 @@ mod tests {
                 .unwrap();
             assert_eq!(bad, 0, "{table}");
         }
+    }
+
+    /// The schema of a layer that QGIS reads: the column types and the
+    /// defaults of the fields.
+    #[test]
+    fn the_file_keeps_the_schema_of_a_layer_and_undo_puts_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let point = Feature::new(Geometry::Points(vec![[1.0, 2.0]]), BTreeMap::new());
+        assert!(project.add_feature(towns, point));
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+
+        let fields = [
+            Field::new("name", FieldType::Text),
+            Field {
+                default: Value::Number(0.0),
+                ..Field::new("pop", FieldType::Integer)
+            },
+            Field::new("area", FieldType::Real),
+            Field {
+                default: Value::Bool(false),
+                ..Field::new("capital", FieldType::Bool)
+            },
+        ];
+        for field in fields {
+            assert!(project.add_field(towns, field));
+        }
+        file.save(&project).unwrap();
+        let earlier = project.clone();
+        assert!(project.rename_field(towns, "pop", "population"));
+        assert!(project.remove_field(towns, "area"));
+        let point = Feature::new(Geometry::Points(vec![[3.0, 4.0]]), BTreeMap::new());
+        assert!(project.add_feature(towns, point));
+        file.save(&project).unwrap();
+        drop(file);
+
+        let conn = Connection::open(path(&dir)).unwrap();
+        assert_eq!(
+            strings(
+                &conn,
+                "SELECT name || ' ' || type || ' ' || coalesce(dflt_value, 'none')
+                 FROM pragma_table_info('Towns')"
+            ),
+            [
+                "fid INTEGER none",
+                "geom MULTIPOINT none",
+                "uuid TEXT none",
+                "name TEXT none",
+                "population INTEGER 0",
+                "capital BOOLEAN 0",
+            ]
+        );
+        assert_eq!(
+            strings(
+                &conn,
+                "SELECT table_name FROM gpkg_contents WHERE data_type = 'features'"
+            ),
+            ["Towns"]
+        );
+        assert_eq!(
+            strings(
+                &conn,
+                "SELECT quote(population) || ' ' || quote(capital) FROM \"Towns\" ORDER BY fid"
+            ),
+            ["NULL NULL", "0 0"]
+        );
+        drop(conn);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        let layer = loaded.layer(towns).unwrap();
+        assert_eq!(layer.field_names(), ["name", "population", "capital"]);
+        assert_eq!(layer.field("population").unwrap().kind, FieldType::Integer);
+        assert_eq!(layer.field("capital").unwrap().default, Value::Bool(false));
+        assert!(file.undo().unwrap().is_some());
+        assert_eq!(file.project(), &earlier);
+    }
+
+    #[test]
+    fn a_default_value_is_a_literal_of_its_column() {
+        let field = |kind, default| Field {
+            default,
+            ..Field::new("x", kind)
+        };
+        let clause = |kind, value| default_clause(&field(kind, value));
+        assert_eq!(clause(FieldType::Text, text("it's")), " DEFAULT 'it''s'");
+        assert_eq!(clause(FieldType::Text, Value::Null), "");
+        assert_eq!(
+            clause(FieldType::Integer, Value::Number(-12.0)),
+            " DEFAULT -12"
+        );
+        assert_eq!(clause(FieldType::Real, Value::Number(2.5)), " DEFAULT 2.5");
+        let inf = Value::Number(f64::INFINITY);
+        assert_eq!(clause(FieldType::Real, inf), "");
+        assert_eq!(clause(FieldType::Bool, Value::Bool(true)), " DEFAULT 1");
+    }
+
+    #[test]
+    fn a_mixed_column_of_version_18_becomes_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let point = |value: &str| {
+            Feature::new(
+                Geometry::Points(vec![]),
+                attributes(&[("any", text(value)), ("n", Value::Number(1.0))]),
+            )
+        };
+        let places = project.add_layer(
+            "Places".into(),
+            GeometryKind::Point,
+            None,
+            vec![point("B1"), point("N2.5"), point("Tx"), point("Zq")],
+        );
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE vale_field DROP COLUMN default_value;
+             UPDATE vale_field SET kind = 'mixed' WHERE name = 'any';
+             UPDATE \"Places\" SET \"any\" = NULL WHERE fid = 4;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 18);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        let layer = loaded.layer(places).unwrap();
+        assert_eq!(layer.field("any").unwrap().kind, FieldType::Text);
+        assert_eq!(layer.field("n").unwrap().kind, FieldType::Real);
+        let any: Vec<&Value> = layer
+            .features
+            .iter()
+            .map(|f| &f.attributes["any"])
+            .collect();
+        assert_eq!(any, [&text("true"), &text("2.5"), &text("x"), &Value::Null]);
+        assert!(layer.fields.iter().all(|f| f.default == Value::Null));
     }
 
     #[test]

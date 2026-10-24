@@ -145,7 +145,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Raster | Face size, unit, value range, base level, color stops with their lines, band colors, display, smoothing, river switch, band line switch, opacity |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Thumbnail | A small picture of the globe, for the list of projects |
-| Layer | Name, type (raster, points, lines, or polygons), visibility, attribute schema, link to a source, to a raster, or to an in-app table |
+| Layer | Name, type (raster, points, lines, or polygons), visibility, attribute schema (fields with a name, a type, and a default value), link to a source, to a raster, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Style | Ordered rules of one layer, stored as JSON |
 | Label class | Text expression, font, placement rules, priority |
@@ -159,7 +159,7 @@ QGIS opens the feature tables directly and ignores the extra tables. The extra t
 
 Each feature has a UUID in addition to the integer row ID. The UUID never changes, so overrides and styles survive an edit, a replaced file, or a new projection. The UUID is a text column of the feature table.
 
-The world is a row in `gpkg_spatial_ref_sys`: a geographic coordinate system on a sphere of the world radius. Each feature table uses it. Each attribute field is one column. A field with values of more than one type is a text column, and the first character of each value gives its type.
+The world is a row in `gpkg_spatial_ref_sys`: a geographic coordinate system on a sphere of the world radius. Each feature table uses it. Each attribute field is one column. Its type is text, whole number, decimal number, or true or false, and the column type is TEXT, INTEGER, DOUBLE, or BOOLEAN. The default value of a field is the DEFAULT of its column. Each value is null or a value of the type of its field. An imported field with values of more than one type is a text field.
 
 The display units of the world are a text column of the world table, with the value `metric` or `imperial`.
 
@@ -376,11 +376,19 @@ Where the ring crosses the 180 degree meridian, the feature has a polygon on eac
 
 The point tool places cities, landmarks, and other named places in the selected point layer. A tap of the pen or a click of the mouse places one point, and a finger turns the globe. The point snaps to the targets of the snap service. A point that snaps to a vertex gets the stored position of the vertex.
 
-The tap opens the attribute form of the point. The form has a text field for each field of the layer. A layer with no fields gets a `name` field, and its points get labels from it. The type of a field comes from the values of the other features. A text that is not a value of that type stays text. An empty field is null.
+The tap opens the attribute form of the point. The form has a text field for each field of the layer, with the default value of the field. A text that is not a value of the type of the field has the warning color, and its value is null. An empty field is null. A layer with no fields opens no form.
 
 The first field has the keyboard focus. Return goes to the next field, and on the last field it closes the form. The next tap also closes the form and places the next point, so ten points take ten taps and ten names. The point and its values are one undo step. Undo, a change of the tool, and a change of the layer close the form first. A ring in the accent color marks the point of the open form.
 
 On the iPad, the form is a card near the top of the screen. The card is not modal, so the pen can place the next point. The app does not know the height of the on-screen keyboard. It takes the top of the keyboard at 45 percent of the screen height in landscape, and at 62 percent in portrait. If the new point is under the card or under that line, the globe turns, so the point is between them.
+
+### Attribute schema
+
+The panel of a vector layer lists the fields of the layer, each with its type. "Add a field" opens a page with the name, the type, and the default value of a new field. The name has the keyboard focus, so the on-screen keyboard opens. "Add", or Return in the name, adds the field. A tap on a field opens its page. There you change the name, the type, and the default value, and "Delete field" removes the field.
+
+A field name is not blank, and it is not `fid`, `geom`, or `uuid`. No two fields of a layer have the same name, and the check ignores the difference between capital and small letters. A name that breaks these rules has the warning color, and "Add" is off. A default value that is not a value of the type also has the warning color, and "Add" is off.
+
+A new field is null in each feature, and each new feature gets the default value. A change of the type converts each value and the default value. A value that does not convert is null. A new point layer has a `name` text field, and its points get labels from it. A field with a new name stays the label field and the priority field of the layer style. Each change of the schema is one undo step, and the project saves at once.
 
 ### Snapping and tracing
 
@@ -452,7 +460,7 @@ The window has five places, from top to bottom:
 
 Each workspace has a tool rail and an options bar, so the canvas keeps its place when the mode changes. The menus are in the menu bar of the system.
 
-The dock is a column at the right edge. Its tabs keep the same order in a workspace. The World and Maps workspaces have the tabs Layers and Toolbox, and the Projection and Labels modes add a tab after them. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. With no selection, it holds the properties of the world. The list and the inspector show at the same time, so a panel has no back button. In the Data mode, the table of the features is in a dock below the canvas.
+The dock is a column at the right edge. Its tabs keep the same order in a workspace. The World and Maps workspaces have the tabs Layers and Toolbox, and the Projection and Labels modes add a tab after them. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. The inspector of a vector layer lists its fields. With no selection, it holds the properties of the world. The list and the inspector show at the same time, so a panel has no back button. In the Data mode, the table of the features is in a dock below the canvas.
 
 The title bar, the tool rail, the dock, the popovers, and the menus are translucent, with the blur of the macOS materials. The background of the canvas is the same material with a darker tint. The globe, the flat map, and the map pages are opaque, so their colors stay true.
 
