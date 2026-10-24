@@ -1,7 +1,7 @@
 //! The attribute form of a point that the point tool placed.
 
 use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
-use vale_store::{Feature, Field, FieldType, Geometry, GeometryKind, LayerId, Uuid, Value};
+use vale_store::{Feature, FieldType, Geometry, GeometryKind, LayerId, Uuid, Value};
 
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
 use super::pad::theme;
@@ -10,9 +10,6 @@ use super::{AppState, Workspace, save_session};
 use crate::globe::PlacedPoint;
 use crate::globe::math::{V3, dir_to_lonlat};
 
-/// The text field that a point layer with no fields gets with its first
-/// point.
-pub const NAME_FIELD: &str = "name";
 /// The button of the desktop form that closes it.
 pub const DONE: &str = "Done";
 const WIDTH: f32 = 360.0;
@@ -30,16 +27,14 @@ pub struct FormField {
 }
 
 impl FormField {
-    /// The value of the text. An empty text is `Null`. A text that is not
-    /// a value of the type of the field stays text.
+    /// The value of the text. An empty text, and a text that is not a value
+    /// of the type of the field, give `Null`.
     fn value(&self) -> Value {
         let text = self.text.trim();
         if text.is_empty() {
             return Value::Null;
         }
-        self.kind
-            .parse(text)
-            .unwrap_or_else(|| Value::Text(text.to_owned()))
+        self.kind.parse(text).unwrap_or(Value::Null)
     }
 
     /// True if the text is a value of the type of the field.
@@ -70,7 +65,9 @@ impl PointForm {
 
 impl AppState {
     /// Puts the last point of the point tool in the selected point layer
-    /// and opens its form. The form of the point before closes.
+    /// and opens its form. The form of the point before closes. The point
+    /// gets the default value of each field. A layer with no fields opens
+    /// no form.
     pub fn poll_point(&mut self) {
         let Some(point) = self.globe.take_point() else {
             return;
@@ -85,37 +82,25 @@ impl AppState {
         if layer.geometry() != Some(GeometryKind::Point) {
             return;
         }
-        let named = layer.fields.is_empty();
-        if named {
-            let name = Field::new(NAME_FIELD, FieldType::Text);
-            self.doc.project.add_field(id, name);
-        }
-        let Some(layer) = self.doc.project.layer(id) else {
-            return;
-        };
         let fields: Vec<FormField> = layer
             .fields
             .iter()
             .map(|field| FormField {
                 kind: field.kind,
                 name: field.name.clone(),
-                text: String::new(),
+                text: field.default.label().unwrap_or_default(),
             })
             .collect();
         let PlacedPoint { dir, exact } = point;
         let lonlat = exact.unwrap_or_else(|| dir_to_lonlat(dir).into());
-        let attributes = fields.iter().map(|f| (f.name.clone(), Value::Null));
-        let feature = Feature::new(Geometry::Points(vec![lonlat]), attributes.collect());
+        let feature = Feature::new(Geometry::Points(vec![lonlat]), Default::default());
         let uuid = feature.uuid();
         if !self.doc.project.add_feature(id, feature) {
             return;
         }
-        // A layer that gets the name field labels its points with it.
-        let entry = self.doc.frame.entries.iter_mut().find(|e| e.layer == id);
-        let label = entry.map(|e| &mut e.style.label).filter(|_| named);
-        if let Some(label) = label.filter(|l| l.field.is_none()) {
-            label.field = Some(NAME_FIELD.to_owned());
-            label.enabled = true;
+        if fields.is_empty() {
+            self.end_point(id);
+            return;
         }
         self.pipeline.forget(id);
         self.touch();
@@ -150,7 +135,12 @@ impl AppState {
         self.doc
             .project
             .set_attributes(form.layer, form.feature, values);
-        self.pipeline.forget(form.layer);
+        self.end_point(form.layer);
+    }
+
+    /// Ends the undo step of a new point and saves the project.
+    fn end_point(&mut self, layer: LayerId) {
+        self.pipeline.forget(layer);
         self.touch();
         self.line_edits += 1;
         // The next point must not join this undo step.

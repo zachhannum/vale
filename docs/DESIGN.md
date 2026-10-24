@@ -376,7 +376,7 @@ Where the ring crosses the 180 degree meridian, the feature has a polygon on eac
 
 The point tool places cities, landmarks, and other named places in the selected point layer. A tap of the pen or a click of the mouse places one point, and a finger turns the globe. The point snaps to the targets of the snap service. A point that snaps to a vertex gets the stored position of the vertex.
 
-The tap opens the attribute form of the point. The form has a text field for each field of the layer. A layer with no fields gets a `name` field, and its points get labels from it. The type of a field comes from the values of the other features. A text that is not a value of that type stays text. An empty field is null.
+The tap opens the attribute form of the point. The form has a text field for each field of the layer, with the default value of the field. A text that is not a value of the type of the field has the warning color, and its value is null. An empty field is null. A layer with no fields opens no form. A new point layer has a `name` text field, and its points get labels from it.
 
 The first field has the keyboard focus. Return goes to the next field, and on the last field it closes the form. The next tap also closes the form and places the next point, so ten points take ten taps and ten names. The point and its values are one undo step. Undo, a change of the tool, and a change of the layer close the form first. A ring in the accent color marks the point of the open form.
 

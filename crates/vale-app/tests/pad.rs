@@ -5260,8 +5260,8 @@ fn pen_tap_at(h: &mut Pad, pos: Pos2) {
     h.run_steps(3);
 }
 
-/// Adds a point layer with no fields and a saved project, and selects the
-/// point tool with no snapping.
+/// Adds a point layer and a saved project, and selects the point tool with
+/// no snapping.
 fn new_point_layer(h: &mut Pad) -> vale_store::LayerId {
     let id = h.state_mut().doc.add_layer(vale_store::GeometryKind::Point);
     h.state_mut().select(Some(LayerRef::Vector(id)));
@@ -5314,12 +5314,20 @@ fn a_pen_tap_places_a_point_and_opens_a_form_with_each_field_of_the_layer() {
 }
 
 #[test]
-fn a_layer_with_no_fields_shows_a_name_field_and_return_closes_the_form() {
+fn a_new_point_layer_has_a_name_field_and_return_closes_the_form() {
     let mut h = pad(BOARDS[0]);
     let id = new_point_layer(&mut h);
+    let layer = h.state().doc.project.layer(id).unwrap();
+    assert_eq!(layer.field_names(), ["name"]);
+    assert_eq!(layer.fields[0].kind, vale_store::FieldType::Text);
+    // The layer labels its points with the name.
+    let entry = h.state().doc.frame.entries.iter().find(|e| e.layer == id);
+    let label = &entry.unwrap().style.label;
+    assert_eq!(label.field.as_deref(), Some("name"));
+    assert!(label.enabled);
     let center = h.state().globe.rect.center();
     pen_tap_at(&mut h, center);
-    assert_eq!(form_fields(&h), [vale_app::ui::point_form::NAME_FIELD]);
+    assert_eq!(form_fields(&h), ["name"]);
     // The field has the focus, so the keyboard types into it at once.
     h.event(egui::Event::Text("Avalon".into()));
     h.run_steps(2);
@@ -5327,15 +5335,99 @@ fn a_layer_with_no_fields_shows_a_name_field_and_return_closes_the_form() {
     h.run_steps(2);
     assert!(h.state().point_form.is_none());
     let layer = h.state().doc.project.layer(id).unwrap();
-    assert_eq!(layer.field_names(), ["name"]);
-    assert_eq!(layer.fields[0].kind, vale_store::FieldType::Text);
     let name = &layer.features[0].attributes["name"];
     assert_eq!(*name, vale_store::Value::Text("Avalon".into()));
-    // The layer labels its points with the name.
-    let entry = h.state().doc.frame.entries.iter().find(|e| e.layer == id);
-    let label = &entry.unwrap().style.label;
-    assert_eq!(label.field.as_deref(), Some("name"));
-    assert!(label.enabled);
+}
+
+#[test]
+fn a_point_layer_with_no_fields_places_a_point_with_no_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let id = new_point_layer(&mut h);
+    h.state_mut().doc.project.remove_field(id, "name");
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    let saved = saves(&h);
+    let center = h.state().globe.rect.center();
+    pen_tap_at(&mut h, center);
+    assert!(h.state().point_form.is_none());
+    assert_eq!(line_features(&h, id).len(), 1);
+    assert!(line_features(&h, id)[0].attributes.is_empty());
+    assert_eq!(saves(&h), saved + 1);
+    tap(&mut h, "Undo");
+    assert!(line_features(&h, id).is_empty());
+}
+
+#[test]
+fn the_form_shows_each_field_of_the_schema_with_its_default() {
+    use vale_store::{Field, FieldType, Value};
+    let mut h = pad(BOARDS[0]);
+    let id = new_point_layer(&mut h);
+    let fields = [
+        ("town", FieldType::Text, Value::Text("Hamlet".into())),
+        ("people", FieldType::Integer, Value::Number(7.0)),
+        ("height", FieldType::Real, Value::Number(2.5)),
+        ("port", FieldType::Bool, Value::Bool(false)),
+    ];
+    let project = &mut h.state_mut().doc.project;
+    project.remove_field(id, "name");
+    for (name, kind, default) in fields.clone() {
+        let field = Field {
+            name: name.into(),
+            kind,
+            default,
+        };
+        assert!(project.add_field(id, field));
+    }
+    let center = h.state().globe.rect.center();
+    pen_tap_at(&mut h, center);
+    assert_eq!(form_fields(&h), ["town", "people", "height", "port"]);
+    let form = h.state().point_form.as_ref().unwrap();
+    let texts: Vec<&str> = form.fields.iter().map(|f| f.text.as_str()).collect();
+    assert_eq!(texts, ["Hamlet", "7", "2.5", "false"]);
+    // Return goes from field to field. The whole number and the true or
+    // false field get new values.
+    let typed = [None, Some((1, "12")), None, Some((5, "true"))];
+    for edit in typed {
+        if let Some((old, new)) = edit {
+            for _ in 0..old {
+                h.key_press(egui::Key::Backspace);
+            }
+            h.event(egui::Event::Text(new.into()));
+            h.run_steps(2);
+        }
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+    }
+    assert!(h.state().point_form.is_none());
+    let attributes = &line_features(&h, id)[0].attributes;
+    assert_eq!(attributes["town"], Value::Text("Hamlet".into()));
+    assert_eq!(attributes["people"], Value::Number(12.0));
+    assert_eq!(attributes["height"], Value::Number(2.5));
+    assert_eq!(attributes["port"], Value::Bool(true));
+}
+
+#[test]
+fn a_text_that_is_not_a_value_of_the_field_type_gives_null() {
+    use vale_store::{Field, FieldType, Value};
+    let mut h = pad(BOARDS[0]);
+    let id = new_point_layer(&mut h);
+    let field = Field::new("people", FieldType::Integer);
+    assert!(h.state_mut().doc.project.add_field(id, field));
+    let center = h.state().globe.rect.center();
+    pen_tap_at(&mut h, center);
+    assert_eq!(form_fields(&h), ["name", "people"]);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    h.event(egui::Event::Text("many".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().point_form.is_none());
+    let attributes = &line_features(&h, id)[0].attributes;
+    assert_eq!(attributes["name"], Value::Null);
+    assert_eq!(attributes["people"], Value::Null);
 }
 
 #[test]

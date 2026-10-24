@@ -5,7 +5,7 @@ use std::path::Path;
 use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
 use vale_sphere::ProjectionSpec;
-use vale_store::{GeometryKind, Layer, LayerId, Project, Units, World};
+use vale_store::{Field, FieldType, GeometryKind, Layer, LayerId, Project, Units, World};
 use vale_style::{Color, LayerStyle, MapStyle, Stroke};
 
 use crate::view::View;
@@ -159,7 +159,8 @@ impl Document {
     }
 
     /// Adds an empty layer on top. Its name is the kind and the first number
-    /// that no layer of the project has, for example "Lines 2".
+    /// that no layer of the project has, for example "Lines 2". A point
+    /// layer gets a `name` text field, and its points get labels from it.
     pub fn add_layer(&mut self, kind: GeometryKind) -> LayerId {
         let noun = match kind {
             GeometryKind::Point => "Points",
@@ -171,6 +172,10 @@ impl Document {
             .find(|name| self.project.layers().iter().all(|l| &l.name != name))
             .expect("a free number");
         let id = self.project.add_layer(name, kind, None, Vec::new());
+        if kind == GeometryKind::Point {
+            self.project
+                .add_field(id, Field::new("name", FieldType::Text));
+        }
         self.sync_entries();
         id
     }
