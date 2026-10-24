@@ -1743,6 +1743,41 @@ impl AppState {
         }
     }
 
+    /// Changes the attribute schema of a vector layer. The open point form
+    /// closes first, and each change that waits saves first. A change that
+    /// `change` makes is one undo step, and the project saves at once.
+    /// Returns the result of `change`.
+    pub fn edit_schema(&mut self, id: LayerId, change: impl FnOnce(&mut Document) -> bool) -> bool {
+        self.commit_point_form();
+        self.save_edit();
+        let changed = change(&mut self.doc);
+        if changed {
+            self.end_vector_edit(id);
+        }
+        changed
+    }
+
+    /// Ends the undo step of an edit of a vector layer and saves the
+    /// project.
+    fn end_vector_edit(&mut self, layer: LayerId) {
+        self.pipeline.forget(layer);
+        self.touch();
+        self.line_edits += 1;
+        // The next edit must not join this undo step.
+        let edits = self.edits();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        self.saved_edits = edits;
+        match save_session(session, &mut self.doc.project, &mut self.globe) {
+            Ok(()) => self.saved_at = Some(std::time::Instant::now()),
+            Err(e) => {
+                self.save_failed = true;
+                self.status = format!("The project did not save: {e}");
+            }
+        }
+    }
+
     /// Marks the map as needing a new compose.
     pub fn touch(&mut self) {
         self.dirty = true;

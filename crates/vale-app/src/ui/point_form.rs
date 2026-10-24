@@ -6,7 +6,7 @@ use vale_store::{Feature, FieldType, Geometry, GeometryKind, LayerId, Uuid, Valu
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
-use super::{AppState, Workspace, save_session};
+use super::{AppState, Workspace};
 use crate::globe::PlacedPoint;
 use crate::globe::math::{V3, dir_to_lonlat};
 
@@ -99,7 +99,7 @@ impl AppState {
             return;
         }
         if fields.is_empty() {
-            self.end_point(id);
+            self.end_vector_edit(id);
             return;
         }
         self.pipeline.forget(id);
@@ -135,36 +135,24 @@ impl AppState {
         self.doc
             .project
             .set_attributes(form.layer, form.feature, values);
-        self.end_point(form.layer);
-    }
-
-    /// Ends the undo step of a new point and saves the project.
-    fn end_point(&mut self, layer: LayerId) {
-        self.pipeline.forget(layer);
-        self.touch();
-        self.line_edits += 1;
-        // The next point must not join this undo step.
-        let edits = self.edits();
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        self.saved_edits = edits;
-        match save_session(session, &mut self.doc.project, &mut self.globe) {
-            Ok(()) => self.saved_at = Some(std::time::Instant::now()),
-            Err(e) => {
-                self.save_failed = true;
-                self.status = format!("The project did not save: {e}");
-            }
-        }
+        self.end_vector_edit(form.layer);
     }
 }
 
-/// The field that gets the focus in this frame. A press or a release of
-/// the pointer in this frame takes the focus away, so the field waits for
-/// a frame with neither.
+/// True if a field can take the focus in this frame. A press or a release
+/// of the pointer in this frame takes the focus away, so the field waits
+/// for a frame with neither.
+pub fn can_take_focus(ctx: &egui::Context) -> bool {
+    !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released())
+}
+
+/// The field that gets the focus in this frame.
 fn take_focus(ctx: &egui::Context, form: &mut PointForm) -> Option<usize> {
-    let pointer = ctx.input(|i| i.pointer.any_down() || i.pointer.any_released());
-    if pointer { None } else { form.focus.take() }
+    if can_take_focus(ctx) {
+        form.focus.take()
+    } else {
+        None
+    }
 }
 
 /// The top of the on-screen keyboard of an iPad. The app does not know the

@@ -3040,6 +3040,20 @@ fn the_screenshots_show_the_boards() {
             .unwrap();
         assert_eq!(state.pad.add_rect.is_some(), name != "layer", "{name}");
     }
+    // The page of a new field, and the page of a field.
+    for (name, page) in [("new-field", Page::NewField), ("field", Page::Field(0))] {
+        let mut state = state();
+        state.pad.open(Panel::Layers);
+        let layers = state.doc.project.layers();
+        let rivers = layers.iter().find(|l| l.name == "Rivers").unwrap().id;
+        state.pad.layer = Some(LayerRef::Vector(rivers));
+        state.pad.page = Some(page);
+        let (image, state) = headless::ui_png(state, (1194.0, 834.0), 1.0).unwrap();
+        image
+            .save(format!("../../target/app/test-pad-{name}.png"))
+            .unwrap();
+        assert_eq!(state.pad.page, Some(page), "{name}");
+    }
 }
 
 /// Types text into the field that has the focus, in place of its text.
@@ -5512,4 +5526,175 @@ fn a_new_point_snaps_to_a_vertex() {
         panic!("not a point");
     };
     assert_eq!(points[0], target);
+}
+
+/// The name and the type of each field of a layer.
+fn schema(layer: &vale_store::Layer) -> Vec<(String, vale_store::FieldType)> {
+    layer
+        .fields
+        .iter()
+        .map(|f| (f.name.clone(), f.kind))
+        .collect()
+}
+
+fn pad_schema(h: &Pad, id: vale_store::LayerId) -> Vec<(String, vale_store::FieldType)> {
+    schema(h.state().doc.layer(id).unwrap())
+}
+
+#[test]
+fn you_add_rename_and_remove_a_field_and_the_file_has_the_same_fields() {
+    use vale_app::ui::pad::fields::{ADD, ADD_FIELD, DELETE_FIELD, FIELD_NAME, NEW_FIELD};
+    use vale_store::FieldType::{Integer, Text};
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    tap(&mut h, "Layers");
+    tap(&mut h, ADD_LAYER);
+    tap(&mut h, "Points");
+    let id = vector(&h, "Points 1");
+    assert_eq!(pad_schema(&h, id), [("name".to_string(), Text)]);
+    h.state_mut().save_waiting().unwrap();
+    let saved = saves(&h);
+
+    tap(&mut h, ADD_FIELD);
+    assert_eq!(h.state().pad.page, Some(Page::NewField));
+    assert!(control(&h, &format!("Close {NEW_FIELD}")).is_some());
+    // The name has the focus, so the on-screen keyboard types into it at
+    // once.
+    h.event(egui::Event::Text("population".into()));
+    h.run_steps(2);
+    tap(&mut h, "Whole number");
+    tap(&mut h, ADD);
+    assert_eq!(h.state().pad.page, None);
+    let fields = [
+        ("name".to_string(), Text),
+        ("population".to_string(), Integer),
+    ];
+    assert_eq!(pad_schema(&h, id), fields);
+    assert_eq!(saves(&h), saved + 1);
+
+    tap(&mut h, "population");
+    assert_eq!(h.state().pad.page, Some(Page::Field(1)));
+    assert!(control(&h, "Back to Points 1").is_some());
+    type_text(&mut h, FIELD_NAME, "people");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let fields = [("name".to_string(), Text), ("people".to_string(), Integer)];
+    assert_eq!(pad_schema(&h, id), fields);
+    assert_eq!(saves(&h), saved + 2);
+    assert!(control(&h, "Close people").is_some());
+    tap(&mut h, "Back to Points 1");
+
+    // Return in the name adds the field.
+    tap(&mut h, ADD_FIELD);
+    h.event(egui::Event::Text("height".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(h.state().pad.page, None);
+    assert_eq!(pad_schema(&h, id).len(), 3);
+    assert_eq!(saves(&h), saved + 3);
+    tap(&mut h, "height");
+    tap(&mut h, DELETE_FIELD);
+    assert_eq!(h.state().pad.page, None);
+    assert_eq!(pad_schema(&h, id), fields);
+    assert_eq!(saves(&h), saved + 4);
+
+    h.state_mut().save_waiting().unwrap();
+    let project = vale_store::ProjectFile::open(&dir.path().join("w.gpkg"))
+        .unwrap()
+        .1;
+    assert_eq!(schema(project.layer(id).unwrap()), fields);
+
+    tap(&mut h, "Undo");
+    let names = h.state().doc.layer(id).unwrap().field_names();
+    assert_eq!(names, ["name", "people", "height"]);
+}
+
+#[test]
+fn a_name_that_is_not_free_turns_add_off() {
+    use vale_app::ui::pad::fields::{ADD, ADD_FIELD, FIELD_NAME};
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    tap(&mut h, ADD_LAYER);
+    tap(&mut h, "Points");
+    let id = vector(&h, "Points 1");
+    tap(&mut h, ADD_FIELD);
+    // A blank name is not free.
+    assert!(control(&h, ADD).is_none());
+    for name in ["Name", "fid", "GEOM", " "] {
+        type_text(&mut h, FIELD_NAME, name);
+        assert!(control(&h, ADD).is_none(), "{name}");
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert_eq!(h.state().pad.page, Some(Page::NewField), "{name}");
+    }
+    type_text(&mut h, FIELD_NAME, "names");
+    assert!(control(&h, ADD).is_some());
+    // A default that is not a whole number turns Add off.
+    tap(&mut h, "Whole number");
+    type_text(&mut h, vale_app::ui::pad::fields::DEFAULT_VALUE, "many");
+    assert!(control(&h, ADD).is_none());
+    type_text(&mut h, vale_app::ui::pad::fields::DEFAULT_VALUE, "12");
+    tap(&mut h, ADD);
+    let layer = h.state().doc.layer(id).unwrap();
+    assert_eq!(layer.field_names(), ["name", "names"]);
+    assert_eq!(layer.fields[1].default, vale_store::Value::Number(12.0));
+}
+
+#[test]
+fn a_rename_of_the_label_field_keeps_the_labels() {
+    use vale_app::pipeline::{Pipeline, Quality, fonts};
+    use vale_app::ui::pad::fields::FIELD_NAME;
+    let placed = |doc: &Document| {
+        let mut fonts = fonts().unwrap();
+        let mut pipeline = Pipeline::new();
+        let composed = pipeline.compose(doc, (1280.0, 800.0), &mut fonts, Quality::Final, None);
+        composed.unwrap().labels.placed
+    };
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    let before = placed(&h.state().doc);
+    assert!(before > 0);
+    let index = h.state().doc.layer(places).unwrap().field_index("name");
+    tap(&mut h, "Layers");
+    h.state_mut().pad.layer = Some(LayerRef::Vector(places));
+    h.state_mut().pad.page = Some(Page::Field(index.unwrap()));
+    h.run_steps(2);
+    type_text(&mut h, FIELD_NAME, "title");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let doc = &h.state().doc;
+    assert!(doc.layer(places).unwrap().field("title").is_some());
+    let label = &doc.entry(places).unwrap().style.label;
+    assert_eq!(label.field.as_deref(), Some("title"));
+    assert_eq!(placed(doc), before);
+    // A rename of the priority field keeps it too.
+    let doc = &mut h.state_mut().doc;
+    assert!(doc.rename_field(places, "pop_max", "people"));
+    let label = &doc.entry(places).unwrap().style.label;
+    assert_eq!(label.priority_field.as_deref(), Some("people"));
+}
+
+#[test]
+fn the_pages_of_the_fields_have_large_controls() {
+    use vale_app::ui::pad::fields::ADD_FIELD;
+    for size in BOARDS {
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        tap(&mut h, ADD_LAYER);
+        tap(&mut h, "Points");
+        check_controls(&h, &format!("{size:?} on the panel of a point layer"));
+        tap(&mut h, ADD_FIELD);
+        check_controls(&h, &format!("{size:?} on the page of a new field"));
+        tap(&mut h, "True or false");
+        // A sheet shows the choices after a scroll.
+        let sheet = h.state().pad.rects.unwrap().sheet.is_some();
+        assert!(sheet || control(&h, "True").is_some(), "{size:?}");
+        check_controls(&h, &format!("{size:?} with a true or false field"));
+        let id = vector(&h, "Points 1");
+        h.state_mut().pad.page = Some(Page::Field(0));
+        h.run_steps(2);
+        check_controls(&h, &format!("{size:?} on the page of a field"));
+        assert_eq!(h.state().doc.layer(id).unwrap().field_names(), ["name"]);
+    }
 }

@@ -275,6 +275,23 @@ impl Document {
         !name.is_empty() && self.project.rename_layer(id, name.to_string())
     }
 
+    /// Gives a field of a vector layer a new name. The label field and the
+    /// priority field of the style keep the field.
+    pub fn rename_field(&mut self, id: LayerId, old: &str, new: &str) -> bool {
+        if !self.project.rename_field(id, old, new) {
+            return false;
+        }
+        if let Some(entry) = self.entry_mut(id) {
+            let label = &mut entry.style.label;
+            for field in [&mut label.field, &mut label.priority_field] {
+                if field.as_deref() == Some(old) {
+                    *field = Some(new.to_string());
+                }
+            }
+        }
+        true
+    }
+
     pub fn set_visible(&mut self, id: LayerId, visible: bool) -> bool {
         self.project.set_layer_visible(id, visible)
     }
