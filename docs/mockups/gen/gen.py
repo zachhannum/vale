@@ -14,6 +14,8 @@ FONT = "'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif"
 
 OUTLINE = [(190, 210), (1330, 210), (1330, 900), (1480, 985), (1480, 1500), (1330, 1585),
            (1330, 1840), (190, 1840), (190, 1000), (20, 915), (20, 480), (190, 395)]
+# The map frame is a box. The map content is placed over OUTLINE and cut at the box.
+FRAME = [(190, 210), (1330, 210), (1330, 1840), (190, 1840)]
 GLOBE = (1300, 1800, 150)
 
 
@@ -516,20 +518,20 @@ for lon in range(16, 46, 2):
     p = [proj(lon, 38 + t * 0.25) for t in range(0, 69)]
     grat.append(p)
     for a in range(len(p) - 1):
-        if inside(*p[a]) != inside(*p[a + 1]) and 21 < lon < 39:
+        if inside(*p[a], FRAME) != inside(*p[a + 1], FRAME) and 21 < lon < 39:
             x, y = p[a]
             glabels.append((x, y - 9 if y < CY else y + 18, 'middle', '%d°E' % lon))
 for lat in range(38, 56, 2):
     p = [proj(14 + t * 0.25, lat) for t in range(0, 129)]
     grat.append(p)
     for a in range(len(p) - 1):
-        if inside(*p[a]) != inside(*p[a + 1]):
+        if inside(*p[a], FRAME) != inside(*p[a + 1], FRAME):
             x, y = p[a]
             glabels.append((x - 7 if x < CX else x + 7, y + 4, 'end' if x < CX else 'start', '%d°N' % lat))
 
 # ---------- base svg ----------
 PAPER = '#f3efdf'
-op = pathd(OUTLINE, True)
+op = pathd(FRAME, True)
 b = ['<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" viewBox="0 0 %d %d">' % (PW, PH),
      '<defs><clipPath id="o"><path d="%s"/></clipPath></defs>' % op,
      '<g clip-path="url(#o)">', '<rect width="%d" height="%d" fill="#95b3c0"/>' % (PW, PH)]
@@ -658,7 +660,7 @@ BIG = []
 PNAMES = ['MARROWMARK', 'HALDANE', 'OSTRAVELLE', 'GREYWOOD', 'SABLEMOOR', 'CALLOWAY']
 pinfo = []
 for s in range(len(seeds)):
-    cs = [c for c in range(0, GW * GH, 3) if pid[c] == s and inside(*cell_xy(c))]
+    cs = [c for c in range(0, GW * GH, 3) if pid[c] == s and inside(*cell_xy(c), FRAME)]
     if len(cs) < 60:
         continue
     xs = sorted(cell_xy(c)[0] for c in cs)
@@ -687,6 +689,8 @@ for rg, nm in zip(RIDGES, RNAMES):
     if x1 > x2:
         x1, y1, x2, y2 = x2, y2, x1, y1
     mxr, myr = rg[len(rg) // 2]
+    if any(math.hypot(mxr - px, myr - py) < 160 for _, px, py in pinfo):
+        continue
     bow = ((myr - (y1 + y2) / 2)) * .5
     BIG.append(spaced(nm, x1 + 20, y1, x2 - 20, y2, bow * .6, 13, '#3a3630', maxls=13))
 RIVN = ['Aldwen', 'Sable', 'Meriden', 'Tarrow', 'Ysel', 'Corr']
@@ -707,6 +711,8 @@ for k, (nm, p) in enumerate(searoutes):
         continue
     n = len(p)
     part = p[int(n * .3):int(n * .75)]
+    if not all(inside(x, y, FRAME) for x, y in part):
+        continue
     if part[0][0] > part[-1][0]:
         part = part[::-1]
     key = 's%d' % k
@@ -734,6 +740,7 @@ L.append('<g font-size="9.500" font-style="italic" fill="#2b6a82">' + ''.join(RT
 L.append('<g font-size="9.500" font-style="italic" fill="#3a302a">' + ''.join(PK) + '</g>')
 L.append(''.join(S))
 L.append('<g fill="#2a2420">' + ''.join(T) + '</g>')
+GI = len(L)
 L.append('<g font-size="12" fill="#3c3a35">' + ''.join('<text x="%.1f" y="%.1f" text-anchor="%s">%s</text>' % g for g in glabels) + '</g>')
 # furniture
 LMAP = len(L)
@@ -790,8 +797,13 @@ for clon, clat, rad in ((16, 44, 30), (-22, 18, 15), (68, 22, 15), (30, -14, 15)
         la = clat + rr * math.sin(th)
         pts.append(orth(clon + rr * math.cos(th) / max(.3, math.cos(math.radians(max(-80, min(80, la))))), max(-88, min(88, la)))[:2])
     gl.append('<path d="%s" fill="#a9b79a" stroke="#3f8296" stroke-width=".8"/>' % pathd(chaikin(pts, 2, True), True))
-box = [(23 + t, 39) for t in range(15)] + [(37, 39 + t) for t in range(15)] + [(37 - t, 53) for t in range(15)] + [(23, 53 - t) for t in range(15)]
-gl.append('<path d="%s" fill="#c8594a" fill-opacity=".85" stroke="#8c2f24" stroke-width="1"/>' % pathd([orth(a, b2)[:2] for a, b2 in box], True))
+# The locator map is a map in its own frame. A style override of that map fills the polity of the main map.
+pol = []
+for t in range(48):
+    th = t / 48 * 2 * math.pi
+    rr = 6.5 * (1 + 0.18 * math.sin(3 * th + 1) + 0.1 * math.sin(5 * th))
+    pol.append(orth(30 + rr * math.cos(th) / math.cos(math.radians(46)), 46 + rr * math.sin(th))[:2])
+gl.append('<path d="%s" fill="#c8594a" fill-opacity=".85" stroke="#8c2f24" stroke-width="1"/>' % pathd(chaikin(pol, 2, True), True))
 gl.append('<g fill="none" stroke="#5d6e72" stroke-width=".8">')
 for lon in range(-180, 180, 30):
     gl.append('<path d="%s"/>' % gline([(lon, la) for la in range(-90, 91, 3)]))
@@ -800,7 +812,7 @@ for lat in range(-60, 90, 30):
 gl.append('</g></g>')
 L += gl
 L.append('</svg>')
-open(OUT + '/plate-labels.svg', 'w').write('\n'.join(L[:LMAP] + ['</svg>']))
+open(OUT + '/plate-labels.svg', 'w').write('\n'.join([L[0], '<clipPath id="lf"><path d="%s"/></clipPath><g clip-path="url(#lf)">' % op] + L[1:GI] + ['</g>'] + L[GI:LMAP] + ['</svg>']))
 open(OUT + '/page-over.svg', 'w').write('\n'.join([L[0]] + L[LMAP:]))
 both = '\n'.join(b[:-1]) + '\n' + '\n'.join(L[1:])
 open(OUT + '/../gen/preview.svg', 'w').write(both.replace('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" viewBox="0 0 %d %d">' % (PW, PH), '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" viewBox="0 0 %d %d" font-family="%s">' % (PW, PH, FONT), 1))
