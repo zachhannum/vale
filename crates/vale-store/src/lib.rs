@@ -390,9 +390,9 @@ pub struct RasterId(pub u32);
 #[derive(Clone, Debug, PartialEq)]
 pub struct Raster {
     pub id: RasterId,
-    /// How much the raster hides the layers below it, from 0 to 1.
+    /// How much the raster hides the layers below it, from 0 to 1. A copy of the style of the layer.
     pub opacity: f32,
-    /// How the globe colors the values.
+    /// How the globe colors the values. A copy of the style of the layer.
     pub display: RasterDisplay,
     /// The number of pixels along the edge of a face.
     pub face_size: u32,
@@ -404,11 +404,13 @@ pub struct Raster {
     pub value_max: f64,
     /// The pixel of each place that has no tile.
     pub base: u16,
-    /// The stops at the edges of the bands, in ascending order of value. An
-    /// empty list gives the default bands of the range.
+    /// The stops at the edges of the bands, in ascending order of value. A
+    /// copy of the style of the layer. An empty list gives the default bands
+    /// of the range.
     pub stops: Vec<Stop>,
     /// The color of each band, from the lowest band up. There is one color
-    /// fewer than stops. Band `i` runs from stop `i` to stop `i + 1`.
+    /// fewer than stops. Band `i` runs from stop `i` to stop `i + 1`. A copy
+    /// of the style of the layer.
     pub colors: Vec<Rgb>,
     /// How the globe smooths the values by the scale.
     pub smoothing: Smoothing,

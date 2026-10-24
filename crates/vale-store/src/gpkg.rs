@@ -29,7 +29,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 20;
+pub const FORMAT_VERSION: u32 = 21;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -54,6 +54,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v18,
     v19,
     v20,
+    v21,
 ];
 
 /// `GPKG` in ASCII.
@@ -854,6 +855,11 @@ fn v20(tx: &Transaction) -> rusqlite::Result<()> {
     if count == 0 {
         tx.execute_batch("ALTER TABLE vale_layer ADD COLUMN style TEXT")?;
     }
+    Ok(())
+}
+
+/// The style of each layer holds the colors of its raster. The app moves the colors of the raster records into the styles when it opens an older file, so the step changes no table.
+fn v21(_tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
