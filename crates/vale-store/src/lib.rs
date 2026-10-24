@@ -329,6 +329,9 @@ pub struct Layer {
     pub fields: Vec<Field>,
     /// A feature ID is its index here.
     pub features: Vec<Feature>,
+    /// The style of the layer as JSON. `vale-store` does not read it. `None`
+    /// means the default style.
+    pub style: Option<String>,
 }
 
 impl Layer {
@@ -387,9 +390,9 @@ pub struct RasterId(pub u32);
 #[derive(Clone, Debug, PartialEq)]
 pub struct Raster {
     pub id: RasterId,
-    /// How much the raster hides the layers below it, from 0 to 1.
+    /// How much the raster hides the layers below it, from 0 to 1. A copy of the style of the layer.
     pub opacity: f32,
-    /// How the globe colors the values.
+    /// How the globe colors the values. A copy of the style of the layer.
     pub display: RasterDisplay,
     /// The number of pixels along the edge of a face.
     pub face_size: u32,
@@ -401,11 +404,13 @@ pub struct Raster {
     pub value_max: f64,
     /// The pixel of each place that has no tile.
     pub base: u16,
-    /// The stops at the edges of the bands, in ascending order of value. An
-    /// empty list gives the default bands of the range.
+    /// The stops at the edges of the bands, in ascending order of value. A
+    /// copy of the style of the layer. An empty list gives the default bands
+    /// of the range.
     pub stops: Vec<Stop>,
     /// The color of each band, from the lowest band up. There is one color
-    /// fewer than stops. Band `i` runs from stop `i` to stop `i + 1`.
+    /// fewer than stops. Band `i` runs from stop `i` to stop `i + 1`. A copy
+    /// of the style of the layer.
     pub colors: Vec<Rgb>,
     /// How the globe smooths the values by the scale.
     pub smoothing: Smoothing,
@@ -714,6 +719,7 @@ impl Project {
             source: None,
             fields: Vec::new(),
             features: Vec::new(),
+            style: None,
         };
         self.next_id += 1;
         self.layers.insert(top.map_or(0, |i| i + 1), layer);
@@ -892,6 +898,7 @@ impl Project {
             source,
             fields,
             features,
+            style: None,
         });
         id
     }
@@ -921,6 +928,11 @@ impl Project {
     /// Gives a layer a new name.
     pub fn rename_layer(&mut self, id: LayerId, name: String) -> bool {
         self.layer_mut(id).map(|l| l.name = name).is_some()
+    }
+
+    /// Sets the style JSON of a layer.
+    pub fn set_layer_style(&mut self, id: LayerId, style: Option<String>) -> bool {
+        self.layer_mut(id).map(|l| l.style = style).is_some()
     }
 
     /// Shows or hides a layer.

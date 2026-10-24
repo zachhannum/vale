@@ -29,7 +29,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 19;
+pub const FORMAT_VERSION: u32 = 21;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -53,6 +53,8 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v17,
     v18,
     v19,
+    v20,
+    v21,
 ];
 
 /// `GPKG` in ASCII.
@@ -333,6 +335,25 @@ impl ProjectFile {
              VALUES (1, ?1, ?2, ?3)",
             params![thumbnail.width, thumbnail.height, data],
         )?;
+        Ok(())
+    }
+
+    /// Writes the style of each of these layers. This is not an edit, so it
+    /// gets no undo step. An ID of no layer is skipped.
+    pub fn set_styles(&mut self, styles: &[(LayerId, String)]) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        for (id, style) in styles {
+            tx.execute(
+                "UPDATE vale_layer SET style = ?2 WHERE id = ?1",
+                params![id.0, style],
+            )?;
+        }
+        tx.commit()?;
+        for (id, style) in styles {
+            if let Some(layer) = self.project.layers.iter_mut().find(|l| l.id == *id) {
+                layer.style = Some(style.clone());
+            }
+        }
         Ok(())
     }
 
@@ -824,6 +845,22 @@ fn v19(tx: &Transaction) -> rusqlite::Result<()> {
         }
     }
     tx.execute_batch("UPDATE vale_field SET kind = 'text' WHERE kind = 'mixed'")
+}
+
+/// The style of a layer. The layers of an older file have no style. A file
+/// of version 19 can already have the column.
+fn v20(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_layer') WHERE name = 'style'";
+    let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
+    if count == 0 {
+        tx.execute_batch("ALTER TABLE vale_layer ADD COLUMN style TEXT")?;
+    }
+    Ok(())
+}
+
+/// The style of each layer holds the colors of its raster. The app moves the colors of the raster records into the styles when it opens an older file, so the step changes no table.
+fn v21(_tx: &Transaction) -> rusqlite::Result<()> {
+    Ok(())
 }
 
 /// The display of a raster. The rasters of an older file show bands.
@@ -1342,8 +1379,9 @@ fn write_layer(
     raster: Option<RasterId>,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO vale_layer (id, position, name, kind, table_name, source, visible, raster_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO vale_layer
+           (id, position, name, kind, table_name, source, visible, raster_id, style)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             layer.id.0,
             position as i64,
@@ -1352,7 +1390,8 @@ fn write_layer(
             table,
             layer.source,
             layer.visible,
-            raster.map(|id| id.0)
+            raster.map(|id| id.0),
+            layer.style
         ],
     )?;
     Ok(())
@@ -1786,7 +1825,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
     let rasters = load_rasters(conn)?;
     let mut layers = Vec::new();
     let mut rows = conn.prepare(
-        "SELECT id, name, kind, table_name, source, visible, raster_id FROM vale_layer
+        "SELECT id, name, kind, table_name, source, visible, raster_id, style FROM vale_layer
          ORDER BY position",
     )?;
     let mut rows = rows.query([])?;
@@ -1817,6 +1856,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
             source: r.get(4)?,
             fields: Vec::new(),
             features: Vec::new(),
+            style: r.get(7)?,
         };
         if let LayerKind::Vector(geometry) = kind {
             load_features(conn, &mut layer, geometry, &table)?;
@@ -2379,6 +2419,61 @@ mod tests {
         assert_eq!(layer.field("capital").unwrap().default, Value::Bool(false));
         assert!(file.undo().unwrap().is_some());
         assert_eq!(file.project(), &earlier);
+    }
+
+    #[test]
+    fn the_file_keeps_the_style_of_a_layer_and_undo_puts_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        project.layers[0].style = Some(r#"{"color":"red"}"#.into());
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let earlier = project.clone();
+        project.layers[0].style = Some(r#"{"color":"blue"}"#.into());
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert!(file.undo().unwrap().is_some());
+        assert_eq!(file.project(), &earlier);
+    }
+
+    #[test]
+    fn set_styles_writes_the_style_with_no_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert!(!file.can_undo());
+        file.set_styles(&[(roads, "{}".into())]).unwrap();
+        assert!(!file.can_undo());
+        let style = |p: &Project, id| p.layer(id).unwrap().style.clone();
+        assert_eq!(style(file.project(), roads).as_deref(), Some("{}"));
+        drop(file);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert!(!file.can_undo());
+        assert_eq!(style(&loaded, towns), None);
+        assert_eq!(style(&loaded, roads).as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn a_layer_of_version_19_has_no_style() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch("ALTER TABLE vale_layer DROP COLUMN style")
+            .unwrap();
+        drop(conn);
+        set_format_version(&dir, 19);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded.layer(towns).unwrap().style, None);
     }
 
     #[test]

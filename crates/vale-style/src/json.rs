@@ -1,0 +1,370 @@
+//! The JSON form of a layer style.
+//!
+//! A constant property is a bare value: hex text for a color, a number for a size. A property that is an expression is an object with `expr` and `fallback`. The reader ignores unknown keys.
+
+use std::fmt;
+
+use serde_json::{Map, Value as Json, json};
+use vale_store::{RasterDisplay, Rgb, Stop, StopLine};
+
+use crate::expr::{Filter, FromValue, Property};
+use crate::{
+    Color, LabelStyle, LayerStyle, RasterSymbolizer, Rule, StrokeSymbolizer, Style, Symbolizer,
+};
+
+/// The version of the style JSON that this build writes and reads.
+pub const STYLE_VERSION: u64 = 1;
+
+/// Why a style JSON did not load.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StyleError {
+    /// The text is not JSON.
+    Json(String),
+    /// The version is missing or is not one that this build reads.
+    Version(Option<u64>),
+    /// The JSON does not have the form of a style.
+    Invalid(String),
+}
+
+impl fmt::Display for StyleError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            StyleError::Json(e) => write!(f, "the style is not JSON: {e}"),
+            StyleError::Version(None) => f.write_str("the style has no version"),
+            StyleError::Version(Some(v)) => {
+                write!(f, "style version {v} is newer than version {STYLE_VERSION}")
+            }
+            StyleError::Invalid(e) => write!(f, "the style is not valid: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for StyleError {}
+
+fn invalid(what: impl Into<String>) -> StyleError {
+    StyleError::Invalid(what.into())
+}
+
+impl LayerStyle {
+    /// The JSON text. The same style gives the same text.
+    pub fn to_json(&self) -> String {
+        let rules: Vec<Json> = self.style.rules.iter().map(rule_json).collect();
+        let l = &self.label;
+        let label = json!({
+            "enabled": l.enabled,
+            "field": l.field,
+            "priority_field": l.priority_field,
+            "size": l.size,
+            "color": l.color.to_hex(),
+            "italic": l.italic,
+        });
+        json!({ "version": STYLE_VERSION, "rules": rules, "label": label }).to_string()
+    }
+
+    pub fn from_json(text: &str) -> Result<LayerStyle, StyleError> {
+        let root: Json = serde_json::from_str(text).map_err(|e| StyleError::Json(e.to_string()))?;
+        let root = root.as_object().ok_or_else(|| invalid("not an object"))?;
+        match root.get("version").and_then(Json::as_u64) {
+            Some(STYLE_VERSION) => {}
+            v => return Err(StyleError::Version(v)),
+        }
+        let rules = root
+            .get("rules")
+            .and_then(Json::as_array)
+            .ok_or_else(|| invalid("no rules"))?
+            .iter()
+            .map(read_rule)
+            .collect::<Result<_, _>>()?;
+        let label = read_label(object(root, "label")?)?;
+        Ok(LayerStyle {
+            style: Style { rules },
+            label,
+        })
+    }
+}
+
+fn rule_json(r: &Rule) -> Json {
+    let mut m = Map::new();
+    m.insert("name".into(), json!(r.name));
+    let filter = r.filter.source().map(|s| s.text()).unwrap_or("");
+    m.insert("filter".into(), json!(filter));
+    if let Some(v) = r.min_scale {
+        m.insert("min_scale".into(), json!(v));
+    }
+    if let Some(v) = r.max_scale {
+        m.insert("max_scale".into(), json!(v));
+    }
+    let symbolizers: Vec<Json> = r.symbolizers.iter().map(symbolizer_json).collect();
+    m.insert("symbolizers".into(), Json::Array(symbolizers));
+    Json::Object(m)
+}
+
+fn symbolizer_json(s: &Symbolizer) -> Json {
+    match s {
+        Symbolizer::Fill { color } => json!({ "type": "fill", "color": color_json(color) }),
+        Symbolizer::Raster(r) => raster_json(r),
+        Symbolizer::Stroke(s) => {
+            let mut m = stroke_json(s);
+            m.insert("type".into(), json!("stroke"));
+            Json::Object(m)
+        }
+        Symbolizer::Marker {
+            radius,
+            fill,
+            stroke,
+        } => json!({
+            "type": "marker",
+            "radius": number_json(radius),
+            "fill": fill.as_ref().map(color_json),
+            "stroke": stroke.as_ref().map(|s| Json::Object(stroke_json(s))),
+        }),
+    }
+}
+
+fn stroke_json(s: &StrokeSymbolizer) -> Map<String, Json> {
+    let mut m = Map::new();
+    m.insert("color".into(), color_json(&s.color));
+    m.insert("width".into(), number_json(&s.width));
+    m
+}
+
+fn property_json<T: FromValue + Clone>(p: &Property<T>, fallback: Json) -> Json {
+    match p.source() {
+        None => fallback,
+        Some(s) => json!({ "expr": s.text(), "fallback": fallback }),
+    }
+}
+
+fn color_json(p: &Property<Color>) -> Json {
+    property_json(p, json!(p.fallback.to_hex()))
+}
+
+fn number_json(p: &Property<f64>) -> Json {
+    property_json(p, json!(p.fallback))
+}
+
+fn object<'a>(m: &'a Map<String, Json>, key: &str) -> Result<&'a Map<String, Json>, StyleError> {
+    m.get(key)
+        .and_then(Json::as_object)
+        .ok_or_else(|| invalid(format!("no {key}")))
+}
+
+fn optional_text(m: &Map<String, Json>, key: &str) -> Option<String> {
+    m.get(key).and_then(Json::as_str).map(str::to_string)
+}
+
+fn read_rule(j: &Json) -> Result<Rule, StyleError> {
+    let m = j
+        .as_object()
+        .ok_or_else(|| invalid("a rule is not an object"))?;
+    let symbolizers = m
+        .get("symbolizers")
+        .and_then(Json::as_array)
+        .ok_or_else(|| invalid("a rule has no symbolizers"))?
+        .iter()
+        .map(read_symbolizer)
+        .collect::<Result<_, _>>()?;
+    Ok(Rule {
+        name: optional_text(m, "name").unwrap_or_default(),
+        filter: Filter::new(m.get("filter").and_then(Json::as_str).unwrap_or("")),
+        min_scale: m.get("min_scale").and_then(Json::as_f64),
+        max_scale: m.get("max_scale").and_then(Json::as_f64),
+        symbolizers,
+    })
+}
+
+fn read_symbolizer(j: &Json) -> Result<Symbolizer, StyleError> {
+    let m = j
+        .as_object()
+        .ok_or_else(|| invalid("a symbolizer is not an object"))?;
+    match m.get("type").and_then(Json::as_str) {
+        Some("fill") => Ok(Symbolizer::Fill {
+            color: read_color(m.get("color"))?,
+        }),
+        Some("stroke") => Ok(Symbolizer::Stroke(read_stroke(m)?)),
+        Some("marker") => Ok(Symbolizer::Marker {
+            radius: read_number(m.get("radius"))?,
+            fill: match m.get("fill") {
+                None | Some(Json::Null) => None,
+                c => Some(read_color(c)?),
+            },
+            stroke: match m.get("stroke") {
+                None | Some(Json::Null) => None,
+                Some(Json::Object(s)) => Some(read_stroke(s)?),
+                Some(_) => return Err(invalid("a marker stroke is not an object")),
+            },
+        }),
+        Some("raster") => Ok(Symbolizer::Raster(read_raster(m)?)),
+        Some(t) => Err(invalid(format!("unknown symbolizer {t}"))),
+        None => Err(invalid("a symbolizer has no type")),
+    }
+}
+
+fn read_stroke(m: &Map<String, Json>) -> Result<StrokeSymbolizer, StyleError> {
+    Ok(StrokeSymbolizer {
+        color: read_color(m.get("color"))?,
+        width: read_number(m.get("width"))?,
+    })
+}
+
+/// Reads a bare value or an object with `expr` and `fallback`.
+fn read_property<T: FromValue + Clone>(
+    j: Option<&Json>,
+    constant: impl Fn(&Json) -> Option<T>,
+) -> Result<Property<T>, StyleError> {
+    let j = j.ok_or_else(|| invalid("a property is missing"))?;
+    if let Some(m) = j.as_object() {
+        let fallback = m
+            .get("fallback")
+            .and_then(&constant)
+            .ok_or_else(|| invalid("a property has no valid fallback"))?;
+        let expr = m
+            .get("expr")
+            .and_then(Json::as_str)
+            .ok_or_else(|| invalid("a property has no expr"))?;
+        return Ok(Property::expression(expr, fallback));
+    }
+    constant(j)
+        .map(Property::constant)
+        .ok_or_else(|| invalid(format!("{j} is not a valid value")))
+}
+
+fn read_color(j: Option<&Json>) -> Result<Property<Color>, StyleError> {
+    read_property(j, |v| v.as_str().and_then(Color::from_hex))
+}
+
+fn read_number(j: Option<&Json>) -> Result<Property<f64>, StyleError> {
+    read_property(j, Json::as_f64)
+}
+
+fn read_label(m: &Map<String, Json>) -> Result<LabelStyle, StyleError> {
+    let color = m
+        .get("color")
+        .and_then(Json::as_str)
+        .and_then(Color::from_hex)
+        .ok_or_else(|| invalid("the label has no valid color"))?;
+    Ok(LabelStyle {
+        enabled: m.get("enabled").and_then(Json::as_bool).unwrap_or(false),
+        field: optional_text(m, "field"),
+        priority_field: optional_text(m, "priority_field"),
+        size: m.get("size").and_then(Json::as_f64).unwrap_or(11.0),
+        color,
+        italic: m.get("italic").and_then(Json::as_bool).unwrap_or(false),
+    })
+}
+
+fn rgb_json(c: Rgb) -> Json {
+    json!(Color::rgb(c[0], c[1], c[2]).to_hex())
+}
+
+fn read_rgb(j: Option<&Json>) -> Option<Rgb> {
+    let c = Color::from_hex(j?.as_str()?)?;
+    (c.a == 255).then_some([c.r, c.g, c.b])
+}
+
+fn display_name(d: RasterDisplay) -> &'static str {
+    match d {
+        RasterDisplay::Bands => "bands",
+        RasterDisplay::Gradient => "gradient",
+        RasterDisplay::Grey => "grey",
+    }
+}
+
+fn raster_json(r: &RasterSymbolizer) -> Json {
+    let stops: Vec<Json> = r
+        .stops
+        .iter()
+        .map(|s| {
+            let l = &s.line;
+            json!({
+                "value": s.value,
+                "line": {
+                    "on": l.on,
+                    "weight": f64::from(l.weight),
+                    "color": rgb_json(l.color),
+                    "darker": l.darker,
+                    "darken": f64::from(l.darken),
+                },
+            })
+        })
+        .collect();
+    let colors: Vec<Json> = r.colors.iter().map(|c| rgb_json(*c)).collect();
+    json!({
+        "type": "raster",
+        "display": display_name(r.display),
+        "opacity": f64::from(r.opacity),
+        "stops": stops,
+        "colors": colors,
+    })
+}
+
+fn read_line(j: Option<&Json>) -> Result<StopLine, StyleError> {
+    let d = StopLine::default();
+    let Some(j) = j else { return Ok(d) };
+    let m = j
+        .as_object()
+        .ok_or_else(|| invalid("a stop line is not an object"))?;
+    let number = |k: &str, d: f32| m.get(k).and_then(Json::as_f64).map_or(d, |v| v as f32);
+    let flag = |k: &str, d: bool| m.get(k).and_then(Json::as_bool).unwrap_or(d);
+    Ok(StopLine {
+        on: flag("on", d.on),
+        weight: number("weight", d.weight),
+        color: match m.get("color") {
+            None => d.color,
+            c => read_rgb(c).ok_or_else(|| invalid("a stop line has no valid color"))?,
+        },
+        darker: flag("darker", d.darker),
+        darken: number("darken", d.darken),
+    })
+}
+
+fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
+    let display = match m.get("display").and_then(Json::as_str) {
+        Some("bands") => RasterDisplay::Bands,
+        Some("gradient") => RasterDisplay::Gradient,
+        Some("grey") => RasterDisplay::Grey,
+        _ => return Err(invalid("a raster has no valid display")),
+    };
+    let opacity = m.get("opacity").and_then(Json::as_f64).unwrap_or(1.0) as f32;
+    let opacity = if opacity.is_nan() {
+        1.0
+    } else {
+        opacity.clamp(0.0, 1.0)
+    };
+    let stops = m
+        .get("stops")
+        .and_then(Json::as_array)
+        .ok_or_else(|| invalid("a raster has no stops"))?
+        .iter()
+        .map(|j| {
+            let value = j
+                .get("value")
+                .and_then(Json::as_f64)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| invalid("a stop has no valid value"))?;
+            Ok(Stop {
+                value,
+                line: read_line(j.get("line"))?,
+            })
+        })
+        .collect::<Result<Vec<_>, StyleError>>()?;
+    if stops.len() < 2 || stops.windows(2).any(|w| w[0].value >= w[1].value) {
+        return Err(invalid("the stops of a raster are not in ascending order"));
+    }
+    let colors = m
+        .get("colors")
+        .and_then(Json::as_array)
+        .ok_or_else(|| invalid("a raster has no colors"))?
+        .iter()
+        .map(|j| read_rgb(Some(j)).ok_or_else(|| invalid("a band has no valid color")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if colors.len() + 1 != stops.len() {
+        return Err(invalid("a raster needs one color fewer than stops"));
+    }
+    Ok(RasterSymbolizer {
+        display,
+        opacity,
+        stops,
+        colors,
+    })
+}

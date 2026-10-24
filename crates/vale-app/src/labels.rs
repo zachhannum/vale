@@ -64,12 +64,6 @@ pub fn place(
         });
         class_colors.push(label.color);
 
-        let stroke_width = style.stroke.map_or(0.0, |s| s.width);
-        let symbol_radius = if style.point_radius > 0.0 {
-            style.point_radius + stroke_width
-        } else {
-            0.0
-        };
         for f in &pl.features {
             let Some(feature) = pl.layer.features.get(f.index) else {
                 continue;
@@ -84,6 +78,13 @@ pub fn place(
                 .and_then(|v| v.as_f64())
                 .filter(|v| v.is_finite())
                 .unwrap_or(0.0);
+            let extent = pl.extent(f.index);
+            let stroke_width = extent.stroke_width;
+            let symbol_radius = if extent.marker_radius > 0.0 {
+                extent.marker_radius + stroke_width
+            } else {
+                0.0
+            };
             let mut push = |geometry: Geometry| {
                 features.push(Feature {
                     id: next_id,

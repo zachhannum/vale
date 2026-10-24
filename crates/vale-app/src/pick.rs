@@ -60,12 +60,14 @@ fn distance(f: &PageFeature, kind: GeometryKind, at: Point) -> f64 {
 /// The feature under `at`, if any. The top layer wins.
 pub fn pick(layers: &[PageLayer<'_>], at: Point) -> Option<Selection> {
     for pl in layers.iter().rev() {
-        let style = &pl.entry.style;
         let kind = pl.kind;
-        let reach = match kind {
-            GeometryKind::Point => style.point_radius.max(3.0) + 3.0,
-            GeometryKind::Line => (style.stroke.map_or(0.0, |s| s.width) / 2.0).max(1.0) + 3.0,
-            GeometryKind::Polygon => 0.0,
+        let reach = |index: usize| {
+            let extent = pl.extent(index);
+            match kind {
+                GeometryKind::Point => extent.marker_radius.max(3.0) + 3.0,
+                GeometryKind::Line => (extent.stroke_width / 2.0).max(1.0) + 3.0,
+                GeometryKind::Polygon => 0.0,
+            }
         };
         let mut best: Option<(f64, usize)> = None;
         for f in &pl.features {
@@ -76,7 +78,7 @@ pub fn pick(layers: &[PageLayer<'_>], at: Point) -> Option<Selection> {
             let hit = if kind == GeometryKind::Polygon {
                 d == 0.0
             } else {
-                d <= reach
+                d <= reach(f.index)
             };
             if hit && best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((d, f.index));

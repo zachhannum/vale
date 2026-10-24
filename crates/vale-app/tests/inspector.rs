@@ -138,7 +138,12 @@ fn move_down_and_remove() {
 fn style_change_reaches_the_pixels() {
     let mut h = harness();
     let land = id_of(&h, "Land");
-    h.state_mut().doc.entry_mut(land).unwrap().style.fill = Some(Color::rgb(200, 0, 0));
+    h.state_mut()
+        .doc
+        .entry_mut(land)
+        .unwrap()
+        .style
+        .set_fill(Some(Color::rgb(200, 0, 0)));
     h.state_mut().touch();
     h.run_steps(2);
     let state = h.state();
@@ -223,7 +228,12 @@ fn inspector_screenshots() {
         layer: places,
         feature: 0,
     });
-    state.doc.entry_mut(places).unwrap().style.fill = Some(Color::rgb(200, 0, 0));
+    state
+        .doc
+        .entry_mut(places)
+        .unwrap()
+        .style
+        .set_fill(Some(Color::rgb(200, 0, 0)));
     let (img, _) = headless::ui_png(state, (1440.0, 900.0), 1.0).unwrap();
     std::fs::create_dir_all("../../target/app").unwrap();
     img.save("../../target/app/test-inspector.png").unwrap();

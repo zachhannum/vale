@@ -742,6 +742,8 @@ fn put_layer(out: &mut Vec<u8>, position: usize, layer: &Layer) {
         out.push(kind.expect("a field type") as u8);
         put_value(out, &field.default);
     }
+    out.push(layer.style.is_some() as u8);
+    put_bytes(out, layer.style.as_deref().unwrap_or_default().as_bytes());
 }
 
 fn put_value(out: &mut Vec<u8>, value: &Value) {
@@ -771,7 +773,8 @@ fn value(r: &mut Reader) -> Option<Value> {
 }
 
 /// A layer and its place in the project. An image of a format before
-/// version 19 ends after the visibility. Its fields get their types as an
+/// version 20 ends before the style, and an image before version 19 ends
+/// after the visibility. Its fields get their types as an
 /// import gives them, and the values turn into values of those types.
 fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
     let position = count(r)?;
@@ -823,6 +826,14 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
             })
             .collect::<Option<_>>()?,
     };
+    let style = match r.0.is_empty() {
+        true => None,
+        false => {
+            let [has_style] = r.take()?;
+            let style = string(r)?;
+            (has_style == 1).then_some(style)
+        }
+    };
     let layer = Layer {
         id,
         name,
@@ -831,6 +842,7 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
         source,
         fields,
         features,
+        style,
     };
     r.0.is_empty().then_some((position, layer))
 }
@@ -863,6 +875,25 @@ mod tests {
         assert_eq!(layer(&mut Reader(&out)), Some((0, hidden.clone())));
         out.pop();
         assert_eq!(layer(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn a_layer_image_keeps_the_style() {
+        const STYLE: &str = r#"{"width":2}"#;
+        let mut project = Project::new(World::default());
+        project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        project.layers[0].style = Some(STYLE.into());
+        let styled = &project.layers[0];
+        let mut out = Vec::new();
+        put_layer(&mut out, 0, styled);
+        assert_eq!(layer(&mut Reader(&out)), Some((0, styled.clone())));
+        // An image of version 19 ends before the style.
+        out.truncate(out.len() - 5 - STYLE.len());
+        let old = Layer {
+            style: None,
+            ..styled.clone()
+        };
+        assert_eq!(layer(&mut Reader(&out)), Some((0, old)));
     }
 
     #[test]
@@ -934,8 +965,9 @@ mod tests {
             .insert("any".into(), Value::Bool(false));
         let mut out = Vec::new();
         put_layer(&mut out, 2, &old);
-        // Each field has a type byte and a null default.
-        out.truncate(out.len() - 2 * old.fields.len());
+        // Each field has a type byte and a null default, and the style
+        // has a presence byte and a length.
+        out.truncate(out.len() - 2 * old.fields.len() - 5);
         assert_eq!(layer(&mut Reader(&out)), Some((2, towns.clone())));
         let kinds: Vec<FieldType> = towns.fields.iter().map(|f| f.kind).collect();
         assert_eq!(kinds, [FieldType::Text, FieldType::Bool, FieldType::Real]);
