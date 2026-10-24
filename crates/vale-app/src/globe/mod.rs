@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
-use vale_store::{Hillshade, LayerId, RasterDisplay, RasterId, Smoothing};
+use vale_store::{Hillshade, LayerId, LonLat, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{
     Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, Pyramid, SEA_LEVEL,
     Stamp, TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap,
@@ -59,7 +59,7 @@ use snap::{Highlight, Run, SnapSettings, Targets, Tracer};
 use stats::Stats;
 use stops::StopTargets;
 use stroke_test::StrokeTest;
-use view::GlobeView;
+use view::{Camera, GlobeView};
 use zoom_test::ZoomTest;
 
 /// Texels on one edge of a cube face. The GPU texture holds six full faces.
@@ -120,6 +120,15 @@ pub struct LineStroke {
     pub runs: Vec<Run>,
 }
 
+/// A point that the point tool placed.
+#[derive(Clone, Copy, Debug)]
+pub struct PlacedPoint {
+    /// The position on the unit sphere.
+    pub dir: V3,
+    /// The stored position of the vertex that the point snapped to.
+    pub exact: Option<LonLat>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
     #[default]
@@ -127,6 +136,7 @@ pub enum Tool {
     Brush,
     Line,
     Polygon,
+    Point,
 }
 
 /// The way that the world workspace shows the world.
@@ -620,8 +630,11 @@ pub struct Globe {
     /// The polygon tool can draw: the selected layer is a visible polygon
     /// layer.
     pub fillable: bool,
-    /// The selected line or polygon layer, the layer that the line tool or
-    /// the polygon tool draws in.
+    /// The point tool can place: the selected layer is a visible point
+    /// layer.
+    pub pointable: bool,
+    /// The selected vector layer that the line tool, the polygon tool, or
+    /// the point tool edits.
     pub draw_layer: Option<LayerId>,
     /// The snap settings of the tools that edit vector layers.
     pub snap: SnapSettings,
@@ -636,6 +649,11 @@ pub struct Globe {
     line_stroke: Option<LineStroke>,
     /// The last stroke of the line or polygon tool, for the layer.
     line_done: Option<LineStroke>,
+    /// The position of the pen of the point tool while it is down. It is
+    /// `None` while the pen is off the world.
+    point_press: Option<Option<V3>>,
+    /// The last point that the point tool placed, for the layer.
+    point_done: Option<PlacedPoint>,
     /// The radius of the world, in kilometers. Set by the canvas each frame.
     pub world_km: f64,
     /// The seed of the world. Set by the canvas each frame.
@@ -732,6 +750,7 @@ impl Globe {
             line: LineSettings::default(),
             lineable: false,
             fillable: false,
+            pointable: false,
             draw_layer: None,
             snap: SnapSettings::default(),
             vectors: None,
@@ -739,6 +758,8 @@ impl Globe {
             targets: None,
             line_stroke: None,
             line_done: None,
+            point_press: None,
+            point_done: None,
             channels_sent: false,
             test_wanted: None,
             new_face_size: face_size,
@@ -1512,6 +1533,59 @@ impl Globe {
         self.lining() || self.filling()
     }
 
+    /// True if the point tool is the tool and it can place a point in the
+    /// selected layer.
+    pub fn placing(&self) -> bool {
+        self.tool == Tool::Point && self.pointable
+    }
+
+    /// True if a tool that edits a vector layer can edit now.
+    pub fn editing(&self) -> bool {
+        self.drawing() || self.placing()
+    }
+
+    /// Starts a tap of the point tool.
+    pub fn point_down(&mut self) {
+        self.point_press = Some(None);
+    }
+
+    /// Moves the pen of the point tool.
+    pub fn point_sample(&mut self, dir: Option<V3>) {
+        if let Some(press) = &mut self.point_press {
+            *press = dir;
+        }
+    }
+
+    /// Ends the tap of the point tool. The point is where the pen comes
+    /// up, snapped to the targets. `take_point` gives it.
+    pub fn point_up(&mut self) {
+        let Some(Some(dir)) = self.point_press.take() else {
+            return;
+        };
+        let scale = self.radius();
+        let snap = self
+            .targets
+            .as_ref()
+            .and_then(|t| t.snap(dir, scale, &self.snap, None));
+        self.point_done = Some(match snap {
+            Some(snap) => PlacedPoint {
+                dir: snap.dir,
+                exact: snap.exact,
+            },
+            None => PlacedPoint { dir, exact: None },
+        });
+    }
+
+    /// True while the pen of the point tool is down.
+    pub fn point_pressed(&self) -> bool {
+        self.point_press.is_some()
+    }
+
+    /// The last point that the point tool placed.
+    pub fn take_point(&mut self) -> Option<PlacedPoint> {
+        self.point_done.take()
+    }
+
     /// Sets the snap targets of the visible vector layers.
     pub fn set_targets(&mut self, targets: Option<Arc<Targets>>) {
         self.vectors = targets;
@@ -1520,7 +1594,7 @@ impl Globe {
 
     /// Makes the snap targets of the color stops again where a raster layer
     /// changed. Each raster layer that the globe draws in the Bands display
-    /// has targets while the line tool or the polygon tool is the tool.
+    /// has targets while a tool that edits a vector layer is the tool.
     pub fn refresh_stops(&mut self) {
         let mut keys = Vec::new();
         let stack = self.stack.as_deref().unwrap_or_default();
@@ -1544,7 +1618,7 @@ impl Globe {
             let (Some(key), Some(map)) = (self.source(id), self.display_map(id)) else {
                 continue;
             };
-            if !self.drawing() || display != RasterDisplay::Bands {
+            if !self.editing() || display != RasterDisplay::Bands {
                 continue;
             }
             let bands = &map.bands;
@@ -1647,7 +1721,7 @@ impl Globe {
         if let Some(stroke) = &self.line_stroke {
             return stroke.tracer.as_ref()?.highlight();
         }
-        if !self.drawing() {
+        if !self.editing() {
             return None;
         }
         let dir = self.unproject(self.input.pos?)?;
@@ -1698,6 +1772,24 @@ impl Globe {
         match self.world_view {
             WorldView::Globe => self.view.unproject(self.rect, pos),
             WorldView::Flat => self.flat.unproject(self.rect, pos),
+        }
+    }
+
+    /// The screen position of a world direction, or `None` if it does not
+    /// show.
+    pub fn project(&self, dir: V3) -> Option<Pos2> {
+        match self.world_view {
+            WorldView::Globe => self.view.project(self.rect, dir),
+            WorldView::Flat => self.flat.project(self.rect, dir),
+        }
+    }
+
+    /// Moves the view, so the place at the screen position `from` goes to
+    /// `to`.
+    pub fn move_place(&mut self, from: Pos2, to: Pos2) {
+        match self.world_view {
+            WorldView::Globe => self.view.gesture(self.rect, from, to, 1.0, 0.0),
+            WorldView::Flat => self.flat.gesture(self.rect, from, to, 1.0, 0.0),
         }
     }
 

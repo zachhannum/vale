@@ -5251,3 +5251,172 @@ fn with_snapping_off_a_stroke_along_a_river_does_not_trace_it() {
         assert!(!line.contains(p), "{p:?} is in the line");
     }
 }
+
+/// A tap of the pen on the canvas.
+fn pen_tap_at(h: &mut Pad, pos: Pos2) {
+    touch(h, egui::TouchPhase::Start, pos, Some(0.5));
+    h.step();
+    touch(h, egui::TouchPhase::End, pos, Some(0.5));
+    h.run_steps(3);
+}
+
+/// Adds a point layer with no fields and a saved project, and selects the
+/// point tool with no snapping.
+fn new_point_layer(h: &mut Pad) -> vale_store::LayerId {
+    let id = h.state_mut().doc.add_layer(vale_store::GeometryKind::Point);
+    h.state_mut().select(Some(LayerRef::Vector(id)));
+    h.step();
+    let now = std::time::Instant::now();
+    h.state_mut().save_tick(false, now);
+    h.state_mut()
+        .save_tick(false, now + std::time::Duration::from_secs(5));
+    tap(h, vale_app::ui::pad::POINT);
+    h.state_mut().globe.snap.on = false;
+    id
+}
+
+/// The names of the fields of the open point form.
+fn form_fields(h: &Pad) -> Vec<String> {
+    let form = h.state().point_form.as_ref().expect("no point form");
+    form.fields.iter().map(|f| f.name.clone()).collect()
+}
+
+#[test]
+fn a_pen_tap_places_a_point_and_opens_a_form_with_each_field_of_the_layer() {
+    let mut h = pad(BOARDS[0]);
+    let more = control(&h, MORE).unwrap();
+    let places = vector(&h, "Places");
+    h.state_mut().select(Some(LayerRef::Vector(places)));
+    h.run_steps(2);
+    assert_eq!(control(&h, vale_app::ui::pad::POINT), Some(more));
+    tap(&mut h, vale_app::ui::pad::POINT);
+    assert_eq!(h.state().globe.tool, Tool::Point);
+    let before = line_features(&h, places);
+    let center = h.state().globe.rect.center();
+    // A finger turns the globe and places no point.
+    drag(&mut h, center, center + vec2(60.0, 0.0), None);
+    assert_eq!(line_features(&h, places), before);
+    assert!(h.state().point_form.is_none());
+
+    pen_tap_at(&mut h, center);
+    let after = line_features(&h, places);
+    assert_eq!(after.len(), before.len() + 1);
+    let fields = h.state().doc.project.layer(places).unwrap().fields.clone();
+    assert!(!fields.is_empty());
+    assert_eq!(form_fields(&h), fields);
+    let form = h.state().point_form.as_ref().unwrap();
+    assert_eq!(form.feature, after.last().unwrap().uuid());
+    // The fields that do not fit scroll.
+    assert!(control(&h, &fields[0]).is_some());
+    // Another tool closes the form.
+    tap(&mut h, "Pan");
+    assert!(h.state().point_form.is_none());
+}
+
+#[test]
+fn a_layer_with_no_fields_shows_a_name_field_and_return_closes_the_form() {
+    let mut h = pad(BOARDS[0]);
+    let id = new_point_layer(&mut h);
+    let center = h.state().globe.rect.center();
+    pen_tap_at(&mut h, center);
+    assert_eq!(form_fields(&h), [vale_app::ui::point_form::NAME_FIELD]);
+    // The field has the focus, so the keyboard types into it at once.
+    h.event(egui::Event::Text("Avalon".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().point_form.is_none());
+    let layer = h.state().doc.project.layer(id).unwrap();
+    assert_eq!(layer.fields, ["name"]);
+    let name = &layer.features[0].attributes["name"];
+    assert_eq!(*name, vale_store::Value::Text("Avalon".into()));
+    // The layer labels its points with the name.
+    let entry = h.state().doc.frame.entries.iter().find(|e| e.layer == id);
+    let label = &entry.unwrap().style.label;
+    assert_eq!(label.field.as_deref(), Some("name"));
+    assert!(label.enabled);
+}
+
+#[test]
+fn ten_named_points_in_a_row_are_ten_undo_steps() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let id = new_point_layer(&mut h);
+    let saved = saves(&h);
+    let center = h.state().globe.rect.center();
+    for i in 0..10 {
+        pen_tap_at(&mut h, center + vec2(30.0 * i as f32 - 135.0, 0.0));
+        h.event(egui::Event::Text(format!("City {i}")));
+        h.run_steps(2);
+        // Return closes the form, and so does the tap of the next point.
+        if i % 2 == 0 || i == 9 {
+            h.key_press(egui::Key::Enter);
+        }
+        for _ in 0..3 {
+            step_and_save(&mut h, false);
+        }
+    }
+    assert!(h.state().point_form.is_none());
+    let names: Vec<_> = line_features(&h, id)
+        .iter()
+        .map(|f| f.attributes["name"].clone())
+        .collect();
+    let want: Vec<_> = (0..10)
+        .map(|i| vale_store::Value::Text(format!("City {i}")))
+        .collect();
+    assert_eq!(names, want);
+    assert_eq!(saves(&h), saved + 10);
+    tap(&mut h, "Undo");
+    assert_eq!(line_features(&h, id).len(), 9);
+}
+
+#[test]
+fn the_keyboard_does_not_hide_the_form_or_the_new_point() {
+    for size in [BOARDS[0], BOARDS[1]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let id = new_point_layer(&mut h);
+        let rect = h.state().globe.rect;
+        // A point low on the screen is under the keyboard.
+        pen_tap_at(&mut h, rect.center() + vec2(0.0, 150.0));
+        h.run_steps(2);
+        let keyboard = vale_app::ui::point_form::keyboard_top(rect);
+        let field = control(&h, "name").unwrap();
+        assert!(field.bottom() < keyboard, "{what}");
+        let point = match &line_features(&h, id)[0].geometry {
+            vale_store::Geometry::Points(points) => points[0],
+            _ => panic!("not a point"),
+        };
+        let dir = vale_app::globe::math::lonlat_to_dir(point[0], point[1]);
+        let pos = h.state().globe.project(dir).unwrap();
+        assert!(
+            pos.y > field.bottom() && pos.y < keyboard,
+            "{what}: {pos:?}"
+        );
+    }
+}
+
+#[test]
+fn a_new_point_snaps_to_a_vertex() {
+    let mut h = pad(BOARDS[0]);
+    let places = vector(&h, "Places");
+    h.state_mut().select(Some(LayerRef::Vector(places)));
+    h.run_steps(2);
+    tap(&mut h, vale_app::ui::pad::POINT);
+    let target = match &line_features(&h, places)[0].geometry {
+        vale_store::Geometry::Points(points) => points[0],
+        _ => panic!("not a point"),
+    };
+    // The towns near the target are far apart at this zoom.
+    let view = GlobeView::centered(target[0], target[1]);
+    h.state_mut().globe.view = GlobeView { zoom: 20.0, ..view };
+    h.run_steps(2);
+    let dir = vale_app::globe::math::lonlat_to_dir(target[0], target[1]);
+    let at = h.state().globe.project(dir).unwrap();
+    pen_tap_at(&mut h, at + vec2(1.0, 1.0));
+    let features = line_features(&h, places);
+    let vale_store::Geometry::Points(points) = &features.last().unwrap().geometry else {
+        panic!("not a point");
+    };
+    assert_eq!(points[0], target);
+}

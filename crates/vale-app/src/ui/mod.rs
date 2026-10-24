@@ -36,6 +36,7 @@ pub mod gradient;
 pub mod inspector;
 pub mod pad;
 pub mod panels;
+pub mod point_form;
 pub mod raster_form;
 pub mod world_form;
 
@@ -352,6 +353,8 @@ pub struct AppState {
     pub share: Option<PathBuf>,
     /// The open form of a new world or of the world of the project.
     pub world_form: Option<world_form::WorldForm>,
+    /// The open form of a point that the point tool placed.
+    pub point_form: Option<point_form::PointForm>,
     /// The open form of a new raster layer.
     pub raster_form: Option<raster_form::RasterForm>,
     /// The face size of `--face-size`. The form of a new raster layer
@@ -377,7 +380,7 @@ pub struct AppState {
     loader: Option<Loader>,
     /// The edit count at the last save.
     saved_edits: u64,
-    /// The number of strokes of the line tool.
+    /// The number of edits of the line, polygon, and point tools.
     line_edits: u64,
     /// The count of the undo steps, the redo steps, and the worlds that open.
     history: u64,
@@ -439,6 +442,7 @@ impl AppState {
             share_exports: false,
             share: None,
             world_form: None,
+            point_form: None,
             raster_form: None,
             form_face_size: None,
             actions: Vec::new(),
@@ -570,15 +574,22 @@ impl AppState {
         };
         let kind = |k: GeometryKind| drawn.filter(|d| d.1 == LayerKind::Vector(k));
         let (line, polygon) = (kind(GeometryKind::Line), kind(GeometryKind::Polygon));
-        globe.draw_layer = line.or(polygon).map(|d| d.0);
+        let point = kind(GeometryKind::Point);
+        globe.draw_layer = line.or(polygon).or(point).map(|d| d.0);
         globe.lineable = line.is_some();
         globe.fillable = polygon.is_some();
-        // A drawing tool stays a drawing tool in a layer of the other kind.
-        globe.tool = match globe.tool {
-            Tool::Line if globe.fillable => Tool::Polygon,
-            Tool::Polygon if globe.lineable => Tool::Line,
-            tool => tool,
-        };
+        globe.pointable = point.is_some();
+        // A tool that edits a vector layer stays such a tool in a layer of
+        // another kind.
+        if matches!(globe.tool, Tool::Line | Tool::Polygon | Tool::Point) {
+            if globe.lineable {
+                globe.tool = Tool::Line;
+            } else if globe.fillable {
+                globe.tool = Tool::Polygon;
+            } else if globe.pointable {
+                globe.tool = Tool::Point;
+            }
+        }
         if !height && brush::needs_height(globe.brush.mode) {
             globe.brush.mode = Mode::Raise;
         }
@@ -1123,6 +1134,7 @@ impl AppState {
     }
 
     fn step(&mut self, redo: bool) {
+        self.commit_point_form();
         let able = if redo {
             self.can_redo()
         } else {
@@ -1173,6 +1185,8 @@ impl AppState {
     /// save.
     pub fn save_tick(&mut self, hold: bool, now: Instant) -> Option<Duration> {
         self.globe.set_memory_undo(!self.file_log());
+        // The point of an open form waits for its values.
+        let hold = hold || self.point_form.is_some();
         let resume_wait = self.resume_tick(hold, now);
         let edits = self.edits();
         let session = self.session.as_mut()?;
@@ -1354,6 +1368,7 @@ impl AppState {
     /// project file. Returns `false` if the save failed. The world then
     /// stays open.
     pub fn save_now(&mut self) -> bool {
+        self.commit_point_form();
         let Some(session) = &mut self.session else {
             return true;
         };
@@ -1656,7 +1671,7 @@ impl AppState {
         self.show_world();
     }
 
-    /// The number of strokes of the brush and of the line tool.
+    /// The number of strokes of the brush and of edits of the vector tools.
     fn edits(&self) -> u64 {
         self.globe.edits() + self.line_edits
     }
@@ -2029,6 +2044,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     browser::dialogs(ui, state);
     state.sync_globe();
+    state.check_point_form();
     if state.layout == Layout::Pad && state.workspace == Workspace::Globe {
         pad::draw(ui, state);
         state.frames += 1;
@@ -2059,5 +2075,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
     world_form::desktop(ui.ctx(), state);
     raster_form::desktop(ui.ctx(), state);
+    point_form::desktop(ui.ctx(), state);
     state.frames += 1;
 }

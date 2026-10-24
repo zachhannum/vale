@@ -36,6 +36,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 fn press(globe: &mut Globe) {
     if globe.drawing() {
         globe.line_down();
+    } else if globe.placing() {
+        globe.point_down();
     } else if globe.pick_level && globe.brush.mode == Mode::Flatten {
         globe.input.picking = true;
     } else {
@@ -46,6 +48,8 @@ fn press(globe: &mut Globe) {
 fn release(globe: &mut Globe) {
     if globe.line_preview().is_some() {
         globe.line_up();
+    } else if globe.point_pressed() {
+        globe.point_up();
     } else if !std::mem::take(&mut globe.input.picking) {
         globe.pen_up();
     }
@@ -93,7 +97,7 @@ fn brush_input(
         .collect();
     hover_input(globe, &queue);
     let brushing = globe.brushing() && globe.format.is_some();
-    if !(brushing || globe.drawing()) || globe.importing() {
+    if !(brushing || globe.editing()) || globe.importing() {
         if globe.input.pen.take().is_some() || std::mem::take(&mut globe.input.mouse) {
             release(globe);
             globe.pen.stats.up();
@@ -108,6 +112,8 @@ fn brush_input(
         globe.input.pos = Some(pos);
         if globe.drawing() {
             globe.line_sample(pos, dir);
+        } else if globe.placing() {
+            globe.point_sample(dir);
         } else if globe.input.picking {
             globe.pick(dir);
         } else {
@@ -434,7 +440,7 @@ pub(super) fn canvas_input(
     background: egui::Color32,
 ) -> Option<egui::Rect> {
     let now = Instant::now();
-    if state.globe.drawing() && state.globe.line_preview().is_none() {
+    if state.globe.editing() && state.globe.line_preview().is_none() {
         state.refresh_targets();
     }
     let globe = &mut state.globe;
@@ -457,6 +463,7 @@ pub(super) fn canvas_input(
         }
     }
     state.poll_line();
+    state.poll_point();
     match history_input(ui, &mut state.globe) {
         Some(true) => state.redo(),
         Some(false) => state.undo(),
@@ -488,6 +495,14 @@ pub(super) fn paint_canvas(
 ) {
     let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect);
     let layer = state.selected_vector();
+    let placed = state.point_form.as_ref().and_then(|form| {
+        let layer = state.doc.project.layer(form.layer)?;
+        let feature = layer.features.iter().find(|f| f.uuid() == form.feature)?;
+        match &feature.geometry {
+            Geometry::Points(points) => points.first().copied(),
+            _ => None,
+        }
+    });
     let globe = &mut state.globe;
     let more = globe.advance(Instant::now());
     let pixels_per_point = ui.ctx().pixels_per_point();
@@ -552,6 +567,11 @@ pub(super) fn paint_canvas(
     });
     if let Some(highlight) = globe.snap_highlight() {
         snap_highlight(&painter, rect, globe, &highlight, stroke.width + 4.0);
+    }
+    // A ring marks the point of the open form.
+    if let Some(pos) = placed.and_then(|p| globe.project(lonlat_to_dir(p[0], p[1]))) {
+        let ring = egui::Stroke::new(2.0, theme::ACCENT);
+        painter.circle_stroke(pos, 9.0, ring);
     }
     if let Some(line) = globe.line_preview() {
         let mut line = line.to_vec();

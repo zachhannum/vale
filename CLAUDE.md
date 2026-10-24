@@ -41,7 +41,7 @@ cargo run --release -p vale-globe-proto
 scripts/globe-proto-ipad.sh
 ```
 
-The app prototype saves the world, the vector layers, and the raster layers to a GeoPackage project file. The file also holds the undo log and a small picture of the globe for the start screen. The file does not hold the styles of the vector layers. A raster layer is a layer in the one draw order, and the globe blends the visible raster layers by their opacity. The flag `--export-heightmap` exports the first height layer of a project file as a GeoTIFF. On iPad, the projects are in a local folder and in an iCloud Drive folder, and the Files app shows both. The prototype leaves out rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools other than the line tool and the polygon tool, and the GPU Vello backend. `README.md` has the full list.
+The app prototype saves the world, the vector layers, and the raster layers to a GeoPackage project file. The file also holds the undo log and a small picture of the globe for the start screen. The file does not hold the styles of the vector layers. A raster layer is a layer in the one draw order, and the globe blends the visible raster layers by their opacity. The flag `--export-heightmap` exports the first height layer of a project file as a GeoTIFF. On iPad, the projects are in a local folder and in an iCloud Drive folder, and the Files app shows both. The prototype leaves out rule-based styles, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools other than the line tool, the polygon tool, and the point tool, and the GPU Vello backend. `README.md` has the full list.
 
 The current phase is phase 0, the iPad test loop and CI. When each PR arrives on the iPad through TestFlight, and CI builds all four platforms, the phase is done.
 
@@ -92,13 +92,15 @@ A feature session keeps its context small on purpose.
 - Use one branch for each issue: `feat/<issue>-slug`, `fix/<issue>-slug`, or `chore/<issue>-slug`.
 - Write `Closes #N` in the PR description. Before you ask for review, make sure that each item of the "done when" list is true.
 - Do not wrap PR and issue bodies. Write one line for each paragraph and each list item, with blank lines between them. GitHub shows a single newline as a line break.
-- Before you push, run these commands and make sure that all three succeed:
+- Before you push, run these commands for each crate that the change touches, and make sure that all three succeed. Replace `<crate>` with the name of the crate.
 
   ```sh
   cargo fmt --all --check
-  cargo clippy --workspace --all-targets
-  cargo test --workspace
+  cargo clippy -p <crate> --all-targets
+  cargo test -p <crate>
   ```
+
+- If a crate has more than one test file, you can run only the test files that cover the change, for example `cargo test -p vale-app --test pad`. Do not run `cargo test --workspace` before a push. The full run is the work of CI.
 
 - If the PR has CI runs, watch them with `gh run watch`. After they pass, ask for review.
 - Claude does not merge. A person reviews and merges each PR.
