@@ -687,6 +687,8 @@ for rg, nm in zip(RIDGES, RNAMES):
     if x1 > x2:
         x1, y1, x2, y2 = x2, y2, x1, y1
     mxr, myr = rg[len(rg) // 2]
+    if any(math.hypot(mxr - px, myr - py) < 160 for _, px, py in pinfo):
+        continue
     bow = ((myr - (y1 + y2) / 2)) * .5
     BIG.append(spaced(nm, x1 + 20, y1, x2 - 20, y2, bow * .6, 13, '#3a3630', maxls=13))
 RIVN = ['Aldwen', 'Sable', 'Meriden', 'Tarrow', 'Ysel', 'Corr']
@@ -790,8 +792,13 @@ for clon, clat, rad in ((16, 44, 30), (-22, 18, 15), (68, 22, 15), (30, -14, 15)
         la = clat + rr * math.sin(th)
         pts.append(orth(clon + rr * math.cos(th) / max(.3, math.cos(math.radians(max(-80, min(80, la))))), max(-88, min(88, la)))[:2])
     gl.append('<path d="%s" fill="#a9b79a" stroke="#3f8296" stroke-width=".8"/>' % pathd(chaikin(pts, 2, True), True))
-box = [(23 + t, 39) for t in range(15)] + [(37, 39 + t) for t in range(15)] + [(37 - t, 53) for t in range(15)] + [(23, 53 - t) for t in range(15)]
-gl.append('<path d="%s" fill="#c8594a" fill-opacity=".85" stroke="#8c2f24" stroke-width="1"/>' % pathd([orth(a, b2)[:2] for a, b2 in box], True))
+# The locator map is a map in its own frame. A style override of that map fills the polity of the main map.
+pol = []
+for t in range(48):
+    th = t / 48 * 2 * math.pi
+    rr = 6.5 * (1 + 0.18 * math.sin(3 * th + 1) + 0.1 * math.sin(5 * th))
+    pol.append(orth(30 + rr * math.cos(th) / math.cos(math.radians(46)), 46 + rr * math.sin(th))[:2])
+gl.append('<path d="%s" fill="#c8594a" fill-opacity=".85" stroke="#8c2f24" stroke-width="1"/>' % pathd(chaikin(pol, 2, True), True))
 gl.append('<g fill="none" stroke="#5d6e72" stroke-width=".8">')
 for lon in range(-180, 180, 30):
     gl.append('<path d="%s"/>' % gline([(lon, la) for la in range(-90, 91, 3)]))
