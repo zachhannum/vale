@@ -14,8 +14,6 @@ FONT = "'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif"
 
 OUTLINE = [(190, 210), (1330, 210), (1330, 900), (1480, 985), (1480, 1500), (1330, 1585),
            (1330, 1840), (190, 1840), (190, 1000), (20, 915), (20, 480), (190, 395)]
-# The map frame is a box. The map content is placed over OUTLINE and cut at the box.
-FRAME = [(190, 210), (1330, 210), (1330, 1840), (190, 1840)]
 GLOBE = (1300, 1800, 150)
 
 
@@ -518,20 +516,20 @@ for lon in range(16, 46, 2):
     p = [proj(lon, 38 + t * 0.25) for t in range(0, 69)]
     grat.append(p)
     for a in range(len(p) - 1):
-        if inside(*p[a], FRAME) != inside(*p[a + 1], FRAME) and 21 < lon < 39:
+        if inside(*p[a]) != inside(*p[a + 1]) and 21 < lon < 39:
             x, y = p[a]
             glabels.append((x, y - 9 if y < CY else y + 18, 'middle', '%d°E' % lon))
 for lat in range(38, 56, 2):
     p = [proj(14 + t * 0.25, lat) for t in range(0, 129)]
     grat.append(p)
     for a in range(len(p) - 1):
-        if inside(*p[a], FRAME) != inside(*p[a + 1], FRAME):
+        if inside(*p[a]) != inside(*p[a + 1]):
             x, y = p[a]
             glabels.append((x - 7 if x < CX else x + 7, y + 4, 'end' if x < CX else 'start', '%d°N' % lat))
 
 # ---------- base svg ----------
 PAPER = '#f3efdf'
-op = pathd(FRAME, True)
+op = pathd(OUTLINE, True)
 b = ['<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" viewBox="0 0 %d %d">' % (PW, PH),
      '<defs><clipPath id="o"><path d="%s"/></clipPath></defs>' % op,
      '<g clip-path="url(#o)">', '<rect width="%d" height="%d" fill="#95b3c0"/>' % (PW, PH)]
@@ -660,7 +658,7 @@ BIG = []
 PNAMES = ['MARROWMARK', 'HALDANE', 'OSTRAVELLE', 'GREYWOOD', 'SABLEMOOR', 'CALLOWAY']
 pinfo = []
 for s in range(len(seeds)):
-    cs = [c for c in range(0, GW * GH, 3) if pid[c] == s and inside(*cell_xy(c), FRAME)]
+    cs = [c for c in range(0, GW * GH, 3) if pid[c] == s and inside(*cell_xy(c))]
     if len(cs) < 60:
         continue
     xs = sorted(cell_xy(c)[0] for c in cs)
@@ -711,8 +709,6 @@ for k, (nm, p) in enumerate(searoutes):
         continue
     n = len(p)
     part = p[int(n * .3):int(n * .75)]
-    if not all(inside(x, y, FRAME) for x, y in part):
-        continue
     if part[0][0] > part[-1][0]:
         part = part[::-1]
     key = 's%d' % k
@@ -740,7 +736,6 @@ L.append('<g font-size="9.500" font-style="italic" fill="#2b6a82">' + ''.join(RT
 L.append('<g font-size="9.500" font-style="italic" fill="#3a302a">' + ''.join(PK) + '</g>')
 L.append(''.join(S))
 L.append('<g fill="#2a2420">' + ''.join(T) + '</g>')
-GI = len(L)
 L.append('<g font-size="12" fill="#3c3a35">' + ''.join('<text x="%.1f" y="%.1f" text-anchor="%s">%s</text>' % g for g in glabels) + '</g>')
 # furniture
 LMAP = len(L)
@@ -812,7 +807,7 @@ for lat in range(-60, 90, 30):
 gl.append('</g></g>')
 L += gl
 L.append('</svg>')
-open(OUT + '/plate-labels.svg', 'w').write('\n'.join([L[0], '<clipPath id="lf"><path d="%s"/></clipPath><g clip-path="url(#lf)">' % op] + L[1:GI] + ['</g>'] + L[GI:LMAP] + ['</svg>']))
+open(OUT + '/plate-labels.svg', 'w').write('\n'.join(L[:LMAP] + ['</svg>']))
 open(OUT + '/page-over.svg', 'w').write('\n'.join([L[0]] + L[LMAP:]))
 both = '\n'.join(b[:-1]) + '\n' + '\n'.join(L[1:])
 open(OUT + '/../gen/preview.svg', 'w').write(both.replace('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" viewBox="0 0 %d %d">' % (PW, PH), '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" viewBox="0 0 %d %d" font-family="%s">' % (PW, PH, FONT), 1))

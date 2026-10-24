@@ -408,7 +408,7 @@ FRAMES_BODY = (item('Vesperan', '1:3,500,000') + item('Kareth globe', '1:90,000,
 
 # A map frame is a box on a page that shows one map. Its panel holds the frame and the map that it shows.
 def frame_panel(row):
-    return (pick('Map', 'Kareth globe') + field('Scale', '1:90,000,000', True) + pair('Center', '24.0°E', '30.0°N') + field('Rotation', '0.0°', True)
+    return (pick('Map', 'Kareth globe') + pick('Shape', 'Rectangle', 'Polygon') + field('Scale', '1:90,000,000', True) + pair('Center', '24.0°E', '30.0°N') + field('Rotation', '0.0°', True)
             + switch('Border', False) + switch('Graticule')
             + '<h2>Map · Kareth globe</h2><div class="row"><span class="lab">Projection</span><span>Orthographic</span></div>'
             + row('Topography', 'polygon') + row('National border', 'polygon') + row('Rivers and lakes', 'line', vis=False) + row('Places', 'point', vis=False)
