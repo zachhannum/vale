@@ -6,7 +6,7 @@ use kurbo::{Point, Rect};
 
 use crate::clip::{ClipRect, EPS, clip_line_rect, clip_ring_rect, densify, shifts, unwrap};
 use crate::frame::{Frame, LonLat, wrap180};
-use crate::spec::{ProjectionKind, ProjectionSpec};
+use crate::spec::{ProjectionKind, ProjectionSpec, lcc_lat_range};
 
 /// An error from building a projection.
 #[derive(Debug)]
@@ -54,26 +54,26 @@ impl Projection {
         let spec = spec.normalized();
         let pj = proj::Proj::new(&spec.proj_string(radius_m))
             .map_err(|e| SphereError::Proj(e.to_string()))?;
-        let (frame, lat_min, lat_max) = match spec.kind {
-            ProjectionKind::Equirectangular | ProjectionKind::EqualEarth => {
-                (Frame::Shift { lon0: spec.lon0 }, -90.0, 90.0)
+        let (lat_min, lat_max) = match spec.kind {
+            ProjectionKind::Mercator | ProjectionKind::TransverseMercator => (-85.0, 85.0),
+            ProjectionKind::LambertConformalConic => lcc_lat_range(spec.lat1, spec.lat2),
+            ProjectionKind::LambertAzimuthal => (-85.0, 90.0),
+            ProjectionKind::Orthographic => (0.01, 90.0),
+            ProjectionKind::Stereographic => (-20.0, 90.0),
+            _ => (-90.0, 90.0),
+        };
+        let frame = match spec.oblique_frame() {
+            Some(frame) => frame,
+            None if spec.kind.is_azimuthal() => Frame::Polar {
+                lon0: spec.lon0,
+                lat0: spec.lat0,
+            },
+            // The central meridian is the frame equator, and the frame poles are the two
+            // points on the equator where the projection goes to infinity.
+            None if spec.kind == ProjectionKind::TransverseMercator => {
+                Frame::oblique([spec.lon0, 0.0], 90.0)
             }
-            ProjectionKind::Mercator => (Frame::Shift { lon0: spec.lon0 }, -85.0, 85.0),
-            k => {
-                let lat_min = match k {
-                    ProjectionKind::LambertAzimuthal => -85.0,
-                    ProjectionKind::Orthographic => 0.01,
-                    _ => -20.0,
-                };
-                (
-                    Frame::Polar {
-                        lon0: spec.lon0,
-                        lat0: spec.lat0,
-                    },
-                    lat_min,
-                    90.0,
-                )
-            }
+            None => Frame::Shift { lon0: spec.lon0 },
         };
         let clip = ClipRect {
             lon_min: -180.0 + EPS,
@@ -316,7 +316,7 @@ impl Projection {
     pub fn outline(&self) -> Vec<Point> {
         let c = &self.clip;
         match self.frame {
-            Frame::Shift { .. } => {
+            Frame::Shift { .. } | Frame::Rotation(_) => {
                 let corners = [
                     [c.lon_min, c.lat_min],
                     [c.lon_max, c.lat_min],
@@ -402,8 +402,8 @@ mod tests {
 
     #[test]
     fn the_mesh_covers_the_projection() {
-        for kind in ProjectionKind::ALL {
-            let p = proj(kind, 30.0, 40.0);
+        for kind in specs(30.0, 40.0) {
+            let p = Projection::new(kind, 1.0).unwrap();
             let mesh = p.mesh(5.0);
             assert_eq!(mesh.vertices.len(), mesh.cols * mesh.rows);
             let bounds = p.bounds().inflate(1.0, 1.0);
@@ -426,7 +426,22 @@ mod tests {
     const EE: f64 = 2.70663;
 
     fn spec(kind: ProjectionKind, lon0: f64, lat0: f64) -> ProjectionSpec {
-        ProjectionSpec { kind, lon0, lat0 }
+        ProjectionSpec::new(kind, lon0, lat0)
+    }
+
+    /// Each kind, and each oblique aspect, at this center.
+    fn specs(lon0: f64, lat0: f64) -> Vec<ProjectionSpec> {
+        let mut v: Vec<ProjectionSpec> = ProjectionKind::ALL
+            .into_iter()
+            .map(|k| spec(k, lon0, lat0))
+            .collect();
+        for k in ProjectionKind::ALL.into_iter().filter(|k| k.has_oblique()) {
+            v.push(ProjectionSpec {
+                oblique: Some(30.0),
+                ..spec(k, lon0, lat0)
+            });
+        }
+        v
     }
 
     fn proj(kind: ProjectionKind, lon0: f64, lat0: f64) -> Projection {
@@ -486,17 +501,10 @@ mod tests {
 
     #[test]
     fn every_preset_projects_its_center() {
-        let kinds = [
-            ProjectionKind::EqualEarth,
-            ProjectionKind::Mercator,
-            ProjectionKind::LambertAzimuthal,
-            ProjectionKind::Orthographic,
-            ProjectionKind::Stereographic,
-        ];
-        for kind in kinds {
-            for lon0 in [-170.0, -73.5, 0.0, 15.0, 16.0, 90.0, 179.0] {
-                for lat0 in [-60.0, -20.0, 0.0, 10.0, 30.0, 52.0, 70.0] {
-                    let p = proj(kind, lon0, lat0);
+        for lon0 in [-170.0, -73.5, 0.0, 15.0, 16.0, 90.0, 179.0] {
+            for lat0 in [-60.0, -20.0, 0.0, 10.0, 30.0, 52.0, 70.0] {
+                for kind in specs(lon0, lat0) {
+                    let p = Projection::new(kind, 1.0).unwrap();
                     let s = p.spec();
                     let c = [s.lon0, s.lat0];
                     let q = p
@@ -533,8 +541,8 @@ mod tests {
 
     #[test]
     fn inverse_round_trip() {
-        for kind in ProjectionKind::ALL {
-            let p = proj(kind, 20.0, 30.0);
+        for kind in specs(20.0, 30.0) {
+            let p = Projection::new(kind, 1.0).unwrap();
             let mut found = 0;
             let mut i = 0;
             while found < 100 && i < 100000 {
@@ -557,8 +565,8 @@ mod tests {
 
     #[test]
     fn inverse_outside() {
-        for kind in ProjectionKind::ALL {
-            let p = proj(kind, 20.0, 30.0);
+        for kind in specs(20.0, 30.0) {
+            let p = Projection::new(kind, 1.0).unwrap();
             let b = p.bounds();
             let cy = (b.y0 + b.y1) / 2.0;
             let cx = (b.x0 + b.x1) / 2.0;
@@ -676,5 +684,137 @@ mod tests {
         for q in o.outline() {
             assert!((q.to_vec2().hypot() - want).abs() < 1e-6);
         }
+    }
+
+    /// Squares of `step` degrees that cover the sphere.
+    fn tiles(step: f64) -> Vec<Vec<LonLat>> {
+        let n = (180.0 / step) as i32;
+        let mut v = Vec::new();
+        for i in 0..2 * n {
+            for j in 0..n {
+                let (l, b) = (-180.0 + i as f64 * step, -90.0 + j as f64 * step);
+                v.push(square(l, b, l + step, b + step));
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn the_tiles_of_the_sphere_stay_inside_the_outline() {
+        for s in specs(30.0, 40.0) {
+            let p = Projection::new(s, 1.0).unwrap();
+            let bounds = p.bounds().inflate(1e-6, 1e-6);
+            for t in tiles(15.0) {
+                for ring in p.project_ring(&t) {
+                    for q in ring {
+                        assert!(bounds.contains(q), "{s:?}: {q:?} {bounds:?}");
+                    }
+                }
+                for line in p.project_line(&t) {
+                    for q in line {
+                        assert!(bounds.contains(q), "{s:?}: {q:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_equal_area_map_of_the_whole_sphere_has_the_area_of_the_sphere() {
+        let sphere = 4.0 * std::f64::consts::PI;
+        // The clip of Lambert azimuthal stops 5 degrees from the antipode.
+        let laea = 2.0 * std::f64::consts::PI * (1.0 + 85f64.to_radians().sin());
+        let cases = [
+            (spec(ProjectionKind::EqualEarth, 30.0, 0.0), sphere),
+            (spec(ProjectionKind::AlbersEqualArea, 30.0, 40.0), sphere),
+            (spec(ProjectionKind::LambertAzimuthal, 30.0, 40.0), laea),
+            (
+                ProjectionSpec {
+                    oblique: Some(30.0),
+                    ..spec(ProjectionKind::EqualEarth, 30.0, 40.0)
+                },
+                sphere,
+            ),
+        ];
+        for (s, truth) in cases {
+            let p = Projection::new(s, 1.0).unwrap();
+            let total: f64 = tiles(10.0).iter().map(|t| area(&p.project_ring(t))).sum();
+            assert!(rel(total, truth) < 0.01, "{s:?}: {total} {truth}");
+        }
+    }
+
+    #[test]
+    fn an_oblique_aspect_is_the_normal_aspect_on_a_rotated_sphere() {
+        for k in [ProjectionKind::Mercator, ProjectionKind::EqualEarth] {
+            let s = ProjectionSpec {
+                oblique: Some(-25.0),
+                ..spec(k, 40.0, 35.0)
+            };
+            let p = Projection::new(s, 1.0).unwrap();
+            let base = Projection::new(spec(k, 0.0, 0.0), 1.0).unwrap();
+            let frame = s.oblique_frame().unwrap();
+            for t in tiles(30.0) {
+                let q = t[0];
+                if let Some(a) = p.forward(q) {
+                    let b = base.forward(frame.to_frame(q)).unwrap();
+                    assert!((a - b).hypot() < 1e-9, "{k:?} {q:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn transverse_mercator_is_mercator_turned_by_90_degrees() {
+        let t = proj(ProjectionKind::TransverseMercator, 20.0, 0.0);
+        let m = Projection::new(
+            ProjectionSpec {
+                oblique: Some(90.0),
+                ..spec(ProjectionKind::Mercator, 20.0, 0.0)
+            },
+            1.0,
+        )
+        .unwrap();
+        let mut seen = 0;
+        for q in tiles(10.0).iter().map(|t| t[0]) {
+            match (t.forward(q), m.forward(q)) {
+                (Some(a), Some(b)) => {
+                    assert!((a.to_vec2().hypot() - b.to_vec2().hypot()).abs() < 1e-6);
+                    seen += 1;
+                }
+                (None, None) => {}
+                _ => panic!("{q:?}"),
+            }
+        }
+        assert!(seen > 500);
+        // Transverse Mercator keeps scale on the central meridian.
+        let a = t.forward([20.0, 10.0]).unwrap();
+        let b = t.forward([20.0, 50.0]).unwrap();
+        assert!(((b - a).hypot() - 40f64.to_radians()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_conic_map_keeps_scale_on_its_standard_parallels() {
+        for k in [
+            ProjectionKind::LambertConformalConic,
+            ProjectionKind::AlbersEqualArea,
+        ] {
+            let s = ProjectionSpec {
+                lat1: 30.0,
+                lat2: 60.0,
+                ..spec(k, 10.0, 45.0)
+            };
+            let p = Projection::new(s, 1.0).unwrap();
+            for lat in [30.0, 60.0] {
+                assert!(
+                    (p.local_scale([10.0, lat]).unwrap() - 1.0).abs() < 1e-4,
+                    "{k:?}"
+                );
+            }
+            assert!(p.local_scale([10.0, 45.0]).unwrap() < 0.999, "{k:?}");
+        }
+        // The southern pole of a northern Lambert cone is at infinity.
+        let l = proj(ProjectionKind::LambertConformalConic, 0.0, 45.0);
+        assert!(l.forward([0.0, -50.0]).is_none());
+        assert!(l.forward([0.0, -40.0]).is_some());
     }
 }

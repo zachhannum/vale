@@ -46,7 +46,7 @@ fn shoelace(r: &[Point]) -> f64 {
 }
 
 fn fraction(kind: ProjectionKind, lon0: f64, lat0: f64) -> f64 {
-    let p = Projection::new(ProjectionSpec { kind, lon0, lat0 }, RADIUS).unwrap();
+    let p = Projection::new(ProjectionSpec::new(kind, lon0, lat0), RADIUS).unwrap();
     let mut total = 0.0;
     for poly in land() {
         let rings = p.project_polygon(&poly);
@@ -79,7 +79,7 @@ fn everything_is_finite_and_inside_bounds() {
     let polys = land();
     for kind in ProjectionKind::ALL {
         for (lon0, lat0) in [(0.0, 0.0), (150.0, 0.0), (20.0, 30.0), (-100.0, -70.0)] {
-            let p = Projection::new(ProjectionSpec { kind, lon0, lat0 }, RADIUS).unwrap();
+            let p = Projection::new(ProjectionSpec::new(kind, lon0, lat0), RADIUS).unwrap();
             let b = p.bounds();
             let grown = b.inflate(0.001 * b.width(), 0.001 * b.height());
             for poly in &polys {
