@@ -16,6 +16,7 @@ pub mod pick;
 pub mod pipeline;
 pub mod projects;
 pub mod ramps;
+pub mod raster_style;
 pub mod resume;
 pub mod session;
 pub mod ui;

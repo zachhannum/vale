@@ -191,13 +191,14 @@ fn brush_strokes_and_vector_edits_use_the_same_log() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let (mut session, mut doc, mut map) = start(&path);
-    let layers = doc.project.layers().to_vec();
     let entries = doc.frame.entries.len();
 
     paint(&mut map, 45.0, 35.3, 0.2);
     session
         .flush(&mut doc.project, &mut maps(&mut map))
         .unwrap();
+    // The save gives the height layer its style.
+    let layers = doc.project.layers().to_vec();
     let painted = texels(&map);
     let layer = |name: &str| doc.project.layers().iter().find(|l| l.name == name);
     let places = layer("Places").unwrap().id;
@@ -331,13 +332,16 @@ fn undo_restores_a_band_color() {
         .unwrap();
     let colors = |path: &std::path::Path| {
         let project = ProjectFile::open(path).unwrap().1;
-        project.rasters()[0].colors.clone()
+        let style = raster_colors(&project, HEIGHT).colors;
+        assert_eq!(project.rasters()[0].colors, style);
+        style
     };
     assert_eq!(colors(&path)[2], [1, 2, 3]);
 
     assert!(session.undo(&mut doc, &mut maps(&mut map)).unwrap());
     assert_eq!(map.bands, before);
     assert_eq!(colors(&path), before.colors());
+    assert_eq!(raster_colors(&doc.project, HEIGHT).colors, before.colors());
     assert!(session.redo(&mut doc, &mut maps(&mut map)).unwrap());
     assert_eq!(map.bands.colors()[2], [1, 2, 3]);
 }
@@ -1405,4 +1409,146 @@ fn a_style_edit_is_an_undo_step() {
 
     assert!(session.undo(&mut doc, &mut []).unwrap());
     assert_eq!(doc.entry(roads).unwrap().style, before);
+}
+
+/// The raster symbolizer of the style of the layer of a raster.
+fn raster_colors(project: &Project, id: RasterId) -> vale_style::RasterSymbolizer {
+    let style = project.raster_layer(id).unwrap().style.as_deref().unwrap();
+    let style = LayerStyle::from_json(style).unwrap();
+    style.raster_symbolizer().unwrap().clone()
+}
+
+/// An older project file with no styles and one undo step: a height layer
+/// with no stops, and a rain layer with its own colors. Returns the IDs
+/// and the bands of the two layers.
+fn old_rasters(path: &std::path::Path) -> ([RasterId; 2], [Bands; 2]) {
+    let mut project = Project::new(World::default());
+    let (m, mm) = ("m".to_string(), "mm/yr".to_string());
+    let height = project.add_raster("Height".into(), 256, m, -6000.0, 6000.0);
+    let rain = project.add_raster("Rain".into(), 256, mm, 0.0, 4000.0);
+    let mut map = Heightmap::new(256, 0);
+    map.bands = Bands::with_range(0.0, 4000.0, false).unwrap();
+    map.bands.set_color(1, [9, 8, 7]);
+    vale_app::session::sync_record(project.raster_mut(rain).unwrap(), &map);
+    project.set_raster_display(rain, RasterDisplay::Gradient);
+    project.set_raster_opacity(rain, 0.4);
+    assert!(project.raster(height).unwrap().stops.is_empty());
+    let bands = [height, rain].map(|id| vale_app::session::bands_of(record(&project, id)));
+    let mut file = ProjectFile::create(path, &project).unwrap();
+    project.world.name = "Old".into();
+    file.save(&project).unwrap();
+    assert!(file.can_undo());
+    ([height, rain], bands)
+}
+
+#[test]
+fn an_older_file_keeps_the_look_of_its_raster_layers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.gpkg");
+    let (ids, bands) = old_rasters(&path);
+    let mut doc = Document::empty();
+    let session = Session::open(&path, &mut doc).unwrap();
+    assert!(!session.can_undo());
+    let maps = session.load_maps().unwrap();
+    for (i, id) in ids.into_iter().enumerate() {
+        let raster = record(&doc.project, id);
+        assert!(!raster.stops.is_empty());
+        let colors = raster_colors(&doc.project, id);
+        assert_eq!(colors, vale_app::raster_style::symbolizer_of(raster));
+        assert_eq!(maps[i].1.bands, bands[i]);
+    }
+    let rain = raster_colors(&doc.project, ids[1]);
+    assert_eq!((rain.display, rain.opacity), (RasterDisplay::Gradient, 0.4));
+    assert_eq!(rain.colors[1], [9, 8, 7]);
+    drop(session);
+    assert_eq!(ProjectFile::open(&path).unwrap().1, doc.project);
+
+    // A second open does not save.
+    let bytes = std::fs::read(&path).unwrap();
+    let session = Session::open(&path, &mut Document::empty()).unwrap();
+    drop(session);
+    assert!(std::fs::read(&path).unwrap() == bytes, "the file changed");
+}
+
+#[test]
+fn the_style_of_a_raster_layer_wins_over_its_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.gpkg");
+    let ([_, rain], _) = old_rasters(&path);
+    drop(Session::open(&path, &mut Document::empty()).unwrap());
+    let (mut file, project) = ProjectFile::open(&path).unwrap();
+    let layer = project.raster_layer(rain).unwrap().id;
+    let mut colors = raster_colors(&project, rain);
+    colors.colors[0] = [1, 1, 1];
+    colors.opacity = 0.7;
+    let mut style = LayerStyle::from_json(
+        project
+            .raster_layer(rain)
+            .unwrap()
+            .style
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    style.set_raster_symbolizer(colors);
+    file.set_styles(&[(layer, style.to_json())]).unwrap();
+    drop(file);
+
+    let mut doc = Document::empty();
+    let session = Session::open(&path, &mut doc).unwrap();
+    let raster = record(&doc.project, rain);
+    assert_eq!((raster.colors[0], raster.opacity), ([1, 1, 1], 0.7));
+    let map = &session.load_maps().unwrap()[1].1;
+    assert_eq!(map.bands.colors()[0], [1, 1, 1]);
+    drop(session);
+    let stored = ProjectFile::open(&path).unwrap().1;
+    assert_eq!(record(&stored, rain).colors[0], [1, 1, 1]);
+}
+
+#[test]
+fn a_new_height_layer_has_the_default_stops_in_its_style() {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    let height = state.add_height();
+    let colors = raster_colors(&state.doc.project, height);
+    let bands = state.globe.raster_map(height).unwrap().bands.clone();
+    let raster = record(&state.doc.project, height);
+    assert!(!colors.stops.is_empty());
+    assert_eq!(colors, vale_app::raster_style::symbolizer_of(raster));
+    assert_eq!(colors.colors, bands.colors());
+    assert_eq!(
+        colors.stops.iter().map(|s| s.value).collect::<Vec<_>>(),
+        bands.stops().iter().map(|s| s.value).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn undo_of_a_stop_move_goes_through_the_style() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let (mut session, mut doc, mut map) = start(&path);
+    paint(&mut map, 45.0, 35.3, 0.2);
+    session
+        .flush(&mut doc.project, &mut maps(&mut map))
+        .unwrap();
+    let before = map.bands.clone();
+    let value = map.bands.stops()[2].value;
+    let moved = map.bands.move_to(2, value + 10.0);
+    assert_ne!(moved, value);
+    session
+        .flush(&mut doc.project, &mut maps(&mut map))
+        .unwrap();
+    let stop = |path: &std::path::Path| {
+        let project = ProjectFile::open(path).unwrap().1;
+        raster_colors(&project, HEIGHT).stops[2].value
+    };
+    assert_eq!(stop(&path), moved);
+
+    assert!(session.undo(&mut doc, &mut maps(&mut map)).unwrap());
+    assert_eq!(map.bands, before);
+    assert_eq!(stop(&path), value);
+    assert_eq!(raster_colors(&doc.project, HEIGHT).stops[2].value, value);
+    assert!(session.redo(&mut doc, &mut maps(&mut map)).unwrap());
+    assert_eq!(map.bands.stops()[2].value, moved);
+    assert_eq!(stop(&path), moved);
 }

@@ -14,6 +14,7 @@ use crate::document::Document;
 use crate::files::Files;
 use crate::globe::view::GlobeView;
 use crate::globe::{DISPLAY_CAP, reduce_tile, thumbnail};
+use crate::raster_style::{self, load_raster_styles, store_raster_styles};
 use crate::workcopy::WorkCopy;
 
 /// The time from a change to its save. One drag of a control changes the
@@ -157,7 +158,7 @@ impl Session {
     fn open_at(
         database: &Path,
         path: &Path,
-        work: Option<WorkCopy>,
+        mut work: Option<WorkCopy>,
         doc: &mut Document,
     ) -> Result<Session, StoreError> {
         let file = if database.exists() {
@@ -181,6 +182,19 @@ impl Session {
         if !defaults.is_empty() {
             file.set_styles(&defaults)?;
             doc.set_project(file.project().clone());
+        }
+        // The raster records take the colors of the styles. An older file
+        // gets a style for each raster layer, with no undo step. Its undo
+        // log goes, because its steps have no colors in the styles.
+        let mut project = file.project().clone();
+        load_raster_styles(&mut project);
+        let migrated = raster_style::migrate(&mut project);
+        if migrated || project != *file.project() {
+            file.save_base(&project)?;
+            doc.set_project(file.project().clone());
+            if let Some(work) = &mut work {
+                work.mark_changed(Instant::now());
+            }
         }
         let thumbnail = vale_store::summary(database)?.thumbnail;
         Ok(Session {
@@ -465,7 +479,8 @@ impl Session {
         maps: &mut Maps,
     ) -> Result<(), StoreError> {
         doc.set_project(self.file.project().clone());
-        let project = self.file.project();
+        load_raster_styles(&mut doc.project);
+        let project = &doc.project;
         for (id, map) in maps.iter_mut() {
             if let Some(raster) = record(project, *id, map) {
                 load_record(map, raster);
@@ -507,7 +522,8 @@ impl Session {
         self.file.undo_limit()
     }
 
-    /// Updates the record of each raster from its heightmap. Returns `true`
+    /// Updates the record of each raster from its heightmap, and the style
+    /// of each raster layer from its record. Returns `true`
     /// if the file does not hold the project or a heightmap.
     fn changed(&self, project: &mut Project, maps: &Maps) -> bool {
         let mut painted = false;
@@ -519,6 +535,8 @@ impl Session {
             sync_record(raster, map);
             painted |= map.has_changes();
         }
+        // A change of the colors and the change of the style are one save.
+        store_raster_styles(project);
         painted || project != self.file.project()
     }
 }
@@ -596,23 +614,26 @@ pub fn sync_record(raster: &mut Raster, map: &Heightmap) {
                 && a.line.darken == b.line.darken
         });
     if !same {
-        raster.stops = stops
-            .iter()
-            .map(|s| vale_store::Stop {
-                value: s.value,
-                line: vale_store::StopLine {
-                    on: s.line.on,
-                    weight: s.line.weight,
-                    color: s.line.color,
-                    darker: s.line.darker,
-                    darken: s.line.darken,
-                },
-            })
-            .collect();
+        raster.stops = record_stops(stops);
     }
     if raster.colors != map.bands.colors() {
         raster.colors = map.bands.colors().to_vec();
     }
+}
+
+/// The stops of a raster record for these stops of bands.
+pub(crate) fn record_stops(stops: &[Stop]) -> Vec<vale_store::Stop> {
+    let stop = |s: &Stop| vale_store::Stop {
+        value: s.value,
+        line: vale_store::StopLine {
+            on: s.line.on,
+            weight: s.line.weight,
+            color: s.line.color,
+            darker: s.line.darker,
+            darken: s.line.darken,
+        },
+    };
+    stops.iter().map(stop).collect()
 }
 
 /// The tiles of the heightmap that the file does not hold. With `all`, they
