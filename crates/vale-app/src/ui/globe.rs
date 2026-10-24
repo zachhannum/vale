@@ -21,6 +21,8 @@ use crate::globe::view::GlobeView;
 use crate::globe::{Globe, Paint, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 use crate::ui::pad::theme;
+use vale_style::expr::Context;
+use vale_style::{Paint as StylePaint, scale_denominator};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
 /// The largest angle between two drawn points of a highlight on the flat map.
@@ -336,6 +338,7 @@ fn vector_layer(
     id: LayerId,
 ) {
     let radius = view.radius(rect);
+    let scale = scale_denominator(doc.project.world.radius_km * 1000.0 / radius);
     let step = vector::step(radius * f64::from(painter.ctx().pixels_per_point()));
     let center = rect.center();
     let to_screen = |p: &vector::P2| {
@@ -350,30 +353,65 @@ fn vector_layer(
         let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
             continue;
         };
-        let fill = entry.style.fill.map(color);
-        let stroke = entry
-            .style
-            .stroke
-            .map(|s| egui::Stroke::new(s.width as f32, color(s.color)));
+        let style = &entry.style.style;
+        let constant = style.constant_paints(scale);
+        let mut paints = Vec::new();
         for feature in &layer.features {
+            let paints = match &constant {
+                Some(c) => c.as_slice(),
+                None => {
+                    paints.clear();
+                    let ctx = Context {
+                        attributes: &feature.attributes,
+                        scale,
+                        geometry: feature.geometry.kind(),
+                    };
+                    style.paints(&ctx, &mut paints);
+                    paints.as_slice()
+                }
+            };
+            if paints.is_empty() {
+                continue;
+            }
+            let fills = paints.iter().filter_map(|p| match p {
+                StylePaint::Fill(c) => Some(color(*c)),
+                _ => None,
+            });
+            let strokes = paints.iter().filter_map(|p| match p {
+                StylePaint::Stroke(s) => Some(egui::Stroke::new(s.width as f32, color(s.color))),
+                _ => None,
+            });
             match &feature.geometry {
                 Geometry::Points(points) => {
+                    let markers = paints.iter().filter_map(|p| match p {
+                        StylePaint::Marker {
+                            radius,
+                            fill,
+                            stroke,
+                        } => Some((
+                            *radius as f32,
+                            fill.map_or(egui::Color32::TRANSPARENT, color),
+                            stroke.map_or(egui::Stroke::NONE, |s| {
+                                egui::Stroke::new(s.width as f32, color(s.color))
+                            }),
+                        )),
+                        _ => None,
+                    });
                     for p in points {
                         if let Some(pos) = view.project(rect, lonlat_to_dir(p[0], p[1])) {
-                            painter.circle(
-                                pos,
-                                entry.style.point_radius as f32,
-                                fill.unwrap_or(egui::Color32::TRANSPARENT),
-                                stroke.unwrap_or(egui::Stroke::NONE),
-                            );
+                            for (radius, fill, stroke) in markers.clone() {
+                                painter.circle(pos, radius, fill, stroke);
+                            }
                         }
                     }
                 }
                 Geometry::Lines(lines) => {
-                    let Some(stroke) = stroke else { continue };
                     for line in lines {
                         for part in vector::clip_line(&view.rot, &vector::line(line), step) {
-                            painter.line(path(&part), stroke);
+                            let part = path(&part);
+                            for stroke in strokes.clone() {
+                                painter.line(part.clone(), stroke);
+                            }
                         }
                     }
                 }
@@ -389,8 +427,10 @@ fn vector_layer(
                         }
                         let rings: Vec<_> = rings.into_iter().filter(|r| !r.is_empty()).collect();
                         let clipped = vector::clip_polygon(&view.rot, &rings, step);
-                        if let Some(fill) = fill {
-                            let (points, indices) = vector::triangulate(&clipped.loops);
+                        let mut triangles = None;
+                        for fill in fills.clone() {
+                            let (points, indices) = triangles
+                                .get_or_insert_with(|| vector::triangulate(&clipped.loops));
                             let vertices = points
                                 .iter()
                                 .map(|p| egui::epaint::Vertex {
@@ -400,13 +440,13 @@ fn vector_layer(
                                 })
                                 .collect();
                             let mesh = egui::Mesh {
-                                indices,
+                                indices: indices.clone(),
                                 vertices,
                                 ..Default::default()
                             };
                             painter.add(mesh);
                         }
-                        if let Some(stroke) = stroke {
+                        for stroke in strokes.clone() {
                             for part in &clipped.outlines {
                                 painter.line(path(part), stroke);
                             }
@@ -561,7 +601,7 @@ pub(super) fn paint_canvas(
     let entries = state.doc.frame.entries.iter();
     let style = entries
         .filter(|e| Some(e.layer) == layer)
-        .find_map(|e| e.style.stroke);
+        .find_map(|e| e.style.stroke());
     let stroke = style.map_or(egui::Stroke::new(2.0, egui::Color32::WHITE), |s| {
         egui::Stroke::new((s.width as f32).max(1.0), color(s.color))
     });

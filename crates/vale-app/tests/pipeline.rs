@@ -6,6 +6,8 @@ use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{Pipeline, Quality, fonts};
 use vale_render::{FillRule, Item};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
+use vale_style::expr::{Filter, Property};
+use vale_style::{Color, Rule, Stroke, StrokeSymbolizer, Style, Symbolizer};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 const LAND: [u8; 3] = [244, 241, 232];
@@ -193,4 +195,143 @@ fn one_layer_of_each_kind() {
         kinds.iter().filter(|k| k.starts_with("fill")).count() >= 4,
         "{kinds:?}"
     );
+}
+
+/// A short description of each item, with the color and the width.
+fn describe(item: &Item) -> String {
+    match item {
+        Item::Fill { color, rule, .. } => {
+            format!(
+                "fill {rule:?} {} {} {} {}",
+                color.r, color.g, color.b, color.a
+            )
+        }
+        Item::Stroke {
+            color,
+            width,
+            round,
+            ..
+        } => format!(
+            "stroke {round} {} {} {} {} {width}",
+            color.r, color.g, color.b, color.a
+        ),
+        Item::Glyphs(_) => "glyphs".to_string(),
+    }
+}
+
+#[test]
+fn default_styles_draw_the_sample_as_one_batch_per_paint() {
+    let doc = plain();
+    let c = compose(&doc, &mut Pipeline::new());
+    let mut items: Vec<String> = c.list.items.iter().map(describe).collect();
+    // Land: one fill for each land polygon on the page.
+    let land = "fill EvenOdd 244 241 232 255";
+    let lands = items.iter().filter(|i| *i == land).count();
+    assert!(lands > 10, "{items:?}");
+    items.dedup();
+    // The scale bar follows.
+    assert_eq!(
+        items[..8],
+        [
+            "fill NonZero 236 236 232 255",
+            "fill NonZero 214 232 242 255",
+            land,
+            "stroke false 150 160 165 255 0.6",
+            "stroke true 90 150 200 255 1.2",
+            "fill NonZero 60 60 60 255",
+            "stroke true 255 255 255 255 1",
+            "stroke false 90 100 105 255 0.8",
+        ]
+    );
+}
+
+/// A document with one line layer. Each line has a `kind` and a `flow`.
+fn lines(features: &[(&str, f64)]) -> (Document, vale_store::LayerId) {
+    let features: Vec<String> = features
+        .iter()
+        .enumerate()
+        .map(|(i, (kind, flow))| {
+            let y = -40.0 + 10.0 * i as f64;
+            format!(
+                r#"{{"type":"Feature","properties":{{"kind":"{kind}","flow":{flow}}},"geometry":{{"type":"LineString","coordinates":[[-40,{y}],[40,{y}]]}}}}"#
+            )
+        })
+        .collect();
+    let text = format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    );
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let imported = vale_import::geojson::read_str("lines", &text).unwrap();
+    let id = doc.add_imported(imported, None)[0];
+    (doc, id)
+}
+
+/// The width and the color of each round stroke: the strokes of the line layer.
+fn line_strokes(doc: &Document) -> Vec<(f64, [u8; 3])> {
+    compose(doc, &mut Pipeline::new())
+        .list
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Stroke {
+                color,
+                width,
+                round: true,
+                ..
+            } => Some((*width, [color.r, color.g, color.b])),
+            _ => None,
+        })
+        .collect()
+}
+
+fn stroke_rule(name: &str, filter: &str, color: Color, width: f64) -> Rule {
+    let mut rule = Rule::new(
+        name,
+        vec![Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke {
+            color,
+            width,
+        }))],
+    );
+    rule.filter = Filter::new(filter);
+    rule
+}
+
+#[test]
+fn rules_with_filters_draw_their_features_in_their_own_colors() {
+    let (mut doc, id) = lines(&[("major", 1.0), ("minor", 1.0), ("major", 1.0)]);
+    let (red, blue) = (Color::rgb(200, 0, 0), Color::rgb(0, 0, 200));
+    doc.entry_mut(id).unwrap().style.style = Style {
+        rules: vec![
+            stroke_rule("Minor", "kind = 'minor'", blue, 1.0),
+            stroke_rule("Major", "kind = 'major'", red, 3.0),
+        ],
+    };
+    // Rule by rule: the minor line, then the two major lines in one batch.
+    assert_eq!(line_strokes(&doc), [(1.0, [0, 0, 200]), (3.0, [200, 0, 0])]);
+
+    // A rule draws nothing at a scale denominator from its maximum.
+    let style = &mut doc.entry_mut(id).unwrap().style.style;
+    style.rules[1].max_scale = Some(1000.0);
+    assert_eq!(line_strokes(&doc), [(1.0, [0, 0, 200])]);
+}
+
+#[test]
+fn a_width_expression_follows_the_attribute() {
+    let (mut doc, id) = lines(&[("a", 2.0), ("a", 6.0), ("a", 2.0), ("a", 4.0)]);
+    let blue = Color::rgb(0, 0, 200);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        rules: vec![Rule::new(
+            "Flow",
+            vec![Symbolizer::Stroke(StrokeSymbolizer {
+                color: Property::constant(blue),
+                width: Property::expression("flow * 0.5", 1.0),
+            })],
+        )],
+    };
+    // One batch for each width, in the order of the features.
+    let widths: Vec<f64> = line_strokes(&doc).iter().map(|(w, _)| *w).collect();
+    assert_eq!(widths, [1.0, 3.0, 2.0]);
 }

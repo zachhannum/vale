@@ -401,9 +401,9 @@ fn the_globe_draws_vector_layers_with_great_circle_edges_up_to_its_edge() {
         (ids[2], Some(blue), None),
     ] {
         let style = &mut state.doc.entry_mut(id).unwrap().style;
-        style.fill = fill;
-        style.stroke = stroke.map(|color| Stroke { color, width: 4.0 });
-        style.point_radius = 5.0;
+        style.set_fill(fill);
+        style.set_stroke(stroke.map(|color| Stroke { color, width: 4.0 }));
+        style.set_point_radius(5.0);
     }
     let hidden = state.doc.add_imported(
         geojson::read_str(
@@ -413,7 +413,12 @@ fn the_globe_draws_vector_layers_with_great_circle_edges_up_to_its_edge() {
         .unwrap(),
         None,
     )[0];
-    state.doc.entry_mut(hidden).unwrap().style.fill = Some(red);
+    state
+        .doc
+        .entry_mut(hidden)
+        .unwrap()
+        .style
+        .set_fill(Some(red));
     state.doc.set_visible(hidden, false);
 
     let (img, state) = headless::ui_png(state, (1280.0, 800.0), 1.0).unwrap();
@@ -3473,7 +3478,7 @@ fn a_raster_layer_and_a_vector_layer_draw_in_the_layer_order() {
     state.globe.raster_map_mut(raster).unwrap().fill(LOW);
     show_as(&mut state, RasterDisplay::Grey);
     let layer = state.doc.project.raster_layer(raster).unwrap().id;
-    let fill = state.doc.entry(land).unwrap().style.fill.unwrap();
+    let fill = state.doc.entry(land).unwrap().style.fill().unwrap();
     let fill = [fill.r, fill.g, fill.b];
     assert!(!is_grey(fill, LOW));
     let setup = egui_kittest::wgpu::default_wgpu_setup();

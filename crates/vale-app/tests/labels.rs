@@ -356,6 +356,7 @@ fn hit(kind: GeometryKind, geometry: Geometry, f: PageFeature, at: Point) -> boo
         layer: &layer,
         kind,
         features: vec![f],
+        scale: 1.0e7,
     }];
     pick(&layers, at).is_some()
 }
