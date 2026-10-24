@@ -473,7 +473,7 @@ These rules apply to the layout:
 - The eye of a layer always shows. A hidden layer shows a crossed eye.
 - Selected tools, segments, tabs, and rows have the same tint of the accent color.
 - Each tool and each action shows its name and its key in a tooltip, and the menus show the keys too.
-- The keys of the World tools are R for Raise, F for Lower, S for Smooth, E for Flatten, L for Line, and H for the hand. B opens the Brush panel. The keys of the Maps tools are V for Select, H for the hand, P for Point, A for Vertex, and T for Label. In the Labels mode, ] and [ go to the next and the previous label, Return pins a label, and Delete hides it.
+- The keys of the World tools are R for Raise, F for Lower, S for Smooth, E for Flatten, L for Line, and H for the hand. B opens the Brush panel. The keys of the Maps tools are V for Select, H for the hand, P for Point, A for Vertex, and T for Label. In a map frame of the Atlas workspace, ] and [ go to the next and the previous label, Return pins a label, and Delete hides it.
 - A form, for example "New world" or "Export", is a sheet of the window. The attribute form of a new point is a window at the top of the canvas, and the canvas takes the next click.
 - The start screen has a sidebar with the places and the recent worlds, and a grid of cards. The tool bar has a search field, the sort order, a switch between a grid and a list, and "New world…". The menu of a card holds "Open", "Rename…", "Make a copy", "Show in Finder", and "Delete…".
 - The left mouse button and the pen paint. The middle button, or Space with the left button, turns the globe, and the wheel zooms. The brush outline follows the pointer and a hovering pen.
@@ -542,7 +542,7 @@ The atlas has three levels: maps, pages, and map frames.
 
 A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. In the Maps workspace you pan and zoom a map freely. Each map has one projection center. For another center, you copy the map and change the projection of the copy.
 
-The Maps workspace has the modes Projection, Labels, and Data. In that workspace, the eye of a row of the Layers panel is the switch of that layer in the open map.
+The Maps workspace has the modes Projection, Labels, and Data. The Labels mode edits the label classes of the map. You pin, move, and hide a label in a map frame, because each manual change belongs to one frame. In that workspace, the eye of a row of the Layers panel is the switch of that layer in the open map.
 
 A page is one page of the atlas. It has a page size, its map frames, and its furniture (the items around the maps). The page size has presets and a free value, with units. Version 1 has a title, a legend, a scale bar, and a north arrow.
 
