@@ -106,11 +106,7 @@ pub(super) fn lex(chars: &[char]) -> Result<Vec<Token>, ParseError> {
                 format!("unexpected character '{c}'"),
             ));
         };
-        out.push(Token {
-            tok,
-            start,
-            end: i,
-        });
+        out.push(Token { tok, start, end: i });
     }
     out.push(Token {
         tok: Tok::End,

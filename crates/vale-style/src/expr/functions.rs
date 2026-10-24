@@ -36,7 +36,12 @@ pub static FUNCTIONS: &[Function] = &[
         min_args: 1,
         max_args: None,
         summary: "The first value that is not null",
-        call: |a| a.iter().find(|v| **v != Value::Null).cloned().unwrap_or(Value::Null),
+        call: |a| {
+            a.iter()
+                .find(|v| **v != Value::Null)
+                .cloned()
+                .unwrap_or(Value::Null)
+        },
     },
     Function {
         name: "lower",

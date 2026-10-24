@@ -2,9 +2,9 @@
 
 use vale_store::Value;
 
+use super::ParseError;
 use super::functions::{self, Function};
 use super::lexer::{Tok, Token};
-use super::ParseError;
 
 /// The greatest height of the syntax tree. Each parenthesis, function call, prefix operator, and each step of a chain such as `a + b + c` adds one level.
 const MAX_DEPTH: usize = 64;
@@ -334,7 +334,11 @@ impl<'a> Parser<'a> {
             let inner = self.unary();
             self.depth -= 1;
             let inner = inner?;
-            return Ok(if neg { Node::Neg(Box::new(inner)) } else { inner });
+            return Ok(if neg {
+                Node::Neg(Box::new(inner))
+            } else {
+                inner
+            });
         }
         self.primary()
     }
@@ -362,7 +366,9 @@ impl<'a> Parser<'a> {
                     _ => Err(self.error(
                         t.start,
                         t.end,
-                        format!("unknown variable '@{name}'. The variables are @scale and @geometry"),
+                        format!(
+                            "unknown variable '@{name}'. The variables are @scale and @geometry"
+                        ),
                     )),
                 }
             }
@@ -384,13 +390,14 @@ impl<'a> Parser<'a> {
                     "true" => Ok(Node::Lit(Value::Bool(true))),
                     "false" => Ok(Node::Lit(Value::Bool(false))),
                     "null" => Ok(Node::Lit(Value::Null)),
-                    kw @ ("and" | "or" | "not" | "is" | "in" | "like" | "ilike") => Err(self.error(
-                        t.start,
-                        t.end,
-                        format!(
-                            "'{kw}' is a keyword. Put a field with this name in double quotes"
-                        ),
-                    )),
+                    kw @ ("and" | "or" | "not" | "is" | "in" | "like" | "ilike") => Err(self
+                        .error(
+                            t.start,
+                            t.end,
+                            format!(
+                                "'{kw}' is a keyword. Put a field with this name in double quotes"
+                            ),
+                        )),
                     _ => Ok(Node::Field(name)),
                 }
             }

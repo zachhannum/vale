@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use vale_store::GeometryKind;
-use vale_style::expr::{Context, Expr, Filter, Property, Value, FUNCTIONS};
 use vale_style::Color;
+use vale_style::expr::{Context, Expr, FUNCTIONS, Filter, Property, Value};
 
 fn city() -> BTreeMap<String, Value> {
     let mut a = BTreeMap::new();
@@ -214,7 +214,10 @@ fn error_line_and_column() {
     assert!(e.to_string().starts_with("2:17: "), "{e}");
 
     let e = Expr::parse("flow * shout(name)").unwrap_err();
-    assert_eq!(e.pointer("flow * shout(name)"), "flow * shout(name)\n       ^^^^^");
+    assert_eq!(
+        e.pointer("flow * shout(name)"),
+        "flow * shout(name)\n       ^^^^^"
+    );
 }
 
 #[test]
@@ -274,9 +277,45 @@ fn wrong_expressions_still_draw() {
 #[test]
 fn random_text_does_not_panic() {
     const PARTS: [&str; 40] = [
-        "(", ")", ",", "'", "\"", "@", "@scale", "@geometry", "1", "2.5", "1e400", "-", "+",
-        "*", "/", "%", "||", "=", "<", ">=", "!=", "!", "and", "or", "not", "is", "null", "in",
-        "like", "ilike", "name", "flow", "note", "if", "substr", "round", "'%_'", " ", "\n",
+        "(",
+        ")",
+        ",",
+        "'",
+        "\"",
+        "@",
+        "@scale",
+        "@geometry",
+        "1",
+        "2.5",
+        "1e400",
+        "-",
+        "+",
+        "*",
+        "/",
+        "%",
+        "||",
+        "=",
+        "<",
+        ">=",
+        "!=",
+        "!",
+        "and",
+        "or",
+        "not",
+        "is",
+        "null",
+        "in",
+        "like",
+        "ilike",
+        "name",
+        "flow",
+        "note",
+        "if",
+        "substr",
+        "round",
+        "'%_'",
+        " ",
+        "\n",
         "é",
     ];
     let attrs = city();

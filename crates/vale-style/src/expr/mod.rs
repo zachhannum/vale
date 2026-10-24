@@ -11,10 +11,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use vale_render::Color;
-pub use vale_store::Value;
 use vale_store::GeometryKind;
+pub use vale_store::Value;
 
-pub use functions::{Function, FUNCTIONS};
+pub use functions::{FUNCTIONS, Function};
 use parser::Node;
 
 /// The attributes of one feature, by field name.
@@ -195,9 +195,7 @@ impl Filter {
     pub fn matches(&self, ctx: &Context) -> bool {
         match &self.source {
             None => true,
-            Some(s) => s
-                .expr()
-                .is_some_and(|e| functions::truthy(&e.eval(ctx))),
+            Some(s) => s.expr().is_some_and(|e| functions::truthy(&e.eval(ctx))),
         }
     }
 }

@@ -4,9 +4,9 @@ use std::cmp::Ordering;
 
 use vale_store::Value;
 
+use super::Context;
 use super::functions::{finite, text_of};
 use super::parser::{BinOp, Node, Var};
-use super::Context;
 
 pub(super) fn eval(node: &Node, ctx: &Context) -> Value {
     match node {
