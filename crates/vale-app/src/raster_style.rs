@@ -61,18 +61,10 @@ pub fn load_raster_styles(p: &mut Project) {
         let (Some(colors), Some(record)) = (style.raster_symbolizer(), p.raster_mut(raster)) else {
             continue;
         };
-        if record.display != colors.display {
-            record.display = colors.display;
-        }
-        if record.opacity != colors.opacity {
-            record.opacity = colors.opacity;
-        }
-        if record.stops != colors.stops {
-            record.stops = colors.stops.clone();
-        }
-        if record.colors != colors.colors {
-            record.colors = colors.colors.clone();
-        }
+        record.display = colors.display;
+        record.opacity = colors.opacity;
+        record.stops.clone_from(&colors.stops);
+        record.colors.clone_from(&colors.colors);
     }
 }
 
