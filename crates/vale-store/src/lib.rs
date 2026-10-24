@@ -329,6 +329,9 @@ pub struct Layer {
     pub fields: Vec<Field>,
     /// A feature ID is its index here.
     pub features: Vec<Feature>,
+    /// The style of the layer as JSON. `vale-store` does not read it. `None`
+    /// means the default style.
+    pub style: Option<String>,
 }
 
 impl Layer {
@@ -714,6 +717,7 @@ impl Project {
             source: None,
             fields: Vec::new(),
             features: Vec::new(),
+            style: None,
         };
         self.next_id += 1;
         self.layers.insert(top.map_or(0, |i| i + 1), layer);
@@ -892,6 +896,7 @@ impl Project {
             source,
             fields,
             features,
+            style: None,
         });
         id
     }
