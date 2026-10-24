@@ -483,6 +483,8 @@ A style is an ordered list of rules. Each rule has a filter, a scale range, and 
 
 A filter is an expression on attributes, for example `population > 50000 and kind = 'city'`. Each symbolizer property can also be an expression, so the line width of a river can come from a `flow` attribute.
 
+The same expression language serves filters, style properties, label text, and the attribute table. `docs/EXPRESSIONS.md` has its grammar and its functions.
+
 Each layer has one style. You edit it in the panel of the layer, from each workspace. The globe, the flat view, and each map frame draw the layer with that style. A map frame can override single properties without a copy of the full style.
 
 The symbolizers must give enough artistic range that the output does not look like a survey map.

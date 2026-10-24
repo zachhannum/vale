@@ -1,5 +1,7 @@
 //! Layer and map styles.
 
+pub mod expr;
+
 pub use vale_render::Color;
 use vale_store::GeometryKind;
 
