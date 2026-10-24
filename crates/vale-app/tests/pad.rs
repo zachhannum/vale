@@ -5301,7 +5301,7 @@ fn a_pen_tap_places_a_point_and_opens_a_form_with_each_field_of_the_layer() {
     pen_tap_at(&mut h, center);
     let after = line_features(&h, places);
     assert_eq!(after.len(), before.len() + 1);
-    let fields = h.state().doc.project.layer(places).unwrap().fields.clone();
+    let fields = h.state().doc.project.layer(places).unwrap().field_names();
     assert!(!fields.is_empty());
     assert_eq!(form_fields(&h), fields);
     let form = h.state().point_form.as_ref().unwrap();
@@ -5327,7 +5327,8 @@ fn a_layer_with_no_fields_shows_a_name_field_and_return_closes_the_form() {
     h.run_steps(2);
     assert!(h.state().point_form.is_none());
     let layer = h.state().doc.project.layer(id).unwrap();
-    assert_eq!(layer.fields, ["name"]);
+    assert_eq!(layer.field_names(), ["name"]);
+    assert_eq!(layer.fields[0].kind, vale_store::FieldType::Text);
     let name = &layer.features[0].attributes["name"];
     assert_eq!(*name, vale_store::Value::Text("Avalon".into()));
     // The layer labels its points with the name.

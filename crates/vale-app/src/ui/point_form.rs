@@ -1,7 +1,7 @@
 //! The attribute form of a point that the point tool placed.
 
 use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
-use vale_store::{Feature, Geometry, Layer, LayerId, Uuid, Value};
+use vale_store::{Feature, Field, FieldType, Geometry, GeometryKind, LayerId, Uuid, Value};
 
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
 use super::pad::theme;
@@ -10,7 +10,8 @@ use super::{AppState, Workspace, save_session};
 use crate::globe::PlacedPoint;
 use crate::globe::math::{V3, dir_to_lonlat};
 
-/// The field of a layer with no fields.
+/// The text field that a point layer with no fields gets with its first
+/// point.
 pub const NAME_FIELD: &str = "name";
 /// The button of the desktop form that closes it.
 pub const DONE: &str = "Done";
@@ -21,43 +22,10 @@ const CARD: &str = "point-form";
 /// screen.
 const POINT_GAP: f32 = 24.0;
 
-/// The type of the values of a field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Text,
-    Number,
-    Bool,
-}
-
-impl Kind {
-    /// The type of the values that the features of the layer have in the
-    /// field. A field with no values, or with values of more than one type,
-    /// is text.
-    fn of(layer: &Layer, name: &str) -> Kind {
-        let mut kinds = layer
-            .features
-            .iter()
-            .filter_map(|f| match f.attributes.get(name)? {
-                Value::Null => None,
-                Value::Bool(_) => Some(Kind::Bool),
-                Value::Number(_) => Some(Kind::Number),
-                Value::Text(_) => Some(Kind::Text),
-            });
-        let Some(first) = kinds.next() else {
-            return Kind::Text;
-        };
-        if kinds.all(|k| k == first) {
-            first
-        } else {
-            Kind::Text
-        }
-    }
-}
-
 /// One field of the form.
 pub struct FormField {
     pub name: String,
-    kind: Kind,
+    kind: FieldType,
     pub text: String,
 }
 
@@ -69,21 +37,15 @@ impl FormField {
         if text.is_empty() {
             return Value::Null;
         }
-        match self.kind {
-            Kind::Number => text.parse().map(Value::Number).ok(),
-            Kind::Bool => match text.to_lowercase().as_str() {
-                "true" => Some(Value::Bool(true)),
-                "false" => Some(Value::Bool(false)),
-                _ => None,
-            },
-            Kind::Text => None,
-        }
-        .unwrap_or_else(|| Value::Text(text.to_owned()))
+        self.kind
+            .parse(text)
+            .unwrap_or_else(|| Value::Text(text.to_owned()))
     }
 
     /// True if the text is a value of the type of the field.
     fn valid(&self) -> bool {
-        self.kind == Kind::Text || !matches!(self.value(), Value::Text(_))
+        let text = self.text.trim();
+        text.is_empty() || self.kind.parse(text).is_some()
     }
 }
 
@@ -120,16 +82,23 @@ impl AppState {
         let Some(layer) = self.doc.project.layer(id) else {
             return;
         };
+        if layer.geometry() != Some(GeometryKind::Point) {
+            return;
+        }
         let named = layer.fields.is_empty();
-        let names = match named {
-            true => vec![NAME_FIELD.to_owned()],
-            false => layer.fields.clone(),
+        if named {
+            let name = Field::new(NAME_FIELD, FieldType::Text);
+            self.doc.project.add_field(id, name);
+        }
+        let Some(layer) = self.doc.project.layer(id) else {
+            return;
         };
-        let fields: Vec<FormField> = names
-            .into_iter()
-            .map(|name| FormField {
-                kind: Kind::of(layer, &name),
-                name,
+        let fields: Vec<FormField> = layer
+            .fields
+            .iter()
+            .map(|field| FormField {
+                kind: field.kind,
+                name: field.name.clone(),
                 text: String::new(),
             })
             .collect();

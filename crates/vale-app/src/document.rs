@@ -190,7 +190,7 @@ impl Document {
                 Some(i) => old.swap_remove(i),
                 None => LayerEntry {
                     layer: layer.id,
-                    style: LayerStyle::default_for(kind, *ordinal, &layer.fields),
+                    style: LayerStyle::default_for(kind, *ordinal, &layer.field_names()),
                 },
             };
             *ordinal += 1;

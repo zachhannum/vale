@@ -38,7 +38,7 @@ fn layer_info(state: &AppState) -> Option<LayerInfo> {
         name: layer.name.clone(),
         kind: layer.geometry()?,
         count: layer.features.len(),
-        fields: layer.fields.clone(),
+        fields: layer.field_names(),
     })
 }
 

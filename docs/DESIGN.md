@@ -145,7 +145,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Raster | Face size, unit, value range, base level, color stops with their lines, band colors, display, smoothing, river switch, band line switch, opacity |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Thumbnail | A small picture of the globe, for the list of projects |
-| Layer | Name, type (raster, points, lines, or polygons), visibility, attribute schema, link to a source, to a raster, or to an in-app table |
+| Layer | Name, type (raster, points, lines, or polygons), visibility, attribute schema (fields with a name, a type, and a default value), link to a source, to a raster, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Style | Ordered rules of one layer, stored as JSON |
 | Label class | Text expression, font, placement rules, priority |
@@ -159,7 +159,7 @@ QGIS opens the feature tables directly and ignores the extra tables. The extra t
 
 Each feature has a UUID in addition to the integer row ID. The UUID never changes, so overrides and styles survive an edit, a replaced file, or a new projection. The UUID is a text column of the feature table.
 
-The world is a row in `gpkg_spatial_ref_sys`: a geographic coordinate system on a sphere of the world radius. Each feature table uses it. Each attribute field is one column. A field with values of more than one type is a text column, and the first character of each value gives its type.
+The world is a row in `gpkg_spatial_ref_sys`: a geographic coordinate system on a sphere of the world radius. Each feature table uses it. Each attribute field is one column. Its type is text, whole number, decimal number, or true or false, and the column type is TEXT, INTEGER, DOUBLE, or BOOLEAN. The default value of a field is the DEFAULT of its column. Each value is null or a value of the type of its field. An imported field with values of more than one type is a text field.
 
 The display units of the world are a text column of the world table, with the value `metric` or `imperial`.
 
