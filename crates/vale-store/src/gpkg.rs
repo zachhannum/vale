@@ -23,13 +23,13 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
-    Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Layer, LayerId, LayerKind,
-    LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine, Units, Uuid,
-    Value, World, clamp_feature_size, clamp_opacity,
+    CustomProjection, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Layer, LayerId,
+    LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine,
+    Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 21;
+pub const FORMAT_VERSION: u32 = 22;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -55,6 +55,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v19,
     v20,
     v21,
+    v22,
 ];
 
 /// `GPKG` in ASCII.
@@ -863,6 +864,25 @@ fn v21(_tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The custom projections. An older file has none. A file of version 21 can
+/// already have the table.
+fn v22(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql = "SELECT count(*) FROM sqlite_master WHERE name = 'vale_projection'";
+    if tx.query_row(sql, [], |r| r.get::<_, i64>(0))? > 0 {
+        return Ok(());
+    }
+    tx.execute_batch(
+        "CREATE TABLE vale_projection (
+           position INTEGER PRIMARY KEY,
+           name TEXT NOT NULL,
+           definition TEXT NOT NULL);
+         INSERT INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_projection', 'vale', 'vale_projection');
+         INSERT INTO gpkg_extensions
+           VALUES ('vale_projection', NULL, 'vale_project', 'Records of the Vale app', 'read-write');",
+    )
+}
+
 /// The display of a raster. The rasters of an older file show bands.
 fn v10(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN display TEXT NOT NULL DEFAULT 'bands'")
@@ -1174,11 +1194,16 @@ fn write_edit(
     Ok(stats)
 }
 
-/// Writes the world, the raster records, and the layers. The record of a
-/// raster that is not in the project stays.
+/// Writes the world, the projections, the raster records, and the layers.
+/// The record of a raster that is not in the project stays.
 fn write_records(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     clear(tx)?;
     write_world(tx, &project.world)?;
+    let mut insert =
+        tx.prepare("INSERT INTO vale_projection (position, name, definition) VALUES (?1, ?2, ?3)")?;
+    for (position, p) in project.projections.iter().enumerate() {
+        insert.execute(params![position, p.name, p.definition])?;
+    }
     // A raster layer refers to the row of its raster.
     write_rasters(tx, project)?;
     tx.execute(
@@ -1207,7 +1232,8 @@ fn write_records(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
     Ok(())
 }
 
-/// Removes the world, the layer records, and the feature tables.
+/// Removes the world, the projections, the layer records, and the feature
+/// tables.
 fn clear(tx: &Transaction) -> Result<(), StoreError> {
     let tables: Vec<String> = tx
         .prepare("SELECT table_name FROM vale_layer WHERE raster_id IS NULL")?
@@ -1222,6 +1248,7 @@ fn clear(tx: &Transaction) -> Result<(), StoreError> {
          DELETE FROM gpkg_spatial_ref_sys WHERE srs_id = {WORLD_SRS};
          DELETE FROM vale_field;
          DELETE FROM vale_layer;
+         DELETE FROM vale_projection;
          DELETE FROM vale_world;"
     ))?;
     Ok(())
@@ -1822,6 +1849,16 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         .parse()
         .map_err(|_| corrupt(format!("next raster ID {next_raster_id:?}")))?;
 
+    let projections = conn
+        .prepare("SELECT name, definition FROM vale_projection ORDER BY position")?
+        .query_map([], |r| {
+            Ok(CustomProjection {
+                name: r.get(0)?,
+                definition: r.get(1)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+
     let rasters = load_rasters(conn)?;
     let mut layers = Vec::new();
     let mut rows = conn.prepare(
@@ -1869,6 +1906,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
     }
     Ok(Project {
         world,
+        projections,
         layers,
         next_id,
         rasters,
@@ -2197,6 +2235,89 @@ mod tests {
         assert_eq!(ProjectFile::open(&path(&dir)).unwrap().1, empty);
     }
 
+    fn projection(name: &str, definition: &str) -> CustomProjection {
+        CustomProjection {
+            name: name.to_string(),
+            definition: definition.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_file_keeps_the_custom_projections_in_their_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = sample();
+        project.projections = vec![
+            projection(
+                "Zeta conic",
+                "+proj=lcc +lon_0=10 +lat_0=45 +lat_1=30 +lat_2=60",
+            ),
+            projection("Alpha", "+proj=tmerc +lon_0=-3"),
+            projection("Alpha", "+proj=ortho"),
+        ];
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.projections, project.projections);
+
+        let mut next = loaded.clone();
+        next.projections.remove(0);
+        next.projections[0].name = "Beta".into();
+        file.save(&next).unwrap();
+        drop(file);
+        assert_eq!(ProjectFile::open(&path(&dir)).unwrap().1, next);
+    }
+
+    #[test]
+    fn an_undo_puts_back_the_custom_projections() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = sample();
+        let mut file = ProjectFile::create(&path(&dir), &first).unwrap();
+        let mut second = first.clone();
+        second
+            .projections
+            .push(projection("Polar", "+proj=stere +lat_0=90"));
+        file.save(&second).unwrap();
+        let mut third = second.clone();
+        third.projections[0].definition = "+proj=stere +lat_0=-90".into();
+        file.save(&third).unwrap();
+
+        assert!(file.undo().unwrap().is_some());
+        assert_eq!(file.project(), &second);
+        assert!(file.undo().unwrap().is_some());
+        assert_eq!(file.project(), &first);
+        assert!(file.redo().unwrap().is_some());
+        assert_eq!(file.project(), &second);
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, second);
+        assert!(file.redo().unwrap().is_some());
+        assert_eq!(file.project(), &third);
+    }
+
+    #[test]
+    fn a_file_of_version_21_has_no_custom_projections() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(ProjectFile::create(&path(&dir), &sample()).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "DROP TABLE vale_projection;
+             DELETE FROM gpkg_extensions WHERE table_name = 'vale_projection';
+             DELETE FROM gpkg_contents WHERE table_name = 'vale_projection';",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 21);
+
+        let (mut file, mut project) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert!(project.projections.is_empty());
+        project
+            .projections
+            .push(projection("Mercator", "+proj=merc"));
+        file.save(&project).unwrap();
+        drop(file);
+        assert_eq!(ProjectFile::open(&path(&dir)).unwrap().1, project);
+    }
+
     fn strings(conn: &Connection, sql: &str) -> Vec<String> {
         conn.prepare(sql)
             .unwrap()
@@ -2284,6 +2405,7 @@ mod tests {
                 "vale_field",
                 "vale_layer",
                 "vale_meta",
+                "vale_projection",
                 "vale_raster",
                 "vale_raster_tile",
                 "vale_thumbnail",

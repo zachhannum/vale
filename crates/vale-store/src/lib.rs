@@ -654,11 +654,22 @@ impl Default for World {
     }
 }
 
+/// A projection that the user defines. The store keeps the definition as
+/// text and does not read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomProjection {
+    pub name: String,
+    /// A PROJ string, for example `+proj=lcc +lon_0=10 +lat_1=30 +lat_2=60`.
+    pub definition: String,
+}
+
 /// A world and its layers. Each raster has one layer, and each raster layer
 /// has one raster.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Project {
     pub world: World,
+    /// The custom projections, in the order of the user.
+    pub projections: Vec<CustomProjection>,
     layers: Vec<Layer>,
     next_id: u32,
     /// In ID order.
@@ -671,6 +682,7 @@ impl Project {
     pub fn new(world: World) -> Self {
         Project {
             world,
+            projections: Vec::new(),
             layers: Vec::new(),
             next_id: 0,
             rasters: Vec::new(),

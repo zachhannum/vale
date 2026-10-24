@@ -3,8 +3,9 @@
 //! A step is one edit. It holds an image of each record and each raster tile
 //! that the edit changed, from before the edit. An undo swaps each image with
 //! the record or the tile in the file, so the step then holds the images from
-//! after the edit, and a redo swaps them back. A record is the world, one
-//! raster, or one layer with its features. The step of a new raster layer or
+//! after the edit, and a redo swaps them back. A record is the world, the
+//! list of the custom projections, one raster, or one layer with its
+//! features. The step of a new raster layer or
 //! of a removed one holds the image of the layer and the image of the raster.
 
 use std::io::{Read, Write};
@@ -18,9 +19,9 @@ use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
 };
 use crate::{
-    Feature, Field, FieldType, GeometryKind, Hillshade, Layer, LayerId, LayerKind, Project, Raster,
-    RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid, Value, World,
-    clamp_feature_size, clamp_opacity, infer_fields,
+    CustomProjection, Feature, Field, FieldType, GeometryKind, Hillshade, Layer, LayerId,
+    LayerKind, Project, Raster, RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid,
+    Value, World, clamp_feature_size, clamp_opacity, infer_fields,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -32,6 +33,7 @@ const DEFLATE: u8 = 1;
 const WORLD: &str = "world";
 const RASTER: &str = "raster";
 const LAYER: &str = "layer";
+const PROJECTIONS: &str = "projections";
 
 /// The log tables.
 pub(crate) fn v3(tx: &Transaction) -> rusqlite::Result<()> {
@@ -95,6 +97,9 @@ pub(crate) fn keep_records(
     let mut changed: Vec<(&str, u32)> = Vec::new();
     if old.world != new.world {
         changed.push((WORLD, 0));
+    }
+    if old.projections != new.projections {
+        changed.push((PROJECTIONS, 0));
     }
     let ids = |a: &Project, b: &Project| -> Vec<u32> {
         let rasters = a.rasters.iter().filter(|r| b.raster(r.id) != Some(r));
@@ -199,6 +204,13 @@ pub(crate) fn swap_records(
                 next.world = payload
                     .is_some()
                     .then(|| world(&mut r))
+                    .flatten()
+                    .ok_or_else(bad)?
+            }
+            PROJECTIONS => {
+                next.projections = payload
+                    .is_some()
+                    .then(|| projections(&mut r))
                     .flatten()
                     .ok_or_else(bad)?
             }
@@ -363,6 +375,7 @@ fn image(project: &Project, kind: &str, id: u32) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     match kind {
         WORLD => put_world(&mut out, &project.world),
+        PROJECTIONS => put_projections(&mut out, &project.projections),
         RASTER => put_raster(&mut out, project.raster(RasterId(id))?),
         _ => {
             let at = project.layers.iter().position(|l| l.id.0 == id)?;
@@ -438,6 +451,25 @@ fn world(r: &mut Reader) -> Option<World> {
         },
         seed: if r.0.is_empty() { 0 } else { r.u32()? },
     })
+}
+
+fn put_projections(out: &mut Vec<u8>, list: &[CustomProjection]) {
+    put_u32(out, list.len());
+    for p in list {
+        put_bytes(out, p.name.as_bytes());
+        put_bytes(out, p.definition.as_bytes());
+    }
+}
+
+fn projections(r: &mut Reader) -> Option<Vec<CustomProjection>> {
+    (0..count(r)?)
+        .map(|_| {
+            Some(CustomProjection {
+                name: string(r)?,
+                definition: string(r)?,
+            })
+        })
+        .collect()
 }
 
 /// The raster images of the log get one color for each band, as the
