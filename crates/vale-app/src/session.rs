@@ -170,6 +170,18 @@ impl Session {
             }
             ProjectFile::create(database, &doc.project)?
         };
+        // A layer with no style, as in an older file, gets the style of its
+        // entry, with no undo step.
+        let mut file = file;
+        let defaults: Vec<_> = doc
+            .changed_styles()
+            .into_iter()
+            .filter(|(id, _)| doc.layer(*id).is_some_and(|l| l.style.is_none()))
+            .collect();
+        if !defaults.is_empty() {
+            file.set_styles(&defaults)?;
+            doc.set_project(file.project().clone());
+        }
         let thumbnail = vale_store::summary(database)?.thumbnail;
         Ok(Session {
             file,

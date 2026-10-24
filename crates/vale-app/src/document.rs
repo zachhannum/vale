@@ -38,6 +38,14 @@ pub struct Document {
     pub frame: MapFrame,
 }
 
+/// The style that a layer holds. A style that does not parse is the default style.
+fn stored_style(layer: &Layer) -> Option<LayerStyle> {
+    let text = layer.style.as_deref()?;
+    LayerStyle::from_json(text)
+        .inspect_err(|e| eprintln!("The style of layer {:?} is not valid: {e}", layer.name))
+        .ok()
+}
+
 fn rank(kind: GeometryKind) -> u8 {
     match kind {
         GeometryKind::Polygon => 0,
@@ -195,7 +203,9 @@ impl Document {
                 Some(i) => old.swap_remove(i),
                 None => LayerEntry {
                     layer: layer.id,
-                    style: LayerStyle::default_for(kind, *ordinal, &layer.field_names()),
+                    style: stored_style(layer).unwrap_or_else(|| {
+                        LayerStyle::default_for(kind, *ordinal, &layer.field_names())
+                    }),
                 },
             };
             *ordinal += 1;
@@ -215,7 +225,33 @@ impl Document {
         self.frame
             .entries
             .retain(|e| kind(new, e.layer).is_some() && kind(new, e.layer) == kind(&old, e.layer));
+        for entry in &mut self.frame.entries {
+            let Some(layer) = new.layer(entry.layer) else {
+                continue;
+            };
+            if layer
+                .style
+                .as_ref()
+                .is_some_and(|t| *t != entry.style.to_json())
+                && let Some(style) = stored_style(layer)
+            {
+                entry.style = style;
+            }
+        }
         self.sync_entries();
+    }
+
+    /// The style of each vector layer whose project layer does not hold it, as JSON.
+    pub fn changed_styles(&self) -> Vec<(LayerId, String)> {
+        self.frame
+            .entries
+            .iter()
+            .filter_map(|e| {
+                let stored = self.project.layer(e.layer)?.style.as_deref();
+                let json = e.style.to_json();
+                (stored != Some(json.as_str())).then_some((e.layer, json))
+            })
+            .collect()
     }
 
     pub fn open_geojson(&mut self, path: &Path) -> Result<Vec<LayerId>, ImportError> {

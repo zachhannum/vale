@@ -4,8 +4,10 @@ use vale_app::document::Document;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
 use vale_app::ui::{AppState, LayerRef, RasterSpec};
 use vale_store::{
-    Hillshade, Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World,
+    GeometryKind, Hillshade, Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World,
 };
+use vale_style::LayerStyle;
+use vale_style::expr::Filter;
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{Bands, FACES, Heightmap, Limits, Mode, Stamp, TexelRect, meters_to_level};
 
@@ -1323,4 +1325,60 @@ fn each_raster_layer_keeps_its_own_unit_ramp_band_limits_and_display() {
     assert_eq!(stored_rain.display, RasterDisplay::Gradient);
     assert_eq!(stored_rain.unit, "mm/yr");
     assert_eq!(vale_app::session::bands_of(stored_rain), rain_bands);
+}
+
+/// A project file with one line layer that has no style.
+fn unstyled(path: &std::path::Path) -> vale_store::LayerId {
+    let mut project = Project::new(World::default());
+    let id = project.add_layer("Roads".into(), GeometryKind::Line, None, Vec::new());
+    ProjectFile::create(path, &project).unwrap();
+    id
+}
+
+fn stored_style(path: &std::path::Path, id: vale_store::LayerId) -> Option<String> {
+    let (_, project) = ProjectFile::open(path).unwrap();
+    project.layer(id).unwrap().style.clone()
+}
+
+#[test]
+fn opening_a_file_with_no_styles_stores_them_with_no_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.vale");
+    let roads = unstyled(&path);
+    let mut doc = Document::empty();
+    let session = Session::open(&path, &mut doc).unwrap();
+    assert!(!session.can_undo());
+    let style = doc.entry(roads).unwrap().style.clone();
+    assert_eq!(style, LayerStyle::default_for(GeometryKind::Line, 0, &[]));
+    assert_eq!(doc.changed_styles(), []);
+    drop(session);
+    assert_eq!(stored_style(&path, roads), Some(style.to_json()));
+}
+
+#[test]
+fn a_style_survives_a_save_and_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("styled.vale");
+    let roads = unstyled(&path);
+    let mut style = LayerStyle::default_for(GeometryKind::Line, 0, &[]);
+    style.style.rules.push(style.style.rules[0].clone());
+    style.style.rules[1].filter = Filter::new("kind = 'major'");
+    style.style.rules[1].max_scale = Some(5.0e6);
+    let (mut file, _) = ProjectFile::open(&path).unwrap();
+    file.set_styles(&[(roads, style.to_json())]).unwrap();
+    drop(file);
+
+    // A save of another change keeps the style.
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.entry(roads).unwrap().style, style);
+    assert!(doc.rename_layer(roads, "Streets"));
+    session.flush(&mut doc.project, &mut []).unwrap();
+    assert!(session.can_undo());
+    drop(session);
+
+    let mut doc = Document::empty();
+    Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.layer(roads).unwrap().name, "Streets");
+    assert_eq!(doc.entry(roads).unwrap().style, style);
 }
