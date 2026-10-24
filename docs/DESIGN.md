@@ -500,7 +500,6 @@ The symbolizers must give enough artistic range that the output does not look li
 | Point symbol | SVG symbol with size and rotation from attributes |
 | Scatter | Symbols spread inside a polygon, for forests and mountain ranges |
 | Raster | Color ramp, smooth or stepped, opacity, blend mode |
-| Page | Paper texture |
 
 Textures and blend modes become raster images in PDF and SVG output. All other symbolizers stay vector.
 
