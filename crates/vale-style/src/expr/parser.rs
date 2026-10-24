@@ -6,8 +6,8 @@ use super::functions::{self, Function};
 use super::lexer::{Tok, Token};
 use super::ParseError;
 
-/// The deepest nesting that the parser accepts.
-const MAX_DEPTH: usize = 256;
+/// The greatest height of the syntax tree. Each parenthesis, function call, prefix operator, and each step of a chain such as `a + b + c` adds one level.
+const MAX_DEPTH: usize = 64;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(super) enum BinOp {
@@ -151,20 +151,26 @@ impl<'a> Parser<'a> {
     }
 
     fn or(&mut self) -> Result<Node, ParseError> {
+        let base = self.depth;
         let mut left = self.and()?;
         while self.eat_keyword("or") {
+            self.enter()?;
             let right = self.and()?;
             left = Node::Binary(BinOp::Or, Box::new(left), Box::new(right));
         }
+        self.depth = base;
         Ok(left)
     }
 
     fn and(&mut self) -> Result<Node, ParseError> {
+        let base = self.depth;
         let mut left = self.not()?;
         while self.eat_keyword("and") {
+            self.enter()?;
             let right = self.not()?;
             left = Node::Binary(BinOp::And, Box::new(left), Box::new(right));
         }
+        self.depth = base;
         Ok(left)
     }
 
@@ -269,39 +275,52 @@ impl<'a> Parser<'a> {
     }
 
     fn concat(&mut self) -> Result<Node, ParseError> {
+        let base = self.depth;
         let mut left = self.sum()?;
         while self.at_op("||") {
             self.next();
+            self.enter()?;
             let right = self.sum()?;
             left = Node::Binary(BinOp::Concat, Box::new(left), Box::new(right));
         }
+        self.depth = base;
         Ok(left)
     }
 
     fn sum(&mut self) -> Result<Node, ParseError> {
+        let base = self.depth;
         let mut left = self.term()?;
         loop {
             let op = match self.peek().tok {
                 Tok::Op("+") => BinOp::Add,
                 Tok::Op("-") => BinOp::Sub,
-                _ => return Ok(left),
+                _ => {
+                    self.depth = base;
+                    return Ok(left);
+                }
             };
             self.next();
+            self.enter()?;
             let right = self.term()?;
             left = Node::Binary(op, Box::new(left), Box::new(right));
         }
     }
 
     fn term(&mut self) -> Result<Node, ParseError> {
+        let base = self.depth;
         let mut left = self.unary()?;
         loop {
             let op = match self.peek().tok {
                 Tok::Op("*") => BinOp::Mul,
                 Tok::Op("/") => BinOp::Div,
                 Tok::Op("%") => BinOp::Rem,
-                _ => return Ok(left),
+                _ => {
+                    self.depth = base;
+                    return Ok(left);
+                }
             };
             self.next();
+            self.enter()?;
             let right = self.unary()?;
             left = Node::Binary(op, Box::new(left), Box::new(right));
         }
