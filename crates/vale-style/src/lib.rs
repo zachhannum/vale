@@ -1,9 +1,18 @@
 //! Layer and map styles.
 
 pub mod expr;
+mod json;
+mod rule;
 
+pub use json::{STYLE_VERSION, StyleError};
+pub use rule::{
+    Extent, METERS_PER_POINT, Paint, RasterSymbolizer, Rule, StrokeSymbolizer, Style, Symbolizer,
+    extent_of, scale_denominator,
+};
 pub use vale_render::Color;
 use vale_store::GeometryKind;
+
+use expr::Property;
 
 /// A solid stroke. The width is in points.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -26,15 +35,10 @@ pub struct LabelStyle {
     pub italic: bool,
 }
 
-/// The style of one layer.
+/// The style of one layer: its rules and its labels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerStyle {
-    /// Polygons and point symbols.
-    pub fill: Option<Color>,
-    /// Polygon outlines and lines.
-    pub stroke: Option<Stroke>,
-    /// Points.
-    pub point_radius: f64,
+    pub style: Style,
     pub label: LabelStyle,
 }
 
@@ -52,20 +56,28 @@ fn pick(list: &[&str; 6], ordinal: usize) -> Color {
     Color::from_hex(list[ordinal % 6]).expect("valid built-in color")
 }
 
+fn fill(color: Color) -> Symbolizer {
+    Symbolizer::Fill {
+        color: Property::constant(color),
+    }
+}
+
+fn stroke(color: Color, width: f64) -> Symbolizer {
+    Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke { color, width }))
+}
+
 impl LayerStyle {
-    /// The style of a new layer. `ordinal` picks a color and wraps around.
+    /// The style of a new layer: one rule with constant symbolizers. `ordinal` picks a color and wraps around.
     pub fn default_for(kind: GeometryKind, ordinal: usize, fields: &[String]) -> Self {
         let field = guess_label_field(fields);
         let on = field.is_some();
-        match kind {
-            GeometryKind::Polygon => LayerStyle {
-                fill: Some(pick(&POLYGON_FILLS, ordinal)),
-                stroke: Some(Stroke {
-                    color: Color::rgb(150, 160, 165),
-                    width: 0.6,
-                }),
-                point_radius: 0.0,
-                label: LabelStyle {
+        let (symbolizers, label) = match kind {
+            GeometryKind::Polygon => (
+                vec![
+                    fill(pick(&POLYGON_FILLS, ordinal)),
+                    stroke(Color::rgb(150, 160, 165), 0.6),
+                ],
+                LabelStyle {
                     enabled: false,
                     field,
                     priority_field: None,
@@ -73,15 +85,10 @@ impl LayerStyle {
                     color: Color::rgb(40, 40, 40),
                     italic: false,
                 },
-            },
-            GeometryKind::Line => LayerStyle {
-                fill: None,
-                stroke: Some(Stroke {
-                    color: pick(&LINE_STROKES, ordinal),
-                    width: 1.2,
-                }),
-                point_radius: 0.0,
-                label: LabelStyle {
+            ),
+            GeometryKind::Line => (
+                vec![stroke(pick(&LINE_STROKES, ordinal), 1.2)],
+                LabelStyle {
                     enabled: on,
                     field,
                     priority_field: None,
@@ -89,15 +96,17 @@ impl LayerStyle {
                     color: Color::rgb(40, 100, 160),
                     italic: true,
                 },
-            },
-            GeometryKind::Point => LayerStyle {
-                fill: Some(pick(&POINT_FILLS, ordinal)),
-                stroke: Some(Stroke {
-                    color: Color::rgb(255, 255, 255),
-                    width: 1.0,
-                }),
-                point_radius: 2.5,
-                label: LabelStyle {
+            ),
+            GeometryKind::Point => (
+                vec![Symbolizer::Marker {
+                    radius: Property::constant(2.5),
+                    fill: Some(Property::constant(pick(&POINT_FILLS, ordinal))),
+                    stroke: Some(StrokeSymbolizer::constant(Stroke {
+                        color: Color::rgb(255, 255, 255),
+                        width: 1.0,
+                    })),
+                }],
+                LabelStyle {
                     enabled: on,
                     field,
                     priority_field: None,
@@ -105,7 +114,187 @@ impl LayerStyle {
                     color: Color::rgb(30, 30, 30),
                     italic: false,
                 },
+            ),
+        };
+        LayerStyle {
+            style: Style {
+                rules: vec![Rule::new("Default", symbolizers)],
             },
+            label,
+        }
+    }
+
+    /// The style of a raster layer: one rule with `colors`.
+    pub fn raster(colors: RasterSymbolizer) -> Self {
+        LayerStyle {
+            style: Style {
+                rules: vec![Rule::new("Colors", vec![Symbolizer::Raster(colors)])],
+            },
+            label: LabelStyle {
+                enabled: false,
+                field: None,
+                priority_field: None,
+                size: 11.0,
+                color: Color::rgb(40, 40, 40),
+                italic: false,
+            },
+        }
+    }
+
+    /// The first raster symbolizer, in rule order.
+    pub fn raster_symbolizer(&self) -> Option<&RasterSymbolizer> {
+        self.style
+            .rules
+            .iter()
+            .flat_map(|r| &r.symbolizers)
+            .find_map(|s| match s {
+                Symbolizer::Raster(r) => Some(r),
+                _ => None,
+            })
+    }
+
+    /// Replaces the first raster symbolizer, or adds a rule with `colors` if the style has none.
+    pub fn set_raster_symbolizer(&mut self, colors: RasterSymbolizer) {
+        let first = self
+            .style
+            .rules
+            .iter_mut()
+            .flat_map(|r| &mut r.symbolizers)
+            .find_map(|s| match s {
+                Symbolizer::Raster(r) => Some(r),
+                _ => None,
+            });
+        match first {
+            Some(r) => *r = colors,
+            None => self
+                .style
+                .rules
+                .push(Rule::new("Colors", vec![Symbolizer::Raster(colors)])),
+        }
+    }
+
+    /// True if the style is one rule with no filter, no scale range, and no expression. The simple controls edit only such a style.
+    pub fn is_simple(&self) -> bool {
+        match self.style.rules.as_slice() {
+            [] => true,
+            [r] => {
+                r.filter.is_all()
+                    && r.min_scale.is_none()
+                    && r.max_scale.is_none()
+                    && r.symbolizers.iter().all(Symbolizer::is_constant)
+            }
+            _ => false,
+        }
+    }
+
+    fn first_rule(&self) -> Option<&Rule> {
+        self.style.rules.first()
+    }
+
+    fn first_rule_mut(&mut self) -> &mut Rule {
+        if self.style.rules.is_empty() {
+            self.style.rules.push(Rule::new("Default", Vec::new()));
+        }
+        &mut self.style.rules[0]
+    }
+
+    /// The fill of the first rule, or the fill of its marker.
+    pub fn fill(&self) -> Option<Color> {
+        self.first_rule()?
+            .symbolizers
+            .iter()
+            .find_map(|s| match s {
+                Symbolizer::Fill { color } => Some(Some(color.fallback)),
+                Symbolizer::Marker { fill, .. } => Some(fill.as_ref().map(|c| c.fallback)),
+                Symbolizer::Stroke(_) | Symbolizer::Raster(_) => None,
+            })
+            .flatten()
+    }
+
+    /// Sets the fill of the first rule, or the fill of its marker.
+    pub fn set_fill(&mut self, color: Option<Color>) {
+        let rule = self.first_rule_mut();
+        if let Some(Symbolizer::Marker { fill, .. }) = rule
+            .symbolizers
+            .iter_mut()
+            .find(|s| matches!(s, Symbolizer::Marker { .. }))
+        {
+            *fill = color.map(Property::constant);
+            return;
+        }
+        let at = rule
+            .symbolizers
+            .iter()
+            .position(|s| matches!(s, Symbolizer::Fill { .. }));
+        match (at, color) {
+            (Some(i), Some(c)) => rule.symbolizers[i] = fill(c),
+            (Some(i), None) => {
+                rule.symbolizers.remove(i);
+            }
+            (None, Some(c)) => rule.symbolizers.insert(0, fill(c)),
+            (None, None) => {}
+        }
+    }
+
+    /// The stroke of the first rule, or the stroke of its marker.
+    pub fn stroke(&self) -> Option<Stroke> {
+        self.first_rule()?
+            .symbolizers
+            .iter()
+            .find_map(|s| match s {
+                Symbolizer::Stroke(s) => Some(Some(s.fallback())),
+                Symbolizer::Marker { stroke, .. } => {
+                    Some(stroke.as_ref().map(StrokeSymbolizer::fallback))
+                }
+                Symbolizer::Fill { .. } | Symbolizer::Raster(_) => None,
+            })
+            .flatten()
+    }
+
+    /// Sets the stroke of the first rule, or the stroke of its marker.
+    pub fn set_stroke(&mut self, value: Option<Stroke>) {
+        let rule = self.first_rule_mut();
+        if let Some(Symbolizer::Marker { stroke, .. }) = rule
+            .symbolizers
+            .iter_mut()
+            .find(|s| matches!(s, Symbolizer::Marker { .. }))
+        {
+            *stroke = value.map(StrokeSymbolizer::constant);
+            return;
+        }
+        let at = rule
+            .symbolizers
+            .iter()
+            .position(|s| matches!(s, Symbolizer::Stroke(_)));
+        match (at, value) {
+            (Some(i), Some(v)) => rule.symbolizers[i] = stroke(v.color, v.width),
+            (Some(i), None) => {
+                rule.symbolizers.remove(i);
+            }
+            (None, Some(v)) => rule.symbolizers.push(stroke(v.color, v.width)),
+            (None, None) => {}
+        }
+    }
+
+    /// The marker radius of the first rule, or 0 with no marker.
+    pub fn point_radius(&self) -> f64 {
+        self.first_rule()
+            .and_then(|r| {
+                r.symbolizers.iter().find_map(|s| match s {
+                    Symbolizer::Marker { radius, .. } => Some(radius.fallback),
+                    _ => None,
+                })
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// Sets the marker radius of the first rule. A rule with no marker does not change.
+    pub fn set_point_radius(&mut self, value: f64) {
+        for s in &mut self.first_rule_mut().symbolizers {
+            if let Symbolizer::Marker { radius, .. } = s {
+                *radius = Property::constant(value);
+                return;
+            }
         }
     }
 }
@@ -192,7 +381,8 @@ mod tests {
         let l = LayerStyle::default_for(GeometryKind::Line, 0, &s(&["name"]));
         assert!(l.label.enabled);
         assert!(l.label.italic);
-        assert!(l.fill.is_none());
+        assert!(l.fill().is_none());
+        assert!(l.is_simple());
     }
 
     #[test]

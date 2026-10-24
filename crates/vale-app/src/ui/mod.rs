@@ -24,6 +24,7 @@ use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
 use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
 use crate::projects::{self, Location, Locations};
+use crate::raster_style;
 use crate::resume::{self, Resume};
 use crate::session::{self, Session};
 use crate::workcopy;
@@ -768,6 +769,7 @@ impl AppState {
         let id = project.add_raster(spec.name, face_size as u32, spec.unit, spec.min, spec.max);
         let raster = project.raster_mut(id).expect("the raster of the ID");
         session::sync_record(raster, &map);
+        raster_style::store_raster_styles(project);
         self.globe.add_raster(id, map, height);
         self.select(Some(LayerRef::Raster(id)));
         Some(id)
@@ -817,6 +819,7 @@ impl AppState {
     /// Sets how much a raster layer hides the layers below it, from 0 to 1.
     pub fn set_raster_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
         let set = self.doc.project.set_raster_opacity(id, opacity);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -824,6 +827,7 @@ impl AppState {
     /// Sets how a raster layer colors its values on the globe.
     pub fn set_raster_display(&mut self, id: RasterId, display: RasterDisplay) -> bool {
         let set = self.doc.project.set_raster_display(id, display);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1188,6 +1192,7 @@ impl AppState {
         // The point of an open form waits for its values.
         let hold = hold || self.point_form.is_some();
         let resume_wait = self.resume_tick(hold, now);
+        self.doc.store_styles();
         let edits = self.edits();
         let session = self.session.as_mut()?;
         let saves = session.saves();

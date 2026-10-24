@@ -1,13 +1,15 @@
 //! The map pipeline: query, clip, project, style, label, emit.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::anyhow;
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
 use vale_labeler::Fonts;
 use vale_render::{DisplayList, FillRule, Item};
 use vale_sphere::{LonLat, Projection, ProjectionSpec, graticule, nice_step};
-use vale_store::{Geometry, GeometryKind, Layer, LayerId};
+use vale_store::{Geometry, GeometryKind, Layer, LayerId, Value};
+use vale_style::expr::Context;
+use vale_style::{Extent, Paint, scale_denominator};
 
 use crate::document::{Document, LayerEntry};
 use crate::view::{View, ViewTransform};
@@ -45,6 +47,30 @@ pub struct PageLayer<'a> {
     /// The geometry kind of the layer.
     pub kind: GeometryKind,
     pub features: Vec<PageFeature>,
+    /// The scale denominator of the view.
+    pub scale: f64,
+}
+
+impl PageLayer<'_> {
+    /// The style context of feature `index` of `layer.features`.
+    pub fn context(&self, index: usize) -> Context<'_> {
+        static NONE: BTreeMap<String, Value> = BTreeMap::new();
+        let attributes = self
+            .layer
+            .features
+            .get(index)
+            .map_or(&NONE, |f| &f.attributes);
+        Context {
+            attributes,
+            scale: self.scale,
+            geometry: self.kind,
+        }
+    }
+
+    /// How far the paint of feature `index` reaches.
+    pub fn extent(&self, index: usize) -> Extent {
+        self.entry.style.style.extent(&self.context(index))
+    }
 }
 
 pub struct PageFeature {
@@ -192,6 +218,7 @@ fn build_page_layers<'a>(
     doc: &'a Document,
     cache: &Cache,
     vt: &ViewTransform,
+    scale: f64,
 ) -> Vec<PageLayer<'a>> {
     let page = vt.page_rect().inflate(8.0, 8.0);
     let mut out = Vec::new();
@@ -216,9 +243,164 @@ fn build_page_layers<'a>(
             layer,
             kind,
             features,
+            scale,
         });
     }
     out
+}
+
+/// Km per point at the middle of the view.
+fn km_per_point(cache: &Cache, vt: &ViewTransform) -> f64 {
+    let middle = Point::new(vt.width / 2.0, vt.height / 2.0);
+    let p = cache
+        .projection
+        .inverse(vt.from_page(middle))
+        .unwrap_or([cache.spec.lon0, cache.spec.lat0]);
+    let local = cache.projection.local_scale(p).unwrap_or(1.0);
+    1.0 / (vt.view.scale * local) / 1000.0
+}
+
+/// The features of a layer that one paint draws. `order` is the index of the rule and the index of the symbolizer.
+struct Batch {
+    order: (usize, usize),
+    paint: Paint,
+    /// Indices in `PageLayer::features`.
+    features: Vec<usize>,
+}
+
+/// The bits of a paint, for grouping.
+fn paint_key(paint: &Paint) -> [u64; 6] {
+    let color = |c: Option<vale_render::Color>| {
+        c.map_or(1 << 32, |c| {
+            u64::from(u32::from_be_bytes([c.r, c.g, c.b, c.a]))
+        })
+    };
+    let stroke = |s: Option<vale_style::Stroke>| {
+        s.map_or([1 << 32, 0], |s| [color(Some(s.color)), s.width.to_bits()])
+    };
+    match *paint {
+        Paint::Fill(c) => [0, color(Some(c)), 0, 0, 0, 0],
+        Paint::Stroke(s) => {
+            let [c, w] = stroke(Some(s));
+            [1, c, w, 0, 0, 0]
+        }
+        Paint::Marker {
+            radius,
+            fill,
+            stroke: st,
+        } => {
+            let [c, w] = stroke(st);
+            [2, radius.to_bits(), color(fill), c, w, 0]
+        }
+    }
+}
+
+/// The batches of a layer, in draw order: rule by rule, and symbolizer by symbolizer. Features with the same paint share a batch, in the order of the features.
+fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
+    let style = &pl.entry.style.style;
+    if let Some(paints) = style.constant_paints(pl.scale) {
+        return paints
+            .into_iter()
+            .enumerate()
+            .map(|(i, paint)| Batch {
+                order: (0, i),
+                paint,
+                features: (0..pl.features.len()).collect(),
+            })
+            .collect();
+    }
+    let mut out: Vec<Batch> = Vec::new();
+    let mut index: HashMap<(usize, usize, [u64; 6]), usize> = HashMap::new();
+    let rules: Vec<_> = style
+        .rules
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.in_scale(pl.scale))
+        .collect();
+    for (i, f) in pl.features.iter().enumerate() {
+        let ctx = pl.context(f.index);
+        for (r, rule) in &rules {
+            if !rule.filter.matches(&ctx) {
+                continue;
+            }
+            for (k, symbolizer) in rule.symbolizers.iter().enumerate() {
+                let Some(paint) = symbolizer.resolve(&ctx) else {
+                    continue;
+                };
+                let at = *index.entry((*r, k, paint_key(&paint))).or_insert_with(|| {
+                    out.push(Batch {
+                        order: (*r, k),
+                        paint,
+                        features: Vec::new(),
+                    });
+                    out.len() - 1
+                });
+                out[at].features.push(i);
+            }
+        }
+    }
+    out.sort_by_key(|b| b.order);
+    out
+}
+
+/// Draws one batch. A paint that does not fit the kind of the layer draws nothing.
+fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch) {
+    let features = || batch.features.iter().map(|&i| &pl.features[i]);
+    let lines = || polylines_path(features().flat_map(|f| &f.lines), false);
+    match (pl.kind, batch.paint) {
+        (GeometryKind::Polygon, Paint::Fill(color)) => {
+            for f in features().filter(|f| !f.rings.is_empty()) {
+                list.push(Item::Fill {
+                    path: polylines_path(&f.rings, true),
+                    color,
+                    rule: FillRule::EvenOdd,
+                });
+            }
+        }
+        (GeometryKind::Polygon | GeometryKind::Line, Paint::Stroke(stroke)) => {
+            let path = lines();
+            if !path.elements().is_empty() {
+                list.push(Item::Stroke {
+                    path,
+                    color: stroke.color,
+                    width: stroke.width,
+                    round: pl.kind == GeometryKind::Line,
+                });
+            }
+        }
+        (
+            GeometryKind::Point,
+            Paint::Marker {
+                radius,
+                fill,
+                stroke,
+            },
+        ) if radius > 0.0 => {
+            let circles = |r: f64| {
+                let mut path = BezPath::new();
+                for p in features().flat_map(|f| &f.points) {
+                    path.extend(Circle::new(*p, r).to_path(0.1));
+                }
+                path
+            };
+            if let Some(color) = fill {
+                list.push(Item::Fill {
+                    path: circles(radius),
+                    color,
+                    rule: FillRule::NonZero,
+                });
+            }
+            if let Some(stroke) = stroke {
+                list.push(Item::Stroke {
+                    path: circles(radius + stroke.width / 2.0),
+                    color: stroke.color,
+                    width: stroke.width,
+                    round: true,
+                });
+            }
+        }
+        _ => {}
+    }
 }
 
 const SELECTION: vale_render::Color = vale_render::Color::rgb(230, 70, 30);
@@ -343,7 +525,8 @@ impl Pipeline {
             height: size.1,
         };
         let cache = self.ensure(doc)?;
-        let layers = build_page_layers(doc, cache, &vt);
+        let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
+        let layers = build_page_layers(doc, cache, &vt, scale);
         Ok(pick::pick(&layers, at))
     }
 
@@ -372,14 +555,14 @@ impl Pipeline {
             .graticule
             .then(|| nice_step(80.0 * degrees_per_point));
         let cache = self.ensure(doc)?;
-        if let Some(step) = graticule_step {
-            if !cache.graticules.contains_key(&step.to_bits()) {
-                let lines: Vec<Vec<Point>> = graticule(step)
-                    .iter()
-                    .flat_map(|l| cache.projection.project_line(l))
-                    .collect();
-                cache.graticules.insert(step.to_bits(), lines);
-            }
+        if let Some(step) = graticule_step
+            && !cache.graticules.contains_key(&step.to_bits())
+        {
+            let lines: Vec<Vec<Point>> = graticule(step)
+                .iter()
+                .flat_map(|l| cache.projection.project_line(l))
+                .collect();
+            cache.graticules.insert(step.to_bits(), lines);
         }
         let cache = &*cache;
 
@@ -400,74 +583,12 @@ impl Pipeline {
         });
 
         // 3: layers.
-        let page_layers = build_page_layers(doc, cache, &vt);
+        let km_per_point = km_per_point(cache, &vt);
+        let scale = scale_denominator(km_per_point * 1000.0);
+        let page_layers = build_page_layers(doc, cache, &vt, scale);
         for pl in &page_layers {
-            let s = &pl.entry.style;
-            match pl.kind {
-                GeometryKind::Polygon => {
-                    if let Some(fill) = s.fill {
-                        for f in &pl.features {
-                            if f.rings.is_empty() {
-                                continue;
-                            }
-                            list.push(Item::Fill {
-                                path: polylines_path(&f.rings, true),
-                                color: fill,
-                                rule: FillRule::EvenOdd,
-                            });
-                        }
-                    }
-                    if let Some(stroke) = s.stroke {
-                        let path = polylines_path(pl.features.iter().flat_map(|f| &f.lines), false);
-                        if !path.elements().is_empty() {
-                            list.push(Item::Stroke {
-                                path,
-                                color: stroke.color,
-                                width: stroke.width,
-                                round: false,
-                            });
-                        }
-                    }
-                }
-                GeometryKind::Line => {
-                    if let Some(stroke) = s.stroke {
-                        let path = polylines_path(pl.features.iter().flat_map(|f| &f.lines), false);
-                        if !path.elements().is_empty() {
-                            list.push(Item::Stroke {
-                                path,
-                                color: stroke.color,
-                                width: stroke.width,
-                                round: true,
-                            });
-                        }
-                    }
-                }
-                GeometryKind::Point => {
-                    if s.point_radius > 0.0 {
-                        let circles = |r: f64| {
-                            let mut path = BezPath::new();
-                            for p in pl.features.iter().flat_map(|f| &f.points) {
-                                path.extend(Circle::new(*p, r).to_path(0.1));
-                            }
-                            path
-                        };
-                        if let Some(fill) = s.fill {
-                            list.push(Item::Fill {
-                                path: circles(s.point_radius),
-                                color: fill,
-                                rule: FillRule::NonZero,
-                            });
-                        }
-                        if let Some(stroke) = s.stroke {
-                            list.push(Item::Stroke {
-                                path: circles(s.point_radius + stroke.width / 2.0),
-                                color: stroke.color,
-                                width: stroke.width,
-                                round: true,
-                            });
-                        }
-                    }
-                }
+            for batch in batches(pl) {
+                draw_batch(&mut list, pl, &batch);
             }
         }
 
@@ -509,14 +630,13 @@ impl Pipeline {
             && let Some(pl) = page_layers.iter().find(|pl| pl.layer.id == sel.layer)
             && let Some(f) = pl.features.iter().find(|f| f.index == sel.feature)
         {
-            let width = pl.entry.style.stroke.map_or(0.0, |s| s.width);
+            let extent = pl.extent(f.index);
+            let width = extent.stroke_width;
             let item = match pl.kind {
                 GeometryKind::Point => {
                     let mut path = BezPath::new();
                     for p in &f.points {
-                        path.extend(
-                            Circle::new(*p, pl.entry.style.point_radius + 3.0).to_path(0.1),
-                        );
+                        path.extend(Circle::new(*p, extent.marker_radius + 3.0).to_path(0.1));
                     }
                     Item::Stroke {
                         path,
@@ -540,15 +660,6 @@ impl Pipeline {
             };
             list.push(item);
         }
-
-        // km per point at the middle of the view.
-        let middle = Point::new(size.0 / 2.0, size.1 / 2.0);
-        let p = cache
-            .projection
-            .inverse(vt.from_page(middle))
-            .unwrap_or([cache.spec.lon0, cache.spec.lat0]);
-        let local = cache.projection.local_scale(p).unwrap_or(1.0);
-        let km_per_point = 1.0 / (view.scale * local) / 1000.0;
 
         // 7 to 9: scale bar, labels.
         let (bar_items, bar_rect) =

@@ -85,6 +85,7 @@ impl fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// A parsed expression.
+#[derive(Clone)]
 pub struct Expr {
     root: Node,
 }
@@ -140,10 +141,17 @@ fn collect_fields(node: &Node, out: &mut Vec<String>) {
 }
 
 /// The text of an expression and the result of its parse. A wrong text stays, so that you can edit it.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Source {
     text: String,
     parsed: Result<Expr, ParseError>,
+}
+
+/// Two sources are equal when their texts are equal.
+impl PartialEq for Source {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
 }
 
 impl Source {
@@ -167,7 +175,7 @@ impl Source {
 }
 
 /// A filter of a rule. A blank filter matches each feature, and a wrong filter matches none.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Filter {
     source: Option<Source>,
 }
@@ -185,6 +193,11 @@ impl Filter {
 
     pub fn source(&self) -> Option<&Source> {
         self.source.as_ref()
+    }
+
+    /// True for the filter that matches each feature.
+    pub fn is_all(&self) -> bool {
+        self.source.is_none()
     }
 
     pub fn error(&self) -> Option<&ParseError> {
@@ -237,7 +250,7 @@ impl FromValue for Color {
 }
 
 /// A style property: a constant, or an expression with a fallback. The fallback replaces a wrong expression and a result of the wrong type.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Property<T> {
     pub fallback: T,
     source: Option<Source>,
@@ -260,6 +273,10 @@ impl<T: FromValue + Clone> Property<T> {
 
     pub fn source(&self) -> Option<&Source> {
         self.source.as_ref()
+    }
+
+    pub fn is_constant(&self) -> bool {
+        self.source.is_none()
     }
 
     pub fn error(&self) -> Option<&ParseError> {
