@@ -1,14 +1,12 @@
 //! The map pipeline: query, clip, project, style, label, emit.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::anyhow;
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
-use std::collections::BTreeMap;
 use vale_labeler::Fonts;
 use vale_render::{DisplayList, FillRule, Item};
 use vale_sphere::{LonLat, Projection, ProjectionSpec, graticule, nice_step};
-
 use vale_store::{Geometry, GeometryKind, Layer, LayerId, Value};
 use vale_style::expr::Context;
 use vale_style::{Extent, Paint, scale_denominator};
@@ -555,14 +553,14 @@ impl Pipeline {
             .graticule
             .then(|| nice_step(80.0 * degrees_per_point));
         let cache = self.ensure(doc)?;
-        if let Some(step) = graticule_step {
-            if !cache.graticules.contains_key(&step.to_bits()) {
-                let lines: Vec<Vec<Point>> = graticule(step)
-                    .iter()
-                    .flat_map(|l| cache.projection.project_line(l))
-                    .collect();
-                cache.graticules.insert(step.to_bits(), lines);
-            }
+        if let Some(step) = graticule_step
+            && !cache.graticules.contains_key(&step.to_bits())
+        {
+            let lines: Vec<Vec<Point>> = graticule(step)
+                .iter()
+                .flat_map(|l| cache.projection.project_line(l))
+                .collect();
+            cache.graticules.insert(step.to_bits(), lines);
         }
         let cache = &*cache;
 

@@ -928,6 +928,11 @@ impl Project {
         self.layer_mut(id).map(|l| l.name = name).is_some()
     }
 
+    /// Sets the style JSON of a layer.
+    pub fn set_layer_style(&mut self, id: LayerId, style: Option<String>) -> bool {
+        self.layer_mut(id).map(|l| l.style = style).is_some()
+    }
+
     /// Shows or hides a layer.
     pub fn set_layer_visible(&mut self, id: LayerId, visible: bool) -> bool {
         self.layer_mut(id).map(|l| l.visible = visible).is_some()

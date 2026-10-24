@@ -254,6 +254,13 @@ impl Document {
             .collect()
     }
 
+    /// Writes each changed style into the project.
+    pub fn store_styles(&mut self) {
+        for (id, json) in self.changed_styles() {
+            self.project.set_layer_style(id, Some(json));
+        }
+    }
+
     pub fn open_geojson(&mut self, path: &Path) -> Result<Vec<LayerId>, ImportError> {
         let imported = geojson::read_file(path)?;
         Ok(self.add_imported(imported, Some(path)))

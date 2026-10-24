@@ -1382,3 +1382,27 @@ fn a_style_survives_a_save_and_a_reopen() {
     assert_eq!(doc.layer(roads).unwrap().name, "Streets");
     assert_eq!(doc.entry(roads).unwrap().style, style);
 }
+
+#[test]
+fn a_style_edit_is_an_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edit.vale");
+    let roads = unstyled(&path);
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let before = doc.entry(roads).unwrap().style.clone();
+    let mut after = before.clone();
+    after.set_stroke(Some(vale_style::Stroke {
+        color: vale_style::Color::rgb(200, 0, 0),
+        width: 3.0,
+    }));
+    doc.entry_mut(roads).unwrap().style = after.clone();
+    doc.store_styles();
+    assert_eq!(doc.changed_styles(), []);
+    session.flush(&mut doc.project, &mut []).unwrap();
+    assert!(session.can_undo());
+    assert_eq!(stored_style(&path, roads), Some(after.to_json()));
+
+    assert!(session.undo(&mut doc, &mut []).unwrap());
+    assert_eq!(doc.entry(roads).unwrap().style, before);
+}

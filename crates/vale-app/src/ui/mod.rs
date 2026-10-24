@@ -1188,6 +1188,7 @@ impl AppState {
         // The point of an open form waits for its values.
         let hold = hold || self.point_form.is_some();
         let resume_wait = self.resume_tick(hold, now);
+        self.doc.store_styles();
         let edits = self.edits();
         let session = self.session.as_mut()?;
         let saves = session.saves();
