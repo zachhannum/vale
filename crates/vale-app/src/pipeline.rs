@@ -458,8 +458,8 @@ struct DrawnMap<'a> {
     km_per_point: f64,
 }
 
-/// Draws a map in `area`: the background, the water, the layers, the
-/// graticule, the outline, and the selection.
+/// Draws a map in `area`: the background if it has one, the water, the
+/// layers, the graticule, the outline, and the selection.
 #[allow(clippy::too_many_arguments)]
 fn draw_map<'a>(
     list: &mut DisplayList,
@@ -467,6 +467,7 @@ fn draw_map<'a>(
     cache: &Cache,
     vt: &ViewTransform,
     area: Rect,
+    background: bool,
     ids: &[LayerId],
     graticule_step: Option<f64>,
     selection: Option<Selection>,
@@ -474,11 +475,13 @@ fn draw_map<'a>(
     let style = &doc.frame.style;
 
     // 1 and 2: background and water.
-    list.push(Item::Fill {
-        path: area.to_path(0.1),
-        color: style.background,
-        rule: FillRule::NonZero,
-    });
+    if background {
+        list.push(Item::Fill {
+            path: area.to_path(0.1),
+            color: style.background,
+            rule: FillRule::NonZero,
+        });
+    }
     let outline: Vec<Point> = map_pts(vt, &cache.outline);
     let outline_path = polylines_path([&outline], true);
     list.push(Item::Fill {
@@ -751,7 +754,9 @@ impl Pipeline {
         let cache = &*cache;
 
         let mut list = DisplayList::new(size.0, size.1);
-        let drawn = draw_map(&mut list, doc, cache, &vt, page, &ids, step, selection);
+        let drawn = draw_map(
+            &mut list, doc, cache, &vt, page, true, &ids, step, selection,
+        );
 
         // 7 to 9: scale bar, labels.
         let (bar_items, bar_rect) =
@@ -775,7 +780,7 @@ impl Pipeline {
 
     /// A map frame of a page, in a target. The list is the size of the page
     /// in the target. The frame draws the layers that its map shows, inside
-    /// its shape.
+    /// its shape, with no background.
     #[allow(clippy::too_many_arguments)]
     pub fn compose_frame(
         &mut self,
@@ -783,6 +788,27 @@ impl Pipeline {
         page: &PageRecord,
         frame: &FrameRecord,
         target: FrameTarget,
+        fonts: &mut Fonts,
+        quality: Quality,
+        selection: Option<Selection>,
+    ) -> anyhow::Result<Composed> {
+        let page_box = Rect::from_points(
+            target.to_target(Point::ZERO),
+            target.to_target(Point::new(page.width_mm, page.height_mm)),
+        );
+        self.compose_frame_part(doc, frame, target, page_box, fonts, quality, selection)
+    }
+
+    /// The part of a map frame in `part`, a box in target points. The list
+    /// reaches to the bottom-right corner of `part`. The layers and the
+    /// labels are only the ones in `part`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compose_frame_part(
+        &mut self,
+        doc: &Document,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        part: Rect,
         fonts: &mut Fonts,
         quality: Quality,
         selection: Option<Selection>,
@@ -795,14 +821,15 @@ impl Pipeline {
         cache.ensure_graticule(step);
         let cache = &*cache;
 
-        let size = target.to_target(Point::new(page.width_mm, page.height_mm));
-        let mut list = DisplayList::new(size.x, size.y);
-        let area = frame_area(frame, target);
+        let mut list = DisplayList::new(part.x1, part.y1);
+        let area = frame_area(frame, target).intersect(part);
         list.push(Item::PushClip {
             path: shape_path(&frame.shape.rings(), target),
             rule: FillRule::EvenOdd,
         });
-        let drawn = draw_map(&mut list, doc, cache, &vt, area, &ids, step, selection);
+        let drawn = draw_map(
+            &mut list, doc, cache, &vt, area, false, &ids, step, selection,
+        );
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {
             let (items, summary) = labels::place(&drawn.layers, area, fonts, quality, &[]);

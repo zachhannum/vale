@@ -408,7 +408,40 @@ fn a_frame_draws_only_inside_its_shape() {
     assert_eq!(at(60.0, 60.0), paper, "the hole");
     assert_eq!(at(148.5, 180.0), paper, "the notch");
     assert_eq!(at(5.0, 5.0), paper, "the margin");
-    assert_ne!(at(150.0, 60.0), paper, "the map");
+    assert_ne!(at(150.0, 95.0), paper, "the map");
+}
+
+#[test]
+fn the_paper_shows_in_a_frame_outside_the_outline_of_the_projection() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let frame = doc.project.atlas.frame(id).unwrap().clone();
+    let items = compose_frame(&doc, &mut pipeline, id);
+    let background = doc.frame.style.background;
+    assert!(
+        !items
+            .iter()
+            .any(|i| matches!(i, Item::Fill { color, .. } if *color == background))
+    );
+    let page = doc.project.atlas.page(page).unwrap();
+    let mut f = fonts().unwrap();
+    let list = pipeline
+        .compose_page(&doc, page, &mut f, Quality::Final)
+        .unwrap();
+    let pixmap = render_pixmap(&list, 1.0).unwrap();
+    let w = usize::from(pixmap.width());
+    let data = pixmap.data_as_u8_slice();
+    let at = |x_mm: f64, y_mm: f64| {
+        let (x, y) = ((x_mm * PT_PER_MM) as usize, (y_mm * PT_PER_MM) as usize);
+        let i = (y * w + x) * 4;
+        [data[i], data[i + 1], data[i + 2]]
+    };
+    let b = vale_app::atlas::shape_bbox(&frame.shape);
+    let paper = [PAPER.r, PAPER.g, PAPER.b];
+    assert_eq!(at(b.x0 + 2.0, b.y0 + 2.0), paper, "the corner of the frame");
+    assert_ne!(at(b.center().x, b.center().y), paper, "the map");
 }
 
 #[test]
