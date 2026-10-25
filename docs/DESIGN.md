@@ -541,7 +541,7 @@ Clean-room has a strict meaning here. The design comes from published research a
 
 The atlas has three levels: maps, pages, and map frames.
 
-A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. The Map menu of a frame lists the maps of the project, with "New map" and "Copy of this map". A map stays in the menu when no frame shows it, until you delete it there. Each map has one projection center. For another center, you copy the map and change the projection of the copy.
+A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. The Map menu of a frame lists the maps of the project, with "New map" and "Copy of this map". A map stays in the menu when no frame shows it. You delete a map in the menu, and only a map that no frame shows has the delete action. Each map has one projection center. For another center, you copy the map and change the projection of the copy.
 
 The app has two workspaces, World and Atlas. In the World workspace you draw and edit the features, and its attribute table edits their attributes. The Atlas workspace holds the maps, the pages, and the map frames. You edit a map in a frame, at the scale of the page, so that the labels and the styles show as they export.
 
