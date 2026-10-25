@@ -141,7 +141,7 @@ fn the_worker_imports_the_image_in_frames() {
     globe.start_import(path.clone());
     assert!(globe.importing() && globe.busy());
     let progress = globe.import_progress().unwrap();
-    assert_eq!(progress, "Importing frames.png: reading the file");
+    assert_eq!(progress, "Importing frames.png: reading file");
     // The frames continue while the import runs.
     assert!(globe.advance(Instant::now()));
     assert!(!globe.can_undo());
@@ -162,7 +162,7 @@ fn the_worker_imports_the_image_in_frames() {
         height: HEIGHT,
         two_to_one: true,
     };
-    assert_eq!(imported.message(), "Imported frames.png (512 x 256).");
+    assert_eq!(imported.message(), "Imported frames.png (512 × 256)");
     assert_eq!(globe.take_import_result(), Some(Ok(imported)));
     assert_eq!(globe.take_import_result(), None);
 
@@ -195,8 +195,8 @@ fn an_image_that_is_not_two_to_one_covers_the_globe() {
     assert!(!imported.two_to_one);
     assert_eq!(
         imported.message(),
-        "Imported square.png. The image is 256 x 256. A full-globe image is twice as wide as \
-         it is tall, so the app stretched the image over the globe."
+        "Imported square.png (256 × 256). The image is not 2:1, so it is stretched to cover the \
+         globe."
     );
 }
 
@@ -244,7 +244,7 @@ fn a_second_import_fails_while_the_first_runs() {
     let text = globe.take_import_result().unwrap().unwrap_err();
     assert_eq!(
         text,
-        "cannot import second.png: the import of first.png is not complete"
+        "Cannot import second.png: first.png is still importing"
     );
     assert!(globe.importing());
     run(&mut globe);
@@ -552,19 +552,19 @@ fn a_wrong_aspect_ratio_gives_a_warning() {
     h.state_mut().run_action(Action::ImportHeightmap(path));
     h.run_steps(2);
     let s = h.state();
-    assert!(s.status.contains("twice as wide"), "{}", s.status);
-    assert!(s.status.contains("300 x 200"), "{}", s.status);
+    assert!(s.status.contains("not 2:1"), "{}", s.status);
+    assert!(s.status.contains("300 × 200"), "{}", s.status);
     assert!(s.import_note.as_ref().unwrap().warning);
     assert!(s.globe.map.allocated_tiles() > 0);
-    assert!(h.query_by_label_contains("twice as wide").is_some());
+    assert!(h.query_by_label_contains("not 2:1").is_some());
 
     let path = write_png("ratio-good.png", WIDTH, HEIGHT);
     h.state_mut().run_action(Action::ImportHeightmap(path));
     h.run_steps(2);
     let s = h.state();
-    assert_eq!(s.status, "Imported ratio-good.png (512 x 256).");
+    assert_eq!(s.status, "Imported ratio-good.png (512 × 256)");
     assert!(!s.import_note.as_ref().unwrap().warning);
-    assert!(h.query_by_label_contains("twice as wide").is_none());
+    assert!(h.query_by_label_contains("not 2:1").is_none());
     assert!(
         h.query_by_label_contains("Imported ratio-good.png")
             .is_some()
@@ -621,7 +621,7 @@ fn the_command_line_imports_a_heightmap() {
     apply_import(&args, &mut state, true).unwrap();
     assert_eq!(state.globe.map.face_size(), 64);
     assert!(state.globe.map.allocated_tiles() > 0);
-    assert_eq!(state.status, "Imported cli.png (512 x 256).");
+    assert_eq!(state.status, "Imported cli.png (512 × 256)");
     assert!(!state.globe.busy());
 
     // The window starts the import at its first frame.

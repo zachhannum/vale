@@ -13,7 +13,7 @@ use crate::world;
 /// The title of the form.
 pub const TITLE: &str = "New raster layer";
 /// The control that adds the layer of the form.
-pub const ADD: &str = "Add layer";
+pub const ADD: &str = "Add";
 pub const NAME: &str = "Raster name";
 pub const UNIT: &str = "Unit";
 pub const MINIMUM: &str = "Minimum";
@@ -251,9 +251,9 @@ impl RasterForm {
     /// The text that tells what is wrong with the form.
     pub fn note(&self) -> Option<&'static str> {
         if self.name.trim().is_empty() {
-            Some("The layer must have a name")
+            Some("Enter a name.")
         } else if self.range().is_none() {
-            Some("The maximum must be above the minimum")
+            Some("Maximum must be greater than minimum.")
         } else {
             None
         }

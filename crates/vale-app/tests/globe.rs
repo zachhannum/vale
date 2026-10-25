@@ -149,20 +149,22 @@ fn the_app_opens_on_the_globe() {
 }
 
 #[test]
-fn the_flat_map_is_reachable() {
+fn the_atlas_is_reachable() {
     let mut h = harness();
-    h.get_by_label("Map").click();
+    h.get_by_label("Atlas").click();
     h.run_steps(3);
     let s = h.state();
-    assert_eq!(s.workspace, Workspace::Map);
-    assert!(s.composed.is_some());
-    assert!(h.query_by_label("Projection").is_some());
+    assert_eq!(s.workspace, Workspace::Atlas);
+    assert!(s.atlas.place.is_some());
+    assert!(h.query_by_label("Add map frame").is_some());
     h.get_by_label("Globe").click();
     h.run_steps(2);
     assert_eq!(h.state().workspace, Workspace::Globe);
 
-    let args = Args::try_parse_from(["vale-app", "--workspace", "map"]).unwrap();
-    assert_eq!(args.workspace, Workspace::Map);
+    for name in ["atlas", "map"] {
+        let args = Args::try_parse_from(["vale-app", "--workspace", name]).unwrap();
+        assert_eq!(args.workspace, Workspace::Atlas);
+    }
 }
 
 #[test]

@@ -40,6 +40,7 @@ pub enum Icon {
     Grid,
     Delete,
     Magnet,
+    Select,
 }
 
 impl Icon {
@@ -86,6 +87,7 @@ impl Icon {
                  M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18"
             }
             Icon::Grid => "M12 3v18M3 12h18",
+            Icon::Select => "M5 3l14 8-6 2-2 6z",
             Icon::Magnet => {
                 "M5 4h4v8c0 1.66 1.34 3 3 3s3-1.34 3-3V4h4v8c0 3.87-3.13 7-7 7s-7-3.13-7-7zM5 8h4M15 8h4"
             }
@@ -365,6 +367,7 @@ mod tests {
             Icon::World,
             Icon::Grid,
             Icon::Delete,
+            Icon::Select,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

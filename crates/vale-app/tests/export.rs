@@ -201,14 +201,14 @@ fn the_worker_exports_the_heightmap_and_gives_a_note() {
     assert!(note.warning);
     assert_eq!(
         note.text,
-        "cannot export second.tif: the export of Terra.tif is not complete"
+        "Cannot export second.tif: Terra.tif is still exporting"
     );
 
     state.globe.wait_export();
     assert!(!state.globe.exporting());
     state.poll_export();
     let note = state.export_note.clone().unwrap();
-    assert_eq!(note.text, "Exported Terra.tif (256 x 128)");
+    assert_eq!(note.text, "Exported Terra.tif (256 × 128)");
     assert!(!note.warning);
     assert_eq!(state.status, note.text);
     assert_eq!(state.share, None);
@@ -297,7 +297,7 @@ fn the_end_of_the_hand_off_to_the_files_app_sets_the_note() {
         state.run_action(Action::ExportHeightmap(out.clone()));
         assert_eq!(
             state.export_note.as_ref().unwrap().text,
-            "Exported Terra.tif (256 x 128)"
+            "Exported Terra.tif (256 × 128)"
         );
         state.share.take().unwrap()
     };
@@ -374,5 +374,5 @@ fn the_status_bar_shows_the_text_of_an_export() {
     let out = dir.path().join("Terra.tif");
     h.state_mut().run_action(Action::ExportHeightmap(out));
     h.run_steps(2);
-    assert!(h.query_by_label("Exported Terra.tif (256 x 128)").is_some());
+    assert!(h.query_by_label("Exported Terra.tif (256 × 128)").is_some());
 }

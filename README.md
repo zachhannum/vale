@@ -22,7 +22,7 @@ The first time, the window opens on the start screen, which lists your worlds. A
 
 A world opens in the globe workspace. A new world has no raster layer. A raster layer holds one value for each place, and a height layer is a raster layer with the unit `m`. A raster layer is a layer in the same draw order as the vector layers, and it has an opacity. The globe shows each visible raster layer as stepped tints, in that order. Each visible height layer shows its rivers, and its hillshade shades the slopes with a light that you set. You can do these things.
 
-- Click "Layers" in the tool bar, and then "Add raster…", to add a raster layer. In the iPad layout, tap "+" in the Layers panel, and then "Raster". The form has the presets "Height", "Precipitation", "Temperature", "Pressure", and "Custom". A preset fills the name, the unit, the value range, and the face size. The face size is 1,024, 2,048, 4,096, or 8,192 pixels. Next to each face size, the form shows the ground per pixel, the world map of equal detail, and the memory of a layer that is painted all over.
+- Click "Layers" in the tool bar, and then "Add raster…", to add a raster layer. In the iPad layout, tap "+" in the Layers panel, and then "Raster…". The form has the presets "Height", "Precipitation", "Temperature", "Pressure", and "Custom". A preset fills the name, the unit, the value range, and the face size. The face size is 1,024, 2,048, 4,096, or 8,192 pixels. Next to each face size, the form shows the ground per pixel, the world map of equal detail, and the memory of a layer that is painted all over.
 
 - Drag the globe to rotate it. On a touch screen, use one finger.
 - Scroll the wheel to zoom. On a trackpad, scroll with two fingers to rotate, and pinch to zoom.
@@ -34,7 +34,7 @@ A world opens in the globe workspace. A new world has no raster layer. A raster 
 - Click "Line" in the tool bar to draw in the selected line layer. In the iPad layout, the Line cell is in the place of the More cell while a line layer is selected. A stroke of the pen or the mouse becomes one line feature, and Undo removes it. The Smoothing slider sets how much the app smooths the stroke. A stroke that starts near the end of a line extends that line.
 - While a polygon layer is selected, the Polygon button of the tool bar is in the place of the Line button, and the Polygon cell is in the place of the More cell in the iPad layout. Click it to draw in the layer. A stroke becomes one polygon feature, and the short arc between its two ends closes it. Undo removes the polygon.
 - While a point layer is selected, the Point button of the tool bar is in the place of the Line button, and the Point cell is in the place of the More cell in the iPad layout. Click it, and then tap the globe with the pen or click the globe to place a point. A form opens with a field for each field of the layer. Type the values, and then press Return or tap the place of the next point. Undo removes the point and its values.
-- The panel of a vector layer lists its fields. Tap "Add a field" to add a field with a name, a type, and a default value. Tap a field to rename it, change its type or its default value, or delete it. In the Map workspace, the Fields part of the inspector has the same controls. Undo takes back each change.
+- The panel of a vector layer lists its fields. Tap "Add field…" to add a field with a name, a type, and a default value. Tap a field to rename it, change its type or its default value, or delete it. In the Map workspace, the Fields part of the inspector has the same controls. Undo takes back each change.
 - The brush keeps its size on screen when you zoom. Select "Lock size" to keep its size on the ground.
 - The flatten mode moves the ground to the level under the start of the stroke. To set a fixed level, click "Pick from globe", and then press on the globe.
 - Press Ctrl+Z to undo a stroke. Press Ctrl+Shift+Z or Ctrl+Y to redo it. On a Mac, use Command in place of Ctrl. On a touch screen, tap with two fingers to undo, and tap with three fingers to redo. The iPad layout also has an undo button and a redo button in the top row. A new stroke removes the strokes that you can redo. The undo steps use 256 MB of memory at most, and the oldest steps go first. With `--project`, the steps are in the project file, and they use 256 MB of the file at most. Undo and redo then work after you close the app and open it again. They also include each change of the world, of the vector layers, and of the color stops of a raster layer.
@@ -50,16 +50,19 @@ A world opens in the globe workspace. A new world has no raster layer. A raster 
 
 The default face size is 8,192 pixels for a height layer and 2,048 pixels for each other raster layer. The selected raster layer is in memory at its full face size. Each other raster layer is in memory as a copy with a face of 2,048 pixels at most, so it looks softer in a close view until you select it. The GPU and the main memory hold only the tiles that you painted. After an import, a height layer of 8,192 pixels holds 805 MB on the GPU and 805 MB of main memory. If the computer has no GPU, start the app with `--face-size 1024`.
 
-Click "Map" in the tool bar to open the flat map with the Natural Earth 110m sample world. You can do these things there.
+Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atlas" in the workspace switch. You can do these things there.
 
-- Drag the map to pan. Scroll or pinch to zoom. On a touch screen, two fingers pan and zoom.
-- Double-click the map to move the center of the projection there.
-- Use the left panel to set the projection and its center.
-- Tick a layer to show it. Click "Edit" on a layer to select it. The inspector then shows its name and its style. Type in the name field to rename the layer.
-- Click "Add layer" above the list to make an empty layer of lines, points, or polygons.
-- Click a feature to see its attributes. The inspector lists the labels that did not fit.
-- Open a GeoJSON file with the button, or drop a GeoJSON file on the window.
-- Export the view to PNG or PDF with the buttons in the tool bar.
+- Click "Add map frame" to add a frame to the page. The frame shows the map of the project. On iPad, tap the Add button and then "Map frame".
+- Click a frame to select it. Drag the frame to move it, and drag a handle to resize it. The dock shows the Frame tab and the Projection tab.
+- In the Frame tab, change the shape to a polygon. Drag a vertex to move it, drag the middle of an edge to add a vertex, and double-click a vertex to remove it. "Add hole" adds a hole.
+- With the Move tool, drag in the selected frame to pan its map. The key H selects the Move tool, and V selects the Select tool. Scroll in the selected frame to zoom its map. On a touch screen, two fingers in the selected frame pan, zoom, and rotate the map.
+- Drag the page outside the frames to pan it, and scroll outside the selected frame to zoom it. On a touch screen, two fingers pan and zoom the page. Double-click outside the page to fit the page in the window again.
+- To delete the selected frame, click "Delete frame" in the Frame tab, or press Delete when no vertex is selected.
+- Type the scale, the center, and the rotation of a frame in the Frame tab. Select a projection in the Projection tab. Each frame of the map shows the new projection.
+- Click the page outside the frames to set the page size, to add a page, or to delete the page. The arrows in the tool bar go to the previous page and the next page.
+- Tick a layer in the left panel to show it in the map. Click "Edit" on a layer to select it. The inspector then shows its name and its style.
+- Click a feature in a frame to see its attributes. The inspector lists the labels that did not fit.
+- Export the page to PNG or PDF with the buttons in the tool bar.
 
 ## Open your own data
 
@@ -99,7 +102,7 @@ cargo run --release -p vale-app -- --project path/to/world.gpkg --export-heightm
 
 | Argument | Meaning |
 | --- | --- |
-| `--workspace <NAME>` | `globe` or `map`. The default is `globe`. |
+| `--workspace <NAME>` | `globe` or `atlas`. The default is `globe`. |
 | `--projection <ID>` | `equal-earth`, `mercator`, `lambert-azimuthal`, `orthographic`, or `stereographic` |
 | `--center <LON,LAT>` | Center of the projection |
 | `--radius-km <KM>` | Radius of the world. The default is 6371. A project file that exists gives its own radius. |
@@ -176,7 +179,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - Vector layers in the flat view of the globe workspace and in the picture of the globe on the start screen.
 - An editor for the rules of a style. The inspector edits the fill, the stroke, and the circle symbol of a style with one rule.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
-- More than one map frame, the atlas, page templates, SVG export, and graticule labels. The only map furniture is a scale bar.
+- More than one map, the overview of the pages, page templates, map furniture on a page, SVG export, and graticule labels.
 - Conic and transverse projections, oblique aspects, and projection suggestions.
 - Editing tools other than the line tool, the polygon tool, and the point tool, including the attribute table.
 - The GPU Vello backend. The prototype draws on the CPU with `vello_cpu`.

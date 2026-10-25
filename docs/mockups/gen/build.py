@@ -231,8 +231,8 @@ READ_LEFT = READ % 'left: 16px; bottom: 26px'
 LAYERS_BODY = (lrow('Height', 'raster', sel=True) + lrow('Precipitation', 'raster', vis=False) + lrow('Topography', 'polygon', badge='Out of date')
                + lrow('Bathymetry', 'polygon') + lrow('Rivers', 'line') + lrow('Borders', 'line') + lrow('Places', 'point')
                + lrow('coast-scan.png', 'raster', badge='Not placed'))
-LAYERS_ADD = tbtn('Add a layer', PLUS)
-ADD_BODY = (more('Raster') + more('Lines') + more('Points') + more('Polygons') + '<div class="rule"></div>' + more('From a file') + more('From a tool'))
+LAYERS_ADD = tbtn('Add layer', PLUS)
+ADD_BODY = (more('Raster…') + more('Lines') + more('Points') + more('Polygons') + '<div class="rule"></div>' + more('From file…') + more('From tool'))
 
 # Each raster layer of values has a unit, a ramp, and band limits. The sea bands come first in SEA.
 SEA = (('#86a8b8', '−3,000'), ('#9dbcc6', '−1,000'), ('#b6d0d3', '−200'))
@@ -241,15 +241,15 @@ HEIGHT_BODY = (field('Unit', 'm', True) + '<h2>Style</h2><div class="seg" role="
                + '<div class="row"><span class="lab">Ramp</span><span class="grad" style="background: linear-gradient(90deg, %s)"></span></div>' % ', '.join(c for c, _ in SEA + RAMP)
                + '<h2>Band limits</h2><div class="grid2">'
                + ''.join('<div class="row"><span class="sw" style="background: %s"></span><input class="in mono" value="%s" aria-label="Limit %s"></div>' % (c, v, v) for c, v in BANDS)
-               + '<div class="row"><button class="btn sec" style="flex: 1">Add a limit</button></div></div>'
+               + '<div class="row"><button class="btn sec" style="flex: 1">Add limit</button></div></div>'
                + '<div class="note">The preview and the Polygonize tool use these limits. Each raster layer has its own.</div>')
 
 CURVE = ('<svg class="curve" viewBox="0 0 308 96" role="img" aria-label="Pressure curve"><g stroke="rgba(255,255,255,.1)" stroke-width="1"><path d="M77 0v96M154 0v96M231 0v96M0 48h308"></path></g>'
          '<path d="M8 88L300 8" fill="none" stroke="#45c4a8" stroke-width="2"></path><circle cx="154" cy="48" r="7" fill="#e7e9ec"></circle></svg>')
 BRUSH_BODY = (pslider('Size', '120 km', 40) + pslider('Hardness', '20%', 20) + pslider('Flow', '30%', 30) + pslider('Spacing', '10%', 10) + pslider('Smoothing', '40%', 40)
-              + '<h2>Pen pressure</h2>' + switch('Pressure sets the size', False) + switch('Pressure sets the flow') + CURVE
+              + '<h2>Pen pressure</h2>' + switch('Size from pressure', False) + switch('Flow from pressure') + CURVE
               + '<div class="seg" role="group" aria-label="Pressure curve"><button>Soft</button><button class="on">Linear</button><button>Firm</button></div>'
-              + switch('Size follows the zoom'))
+              + switch('Size follows zoom'))
 TOOL_BODY = (pick('Input', 'Height', 'Precipitation') + '<div class="row"><span class="lab">Limits</span><span class="grow">11, from the layer</span></div>' + pslider('Smooth', '60%', 60)
              + '<h2>Output</h2>' + switch('Split into two layers at 0 m') + field('Above', 'Topography') + field('Below', 'Bathymetry')
              + '<div class="note">Topography is out of date. This run replaces it.</div>'
@@ -264,7 +264,7 @@ WIDE_GLOBE = globe('left: 50%; top: 50%; width: 760px; transform: translate(-50%
 ipage('PadDraw', 'Vale draw on iPad', WIDE_GLOBE + DRAW + actions() + brushcard())
 ipage('PadDrawOpen', 'Vale draw on iPad with panels', WIDE_GLOBE + DRAW + actions('Layers') + brushcard(True)
       + panel('Brush', BRUSH_BODY, 'left: 92px; top: 96px; width: 340px') + panel('Layers', LAYERS_BODY, 'right: 16px; top: 96px; width: 320px', act=LAYERS_ADD.replace('class="tool"', 'class="tool on"'))
-      + panel('Add a layer', ADD_BODY, 'right: 344px; top: 96px; width: 220px', close=False).replace('class="card panel"', 'class="card panel menup"'))
+      + panel('Add layer', ADD_BODY, 'right: 344px; top: 96px; width: 220px', close=False).replace('class="card panel"', 'class="card panel menup"'))
 # A layer has one style, and the panel of the layer holds it. The same panel opens in each workspace.
 def color(label, hex_):
     return '<div class="row"><span class="lab">%s</span><span class="sw" style="background: #%s"></span><span class="mono mute">%s</span></div>' % (label, hex_, hex_.upper())
@@ -272,12 +272,12 @@ def color(label, hex_):
 
 def rules(*set_):
     return ('<h2>Style</h2>' + ''.join('<div class="row%s"><span class="grow">%s</span><span class="mono mute">%s</span></div>' % (' sel' if i == 0 else '', n, f)
-                                       for i, (n, f) in enumerate(set_)) + '<div class="row"><button class="btn sec" style="flex: 1">Add a rule</button></div>')
+                                       for i, (n, f) in enumerate(set_)) + '<div class="row"><button class="btn sec" style="flex: 1">Add rule</button></div>')
 
 
 RIVER_STYLE = (rules(('Major rivers', 'flow &gt;= 3'), ('Streams', 'flow &lt; 3')) + '<h2>Major rivers</h2>' + field('Filter', 'flow &gt;= 3', True)
                + '<div class="seg" role="group" aria-label="Stroke kind"><button class="on">Solid</button><button>Dashed</button><button>Brush</button></div>'
-               + color('Color', '3f8aa3') + field('Width', '0.3 + flow * 0.2', True) + switch('Taper along the line'))
+               + color('Color', '3f8aa3') + field('Width', '0.3 + flow * 0.2', True) + switch('Taper along line'))
 TOPO_STYLE = (rules(('Land', 'elev_min &gt;= 0'), ('Coastline', 'elev_min = 0')) + '<h2>Land</h2>' + field('Filter', 'elev_min &gt;= 0', True)
               + '<div class="seg" role="group" aria-label="Fill kind"><button class="on">Color</button><button>Pattern</button><button>Texture</button></div>'
               + field('Color by', 'elev_min', True) + '<div class="ramp" style="padding-top: 8px">' + ''.join('<span><i style="background: %s"></i>%s</span>' % r for r in RAMP) + '</div>')
@@ -322,7 +322,7 @@ def class_list(sel=True):
 
 
 CLASS_BODY = (pick('Layer', 'Places') + field('Text', 'name', True) + field('Filter', 'rank &lt;= 2', True) + pick('Font', 'Iowan Old Style')
-              + field('Size', '11 pt', True) + color('Color', '#2b2a26') + switch('Halo') + field('Priority', '8', True) + pick('Placement', 'Around the point'))
+              + field('Size', '11 pt', True) + color('Color', '#2b2a26') + switch('Halo') + field('Priority', '8', True) + pick('Placement', 'Around point'))
 
 def pair(label, a, b):
     return ('<div class="row"><span class="lab">%s</span><input class="in mono" value="%s" aria-label="%s, first"><input class="in mono" value="%s" aria-label="%s, second"></div>'
@@ -361,7 +361,7 @@ ipage('PadDrawLinked', 'Vale linked file layer on iPad', flat(LINK_RECT)
 PROJ_LIST = (item('Lambert conformal conic', '0.5%', True) + item('Transverse Mercator', '0.4%') + item('Albers equal-area conic', '0.9%')
              + item('Azimuthal equal-area', '0.3%') + item('Polar stereographic', '6%') + item('Mercator', '15%', cls='warn') + item('Orthographic')
              + item('Equal Earth') + item('Custom'))
-PARAM_BODY = (pair('Center', '30.0°E', '46.0°N') + pair('Parallels', '41.3°N', '50.7°N') + field('Rotation', '0.0°', True) + switch('Fit parallels to the view')
+PARAM_BODY = (pair('Center', '30.0°E', '46.0°N') + pair('Parallels', '41.3°N', '50.7°N') + field('Rotation', '0.0°', True) + switch('Fit parallels to view')
               + '<h2>Distortion</h2><table class="t"><thead><tr><th></th><th>Scale</th><th>Area</th></tr></thead><tbody>'
               '<tr><td>North</td><td class="mono">+0.4%</td><td class="mono">+0.8%</td></tr><tr><td>Center</td><td class="mono">−0.3%</td><td class="mono">−0.6%</td></tr>'
               '<tr><td>South</td><td class="mono">+0.5%</td><td class="mono">+1.0%</td></tr></tbody></table>' + switch('Tissot circles')
@@ -410,7 +410,7 @@ FRAME_TAB = (pick('Map', 'Kareth globe') + pick('Shape', 'Rectangle', 'Polygon')
 PROJ_TAB = pick('Projection', 'Lambert conformal conic') + PARAM_BODY
 PAGE_PANEL = (field('Name', 'Vesperan') + pick('Size', '12 × 16 in', 'A3', 'Letter', 'Custom') + pick('Template', 'Regional map') + color('Paper', '#f3efdf')
               + '<h2>Page border</h2>' + switch('Show') + color('Color', '#c9aaa0') + field('Width', '2 mm', True) + field('Distance', '8 mm', True)
-              + '<div class="row"><button class="btn sec" style="flex: 1">Delete the page</button></div>')
+              + '<div class="row"><button class="btn sec" style="flex: 1">Delete page</button></div>')
 PAGE_SEL = '<svg class="lay" viewBox="0 0 1500 2000" role="img" aria-label="Selected page"><rect x="5" y="5" width="1490" height="1990" fill="none" stroke="#45c4a8" stroke-width="10"></rect></svg>'
 
 
@@ -469,7 +469,7 @@ def tiles(x0, y0, w, gap):
                 % (x, y0, w, '; outline: 3px solid #45c4a8; outline-offset: 4px' if sel else '', inner, x, y0 + w * 4 // 3 + 14, w, i + 1, n))
     x = x0 + len(PAGES) * (w + gap)
     out += ('<div style="position: absolute; left: %dpx; top: %dpx; width: %dpx; height: %dpx; border: 2px dashed #5b6068; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #c9ccd1">'
-            '<span style="white-space: nowrap">+&ensp;Add a page</span></div>' % (x, y0, w - 4, w * 4 // 3 - 4))
+            '<span style="white-space: nowrap">+&ensp;Add page</span></div>' % (x, y0, w - 4, w * 4 // 3 - 4))
     return out
 
 
@@ -537,7 +537,7 @@ def sysbar(menus):
 
 
 KEYS = {'Raise': 'R', 'Lower': 'F', 'Smooth': 'S', 'Flatten': 'E', 'Line': 'L', 'Hand': 'H', 'Select': 'V', 'Place point': 'P', 'Edit vertices': 'A',
-        'Edit labels': 'T', 'Undo': '⌘Z', 'Redo': '⇧⌘Z', 'Layers': '⌥⌘1', 'Toolbox': '⌥⌘2', 'Add a layer': '⇧⌘N', 'Brush…': 'B',
+        'Edit labels': 'T', 'Undo': '⌘Z', 'Redo': '⇧⌘Z', 'Layers': '⌥⌘1', 'Toolbox': '⌥⌘2', 'Add layer': '⇧⌘N', 'Brush…': 'B',
         'Previous': '[', 'Next': ']', 'Pin': '↩', 'Hide': '⌫', 'Export…': '⇧⌘E'}
 DOTS = '<circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle>'
 SEARCH = '<circle cx="11" cy="11" r="6"></circle><path d="M16 16l4 4"></path>'
@@ -626,12 +626,12 @@ def osel(label, value, width=140):
 OSEP = '<span class="div"></span>'
 GROW = '<span class="grow"></span>'
 BRUSH_OPTS = obar('<span class="on">Raise</span>', OSEP, osl('Size', '120 km', 40), osl('Flow', '30%', 30), osl('Hardness', '20%', 20), OSEP,
-                  osw('Pressure sets the flow'), GROW, tbtn2('Brush…'))
-LINE_OPTS = obar('<span class="on">Line</span>', OSEP, osel('Layer', 'Rivers'), osl('Smoothing', '40%', 40), OSEP, osw('Snap to lines'), osw('Close the line', False))
-CLASS_OPTS = obar('<span class="on">Select</span>', OSEP, tbtn2('Add a class'), OSEP, osw('Show overlaps', False))
+                  osw('Flow from pressure'), GROW, tbtn2('Brush…'))
+LINE_OPTS = obar('<span class="on">Line</span>', OSEP, osel('Layer', 'Rivers'), osl('Smoothing', '40%', 40), OSEP, osw('Snap to lines'), osw('Close line', False))
+CLASS_OPTS = obar('<span class="on">Select</span>', OSEP, tbtn2('Add class'), OSEP, osw('Show overlaps', False))
 LABEL_OPTS = obar('<span class="on">Label</span>', OSEP, tbtn2('Previous') + tbtn2('Next') + tbtn2('Pin') + tbtn2('Hide'), OSEP, osw('Show candidates'), osw('Show overlaps'))
 DATA_OPTS = obar('<span class="on">Point</span>', OSEP, osel('Layer', 'Places'), OSEP, osw('Snap to vertices'), osw('Snap to lines'))
-PAGE_OPTS = obar('<span class="on">Select</span>', OSEP, osw('Show the margins'), osw('Show the bleed', False))
+PAGE_OPTS = obar('<span class="on">Select</span>', OSEP, osw('Show margins'), osw('Show bleed', False))
 
 
 # A dock is a column at the right edge. Its tabs keep the same order in a workspace. Below the tabs is the list, and below the list is the inspector,
@@ -663,7 +663,7 @@ def mlayers(sel=None):
         ('Province borders', 'line'), ('Roads', 'line'), ('Sea routes', 'line'), ('Peaks', 'point'), ('Places', 'point')))
 
 
-ADD = dbtn('Add a layer', PLUS)
+ADD = dbtn('Add layer', PLUS)
 WTABS = ('Layers', 'Toolbox')
 
 
@@ -747,7 +747,7 @@ dpage('Start', 'Vale start screen',
                     + pcard('The Sundering', 'Oct 3, 2026', 'On this Mac', 260) + pcard('Ashfall Reach', 'Sep 28, 2026', 'iCloud Drive', 40)
                     + pcard('Tidewater', 'Sep 9, 2026', 'On this Mac', 200) + pcard('Low Countries', 'Aug 30, 2026', 'iCloud Drive', pic=False)
                     + '</div>', ' start-cv'))
-      + pop([mi('Open', '⌘O'), MR, mi('Rename…'), mi('Make a copy', '⌘D'), mi('Show in Finder', '⌥⌘R'), MR, mi('Delete…', '⌘⌫', hov=True)],
+      + pop([mi('Open', '⌘O'), MR, mi('Rename…'), mi('Duplicate', '⌘D'), mi('Show in Finder', '⌥⌘R'), MR, mi('Delete…', '⌘⌫', hov=True)],
             'left: 750px; top: 150px; width: 220px', 'Actions'),
       menus=('File', 'Edit', 'View', 'Window', 'Help'))
 
@@ -761,8 +761,8 @@ dpage('DrawOpen', 'Vale draw with the brush settings', world(GLOBE_VIEW, WRAIL, 
 dpage('DrawHeight', 'Vale height layer', world(GLOBE_VIEW, WRAIL, BRUSH_OPTS, DGLOBE, dock(WTABS, 'Layers', wlayers('Height'), ('Height', HEIGHT_IO), ADD, list_h=232)))
 dpage('DrawFlat', 'Vale draw on a flat view', world(FLAT_VIEW, WRAIL, BRUSH_OPTS, flat(FLAT_BRUSH, 1096),
                                                     dock(WTABS, 'Layers', wlayers(), ('Kareth', WORLD_BODY), ADD.replace('class="tool"', 'class="tool on"'), list_h=232))
-      + pop([mi('Raster'), mi('Lines', '⇧⌘N', hov=True), mi('Points'), mi('Polygons'), MR, mi('From a file…', '⇧⌘O'), mi('From a tool', sub=True)],
-            'right: 14px; top: 144px; width: 236px', 'Add a layer'))
+      + pop([mi('Raster…'), mi('Lines', '⇧⌘N', hov=True), mi('Points'), mi('Polygons'), MR, mi('From file…', '⇧⌘O'), mi('From tool', sub=True)],
+            'right: 14px; top: 144px; width: 236px', 'Add layer'))
 dpage('DrawLinked', 'Vale linked file layer', world(FLAT_VIEW, WRAIL, BRUSH_OPTS, flat(LINK_RECT, 1096),
                                                     dock(WTABS, 'Layers', wlayers('coast-scan.png'), ('coast-scan.png', link_body('~/Sketches/coast-scan.png')
                                                          .replace('</span></div><h2>', '</span></div><div class="row"><a href="#" style="margin-left: 76px">Show in Finder</a></div><h2>', 1)), ADD, list_h=232),

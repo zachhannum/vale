@@ -165,12 +165,46 @@ impl Projection {
             .collect()
     }
 
+    /// Adds points along each edge, which is straight in longitude and
+    /// latitude, until no edge moves more than `step` degrees in the frame.
+    /// Near the pole of a polar frame, a short edge can turn far in frame
+    /// longitude, so a fixed step on the sphere is not enough there.
+    fn densify_in_frame(&self, pts: &[LonLat], step: f64) -> Vec<LonLat> {
+        // An edge this short stops there, also at the frame pole itself.
+        const SHORTEST: f64 = 1e-6;
+        let dense = densify(pts, step, false);
+        let mut out = Vec::with_capacity(dense.len());
+        for pair in dense.windows(2) {
+            out.push(pair[0]);
+            let mut todo = vec![(pair[0], pair[1])];
+            while let Some((a, b)) = todo.pop() {
+                let (fa, fb) = (self.frame.to_frame(a), self.frame.to_frame(b));
+                let turn = wrap180(fb[0] - fa[0]).abs().max((fb[1] - fa[1]).abs());
+                let length = (b[0] - a[0]).abs().max((b[1] - a[1]).abs());
+                if turn <= step || length <= SHORTEST {
+                    if b != pair[1] {
+                        out.push(b);
+                    }
+                    continue;
+                }
+                let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                // The second half goes on the stack first, so the first half comes out first.
+                todo.push((mid, b));
+                todo.push((a, mid));
+            }
+        }
+        if let Some(last) = dense.last() {
+            out.push(*last);
+        }
+        out
+    }
+
     /// Open lines in projected meters.
     pub fn project_line(&self, line: &[LonLat]) -> Vec<Vec<Point>> {
         if line.len() < 2 {
             return Vec::new();
         }
-        let dense = densify(line, 1.0, false);
+        let dense = self.densify_in_frame(line, 1.0);
         let f: Vec<LonLat> = dense.iter().map(|p| self.frame.to_frame(*p)).collect();
         let u = unwrap(&f);
         let mut out = Vec::new();
@@ -208,7 +242,7 @@ impl Projection {
             first
         };
         ring.push(target);
-        let mut dense = densify(&ring, 1.0, false);
+        let mut dense = self.densify_in_frame(&ring, 1.0);
         dense.pop();
         let f: Vec<LonLat> = dense.iter().map(|p| self.frame.to_frame(*p)).collect();
         let mut u = unwrap(&f);
@@ -431,6 +465,30 @@ mod tests {
 
     fn proj(kind: ProjectionKind, lon0: f64, lat0: f64) -> Projection {
         Projection::new(spec(kind, lon0, lat0), 1.0).unwrap()
+    }
+
+    #[test]
+    fn a_line_near_the_center_of_an_azimuthal_map_keeps_its_path() {
+        // The parallel and the meridian pass 0.3 degrees from the center.
+        let (lon0, lat0) = (20.3, 45.3);
+        for kind in [
+            ProjectionKind::LambertAzimuthal,
+            ProjectionKind::Orthographic,
+            ProjectionKind::Stereographic,
+        ] {
+            let p = proj(kind, lon0, lat0);
+            let parallel = p.project_line(&[[10.0, 45.0], [30.0, 45.0]]);
+            let meridian = p.project_line(&[[20.0, 35.0], [20.0, 55.0]]);
+            assert!(!parallel.is_empty() && !meridian.is_empty(), "{kind:?}");
+            for point in parallel.iter().flatten() {
+                let place = p.inverse(*point).unwrap();
+                assert!((place[1] - 45.0).abs() < 1e-6, "{kind:?}: {place:?}");
+            }
+            for point in meridian.iter().flatten() {
+                let place = p.inverse(*point).unwrap();
+                assert!((place[0] - 20.0).abs() < 1e-6, "{kind:?}: {place:?}");
+            }
+        }
     }
 
     fn area(rings: &[Vec<Point>]) -> f64 {

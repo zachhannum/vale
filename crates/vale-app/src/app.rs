@@ -134,10 +134,12 @@ impl eframe::App for ValeApp {
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::ExportDialog(format) => {
-                    let name = match format {
-                        ExportFormat::Png => "map.png",
-                        ExportFormat::Pdf => "map.pdf",
+                    let ext = match format {
+                        ExportFormat::Png => "png",
+                        ExportFormat::Pdf => "pdf",
                     };
+                    let (index, _) = crate::ui::atlas::page_index(state);
+                    let name = format!("page-{}.{ext}", index + 1);
                     if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
                         state.run_action(Action::Export(path));
                     }
@@ -301,7 +303,7 @@ pub fn run_window(
                     if let Ok(mut state) = shared.try_borrow_mut()
                         && let Err(e) = state.save_waiting()
                     {
-                        state.status = format!("The project did not save: {e}");
+                        state.status = format!("Could not save project: {e}");
                     }
                 });
                 app._lifecycle = crate::lifecycle::Observer::new(save);

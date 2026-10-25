@@ -1206,6 +1206,11 @@ pub fn keypad_is_open(ctx: &egui::Context) -> bool {
     key_edit(ctx).is_some()
 }
 
+/// The name of the field whose keypad is open.
+pub fn keypad_field(ctx: &egui::Context) -> Option<String> {
+    key_edit(ctx).map(|edit| edit.name)
+}
+
 /// Closes the keypad.
 pub fn close_keypad(ctx: &egui::Context) {
     set_key_edit(ctx, None);

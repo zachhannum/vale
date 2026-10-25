@@ -4,8 +4,10 @@ use std::path::Path;
 
 use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
-use vale_sphere::ProjectionSpec;
-use vale_store::{Field, FieldType, GeometryKind, Layer, LayerId, Project, Units, World};
+use vale_sphere::{ProjectionKind, ProjectionSpec};
+use vale_store::{
+    Field, FieldType, GeometryKind, Layer, LayerId, MapId, MapRecord, Project, Units, World,
+};
 use vale_style::{Color, LayerStyle, MapStyle, Stroke};
 
 use crate::view::View;
@@ -18,10 +20,10 @@ pub struct LayerEntry {
     pub style: LayerStyle,
 }
 
-/// How the map looks: projection, view, layer styles, and map style.
+/// How the map looks: view, layer styles, and map style. The projection is
+/// on the map of the atlas.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MapFrame {
-    pub projection: ProjectionSpec,
     /// `None` means fit the world at the next compose.
     pub view: Option<View>,
     /// One entry for each vector layer of the project, in the order of the
@@ -65,7 +67,6 @@ impl Document {
         Document {
             project: Project::new(World::default()),
             frame: MapFrame {
-                projection: ProjectionSpec::default(),
                 view: None,
                 entries: Vec::new(),
                 graticule: true,
@@ -216,8 +217,9 @@ impl Document {
     /// Replaces the project. An entry stays if the new project has a layer
     /// with its ID and its kind. Each other layer gets a new entry.
     pub fn set_project(&mut self, project: Project) {
+        let projection = self.projection();
         let old = std::mem::replace(&mut self.project, project);
-        if old.world.radius_km != self.project.world.radius_km {
+        if old.world.radius_km != self.project.world.radius_km || projection != self.projection() {
             self.frame.view = None;
         }
         let kind = |p: &Project, id| p.layer(id).map(|l| l.kind);
@@ -366,11 +368,55 @@ impl Document {
         self.project.world.radius_km = new;
     }
 
+    /// The map of every frame.
+    pub fn map_id(&self) -> MapId {
+        self.map().id
+    }
+
+    fn map(&self) -> &MapRecord {
+        &self.project.atlas.maps[0]
+    }
+
+    /// The projection of the map. An unknown kind is the default projection.
+    pub fn projection(&self) -> ProjectionSpec {
+        let map = self.map();
+        match ProjectionKind::from_id(&map.projection) {
+            Some(kind) => ProjectionSpec {
+                kind,
+                lon0: map.lon0,
+                lat0: map.lat0,
+            }
+            .normalized(),
+            None => ProjectionSpec::default(),
+        }
+    }
+
     pub fn set_projection(&mut self, spec: ProjectionSpec) {
         let spec = spec.normalized();
-        if spec != self.frame.projection {
-            self.frame.projection = spec;
+        if spec != self.projection() {
+            let map = &mut self.project.atlas.maps[0];
+            map.projection = spec.kind.id().to_string();
+            map.lon0 = spec.lon0;
+            map.lat0 = spec.lat0;
             self.frame.view = None;
+        }
+    }
+
+    /// True if a map shows a layer.
+    pub fn shown(&self, map: MapId, layer: LayerId) -> bool {
+        let map = self.project.atlas.map(map);
+        map.is_some_and(|m| !m.hidden.contains(&layer))
+    }
+
+    /// Shows or hides a layer in a map. Returns false if nothing changed.
+    pub fn set_shown(&mut self, map: MapId, layer: LayerId, on: bool) -> bool {
+        let Some(map) = self.project.atlas.map_mut(map) else {
+            return false;
+        };
+        if on {
+            map.hidden.remove(&layer)
+        } else {
+            map.hidden.insert(layer)
         }
     }
 }

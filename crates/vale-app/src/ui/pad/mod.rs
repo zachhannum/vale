@@ -21,6 +21,7 @@ use crate::globe::{Tool, WorldView};
 use crate::session::{WorldFile, worlds_of};
 use crate::world;
 
+pub mod atlas;
 pub mod browser;
 pub mod fields;
 pub mod geometry;
@@ -85,14 +86,14 @@ pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
 pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 
 /// The button of the Layers panel that opens the menu of the new layers.
-pub const ADD_LAYER: &str = "Add a layer";
+pub const ADD_LAYER: &str = "Add layer";
 /// The field of the panel of a vector layer with the name of the layer.
 pub const LAYER_NAME: &str = "Layer name";
 /// The slider of the panel of a raster layer that sets its opacity.
 pub const OPACITY: &str = "Layer opacity";
 /// The row of the menu of the new layers that opens the form of a new raster
 /// layer.
-pub const NEW_RASTER: &str = "Raster";
+pub const NEW_RASTER: &str = "Raster…";
 /// The rows of the menu of the new vector layers.
 const NEW_LAYERS: [(&str, GeometryKind); 3] = [
     ("Lines", GeometryKind::Line),
@@ -265,7 +266,7 @@ impl PadState {
     }
 }
 
-const WORKSPACES: [&str; 3] = ["World", "Maps", "Atlas"];
+pub const WORKSPACES: [&str; 2] = ["World", "Atlas"];
 const VIEWS: [&str; 2] = ["Globe", "Flat"];
 /// The action that makes the place at the middle of the canvas the center of
 /// the projection of the flat view.
@@ -439,13 +440,9 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             }
             let ui = &ui.new_child(egui::UiBuilder::new().max_rect(rest));
             if rects.class == WidthClass::Wide {
-                let items = [
-                    (WORKSPACES[0], true),
-                    (WORKSPACES[1], true),
-                    (WORKSPACES[2], false),
-                ];
+                let items = [(WORKSPACES[0], true), (WORKSPACES[1], true)];
                 if widgets::segments(ui, controls, &items, 0) == Some(1) {
-                    state.workspace = Workspace::Map;
+                    state.workspace = Workspace::Atlas;
                 }
             } else {
                 let open = state.pad.menu;
@@ -864,6 +861,116 @@ fn show_panel(
         Some(_) => egui::scroll_area::ScrollSource::NONE,
         None => egui::scroll_area::ScrollSource::default(),
     };
+    let place = match panel {
+        Panel::Brush => (rects.brush_panel, geometry::BRUSH_PANEL_WIDTH),
+        _ => (rects.right_panel, geometry::RIGHT_PANEL_WIDTH),
+    };
+    let action = list.then_some((ADD_LAYER, Icon::Plus, state.pad.add));
+    let head = CardTitle {
+        title,
+        back,
+        action,
+    };
+    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
+        if let Some(add) = &row.action {
+            state.pad.add_button = Some(add.rect);
+            if add.clicked() {
+                state.pad.add = !state.pad.add;
+            }
+        }
+        if row.back && page == Some(Page::Ramps) {
+            state.pad.page = Some(Page::Stops);
+        } else if row.back && page.is_some() {
+            state.pad.page = None;
+            state.globe.preview.selected = None;
+        } else if row.back {
+            state.pad.layer = None;
+        }
+        if row.close {
+            state.pad.close(panel);
+        }
+    };
+    let body =
+        |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| match (panel, layer) {
+            (Panel::Brush, _) => brush_body(ui, state, controls),
+            (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
+                Some(Page::Ramps) => raster::ramps_body(ui, state, controls, id),
+                Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
+                Some(Page::Hillshade) => {
+                    raster::hillshade_body(ui, state, controls, id);
+                }
+                _ => raster_body(ui, state, controls, id),
+            },
+            (Panel::Layers, Some(LayerRef::Vector(id))) => match page {
+                Some(Page::NewField) => {
+                    fields::new_field_body(ui, state, controls, id);
+                }
+                Some(Page::Field(i)) => {
+                    fields::field_body(ui, state, controls, id, i);
+                }
+                _ => vector_body(ui, state, controls, id),
+            },
+            (Panel::Layers, None) => layers_body(ui, state, controls),
+            (Panel::Toolbox, _) => toolbox_body(ui, state),
+        };
+    let card = Card {
+        key,
+        place,
+        head,
+        scroll,
+    };
+    let rect = show_card(
+        ctx,
+        state,
+        controls,
+        rects,
+        card,
+        on_title,
+        |_, _, _| {},
+        body,
+    );
+    state.pad.panels.push((panel, rect));
+}
+
+/// The title row of a panel: the title, the name of the panel that the back
+/// button opens, and the action button.
+pub struct CardTitle<'a> {
+    pub title: &'a str,
+    pub back: Option<&'a str>,
+    pub action: Option<(&'a str, Icon, bool)>,
+}
+
+/// A panel of `show_card`.
+pub struct Card<'a> {
+    /// The name of the card. The card keeps its height under this name.
+    pub key: &'static str,
+    /// The top-left corner and the width of the card in the normal widths.
+    pub place: (Pos2, f32),
+    pub head: CardTitle<'a>,
+    pub scroll: egui::scroll_area::ScrollSource,
+}
+
+/// Shows a panel: a card in the normal widths, and the sheet at the bottom
+/// in the compact width. `on_title` gets the title row before the body
+/// shows. `top` adds the rows between the title row and the body, which do
+/// not scroll. Returns the rectangle of the panel.
+#[allow(clippy::too_many_arguments)]
+fn show_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    card: Card,
+    on_title: impl FnOnce(&mut AppState, &widgets::TitleRow),
+    top: impl FnOnce(&mut egui::Ui, &mut AppState, &mut Controls),
+    body: impl FnOnce(&mut egui::Ui, &mut AppState, &mut Controls),
+) -> Rect {
+    let Card {
+        key,
+        place: (min, width),
+        head,
+        scroll,
+    } = card;
     let (rect, radius) = match rects.sheet {
         Some(sheet) => {
             let r = theme::SHEET_RADIUS as u8;
@@ -876,10 +983,6 @@ fn show_panel(
             (sheet, radius)
         }
         None => {
-            let (min, width) = match panel {
-                Panel::Brush => (rects.brush_panel, geometry::BRUSH_PANEL_WIDTH),
-                _ => (rects.right_panel, geometry::RIGHT_PANEL_WIDTH),
-            };
             let most = (rects.panel_bottom - min.y).max(ROW);
             let height = state.pad.heights.get(key).map_or(most, |h| h.min(most));
             let rect = Rect::from_min_size(min, vec2(width, height));
@@ -888,96 +991,62 @@ fn show_panel(
     };
     let sheet = rects.sheet.is_some();
     let id = if sheet { "pad-sheet" } else { key };
-    state.pad.panels.push((panel, rect));
-    widgets::card(
-        ctx,
-        state.globe.backdrop(),
-        id,
-        rect,
-        Order::Middle,
-        radius,
-        |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            if sheet {
-                let grabber = Rect::from_center_size(
-                    pos2(rect.center().x, rect.top() + 8.5),
-                    vec2(36.0, 5.0),
-                );
-                ui.painter()
-                    .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
+    let backdrop = match state.workspace {
+        Workspace::Globe => state.globe.backdrop(),
+        Workspace::Atlas => None,
+    };
+    widgets::card(ctx, backdrop, id, rect, Order::Middle, radius, |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        if sheet {
+            let grabber =
+                Rect::from_center_size(pos2(rect.center().x, rect.top() + 8.5), vec2(36.0, 5.0));
+            ui.painter()
+                .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
+        }
+        let row = widgets::title_row_with(ui, controls, head.title, head.back, sheet, head.action);
+        on_title(state, &row);
+        if sheet {
+            sheet_drag(ui, &mut state.pad, &row.bar, rects.sheet_travel);
+            if state.pad.sheet_offset >= rects.sheet_travel {
+                return;
             }
-            let action = list.then_some((ADD_LAYER, Icon::Plus, state.pad.add));
-            let row = widgets::title_row_with(ui, controls, title, back, sheet, action);
-            if let Some(add) = &row.action {
-                state.pad.add_button = Some(add.rect);
-                if add.clicked() {
-                    state.pad.add = !state.pad.add;
-                }
-            }
-            if row.back && page == Some(Page::Ramps) {
-                state.pad.page = Some(Page::Stops);
-            } else if row.back && page.is_some() {
-                state.pad.page = None;
-                state.globe.preview.selected = None;
-            } else if row.back {
-                state.pad.layer = None;
-            }
-            if row.close {
-                state.pad.close(panel);
-            }
-            if sheet {
-                sheet_drag(ui, &mut state.pad, &row.bar, rects.sheet_travel);
-                if state.pad.sheet_offset >= rects.sheet_travel {
-                    return;
-                }
-            }
-            let bottom = if sheet {
-                rect.bottom() - rects.bands.bottom
-            } else {
-                rect.bottom()
-            };
-            let most = (bottom - ui.cursor().top()).max(0.0);
-            let out = egui::ScrollArea::vertical()
-                .id_salt(key)
-                .scroll_source(scroll)
-                .max_height(most)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    let margin = egui::Margin {
-                        left: BODY_PAD as i8,
-                        right: BODY_PAD as i8,
-                        top: 0,
-                        bottom: 10,
-                    };
-                    egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 6.0;
-                        match (panel, layer) {
-                            (Panel::Brush, _) => brush_body(ui, state, controls),
-                            (Panel::Layers, Some(LayerRef::Raster(id))) => match page {
-                                Some(Page::Ramps) => raster::ramps_body(ui, state, controls, id),
-                                Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
-                                Some(Page::Hillshade) => {
-                                    raster::hillshade_body(ui, state, controls, id);
-                                }
-                                _ => raster_body(ui, state, controls, id),
-                            },
-                            (Panel::Layers, Some(LayerRef::Vector(id))) => match page {
-                                Some(Page::NewField) => {
-                                    fields::new_field_body(ui, state, controls, id);
-                                }
-                                Some(Page::Field(i)) => {
-                                    fields::field_body(ui, state, controls, id, i);
-                                }
-                                _ => vector_body(ui, state, controls, id),
-                            },
-                            (Panel::Layers, None) => layers_body(ui, state, controls),
-                            (Panel::Toolbox, _) => toolbox_body(ui, state),
-                        }
-                    });
+        }
+        let start = ui.cursor().top();
+        let margin = egui::Margin::symmetric(BODY_PAD as i8, 0);
+        egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            top(ui, state, controls);
+        });
+        let fixed = ui.cursor().top() - start;
+        let bottom = if sheet {
+            rect.bottom() - rects.bands.bottom
+        } else {
+            rect.bottom()
+        };
+        let most = (bottom - ui.cursor().top()).max(0.0);
+        let out = egui::ScrollArea::vertical()
+            .id_salt(key)
+            .scroll_source(scroll)
+            .max_height(most)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                let margin = egui::Margin {
+                    left: BODY_PAD as i8,
+                    right: BODY_PAD as i8,
+                    top: 0,
+                    bottom: 10,
+                };
+                egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    body(ui, state, controls);
                 });
-            state.pad.heights.insert(key, ROW + out.content_size.y);
-        },
-    );
+            });
+        state
+            .pad
+            .heights
+            .insert(key, ROW + fixed + out.content_size.y);
+    });
+    rect
 }
 
 /// Moves the sheet with a drag on its title row. At the end of the drag, the
@@ -1155,7 +1224,7 @@ fn limit_rows(
 }
 
 /// The text of the Layers panel of a world with no layer.
-pub const NO_LAYERS: &str = "This world has no layers.";
+pub const NO_LAYERS: &str = "No layers yet.";
 
 /// The icon of the kind of a layer.
 fn layer_icon(layer: &Layer) -> Icon {
@@ -1619,7 +1688,7 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
 
 fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("The toolbox has no tools yet.").color(theme::MUTE));
+    ui.label(egui::RichText::new("No tools yet.").color(theme::MUTE));
     // Temporary controls, for the tests of the brush on the device.
     ui.checkbox(&mut state.globe.debug, "Debug");
     if state.globe.debug {
@@ -1877,9 +1946,9 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
     let compact = rects.class == WidthClass::Compact;
     let flat = state.globe.world_view == WorldView::Flat;
     let rows = match (compact, flat) {
-        (true, true) => 8.0,
-        (true, false) => 7.0,
-        (false, _) => 3.0,
+        (true, true) => 7.0,
+        (true, false) => 6.0,
+        (false, _) => 2.0,
     };
     let rules = if compact { 2.0 } else { 1.0 };
     let height = 10.0 + rows * PANEL_ROW + rules * 13.0 + 10.0;
@@ -1940,10 +2009,9 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
             }
             rule(ui);
             if widgets::text_row(ui, controls, WORKSPACES[1], 0.0, false, true).clicked() {
-                state.workspace = Workspace::Map;
+                state.workspace = Workspace::Atlas;
                 state.pad.menu = false;
             }
-            widgets::text_row(ui, controls, WORKSPACES[2], 0.0, false, false);
             if compact {
                 rule(ui);
                 if widgets::text_row(ui, controls, WORLDS_ROW, 0.0, false, true).clicked() {

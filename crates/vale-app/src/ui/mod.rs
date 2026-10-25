@@ -22,15 +22,16 @@ use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
 use crate::headless;
-use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
+use crate::pipeline::{Composed, Pipeline, Selection, fonts};
 use crate::projects::{self, Location, Locations};
 use crate::raster_style;
 use crate::resume::{self, Resume};
 use crate::session::{self, Session};
 use crate::workcopy;
 
+pub mod atlas;
 pub mod browser;
-pub mod canvas;
+pub mod dock;
 pub mod elevation;
 pub mod globe;
 pub mod gradient;
@@ -46,7 +47,9 @@ pub mod world_form;
 pub enum Action {
     OpenDialog,
     OpenFiles(Vec<PathBuf>),
+    /// Asks for the file of an export of the open page.
     ExportDialog(ExportFormat),
+    /// Exports the open page to this PNG or PDF file.
     Export(PathBuf),
     ImportHeightmapDialog,
     /// Imports this equirectangular image into a height layer. A world with
@@ -165,8 +168,9 @@ pub enum Workspace {
     /// The world on a globe.
     #[default]
     Globe,
-    /// The flat map of one map frame.
-    Map,
+    /// The pages of the atlas and their map frames.
+    #[value(alias = "map")]
+    Atlas,
 }
 
 /// The arrangement of the controls on the screen.
@@ -315,19 +319,17 @@ pub struct AppState {
     pub doc: Document,
     pub pipeline: Pipeline,
     pub fonts: Fonts,
+    /// The last compose of the selected frame, or of the bottom frame of
+    /// the open page.
     pub composed: Option<Composed>,
-    pub texture: Option<egui::TextureHandle>,
-    /// The map must be composed again.
-    pub dirty: bool,
-    /// Quality of the last compose.
-    pub quality: Quality,
-    /// Egui time in seconds.
-    pub last_view_change: Option<f64>,
-    /// Size of the canvas in points.
+    /// Size of the canvas of the atlas in points.
     pub canvas_size: (f64, f64),
-    /// Top-left corner of the canvas in screen points. Set by the canvas each frame.
-    pub canvas_origin: (f32, f32),
+    /// The selected feature of a map.
     pub selection: Option<Selection>,
+    /// The Atlas workspace.
+    pub atlas: atlas::AtlasState,
+    /// The count of the changes of the contents of the maps.
+    pub map_generation: u64,
     /// The layer that the tools work on. The brush paints a selected raster
     /// layer that is visible.
     pub selected_layer: Option<LayerRef>,
@@ -364,7 +366,7 @@ pub struct AppState {
     pub form_face_size: Option<usize>,
     /// Requests that need the host (dialogs, files).
     pub actions: Vec<Action>,
-    /// True: no timers, always `Quality::Final`.
+    /// True: no timers, and each compose is final.
     pub headless: bool,
     /// False: the tool bar has no buttons for GeoJSON files and for exports.
     pub file_buttons: bool,
@@ -423,13 +425,10 @@ impl AppState {
             pipeline: Pipeline::new(),
             fonts: fonts()?,
             composed: None,
-            texture: None,
-            dirty: true,
-            quality: Quality::Final,
-            last_view_change: None,
             canvas_size: (0.0, 0.0),
-            canvas_origin: (0.0, 0.0),
             selection: None,
+            atlas: atlas::AtlasState::default(),
+            map_generation: 0,
             selected_layer: None,
             cursor_lonlat: None,
             cursor_value: None,
@@ -623,7 +622,7 @@ impl AppState {
         let lost = self.lost_rasters();
         if !lost.is_empty() {
             self.status = format!(
-                "This device cannot show the raster layer {}. The project keeps it.",
+                "Raster layer {} cannot be shown on this device. It stays in the project.",
                 lost.join(", ")
             );
         }
@@ -711,7 +710,7 @@ impl AppState {
                 self.status.clear();
             }
             Err(e) => {
-                self.status = format!("The layer did not load: {e}");
+                self.status = format!("Could not load layer: {e}");
                 self.globe.cancel_activation();
             }
         }
@@ -746,7 +745,7 @@ impl AppState {
             return;
         }
         if let Err(e) = save_session(session, &mut self.doc.project, &mut self.globe) {
-            self.status = format!("The project did not save: {e}");
+            self.status = format!("Could not save project: {e}");
         }
     }
 
@@ -1176,8 +1175,8 @@ impl AppState {
                 self.touch();
             }
             Err(e) => {
-                let what = if redo { "redo" } else { "undo" };
-                self.status = format!("The {what} did not work: {e}");
+                let what = if redo { "Redo" } else { "Undo" };
+                self.status = format!("{what} failed: {e}");
             }
         }
     }
@@ -1220,7 +1219,7 @@ impl AppState {
         let wait = match result {
             Ok(wait) => wait,
             Err(e) => {
-                self.status = format!("The project did not save: {e}");
+                self.status = format!("Could not save project: {e}");
                 None
             }
         };
@@ -1278,7 +1277,7 @@ impl AppState {
                 self.saved_at = Some(now);
                 self.status = format!("Saved {}", self.doc.project.world.name);
             }
-            Err(e) => self.status = format!("The project did not save: {e}"),
+            Err(e) => self.status = format!("Could not save project: {e}"),
         }
     }
 
@@ -1302,6 +1301,7 @@ impl AppState {
                 flat_spec: globe.flat.spec(),
                 flat_center: globe.flat.center,
                 flat_zoom: globe.flat.zoom,
+                page: Some(self.atlas.page),
             }),
         }
     }
@@ -1361,6 +1361,12 @@ impl AppState {
             globe.flat.set_spec(view.flat_spec);
             globe.flat.center = view.flat_center;
             globe.flat.zoom = view.flat_zoom;
+            if let Some(page) = view
+                .page
+                .filter(|&p| self.doc.project.atlas.page(p).is_some())
+            {
+                self.atlas.page = page;
+            }
         }
     }
 
@@ -1387,7 +1393,7 @@ impl AppState {
         match saved.and_then(|()| self.write_back()) {
             Ok(()) => true,
             Err(e) => {
-                self.status = format!("The project did not save, so the world stays open: {e}");
+                self.status = format!("Could not save project: {e}. The world stays open.");
                 false
             }
         }
@@ -1420,9 +1426,10 @@ impl AppState {
             stem.to_string_lossy().into_owned()
         };
         if let Some(error) = errors.first() {
-            self.status = format!("The app did not save the changes of the last run: {error}");
+            self.status =
+                format!("Could not restore unsaved changes from the last session: {error}");
         } else if let Some(path) = saved.first() {
-            self.status = format!("Saved the changes of the last run to \"{}\"", name(path));
+            self.status = format!("Saved changes from the last session to \"{}\"", name(path));
         }
     }
 
@@ -1436,7 +1443,7 @@ impl AppState {
             Ok(true) => {
                 let stem = session.path().file_stem().unwrap_or_default();
                 self.status = format!(
-                    "Another device changed this world. Your version is \"{}\".",
+                    "This world was changed on another device. Your version is saved as \"{}\".",
                     stem.to_string_lossy()
                 );
                 Ok(())
@@ -1470,7 +1477,7 @@ impl AppState {
             return;
         }
         self.session = None;
-        self.status = format!("New world: {}", world.name);
+        self.status = format!("Created {}", world.name);
         let dir = self.projects.new_world_dir();
         let path = dir.map(|dir| session::new_project_path(dir, &world.name));
         self.doc.set_project(Project::new(world));
@@ -1479,7 +1486,7 @@ impl AppState {
         if let Some(path) = path {
             match self.open_session(&path, None) {
                 Ok(session) => self.session = Some(session),
-                Err(e) => self.status = format!("The new world has no file: {e}"),
+                Err(e) => self.status = format!("Could not create file for new world: {e}"),
             }
         }
         self.show_world();
@@ -1561,7 +1568,7 @@ impl AppState {
             Action::RenameProject(path, name) => {
                 let name = name.trim();
                 if name.is_empty() {
-                    return Err("A world must have a name.".to_string());
+                    return Err("Enter a name.".to_string());
                 }
                 if is_open(&path) {
                     // The next save writes the name, as one undo step.
@@ -1585,7 +1592,7 @@ impl AppState {
                     None => projects::copy(&path),
                 };
                 let name = vale_store::summary(&copy.map_err(text)?);
-                self.status = format!("Made {}", name.map_err(text)?.name);
+                self.status = format!("Duplicated {}", name.map_err(text)?.name);
             }
             Action::DeleteProject(path) => {
                 if is_open(&path) {
@@ -1641,7 +1648,7 @@ impl AppState {
         });
         match copied {
             Ok(()) => self.open_world(&to),
-            Err(e) => self.status = format!("The app did not copy the file: {e}"),
+            Err(e) => self.status = format!("Could not copy file: {e}"),
         }
     }
 
@@ -1663,7 +1670,7 @@ impl AppState {
         let (session, maps) = match opened {
             Ok(opened) => opened,
             Err(e) => {
-                self.status = format!("The world did not open: {e}");
+                self.status = format!("Could not open world: {e}");
                 return;
             }
         };
@@ -1778,14 +1785,14 @@ impl AppState {
             Ok(()) => self.saved_at = Some(std::time::Instant::now()),
             Err(e) => {
                 self.save_failed = true;
-                self.status = format!("The project did not save: {e}");
+                self.status = format!("Could not save project: {e}");
             }
         }
     }
 
-    /// Marks the map as needing a new compose.
+    /// Marks the maps as needing a new compose.
     pub fn touch(&mut self) {
-        self.dirty = true;
+        self.map_generation += 1;
     }
 
     /// Moves the result of an import of a heightmap to the status text.
@@ -1813,7 +1820,7 @@ impl AppState {
         match colors.len() {
             0 => return Err(format!("{name}: No color blocks found.")),
             n if n > max => {
-                return Err(format!("{name}: {n} colors. The most is {max}."));
+                return Err(format!("{name}: {n} colors. The maximum is {max}."));
             }
             _ => {}
         }
@@ -1838,7 +1845,7 @@ impl AppState {
         part: vale_terrain::Part,
     ) -> Result<(), String> {
         let Some(ramp) = self.ramps.list().get(index) else {
-            return Err("The ramp is gone.".to_owned());
+            return Err("Ramp not found.".to_owned());
         };
         let colors = ramp.colors.clone();
         let Some(bands) = self.globe.bands_mut(id) else {
@@ -1851,7 +1858,7 @@ impl AppState {
         };
         let Some(applied) = applied else {
             let count = colors.len();
-            return Err(format!("The range has no room for {count} bands."));
+            return Err(format!("Range is too small for {count} bands."));
         };
         *bands = applied;
         self.globe.preview.selected = None;
@@ -1936,7 +1943,7 @@ impl AppState {
                     .start_export_of(path, world, Some(raster), loaded);
             }
             Err(e) => {
-                let text = format!("cannot export {}: {e}", file_name(&path));
+                let text = format!("Cannot export {}: {e}", file_name(&path));
                 self.globe.fail_export(text);
             }
         }
@@ -1978,11 +1985,13 @@ impl AppState {
                 self.touch();
             }
             Action::Export(path) => {
-                self.status = match headless::export(&self.doc, self.canvas_size, 2.0, &path) {
-                    Ok(_) => format!("Exported {}", path.display()),
+                let page = atlas::open_page(self).clone();
+                let (pipeline, fonts) = (&mut self.pipeline, &mut self.fonts);
+                self.status = match headless::export_page(pipeline, &self.doc, &page, fonts, &path)
+                {
+                    Ok(()) => format!("Exported {}", path.display()),
                     Err(e) => format!("{e:#}"),
                 };
-                self.touch();
             }
             Action::ImportHeightmap(path) => {
                 self.import_note = None;
@@ -2028,7 +2037,7 @@ impl AppState {
                     }
                     None => {
                         let name = file_name(&path);
-                        let text = format!("cannot export {name}: no raster layer is selected");
+                        let text = format!("Cannot export {name}: no raster layer selected");
                         self.status = text.clone();
                         self.export_note = Some(Note::new(text, true, None));
                     }
@@ -2048,13 +2057,13 @@ impl AppState {
             Action::Download(path) => {
                 match self.files.start_download(&path) {
                     Ok(()) => self.browser.pending = Some(path),
-                    Err(e) => self.status = format!("The download did not start: {e}"),
+                    Err(e) => self.status = format!("Could not start download: {e}"),
                 }
                 self.reload_projects();
             }
             Action::KeepVersion(path, keep) => {
                 if let Err(e) = self.files.resolve(&path, keep) {
-                    self.status = format!("The app did not keep the version: {e}");
+                    self.status = format!("Could not keep version: {e}");
                 }
                 self.reload_projects();
             }
@@ -2085,8 +2094,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     browser::dialogs(ui, state);
     state.sync_globe();
     state.check_point_form();
-    if state.layout == Layout::Pad && state.workspace == Workspace::Globe {
-        pad::draw(ui, state);
+    if state.layout == Layout::Pad {
+        match state.workspace {
+            Workspace::Globe => pad::draw(ui, state),
+            Workspace::Atlas => pad::atlas::draw(ui, state),
+        }
         state.frames += 1;
         return;
     }
@@ -2105,11 +2117,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 elevation::draw(ui, state);
                 globe::draw(ui, state);
             }
-            Workspace::Map => {
+            Workspace::Atlas => {
                 panels::left(ui, state);
-                inspector::draw(ui, state);
+                dock::draw(ui, state);
                 panels::status(ui, state);
-                canvas::draw(ui, state);
+                atlas::desktop(ui, state);
             }
         }
     });

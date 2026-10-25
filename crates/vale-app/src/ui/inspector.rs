@@ -1,4 +1,5 @@
-//! The right panel: layer style, feature information, and unplaced labels.
+//! The inspector of the right dock: layer style, feature information, and
+//! unplaced labels.
 
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
@@ -8,17 +9,10 @@ use super::AppState;
 
 const MAX_UNPLACED: usize = 200;
 
-pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::Panel::right("inspector")
-        .default_size(280.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                layer_section(ui, state);
-                feature_section(ui, state);
-                unplaced_section(ui, state);
-            });
-        });
+pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
+    layer_section(ui, state);
+    feature_section(ui, state);
+    unplaced_section(ui, state);
 }
 
 /// What the style controls need to know about the layer.
@@ -70,7 +64,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         if ui.button("Move down").clicked() && state.doc.move_entry(info.id, false) {
             state.touch();
         }
-        if ui.button("Remove").clicked() {
+        if ui.button("Delete layer").clicked() {
             state.doc.remove_layer(info.id);
             state.select(None);
             if state.selection.is_some_and(|s| s.layer == info.id) {
@@ -97,7 +91,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
 
     if info.kind == GeometryKind::Polygon {
         ui.add_space(4.0);
-        ui.label("Polygon labels are not in the prototype.");
+        ui.label("Polygon labels are not available yet.");
     } else {
         ui.add_space(4.0);
         let label = &mut style.label;
@@ -105,7 +99,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         ui.horizontal(|ui| {
             ui.label("Label field");
             egui::ComboBox::from_id_salt("label_field")
-                .selected_text(label.field.as_deref().unwrap_or("(none)"))
+                .selected_text(label.field.as_deref().unwrap_or("None"))
                 .width(130.0)
                 .show_ui(ui, |ui| {
                     for f in &info.fields {
@@ -118,11 +112,11 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         ui.horizontal(|ui| {
             ui.label("Priority field");
             egui::ComboBox::from_id_salt("priority_field")
-                .selected_text(label.priority_field.as_deref().unwrap_or("(none)"))
+                .selected_text(label.priority_field.as_deref().unwrap_or("None"))
                 .width(120.0)
                 .show_ui(ui, |ui| {
                     changed |= ui
-                        .selectable_value(&mut label.priority_field, None, "(none)")
+                        .selectable_value(&mut label.priority_field, None, "None")
                         .changed();
                     for f in &info.fields {
                         changed |= ui
@@ -235,7 +229,7 @@ fn fields_section(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
                                 });
                             }
                         }
-                        if ui.button("Remove").clicked() {
+                        if ui.button("Delete").clicked() {
                             state.edit_schema(id, |doc| doc.project.remove_field(id, &field.name));
                         }
                         ui.end_row();

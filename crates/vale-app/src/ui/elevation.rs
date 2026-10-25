@@ -363,7 +363,7 @@ fn reset_button(ui: &mut egui::Ui, bands: &mut Bands, height: bool) -> bool {
     let mut reset = false;
     ui.add_enabled_ui(changed, |ui| {
         ui.menu_button(format!("{}…", pad::raster::RESET_STOPS), |ui| {
-            ui.label("Put back the default color stops? You cannot undo this.");
+            ui.label("Reset to the default color stops? This cannot be undone.");
             if ui.button(pad::raster::RESET).clicked() {
                 reset = true;
                 ui.close();

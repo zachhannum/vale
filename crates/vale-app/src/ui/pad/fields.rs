@@ -14,7 +14,7 @@ use crate::ui::point_form::can_take_focus;
 pub const FIELDS: &str = "Fields";
 /// The row of the panel of a vector layer that opens the page of a new
 /// field.
-pub const ADD_FIELD: &str = "Add a field";
+pub const ADD_FIELD: &str = "Add field…";
 /// The title of the page of a new field.
 pub const NEW_FIELD: &str = "New field";
 /// The field of the name on the page of a field.

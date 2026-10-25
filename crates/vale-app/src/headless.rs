@@ -7,8 +7,14 @@ use kurbo::Point;
 use vale_render::{render_pdf, render_pixmap};
 use vale_sphere::LonLat;
 
+use vale_labeler::Fonts;
+use vale_store::PageRecord;
+
 use crate::document::Document;
 use crate::pipeline::{Composed, Pipeline, Quality, fonts};
+
+/// The pixels of a PNG export of a page per point: 300 pixels per inch.
+pub const PAGE_PIXEL_RATIO: f64 = 300.0 / 72.0;
 
 pub struct MapImage {
     pub png: Vec<u8>,
@@ -68,6 +74,36 @@ pub fn export(
     }
 }
 
+/// Exports a page to a PNG or a PDF file, by the extension of the file.
+pub fn export_page(
+    pipeline: &mut Pipeline,
+    doc: &Document,
+    page: &PageRecord,
+    fonts: &mut Fonts,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    let png = match ext.as_deref() {
+        Some("png") => true,
+        Some("pdf") => false,
+        _ => bail!(
+            "cannot export to {}; use a .png or .pdf file",
+            path.display()
+        ),
+    };
+    let list = pipeline.compose_page(doc, page, fonts, Quality::Final)?;
+    let bytes = if png {
+        let pixmap = render_pixmap(&list, PAGE_PIXEL_RATIO)?;
+        pixmap.into_png().map_err(|e| anyhow!("PNG error: {e:?}"))?
+    } else {
+        render_pdf(&list)?
+    };
+    write_file(path, &bytes)
+}
+
 /// The page position of a place and the color of the map pixel there.
 pub fn probe(
     doc: &Document,
@@ -93,7 +129,7 @@ pub fn probe(
 
 /// The text of `--report`.
 pub fn report(doc: &Document, composed: &Composed) -> String {
-    let spec = doc.frame.projection;
+    let spec = doc.projection();
     let mut out = String::new();
     out.push_str(&format!(
         "world: {}, radius {} km\n",
