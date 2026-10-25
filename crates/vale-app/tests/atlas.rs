@@ -13,8 +13,9 @@ use vale_app::projects::Locations;
 use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, DELETE_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT, MAP_FRAME, NEXT_PAGE,
-    POLYGON, PREVIOUS_PAGE, REMOVE_VERTEX, SCALE, SIZE, WIDTH, page_title, readout_text,
+    ADD, ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT,
+    MAP_FRAME, NEXT_PAGE, POLYGON, PREVIOUS_PAGE, REMOVE_VERTEX, SCALE, SIZE, WIDTH, page_title,
+    readout_text,
 };
 use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
 use vale_render::Item;
@@ -684,7 +685,7 @@ fn a_change_of_the_projection_shows_in_each_frame_of_the_map() {
     let s = h.state_mut();
     s.doc.project.atlas.frame_mut(id).unwrap().center = [40.0, 20.0];
     h.run_steps(2);
-    tap(&mut h, "Center on the frame");
+    tap(&mut h, CENTER_ON_FRAME);
     assert_eq!(h.state().doc.projection().lon0, 40.0);
 }
 

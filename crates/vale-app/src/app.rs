@@ -303,7 +303,7 @@ pub fn run_window(
                     if let Ok(mut state) = shared.try_borrow_mut()
                         && let Err(e) = state.save_waiting()
                     {
-                        state.status = format!("The project did not save: {e}");
+                        state.status = format!("Could not save project: {e}");
                     }
                 });
                 app._lifecycle = crate::lifecycle::Observer::new(save);

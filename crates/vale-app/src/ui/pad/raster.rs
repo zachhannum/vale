@@ -33,7 +33,7 @@ pub const CUSTOM: &str = "Custom";
 pub const DARKEN: &str = "Line darken";
 /// The step of the weight slider, in points.
 const WEIGHT_STEP: f32 = 0.25;
-pub const REMOVE_STOP: &str = "Remove the stop";
+pub const REMOVE_STOP: &str = "Remove stop";
 /// The row that puts back the default color stops, and the button of the
 /// card that asks before it.
 pub const RESET_STOPS: &str = "Reset colors";
@@ -58,7 +58,7 @@ const RAMP_NAME: usize = 20;
 /// The width and the height of the bar of a ramp row.
 const RAMP_BAR: Vec2 = vec2(96.0, 14.0);
 pub const RESET: &str = "Reset";
-const RESET_TEXT: &str = "Put back the default color stops of this layer? You cannot undo this.";
+const RESET_TEXT: &str = "Reset this layer to the default color stops? This cannot be undone.";
 /// The name of the unit field.
 pub const UNIT: &str = "Unit";
 /// The switch of the smoothing and the slider of the minimum feature size.
@@ -683,7 +683,7 @@ pub fn band_card(
                         .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
                 }
                 let at = pos2(row.left(), row.center().y);
-                let text = "Remove stop";
+                let text = REMOVE_STOP;
                 ui.painter()
                     .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::WARN);
                 removed = resp.clicked() && bands.remove(index);

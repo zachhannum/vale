@@ -622,7 +622,7 @@ impl AppState {
         let lost = self.lost_rasters();
         if !lost.is_empty() {
             self.status = format!(
-                "This device cannot show the raster layer {}. The project keeps it.",
+                "Raster layer {} cannot be shown on this device. It stays in the project.",
                 lost.join(", ")
             );
         }
@@ -710,7 +710,7 @@ impl AppState {
                 self.status.clear();
             }
             Err(e) => {
-                self.status = format!("The layer did not load: {e}");
+                self.status = format!("Could not load layer: {e}");
                 self.globe.cancel_activation();
             }
         }
@@ -745,7 +745,7 @@ impl AppState {
             return;
         }
         if let Err(e) = save_session(session, &mut self.doc.project, &mut self.globe) {
-            self.status = format!("The project did not save: {e}");
+            self.status = format!("Could not save project: {e}");
         }
     }
 
@@ -1175,8 +1175,8 @@ impl AppState {
                 self.touch();
             }
             Err(e) => {
-                let what = if redo { "redo" } else { "undo" };
-                self.status = format!("The {what} did not work: {e}");
+                let what = if redo { "Redo" } else { "Undo" };
+                self.status = format!("{what} failed: {e}");
             }
         }
     }
@@ -1219,7 +1219,7 @@ impl AppState {
         let wait = match result {
             Ok(wait) => wait,
             Err(e) => {
-                self.status = format!("The project did not save: {e}");
+                self.status = format!("Could not save project: {e}");
                 None
             }
         };
@@ -1277,7 +1277,7 @@ impl AppState {
                 self.saved_at = Some(now);
                 self.status = format!("Saved {}", self.doc.project.world.name);
             }
-            Err(e) => self.status = format!("The project did not save: {e}"),
+            Err(e) => self.status = format!("Could not save project: {e}"),
         }
     }
 
@@ -1393,7 +1393,7 @@ impl AppState {
         match saved.and_then(|()| self.write_back()) {
             Ok(()) => true,
             Err(e) => {
-                self.status = format!("The project did not save, so the world stays open: {e}");
+                self.status = format!("Could not save project: {e}. The world stays open.");
                 false
             }
         }
@@ -1426,9 +1426,10 @@ impl AppState {
             stem.to_string_lossy().into_owned()
         };
         if let Some(error) = errors.first() {
-            self.status = format!("The app did not save the changes of the last run: {error}");
+            self.status =
+                format!("Could not restore unsaved changes from the last session: {error}");
         } else if let Some(path) = saved.first() {
-            self.status = format!("Saved the changes of the last run to \"{}\"", name(path));
+            self.status = format!("Saved changes from the last session to \"{}\"", name(path));
         }
     }
 
@@ -1442,7 +1443,7 @@ impl AppState {
             Ok(true) => {
                 let stem = session.path().file_stem().unwrap_or_default();
                 self.status = format!(
-                    "Another device changed this world. Your version is \"{}\".",
+                    "This world was changed on another device. Your version is saved as \"{}\".",
                     stem.to_string_lossy()
                 );
                 Ok(())
@@ -1476,7 +1477,7 @@ impl AppState {
             return;
         }
         self.session = None;
-        self.status = format!("New world: {}", world.name);
+        self.status = format!("Created {}", world.name);
         let dir = self.projects.new_world_dir();
         let path = dir.map(|dir| session::new_project_path(dir, &world.name));
         self.doc.set_project(Project::new(world));
@@ -1485,7 +1486,7 @@ impl AppState {
         if let Some(path) = path {
             match self.open_session(&path, None) {
                 Ok(session) => self.session = Some(session),
-                Err(e) => self.status = format!("The new world has no file: {e}"),
+                Err(e) => self.status = format!("Could not create file for new world: {e}"),
             }
         }
         self.show_world();
@@ -1567,7 +1568,7 @@ impl AppState {
             Action::RenameProject(path, name) => {
                 let name = name.trim();
                 if name.is_empty() {
-                    return Err("A world must have a name.".to_string());
+                    return Err("Enter a name.".to_string());
                 }
                 if is_open(&path) {
                     // The next save writes the name, as one undo step.
@@ -1591,7 +1592,7 @@ impl AppState {
                     None => projects::copy(&path),
                 };
                 let name = vale_store::summary(&copy.map_err(text)?);
-                self.status = format!("Made {}", name.map_err(text)?.name);
+                self.status = format!("Duplicated {}", name.map_err(text)?.name);
             }
             Action::DeleteProject(path) => {
                 if is_open(&path) {
@@ -1647,7 +1648,7 @@ impl AppState {
         });
         match copied {
             Ok(()) => self.open_world(&to),
-            Err(e) => self.status = format!("The app did not copy the file: {e}"),
+            Err(e) => self.status = format!("Could not copy file: {e}"),
         }
     }
 
@@ -1669,7 +1670,7 @@ impl AppState {
         let (session, maps) = match opened {
             Ok(opened) => opened,
             Err(e) => {
-                self.status = format!("The world did not open: {e}");
+                self.status = format!("Could not open world: {e}");
                 return;
             }
         };
@@ -1784,7 +1785,7 @@ impl AppState {
             Ok(()) => self.saved_at = Some(std::time::Instant::now()),
             Err(e) => {
                 self.save_failed = true;
-                self.status = format!("The project did not save: {e}");
+                self.status = format!("Could not save project: {e}");
             }
         }
     }
@@ -1819,7 +1820,7 @@ impl AppState {
         match colors.len() {
             0 => return Err(format!("{name}: No color blocks found.")),
             n if n > max => {
-                return Err(format!("{name}: {n} colors. The most is {max}."));
+                return Err(format!("{name}: {n} colors. The maximum is {max}."));
             }
             _ => {}
         }
@@ -1844,7 +1845,7 @@ impl AppState {
         part: vale_terrain::Part,
     ) -> Result<(), String> {
         let Some(ramp) = self.ramps.list().get(index) else {
-            return Err("The ramp is gone.".to_owned());
+            return Err("Ramp not found.".to_owned());
         };
         let colors = ramp.colors.clone();
         let Some(bands) = self.globe.bands_mut(id) else {
@@ -1857,7 +1858,7 @@ impl AppState {
         };
         let Some(applied) = applied else {
             let count = colors.len();
-            return Err(format!("The range has no room for {count} bands."));
+            return Err(format!("Range is too small for {count} bands."));
         };
         *bands = applied;
         self.globe.preview.selected = None;
@@ -1942,7 +1943,7 @@ impl AppState {
                     .start_export_of(path, world, Some(raster), loaded);
             }
             Err(e) => {
-                let text = format!("cannot export {}: {e}", file_name(&path));
+                let text = format!("Cannot export {}: {e}", file_name(&path));
                 self.globe.fail_export(text);
             }
         }
@@ -2036,7 +2037,7 @@ impl AppState {
                     }
                     None => {
                         let name = file_name(&path);
-                        let text = format!("cannot export {name}: no raster layer is selected");
+                        let text = format!("Cannot export {name}: no raster layer selected");
                         self.status = text.clone();
                         self.export_note = Some(Note::new(text, true, None));
                     }
@@ -2056,13 +2057,13 @@ impl AppState {
             Action::Download(path) => {
                 match self.files.start_download(&path) {
                     Ok(()) => self.browser.pending = Some(path),
-                    Err(e) => self.status = format!("The download did not start: {e}"),
+                    Err(e) => self.status = format!("Could not start download: {e}"),
                 }
                 self.reload_projects();
             }
             Action::KeepVersion(path, keep) => {
                 if let Err(e) = self.files.resolve(&path, keep) {
-                    self.status = format!("The app did not keep the version: {e}");
+                    self.status = format!("Could not keep version: {e}");
                 }
                 self.reload_projects();
             }

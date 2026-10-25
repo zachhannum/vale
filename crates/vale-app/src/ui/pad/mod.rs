@@ -86,14 +86,14 @@ pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
 pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
 
 /// The button of the Layers panel that opens the menu of the new layers.
-pub const ADD_LAYER: &str = "Add a layer";
+pub const ADD_LAYER: &str = "Add layer";
 /// The field of the panel of a vector layer with the name of the layer.
 pub const LAYER_NAME: &str = "Layer name";
 /// The slider of the panel of a raster layer that sets its opacity.
 pub const OPACITY: &str = "Layer opacity";
 /// The row of the menu of the new layers that opens the form of a new raster
 /// layer.
-pub const NEW_RASTER: &str = "Raster";
+pub const NEW_RASTER: &str = "Raster…";
 /// The rows of the menu of the new vector layers.
 const NEW_LAYERS: [(&str, GeometryKind); 3] = [
     ("Lines", GeometryKind::Line),
@@ -1224,7 +1224,7 @@ fn limit_rows(
 }
 
 /// The text of the Layers panel of a world with no layer.
-pub const NO_LAYERS: &str = "This world has no layers.";
+pub const NO_LAYERS: &str = "No layers yet.";
 
 /// The icon of the kind of a layer.
 fn layer_icon(layer: &Layer) -> Icon {
@@ -1688,7 +1688,7 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
 
 fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("The toolbox has no tools yet.").color(theme::MUTE));
+    ui.label(egui::RichText::new("No tools yet.").color(theme::MUTE));
     // Temporary controls, for the tests of the brush on the device.
     ui.checkbox(&mut state.globe.debug, "Debug");
     if state.globe.debug {

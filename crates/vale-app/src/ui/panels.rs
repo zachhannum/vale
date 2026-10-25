@@ -40,7 +40,7 @@ pub const SNAP_DISTANCE: &str = "Snap distance";
 /// The name of the switch that makes the color stops of a raster layer
 /// snap targets.
 pub fn snap_stops_name(layer: &str) -> String {
-    format!("Snap to the stops of {layer}")
+    format!("Snap to stops of {layer}")
 }
 
 /// The raster layers of the project, with their names, in the list order.
@@ -380,7 +380,7 @@ fn file_menu(ui: &mut egui::Ui, state: &mut AppState) {
             if ui.button("Rename…").clicked() {
                 state.browser.ask_rename(path.clone(), name.clone());
             }
-            if ui.button("Make a copy").clicked() {
+            if ui.button("Duplicate").clicked() {
                 state.actions.push(Action::CopyProject(path.clone()));
             }
             if ui.button("Delete…").clicked() {
@@ -421,8 +421,7 @@ fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
         });
     flat.set_spec(ProjectionSpec { kind, ..spec });
     let button = ui.add_enabled(flat.can_center_here(), egui::Button::new(pad::RECENTER));
-    let help = "Makes the place at the middle of the view the center of the projection. \
-                Move the map first.";
+    let help = "Center the projection on the middle of the view. Move the map first.";
     if button
         .on_hover_text(help)
         .on_disabled_hover_text(help)
@@ -431,7 +430,7 @@ fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
         flat.center_here();
     }
     let button = ui.add_enabled(flat.can_reset(), egui::Button::new(pad::RESET));
-    let help = "Puts the center of the projection back, and shows the whole map.";
+    let help = "Reset center and show the whole map";
     if button
         .on_hover_text(help)
         .on_disabled_hover_text(help)
@@ -704,7 +703,7 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     let globe_radius = globe.radius();
     let mut lock = globe.brush.lock.is_some();
     let lock_box = ui.checkbox(&mut lock, "Lock size");
-    lock_box.on_hover_text("The brush keeps its size on the ground when you zoom.");
+    lock_box.on_hover_text("Keep the brush size on the ground while zooming");
     globe.brush.set_lock(lock, globe_radius);
 
     if globe.brush.mode != Mode::Flatten {
@@ -727,7 +726,7 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
             });
         }
         None => {
-            ui.label("The level under the start of the stroke");
+            ui.label("Level at stroke start");
         }
     }
     let pick = egui::Button::new("Pick from globe").selected(globe.pick_level);
@@ -735,7 +734,7 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     if pick.clicked() {
         globe.pick_level = !globe.pick_level;
     }
-    pick.on_hover_text("The next press on the globe sets the level.");
+    pick.on_hover_text("Set level from the next press on the globe");
 }
 
 pub fn left(ui: &mut egui::Ui, state: &mut AppState) {

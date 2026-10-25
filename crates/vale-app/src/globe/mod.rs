@@ -2138,10 +2138,7 @@ impl Globe {
     pub fn start_import(&mut self, path: PathBuf) {
         if let Some(job) = &self.import {
             let name = import::file_name(&path);
-            let text = format!(
-                "cannot import {name}: the import of {} is not complete",
-                job.name
-            );
+            let text = format!("Cannot import {name}: {} is still importing", job.name);
             self.import_result = Some(Err(text));
             return;
         }
@@ -2250,13 +2247,13 @@ impl Globe {
     ) -> bool {
         let name = import::file_name(&path);
         let refusal = match &self.export {
-            Some(job) => Some(format!("the export of {} is not complete", job.name)),
+            Some(job) => Some(format!("{} is still exporting", job.name)),
             // The heightmap is behind the GPU during a stroke.
-            None if self.busy() => Some("an edit of the heightmap is not complete".to_string()),
+            None if self.busy() => Some("an edit is still in progress".to_string()),
             None => None,
         };
         if let Some(why) = refusal {
-            self.export_result = Some(Err(format!("cannot export {name}: {why}")));
+            self.export_result = Some(Err(format!("Cannot export {name}: {why}")));
             return false;
         }
         self.export_result = None;

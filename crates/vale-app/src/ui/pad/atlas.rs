@@ -30,22 +30,22 @@ pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
-pub const ADD_HOLE: &str = "Add a hole";
-pub const DELETE_FRAME: &str = "Delete the frame";
+pub const ADD_HOLE: &str = "Add hole";
+pub const DELETE_FRAME: &str = "Delete frame";
 pub const REMOVE_VERTEX: &str = "Remove vertex";
 pub const SCALE: &str = "Scale";
 pub const LONGITUDE: &str = "Longitude";
 pub const LATITUDE: &str = "Latitude";
 pub const ROTATION: &str = "Rotation";
-pub const CENTER_ON_FRAME: &str = "Center on the frame";
+pub const CENTER_ON_FRAME: &str = "Center on frame";
 pub const PAGE_NAME: &str = "Page name";
 pub const SIZE: &str = "Size";
 pub const ORIENTATIONS: [&str; 2] = ["Portrait", "Landscape"];
 pub const WIDTH: &str = "Width";
 pub const HEIGHT: &str = "Height";
 pub const UNIT_NAMES: [&str; 2] = ["mm", "in"];
-pub const ADD_PAGE: &str = "Add a page";
-pub const DELETE_PAGE: &str = "Delete the page";
+pub const ADD_PAGE: &str = "Add page";
+pub const DELETE_PAGE: &str = "Delete page";
 
 /// The width of the actions card: three buttons and a divider.
 const ACTIONS_WIDTH: f32 = 3.0 * TOUCH + 3.0 * PAD + 9.0 + 2.0 * PAD;

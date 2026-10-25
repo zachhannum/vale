@@ -22,7 +22,7 @@ use crate::ui::{Action, AppState};
 /// The title of the screen.
 pub const TITLE: &str = "Worlds";
 pub const RENAME: &str = "Rename…";
-pub const COPY: &str = "Make a copy";
+pub const COPY: &str = "Duplicate";
 pub const DELETE: &str = "Delete…";
 /// The title of the dialog that asks for a new name.
 pub const RENAME_TITLE: &str = "Rename world";
@@ -108,7 +108,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         header(ui, state, &mut controls);
         if state.browser.entries.is_empty() {
-            let text = format!("No worlds yet. Tap \"{}\".", world_form::NEW_WORLD);
+            let text = format!(
+                "No worlds yet. Tap \"{}\" to create one.",
+                world_form::NEW_WORLD
+            );
             let text = egui::RichText::new(text).font(theme::body());
             ui.add_space(GAP);
             ui.add(egui::Label::new(text.color(theme::MUTE)).selectable(false));
@@ -460,7 +463,8 @@ fn dialog(
             });
         }
         Dialog::Delete { path, name } => {
-            let text = format!("\"{name}\" and its undo steps go away. You cannot get them back.");
+            let text =
+                format!("\"{name}\" and its undo history will be deleted. This cannot be undone.");
             let text_height = 66.0;
             let height = ROW + text_height + PANEL_ROW + 16.0;
             let top = (screen.center().y - height / 2.0).max(screen.top() + bands.top);

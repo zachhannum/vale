@@ -782,7 +782,7 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
         type_text(&mut h, raster_form::MAXIMUM, "0");
         assert!(control(&h, raster_form::ADD).is_none(), "{what}");
         assert!(
-            h.query_by_label("The maximum must be above the minimum")
+            h.query_by_label("Maximum must be greater than minimum.")
                 .is_some()
         );
         type_text(&mut h, raster_form::MAXIMUM, "2500");
@@ -1450,15 +1450,12 @@ fn the_height_panel_shows_the_warning_of_a_wrong_aspect_ratio() {
             h.state_mut().actions.pop(),
             Some(Action::ImportHeightmapDialog)
         );
-        assert!(h.query_by_label_contains("twice as wide").is_none());
+        assert!(h.query_by_label_contains("not 2:1").is_none());
         h.state_mut()
             .run_action(Action::ImportHeightmap(path.clone()));
         h.run_steps(3);
         assert!(h.state().import_note.as_ref().unwrap().warning);
-        assert!(
-            h.query_by_label_contains("twice as wide").is_some(),
-            "{size:?}"
-        );
+        assert!(h.query_by_label_contains("not 2:1").is_some(), "{size:?}");
         check_controls(&h, &format!("{size:?} with the warning"));
     }
 }
@@ -1594,7 +1591,7 @@ fn the_height_panel_shows_the_note_of_an_export_below_the_row() {
         h.state_mut().run_action(Action::ExportHeightmap(path));
         h.run_steps(3);
         assert!(!h.state().export_note.as_ref().unwrap().warning);
-        let note = h.get_by_label("Exported Terra.tif (256 x 128)").rect();
+        let note = h.get_by_label("Exported Terra.tif (256 × 128)").rect();
         let row = control(&h, EXPORT_GEOTIFF).unwrap();
         assert!(note.top() >= row.bottom() - 0.5, "{size:?}: {note:?}");
         assert!(note.left() >= row.left() && note.right() <= row.right() + 0.5);

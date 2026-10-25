@@ -21,10 +21,10 @@ const GAP: f32 = 24.0;
 const MARGIN: i8 = 32;
 
 /// The title of the dialog with the error of a file.
-pub const PROBLEM_TITLE: &str = "The app cannot read this file";
+pub const PROBLEM_TITLE: &str = "Cannot read file";
 /// The button that opens a file that the list cannot read. The open can
 /// repair a file that the app did not close.
-pub const TRY_OPEN: &str = "Try to open";
+pub const TRY_OPEN: &str = "Open anyway";
 
 /// The name of the file and the whole error.
 pub fn problem_text(path: &Path, error: &str) -> String {
@@ -62,9 +62,8 @@ pub enum Dialog {
 }
 
 /// The title of the dialog with the versions of a file.
-pub const VERSIONS_TITLE: &str = "Pick a version";
-pub const VERSIONS_TEXT: &str =
-    "Two devices changed this world. Pick the version to keep. The other versions go away.";
+pub const VERSIONS_TITLE: &str = "Conflicting versions";
+pub const VERSIONS_TEXT: &str = "This world was changed on two devices. Choose the version to keep. The other versions will be deleted.";
 
 /// The name of the button that keeps a version.
 pub fn keep_name(device: &str, modified: Option<SystemTime>) -> String {
@@ -98,7 +97,7 @@ pub fn version_buttons(
 /// warning. `pad`: the device is an iPad.
 pub fn info_line(entry: &Entry, pad: bool, locations: bool) -> (String, bool) {
     let (text, warning) = match (&entry.error, entry.availability) {
-        (Some(_), _) => return ("Cannot read the file".to_string(), true),
+        (Some(_), _) => return ("Cannot read file".to_string(), true),
         (None, Availability::InCloud) => ("Not downloaded".to_string(), false),
         (None, Availability::Downloading) => ("Downloading…".to_string(), false),
         (None, Availability::Here) if !entry.conflicts.is_empty() => {
@@ -232,7 +231,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             }
             ui.add_space(16.0);
             if state.browser.entries.is_empty() {
-                ui.weak("No worlds yet. Make the first one with \"New world…\".");
+                ui.weak("No worlds yet. Click \"New world…\" to create one.");
                 return;
             }
             egui::ScrollArea::vertical()
@@ -325,7 +324,7 @@ fn card(ui: &mut egui::Ui, state: &mut AppState, entry: &Entry) {
                 state.browser.ask_rename(path.clone(), name.clone());
             }
             if ui
-                .add_enabled(readable, egui::Button::new("Copy"))
+                .add_enabled(readable, egui::Button::new("Duplicate"))
                 .clicked()
             {
                 state.actions.push(Action::CopyProject(path.clone()));
@@ -390,7 +389,7 @@ pub fn dialogs(ui: &mut egui::Ui, state: &mut AppState) {
             let modal = Modal::new(Id::new("delete_project")).show(&ctx, |ui| {
                 ui.set_width(320.0);
                 ui.heading(format!("Delete {name}?"));
-                ui.label("The world and its undo steps go away. You cannot get them back.");
+                ui.label("The world and its undo history will be deleted. This cannot be undone.");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
@@ -410,7 +409,7 @@ pub fn dialogs(ui: &mut egui::Ui, state: &mut AppState) {
         } => {
             let modal = Modal::new(Id::new("rename_project")).show(&ctx, |ui| {
                 ui.set_width(320.0);
-                ui.heading("Rename the world");
+                ui.heading("Rename world");
                 let field = egui::TextEdit::singleline(name).desired_width(f32::INFINITY);
                 let field = ui.add(field);
                 if !*focused {

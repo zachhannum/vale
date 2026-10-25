@@ -28,11 +28,11 @@ impl Imported {
             ..
         } = self;
         if self.two_to_one {
-            return format!("Imported {name} ({width} x {height}).");
+            return format!("Imported {name} ({width} × {height})");
         }
         format!(
-            "Imported {name}. The image is {width} x {height}. A full-globe image is twice as \
-             wide as it is tall, so the app stretched the image over the globe."
+            "Imported {name} ({width} × {height}). The image is not 2:1, so it is stretched \
+             to cover the globe."
         )
     }
 }
@@ -127,7 +127,7 @@ impl Job {
     /// The text that tells the user how far the import is.
     pub fn progress(&self) -> String {
         match self.info {
-            None => format!("Importing {}: reading the file", self.name),
+            None => format!("Importing {}: reading file", self.name),
             Some(_) => {
                 let face = (self.faces + 1).min(FACES);
                 format!("Importing {}: face {face} of {FACES}", self.name)
@@ -153,7 +153,7 @@ impl Job {
             }
             Some(Msg::Face(face, levels)) => Step::Face(face, levels),
             Some(Msg::Failed(text)) => Step::Failed(text),
-            None => Step::Failed(format!("cannot import {}: the import stopped", self.name)),
+            None => Step::Failed(format!("Cannot import {}: import stopped", self.name)),
         }
     }
 }

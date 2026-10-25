@@ -117,7 +117,7 @@ enum CardAction {
 fn card_action(h: &mut App, world: &str, action: CardAction) {
     let (desktop, pad) = match action {
         CardAction::Rename => ("Rename", pad_browser::RENAME),
-        CardAction::Copy => ("Copy", pad_browser::COPY),
+        CardAction::Copy => ("Duplicate", pad_browser::COPY),
         CardAction::Delete => ("Delete", pad_browser::DELETE),
     };
     match h.state().layout {
@@ -294,7 +294,7 @@ fn delete_asks_before_it_removes_the_project() {
         let (question, cancel) = match layout {
             Layout::Desktop => ("Delete Aurelia?", "Cancel".to_string()),
             Layout::Pad => (
-                "\"Aurelia\" and its undo steps",
+                "\"Aurelia\" and its undo history",
                 pad_browser::close_name(pad_browser::DELETE_TITLE),
             ),
         };
@@ -326,14 +326,14 @@ fn a_tap_on_a_file_with_an_error_shows_the_whole_error() {
 
         match layout {
             Layout::Pad => click(&mut h, &pad_browser::open_name("broken")),
-            Layout::Desktop => click(&mut h, "Cannot read the file"),
+            Layout::Desktop => click(&mut h, "Cannot read file"),
         }
         h.get_by_label(problem_text(&path, &error).as_str());
         click(&mut h, TRY_OPEN);
         assert_eq!(h.state().browser.dialog, None);
         assert_eq!(h.state().screen, Screen::Browser);
         let status = h.state().status.clone();
-        assert!(status.contains("did not open"), "{status}");
+        assert!(status.contains("Could not open"), "{status}");
         h.get_by_label(status.as_str());
     }
 }
@@ -414,7 +414,7 @@ fn the_file_menu_has_the_actions_and_the_recent_list() {
 
     // Copy: the copy has the changes of the open project.
     click(&mut h, FILE_MENU);
-    click(&mut h, "Make a copy");
+    click(&mut h, "Duplicate");
     assert_eq!(names(dir.path()), ["Borea", "Cassia", "Cassia copy"]);
     assert_eq!(open_path(&h), path);
 

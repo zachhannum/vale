@@ -31,7 +31,7 @@ impl Exported {
             height,
             ..
         } = self;
-        format!("Exported {name} ({width} x {height})")
+        format!("Exported {name} ({width} × {height})")
     }
 }
 
@@ -112,7 +112,7 @@ impl Job {
     /// The result of the worker, or `None` while the worker runs. `block`:
     /// waits for the result.
     pub fn result(&mut self, block: bool) -> Option<ExportResult> {
-        let stopped = || Err(format!("cannot export {}: the export stopped", self.name));
+        let stopped = || Err(format!("Cannot export {}: export stopped", self.name));
         if block {
             return Some(self.rx.recv().unwrap_or_else(|_| stopped()));
         }

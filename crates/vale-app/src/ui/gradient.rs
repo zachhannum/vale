@@ -15,7 +15,7 @@ use crate::world;
 pub const GRADIENT: &str = "Gradient";
 /// The text below the control when no stop is selected.
 pub const HINT: &str =
-    "Tap the bar to add a stop. Drag a stop to move it, or pull it down to remove it.";
+    "Tap the bar to add a stop. Drag a stop to move it, or drag it down to remove it.";
 /// A finger this far below the handle row removes the stop on release.
 pub const PULL: f32 = 36.0;
 /// The space between the bubble of a dragged value and the bar.

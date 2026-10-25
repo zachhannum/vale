@@ -95,7 +95,7 @@ fn polygon_layer_has_no_point_controls() {
     h.state_mut().selected_layer = Some(LayerRef::Vector(land));
     h.run_steps(2);
     assert!(
-        h.query_by_label("Polygon labels are not in the prototype.")
+        h.query_by_label("Polygon labels are not available yet.")
             .is_some()
     );
     assert!(h.query_by_label("Point size").is_none());
@@ -129,7 +129,7 @@ fn move_down_and_remove() {
             .unwrap()
     };
     assert!(pos(&h, places) < pos(&h, rivers));
-    h.get_by_label("Remove").click();
+    h.get_by_label("Delete layer").click();
     h.run_steps(2);
     assert_eq!(h.state().doc.frame.entries.len(), 2);
     assert_eq!(h.state().selected_layer, None);
