@@ -52,6 +52,20 @@ const ADD_WIDTH: f32 = 220.0;
 const TOOL_CELLS: usize = 2;
 /// The height of the keypad of a field.
 const KEYPAD: f32 = 4.0 * PANEL_ROW;
+/// The smallest space at each side of the text of a tab.
+pub const TAB_PAD: f32 = 12.0;
+
+fn text_width(ctx: &egui::Context, text: &str) -> f32 {
+    let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), theme::body(), theme::TEXT));
+    galley.size().x.ceil()
+}
+
+/// The width of the panel of the selection. The tabs of a frame fit in it.
+fn panel_width(ctx: &egui::Context) -> f32 {
+    let text: f32 = FRAME_TABS.iter().map(|t| text_width(ctx, t)).sum();
+    let tabs = text + 2.0 * TAB_PAD * FRAME_TABS.len() as f32 + 2.0 * PAD;
+    geometry::RIGHT_PANEL_WIDTH.max(tabs + 2.0 * BODY_PAD)
+}
 
 /// The keypad of the field `name`, below the field, if it is open. The
 /// panel scrolls to show the keypad when it opens.
@@ -135,6 +149,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     };
     let mut rects = geometry::layout(&input);
     rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH;
+    rects.right_panel.x += geometry::RIGHT_PANEL_WIDTH - panel_width(&ctx);
     rects.tools.max.y = rects.tools.min.y + TOOL_CELLS as f32 * geometry::CELL.1 + 2.0 * PAD;
     rects.brush = None;
     state.pad.sheet_offset = input.sheet_offset.clamp(0.0, rects.sheet_travel);
@@ -497,7 +512,7 @@ fn selection_panel(
     controls: &mut Controls,
     rects: &Rects,
 ) {
-    let place = (rects.right_panel, geometry::RIGHT_PANEL_WIDTH);
+    let place = (rects.right_panel, panel_width(ctx));
     let scroll = egui::scroll_area::ScrollSource::default();
     let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
         if row.close {
@@ -561,7 +576,8 @@ fn selection_panel(
     state.atlas.panel_rect = Some(rect);
 }
 
-/// A row of tabs of equal width. A tab that is not `enabled` does nothing
+/// A row of tabs. Each tab is as wide as its text and a padding, and the
+/// tabs share the rest of the row. A tab that is not `enabled` does nothing
 /// yet. Returns the tab that the user chose.
 fn tabs(
     ui: &mut egui::Ui,
@@ -575,11 +591,22 @@ fn tabs(
     );
     ui.painter()
         .rect_filled(row, theme::CONTROL_RADIUS, theme::track());
-    let width = (row.width() - 2.0 * PAD) / items.len() as f32;
+    let ctx = ui.ctx().clone();
+    let widths: Vec<f32> = items
+        .iter()
+        .map(|(label, _)| text_width(&ctx, label) + 2.0 * TAB_PAD)
+        .collect();
+    let room = row.width() - 2.0 * PAD;
+    let rest = room - widths.iter().sum::<f32>();
+    let n = items.len() as f32;
+    // In a row that is too narrow, the tabs shrink in proportion.
+    let shrink = (room / (room - rest)).min(1.0);
+    let mut left = row.left() + PAD;
     let mut chosen = None;
     for (index, &(label, enabled)) in items.iter().enumerate() {
-        let min = pos2(row.left() + PAD + index as f32 * width, row.top() + PAD);
-        let rect = Rect::from_min_size(min, vec2(width, TOUCH));
+        let width = widths[index] * shrink + rest.max(0.0) / n;
+        let rect = Rect::from_min_size(pos2(left, row.top() + PAD), vec2(width, TOUCH));
+        left += width;
         let resp = widgets::tap_area(ui, controls, rect, label, enabled);
         let on = index == active;
         if on || resp.is_pointer_button_down_on() {

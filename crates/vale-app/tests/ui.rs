@@ -979,6 +979,44 @@ fn the_page_buttons_open_the_page_before_and_after() {
 }
 
 #[test]
+fn the_wheel_zooms_the_page_and_in_the_selected_frame_the_map() {
+    let mut h = harness();
+    h.run_steps(3);
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].clone();
+    let wheel = |h: &mut Harness<'static, AppState>, pos: egui::Pos2| {
+        h.hover_at(pos);
+        h.step();
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 200.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_steps(10);
+    };
+    // On a frame that is not selected, the wheel zooms the page about the
+    // pointer, and the map stays the same.
+    let before = h.state().atlas.place.unwrap();
+    let pos = frame_middle(&h);
+    let mm = before.to_mm(pos);
+    wheel(&mut h, pos);
+    let after = h.state().atlas.place.unwrap();
+    assert!(after.pts_per_mm > before.pts_per_mm * 1.05);
+    assert!(after.to_mm(pos).distance(mm) < 0.5);
+    let page = vale_app::ui::atlas::open_page(h.state());
+    assert_eq!(page.frames[0], frame);
+    // In the selected frame, the wheel zooms the map.
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame.id);
+    h.run_steps(3);
+    let before = h.state().atlas.place.unwrap();
+    let pos = frame_middle(&h);
+    wheel(&mut h, pos);
+    assert_eq!(h.state().atlas.place.unwrap(), before);
+    let page = vale_app::ui::atlas::open_page(h.state());
+    assert!(page.frames[0].scale < frame.scale / 1.05);
+}
+
+#[test]
 fn the_keys_v_and_h_choose_the_tools() {
     let mut h = harness();
     h.run_steps(3);

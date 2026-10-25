@@ -27,6 +27,11 @@ const PAPER: Color32 = Color32::WHITE;
 const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
 /// The smallest and the largest side of a page, in millimeters.
 const PAGE_SIDE: (f64, f64) = (10.0, 2000.0);
+/// The smallest and the largest zoom of the page, relative to the page
+/// that fits the screen.
+pub const PAGE_ZOOM: (f64, f64) = (0.25, 40.0);
+/// The part of the page that stays on the screen, in points.
+const PAGE_KEEP: f32 = 48.0;
 
 /// The thing that the panel of the Atlas workspace shows.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -55,6 +60,25 @@ pub enum FrameTab {
     Projection,
 }
 
+/// The pan and the zoom of the page on the screen.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PageView {
+    /// The zoom, relative to the page that fits the screen.
+    pub zoom: f64,
+    /// The middle of the page from the middle of the page that fits, in
+    /// points.
+    pub offset: egui::Vec2,
+}
+
+impl Default for PageView {
+    fn default() -> PageView {
+        PageView {
+            zoom: 1.0,
+            offset: egui::Vec2::ZERO,
+        }
+    }
+}
+
 /// The place of the page on the screen.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PagePlace {
@@ -74,6 +98,18 @@ impl PagePlace {
         PagePlace {
             rect: Rect::from_center_size(free.center(), size),
             pts_per_mm: scale,
+        }
+    }
+
+    /// The fitted page with a pan and a zoom.
+    pub fn viewed(&self, view: PageView) -> PagePlace {
+        if view == PageView::default() {
+            return *self;
+        }
+        let size = self.rect.size() * view.zoom as f32;
+        PagePlace {
+            rect: Rect::from_center_size(self.rect.center() + view.offset, size),
+            pts_per_mm: self.pts_per_mm * view.zoom,
         }
     }
 
@@ -130,11 +166,21 @@ enum Drag {
     Body(FrameId),
     /// The map in the frame.
     Pan(FrameId),
+    /// The page on the screen.
+    Page,
     /// The map in the frame turns about the anchor. The angle of the pointer
     /// in the last frame, in degrees.
     Rotate(FrameId, f64),
     /// Nothing.
     Idle,
+}
+
+/// What a gesture of two fingers changes.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Pinch {
+    /// The map in the selected frame.
+    Frame(FrameId),
+    Page,
 }
 
 pub struct AtlasState {
@@ -155,6 +201,12 @@ pub struct AtlasState {
     pub panel_rect: Option<Rect>,
     /// The page on the screen in the last frame.
     pub place: Option<PagePlace>,
+    /// The pan and the zoom of the open page.
+    pub view: PageView,
+    /// The page of `view`.
+    view_of: Option<PageId>,
+    /// The page that fits the screen, and the canvas, in the last frame.
+    fit: Option<(PagePlace, Rect)>,
     /// The handles of the selected frame in the last frame, with their
     /// touch areas.
     pub handles: Vec<(Handle, Rect)>,
@@ -168,8 +220,8 @@ pub struct AtlasState {
     drag: Option<Drag>,
     /// The pointer at the last step of the drag.
     drag_last: Pos2,
-    /// The frame of the two-finger gesture.
-    pinch: Option<FrameId>,
+    /// What the two-finger gesture changes.
+    pinch: Option<Pinch>,
     /// More than one finger touched the screen since the first finger came
     /// down. A drag of one finger then does nothing.
     fingers: bool,
@@ -192,6 +244,9 @@ impl Default for AtlasState {
             add_rect: None,
             panel_rect: None,
             place: None,
+            view: PageView::default(),
+            view_of: None,
+            fit: None,
             handles: Vec::new(),
             composes: 0,
             shown: None,
@@ -216,6 +271,11 @@ impl AtlasState {
     /// True if the frame has a texture.
     pub fn has_image(&self, id: FrameId) -> bool {
         self.images.contains_key(&id)
+    }
+
+    /// The size of the texture of a frame, in pixels.
+    pub fn image_size(&self, id: FrameId) -> Option<[usize; 2]> {
+        self.images.get(&id).map(|image| image.texture.size())
     }
 
     /// The selected frame.
@@ -345,6 +405,53 @@ fn handle_at(state: &AppState, pos: Pos2) -> Option<(Handle, Pos2)> {
     best.map(|(h, r)| (*h, r.center()))
 }
 
+/// The selected frame if it is the top frame at a screen position.
+fn selected_at(
+    state: &AppState,
+    page: &PageRecord,
+    place: PagePlace,
+    pos: Pos2,
+) -> Option<FrameId> {
+    let id = state.atlas.frame()?;
+    (frame_at(page, place.to_mm(pos)) == Some(id)).then_some(id)
+}
+
+/// Moves the page on the screen by `d` points.
+fn pan_page(state: &mut AppState, d: egui::Vec2) {
+    state.atlas.view.offset += d;
+    keep_page(state);
+}
+
+/// Zooms the page about a screen position.
+fn zoom_page(state: &mut AppState, at: Pos2, factor: f64) {
+    let Some((fit, _)) = state.atlas.fit else {
+        return;
+    };
+    let view = &mut state.atlas.view;
+    let zoom = (view.zoom * factor).clamp(PAGE_ZOOM.0, PAGE_ZOOM.1);
+    let f = (zoom / view.zoom) as f32;
+    let center = fit.rect.center() + view.offset;
+    view.offset = at + (center - at) * f - fit.rect.center();
+    view.zoom = zoom;
+    keep_page(state);
+}
+
+/// Moves the page so that a part of it stays on the canvas.
+fn keep_page(state: &mut AppState) {
+    let Some((fit, area)) = state.atlas.fit else {
+        return;
+    };
+    let r = fit.viewed(state.atlas.view).rect;
+    let keep = |lo: f32, hi: f32, min: f32, max: f32| {
+        let k = PAGE_KEEP.min(hi - lo);
+        (min + k - hi).max(0.0) + (max - k - lo).min(0.0)
+    };
+    state.atlas.view.offset += vec2(
+        keep(r.left(), r.right(), area.left(), area.right()),
+        keep(r.top(), r.bottom(), area.top(), area.bottom()),
+    );
+}
+
 fn hash_of(value: impl std::fmt::Debug) -> u64 {
     let mut hasher = DefaultHasher::new();
     format!("{value:?}").hash(&mut hasher);
@@ -365,10 +472,18 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     if let Some(queue) = &state.globe.pen.queue {
         queue.take();
     }
-    let place = PagePlace::fit(open_page(state), free);
+    if state.atlas.view_of != Some(state.atlas.page) {
+        state.atlas.view = PageView::default();
+        state.atlas.view_of = Some(state.atlas.page);
+    }
+    let fit = PagePlace::fit(open_page(state), free);
+    state.atlas.fit = Some((fit, area));
+    let place = fit.viewed(state.atlas.view);
     state.atlas.place = Some(place);
     input(ui, state, &resp, place);
     sync(state);
+    let place = PagePlace::fit(open_page(state), free).viewed(state.atlas.view);
+    state.atlas.place = Some(place);
 
     let painter = ui.painter_at(area);
     painter.rect_filled(area, 0.0, back);
@@ -406,18 +521,26 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         }
     }
 
-    // Two fingers move, zoom, and turn the map of the frame below them.
+    // Two fingers move, zoom, and turn the map of the selected frame below
+    // them. Elsewhere, they move and zoom the page.
     if let Some(touch) = fingers {
         let pinch = match state.atlas.pinch {
-            Some(id) => Some(id),
+            Some(pinch) => Some(pinch),
             None if resp.rect.contains(touch.center_pos) => {
-                frame_at(&page, place.to_mm(touch.center_pos))
+                Some(match selected_at(state, &page, place, touch.center_pos) {
+                    Some(id) => Pinch::Frame(id),
+                    None => Pinch::Page,
+                })
             }
             None => None,
         };
         state.atlas.pinch = pinch;
         state.atlas.drag = None;
-        if let Some(id) = pinch {
+        if pinch == Some(Pinch::Page) {
+            pan_page(state, touch.translation_delta);
+            zoom_page(state, touch.center_pos, f64::from(touch.zoom_delta));
+        }
+        if let Some(Pinch::Frame(id)) = pinch {
             let at = place.to_mm(touch.center_pos);
             let d = touch.translation_delta;
             let d = Vec2::new(f64::from(d.x), f64::from(d.y)) / place.pts_per_mm;
@@ -433,18 +556,26 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         }
     }
 
-    // The wheel and a pinch of the trackpad zoom about the pointer.
+    // The wheel and a pinch of the trackpad zoom the map of the selected
+    // frame, or the page, about the pointer.
     if fingers.is_none()
         && let Some(pos) = resp.hover_pos()
     {
         let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
         let factor = (f64::from(scroll) * 0.002).exp() * f64::from(pinch);
         let at = place.to_mm(pos);
-        if (factor - 1.0).abs() > 1e-4
-            && let Some(id) = frame_at(&page, at)
-            && edit_frame(state, id, |f, p| math::zoom(f, p, at, factor))
-        {
-            state.atlas.wheel_at = Some(now);
+        if (factor - 1.0).abs() > 1e-4 {
+            match selected_at(state, &page, place, pos) {
+                Some(id) => {
+                    if edit_frame(state, id, |f, p| math::zoom(f, p, at, factor)) {
+                        state.atlas.wheel_at = Some(now);
+                    }
+                }
+                None => {
+                    zoom_page(state, pos, factor);
+                    state.atlas.wheel_at = Some(now);
+                }
+            }
         }
         state.cursor_lonlat = frame_at(&page, at).and_then(|id| {
             let frame = page.frames.iter().find(|f| f.id == id)?;
@@ -475,14 +606,19 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let d = pos - std::mem::replace(&mut state.atlas.drag_last, pos);
-        let d = Vec2::new(f64::from(d.x), f64::from(d.y)) / place.pts_per_mm;
-        drag_to(state, drag, place, pos, d);
+        if drag == Drag::Page {
+            pan_page(state, d);
+        } else {
+            let d = Vec2::new(f64::from(d.x), f64::from(d.y)) / place.pts_per_mm;
+            drag_to(state, drag, place, pos, d);
+        }
     }
     if resp.drag_stopped() || !any_down {
         state.atlas.drag = None;
     }
 
-    // A second quick tap on a vertex removes it.
+    // A second quick tap on a vertex removes it. A second quick tap off the
+    // page fits the page to the screen.
     if resp.clicked()
         && let Some(pos) = resp.interact_pointer_pos()
     {
@@ -493,7 +629,13 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
                 remove_vertex(state, v);
                 state.atlas.last_tap = None;
             }
-            _ => tap(state, &page, place, pos),
+            _ => {
+                tap(state, &page, place, pos);
+                if again && !place.rect.contains(pos) {
+                    state.atlas.view = PageView::default();
+                    state.atlas.last_tap = None;
+                }
+            }
         }
     }
 
@@ -534,14 +676,14 @@ fn start_drag(
     let at = place.to_mm(pos);
     let under = frame_at(page, at);
     match state.atlas.tool {
-        AtlasTool::Move => match under {
+        AtlasTool::Move => match selected_at(state, page, place, pos) {
             Some(id) if alt => {
                 let frame = page.frames.iter().find(|f| f.id == id);
                 let anchor = frame.map_or(at, |f| math::anchor(&f.shape));
                 Drag::Rotate(id, angle(anchor, at))
             }
             Some(id) => Drag::Pan(id),
-            None => Drag::Idle,
+            None => Drag::Page,
         },
         AtlasTool::Select => {
             if let (Some(id), Some((handle, center))) = (state.atlas.frame(), handle_at(state, pos))
@@ -574,7 +716,7 @@ fn start_drag(
                     state.atlas.selection = AtlasSelection::Frame(id);
                     Drag::Body(id)
                 }
-                None => Drag::Idle,
+                None => Drag::Page,
             }
         }
     }
@@ -624,7 +766,7 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
             edit_frame(state, id, |f, p| math::rotate(f, p, anchor, degrees));
             state.atlas.drag = Some(Drag::Rotate(id, now));
         }
-        Drag::Idle => {}
+        Drag::Page | Drag::Idle => {}
     }
 }
 
@@ -694,12 +836,20 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             ppp.to_bits(),
             state.selection,
         ));
+        // Only the part of the frame on the canvas has a texture.
+        let shown = place
+            .rect_to_screen(math::shape_bbox(&frame.shape))
+            .intersect(area);
+        if !shown.is_positive() {
+            continue;
+        }
         let place_key = hash_of((
             &frame.shape,
             frame.center,
             frame.scale,
             frame.rotation,
             target,
+            shown,
         ));
         let Ok(projection) = state.pipeline.projection(&state.doc) else {
             continue;
@@ -719,11 +869,11 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             };
             let keys = (content, place_key);
             let primary = primary == Some(frame.id);
-            compose(&ctx, state, &page, frame, place, vt, keys, quality, primary);
+            let at = (place, shown);
+            compose(&ctx, state, frame, at, vt, keys, quality, primary);
         }
         if let Some(image) = state.atlas.images.get(&frame.id) {
-            let clip = place.rect_to_screen(math::shape_bbox(&frame.shape));
-            paint_image(&painter, image, &vt, clip.intersect(area));
+            paint_image(&painter, image, &vt, shown);
         }
     }
 }
@@ -732,31 +882,35 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
 fn compose(
     ctx: &egui::Context,
     state: &mut AppState,
-    page: &PageRecord,
     frame: &FrameRecord,
-    place: PagePlace,
+    (place, shown): (PagePlace, Rect),
     vt: ViewTransform,
     (content, place_key): (u64, u64),
     quality: Quality,
     primary: bool,
 ) {
     let ppp = ctx.pixels_per_point();
-    let ppm = place.pts_per_mm;
-    let bbox = math::shape_bbox(&frame.shape);
-    let screen = place.rect_to_screen(bbox);
-    let px = |points: f64| ((points * f64::from(ppp)).ceil() as usize).clamp(1, 8192);
-    let (w, h) = (px(bbox.width() * ppm), px(bbox.height() * ppm));
-    // The list starts at the top-left corner of the box of the frame.
+    let px = |points: f32| ((points * ppp).ceil() as usize).clamp(1, 8192);
+    let (w, h) = (px(shown.width()), px(shown.height()));
+    // The list starts at the top-left corner of the part of the frame on
+    // the canvas.
+    let origin = place.rect.min - shown.min;
     let target = FrameTarget {
-        origin: Point::new(-bbox.x0 * ppm, -bbox.y0 * ppm),
-        pts_per_mm: ppm,
+        origin: Point::new(f64::from(origin.x), f64::from(origin.y)),
+        pts_per_mm: place.pts_per_mm,
     };
+    let part = kurbo::Rect::new(
+        0.0,
+        0.0,
+        f64::from(shown.width()),
+        f64::from(shown.height()),
+    );
     let selection = state.selection;
-    let composed = state.pipeline.compose_frame(
+    let composed = state.pipeline.compose_frame_part(
         &state.doc,
-        page,
         frame,
         target,
+        part,
         &mut state.fonts,
         quality,
         selection,
@@ -793,7 +947,7 @@ fn compose(
         content,
         place: place_key,
         vt,
-        rect: Rect::from_min_size(screen.min, size),
+        rect: Rect::from_min_size(shown.min, size),
         settled: quality == Quality::Final,
     };
     state.atlas.images.insert(frame.id, image);

@@ -13,8 +13,8 @@ use vale_app::projects::Locations;
 use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, DELETE_PAGE, HEIGHT, MAP_FRAME, NEXT_PAGE, POLYGON, PREVIOUS_PAGE,
-    REMOVE_VERTEX, SCALE, SIZE, WIDTH, page_title, readout_text,
+    ADD, ADD_HOLE, ADD_PAGE, DELETE_PAGE, FRAME_TABS, HEIGHT, MAP_FRAME, NEXT_PAGE, POLYGON,
+    PREVIOUS_PAGE, REMOVE_VERTEX, SCALE, SIZE, WIDTH, page_title, readout_text,
 };
 use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
 use vale_render::Item;
@@ -314,8 +314,9 @@ fn check_controls(h: &Pad, what: &str) {
             assert_ne!(a.name, b.name, "{what}");
         }
     }
+    // The handles are 44 points wide, up to the rounding of a float.
     for (handle, rect) in &h.state().atlas.handles {
-        assert!(rect.width() >= 44.0 && rect.height() >= 44.0, "{handle:?}");
+        assert!(rect.width() > 43.99 && rect.height() > 43.99, "{handle:?}");
     }
 }
 
@@ -452,7 +453,11 @@ fn a_frame_moves_and_resizes_with_a_finger_a_pen_and_a_mouse() {
         let want = (-40.0 / f64::from(ppm), -30.0 / f64::from(ppm));
         assert!((moved.0 - want.0).abs() < 0.1, "{input:?}: {moved:?}");
         assert!((moved.1 - want.1).abs() < 0.1, "{input:?}: {moved:?}");
-        assert_eq!(after.size(), before.size(), "{input:?}");
+        let (dw, dh) = (
+            after.width() - before.width(),
+            after.height() - before.height(),
+        );
+        assert!(dw.abs() < 1e-9 && dh.abs() < 1e-9, "{input:?}");
 
         // The bottom-right handle makes the frame smaller.
         let corner = handle(&h, Handle::Resize(4));
@@ -545,6 +550,13 @@ fn pan_zoom_and_rotate_in_a_frame_set_its_center_scale_and_rotation() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, "Move");
     assert_eq!(h.state().atlas.tool, AtlasTool::Move);
+    // Only the map of the selected frame moves.
+    let at = middle(&h, 0) - vec2(60.0, 0.0);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(
+        h.state().atlas.selection,
+        AtlasSelection::Frame(frame(&h, 0).id)
+    );
 
     // One finger, a pen, and the mouse move the map, and the place under
     // the pointer stays under it.
@@ -695,15 +707,166 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
 fn the_maps_stay_still_during_a_drag_and_compose_after_it() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, "Move");
+    let from = middle(&h, 0) - vec2(60.0, 0.0);
+    tap_with(&mut h, from, Input::Finger);
     let composes = h.state().atlas.composes;
     let center = frame(&h, 0).center;
-    let from = middle(&h, 0) - vec2(60.0, 0.0);
     let to = from + vec2(80.0, 40.0);
     drag_steps(&mut h, from, to, Input::Finger, 10);
     assert_eq!(h.state().atlas.composes, composes);
     assert_ne!(frame(&h, 0).center, center);
     release(&mut h, to, Input::Finger);
     assert_eq!(h.state().atlas.composes, composes + 1);
+}
+
+/// The center, the scale, the rotation, and the shape of each frame of the
+/// open page.
+fn maps(h: &Pad) -> Vec<String> {
+    let frames = open_page(h).frames;
+    let map = |f: &FrameRecord| format!("{:?}", (f.center, f.scale, f.rotation, &f.shape));
+    frames.iter().map(map).collect()
+}
+
+fn place(h: &Pad) -> vale_app::ui::atlas::PagePlace {
+    h.state().atlas.place.unwrap()
+}
+
+/// A place on the paper in the margin of the page.
+fn margin(h: &Pad) -> Pos2 {
+    screen(h, Point::new(4.0, 50.0))
+}
+
+#[test]
+fn a_pinch_on_the_paper_zooms_and_moves_the_page_and_not_the_maps() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (before, maps_before) = (place(&h), maps(&h));
+    let at = margin(&h);
+    let mm = before.to_mm(at);
+    pinch(&mut h, at, 100.0, 150.0, 0.0, Vec2::ZERO);
+    let after = place(&h);
+    let zoom = after.pts_per_mm / before.pts_per_mm;
+    assert!((zoom - 1.5).abs() < 0.01, "{zoom}");
+    assert!(after.to_mm(at).distance(mm) < 0.5);
+    assert_eq!(maps(&h), maps_before);
+    // The middle of the fingers moves the page.
+    pinch(&mut h, at, 120.0, 120.0, 0.0, vec2(40.0, 20.0));
+    let moved = place(&h).rect.min - after.rect.min;
+    assert!((moved - vec2(40.0, 20.0)).length() < 1.0, "{moved:?}");
+    assert_eq!(maps(&h), maps_before);
+}
+
+#[test]
+fn a_drag_on_the_paper_moves_the_page() {
+    let mut h = inset_pad(BOARDS[0]);
+    let maps_before = maps(&h);
+    for tool in ["Move", "Select"] {
+        tap(&mut h, tool);
+        for input in INPUTS {
+            let before = place(&h);
+            let from = margin(&h);
+            drag(&mut h, from, from + vec2(60.0, 30.0), input);
+            let moved = place(&h).rect.min - before.rect.min;
+            assert!(
+                (moved - vec2(60.0, 30.0)).length() < 1.0,
+                "{tool} {input:?}: {moved:?}"
+            );
+            assert_eq!(place(&h).pts_per_mm, before.pts_per_mm);
+        }
+    }
+    // A drag on a frame that is not selected also moves the page with the
+    // Move tool.
+    tap(&mut h, "Move");
+    let before = place(&h);
+    let from = middle(&h, 0) - vec2(60.0, 0.0);
+    drag(&mut h, from, from + vec2(-40.0, 20.0), Input::Finger);
+    let moved = place(&h).rect.min - before.rect.min;
+    assert!((moved - vec2(-40.0, 20.0)).length() < 1.0, "{moved:?}");
+    assert_eq!(maps(&h), maps_before);
+}
+
+#[test]
+fn a_pinch_in_the_selected_frame_changes_only_that_frame() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (before, maps_before) = (place(&h), maps(&h));
+    let scale = frame(&h, 1).scale;
+    let at = middle(&h, 1);
+    pinch(&mut h, at, 40.0, 60.0, 0.0, Vec2::ZERO);
+    assert_eq!(place(&h), before);
+    assert!((scale / frame(&h, 1).scale - 1.5).abs() < 0.01);
+    assert_eq!(maps(&h)[0], maps_before[0]);
+}
+
+#[test]
+fn a_pinch_in_a_frame_that_is_not_selected_zooms_the_page() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (before, maps_before) = (place(&h), maps(&h));
+    let at = middle(&h, 0) - vec2(60.0, 0.0);
+    pinch(&mut h, at, 100.0, 150.0, 0.0, Vec2::ZERO);
+    let zoom = place(&h).pts_per_mm / before.pts_per_mm;
+    assert!((zoom - 1.5).abs() < 0.01, "{zoom}");
+    assert_eq!(maps(&h), maps_before);
+}
+
+#[test]
+fn a_double_tap_off_the_page_fits_the_page_again() {
+    let mut h = inset_pad(BOARDS[0]);
+    let fit = place(&h);
+    let at = margin(&h);
+    pinch(&mut h, at, 150.0, 100.0, 0.0, vec2(30.0, 0.0));
+    assert_ne!(place(&h), fit);
+    let off = pos2(place(&h).rect.center().x, place(&h).rect.bottom() + 30.0);
+    double_tap(&mut h, off, Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert!((place(&h).pts_per_mm - fit.pts_per_mm).abs() < 1e-9);
+    assert!(place(&h).rect.min.distance(fit.rect.min) < 0.01);
+    // A page that opens also fits.
+    let s = h.state_mut();
+    s.atlas.view.zoom = 3.0;
+    vale_app::ui::atlas::add_page(s);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.view.zoom, 1.0);
+}
+
+#[test]
+fn at_a_page_zoom_of_20_the_texture_of_a_frame_is_no_larger_than_the_canvas() {
+    let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().atlas.view.zoom = 20.0;
+    h.run_steps(3);
+    let (w, hh) = h.state().canvas_size;
+    let main = frame(&h, 0).id;
+    let size = h.state().atlas.image_size(main).unwrap();
+    assert!(size[0] as f64 <= w && size[1] as f64 <= hh, "{size:?}");
+    for f in open_page(&h).frames {
+        if let Some(size) = h.state().atlas.image_size(f.id) {
+            assert!(size[0] as f64 <= w && size[1] as f64 <= hh, "{size:?}");
+        }
+    }
+    // The handles keep their size.
+    for (handle, rect) in &h.state().atlas.handles {
+        assert!(
+            (rect.size() - vec2(44.0, 44.0)).length() < 0.01,
+            "{handle:?}"
+        );
+    }
+}
+
+#[test]
+fn each_tab_of_a_frame_is_as_wide_as_its_text_and_a_padding() {
+    for size in BOARDS {
+        let h = inset_pad(size);
+        for name in FRAME_TABS {
+            let rect = h.get_by_label(name).rect();
+            let font = vale_app::ui::pad::theme::body();
+            let text = h.ctx.fonts_mut(|f| {
+                let galley = f.layout_no_wrap(name.to_owned(), font, egui::Color32::WHITE);
+                galley.size().x
+            });
+            assert!(
+                rect.width() >= text + 24.0,
+                "{size:?} {name}: {rect:?} {text}"
+            );
+        }
+    }
 }
 
 #[test]
