@@ -162,6 +162,12 @@ fn round9(x: f64) -> f64 {
     (x * 1e9).round() / 1e9 + 0.0
 }
 
+/// The center and the rotation of an oblique aspect come back from the rotation with
+/// a small error. A coarser rounding removes it.
+fn round7(x: f64) -> f64 {
+    (x * 1e7).round() / 1e7 + 0.0
+}
+
 /// The southern and northern clip latitude of a conformal cone with these parallels.
 pub(crate) fn lcc_lat_range(lat1: f64, lat2: f64) -> (f64, f64) {
     if lat1 + lat2 >= 0.0 {
@@ -332,8 +338,8 @@ impl ProjectionSpec {
                     Frame::from_ob_tran(lon_0, o_lat_p.unwrap_or(90.0), o_lon_p.unwrap_or(0.0));
                 let (c, r) = frame.center_and_rotation();
                 ProjectionSpec {
-                    oblique: Some(round9(r)),
-                    ..ProjectionSpec::new(kind, round9(c[0]), round9(c[1]))
+                    oblique: Some(round7(r)),
+                    ..ProjectionSpec::new(kind, round7(c[0]), round7(c[1]))
                 }
             }
             name => {
@@ -460,9 +466,8 @@ mod tests {
                 if let (Some(a), Some(b)) = (back.oblique, s.oblique) {
                     assert!(close(a, b), "{text}: {a} {b}");
                 }
-                if s.oblique.is_none() {
-                    assert_eq!(back.definition(), s.definition());
-                }
+                assert_eq!(back, s, "{text}");
+                assert_eq!(back.definition(), s.definition());
             }
         }
     }
