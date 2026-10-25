@@ -179,7 +179,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - Vector layers in the flat view of the globe workspace and in the picture of the globe on the start screen.
 - An editor for the rules of a style. The inspector edits the fill, the stroke, and the circle symbol of a style with one rule.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
-- More than one map, the overview of the pages, page templates, map furniture on a page, SVG export, and graticule labels.
+- The overview of the pages, page templates, map furniture on a page, SVG export, and graticule labels.
 - Conic and transverse projections, oblique aspects, and projection suggestions.
 - Editing tools other than the line tool, the polygon tool, and the point tool, including the attribute table.
 - The GPU Vello backend. The prototype draws on the CPU with `vello_cpu`.
