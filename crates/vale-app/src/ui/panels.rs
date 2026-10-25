@@ -733,7 +733,7 @@ fn world_section(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Projection");
-    let mut spec = state.doc.frame.projection;
+    let mut spec = state.doc.projection();
     egui::ComboBox::from_id_salt("projection")
         .selected_text(spec.kind.name())
         .width(180.0)
@@ -759,7 +759,7 @@ fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .range(-90.0..=90.0),
         );
     });
-    if spec != state.doc.frame.projection {
+    if spec != state.doc.projection() {
         state.doc.set_projection(ProjectionSpec { ..spec });
         state.touch();
     }

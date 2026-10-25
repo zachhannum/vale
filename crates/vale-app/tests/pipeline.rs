@@ -1,11 +1,13 @@
 use std::path::Path;
 
 use kurbo::Point;
+use vale_app::atlas::{FrameTarget, PT_PER_MM, new_frame};
 use vale_app::document::Document;
 use vale_app::headless::{export, map_png, probe};
-use vale_app::pipeline::{Pipeline, Quality, fonts};
-use vale_render::{FillRule, Item};
+use vale_app::pipeline::{PAPER, Pipeline, Quality, fonts};
+use vale_render::{FillRule, Item, render_pixmap};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
+use vale_store::{FrameId, FrameShape, PageId, PageUnits};
 use vale_style::expr::{Filter, Property};
 use vale_style::{Color, Rule, Stroke, StrokeSymbolizer, Style, Symbolizer};
 
@@ -338,4 +340,159 @@ fn a_width_expression_follows_the_attribute() {
     // One batch for each width, in the order of the features.
     let widths: Vec<f64> = line_strokes(&doc).iter().map(|(w, _)| *w).collect();
     assert_eq!(widths, [1.0, 3.0, 2.0]);
+}
+
+/// A page and a frame of map 0 on it.
+fn frame_on(doc: &mut Document, pipeline: &mut Pipeline, page: PageId) -> FrameId {
+    let atlas = &doc.project.atlas;
+    let projection = pipeline.projection(doc).unwrap();
+    let frame = new_frame(atlas.page(page).unwrap(), &atlas.maps[0], projection);
+    doc.project.atlas.add_frame(page, frame).unwrap()
+}
+
+fn compose_frame(doc: &Document, pipeline: &mut Pipeline, id: FrameId) -> Vec<Item> {
+    let atlas = &doc.project.atlas;
+    let page = atlas.page(atlas.page_of_frame(id).unwrap()).unwrap();
+    let frame = atlas.frame(id).unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut f = fonts().unwrap();
+    let composed = pipeline
+        .compose_frame(doc, page, frame, target, &mut f, Quality::Final, None)
+        .unwrap();
+    composed.list.items
+}
+
+#[test]
+fn a_frame_draws_only_inside_its_shape() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.graticule = false;
+    // The outer ring has a notch at the bottom, and the polygon has a hole.
+    frame.shape = FrameShape::Polygon(vec![
+        vec![
+            [10.0, 10.0],
+            [287.0, 10.0],
+            [287.0, 200.0],
+            [148.5, 120.0],
+            [10.0, 200.0],
+        ],
+        vec![[40.0, 40.0], [80.0, 40.0], [80.0, 80.0], [40.0, 80.0]],
+    ]);
+    let page = doc.project.atlas.page(page).unwrap();
+    let mut f = fonts().unwrap();
+    let list = pipeline
+        .compose_page(&doc, page, &mut f, Quality::Final)
+        .unwrap();
+    assert!(list.items.iter().any(|i| matches!(
+        i,
+        Item::PushClip {
+            rule: FillRule::EvenOdd,
+            ..
+        }
+    )));
+    let pixmap = render_pixmap(&list, 1.0).unwrap();
+    let w = usize::from(pixmap.width());
+    let data = pixmap.data_as_u8_slice();
+    let at = |x_mm: f64, y_mm: f64| {
+        let (x, y) = ((x_mm * PT_PER_MM) as usize, (y_mm * PT_PER_MM) as usize);
+        let i = (y * w + x) * 4;
+        [data[i], data[i + 1], data[i + 2]]
+    };
+    let paper = [PAPER.r, PAPER.g, PAPER.b];
+    assert_eq!(at(60.0, 60.0), paper, "the hole");
+    assert_eq!(at(148.5, 180.0), paper, "the notch");
+    assert_eq!(at(5.0, 5.0), paper, "the margin");
+    assert_ne!(at(150.0, 60.0), paper, "the map");
+}
+
+#[test]
+fn a_frame_draws_the_layers_that_its_map_shows() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let land = doc
+        .project
+        .layers()
+        .iter()
+        .find(|l| l.name == "Land")
+        .unwrap()
+        .id;
+    let land_fills = |doc: &Document, pipeline: &mut Pipeline| {
+        let items = compose_frame(doc, pipeline, id);
+        let land = Color::rgb(244, 241, 232);
+        let fills = items
+            .iter()
+            .filter(|i| matches!(i, Item::Fill { color, .. } if *color == land));
+        fills.count()
+    };
+    assert!(land_fills(&doc, &mut pipeline) > 0);
+    let map = doc.map_id();
+    assert!(doc.set_shown(map, land, false));
+    assert!(!doc.shown(map, land));
+    assert_eq!(land_fills(&doc, &mut pipeline), 0);
+    // The eye of the World workspace does not hide a layer in a frame.
+    assert!(doc.set_shown(map, land, true));
+    doc.set_visible(land, false);
+    assert!(land_fills(&doc, &mut pipeline) > 0);
+}
+
+#[test]
+fn frames_on_two_pages_share_one_projection() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let first = doc.project.atlas.pages[0].id;
+    let second = doc
+        .project
+        .atlas
+        .add_page(Some(first), 420.0, 297.0, PageUnits::Mm);
+    let a = frame_on(&mut doc, &mut pipeline, first);
+    let b = frame_on(&mut doc, &mut pipeline, second);
+    assert_eq!(doc.project.atlas.frame(b).unwrap().map, doc.map_id());
+    let mut f = fonts().unwrap();
+    for page in [first, second] {
+        let page = doc.project.atlas.page(page).unwrap();
+        let list = pipeline
+            .compose_page(&doc, page, &mut f, Quality::Final)
+            .unwrap();
+        assert!(list.items.iter().any(|i| matches!(i, Item::Fill { .. })));
+    }
+    assert!(!compose_frame(&doc, &mut pipeline, a).is_empty());
+    assert_eq!(pipeline.cache_count(), 1);
+}
+
+#[test]
+fn a_new_projection_changes_each_frame() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let first = doc.project.atlas.pages[0].id;
+    let second = doc
+        .project
+        .atlas
+        .add_page(None, 297.0, 210.0, PageUnits::Mm);
+    let frames = [
+        frame_on(&mut doc, &mut pipeline, first),
+        frame_on(&mut doc, &mut pipeline, second),
+    ];
+    let before: Vec<String> = frames
+        .iter()
+        .map(|id| format!("{:?}", compose_frame(&doc, &mut pipeline, *id)))
+        .collect();
+    doc.set_projection(ProjectionSpec {
+        kind: ProjectionKind::Mercator,
+        lon0: 0.0,
+        lat0: 0.0,
+    });
+    assert_eq!(doc.project.atlas.maps[0].projection, "mercator");
+    for (id, before) in frames.iter().zip(&before) {
+        let after = format!("{:?}", compose_frame(&doc, &mut pipeline, *id));
+        assert_ne!(&after, before);
+    }
+    assert_eq!(pipeline.cache_count(), 2);
 }

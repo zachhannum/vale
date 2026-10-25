@@ -48,7 +48,7 @@ pub fn center_on(state: &mut AppState, q: Point) {
     let Ok(Some([lon, lat])) = state.pipeline.page_to_lonlat(&state.doc, size, q) else {
         return;
     };
-    let mut spec = state.doc.frame.projection;
+    let mut spec = state.doc.projection();
     spec.lon0 = lon;
     if spec.kind.is_azimuthal() {
         spec.lat0 = lat;

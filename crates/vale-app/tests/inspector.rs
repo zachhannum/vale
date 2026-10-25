@@ -195,7 +195,7 @@ fn double_click_centers_the_projection() {
         h.step();
     }
     h.run_steps(3);
-    let lon0 = h.state().doc.frame.projection.lon0;
+    let lon0 = h.state().doc.projection().lon0;
     assert!((lon0 - 100.0).abs() < 0.5, "{lon0}");
     assert!(h.state().status.starts_with("Centered the projection"));
 }

@@ -127,6 +127,7 @@ fn radius_rescales_view() {
     d.frame.view = Some(View {
         center: kurbo::Point::new(1000.0, 2000.0),
         scale: 1e-4,
+        rotation: 0.0,
     });
     d.set_radius_km(3000.0);
     let v = d.frame.view.unwrap();
@@ -144,6 +145,7 @@ fn projection_resets_view() {
     let view = View {
         center: kurbo::Point::new(1.0, 2.0),
         scale: 1e-4,
+        rotation: 0.0,
     };
     d.frame.view = Some(view);
     d.set_projection(ProjectionSpec::default());

@@ -7,10 +7,11 @@ use kurbo::{BezPath, Circle, Point, Rect, Shape};
 use vale_labeler::Fonts;
 use vale_render::{DisplayList, FillRule, Item};
 use vale_sphere::{LonLat, Projection, ProjectionSpec, graticule, nice_step};
-use vale_store::{Geometry, GeometryKind, Layer, LayerId, Value};
+use vale_store::{FrameRecord, Geometry, GeometryKind, Layer, LayerId, MapId, PageRecord, Value};
 use vale_style::expr::Context;
 use vale_style::{Extent, Paint, scale_denominator};
 
+use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
 use crate::view::{View, ViewTransform};
 use crate::{furniture, labels, pick};
@@ -114,9 +115,13 @@ struct Cache {
     graticules: HashMap<u64, Vec<Vec<Point>>>,
 }
 
+/// The most caches that a pipeline keeps.
+const MAX_CACHES: usize = 3;
+
 #[derive(Default)]
 pub struct Pipeline {
-    cache: Option<Cache>,
+    /// The most recently used cache first.
+    caches: Vec<Cache>,
 }
 
 /// Registers both Noto Sans files.
@@ -174,12 +179,6 @@ fn meets(a: Rect, b: Rect) -> bool {
     a.x0 <= b.x1 && a.x1 >= b.x0 && a.y0 <= b.y1 && a.y1 >= b.y0
 }
 
-fn page_bbox(vt: &ViewTransform, b: Rect) -> Rect {
-    let p = vt.to_page(Point::new(b.x0, b.y0));
-    let q = vt.to_page(Point::new(b.x1, b.y1));
-    Rect::new(p.x.min(q.x), p.y.min(q.y), p.x.max(q.x), p.y.max(q.y))
-}
-
 fn map_pts(vt: &ViewTransform, pts: &[Point]) -> Vec<Point> {
     pts.iter().map(|p| vt.to_page(*p)).collect()
 }
@@ -210,19 +209,32 @@ fn page_feature(vt: &ViewTransform, index: usize, f: &ProjFeature) -> PageFeatur
         points: map_pts(vt, &f.points),
         lines: f.lines.iter().map(|l| map_pts(vt, l)).collect(),
         rings: f.rings.iter().map(|l| map_pts(vt, l)).collect(),
-        bbox: page_bbox(vt, f.bbox),
+        bbox: vt.page_bbox(f.bbox),
     }
 }
 
+/// The layers that a map draws, in draw order. `None` is the legacy map,
+/// which draws the visible layers.
+fn drawn_layers(doc: &Document, map: Option<MapId>) -> Vec<LayerId> {
+    let entries = doc.frame.entries.iter().map(|e| e.layer);
+    match map {
+        None => entries.filter(|id| doc.visible(*id)).collect(),
+        Some(map) => entries.filter(|id| doc.shown(map, *id)).collect(),
+    }
+}
+
+/// The features of the layers that meet `area`, in page space.
 fn build_page_layers<'a>(
     doc: &'a Document,
     cache: &Cache,
     vt: &ViewTransform,
+    area: Rect,
+    ids: &[LayerId],
     scale: f64,
 ) -> Vec<PageLayer<'a>> {
-    let page = vt.page_rect().inflate(8.0, 8.0);
+    let page = area.inflate(8.0, 8.0);
     let mut out = Vec::new();
-    for entry in doc.frame.entries.iter().filter(|e| doc.visible(e.layer)) {
+    for entry in ids.iter().filter_map(|id| doc.entry(*id)) {
         let (Some(layer), Some(feats)) = (doc.layer(entry.layer), cache.layers.get(&entry.layer))
         else {
             continue;
@@ -235,7 +247,7 @@ fn build_page_layers<'a>(
             .iter()
             .enumerate()
             .filter_map(|(i, f)| f.as_ref().map(|f| (i, f)))
-            .filter(|(_, f)| meets(page_bbox(vt, f.bbox), page))
+            .filter(|(_, f)| meets(vt.page_bbox(f.bbox), page))
             .map(|(i, f)| page_feature(vt, i, f))
             .collect();
         out.push(PageLayer {
@@ -249,12 +261,11 @@ fn build_page_layers<'a>(
     out
 }
 
-/// Km per point at the middle of the view.
+/// Km per point at the center of the view.
 fn km_per_point(cache: &Cache, vt: &ViewTransform) -> f64 {
-    let middle = Point::new(vt.width / 2.0, vt.height / 2.0);
     let p = cache
         .projection
-        .inverse(vt.from_page(middle))
+        .inverse(vt.view.center)
         .unwrap_or([cache.spec.lon0, cache.spec.lat0]);
     let local = cache.projection.local_scale(p).unwrap_or(1.0);
     1.0 / (vt.view.scale * local) / 1000.0
@@ -405,56 +416,226 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch) {
 
 const SELECTION: vale_render::Color = vale_render::Color::rgb(230, 70, 30);
 
+/// The color of the paper of a page.
+pub const PAPER: vale_render::Color = vale_render::Color::rgb(255, 255, 255);
+
+/// The graticule step of a view, in degrees. `None` when the graticule is off.
+fn graticule_step(on: bool, view: &View, radius_m: f64) -> Option<f64> {
+    let degrees_per_point = 1.0 / (view.scale * radius_m * std::f64::consts::PI / 180.0);
+    on.then(|| nice_step(80.0 * degrees_per_point))
+}
+
+/// A closed path through rings of page millimeters, in target points.
+fn shape_path(rings: &[Vec<[f64; 2]>], target: FrameTarget) -> BezPath {
+    let rings: Vec<Vec<Point>> = rings
+        .iter()
+        .map(|r| {
+            let points = r.iter().map(|&[x, y]| target.to_target(Point::new(x, y)));
+            points.collect()
+        })
+        .collect();
+    polylines_path(&rings, true)
+}
+
+impl Cache {
+    /// Projects the graticule lines of a step.
+    fn ensure_graticule(&mut self, step: Option<f64>) {
+        let Some(step) = step else { return };
+        if self.graticules.contains_key(&step.to_bits()) {
+            return;
+        }
+        let lines: Vec<Vec<Point>> = graticule(step)
+            .iter()
+            .flat_map(|l| self.projection.project_line(l))
+            .collect();
+        self.graticules.insert(step.to_bits(), lines);
+    }
+}
+
+/// The layers that `draw_map` drew, and the ground size of one point.
+struct DrawnMap<'a> {
+    layers: Vec<PageLayer<'a>>,
+    km_per_point: f64,
+}
+
+/// Draws a map in `area`: the background, the water, the layers, the
+/// graticule, the outline, and the selection.
+#[allow(clippy::too_many_arguments)]
+fn draw_map<'a>(
+    list: &mut DisplayList,
+    doc: &'a Document,
+    cache: &Cache,
+    vt: &ViewTransform,
+    area: Rect,
+    ids: &[LayerId],
+    graticule_step: Option<f64>,
+    selection: Option<Selection>,
+) -> DrawnMap<'a> {
+    let style = &doc.frame.style;
+
+    // 1 and 2: background and water.
+    list.push(Item::Fill {
+        path: area.to_path(0.1),
+        color: style.background,
+        rule: FillRule::NonZero,
+    });
+    let outline: Vec<Point> = map_pts(vt, &cache.outline);
+    let outline_path = polylines_path([&outline], true);
+    list.push(Item::Fill {
+        path: outline_path.clone(),
+        color: style.water,
+        rule: FillRule::NonZero,
+    });
+
+    // 3: layers.
+    let km_per_point = km_per_point(cache, vt);
+    let scale = scale_denominator(km_per_point * 1000.0);
+    let page_layers = build_page_layers(doc, cache, vt, area, ids, scale);
+    for pl in &page_layers {
+        for batch in batches(pl) {
+            draw_batch(list, pl, &batch);
+        }
+    }
+
+    // 4: graticule.
+    if let Some(step) = graticule_step
+        && let Some(lines) = cache.graticules.get(&step.to_bits())
+    {
+        let mut path = BezPath::new();
+        for l in lines {
+            let pts = map_pts(vt, l);
+            let mut b = None;
+            for p in &pts {
+                extend_bbox(&mut b, *p);
+            }
+            if b.is_some_and(|b| meets(b, area)) {
+                add_polyline(&mut path, &pts, false);
+            }
+        }
+        if !path.elements().is_empty() {
+            list.push(Item::Stroke {
+                path,
+                color: style.graticule.color,
+                width: style.graticule.width,
+                round: false,
+            });
+        }
+    }
+
+    // 5: outline.
+    list.push(Item::Stroke {
+        path: outline_path,
+        color: style.outline.color,
+        width: style.outline.width,
+        round: false,
+    });
+
+    // 6: selection.
+    if let Some(sel) = selection
+        && let Some(pl) = page_layers.iter().find(|pl| pl.layer.id == sel.layer)
+        && let Some(f) = pl.features.iter().find(|f| f.index == sel.feature)
+    {
+        let extent = pl.extent(f.index);
+        let width = extent.stroke_width;
+        let item = match pl.kind {
+            GeometryKind::Point => {
+                let mut path = BezPath::new();
+                for p in &f.points {
+                    path.extend(Circle::new(*p, extent.marker_radius + 3.0).to_path(0.1));
+                }
+                Item::Stroke {
+                    path,
+                    color: SELECTION,
+                    width: 2.0,
+                    round: true,
+                }
+            }
+            GeometryKind::Line => Item::Stroke {
+                path: polylines_path(&f.lines, false),
+                color: SELECTION,
+                width: width + 2.0,
+                round: true,
+            },
+            GeometryKind::Polygon => Item::Stroke {
+                path: polylines_path(&f.lines, false),
+                color: SELECTION,
+                width: 2.0,
+                round: false,
+            },
+        };
+        list.push(item);
+    }
+
+    DrawnMap {
+        layers: page_layers,
+        km_per_point,
+    }
+}
+
 impl Pipeline {
     pub fn new() -> Self {
-        Pipeline { cache: None }
+        Pipeline { caches: Vec::new() }
     }
 
     /// Projects the features of a layer again at the next compose.
     pub fn forget(&mut self, id: LayerId) {
-        if let Some(cache) = &mut self.cache {
+        for cache in &mut self.caches {
             cache.layers.remove(&id);
         }
     }
 
-    /// Brings the projection and the projected geometry up to date with the document.
-    fn ensure(&mut self, doc: &Document) -> anyhow::Result<&mut Cache> {
-        let spec = doc.frame.projection.normalized();
+    /// The number of projections that the pipeline keeps.
+    pub fn cache_count(&self) -> usize {
+        self.caches.len()
+    }
+
+    /// Brings the projection of the map and the projected geometry of the
+    /// layers `ids` up to date with the document.
+    fn ensure(&mut self, doc: &Document, ids: &[LayerId]) -> anyhow::Result<&mut Cache> {
+        let spec = doc.projection();
         let radius_m = doc.project.world.radius_km * 1000.0;
-        let stale = self
-            .cache
-            .as_ref()
-            .is_none_or(|c| c.spec != spec || c.radius_m != radius_m);
-        if stale {
-            let projection =
-                Projection::new(spec, radius_m).map_err(|e| anyhow!("projection: {e}"))?;
-            let outline = projection.outline();
-            let bounds = projection.bounds();
-            self.cache = Some(Cache {
-                spec,
-                radius_m,
-                projection,
-                outline,
-                bounds,
-                layers: HashMap::new(),
-                graticules: HashMap::new(),
-            });
+        let found = self
+            .caches
+            .iter()
+            .position(|c| c.spec == spec && c.radius_m == radius_m);
+        match found {
+            Some(i) => {
+                let cache = self.caches.remove(i);
+                self.caches.insert(0, cache);
+            }
+            None => {
+                let projection =
+                    Projection::new(spec, radius_m).map_err(|e| anyhow!("projection: {e}"))?;
+                let outline = projection.outline();
+                let bounds = projection.bounds();
+                let cache = Cache {
+                    spec,
+                    radius_m,
+                    projection,
+                    outline,
+                    bounds,
+                    layers: HashMap::new(),
+                    graticules: HashMap::new(),
+                };
+                self.caches.insert(0, cache);
+                self.caches.truncate(MAX_CACHES);
+            }
         }
-        let cache = self.cache.as_mut().expect("cache was just made");
+        let cache = &mut self.caches[0];
         cache
             .layers
             .retain(|id, _| doc.project.layers().iter().any(|l| l.id == *id));
-        for entry in doc.frame.entries.iter().filter(|e| doc.visible(e.layer)) {
-            if cache.layers.contains_key(&entry.layer) {
+        for id in ids {
+            if cache.layers.contains_key(id) {
                 continue;
             }
-            if let Some(layer) = doc.layer(entry.layer) {
+            if let Some(layer) = doc.layer(*id) {
                 let feats = layer
                     .features
                     .iter()
                     .map(|f| project_feature(&cache.projection, &f.geometry))
                     .collect();
-                cache.layers.insert(entry.layer, feats);
+                cache.layers.insert(*id, feats);
             }
         }
         Ok(cache)
@@ -464,18 +645,28 @@ impl Pipeline {
         if let Some(v) = doc.frame.view {
             return Ok(v);
         }
-        let cache = self.ensure(doc)?;
+        let cache = self.ensure(doc, &drawn_layers(doc, None))?;
         Ok(View::fit(cache.bounds, size.0, size.1, 24.0))
     }
 
     pub fn fit_scale(&mut self, doc: &Document, size: (f64, f64)) -> anyhow::Result<f64> {
-        let cache = self.ensure(doc)?;
+        let cache = self.ensure(doc, &drawn_layers(doc, None))?;
         Ok(View::fit(cache.bounds, size.0, size.1, 24.0).scale)
+    }
+
+    /// The projected bounds of the projection of the map, in meters.
+    pub fn projection_bounds(&mut self, doc: &Document) -> anyhow::Result<Rect> {
+        Ok(self.ensure(doc, &[])?.bounds)
+    }
+
+    /// The projection of the map.
+    pub fn projection(&mut self, doc: &Document) -> anyhow::Result<&Projection> {
+        Ok(&self.ensure(doc, &[])?.projection)
     }
 
     /// The projected position of a place, in meters. `None` when it is not visible.
     pub fn project_lonlat(&mut self, doc: &Document, p: LonLat) -> anyhow::Result<Option<Point>> {
-        Ok(self.ensure(doc)?.projection.forward(p))
+        Ok(self.ensure(doc, &[])?.projection.forward(p))
     }
 
     pub fn lonlat_to_page(
@@ -485,13 +676,9 @@ impl Pipeline {
         p: LonLat,
     ) -> anyhow::Result<Option<Point>> {
         let view = self.resolve_view(doc, size)?;
-        let vt = ViewTransform {
-            view,
-            width: size.0,
-            height: size.1,
-        };
+        let vt = ViewTransform::new(view, size.0, size.1);
         Ok(self
-            .ensure(doc)?
+            .ensure(doc, &[])?
             .projection
             .forward(p)
             .map(|q| vt.to_page(q)))
@@ -504,12 +691,8 @@ impl Pipeline {
         q: Point,
     ) -> anyhow::Result<Option<LonLat>> {
         let view = self.resolve_view(doc, size)?;
-        let vt = ViewTransform {
-            view,
-            width: size.0,
-            height: size.1,
-        };
-        Ok(self.ensure(doc)?.projection.inverse(vt.from_page(q)))
+        let vt = ViewTransform::new(view, size.0, size.1);
+        Ok(self.ensure(doc, &[])?.projection.inverse(vt.from_page(q)))
     }
 
     pub fn pick(
@@ -519,17 +702,36 @@ impl Pipeline {
         at: Point,
     ) -> anyhow::Result<Option<Selection>> {
         let view = self.resolve_view(doc, size)?;
-        let vt = ViewTransform {
-            view,
-            width: size.0,
-            height: size.1,
-        };
-        let cache = self.ensure(doc)?;
+        let vt = ViewTransform::new(view, size.0, size.1);
+        let ids = drawn_layers(doc, None);
+        let cache = self.ensure(doc, &ids)?;
         let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
-        let layers = build_page_layers(doc, cache, &vt, scale);
+        let layers = build_page_layers(doc, cache, &vt, vt.page_rect(), &ids, scale);
         Ok(pick::pick(&layers, at))
     }
 
+    /// The feature of a frame under the target point `at`. A point outside
+    /// the shape of the frame picks nothing.
+    pub fn pick_frame(
+        &mut self,
+        doc: &Document,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        at: Point,
+    ) -> anyhow::Result<Option<Selection>> {
+        if !atlas::contains(&frame.shape, target.from_target(at)) {
+            return Ok(None);
+        }
+        let ids = drawn_layers(doc, Some(frame.map));
+        let cache = self.ensure(doc, &ids)?;
+        let vt = atlas::frame_transform(&cache.projection, frame, target);
+        let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
+        let area = frame_area(frame, target);
+        let layers = build_page_layers(doc, cache, &vt, area, &ids, scale);
+        Ok(pick::pick(&layers, at))
+    }
+
+    /// The map of the document at the size of a window, with a scale bar.
     pub fn compose(
         &mut self,
         doc: &Document,
@@ -539,134 +741,24 @@ impl Pipeline {
         selection: Option<Selection>,
     ) -> anyhow::Result<Composed> {
         let view = self.resolve_view(doc, size)?;
-        let vt = ViewTransform {
-            view,
-            width: size.0,
-            height: size.1,
-        };
+        let vt = ViewTransform::new(view, size.0, size.1);
         let page = vt.page_rect();
-        let style = &doc.frame.style;
         let radius_m = doc.project.world.radius_km * 1000.0;
-
-        // The graticule step depends on the view, so make its lines before borrowing the cache.
-        let degrees_per_point = 1.0 / (view.scale * radius_m * std::f64::consts::PI / 180.0);
-        let graticule_step = doc
-            .frame
-            .graticule
-            .then(|| nice_step(80.0 * degrees_per_point));
-        let cache = self.ensure(doc)?;
-        if let Some(step) = graticule_step
-            && !cache.graticules.contains_key(&step.to_bits())
-        {
-            let lines: Vec<Vec<Point>> = graticule(step)
-                .iter()
-                .flat_map(|l| cache.projection.project_line(l))
-                .collect();
-            cache.graticules.insert(step.to_bits(), lines);
-        }
+        let step = graticule_step(doc.frame.graticule, &view, radius_m);
+        let ids = drawn_layers(doc, None);
+        let cache = self.ensure(doc, &ids)?;
+        cache.ensure_graticule(step);
         let cache = &*cache;
 
         let mut list = DisplayList::new(size.0, size.1);
-
-        // 1 and 2: background and water.
-        list.push(Item::Fill {
-            path: page.to_path(0.1),
-            color: style.background,
-            rule: FillRule::NonZero,
-        });
-        let outline: Vec<Point> = map_pts(&vt, &cache.outline);
-        let outline_path = polylines_path([&outline], true);
-        list.push(Item::Fill {
-            path: outline_path.clone(),
-            color: style.water,
-            rule: FillRule::NonZero,
-        });
-
-        // 3: layers.
-        let km_per_point = km_per_point(cache, &vt);
-        let scale = scale_denominator(km_per_point * 1000.0);
-        let page_layers = build_page_layers(doc, cache, &vt, scale);
-        for pl in &page_layers {
-            for batch in batches(pl) {
-                draw_batch(&mut list, pl, &batch);
-            }
-        }
-
-        // 4: graticule.
-        if let Some(step) = graticule_step
-            && let Some(lines) = cache.graticules.get(&step.to_bits())
-        {
-            let mut path = BezPath::new();
-            for l in lines {
-                let pts = map_pts(&vt, l);
-                let mut b = None;
-                for p in &pts {
-                    extend_bbox(&mut b, *p);
-                }
-                if b.is_some_and(|b| meets(b, page)) {
-                    add_polyline(&mut path, &pts, false);
-                }
-            }
-            if !path.elements().is_empty() {
-                list.push(Item::Stroke {
-                    path,
-                    color: style.graticule.color,
-                    width: style.graticule.width,
-                    round: false,
-                });
-            }
-        }
-
-        // 5: outline.
-        list.push(Item::Stroke {
-            path: outline_path,
-            color: style.outline.color,
-            width: style.outline.width,
-            round: false,
-        });
-
-        // 6: selection.
-        if let Some(sel) = selection
-            && let Some(pl) = page_layers.iter().find(|pl| pl.layer.id == sel.layer)
-            && let Some(f) = pl.features.iter().find(|f| f.index == sel.feature)
-        {
-            let extent = pl.extent(f.index);
-            let width = extent.stroke_width;
-            let item = match pl.kind {
-                GeometryKind::Point => {
-                    let mut path = BezPath::new();
-                    for p in &f.points {
-                        path.extend(Circle::new(*p, extent.marker_radius + 3.0).to_path(0.1));
-                    }
-                    Item::Stroke {
-                        path,
-                        color: SELECTION,
-                        width: 2.0,
-                        round: true,
-                    }
-                }
-                GeometryKind::Line => Item::Stroke {
-                    path: polylines_path(&f.lines, false),
-                    color: SELECTION,
-                    width: width + 2.0,
-                    round: true,
-                },
-                GeometryKind::Polygon => Item::Stroke {
-                    path: polylines_path(&f.lines, false),
-                    color: SELECTION,
-                    width: 2.0,
-                    round: false,
-                },
-            };
-            list.push(item);
-        }
+        let drawn = draw_map(&mut list, doc, cache, &vt, page, &ids, step, selection);
 
         // 7 to 9: scale bar, labels.
         let (bar_items, bar_rect) =
-            furniture::scale_bar(page, km_per_point, doc.project.world.units, fonts);
+            furniture::scale_bar(page, drawn.km_per_point, doc.project.world.units, fonts);
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {
-            let (items, summary) = labels::place(&page_layers, page, fonts, quality, &[bar_rect]);
+            let (items, summary) = labels::place(&drawn.layers, page, fonts, quality, &[bar_rect]);
             list.items.extend(items);
             label_summary = summary;
         }
@@ -676,8 +768,91 @@ impl Pipeline {
             list,
             view,
             labels: label_summary,
-            km_per_point,
-            graticule_step,
+            km_per_point: drawn.km_per_point,
+            graticule_step: step,
         })
     }
+
+    /// A map frame of a page, in a target. The list is the size of the page
+    /// in the target. The frame draws the layers that its map shows, inside
+    /// its shape.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compose_frame(
+        &mut self,
+        doc: &Document,
+        page: &PageRecord,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        fonts: &mut Fonts,
+        quality: Quality,
+        selection: Option<Selection>,
+    ) -> anyhow::Result<Composed> {
+        let radius_m = doc.project.world.radius_km * 1000.0;
+        let ids = drawn_layers(doc, Some(frame.map));
+        let cache = self.ensure(doc, &ids)?;
+        let vt = atlas::frame_transform(&cache.projection, frame, target);
+        let step = graticule_step(frame.graticule, &vt.view, radius_m);
+        cache.ensure_graticule(step);
+        let cache = &*cache;
+
+        let size = target.to_target(Point::new(page.width_mm, page.height_mm));
+        let mut list = DisplayList::new(size.x, size.y);
+        let area = frame_area(frame, target);
+        list.push(Item::PushClip {
+            path: shape_path(&frame.shape.rings(), target),
+            rule: FillRule::EvenOdd,
+        });
+        let drawn = draw_map(&mut list, doc, cache, &vt, area, &ids, step, selection);
+        let mut label_summary = LabelSummary::default();
+        if doc.frame.labels {
+            let (items, summary) = labels::place(&drawn.layers, area, fonts, quality, &[]);
+            list.items.extend(items);
+            label_summary = summary;
+        }
+        list.push(Item::PopClip);
+
+        Ok(Composed {
+            list,
+            view: vt.view,
+            labels: label_summary,
+            km_per_point: drawn.km_per_point,
+            graticule_step: step,
+        })
+    }
+
+    /// A whole page in points: the paper, then each frame from the bottom
+    /// frame to the top frame.
+    pub fn compose_page(
+        &mut self,
+        doc: &Document,
+        page: &PageRecord,
+        fonts: &mut Fonts,
+        quality: Quality,
+    ) -> anyhow::Result<DisplayList> {
+        let target = FrameTarget {
+            origin: Point::ZERO,
+            pts_per_mm: PT_PER_MM,
+        };
+        let size = target.to_target(Point::new(page.width_mm, page.height_mm));
+        let mut list = DisplayList::new(size.x, size.y);
+        list.push(Item::Fill {
+            path: Rect::new(0.0, 0.0, size.x, size.y).to_path(0.1),
+            color: PAPER,
+            rule: FillRule::NonZero,
+        });
+        for frame in &page.frames {
+            let composed = self.compose_frame(doc, page, frame, target, fonts, quality, None)?;
+            list.items.extend(composed.list.items);
+        }
+        Ok(list)
+    }
+}
+
+/// The box of the shape of a frame, in target points.
+fn frame_area(frame: &FrameRecord, target: FrameTarget) -> Rect {
+    let b = atlas::shape_bbox(&frame.shape);
+    Rect::from_points(
+        target.to_target(Point::new(b.x0, b.y0)),
+        target.to_target(Point::new(b.x1, b.y1)),
+    )
 }

@@ -93,7 +93,7 @@ pub fn probe(
 
 /// The text of `--report`.
 pub fn report(doc: &Document, composed: &Composed) -> String {
-    let spec = doc.frame.projection;
+    let spec = doc.projection();
     let mut out = String::new();
     out.push_str(&format!(
         "world: {}, radius {} km\n",
