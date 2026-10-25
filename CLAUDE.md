@@ -10,7 +10,7 @@ The labeling prototype is done. The `vale-labeler` library labels points and lin
 cargo run --release -p vale-labeler-demo -- --preset world --out target/demo/world.png
 ```
 
-An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. The first start opens on a start screen that lists the projects, and a later start opens the project of the last run. A project opens on the globe workspace, and a switch in the tool bar opens the flat map. The globe workspace has a list of the layers, and the globe draws the vector layers. This command opens the window:
+An app prototype also exists. It is a vertical slice through phases 2, 4, 6, 8, and 9, ahead of the phase order. None of those phases is done. The first start opens on a start screen that lists the projects, and a later start opens the project of the last run. A project opens on the globe workspace, and the workspace switch opens the Atlas workspace, with the pages and the map frames. The globe workspace has a list of the layers, and the globe draws the vector layers. This command opens the window:
 
 ```sh
 cargo run --release -p vale-app
@@ -41,7 +41,7 @@ cargo run --release -p vale-globe-proto
 scripts/globe-proto-ipad.sh
 ```
 
-The app prototype saves the world, the vector layers, and the raster layers to a GeoPackage project file. The file also holds the undo log and a small picture of the globe for the start screen. The file also holds the style of each layer. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, and the opacity. A raster layer is a layer in the one draw order, and the globe blends the visible raster layers by their opacity. The flag `--export-heightmap` exports the first height layer of a project file as a GeoTIFF. On iPad, the projects are in a local folder and in an iCloud Drive folder, and the Files app shows both. The prototype leaves out an editor for the rules of a style, polygon labels, and the atlas. It also leaves out conic and transverse projections, editing tools other than the line tool, the polygon tool, and the point tool, and the GPU Vello backend. `README.md` has the full list.
+The app prototype saves the world, the vector layers, and the raster layers to a GeoPackage project file. The file also holds the undo log and a small picture of the globe for the start screen. The file also holds the style of each layer, and the maps, the pages, and the map frames of the atlas. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, and the opacity. A raster layer is a layer in the one draw order, and the globe blends the visible raster layers by their opacity. The flag `--export-heightmap` exports the first height layer of a project file as a GeoTIFF. On iPad, the projects are in a local folder and in an iCloud Drive folder, and the Files app shows both. The prototype leaves out an editor for the rules of a style, polygon labels, and the overview of the pages. It also leaves out conic and transverse projections, editing tools other than the line tool, the polygon tool, and the point tool, and the GPU Vello backend. `README.md` has the full list.
 
 The current phase is phase 0, the iPad test loop and CI. When each PR arrives on the iPad through TestFlight, and CI builds all four platforms, the phase is done.
 
