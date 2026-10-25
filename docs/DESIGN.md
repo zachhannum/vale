@@ -490,7 +490,7 @@ The same expression language serves filters, style properties, label text, and t
 
 A rule draws a feature when its filter matches and the scale denominator is in its range. The lower limit is in the range, and the upper limit is not. Each rule that matches draws the feature, in the order of the list. The project stores the style of each layer as JSON with a version number, together with the label settings of the layer.
 
-Each layer has one style. You edit it in the panel of the layer, from each workspace. The globe, the flat view, and each map draw the layer with that style. A map can override single properties without a copy of the full style. A change to the style of the layer shows in each map, and each override stays.
+Each layer has one style. You edit it in the panel of the layer, from each workspace. The globe, the flat view, and each map draw the layer with that style. A map can override single properties without a copy of the full style. A change to the style of the layer shows in each map, and each override stays. In the Layers tab of a selected frame, a switch in the panel of a layer sends a change to all maps or to the map of the frame only.
 
 The symbolizers must give enough artistic range that the output does not look like a survey map.
 
