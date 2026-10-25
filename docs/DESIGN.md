@@ -151,7 +151,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Label class | Text expression, font, placement rules, priority |
 | Map | Name, projection preset and center, the layers that are off in the map, style overrides, label classes |
 | Page | Name, page size in millimeters, units of the page size, paper color, page border, page template, furniture |
-| Map frame | Page, map, shape on the page, center, scale, rotation, border, graticule |
+| Map frame | Page, map, shape on the page, center, scale, rotation, fill, border, graticule |
 | Override | One manual change, keyed by map frame, feature ID, and label class |
 | Page template | Page size, margins, positions of the furniture |
 | Atlas | Ordered list of pages |
@@ -549,7 +549,7 @@ The app has two workspaces, World and Atlas. In the World workspace you draw and
 
 A page is one page of the atlas. It has a page size, its map frames, and its furniture (the items around the maps). The page size has presets and a free value, with units. A page has a paper color and a page border. The page border is a rectangle at a set distance from the edge of the page, and a map frame can cross it. Version 1 has a title, a legend, a scale bar, and a north arrow.
 
-A map frame is an area on a page that shows one map. Its shape is a rectangle or a polygon. A polygon can have notches and holes, for example a cut-out for an inset. The frame holds its shape on the page, and the center, the scale, and the rotation of the map in the shape. The map draws only inside the shape, and the border follows the shape. The extent of the frame comes from the shape and the view. A frame also holds its border and its graticule. One map can be in no frame, or in many frames on one or many pages. Thus an inset or an island chain is many frames on one page. A locator map is a map in a small frame, for example in the orthographic projection with a fill for the region of the main map.
+A map frame is an area on a page that shows one map. Its shape is a rectangle or a polygon. A polygon can have notches and holes, for example a cut-out for an inset. The frame holds its shape on the page, and the center, the scale, and the rotation of the map in the shape. The map draws only inside the shape, and the border follows the shape. The extent of the frame comes from the shape and the view. A frame also holds its fill, its border, and its graticule. The fill is a color behind the map, and with the fill off, the paper shows through. One map can be in no frame, or in many frames on one or many pages. Thus an inset or an island chain is many frames on one page. A locator map is a map in a small frame, for example in the orthographic projection with a fill for the region of the main map.
 
 Each scale bar, north arrow, and legend links to one frame of its page. A new item links to the largest frame.
 
