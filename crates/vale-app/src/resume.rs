@@ -80,6 +80,7 @@ impl Resume {
             lines.push(format!("globe_zoom {}", view.globe.zoom));
             let center = numbers(&[spec.lon0, spec.lat0]);
             lines.push(format!("flat_projection {} {center}", spec.kind.id()));
+            lines.push(format!("flat_definition {}", spec.definition()));
             let center = view.flat_center;
             lines.push(format!("flat_center {}", numbers(&[center.x, center.y])));
             lines.push(format!("flat_zoom {}", view.flat_zoom));
@@ -114,10 +115,15 @@ impl Resume {
             let r = floats("globe_rot", 9)?;
             let rot = Mat3([[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]]);
             let globe_zoom = floats("globe_zoom", 1)?[0];
-            let (kind, center) = value("flat_projection")?.split_once(' ')?;
-            let center = parse(center, 2)?;
-            let (lon0, lat0) = (center[0], center[1]);
-            let kind = ProjectionKind::from_id(kind)?;
+            let flat_spec = match value("flat_definition") {
+                Some(definition) => ProjectionSpec::from_proj_string(definition).ok()?,
+                None => {
+                    let (kind, center) = value("flat_projection")?.split_once(' ')?;
+                    let center = parse(center, 2)?;
+                    let kind = ProjectionKind::from_id(kind)?;
+                    ProjectionSpec::new(kind, center[0], center[1]).normalized()
+                }
+            };
             let flat_center = floats("flat_center", 2)?;
             let flat_zoom = floats("flat_zoom", 1)?[0];
             is_rotation(&rot).then_some(View {
@@ -127,7 +133,7 @@ impl Resume {
                     rot,
                     zoom: globe_zoom.clamp(view::ZOOM_MIN, view::ZOOM_MAX),
                 },
-                flat_spec: ProjectionSpec { kind, lon0, lat0 }.normalized(),
+                flat_spec,
                 flat_center: Point::new(flat_center[0], flat_center[1]),
                 flat_zoom: flat_zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX),
             })
@@ -164,11 +170,7 @@ mod tests {
             workspace: Workspace::Globe,
             world_view: WorldView::Flat,
             globe,
-            flat_spec: ProjectionSpec {
-                kind: ProjectionKind::Mercator,
-                lon0: 12.5,
-                lat0: 0.0,
-            },
+            flat_spec: ProjectionSpec::new(ProjectionKind::Mercator, 12.5, 0.0),
             flat_center: Point::new(0.3, -0.1),
             flat_zoom: 2.25,
         }
@@ -209,5 +211,46 @@ mod tests {
         assert_eq!(Resume::parse(&not_rotation), no_view);
         let unknown = format!("{text}\nlater_key 1");
         assert_eq!(Resume::parse(&unknown), resume);
+    }
+
+    #[test]
+    fn an_oblique_flat_projection_comes_back() {
+        let oblique = ProjectionSpec {
+            oblique: Some(40.0),
+            ..ProjectionSpec::new(ProjectionKind::EqualEarth, -30.5, 52.25)
+        };
+        let resume = Resume {
+            project: Some(PathBuf::from("/worlds/a.gpkg")),
+            view: Some(View {
+                flat_spec: oblique,
+                ..view()
+            }),
+        };
+        let back = Resume::parse(&resume.text()).view.unwrap();
+        // The PROJ string rounds the parameters to 1e-9 degrees.
+        let spec = back.flat_spec;
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(spec.lon0, -30.5) && near(spec.lat0, 52.25), "{spec:?}");
+        assert!(near(spec.oblique.unwrap(), 40.0), "{spec:?}");
+        assert_eq!(spec.kind, ProjectionKind::EqualEarth);
+        let view = View {
+            flat_spec: oblique,
+            ..back
+        };
+        assert_eq!(Some(view), resume.view);
+    }
+
+    #[test]
+    fn a_file_with_no_definition_gives_the_projection() {
+        let resume = Resume {
+            project: Some(PathBuf::from("/worlds/a.gpkg")),
+            view: Some(view()),
+        };
+        let text = resume.text();
+        let old: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.starts_with("flat_definition"))
+            .collect();
+        assert_eq!(Resume::parse(&old.join("\n")), resume);
     }
 }
