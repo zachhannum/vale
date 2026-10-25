@@ -39,7 +39,7 @@ A world opens in the globe workspace. A new world has no raster layer. A raster 
 - The flatten mode moves the ground to the level under the start of the stroke. To set a fixed level, click "Pick from globe", and then press on the globe.
 - Press Ctrl+Z to undo a stroke. Press Ctrl+Shift+Z or Ctrl+Y to redo it. On a Mac, use Command in place of Ctrl. On a touch screen, tap with two fingers to undo, and tap with three fingers to redo. The iPad layout also has an undo button and a redo button in the top row. A new stroke removes the strokes that you can redo. The undo steps use 256 MB of memory at most, and the oldest steps go first. With `--project`, the steps are in the project file, and they use 256 MB of the file at most. Undo and redo then work after you close the app and open it again. They also include each change of the world, of the vector layers, and of the color stops of a raster layer.
 - Click "Flat" in the tool bar to show the whole world as one flat map. Click it again to go back to the globe. The tool and the panels stay. A drag moves the map, and the wheel zooms. You can zoom out until the map has a quarter of the size of the canvas. At each zoom, you can move each place of the map to the middle of the canvas. The brush paints the same heightmap, and its outline shows the ground that the stamp covers. In the equirectangular projection, the outline is wide near a pole.
-- In the flat view, the list next to "Flat" sets the projection: equirectangular, Equal Earth, Mercator, Lambert azimuthal, orthographic, or stereographic. In the iPad layout, the button next to "Flat" opens the same list.
+- In the flat view, the list next to "Flat" sets the projection: equirectangular, Equal Earth, Mercator, transverse Mercator, Lambert azimuthal, Lambert conformal conic, Albers equal-area conic, orthographic, or stereographic. The list also has the custom projections of the project. In the iPad layout, the button next to "Flat" opens the same list. Its last row, "Save projection", saves the projection of the view as a custom projection with the name "Custom 1", "Custom 2", and so on.
 - "Recenter" makes the place at the middle of the canvas the center of the projection. Move the map first. "Reset" puts the center of the projection back and shows the whole map. In the iPad layout, the two actions are buttons to the right of the view switch.
 - Click "New world…" in the tool bar to make a world from a name, a radius, and display units. The radius is that of Earth, Mars, or the Moon, or a value that you type. With `--project`, the new world is a new project file in the folder of the project file, and the app opens it. The file of the old world stays. With no project file, the new world has no file. Click "World…" to change the name, the radius, or the units of the world.
 - The globe draws the vector layers of the world over the heightmap. The flat view of the globe workspace does not draw them.
@@ -54,7 +54,8 @@ Click "Map" in the tool bar to open the flat map with the Natural Earth 110m sam
 
 - Drag the map to pan. Scroll or pinch to zoom. On a touch screen, two fingers pan and zoom.
 - Double-click the map to move the center of the projection there.
-- Use the left panel to set the projection and its center.
+- Use the left panel to set the projection, its center, the standard parallels of a conic projection, and the rotation of an oblique aspect. An oblique aspect is a projection tilted so that its center line follows a region. Type a name and click "Save projection" to keep the projection in the project as a custom projection. The list of the projections then has it, and the flat view can use it too. "Delete" removes the custom projection of the map.
+- In the iPad layout, the button at the top right of the map opens the list of the projections.
 - Tick a layer to show it. Click "Edit" on a layer to select it. The inspector then shows its name and its style. Type in the name field to rename the layer.
 - Click "Add layer" above the list to make an empty layer of lines, points, or polygons.
 - Click a feature to see its attributes. The inspector lists the labels that did not fit.
@@ -95,12 +96,12 @@ cargo run --release -p vale-app -- --zoom-test --import-heightmap path/to/height
 cargo run --release -p vale-app -- --project path/to/world.gpkg --export-heightmap target/app/world.tif
 ```
 
-`--screenshot` draws the full UI in the globe workspace. With `--layout pad` it draws the iPad layout. In that layout, `--panel brush`, `--panel layers`, or `--panel toolbox` opens a panel, `--more-tools` opens the menu of the More cell, and `--worlds-menu` opens the menu of the worlds. `--world-form new` or `--world-form properties` opens the form of the world. With `--view flat` it draws the flat view of the world, and `--flat-projection` and `--flat-center` set its projection. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
+`--screenshot` draws the full UI in the globe workspace. With `--layout pad` it draws the iPad layout. In that layout, `--panel brush`, `--panel layers`, or `--panel toolbox` opens a panel, `--more-tools` opens the menu of the More cell, and `--worlds-menu` opens the menu of the worlds. `--world-form new` or `--world-form properties` opens the form of the world. With `--view flat` it draws the flat view of the world, and `--flat-projection` and `--flat-center` set its projection. `--projection-list` opens the list of the projections. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. Text in the PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
 
 | Argument | Meaning |
 | --- | --- |
 | `--workspace <NAME>` | `globe` or `map`. The default is `globe`. |
-| `--projection <ID>` | `equal-earth`, `mercator`, `lambert-azimuthal`, `orthographic`, or `stereographic` |
+| `--projection <ID>` | `equirectangular`, `equal-earth`, `mercator`, `transverse-mercator`, `lambert-azimuthal`, `lambert-conformal-conic`, `albers`, `orthographic`, or `stereographic` |
 | `--center <LON,LAT>` | Center of the projection |
 | `--radius-km <KM>` | Radius of the world. The default is 6371. A project file that exists gives its own radius. |
 | `--project <GPKG>` | Project file for the world, the vector layers, and the heightmap |
@@ -177,7 +178,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - An editor for the rules of a style. The inspector edits the fill, the stroke, and the circle symbol of a style with one rule.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
 - More than one map frame, the atlas, page templates, SVG export, and graticule labels. The only map furniture is a scale bar.
-- Conic and transverse projections, oblique aspects, and projection suggestions.
+- Projection suggestions, the projection editor, and Tissot circles.
 - Editing tools other than the line tool, the polygon tool, and the point tool, including the attribute table.
 - The GPU Vello backend. The prototype draws on the CPU with `vello_cpu`.
 
