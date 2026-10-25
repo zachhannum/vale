@@ -561,6 +561,8 @@ The Atlas workspace has the Select tool and the Move tool. With the Select tool,
 
 Only the selected frame pans, zooms, and rotates its map. With the Move tool, a drag in the selected frame pans the map. With each tool, two fingers in the selected frame pan, zoom, and rotate the map, and the mouse wheel zooms it. Elsewhere, two fingers pan and zoom the page, and the mouse wheel zooms the page. A drag that starts outside the frames pans the page. With the Move tool, a drag outside the selected frame also pans the page. A double tap outside the page fits the page to the screen again, and a page fits when it opens.
 
+When you move or resize a frame, or drag a vertex, the frame snaps to the page edges, the center lines of the page, the margins of the page template, and the edges, the center lines, and the vertices of the other frames. A guide line shows each snap. An edge of a polygon frame locks to horizontal, to vertical, or to 45 degrees, with Shift on the desktop and with a second finger on iPad.
+
 A new frame on an empty page fills the page inside a margin of 10 mm. The panel of the page does not delete the last page.
 
 A page template holds the page size, the margins, and the positions of the furniture. Many pages share one template, so the atlas has one look. The atlas is the ordered list of the pages.
