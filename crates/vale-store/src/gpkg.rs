@@ -20,6 +20,9 @@ use flate2::write::DeflateEncoder;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
 
+use crate::atlas::{
+    self, Atlas, FrameId, FrameRecord, FrameShape, MapId, MapRecord, PageId, PageRecord, PageUnits,
+};
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
@@ -29,7 +32,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 21;
+pub const FORMAT_VERSION: u32 = 22;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -55,6 +58,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v19,
     v20,
     v21,
+    v22,
 ];
 
 /// `GPKG` in ASCII.
@@ -863,6 +867,64 @@ fn v21(_tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The atlas. An older file gets one map with an Equal Earth projection and
+/// one page in the units of the world. A file with an older version number
+/// can already have the tables.
+fn v22(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_map (
+           id INTEGER PRIMARY KEY,
+           position INTEGER NOT NULL UNIQUE,
+           name TEXT NOT NULL,
+           projection TEXT NOT NULL,
+           lon0 REAL NOT NULL,
+           lat0 REAL NOT NULL);
+         CREATE TABLE IF NOT EXISTS vale_map_hidden (
+           map_id INTEGER NOT NULL REFERENCES vale_map(id),
+           layer_id INTEGER NOT NULL,
+           PRIMARY KEY (map_id, layer_id));
+         CREATE TABLE IF NOT EXISTS vale_page (
+           id INTEGER PRIMARY KEY,
+           position INTEGER NOT NULL UNIQUE,
+           name TEXT NOT NULL,
+           width_mm REAL NOT NULL,
+           height_mm REAL NOT NULL,
+           units TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS vale_frame (
+           id INTEGER PRIMARY KEY,
+           page_id INTEGER NOT NULL REFERENCES vale_page(id),
+           position INTEGER NOT NULL,
+           map_id INTEGER NOT NULL REFERENCES vale_map(id),
+           shape TEXT NOT NULL CHECK (shape IN ('rectangle', 'polygon')),
+           rings BLOB NOT NULL,
+           center_lon REAL NOT NULL,
+           center_lat REAL NOT NULL,
+           scale REAL NOT NULL CHECK (scale > 0),
+           rotation REAL NOT NULL,
+           graticule INTEGER NOT NULL,
+           UNIQUE (page_id, position));
+         INSERT OR IGNORE INTO vale_map (id, position, name, projection, lon0, lat0)
+           VALUES (0, 0, 'Map', 'equal-earth', 0, 0);
+         INSERT OR IGNORE INTO vale_page (id, position, name, width_mm, height_mm, units)
+           SELECT 0, 0, '',
+             CASE units WHEN 'imperial' THEN 279.4 ELSE 297 END,
+             CASE units WHEN 'imperial' THEN 215.9 ELSE 210 END,
+             CASE units WHEN 'imperial' THEN 'in' ELSE 'mm' END
+           FROM vale_world;
+         INSERT OR IGNORE INTO vale_meta (key, value)
+           VALUES ('next_map_id', '1'), ('next_page_id', '1'), ('next_frame_id', '0');
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_map', 'vale', 'vale_map'),
+                  ('vale_map_hidden', 'vale', 'vale_map_hidden'),
+                  ('vale_page', 'vale', 'vale_page'),
+                  ('vale_frame', 'vale', 'vale_frame');
+         INSERT OR IGNORE INTO gpkg_extensions
+           SELECT table_name, NULL, 'vale_project', 'Records of the Vale app', 'read-write'
+           FROM gpkg_contents
+           WHERE table_name IN ('vale_map', 'vale_map_hidden', 'vale_page', 'vale_frame');",
+    )
+}
+
 /// The display of a raster. The rasters of an older file show bands.
 fn v10(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE vale_raster ADD COLUMN display TEXT NOT NULL DEFAULT 'bands'")
@@ -1163,7 +1225,10 @@ fn write_edit(
         tiles_deleted: remove_old_tiles(tx, project, step)?,
         tiles_written: 0,
     };
-    write_records(tx, project)?;
+    if old.is_none_or(|old| !same_base(old, project)) {
+        write_base(tx, project)?;
+    }
+    write_atlas(tx, project)?;
     remove_rasters(tx, project)?;
     for change in changes {
         write_tiles(tx, change, step, &mut stats)?;
@@ -1174,9 +1239,25 @@ fn write_edit(
     Ok(stats)
 }
 
+/// True if the world, the rasters, and the layers of two projects are the
+/// same.
+fn same_base(a: &Project, b: &Project) -> bool {
+    a.world == b.world
+        && a.layers == b.layers
+        && a.next_id == b.next_id
+        && a.rasters == b.rasters
+        && a.next_raster_id == b.next_raster_id
+}
+
+/// Writes all the records of a project.
+fn write_records(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    write_base(tx, project)?;
+    write_atlas(tx, project)
+}
+
 /// Writes the world, the raster records, and the layers. The record of a
 /// raster that is not in the project stays.
-fn write_records(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+fn write_base(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     clear(tx)?;
     write_world(tx, &project.world)?;
     // A raster layer refers to the row of its raster.
@@ -1203,6 +1284,81 @@ fn write_records(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 write_layer(tx, position, layer, &table, Some(raster))?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Writes the maps, the pages, and the frames. A map does not keep the
+/// hidden ID of a layer that the project does not have.
+fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    let atlas = &project.atlas;
+    tx.execute_batch(
+        "DELETE FROM vale_frame;
+         DELETE FROM vale_map_hidden;
+         DELETE FROM vale_page;
+         DELETE FROM vale_map;",
+    )?;
+    let mut map = tx.prepare(
+        "INSERT INTO vale_map (id, position, name, projection, lon0, lat0)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    let mut hidden =
+        tx.prepare("INSERT INTO vale_map_hidden (map_id, layer_id) VALUES (?1, ?2)")?;
+    for (position, m) in atlas.maps.iter().enumerate() {
+        map.execute(params![
+            m.id.0,
+            position,
+            m.name,
+            m.projection,
+            m.lon0,
+            m.lat0
+        ])?;
+        for layer in m.hidden.iter().filter(|id| project.layer(**id).is_some()) {
+            hidden.execute(params![m.id.0, layer.0])?;
+        }
+    }
+    let mut page = tx.prepare(
+        "INSERT INTO vale_page (id, position, name, width_mm, height_mm, units)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    let mut frame = tx.prepare(
+        "INSERT INTO vale_frame (id, page_id, position, map_id, shape, rings, center_lon,
+           center_lat, scale, rotation, graticule)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+    )?;
+    for (position, p) in atlas.pages.iter().enumerate() {
+        let units = p.units.id();
+        page.execute(params![
+            p.id.0,
+            position,
+            p.name,
+            p.width_mm,
+            p.height_mm,
+            units
+        ])?;
+        for (position, f) in p.frames.iter().enumerate() {
+            frame.execute(params![
+                f.id.0,
+                p.id.0,
+                position,
+                f.map.0,
+                f.shape.kind_id(),
+                atlas::encode_rings(&f.shape.rings()),
+                f.center[0],
+                f.center[1],
+                f.scale,
+                f.rotation,
+                f.graticule,
+            ])?;
+        }
+    }
+    let mut meta = tx.prepare("INSERT OR REPLACE INTO vale_meta (key, value) VALUES (?1, ?2)")?;
+    for (key, n) in [
+        ("next_map_id", atlas.next_map_id),
+        ("next_page_id", atlas.next_page_id),
+        ("next_frame_id", atlas.next_frame_id),
+    ] {
+        meta.execute(params![key, n.to_string()])?;
     }
     Ok(())
 }
@@ -1868,12 +2024,104 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         return Err(corrupt(format!("raster {} has no layer", raster.id.0)));
     }
     Ok(Project {
+        atlas: load_atlas(conn, units)?,
         world,
         layers,
         next_id,
         rasters,
         next_raster_id,
     })
+}
+
+fn counter(conn: &Connection, key: &str) -> Result<u32, StoreError> {
+    let text = meta(conn, key)?;
+    text.parse().map_err(|_| corrupt(format!("{key} {text:?}")))
+}
+
+/// Reads the atlas. A file with no map or no page gets the default map or
+/// page of `Atlas::new`.
+fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
+    let default = Atlas::new(units);
+    let mut atlas = Atlas {
+        maps: Vec::new(),
+        pages: Vec::new(),
+        next_map_id: counter(conn, "next_map_id")?,
+        next_page_id: counter(conn, "next_page_id")?,
+        next_frame_id: counter(conn, "next_frame_id")?,
+    };
+    let mut rows =
+        conn.prepare("SELECT id, name, projection, lon0, lat0 FROM vale_map ORDER BY position")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        atlas.maps.push(MapRecord {
+            id: MapId(r.get(0)?),
+            name: r.get(1)?,
+            projection: r.get(2)?,
+            lon0: r.get(3)?,
+            lat0: r.get(4)?,
+            hidden: BTreeSet::new(),
+        });
+    }
+    let mut rows = conn.prepare("SELECT map_id, layer_id FROM vale_map_hidden")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id = MapId(r.get(0)?);
+        let map = atlas.map_mut(id);
+        let map = map.ok_or_else(|| corrupt(format!("hidden layers of map {}", id.0)))?;
+        map.hidden.insert(LayerId(r.get(1)?));
+    }
+    let mut rows = conn
+        .prepare("SELECT id, name, width_mm, height_mm, units FROM vale_page ORDER BY position")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let units: String = r.get(4)?;
+        atlas.pages.push(PageRecord {
+            id: PageId(r.get(0)?),
+            name: r.get(1)?,
+            width_mm: r.get(2)?,
+            height_mm: r.get(3)?,
+            units: PageUnits::from_id(&units)
+                .ok_or_else(|| corrupt(format!("page units {units:?}")))?,
+            frames: Vec::new(),
+        });
+    }
+    if atlas.maps.is_empty() {
+        atlas.maps = default.maps;
+        atlas.next_map_id = atlas.next_map_id.max(1);
+    }
+    if atlas.pages.is_empty() {
+        atlas.pages = default.pages;
+        atlas.next_page_id = atlas.next_page_id.max(1);
+    }
+    let mut rows = conn.prepare(
+        "SELECT id, page_id, map_id, shape, rings, center_lon, center_lat, scale, rotation,
+           graticule
+         FROM vale_frame ORDER BY page_id, position",
+    )?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id: u32 = r.get(0)?;
+        let bad = || corrupt(format!("frame {id}"));
+        let map = MapId(r.get(2)?);
+        let kind: String = r.get(3)?;
+        let rings: Vec<u8> = r.get(4)?;
+        let rings = atlas::decode_rings(&rings).ok_or_else(bad)?;
+        let frame = FrameRecord {
+            id: FrameId(id),
+            map,
+            shape: FrameShape::from_rings(&kind, rings).ok_or_else(bad)?,
+            center: [r.get(5)?, r.get(6)?],
+            scale: r.get(7)?,
+            rotation: r.get(8)?,
+            graticule: r.get(9)?,
+        };
+        if atlas.map(map).is_none() {
+            return Err(bad());
+        }
+        let page = atlas.page_mut(PageId(r.get(1)?)).ok_or_else(bad)?;
+        page.frames.push(frame);
+    }
+    Ok(atlas)
 }
 
 fn load_features(
@@ -2282,8 +2530,12 @@ mod tests {
             ),
             [
                 "vale_field",
+                "vale_frame",
                 "vale_layer",
+                "vale_map",
+                "vale_map_hidden",
                 "vale_meta",
+                "vale_page",
                 "vale_raster",
                 "vale_raster_tile",
                 "vale_thumbnail",
@@ -2474,6 +2726,166 @@ mod tests {
         let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
         assert_eq!(loaded.layer(towns).unwrap().style, None);
+    }
+
+    fn atlas_edit(project: &mut Project) {
+        let towns = project.layers()[0].id;
+        let atlas = &mut project.atlas;
+        atlas.maps[0].hidden.insert(towns);
+        atlas.maps[0].projection = "orthographic".into();
+        atlas.maps[0].lon0 = 40.0;
+        let first = atlas.pages[0].id;
+        let second = atlas.add_page(Some(first), 420.0, 297.0, PageUnits::In);
+        atlas.page_mut(second).unwrap().name = "North".into();
+        let frame = FrameRecord {
+            id: FrameId(0),
+            map: MapId(0),
+            shape: FrameShape::Rectangle([10.0, 10.0, 287.0, 200.0]),
+            center: [12.0, -30.5],
+            scale: 90_000_000.0,
+            rotation: 45.0,
+            graticule: true,
+        };
+        atlas.add_frame(first, frame.clone()).unwrap();
+        let ring = vec![
+            [0.0, 0.0],
+            [90.0, 0.0],
+            [45.0, 20.0],
+            [90.0, 60.0],
+            [0.0, 60.0],
+        ];
+        let hole = vec![[5.0, 5.0], [15.0, 5.0], [15.0, 15.0]];
+        let polygon = FrameRecord {
+            shape: FrameShape::Polygon(vec![ring, hole]),
+            graticule: false,
+            ..frame
+        };
+        atlas.add_frame(second, polygon.clone()).unwrap();
+        atlas.add_frame(second, polygon).unwrap();
+    }
+
+    #[test]
+    fn the_file_keeps_the_atlas_and_undo_puts_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let before = project.clone();
+        atlas_edit(&mut project);
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas, project.atlas);
+        assert!(file.undo().unwrap().is_some());
+        assert_eq!(file.project().atlas.maps, before.atlas.maps);
+        assert_eq!(file.project().atlas.pages, before.atlas.pages);
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas.pages, before.atlas.pages);
+        assert!(file.redo().unwrap().is_some());
+        assert_eq!(file.project().atlas, project.atlas);
+
+        // A frame that is added after the undo gets an ID that was never used.
+        let mut next = file.project().clone();
+        let page = next.atlas.pages[0].id;
+        let frame = next.atlas.pages[0].frames[0].clone();
+        let id = next.atlas.add_frame(page, frame).unwrap();
+        assert!(next.atlas.frame(id).is_some());
+        assert_eq!(
+            next.atlas
+                .pages
+                .iter()
+                .flat_map(|p| &p.frames)
+                .filter(|f| f.id == id)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_file_does_not_keep_the_hidden_id_of_a_missing_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        project.atlas.maps[0].hidden.extend([towns, LayerId(99)]);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas.maps[0].hidden, BTreeSet::from([towns]));
+
+        project.remove_layer(towns);
+        assert!(!project.atlas.maps[0].hidden.contains(&towns));
+    }
+
+    #[test]
+    fn a_file_of_version_21_gets_one_map_and_one_page() {
+        for units in Units::ALL {
+            let dir = tempfile::tempdir().unwrap();
+            let project = Project::new(World {
+                units,
+                ..World::default()
+            });
+            drop(ProjectFile::create(&path(&dir), &project).unwrap());
+            let conn = Connection::open(path(&dir)).unwrap();
+            conn.execute_batch(
+                "DROP TABLE vale_frame;
+                 DROP TABLE vale_map_hidden;
+                 DROP TABLE vale_page;
+                 DROP TABLE vale_map;
+                 DELETE FROM vale_meta WHERE key GLOB 'next_*' AND key NOT GLOB 'next_[lr]*';
+                 DELETE FROM gpkg_extensions
+                   WHERE table_name IN ('vale_map', 'vale_map_hidden', 'vale_page', 'vale_frame');
+                 DELETE FROM gpkg_contents
+                   WHERE table_name IN ('vale_map', 'vale_map_hidden', 'vale_page', 'vale_frame');",
+            )
+            .unwrap();
+            drop(conn);
+            set_format_version(&dir, 21);
+
+            let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+            assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+            assert_eq!(loaded.atlas, Atlas::new(units));
+            let mut next = loaded.clone();
+            let page = next.atlas.add_page(None, 1.0, 1.0, PageUnits::Mm);
+            assert_eq!(page, PageId(1));
+        }
+    }
+
+    #[test]
+    fn a_change_of_the_atlas_does_not_write_the_feature_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = sample();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        // A write of the base records puts back the rows and the world name.
+        let mark = |file: &ProjectFile| {
+            file.conn
+                .execute_batch("DELETE FROM \"Places\"; UPDATE vale_world SET name = 'mark'")
+                .unwrap();
+        };
+        let marked = |file: &ProjectFile| -> bool {
+            let world: String = file
+                .conn
+                .query_row("SELECT name FROM vale_world", [], |r| r.get(0))
+                .unwrap();
+            let rows: i64 = file
+                .conn
+                .query_row("SELECT count(*) FROM \"Places\"", [], |r| r.get(0))
+                .unwrap();
+            world == "mark" && rows == 0
+        };
+        mark(&file);
+        atlas_edit(&mut project);
+        file.save(&project).unwrap();
+        assert!(marked(&file));
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas, project.atlas);
+
+        project.world.seed += 1;
+        file.save(&project).unwrap();
+        assert!(!marked(&file));
+        mark(&file);
+        assert!(file.undo().unwrap().is_some());
+        assert!(!marked(&file));
     }
 
     #[test]
@@ -2896,7 +3308,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 128 * 1024, "{bytes} bytes");
+        assert!(bytes < 160 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();

@@ -4,7 +4,7 @@
 //! that the edit changed, from before the edit. An undo swaps each image with
 //! the record or the tile in the file, so the step then holds the images from
 //! after the edit, and a redo swaps them back. A record is the world, one
-//! raster, or one layer with its features. The step of a new raster layer or
+//! raster, one layer with its features, or the atlas. The step of a new raster layer or
 //! of a removed one holds the image of the layer and the image of the raster.
 
 use std::io::{Read, Write};
@@ -14,6 +14,10 @@ use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
+use crate::atlas::{
+    Atlas, FrameId, FrameRecord, FrameShape, MapId, MapRecord, PageId, PageRecord, PageUnits,
+    encode_rings, read_rings,
+};
 use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
 };
@@ -32,6 +36,7 @@ const DEFLATE: u8 = 1;
 const WORLD: &str = "world";
 const RASTER: &str = "raster";
 const LAYER: &str = "layer";
+const ATLAS: &str = "atlas";
 
 /// The log tables.
 pub(crate) fn v3(tx: &Transaction) -> rusqlite::Result<()> {
@@ -95,6 +100,9 @@ pub(crate) fn keep_records(
     let mut changed: Vec<(&str, u32)> = Vec::new();
     if old.world != new.world {
         changed.push((WORLD, 0));
+    }
+    if old.atlas != new.atlas {
+        changed.push((ATLAS, 0));
     }
     let ids = |a: &Project, b: &Project| -> Vec<u32> {
         let rasters = a.rasters.iter().filter(|r| b.raster(r.id) != Some(r));
@@ -213,6 +221,11 @@ pub(crate) fn swap_records(
                 if payload.is_some() {
                     layers.push(layer(&mut r).ok_or_else(bad)?);
                 }
+            }
+            ATLAS => {
+                let image = payload.is_some().then(|| atlas(&mut r)).flatten();
+                let (maps, pages) = image.ok_or_else(bad)?;
+                (next.atlas.maps, next.atlas.pages) = (maps, pages);
             }
             _ => return Err(bad()),
         }
@@ -364,6 +377,7 @@ fn image(project: &Project, kind: &str, id: u32) -> Option<Vec<u8>> {
     match kind {
         WORLD => put_world(&mut out, &project.world),
         RASTER => put_raster(&mut out, project.raster(RasterId(id))?),
+        ATLAS => put_atlas(&mut out, &project.atlas),
         _ => {
             let at = project.layers.iter().position(|l| l.id.0 == id)?;
             put_layer(&mut out, at, &project.layers[at]);
@@ -438,6 +452,101 @@ fn world(r: &mut Reader) -> Option<World> {
         },
         seed: if r.0.is_empty() { 0 } else { r.u32()? },
     })
+}
+
+/// The image of the atlas holds the maps and the pages, and not the
+/// counters of the IDs.
+fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
+    put_u32(out, atlas.maps.len());
+    for map in &atlas.maps {
+        put_u32(out, map.id.0 as usize);
+        put_bytes(out, map.name.as_bytes());
+        put_bytes(out, map.projection.as_bytes());
+        put_f64(out, map.lon0);
+        put_f64(out, map.lat0);
+        put_u32(out, map.hidden.len());
+        for layer in &map.hidden {
+            put_u32(out, layer.0 as usize);
+        }
+    }
+    put_u32(out, atlas.pages.len());
+    for page in &atlas.pages {
+        put_u32(out, page.id.0 as usize);
+        put_bytes(out, page.name.as_bytes());
+        put_f64(out, page.width_mm);
+        put_f64(out, page.height_mm);
+        put_bytes(out, page.units.id().as_bytes());
+        put_u32(out, page.frames.len());
+        for frame in &page.frames {
+            put_u32(out, frame.id.0 as usize);
+            put_u32(out, frame.map.0 as usize);
+            put_bytes(out, frame.shape.kind_id().as_bytes());
+            out.extend_from_slice(&encode_rings(&frame.shape.rings()));
+            put_f64(out, frame.center[0]);
+            put_f64(out, frame.center[1]);
+            put_f64(out, frame.scale);
+            put_f64(out, frame.rotation);
+            out.push(frame.graticule as u8);
+        }
+    }
+}
+
+fn atlas(r: &mut Reader) -> Option<(Vec<MapRecord>, Vec<PageRecord>)> {
+    let mut maps = Vec::new();
+    for _ in 0..count(r)? {
+        let id = MapId(r.u32()?);
+        let name = string(r)?;
+        let projection = string(r)?;
+        let (lon0, lat0) = (r.f64()?, r.f64()?);
+        let mut hidden = std::collections::BTreeSet::new();
+        for _ in 0..count(r)? {
+            hidden.insert(LayerId(r.u32()?));
+        }
+        maps.push(MapRecord {
+            id,
+            name,
+            projection,
+            lon0,
+            lat0,
+            hidden,
+        });
+    }
+    let mut pages = Vec::new();
+    for _ in 0..count(r)? {
+        let id = PageId(r.u32()?);
+        let name = string(r)?;
+        let (width_mm, height_mm) = (r.f64()?, r.f64()?);
+        let units = PageUnits::from_id(&string(r)?)?;
+        let mut frames = Vec::new();
+        for _ in 0..count(r)? {
+            let id = FrameId(r.u32()?);
+            let map = MapId(r.u32()?);
+            let kind = string(r)?;
+            let shape = FrameShape::from_rings(&kind, read_rings(r)?)?;
+            frames.push(FrameRecord {
+                id,
+                map,
+                shape,
+                center: [r.f64()?, r.f64()?],
+                scale: r.f64()?,
+                rotation: r.f64()?,
+                graticule: match r.take::<1>()? {
+                    [0] => false,
+                    [1] => true,
+                    _ => return None,
+                },
+            });
+        }
+        pages.push(PageRecord {
+            id,
+            name,
+            width_mm,
+            height_mm,
+            units,
+            frames,
+        });
+    }
+    r.0.is_empty().then_some((maps, pages))
 }
 
 /// The raster images of the log get one color for each band, as the
@@ -850,6 +959,44 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_atlas_image_keeps_the_frames() {
+        let mut before = Atlas::new(Units::Metric);
+        before.maps[0].hidden.insert(LayerId(3));
+        before.maps[0].name = "Wide".into();
+        let first = before.pages[0].id;
+        let second = before.add_page(Some(first), 420.0, 297.0, PageUnits::In);
+        before.page_mut(second).unwrap().name = "North".into();
+        let frame = |shape, graticule| FrameRecord {
+            id: FrameId(0),
+            map: MapId(0),
+            shape,
+            center: [-12.5, 33.25],
+            scale: 25_000_000.0,
+            rotation: 271.5,
+            graticule,
+        };
+        let rect = FrameShape::Rectangle([10.0, 10.0, 200.0, 150.0]);
+        let ring = vec![
+            [0.0, 0.0],
+            [90.0, 0.0],
+            [45.0, 20.0],
+            [90.0, 60.0],
+            [0.0, 60.0],
+        ];
+        let hole = vec![[5.0, 5.0], [15.0, 5.0], [15.0, 15.0]];
+        let polygon = FrameShape::Polygon(vec![ring, hole]);
+        before.add_frame(second, frame(rect, true)).unwrap();
+        before.add_frame(second, frame(polygon, false)).unwrap();
+
+        let mut out = Vec::new();
+        put_atlas(&mut out, &before);
+        let image = atlas(&mut Reader(&out)).unwrap();
+        assert_eq!(image, (before.maps.clone(), before.pages.clone()));
+        out.pop();
+        assert_eq!(atlas(&mut Reader(&out)), None);
+    }
 
     #[test]
     fn a_world_image_keeps_the_seed() {

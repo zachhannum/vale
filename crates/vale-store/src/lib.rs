@@ -5,10 +5,14 @@ use std::ops::RangeInclusive;
 
 pub use uuid::Uuid;
 
+mod atlas;
 mod gpkg;
 mod tile;
 mod undo;
 
+pub use atlas::{
+    Atlas, FrameId, FrameRecord, FrameShape, MapId, MapRecord, PageId, PageRecord, PageUnits,
+};
 pub use gpkg::{
     FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,
     TileKey, summary,
@@ -654,8 +658,8 @@ impl Default for World {
     }
 }
 
-/// A world and its layers. Each raster has one layer, and each raster layer
-/// has one raster.
+/// A world, its layers, and its atlas. Each raster has one layer, and each
+/// raster layer has one raster.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Project {
     pub world: World,
@@ -664,12 +668,14 @@ pub struct Project {
     /// In ID order.
     rasters: Vec<Raster>,
     next_raster_id: u32,
+    pub atlas: Atlas,
 }
 
 impl Project {
     /// A project with no layers.
     pub fn new(world: World) -> Self {
         Project {
+            atlas: Atlas::new(world.units),
             world,
             layers: Vec::new(),
             next_id: 0,
@@ -1103,6 +1109,9 @@ impl Project {
     pub fn remove_layer(&mut self, id: LayerId) -> Option<Layer> {
         let i = self.layers.iter().position(|l| l.id == id)?;
         let layer = self.layers.remove(i);
+        for map in &mut self.atlas.maps {
+            map.hidden.remove(&id);
+        }
         if let Some(raster) = layer.raster() {
             self.rasters.retain(|r| r.id != raster);
         }
