@@ -22,15 +22,15 @@ use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
 use crate::headless;
-use crate::pipeline::{Composed, Pipeline, Quality, Selection, fonts};
+use crate::pipeline::{Composed, Pipeline, Selection, fonts};
 use crate::projects::{self, Location, Locations};
 use crate::raster_style;
 use crate::resume::{self, Resume};
 use crate::session::{self, Session};
 use crate::workcopy;
 
+pub mod atlas;
 pub mod browser;
-pub mod canvas;
 pub mod elevation;
 pub mod globe;
 pub mod gradient;
@@ -165,8 +165,9 @@ pub enum Workspace {
     /// The world on a globe.
     #[default]
     Globe,
-    /// The flat map of one map frame.
-    Map,
+    /// The pages of the atlas and their map frames.
+    #[value(alias = "map")]
+    Atlas,
 }
 
 /// The arrangement of the controls on the screen.
@@ -315,19 +316,17 @@ pub struct AppState {
     pub doc: Document,
     pub pipeline: Pipeline,
     pub fonts: Fonts,
+    /// The last compose of the selected frame, or of the bottom frame of
+    /// the open page.
     pub composed: Option<Composed>,
-    pub texture: Option<egui::TextureHandle>,
-    /// The map must be composed again.
-    pub dirty: bool,
-    /// Quality of the last compose.
-    pub quality: Quality,
-    /// Egui time in seconds.
-    pub last_view_change: Option<f64>,
-    /// Size of the canvas in points.
+    /// Size of the canvas of the atlas in points.
     pub canvas_size: (f64, f64),
-    /// Top-left corner of the canvas in screen points. Set by the canvas each frame.
-    pub canvas_origin: (f32, f32),
+    /// The selected feature of a map.
     pub selection: Option<Selection>,
+    /// The Atlas workspace.
+    pub atlas: atlas::AtlasState,
+    /// The count of the changes of the contents of the maps.
+    pub map_generation: u64,
     /// The layer that the tools work on. The brush paints a selected raster
     /// layer that is visible.
     pub selected_layer: Option<LayerRef>,
@@ -364,7 +363,7 @@ pub struct AppState {
     pub form_face_size: Option<usize>,
     /// Requests that need the host (dialogs, files).
     pub actions: Vec<Action>,
-    /// True: no timers, always `Quality::Final`.
+    /// True: no timers, and each compose is final.
     pub headless: bool,
     /// False: the tool bar has no buttons for GeoJSON files and for exports.
     pub file_buttons: bool,
@@ -423,13 +422,10 @@ impl AppState {
             pipeline: Pipeline::new(),
             fonts: fonts()?,
             composed: None,
-            texture: None,
-            dirty: true,
-            quality: Quality::Final,
-            last_view_change: None,
             canvas_size: (0.0, 0.0),
-            canvas_origin: (0.0, 0.0),
             selection: None,
+            atlas: atlas::AtlasState::default(),
+            map_generation: 0,
             selected_layer: None,
             cursor_lonlat: None,
             cursor_value: None,
@@ -1302,6 +1298,7 @@ impl AppState {
                 flat_spec: globe.flat.spec(),
                 flat_center: globe.flat.center,
                 flat_zoom: globe.flat.zoom,
+                page: Some(self.atlas.page),
             }),
         }
     }
@@ -1361,6 +1358,12 @@ impl AppState {
             globe.flat.set_spec(view.flat_spec);
             globe.flat.center = view.flat_center;
             globe.flat.zoom = view.flat_zoom;
+            if let Some(page) = view
+                .page
+                .filter(|&p| self.doc.project.atlas.page(p).is_some())
+            {
+                self.atlas.page = page;
+            }
         }
     }
 
@@ -1783,9 +1786,9 @@ impl AppState {
         }
     }
 
-    /// Marks the map as needing a new compose.
+    /// Marks the maps as needing a new compose.
     pub fn touch(&mut self) {
-        self.dirty = true;
+        self.map_generation += 1;
     }
 
     /// Moves the result of an import of a heightmap to the status text.
@@ -2085,8 +2088,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     browser::dialogs(ui, state);
     state.sync_globe();
     state.check_point_form();
-    if state.layout == Layout::Pad && state.workspace == Workspace::Globe {
-        pad::draw(ui, state);
+    if state.layout == Layout::Pad {
+        match state.workspace {
+            Workspace::Globe => pad::draw(ui, state),
+            Workspace::Atlas => pad::atlas::draw(ui, state),
+        }
         state.frames += 1;
         return;
     }
@@ -2105,11 +2111,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 elevation::draw(ui, state);
                 globe::draw(ui, state);
             }
-            Workspace::Map => {
+            Workspace::Atlas => {
                 panels::left(ui, state);
                 inspector::draw(ui, state);
                 panels::status(ui, state);
-                canvas::draw(ui, state);
+                atlas::desktop(ui, state);
             }
         }
     });

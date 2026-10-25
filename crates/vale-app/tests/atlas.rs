@@ -1,0 +1,856 @@
+//! The Atlas workspace in the iPad layout: pages, map frames, and their
+//! panels.
+
+use std::time::Instant;
+
+use eframe::egui::{self, Modifiers, Pos2, Rect, Vec2, pos2, vec2};
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+use kurbo::Point;
+use vale_app::atlas::{Handle, anchor, frame_transform, shape_bbox};
+use vale_app::document::Document;
+use vale_app::projects::Locations;
+use vale_app::session::{Session, new_project_path};
+use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
+use vale_app::ui::pad::atlas::{
+    ADD, ADD_HOLE, ADD_PAGE, DELETE_PAGE, HEIGHT, MAP_FRAME, NEXT_PAGE, POLYGON, PREVIOUS_PAGE,
+    REMOVE_VERTEX, SCALE, SIZE, WIDTH, page_title, readout_text,
+};
+use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
+use vale_render::Item;
+use vale_sphere::ProjectionKind;
+use vale_store::{
+    Feature, FrameRecord, FrameShape, Geometry, PageUnits, Project, ProjectFile, World,
+};
+
+type Pad = Harness<'static, AppState>;
+
+/// The boards of the mockup: landscape, portrait, half split view, and
+/// narrow split view.
+const BOARDS: [(f32, f32); 4] = [
+    (1194.0, 834.0),
+    (834.0, 1194.0),
+    (597.0, 834.0),
+    (375.0, 834.0),
+];
+/// The bands that the system uses at the top and at the bottom.
+const BANDS: (f32, f32) = (24.0, 20.0);
+/// The ways to touch the screen: a finger, a pen, and the mouse.
+#[derive(Clone, Copy, Debug)]
+enum Input {
+    Finger,
+    Pen,
+    Mouse,
+}
+const INPUTS: [Input; 3] = [Input::Finger, Input::Pen, Input::Mouse];
+
+fn state() -> AppState {
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.workspace = Workspace::Atlas;
+    state
+}
+
+fn pad_with(state: AppState, (width, height): (f32, f32)) -> Pad {
+    let mut h = Harness::builder()
+        .with_size(vec2(width, height))
+        .with_pixels_per_point(1.0)
+        .with_step_dt(0.05)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    h
+}
+
+fn pad() -> Pad {
+    pad_with(state(), BOARDS[0])
+}
+
+fn control(h: &Pad, name: &str) -> Option<Rect> {
+    let controls = &h.state().pad.controls;
+    controls.iter().find(|c| c.name == name).map(|c| c.rect)
+}
+
+/// One touch. The touch with id 1 is also the pointer. A touch with a force
+/// is a pen.
+fn touch(h: &mut Pad, id: u64, phase: egui::TouchPhase, pos: Pos2, force: Option<f32>) {
+    h.event(egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(id),
+        phase,
+        pos,
+        force,
+    });
+    if id != 1 {
+        return;
+    }
+    h.event(egui::Event::PointerMoved(pos));
+    if phase != egui::TouchPhase::Move {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: phase == egui::TouchPhase::Start,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    if phase == egui::TouchPhase::End {
+        h.event(egui::Event::PointerGone);
+    }
+}
+
+fn button(h: &mut Pad, pos: Pos2, pressed: bool) {
+    h.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    });
+}
+
+/// A tap at a place.
+fn tap_with(h: &mut Pad, pos: Pos2, input: Input) {
+    match input {
+        Input::Mouse => {
+            h.event(egui::Event::PointerMoved(pos));
+            h.step();
+            button(h, pos, true);
+            h.step();
+            button(h, pos, false);
+        }
+        _ => {
+            let force = matches!(input, Input::Pen).then_some(0.5);
+            touch(h, 1, egui::TouchPhase::Start, pos, force);
+            h.step();
+            touch(h, 1, egui::TouchPhase::End, pos, force);
+        }
+    }
+    h.run_steps(3);
+}
+
+/// Two quick taps at a place. The second tap starts in the frame of the
+/// end of the first tap.
+fn double_tap(h: &mut Pad, pos: Pos2, input: Input) {
+    let force = matches!(input, Input::Pen).then_some(0.5);
+    let press = |h: &mut Pad, pressed: bool| match input {
+        Input::Mouse => button(h, pos, pressed),
+        _ => {
+            let phase = if pressed {
+                egui::TouchPhase::Start
+            } else {
+                egui::TouchPhase::End
+            };
+            touch(h, 1, phase, pos, force);
+        }
+    };
+    if matches!(input, Input::Mouse) {
+        h.event(egui::Event::PointerMoved(pos));
+        h.step();
+    }
+    press(h, true);
+    h.step();
+    press(h, false);
+    press(h, true);
+    h.step();
+    press(h, false);
+    h.run_steps(3);
+}
+
+/// A tap of a finger on the middle of a control.
+fn tap(h: &mut Pad, name: &str) {
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    tap_with(h, rect.center(), Input::Finger);
+}
+
+/// A drag from one place to another in `steps` steps. The release is in a
+/// later frame.
+fn drag_steps(h: &mut Pad, from: Pos2, to: Pos2, input: Input, steps: usize) {
+    let force = matches!(input, Input::Pen).then_some(0.5);
+    match input {
+        Input::Mouse => {
+            h.event(egui::Event::PointerMoved(from));
+            h.step();
+            button(h, from, true);
+        }
+        _ => touch(h, 1, egui::TouchPhase::Start, from, force),
+    }
+    h.step();
+    for i in 1..=steps {
+        let at = from.lerp(to, i as f32 / steps as f32);
+        match input {
+            Input::Mouse => h.event(egui::Event::PointerMoved(at)),
+            _ => touch(h, 1, egui::TouchPhase::Move, at, force),
+        }
+        h.step();
+    }
+}
+
+fn release(h: &mut Pad, at: Pos2, input: Input) {
+    let force = matches!(input, Input::Pen).then_some(0.5);
+    match input {
+        Input::Mouse => button(h, at, false),
+        _ => touch(h, 1, egui::TouchPhase::End, at, force),
+    }
+    h.run_steps(3);
+}
+
+fn drag(h: &mut Pad, from: Pos2, to: Pos2, input: Input) {
+    drag_steps(h, from, to, input, 6);
+    release(h, to, input);
+}
+
+/// Two fingers about `center`: they start `from` points apart on a
+/// horizontal line, and they end `to` points apart, turned clockwise by
+/// `turn` degrees, with the middle moved by `shift`.
+fn pinch(h: &mut Pad, center: Pos2, from: f32, to: f32, turn: f32, shift: Vec2) {
+    let fingers = |t: f32| {
+        let half = (from + (to - from) * t) / 2.0;
+        let angle = (turn * t).to_radians();
+        let d = vec2(angle.cos(), angle.sin()) * half;
+        let middle = center + shift * t;
+        (middle - d, middle + d)
+    };
+    let (a, b) = fingers(0.0);
+    touch(h, 1, egui::TouchPhase::Start, a, None);
+    h.step();
+    touch(h, 2, egui::TouchPhase::Start, b, None);
+    h.step();
+    for i in 1..=8 {
+        let (a, b) = fingers(i as f32 / 8.0);
+        touch(h, 1, egui::TouchPhase::Move, a, None);
+        touch(h, 2, egui::TouchPhase::Move, b, None);
+        h.step();
+    }
+    let (a, b) = fingers(1.0);
+    touch(h, 2, egui::TouchPhase::End, b, None);
+    h.step();
+    touch(h, 1, egui::TouchPhase::End, a, None);
+    h.run_steps(8);
+}
+
+fn open_page(h: &Pad) -> vale_store::PageRecord {
+    vale_app::ui::atlas::open_page(h.state()).clone()
+}
+
+fn frame(h: &Pad, index: usize) -> FrameRecord {
+    open_page(h).frames[index].clone()
+}
+
+/// A page point in millimeters on the screen.
+fn screen(h: &Pad, p: Point) -> Pos2 {
+    h.state().atlas.place.unwrap().to_screen(p)
+}
+
+/// The middle of a frame on the screen.
+fn middle(h: &Pad, index: usize) -> Pos2 {
+    screen(h, anchor(&frame(h, index).shape))
+}
+
+/// Adds a frame with the Add menu.
+fn add_frame(h: &mut Pad) {
+    tap(h, ADD);
+    tap(h, MAP_FRAME);
+}
+
+/// A page with a main frame and an inset frame. The inset is selected.
+fn inset_pad(size: (f32, f32)) -> Pad {
+    let mut h = pad_with(state(), size);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    h
+}
+
+fn handle(h: &Pad, which: Handle) -> Pos2 {
+    let handles = &h.state().atlas.handles;
+    let found = handles.iter().find(|(handle, _)| *handle == which);
+    found
+        .unwrap_or_else(|| panic!("no handle {which:?}"))
+        .1
+        .center()
+}
+
+/// The place of a screen position in a frame, and the screen position of a
+/// place in a frame.
+fn place_at(h: &mut Pad, index: usize, pos: Pos2) -> [f64; 2] {
+    let f = frame(h, index);
+    let target = h.state().atlas.place.unwrap().target();
+    let s = h.state_mut();
+    let projection = s.pipeline.projection(&s.doc).unwrap();
+    let vt = frame_transform(projection, &f, target);
+    let q = Point::new(f64::from(pos.x), f64::from(pos.y));
+    projection.inverse(vt.from_page(q)).unwrap()
+}
+
+fn pos_of(h: &mut Pad, index: usize, lonlat: [f64; 2]) -> Pos2 {
+    let f = frame(h, index);
+    let target = h.state().atlas.place.unwrap().target();
+    let s = h.state_mut();
+    let projection = s.pipeline.projection(&s.doc).unwrap();
+    let vt = frame_transform(projection, &f, target);
+    let p = vt.to_page(projection.forward(lonlat).unwrap());
+    pos2(p.x as f32, p.y as f32)
+}
+
+/// Makes sure that a finger can hit each control of the frame.
+fn check_controls(h: &Pad, what: &str) {
+    let screen = h.state().pad.rects.unwrap().screen;
+    let controls = &h.state().pad.controls;
+    assert!(controls.len() >= 4, "{what}: {} controls", controls.len());
+    for (i, a) in controls.iter().enumerate() {
+        let (name, rect) = (&a.name, a.rect);
+        assert!(
+            rect.width() >= 44.0 && rect.height() >= 44.0,
+            "{what}: {name} is {rect:?}"
+        );
+        assert!(rect.top() >= BANDS.0, "{what}: {name} is in the top band");
+        assert!(
+            rect.bottom() <= screen.bottom() - BANDS.1,
+            "{what}: {name} is in the bottom band"
+        );
+        assert!(
+            rect.left() >= 0.0 && rect.right() <= screen.right(),
+            "{what}: {name}"
+        );
+        for b in &controls[i + 1..] {
+            assert_ne!(a.name, b.name, "{what}");
+        }
+    }
+    for (handle, rect) in &h.state().atlas.handles {
+        assert!(rect.width() >= 44.0 && rect.height() >= 44.0, "{handle:?}");
+    }
+}
+
+#[test]
+fn the_panel_of_the_page_sets_the_page_size() {
+    let mut h = pad();
+    let page = h.state().atlas.place.unwrap().rect;
+    tap_with(&mut h, page.center(), Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
+    assert_eq!(readout_text(h.state()), "297 × 210 mm · 1 / 1");
+
+    // A preset keeps the orientation.
+    tap(&mut h, SIZE);
+    tap(&mut h, "A3");
+    let p = open_page(&h);
+    assert_eq!((p.width_mm, p.height_mm), (420.0, 297.0));
+    tap(&mut h, "Portrait");
+    let p = open_page(&h);
+    assert_eq!((p.width_mm, p.height_mm), (297.0, 420.0));
+
+    // A free width, from the keypad.
+    tap(&mut h, WIDTH);
+    for key in ["3", "0", "5"] {
+        tap(&mut h, &format!("{WIDTH} {key}"));
+    }
+    tap(&mut h, &format!("{WIDTH} Done"));
+    let p = open_page(&h);
+    assert_eq!((p.width_mm, p.height_mm), (305.0, 420.0));
+    assert!(control(&h, SIZE).is_some());
+
+    // The units of the page.
+    tap(&mut h, "in");
+    assert_eq!(open_page(&h).units, PageUnits::In);
+    assert_eq!(readout_text(h.state()), "12.01 × 16.54 in · 1 / 1");
+    tap(&mut h, HEIGHT);
+    for key in ["1", "1"] {
+        tap(&mut h, &format!("{HEIGHT} {key}"));
+    }
+    tap(&mut h, &format!("{HEIGHT} Done"));
+    assert!((open_page(&h).height_mm - 279.4).abs() < 1e-9);
+}
+
+#[test]
+fn the_atlas_shows_the_page_with_its_true_proportions() {
+    for size in BOARDS {
+        let mut h = pad_with(state(), size);
+        for (w, h_mm) in [(297.0, 210.0), (100.0, 400.0), (500.0, 120.0)] {
+            let page = h.state().atlas.page;
+            let atlas = &mut h.state_mut().doc.project.atlas;
+            let record = atlas.page_mut(page).unwrap();
+            (record.width_mm, record.height_mm) = (w, h_mm);
+            h.run_steps(2);
+            let rect = h.state().atlas.place.unwrap().rect;
+            let want = w / h_mm;
+            let got = f64::from(rect.width() / rect.height());
+            assert!((got / want - 1.0).abs() < 0.005, "{size:?}: {got} {want}");
+            let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+            assert!(screen.contains_rect(rect), "{size:?}");
+        }
+    }
+}
+
+#[test]
+fn with_no_selection_no_panel_shows() {
+    let mut h = inset_pad(BOARDS[0]);
+    assert!(h.state().atlas.panel_rect.is_some());
+    // A tap off the page clears the selection.
+    let page = h.state().atlas.place.unwrap().rect;
+    tap_with(&mut h, page.left_center() - vec2(4.0, 0.0), Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(h.state().atlas.panel_rect, None);
+    assert!(control(&h, SCALE).is_none() && control(&h, ADD_PAGE).is_none());
+}
+
+#[test]
+fn a_tap_opens_the_panel_of_a_frame_or_of_the_page() {
+    let mut h = inset_pad(BOARDS[0]);
+    let inset = frame(&h, 1).id;
+    let main = frame(&h, 0).id;
+    let page = h.state().atlas.place.unwrap().rect;
+    tap_with(&mut h, page.left_center() - vec2(4.0, 0.0), Input::Finger);
+
+    let at = middle(&h, 1);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset));
+    assert!(h.state().atlas.panel_rect.is_some());
+    assert!(control(&h, "Frame").is_some() && control(&h, SCALE).is_some());
+    let at = middle(&h, 0);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(main));
+
+    // The margin of the page is outside the frames.
+    let at = screen(&h, Point::new(4.0, 50.0));
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
+    assert!(h.state().atlas.panel_rect.is_some());
+    assert!(control(&h, ADD_PAGE).is_some());
+    assert!(control(&h, SCALE).is_none());
+}
+
+#[test]
+fn the_add_button_adds_a_frame_that_shows_the_map_of_the_project() {
+    let mut h = pad();
+    tap(&mut h, ADD);
+    assert!(h.state().atlas.add_rect.is_some());
+    // The other items come in other tasks.
+    for name in ["Text", "Legend", "Scale bar", "North arrow"] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    check_controls(&h, "add menu");
+    tap(&mut h, MAP_FRAME);
+    assert_eq!(h.state().atlas.add_rect, None);
+    let page = open_page(&h);
+    assert_eq!(page.frames.len(), 1);
+    let f = &page.frames[0];
+    assert_eq!(f.map, h.state().doc.map_id());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(f.id));
+    assert!(h.state().atlas.has_image(f.id));
+    let list = &h.state().composed.as_ref().unwrap().list;
+    let fills = list.items.iter().filter(|i| matches!(i, Item::Fill { .. }));
+    assert!(fills.count() > 10);
+}
+
+#[test]
+fn a_frame_moves_and_resizes_with_a_finger_a_pen_and_a_mouse() {
+    let mut h = inset_pad(BOARDS[0]);
+    let ppm = h.state().atlas.place.unwrap().pts_per_mm as f32;
+    for input in INPUTS {
+        let before = shape_bbox(&frame(&h, 1).shape);
+        let from = middle(&h, 1);
+        drag(&mut h, from, from - vec2(40.0, 30.0), input);
+        let after = shape_bbox(&frame(&h, 1).shape);
+        let moved = (after.x0 - before.x0, after.y0 - before.y0);
+        let want = (-40.0 / f64::from(ppm), -30.0 / f64::from(ppm));
+        assert!((moved.0 - want.0).abs() < 0.1, "{input:?}: {moved:?}");
+        assert!((moved.1 - want.1).abs() < 0.1, "{input:?}: {moved:?}");
+        assert_eq!(after.size(), before.size(), "{input:?}");
+
+        // The bottom-right handle makes the frame smaller.
+        let corner = handle(&h, Handle::Resize(4));
+        drag(&mut h, corner, corner - vec2(20.0, 10.0), input);
+        let resized = shape_bbox(&frame(&h, 1).shape);
+        assert_eq!((resized.x0, resized.y0), (after.x0, after.y0), "{input:?}");
+        let less = (
+            after.width() - resized.width(),
+            after.height() - resized.height(),
+        );
+        assert!(
+            (less.0 - 20.0 / f64::from(ppm)).abs() < 0.1,
+            "{input:?}: {less:?}"
+        );
+        assert!(
+            (less.1 - 10.0 / f64::from(ppm)).abs() < 0.1,
+            "{input:?}: {less:?}"
+        );
+    }
+    // The main frame stays.
+    let main = shape_bbox(&frame(&h, 0).shape);
+    assert_eq!((main.x0, main.y0), (10.0, 10.0));
+}
+
+fn ring_len(h: &Pad, ring: usize) -> usize {
+    match &frame(h, 1).shape {
+        FrameShape::Polygon(rings) => rings.get(ring).map_or(0, Vec::len),
+        FrameShape::Rectangle(_) => 0,
+    }
+}
+
+#[test]
+fn the_vertices_of_a_polygon_frame_move_add_and_go_away() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    assert_eq!(ring_len(&h, 0), 4);
+    let ppm = h.state().atlas.place.unwrap().pts_per_mm;
+    for input in INPUTS {
+        // A drag moves a vertex.
+        let FrameShape::Polygon(rings) = frame(&h, 1).shape else {
+            panic!("not a polygon");
+        };
+        let [x, y] = rings[0][0];
+        let from = handle(&h, Handle::Vertex((0, 0)));
+        drag(&mut h, from, from + vec2(-15.0, 10.0), input);
+        let FrameShape::Polygon(rings) = frame(&h, 1).shape else {
+            panic!("not a polygon");
+        };
+        let [nx, ny] = rings[0][0];
+        assert!((nx - x + 15.0 / ppm).abs() < 0.1, "{input:?}");
+        assert!((ny - y - 10.0 / ppm).abs() < 0.1, "{input:?}");
+
+        // A drag of the middle of an edge adds a vertex.
+        let edge = handle(&h, Handle::Edge((0, 1)));
+        drag(&mut h, edge, edge + vec2(12.0, 12.0), input);
+        assert_eq!(ring_len(&h, 0), 5, "{input:?}");
+        assert_eq!(h.state().atlas.vertex, Some((0, 2)));
+
+        // A tap selects a vertex, and two taps remove it.
+        let at = handle(&h, Handle::Vertex((0, 3)));
+        tap_with(&mut h, at, input);
+        assert_eq!(h.state().atlas.vertex, Some((0, 3)), "{input:?}");
+        let at = handle(&h, Handle::Vertex((0, 2)));
+        double_tap(&mut h, at, input);
+        assert_eq!(ring_len(&h, 0), 4, "{input:?}");
+    }
+
+    // The Remove vertex button and the Delete key remove the selected vertex.
+    assert!(control(&h, REMOVE_VERTEX).is_none());
+    let at = handle(&h, Handle::Vertex((0, 1)));
+    tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, REMOVE_VERTEX);
+    assert_eq!(ring_len(&h, 0), 3);
+    // The outer ring keeps three vertices.
+    let at = handle(&h, Handle::Vertex((0, 1)));
+    tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, REMOVE_VERTEX);
+    assert_eq!(ring_len(&h, 0), 3);
+    tap(&mut h, ADD_HOLE);
+    assert_eq!(ring_len(&h, 1), 4);
+    let at = handle(&h, Handle::Vertex((1, 0)));
+    tap_with(&mut h, at, Input::Mouse);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert_eq!(ring_len(&h, 1), 3);
+}
+
+#[test]
+fn pan_zoom_and_rotate_in_a_frame_set_its_center_scale_and_rotation() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, "Move");
+    assert_eq!(h.state().atlas.tool, AtlasTool::Move);
+
+    // One finger, a pen, and the mouse move the map, and the place under
+    // the pointer stays under it.
+    for input in INPUTS {
+        let from = middle(&h, 0) - vec2(60.0, 20.0);
+        let to = from + vec2(50.0, 30.0);
+        let place = place_at(&mut h, 0, from);
+        let center = frame(&h, 0).center;
+        drag(&mut h, from, to, input);
+        assert_ne!(frame(&h, 0).center, center, "{input:?}");
+        let at = pos_of(&mut h, 0, place);
+        assert!(at.distance(to) < 1.0, "{input:?}: {at:?} {to:?}");
+    }
+    // The frame does not move.
+    assert_eq!(shape_bbox(&frame(&h, 0).shape).x0, 10.0);
+
+    // Two fingers zoom and turn the map about their middle.
+    let id = frame(&h, 0).id;
+    h.state_mut()
+        .doc
+        .project
+        .atlas
+        .frame_mut(id)
+        .unwrap()
+        .center = [0.0, 0.0];
+    h.run_steps(2);
+    let at = middle(&h, 0) - vec2(60.0, 0.0);
+    let scale = frame(&h, 0).scale;
+    pinch(&mut h, at, 100.0, 150.0, 0.0, Vec2::ZERO);
+    let zoomed = frame(&h, 0).scale;
+    assert!((scale / zoomed - 1.5).abs() < 0.01, "{scale} {zoomed}");
+    let place = place_at(&mut h, 0, at);
+    pinch(&mut h, at, 120.0, 120.0, 30.0, Vec2::ZERO);
+    let rotation = frame(&h, 0).rotation;
+    assert!((rotation - 30.0).abs() < 0.5, "{rotation}");
+    assert!(pos_of(&mut h, 0, place).distance(at) < 1.0);
+    assert!((frame(&h, 0).scale / zoomed - 1.0).abs() < 0.01);
+    // Two fingers also move the map, and never the frame.
+    let center = frame(&h, 0).center;
+    pinch(&mut h, at, 120.0, 120.0, 0.0, vec2(40.0, 0.0));
+    assert_ne!(frame(&h, 0).center, center);
+    assert_eq!(shape_bbox(&frame(&h, 0).shape).x0, 10.0);
+
+    // The wheel zooms at the pointer.
+    let scale = frame(&h, 0).scale;
+    h.event(egui::Event::PointerMoved(at));
+    h.step();
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, 200.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(10);
+    assert!(frame(&h, 0).scale < scale / 1.05);
+
+    // Alt and a drag turn the map.
+    let rotation = frame(&h, 0).rotation;
+    h.event(egui::Event::ModifiersChanged(Modifiers::ALT));
+    let c = middle(&h, 0);
+    drag(
+        &mut h,
+        c + vec2(100.0, 0.0),
+        c + vec2(0.0, 100.0),
+        Input::Mouse,
+    );
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    let turned = (frame(&h, 0).rotation - rotation).rem_euclid(360.0);
+    assert!((turned - 90.0).abs() < 1.0, "{turned}");
+}
+
+#[test]
+fn a_globe_edit_composes_each_frame_again() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, "World");
+    assert_eq!(h.state().workspace, Workspace::Globe);
+    let composes = h.state().atlas.composes;
+    // The point tool adds a point as this does.
+    let s = h.state_mut();
+    let places = s
+        .doc
+        .project
+        .layers()
+        .iter()
+        .find(|l| l.name == "Places")
+        .unwrap()
+        .id;
+    let point = Feature::new(Geometry::Points(vec![[10.0, 10.0]]), Default::default());
+    assert!(s.doc.project.add_feature(places, point));
+    s.pipeline.forget(places);
+    s.touch();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.composes, composes);
+    tap(&mut h, "Atlas");
+    assert_eq!(h.state().workspace, Workspace::Atlas);
+    assert_eq!(h.state().atlas.composes, composes + 2);
+}
+
+#[test]
+fn a_change_of_the_projection_shows_in_each_frame_of_the_map() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, "Projection");
+    assert_eq!(h.state().atlas.tab, FrameTab::Projection);
+    let composes = h.state().atlas.composes;
+    tap(&mut h, ProjectionKind::Mercator.name());
+    assert_eq!(h.state().doc.projection().kind, ProjectionKind::Mercator);
+    assert_eq!(h.state().atlas.composes, composes + 2);
+
+    // The projection centers on the place in the middle of the frame.
+    let id = frame(&h, 1).id;
+    let s = h.state_mut();
+    s.doc.project.atlas.frame_mut(id).unwrap().center = [40.0, 20.0];
+    h.run_steps(2);
+    tap(&mut h, "Center on the frame");
+    assert_eq!(h.state().doc.projection().lon0, 40.0);
+}
+
+#[test]
+fn the_tabs_of_a_frame_work_with_a_finger() {
+    for size in BOARDS {
+        let mut h = inset_pad(size);
+        check_controls(&h, "frame tab");
+        // The other tabs come in other tasks.
+        assert!(control(&h, "Layers").is_none() && control(&h, "Labels").is_none());
+        tap(&mut h, POLYGON);
+        check_controls(&h, "polygon");
+        tap(&mut h, SCALE);
+        for key in ["5", "0", "0", "0", "0", "0", "0", "0"] {
+            tap(&mut h, &format!("{SCALE} {key}"));
+        }
+        check_controls(&h, "keypad");
+        tap(&mut h, &format!("{SCALE} Done"));
+        assert_eq!(frame(&h, 1).scale, 50_000_000.0, "{size:?}");
+        tap(&mut h, "Projection");
+        check_controls(&h, "projection tab");
+        tap(&mut h, ProjectionKind::Mercator.name());
+        assert_eq!(h.state().doc.projection().kind, ProjectionKind::Mercator);
+        let at = screen(&h, Point::new(4.0, 50.0));
+        tap_with(&mut h, at, Input::Finger);
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Page, "{size:?}");
+        check_controls(&h, "page panel");
+        tap(&mut h, SIZE);
+        check_controls(&h, "page sizes");
+    }
+}
+
+#[test]
+fn the_maps_stay_still_during_a_drag_and_compose_after_it() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, "Move");
+    let composes = h.state().atlas.composes;
+    let center = frame(&h, 0).center;
+    let from = middle(&h, 0) - vec2(60.0, 0.0);
+    let to = from + vec2(80.0, 40.0);
+    drag_steps(&mut h, from, to, Input::Finger, 10);
+    assert_eq!(h.state().atlas.composes, composes);
+    assert_ne!(frame(&h, 0).center, center);
+    release(&mut h, to, Input::Finger);
+    assert_eq!(h.state().atlas.composes, composes + 1);
+}
+
+#[test]
+fn the_panel_of_the_page_adds_a_page_and_deletes_the_open_page() {
+    let mut h = inset_pad(BOARDS[0]);
+    let at = screen(&h, Point::new(4.0, 50.0));
+    tap_with(&mut h, at, Input::Finger);
+    assert!(control(&h, DELETE_PAGE).is_none());
+    tap(&mut h, ADD_PAGE);
+    let atlas = &h.state().doc.project.atlas;
+    assert_eq!(atlas.pages.len(), 2);
+    assert_eq!(h.state().atlas.page, atlas.pages[1].id);
+    assert!(atlas.pages[1].frames.is_empty());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
+    assert_eq!(readout_text(h.state()), "297 × 210 mm · 2 / 2");
+    tap(&mut h, DELETE_PAGE);
+    let atlas = &h.state().doc.project.atlas;
+    assert_eq!(atlas.pages.len(), 1);
+    assert_eq!(h.state().atlas.page, atlas.pages[0].id);
+    assert_eq!(atlas.pages[0].frames.len(), 2);
+}
+
+#[test]
+fn the_page_controls_go_to_the_previous_page_and_the_next_page() {
+    let mut s = state();
+    let atlas = &mut s.doc.project.atlas;
+    let first = atlas.pages[0].id;
+    let second = atlas.add_page(Some(first), 297.0, 210.0, PageUnits::Mm);
+    let third = atlas.add_page(Some(second), 279.4, 215.9, PageUnits::In);
+    atlas.page_mut(third).unwrap().name = "Vesperan".to_string();
+    let mut h = pad_with(s, BOARDS[0]);
+    assert_eq!(h.state().atlas.page, first);
+    assert!(control(&h, PREVIOUS_PAGE).is_none());
+    tap(&mut h, NEXT_PAGE);
+    assert_eq!(h.state().atlas.page, second);
+    tap(&mut h, NEXT_PAGE);
+    assert_eq!(h.state().atlas.page, third);
+    assert!(control(&h, NEXT_PAGE).is_none());
+    assert_eq!(page_title(2, "Vesperan"), "Page 3 · Vesperan");
+    assert_eq!(readout_text(h.state()), "11 × 8.5 in · 3 / 3");
+    tap(&mut h, PREVIOUS_PAGE);
+    assert_eq!(h.state().atlas.page, second);
+    for size in BOARDS {
+        let h = pad_with(state(), size);
+        for name in [ADD, "Select", "Move"] {
+            assert!(control(&h, name).is_some(), "{size:?}: {name}");
+        }
+        check_controls(&h, "top row");
+    }
+}
+
+#[test]
+fn pages_and_frames_survive_a_close_and_an_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    tap(&mut h, POLYGON);
+    tap(&mut h, ADD_HOLE);
+    let at = screen(&h, Point::new(4.0, 50.0));
+    tap_with(&mut h, at, Input::Finger);
+    tap(&mut h, ADD_PAGE);
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.project.atlas, project.atlas);
+    assert_eq!(doc.project.atlas.pages[0].frames.len(), 2);
+}
+
+#[test]
+fn the_next_start_opens_the_last_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = new_project_path(dir.path(), "Borea");
+    let world = World {
+        name: "Borea".to_string(),
+        ..World::default()
+    };
+    let mut project = Project::new(world);
+    let first = project.atlas.pages[0].id;
+    let second = project
+        .atlas
+        .add_page(Some(first), 297.0, 210.0, PageUnits::Mm);
+    ProjectFile::create(&path, &project).unwrap();
+    let app = |dir: &std::path::Path| {
+        let mut s = AppState::new(Document::empty()).unwrap();
+        s.headless = true;
+        s.set_layout(Layout::Pad);
+        s.globe.set_face_size(256);
+        s.projects = Locations::single(dir);
+        s.restore();
+        pad_with(s, BOARDS[0])
+    };
+
+    let mut h = app(dir.path());
+    h.state_mut().show_projects();
+    h.run_steps(2);
+    h.get_by_label("Open Borea").click();
+    for _ in 0..3 {
+        h.run_steps(2);
+        for action in std::mem::take(&mut h.state_mut().actions) {
+            h.state_mut().run_action(action);
+        }
+    }
+    assert_eq!(h.state().screen, Screen::Editor);
+    h.state_mut().workspace = Workspace::Atlas;
+    h.run_steps(2);
+    tap(&mut h, NEXT_PAGE);
+    assert_eq!(h.state().atlas.page, second);
+    h.state_mut().save_tick(false, Instant::now());
+    drop(h);
+
+    let h = app(dir.path());
+    assert_eq!(h.state().workspace, Workspace::Atlas);
+    assert_eq!(h.state().atlas.page, second);
+}
+
+/// One test at a time makes a wgpu device.
+fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[test]
+fn the_pad_atlas_renders_a_page_with_a_main_frame_and_an_inset() {
+    let _gpu = one_gpu_test();
+    let prepare = |s: &mut AppState| {
+        vale_app::ui::atlas::add_frame(s);
+        vale_app::ui::atlas::add_frame(s);
+        Ok(())
+    };
+    let (img, state) = vale_app::headless::ui_png_with(state(), (1194.0, 834.0), 1.0, prepare)
+        .unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir_all("../../target/app").unwrap();
+    img.save("../../target/app/pad-atlas.png").unwrap();
+    let place = state.atlas.place.unwrap();
+    // The paper is white in the margin of the page.
+    let margin = place.to_screen(Point::new(4.0, 50.0));
+    let paper = img.get_pixel(margin.x as u32, margin.y as u32).0;
+    assert_eq!(paper, [255, 255, 255, 255]);
+    let colors: std::collections::HashSet<_> = img.pixels().map(|p| p.0).collect();
+    assert!(colors.len() > 50, "{}", colors.len());
+}

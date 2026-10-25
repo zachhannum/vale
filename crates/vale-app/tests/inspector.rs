@@ -3,6 +3,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use vale_app::document::Document;
 use vale_app::headless;
+use vale_app::ui::atlas::{self, AtlasSelection};
 use vale_app::ui::{AppState, LayerRef, Workspace, draw};
 use vale_render::Color;
 use vale_store::LayerId;
@@ -12,7 +13,9 @@ const SIZE: (f32, f32) = (1400.0, 900.0);
 fn harness_with(doc: Document) -> Harness<'static, AppState> {
     let mut state = AppState::new(doc).unwrap();
     state.headless = true;
-    state.workspace = Workspace::Map;
+    state.workspace = Workspace::Atlas;
+    atlas::add_frame(&mut state).unwrap();
+    state.atlas.selection = AtlasSelection::None;
     let mut h = Harness::builder()
         .with_size(egui::vec2(SIZE.0, SIZE.1))
         .with_pixels_per_point(1.0)
@@ -37,19 +40,15 @@ fn id_of(h: &Harness<'static, AppState>, name: &str) -> LayerId {
         .id
 }
 
-/// The screen position of a place.
+/// The screen position of a place in the frame of the page.
 fn screen_pos(h: &mut Harness<'static, AppState>, lonlat: [f64; 2]) -> egui::Pos2 {
     let s = h.state_mut();
-    let size = s.canvas_size;
-    let p = s
-        .pipeline
-        .lonlat_to_page(&s.doc, size, lonlat)
-        .unwrap()
-        .unwrap();
-    egui::pos2(
-        s.canvas_origin.0 + p.x as f32,
-        s.canvas_origin.1 + p.y as f32,
-    )
+    let place = s.atlas.place.unwrap();
+    let frame = s.doc.project.atlas.pages[0].frames[0].clone();
+    let projection = s.pipeline.projection(&s.doc).unwrap();
+    let vt = vale_app::atlas::frame_transform(projection, &frame, place.target());
+    let p = vt.to_page(projection.forward(lonlat).unwrap());
+    egui::pos2(p.x as f32, p.y as f32)
 }
 
 /// A primary click at a screen position, in three steps.
@@ -178,29 +177,6 @@ fn click_identifies_a_feature() {
 }
 
 #[test]
-fn double_click_centers_the_projection() {
-    let mut h = harness();
-    let at = screen_pos(&mut h, [100.0, 20.0]);
-    h.hover_at(at);
-    h.step();
-    for _ in 0..2 {
-        for pressed in [true, false] {
-            h.event(egui::Event::PointerButton {
-                pos: at,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            });
-        }
-        h.step();
-    }
-    h.run_steps(3);
-    let lon0 = h.state().doc.projection().lon0;
-    assert!((lon0 - 100.0).abs() < 0.5, "{lon0}");
-    assert!(h.state().status.starts_with("Centered the projection"));
-}
-
-#[test]
 fn unplaced_summary() {
     let h = harness();
     assert!(h.query_by_label("Unplaced labels").is_some());
@@ -214,7 +190,8 @@ fn unplaced_summary() {
 fn inspector_screenshots() {
     use vale_app::pipeline::Selection;
     let mut state = AppState::new(Document::sample()).unwrap();
-    state.workspace = Workspace::Map;
+    state.workspace = Workspace::Atlas;
+    atlas::add_frame(&mut state).unwrap();
     let places = state
         .doc
         .project

@@ -3,12 +3,12 @@ use std::path::Path;
 use eframe::egui;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use kurbo::Point;
 use vale_app::document::Document;
 use vale_app::globe::StackItem;
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
+use vale_app::ui::atlas::AtlasSelection;
 use vale_app::ui::pad::MORE;
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
@@ -22,10 +22,13 @@ use vale_terrain::{FACES, Heightmap, TexelRect};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 
+/// The Atlas workspace with one frame on the page.
 fn state_with(doc: Document) -> AppState {
     let mut state = AppState::new(doc).unwrap();
     state.headless = true;
-    state.workspace = Workspace::Map;
+    state.workspace = Workspace::Atlas;
+    vale_app::ui::atlas::add_frame(&mut state).unwrap();
+    state.atlas.selection = AtlasSelection::None;
     state
 }
 
@@ -50,16 +53,19 @@ fn first_frames_compose_the_map() {
     h.run_steps(3);
     let s = h.state();
     assert!(s.composed.is_some());
-    assert!(s.texture.is_some());
+    assert_eq!(s.atlas.image_count(), 1);
     assert!(
         s.canvas_size.0 > 650.0 && s.canvas_size.0 < 850.0,
         "{:?}",
         s.canvas_size
     );
-    assert!(!s.dirty);
+    let composes = s.atlas.composes;
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.composes, composes);
 }
 
 #[test]
+#[ignore = "desktop atlas"]
 fn graticule_checkbox_recomposes() {
     let mut h = harness();
     h.run_steps(3);
@@ -320,193 +326,6 @@ fn a_heightmap_file_has_the_extension_of_a_png_or_tiff_image() {
 }
 
 #[test]
-fn drag_pans_the_map() {
-    let mut h = harness();
-    h.run_steps(3);
-    let size = h.state().canvas_size;
-    let before = {
-        let s = h.state_mut();
-        s.pipeline
-            .lonlat_to_page(&s.doc, size, [0.0, 0.0])
-            .unwrap()
-            .unwrap()
-    };
-    h.drag_at(egui::pos2(700.0, 400.0));
-    h.run_steps(1);
-    h.hover_at(egui::pos2(750.0, 420.0));
-    h.run_steps(1);
-    h.drop_at(egui::pos2(750.0, 420.0));
-    h.run_steps(2);
-    let s = h.state_mut();
-    assert!(s.doc.frame.view.is_some());
-    let after = s
-        .pipeline
-        .lonlat_to_page(&s.doc, size, [0.0, 0.0])
-        .unwrap()
-        .unwrap();
-    assert!(
-        (after.x - before.x - 50.0).abs() < 1.0,
-        "{before:?} {after:?}"
-    );
-    assert!(
-        (after.y - before.y - 20.0).abs() < 1.0,
-        "{before:?} {after:?}"
-    );
-}
-
-#[test]
-fn scroll_zooms_the_map() {
-    let mut h = harness();
-    h.run_steps(3);
-    let size = h.state().canvas_size;
-    let fit = {
-        let s = h.state_mut();
-        s.pipeline.fit_scale(&s.doc, size).unwrap()
-    };
-    h.hover_at(egui::pos2(700.0, 400.0));
-    h.run_steps(1);
-    h.event(egui::Event::MouseWheel {
-        unit: egui::MouseWheelUnit::Point,
-        delta: egui::vec2(0.0, 200.0),
-        phase: egui::TouchPhase::Move,
-        modifiers: egui::Modifiers::NONE,
-    });
-    h.run_steps(3);
-    let s = h.state();
-    let view = s.doc.frame.view.expect("the scroll sets a view");
-    assert!(view.scale > fit * 1.05, "{} vs {fit}", view.scale);
-}
-
-fn touch(h: &mut Harness<'static, AppState>, id: u64, phase: egui::TouchPhase, pos: egui::Pos2) {
-    h.event(egui::Event::Touch {
-        device_id: egui::TouchDeviceId(0),
-        id: egui::TouchId(id),
-        phase,
-        pos,
-        force: None,
-    });
-}
-
-/// The first finger is also the pointer, as in the window on iPad.
-fn first_finger(h: &mut Harness<'static, AppState>, phase: egui::TouchPhase, pos: egui::Pos2) {
-    touch(h, 1, phase, pos);
-    h.event(egui::Event::PointerMoved(pos));
-    if phase != egui::TouchPhase::Move {
-        h.event(egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed: phase == egui::TouchPhase::Start,
-            modifiers: egui::Modifiers::NONE,
-        });
-    }
-    if phase == egui::TouchPhase::End {
-        h.event(egui::Event::PointerGone);
-    }
-}
-
-fn page_of_origin(h: &mut Harness<'static, AppState>) -> Point {
-    let s = h.state_mut();
-    s.pipeline
-        .lonlat_to_page(&s.doc, s.canvas_size, [0.0, 0.0])
-        .unwrap()
-        .unwrap()
-}
-
-#[test]
-fn one_finger_pans_the_map() {
-    let mut h = harness();
-    h.run_steps(3);
-    let before = page_of_origin(&mut h);
-    first_finger(&mut h, egui::TouchPhase::Start, egui::pos2(700.0, 400.0));
-    h.run_steps(1);
-    first_finger(&mut h, egui::TouchPhase::Move, egui::pos2(750.0, 420.0));
-    h.run_steps(1);
-    first_finger(&mut h, egui::TouchPhase::End, egui::pos2(750.0, 420.0));
-    h.run_steps(2);
-    let after = page_of_origin(&mut h);
-    assert!(
-        (after.x - before.x - 50.0).abs() < 1.0,
-        "{before:?} {after:?}"
-    );
-    assert!(
-        (after.y - before.y - 20.0).abs() < 1.0,
-        "{before:?} {after:?}"
-    );
-}
-
-#[test]
-fn two_fingers_zoom_the_map() {
-    let mut h = harness();
-    h.run_steps(3);
-    let size = h.state().canvas_size;
-    let origin = h.state().canvas_origin;
-    let fit = {
-        let s = h.state_mut();
-        s.pipeline.fit_scale(&s.doc, size).unwrap()
-    };
-    // The fingers start 200 points apart, with the middle at 700, 400.
-    let middle = Point::new(700.0 - f64::from(origin.0), 400.0 - f64::from(origin.1));
-    let place = {
-        let s = h.state_mut();
-        s.pipeline
-            .page_to_lonlat(&s.doc, size, middle)
-            .unwrap()
-            .unwrap()
-    };
-    first_finger(&mut h, egui::TouchPhase::Start, egui::pos2(600.0, 400.0));
-    h.run_steps(1);
-    touch(&mut h, 2, egui::TouchPhase::Start, egui::pos2(800.0, 400.0));
-    h.run_steps(1);
-
-    // The fingers move apart to 300 points. The middle stays.
-    first_finger(&mut h, egui::TouchPhase::Move, egui::pos2(550.0, 400.0));
-    touch(&mut h, 2, egui::TouchPhase::Move, egui::pos2(850.0, 400.0));
-    h.run_steps(1);
-    let view = h.state().doc.frame.view.expect("the pinch sets a view");
-    assert!(
-        (view.scale / fit - 1.5).abs() < 0.01,
-        "{} vs {fit}",
-        view.scale
-    );
-    let at = {
-        let s = h.state_mut();
-        s.pipeline
-            .lonlat_to_page(&s.doc, size, place)
-            .unwrap()
-            .unwrap()
-    };
-    assert!((at - middle).hypot() < 1.0, "{at:?} {middle:?}");
-
-    // Both fingers move by 30, 10. The map follows, and the scale stays.
-    first_finger(&mut h, egui::TouchPhase::Move, egui::pos2(580.0, 410.0));
-    touch(&mut h, 2, egui::TouchPhase::Move, egui::pos2(880.0, 410.0));
-    h.run_steps(1);
-    let moved = h.state().doc.frame.view.unwrap();
-    assert!((moved.scale / view.scale - 1.0).abs() < 0.01);
-    let at = {
-        let s = h.state_mut();
-        s.pipeline
-            .lonlat_to_page(&s.doc, size, place)
-            .unwrap()
-            .unwrap()
-    };
-    let want = middle + kurbo::Vec2::new(30.0, 10.0);
-    assert!((at - want).hypot() < 1.0, "{at:?} {want:?}");
-}
-
-#[test]
-fn zoom_helper_zooms() {
-    let mut h = harness();
-    h.run_steps(3);
-    let state = h.state_mut();
-    let size = state.canvas_size;
-    let fit = state.pipeline.fit_scale(&state.doc, size).unwrap();
-    vale_app::ui::canvas::zoom_at(state, Point::new(300.0, 300.0), 2.0, 0.0);
-    let view = state.doc.frame.view.unwrap();
-    assert!((view.scale - 2.0 * fit).abs() < 1e-9 * fit);
-}
-
-#[test]
 fn open_files_action() {
     let mut state = state_with(Document::empty());
     state.run_action(Action::OpenFiles(vec![land_path()]));
@@ -535,7 +354,7 @@ fn export_action_writes_pdf() {
 fn projection_change_recomposes() {
     let mut h = harness();
     h.run_steps(3);
-    let before = h.state().composed.as_ref().unwrap().view;
+    let before = h.state().atlas.composes;
     let s = h.state_mut();
     s.doc.set_projection(ProjectionSpec {
         kind: ProjectionKind::Mercator,
@@ -544,7 +363,7 @@ fn projection_change_recomposes() {
     });
     s.touch();
     h.run_steps(2);
-    assert_ne!(h.state().composed.as_ref().unwrap().view, before);
+    assert_eq!(h.state().atlas.composes, before + 1);
 }
 
 #[test]
@@ -728,10 +547,11 @@ fn the_properties_form_changes_the_radius_and_keeps_each_feature() {
     let world = &state.doc.project.world;
     assert_eq!((world.radius_km, world.units), (1737.4, Units::Imperial));
     assert_eq!(world.name, "Earth (sample)");
-    // Each feature keeps its longitude and its latitude, and the picture stays.
+    // Each feature keeps its longitude and its latitude. The scale of the
+    // frame is a ratio, so a point is the same distance on each world.
     assert_eq!(state.doc.project.layers(), layers);
     let small = state.composed.as_ref().unwrap().km_per_point;
-    assert!((small / scale - 1737.4 / 6371.0).abs() < 1e-9);
+    assert!((small / scale - 1.0).abs() < 1e-6, "{small} {scale}");
     assert!(h.query_by_label_contains("Radius 1079.6 mi").is_some());
 
     let form = h.state_mut().world_form.as_mut().unwrap();

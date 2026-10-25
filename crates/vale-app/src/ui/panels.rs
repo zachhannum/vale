@@ -62,7 +62,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.separator();
             }
             ui.selectable_value(&mut state.workspace, Workspace::Globe, "Globe");
-            ui.selectable_value(&mut state.workspace, Workspace::Map, "Map");
+            ui.selectable_value(&mut state.workspace, Workspace::Atlas, "Atlas");
             ui.separator();
             if ui.button(world_form::NEW_WORLD).clicked() {
                 state.world_form = Some(WorldForm::new_world());
@@ -164,7 +164,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     state.actions.push(Action::ExportHeightmapDialog);
                 }
             }
-            if !state.file_buttons || state.workspace != Workspace::Map {
+            if !state.file_buttons || state.workspace != Workspace::Atlas {
                 return;
             }
             ui.separator();
@@ -817,7 +817,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             ui.weak(format!("{count}"));
             if resp.changed() {
                 state.doc.set_visible(id, visible);
-                state.dirty = true;
+                state.touch();
             }
             if resp.clicked() {
                 state.select(Some(LayerRef::Vector(id)));
@@ -865,7 +865,7 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
             }
             ui.separator();
             if let Some(c) = &state.composed
-                && state.workspace == Workspace::Map
+                && state.workspace == Workspace::Atlas
             {
                 let units = state.doc.project.world.units;
                 ui.label(format!("1 pt = {}", world::distance(c.km_per_point, units)));

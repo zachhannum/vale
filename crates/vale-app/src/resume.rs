@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use vale_sphere::{Point, ProjectionKind, ProjectionSpec};
+use vale_store::PageId;
 
 use crate::globe::math::Mat3;
 use crate::globe::view::GlobeView;
@@ -25,6 +26,8 @@ pub struct View {
     /// The point of the flat map at the middle of the canvas.
     pub flat_center: Point,
     pub flat_zoom: f64,
+    /// The open page of the atlas. `None`: the first page.
+    pub page: Option<PageId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,7 +69,7 @@ impl Resume {
         if let Some(view) = &self.view {
             let workspace = match view.workspace {
                 Workspace::Globe => "globe",
-                Workspace::Map => "map",
+                Workspace::Atlas => "atlas",
             };
             let world_view = match view.world_view {
                 WorldView::Globe => "globe",
@@ -83,6 +86,9 @@ impl Resume {
             let center = view.flat_center;
             lines.push(format!("flat_center {}", numbers(&[center.x, center.y])));
             lines.push(format!("flat_zoom {}", view.flat_zoom));
+            if let Some(page) = view.page {
+                lines.push(format!("page {}", page.0));
+            }
         }
         lines.join("\n")
     }
@@ -103,7 +109,7 @@ impl Resume {
         let view = || {
             let workspace = match value("workspace")? {
                 "globe" => Workspace::Globe,
-                "map" => Workspace::Map,
+                "atlas" | "map" => Workspace::Atlas,
                 _ => return None,
             };
             let world_view = match value("world_view")? {
@@ -130,6 +136,7 @@ impl Resume {
                 flat_spec: ProjectionSpec { kind, lon0, lat0 }.normalized(),
                 flat_center: Point::new(flat_center[0], flat_center[1]),
                 flat_zoom: flat_zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX),
+                page: value("page").and_then(|v| v.parse().ok()).map(PageId),
             })
         };
         Resume {
@@ -171,6 +178,7 @@ mod tests {
             },
             flat_center: Point::new(0.3, -0.1),
             flat_zoom: 2.25,
+            page: Some(PageId(3)),
         }
     }
 
@@ -209,5 +217,23 @@ mod tests {
         assert_eq!(Resume::parse(&not_rotation), no_view);
         let unknown = format!("{text}\nlater_key 1");
         assert_eq!(Resume::parse(&unknown), resume);
+    }
+
+    #[test]
+    fn the_atlas_workspace_keeps_its_page_and_reads_the_old_name() {
+        let mut view = view();
+        view.workspace = Workspace::Atlas;
+        let resume = Resume {
+            project: Some(PathBuf::from("/worlds/a.gpkg")),
+            view: Some(view),
+        };
+        let text = resume.text();
+        assert!(text.contains("workspace atlas") && text.contains("page 3"));
+        assert_eq!(Resume::parse(&text), resume);
+        let old = text.replace("workspace atlas", "workspace map");
+        assert_eq!(Resume::parse(&old), resume);
+        let no_page = text.replace("\npage 3", "");
+        let parsed = Resume::parse(&no_page).view.unwrap();
+        assert_eq!(parsed.page, None);
     }
 }

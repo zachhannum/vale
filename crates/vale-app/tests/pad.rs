@@ -223,7 +223,7 @@ fn check_controls(h: &Pad, what: &str) {
                     .iter()
                     .any(|k| k.name() == name);
                 let menu =
-                    ["World", "Globe", "Flat", GRATICULE, "Maps", WORLDS_ROW].contains(&name);
+                    ["World", "Globe", "Flat", GRATICULE, "Atlas", WORLDS_ROW].contains(&name);
                 let more = in_more
                     && [
                         "Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp",
@@ -1696,8 +1696,8 @@ fn a_finger_hits_each_control_at_the_first_try() {
     drag(&mut h, rect.center(), rect.center_bottom(), None);
     assert!(h.state().globe.brush.size_points < size);
 
-    tap(&mut h, "Maps");
-    assert_eq!(h.state().workspace, Workspace::Map);
+    tap(&mut h, "Atlas");
+    assert_eq!(h.state().workspace, Workspace::Atlas);
 }
 
 #[test]
@@ -2702,10 +2702,8 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     // The Worlds button and a line are at the left of the workspaces.
     assert_eq!(control(&h, WORLDS).unwrap().min, pos2(20.0, 36.0));
     assert_eq!(control(&h, "World").unwrap().min, pos2(73.0, 36.0));
-    assert!(control(&h, "Maps").is_some());
+    assert!(control(&h, "Atlas").is_some());
     assert!(control(&h, "Workspace").is_none());
-    // Atlas does nothing yet, so it is not a control.
-    assert!(control(&h, "Atlas").is_none());
     assert!(r.view.unwrap().contains_rect(control(&h, "Flat").unwrap()));
     assert_eq!(r.view.unwrap().center(), pos2(597.0, 58.0));
     assert!(r.view.unwrap().contains_rect(control(&h, "Globe").unwrap()));
@@ -2778,12 +2776,12 @@ fn the_top_row_and_the_panels_match_the_portrait_board() {
     tap(&mut h, "Workspace");
     let menu = h.state().pad.menu_rect.unwrap();
     assert_eq!((menu.min, menu.width()), (pos2(16.0, 88.0), 240.0));
-    assert!(menu.contains_rect(control(&h, "Maps").unwrap()));
-    tap(&mut h, "Maps");
-    assert_eq!(h.state().workspace, Workspace::Map);
-    // The flat map has the desktop layout, with a way back to the world.
-    h.get_by_label("Globe").click();
-    h.run_steps(3);
+    assert!(menu.contains_rect(control(&h, "Atlas").unwrap()));
+    tap(&mut h, "Atlas");
+    assert_eq!(h.state().workspace, Workspace::Atlas);
+    // The menu of the Atlas workspace goes back to the world.
+    tap(&mut h, "Workspace");
+    tap(&mut h, "World");
     assert_eq!(h.state().workspace, Workspace::Globe);
     assert!(control(&h, "Workspace").is_some());
 }
@@ -2806,9 +2804,9 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 382.0))
+            Rect::from_min_size(pos2(16.0, 88.0), vec2(240.0, 334.0))
         );
-        let tops = ["World", "Globe", "Maps"].map(|name| control(&h, name).unwrap().top());
+        let tops = ["World", "Globe", "Atlas"].map(|name| control(&h, name).unwrap().top());
         assert_eq!(tops, [98.0, 146.0, 303.0]);
         tap(&mut h, "Flat");
         assert!(!h.state().pad.menu);
