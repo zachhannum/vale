@@ -270,6 +270,68 @@ impl Atlas {
         self.maps.iter_mut().find(|m| m.id == id)
     }
 
+    /// Adds a map with an Equal Earth projection at 0, 0 that shows each
+    /// layer, after the last map. Its name is the first free name of "Map",
+    /// "Map 2", "Map 3", and so on.
+    pub fn add_map(&mut self) -> MapId {
+        let name = self.free_name("Map");
+        self.push_map(MapRecord {
+            id: MapId(0),
+            name,
+            projection: EQUAL_EARTH.to_string(),
+            lon0: 0.0,
+            lat0: 0.0,
+            hidden: BTreeSet::new(),
+        })
+    }
+
+    /// Adds a copy of a map directly after it, with the name "<name> copy".
+    /// `None`: no such map.
+    pub fn copy_map(&mut self, id: MapId) -> Option<MapId> {
+        let i = self.maps.iter().position(|m| m.id == id)?;
+        let mut map = self.maps[i].clone();
+        map.name = self.free_name(&format!("{} copy", map.name));
+        map.id = MapId(self.next_map_id);
+        self.next_map_id += 1;
+        self.maps.insert(i + 1, map);
+        Some(MapId(self.next_map_id - 1))
+    }
+
+    /// Removes a map. `None`: no such map, a frame shows it, or it is the
+    /// last map.
+    pub fn remove_map(&mut self, id: MapId) -> Option<MapRecord> {
+        let i = self.maps.iter().position(|m| m.id == id)?;
+        if self.maps.len() == 1 || self.frames_of_map(id).next().is_some() {
+            return None;
+        }
+        Some(self.maps.remove(i))
+    }
+
+    /// Whether the map can be removed: it is not the last map, and no frame
+    /// shows it.
+    pub fn can_remove_map(&self, id: MapId) -> bool {
+        self.maps.len() > 1 && self.map(id).is_some() && self.frames_of_map(id).next().is_none()
+    }
+
+    fn push_map(&mut self, mut map: MapRecord) -> MapId {
+        map.id = MapId(self.next_map_id);
+        self.next_map_id += 1;
+        self.maps.push(map);
+        MapId(self.next_map_id - 1)
+    }
+
+    /// `base`, or `base` with the first free number from 2.
+    fn free_name(&self, base: &str) -> String {
+        let taken = |n: &str| self.maps.iter().any(|m| m.name == n);
+        if !taken(base) {
+            return base.to_string();
+        }
+        (2..)
+            .map(|i| format!("{base} {i}"))
+            .find(|n| !taken(n))
+            .expect("a free name")
+    }
+
     /// Each frame of a map, with its page, in atlas order.
     pub fn frames_of_map(&self, id: MapId) -> impl Iterator<Item = (&PageRecord, &FrameRecord)> {
         let frames = self
@@ -367,6 +429,57 @@ mod tests {
         assert_eq!(atlas.pages.len(), 1);
         // The ID of a removed page is not used again.
         assert!(atlas.add_page(None, 1.0, 1.0, PageUnits::Mm) > end);
+    }
+
+    #[test]
+    fn new_maps_and_copies_get_free_names_and_new_ids() {
+        let mut atlas = Atlas::new(Units::Metric);
+        let first = atlas.maps[0].id;
+        let second = atlas.add_map();
+        let third = atlas.add_map();
+        let names: Vec<&str> = atlas.maps.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Map", "Map 2", "Map 3"]);
+
+        let source = atlas.map_mut(first).unwrap();
+        source.projection = "orthographic".to_string();
+        source.lon0 = 24.0;
+        source.lat0 = 30.0;
+        source.hidden.insert(LayerId(4));
+        let copy = atlas.copy_map(first).unwrap();
+        let again = atlas.copy_map(first).unwrap();
+        let ids: Vec<MapId> = atlas.maps.iter().map(|m| m.id).collect();
+        assert_eq!(ids, [first, again, copy, second, third]);
+        let mut expected = atlas.map(first).unwrap().clone();
+        expected.id = copy;
+        expected.name = "Map copy".to_string();
+        assert_eq!(atlas.map(copy), Some(&expected));
+        assert_eq!(atlas.map(again).unwrap().name, "Map copy 2");
+        assert!(atlas.copy_map(MapId(99)).is_none());
+
+        atlas.map_mut(copy).unwrap().hidden.clear();
+        assert!(atlas.map(first).unwrap().hidden.contains(&LayerId(4)));
+    }
+
+    #[test]
+    fn only_a_map_that_no_frame_shows_comes_off() {
+        let mut atlas = Atlas::new(Units::Metric);
+        let shown = atlas.maps[0].id;
+        let page = atlas.pages[0].id;
+        atlas.add_frame(page, frame(shown)).unwrap();
+        assert!(!atlas.can_remove_map(shown));
+        assert!(atlas.remove_map(shown).is_none());
+
+        let free = atlas.add_map();
+        assert!(atlas.can_remove_map(free));
+        assert_eq!(atlas.remove_map(free).unwrap().id, free);
+        assert!(atlas.remove_map(free).is_none());
+        // The ID of a removed map is not used again.
+        assert!(atlas.add_map() > free);
+
+        let mut lone = Atlas::new(Units::Metric);
+        let last = lone.maps[0].id;
+        assert!(!lone.can_remove_map(last));
+        assert!(lone.remove_map(last).is_none());
     }
 
     #[test]
