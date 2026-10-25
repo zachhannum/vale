@@ -25,11 +25,8 @@ pub struct FrameId(pub u32);
 pub struct MapRecord {
     pub id: MapId,
     pub name: String,
-    /// The ID of the kind of projection.
+    /// The PROJ string of the projection, with no radius.
     pub projection: String,
-    /// The center of the projection, in degrees.
-    pub lon0: f64,
-    pub lat0: f64,
     /// The layers that the map does not show.
     pub hidden: BTreeSet<LayerId>,
 }
@@ -132,10 +129,21 @@ pub struct FrameRecord {
     pub graticule: bool,
 }
 
+/// A projection that the project keeps under a name. A custom projection is
+/// a preset that you edit and save.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectionPreset {
+    pub name: String,
+    /// The PROJ string of the projection, with no radius.
+    pub projection: String,
+}
+
 /// The maps and the pages. The atlas has at least one map and one page.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Atlas {
     pub maps: Vec<MapRecord>,
+    /// The custom projections, in the order in which they were first saved.
+    pub presets: Vec<ProjectionPreset>,
     /// In atlas order.
     pub pages: Vec<PageRecord>,
     pub(crate) next_map_id: u32,
@@ -143,8 +151,8 @@ pub struct Atlas {
     pub(crate) next_frame_id: u32,
 }
 
-/// The ID of the Equal Earth projection.
-const EQUAL_EARTH: &str = "equal-earth";
+/// The PROJ string of the Equal Earth projection at 0, 0.
+pub const EQUAL_EARTH: &str = "+proj=eqearth +lon_0=0";
 
 impl Atlas {
     /// An atlas with one map and one empty page. The map has an Equal Earth
@@ -160,10 +168,9 @@ impl Atlas {
                 id: MapId(0),
                 name: "Map".to_string(),
                 projection: EQUAL_EARTH.to_string(),
-                lon0: 0.0,
-                lat0: 0.0,
                 hidden: BTreeSet::new(),
             }],
+            presets: Vec::new(),
             pages: vec![PageRecord {
                 id: PageId(0),
                 name: String::new(),
@@ -262,6 +269,25 @@ impl Atlas {
         })
     }
 
+    /// Saves a projection under a name. A preset with that name changes.
+    pub fn save_preset(&mut self, name: &str, projection: &str) {
+        match self.presets.iter_mut().find(|p| p.name == name) {
+            Some(preset) => preset.projection = projection.to_string(),
+            None => self.presets.push(ProjectionPreset {
+                name: name.to_string(),
+                projection: projection.to_string(),
+            }),
+        }
+    }
+
+    /// Removes the preset with this name. Returns true if there was one. A
+    /// map keeps its projection.
+    pub fn remove_preset(&mut self, name: &str) -> bool {
+        let before = self.presets.len();
+        self.presets.retain(|p| p.name != name);
+        self.presets.len() != before
+    }
+
     pub fn map(&self, id: MapId) -> Option<&MapRecord> {
         self.maps.iter().find(|m| m.id == id)
     }
@@ -333,10 +359,23 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_preset_replaces_the_preset_of_its_name() {
+        let mut atlas = Atlas::new(Units::Metric);
+        atlas.save_preset("Home", "+proj=laea +lon_0=1 +lat_0=2");
+        atlas.save_preset("Far", "+proj=eqearth +lon_0=0");
+        atlas.save_preset("Home", "+proj=laea +lon_0=3 +lat_0=4");
+        assert_eq!(atlas.presets.len(), 2);
+        assert_eq!(atlas.presets[0].projection, "+proj=laea +lon_0=3 +lat_0=4");
+        assert!(atlas.remove_preset("Home"));
+        assert!(!atlas.remove_preset("Home"));
+        assert_eq!(atlas.presets.len(), 1);
+    }
+
+    #[test]
     fn a_new_atlas_has_one_map_and_one_page_in_the_units_of_the_world() {
         let metric = Atlas::new(Units::Metric);
         assert_eq!(metric.maps.len(), 1);
-        assert_eq!(metric.maps[0].projection, "equal-earth");
+        assert_eq!(metric.maps[0].projection, EQUAL_EARTH);
         let page = &metric.pages[0];
         assert_eq!(
             (page.width_mm, page.height_mm, page.units),

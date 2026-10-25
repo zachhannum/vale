@@ -22,6 +22,7 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 
 use crate::atlas::{
     self, Atlas, FrameId, FrameRecord, FrameShape, MapId, MapRecord, PageId, PageRecord, PageUnits,
+    ProjectionPreset,
 };
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
@@ -32,7 +33,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 22;
+pub const FORMAT_VERSION: u32 = 23;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -59,6 +60,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v20,
     v21,
     v22,
+    v23,
 ];
 
 /// `GPKG` in ASCII.
@@ -877,8 +879,8 @@ fn v22(tx: &Transaction) -> rusqlite::Result<()> {
            position INTEGER NOT NULL UNIQUE,
            name TEXT NOT NULL,
            projection TEXT NOT NULL,
-           lon0 REAL NOT NULL,
-           lat0 REAL NOT NULL);
+           lon0 REAL NOT NULL DEFAULT 0,
+           lat0 REAL NOT NULL DEFAULT 0);
          CREATE TABLE IF NOT EXISTS vale_map_hidden (
            map_id INTEGER NOT NULL REFERENCES vale_map(id),
            layer_id INTEGER NOT NULL,
@@ -903,8 +905,8 @@ fn v22(tx: &Transaction) -> rusqlite::Result<()> {
            rotation REAL NOT NULL,
            graticule INTEGER NOT NULL,
            UNIQUE (page_id, position));
-         INSERT OR IGNORE INTO vale_map (id, position, name, projection, lon0, lat0)
-           VALUES (0, 0, 'Map', 'equal-earth', 0, 0);
+         INSERT OR IGNORE INTO vale_map (id, position, name, projection)
+           VALUES (0, 0, 'Map', 'equal-earth');
          INSERT OR IGNORE INTO vale_page (id, position, name, width_mm, height_mm, units)
            SELECT 0, 0, '',
              CASE units WHEN 'imperial' THEN 279.4 ELSE 297 END,
@@ -922,6 +924,45 @@ fn v22(tx: &Transaction) -> rusqlite::Result<()> {
            SELECT table_name, NULL, 'vale_project', 'Records of the Vale app', 'read-write'
            FROM gpkg_contents
            WHERE table_name IN ('vale_map', 'vale_map_hidden', 'vale_page', 'vale_frame');",
+    )
+}
+
+/// The projection of a map is a PROJ string, and the project keeps custom
+/// projections under a name. The step makes the string from the kind and the
+/// center of each map. The undo images of the atlas have the old form, so the
+/// step removes them, and the steps that hold nothing else.
+fn v23(tx: &Transaction) -> rusqlite::Result<()> {
+    // A file with an older version number can already have the new table shape.
+    let old_shape = tx
+        .prepare("SELECT 1 FROM pragma_table_info('vale_map') WHERE name = 'lon0'")?
+        .exists([])?;
+    if old_shape {
+        tx.execute_batch(
+            "UPDATE vale_map SET projection = CASE projection
+             WHEN 'equirectangular' THEN '+proj=eqc +lon_0=' || printf('%.15g', lon0)
+             WHEN 'equal-earth' THEN '+proj=eqearth +lon_0=' || printf('%.15g', lon0)
+             WHEN 'mercator' THEN '+proj=merc +lon_0=' || printf('%.15g', lon0)
+             WHEN 'lambert-azimuthal' THEN '+proj=laea +lon_0=' || printf('%.15g', lon0) || ' +lat_0=' || printf('%.15g', lat0)
+             WHEN 'orthographic' THEN '+proj=ortho +lon_0=' || printf('%.15g', lon0) || ' +lat_0=' || printf('%.15g', lat0)
+             WHEN 'stereographic' THEN '+proj=stere +lon_0=' || printf('%.15g', lon0) || ' +lat_0=' || printf('%.15g', lat0)
+             ELSE '+proj=eqearth +lon_0=0' END;
+         ALTER TABLE vale_map DROP COLUMN lon0;
+         ALTER TABLE vale_map DROP COLUMN lat0;",
+        )?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_projection (
+           position INTEGER PRIMARY KEY,
+           name TEXT NOT NULL,
+           projection TEXT NOT NULL);
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_projection', 'vale', 'vale_projection');
+         INSERT OR IGNORE INTO gpkg_extensions
+           VALUES ('vale_projection', NULL, 'vale_project', 'Records of the Vale app', 'read-write');
+         DELETE FROM vale_undo_record WHERE kind = 'atlas';
+         DELETE FROM vale_undo_step
+           WHERE id NOT IN (SELECT step_id FROM vale_undo_record)
+             AND id NOT IN (SELECT step_id FROM vale_undo_tile);",
     )
 }
 
@@ -1296,23 +1337,22 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
         "DELETE FROM vale_frame;
          DELETE FROM vale_map_hidden;
          DELETE FROM vale_page;
-         DELETE FROM vale_map;",
+         DELETE FROM vale_map;
+         DELETE FROM vale_projection;",
     )?;
+    let mut preset =
+        tx.prepare("INSERT INTO vale_projection (position, name, projection) VALUES (?1, ?2, ?3)")?;
+    for (position, p) in atlas.presets.iter().enumerate() {
+        preset.execute(params![position, p.name, p.projection])?;
+    }
     let mut map = tx.prepare(
-        "INSERT INTO vale_map (id, position, name, projection, lon0, lat0)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO vale_map (id, position, name, projection)
+         VALUES (?1, ?2, ?3, ?4)",
     )?;
     let mut hidden =
         tx.prepare("INSERT INTO vale_map_hidden (map_id, layer_id) VALUES (?1, ?2)")?;
     for (position, m) in atlas.maps.iter().enumerate() {
-        map.execute(params![
-            m.id.0,
-            position,
-            m.name,
-            m.projection,
-            m.lon0,
-            m.lat0
-        ])?;
+        map.execute(params![m.id.0, position, m.name, m.projection])?;
         for layer in m.hidden.iter().filter(|id| project.layer(**id).is_some()) {
             hidden.execute(params![m.id.0, layer.0])?;
         }
@@ -2044,22 +2084,29 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
     let default = Atlas::new(units);
     let mut atlas = Atlas {
         maps: Vec::new(),
+        presets: Vec::new(),
         pages: Vec::new(),
         next_map_id: counter(conn, "next_map_id")?,
         next_page_id: counter(conn, "next_page_id")?,
         next_frame_id: counter(conn, "next_frame_id")?,
     };
-    let mut rows =
-        conn.prepare("SELECT id, name, projection, lon0, lat0 FROM vale_map ORDER BY position")?;
+    let mut rows = conn.prepare("SELECT id, name, projection FROM vale_map ORDER BY position")?;
     let mut rows = rows.query([])?;
     while let Some(r) = rows.next()? {
         atlas.maps.push(MapRecord {
             id: MapId(r.get(0)?),
             name: r.get(1)?,
             projection: r.get(2)?,
-            lon0: r.get(3)?,
-            lat0: r.get(4)?,
             hidden: BTreeSet::new(),
+        });
+    }
+    let mut rows =
+        conn.prepare("SELECT name, projection FROM vale_projection ORDER BY position")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        atlas.presets.push(ProjectionPreset {
+            name: r.get(0)?,
+            projection: r.get(1)?,
         });
     }
     let mut rows = conn.prepare("SELECT map_id, layer_id FROM vale_map_hidden")?;
@@ -2536,6 +2583,7 @@ mod tests {
                 "vale_map_hidden",
                 "vale_meta",
                 "vale_page",
+                "vale_projection",
                 "vale_raster",
                 "vale_raster_tile",
                 "vale_thumbnail",
@@ -2732,8 +2780,8 @@ mod tests {
         let towns = project.layers()[0].id;
         let atlas = &mut project.atlas;
         atlas.maps[0].hidden.insert(towns);
-        atlas.maps[0].projection = "orthographic".into();
-        atlas.maps[0].lon0 = 40.0;
+        atlas.maps[0].projection = "+proj=ortho +lon_0=40 +lat_0=10".into();
+        atlas.save_preset("Home", "+proj=laea +lon_0=40 +lat_0=10");
         let first = atlas.pages[0].id;
         let second = atlas.add_page(Some(first), 420.0, 297.0, PageUnits::In);
         atlas.page_mut(second).unwrap().name = "North".into();
@@ -3308,7 +3356,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 160 * 1024, "{bytes} bytes");
+        assert!(bytes < 168 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();

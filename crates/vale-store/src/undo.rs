@@ -16,7 +16,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
     Atlas, FrameId, FrameRecord, FrameShape, MapId, MapRecord, PageId, PageRecord, PageUnits,
-    encode_rings, read_rings,
+    ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
@@ -224,8 +224,8 @@ pub(crate) fn swap_records(
             }
             ATLAS => {
                 let image = payload.is_some().then(|| atlas(&mut r)).flatten();
-                let (maps, pages) = image.ok_or_else(bad)?;
-                (next.atlas.maps, next.atlas.pages) = (maps, pages);
+                let (maps, pages, presets) = image.ok_or_else(bad)?;
+                (next.atlas.maps, next.atlas.pages, next.atlas.presets) = (maps, pages, presets);
             }
             _ => return Err(bad()),
         }
@@ -454,16 +454,14 @@ fn world(r: &mut Reader) -> Option<World> {
     })
 }
 
-/// The image of the atlas holds the maps and the pages, and not the
-/// counters of the IDs.
+/// The image of the atlas holds the maps, the pages, and the custom
+/// projections, and not the counters of the IDs.
 fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     put_u32(out, atlas.maps.len());
     for map in &atlas.maps {
         put_u32(out, map.id.0 as usize);
         put_bytes(out, map.name.as_bytes());
         put_bytes(out, map.projection.as_bytes());
-        put_f64(out, map.lon0);
-        put_f64(out, map.lat0);
         put_u32(out, map.hidden.len());
         for layer in &map.hidden {
             put_u32(out, layer.0 as usize);
@@ -489,15 +487,21 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
             out.push(frame.graticule as u8);
         }
     }
+    put_u32(out, atlas.presets.len());
+    for preset in &atlas.presets {
+        put_bytes(out, preset.name.as_bytes());
+        put_bytes(out, preset.projection.as_bytes());
+    }
 }
 
-fn atlas(r: &mut Reader) -> Option<(Vec<MapRecord>, Vec<PageRecord>)> {
+type AtlasImage = (Vec<MapRecord>, Vec<PageRecord>, Vec<ProjectionPreset>);
+
+fn atlas(r: &mut Reader) -> Option<AtlasImage> {
     let mut maps = Vec::new();
     for _ in 0..count(r)? {
         let id = MapId(r.u32()?);
         let name = string(r)?;
         let projection = string(r)?;
-        let (lon0, lat0) = (r.f64()?, r.f64()?);
         let mut hidden = std::collections::BTreeSet::new();
         for _ in 0..count(r)? {
             hidden.insert(LayerId(r.u32()?));
@@ -506,8 +510,6 @@ fn atlas(r: &mut Reader) -> Option<(Vec<MapRecord>, Vec<PageRecord>)> {
             id,
             name,
             projection,
-            lon0,
-            lat0,
             hidden,
         });
     }
@@ -546,7 +548,14 @@ fn atlas(r: &mut Reader) -> Option<(Vec<MapRecord>, Vec<PageRecord>)> {
             frames,
         });
     }
-    r.0.is_empty().then_some((maps, pages))
+    let mut presets = Vec::new();
+    for _ in 0..count(r)? {
+        presets.push(ProjectionPreset {
+            name: string(r)?,
+            projection: string(r)?,
+        });
+    }
+    r.0.is_empty().then_some((maps, pages, presets))
 }
 
 /// The raster images of the log get one color for each band, as the
@@ -990,10 +999,18 @@ mod tests {
         before.add_frame(second, frame(rect, true)).unwrap();
         before.add_frame(second, frame(polygon, false)).unwrap();
 
+        before.save_preset("Home", "+proj=laea +lon_0=10 +lat_0=50");
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
         let image = atlas(&mut Reader(&out)).unwrap();
-        assert_eq!(image, (before.maps.clone(), before.pages.clone()));
+        assert_eq!(
+            image,
+            (
+                before.maps.clone(),
+                before.pages.clone(),
+                before.presets.clone()
+            )
+        );
         out.pop();
         assert_eq!(atlas(&mut Reader(&out)), None);
     }
