@@ -156,7 +156,7 @@ fn the_atlas_is_reachable() {
     let s = h.state();
     assert_eq!(s.workspace, Workspace::Atlas);
     assert!(s.atlas.place.is_some());
-    assert!(h.query_by_label("Projection").is_some());
+    assert!(h.query_by_label("Add map frame").is_some());
     h.get_by_label("Globe").click();
     h.run_steps(2);
     assert_eq!(h.state().workspace, Workspace::Globe);
