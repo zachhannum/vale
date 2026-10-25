@@ -9,10 +9,12 @@ use vale_store::{FrameRecord, FrameShape, PageUnits};
 use super::atlas::{self, AtlasSelection, FrameTab};
 use super::pad::GRATICULE;
 use super::pad::atlas::{
-    ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT, LATITUDE,
-    LONGITUDE, ORIENTATIONS, PAGE_NAME, POLYGON, RECTANGLE, REMOVE_VERTEX, ROTATION, SCALE, SHAPE,
-    SIZE, UNIT_NAMES, WIDTH, length_text, unit_name,
+    ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, COPY_MAP, DELETE_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT,
+    LATITUDE, LONGITUDE, MAP, MAP_NAME, NEW_MAP, ORIENTATIONS, PAGE_NAME, POLYGON, RECTANGLE,
+    REMOVE_VERTEX, RENAME_MAP, ROTATION, SCALE, SHAPE, SIZE, UNIT_NAMES, WIDTH, length_text,
+    unit_name,
 };
+use super::pad::widgets::delete_name;
 use super::{AppState, inspector};
 use crate::atlas::{self as math, PAGE_PRESETS};
 
@@ -90,6 +92,8 @@ fn frame_panel(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 
 fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let id = frame.id;
+    map_menu(ui, state, frame);
+    rename_dialog(ui, state, frame);
     let polygon = matches!(frame.shape, FrameShape::Polygon(_));
     ui.horizontal(|ui| {
         ui.label(SHAPE);
@@ -153,6 +157,77 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     ui.add_space(4.0);
     if ui.button(DELETE_FRAME).clicked() {
         atlas::delete_frame(state);
+    }
+}
+
+/// The Map menu: the maps of the project with a check on the map of the
+/// frame, a Delete button for each map that no frame shows, and the map
+/// commands.
+fn map_menu(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let atlas = &state.doc.project.atlas;
+    let current = atlas.map(frame.map).map_or("", |m| m.name.as_str());
+    let maps: Vec<_> = (atlas.maps.iter())
+        .map(|m| (m.id, m.name.clone(), atlas.can_remove_map(m.id)))
+        .collect();
+    egui::ComboBox::from_label(MAP)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for (map, name, removable) in maps {
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(map == frame.map, &name).clicked() {
+                        atlas::set_frame_map(state, frame.id, map);
+                    }
+                    if removable {
+                        let delete = ui.small_button("Delete");
+                        named(&delete, egui::WidgetType::Button, &delete_name(&name));
+                        if delete.clicked() {
+                            atlas::delete_map(state, map);
+                        }
+                    }
+                });
+            }
+            ui.separator();
+            if ui.button(NEW_MAP).clicked() {
+                atlas::new_map(state, frame.id);
+            }
+            if ui.button(COPY_MAP).clicked() {
+                atlas::copy_map(state, frame.id);
+            }
+            if ui.button(RENAME_MAP).clicked() {
+                let name = state.doc.project.atlas.map(frame.map);
+                state.atlas.map_name = name.map(|m| m.name.clone());
+            }
+        });
+}
+
+/// The dialog that renames the map of the frame.
+fn rename_dialog(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let Some(mut name) = state.atlas.map_name.take() else {
+        return;
+    };
+    let mut close = false;
+    let modal = egui::Modal::new(egui::Id::new("atlas-rename-map")).show(ui.ctx(), |ui| {
+        ui.set_width(320.0);
+        ui.heading("Rename map");
+        let field = egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY);
+        let field = ui.add(field);
+        named(&field, egui::WidgetType::TextEdit, MAP_NAME);
+        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+            let valid = !name.trim().is_empty();
+            let rename = ui.add_enabled(valid, egui::Button::new("Rename"));
+            if valid && (rename.clicked() || enter) {
+                atlas::rename_map(state, frame.map, &name);
+                close = true;
+            }
+        });
+    });
+    if !close && !modal.should_close() {
+        state.atlas.map_name = Some(name);
     }
 }
 

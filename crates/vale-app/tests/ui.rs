@@ -11,8 +11,10 @@ use vale_app::session::Session;
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::MORE;
 use vale_app::ui::pad::atlas::{
-    ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, NEXT_PAGE, PAGE_NAME, PREVIOUS_PAGE, SCALE,
+    ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, MAP, MAP_NAME, NEW_MAP, NEXT_PAGE,
+    PAGE_NAME, PREVIOUS_PAGE, RENAME_MAP, SCALE,
 };
+use vale_app::ui::pad::widgets::delete_name;
 use vale_app::ui::panels::ADD_MAP_FRAME;
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
@@ -1089,4 +1091,65 @@ fn the_desktop_atlas_renders_offscreen() {
     std::fs::create_dir_all("../../target/app").unwrap();
     img.save("../../target/app/atlas.png").unwrap();
     assert_eq!((img.width(), img.height()), (1440, 900));
+}
+
+/// The desktop layout with the frame selected. The first map is "Kareth",
+/// and no frame shows the map "Vesperan".
+fn map_menu_harness() -> Harness<'static, AppState> {
+    let mut h = harness();
+    let s = h.state_mut();
+    let atlas = &mut s.doc.project.atlas;
+    let first = atlas.maps[0].id;
+    atlas.map_mut(first).unwrap().name = "Kareth".to_string();
+    let vesperan = atlas.add_map();
+    atlas.map_mut(vesperan).unwrap().name = "Vesperan".to_string();
+    let frame = atlas.pages[0].frames[0].id;
+    s.atlas.selection = AtlasSelection::Frame(frame);
+    h.run_steps(3);
+    h
+}
+
+fn open_map_menu(h: &mut Harness<'static, AppState>) {
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, MAP)
+        .click();
+    h.run_steps(2);
+}
+
+fn frame_map_name(h: &Harness<'static, AppState>) -> String {
+    let atlas = &h.state().doc.project.atlas;
+    let map = atlas.pages[0].frames[0].map;
+    atlas.map(map).unwrap().name.clone()
+}
+
+#[test]
+fn the_desktop_map_menu_chooses_a_map_and_makes_a_new_map() {
+    let mut h = map_menu_harness();
+    open_map_menu(&mut h);
+    assert!(h.query_by_label(&delete_name("Kareth")).is_none());
+    h.get_by_label("Vesperan").click();
+    h.run_steps(2);
+    assert_eq!(frame_map_name(&h), "Vesperan");
+
+    open_map_menu(&mut h);
+    assert!(h.query_by_label(&delete_name("Kareth")).is_some());
+    h.get_by_label(NEW_MAP).click();
+    h.run_steps(2);
+    assert_eq!(frame_map_name(&h), "Map");
+    assert_eq!(h.state().doc.project.atlas.maps.len(), 3);
+}
+
+#[test]
+fn the_desktop_map_menu_renames_and_deletes_a_map() {
+    let mut h = map_menu_harness();
+    open_map_menu(&mut h);
+    h.get_by_label(&delete_name("Vesperan")).click();
+    h.run_steps(2);
+    assert_eq!(h.state().doc.project.atlas.maps.len(), 1);
+
+    open_map_menu(&mut h);
+    h.get_by_label(RENAME_MAP).click();
+    h.run_steps(2);
+    type_in(&mut h, MAP_NAME, "Dravenhold");
+    assert_eq!(frame_map_name(&h), "Dravenhold");
+    assert!(h.state().atlas.map_name.is_none());
 }

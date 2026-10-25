@@ -60,6 +60,15 @@ pub enum FrameTab {
     Projection,
 }
 
+/// The view of the Map menu of the selected frame.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MapMenu {
+    /// The maps of the project and the commands of the menu.
+    List,
+    /// The field that renames the map of the frame.
+    Rename,
+}
+
 /// The pan and the zoom of the page on the screen.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PageView {
@@ -197,6 +206,15 @@ pub struct AtlasState {
     pub add: bool,
     /// The Add menu in the last frame.
     pub add_rect: Option<Rect>,
+    /// The Map menu of the selected frame is open, with this view.
+    pub map_menu: Option<MapMenu>,
+    /// The Map menu in the last frame.
+    pub map_rect: Option<Rect>,
+    /// The Map row of the panel of the frame in the last frame.
+    pub map_row: Option<Rect>,
+    /// The text of the field that renames the map of the selected frame.
+    /// In the desktop layout, the rename dialog is open while it has a text.
+    pub map_name: Option<String>,
     /// The panel of the selection in the last frame.
     pub panel_rect: Option<Rect>,
     /// The page on the screen in the last frame.
@@ -242,6 +260,10 @@ impl Default for AtlasState {
             sizes: false,
             add: false,
             add_rect: None,
+            map_menu: None,
+            map_rect: None,
+            map_row: None,
+            map_name: None,
             panel_rect: None,
             place: None,
             view: PageView::default(),
@@ -1224,6 +1246,59 @@ pub fn delete_page(state: &mut AppState) {
         state.atlas.page = atlas.pages[open].id;
         state.atlas.selection = AtlasSelection::Page;
     }
+}
+
+/// Makes a frame show a map.
+pub fn set_frame_map(state: &mut AppState, id: FrameId, map: MapId) {
+    let atlas = &mut state.doc.project.atlas;
+    if atlas.map(map).is_none() {
+        return;
+    }
+    if let Some(frame) = atlas.frame_mut(id)
+        && frame.map != map
+    {
+        frame.map = map;
+        state.touch();
+    }
+}
+
+/// Adds a map after the last map, and the frame shows it.
+pub fn new_map(state: &mut AppState, id: FrameId) -> MapId {
+    let map = state.doc.project.atlas.add_map();
+    set_frame_map(state, id, map);
+    map
+}
+
+/// Adds a copy of the map of a frame after that map, and the frame shows
+/// the copy.
+pub fn copy_map(state: &mut AppState, id: FrameId) -> Option<MapId> {
+    let source = state.doc.project.atlas.frame(id)?.map;
+    let map = state.doc.project.atlas.copy_map(source)?;
+    set_frame_map(state, id, map);
+    Some(map)
+}
+
+/// Gives a map a new name. A blank name does nothing. Returns false if
+/// nothing changed.
+pub fn rename_map(state: &mut AppState, map: MapId, name: &str) -> bool {
+    let name = name.trim();
+    match state.doc.project.atlas.map_mut(map) {
+        Some(record) if !name.is_empty() && record.name != name => {
+            record.name = name.to_string();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Removes a map that no frame shows. The last map stays. Returns false if
+/// nothing changed.
+pub fn delete_map(state: &mut AppState, map: MapId) -> bool {
+    let removed = state.doc.project.atlas.remove_map(map).is_some();
+    if removed {
+        state.touch();
+    }
+    removed
 }
 
 /// The canvas of the desktop layout, in the space between the panels. The
