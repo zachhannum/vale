@@ -43,9 +43,9 @@ Version 1 does not include the items that follow.
 The app has one main workflow with four steps, and every design choice in this document serves it.
 
 1. Define the world. You set the radius, the name, and the display units.
-2. Draw the world. You paint the heightmap on the globe, run the polygonize tool to get topography polygons, and draw rivers and borders as lines. You can also import equirectangular vector or raster files that you made in other tools.
-3. Make maps. A map shows the layers of the world in one projection. You select the projection, turn layers on and off, and change the styles for that map. You place data such as cities and generate labels from attributes.
-4. Make the atlas. You put maps into map frames on pages, set the scale and the extent of each frame, and add the title, the legend, and the scale bar. A frame draws the graticule (the grid of latitude and longitude lines). You order the pages and export all of them.
+2. Draw the world. You paint the heightmap on the globe, run the polygonize tool to get topography polygons, draw rivers and borders as lines, and place data such as cities. You can also import equirectangular vector or raster files that you made in other tools.
+3. Make maps. A map shows the layers of the world in one projection. You put a map into a map frame on a page. There you select the projection, turn layers on and off, change the styles for that map, and generate labels from attributes.
+4. Make the atlas. You set the scale and the extent of each frame, and you add the title, the legend, and the scale bar. A frame draws the graticule (the grid of latitude and longitude lines). You order the pages and export all of them.
 
 The first start of the app opens on a start screen that lists the projects. A later start opens the project of the last run at its last view. If the last run ended on the start screen, the app opens there. Each project shows a small picture of its globe, the name of its world, and the date of its last change. From the start screen you make a new world, open a project, rename it, make a copy, and delete it. The app asks before it deletes a project. On the desktop, the File menu has the same actions and a list of the recent projects.
 
@@ -122,7 +122,7 @@ An unpublished tenth crate, `vale-globe-proto`, is a prototype that tests pen dr
 
 The published crate names take a `vale-` prefix, for example `vale-labeler` and `vale-sphere`. The plain name `vale` is taken on crates.io by an unrelated validation library.
 
-Each map frame runs the same pipeline, on screen and at export. The view of a map in the Maps workspace runs it too.
+Each map frame runs the same pipeline, on screen and at export.
 
 1. Query. The store returns the features of the visible layers that intersect the extent of the frame.
 2. Resample and clip. The sphere crate adds points along each line so that it curves correctly, and it cuts geometry at the edge of the projection.
@@ -208,7 +208,7 @@ The display units are kilometers or miles. They apply to a distance on the groun
 
 A projection in the app is a PROJ string plus a name. A custom projection is a preset that you edit and save, so the app needs no projection math of its own.
 
-When you make a map, you can draw a region on the globe. The app then suggests a projection from the shape and latitude of the region, and it opens the map on that region. The map does not keep the region.
+When you make a map, you can draw a region on the globe. The app then suggests a projection from the shape and latitude of the region, and it puts the map in a new frame on the open page, with the region in view. The map and the frame do not keep the region.
 
 | Region | Suggested projection | PROJ name |
 | --- | --- | --- |
@@ -225,9 +225,9 @@ For the two conic projections, the app sets the standard parallels at one sixth 
 
 The projection editor exposes the parameters that matter: center, standard parallels, and rotation. An oblique aspect (a projection tilted so that its center line follows the region) uses the PROJ `ob_tran` wrapper.
 
-The editor shows distortion while you edit. It draws Tissot circles (equal circles on the sphere that show local stretch after projection) and prints the scale error at the corners of the view.
+The editor shows distortion while you edit. It draws Tissot circles (equal circles on the sphere that show local stretch after projection) and prints the scale error at the corners of the frame.
 
-The sphere crate generates graticule lines on the sphere and sends them through the same pipeline as features. The graticule belongs to the map frame. The frame turns it on or off and holds its style. The interval follows the scale of the frame, and the labels sit where each line meets the frame edge. The Maps workspace and the globe show a graticule as a view option, and that graticule is not in an export.
+The sphere crate generates graticule lines on the sphere and sends them through the same pipeline as features. The graticule belongs to the map frame. The frame turns it on or off and holds its style. The interval follows the scale of the frame, and the labels sit where each line meets the frame edge. The globe and the flat view show a graticule as a view option, and that graticule is not in an export.
 
 A scale bar is correct only where the projection keeps scale. The app measures the scale bar at the frame center and states that in the bar's properties.
 
@@ -455,7 +455,7 @@ The desktop layout has the workspaces, switches, tools, and panels of the iPad l
 
 The window has five places, from top to bottom:
 
-- The title bar and the tool bar are one bar. At the left, it holds the window buttons, the name of the world, the name of the file with the save mark, and the workspace switch. At the center, it holds the view switch in the World workspace, the map menu and the mode switch in the Maps workspace, and the page controls and "Export…" in the Atlas workspace. At the right, it holds undo, redo, and the button that shows or hides the dock. These actions are the same in each workspace.
+- The title bar and the tool bar are one bar. At the left, it holds the window buttons, the name of the world, the name of the file with the save mark, and the workspace switch. At the center, it holds the view switch in the World workspace, and the page controls and "Export…" in the Atlas workspace. At the right, it holds undo, redo, and the button that shows or hides the dock. These actions are the same in each workspace.
 - The options bar holds the settings of the active tool. For a brush mode, these are the Size slider, the Flow slider, the Hardness slider, a pressure switch, and the button "Brush…". That button opens the Brush panel as a popover.
 - The tool rail at the left edge holds the tools and the More button.
 - The canvas is between the tool rail and the dock.
@@ -463,7 +463,7 @@ The window has five places, from top to bottom:
 
 Each workspace has a tool rail and an options bar, so the canvas keeps its place when the mode changes. The menus are in the menu bar of the system.
 
-The dock is a column at the right edge. Its tabs keep the same order in a workspace. The World and Maps workspaces have the tabs Layers and Toolbox, and the Projection and Labels modes add a tab after them. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. The inspector of a vector layer lists its fields. With no selection, it holds the properties of the world. The list and the inspector show at the same time, so a panel has no back button. In the Data mode, the table of the features is in a dock below the canvas.
+The dock is a column at the right edge. Its tabs keep the same order in a workspace. The World workspace has the tabs Layers and Toolbox. The Atlas workspace has the tabs Pages, Maps, Layers, Projection, and Labels. Its Layers, Projection, and Labels tabs belong to the map of the selected frame. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. The inspector of a vector layer lists its fields. With no selection, it holds the properties of the world. The list and the inspector show at the same time, so a panel has no back button. In the World workspace, the attribute table of a layer is in a dock below the canvas.
 
 The title bar, the tool rail, the dock, the popovers, and the menus are translucent, with the blur of the macOS materials. The background of the canvas is the same material with a darker tint. The globe, the flat map, and the map pages are opaque, so their colors stay true.
 
@@ -473,7 +473,7 @@ These rules apply to the layout:
 - The eye of a layer always shows. A hidden layer shows a crossed eye.
 - Selected tools, segments, tabs, and rows have the same tint of the accent color.
 - Each tool and each action shows its name and its key in a tooltip, and the menus show the keys too.
-- The keys of the World tools are R for Raise, F for Lower, S for Smooth, E for Flatten, L for Line, and H for the hand. B opens the Brush panel. The keys of the Maps tools are V for Select, H for the hand, P for Point, and A for Vertex. The keys of the Atlas tools are V for Select, H for the hand, and T for Label. In a map frame of the Atlas workspace, ] and [ go to the next and the previous label, Return pins a label, and Delete hides it.
+- The keys of the World tools are R for Raise, F for Lower, S for Smooth, E for Flatten, L for Line, P for Point, V for Select, A for Vertex, and H for the hand. B opens the Brush panel. The keys of the Atlas tools are V for Select, H for the hand, and T for Label. In a map frame of the Atlas workspace, ] and [ go to the next and the previous label, Return pins a label, and Delete hides it.
 - A form, for example "New world" or "Export", is a sheet of the window. The attribute form of a new point is a window at the top of the canvas, and the canvas takes the next click.
 - The start screen has a sidebar with the places and the recent worlds, and a grid of cards. The tool bar has a search field, the sort order, a switch between a grid and a list, and "New world…". The menu of a card holds "Open", "Rename…", "Make a copy", "Show in Finder", and "Delete…".
 - The left mouse button and the pen paint. The middle button, or Space with the left button, turns the globe, and the wheel zooms. The brush outline follows the pointer and a hovering pen.
@@ -541,9 +541,9 @@ Clean-room has a strict meaning here. The design comes from published research a
 
 The atlas has three levels: maps, pages, and map frames.
 
-A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. In the Maps workspace you pan and zoom a map freely. Each map has one projection center. For another center, you copy the map and change the projection of the copy.
+A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. The Maps tab of the Atlas workspace lists all maps, also a map that is in no frame. Each map has one projection center. For another center, you copy the map and change the projection of the copy.
 
-The Maps workspace has the modes Map, Projection, Labels, and Data. The Labels mode edits the label classes of the map. You pin, move, and hide a label in a map frame, because each manual change belongs to one frame. In that workspace, the eye of a row of the Layers panel is the switch of that layer in the open map.
+The app has two workspaces, World and Atlas. In the World workspace you draw and edit the features, and its attribute table edits their attributes. The Atlas workspace holds the maps, the pages, and the map frames. You edit a map in a frame, at the scale of the page, so that the labels and the styles show as they export.
 
 A page is one page of the atlas. It has a page size, its map frames, and its furniture (the items around the maps). The page size has presets and a free value, with units. A page has a paper color and a page border. The page border is a rectangle at a set distance from the edge of the page, and a map frame can cross it. Version 1 has a title, a legend, a scale bar, and a north arrow.
 
@@ -551,7 +551,7 @@ A map frame is an area on a page that shows one map. Its shape is a rectangle or
 
 Each scale bar, north arrow, and legend links to one frame of its page. A new item links to the largest frame.
 
-In the Atlas workspace, you move and resize a frame on the page, you edit the vertices of its shape, and you pan, zoom, and rotate the map in it. When you select a frame, the panel shows the frame and the map that it shows. You edit the projection, the layer switches, and the style overrides of that map there. A change to a map shows in each frame of that map.
+In the Atlas workspace, you move and resize a frame on the page, you edit the vertices of its shape, and you pan, zoom, and rotate the map in it. When you select a frame, its panel has the tabs Frame, Projection, Layers, and Labels. The Frame tab holds the map of the frame, its shape, center, scale, rotation, border, and graticule. The Projection tab edits the projection of the map and shows the distortion in the frame. In the Layers tab, the eye of a row is the switch of that layer in the map, and the panel of a layer edits the style overrides of the map. The Labels tab edits the label classes of the map. A change in these three tabs changes the map, so it shows in each frame of that map. You pin, move, and hide a single label in a frame, because each manual change belongs to one frame. On iPad, the panel at the left has the tabs Pages and Maps.
 
 A page template holds the page size, the margins, and the positions of the furniture. Many pages share one template, so the atlas has one look. The atlas is the ordered list of the pages.
 
