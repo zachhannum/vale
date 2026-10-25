@@ -107,6 +107,16 @@ A feature session keeps its context small on purpose.
 - Do not force-push `main`. While the PR of a feature branch is open, you can rewrite the history of that branch.
 - Do not add Co-Authored-By trailers to commits.
 
+## UI text
+
+The documentation rules and the `simple-english` skill do not apply to text in the UI. UI text is short, clear, and professional, and it follows the conventions of macOS and iPadOS.
+
+- A button or a menu item is a verb and a noun in sentence case, with no article, for example "Delete frame" and "Add page".
+- A command that opens a dialog, a form, or a file picker ends with "…".
+- A field label is a short noun.
+- A hint or an empty state is one short sentence.
+- One term names one thing in both layouts.
+
 ## Documentation rules
 
 These rules apply to code comments and to all documentation: this file, `docs/`, and the README files.
