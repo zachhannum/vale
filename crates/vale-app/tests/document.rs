@@ -148,11 +148,7 @@ fn projection_resets_view() {
     d.frame.view = Some(view);
     d.set_projection(ProjectionSpec::default());
     assert_eq!(d.frame.view, Some(view));
-    d.set_projection(ProjectionSpec {
-        kind: ProjectionKind::Mercator,
-        lon0: 0.0,
-        lat0: 0.0,
-    });
+    d.set_projection(ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0));
     assert_eq!(d.frame.view, None);
 }
 

@@ -50,7 +50,7 @@ pub fn center_on(state: &mut AppState, q: Point) {
     };
     let mut spec = state.doc.frame.projection;
     spec.lon0 = lon;
-    if spec.kind.is_azimuthal() {
+    if spec.uses_lat0() {
         spec.lat0 = lat;
     }
     state.doc.set_projection(spec);

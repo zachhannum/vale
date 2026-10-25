@@ -47,6 +47,10 @@ pub struct Args {
     /// With --layout pad: open the menu of the More cell.
     #[arg(long)]
     pub more_tools: bool,
+    /// With --layout pad: open the list of the projections of the flat view,
+    /// or in the Map workspace of the map.
+    #[arg(long)]
+    pub projection_list: bool,
     /// With --layout pad: open the menu of the worlds.
     #[arg(long)]
     pub worlds_menu: bool,
@@ -291,7 +295,7 @@ fn projection_spec(id: &str, center: Option<&str>) -> anyhow::Result<ProjectionS
         Some(c) => parse_pair(c)?,
         None => [0.0, 0.0],
     };
-    Ok(ProjectionSpec { kind, lon0, lat0 })
+    Ok(ProjectionSpec::new(kind, lon0, lat0).normalized())
 }
 
 impl Args {
