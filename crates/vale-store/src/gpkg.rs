@@ -2734,6 +2734,9 @@ mod tests {
         atlas.maps[0].hidden.insert(towns);
         atlas.maps[0].projection = "orthographic".into();
         atlas.maps[0].lon0 = 40.0;
+        let copy = atlas.add_map();
+        atlas.map_mut(copy).unwrap().lat0 = -20.0;
+        atlas.add_map();
         let first = atlas.pages[0].id;
         let second = atlas.add_page(Some(first), 420.0, 297.0, PageUnits::In);
         atlas.page_mut(second).unwrap().name = "North".into();
@@ -2756,6 +2759,7 @@ mod tests {
         ];
         let hole = vec![[5.0, 5.0], [15.0, 5.0], [15.0, 15.0]];
         let polygon = FrameRecord {
+            map: copy,
             shape: FrameShape::Polygon(vec![ring, hole]),
             graticule: false,
             ..frame
@@ -2786,8 +2790,13 @@ mod tests {
         assert!(file.redo().unwrap().is_some());
         assert_eq!(file.project().atlas, project.atlas);
 
-        // A frame that is added after the undo gets an ID that was never used.
+        assert_eq!(project.atlas.maps.len(), 3);
+
+        // A map or a frame that is added after the undo gets an ID that was
+        // never used.
         let mut next = file.project().clone();
+        let map = next.atlas.add_map();
+        assert!(next.atlas.maps.iter().filter(|m| m.id == map).count() == 1);
         let page = next.atlas.pages[0].id;
         let frame = next.atlas.pages[0].frames[0].clone();
         let id = next.atlas.add_frame(page, frame).unwrap();

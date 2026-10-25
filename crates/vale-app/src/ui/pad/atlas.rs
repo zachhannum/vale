@@ -27,6 +27,7 @@ pub const MAP_FRAME: &str = "Map frame";
 const LATER_ITEMS: [&str; 4] = ["Text", "Legend", "Scale bar", "North arrow"];
 /// The tabs of the panel of a frame. The last two come in other tasks.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
+pub const MAP_NAME: &str = "Map name";
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
@@ -664,8 +665,10 @@ fn frame_tab(
         return;
     };
     let map = state.doc.project.atlas.map(frame.map);
-    let name = map.map_or_else(String::new, |m| m.name.clone());
-    widgets::value_row(ui, "Map", &name);
+    let mut name = map.map_or_else(String::new, |m| m.name.clone());
+    if widgets::text_field(ui, controls, MAP_NAME, "Name", None, &mut name, true).changed() {
+        atlas::rename_map(state, id, &name);
+    }
 
     let polygon = matches!(frame.shape, FrameShape::Polygon(_));
     let shapes = [RECTANGLE, POLYGON];
@@ -737,7 +740,10 @@ fn projection_tab(
     controls: &mut Controls,
     id: vale_store::FrameId,
 ) {
-    let spec = state.doc.projection();
+    let Some(map) = state.doc.project.atlas.frame(id).map(|f| f.map) else {
+        return;
+    };
+    let spec = state.doc.projection(map);
     for kind in ProjectionKind::ALL {
         let row = widgets::option_row(
             ui,
@@ -748,7 +754,7 @@ fn projection_tab(
             spec.kind == kind,
         );
         if row.clicked() {
-            atlas::set_projection_kind(state, kind);
+            atlas::set_projection_kind(state, id, kind);
         }
     }
     ui.add_space(6.0);

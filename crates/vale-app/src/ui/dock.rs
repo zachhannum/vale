@@ -10,8 +10,8 @@ use super::atlas::{self, AtlasSelection, FrameTab};
 use super::pad::GRATICULE;
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT, LATITUDE,
-    LONGITUDE, ORIENTATIONS, PAGE_NAME, POLYGON, RECTANGLE, REMOVE_VERTEX, ROTATION, SCALE, SHAPE,
-    SIZE, UNIT_NAMES, WIDTH, length_text, unit_name,
+    LONGITUDE, MAP_NAME, ORIENTATIONS, PAGE_NAME, POLYGON, RECTANGLE, REMOVE_VERTEX, ROTATION,
+    SCALE, SHAPE, SIZE, UNIT_NAMES, WIDTH, length_text, unit_name,
 };
 use super::{AppState, inspector};
 use crate::atlas::{self as math, PAGE_PRESETS};
@@ -90,6 +90,16 @@ fn frame_panel(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 
 fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let id = frame.id;
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        let mut name =
+            (state.doc.project.atlas.map(frame.map)).map_or_else(String::new, |m| m.name.clone());
+        let field = ui.add(egui::TextEdit::singleline(&mut name).desired_width(160.0));
+        named(&field, egui::WidgetType::TextEdit, MAP_NAME);
+        if field.changed() {
+            atlas::rename_map(state, id, &name);
+        }
+    });
     let polygon = matches!(frame.shape, FrameShape::Polygon(_));
     ui.horizontal(|ui| {
         ui.label(SHAPE);
@@ -157,10 +167,10 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 }
 
 fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
-    let kind = state.doc.projection().kind;
+    let kind = state.doc.projection(frame.map).kind;
     for k in ProjectionKind::ALL {
         if ui.selectable_label(kind == k, k.name()).clicked() {
-            atlas::set_projection_kind(state, k);
+            atlas::set_projection_kind(state, frame.id, k);
         }
     }
     ui.add_space(4.0);

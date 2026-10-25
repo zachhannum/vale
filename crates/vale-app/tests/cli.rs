@@ -29,7 +29,8 @@ fn defaults() {
 #[test]
 fn center_and_projection() {
     let a = parse(&["--center", "-100,40", "--projection", "orthographic"]);
-    let spec = a.document().unwrap().projection();
+    let doc = a.document().unwrap();
+    let spec = doc.projection(doc.first_map());
     assert_eq!(spec.kind, ProjectionKind::Orthographic);
     assert_eq!((spec.lon0, spec.lat0), (-100.0, 40.0));
 }

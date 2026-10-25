@@ -796,7 +796,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         };
         let selected = state.selected_vector() == Some(id);
         ui.horizontal(|ui| {
-            let map = state.doc.map_id();
+            let map = atlas::selected_map(state);
             let mut visible = state.doc.shown(map, id);
             let text = if selected {
                 egui::RichText::new(name).strong()

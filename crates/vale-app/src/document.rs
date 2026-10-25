@@ -5,9 +5,7 @@ use std::path::Path;
 use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{
-    Field, FieldType, GeometryKind, Layer, LayerId, MapId, MapRecord, Project, Units, World,
-};
+use vale_store::{Field, FieldType, GeometryKind, Layer, LayerId, MapId, Project, Units, World};
 use vale_style::{Color, LayerStyle, MapStyle, Stroke};
 
 use crate::view::View;
@@ -217,9 +215,11 @@ impl Document {
     /// Replaces the project. An entry stays if the new project has a layer
     /// with its ID and its kind. Each other layer gets a new entry.
     pub fn set_project(&mut self, project: Project) {
-        let projection = self.projection();
+        let projection = self.projection(self.first_map());
         let old = std::mem::replace(&mut self.project, project);
-        if old.world.radius_km != self.project.world.radius_km || projection != self.projection() {
+        if old.world.radius_km != self.project.world.radius_km
+            || projection != self.projection(self.first_map())
+        {
             self.frame.view = None;
         }
         let kind = |p: &Project, id| p.layer(id).map(|l| l.kind);
@@ -368,18 +368,17 @@ impl Document {
         self.project.world.radius_km = new;
     }
 
-    /// The map of every frame.
-    pub fn map_id(&self) -> MapId {
-        self.map().id
+    /// The first map of the atlas. The single map view draws it.
+    pub fn first_map(&self) -> MapId {
+        self.project.atlas.maps[0].id
     }
 
-    fn map(&self) -> &MapRecord {
-        &self.project.atlas.maps[0]
-    }
-
-    /// The projection of the map. An unknown kind is the default projection.
-    pub fn projection(&self) -> ProjectionSpec {
-        let map = self.map();
+    /// The projection of a map. An unknown map or kind is the default
+    /// projection.
+    pub fn projection(&self, map: MapId) -> ProjectionSpec {
+        let Some(map) = self.project.atlas.map(map) else {
+            return ProjectionSpec::default();
+        };
         match ProjectionKind::from_id(&map.projection) {
             Some(kind) => ProjectionSpec {
                 kind,
@@ -391,13 +390,19 @@ impl Document {
         }
     }
 
-    pub fn set_projection(&mut self, spec: ProjectionSpec) {
+    pub fn set_projection(&mut self, map: MapId, spec: ProjectionSpec) {
         let spec = spec.normalized();
-        if spec != self.projection() {
-            let map = &mut self.project.atlas.maps[0];
-            map.projection = spec.kind.id().to_string();
-            map.lon0 = spec.lon0;
-            map.lat0 = spec.lat0;
+        if spec == self.projection(map) {
+            return;
+        }
+        let first = self.first_map();
+        let Some(record) = self.project.atlas.map_mut(map) else {
+            return;
+        };
+        record.projection = spec.kind.id().to_string();
+        record.lon0 = spec.lon0;
+        record.lat0 = spec.lat0;
+        if map == first {
             self.frame.view = None;
         }
     }
