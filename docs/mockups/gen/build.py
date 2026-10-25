@@ -69,9 +69,7 @@ ROWS = (('Ardent', 'Town', '3', ''), ('Castellane', 'City', '2', 'Port'), ('Hart
         ('Ostrey', 'Town', '3', ''), ('Tolver', 'Town', '3', ''), ('Yarrow', 'Town', '3', 'Port'))
 
 
-def pg(n, name, sel=False):
-    return '<div class="row%s" style="gap: 12px; padding-top: 6px; padding-bottom: 6px"><span class="mono mute">%d</span><div class="thumb">%s</div><span>%s</span></div>' % (
-        ' sel' if sel else '', n, FULL % '' if sel else '', name)
+
 
 
 # iPad boards. All sizes are in points. Each control is at least 44 points on each side.
@@ -388,31 +386,32 @@ ipage('PadData', 'Vale attribute table on iPad', flat(DATA_MARK) + wswitch('Worl
       + panel('Places', places(ROWS[1:6]), 'left: 96px; right: 332px; bottom: 16px; width: auto',
               act='<span class="mute" style="font-weight: 400; margin-right: 12px">58</span><input class="in" placeholder="Filter" aria-label="Filter" style="flex: 0 1 200px; margin-right: 8px">'))
 
-PAGES_BODY = pg(1, 'Kareth') + pg(2, 'Vesperan', True) + pg(3, 'Dravenhold') + pg(4, 'Marrow Sea') + '<div class="row"><button class="btn sec" style="flex: 1">Add a page</button></div>'
-
-
-def frames_body(sel):
-    return (item('Vesperan', '1:3,500,000', sel == 'Vesperan') + item('Kareth globe', '1:90,000,000', sel == 'Kareth globe')
-            + '<div class="row"><button class="btn sec" style="flex: 1">Add a frame</button></div>')
-
-
-# A map can be in no frame. The Maps tab lists all maps of the atlas.
-MAPS_BODY = (item('Vesperan', '1 frame') + item('Kareth globe', '4 frames') + item('Dravenhold', '1 frame') + item('Marrow Sea', '1 frame')
-             + item('Vesperan coast', 'No frame', True) + '<div class="row"><button class="btn sec" style="flex: 1">Add a map</button></div>')
-MAP_BODY = (field('Name', 'Vesperan coast') + '<div class="row"><span class="lab">Projection</span><span>Transverse Mercator</span></div>'
-            + '<h2>Frames</h2><div class="row"><span class="mute">No frame</span></div>'
-            + '<div class="row"><button class="btn pri" style="flex: 1">Place on this page</button></div>')
-
-
+# The Atlas workspace shows one page. Each panel opens from the selection, and with no selection no panel shows.
 def ptabs(names, on):
     return '<div class="seg" role="tablist" aria-label="Tabs">%s</div>' % ''.join('<button%s>%s</button>' % (' class="on"' if n == on else '', n) for n in names)
 
+
+def prow(label, on=False):
+    return '<div class="row%s"><span class="grow">%s</span>%s</div>' % (' sel' if on else '', label, '<span class="chev on">%s</span>' % ic(TICK) if on else '')
+
+
+def pmenu(title, rows, style):
+    return panel(title, ''.join(rows), style + '; z-index: 3', close=False).replace('class="card panel"', 'class="card panel menup"')
+
+
+RULE = '<div class="rule"></div>'
+MAP_MENU = (prow('Kareth globe', True), prow('Vesperan'), prow('Dravenhold'), prow('Marrow Sea'), prow('Vesperan coast'), RULE, prow('New map'), prow('Copy of this map'))
+ADD_MENU = ('Map frame', 'Text', 'Legend', 'Scale bar', 'North arrow')
 
 # A map frame is an area on a page that shows one map. The tabs of its panel hold the frame and the map that it shows.
 FTABS = ('Frame', 'Projection', 'Layers', 'Labels')
 FRAME_TAB = (pick('Map', 'Kareth globe') + pick('Shape', 'Rectangle', 'Polygon') + field('Scale', '1:90,000,000', True) + pair('Center', '24.0°E', '30.0°N')
              + field('Rotation', '0.0°', True) + switch('Border', False) + switch('Graticule'))
 PROJ_TAB = pick('Projection', 'Lambert conformal conic') + PARAM_BODY
+PAGE_PANEL = (field('Name', 'Vesperan') + pick('Size', '12 × 16 in', 'A3', 'Letter', 'Custom') + pick('Template', 'Regional map') + color('Paper', '#f3efdf')
+              + '<h2>Page border</h2>' + switch('Show') + color('Color', '#c9aaa0') + field('Width', '2 mm', True) + field('Distance', '8 mm', True)
+              + '<div class="row"><button class="btn sec" style="flex: 1">Delete the page</button></div>')
+PAGE_SEL = '<svg class="lay" viewBox="0 0 1500 2000" role="img" aria-label="Selected page"><rect x="5" y="5" width="1490" height="1990" fill="none" stroke="#45c4a8" stroke-width="10"></rect></svg>'
 
 
 def map_layers(row):
@@ -421,38 +420,65 @@ def map_layers(row):
         ('Province borders', 'line'), ('Roads', 'line'), ('Sea routes', 'line'), ('Places', 'point')))
 
 
-def pad_page(over=''):
-    return (SHEET.replace('sheet bare', 'sheet').replace('left: 50%', 'left: 326px').replace('; transform: translateX(-50%)', '')
+def pad_page(over='', left=300):
+    return (SHEET.replace('sheet bare', 'sheet').replace('left: 50%', 'left: %dpx' % left).replace('; transform: translateX(-50%)', '')
             + FULL % 'Atlas page for Vesperan' + over + '</div>')
 
 
-def atlas_left(tab, sel='Vesperan'):
-    body = PAGES_BODY + '<h2>Frames on page 2</h2>' + frames_body(sel) if tab == 'Pages' else MAPS_BODY
-    return panel('Atlas', ptabs(('Pages', 'Maps'), tab) + body, 'left: 96px; top: 96px; width: 224px', close=False)
-
-
 def frame_right(name, tab, body):
-    return panel('Frame · ' + name, ptabs(FTABS, tab) + body, RIGHT + '; width: 320px', close=False)
+    return panel(name, ptabs(FTABS, tab) + body, RIGHT + '; width: 320px', close=False)
 
 
-ATLAS_ACT = actions().replace(tbtn('Layers', LAYERS_IC) + tbtn('Toolbox', TOOLBOX), '<button class="btn pri">Export</button>')
+# The top row holds the page controls. A tap on the name of the page opens the overview of the pages.
+PAGE_CTL = ('<div class="card bar" role="toolbar" aria-label="Pages" style="left: 50%; top: 32px; transform: translateX(-50%)">' + tbtn('Previous page', BACK)
+            + '<button class="btn">Page 2 · Vesperan</button>' + tbtn('Next page', NEXT) + '</div>')
+
+
+def atlas_act(add=False):
+    return actions().replace(tbtn('Layers', LAYERS_IC) + tbtn('Toolbox', TOOLBOX), tbtn('Add', PLUS, ' on' if add else '') + '<button class="btn pri">Export</button>')
+
+
 PAGE_READ = READ.replace('24.6°E 31.2°N · 640 m', '12 × 16 in · 2 / 4') % 'left: 50%; bottom: 28px; transform: translateX(-50%)'
-ATLAS = wswitch('Atlas') + ATLAS_ACT
+ATLAS = wswitch('Atlas') + PAGE_CTL + atlas_act()
+ATLAS_TOOLS = strip(PATOOLS, 'Select')
 DISTORT = '<svg class="lay" viewBox="0 0 1500 2000"><g fill="#c2382b" fill-opacity=".14" stroke="#9c2415" stroke-width="3">' + CIRC + '</g></svg>'
-ipage('PadAtlas', 'Vale atlas on iPad', ATLAS + pad_page(fhandles(INSET)) + strip(PATOOLS, 'Select') + atlas_left('Pages', 'Kareth globe')
-      + frame_right('Kareth globe', 'Frame', FRAME_TAB) + PAGE_READ)
-ipage('PadMap', 'Vale maps of the atlas on iPad', ATLAS + pad_page() + strip(PATOOLS, 'Select') + atlas_left('Maps')
-      + panel('Map', MAP_BODY, RIGHT + '; width: 320px', close=False) + PAGE_READ)
-ipage('PadProjection', 'Vale projection of a map on iPad', ATLAS + pad_page(DISTORT + phandles(CORNERS)) + strip(PATOOLS, 'Select') + atlas_left('Pages')
+ipage('PadAtlas', 'Vale map frame on iPad', ATLAS + pad_page(fhandles(INSET)) + ATLAS_TOOLS + frame_right('Kareth globe', 'Frame', FRAME_TAB)
+      + pmenu('Map', MAP_MENU, 'right: 344px; top: 150px; width: 240px') + PAGE_READ)
+ipage('PadPage', 'Vale atlas page on iPad', wswitch('Atlas') + PAGE_CTL + atlas_act(True) + pad_page(PAGE_SEL) + ATLAS_TOOLS
+      + panel('Page 2', PAGE_PANEL, RIGHT + '; width: 320px', close=False)
+      + pmenu('Add', [prow(n) for n in ADD_MENU], 'right: 16px; top: 88px; width: 220px') + PAGE_READ)
+ipage('PadProjection', 'Vale projection of a map on iPad', ATLAS + pad_page(DISTORT + phandles(CORNERS)) + ATLAS_TOOLS
       + frame_right('Vesperan', 'Projection', PROJ_TAB) + PAGE_READ)
-ipage('PadStyle', 'Vale layers of a map on iPad', ATLAS + pad_page(phandles(CORNERS)) + strip(PATOOLS, 'Select') + atlas_left('Pages')
+ipage('PadStyle', 'Vale layers of a map on iPad', ATLAS + pad_page(phandles(CORNERS)) + ATLAS_TOOLS
       + frame_right('Vesperan', 'Layers', map_layers(lrow) + '<h2>Style for this map</h2>' + item('Topography', 'Opacity 90%')) + PAGE_READ)
-ipage('PadLabels', 'Vale label class of a map on iPad', ATLAS + pad_page(phandles(CORNERS)) + strip(PATOOLS, 'Select') + atlas_left('Pages')
+ipage('PadLabels', 'Vale label class of a map on iPad', ATLAS + pad_page(phandles(CORNERS)) + ATLAS_TOOLS
       + panel('Cities', CLASS_BODY, RIGHT + '; width: 320px', close=False, back='Labels') + PAGE_READ)
+
+
+# The overview shows all pages. You open, reorder, add, and delete pages there.
+PAGES = (('Kareth', False), ('Vesperan', True), ('Dravenhold', False), ('Marrow Sea', False))
+
+
+def tiles(x0, y0, w, gap):
+    out = ''
+    for i, (n, sel) in enumerate(PAGES):
+        x = x0 + i * (w + gap)
+        inner = FULL % ('Page ' + n) if n == 'Vesperan' else '<img class="lay" src="./page-under.svg" alt="Page %s">' % n
+        out += ('<div class="sheet" style="position: absolute; left: %dpx; top: %dpx; width: %dpx; max-width: none%s">%s</div>'
+                '<div style="position: absolute; left: %dpx; top: %dpx; width: %dpx; text-align: center; color: #c9ccd1"><span class="mono" style="opacity: .6">%d</span>&ensp;%s</div>'
+                % (x, y0, w, '; outline: 3px solid #45c4a8; outline-offset: 4px' if sel else '', inner, x, y0 + w * 4 // 3 + 14, w, i + 1, n))
+    x = x0 + len(PAGES) * (w + gap)
+    out += ('<div style="position: absolute; left: %dpx; top: %dpx; width: %dpx; height: %dpx; border: 2px dashed #5b6068; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #c9ccd1">'
+            '<span style="white-space: nowrap">+&ensp;Add a page</span></div>' % (x, y0, w - 4, w * 4 // 3 - 4))
+    return out
+
+
+ipage('PadPages', 'Vale pages of the atlas on iPad', tiles(66, 150, 180, 30) + wswitch('Atlas')
+      + '<div class="card bar" role="toolbar" aria-label="Pages" style="left: 50%; top: 32px; transform: translateX(-50%)"><span style="padding: 0 12px">4 pages</span><button class="btn pri">Done</button></div>'
+      + atlas_act() + READ.replace('24.6°E 31.2°N · 640 m', 'Hold a page and drag it to reorder') % 'left: 50%; bottom: 28px; transform: translateX(-50%)')
 
 # You pin, move, and hide a label in a map frame, because each manual change belongs to one frame.
 ipage('PadAtlasLabels', 'Vale label editing in a map frame on iPad', ZOOM % (-1300, -1603) + ATLAS + strip(PATOOLS, 'Edit labels')
-      + '<div class="card read" style="left: 50%; top: 32px; transform: translateX(-50%)">Page 2 · Frame Vesperan</div>'
       + '<div role="toolbar" aria-label="Label actions" class="card bar" style="left: 590px; top: 440px"><button class="btn">Pin</button><button class="btn">Next</button><button class="btn">Hide</button></div>'
       + panel('Not placed', ''.join(item(n) for n in NOT_PLACED), 'right: 16px; top: 96px; width: 240px'), ink=True)
 
@@ -771,27 +797,34 @@ dpage('Data', 'Vale attribute table', head('World', FLAT_VIEW) + DATA_OPTS
       + sbar('29.27°E 45.70°N', None, 'Face 4,096', '100%'))
 
 # Atlas workspace
-ATLAS_HEAD = head('Atlas', '<button class="tool" aria-label="Previous page">%s</button><span class="pgn">Page 2 of 4</span><button class="tool" aria-label="Next page">%s</button>'
-                  % (ic(BACK), ic(NEXT)) + '<span class="div"></span>' + tbtn2('Export…', 'btn pri'))
-# The Layers, Projection, and Labels tabs belong to the map of the selected frame.
-ATABS = ('Pages', 'Maps', 'Layers', 'Projection', 'Labels')
-PAGES_LIST = PAGES_BODY + '<div class="gh">Frames on page 2</div>'
+def atlas_head(add=False):
+    return head('Atlas', '<button class="tool" aria-label="Previous page">%s</button>' % ic(BACK) + popup('Page 2 · Vesperan', 'Pages')
+                + '<button class="tool" aria-label="Next page">%s</button>' % ic(NEXT) + '<span class="div"></span>'
+                + tbtn2('Add', 'btn on' if add else 'btn') + tbtn2('Export…', 'btn pri'))
+
+
+ATLAS_HEAD = atlas_head()
 LABELS_LIST = '<div class="gh">Classes</div>' + class_list(False) + LABEL_LIST
 
 
-def atlas(name, title, opts, over, tabs_on, lst, insp, rail_on='Select', list_h=452, status=sbar('12 × 16 in', None, '62%')):
+# The dock holds the panel of the selection, and its tabs are the tabs of that panel.
+def atlas(name, title, opts, over, tabs, on, lst, insp=None, list_h=None, extra='', head_=ATLAS_HEAD, cv=None):
     page = DSHEET.replace('sheet bare', 'sheet') % (24, 540) + FULL % 'Atlas page for Vesperan' + over + '</div>'
-    dpage(name, title, ATLAS_HEAD + opts + main(drail(ATOOLS, rail_on), canvas(page), dock(ATABS, tabs_on, lst, insp, list_h=list_h)) + status)
+    dpage(name, title, head_ + opts + main(drail(ATOOLS, 'Select'), canvas(cv or page), dock(tabs, on, lst, insp, list_h=list_h)) + sbar('12 × 16 in', None, '62%') + extra)
 
 
-atlas('Atlas', 'Vale atlas', PAGE_OPTS, fhandles(INSET), 'Pages', PAGES_LIST + frames_body('Kareth globe'), ('Frame · Kareth globe', FRAME_TAB))
-atlas('Map', 'Vale maps of the atlas', PAGE_OPTS, '', 'Maps', MAPS_BODY, ('Map · Vesperan coast', MAP_BODY), list_h=232)
-atlas('Projection', 'Vale projection of a map', PAGE_OPTS, DISTORT + phandles(CORNERS), 'Projection', PROJ_LIST, ('Vesperan · Lambert conformal conic', PARAM_BODY), list_h=246)
-atlas('Style', 'Vale layer style in a map', PAGE_OPTS, phandles(CORNERS), 'Layers', mlayers('Topography'), ('Topography · Vesperan', SCOPE + TOPO_STYLE), list_h=272)
-atlas('Labels', 'Vale label classes of a map', CLASS_OPTS, phandles(CORNERS), 'Labels',
-      LABELS_LIST.replace(item('Castellane', 'Selected', True), item('Castellane', 'Moved'))
-      .replace(item('Cities', 'Places'), item('Cities', 'Places', True), 1), ('Cities', CLASS_BODY), list_h=320)
+atlas('Atlas', 'Vale map frame', PAGE_OPTS, fhandles(INSET), FTABS, 'Frame', FRAME_TAB,
+      extra=pop([mi('Kareth globe', on=True), mi('Vesperan'), mi('Dravenhold'), mi('Marrow Sea'), mi('Vesperan coast'), MR, mi('New map'), mi('Copy of this map')],
+                'right: 14px; top: 168px; width: 236px', 'Map'))
+atlas('Page', 'Vale atlas page', PAGE_OPTS, PAGE_SEL, ('Page',), 'Page', PAGE_PANEL, head_=atlas_head(True),
+      extra=pop([mi(n) for n in ADD_MENU], 'left: 812px; top: 64px; width: 180px', 'Add'))
+atlas('Pages', 'Vale pages of the atlas', PAGE_OPTS, '', ('Page',), 'Page', PAGE_PANEL, cv=tiles(40, 60, 150, 40))
+atlas('Projection', 'Vale projection of a map', PAGE_OPTS, DISTORT + phandles(CORNERS), FTABS, 'Projection', PROJ_LIST, ('Lambert conformal conic', PARAM_BODY), list_h=246)
+atlas('Style', 'Vale layer style in a map', PAGE_OPTS, phandles(CORNERS), FTABS, 'Layers', mlayers('Topography'), ('Topography', SCOPE + TOPO_STYLE), list_h=272)
+atlas('Labels', 'Vale label classes of a map', CLASS_OPTS, phandles(CORNERS), FTABS, 'Labels',
+      LABELS_LIST.replace(item('Castellane', 'Selected', True), item('Castellane', 'Moved')).replace(item('Cities', 'Places'), item('Cities', 'Places', True), 1),
+      ('Cities', CLASS_BODY), list_h=320)
 dpage('AtlasLabels', 'Vale label editing in a map frame', ATLAS_HEAD
       + LABEL_OPTS + main(drail(ATOOLS, 'Edit labels'), canvas(ZOOM % (-1362, -1614)),
-                          dock(ATABS, 'Labels', LABELS_LIST, ('Castellane', CANDIDATES), list_h=320))
+                          dock(FTABS, 'Labels', LABELS_LIST, ('Castellane', CANDIDATES), list_h=320))
       + sbar('31.42°E 46.31°N', None, 'Frame Vesperan · 1:3,500,000', '390%'))
