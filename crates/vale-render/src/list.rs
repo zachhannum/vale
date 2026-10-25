@@ -1,4 +1,4 @@
-//! The display list: a page of fills, strokes, and glyph runs in page space.
+//! The display list: a page of fills, strokes, glyph runs, and clips in page space.
 
 pub use kurbo::{Affine, BezPath, Point, Rect};
 pub use vale_labeler::FontData;
@@ -87,6 +87,13 @@ pub enum Item {
         round: bool,
     },
     Glyphs(GlyphRun),
+    /// Clips the items up to the matching `PopClip` to the inside of `path`.
+    PushClip {
+        path: BezPath,
+        rule: FillRule,
+    },
+    /// Ends the most recent clip. A `PopClip` with no open clip does nothing.
+    PopClip,
 }
 
 /// A page and its items, in drawing order. The size is in points.

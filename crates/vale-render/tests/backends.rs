@@ -262,3 +262,51 @@ fn pdf_with_mismatched_text_uses_outline() {
     let bytes = render_pdf(&pdf_list(run)).unwrap();
     assert!(bytes.starts_with(b"%PDF-"));
 }
+
+/// A white page, then a red page fill inside an even-odd clip: a square with a square hole.
+fn ring_clip_list() -> DisplayList {
+    let mut clip = rect_path(10.0, 10.0, 50.0, 50.0);
+    clip.extend(rect_path(20.0, 20.0, 40.0, 40.0).elements().iter().copied());
+    let mut list = DisplayList::new(60.0, 60.0);
+    page_fill(&mut list, WHITE);
+    list.push(Item::PushClip {
+        path: clip,
+        rule: FillRule::EvenOdd,
+    });
+    page_fill(&mut list, RED);
+    list.push(Item::PopClip);
+    list
+}
+
+#[test]
+fn an_even_odd_clip_leaves_the_hole_empty() {
+    let pm = render_pixmap(&ring_clip_list(), 1.0).unwrap();
+    assert_eq!(px(&pm, 30, 30), [255, 255, 255, 255]);
+    assert_eq!(px(&pm, 5, 5), [255, 255, 255, 255]);
+    assert_eq!(px(&pm, 15, 30), [255, 0, 0, 255]);
+}
+
+#[test]
+fn a_fill_after_pop_clip_is_not_clipped() {
+    let mut list = ring_clip_list();
+    list.push(Item::PopClip);
+    page_fill(&mut list, BLUE);
+    let pm = render_pixmap(&list, 1.0).unwrap();
+    assert_eq!(px(&pm, 5, 5), [0, 0, 255, 255]);
+}
+
+#[test]
+fn pdf_accepts_clips() {
+    let mut list = ring_clip_list();
+    list.push(Item::PushClip {
+        path: BezPath::new(),
+        rule: FillRule::NonZero,
+    });
+    page_fill(&mut list, BLUE);
+    list.push(Item::PushClip {
+        path: rect_path(0.0, 0.0, 10.0, 10.0),
+        rule: FillRule::NonZero,
+    });
+    let bytes = render_pdf(&list).unwrap();
+    assert!(bytes.starts_with(b"%PDF-"));
+}

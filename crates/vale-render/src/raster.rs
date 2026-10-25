@@ -22,6 +22,13 @@ fn paint(c: Color) -> AlphaColor<Srgb> {
     AlphaColor::from_rgba8(c.r, c.g, c.b, c.a)
 }
 
+fn fill_rule(rule: FillRule) -> Fill {
+    match rule {
+        FillRule::NonZero => Fill::NonZero,
+        FillRule::EvenOdd => Fill::EvenOdd,
+    }
+}
+
 /// All glyph outlines of a run in page space, in one path.
 pub fn glyph_run_outline(run: &GlyphRun) -> BezPath {
     let mut out = BezPath::new();
@@ -60,13 +67,11 @@ pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderErr
         },
     );
     ctx.set_transform(Affine::scale(scale));
+    let mut clips = 0usize;
     for item in &list.items {
         match item {
             Item::Fill { path, color, rule } => {
-                ctx.set_fill_rule(match rule {
-                    FillRule::NonZero => Fill::NonZero,
-                    FillRule::EvenOdd => Fill::EvenOdd,
-                });
+                ctx.set_fill_rule(fill_rule(*rule));
                 ctx.set_paint(paint(*color));
                 ctx.fill_path(path);
             }
@@ -88,6 +93,17 @@ pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderErr
                 ctx.set_fill_rule(Fill::NonZero);
                 ctx.set_paint(paint(run.color));
                 ctx.fill_path(&glyph_run_outline(run));
+            }
+            Item::PushClip { path, rule } => {
+                ctx.set_fill_rule(fill_rule(*rule));
+                ctx.push_clip_path(path);
+                clips += 1;
+            }
+            Item::PopClip => {
+                if clips > 0 {
+                    ctx.pop_clip();
+                    clips -= 1;
+                }
             }
         }
     }

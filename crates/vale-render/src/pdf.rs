@@ -14,6 +14,13 @@ use kurbo::{BezPath, PathEl};
 use crate::list::{Color, DisplayList, FillRule as ListRule, GlyphRun, Item, RenderError};
 use crate::raster::glyph_run_outline;
 
+fn krilla_rule(rule: ListRule) -> FillRule {
+    match rule {
+        ListRule::NonZero => FillRule::NonZero,
+        ListRule::EvenOdd => FillRule::EvenOdd,
+    }
+}
+
 fn opacity(c: Color) -> NormalizedF32 {
     NormalizedF32::new(f32::from(c.a) / 255.0).unwrap_or(NormalizedF32::ONE)
 }
@@ -150,17 +157,29 @@ pub fn render_pdf(list: &DisplayList) -> Result<Vec<u8>, RenderError> {
     let mut page = doc.start_page_with(settings);
     let mut s = page.surface();
     let mut fonts = HashMap::new();
+    // One entry for each open clip. `false` marks an empty clip, which hides all items.
+    let mut clips: Vec<bool> = Vec::new();
     for item in &list.items {
+        let hidden = clips.contains(&false);
         match item {
-            Item::Fill { path, color, rule } => fill_path(
-                &mut s,
-                path,
-                *color,
-                match rule {
-                    ListRule::NonZero => FillRule::NonZero,
-                    ListRule::EvenOdd => FillRule::EvenOdd,
-                },
-            ),
+            Item::PushClip { path, rule } => {
+                match to_path(path).filter(|_| !hidden) {
+                    Some(p) => {
+                        s.push_clip_path(&p, &krilla_rule(*rule));
+                        clips.push(true);
+                    }
+                    None => clips.push(false),
+                }
+                continue;
+            }
+            Item::PopClip => {
+                if clips.pop() == Some(true) {
+                    s.pop();
+                }
+                continue;
+            }
+            _ if hidden => continue,
+            Item::Fill { path, color, rule } => fill_path(&mut s, path, *color, krilla_rule(*rule)),
             Item::Stroke {
                 path,
                 color,
@@ -188,6 +207,11 @@ pub fn render_pdf(list: &DisplayList) -> Result<Vec<u8>, RenderError> {
                 s.draw_path(&p);
             }
             Item::Glyphs(run) => draw_run(&mut s, run, &mut fonts),
+        }
+    }
+    for pushed in clips {
+        if pushed {
+            s.pop();
         }
     }
     s.finish();
