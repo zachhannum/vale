@@ -31,6 +31,7 @@ pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
 pub const ADD_HOLE: &str = "Add a hole";
+pub const DELETE_FRAME: &str = "Delete the frame";
 pub const REMOVE_VERTEX: &str = "Remove vertex";
 pub const SCALE: &str = "Scale";
 pub const LONGITUDE: &str = "Longitude";
@@ -721,6 +722,12 @@ fn frame_tab(
     let mut graticule = frame.graticule;
     if widgets::switch_row(ui, controls, GRATICULE, GRATICULE, &mut graticule) {
         atlas::set_graticule(state, id, graticule);
+    }
+
+    ui.add_space(6.0);
+    let delete = widgets::button_row_in(ui, controls, DELETE_FRAME, true, theme::WARN);
+    if delete.clicked() {
+        atlas::delete_frame(state);
     }
 }
 

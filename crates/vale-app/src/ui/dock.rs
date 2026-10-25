@@ -9,9 +9,9 @@ use vale_store::{FrameRecord, FrameShape, PageUnits};
 use super::atlas::{self, AtlasSelection, FrameTab};
 use super::pad::GRATICULE;
 use super::pad::atlas::{
-    ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT, LATITUDE, LONGITUDE,
-    ORIENTATIONS, PAGE_NAME, POLYGON, RECTANGLE, REMOVE_VERTEX, ROTATION, SCALE, SHAPE, SIZE,
-    UNIT_NAMES, WIDTH, length_text, unit_name,
+    ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT, LATITUDE,
+    LONGITUDE, ORIENTATIONS, PAGE_NAME, POLYGON, RECTANGLE, REMOVE_VERTEX, ROTATION, SCALE, SHAPE,
+    SIZE, UNIT_NAMES, WIDTH, length_text, unit_name,
 };
 use super::{AppState, inspector};
 use crate::atlas::{self as math, PAGE_PRESETS};
@@ -149,6 +149,10 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let mut graticule = frame.graticule;
     if ui.checkbox(&mut graticule, GRATICULE).changed() {
         atlas::set_graticule(state, id, graticule);
+    }
+    ui.add_space(4.0);
+    if ui.button(DELETE_FRAME).clicked() {
+        atlas::delete_frame(state);
     }
 }
 

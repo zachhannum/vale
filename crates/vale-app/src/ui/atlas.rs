@@ -642,13 +642,24 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     let typing = ui.ctx().memory(|m| m.focused().is_some());
     let delete =
         ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
-    if delete
-        && !typing
-        && state.atlas.tool == AtlasTool::Select
-        && let Some(v) = state.atlas.vertex
-    {
-        remove_vertex(state, v);
+    if delete && !typing && state.atlas.tool == AtlasTool::Select {
+        if let Some(v) = state.atlas.vertex {
+            remove_vertex(state, v);
+        } else if state.atlas.frame().is_some() {
+            delete_frame(state);
+        }
     }
+}
+
+/// Deletes the selected frame and clears the selection.
+pub fn delete_frame(state: &mut AppState) {
+    let Some(id) = state.atlas.frame() else {
+        return;
+    };
+    state.doc.project.atlas.remove_frame(id);
+    state.atlas.selection = AtlasSelection::None;
+    state.atlas.vertex = None;
+    state.atlas.images.remove(&id);
 }
 
 /// Removes the selected vertex of the selected frame.

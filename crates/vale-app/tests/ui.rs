@@ -11,7 +11,7 @@ use vale_app::session::Session;
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::MORE;
 use vale_app::ui::pad::atlas::{
-    ADD_PAGE, CENTER_ON_FRAME, FRAME_TABS, NEXT_PAGE, PAGE_NAME, PREVIOUS_PAGE, SCALE,
+    ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, NEXT_PAGE, PAGE_NAME, PREVIOUS_PAGE, SCALE,
 };
 use vale_app::ui::panels::ADD_MAP_FRAME;
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
@@ -1014,6 +1014,48 @@ fn the_wheel_zooms_the_page_and_in_the_selected_frame_the_map() {
     assert_eq!(h.state().atlas.place.unwrap(), before);
     let page = vale_app::ui::atlas::open_page(h.state());
     assert!(page.frames[0].scale < frame.scale / 1.05);
+}
+
+#[test]
+fn the_dock_deletes_the_selected_frame() {
+    let mut h = harness();
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
+    h.run_steps(3);
+    h.get_by_label(DELETE_FRAME).click();
+    h.run_steps(3);
+    assert!(h.state().doc.project.atlas.frame(frame).is_none());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert!(!h.state().atlas.has_image(frame));
+    assert!(h.query_by_label(DELETE_FRAME).is_none());
+}
+
+#[test]
+fn the_delete_key_removes_a_selected_vertex_or_else_the_frame() {
+    let mut h = harness();
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    vale_app::ui::atlas::set_polygon(h.state_mut(), frame, true);
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
+    h.state_mut().atlas.vertex = Some((0, 0));
+    h.run_steps(3);
+    let ring = |h: &Harness<'static, AppState>| match &h.state().doc.project.atlas.frame(frame) {
+        Some(f) => match &f.shape {
+            vale_store::FrameShape::Polygon(rings) => rings[0].len(),
+            _ => 0,
+        },
+        None => 0,
+    };
+    let before = ring(&h);
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    assert_eq!(ring(&h), before - 1);
+    assert_eq!(h.state().atlas.vertex, None);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
+
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert!(h.state().doc.project.atlas.frame(frame).is_none());
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
 }
 
 #[test]

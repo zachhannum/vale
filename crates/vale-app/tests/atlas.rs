@@ -13,8 +13,8 @@ use vale_app::projects::Locations;
 use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, DELETE_PAGE, FRAME_TABS, HEIGHT, MAP_FRAME, NEXT_PAGE, POLYGON,
-    PREVIOUS_PAGE, REMOVE_VERTEX, SCALE, SIZE, WIDTH, page_title, readout_text,
+    ADD, ADD_HOLE, ADD_PAGE, DELETE_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT, MAP_FRAME, NEXT_PAGE,
+    POLYGON, PREVIOUS_PAGE, REMOVE_VERTEX, SCALE, SIZE, WIDTH, page_title, readout_text,
 };
 use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
 use vale_render::Item;
@@ -288,6 +288,20 @@ fn pos_of(h: &mut Pad, index: usize, lonlat: [f64; 2]) -> Pos2 {
     let vt = frame_transform(projection, &f, target);
     let p = vt.to_page(projection.forward(lonlat).unwrap());
     pos2(p.x as f32, p.y as f32)
+}
+
+/// Scrolls the panel of the selection until a control is inside the card,
+/// with a drag up of a finger on the margin at the left of the rows.
+fn scroll_to(h: &mut Pad, name: &str) {
+    for _ in 0..8 {
+        let card = h.state().atlas.panel_rect.unwrap();
+        let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
+        if control(h, name).is_some_and(inside) {
+            return;
+        }
+        let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
+        drag(h, from, from - vec2(0.0, 200.0), Input::Finger);
+    }
 }
 
 /// Makes sure that a finger can hit each control of the frame.
@@ -700,6 +714,13 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         check_controls(&h, "page panel");
         tap(&mut h, SIZE);
         check_controls(&h, "page sizes");
+        let inset = frame(&h, 1).id;
+        h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
+        h.state_mut().atlas.tab = FrameTab::Frame;
+        h.run_steps(3);
+        scroll_to(&mut h, DELETE_FRAME);
+        assert!(control(&h, DELETE_FRAME).is_some(), "{size:?}");
+        check_controls(&h, "bottom of the frame tab");
     }
 }
 
@@ -887,6 +908,38 @@ fn the_panel_of_the_page_adds_a_page_and_deletes_the_open_page() {
     assert_eq!(atlas.pages.len(), 1);
     assert_eq!(h.state().atlas.page, atlas.pages[0].id);
     assert_eq!(atlas.pages[0].frames.len(), 2);
+}
+
+#[test]
+fn the_frame_tab_deletes_the_frame_and_an_undo_brings_it_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    tap(&mut h, POLYGON);
+    h.state_mut().save_waiting().unwrap();
+    let inset = frame(&h, 1);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(inset.id));
+
+    scroll_to(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_FRAME);
+    let page = open_page(&h);
+    assert_eq!(page.frames.len(), 1);
+    assert!(page.frames.iter().all(|f| f.id != inset.id));
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    assert_eq!(h.state().atlas.vertex, None);
+    assert!(!h.state().atlas.has_image(inset.id));
+    assert_eq!(h.state().atlas.panel_rect, None);
+    assert!(control(&h, DELETE_FRAME).is_none());
+
+    h.state_mut().save_waiting().unwrap();
+    tap(&mut h, "Undo");
+    let page = open_page(&h);
+    assert_eq!(page.frames.len(), 2);
+    assert_eq!(page.frames[1], inset);
 }
 
 #[test]
