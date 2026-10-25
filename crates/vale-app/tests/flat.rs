@@ -228,7 +228,7 @@ fn a_stroke_across_the_180_degree_meridian_continues_at_the_other_edge() {
 }
 
 fn spec(kind: ProjectionKind, lon0: f64, lat0: f64) -> ProjectionSpec {
-    ProjectionSpec { kind, lon0, lat0 }
+    ProjectionSpec::new(kind, lon0, lat0).normalized()
 }
 
 /// Stamps one time at a place, and compares the ground that changed with the
@@ -266,9 +266,16 @@ fn check_outline(h: &mut App, lon: f64, lat: f64) -> (f32, f32) {
 #[test]
 fn each_projection_paints_at_the_place_under_the_pen() {
     let _gpu = one_gpu_test();
-    for kind in ProjectionKind::ALL {
+    let presets = ProjectionKind::ALL.map(|kind| spec(kind, 20.0, 30.0));
+    // An oblique aspect turns the map about its center.
+    let oblique = ProjectionSpec {
+        oblique: Some(35.0),
+        ..spec(ProjectionKind::Mercator, 20.0, 30.0)
+    };
+    for spec in presets.into_iter().chain([oblique.normalized()]) {
         let mut h = flat_harness();
-        h.state_mut().globe.flat = FlatView::new(spec(kind, 20.0, 30.0));
+        h.state_mut().globe.flat = FlatView::new(spec);
+        assert_eq!(h.state().globe.flat.spec(), spec);
         let before = canvas_image(&mut h);
         check_outline(&mut h, 40.0, 45.0);
         // The picture shows the stamp at the same place.
@@ -282,8 +289,8 @@ fn each_projection_paints_at_the_place_under_the_pen() {
         };
         let (stamp, far) = (at(40.0, 45.0), at(0.0, 10.0));
         let (was, is) = (grey(&h, &before, stamp), grey(&h, &after, stamp));
-        assert!(is > was, "{kind:?}: {was} and {is}");
-        assert_eq!(grey(&h, &after, far), grey(&h, &before, far), "{kind:?}");
+        assert!(is > was, "{spec:?}: {was} and {is}");
+        assert_eq!(grey(&h, &after, far), grey(&h, &before, far), "{spec:?}");
     }
 }
 

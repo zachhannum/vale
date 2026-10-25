@@ -274,6 +274,9 @@ pub const RECENTER: &str = "Recenter";
 pub const RESET: &str = "Reset";
 /// The control that opens the list of the projections.
 pub const PROJECTION: &str = "Projection";
+/// The row of the list of the projections that saves the projection of now
+/// as a custom projection.
+pub const SAVE_PROJECTION: &str = "Save projection";
 /// The button that opens the view options.
 pub const VIEW_OPTIONS: &str = "View options";
 /// The switch of the view options that shows the graticule.
@@ -1772,13 +1775,54 @@ fn center_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
 /// The list of the projections of the flat view. It opens below the view
 /// switch, or in the place of the workspace menu.
 fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let rows = ProjectionKind::ALL.len() as f32;
-    let size = vec2(geometry::MENU_WIDTH, 10.0 + rows * PANEL_ROW + 10.0);
     let min = match rects.view {
-        Some(view) => pos2(view.center().x - size.x / 2.0, view.bottom() + PAD),
+        Some(view) => pos2(
+            view.center().x - geometry::MENU_WIDTH / 2.0,
+            view.bottom() + PAD,
+        ),
         None => rects.menu,
     };
-    let rect = Rect::from_min_size(min, size);
+    projection_list(ctx, state, controls, min, rects.view);
+}
+
+/// The projection of the open workspace: the map projection in the Map
+/// workspace, else the projection of the flat view.
+fn projection_now(state: &AppState) -> ProjectionSpec {
+    match state.workspace {
+        Workspace::Map => state.doc.frame.projection,
+        Workspace::Globe => state.globe.flat.spec(),
+    }
+}
+
+fn set_projection(state: &mut AppState, spec: ProjectionSpec) {
+    match state.workspace {
+        Workspace::Map => {
+            state.doc.set_projection(spec);
+            state.touch();
+        }
+        Workspace::Globe => state.globe.flat.set_spec(spec),
+    }
+}
+
+/// The list of the presets and the custom projections, with the row that
+/// saves the projection of now. Its top left corner is at `min`. A touch
+/// off the list and off `button` closes it. A list that is taller than the
+/// room on the screen scrolls.
+fn projection_list(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    min: Pos2,
+    button: Option<Rect>,
+) {
+    let customs = state.custom_projections();
+    let rows = (ProjectionKind::ALL.len() + customs.len() + 1) as f32;
+    let content = rows * PANEL_ROW + 13.0;
+    let screen = ctx.viewport_rect();
+    let bands = geometry::Bands::new(screen, ctx.content_rect());
+    let room = screen.bottom() - bands.bottom - geometry::MARGIN - min.y;
+    let height = (10.0 + content + 10.0).min(room);
+    let rect = Rect::from_min_size(min, vec2(geometry::MENU_WIDTH, height));
     state.pad.projections_rect = Some(rect);
     let pressed = ctx.input(|i| {
         i.pointer
@@ -1786,8 +1830,8 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             .then(|| i.pointer.interact_pos())
             .flatten()
     });
-    let on_switch = |pos| rects.view.is_some_and(|view| view.contains(pos));
-    if pressed.is_some_and(|pos| !rect.contains(pos) && !on_switch(pos)) {
+    let on_button = |pos| button.is_some_and(|button: Rect| button.contains(pos));
+    if pressed.is_some_and(|pos| !rect.contains(pos) && !on_button(pos)) {
         state.pad.projections = false;
     }
     let radius = theme::CARD_RADIUS.into();
@@ -1805,25 +1849,97 @@ fn projections(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-            let ui = &mut ui;
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            let spec = state.globe.flat.spec();
-            for kind in ProjectionKind::ALL {
-                let row = widgets::text_row(ui, controls, kind.name(), 0.0, false, true);
-                if kind == spec.kind {
-                    let tick = Rect::from_center_size(
-                        pos2(row.rect.right() - 14.0, row.rect.center().y),
-                        vec2(18.0, 18.0),
-                    );
-                    icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-                }
-                if row.clicked() {
-                    state.globe.flat.set_spec(ProjectionSpec { kind, ..spec });
-                    state.pad.projections = false;
-                }
+            let scroll = egui::ScrollArea::vertical()
+                .id_salt("pad-projections-scroll")
+                .vscroll(content > inner.height())
+                .max_height(inner.height())
+                .auto_shrink([false, true])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+            scroll.show(&mut ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                projection_rows(ui, state, controls, &customs);
+            });
+        },
+    );
+}
+
+fn projection_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    customs: &[(String, ProjectionSpec)],
+) {
+    let spec = projection_now(state);
+    let custom = super::projections::custom_name(customs, spec);
+    let tick = |ui: &egui::Ui, row: Rect| {
+        let tick =
+            Rect::from_center_size(pos2(row.right() - 14.0, row.center().y), vec2(18.0, 18.0));
+        icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+    };
+    let mut picked = None;
+    for kind in ProjectionKind::ALL {
+        let row = widgets::text_row(ui, controls, kind.name(), 0.0, false, true);
+        if custom.is_none() && kind == spec.kind {
+            tick(ui, row.rect);
+        }
+        if row.clicked() {
+            picked = Some(super::projections::pick_preset(spec, kind));
+        }
+    }
+    for (name, s) in customs {
+        let row = widgets::text_row(ui, controls, name, 0.0, false, true);
+        if custom == Some(name) {
+            tick(ui, row.rect);
+        }
+        if row.clicked() {
+            picked = Some(*s);
+        }
+    }
+    rule(ui);
+    if widgets::text_row(ui, controls, SAVE_PROJECTION, 0.0, false, true).clicked() {
+        let name = state.next_projection_name();
+        picked = Some(state.save_projection(&name, spec));
+    }
+    if let Some(spec) = picked {
+        set_projection(state, spec);
+        state.pad.projections = false;
+    }
+}
+
+/// The button of the list of the projections in the Map workspace, at the
+/// top right of the canvas, and the list when it is open.
+pub fn map_projections(ctx: &egui::Context, state: &mut AppState, canvas: Rect) {
+    let mut controls = Controls::new();
+    let size = vec2(TOUCH + 2.0 * PAD, ROW);
+    let min = pos2(
+        canvas.right() - geometry::GAP - size.x,
+        canvas.top() + geometry::GAP,
+    );
+    let card = Rect::from_min_size(min, size);
+    widgets::card(
+        ctx,
+        None,
+        "pad-map-projection",
+        card,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            let button = Rect::from_min_size(card.min + vec2(PAD, PAD), vec2(TOUCH, TOUCH));
+            let open = state.pad.projections;
+            let icon = Icon::Down;
+            if widgets::icon_button_at(ui, &mut controls, button, PROJECTION, icon, open, true)
+                .clicked()
+            {
+                state.pad.projections = !open;
             }
         },
     );
+    state.pad.projections_rect = None;
+    if state.pad.projections {
+        let min = pos2(card.right() - geometry::MENU_WIDTH, card.bottom() + PAD);
+        projection_list(ctx, state, &mut controls, min, Some(card));
+    }
+    state.pad.controls = controls;
 }
 
 /// The view options: a card below the view switch with the switch of the

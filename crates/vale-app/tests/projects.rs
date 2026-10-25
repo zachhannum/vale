@@ -470,11 +470,7 @@ fn the_app_opens_at_the_last_project_and_the_last_view() {
     click(&mut h, "Open Borea");
     let mut view = GlobeView::centered(-120.0, 35.0);
     view.zoom = 6.5;
-    let spec = ProjectionSpec {
-        kind: ProjectionKind::Mercator,
-        lon0: 30.0,
-        lat0: 0.0,
-    };
+    let spec = ProjectionSpec::new(ProjectionKind::Mercator, 30.0, 0.0);
     let globe = &mut h.state_mut().globe;
     globe.view = view;
     globe.world_view = WorldView::Flat;
@@ -609,4 +605,60 @@ fn the_save_mark_turns_after_an_automatic_save() {
         h.state().save_mark(saved + SAVE_MARK_TIME),
         Some(SaveMark::Saved)
     );
+}
+
+/// Picks the projection with this name in the first list of projections.
+fn pick_projection(h: &mut App, name: &str) {
+    let combo = h.get_all_by_role(egui::accesskit::Role::ComboBox).next();
+    combo.expect("a list of projections").click();
+    run(h);
+    click(h, name);
+}
+
+#[test]
+fn a_custom_projection_saves_in_the_project_and_a_second_map_uses_it() {
+    use vale_app::ui::Workspace;
+    use vale_app::ui::pad::SAVE_PROJECTION;
+    let dir = tempfile::tempdir().unwrap();
+    create(dir.path(), "Borea");
+    let mut h = start(dir.path(), Layout::Desktop);
+    click(&mut h, "Open Borea");
+    h.state_mut().workspace = Workspace::Map;
+    run(&mut h);
+    let cone = ProjectionSpec {
+        lat1: 20.0,
+        lat2: 50.0,
+        ..ProjectionSpec::new(ProjectionKind::AlbersEqualArea, 15.0, 35.0)
+    }
+    .normalized();
+    h.state_mut().doc.set_projection(cone);
+    run(&mut h);
+    click(&mut h, SAVE_PROJECTION);
+    assert_eq!(h.state().doc.project.projections.len(), 1);
+    assert_eq!(h.state().doc.project.projections[0].name, "Custom 1");
+    h.state_mut().save_waiting().unwrap();
+    drop(h);
+
+    // After a new start, the Map workspace and the flat view pick it.
+    let mut h = start(dir.path(), Layout::Desktop);
+    assert_eq!(h.state().screen, Screen::Editor);
+    let customs = h.state().custom_projections();
+    assert_eq!(customs, vec![("Custom 1".to_string(), cone)]);
+    h.state_mut().workspace = Workspace::Map;
+    h.state_mut().doc.set_projection(ProjectionSpec::default());
+    run(&mut h);
+    pick_projection(&mut h, "Custom 1");
+    assert_eq!(h.state().doc.frame.projection, cone);
+
+    h.state_mut().workspace = Workspace::Globe;
+    h.state_mut().globe.world_view = WorldView::Flat;
+    run(&mut h);
+    pick_projection(&mut h, "Custom 1");
+    assert_eq!(h.state().globe.flat.spec(), cone);
+
+    // The Map workspace deletes the custom projection of the map.
+    h.state_mut().workspace = Workspace::Map;
+    run(&mut h);
+    click(&mut h, "Delete Custom 1");
+    assert!(h.state().doc.project.projections.is_empty());
 }

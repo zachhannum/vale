@@ -51,6 +51,7 @@ fn run() -> anyhow::Result<u8> {
             state.pad.open(*panel);
         }
         state.pad.more = args.more_tools;
+        state.pad.projections = args.projection_list;
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
         if args.worlds_menu {

@@ -38,6 +38,7 @@ pub mod inspector;
 pub mod pad;
 pub mod panels;
 pub mod point_form;
+pub mod projections;
 pub mod raster_form;
 pub mod world_form;
 
@@ -2109,7 +2110,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                 panels::left(ui, state);
                 inspector::draw(ui, state);
                 panels::status(ui, state);
+                let rect = ui.available_rect_before_wrap();
                 canvas::draw(ui, state);
+                if state.layout == Layout::Pad {
+                    pad::map_projections(ui.ctx(), state, rect);
+                }
             }
         }
     });

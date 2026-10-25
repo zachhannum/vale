@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use kurbo::Point;
+use kurbo::{Point, Shape};
 use vale_app::document::Document;
 use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{Pipeline, Quality, fonts};
@@ -75,11 +75,11 @@ fn colors() {
 #[test]
 fn orthographic_hides_the_far_side() {
     let mut doc = plain();
-    doc.set_projection(ProjectionSpec {
-        kind: ProjectionKind::Orthographic,
-        lon0: 20.0,
-        lat0: 30.0,
-    });
+    doc.set_projection(ProjectionSpec::new(
+        ProjectionKind::Orthographic,
+        20.0,
+        30.0,
+    ));
     assert_eq!(color_at(&doc, [-150.0, -30.0]), None);
     assert_eq!(color_at(&doc, [25.0, 25.0]), Some(LAND));
 }
@@ -334,4 +334,48 @@ fn a_width_expression_follows_the_attribute() {
     // One batch for each width, in the order of the features.
     let widths: Vec<f64> = line_strokes(&doc).iter().map(|(w, _)| *w).collect();
     assert_eq!(widths, [1.0, 3.0, 2.0]);
+}
+
+/// The presets of each kind with the center away from 0, and two oblique aspects.
+fn each_projection() -> Vec<ProjectionSpec> {
+    let mut specs: Vec<ProjectionSpec> = ProjectionKind::ALL
+        .into_iter()
+        .map(|kind| ProjectionSpec::new(kind, 20.0, 30.0).normalized())
+        .collect();
+    for kind in [ProjectionKind::Mercator, ProjectionKind::EqualEarth] {
+        let oblique = ProjectionSpec {
+            oblique: Some(35.0),
+            ..ProjectionSpec::new(kind, 20.0, 30.0)
+        };
+        specs.push(oblique.normalized());
+    }
+    specs
+}
+
+#[test]
+fn each_projection_draws_the_map_inside_the_page() {
+    let page = kurbo::Rect::new(0.0, 0.0, SIZE.0, SIZE.1).inflate(2.0, 2.0);
+    for spec in each_projection() {
+        let mut doc = plain();
+        doc.set_projection(spec);
+        let c = compose(&doc, &mut Pipeline::new());
+        let mut fills = 0;
+        for item in &c.list.items {
+            let path = match item {
+                Item::Fill { path, .. } => {
+                    fills += 1;
+                    path
+                }
+                Item::Stroke { path, .. } => path,
+                Item::Glyphs(_) => continue,
+            };
+            let b = path.bounding_box();
+            let finite = [b.x0, b.y0, b.x1, b.y1].iter().all(|v| v.is_finite());
+            assert!(finite && page.contains_rect(b), "{spec:?}: {b:?}");
+        }
+        // The page, the sea, and land.
+        assert!(fills > 2, "{spec:?}: {fills} fills");
+        assert_eq!(color_at(&doc, [25.0, 25.0]), Some(LAND), "{spec:?}");
+        map_png(&doc, SIZE, 1.0).unwrap();
+    }
 }

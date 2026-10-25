@@ -6,7 +6,9 @@ use vale_store::{GeometryKind, RasterId, World};
 
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, elevation, pad};
+use super::{
+    Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, elevation, pad, projections,
+};
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
@@ -20,6 +22,10 @@ use crate::world::{self, three_significant};
 pub const WORLD_BUTTON: &str = "World…";
 /// The button of the tool bar that exports the heightmap.
 pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
+/// The check box of the oblique aspect of the map projection.
+pub const OBLIQUE: &str = "Oblique aspect";
+/// The angle of the center line of an oblique aspect.
+pub const ROTATION: &str = "Rotation";
 /// The button of the line tool.
 pub const LINE_TOOL: &str = "Line";
 /// The button of the polygon tool.
@@ -379,17 +385,11 @@ fn save_mark(ui: &mut egui::Ui, state: &AppState) {
 }
 
 fn flat_projection(ui: &mut egui::Ui, state: &mut AppState) {
+    let customs = state.custom_projections();
     let flat = &mut state.globe.flat;
-    let spec = flat.spec();
-    let mut kind = spec.kind;
-    egui::ComboBox::from_id_salt("flat-projection")
-        .selected_text(kind.name())
-        .show_ui(ui, |ui| {
-            for k in ProjectionKind::ALL {
-                ui.selectable_value(&mut kind, k, k.name());
-            }
-        });
-    flat.set_spec(ProjectionSpec { kind, ..spec });
+    if let Some(spec) = projection_combo(ui, "flat-projection", flat.spec(), &customs) {
+        flat.set_spec(spec);
+    }
     let button = ui.add_enabled(flat.can_center_here(), egui::Button::new(pad::RECENTER));
     let help = "Makes the place at the middle of the view the center of the projection. \
                 Move the map first.";
@@ -731,42 +731,104 @@ fn world_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.heading("Projection");
-    let mut spec = state.doc.frame.projection;
-    egui::ComboBox::from_id_salt("projection")
-        .selected_text(spec.kind.name())
+/// The list of the presets and the custom projections. Returns the pick.
+fn projection_combo(
+    ui: &mut egui::Ui,
+    id: &str,
+    spec: ProjectionSpec,
+    customs: &[(String, ProjectionSpec)],
+) -> Option<ProjectionSpec> {
+    let custom = projections::custom_name(customs, spec);
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(custom.unwrap_or(spec.kind.name()))
         .width(180.0)
+        .height(480.0)
         .show_ui(ui, |ui| {
             for kind in ProjectionKind::ALL {
-                ui.selectable_value(&mut spec.kind, kind, kind.name());
+                let on = custom.is_none() && kind == spec.kind;
+                if ui.selectable_label(on, kind.name()).clicked() {
+                    picked = Some(projections::pick_preset(spec, kind));
+                }
+            }
+            if !customs.is_empty() {
+                ui.separator();
+            }
+            for (name, s) in customs {
+                if ui.selectable_label(custom == Some(name), name).clicked() {
+                    picked = Some(*s);
+                }
             }
         });
+    picked
+}
+
+/// A number field in degrees in a row with a label.
+fn degrees(ui: &mut egui::Ui, label: &str, value: &mut f64, range: f64, enabled: bool) {
     ui.horizontal(|ui| {
-        ui.label("Center longitude");
-        ui.add(
-            egui::DragValue::new(&mut spec.lon0)
-                .speed(1.0)
-                .range(-180.0..=180.0),
-        );
-    });
-    ui.horizontal(|ui| {
-        ui.label("Center latitude");
+        ui.label(label);
         ui.add_enabled(
-            spec.kind.is_azimuthal(),
-            egui::DragValue::new(&mut spec.lat0)
-                .speed(1.0)
-                .range(-90.0..=90.0),
+            enabled,
+            egui::DragValue::new(value).speed(1.0).range(-range..=range),
         );
     });
-    if spec != state.doc.frame.projection {
-        state.doc.set_projection(ProjectionSpec { ..spec });
+}
+
+fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.heading("Projection");
+    let customs = state.custom_projections();
+    let now = state.doc.frame.projection;
+    let mut spec = projection_combo(ui, "projection", now, &customs).unwrap_or(now);
+    degrees(ui, "Center longitude", &mut spec.lon0, 180.0, true);
+    let uses_lat0 = spec.uses_lat0();
+    degrees(ui, "Center latitude", &mut spec.lat0, 90.0, uses_lat0);
+    if spec.kind.is_conic() {
+        degrees(ui, "Standard parallel 1", &mut spec.lat1, 89.0, true);
+        degrees(ui, "Standard parallel 2", &mut spec.lat2, 89.0, true);
+    }
+    if spec.kind.has_oblique() {
+        let mut oblique = spec.oblique.is_some();
+        if ui.checkbox(&mut oblique, OBLIQUE).changed() {
+            spec.oblique = oblique.then_some(0.0);
+        }
+        if let Some(r) = &mut spec.oblique {
+            degrees(ui, ROTATION, r, 180.0, true);
+        }
+    }
+    if spec != now {
+        state.doc.set_projection(spec);
         state.touch();
     }
     if ui.button("Fit world").clicked() {
         state.doc.frame.view = None;
         state.touch();
     }
+    let spec = state.doc.frame.projection;
+    let id = ui.id().with("projection-name");
+    let mut name: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        ui.add(egui::TextEdit::singleline(&mut name).desired_width(120.0));
+    });
+    ui.horizontal(|ui| {
+        if ui.button(pad::SAVE_PROJECTION).clicked() {
+            let trimmed = name.trim();
+            let name = if trimmed.is_empty() {
+                state.next_projection_name()
+            } else {
+                trimmed.to_owned()
+            };
+            let saved = state.save_projection(&name, spec);
+            state.doc.set_projection(saved);
+            state.touch();
+        }
+        if let Some(custom) = projections::custom_name(&customs, spec)
+            && ui.button(format!("Delete {custom}")).clicked()
+        {
+            state.delete_projection(custom);
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, name));
     ui.add_space(6.0);
 }
 

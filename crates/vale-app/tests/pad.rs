@@ -233,7 +233,9 @@ fn check_controls(h: &Pad, what: &str) {
                 let add = in_add && rows.contains(&name);
                 let stop = in_stop
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
-                menu || kind || more || add || stop || (in_menu && name == "Projection")
+                let list = in_list
+                    && (name == vale_app::ui::pad::SAVE_PROJECTION || name.starts_with("Custom "));
+                menu || kind || list || more || add || stop || (in_menu && name == "Projection")
             };
             // The edit menu of a field covers the controls below it.
             let edit = |c: &vale_app::ui::pad::widgets::Control| {
@@ -2541,6 +2543,77 @@ fn the_view_switch_has_the_list_of_the_projections_of_the_flat_view() {
     tap(&mut h, "Projection");
     tap(&mut h, "Globe");
     assert!(!h.state().pad.projections && control(&h, "Projection").is_none());
+}
+
+#[test]
+fn the_list_of_the_projections_switches_the_flat_view_and_the_map() {
+    use vale_app::ui::pad::{PROJECTION, SAVE_PROJECTION};
+    use vale_sphere::ProjectionKind;
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Flat");
+    for kind in ProjectionKind::ALL {
+        tap(&mut h, PROJECTION);
+        tap(&mut h, kind.name());
+        assert_eq!(h.state().globe.flat.spec().kind, kind);
+    }
+    tap(&mut h, PROJECTION);
+    tap(&mut h, SAVE_PROJECTION);
+    let customs = h.state().custom_projections();
+    let custom = h.state().globe.flat.spec();
+    assert_eq!(customs, vec![("Custom 1".to_string(), custom)]);
+    tap(&mut h, PROJECTION);
+    let list = h.state().pad.projections_rect.unwrap();
+    assert!(list.contains_rect(control(&h, "Custom 1").unwrap()));
+    check_controls(&h, "with a custom projection");
+    tap(&mut h, "Equal Earth");
+
+    // In the Map workspace, the list sets the projection of the map.
+    tap(&mut h, "Maps");
+    assert_eq!(h.state().workspace, Workspace::Map);
+    for kind in ProjectionKind::ALL {
+        tap(&mut h, PROJECTION);
+        tap(&mut h, kind.name());
+        assert_eq!(h.state().doc.frame.projection.kind, kind);
+    }
+    assert_eq!(h.state().globe.flat.spec().kind, ProjectionKind::EqualEarth);
+    tap(&mut h, PROJECTION);
+    tap(&mut h, "Custom 1");
+    assert_eq!(h.state().doc.frame.projection, custom);
+    tap(&mut h, PROJECTION);
+    tap(&mut h, SAVE_PROJECTION);
+    let names: Vec<String> = h
+        .state()
+        .custom_projections()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names, ["Custom 1", "Custom 2"]);
+}
+
+#[test]
+fn a_long_list_of_the_projections_fits_the_screen() {
+    use vale_app::ui::pad::PROJECTION;
+    for size in BOARDS {
+        let mut h = pad(size);
+        h.state_mut().globe.world_view = WorldView::Flat;
+        for _ in 0..8 {
+            let name = h.state().next_projection_name();
+            let spec = h.state().globe.flat.spec();
+            h.state_mut().save_projection(&name, spec);
+        }
+        h.run_steps(2);
+        if control(&h, PROJECTION).is_none() {
+            tap(&mut h, "Workspace");
+        }
+        tap(&mut h, PROJECTION);
+        let list = h.state().pad.projections_rect.unwrap();
+        let screen = h.state().pad.rects.unwrap().screen;
+        assert!(
+            list.bottom() <= screen.bottom() - BANDS.1,
+            "{size:?}: {list:?}"
+        );
+        check_controls(&h, &format!("{size:?} with a long list"));
+    }
 }
 
 #[test]
