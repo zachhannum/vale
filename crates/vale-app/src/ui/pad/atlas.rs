@@ -52,8 +52,6 @@ const ADD_WIDTH: f32 = 220.0;
 const TOOL_CELLS: usize = 2;
 /// The height of the keypad of a field.
 const KEYPAD: f32 = 4.0 * PANEL_ROW;
-/// The smallest and the largest side of a page, in millimeters.
-const PAGE_SIDE: (f64, f64) = (10.0, 2000.0);
 
 /// The keypad of the field `name`, below the field, if it is open. The
 /// panel scrolls to show the keypad when it opens.
@@ -89,7 +87,7 @@ pub fn length_text(mm: f64, units: PageUnits) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-fn unit_name(units: PageUnits) -> &'static str {
+pub fn unit_name(units: PageUnits) -> &'static str {
     match units {
         PageUnits::Mm => UNIT_NAMES[0],
         PageUnits::In => UNIT_NAMES[1],
@@ -646,22 +644,11 @@ fn frame_tab(
     if let Some(chosen) =
         widgets::choice_row(ui, controls, SHAPE, &shapes, Some(usize::from(polygon)))
     {
-        let shape = match chosen {
-            0 => math::to_rectangle(&frame.shape),
-            _ => math::to_polygon(&frame.shape),
-        };
-        atlas::edit_frame(state, id, |f, _| {
-            f.shape = shape;
-            true
-        });
-        state.atlas.vertex = None;
+        atlas::set_polygon(state, id, chosen == 1);
     }
     if polygon {
         if widgets::button_row(ui, controls, ADD_HOLE, true).clicked() {
-            atlas::edit_frame(state, id, |f, _| {
-                math::add_hole(&mut f.shape);
-                true
-            });
+            atlas::add_hole(state, id);
         }
         let vertex = state.atlas.vertex;
         if widgets::button_row(ui, controls, REMOVE_VERTEX, vertex.is_some()).clicked()
@@ -678,11 +665,7 @@ fn frame_tab(
         .as_deref()
         .and_then(math::parse_scale)
     {
-        let scale = scale.clamp(math::SCALE_RANGE.0, math::SCALE_RANGE.1);
-        atlas::edit_frame(state, id, |f, _| {
-            f.scale = scale;
-            true
-        });
+        atlas::set_scale(state, id, scale);
     }
     keypad_below(ui, controls, SCALE);
     let [lon, lat] = frame.center;
@@ -692,43 +675,25 @@ fn frame_tab(
         degrees(t).is_some()
     });
     if let Some(lon) = typed.as_deref().and_then(degrees) {
-        let lon = (lon + 180.0).rem_euclid(360.0) - 180.0;
-        atlas::edit_frame(state, id, |f, _| {
-            f.center[0] = lon;
-            true
-        });
+        atlas::set_longitude(state, id, lon);
     }
     keypad_below(ui, controls, LONGITUDE);
     let shown = math::lat_text(lat);
     let typed = widgets::key_field(ui, controls, LATITUDE, LATITUDE, "", &shown, keys, |t| {
         degrees(t).is_some_and(|v| v.abs() <= 90.0)
     });
-    if let Some(lat) = typed
-        .as_deref()
-        .and_then(degrees)
-        .filter(|v| v.abs() <= 90.0)
-    {
-        atlas::edit_frame(state, id, |f, _| {
-            f.center[1] = lat;
-            true
-        });
+    if let Some(lat) = typed.as_deref().and_then(degrees) {
+        atlas::set_latitude(state, id, lat);
     }
     keypad_below(ui, controls, LATITUDE);
 
     let mut rotation = frame.rotation as f32;
     if widgets::compass_row(ui, controls, ROTATION, ROTATION, &mut rotation) {
-        let rotation = f64::from(rotation);
-        atlas::edit_frame(state, id, |f, _| {
-            f.rotation = rotation;
-            true
-        });
+        atlas::set_rotation(state, id, f64::from(rotation));
     }
     let mut graticule = frame.graticule;
     if widgets::switch_row(ui, controls, GRATICULE, GRATICULE, &mut graticule) {
-        atlas::edit_frame(state, id, |f, _| {
-            f.graticule = graticule;
-            true
-        });
+        atlas::set_graticule(state, id, graticule);
     }
 }
 
@@ -748,40 +713,22 @@ fn projection_tab(
             &[],
             spec.kind == kind,
         );
-        if row.clicked() && spec.kind != kind {
-            state
-                .doc
-                .set_projection(vale_sphere::ProjectionSpec { kind, ..spec });
-            state.touch();
+        if row.clicked() {
+            atlas::set_projection_kind(state, kind);
         }
     }
     ui.add_space(6.0);
-    if widgets::button_row(ui, controls, CENTER_ON_FRAME, true).clicked()
-        && let Some(frame) = state.doc.project.atlas.frame(id)
-    {
-        let [lon, lat] = frame.center;
-        let mut spec = state.doc.projection();
-        spec.lon0 = lon;
-        if spec.kind.is_azimuthal() {
-            spec.lat0 = lat;
-        }
-        state.doc.set_projection(spec);
-        state.touch();
+    if widgets::button_row(ui, controls, CENTER_ON_FRAME, true).clicked() {
+        atlas::center_projection(state, id);
     }
 }
 
 fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let page = atlas::open_page(state).clone();
-    let id = page.id;
-    let edit = |state: &mut AppState, f: &dyn Fn(&mut vale_store::PageRecord)| {
-        if let Some(page) = state.doc.project.atlas.page_mut(id) {
-            f(page);
-        }
-    };
 
     let mut name = page.name.clone();
     if widgets::text_field(ui, controls, PAGE_NAME, "Name", None, &mut name, true).changed() {
-        edit(state, &|p| p.name = name.clone());
+        atlas::edit_page(state, |p| p.name = name);
     }
 
     let preset = math::preset_of(page.width_mm, page.height_mm);
@@ -792,15 +739,7 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if state.atlas.sizes {
         for p in PAGE_PRESETS {
             if widgets::option_row(ui, controls, p.name, p.name, &[], p.name == preset).clicked() {
-                let (w, h) = if landscape {
-                    (p.height_mm, p.width_mm)
-                } else {
-                    (p.width_mm, p.height_mm)
-                };
-                edit(state, &|page| {
-                    page.width_mm = w;
-                    page.height_mm = h;
-                });
+                atlas::set_page_preset(state, &p);
                 state.atlas.sizes = false;
             }
         }
@@ -815,21 +754,11 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     )
     .is_some()
     {
-        edit(state, &|p| {
-            std::mem::swap(&mut p.width_mm, &mut p.height_mm)
-        });
+        atlas::turn_page(state);
     }
 
     let units = page.units;
-    let factor = match units {
-        PageUnits::Mm => 1.0,
-        PageUnits::In => 25.4,
-    };
-    let parse = move |text: &str| {
-        super::raster::parse_value(text)
-            .map(|v| v * factor)
-            .filter(|mm| (PAGE_SIDE.0..=PAGE_SIDE.1).contains(mm))
-    };
+    let parse = move |text: &str| atlas::parse_length(text, units);
     let keys = Keys::Number;
     let suffix = unit_name(units);
     let shown = length_text(page.width_mm, units);
@@ -837,7 +766,7 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         parse(t).is_some()
     });
     if let Some(mm) = typed.as_deref().and_then(parse) {
-        edit(state, &|p| p.width_mm = mm);
+        atlas::edit_page(state, |p| p.width_mm = mm);
     }
     keypad_below(ui, controls, WIDTH);
     let shown = length_text(page.height_mm, units);
@@ -845,31 +774,22 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         parse(t).is_some()
     });
     if let Some(mm) = typed.as_deref().and_then(parse) {
-        edit(state, &|p| p.height_mm = mm);
+        atlas::edit_page(state, |p| p.height_mm = mm);
     }
     keypad_below(ui, controls, HEIGHT);
     let active = PageUnits::ALL.iter().position(|u| *u == units);
     if let Some(chosen) = widgets::choice_row(ui, controls, "Units", &UNIT_NAMES, active) {
         let units = PageUnits::ALL[chosen];
-        edit(state, &|p| p.units = units);
+        atlas::edit_page(state, |p| p.units = units);
     }
 
     ui.add_space(6.0);
     if widgets::button_row(ui, controls, ADD_PAGE, true).clicked() {
-        let atlas = &mut state.doc.project.atlas;
-        let new = atlas.add_page(Some(id), page.width_mm, page.height_mm, page.units);
-        state.atlas.page = new;
-        state.atlas.selection = AtlasSelection::Page;
+        atlas::add_page(state);
     }
     let count = state.doc.project.atlas.pages.len();
     let delete = widgets::button_row_in(ui, controls, DELETE_PAGE, count > 1, theme::WARN);
     if delete.clicked() {
-        let atlas = &mut state.doc.project.atlas;
-        let index = atlas.page_index(id).unwrap_or(0);
-        if atlas.remove_page(id).is_some() {
-            let open = index.saturating_sub(1).min(atlas.pages.len() - 1);
-            state.atlas.page = atlas.pages[open].id;
-            state.atlas.selection = AtlasSelection::Page;
-        }
+        atlas::delete_page(state);
     }
 }

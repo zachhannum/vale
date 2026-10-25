@@ -1,4 +1,5 @@
-//! The right panel: layer style, feature information, and unplaced labels.
+//! The inspector of the right dock: layer style, feature information, and
+//! unplaced labels.
 
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
@@ -8,17 +9,10 @@ use super::AppState;
 
 const MAX_UNPLACED: usize = 200;
 
-pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::Panel::right("inspector")
-        .default_size(280.0)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                layer_section(ui, state);
-                feature_section(ui, state);
-                unplaced_section(ui, state);
-            });
-        });
+pub fn contents(ui: &mut egui::Ui, state: &mut AppState) {
+    layer_section(ui, state);
+    feature_section(ui, state);
+    unplaced_section(ui, state);
 }
 
 /// What the style controls need to know about the layer.

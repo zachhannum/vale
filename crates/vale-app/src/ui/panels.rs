@@ -4,9 +4,10 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, RasterId, World};
 
+use super::pad::atlas::{NEXT_PAGE, PREVIOUS_PAGE, page_title};
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, elevation, pad};
+use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, atlas, elevation, pad};
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
@@ -164,7 +165,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     state.actions.push(Action::ExportHeightmapDialog);
                 }
             }
-            if !state.file_buttons || state.workspace != Workspace::Atlas {
+            if state.workspace != Workspace::Atlas {
+                return;
+            }
+            ui.separator();
+            atlas_buttons(ui, state);
+            if !state.file_buttons {
                 return;
             }
             ui.separator();
@@ -179,6 +185,30 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     });
+}
+
+/// The button of the tool bar that adds a map frame to the open page.
+pub const ADD_MAP_FRAME: &str = "Add map frame";
+
+/// The page buttons of the tool bar in the Atlas workspace: the page before,
+/// the name of the open page, the page after, and a new map frame.
+fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
+    let (index, count) = atlas::page_index(state);
+    let back = ui.add_enabled(index > 0, egui::Button::new("◀"));
+    named(&back, egui::WidgetType::Button, false, PREVIOUS_PAGE.into());
+    if back.clicked() {
+        atlas::go_to_page(state, -1);
+    }
+    let (index, _) = atlas::page_index(state);
+    ui.label(page_title(index, &atlas::open_page(state).name));
+    let next = ui.add_enabled(index + 1 < count, egui::Button::new("▶"));
+    named(&next, egui::WidgetType::Button, false, NEXT_PAGE.into());
+    if next.clicked() {
+        atlas::go_to_page(state, 1);
+    }
+    if ui.button(ADD_MAP_FRAME).clicked() {
+        atlas::add_frame(state);
+    }
 }
 
 /// The button of the tool bar that opens the list of the layers.
@@ -714,7 +744,6 @@ pub fn left(ui: &mut egui::Ui, state: &mut AppState) {
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 world_section(ui, state);
-                projection_section(ui, state);
                 layers_section(ui, state);
                 map_section(ui, state);
             });
@@ -728,45 +757,6 @@ fn world_section(ui: &mut egui::Ui, state: &mut AppState) {
     let radius = world::radius_text(world.radius_km, world.units);
     ui.label(&world.name);
     ui.label(format!("Radius {radius} {symbol}"));
-    ui.add_space(6.0);
-}
-
-fn projection_section(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.heading("Projection");
-    let mut spec = state.doc.projection();
-    egui::ComboBox::from_id_salt("projection")
-        .selected_text(spec.kind.name())
-        .width(180.0)
-        .show_ui(ui, |ui| {
-            for kind in ProjectionKind::ALL {
-                ui.selectable_value(&mut spec.kind, kind, kind.name());
-            }
-        });
-    ui.horizontal(|ui| {
-        ui.label("Center longitude");
-        ui.add(
-            egui::DragValue::new(&mut spec.lon0)
-                .speed(1.0)
-                .range(-180.0..=180.0),
-        );
-    });
-    ui.horizontal(|ui| {
-        ui.label("Center latitude");
-        ui.add_enabled(
-            spec.kind.is_azimuthal(),
-            egui::DragValue::new(&mut spec.lat0)
-                .speed(1.0)
-                .range(-90.0..=90.0),
-        );
-    });
-    if spec != state.doc.projection() {
-        state.doc.set_projection(ProjectionSpec { ..spec });
-        state.touch();
-    }
-    if ui.button("Fit world").clicked() {
-        state.doc.frame.view = None;
-        state.touch();
-    }
     ui.add_space(6.0);
 }
 
@@ -807,7 +797,8 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         };
         let selected = state.selected_vector() == Some(id);
         ui.horizontal(|ui| {
-            let mut visible = state.doc.visible(id);
+            let map = state.doc.map_id();
+            let mut visible = state.doc.shown(map, id);
             let text = if selected {
                 egui::RichText::new(name).strong()
             } else {
@@ -815,8 +806,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             };
             let resp = ui.checkbox(&mut visible, text);
             ui.weak(format!("{count}"));
-            if resp.changed() {
-                state.doc.set_visible(id, visible);
+            if resp.changed() && state.doc.set_shown(map, id, visible) {
                 state.touch();
             }
             if resp.clicked() {
@@ -842,12 +832,6 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Map");
-    if ui
-        .checkbox(&mut state.doc.frame.graticule, "Graticule")
-        .changed()
-    {
-        state.touch();
-    }
     if ui.checkbox(&mut state.doc.frame.labels, "Labels").changed() {
         state.touch();
     }

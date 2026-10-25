@@ -2,14 +2,18 @@ use std::path::Path;
 
 use eframe::egui;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
 use vale_app::globe::StackItem;
 use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
-use vale_app::ui::atlas::AtlasSelection;
+use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::MORE;
+use vale_app::ui::pad::atlas::{
+    ADD_PAGE, CENTER_ON_FRAME, FRAME_TABS, NEXT_PAGE, PAGE_NAME, PREVIOUS_PAGE, SCALE,
+};
+use vale_app::ui::panels::ADD_MAP_FRAME;
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{
@@ -54,8 +58,9 @@ fn first_frames_compose_the_map() {
     let s = h.state();
     assert!(s.composed.is_some());
     assert_eq!(s.atlas.image_count(), 1);
+    // With no selection, the canvas has the room of the right dock.
     assert!(
-        s.canvas_size.0 > 650.0 && s.canvas_size.0 < 850.0,
+        s.canvas_size.0 > 1000.0 && s.canvas_size.0 < 1200.0,
         "{:?}",
         s.canvas_size
     );
@@ -65,15 +70,18 @@ fn first_frames_compose_the_map() {
 }
 
 #[test]
-#[ignore = "desktop atlas"]
 fn graticule_checkbox_recomposes() {
     let mut h = harness();
     h.run_steps(3);
     let before = h.state().composed.as_ref().unwrap().list.items.len();
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
+    h.run_steps(3);
+    assert!(h.state().doc.project.atlas.frame(frame).unwrap().graticule);
     h.get_by_label("Graticule").click();
     h.run_steps(3);
     let s = h.state();
-    assert!(!s.doc.frame.graticule);
+    assert!(!s.doc.project.atlas.frame(frame).unwrap().graticule);
     assert_ne!(s.composed.as_ref().unwrap().list.items.len(), before);
 }
 
@@ -91,7 +99,7 @@ fn land_checkbox_hides_layer() {
         .find(|l| l.name == "Land")
         .unwrap()
         .id;
-    assert!(!doc.visible(land));
+    assert!(!doc.shown(doc.map_id(), land));
 }
 
 #[test]
@@ -339,15 +347,45 @@ fn open_files_action() {
 }
 
 #[test]
-fn export_action_writes_pdf() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/app/test-ui-export.pdf");
-    let _ = std::fs::remove_file(&path);
+fn the_export_writes_a_png_and_a_pdf_of_the_open_page() {
+    let dir = tempfile::tempdir().unwrap();
     let mut state = state_with(Document::sample());
-    state.canvas_size = (800.0, 600.0);
-    state.run_action(Action::Export(path.clone()));
-    let bytes = std::fs::read(&path).unwrap();
+    vale_app::ui::atlas::add_page(&mut state);
+    vale_app::ui::atlas::edit_page(&mut state, |p| {
+        p.width_mm = 100.0;
+        p.height_mm = 50.0;
+    });
+    vale_app::ui::atlas::add_frame(&mut state).unwrap();
+
+    let png = dir.path().join("page.png");
+    state.run_action(Action::Export(png.clone()));
+    assert!(state.status.starts_with("Exported"), "{}", state.status);
+    let img = image::open(&png).unwrap();
+    let px = |mm: f64| (mm * 72.0 / 25.4 * headless::PAGE_PIXEL_RATIO).ceil() as u32;
+    let (w, h) = (img.width(), img.height());
+    assert!(
+        w.abs_diff(px(100.0)) <= 1 && h.abs_diff(px(50.0)) <= 1,
+        "{w} × {h}"
+    );
+
+    let pdf = dir.path().join("page.pdf");
+    state.run_action(Action::Export(pdf.clone()));
+    let bytes = std::fs::read(&pdf).unwrap();
     assert!(bytes.starts_with(b"%PDF-"));
-    assert!(state.status.starts_with("Exported"));
+    // The media box is the page in points.
+    let text = String::from_utf8_lossy(&bytes);
+    let points = |mm: f64| format!("{}", (mm * 72.0 / 25.4 * 1000.0).round() / 1000.0);
+    let pt = |mm: f64| points(mm).split('.').next().unwrap().to_owned();
+    let mediabox = text
+        .split("/MediaBox")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        mediabox.contains(&pt(100.0)) && mediabox.contains(&pt(50.0)),
+        "{mediabox}"
+    );
 }
 
 #[test]
@@ -797,4 +835,172 @@ fn a_new_world_has_no_raster_layer() {
             .next()
             .is_some()
     );
+}
+
+/// The screen position of a point of the open page, in millimeters.
+fn page_pos(h: &Harness<'static, AppState>, x: f64, y: f64) -> egui::Pos2 {
+    let place = h.state().atlas.place.unwrap();
+    place.to_screen(kurbo::Point::new(x, y))
+}
+
+/// The screen position of the middle of the first frame of the open page.
+fn frame_middle(h: &Harness<'static, AppState>) -> egui::Pos2 {
+    let page = vale_app::ui::atlas::open_page(h.state());
+    let b = vale_app::atlas::shape_bbox(&page.frames[0].shape);
+    page_pos(h, b.center().x, b.center().y)
+}
+
+/// A primary click at a screen position, in three steps.
+fn click_at(h: &mut Harness<'static, AppState>, pos: egui::Pos2) {
+    h.hover_at(pos);
+    h.step();
+    h.drag_at(pos);
+    h.step();
+    h.drop_at(pos);
+    h.run_steps(3);
+}
+
+#[test]
+fn the_dock_shows_only_with_a_selection() {
+    let mut h = harness();
+    h.run_steps(3);
+    assert_eq!(h.state().selected_layer, None);
+    assert!(h.query_by_label("Unplaced labels").is_none());
+    assert!(h.query_by_label(FRAME_TABS[0]).is_none());
+    assert!(h.query_by_label(ADD_PAGE).is_none());
+}
+
+#[test]
+fn a_click_on_a_frame_shows_the_frame_and_projection_tabs() {
+    let mut h = harness();
+    h.run_steps(3);
+    let pos = frame_middle(&h);
+    click_at(&mut h, pos);
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame));
+    assert!(h.query_by_label(FRAME_TABS[0]).is_some());
+    h.get_by_label(FRAME_TABS[1]).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tab, FrameTab::Projection);
+    assert!(h.query_by_label(CENTER_ON_FRAME).is_some());
+}
+
+#[test]
+fn a_click_on_the_paper_shows_the_page_panel() {
+    let mut h = harness();
+    h.run_steps(3);
+    let pos = page_pos(&h, 2.0, 2.0);
+    click_at(&mut h, pos);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
+    assert!(h.query_by_label(ADD_PAGE).is_some());
+    assert!(h.query_by_label(PAGE_NAME).is_some());
+    h.get_by_label(ADD_PAGE).click();
+    h.run_steps(2);
+    assert_eq!(h.state().doc.project.atlas.pages.len(), 2);
+}
+
+/// Types this text in place of the text of the field `name`, and ends the
+/// edit with Enter.
+fn type_in(h: &mut Harness<'static, AppState>, name: &str, text: &str) {
+    let role = egui::accesskit::Role::TextInput;
+    h.get_by_role_and_label(role, name).focus();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.get_by_role_and_label(role, name).type_text(text);
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+}
+
+#[test]
+fn a_typed_scale_sets_the_scale_of_the_frame() {
+    let mut h = harness();
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
+    h.run_steps(3);
+    type_in(&mut h, SCALE, "1:5000000");
+    let scale = h.state().doc.project.atlas.frame(frame).unwrap().scale;
+    assert!((scale - 5e6).abs() < 1.0, "{scale}");
+}
+
+#[test]
+fn a_projection_preset_changes_the_projection() {
+    let mut h = harness();
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
+    h.state_mut().atlas.tab = FrameTab::Projection;
+    h.run_steps(3);
+    let kind = ProjectionKind::ALL
+        .into_iter()
+        .find(|k| *k != h.state().doc.projection().kind)
+        .unwrap();
+    h.get_by_label(kind.name()).click();
+    h.run_steps(2);
+    assert_eq!(h.state().doc.projection().kind, kind);
+}
+
+#[test]
+fn add_map_frame_adds_a_frame_to_the_open_page() {
+    let mut h = harness();
+    h.run_steps(3);
+    h.get_by_label(ADD_MAP_FRAME).click();
+    h.run_steps(3);
+    let s = h.state();
+    let page = &s.doc.project.atlas.pages[0];
+    assert_eq!(page.frames.len(), 2);
+    assert_eq!(s.atlas.selection, AtlasSelection::Frame(page.frames[1].id));
+}
+
+#[test]
+fn the_page_buttons_open_the_page_before_and_after() {
+    let mut h = harness();
+    vale_app::ui::atlas::add_page(h.state_mut());
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(3);
+    let pages: Vec<_> = h
+        .state()
+        .doc
+        .project
+        .atlas
+        .pages
+        .iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(h.state().atlas.page, pages[1]);
+    assert!(h.get_by_label(NEXT_PAGE).accesskit_node().is_disabled());
+    h.get_by_label(PREVIOUS_PAGE).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.page, pages[0]);
+    assert!(h.get_by_label(PREVIOUS_PAGE).accesskit_node().is_disabled());
+    h.get_by_label(NEXT_PAGE).click();
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.page, pages[1]);
+}
+
+#[test]
+fn the_keys_v_and_h_choose_the_tools() {
+    let mut h = harness();
+    h.run_steps(3);
+    h.key_press(egui::Key::H);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Move);
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+}
+
+#[test]
+fn the_desktop_atlas_renders_offscreen() {
+    let _gpu = one_gpu_test();
+    let mut state = state_with(Document::sample());
+    let frame = state.doc.project.atlas.pages[0].frames[0].id;
+    state.atlas.selection = AtlasSelection::Frame(frame);
+    let (img, _) = match headless::ui_png(state, (1440.0, 900.0), 1.0) {
+        Ok(v) => v,
+        Err(e) => panic!("{e}"),
+    };
+    std::fs::create_dir_all("../../target/app").unwrap();
+    img.save("../../target/app/atlas.png").unwrap();
+    assert_eq!((img.width(), img.height()), (1440, 900));
 }

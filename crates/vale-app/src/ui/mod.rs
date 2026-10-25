@@ -31,6 +31,7 @@ use crate::workcopy;
 
 pub mod atlas;
 pub mod browser;
+pub mod dock;
 pub mod elevation;
 pub mod globe;
 pub mod gradient;
@@ -46,7 +47,9 @@ pub mod world_form;
 pub enum Action {
     OpenDialog,
     OpenFiles(Vec<PathBuf>),
+    /// Asks for the file of an export of the open page.
     ExportDialog(ExportFormat),
+    /// Exports the open page to this PNG or PDF file.
     Export(PathBuf),
     ImportHeightmapDialog,
     /// Imports this equirectangular image into a height layer. A world with
@@ -1981,11 +1984,13 @@ impl AppState {
                 self.touch();
             }
             Action::Export(path) => {
-                self.status = match headless::export(&self.doc, self.canvas_size, 2.0, &path) {
-                    Ok(_) => format!("Exported {}", path.display()),
+                let page = atlas::open_page(self).clone();
+                let (pipeline, fonts) = (&mut self.pipeline, &mut self.fonts);
+                self.status = match headless::export_page(pipeline, &self.doc, &page, fonts, &path)
+                {
+                    Ok(()) => format!("Exported {}", path.display()),
                     Err(e) => format!("{e:#}"),
                 };
-                self.touch();
             }
             Action::ImportHeightmap(path) => {
                 self.import_note = None;
@@ -2113,7 +2118,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             }
             Workspace::Atlas => {
                 panels::left(ui, state);
-                inspector::draw(ui, state);
+                dock::draw(ui, state);
                 panels::status(ui, state);
                 atlas::desktop(ui, state);
             }

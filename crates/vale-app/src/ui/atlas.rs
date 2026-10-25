@@ -6,11 +6,11 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
-use vale_sphere::Projection;
-use vale_store::{FrameId, FrameRecord, FrameShape, PageId, PageRecord};
+use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
+use vale_store::{FrameId, FrameRecord, FrameShape, PageId, PageRecord, PageUnits};
 
 use super::{AppState, LayerRef};
-use crate::atlas::{self as math, FrameTarget, Handle, Vertex};
+use crate::atlas::{self as math, FrameTarget, Handle, PagePreset, Vertex};
 use crate::pipeline::Quality;
 use crate::view::ViewTransform;
 
@@ -25,6 +25,8 @@ const WHEEL_REST: f64 = 0.25;
 const DOUBLE_TAP: f64 = 0.4;
 const PAPER: Color32 = Color32::WHITE;
 const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
+/// The smallest and the largest side of a page, in millimeters.
+const PAGE_SIDE: (f64, f64) = (10.0, 2000.0);
 
 /// The thing that the panel of the Atlas workspace shows.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -892,8 +894,171 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
     }
 }
 
-/// The canvas of the desktop layout, in the space between the panels.
+/// Makes the shape of a frame a polygon or a rectangle.
+pub fn set_polygon(state: &mut AppState, id: FrameId, polygon: bool) {
+    edit_frame(state, id, |f, _| {
+        f.shape = if polygon {
+            math::to_polygon(&f.shape)
+        } else {
+            math::to_rectangle(&f.shape)
+        };
+        true
+    });
+    state.atlas.vertex = None;
+}
+
+/// Adds a hole to a polygon frame.
+pub fn add_hole(state: &mut AppState, id: FrameId) {
+    edit_frame(state, id, |f, _| {
+        math::add_hole(&mut f.shape);
+        true
+    });
+}
+
+/// Sets the scale of a frame, in the range of the scales.
+pub fn set_scale(state: &mut AppState, id: FrameId, scale: f64) {
+    let scale = scale.clamp(math::SCALE_RANGE.0, math::SCALE_RANGE.1);
+    edit_frame(state, id, |f, _| {
+        f.scale = scale;
+        true
+    });
+}
+
+/// Sets the longitude of the center of a frame, in degrees.
+pub fn set_longitude(state: &mut AppState, id: FrameId, lon: f64) {
+    let lon = (lon + 180.0).rem_euclid(360.0) - 180.0;
+    edit_frame(state, id, |f, _| {
+        f.center[0] = lon;
+        true
+    });
+}
+
+/// Sets the latitude of the center of a frame, in degrees. A latitude past
+/// a pole does nothing.
+pub fn set_latitude(state: &mut AppState, id: FrameId, lat: f64) {
+    if lat.abs() <= 90.0 {
+        edit_frame(state, id, |f, _| {
+            f.center[1] = lat;
+            true
+        });
+    }
+}
+
+/// Sets the rotation of the map in a frame, in degrees.
+pub fn set_rotation(state: &mut AppState, id: FrameId, degrees: f64) {
+    edit_frame(state, id, |f, _| {
+        f.rotation = degrees;
+        true
+    });
+}
+
+pub fn set_graticule(state: &mut AppState, id: FrameId, on: bool) {
+    edit_frame(state, id, |f, _| {
+        f.graticule = on;
+        true
+    });
+}
+
+/// Sets the kind of the projection of the map and keeps its center.
+pub fn set_projection_kind(state: &mut AppState, kind: ProjectionKind) {
+    let spec = state.doc.projection();
+    if spec.kind != kind {
+        state.doc.set_projection(ProjectionSpec { kind, ..spec });
+        state.touch();
+    }
+}
+
+/// Moves the center of the projection to the center of a frame. A
+/// projection that is not azimuthal keeps its latitude.
+pub fn center_projection(state: &mut AppState, id: FrameId) {
+    let Some(frame) = state.doc.project.atlas.frame(id) else {
+        return;
+    };
+    let [lon, lat] = frame.center;
+    let mut spec = state.doc.projection();
+    spec.lon0 = lon;
+    if spec.kind.is_azimuthal() {
+        spec.lat0 = lat;
+    }
+    state.doc.set_projection(spec);
+    state.touch();
+}
+
+/// Changes the open page.
+pub fn edit_page(state: &mut AppState, edit: impl FnOnce(&mut PageRecord)) {
+    let id = open_page(state).id;
+    if let Some(page) = state.doc.project.atlas.page_mut(id) {
+        edit(page);
+    }
+}
+
+/// Gives the open page the size of a preset and keeps its orientation.
+pub fn set_page_preset(state: &mut AppState, preset: &PagePreset) {
+    edit_page(state, |page| {
+        let (w, h) = (preset.width_mm, preset.height_mm);
+        let (w, h) = if page.width_mm > page.height_mm {
+            (h, w)
+        } else {
+            (w, h)
+        };
+        page.width_mm = w;
+        page.height_mm = h;
+    });
+}
+
+/// Turns the open page between portrait and landscape.
+pub fn turn_page(state: &mut AppState) {
+    edit_page(state, |p| std::mem::swap(&mut p.width_mm, &mut p.height_mm));
+}
+
+/// A length of a page from the text of a field, in millimeters. A length
+/// outside the sides of a page is `None`.
+pub fn parse_length(text: &str, units: PageUnits) -> Option<f64> {
+    let factor = match units {
+        PageUnits::Mm => 1.0,
+        PageUnits::In => 25.4,
+    };
+    super::pad::raster::parse_value(text)
+        .map(|v| v * factor)
+        .filter(|mm| (PAGE_SIDE.0..=PAGE_SIDE.1).contains(mm))
+}
+
+/// Adds a page after the open page, with its size and units, and opens it
+/// with the page selected.
+pub fn add_page(state: &mut AppState) {
+    let page = open_page(state);
+    let (id, w, h, units) = (page.id, page.width_mm, page.height_mm, page.units);
+    let new = state.doc.project.atlas.add_page(Some(id), w, h, units);
+    state.atlas.page = new;
+    state.atlas.selection = AtlasSelection::Page;
+}
+
+/// Deletes the open page and opens the page before it, or else the page
+/// after it. The last page stays.
+pub fn delete_page(state: &mut AppState) {
+    let id = open_page(state).id;
+    let atlas = &mut state.doc.project.atlas;
+    let index = atlas.page_index(id).unwrap_or(0);
+    if atlas.remove_page(id).is_some() {
+        let open = index.saturating_sub(1).min(atlas.pages.len() - 1);
+        state.atlas.page = atlas.pages[open].id;
+        state.atlas.selection = AtlasSelection::Page;
+    }
+}
+
+/// The canvas of the desktop layout, in the space between the panels. The
+/// keys V and H choose the Select tool and the Move tool.
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
+    let typing = ui.ctx().memory(|m| m.focused().is_some());
+    if !typing {
+        let (v, h) = ui.input(|i| (i.key_pressed(egui::Key::V), i.key_pressed(egui::Key::H)));
+        if v {
+            state.atlas.tool = AtlasTool::Select;
+        }
+        if h {
+            state.atlas.tool = AtlasTool::Move;
+        }
+    }
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(ui, |ui| {

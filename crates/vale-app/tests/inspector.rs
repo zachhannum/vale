@@ -63,7 +63,9 @@ fn click_at(h: &mut Harness<'static, AppState>, pos: egui::Pos2) {
 
 #[test]
 fn empty_states() {
-    let h = harness();
+    let mut h = harness();
+    h.state_mut().atlas.selection = AtlasSelection::Page;
+    h.run_steps(2);
     assert!(h.query_by_label("Select a layer in the list.").is_some());
     assert!(h.query_by_label("Click a feature on the map.").is_some());
     assert!(h.query_by_label("Unplaced labels").is_some());
@@ -178,11 +180,15 @@ fn click_identifies_a_feature() {
 
 #[test]
 fn unplaced_summary() {
-    let h = harness();
+    let mut h = harness();
+    h.state_mut().atlas.selection = AtlasSelection::Page;
+    h.run_steps(2);
     assert!(h.query_by_label("Unplaced labels").is_some());
     let mut doc = Document::sample();
     doc.frame.labels = false;
-    let h = harness_with(doc);
+    let mut h = harness_with(doc);
+    h.state_mut().atlas.selection = AtlasSelection::Page;
+    h.run_steps(2);
     assert!(h.query_by_label("All labels fit.").is_some());
 }
 
