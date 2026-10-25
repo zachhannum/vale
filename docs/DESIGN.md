@@ -455,7 +455,7 @@ The desktop layout has the workspaces, switches, tools, and panels of the iPad l
 
 The window has five places, from top to bottom:
 
-- The title bar and the tool bar are one bar. At the left, it holds the window buttons, the name of the world, the name of the file with the save mark, and the workspace switch. At the center, it holds the view switch in the World workspace, and the page controls and "Export…" in the Atlas workspace. At the right, it holds undo, redo, and the button that shows or hides the dock. These actions are the same in each workspace.
+- The title bar and the tool bar are one bar. At the left, it holds the window buttons, the name of the world, the name of the file with the save mark, and the workspace switch. At the center, it holds the view switch in the World workspace, and the page controls, "Add", and "Export…" in the Atlas workspace. At the right, it holds undo, redo, and the button that shows or hides the dock. These actions are the same in each workspace.
 - The options bar holds the settings of the active tool. For a brush mode, these are the Size slider, the Flow slider, the Hardness slider, a pressure switch, and the button "Brush…". That button opens the Brush panel as a popover.
 - The tool rail at the left edge holds the tools and the More button.
 - The canvas is between the tool rail and the dock.
@@ -463,7 +463,7 @@ The window has five places, from top to bottom:
 
 Each workspace has a tool rail and an options bar, so the canvas keeps its place when the mode changes. The menus are in the menu bar of the system.
 
-The dock is a column at the right edge. Its tabs keep the same order in a workspace. The World workspace has the tabs Layers and Toolbox. The Atlas workspace has the tabs Pages, Maps, Layers, Projection, and Labels. Its Layers, Projection, and Labels tabs belong to the map of the selected frame. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. The inspector of a vector layer lists its fields. With no selection, it holds the properties of the world. The list and the inspector show at the same time, so a panel has no back button. In the World workspace, the attribute table of a layer is in a dock below the canvas.
+The dock is a column at the right edge. Its tabs keep the same order in a workspace. The World workspace has the tabs Layers and Toolbox. In the Atlas workspace, the dock holds the panel of the selection, and the tabs are the tabs of that panel. Below the tabs is the list, and below the list is the inspector. The inspector is the panel of the selected layer or tool. The inspector of a vector layer lists its fields. With no selection, it holds the properties of the world. The list and the inspector show at the same time, so a panel has no back button. In the World workspace, the attribute table of a layer is in a dock below the canvas.
 
 The title bar, the tool rail, the dock, the popovers, and the menus are translucent, with the blur of the macOS materials. The background of the canvas is the same material with a darker tint. The globe, the flat map, and the map pages are opaque, so their colors stay true.
 
@@ -541,7 +541,7 @@ Clean-room has a strict meaning here. The design comes from published research a
 
 The atlas has three levels: maps, pages, and map frames.
 
-A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. The Maps tab of the Atlas workspace lists all maps, also a map that is in no frame. Each map has one projection center. For another center, you copy the map and change the projection of the copy.
+A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. The Map menu of a frame lists the maps of the project, with "New map" and "Copy of this map". A map stays in the menu when no frame shows it, until you delete it there. Each map has one projection center. For another center, you copy the map and change the projection of the copy.
 
 The app has two workspaces, World and Atlas. In the World workspace you draw and edit the features, and its attribute table edits their attributes. The Atlas workspace holds the maps, the pages, and the map frames. You edit a map in a frame, at the scale of the page, so that the labels and the styles show as they export.
 
@@ -551,7 +551,9 @@ A map frame is an area on a page that shows one map. Its shape is a rectangle or
 
 Each scale bar, north arrow, and legend links to one frame of its page. A new item links to the largest frame.
 
-In the Atlas workspace, you move and resize a frame on the page, you edit the vertices of its shape, and you pan, zoom, and rotate the map in it. When you select a frame, its panel has the tabs Frame, Projection, Layers, and Labels. The Frame tab holds the map of the frame, its shape, center, scale, rotation, border, and graticule. The Projection tab edits the projection of the map and shows the distortion in the frame. In the Layers tab, the eye of a row is the switch of that layer in the map, and the panel of a layer edits the style overrides of the map. The Labels tab edits the label classes of the map. A change in these three tabs changes the map, so it shows in each frame of that map. You pin, move, and hide a single label in a frame, because each manual change belongs to one frame. On iPad, the panel at the left has the tabs Pages and Maps.
+The Atlas workspace shows one page, and each panel opens from the selection. With no selection, no panel shows. A tap on a frame opens the panel of the frame. A tap on the page outside the frames opens the panel of the page, with the page size, the paper color, the page border, and the template. A tap on an item of furniture opens the panel of the item. The page controls in the top row go to the previous page and the next page. A tap on the name of the page opens the overview of all pages, where you open, reorder, add, and delete pages. The Add button in the top row adds a map frame, text, a legend, a scale bar, or a north arrow to the page.
+
+In the Atlas workspace, you move and resize a frame on the page, you edit the vertices of its shape, and you pan, zoom, and rotate the map in it. When you select a frame, its panel has the tabs Frame, Projection, Layers, and Labels. The Frame tab holds the map of the frame, its shape, center, scale, rotation, border, and graticule. The Projection tab edits the projection of the map and shows the distortion in the frame. In the Layers tab, the eye of a row is the switch of that layer in the map, and the panel of a layer edits the style overrides of the map. The Labels tab edits the label classes of the map. A change in these three tabs changes the map, so it shows in each frame of that map. You pin, move, and hide a single label in a frame, because each manual change belongs to one frame.
 
 A page template holds the page size, the margins, and the positions of the furniture. Many pages share one template, so the atlas has one look. The atlas is the ordered list of the pages.
 
