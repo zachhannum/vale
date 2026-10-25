@@ -510,7 +510,7 @@ fn each_frame_draws_with_the_projection_of_its_map() {
     let page = doc.project.atlas.pages[0].id;
     let a = frame_on(&mut doc, &mut pipeline, page);
     let b = frame_on(&mut doc, &mut pipeline, page);
-    let copy = doc.project.atlas.copy_map(doc.first_map()).unwrap();
+    let copy = doc.project.atlas.add_map();
     doc.project.atlas.frame_mut(b).unwrap().map = copy;
     let draw = |doc: &Document, pipeline: &mut Pipeline, id| {
         format!("{:?}", compose_frame(doc, pipeline, id))

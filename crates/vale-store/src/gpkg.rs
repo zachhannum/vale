@@ -2734,7 +2734,7 @@ mod tests {
         atlas.maps[0].hidden.insert(towns);
         atlas.maps[0].projection = "orthographic".into();
         atlas.maps[0].lon0 = 40.0;
-        let copy = atlas.copy_map(MapId(0)).unwrap();
+        let copy = atlas.add_map();
         atlas.map_mut(copy).unwrap().lat0 = -20.0;
         atlas.add_map();
         let first = atlas.pages[0].id;

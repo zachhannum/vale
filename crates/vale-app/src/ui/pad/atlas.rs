@@ -7,12 +7,12 @@ use vale_sphere::ProjectionKind;
 use vale_store::{FrameShape, PageUnits};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
-use super::icons::{self, Icon};
+use super::icons::Icon;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW};
 use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
 use super::{rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
-use crate::ui::atlas::{self, AtlasSelection, AtlasTool, FrameTab, MapMenu};
+use crate::ui::atlas::{self, AtlasSelection, AtlasTool, FrameTab};
 use crate::ui::{AppState, Workspace};
 
 pub const SELECT: &str = "Select";
@@ -27,12 +27,7 @@ pub const MAP_FRAME: &str = "Map frame";
 const LATER_ITEMS: [&str; 4] = ["Text", "Legend", "Scale bar", "North arrow"];
 /// The tabs of the panel of a frame. The last two come in other tasks.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
-pub const MAP: &str = "Map";
-pub const NEW_MAP: &str = "New map";
-pub const COPY_MAP: &str = "Copy of this map";
-pub const RENAME_MAP: &str = "Rename map…";
 pub const MAP_NAME: &str = "Map name";
-pub const DONE: &str = "Done";
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
@@ -56,7 +51,6 @@ pub const DELETE_PAGE: &str = "Delete page";
 /// The width of the actions card: three buttons and a divider.
 const ACTIONS_WIDTH: f32 = 3.0 * TOUCH + 3.0 * PAD + 9.0 + 2.0 * PAD;
 const ADD_WIDTH: f32 = 220.0;
-const MAP_MENU_WIDTH: f32 = 260.0;
 const TOOL_CELLS: usize = 2;
 /// The height of the keypad of a field.
 const KEYPAD: f32 = 4.0 * PANEL_ROW;
@@ -90,11 +84,6 @@ fn keypad_below(ui: &mut egui::Ui, controls: &mut Controls, name: &str) {
         let rect = Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
         ui.scroll_to_rect_animation(rect, None, egui::style::ScrollAnimation::none());
     }
-}
-
-/// The name of the row of a map in the Map menu.
-pub fn choose_name(name: &str) -> String {
-    format!("Choose {name}")
 }
 
 /// The name of a page in the top row and in the title of its panel.
@@ -186,9 +175,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         widgets::close_keypad(&ctx);
         state.atlas.shown = shown;
         state.pad.sheet_offset = 0.0;
-        state.atlas.map_menu = None;
     }
-    state.atlas.map_row = None;
 
     top_row(&ctx, state, &mut controls, &rects, page_card);
     tool_strip(&ctx, state, &mut controls, &rects);
@@ -196,10 +183,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         selection_panel(&ctx, state, &mut controls, &rects);
     }
     readout(&ctx, ui, state, &rects);
-    state.atlas.map_rect = None;
-    if state.atlas.map_menu.is_some() {
-        map_menu(&ctx, state, &mut controls, &rects);
-    }
     state.atlas.add_rect = None;
     if state.atlas.add {
         add_menu(&ctx, state, &mut controls, &rects);
@@ -488,176 +471,6 @@ fn add_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
     });
 }
 
-/// The Map menu of the selected frame, at the left of the panel next to
-/// the Map row, or over the panel below the Map row if the left has no room.
-/// The list of the maps scrolls if the menu does not fit.
-fn map_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let (Some(id), Some(view), Some(row), Some(panel)) = (
-        state.atlas.frame(),
-        state.atlas.map_menu,
-        state.atlas.map_row,
-        state.atlas.panel_rect,
-    ) else {
-        state.atlas.map_menu = None;
-        return;
-    };
-    let Some(current) = state.doc.project.atlas.frame(id).map(|f| f.map) else {
-        state.atlas.map_menu = None;
-        return;
-    };
-    let height = match view {
-        MapMenu::List => {
-            let rows = state.doc.project.atlas.maps.len() + 3;
-            rows as f32 * PANEL_ROW + 13.0
-        }
-        MapMenu::Rename => 2.0 * PANEL_ROW,
-    } + 20.0;
-    let width = MAP_MENU_WIDTH;
-    let beside = panel.left() - GAP - width;
-    let (left, top) = if beside >= rects.tools.right() + GAP {
-        (beside, row.top() - 10.0)
-    } else {
-        let right = panel.right().min(rects.screen.right() - MARGIN);
-        (right - width, row.bottom() + PAD)
-    };
-    let top = top.min(rects.panel_bottom - height).max(rects.tools.top());
-    let bottom = (top + height).min(rects.panel_bottom);
-    let rect = Rect::from_min_max(pos2(left, top), pos2(left + width, bottom));
-    state.atlas.map_rect = Some(rect);
-    if pressed_outside(ctx, rect, row) {
-        state.atlas.map_menu = None;
-    }
-    menu_card(ctx, "pad-atlas-map", rect, |ui| match view {
-        MapMenu::List => {
-            egui::ScrollArea::vertical()
-                .id_salt("pad-atlas-map-list")
-                .auto_shrink([false, false])
-                .show(ui, |ui| map_list(ui, state, controls, id, current));
-        }
-        MapMenu::Rename => map_rename(ui, state, controls, current),
-    });
-}
-
-/// The maps of the project, each with a tick on the map of the frame, and
-/// the commands of the Map menu.
-fn map_list(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    id: vale_store::FrameId,
-    current: vale_store::MapId,
-) {
-    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-    let maps: Vec<_> = (state.doc.project.atlas.maps.iter())
-        .map(|m| (m.id, m.name.clone()))
-        .collect();
-    for (map, name) in maps {
-        let delete = state.doc.project.atlas.can_remove_map(map);
-        let (choose, remove) = map_item(ui, controls, &name, map == current, delete);
-        if choose.clicked() {
-            atlas::set_frame_map(state, id, map);
-            state.atlas.map_menu = None;
-        }
-        if remove.is_some_and(|r| r.clicked()) {
-            atlas::delete_map(state, map);
-        }
-    }
-    rule(ui);
-    if widgets::text_row(ui, controls, NEW_MAP, 0.0, false, true).clicked() {
-        atlas::new_map(state, id);
-        state.atlas.map_menu = None;
-    }
-    if widgets::text_row(ui, controls, COPY_MAP, 0.0, false, true).clicked() {
-        atlas::copy_map(state, id);
-        state.atlas.map_menu = None;
-    }
-    if widgets::text_row(ui, controls, RENAME_MAP, 0.0, false, true).clicked() {
-        state.atlas.map_name = None;
-        state.atlas.map_menu = Some(MapMenu::Rename);
-    }
-}
-
-/// A row of a map in the Map menu: the name, a tick if the frame shows the
-/// map, and a Delete button if the map can go away. Returns the responses
-/// of the row and of the Delete button.
-fn map_item(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    on: bool,
-    delete: bool,
-) -> (egui::Response, Option<egui::Response>) {
-    let (row, _) =
-        ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
-    let mut main = row;
-    if delete {
-        main.max.x -= TOUCH;
-    }
-    let choose = widgets::tap_area(ui, controls, main, &choose_name(name), true);
-    if on || choose.is_pointer_button_down_on() {
-        let back = main.expand2(vec2(8.0, -widgets::HIGHLIGHT_INSET));
-        ui.painter().rect_filled(back, 5.0, theme::raise());
-    }
-    let mark = 18.0;
-    let room = main.width() - if on { mark + 8.0 } else { 0.0 };
-    let mut job =
-        egui::text::LayoutJob::simple_singleline(name.to_owned(), theme::body(), theme::TEXT);
-    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-    let galley = ui.painter().layout_job(job);
-    let at = pos2(main.left(), main.center().y - galley.size().y / 2.0);
-    ui.painter().galley(at, galley, theme::TEXT);
-    if on {
-        let tick = Rect::from_center_size(
-            pos2(main.right() - mark / 2.0, main.center().y),
-            vec2(mark, mark),
-        );
-        icons::paint(ui.painter(), tick, Icon::Tick, mark, theme::ACCENT);
-    }
-    let remove = delete.then(|| {
-        let rect = Rect::from_min_max(pos2(main.right(), row.top()), row.max);
-        let resp = widgets::tap_area(ui, controls, rect, &widgets::delete_name(name), true);
-        if resp.is_pointer_button_down_on() {
-            let back = rect.shrink(widgets::HIGHLIGHT_INSET);
-            ui.painter()
-                .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
-        }
-        icons::paint(ui.painter(), rect, Icon::Delete, 22.0, theme::WARN);
-        resp
-    });
-    (choose, remove)
-}
-
-/// The rename view of the Map menu: a field that renames the map of the
-/// frame as the user types, and the Done row that closes the menu.
-fn map_rename(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    map: vale_store::MapId,
-) {
-    let Some(name) = state.doc.project.atlas.map(map).map(|m| m.name.clone()) else {
-        return;
-    };
-    let first = state.atlas.map_name.is_none();
-    let mut text = state.atlas.map_name.take().unwrap_or_else(|| name.clone());
-    let valid = !text.trim().is_empty();
-    let field = widgets::text_field(ui, controls, MAP_NAME, "Name", None, &mut text, valid);
-    if first {
-        field.request_focus();
-    }
-    if field.changed() {
-        atlas::rename_map(state, map, &text);
-    } else if !field.has_focus() && !first {
-        // The field shows the name again after an undo and after a blank text.
-        text = name;
-    }
-    state.atlas.map_name = Some(text);
-    if widgets::text_row(ui, controls, DONE, 0.0, false, true).clicked() {
-        state.atlas.map_menu = None;
-        state.atlas.map_name = None;
-    }
-}
-
 fn workspace_menu(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -852,15 +665,9 @@ fn frame_tab(
         return;
     };
     let map = state.doc.project.atlas.map(frame.map);
-    let name = map.map_or_else(String::new, |m| m.name.clone());
-    let row = widgets::open_row(ui, controls, MAP, &name);
-    state.atlas.map_row = Some(row.rect);
-    if row.clicked() {
-        let menu = &mut state.atlas.map_menu;
-        *menu = match menu {
-            Some(_) => None,
-            None => Some(MapMenu::List),
-        };
+    let mut name = map.map_or_else(String::new, |m| m.name.clone());
+    if widgets::text_field(ui, controls, MAP_NAME, "Name", None, &mut name, true).changed() {
+        atlas::rename_map(state, id, &name);
     }
 
     let polygon = matches!(frame.shape, FrameShape::Polygon(_));
