@@ -5,7 +5,7 @@ use std::fmt;
 use kurbo::{Point, Rect};
 
 use crate::clip::{ClipRect, EPS, clip_line_rect, clip_ring_rect, densify, shifts, unwrap};
-use crate::frame::{Frame, LonLat, wrap180};
+use crate::frame::{Frame, LonLat, oblique_pole, wrap180};
 use crate::spec::{ProjectionKind, ProjectionSpec};
 
 /// An error from building a projection.
@@ -36,6 +36,51 @@ pub struct Mesh {
     pub vertices: Vec<Option<(Point, LonLat)>>,
 }
 
+/// The frame of a spec, and the part of the sphere that the projection draws.
+/// The part is a rectangle in frame degrees.
+fn frame_and_clip(spec: &ProjectionSpec) -> (Frame, ClipRect) {
+    use ProjectionKind::*;
+    let (mut lon_max, mut lat_min, mut lat_max) = (180.0 - EPS, -90.0, 90.0);
+    let frame = match (spec.kind, spec.azimuth) {
+        (_, Some(azimuth)) => {
+            let (lon_0, lat_p, lon_p) = oblique_pole(spec.lon0, spec.lat0, azimuth);
+            Frame::Oblique {
+                lon_0,
+                lat_p,
+                lon_p,
+            }
+        }
+        (Equirectangular | EqualEarth | Mercator | LambertConformal | AlbersEqualArea, _)
+        | (TransverseMercator, _) => Frame::Shift { lon0: spec.lon0 },
+        _ => Frame::Polar {
+            lon0: spec.lon0,
+            lat0: spec.lat0,
+        },
+    };
+    match spec.kind {
+        Mercator => (lat_min, lat_max) = (-85.0, 85.0),
+        // The scale of a cone grows without limit toward the pole that it does not touch.
+        LambertConformal if spec.lat1 + spec.lat2 >= 0.0 => lat_min = -20.0,
+        LambertConformal => lat_max = 20.0,
+        // The scale grows without limit 90 degrees from the central meridian.
+        TransverseMercator => lon_max = 80.0,
+        LambertAzimuthal => (lat_min, lat_max) = (-85.0, 90.0),
+        Orthographic => (lat_min, lat_max) = (0.01, 90.0),
+        Stereographic | PolarStereographic => (lat_min, lat_max) = (-20.0, 90.0),
+        _ => {}
+    }
+    if matches!(frame, Frame::Polar { .. }) {
+        lon_max = 180.0 - EPS;
+    }
+    let clip = ClipRect {
+        lon_min: -lon_max,
+        lon_max,
+        lat_min,
+        lat_max,
+    };
+    (frame, clip)
+}
+
 /// A projection on a sphere, with a frame and a clip rectangle. Not `Send`.
 pub struct Projection {
     spec: ProjectionSpec,
@@ -54,33 +99,7 @@ impl Projection {
         let spec = spec.normalized();
         let pj = proj::Proj::new(&spec.proj_string(radius_m))
             .map_err(|e| SphereError::Proj(e.to_string()))?;
-        let (frame, lat_min, lat_max) = match spec.kind {
-            ProjectionKind::Equirectangular | ProjectionKind::EqualEarth => {
-                (Frame::Shift { lon0: spec.lon0 }, -90.0, 90.0)
-            }
-            ProjectionKind::Mercator => (Frame::Shift { lon0: spec.lon0 }, -85.0, 85.0),
-            k => {
-                let lat_min = match k {
-                    ProjectionKind::LambertAzimuthal => -85.0,
-                    ProjectionKind::Orthographic => 0.01,
-                    _ => -20.0,
-                };
-                (
-                    Frame::Polar {
-                        lon0: spec.lon0,
-                        lat0: spec.lat0,
-                    },
-                    lat_min,
-                    90.0,
-                )
-            }
-        };
-        let clip = ClipRect {
-            lon_min: -180.0 + EPS,
-            lon_max: 180.0 - EPS,
-            lat_min,
-            lat_max,
-        };
+        let (frame, clip) = frame_and_clip(&spec);
         Ok(Projection {
             spec,
             radius_m,
@@ -350,7 +369,7 @@ impl Projection {
     pub fn outline(&self) -> Vec<Point> {
         let c = &self.clip;
         match self.frame {
-            Frame::Shift { .. } => {
+            Frame::Shift { .. } | Frame::Oblique { .. } => {
                 let corners = [
                     [c.lon_min, c.lat_min],
                     [c.lon_max, c.lat_min],
@@ -460,7 +479,7 @@ mod tests {
     const EE: f64 = 2.70663;
 
     fn spec(kind: ProjectionKind, lon0: f64, lat0: f64) -> ProjectionSpec {
-        ProjectionSpec { kind, lon0, lat0 }
+        ProjectionSpec::new(kind, lon0, lat0)
     }
 
     fn proj(kind: ProjectionKind, lon0: f64, lat0: f64) -> Projection {
@@ -722,6 +741,97 @@ mod tests {
         let m = o.project_line(&[[30.0, -90.0], [30.0, 90.0]]);
         assert_eq!(m.len(), 1);
         assert!(m[0].iter().all(|q| q.to_vec2().hypot() <= 1.0 + 1e-6));
+    }
+
+    fn oblique(kind: ProjectionKind) -> ProjectionSpec {
+        ProjectionSpec {
+            azimuth: Some(30.0),
+            ..ProjectionSpec::new(kind, 40.0, 50.0)
+        }
+    }
+
+    #[test]
+    fn the_oblique_frame_is_the_ob_tran_rotation() {
+        let kinds = [
+            ProjectionKind::Equirectangular,
+            ProjectionKind::EqualEarth,
+            ProjectionKind::Mercator,
+            ProjectionKind::LambertConformal,
+            ProjectionKind::AlbersEqualArea,
+            ProjectionKind::TransverseMercator,
+        ];
+        for kind in kinds {
+            let tilted = Projection::new(oblique(kind), 1.0).unwrap();
+            let base = Projection::new(ProjectionSpec::new(kind, 0.0, 0.0), 1.0).unwrap();
+            let c = tilted.forward_raw([40.0, 50.0]).unwrap();
+            let c0 = base.forward_raw([0.0, 0.0]).unwrap();
+            assert!((c - c0).hypot() < 1e-6, "{kind:?} center {c:?} {c0:?}");
+            for i in 0..200 {
+                let p = [wrap180(i as f64 * 37.3), (i as f64 * 11.7) % 120.0 - 60.0];
+                let want = base.forward_raw(tilted.frame().to_frame(p));
+                let got = tilted.forward_raw(p);
+                let (want, got) = (want.unwrap(), got.unwrap());
+                assert!(
+                    (want - got).hypot() < 1e-9,
+                    "{kind:?} {p:?} {want:?} {got:?}"
+                );
+                let back = tilted.frame().from_frame(tilted.frame().to_frame(p));
+                assert!(wrap180(back[0] - p[0]).abs() < 1e-9 && (back[1] - p[1]).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn an_oblique_map_clips_in_the_rotated_frame() {
+        // The center line of the tilted map is a great circle through the center.
+        let p = Projection::new(oblique(ProjectionKind::Mercator), 1.0).unwrap();
+        assert!(p.forward([40.0, 50.0]).is_some());
+        let far = p.frame().from_frame([0.0, 88.0]);
+        assert!(p.forward(far).is_none());
+        let line = p.project_line(&[[-170.0, 0.0], [170.0, 0.0]]);
+        assert!(!line.is_empty());
+        let b = p.bounds().inflate(1e-6, 1e-6);
+        assert!(line.iter().flatten().all(|q| b.contains(*q)));
+    }
+
+    #[test]
+    fn each_preset_makes_a_map_with_its_edge() {
+        for kind in ProjectionKind::ALL {
+            let p = proj(kind, 10.0, 45.0);
+            let ring = p.outline();
+            assert!(ring.len() >= 4, "{kind:?}");
+            let b = p.bounds();
+            assert!(b.width() > 0.1 && b.height() > 0.1, "{kind:?} {b:?}");
+            // A line across the whole map stays inside the edge.
+            let line = p.project_line(&[[-180.0, 40.0], [0.0, 40.0], [180.0, 40.0]]);
+            let b = b.inflate(1e-6, 1e-6);
+            assert!(line.iter().flatten().all(|q| b.contains(*q)), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_transverse_map_cuts_at_the_far_meridians() {
+        let p = proj(ProjectionKind::TransverseMercator, 10.0, 0.0);
+        assert!(p.forward([10.0 + 79.0, 30.0]).is_some());
+        assert!(p.forward([10.0 + 100.0, 30.0]).is_none());
+        assert!(p.forward([10.0 - 100.0, 30.0]).is_none());
+    }
+
+    #[test]
+    fn a_conic_map_cuts_far_from_its_pole() {
+        let n = proj(ProjectionKind::LambertConformal, 0.0, 45.0);
+        assert!(n.forward([0.0, 89.0]).is_some() && n.forward([0.0, -10.0]).is_some());
+        assert!(n.forward([0.0, -60.0]).is_none());
+        let south = Projection::new(
+            ProjectionSpec {
+                lat1: -30.0,
+                lat2: -60.0,
+                ..ProjectionSpec::new(ProjectionKind::LambertConformal, 0.0, -45.0)
+            },
+            1.0,
+        )
+        .unwrap();
+        assert!(south.forward([0.0, 60.0]).is_none() && south.forward([0.0, -89.0]).is_some());
     }
 
     #[test]
