@@ -592,10 +592,15 @@ impl Pipeline {
         self.caches.len()
     }
 
-    /// Brings the projection of the map and the projected geometry of the
+    /// Brings the projection of a map and the projected geometry of the
     /// layers `ids` up to date with the document.
-    fn ensure(&mut self, doc: &Document, ids: &[LayerId]) -> anyhow::Result<&mut Cache> {
-        let spec = doc.projection();
+    fn ensure(
+        &mut self,
+        doc: &Document,
+        map: MapId,
+        ids: &[LayerId],
+    ) -> anyhow::Result<&mut Cache> {
+        let spec = doc.projection(map);
         let radius_m = doc.project.world.radius_km * 1000.0;
         let found = self
             .caches
@@ -648,28 +653,31 @@ impl Pipeline {
         if let Some(v) = doc.frame.view {
             return Ok(v);
         }
-        let cache = self.ensure(doc, &drawn_layers(doc, None))?;
+        let cache = self.ensure(doc, doc.first_map(), &drawn_layers(doc, None))?;
         Ok(View::fit(cache.bounds, size.0, size.1, 24.0))
     }
 
     pub fn fit_scale(&mut self, doc: &Document, size: (f64, f64)) -> anyhow::Result<f64> {
-        let cache = self.ensure(doc, &drawn_layers(doc, None))?;
+        let cache = self.ensure(doc, doc.first_map(), &drawn_layers(doc, None))?;
         Ok(View::fit(cache.bounds, size.0, size.1, 24.0).scale)
     }
 
-    /// The projected bounds of the projection of the map, in meters.
+    /// The projected bounds of the projection of the first map, in meters.
     pub fn projection_bounds(&mut self, doc: &Document) -> anyhow::Result<Rect> {
-        Ok(self.ensure(doc, &[])?.bounds)
+        Ok(self.ensure(doc, doc.first_map(), &[])?.bounds)
     }
 
-    /// The projection of the map.
-    pub fn projection(&mut self, doc: &Document) -> anyhow::Result<&Projection> {
-        Ok(&self.ensure(doc, &[])?.projection)
+    /// The projection of a map.
+    pub fn projection(&mut self, doc: &Document, map: MapId) -> anyhow::Result<&Projection> {
+        Ok(&self.ensure(doc, map, &[])?.projection)
     }
 
     /// The projected position of a place, in meters. `None` when it is not visible.
     pub fn project_lonlat(&mut self, doc: &Document, p: LonLat) -> anyhow::Result<Option<Point>> {
-        Ok(self.ensure(doc, &[])?.projection.forward(p))
+        Ok(self
+            .ensure(doc, doc.first_map(), &[])?
+            .projection
+            .forward(p))
     }
 
     pub fn lonlat_to_page(
@@ -681,7 +689,7 @@ impl Pipeline {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
         Ok(self
-            .ensure(doc, &[])?
+            .ensure(doc, doc.first_map(), &[])?
             .projection
             .forward(p)
             .map(|q| vt.to_page(q)))
@@ -695,7 +703,10 @@ impl Pipeline {
     ) -> anyhow::Result<Option<LonLat>> {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
-        Ok(self.ensure(doc, &[])?.projection.inverse(vt.from_page(q)))
+        Ok(self
+            .ensure(doc, doc.first_map(), &[])?
+            .projection
+            .inverse(vt.from_page(q)))
     }
 
     pub fn pick(
@@ -707,7 +718,7 @@ impl Pipeline {
         let view = self.resolve_view(doc, size)?;
         let vt = ViewTransform::new(view, size.0, size.1);
         let ids = drawn_layers(doc, None);
-        let cache = self.ensure(doc, &ids)?;
+        let cache = self.ensure(doc, doc.first_map(), &ids)?;
         let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
         let layers = build_page_layers(doc, cache, &vt, vt.page_rect(), &ids, scale);
         Ok(pick::pick(&layers, at))
@@ -726,7 +737,7 @@ impl Pipeline {
             return Ok(None);
         }
         let ids = drawn_layers(doc, Some(frame.map));
-        let cache = self.ensure(doc, &ids)?;
+        let cache = self.ensure(doc, frame.map, &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
         let area = frame_area(frame, target);
@@ -749,7 +760,7 @@ impl Pipeline {
         let radius_m = doc.project.world.radius_km * 1000.0;
         let step = graticule_step(doc.frame.graticule, &view, radius_m);
         let ids = drawn_layers(doc, None);
-        let cache = self.ensure(doc, &ids)?;
+        let cache = self.ensure(doc, doc.first_map(), &ids)?;
         cache.ensure_graticule(step);
         let cache = &*cache;
 
@@ -815,7 +826,7 @@ impl Pipeline {
     ) -> anyhow::Result<Composed> {
         let radius_m = doc.project.world.radius_km * 1000.0;
         let ids = drawn_layers(doc, Some(frame.map));
-        let cache = self.ensure(doc, &ids)?;
+        let cache = self.ensure(doc, frame.map, &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let step = graticule_step(frame.graticule, &vt.view, radius_m);
         cache.ensure_graticule(step);

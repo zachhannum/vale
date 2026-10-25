@@ -99,7 +99,7 @@ fn land_checkbox_hides_layer() {
         .find(|l| l.name == "Land")
         .unwrap()
         .id;
-    assert!(!doc.shown(doc.map_id(), land));
+    assert!(!doc.shown(doc.first_map(), land));
 }
 
 #[test]
@@ -394,11 +394,14 @@ fn projection_change_recomposes() {
     h.run_steps(3);
     let before = h.state().atlas.composes;
     let s = h.state_mut();
-    s.doc.set_projection(ProjectionSpec {
-        kind: ProjectionKind::Mercator,
-        lon0: 0.0,
-        lat0: 0.0,
-    });
+    s.doc.set_projection(
+        s.doc.first_map(),
+        ProjectionSpec {
+            kind: ProjectionKind::Mercator,
+            lon0: 0.0,
+            lat0: 0.0,
+        },
+    );
     s.touch();
     h.run_steps(2);
     assert_eq!(h.state().atlas.composes, before + 1);
@@ -933,11 +936,14 @@ fn a_projection_preset_changes_the_projection() {
     h.run_steps(3);
     let kind = ProjectionKind::ALL
         .into_iter()
-        .find(|k| *k != h.state().doc.projection().kind)
+        .find(|k| *k != h.state().doc.projection(h.state().doc.first_map()).kind)
         .unwrap();
     h.get_by_label(kind.name()).click();
     h.run_steps(2);
-    assert_eq!(h.state().doc.projection().kind, kind);
+    assert_eq!(
+        h.state().doc.projection(h.state().doc.first_map()).kind,
+        kind
+    );
 }
 
 #[test]

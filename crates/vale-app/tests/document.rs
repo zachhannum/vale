@@ -148,13 +148,16 @@ fn projection_resets_view() {
         rotation: 0.0,
     };
     d.frame.view = Some(view);
-    d.set_projection(ProjectionSpec::default());
+    d.set_projection(d.first_map(), ProjectionSpec::default());
     assert_eq!(d.frame.view, Some(view));
-    d.set_projection(ProjectionSpec {
-        kind: ProjectionKind::Mercator,
-        lon0: 0.0,
-        lat0: 0.0,
-    });
+    d.set_projection(
+        d.first_map(),
+        ProjectionSpec {
+            kind: ProjectionKind::Mercator,
+            lon0: 0.0,
+            lat0: 0.0,
+        },
+    );
     assert_eq!(d.frame.view, None);
 }
 

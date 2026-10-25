@@ -157,10 +157,10 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 }
 
 fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
-    let kind = state.doc.projection().kind;
+    let kind = state.doc.projection(frame.map).kind;
     for k in ProjectionKind::ALL {
         if ui.selectable_label(kind == k, k.name()).clicked() {
-            atlas::set_projection_kind(state, k);
+            atlas::set_projection_kind(state, frame.id, k);
         }
     }
     ui.add_space(4.0);

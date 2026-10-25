@@ -7,7 +7,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
-use vale_store::{FrameId, FrameRecord, FrameShape, PageId, PageRecord, PageUnits};
+use vale_store::{FrameId, FrameRecord, FrameShape, MapId, PageId, PageRecord, PageUnits};
 
 use super::{AppState, LayerRef};
 use crate::atlas::{self as math, FrameTarget, Handle, PagePreset, Vertex};
@@ -342,13 +342,21 @@ pub fn go_to_page(state: &mut AppState, step: isize) {
     }
 }
 
-/// Adds a frame of the map of the project to the open page and selects
-/// it.
+/// The map of the selected frame, or the first map if no frame is
+/// selected.
+pub fn selected_map(state: &AppState) -> MapId {
+    let frame = state.atlas.frame();
+    let frame = frame.and_then(|id| state.doc.project.atlas.frame(id));
+    frame.map_or_else(|| state.doc.first_map(), |f| f.map)
+}
+
+/// Adds a frame to the open page and selects it. The frame shows the map
+/// of the selected frame.
 pub fn add_frame(state: &mut AppState) -> Option<FrameId> {
     let page = open_page(state).clone();
-    let map_id = state.doc.map_id();
+    let map_id = selected_map(state);
     let map = state.doc.project.atlas.map(map_id)?.clone();
-    let projection = match state.pipeline.projection(&state.doc) {
+    let projection = match state.pipeline.projection(&state.doc, map_id) {
         Ok(p) => p,
         Err(e) => {
             state.status = format!("{e:#}");
@@ -373,7 +381,7 @@ pub fn edit_frame(
     let Some(mut frame) = state.doc.project.atlas.frame(id).cloned() else {
         return false;
     };
-    let Ok(projection) = state.pipeline.projection(&state.doc) else {
+    let Ok(projection) = state.pipeline.projection(&state.doc, frame.map) else {
         return false;
     };
     if !edit(&mut frame, projection) {
@@ -579,7 +587,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         }
         state.cursor_lonlat = frame_at(&page, at).and_then(|id| {
             let frame = page.frames.iter().find(|f| f.id == id)?;
-            let projection = state.pipeline.projection(&state.doc).ok()?;
+            let projection = state.pipeline.projection(&state.doc, frame.map).ok()?;
             let vt = math::frame_transform(projection, frame, place.target());
             let q = Point::new(f64::from(pos.x), f64::from(pos.y));
             projection.inverse(vt.from_page(q))
@@ -862,7 +870,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             target,
             shown,
         ));
-        let Ok(projection) = state.pipeline.projection(&state.doc) else {
+        let Ok(projection) = state.pipeline.projection(&state.doc, frame.map) else {
             continue;
         };
         let vt = math::frame_transform(projection, frame, target);
@@ -1124,28 +1132,35 @@ pub fn set_graticule(state: &mut AppState, id: FrameId, on: bool) {
     });
 }
 
-/// Sets the kind of the projection of the map and keeps its center.
-pub fn set_projection_kind(state: &mut AppState, kind: ProjectionKind) {
-    let spec = state.doc.projection();
+/// Sets the kind of the projection of the map of a frame and keeps its
+/// center.
+pub fn set_projection_kind(state: &mut AppState, id: FrameId, kind: ProjectionKind) {
+    let Some(map) = state.doc.project.atlas.frame(id).map(|f| f.map) else {
+        return;
+    };
+    let spec = state.doc.projection(map);
     if spec.kind != kind {
-        state.doc.set_projection(ProjectionSpec { kind, ..spec });
+        state
+            .doc
+            .set_projection(map, ProjectionSpec { kind, ..spec });
         state.touch();
     }
 }
 
-/// Moves the center of the projection to the center of a frame. A
-/// projection that is not azimuthal keeps its latitude.
+/// Moves the center of the projection of the map of a frame to the center
+/// of the frame. A projection that is not azimuthal keeps its latitude.
 pub fn center_projection(state: &mut AppState, id: FrameId) {
     let Some(frame) = state.doc.project.atlas.frame(id) else {
         return;
     };
     let [lon, lat] = frame.center;
-    let mut spec = state.doc.projection();
+    let map = frame.map;
+    let mut spec = state.doc.projection(map);
     spec.lon0 = lon;
     if spec.kind.is_azimuthal() {
         spec.lat0 = lat;
     }
-    state.doc.set_projection(spec);
+    state.doc.set_projection(map, spec);
     state.touch();
 }
 

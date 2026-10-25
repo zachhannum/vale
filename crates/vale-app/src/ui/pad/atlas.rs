@@ -737,7 +737,10 @@ fn projection_tab(
     controls: &mut Controls,
     id: vale_store::FrameId,
 ) {
-    let spec = state.doc.projection();
+    let Some(map) = state.doc.project.atlas.frame(id).map(|f| f.map) else {
+        return;
+    };
+    let spec = state.doc.projection(map);
     for kind in ProjectionKind::ALL {
         let row = widgets::option_row(
             ui,
@@ -748,7 +751,7 @@ fn projection_tab(
             spec.kind == kind,
         );
         if row.clicked() {
-            atlas::set_projection_kind(state, kind);
+            atlas::set_projection_kind(state, id, kind);
         }
     }
     ui.add_space(6.0);

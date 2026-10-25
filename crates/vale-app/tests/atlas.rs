@@ -19,7 +19,7 @@ use vale_app::ui::pad::atlas::{
 };
 use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
 use vale_render::Item;
-use vale_sphere::ProjectionKind;
+use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
     Feature, FrameRecord, FrameShape, Geometry, PageUnits, Project, ProjectFile, World,
 };
@@ -228,6 +228,11 @@ fn pinch(h: &mut Pad, center: Pos2, from: f32, to: f32, turn: f32, shift: Vec2) 
     h.run_steps(8);
 }
 
+fn first_projection(h: &Pad) -> ProjectionSpec {
+    let doc = &h.state().doc;
+    doc.projection(doc.first_map())
+}
+
 fn open_page(h: &Pad) -> vale_store::PageRecord {
     vale_app::ui::atlas::open_page(h.state()).clone()
 }
@@ -275,7 +280,7 @@ fn place_at(h: &mut Pad, index: usize, pos: Pos2) -> [f64; 2] {
     let f = frame(h, index);
     let target = h.state().atlas.place.unwrap().target();
     let s = h.state_mut();
-    let projection = s.pipeline.projection(&s.doc).unwrap();
+    let projection = s.pipeline.projection(&s.doc, f.map).unwrap();
     let vt = frame_transform(projection, &f, target);
     let q = Point::new(f64::from(pos.x), f64::from(pos.y));
     projection.inverse(vt.from_page(q)).unwrap()
@@ -285,7 +290,7 @@ fn pos_of(h: &mut Pad, index: usize, lonlat: [f64; 2]) -> Pos2 {
     let f = frame(h, index);
     let target = h.state().atlas.place.unwrap().target();
     let s = h.state_mut();
-    let projection = s.pipeline.projection(&s.doc).unwrap();
+    let projection = s.pipeline.projection(&s.doc, f.map).unwrap();
     let vt = frame_transform(projection, &f, target);
     let p = vt.to_page(projection.forward(lonlat).unwrap());
     pos2(p.x as f32, p.y as f32)
@@ -447,7 +452,7 @@ fn the_add_button_adds_a_frame_that_shows_the_map_of_the_project() {
     let page = open_page(&h);
     assert_eq!(page.frames.len(), 1);
     let f = &page.frames[0];
-    assert_eq!(f.map, h.state().doc.map_id());
+    assert_eq!(f.map, h.state().doc.first_map());
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(f.id));
     assert!(h.state().atlas.has_image(f.id));
     let list = &h.state().composed.as_ref().unwrap().list;
@@ -677,7 +682,7 @@ fn a_change_of_the_projection_shows_in_each_frame_of_the_map() {
     assert_eq!(h.state().atlas.tab, FrameTab::Projection);
     let composes = h.state().atlas.composes;
     tap(&mut h, ProjectionKind::Mercator.name());
-    assert_eq!(h.state().doc.projection().kind, ProjectionKind::Mercator);
+    assert_eq!(first_projection(&h).kind, ProjectionKind::Mercator);
     assert_eq!(h.state().atlas.composes, composes + 2);
 
     // The projection centers on the place in the middle of the frame.
@@ -686,7 +691,33 @@ fn a_change_of_the_projection_shows_in_each_frame_of_the_map() {
     s.doc.project.atlas.frame_mut(id).unwrap().center = [40.0, 20.0];
     h.run_steps(2);
     tap(&mut h, CENTER_ON_FRAME);
-    assert_eq!(h.state().doc.projection().lon0, 40.0);
+    assert_eq!(first_projection(&h).lon0, 40.0);
+}
+
+#[test]
+fn a_frame_of_a_copy_of_a_map_changes_the_projection_of_the_copy_only() {
+    let mut h = inset_pad(BOARDS[0]);
+    let s = h.state_mut();
+    let source = s.doc.first_map();
+    let copy = s.doc.project.atlas.copy_map(source).unwrap();
+    let inset = frame(&h, 1).id;
+    h.state_mut()
+        .doc
+        .project
+        .atlas
+        .frame_mut(inset)
+        .unwrap()
+        .map = copy;
+    h.run_steps(2);
+    tap(&mut h, "Projection");
+    tap(&mut h, ProjectionKind::Mercator.name());
+    let doc = &h.state().doc;
+    assert_eq!(doc.projection(copy).kind, ProjectionKind::Mercator);
+    assert_ne!(doc.projection(source).kind, ProjectionKind::Mercator);
+
+    // A new frame shows the map of the selected frame.
+    add_frame(&mut h);
+    assert_eq!(frame(&h, 2).map, copy);
 }
 
 #[test]
@@ -708,7 +739,7 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         tap(&mut h, "Projection");
         check_controls(&h, "projection tab");
         tap(&mut h, ProjectionKind::Mercator.name());
-        assert_eq!(h.state().doc.projection().kind, ProjectionKind::Mercator);
+        assert_eq!(first_projection(&h).kind, ProjectionKind::Mercator);
         let at = screen(&h, Point::new(4.0, 50.0));
         tap_with(&mut h, at, Input::Finger);
         assert_eq!(h.state().atlas.selection, AtlasSelection::Page, "{size:?}");

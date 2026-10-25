@@ -45,7 +45,7 @@ fn screen_pos(h: &mut Harness<'static, AppState>, lonlat: [f64; 2]) -> egui::Pos
     let s = h.state_mut();
     let place = s.atlas.place.unwrap();
     let frame = s.doc.project.atlas.pages[0].frames[0].clone();
-    let projection = s.pipeline.projection(&s.doc).unwrap();
+    let projection = s.pipeline.projection(&s.doc, frame.map).unwrap();
     let vt = vale_app::atlas::frame_transform(projection, &frame, place.target());
     let p = vt.to_page(projection.forward(lonlat).unwrap());
     egui::pos2(p.x as f32, p.y as f32)
