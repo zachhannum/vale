@@ -10,8 +10,7 @@ use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
     BlendMode, Feature, GeometryKind, Layer, LayerId, LayerKind, MapId, Project, Raster,
-    RasterDisplay,
-    RasterId, Rgb, StoreError, World,
+    RasterDisplay, RasterId, Rgb, StoreError, World,
 };
 use vale_terrain::{Bands, Heightmap, Mode};
 

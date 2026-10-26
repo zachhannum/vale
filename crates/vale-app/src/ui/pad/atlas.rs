@@ -764,7 +764,6 @@ fn layers_tab(
     };
     ui.spacing_mut().item_spacing.y = 0.0;
     let rows: Vec<_> = (state.doc.project.layers().iter())
-        .filter(|l| matches!(l.kind, LayerKind::Vector(_)))
         .map(|l| (l.id, layer_icon(l), l.name.clone()))
         .collect();
     if rows.is_empty() {

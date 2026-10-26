@@ -170,11 +170,10 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     }
 }
 
-/// A switch for each vector layer, which turns the layer on or off in the
+/// A switch for each layer, which turns the layer on or off in the
 /// map of the frame.
 fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let rows: Vec<_> = (state.doc.project.layers().iter().rev())
-        .filter(|l| matches!(l.kind, LayerKind::Vector(_)))
         .map(|l| (l.id, l.name.clone()))
         .collect();
     if rows.is_empty() {

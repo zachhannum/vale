@@ -86,6 +86,26 @@ fn a_frame_draws_the_raster_layers_that_its_map_shows() {
 }
 
 #[test]
+fn a_raster_layer_switch_changes_only_the_frames_of_its_map() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, height) = atlas(level);
+    vale_app::ui::atlas::add_frame(h.state_mut()).expect("a page takes a frame");
+    let frames = vale_app::ui::atlas::open_page(h.state()).frames.clone();
+    assert_ne!(frames[0].map, frames[1].map);
+    let middle = |h: &App, f: &vale_store::FrameRecord| {
+        screen(h, anchor(&f.shape)) + eframe::egui::vec2(23.0, 17.0)
+    };
+    let (a, b) = (middle(&h, &frames[0]), middle(&h, &frames[1]));
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    h.state_mut().set_map_shown(frames[0].map, layer, false);
+    let [first, ..] = pixel(&mut h, a);
+    let [second, ..] = pixel(&mut h, b);
+    assert!(first.abs_diff(grey_of(level)) > 20, "{first}");
+    assert!(second.abs_diff(grey_of(level)) <= 3, "{second}");
+}
+
+#[test]
 fn the_blend_mode_works_in_a_frame() {
     let _gpu = one_gpu_test();
     let level = 40000;

@@ -59,7 +59,7 @@ Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atla
 - Drag the page outside the frames to pan it, and scroll outside the selected frame to zoom it. On a touch screen, two fingers pan and zoom the page. Double-click outside the page to fit the page in the window again.
 - To delete the selected frame, click "Delete frame" in the Frame tab, or press Delete when no vertex is selected.
 - Type the scale, the center, and the rotation of a frame in the Frame tab. Select a projection in the Projection tab. Each frame of the map shows the new projection.
-- In the Layers tab, the eye of a vector layer turns the layer on or off in the map of the frame. Each frame of that map shows the change. The eye in the globe workspace does not change a map.
+- In the Layers tab, the eye of a layer turns the layer on or off in the map of the frame. Each frame of that map shows the change. The eye in the globe workspace does not change a map.
 - Click the page outside the frames to set the page size, to add a page, or to delete the page. The arrows in the tool bar go to the previous page and the next page.
 - Tick a layer in the left panel to show it in the map. Click "Edit" on a layer to select it. The inspector then shows its name and its style.
 - Click a feature in a frame to see its attributes. The inspector lists the labels that did not fit.
