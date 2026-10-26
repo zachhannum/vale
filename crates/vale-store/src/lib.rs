@@ -399,6 +399,8 @@ pub struct Raster {
     pub opacity: f32,
     /// How the globe colors the values. A copy of the style of the layer.
     pub display: RasterDisplay,
+    /// How the raster mixes with the layers below it. A copy of the style of the layer.
+    pub blend: BlendMode,
     /// The number of pixels along the edge of a face.
     pub face_size: u32,
     /// The unit of the values, for example `m`.
@@ -611,6 +613,68 @@ impl RasterDisplay {
     }
 }
 
+/// How a raster layer mixes its colors with the layers below it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlendMode {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+}
+
+impl BlendMode {
+    pub const ALL: [BlendMode; 12] = [
+        BlendMode::Normal,
+        BlendMode::Multiply,
+        BlendMode::Screen,
+        BlendMode::Overlay,
+        BlendMode::Darken,
+        BlendMode::Lighten,
+        BlendMode::ColorDodge,
+        BlendMode::ColorBurn,
+        BlendMode::HardLight,
+        BlendMode::SoftLight,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+    ];
+
+    /// The name of the mode in the project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            BlendMode::Normal => "normal",
+            BlendMode::Multiply => "multiply",
+            BlendMode::Screen => "screen",
+            BlendMode::Overlay => "overlay",
+            BlendMode::Darken => "darken",
+            BlendMode::Lighten => "lighten",
+            BlendMode::ColorDodge => "color-dodge",
+            BlendMode::ColorBurn => "color-burn",
+            BlendMode::HardLight => "hard-light",
+            BlendMode::SoftLight => "soft-light",
+            BlendMode::Difference => "difference",
+            BlendMode::Exclusion => "exclusion",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<BlendMode> {
+        BlendMode::ALL.into_iter().find(|m| m.id() == id)
+    }
+
+    /// The place of the mode in `ALL`, for the shader.
+    pub fn index(self) -> u32 {
+        BlendMode::ALL.iter().position(|m| *m == self).unwrap_or(0) as u32
+    }
+}
+
 /// The units in which the app shows a distance on the ground.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Units {
@@ -716,6 +780,7 @@ impl Project {
             hillshade: Hillshade::default(),
             rivers: true,
             lines: true,
+            blend: BlendMode::Normal,
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());
         let layer = Layer {
@@ -759,6 +824,11 @@ impl Project {
     pub fn set_raster_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
         let raster = self.raster_mut(id);
         raster.map(|r| r.opacity = clamp_opacity(opacity)).is_some()
+    }
+
+    /// Sets how a raster mixes with the layers below it.
+    pub fn set_raster_blend(&mut self, id: RasterId, blend: BlendMode) -> bool {
+        self.raster_mut(id).map(|r| r.blend = blend).is_some()
     }
 
     /// Sets how the globe colors the values of a raster.

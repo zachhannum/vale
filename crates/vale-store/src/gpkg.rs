@@ -27,9 +27,9 @@ use crate::atlas::{
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
-    Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Layer, LayerId, LayerKind,
-    LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine, Units, Uuid,
-    Value, World, clamp_feature_size, clamp_opacity,
+    BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Layer, LayerId,
+    LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine,
+    Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
@@ -866,6 +866,18 @@ fn v20(tx: &Transaction) -> rusqlite::Result<()> {
 
 /// The style of each layer holds the colors of its raster. The app moves the colors of the raster records into the styles when it opens an older file, so the step changes no table.
 fn v21(_tx: &Transaction) -> rusqlite::Result<()> {
+    Ok(())
+}
+
+/// The blend mode of a raster. The rasters of an older file blend as normal, and so do their undo images.
+fn v23(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_raster') WHERE name = 'blend'";
+    let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
+    if count == 0 {
+        tx.execute_batch(
+            "ALTER TABLE vale_raster ADD COLUMN blend TEXT NOT NULL DEFAULT 'normal'",
+        )?;
+    }
     Ok(())
 }
 
@@ -1828,9 +1840,9 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
             "INSERT INTO vale_raster (id, face_size, unit, value_min, value_max, base,
                opacity, display, stops, colors, smooth, feature_size, hillshade,
                hillshade_opacity, hillshade_highlights, hillshade_azimuth,
-               hillshade_altitude, hillshade_exaggeration, hillshade_color, rivers, lines)
+               hillshade_altitude, hillshade_exaggeration, hillshade_color, rivers, lines, blend)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-               ?16, ?17, ?18, ?19, ?20, ?21)
+               ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT (id) DO UPDATE SET
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
@@ -1846,7 +1858,8 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                hillshade_altitude = excluded.hillshade_altitude,
                hillshade_exaggeration = excluded.hillshade_exaggeration,
                hillshade_color = excluded.hillshade_color,
-               rivers = excluded.rivers, lines = excluded.lines",
+               rivers = excluded.rivers, lines = excluded.lines,
+               blend = excluded.blend",
             params![
                 r.id.0,
                 r.face_size,
@@ -1869,6 +1882,7 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 hex(shade.color),
                 r.rivers,
                 r.lines,
+                r.blend.id(),
             ],
         )?;
     }
@@ -1946,7 +1960,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
         "SELECT id, face_size, unit, value_min, value_max, base, opacity, display, stops,
            colors, smooth, feature_size, hillshade, hillshade_opacity,
            hillshade_highlights, hillshade_azimuth, hillshade_altitude,
-           hillshade_exaggeration, hillshade_color, rivers, lines
+           hillshade_exaggeration, hillshade_color, rivers, lines, blend
          FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
@@ -1987,6 +2001,7 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
             .clamped(),
             rivers: r.get::<_, i64>(19)? != 0,
             lines: r.get::<_, i64>(20)? != 0,
+            blend: BlendMode::from_id(&text(21)?).unwrap_or_default(),
         });
     }
     Ok(rasters)
@@ -3192,6 +3207,7 @@ mod tests {
             hillshade: Hillshade::default(),
             rivers: true,
             lines: true,
+            blend: BlendMode::Multiply,
         };
         (project, height, rain)
     }
@@ -3621,7 +3637,8 @@ mod tests {
                 "hillshade_exaggeration",
                 "hillshade_color",
                 "rivers",
-                "lines"
+                "lines",
+                "blend"
             ]
         );
 

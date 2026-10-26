@@ -5,7 +5,7 @@
 use std::fmt;
 
 use serde_json::{Map, Value as Json, json};
-use vale_store::{RasterDisplay, Rgb, Stop, StopLine};
+use vale_store::{BlendMode, RasterDisplay, Rgb, Stop, StopLine};
 
 use crate::expr::{Filter, FromValue, Property};
 use crate::{
@@ -293,6 +293,7 @@ fn raster_json(r: &RasterSymbolizer) -> Json {
         "type": "raster",
         "display": display_name(r.display),
         "opacity": f64::from(r.opacity),
+        "blend": r.blend.id(),
         "stops": stops,
         "colors": colors,
     })
@@ -331,6 +332,11 @@ fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
     } else {
         opacity.clamp(0.0, 1.0)
     };
+    let blend = m
+        .get("blend")
+        .and_then(Json::as_str)
+        .and_then(BlendMode::from_id)
+        .unwrap_or_default();
     let stops = m
         .get("stops")
         .and_then(Json::as_array)
@@ -364,6 +370,7 @@ fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
     Ok(RasterSymbolizer {
         display,
         opacity,
+        blend,
         stops,
         colors,
     })
