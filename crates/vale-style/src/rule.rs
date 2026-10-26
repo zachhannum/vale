@@ -1,6 +1,6 @@
 //! Rule-based styles.
 
-use vale_store::{RasterDisplay, Rgb, Stop};
+use vale_store::{BlendMode, RasterDisplay, Rgb, Stop};
 
 use crate::expr::{Context, Filter, Property};
 use crate::{Color, Stroke};
@@ -61,6 +61,8 @@ pub struct RasterSymbolizer {
     pub display: RasterDisplay,
     /// From 0 to 1.
     pub opacity: f32,
+    /// How the layer mixes with the layers below it.
+    pub blend: BlendMode,
     /// The stops at the edges of the bands, in ascending order of value, with the two end stops.
     pub stops: Vec<Stop>,
     /// The color of each band, from the lowest band up. There is one color fewer than stops.

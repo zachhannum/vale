@@ -175,7 +175,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 ## What the prototype leaves out
 
 - With GeoJSON files and no `--project`, undo and redo are for brush strokes only, and the session ends when the window closes.
-- Raster layers in a map frame, SVG and Shapefile import, and the command Replace from file.
+- Rasters and blend modes in the PNG and PDF export, regional source extents over a world source, SVG and Shapefile import, and the command Replace from file.
 - Vector layers in the flat view of the globe workspace and in the picture of the globe on the start screen.
 - An editor for the rules of a style. The inspector edits the fill, the stroke, and the circle symbol of a style with one rule.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.

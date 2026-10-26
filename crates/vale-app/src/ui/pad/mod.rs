@@ -157,6 +157,7 @@ pub enum Page {
     Ramps,
     Stops,
     Hillshade,
+    Blend,
     /// The field with this index.
     Field(usize),
     NewField,
@@ -803,7 +804,10 @@ fn show_panel(
     }
     let layer = state.pad.layer.filter(|_| panel == Panel::Layers);
     let fits = match (layer, state.pad.page) {
-        (Some(LayerRef::Raster(_)), Some(Page::Ramps | Page::Stops | Page::Hillshade)) => true,
+        (
+            Some(LayerRef::Raster(_)),
+            Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend),
+        ) => true,
         (Some(LayerRef::Vector(_)), Some(Page::NewField)) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         _ => false,
@@ -835,6 +839,9 @@ fn show_panel(
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Hillshade) => {
             ("pad-hillshade", raster::HILLSHADE, Some(name))
+        }
+        (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Blend) => {
+            ("pad-blend", raster::BLEND, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) => ("pad-layer", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
@@ -899,6 +906,7 @@ fn show_panel(
                 Some(Page::Hillshade) => {
                     raster::hillshade_body(ui, state, controls, id);
                 }
+                Some(Page::Blend) => raster::blend_body(ui, state, controls, id),
                 _ => raster_body(ui, state, controls, id),
             },
             (Panel::Layers, Some(LayerRef::Vector(id))) => match page {

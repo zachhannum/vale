@@ -147,7 +147,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Thumbnail | A small picture of the globe, for the list of projects |
 | Layer | Name, type (raster, points, lines, or polygons), visibility, attribute schema (fields with a name, a type, and a default value), link to a source, to a raster, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
-| Style | Ordered rules of one layer, stored as JSON. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, and the opacity. |
+| Style | Ordered rules of one layer, stored as JSON. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, the opacity, and the blend mode. |
 | Label class | Text expression, font, placement rules, priority |
 | Map | Name, projection preset and center, the layers that are off in the map, style overrides, label classes |
 | Page | Name, page size in millimeters, units of the page size, paper color, page border, page template, furniture |
@@ -267,7 +267,7 @@ A heightmap is a raster layer of values with meters as its unit. A world can hav
 
 The world does not mark one raster layer as its height. Each raster layer with the unit `m` is a height layer. Sea level, the rivers, and the brush modes that move ground work on a height layer only. A tool that needs a height takes a layer as its input. Nothing else in the app needs a height layer.
 
-A raster layer is a layer in the one draw order, with the vector layers. It has an opacity. The globe and the flat view draw each visible raster layer in that order, and a layer shows the layers below it through itself as its opacity says. Below the lowest layer is a ground of one plain color. A new raster layer goes above the top raster layer.
+A raster layer is a layer in the one draw order, with the vector layers. It has an opacity. The globe and the flat view draw each visible raster layer in that order, and a layer shows the layers below it through itself as its opacity says. Each raster layer has a blend mode, one of the 12 W3C modes, and the default is Normal. A layer with another mode draws in an offscreen group, which the view blends with the layers below. The flat view, the globe, and the map frames use the same modes. A map frame draws each raster layer that the map of the frame shows, in the projection of the frame and clipped to the shape of the frame. It smooths the layer by the minimum feature size at the scale of the frame, where 1 pt is 1/72 inch. Below the lowest layer is a ground of one plain color. A new raster layer goes above the top raster layer.
 
 A raster layer holds a value that changes smoothly from place to place. A layer of classes, such as a number for each biome, is not in version 1.
 
@@ -700,7 +700,7 @@ The brush panel has a Floor setting and a Ceiling setting. Each one has a switch
 The prototype leaves out the following.
 
 - Undo and redo with no project file. Then undo and redo are for brush strokes only.
-- Raster layers in a map frame, SVG and Shapefile import, the command Replace from file, and georeferencing with extents or control points.
+- Rasters and blend modes in the PNG and PDF export, regional source extents over a world source, SVG and Shapefile import, the command Replace from file, and georeferencing with extents or control points.
 - Vector layers in the flat view of the globe workspace, in the blurred copy of the globe behind a card, and in the picture of the globe for the start screen.
 - The rows "From file…" and "From tool" in the menu of the new layers.
 - An editor for the rules of a style, and all symbolizers other than a solid fill, a solid stroke, and a circle.

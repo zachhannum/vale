@@ -1201,6 +1201,48 @@ fn a_drag_moves_a_raster_row_past_a_vector_row_and_undo_puts_it_back() {
 }
 
 #[test]
+fn the_blend_page_sets_the_blend_mode_and_is_one_undo_step() {
+    use vale_store::BlendMode;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        let height = h.state().doc.project.rasters()[0].id;
+        let blend = |h: &Pad| h.state().doc.project.raster(height).unwrap().blend;
+        assert_eq!(blend(&h), BlendMode::Normal, "{what}");
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Height");
+        scroll_to(&mut h, raster::BLEND);
+        tap(&mut h, raster::BLEND);
+        check_controls(&h, &format!("{what} with the blend page"));
+        tap(&mut h, "Blend mode Multiply");
+        let card = panel(&h, Panel::Layers).unwrap();
+        for mode in BlendMode::ALL {
+            let name = format!(
+                "{} {}",
+                raster::BLEND,
+                vale_app::ui::elevation::blend_label(mode)
+            );
+            scroll_to(&mut h, &name);
+            let rect = control(&h, &name).unwrap_or_else(|| panic!("{what}: no {name}"));
+            assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
+        }
+        for _ in 0..3 {
+            step_and_save(&mut h, false);
+        }
+        assert_eq!(blend(&h), BlendMode::Multiply, "{what}");
+        let style = h.state().doc.project.raster_layer(height).unwrap();
+        let style = vale_style::LayerStyle::from_json(style.style.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            style.raster_symbolizer().unwrap().blend,
+            BlendMode::Multiply
+        );
+        tap(&mut h, "Undo");
+        assert_eq!(blend(&h), BlendMode::Normal, "{what}");
+    }
+}
+
+#[test]
 fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");

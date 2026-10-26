@@ -538,6 +538,73 @@ fn the_flat_view_blends_the_raster_layers_by_their_opacity() {
     assert_eq!(middle(&mut h), ground.r());
 }
 
+#[test]
+fn the_flat_view_mixes_a_layer_with_the_layers_below_by_its_blend_mode() {
+    use vale_store::BlendMode;
+    let _gpu = one_gpu_test();
+    let mut h = flat_harness();
+    let height = h.state().globe.raster().unwrap();
+    let rain = vale_app::ui::RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 128,
+    };
+    let rain = h.state_mut().add_raster(rain).unwrap();
+    show_as(h.state_mut(), RasterDisplay::Grey);
+    let (low, high) = (16000u16, 50000u16);
+    let state = h.state_mut();
+    state.globe.raster_map_mut(height).unwrap().fill(low);
+    state.globe.raster_map_mut(rain).unwrap().fill(high);
+    h.run_steps(3);
+    let unit = |level: u16| f32::from(level) / 65535.0;
+    let middle = |h: &mut App| {
+        let image = canvas_image(h);
+        let center = h.state().globe.rect.center();
+        f32::from(grey(h, &image, center)) / 255.0
+    };
+    let (b, s) = (unit(low), unit(high));
+    let near = |got: f32, want: f32, what: &str| {
+        assert!(
+            (got - want).abs() <= 3.0 / 255.0,
+            "{what}: {got} and {want}"
+        );
+    };
+    // A layer with the mode Normal hides the layer below it.
+    near(middle(&mut h), s, "normal");
+    // A blend with an opacity of 100 % shows the mode.
+    let state = h.state_mut();
+    state.set_raster_blend(rain, BlendMode::Multiply);
+    near(middle(&mut h), b * s, "multiply");
+    h.state_mut().set_raster_blend(rain, BlendMode::Screen);
+    near(middle(&mut h), b + s - b * s, "screen");
+    h.state_mut().set_raster_blend(rain, BlendMode::Difference);
+    near(middle(&mut h), (b - s).abs(), "difference");
+    h.state_mut().set_raster_blend(rain, BlendMode::HardLight);
+    near(
+        middle(&mut h),
+        b + (2.0 * s - 1.0) - b * (2.0 * s - 1.0),
+        "hard light",
+    );
+    h.state_mut().set_raster_blend(rain, BlendMode::Overlay);
+    let overlay = if b <= 0.5 {
+        2.0 * b * s
+    } else {
+        s + (2.0 * b - 1.0) - s * (2.0 * b - 1.0)
+    };
+    near(middle(&mut h), overlay, "overlay");
+    // The opacity mixes the result with the layer below.
+    h.state_mut().set_raster_blend(rain, BlendMode::Multiply);
+    h.state_mut().set_raster_opacity(rain, 0.5);
+    near(middle(&mut h), 0.5 * b + 0.5 * b * s, "multiply at half");
+    // Over the ground alone, a blend shows the ground as the backdrop.
+    h.state_mut().set_raster_opacity(rain, 1.0);
+    h.state_mut().set_raster_visible(height, false);
+    let ground = f32::from(vale_app::ui::pad::theme::GROUND.r()) / 255.0;
+    near(middle(&mut h), ground * s, "multiply over the ground");
+}
+
 /// Makes sure that the coast line of `ground` has its weight across the
 /// line and its middle on the band edge in the flat view, at each zoom: on
 /// the equator across a face edge, and on the circle of latitude through a

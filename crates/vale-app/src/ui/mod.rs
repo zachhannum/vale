@@ -9,8 +9,8 @@ use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
-    Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId,
-    Rgb, StoreError, World,
+    BlendMode, Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay,
+    RasterId, Rgb, StoreError, World,
 };
 use vale_terrain::{Bands, Heightmap, Mode};
 
@@ -536,6 +536,7 @@ impl AppState {
                     hillshade,
                     rivers: raster.rivers,
                     lines: raster.lines,
+                    blend: raster.blend,
                 })
             }
             None => Some(StackItem::Vector(layer.id)),
@@ -818,6 +819,14 @@ impl AppState {
     /// Sets how much a raster layer hides the layers below it, from 0 to 1.
     pub fn set_raster_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
         let set = self.doc.project.set_raster_opacity(id, opacity);
+        raster_style::store_raster_styles(&mut self.doc.project);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets how a raster layer mixes with the layers below it.
+    pub fn set_raster_blend(&mut self, id: RasterId, blend: BlendMode) -> bool {
+        let set = self.doc.project.set_raster_blend(id, blend);
         raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set

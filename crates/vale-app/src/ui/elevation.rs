@@ -79,6 +79,25 @@ pub fn band_color_at(
 }
 
 /// The names of the displays, in the order of `RasterDisplay::ALL`.
+/// The name of a blend mode in the panels.
+pub fn blend_label(mode: vale_store::BlendMode) -> &'static str {
+    use vale_store::BlendMode as B;
+    match mode {
+        B::Normal => "Normal",
+        B::Multiply => "Multiply",
+        B::Screen => "Screen",
+        B::Overlay => "Overlay",
+        B::Darken => "Darken",
+        B::Lighten => "Lighten",
+        B::ColorDodge => "Color dodge",
+        B::ColorBurn => "Color burn",
+        B::HardLight => "Hard light",
+        B::SoftLight => "Soft light",
+        B::Difference => "Difference",
+        B::Exclusion => "Exclusion",
+    }
+}
+
 pub const DISPLAYS: [&str; 3] = ["Bands", "Gradient", "Grey"];
 
 /// The name of a display.

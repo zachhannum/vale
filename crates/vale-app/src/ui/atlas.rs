@@ -9,8 +9,16 @@ use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{FrameId, FrameRecord, FrameShape, MapId, PageId, PageRecord, PageUnits};
 
+use std::sync::Arc;
+
+use vale_store::RasterId;
+
 use super::{AppState, LayerRef};
 use crate::atlas::{self as math, FrameTarget, Handle, PagePreset, Vertex};
+use crate::globe::backdrop::Canvas;
+use crate::globe::flat::FlatMesh;
+use crate::globe::gpu::Mask;
+use crate::globe::{FrameDraw, FramePlace};
 use crate::pipeline::Quality;
 use crate::view::ViewTransform;
 
@@ -221,6 +229,14 @@ pub struct AtlasState {
     /// The frame of `handles`.
     handles_of: Option<FrameId>,
     images: HashMap<FrameId, FrameImage>,
+    /// The water of the frames that draw raster layers.
+    unders: HashMap<FrameId, FrameImage>,
+    /// The shape of each frame as a mask for its raster layers: the key of
+    /// what it shows, and the mask.
+    masks: HashMap<FrameId, (u64, Arc<Mask>)>,
+    mask_count: u64,
+    /// The meshes of the projections of the maps, on a sphere of radius 1.
+    meshes: Vec<(ProjectionSpec, Arc<FlatMesh>)>,
     drag: Option<Drag>,
     /// The pointer at the last step of the drag.
     drag_last: Pos2,
@@ -258,6 +274,10 @@ impl Default for AtlasState {
             shown: None,
             handles_of: None,
             images: HashMap::new(),
+            unders: HashMap::new(),
+            masks: HashMap::new(),
+            mask_count: 0,
+            meshes: Vec::new(),
             drag: None,
             drag_last: Pos2::ZERO,
             pinch: None,
@@ -842,6 +862,89 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
     }
 }
 
+/// The raster layers that a map shows and that the globe draws, from the
+/// bottom.
+fn map_rasters(state: &AppState, map: MapId) -> Vec<RasterId> {
+    let layers = state.doc.project.layers().iter();
+    let on = layers.filter(|layer| state.doc.shown(map, layer.id));
+    on.filter_map(|layer| layer.raster())
+        .filter(|id| state.globe.draws(*id))
+        .collect()
+}
+
+/// A frame of the page to draw in this pass.
+struct Placed {
+    id: FrameId,
+    vt: ViewTransform,
+    shown: Rect,
+    /// The frame draws raster layers on the GPU.
+    layered: bool,
+}
+
+/// The pixels of the part of a frame on the canvas: the left, the top, the
+/// width, and the height. The pixels cover `shown`.
+fn pixel_rect(shown: Rect, ppp: f32) -> [u32; 4] {
+    let (x0, y0) = ((shown.min.x * ppp).floor(), (shown.min.y * ppp).floor());
+    let (x1, y1) = ((shown.max.x * ppp).ceil(), (shown.max.y * ppp).ceil());
+    let side = |a: f32, b: f32| (b - a).clamp(1.0, 8192.0) as u32;
+    [
+        x0.max(0.0) as u32,
+        y0.max(0.0) as u32,
+        side(x0, x1),
+        side(y0, y1),
+    ]
+}
+
+/// The mesh of the projection of a map, on a sphere of radius 1.
+fn mesh_of(state: &mut AppState, spec: ProjectionSpec) -> Option<Arc<FlatMesh>> {
+    if let Some((_, mesh)) = state.atlas.meshes.iter().find(|(of, _)| *of == spec) {
+        return Some(mesh.clone());
+    }
+    let projection = Projection::new(spec, 1.0).ok()?;
+    let mesh = Arc::new(FlatMesh::new(&projection));
+    if state.atlas.meshes.len() >= 8 {
+        state.atlas.meshes.remove(0);
+    }
+    state.atlas.meshes.push((spec, mesh.clone()));
+    Some(mesh)
+}
+
+/// The shape of a frame as pixels of coverage, for the target of the frame.
+fn shape_mask(
+    state: &mut AppState,
+    frame: &FrameRecord,
+    place: PagePlace,
+    rect: [u32; 4],
+    ppp: f32,
+) -> Option<Arc<Mask>> {
+    let [x, y, w, h] = rect;
+    let key = hash_of((&frame.shape, place.target(), rect, ppp.to_bits()));
+    if let Some((of, mask)) = state.atlas.masks.get(&frame.id)
+        && *of == key
+    {
+        return Some(mask.clone());
+    }
+    let top_left = vec2(x as f32, y as f32) / ppp;
+    let origin = place.rect.min - top_left;
+    let target = FrameTarget {
+        origin: Point::new(f64::from(origin.x), f64::from(origin.y)),
+        pts_per_mm: place.pts_per_mm,
+    };
+    let size = (f64::from(w) / f64::from(ppp), f64::from(h) / f64::from(ppp));
+    let list = crate::pipeline::Pipeline::frame_mask(frame, target, size);
+    let image = vale_render::render_rgba(&list, f64::from(ppp)).ok()?;
+    let alpha: Vec<u8> = image.data.chunks_exact(4).map(|px| px[3]).collect();
+    let size = [image.width as u32, image.height as u32];
+    state.atlas.mask_count += 1;
+    let mask = Arc::new(Mask {
+        id: state.atlas.mask_count,
+        size,
+        alpha,
+    });
+    state.atlas.masks.insert(frame.id, (key, mask.clone()));
+    Some(mask)
+}
+
 /// Composes the frames that changed and paints each frame of the page.
 fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let page = open_page(state).clone();
@@ -851,10 +954,20 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let primary = state.atlas.frame().or(page.frames.first().map(|f| f.id));
     let target = place.target();
     let painter = ui.painter_at(area);
+    // The copies of the raster layers arrive on the GPU while the globe
+    // advances.
+    if state.globe.advance(std::time::Instant::now()) {
+        ctx.request_repaint();
+    }
+    let radius = state.doc.project.world.radius_km * 1000.0;
+    let mut placed: Vec<Placed> = Vec::new();
+    let mut draws: Vec<FrameDraw> = Vec::new();
     for frame in &page.frames {
         let Some(map) = state.doc.project.atlas.map(frame.map) else {
             continue;
         };
+        let rasters = map_rasters(state, frame.map);
+        let layered = !rasters.is_empty();
         let content = hash_of((
             map,
             state.map_generation,
@@ -862,6 +975,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             frame.graticule,
             ppp.to_bits(),
             state.selection,
+            layered,
         ));
         // Only the part of the frame on the canvas has a texture.
         let shown = place
@@ -897,10 +1011,78 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             let keys = (content, place_key);
             let primary = primary == Some(frame.id);
             let at = (place, shown);
-            compose(&ctx, state, frame, at, vt, keys, quality, primary);
+            compose(
+                &ctx,
+                state,
+                frame,
+                at,
+                vt,
+                keys,
+                quality,
+                (primary, layered),
+            );
         }
-        if let Some(image) = state.atlas.images.get(&frame.id) {
-            paint_image(&painter, image, &vt, shown);
+        if layered {
+            let spec = state.doc.projection(frame.map);
+            let rect = pixel_rect(shown, ppp);
+            let mesh = mesh_of(state, spec);
+            let mask = shape_mask(state, frame, place, rect, ppp);
+            if let Some(mesh) = mesh {
+                let [x, y, ..] = rect;
+                let center = vt.origin;
+                let units = vt.view.scale * radius;
+                let scale = frame.scale;
+                draws.push(FrameDraw {
+                    id: frame.id.0,
+                    place: FramePlace {
+                        center: [
+                            center.x as f32 * ppp - x as f32,
+                            center.y as f32 * ppp - y as f32,
+                        ],
+                        map_center: [
+                            (vt.view.center.x / radius) as f32,
+                            (vt.view.center.y / radius) as f32,
+                        ],
+                        units_to_pixels: (units * f64::from(ppp)) as f32,
+                        rotation: vt.view.rotation,
+                        points_per_radian: radius * crate::atlas::PT_PER_MM * 1000.0 / scale,
+                    },
+                    rect,
+                    mesh,
+                    mask,
+                    shown: rasters,
+                });
+            }
+        }
+        placed.push(Placed {
+            id: frame.id,
+            vt,
+            shown,
+            layered,
+        });
+    }
+    let canvas = Canvas {
+        background: PAPER,
+        pixels_per_point: ppp,
+    };
+    let mut callbacks: HashMap<u32, _> = if draws.is_empty() {
+        HashMap::new()
+    } else {
+        let painted = state.globe.paint_frames(canvas, draws);
+        painted.unwrap_or_default().into_iter().collect()
+    };
+    for p in placed {
+        let by = p.layered.then(|| state.atlas.unders.get(&p.id)).flatten();
+        if let Some(image) = by {
+            paint_image(&painter, image, &p.vt, p.shown);
+        }
+        if let Some(callback) = callbacks.remove(&p.id.0) {
+            painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
+                area, callback,
+            ));
+        }
+        if let Some(image) = state.atlas.images.get(&p.id) {
+            paint_image(&painter, image, &p.vt, p.shown);
         }
     }
 }
@@ -914,7 +1096,7 @@ fn compose(
     vt: ViewTransform,
     (content, place_key): (u64, u64),
     quality: Quality,
-    primary: bool,
+    (primary, layered): (bool, bool),
 ) {
     let ppp = ctx.pixels_per_point();
     let px = |points: f32| ((points * ppp).ceil() as usize).clamp(1, 8192);
@@ -933,15 +1115,29 @@ fn compose(
         f64::from(shown.height()),
     );
     let selection = state.selection;
-    let composed = state.pipeline.compose_frame_part(
-        &state.doc,
-        frame,
-        target,
-        part,
-        &mut state.fonts,
-        quality,
-        selection,
-    );
+    // A frame with raster layers has the water below them and the rest
+    // above them. The GPU draws them between the two.
+    let composed = if layered {
+        state.pipeline.compose_frame_over(
+            &state.doc,
+            frame,
+            target,
+            part,
+            &mut state.fonts,
+            quality,
+            selection,
+        )
+    } else {
+        state.pipeline.compose_frame_part(
+            &state.doc,
+            frame,
+            target,
+            part,
+            &mut state.fonts,
+            quality,
+            selection,
+        )
+    };
     state.atlas.composes += 1;
     let mut composed = match composed {
         Ok(c) => c,
@@ -950,37 +1146,82 @@ fn compose(
             return;
         }
     };
-    composed.list.width = w as f64 / f64::from(ppp);
-    composed.list.height = h as f64 / f64::from(ppp);
-    let img = match vale_render::render_rgba(&composed.list, f64::from(ppp)) {
-        Ok(img) => img,
-        Err(e) => {
-            state.status = format!("{e}");
-            return;
+    let (width, height) = (w as f64 / f64::from(ppp), h as f64 / f64::from(ppp));
+    composed.list.width = width;
+    composed.list.height = height;
+    let settled = quality == Quality::Final;
+    let keys = (content, place_key);
+    if layered {
+        let under = state
+            .pipeline
+            .compose_frame_under(&state.doc, frame, target, part);
+        match under {
+            Ok(mut list) => {
+                list.width = width;
+                list.height = height;
+                let images = &mut state.atlas.unders;
+                match upload(ctx, images, frame.id, &list, (shown, vt), keys, settled) {
+                    Ok(()) => {}
+                    Err(e) => state.status = e,
+                }
+            }
+            Err(e) => state.status = format!("{e:#}"),
         }
-    };
+    } else {
+        state.atlas.unders.remove(&frame.id);
+    }
+    let images = &mut state.atlas.images;
+    if let Err(e) = upload(
+        ctx,
+        images,
+        frame.id,
+        &composed.list,
+        (shown, vt),
+        keys,
+        settled,
+    ) {
+        state.status = e;
+        return;
+    }
+    if primary {
+        state.composed = Some(composed);
+    }
+}
+
+/// Renders a list to the texture of a frame in `images`.
+fn upload(
+    ctx: &egui::Context,
+    images: &mut HashMap<FrameId, FrameImage>,
+    id: FrameId,
+    list: &vale_render::DisplayList,
+    (shown, vt): (Rect, ViewTransform),
+    (content, place): (u64, u64),
+    settled: bool,
+) -> Result<(), String> {
+    let ppp = ctx.pixels_per_point();
+    let img = vale_render::render_rgba(list, f64::from(ppp)).map_err(|e| format!("{e}"))?;
     let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
     let options = egui::TextureOptions::LINEAR;
-    let texture = match state.atlas.images.remove(&frame.id) {
+    let texture = match images.remove(&id) {
         Some(mut old) => {
             old.texture.set(image, options);
             old.texture
         }
-        None => ctx.load_texture(format!("frame-{}", frame.id.0), image, options),
+        None => ctx.load_texture(format!("frame-{}", id.0), image, options),
     };
     let size = vec2(img.width as f32, img.height as f32) / ppp;
-    let image = FrameImage {
-        texture,
-        content,
-        place: place_key,
-        vt,
-        rect: Rect::from_min_size(shown.min, size),
-        settled: quality == Quality::Final,
-    };
-    state.atlas.images.insert(frame.id, image);
-    if primary {
-        state.composed = Some(composed);
-    }
+    images.insert(
+        id,
+        FrameImage {
+            texture,
+            content,
+            place,
+            vt,
+            rect: Rect::from_min_size(shown.min, size),
+            settled,
+        },
+    );
+    Ok(())
 }
 
 /// Paints the texture of a frame. While a gesture moves the map, the

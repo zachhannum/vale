@@ -468,6 +468,7 @@ fn draw_map<'a>(
     vt: &ViewTransform,
     area: Rect,
     background: bool,
+    water: bool,
     ids: &[LayerId],
     graticule_step: Option<f64>,
     selection: Option<Selection>,
@@ -484,11 +485,13 @@ fn draw_map<'a>(
     }
     let outline: Vec<Point> = map_pts(vt, &cache.outline);
     let outline_path = polylines_path([&outline], true);
-    list.push(Item::Fill {
-        path: outline_path.clone(),
-        color: style.water,
-        rule: FillRule::NonZero,
-    });
+    if water {
+        list.push(Item::Fill {
+            path: outline_path.clone(),
+            color: style.water,
+            rule: FillRule::NonZero,
+        });
+    }
 
     // 3: layers.
     let km_per_point = km_per_point(cache, vt);
@@ -766,7 +769,7 @@ impl Pipeline {
 
         let mut list = DisplayList::new(size.0, size.1);
         let drawn = draw_map(
-            &mut list, doc, cache, &vt, page, true, &ids, step, selection,
+            &mut list, doc, cache, &vt, page, true, true, &ids, step, selection,
         );
 
         // 7 to 9: scale bar, labels.
@@ -824,6 +827,81 @@ impl Pipeline {
         quality: Quality,
         selection: Option<Selection>,
     ) -> anyhow::Result<Composed> {
+        self.compose_frame_inner(doc, frame, target, part, fonts, quality, selection, true)
+    }
+
+    /// The water of a map frame, inside its shape. The raster layers of the
+    /// frame go over it, and `compose_frame_over` goes over them.
+    pub fn compose_frame_under(
+        &mut self,
+        doc: &Document,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        part: Rect,
+    ) -> anyhow::Result<DisplayList> {
+        let ids = drawn_layers(doc, Some(frame.map));
+        let cache = self.ensure(doc, frame.map, &ids)?;
+        let vt = atlas::frame_transform(&cache.projection, frame, target);
+        let outline = polylines_path([&map_pts(&vt, &cache.outline)], true);
+        let mut list = DisplayList::new(part.x1, part.y1);
+        list.push(Item::PushClip {
+            path: shape_path(&frame.shape.rings(), target),
+            rule: FillRule::EvenOdd,
+        });
+        list.push(Item::Fill {
+            path: outline,
+            color: doc.frame.style.water,
+            rule: FillRule::NonZero,
+        });
+        list.push(Item::PopClip);
+        Ok(list)
+    }
+
+    /// A list that fills the shape of a map frame. A mask for the raster
+    /// layers of the frame comes from it. The list is `size` points big.
+    pub fn frame_mask(frame: &FrameRecord, target: FrameTarget, size: (f64, f64)) -> DisplayList {
+        let mut list = DisplayList::new(size.0, size.1);
+        list.push(Item::PushClip {
+            path: shape_path(&frame.shape.rings(), target),
+            rule: FillRule::EvenOdd,
+        });
+        list.push(Item::Fill {
+            path: Rect::new(0.0, 0.0, size.0, size.1).to_path(0.1),
+            color: PAPER,
+            rule: FillRule::NonZero,
+        });
+        list.push(Item::PopClip);
+        list
+    }
+
+    /// The part of a map frame over its raster layers: the same as
+    /// `compose_frame_part` with no water.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compose_frame_over(
+        &mut self,
+        doc: &Document,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        part: Rect,
+        fonts: &mut Fonts,
+        quality: Quality,
+        selection: Option<Selection>,
+    ) -> anyhow::Result<Composed> {
+        self.compose_frame_inner(doc, frame, target, part, fonts, quality, selection, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose_frame_inner(
+        &mut self,
+        doc: &Document,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        part: Rect,
+        fonts: &mut Fonts,
+        quality: Quality,
+        selection: Option<Selection>,
+        water: bool,
+    ) -> anyhow::Result<Composed> {
         let radius_m = doc.project.world.radius_km * 1000.0;
         let ids = drawn_layers(doc, Some(frame.map));
         let cache = self.ensure(doc, frame.map, &ids)?;
@@ -839,7 +917,7 @@ impl Pipeline {
             rule: FillRule::EvenOdd,
         });
         let drawn = draw_map(
-            &mut list, doc, cache, &vt, area, false, &ids, step, selection,
+            &mut list, doc, cache, &vt, area, false, water, &ids, step, selection,
         );
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {

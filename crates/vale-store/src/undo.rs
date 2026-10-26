@@ -22,8 +22,8 @@ use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
 };
 use crate::{
-    Feature, Field, FieldType, GeometryKind, Hillshade, Layer, LayerId, LayerKind, Project, Raster,
-    RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid, Value, World,
+    BlendMode, Feature, Field, FieldType, GeometryKind, Hillshade, Layer, LayerId, LayerKind,
+    Project, Raster, RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid, Value, World,
     clamp_feature_size, clamp_opacity, infer_fields,
 };
 
@@ -622,6 +622,7 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     out.extend_from_slice(&raster.hillshade.color);
     out.push(raster.rivers as u8);
     out.push(raster.lines as u8);
+    put_bytes(out, raster.blend.id().as_bytes());
 }
 
 /// A raster image of format version 13 with the stops `old`.
@@ -712,7 +713,8 @@ fn hillshade(r: &mut Reader) -> Option<Hillshade> {
 /// An unknown display gives bands. An image of format version 14 ends after
 /// the smoothing, and gets the default hillshade. An image of a version
 /// before 17 has no switch of the rivers, and shows them. An image of a
-/// version before 18 has no switch of the lines, and shows them.
+/// version before 18 has no switch of the lines, and shows them. An image of
+/// a version before 23 has no blend mode, and blends as normal.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -747,10 +749,15 @@ fn raster(r: &mut Reader) -> Option<Raster> {
         let [on]: [u8; 1] = r.take()?;
         lines = on != 0;
     }
+    let blend = match r.0.is_empty() {
+        true => BlendMode::Normal,
+        false => BlendMode::from_id(&string(r)?).unwrap_or_default(),
+    };
     r.0.is_empty().then_some(Raster {
         id,
         opacity,
         display,
+        blend,
         face_size,
         unit,
         value_min,
@@ -812,6 +819,7 @@ fn raster_v13(r: &mut Reader) -> Option<Raster> {
         hillshade: Hillshade::default(),
         rivers: true,
         lines: true,
+        blend: BlendMode::Normal,
     })
 }
 
@@ -1201,9 +1209,19 @@ mod tests {
             exaggeration: 3.0,
             color: [30, 60, 90],
         };
+        rain.blend = BlendMode::SoftLight;
         let mut out = Vec::new();
         put_raster(&mut out, &rain);
         assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
+        // An image of version 22 ends after the switch of the lines, and it
+        // blends as normal.
+        out.truncate(out.len() - (4 + rain.blend.id().len()));
+        let normal = Raster {
+            blend: BlendMode::Normal,
+            ..rain.clone()
+        };
+        assert_eq!(raster(&mut Reader(&out)), Some(normal.clone()));
+        let rain = normal;
         // An image of version 17 ends after the switch of the rivers, and it
         // shows the lines.
         out.pop();
@@ -1243,7 +1261,7 @@ mod tests {
         };
         let mut full = Vec::new();
         put_raster(&mut full, &rain);
-        full.truncate(full.len() - 2);
+        full.truncate(full.len() - 2 - (4 + rain.blend.id().len()));
         let light = HILLSHADE_LEN - 4 - 2;
         // The image ends after the highlights.
         let out = &full[..full.len() - light];

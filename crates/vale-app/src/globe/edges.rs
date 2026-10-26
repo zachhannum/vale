@@ -10,7 +10,13 @@ use std::collections::HashMap;
 
 use eframe::egui_wgpu::wgpu;
 
-use super::gpu::LayerKey;
+use super::gpu::{CANVAS, LayerKey, TargetId};
+
+/// A layer in one render target.
+pub type EdgeKey = (TargetId, LayerKey);
+
+/// The most sizes of render target that the passes keep scratch textures for.
+const SCRATCH_SIZES: usize = 6;
 use super::preview::LineUniform;
 
 /// The largest half weight of a line in pixels. A larger weight is cut to it,
@@ -136,7 +142,6 @@ const PLACES: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
 /// The textures that the layers share, at the size of the render target.
 struct Scratch {
-    size: [u32; 2],
     seeds: wgpu::TextureView,
     blocks: wgpu::TextureView,
     /// The group that reads `seeds`.
@@ -205,8 +210,8 @@ pub struct Edges {
     no_places: wgpu::TextureView,
     /// The group of a layer pass with no lines.
     none: wgpu::BindGroup,
-    scratch: Option<Scratch>,
-    targets: HashMap<LayerKey, Target>,
+    scratch: HashMap<[u32; 2], Scratch>,
+    targets: HashMap<EdgeKey, Target>,
     /// The count of the runs of the passes.
     runs: u64,
 }
@@ -374,7 +379,7 @@ impl Edges {
             no_heights,
             no_places,
             none,
-            scratch: None,
+            scratch: HashMap::new(),
             targets: HashMap::new(),
             runs: 0,
         }
@@ -386,7 +391,7 @@ impl Edges {
     }
 
     /// The last group of the layer pass of a layer.
-    pub fn group(&self, layer: LayerKey) -> &wgpu::BindGroup {
+    pub fn group(&self, layer: EdgeKey) -> &wgpu::BindGroup {
         self.targets.get(&layer).map_or(&self.none, |t| &t.group)
     }
 
@@ -397,7 +402,7 @@ impl Edges {
 
     /// Keeps the textures of the layers that `live` keeps.
     pub fn retain(&mut self, live: impl Fn(&LayerKey) -> bool) {
-        self.targets.retain(|layer, _| live(layer));
+        self.targets.retain(|(_, layer), _| live(layer));
     }
 
     /// Encodes the passes of the lines of one layer for a render target of
@@ -408,7 +413,7 @@ impl Edges {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        layer: LayerKey,
+        layer: EdgeKey,
         extent: Extent,
         groups: Groups<'_>,
         mesh: Option<Mesh<'_>>,
@@ -420,8 +425,10 @@ impl Edges {
             inputs,
         } = extent;
         let size = size.map(|s| s.max(1));
-        if self.scratch.as_ref().is_none_or(|s| s.size != size) {
-            self.scratch = None;
+        if !self.scratch.contains_key(&size) {
+            if self.scratch.len() >= SCRATCH_SIZES {
+                self.scratch.clear();
+            }
             let seeds = view(device, "edge seeds", size, PLACES);
             let blocks = view(
                 device,
@@ -431,13 +438,13 @@ impl Edges {
             );
             let (h, p) = (&self.no_heights, &self.no_places);
             let read = |seeds, blocks| [(0, h), (1, seeds), (2, h), (4, blocks)];
-            self.scratch = Some(Scratch {
-                size,
+            let scratch = Scratch {
                 read_seeds: group(device, &self.layout, &read(&seeds, p)),
                 read_blocks: group(device, &self.layout, &read(&seeds, &blocks)),
                 seeds,
                 blocks,
-            });
+            };
+            self.scratch.insert(size, scratch);
         }
         if self.targets.get(&layer).is_none_or(|t| t.size != size) {
             self.targets.remove(&layer);
@@ -470,7 +477,7 @@ impl Edges {
         }
         target.inputs = Some(inputs);
         self.runs += 1;
-        let scratch = self.scratch.as_ref().expect("made above");
+        let scratch = &self.scratch[&size];
         let target = &self.targets[&layer];
         let attachment = |view, clear: f64| {
             Some(wgpu::RenderPassColorAttachment {
@@ -573,7 +580,8 @@ impl Edges {
         let read = |target| read_places(device, queue, target);
         let found = self.targets.iter();
         found
-            .filter_map(|(layer, target)| Some((*layer, target.size, read(target)?)))
+            .filter(|((target, _), _)| *target == CANVAS)
+            .filter_map(|((_, layer), target)| Some((*layer, target.size, read(target)?)))
             .collect()
     }
 }

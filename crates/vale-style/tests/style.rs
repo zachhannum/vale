@@ -247,6 +247,7 @@ fn colors() -> vale_style::RasterSymbolizer {
     vale_style::RasterSymbolizer {
         display: RasterDisplay::Grey,
         opacity: 0.375,
+        blend: vale_store::BlendMode::Overlay,
         stops: vec![
             Stop {
                 value: -100.0,
@@ -304,4 +305,25 @@ fn wrong_raster_stops_do_not_load() {
             Err(StyleError::Invalid(_))
         ));
     }
+}
+
+#[test]
+fn a_raster_style_without_a_blend_mode_blends_as_normal() {
+    let json = LayerStyle::raster(colors()).to_json();
+    assert!(json.contains("\"blend\":\"overlay\""));
+    let old = json
+        .replace(",\"blend\":\"overlay\"", "")
+        .replace("\"blend\":\"overlay\",", "");
+    assert!(!old.contains("blend"));
+    let back = LayerStyle::from_json(&old).unwrap();
+    assert_eq!(
+        back.raster_symbolizer().unwrap().blend,
+        vale_store::BlendMode::Normal
+    );
+    let unknown = json.replace("overlay", "glow");
+    let back = LayerStyle::from_json(&unknown).unwrap();
+    assert_eq!(
+        back.raster_symbolizer().unwrap().blend,
+        vale_store::BlendMode::Normal
+    );
 }

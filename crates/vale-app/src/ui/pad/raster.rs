@@ -2,7 +2,7 @@
 //! color stops.
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
-use vale_store::{Hillshade, RasterDisplay, RasterId, Smoothing};
+use vale_store::{BlendMode, Hillshade, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, MAX_BANDS, Part, StopLine};
 
 use super::geometry::{PAD, Rects};
@@ -64,6 +64,10 @@ pub const UNIT: &str = "Unit";
 /// The switch of the smoothing and the slider of the minimum feature size.
 pub const SMOOTHING: &str = "Smoothing";
 pub const FEATURE_SIZE: &str = "Feature size";
+/// The row of the panel of a raster layer that opens the page of the blend
+/// mode, and the title of the page.
+pub const BLEND: &str = "Blend mode";
+
 /// The row of the Style section that opens the page of the hillshade, and
 /// the title of the page.
 pub const HILLSHADE: &str = "Hillshade";
@@ -182,7 +186,7 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     let Some(raster) = state.doc.project.raster(id) else {
         return;
     };
-    let (display, unit) = (raster.display, raster.unit.clone());
+    let (display, unit, blend) = (raster.display, raster.unit.clone(), raster.blend);
     let height = crate::ui::is_height(raster);
 
     heading(ui, "Style");
@@ -192,6 +196,10 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         state.set_raster_display(id, RasterDisplay::ALL[index]);
     }
     let display = state.doc.project.raster(id).map_or(display, |r| r.display);
+    let blend = state.doc.project.raster(id).map_or(blend, |r| r.blend);
+    if widgets::open_row(ui, controls, BLEND, elevation::blend_label(blend)).clicked() {
+        state.pad.page = Some(Page::Blend);
+    }
     smoothing(ui, state, controls, id);
 
     let Some(bands) = state.globe.bands_mut(id) else {
@@ -361,6 +369,21 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     ) {
         let size = (fraction as f32 * max / WEIGHT_STEP).round() * WEIGHT_STEP;
         state.set_raster_feature_size(id, size);
+    }
+}
+
+/// The page of the blend mode: a row for each mode, with a mark on the mode
+/// of the layer.
+pub fn blend_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+    let Some(current) = state.doc.project.raster(id).map(|r| r.blend) else {
+        return;
+    };
+    for mode in BlendMode::ALL {
+        let label = elevation::blend_label(mode);
+        let name = format!("{BLEND} {label}");
+        if widgets::option_row(ui, controls, &name, label, &[], mode == current).clicked() {
+            state.set_raster_blend(id, mode);
+        }
     }
 }
 

@@ -47,7 +47,7 @@ pub struct FlatMesh {
 }
 
 impl FlatMesh {
-    fn new(projection: &Projection) -> FlatMesh {
+    pub fn new(projection: &Projection) -> FlatMesh {
         let mesh = projection.mesh(MESH_STEP);
         let vertices = mesh.vertices.iter().map(|vertex| {
             let (point, place) = (*vertex).unwrap_or_default();
