@@ -33,7 +33,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 23;
+pub const FORMAT_VERSION: u32 = 24;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -61,6 +61,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v21,
     v22,
     v23,
+    v24,
 ];
 
 /// `GPKG` in ASCII.
@@ -870,7 +871,7 @@ fn v21(_tx: &Transaction) -> rusqlite::Result<()> {
 }
 
 /// The blend mode of a raster. The rasters of an older file blend as normal, and so do their undo images.
-fn v23(tx: &Transaction) -> rusqlite::Result<()> {
+fn v24(tx: &Transaction) -> rusqlite::Result<()> {
     let sql = "SELECT count(*) FROM pragma_table_info('vale_raster') WHERE name = 'blend'";
     let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
     if count == 0 {
