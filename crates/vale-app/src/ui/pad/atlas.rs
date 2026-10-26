@@ -3,11 +3,12 @@
 //! selection.
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
-use vale_sphere::ProjectionKind;
-use vale_store::{FrameShape, PageUnits};
+use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
+use vale_store::{FrameShape, Graticule, PageUnits};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
+use super::raster::SWATCH;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW};
 use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
 use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
@@ -38,6 +39,10 @@ pub const SCALE: &str = "Scale";
 pub const LONGITUDE: &str = "Longitude";
 pub const LATITUDE: &str = "Latitude";
 pub const ROTATION: &str = "Rotation";
+pub const AUTO_INTERVAL: &str = "Auto interval";
+pub const INTERVAL: &str = "Interval";
+pub const GRATICULE_COLOR: &str = "Graticule color";
+pub const GRATICULE_WIDTH: &str = "Graticule width";
 pub const CENTER_ON_FRAME: &str = "Center on frame";
 pub const PROJECTION: &str = "Map projection";
 pub const CENTER_LONGITUDE: &str = "Center longitude";
@@ -196,6 +201,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.atlas.selection != AtlasSelection::None {
         selection_panel(&ctx, state, &mut controls, &rects);
     }
+    graticule_color_frame(&ctx, state);
     readout(&ctx, ui, state, &rects);
     state.atlas.add_rect = None;
     if state.atlas.add {
@@ -743,11 +749,91 @@ fn frame_tab(
     if widgets::switch_row(ui, controls, GRATICULE, GRATICULE, &mut graticule) {
         atlas::set_graticule(state, id, graticule);
     }
+    if frame.graticule.on {
+        graticule_rows(ui, state, controls, &frame);
+    }
 
     ui.add_space(6.0);
     let delete = widgets::button_row_in(ui, controls, DELETE_FRAME, true, theme::WARN);
     if delete.clicked() {
         atlas::delete_frame(state);
+    }
+}
+
+/// The rows of the graticule of a frame: the interval, the color, and the
+/// width. The interval slider shows the interval that the frame draws, and
+/// a drag on it sets the interval by hand. A tap on the color opens a color
+/// picker below it.
+fn graticule_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    frame: &vale_store::FrameRecord,
+) {
+    let id = frame.id;
+    let g = &frame.graticule;
+    let Some((drawn, auto)) = atlas::graticule_intervals(state, id) else {
+        return;
+    };
+    let mut automatic = g.interval.is_none();
+    if widgets::switch_row(ui, controls, AUTO_INTERVAL, AUTO_INTERVAL, &mut automatic) {
+        atlas::set_graticule_interval(state, id, (!automatic).then_some(auto));
+    }
+    let last = INTERVALS.len() - 1;
+    let index = INTERVALS
+        .iter()
+        .position(|i| *i >= drawn * (1.0 - 1e-9))
+        .unwrap_or(last);
+    let mut fraction = index as f64 / last as f64;
+    let text = interval_text(INTERVALS[index]);
+    if widgets::row_slider(ui, controls, INTERVAL, INTERVAL, &mut fraction, &text) {
+        let chosen = INTERVALS[(fraction * last as f64).round() as usize];
+        if g.interval != Some(chosen) {
+            atlas::set_graticule_interval(state, id, Some(chosen));
+        }
+    }
+
+    let open = state.atlas.graticule_color;
+    let row = widgets::text_row(ui, controls, GRATICULE_COLOR, 0.0, open, true);
+    let [r, gr, b] = g.color;
+    let swatch = Rect::from_center_size(
+        pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
+        vec2(SWATCH, SWATCH),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(swatch, 6.0, egui::Color32::from_rgb(r, gr, b));
+    let stroke = egui::Stroke::new(1.0, theme::divider());
+    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    if row.clicked() {
+        state.atlas.graticule_color = !open;
+        if open {
+            widgets::close_keypad(ui.ctx());
+        }
+    }
+    if state.atlas.graticule_color {
+        ui.add_space(4.0);
+        let mut color = g.color;
+        if widgets::color_picker(ui, controls, GRATICULE_COLOR, &mut color) {
+            atlas::set_graticule_color(state, id, color);
+        }
+        state.atlas.graticule_shown = true;
+    }
+
+    let (lo, hi) = (*Graticule::WIDTHS.start(), *Graticule::WIDTHS.end());
+    let mut fraction = (g.width - lo) / (hi - lo);
+    let text = format!("{} pt", (g.width * 10.0).round() / 10.0);
+    let name = GRATICULE_WIDTH;
+    if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
+        atlas::set_graticule_width(state, id, lo + fraction * (hi - lo));
+    }
+}
+
+/// Closes the color picker of the graticule when it did not show in this
+/// frame, with the keypad of its field.
+fn graticule_color_frame(ctx: &egui::Context, state: &mut AppState) {
+    let shown = std::mem::take(&mut state.atlas.graticule_shown);
+    if !shown && std::mem::take(&mut state.atlas.graticule_color) {
+        widgets::close_keypad(ctx);
     }
 }
 

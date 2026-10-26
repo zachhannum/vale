@@ -79,8 +79,8 @@ pub const HILLSHADE_AZIMUTH: &str = "Light direction";
 pub const HILLSHADE_ALTITUDE: &str = "Light height";
 pub const HILLSHADE_RELIEF: &str = "Relief";
 pub const HILLSHADE_COLOR: &str = "Shade color";
-/// The size of the swatch of the shade color.
-const SWATCH: f32 = 24.0;
+/// The size of the swatch of a color row.
+pub(super) const SWATCH: f32 = 24.0;
 pub const RIVERS: &str = "Rivers";
 /// The switch of the lines of the stops of a raster layer.
 pub const BAND_LINES: &str = "Band lines";

@@ -208,6 +208,8 @@ pub struct AtlasState {
     pub kinds: bool,
     /// The color picker of the graticule is open.
     pub graticule_color: bool,
+    /// The color picker of the graticule showed in this frame.
+    pub(crate) graticule_shown: bool,
     /// The text of the name field of the custom projections.
     pub preset_name: String,
     /// The Add menu is open.
@@ -267,6 +269,7 @@ impl Default for AtlasState {
             sizes: false,
             kinds: false,
             graticule_color: false,
+            graticule_shown: false,
             preset_name: String::new(),
             add: false,
             add_rect: None,
@@ -1413,6 +1416,16 @@ pub fn set_graticule_color(state: &mut AppState, id: FrameId, color: Rgb) {
         f.graticule.color = color;
         true
     });
+}
+
+/// The graticule interval that a frame draws, and the interval from its
+/// scale, in degrees. With the graticule off, the first is the second.
+pub fn graticule_intervals(state: &mut AppState, id: FrameId) -> Option<(f64, f64)> {
+    let frame = state.doc.project.atlas.frame(id)?.clone();
+    let projection = state.pipeline.projection(&state.doc, frame.map).ok()?;
+    let auto = math::auto_graticule_interval(projection, &frame);
+    let drawn = math::graticule_interval(projection, &frame).unwrap_or(auto);
+    Some((drawn, auto))
 }
 
 /// Sets the graticule line width of a frame, in points, rounded to 0.1.

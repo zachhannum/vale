@@ -12,11 +12,12 @@ use vale_app::document::Document;
 use vale_app::projects::Locations;
 use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
+use vale_app::ui::pad::GRATICULE;
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION,
-    FIRST_PARALLEL, FRAME_TABS, HEIGHT, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON,
-    PREVIOUS_PAGE, PROJECTION, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, WIDTH, custom_row,
-    page_title, readout_text,
+    ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
+    DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
+    INTERVAL, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON, PREVIOUS_PAGE, PROJECTION,
+    REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, WIDTH, custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
@@ -1425,4 +1426,167 @@ fn the_switches_of_each_map_survive_a_close_and_an_open() {
     assert_eq!(doc.project.atlas, project.atlas);
     let places = layer_id(&h, "Places");
     assert!(!doc.shown(inset, places) && doc.shown(main, places));
+}
+
+/// The strokes of a frame of the open page with a color and a width.
+fn strokes(h: &mut Pad, index: usize, rgb: [u8; 3], line: f64) -> usize {
+    use vale_app::atlas::{FrameTarget, PT_PER_MM};
+    use vale_app::pipeline::{Quality, fonts};
+    let page = open_page(h);
+    let f = page.frames[index].clone();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut fonts = fonts().unwrap();
+    let s = h.state_mut();
+    let composed = s
+        .pipeline
+        .compose_frame(&s.doc, &page, &f, target, &mut fonts, Quality::Final, None)
+        .unwrap();
+    let color = vale_render::Color::rgb(rgb[0], rgb[1], rgb[2]);
+    (composed.list.items.iter())
+        .filter(
+            |i| matches!(i, Item::Stroke { color: c, width, .. } if *c == color && *width == line),
+        )
+        .count()
+}
+
+#[test]
+fn a_hand_set_interval_stays_through_a_zoom() {
+    let mut h = inset_pad(BOARDS[0]);
+    assert_eq!(frame(&h, 1).graticule.interval, None);
+    scroll_to(&mut h, INTERVAL);
+    let slider = control(&h, INTERVAL).unwrap();
+    let from = slider.center();
+    drag(&mut h, from, from - vec2(60.0, 0.0), Input::Finger);
+    let set = frame(&h, 1).graticule.interval;
+    assert!(set.is_some());
+    assert!(control(&h, AUTO_INTERVAL).is_some());
+
+    let scale = frame(&h, 1).scale;
+    let at = middle(&h, 1);
+    pinch(&mut h, at, 40.0, 80.0, 0.0, Vec2::ZERO);
+    assert!(frame(&h, 1).scale < scale / 1.5);
+    assert_eq!(frame(&h, 1).graticule.interval, set);
+
+    // The switch puts the interval back on the scale of the frame.
+    scroll_to(&mut h, AUTO_INTERVAL);
+    tap(&mut h, AUTO_INTERVAL);
+    assert_eq!(frame(&h, 1).graticule.interval, None);
+    tap(&mut h, AUTO_INTERVAL);
+    let id = frame(&h, 1).id;
+    let (_, auto) = vale_app::ui::atlas::graticule_intervals(h.state_mut(), id).unwrap();
+    assert_eq!(frame(&h, 1).graticule.interval, Some(auto));
+}
+
+#[test]
+fn two_frames_of_one_map_have_their_own_graticule() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).id);
+    h.state_mut()
+        .doc
+        .project
+        .atlas
+        .frame_mut(inset)
+        .unwrap()
+        .map = main;
+    h.run_steps(2);
+    let first = frame(&h, 0).graticule;
+    scroll_to(&mut h, GRATICULE_COLOR);
+    tap(&mut h, GRATICULE_COLOR);
+    let shade = format!("{GRATICULE_COLOR} shade");
+    scroll_to(&mut h, &shade);
+    let square = control(&h, &shade).unwrap();
+    tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+    let color = frame(&h, 1).graticule.color;
+    assert_ne!(color, first.color);
+    assert_eq!(frame(&h, 0).graticule, first);
+    assert!(strokes(&mut h, 0, first.color, first.width) > 0);
+    assert_eq!(strokes(&mut h, 0, color, first.width), 0);
+    assert!(strokes(&mut h, 1, color, first.width) > 0);
+
+    scroll_up_to(&mut h, GRATICULE);
+    tap(&mut h, GRATICULE);
+    assert!(!frame(&h, 1).graticule.on);
+    assert_eq!(frame(&h, 0).graticule, first);
+    assert_eq!(strokes(&mut h, 1, color, first.width), 0);
+    assert!(strokes(&mut h, 0, first.color, first.width) > 0);
+}
+
+#[test]
+fn the_graticule_controls_work_with_a_finger() {
+    let hue = format!("{GRATICULE_COLOR} hue");
+    let shade = format!("{GRATICULE_COLOR} shade");
+    for size in BOARDS {
+        let mut h = inset_pad(size);
+        scroll_to(&mut h, GRATICULE);
+        tap(&mut h, GRATICULE);
+        assert!(!frame(&h, 1).graticule.on, "{size:?}");
+        assert!(control(&h, INTERVAL).is_none(), "{size:?}");
+        tap(&mut h, GRATICULE);
+        assert!(frame(&h, 1).graticule.on, "{size:?}");
+        check_controls(&h, "graticule");
+
+        scroll_to(&mut h, AUTO_INTERVAL);
+        tap(&mut h, AUTO_INTERVAL);
+        assert!(frame(&h, 1).graticule.interval.is_some(), "{size:?}");
+
+        scroll_to(&mut h, GRATICULE_COLOR);
+        tap(&mut h, GRATICULE_COLOR);
+        scroll_to(&mut h, &hue);
+        check_controls(&h, "graticule color");
+        let before = frame(&h, 1).graticule.color;
+        let square = control(&h, &shade).unwrap();
+        tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+        assert_ne!(frame(&h, 1).graticule.color, before, "{size:?}");
+
+        scroll_to(&mut h, GRATICULE_WIDTH);
+        let slider = control(&h, GRATICULE_WIDTH).unwrap();
+        tap_with(
+            &mut h,
+            slider.right_center() - vec2(70.0, 0.0),
+            Input::Finger,
+        );
+        let width = frame(&h, 1).graticule.width;
+        assert!(width > 1.5, "{size:?}: {width}");
+        assert_eq!((width * 10.0).round() / 10.0, width);
+        check_controls(&h, "graticule width");
+    }
+}
+
+#[test]
+fn the_graticule_settings_survive_a_close_and_an_open() {
+    use vale_app::ui::atlas::{
+        set_graticule, set_graticule_color, set_graticule_interval, set_graticule_width,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
+    let st = h.state_mut();
+    set_graticule_interval(st, main, Some(5.0 / 60.0));
+    set_graticule_color(st, main, [10, 20, 30]);
+    set_graticule_width(st, main, 1.3);
+    set_graticule(st, inset, false);
+    h.run_steps(2);
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.project.atlas, project.atlas);
+    let g = &doc.project.atlas.frame(main).unwrap().graticule;
+    assert!(g.on);
+    assert_eq!(g.interval, Some(5.0 / 60.0));
+    assert_eq!(g.color, [10, 20, 30]);
+    assert_eq!(g.width, 1.3);
+    assert!(!doc.project.atlas.frame(inset).unwrap().graticule.on);
 }
