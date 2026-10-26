@@ -397,11 +397,7 @@ fn projection_change_recomposes() {
     let s = h.state_mut();
     s.doc.set_projection(
         s.doc.first_map(),
-        ProjectionSpec {
-            kind: ProjectionKind::Mercator,
-            lon0: 0.0,
-            lat0: 0.0,
-        },
+        ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0),
     );
     s.touch();
     h.run_steps(2);

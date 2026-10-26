@@ -39,6 +39,20 @@ pub const LONGITUDE: &str = "Longitude";
 pub const LATITUDE: &str = "Latitude";
 pub const ROTATION: &str = "Rotation";
 pub const CENTER_ON_FRAME: &str = "Center on frame";
+pub const PROJECTION: &str = "Map projection";
+pub const CENTER_LONGITUDE: &str = "Center longitude";
+pub const CENTER_LATITUDE: &str = "Center latitude";
+pub const FIRST_PARALLEL: &str = "First parallel";
+pub const SECOND_PARALLEL: &str = "Second parallel";
+pub const OBLIQUE: &str = "Oblique";
+pub const AZIMUTH: &str = "Azimuth";
+pub const PROJECTION_NAME: &str = "Projection name";
+pub const SAVE_PROJECTION: &str = "Save projection";
+pub const DELETE_PROJECTION: &str = "Delete projection";
+/// The name of the row of a custom projection.
+pub fn custom_row(name: &str) -> String {
+    format!("Custom projection {name}")
+}
 pub const PAGE_NAME: &str = "Page name";
 pub const SIZE: &str = "Size";
 pub const ORIENTATIONS: [&str; 2] = ["Portrait", "Landscape"];
@@ -744,22 +758,131 @@ fn projection_tab(
         return;
     };
     let spec = state.doc.projection(map);
-    for kind in ProjectionKind::ALL {
-        let row = widgets::option_row(
+    let current = atlas::current_preset(state, id);
+    let shown = current
+        .clone()
+        .unwrap_or_else(|| spec.kind.name().to_string());
+    if widgets::open_row(ui, controls, PROJECTION, &shown).clicked() {
+        state.atlas.kinds = !state.atlas.kinds;
+    }
+    if state.atlas.kinds {
+        for kind in ProjectionKind::ALL {
+            let on = spec.kind == kind && current.is_none();
+            let row = widgets::option_row(ui, controls, kind.name(), kind.name(), &[], on);
+            if row.clicked() {
+                atlas::set_projection_kind(state, id, kind);
+                state.atlas.kinds = false;
+            }
+        }
+        let names: Vec<String> = state.doc.presets().iter().map(|p| p.name.clone()).collect();
+        for name in names {
+            let on = current.as_deref() == Some(name.as_str());
+            let row = widgets::option_row(ui, controls, &custom_row(&name), &name, &[], on);
+            if row.clicked() {
+                atlas::apply_preset(state, id, &name);
+                state.atlas.kinds = false;
+            }
+        }
+    }
+    ui.add_space(6.0);
+
+    let keys = Keys::Number;
+    let degrees = |text: &str| math::parse_degrees(text);
+    let spec = state.doc.projection(map);
+    let shown = math::lon_text(spec.lon0);
+    let typed = widgets::key_field(
+        ui,
+        controls,
+        CENTER_LONGITUDE,
+        CENTER_LONGITUDE,
+        "",
+        &shown,
+        keys,
+        |t| degrees(t).is_some(),
+    );
+    if let Some(lon) = typed.as_deref().and_then(degrees) {
+        atlas::set_projection_longitude(state, id, lon);
+    }
+    keypad_below(ui, controls, CENTER_LONGITUDE);
+    let has_latitude = spec.kind.has_origin_latitude() || spec.azimuth.is_some();
+    if has_latitude && spec.kind != ProjectionKind::PolarStereographic {
+        let shown = math::lat_text(spec.lat0);
+        let valid = |t: &str| degrees(t).is_some_and(|v| v.abs() <= 90.0);
+        let typed = widgets::key_field(
             ui,
             controls,
-            kind.name(),
-            kind.name(),
-            &[],
-            spec.kind == kind,
+            CENTER_LATITUDE,
+            CENTER_LATITUDE,
+            "",
+            &shown,
+            keys,
+            valid,
         );
-        if row.clicked() {
-            atlas::set_projection_kind(state, id, kind);
+        if let Some(lat) = typed.as_deref().and_then(degrees) {
+            atlas::set_projection_latitude(state, id, lat);
+        }
+        keypad_below(ui, controls, CENTER_LATITUDE);
+    }
+    if spec.kind == ProjectionKind::PolarStereographic {
+        let pole = ["South pole", "North pole"];
+        let north = usize::from(spec.lat0 >= 0.0);
+        if let Some(chosen) = widgets::choice_row(ui, controls, "Pole", &pole, Some(north)) {
+            atlas::set_projection_latitude(state, id, if chosen == 1 { 90.0 } else { -90.0 });
+        }
+    }
+    if spec.kind.is_conic() {
+        let valid = |t: &str| degrees(t).is_some_and(|v| v.abs() <= 89.0);
+        for (name, value, first) in [
+            (FIRST_PARALLEL, spec.lat1, true),
+            (SECOND_PARALLEL, spec.lat2, false),
+        ] {
+            let shown = math::lat_text(value);
+            let typed = widgets::key_field(ui, controls, name, name, "", &shown, keys, valid);
+            if let Some(v) = typed.as_deref().and_then(degrees) {
+                let (a, b) = if first {
+                    (v, spec.lat2)
+                } else {
+                    (spec.lat1, v)
+                };
+                atlas::set_parallels(state, id, a, b);
+            }
+            keypad_below(ui, controls, name);
+        }
+    }
+    if spec.kind.can_tilt() {
+        let mut oblique = spec.azimuth.is_some();
+        if widgets::switch_row(ui, controls, OBLIQUE, OBLIQUE, &mut oblique) {
+            atlas::set_oblique(state, id, oblique);
+        }
+        if let Some(azimuth) = spec.azimuth {
+            let mut angle = azimuth as f32;
+            if widgets::compass_row(ui, controls, AZIMUTH, AZIMUTH, &mut angle) {
+                atlas::set_azimuth(state, id, f64::from(angle));
+            }
         }
     }
     ui.add_space(6.0);
     if widgets::button_row(ui, controls, CENTER_ON_FRAME, true).clicked() {
         atlas::center_projection(state, id);
+    }
+
+    ui.add_space(6.0);
+    let mut name = state.atlas.preset_name.clone();
+    let hint = Some("Name");
+    if widgets::text_field(ui, controls, PROJECTION_NAME, "Name", hint, &mut name, true).changed() {
+        state.atlas.preset_name = name;
+    }
+    let named = !state.atlas.preset_name.trim().is_empty();
+    if widgets::button_row(ui, controls, SAVE_PROJECTION, named).clicked() {
+        atlas::save_preset(state, id);
+    }
+    let saved = state
+        .doc
+        .presets()
+        .iter()
+        .any(|p| p.name == state.atlas.preset_name);
+    if widgets::button_row(ui, controls, DELETE_PROJECTION, saved).clicked() {
+        atlas::delete_preset(state);
     }
 }
 

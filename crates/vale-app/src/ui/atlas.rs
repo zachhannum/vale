@@ -193,6 +193,10 @@ pub struct AtlasState {
     pub tab: FrameTab,
     /// The list of the page sizes of the panel of the page is open.
     pub sizes: bool,
+    /// The list of the projections of the Projection tab is open.
+    pub kinds: bool,
+    /// The text of the name field of the custom projections.
+    pub preset_name: String,
     /// The Add menu is open.
     pub add: bool,
     /// The Add menu in the last frame.
@@ -240,6 +244,8 @@ impl Default for AtlasState {
             tool: AtlasTool::Select,
             tab: FrameTab::Frame,
             sizes: false,
+            kinds: false,
+            preset_name: String::new(),
             add: false,
             add_rect: None,
             panel_rect: None,
@@ -1134,19 +1140,110 @@ pub fn set_graticule(state: &mut AppState, id: FrameId, on: bool) {
     });
 }
 
+/// The map of a frame.
+fn map_of(state: &AppState, id: FrameId) -> Option<vale_store::MapId> {
+    state.doc.project.atlas.frame(id).map(|f| f.map)
+}
+
+/// Changes the projection of the map of a frame.
+pub fn edit_projection(state: &mut AppState, id: FrameId, edit: impl FnOnce(&mut ProjectionSpec)) {
+    let Some(map) = map_of(state, id) else {
+        return;
+    };
+    let before = state.doc.projection(map);
+    let mut spec = before;
+    edit(&mut spec);
+    state.doc.set_projection(map, spec);
+    if state.doc.projection(map).to_proj() != before.to_proj() {
+        state.touch();
+    }
+}
+
 /// Sets the kind of the projection of the map of a frame and keeps its
 /// center.
 pub fn set_projection_kind(state: &mut AppState, id: FrameId, kind: ProjectionKind) {
-    let Some(map) = state.doc.project.atlas.frame(id).map(|f| f.map) else {
+    edit_projection(state, id, |s| *s = s.with_kind(kind));
+}
+
+/// Sets the central meridian, or the longitude of the center.
+pub fn set_projection_longitude(state: &mut AppState, id: FrameId, lon: f64) {
+    edit_projection(state, id, |s| s.lon0 = lon);
+}
+
+/// Sets the latitude of origin, or the latitude of the center.
+pub fn set_projection_latitude(state: &mut AppState, id: FrameId, lat: f64) {
+    edit_projection(state, id, |s| s.lat0 = lat);
+}
+
+/// Sets the standard parallels of a conic projection.
+pub fn set_parallels(state: &mut AppState, id: FrameId, lat1: f64, lat2: f64) {
+    edit_projection(state, id, |s| (s.lat1, s.lat2) = (lat1, lat2));
+}
+
+/// Turns the oblique aspect on or off.
+pub fn set_oblique(state: &mut AppState, id: FrameId, on: bool) {
+    edit_projection(state, id, |s| {
+        s.azimuth = on.then_some(s.azimuth.unwrap_or(OBLIQUE_AZIMUTH));
+    });
+}
+
+/// Sets the azimuth of the center line of an oblique aspect.
+pub fn set_azimuth(state: &mut AppState, id: FrameId, azimuth: f64) {
+    edit_projection(state, id, |s| s.azimuth = Some(azimuth));
+}
+
+/// The azimuth of a new oblique aspect. A tilt of 45 degrees shows well.
+pub const OBLIQUE_AZIMUTH: f64 = 45.0;
+
+/// Saves the projection of the map of a frame under the typed name. Returns
+/// false if the name is empty.
+pub fn save_preset(state: &mut AppState, id: FrameId) -> bool {
+    let Some(map) = map_of(state, id) else {
+        return false;
+    };
+    let name = state.atlas.preset_name.trim().to_string();
+    let saved = state.doc.save_preset(map, &name);
+    if saved {
+        state.atlas.preset_name = name;
+    }
+    saved
+}
+
+/// Gives the map of a frame the projection of a custom projection, and puts
+/// its name in the name field.
+pub fn apply_preset(state: &mut AppState, id: FrameId, name: &str) {
+    let Some(map) = map_of(state, id) else {
         return;
     };
-    let spec = state.doc.projection(map);
-    if spec.kind != kind {
-        state
-            .doc
-            .set_projection(map, ProjectionSpec { kind, ..spec });
-        state.touch();
+    let before = state.doc.projection(map).to_proj();
+    if state.doc.apply_preset(map, name) {
+        state.atlas.preset_name = name.to_string();
+        if state.doc.projection(map).to_proj() != before {
+            state.touch();
+        }
     }
+}
+
+/// Deletes the custom projection with the name in the name field.
+pub fn delete_preset(state: &mut AppState) {
+    let name = state.atlas.preset_name.clone();
+    if state.doc.remove_preset(&name) {
+        state.atlas.preset_name.clear();
+    }
+}
+
+/// The custom projection that has the projection of the map of a frame.
+pub fn current_preset(state: &AppState, id: FrameId) -> Option<String> {
+    let now = state.doc.projection(map_of(state, id)?).to_proj();
+    let same = |p: &&vale_store::ProjectionPreset| {
+        ProjectionSpec::from_proj(&p.projection).is_some_and(|s| s.to_proj() == now)
+    };
+    state
+        .doc
+        .presets()
+        .iter()
+        .find(same)
+        .map(|p| p.name.clone())
 }
 
 /// Moves the center of the projection of the map of a frame to the center
@@ -1159,7 +1256,7 @@ pub fn center_projection(state: &mut AppState, id: FrameId) {
     let map = frame.map;
     let mut spec = state.doc.projection(map);
     spec.lon0 = lon;
-    if spec.kind.is_azimuthal() {
+    if spec.kind.is_azimuthal() || spec.azimuth.is_some() {
         spec.lat0 = lat;
     }
     state.doc.set_projection(map, spec);

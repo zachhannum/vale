@@ -81,8 +81,7 @@ impl Resume {
             lines.push(format!("world_view {world_view}"));
             lines.push(format!("globe_rot {}", numbers(&rot)));
             lines.push(format!("globe_zoom {}", view.globe.zoom));
-            let center = numbers(&[spec.lon0, spec.lat0]);
-            lines.push(format!("flat_projection {} {center}", spec.kind.id()));
+            lines.push(format!("flat_projection {}", spec.to_proj()));
             let center = view.flat_center;
             lines.push(format!("flat_center {}", numbers(&[center.x, center.y])));
             lines.push(format!("flat_zoom {}", view.flat_zoom));
@@ -120,10 +119,7 @@ impl Resume {
             let r = floats("globe_rot", 9)?;
             let rot = Mat3([[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]]);
             let globe_zoom = floats("globe_zoom", 1)?[0];
-            let (kind, center) = value("flat_projection")?.split_once(' ')?;
-            let center = parse(center, 2)?;
-            let (lon0, lat0) = (center[0], center[1]);
-            let kind = ProjectionKind::from_id(kind)?;
+            let flat_spec = flat_spec(value("flat_projection")?, parse)?;
             let flat_center = floats("flat_center", 2)?;
             let flat_zoom = floats("flat_zoom", 1)?[0];
             is_rotation(&rot).then_some(View {
@@ -133,7 +129,7 @@ impl Resume {
                     rot,
                     zoom: globe_zoom.clamp(view::ZOOM_MIN, view::ZOOM_MAX),
                 },
-                flat_spec: ProjectionSpec { kind, lon0, lat0 }.normalized(),
+                flat_spec,
                 flat_center: Point::new(flat_center[0], flat_center[1]),
                 flat_zoom: flat_zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX),
                 page: value("page").and_then(|v| v.parse().ok()).map(PageId),
@@ -171,11 +167,7 @@ mod tests {
             workspace: Workspace::Globe,
             world_view: WorldView::Flat,
             globe,
-            flat_spec: ProjectionSpec {
-                kind: ProjectionKind::Mercator,
-                lon0: 12.5,
-                lat0: 0.0,
-            },
+            flat_spec: ProjectionSpec::new(ProjectionKind::Mercator, 12.5, 0.0),
             flat_center: Point::new(0.3, -0.1),
             flat_zoom: 2.25,
             page: Some(PageId(3)),
@@ -236,4 +228,19 @@ mod tests {
         let parsed = Resume::parse(&no_page).view.unwrap();
         assert_eq!(parsed.page, None);
     }
+}
+
+/// Reads the projection of the flat view. A file of an older version has the
+/// ID of the kind and the center.
+fn flat_spec(
+    text: &str,
+    parse: impl Fn(&str, usize) -> Option<Vec<f64>>,
+) -> Option<ProjectionSpec> {
+    if text.starts_with('+') {
+        return ProjectionSpec::from_proj(text);
+    }
+    let (kind, center) = text.split_once(' ')?;
+    let center = parse(center, 2)?;
+    let kind = ProjectionKind::from_id(kind)?;
+    Some(ProjectionSpec::new(kind, center[0], center[1]).normalized())
 }

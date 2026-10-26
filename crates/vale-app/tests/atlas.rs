@@ -13,8 +13,9 @@ use vale_app::projects::Locations;
 use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT,
-    MAP_FRAME, MAP_NAME, NEXT_PAGE, POLYGON, PREVIOUS_PAGE, REMOVE_VERTEX, SCALE, SIZE, WIDTH,
+    ADD, ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION,
+    FIRST_PARALLEL, FRAME_TABS, HEIGHT, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON,
+    PREVIOUS_PAGE, PROJECTION, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, WIDTH, custom_row,
     page_title, readout_text,
 };
 use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
@@ -313,6 +314,20 @@ fn scroll_to(h: &mut Pad, name: &str) {
         }
         let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
         drag(h, from, from - vec2(0.0, 200.0), Input::Finger);
+    }
+}
+
+/// Scrolls the panel up until a control shows.
+fn scroll_up_to(h: &mut Pad, name: &str) {
+    for _ in 0..8 {
+        let card = h.state().atlas.panel_rect.unwrap();
+        let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
+        if control(h, name).is_some_and(inside) {
+            return;
+        }
+        let from = pos2(card.left() + 6.0, card.top() + 200.0);
+        let to = pos2(from.x, card.bottom() - 60.0);
+        drag(h, from, to, Input::Finger);
     }
 }
 
@@ -696,6 +711,7 @@ fn a_change_of_the_projection_shows_in_each_frame_of_the_map() {
     tap(&mut h, "Projection");
     assert_eq!(h.state().atlas.tab, FrameTab::Projection);
     let composes = h.state().atlas.composes;
+    tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::Mercator.name());
     assert_eq!(first_projection(&h).kind, ProjectionKind::Mercator);
     assert_eq!(h.state().atlas.composes, composes + 2);
@@ -716,10 +732,95 @@ fn a_frame_changes_the_projection_of_its_own_map_only() {
     let copy = frame(&h, 1).map;
     h.run_steps(2);
     tap(&mut h, "Projection");
+    tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::Mercator.name());
     let doc = &h.state().doc;
     assert_eq!(doc.projection(copy).kind, ProjectionKind::Mercator);
     assert_ne!(doc.projection(source).kind, ProjectionKind::Mercator);
+}
+
+#[test]
+fn the_projection_tab_switches_the_map_through_all_presets() {
+    for size in BOARDS {
+        let mut h = inset_pad(size);
+        let map = frame(&h, 1).map;
+        tap(&mut h, "Projection");
+        for kind in ProjectionKind::ALL {
+            scroll_up_to(&mut h, PROJECTION);
+            tap(&mut h, PROJECTION);
+            scroll_to(&mut h, kind.name());
+            tap(&mut h, kind.name());
+            assert_eq!(h.state().doc.projection(map).kind, kind, "{size:?}");
+            h.run_steps(3);
+            check_controls(&h, kind.name());
+            let state = h.state_mut();
+            let projection = state.pipeline.projection(&state.doc, map).unwrap();
+            assert!(projection.bounds().width() > 0.0, "{kind:?}");
+            let text = state.doc.project.atlas.map(map).unwrap().projection.clone();
+            assert!(text.starts_with("+proj="), "{text}");
+        }
+    }
+}
+
+#[test]
+fn a_conic_projection_has_two_parallels_and_an_oblique_aspect_a_tilt() {
+    let mut h = inset_pad(BOARDS[0]);
+    let map = frame(&h, 1).map;
+    tap(&mut h, "Projection");
+    assert!(control(&h, FIRST_PARALLEL).is_none());
+    tap(&mut h, PROJECTION);
+    tap(&mut h, ProjectionKind::LambertConformal.name());
+    h.run_steps(2);
+    assert!(control(&h, FIRST_PARALLEL).is_some());
+    let spec = h.state().doc.projection(map);
+    assert_eq!((spec.lat1, spec.lat2), (30.0, 60.0));
+
+    tap(&mut h, PROJECTION);
+    tap(&mut h, ProjectionKind::EqualEarth.name());
+    h.run_steps(2);
+    assert!(control(&h, FIRST_PARALLEL).is_none());
+    assert_eq!(h.state().doc.projection(map).azimuth, None);
+    tap(&mut h, OBLIQUE);
+    h.run_steps(2);
+    assert!(h.state().doc.projection(map).azimuth.is_some());
+    let state = h.state_mut();
+    let text = state.doc.project.atlas.map(map).unwrap().projection.clone();
+    assert!(text.starts_with("+proj=ob_tran +o_proj=eqearth"), "{text}");
+    assert!(state.pipeline.projection(&state.doc, map).is_ok());
+    tap(&mut h, OBLIQUE);
+    h.run_steps(2);
+    assert_eq!(h.state().doc.projection(map).azimuth, None);
+}
+
+#[test]
+fn a_custom_projection_is_saved_in_the_project_and_picked_again() {
+    let mut h = inset_pad(BOARDS[0]);
+    let map = frame(&h, 1).map;
+    tap(&mut h, "Projection");
+    tap(&mut h, PROJECTION);
+    tap(&mut h, ProjectionKind::AlbersEqualArea.name());
+    h.run_steps(2);
+    assert!(h.state().atlas.preset_name.is_empty());
+    h.state_mut().atlas.preset_name = "Home".into();
+    h.run_steps(2);
+    tap(&mut h, SAVE_PROJECTION);
+    let saved = h.state().doc.projection(map).to_proj();
+    assert_eq!(h.state().doc.presets().len(), 1);
+    assert_eq!(h.state().doc.presets()[0].projection, saved);
+
+    // Another projection, and then the custom one again.
+    tap(&mut h, PROJECTION);
+    tap(&mut h, ProjectionKind::Mercator.name());
+    h.run_steps(2);
+    assert_eq!(h.state().doc.projection(map).kind, ProjectionKind::Mercator);
+    tap(&mut h, PROJECTION);
+    scroll_to(&mut h, &custom_row("Home"));
+    tap(&mut h, &custom_row("Home"));
+    assert_eq!(h.state().doc.projection(map).to_proj(), saved);
+
+    tap(&mut h, DELETE_PROJECTION);
+    assert!(h.state().doc.presets().is_empty());
+    assert_eq!(h.state().doc.projection(map).to_proj(), saved);
 }
 
 #[test]
@@ -740,6 +841,8 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         assert_eq!(frame(&h, 1).scale, 50_000_000.0, "{size:?}");
         tap(&mut h, "Projection");
         check_controls(&h, "projection tab");
+        tap(&mut h, PROJECTION);
+        check_controls(&h, "projection list");
         tap(&mut h, ProjectionKind::Mercator.name());
         assert_eq!(selected_projection(&h).kind, ProjectionKind::Mercator);
         let at = screen(&h, Point::new(4.0, 50.0));

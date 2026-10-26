@@ -470,11 +470,7 @@ fn the_app_opens_at_the_last_project_and_the_last_view() {
     click(&mut h, "Open Borea");
     let mut view = GlobeView::centered(-120.0, 35.0);
     view.zoom = 6.5;
-    let spec = ProjectionSpec {
-        kind: ProjectionKind::Mercator,
-        lon0: 30.0,
-        lat0: 0.0,
-    };
+    let spec = ProjectionSpec::new(ProjectionKind::Mercator, 30.0, 0.0);
     let globe = &mut h.state_mut().globe;
     globe.view = view;
     globe.world_view = WorldView::Flat;

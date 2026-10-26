@@ -46,7 +46,7 @@ fn shoelace(r: &[Point]) -> f64 {
 }
 
 fn fraction(kind: ProjectionKind, lon0: f64, lat0: f64) -> f64 {
-    let p = Projection::new(ProjectionSpec { kind, lon0, lat0 }, RADIUS).unwrap();
+    let p = Projection::new(ProjectionSpec::new(kind, lon0, lat0), RADIUS).unwrap();
     let mut total = 0.0;
     for poly in land() {
         let rings = p.project_polygon(&poly);
@@ -62,6 +62,7 @@ fn land_area_is_stable() {
         (ProjectionKind::EqualEarth, 150.0, 0.0),
         (ProjectionKind::LambertAzimuthal, -100.0, 40.0),
         (ProjectionKind::LambertAzimuthal, 20.0, -30.0),
+        (ProjectionKind::AlbersEqualArea, 10.0, 40.0),
     ] {
         let f = fraction(kind, lon0, lat0);
         assert!(f > 0.283 && f < 0.294, "{kind:?} {lon0} {lat0}: {f}");
@@ -79,7 +80,7 @@ fn everything_is_finite_and_inside_bounds() {
     let polys = land();
     for kind in ProjectionKind::ALL {
         for (lon0, lat0) in [(0.0, 0.0), (150.0, 0.0), (20.0, 30.0), (-100.0, -70.0)] {
-            let p = Projection::new(ProjectionSpec { kind, lon0, lat0 }, RADIUS).unwrap();
+            let p = Projection::new(ProjectionSpec::new(kind, lon0, lat0), RADIUS).unwrap();
             let b = p.bounds();
             let grown = b.inflate(0.001 * b.width(), 0.001 * b.height());
             for poly in &polys {
@@ -102,4 +103,21 @@ fn everything_is_finite_and_inside_bounds() {
             }
         }
     }
+}
+
+#[test]
+fn an_oblique_equal_area_map_keeps_the_area() {
+    let spec = ProjectionSpec {
+        azimuth: Some(20.0),
+        ..ProjectionSpec::new(ProjectionKind::EqualEarth, 60.0, 40.0)
+    };
+    let p = Projection::new(spec, RADIUS).unwrap();
+    let total: f64 = land()
+        .iter()
+        .flat_map(|poly| p.project_polygon(poly))
+        .map(|r| shoelace(&r))
+        .sum::<f64>()
+        .abs();
+    let f = total / (4.0 * std::f64::consts::PI * RADIUS * RADIUS);
+    assert!(f > 0.283 && f < 0.294, "{f}");
 }

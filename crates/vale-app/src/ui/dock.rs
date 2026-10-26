@@ -9,9 +9,11 @@ use vale_store::{FrameRecord, FrameShape, PageUnits};
 use super::atlas::{self, AtlasSelection, FrameTab};
 use super::pad::GRATICULE;
 use super::pad::atlas::{
-    ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, FRAME_TABS, HEIGHT, LATITUDE,
-    LONGITUDE, MAP_NAME, ORIENTATIONS, PAGE_NAME, POLYGON, RECTANGLE, REMOVE_VERTEX, ROTATION,
-    SCALE, SHAPE, SIZE, UNIT_NAMES, WIDTH, length_text, unit_name,
+    ADD_HOLE, ADD_PAGE, AZIMUTH, CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME,
+    DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, HEIGHT, LATITUDE, LONGITUDE,
+    MAP_NAME, OBLIQUE, ORIENTATIONS, PAGE_NAME, POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_VERTEX,
+    ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
+    length_text, unit_name,
 };
 use super::{AppState, inspector};
 use crate::atlas::{self as math, PAGE_PRESETS};
@@ -167,16 +169,106 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 }
 
 fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
-    let kind = state.doc.projection(frame.map).kind;
+    let map = frame.map;
+    let spec = state.doc.projection(map);
     for k in ProjectionKind::ALL {
-        if ui.selectable_label(kind == k, k.name()).clicked() {
+        if ui.selectable_label(spec.kind == k, k.name()).clicked() {
             atlas::set_projection_kind(state, frame.id, k);
+        }
+    }
+    let current = atlas::current_preset(state, frame.id);
+    let names: Vec<String> = state.doc.presets().iter().map(|p| p.name.clone()).collect();
+    for name in names {
+        let on = current.as_deref() == Some(name.as_str());
+        let resp = ui.selectable_label(on, &name);
+        named(&resp, egui::WidgetType::SelectableLabel, &custom_row(&name));
+        if resp.clicked() {
+            atlas::apply_preset(state, frame.id, &name);
+        }
+    }
+    ui.add_space(4.0);
+    egui::Grid::new("atlas-projection")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label(CENTER_LONGITUDE);
+            let typed = field(ui, CENTER_LONGITUDE, &math::lon_text(spec.lon0));
+            if let Some(lon) = typed.as_deref().and_then(math::parse_degrees) {
+                atlas::set_projection_longitude(state, frame.id, lon);
+            }
+            ui.end_row();
+            let has_latitude = spec.kind.has_origin_latitude() || spec.azimuth.is_some();
+            if has_latitude {
+                ui.label(CENTER_LATITUDE);
+                let typed = field(ui, CENTER_LATITUDE, &math::lat_text(spec.lat0));
+                if let Some(lat) = typed.as_deref().and_then(math::parse_degrees) {
+                    atlas::set_projection_latitude(state, frame.id, lat);
+                }
+                ui.end_row();
+            }
+            if spec.kind.is_conic() {
+                for (name, value, first) in [
+                    (FIRST_PARALLEL, spec.lat1, true),
+                    (SECOND_PARALLEL, spec.lat2, false),
+                ] {
+                    ui.label(name);
+                    let typed = field(ui, name, &math::lat_text(value));
+                    if let Some(v) = typed.as_deref().and_then(math::parse_degrees) {
+                        let (a, b) = if first {
+                            (v, spec.lat2)
+                        } else {
+                            (spec.lat1, v)
+                        };
+                        atlas::set_parallels(state, frame.id, a, b);
+                    }
+                    ui.end_row();
+                }
+            }
+            if let Some(azimuth) = spec.azimuth {
+                ui.label(AZIMUTH);
+                let mut value = azimuth;
+                let drag = egui::DragValue::new(&mut value).speed(1.0).suffix("°");
+                let drag = ui.add(drag);
+                named(&drag, egui::WidgetType::DragValue, AZIMUTH);
+                if drag.changed() {
+                    atlas::set_azimuth(state, frame.id, value);
+                }
+                ui.end_row();
+            }
+        });
+    if spec.kind.can_tilt() {
+        let mut oblique = spec.azimuth.is_some();
+        let resp = ui.checkbox(&mut oblique, OBLIQUE);
+        if resp.changed() {
+            atlas::set_oblique(state, frame.id, oblique);
         }
     }
     ui.add_space(4.0);
     if ui.button(CENTER_ON_FRAME).clicked() {
         atlas::center_projection(state, frame.id);
     }
+    ui.add_space(4.0);
+    let mut name = state.atlas.preset_name.clone();
+    let resp = ui.add(egui::TextEdit::singleline(&mut name).hint_text("Name"));
+    named(&resp, egui::WidgetType::TextEdit, PROJECTION_NAME);
+    if resp.changed() {
+        state.atlas.preset_name = name;
+    }
+    let named_now = !state.atlas.preset_name.trim().is_empty();
+    ui.horizontal(|ui| {
+        let save = ui.add_enabled(named_now, egui::Button::new(SAVE_PROJECTION));
+        if save.clicked() {
+            atlas::save_preset(state, frame.id);
+        }
+        let saved = state
+            .doc
+            .presets()
+            .iter()
+            .any(|p| p.name == state.atlas.preset_name);
+        let delete = ui.add_enabled(saved, egui::Button::new(DELETE_PROJECTION));
+        if delete.clicked() {
+            atlas::delete_preset(state);
+        }
+    });
 }
 
 fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {

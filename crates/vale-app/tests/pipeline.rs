@@ -79,11 +79,7 @@ fn orthographic_hides_the_far_side() {
     let mut doc = plain();
     doc.set_projection(
         doc.first_map(),
-        ProjectionSpec {
-            kind: ProjectionKind::Orthographic,
-            lon0: 20.0,
-            lat0: 30.0,
-        },
+        ProjectionSpec::new(ProjectionKind::Orthographic, 20.0, 30.0),
     );
     assert_eq!(color_at(&doc, [-150.0, -30.0]), None);
     assert_eq!(color_at(&doc, [25.0, 25.0]), Some(LAND));
@@ -518,11 +514,7 @@ fn each_frame_draws_with_the_projection_of_its_map() {
     let before = [draw(&doc, &mut pipeline, a), draw(&doc, &mut pipeline, b)];
     doc.set_projection(
         copy,
-        ProjectionSpec {
-            kind: ProjectionKind::Mercator,
-            lon0: 0.0,
-            lat0: 0.0,
-        },
+        ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0),
     );
     assert_eq!(draw(&doc, &mut pipeline, a), before[0]);
     assert_ne!(draw(&doc, &mut pipeline, b), before[1]);
@@ -548,13 +540,9 @@ fn a_new_projection_changes_each_frame() {
         .collect();
     doc.set_projection(
         doc.first_map(),
-        ProjectionSpec {
-            kind: ProjectionKind::Mercator,
-            lon0: 0.0,
-            lat0: 0.0,
-        },
+        ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0),
     );
-    assert_eq!(doc.project.atlas.maps[0].projection, "mercator");
+    assert_eq!(doc.project.atlas.maps[0].projection, "+proj=merc +lon_0=0");
     for (id, before) in frames.iter().zip(&before) {
         let after = format!("{:?}", compose_frame(&doc, &mut pipeline, *id));
         assert_ne!(&after, before);

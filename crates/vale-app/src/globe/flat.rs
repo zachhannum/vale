@@ -24,6 +24,9 @@ pub const DEFAULT_SPEC: ProjectionSpec = ProjectionSpec {
     kind: ProjectionKind::Equirectangular,
     lon0: 0.0,
     lat0: 0.0,
+    lat1: 0.0,
+    lat2: 0.0,
+    azimuth: None,
 };
 
 /// One corner of the mesh: a point of the map on a sphere of radius 1, and
@@ -118,8 +121,8 @@ impl FlatView {
     /// canvas. `None`: the place is off the map, or it is the center now.
     fn spec_here(&self) -> Option<ProjectionSpec> {
         let [lon0, lat0] = self.projection.inverse(self.center)?;
-        let (now, kind) = (self.spec(), self.spec().kind);
-        let here = ProjectionSpec { kind, lon0, lat0 }.normalized();
+        let now = self.spec();
+        let here = ProjectionSpec { lon0, lat0, ..now }.normalized();
         let moved = (here.lon0 - now.lon0).abs() > 1e-6 || (here.lat0 - now.lat0).abs() > 1e-6;
         moved.then_some(here)
     }
@@ -148,11 +151,7 @@ impl FlatView {
     /// north, and shows the whole map.
     pub fn reset(&mut self) {
         let kind = self.spec().kind;
-        *self = FlatView::new(ProjectionSpec {
-            kind,
-            lon0: 0.0,
-            lat0: 0.0,
-        });
+        *self = FlatView::new(ProjectionSpec::new(kind, 0.0, 0.0));
     }
 
     /// Puts a place at the middle of the canvas. The place is in degrees.
@@ -276,7 +275,7 @@ mod tests {
     }
 
     fn view(kind: ProjectionKind, lon0: f64, lat0: f64) -> FlatView {
-        FlatView::new(ProjectionSpec { kind, lon0, lat0 })
+        FlatView::new(ProjectionSpec::new(kind, lon0, lat0))
     }
 
     #[test]
@@ -325,6 +324,11 @@ mod tests {
                 let Some([lon, lat]) = view.projection.inverse(point) else {
                     continue;
                 };
+                // An equal-area cone turns a pole into an arc, and the inverse
+                // is ill-conditioned there, also at the precision of the vertex.
+                if lat.abs() > 89.9 {
+                    continue;
+                }
                 let d = v.dir.map(f64::from);
                 assert!(angle(lonlat_to_dir(lon, lat), d) < 1e-4, "{kind:?}");
                 read += 1;
