@@ -21,8 +21,8 @@ use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
 
 use crate::atlas::{
-    self, Atlas, FrameId, FrameRecord, FrameShape, MapId, MapRecord, PageId, PageRecord, PageUnits,
-    ProjectionPreset,
+    self, Atlas, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
+    PageUnits, ProjectionPreset,
 };
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
@@ -33,7 +33,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 24;
+pub const FORMAT_VERSION: u32 = 25;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -62,6 +62,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v22,
     v23,
     v24,
+    v25,
 ];
 
 /// `GPKG` in ASCII.
@@ -882,6 +883,32 @@ fn v24(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The interval, the color, and the width of the graticule of a frame. The
+/// frames of an older file get an automatic interval. The undo images of the
+/// atlas have the old form, so the step removes them, and the steps that hold
+/// nothing else.
+fn v25(tx: &Transaction) -> rusqlite::Result<()> {
+    for (column, kind) in [
+        ("graticule_interval", "REAL"),
+        ("graticule_color", "TEXT NOT NULL DEFAULT '96A5AF'"),
+        ("graticule_width", "REAL NOT NULL DEFAULT 0.5"),
+    ] {
+        let sql = "SELECT count(*) FROM pragma_table_info('vale_frame') WHERE name = ?1";
+        let count: i64 = tx.query_row(sql, [column], |r| r.get(0))?;
+        if count == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE vale_frame ADD COLUMN {column} {kind}"
+            ))?;
+        }
+    }
+    tx.execute_batch(
+        "DELETE FROM vale_undo_record WHERE kind = 'atlas';
+         DELETE FROM vale_undo_step
+           WHERE id NOT IN (SELECT step_id FROM vale_undo_record)
+             AND id NOT IN (SELECT step_id FROM vale_undo_tile);",
+    )
+}
+
 /// The atlas. An older file gets one map with an Equal Earth projection and
 /// one page in the units of the world. A file with an older version number
 /// can already have the tables.
@@ -1376,8 +1403,9 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     )?;
     let mut frame = tx.prepare(
         "INSERT INTO vale_frame (id, page_id, position, map_id, shape, rings, center_lon,
-           center_lat, scale, rotation, graticule)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+           center_lat, scale, rotation, graticule, graticule_interval, graticule_color,
+           graticule_width)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
     )?;
     for (position, p) in atlas.pages.iter().enumerate() {
         let units = p.units.id();
@@ -1401,7 +1429,10 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.center[1],
                 f.scale,
                 f.rotation,
-                f.graticule,
+                f.graticule.on,
+                f.graticule.interval,
+                hex(f.graticule.color),
+                f.graticule.width,
             ])?;
         }
     }
@@ -2158,7 +2189,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
     }
     let mut rows = conn.prepare(
         "SELECT id, page_id, map_id, shape, rings, center_lon, center_lat, scale, rotation,
-           graticule
+           graticule, graticule_interval, graticule_color, graticule_width
          FROM vale_frame ORDER BY page_id, position",
     )?;
     let mut rows = rows.query([])?;
@@ -2169,6 +2200,19 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         let kind: String = r.get(3)?;
         let rings: Vec<u8> = r.get(4)?;
         let rings = atlas::decode_rings(&rings).ok_or_else(bad)?;
+        let interval: Option<f64> = r.get(10)?;
+        let color: String = r.get(11)?;
+        let width: f64 = r.get(12)?;
+        let positive = |x: f64| x > 0.0;
+        if !interval.is_none_or(positive) || !positive(width) {
+            return Err(bad());
+        }
+        let graticule = Graticule {
+            on: r.get(9)?,
+            interval,
+            color: parse_color(&color).ok_or_else(bad)?,
+            width,
+        };
         let frame = FrameRecord {
             id: FrameId(id),
             map,
@@ -2176,7 +2220,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             center: [r.get(5)?, r.get(6)?],
             scale: r.get(7)?,
             rotation: r.get(8)?,
-            graticule: r.get(9)?,
+            graticule,
         };
         if atlas.map(map).is_none() {
             return Err(bad());
@@ -2812,7 +2856,7 @@ mod tests {
             center: [12.0, -30.5],
             scale: 90_000_000.0,
             rotation: 45.0,
-            graticule: true,
+            graticule: Graticule::default(),
         };
         atlas.add_frame(first, frame.clone()).unwrap();
         let ring = vec![
@@ -2826,7 +2870,12 @@ mod tests {
         let polygon = FrameRecord {
             map: copy,
             shape: FrameShape::Polygon(vec![ring, hole]),
-            graticule: false,
+            graticule: Graticule {
+                on: false,
+                interval: Some(7.5),
+                color: [0x12, 0x34, 0xab],
+                width: 1.25,
+            },
             ..frame
         };
         atlas.add_frame(second, polygon.clone()).unwrap();
@@ -2875,6 +2924,68 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// Removes the interval, the color, and the width of the graticules, as in
+    /// a file before format version 25.
+    const V24_DROP: &str = "ALTER TABLE vale_frame DROP COLUMN graticule_interval;
+         ALTER TABLE vale_frame DROP COLUMN graticule_color;
+         ALTER TABLE vale_frame DROP COLUMN graticule_width;";
+
+    #[test]
+    fn a_frame_of_version_24_gets_the_default_graticule() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        atlas_edit(&mut project);
+        file.save(&project).unwrap();
+        assert!(file.can_undo());
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(V24_DROP).unwrap();
+        drop(conn);
+        set_format_version(&dir, 24);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        let frames: Vec<&FrameRecord> = loaded.atlas.pages.iter().flat_map(|p| &p.frames).collect();
+        assert_eq!(frames.len(), 3);
+        for frame in frames {
+            let on = frame.map == MapId(0);
+            assert_eq!(
+                frame.graticule,
+                Graticule {
+                    on,
+                    ..Graticule::default()
+                }
+            );
+        }
+        // The undo image of the atlas has the old form, so it goes.
+        assert!(!file.can_undo());
+    }
+
+    #[test]
+    fn a_bad_graticule_is_corrupt() {
+        for update in [
+            "graticule_interval = 0",
+            "graticule_width = -1",
+            "graticule_color = 'blue'",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut project = Project::new(World::default());
+            project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+            atlas_edit(&mut project);
+            drop(ProjectFile::create(&path(&dir), &project).unwrap());
+            let conn = Connection::open(path(&dir)).unwrap();
+            conn.execute_batch(&format!("UPDATE vale_frame SET {update}"))
+                .unwrap();
+            drop(conn);
+            assert!(
+                matches!(ProjectFile::open(&path(&dir)), Err(StoreError::Corrupt(_))),
+                "{update}"
+            );
+        }
     }
 
     #[test]

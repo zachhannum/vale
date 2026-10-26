@@ -4,9 +4,10 @@
 //! with y down.
 
 use std::collections::BTreeSet;
+use std::ops::RangeInclusive;
 
 use crate::gpkg::Reader;
-use crate::{LayerId, LonLat, Units};
+use crate::{LayerId, LonLat, Rgb, Units};
 
 /// The ID of a map.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -126,7 +127,35 @@ pub struct FrameRecord {
     pub scale: f64,
     /// Degrees clockwise.
     pub rotation: f64,
-    pub graticule: bool,
+    pub graticule: Graticule,
+}
+
+/// The lines of latitude and longitude in a map frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Graticule {
+    pub on: bool,
+    /// Degrees between two lines. `None`: the frame picks the interval from
+    /// its scale.
+    pub interval: Option<f64>,
+    pub color: Rgb,
+    /// The line width in points.
+    pub width: f64,
+}
+
+impl Graticule {
+    /// The line widths in points that the app offers.
+    pub const WIDTHS: RangeInclusive<f64> = 0.1..=2.0;
+}
+
+impl Default for Graticule {
+    fn default() -> Self {
+        Graticule {
+            on: true,
+            interval: None,
+            color: [0x96, 0xa5, 0xaf],
+            width: 0.5,
+        }
+    }
 }
 
 /// A projection that the project keeps under a name. A custom projection is
@@ -409,7 +438,7 @@ mod tests {
             center: [12.0, -3.5],
             scale: 50_000_000.0,
             rotation: 15.0,
-            graticule: true,
+            graticule: Graticule::default(),
         }
     }
 

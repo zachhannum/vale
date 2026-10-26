@@ -11,8 +11,8 @@ mod tile;
 mod undo;
 
 pub use atlas::{
-    Atlas, FrameId, FrameRecord, FrameShape, MapId, MapRecord, PageId, PageRecord, PageUnits,
-    ProjectionPreset,
+    Atlas, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
+    PageUnits, ProjectionPreset,
 };
 pub use gpkg::{
     FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,

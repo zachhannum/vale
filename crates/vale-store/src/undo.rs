@@ -15,8 +15,8 @@ use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
-    Atlas, FrameId, FrameRecord, FrameShape, MapId, MapRecord, PageId, PageRecord, PageUnits,
-    ProjectionPreset, encode_rings, read_rings,
+    Atlas, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
+    PageUnits, ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
@@ -484,13 +484,31 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
             put_f64(out, frame.center[1]);
             put_f64(out, frame.scale);
             put_f64(out, frame.rotation);
-            out.push(frame.graticule as u8);
+            let graticule = &frame.graticule;
+            out.push(graticule.on as u8);
+            match graticule.interval {
+                Some(interval) => {
+                    out.push(1);
+                    put_f64(out, interval);
+                }
+                None => out.push(0),
+            }
+            out.extend_from_slice(&graticule.color);
+            put_f64(out, graticule.width);
         }
     }
     put_u32(out, atlas.presets.len());
     for preset in &atlas.presets {
         put_bytes(out, preset.name.as_bytes());
         put_bytes(out, preset.projection.as_bytes());
+    }
+}
+
+fn flag(r: &mut Reader) -> Option<bool> {
+    match r.take::<1>()? {
+        [0] => Some(false),
+        [1] => Some(true),
+        _ => None,
     }
 }
 
@@ -532,10 +550,11 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                 center: [r.f64()?, r.f64()?],
                 scale: r.f64()?,
                 rotation: r.f64()?,
-                graticule: match r.take::<1>()? {
-                    [0] => false,
-                    [1] => true,
-                    _ => return None,
+                graticule: Graticule {
+                    on: flag(r)?,
+                    interval: if flag(r)? { Some(r.f64()?) } else { None },
+                    color: r.take::<3>()?,
+                    width: r.f64()?,
                 },
             });
         }
@@ -994,6 +1013,12 @@ mod tests {
             rotation: 271.5,
             graticule,
         };
+        let manual = Graticule {
+            on: false,
+            interval: Some(7.5),
+            color: [0x12, 0x34, 0x56],
+            width: 1.25,
+        };
         let rect = FrameShape::Rectangle([10.0, 10.0, 200.0, 150.0]);
         let ring = vec![
             [0.0, 0.0],
@@ -1004,8 +1029,10 @@ mod tests {
         ];
         let hole = vec![[5.0, 5.0], [15.0, 5.0], [15.0, 15.0]];
         let polygon = FrameShape::Polygon(vec![ring, hole]);
-        before.add_frame(second, frame(rect, true)).unwrap();
-        before.add_frame(second, frame(polygon, false)).unwrap();
+        before
+            .add_frame(second, frame(rect, Graticule::default()))
+            .unwrap();
+        before.add_frame(second, frame(polygon, manual)).unwrap();
 
         before.save_preset("Home", "+proj=laea +lon_0=10 +lat_0=50");
         let mut out = Vec::new();
