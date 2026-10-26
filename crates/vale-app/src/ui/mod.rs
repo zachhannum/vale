@@ -536,6 +536,7 @@ impl AppState {
                     hillshade,
                     rivers: raster.rivers,
                     lines: raster.lines,
+                    blend: raster.blend,
                 })
             }
             None => Some(StackItem::Vector(layer.id)),
