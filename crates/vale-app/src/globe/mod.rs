@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
-use vale_store::{Hillshade, LayerId, LonLat, RasterDisplay, RasterId, Smoothing};
+use vale_store::{BlendMode, Hillshade, LayerId, LonLat, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{
     Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, Pyramid, SEA_LEVEL,
     Stamp, TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap,
@@ -46,8 +46,8 @@ use erode::{Eroder, Ground, brush_window, erode_window, near_side};
 use export::ExportResult;
 use flat::FlatView;
 use gpu::{
-    Changes, Draw, Event, Frame, GlobeCallback, Job as GpuJob, LayerKey, Link, MapKey, Op, Pass,
-    Uniforms, Uploads,
+    Changes, Draw, Event, Frame, GlobeCallback, Group, Job as GpuJob, LayerKey, Link, MapKey, Mask,
+    Op, Pass, TargetId, Uniforms, Uploads,
 };
 use import::{ImportResult, Job, Step};
 use line::LineSettings;
@@ -267,6 +267,8 @@ pub enum StackItem {
         hillshade: Hillshade,
         rivers: bool,
         lines: bool,
+        /// How the layer mixes with the layers below it.
+        blend: BlendMode,
     },
     Vector(LayerId),
 }
@@ -1075,6 +1077,15 @@ impl Globe {
     }
 
     /// True if the globe holds the raster layer.
+    /// True if the list of layers has the raster layer, so the globe draws
+    /// it and a map frame can draw it.
+    pub fn draws(&self, id: RasterId) -> bool {
+        let stack = self.stack.as_deref().unwrap_or_default();
+        let found =
+            |item: &StackItem| matches!(item, StackItem::Raster { id: of, .. } if *of == id);
+        stack.iter().any(found) && self.source(id).is_some()
+    }
+
     pub fn holds(&self, id: RasterId) -> bool {
         self.layer(id).is_some()
     }
@@ -1606,8 +1617,9 @@ impl Globe {
                     opacity,
                     display,
                     smoothing,
+                    blend,
                     ..
-                } => Some((id, opacity, display, smoothing)),
+                } => Some((id, hides(opacity, blend), display, smoothing)),
                 StackItem::Vector(_) => None,
             })
             .filter(|&(id, ..)| self.source(id).is_some())
@@ -2780,13 +2792,15 @@ impl Globe {
         layer: Option<&LayerDraw>,
         graticule: bool,
         small: bool,
+        frame: Option<&FramePlace>,
     ) -> Uniforms {
         let row = |r: V3| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
         let center = self.rect.center();
         let radius = self.radius() as f32;
-        let (zoom, flat_center) = match self.world_view {
-            WorldView::Globe => (self.view.zoom, [0.0; 2]),
-            WorldView::Flat => {
+        let (zoom, flat_center) = match (frame, self.world_view) {
+            (Some(frame), _) => (1.0, frame.map_center),
+            (None, WorldView::Globe) => (self.view.zoom, [0.0; 2]),
+            (None, WorldView::Flat) => {
                 let center = self.flat.center;
                 (self.flat.zoom, [center.x as f32, center.y as f32])
             }
@@ -2831,12 +2845,20 @@ impl Globe {
         };
         Uniforms {
             rot: self.view.rot.0.map(row),
-            globe: [
-                center.x * scale,
-                center.y * scale,
-                radius * scale,
-                pixels_per_point,
-            ],
+            globe: match frame {
+                Some(frame) => [
+                    frame.center[0],
+                    frame.center[1],
+                    frame.units_to_pixels,
+                    pixels_per_point,
+                ],
+                None => [
+                    center.x * scale,
+                    center.y * scale,
+                    radius * scale,
+                    pixels_per_point,
+                ],
+            },
             params: [
                 layer.map_or(1.0, |layer| layer.key.face_size as f32),
                 graticule_degrees.to_radians() as f32,
@@ -2878,12 +2900,27 @@ impl Globe {
             detail: match layer {
                 Some(layer) => {
                     let size = layer.key.face_size;
-                    let level = self.level_of(layer.smoothing, size) as f32;
+                    let level = match frame {
+                        // A map frame smooths by the scale of the page, so
+                        // the zoom of the screen does not change it.
+                        Some(frame) if layer.smoothing.on => smoothing_level(
+                            f64::from(layer.smoothing.feature_size),
+                            frame.points_per_radian,
+                            size,
+                        ),
+                        Some(_) => 0.0,
+                        None => self.level_of(layer.smoothing, size),
+                    } as f32;
                     [level, max_level(size) as f32, 0.0, 0.0]
                 }
                 None => [0.0; 4],
             },
             edges: [0.0; 4],
+            turn: {
+                let (sin, cos) = frame.map_or(0.0, |frame| frame.rotation).sin_cos();
+                let blend = layer.map_or(0, |layer| layer.blend.index());
+                [cos as f32, sin as f32, blend as f32, 0.0]
+            },
             bands,
             lines,
         }
@@ -2940,6 +2977,129 @@ impl Globe {
         out
     }
 
+    /// The heightmaps on the GPU for the callbacks of one frame of the UI.
+    fn gpu_frame(
+        &self,
+        format: wgpu::TextureFormat,
+        smooth_full: bool,
+        river_layers: &[(LayerKey, usize)],
+        flat: Option<Arc<flat::FlatMesh>>,
+    ) -> Arc<Frame> {
+        Arc::new(Frame {
+            format,
+            link: self.link.clone(),
+            full: self.full,
+            smooth_full,
+            copies: {
+                let layers = self.layers.iter();
+                let keys = |l: &Layer| [l.copy.as_ref().map(|copy| copy.key), l.old_copy];
+                layers.flat_map(keys).flatten().collect()
+            },
+            rivers: river_layers.iter().map(|(layer, _)| *layer).collect(),
+            flat,
+            epoch: self.epoch,
+        })
+    }
+
+    /// The callbacks that draw the raster layers in the map frames of a
+    /// page, one for each frame, or `None` with no wgpu renderer. A frame
+    /// draws the layers of the list that its map shows, in the flat map of
+    /// its projection, in a target of its own. It draws no rivers.
+    pub fn paint_frames(
+        &mut self,
+        canvas: Canvas,
+        frames: Vec<FrameDraw>,
+    ) -> Option<Vec<(u32, GlobeCallback)>> {
+        let format = self.format?;
+        self.queue_changes();
+        let river_layers = self.send_rivers();
+        let stack = self.stack.as_deref().unwrap_or_default();
+        let mut draws = Vec::new();
+        let mut smooth_full = false;
+        let cover = |layer: &LayerDraw| Some(layer.key) == self.full;
+        let mut sources: Vec<(RasterId, LayerDraw)> = Vec::new();
+        for item in stack {
+            let StackItem::Raster {
+                id,
+                opacity,
+                display,
+                smoothing,
+                hillshade,
+                lines,
+                blend,
+                ..
+            } = *item
+            else {
+                continue;
+            };
+            let source = self.source(id).zip(self.display_map(id));
+            let Some((key, map)) = source else { continue };
+            let layer = LayerDraw {
+                key,
+                bands: &map.bands,
+                opacity: opacity.clamp(0.0, 1.0),
+                display,
+                smoothing,
+                hillshade,
+                rivers: None,
+                window: false,
+                lines,
+                blend,
+            };
+            smooth_full |= cover(&layer);
+            sources.push((id, layer));
+        }
+        for frame in frames {
+            let [x, y, w, h] = frame.rect;
+            let clip = [0.0, 0.0, w as f32, h as f32];
+            let layers = sources.iter().filter(|(id, _)| frame.shown.contains(id));
+            // The layers below the top layer that hides them do not show.
+            let layers: Vec<&LayerDraw> = layers.map(|(_, layer)| layer).collect();
+            let start = layers
+                .iter()
+                .rposition(|l| l.opacity >= 1.0 && l.blend == BlendMode::Normal);
+            let mut group = Vec::new();
+            for layer in &layers[start.unwrap_or(0)..] {
+                group.push(Draw {
+                    pass: Pass::Layer(layer.key.layer),
+                    source: Some(layer.key),
+                    rivers: false,
+                    lines: layer.lines
+                        && layer.display == RasterDisplay::Bands
+                        && layer.bands.stops().iter().any(|stop| stop.line.on),
+                    clip,
+                    uniforms: self.uniforms(canvas, Some(layer), false, false, Some(&frame.place)),
+                });
+            }
+            draws.push((
+                frame.id,
+                Group {
+                    target: FRAME_TARGET + u64::from(frame.id),
+                    place: Some([x, y, w, h]),
+                    mesh: Some(frame.mesh),
+                    mask: frame.mask,
+                    draws: group,
+                },
+            ));
+        }
+        let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
+        Some(
+            draws
+                .into_iter()
+                .map(|(id, group)| {
+                    let job = GpuJob::Group(Box::new(group));
+                    (
+                        id,
+                        GlobeCallback {
+                            frame: gpu.clone(),
+                            job,
+                        },
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// The things that the canvas paints in this frame, from the bottom, or
     /// `None` with no wgpu renderer.
     ///
@@ -2979,6 +3139,7 @@ impl Globe {
                     rivers: rivers(key.layer, display, self.preview.rivers),
                     window: true,
                     lines: true,
+                    blend: BlendMode::Normal,
                 }));
             }
             Some(stack) => {
@@ -2993,6 +3154,7 @@ impl Globe {
                             hillshade,
                             rivers: on,
                             lines,
+                            blend,
                         } => {
                             let source = self.source(id).zip(self.display_map(id));
                             if let Some((key, map)) = source {
@@ -3006,6 +3168,7 @@ impl Globe {
                                     rivers: rivers(key.layer, display, on),
                                     window: !key.display,
                                     lines,
+                                    blend,
                                 }));
                             }
                         }
@@ -3013,26 +3176,16 @@ impl Globe {
                 }
             }
         }
-        let opaque = |item: &Item| matches!(item, Item::Raster(layer) if layer.opacity >= 1.0);
+        // A layer that blends shows the layers below it through itself.
+        let opaque = |item: &Item| matches!(item, Item::Raster(layer) if layer.opacity >= 1.0 && layer.blend == BlendMode::Normal);
         let start = items.iter().rposition(opaque);
         let top = items.iter().rposition(|i| matches!(i, Item::Raster(..)));
 
-        let frame = Arc::new(Frame {
-            format,
-            link: self.link.clone(),
-            full: self.full,
-            smooth_full: items
-                .iter()
-                .any(|item| matches!(item, Item::Raster(layer) if Some(layer.key) == self.full)),
-            copies: {
-                let layers = self.layers.iter();
-                let keys = |l: &Layer| [l.copy.as_ref().map(|copy| copy.key), l.old_copy];
-                layers.flat_map(keys).flatten().collect()
-            },
-            rivers: river_layers.iter().map(|(layer, _)| *layer).collect(),
-            flat: (self.world_view == WorldView::Flat).then(|| self.flat.mesh()),
-            epoch: self.epoch,
-        });
+        let smooth_full = items
+            .iter()
+            .any(|item| matches!(item, Item::Raster(layer) if Some(layer.key) == self.full));
+        let flat_mesh = (self.world_view == WorldView::Flat).then(|| self.flat.mesh());
+        let frame = self.gpu_frame(format, smooth_full, &river_layers, flat_mesh.clone());
         let draw_job = |draw| GpuJob::Draw(Box::new(draw));
         let callback = |job| {
             Paint::Callback(GlobeCallback {
@@ -3050,7 +3203,7 @@ impl Globe {
             rivers: false,
             lines: false,
             clip,
-            uniforms: self.uniforms(canvas, None, graticule, small),
+            uniforms: self.uniforms(canvas, None, graticule, small, None),
         };
         let layer = |item: &Item, small: bool| match item {
             Item::Raster(layer) => Some(Draw {
@@ -3063,7 +3216,14 @@ impl Globe {
                     && layer.display == RasterDisplay::Bands
                     && layer.bands.stops().iter().any(|stop| stop.line.on),
                 clip,
-                uniforms: self.uniforms(canvas, Some(layer), false, small),
+                uniforms: {
+                    let mut uniforms = self.uniforms(canvas, Some(layer), false, small, None);
+                    // The blurred copy mixes nothing.
+                    if small {
+                        uniforms.turn[2] = 0.0;
+                    }
+                    uniforms
+                },
             }),
             Item::Vector(_) => None,
         };
@@ -3087,24 +3247,61 @@ impl Globe {
                 .chain([plain(Pass::Rim, false, false)]);
             passes.map(|draw| callback(draw_job(draw)))
         };
+        // The passes of the raster layers between two vector layers. A run
+        // with a blend mode draws into a target of its own, because a blend
+        // reads the pixels below the layer.
+        let mut run: Vec<Draw> = Vec::new();
+        let mut groups = 0;
+        let mut flush = |run: &mut Vec<Draw>, out: &mut Vec<Paint>| {
+            let draws = std::mem::take(run);
+            if draws.iter().all(|draw| draw.uniforms.turn[2] < 1.0) {
+                out.extend(draws.into_iter().map(|draw| callback(draw_job(draw))));
+                return;
+            }
+            groups += 1;
+            let group = Group {
+                target: groups,
+                place: None,
+                mesh: flat_mesh.clone(),
+                mask: None,
+                draws,
+            };
+            out.push(callback(GpuJob::Group(Box::new(group))));
+        };
         if start.is_none() {
-            out.push(callback(draw_job(plain(Pass::Ground, false, false))));
+            run.push(plain(Pass::Ground, false, false));
         }
         if top.is_none() {
+            flush(&mut run, &mut out);
             out.extend(over());
         }
         for (at, item) in items.iter().enumerate().skip(start.unwrap_or(0)) {
             match item {
-                Item::Vector(id) => out.push(Paint::Vector(*id)),
+                Item::Vector(id) => {
+                    flush(&mut run, &mut out);
+                    out.push(Paint::Vector(*id));
+                }
                 Item::Raster(..) => {
-                    out.extend(layer(item, false).map(|draw| callback(draw_job(draw))));
+                    run.extend(layer(item, false));
                     if top == Some(at) {
+                        flush(&mut run, &mut out);
                         out.extend(over());
                     }
                 }
             }
         }
+        flush(&mut run, &mut out);
         Some(out)
+    }
+}
+
+/// The opacity of a layer for the test of what it hides. A layer that
+/// blends hides nothing.
+fn hides(opacity: f32, blend: BlendMode) -> f32 {
+    if blend == BlendMode::Normal {
+        opacity
+    } else {
+        0.0
     }
 }
 
@@ -3137,6 +3334,40 @@ struct LayerDraw<'a> {
     window: bool,
     /// The pass draws the lines of the stops.
     lines: bool,
+    blend: BlendMode,
+}
+
+/// Where a map frame draws the flat map in its target of pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FramePlace {
+    /// The pixel of the target that shows the center of the map.
+    pub center: [f32; 2],
+    /// The center of the map, in units of the projection of radius 1.
+    pub map_center: [f32; 2],
+    /// Pixels in one unit of the projection.
+    pub units_to_pixels: f32,
+    /// The turn of the map, in radians clockwise.
+    pub rotation: f64,
+    /// Points of the page in one radian of the world.
+    pub points_per_radian: f64,
+}
+
+/// The first number of a target of a map frame. The numbers below it are for
+/// the groups of the canvas.
+pub const FRAME_TARGET: TargetId = 1 << 32;
+
+/// A map frame to draw.
+pub struct FrameDraw {
+    pub id: u32,
+    pub place: FramePlace,
+    /// The left, the top, the width, and the height of the target on the
+    /// screen, in pixels.
+    pub rect: [u32; 4],
+    pub mesh: Arc<flat::FlatMesh>,
+    /// A shape that cuts the layers. The mask has the size of the target.
+    pub mask: Option<Arc<Mask>>,
+    /// The raster layers that the map shows.
+    pub shown: Vec<RasterId>,
 }
 
 #[cfg(test)]

@@ -70,6 +70,9 @@ struct Uniforms {
     // 1 when the passes of `edges.wgsl` ran for this layer, then the radius
     // of their search in pixels.
     edges: vec4<f32>,
+    // The cosine and the sine of the turn of the flat map, clockwise on the
+    // screen, and the blend mode of the layer as a number of `BlendMode`.
+    turn: vec4<f32>,
     // The bands, from the lowest to the highest.
     bands: array<Band, 32>,
     // The lines of the stops, from the lowest stop to the highest. There is
@@ -86,6 +89,9 @@ const MODE_SMOOTH: i32 = 2;
 @group(0) @binding(1) var channels: texture_2d_array<u32>;
 // The channel window of `vale-terrain`, with the same two bytes.
 @group(0) @binding(2) var window_channels: texture_2d<u32>;
+// The layers below the layer pass, in a pass that blends. The color is
+// multiplied by the alpha.
+@group(0) @binding(3) var backdrop: texture_2d<f32>;
 
 const PI: f32 = 3.14159265;
 const RIVER_COLOR: vec3<f32> = vec3<f32>(0.16, 0.36, 0.62);
@@ -404,6 +410,53 @@ fn flat_height(d: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>) -> vec2<f32> {
     return vec2<f32>(h.x, length(pixel_slope(d, h.yz, dx, dy)));
 }
 
+// The blend function of a mode for one channel, as in the W3C compositing
+// rules. `b` is the backdrop, and `s` is the layer.
+fn hard_light(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    let multiply = b * 2.0 * s;
+    let screen = b + (2.0 * s - 1.0) - b * (2.0 * s - 1.0);
+    return select(screen, multiply, s <= vec3<f32>(0.5));
+}
+
+fn color_dodge(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    let dodge = min(vec3<f32>(1.0), b / max(1.0 - s, vec3<f32>(1e-6)));
+    let high = select(dodge, vec3<f32>(1.0), s >= vec3<f32>(1.0));
+    return select(high, vec3<f32>(0.0), b <= vec3<f32>(0.0));
+}
+
+fn color_burn(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    let burn = 1.0 - min(vec3<f32>(1.0), (1.0 - b) / max(s, vec3<f32>(1e-6)));
+    let low = select(burn, vec3<f32>(0.0), s <= vec3<f32>(0.0));
+    return select(low, vec3<f32>(1.0), b >= vec3<f32>(1.0));
+}
+
+fn blend_function(mode: i32, b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    switch mode {
+        case 1: { return b * s; }
+        case 2: { return b + s - b * s; }
+        case 3: { return hard_light(s, b); }
+        case 4: { return min(b, s); }
+        case 5: { return max(b, s); }
+        case 6: { return color_dodge(b, s); }
+        case 7: { return color_burn(b, s); }
+        case 8: { return hard_light(b, s); }
+        case 9: { return soft_light(b, s); }
+        case 10: { return abs(b - s); }
+        case 11: { return b + s - 2.0 * b * s; }
+        default: { return s; }
+    }
+}
+
+// The layer `color` with `alpha`, mixed with the layers below it by the
+// blend mode. The result replaces the pixel, so the pass has no blend state.
+fn blended(frag: vec2<f32>, color: vec3<f32>, alpha: f32) -> vec4<f32> {
+    let below = textureLoad(backdrop, vec2<i32>(floor(frag)), 0);
+    let ab = below.a;
+    let cb = select(vec3<f32>(0.0), below.rgb / ab, ab > 0.0);
+    let mixed = (1.0 - ab) * color + ab * blend_function(i32(u.turn.z), cb, color);
+    return vec4<f32>(alpha * mixed + (1.0 - alpha) * below.rgb, alpha + ab * (1.0 - alpha));
+}
+
 @fragment
 fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let at = disk(frag);
@@ -417,6 +470,21 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let color = ground(h.x, h.y, at.d, at.px, frag.xy) * at.shade;
     let alpha = u.layer.x;
     return vec4<f32>(color * alpha, alpha);
+}
+
+@fragment
+fn fs_main_blend(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let below = textureLoad(backdrop, vec2<i32>(floor(frag.xy)), 0);
+    let at = disk(frag);
+    if at.cover <= 0.0 {
+        return below;
+    }
+    var h = edge_shown(frag.xy);
+    if h.x < 0.0 {
+        h = disk_height(at);
+    }
+    let color = ground(h.x, h.y, at.d, at.px, frag.xy) * at.shade;
+    return blended(frag.xy, color, u.layer.x);
 }
 
 // The plain ground below the layers.
@@ -461,8 +529,11 @@ struct FlatVertex {
 // direction of the place there.
 @vertex
 fn vs_flat(@location(0) point: vec2<f32>, @location(1) dir: vec3<f32>) -> FlatVertex {
-    let offset = vec2<f32>(point.x - u.flat.z, u.flat.w - point.y);
-    let pixel = u.globe.xy + offset * u.globe.z;
+    let offset = vec2<f32>(point.x - u.flat.z, point.y - u.flat.w);
+    let c = u.turn.x;
+    let s = u.turn.y;
+    let turned = vec2<f32>(offset.x * c + offset.y * s, offset.x * s - offset.y * c);
+    let pixel = u.globe.xy + turned * u.globe.z;
     let ndc = vec2<f32>(pixel.x / u.screen.x * 2.0 - 1.0, 1.0 - pixel.y / u.screen.y * 2.0);
     return FlatVertex(vec4<f32>(ndc, 0.0, 1.0), dir);
 }
@@ -491,6 +562,19 @@ fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
     let angle = max(length(dx), length(dy));
     let alpha = u.layer.x;
     return vec4<f32>(ground(h.x, h.y, d, angle, in.position.xy) * alpha, alpha);
+}
+
+@fragment
+fn fs_flat_blend(in: FlatVertex) -> @location(0) vec4<f32> {
+    let d = normalize(in.dir);
+    let dx = dpdx(d);
+    let dy = dpdy(d);
+    var h = edge_shown(in.position.xy);
+    if h.x < 0.0 {
+        h = flat_height(d, dx, dy);
+    }
+    let angle = max(length(dx), length(dy));
+    return blended(in.position.xy, ground(h.x, h.y, d, angle, in.position.xy), u.layer.x);
 }
 
 @fragment

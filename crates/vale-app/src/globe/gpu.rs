@@ -60,12 +60,30 @@ pub struct Uniforms {
     /// 1 when the passes of the lines of the stops ran for this layer, then
     /// the radius of their search in pixels.
     pub edges: [f32; 4],
+    /// The cosine and the sine of the turn of the flat map, and the number
+    /// of the blend mode of the layer.
+    pub turn: [f32; 4],
     pub bands: [BandUniform; MAX_BANDS],
     pub lines: [LineUniform; MAX_BANDS + 1],
 }
 
+/// A render target that the passes of one callback draw into.
+pub type TargetId = u64;
+
+/// The canvas: the passes draw straight into the target of egui.
+pub const CANVAS: TargetId = 0;
+
+/// What a pass draws on: the globe, or the mesh of the flat view. A flat
+/// view with no mesh yet draws nothing.
+#[derive(Clone)]
+pub enum View {
+    Globe,
+    Flat(Option<GpuMesh>),
+}
+
 /// The mesh of the flat view on the GPU.
-struct GpuMesh {
+#[derive(Clone)]
+pub struct GpuMesh {
     spec: vale_sphere::ProjectionSpec,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -143,6 +161,9 @@ struct Slot {
     /// generation of the full heightmap that gives the window texture.
     /// `None`: the texture is empty.
     rivers: (Option<u64>, Option<u64>),
+    /// The number of the offscreen target that gives the backdrop, or 0 for
+    /// the empty one.
+    backdrop: u64,
 }
 
 /// The channel map of the rivers of one layer on the GPU.
@@ -159,16 +180,27 @@ struct Resources {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     flat_pipeline: wgpu::RenderPipeline,
+    /// The layer passes that mix with the backdrop.
+    blend_pipeline: wgpu::RenderPipeline,
+    flat_blend_pipeline: wgpu::RenderPipeline,
+    /// Puts an offscreen target on the screen.
+    composite: wgpu::RenderPipeline,
+    composite_layout: wgpu::BindGroupLayout,
     /// The passes that read no heightmap: the ground and the graticule, on
     /// the globe and in the flat view, and the edge of the globe.
     plain: [wgpu::RenderPipeline; 5],
-    mesh: Option<GpuMesh>,
+    meshes: Vec<GpuMesh>,
+    no_backdrop: wgpu::TextureView,
+    no_mask: wgpu::TextureView,
+    /// The offscreen targets.
+    targets: HashMap<TargetId, Offscreen>,
+    target_count: u64,
     /// Channel textures with no river, for a pass with no rivers.
     no_channels: wgpu::TextureView,
     no_window: wgpu::TextureView,
     /// The pass and the target of each slot. True: the small target of the
     /// blurred copy.
-    slots: HashMap<(Pass, bool), Slot>,
+    slots: HashMap<(TargetId, Pass, bool), Slot>,
     /// The heightmap that the brush paints.
     full: Option<(MapKey, GpuHeightmap)>,
     /// The reduced copies that the globe draws.
@@ -229,6 +261,16 @@ impl Resources {
                 },
                 texture(1, wgpu::TextureViewDimension::D2Array),
                 texture(2, wgpu::TextureViewDimension::D2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let tiles = tiles_layout(device);
@@ -261,7 +303,7 @@ impl Resources {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = |label, layout, vertex, fragment, flat: bool| {
+        let pipeline = |label, layout, vertex, fragment, flat: bool, replace: bool| {
             let buffers = [Some(vertex_layout.clone())];
             let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
                 if flat { &buffers } else { &[] };
@@ -279,7 +321,7 @@ impl Resources {
                     entry_point: Some(fragment),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        blend: (!replace).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: Default::default(),
@@ -291,6 +333,70 @@ impl Resources {
                 cache: None,
             })
         };
+        let group_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("group"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("group.wgsl").into()),
+        });
+        let group_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty,
+            count: None,
+        };
+        let group_texture = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
+        let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("group"),
+            entries: &[
+                group_entry(
+                    0,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                group_entry(1, group_texture),
+                group_entry(2, group_texture),
+            ],
+        });
+        let composite_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("group"),
+                bind_group_layouts: &[Some(&composite_layout)],
+                immediate_size: 0,
+            });
+        let composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("group"),
+            layout: Some(&composite_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &group_shader,
+                entry_point: Some("vs_group"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &group_shader,
+                entry_point: Some("fs_group"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let empty = |label, layers, dimension| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -313,22 +419,59 @@ impl Resources {
         };
         Resources {
             format,
-            flat_pipeline: pipeline("flat", &with_tiles, "vs_flat", "fs_flat", true),
-            pipeline: pipeline("globe", &with_tiles, "vs_main", "fs_main", false),
+            flat_pipeline: pipeline("flat", &with_tiles, "vs_flat", "fs_flat", true, false),
+            pipeline: pipeline("globe", &with_tiles, "vs_main", "fs_main", false, false),
+            blend_pipeline: pipeline(
+                "globe blend",
+                &with_tiles,
+                "vs_main",
+                "fs_main_blend",
+                false,
+                true,
+            ),
+            flat_blend_pipeline: pipeline(
+                "flat blend",
+                &with_tiles,
+                "vs_flat",
+                "fs_flat_blend",
+                true,
+                true,
+            ),
+            composite,
+            composite_layout,
             plain: [
-                pipeline("ground", &no_tiles, "vs_main", "fs_ground", false),
-                pipeline("graticule", &no_tiles, "vs_main", "fs_graticule", false),
-                pipeline("flat ground", &no_tiles, "vs_flat", "fs_flat_ground", true),
+                pipeline("ground", &no_tiles, "vs_main", "fs_ground", false, false),
+                pipeline(
+                    "graticule",
+                    &no_tiles,
+                    "vs_main",
+                    "fs_graticule",
+                    false,
+                    false,
+                ),
+                pipeline(
+                    "flat ground",
+                    &no_tiles,
+                    "vs_flat",
+                    "fs_flat_ground",
+                    true,
+                    false,
+                ),
                 pipeline(
                     "flat graticule",
                     &no_tiles,
                     "vs_flat",
                     "fs_flat_graticule",
                     true,
+                    false,
                 ),
-                pipeline("rim", &no_tiles, "vs_main", "fs_rim", false),
+                pipeline("rim", &no_tiles, "vs_main", "fs_rim", false, false),
             ],
-            mesh: None,
+            meshes: Vec::new(),
+            no_backdrop: empty_float("no backdrop", device),
+            no_mask: empty_float("no mask", device),
+            targets: HashMap::new(),
+            target_count: 0,
             no_channels: empty(
                 "no channels",
                 FACES as u32,
@@ -389,7 +532,7 @@ impl Resources {
             }
             Pass::Ground | Pass::Graticule | Pass::Rim => true,
         };
-        self.slots.retain(|(pass, _), _| live(pass));
+        self.slots.retain(|(_, pass, _), _| live(pass));
         self.edges.retain(|layer| live(&Pass::Layer(*layer)));
         self.channels
             .retain(|layer, _| frame.rivers.contains(layer));
@@ -460,9 +603,20 @@ impl Resources {
         bytes.sum()
     }
 
-    /// Writes the uniforms of one pass. `small`: the pass draws into the
-    /// small target of the blurred copy.
-    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draw: &Draw, small: bool) {
+    /// Writes the uniforms of one pass into the target `target`. `small`: the
+    /// pass draws into the small target of the blurred copy. `backdrop` is the
+    /// number and the view of the texture that holds the layers below.
+    fn write(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        draw: &Draw,
+        target: TargetId,
+        small: bool,
+        backdrop: Option<(u64, wgpu::TextureView)>,
+    ) {
+        let key = (target, draw.pass, small);
+        let number = backdrop.as_ref().map_or(0, |(number, _)| *number);
         // A layer has its channel map. Only the full heightmap has the
         // window of small rivers.
         let layer = match draw.pass {
@@ -476,8 +630,8 @@ impl Resources {
             _ => None,
         };
         let rivers = (layer.map(|channels| channels.number), window);
-        let stale = |slot: &Slot| slot.rivers != rivers;
-        if self.slots.get(&(draw.pass, small)).is_none_or(stale) {
+        let stale = |slot: &Slot| slot.rivers != rivers || slot.backdrop != number;
+        if self.slots.get(&key).is_none_or(stale) {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("globe uniforms"),
                 size: size_of::<Uniforms>() as u64,
@@ -505,16 +659,25 @@ impl Resources {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(window),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(
+                            backdrop
+                                .as_ref()
+                                .map_or(&self.no_backdrop, |(_, view)| view),
+                        ),
+                    },
                 ],
             });
             let slot = Slot {
                 buffer,
                 bind_group,
                 rivers,
+                backdrop: number,
             };
-            self.slots.insert((draw.pass, small), slot);
+            self.slots.insert(key, slot);
         }
-        let slot = &self.slots[&(draw.pass, small)];
+        let slot = &self.slots[&key];
         queue.write_buffer(&slot.buffer, 0, bytemuck::bytes_of(&draw.uniforms));
     }
 
@@ -537,23 +700,29 @@ impl Resources {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         draw: &Draw,
+        target: TargetId,
         size: [u32; 2],
-        flat: bool,
+        view: &View,
     ) -> Option<u32> {
         let Pass::Layer(layer) = draw.pass else {
             return None;
         };
         let radius = edges::radius(edges::max_half(&draw.uniforms.lines)).filter(|_| draw.lines)?;
         let (tiles, levels) = self.layer_groups(draw)?;
-        let uniforms = self.slots.get(&(draw.pass, false))?.bind_group.clone();
-        let mesh = match (&self.mesh, flat) {
-            (_, false) => None,
-            (Some(mesh), true) => Some(edges::Mesh {
+        let uniforms = self
+            .slots
+            .get(&(target, draw.pass, false))?
+            .bind_group
+            .clone();
+        let flat = !matches!(view, View::Globe);
+        let mesh = match view {
+            View::Globe => None,
+            View::Flat(Some(mesh)) => Some(edges::Mesh {
                 vertices: &mesh.vertices,
                 indices: &mesh.indices,
                 count: mesh.count,
             }),
-            (None, true) => return None,
+            View::Flat(None) => return None,
         };
         let groups = edges::Groups {
             uniforms: &uniforms,
@@ -585,23 +754,26 @@ impl Resources {
             inputs: hasher.finish(),
         };
         self.edges
-            .encode(device, encoder, layer, extent, groups, mesh);
+            .encode(device, encoder, (target, layer), extent, groups, mesh);
         Some(radius)
     }
 
-    /// Draws one pass on the globe, or on the mesh of the flat view. `screen`
-    /// is the size of the render target in pixels.
+    /// Draws one pass on the globe, or on the mesh of the flat view, into the
+    /// target `target`. `screen` is the size of the render target in pixels.
     fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         draw: &Draw,
+        target: TargetId,
         small: bool,
-        flat: bool,
+        view: &View,
         screen: [u32; 2],
     ) {
-        let Some(slot) = self.slots.get(&(draw.pass, small)) else {
+        let flat = !matches!(view, View::Globe);
+        let Some(slot) = self.slots.get(&(target, draw.pass, small)) else {
             return;
         };
+        let blend = draw.uniforms.turn[2] >= 1.0;
         let kind = match draw.pass {
             Pass::Ground => Some(GROUND),
             Pass::Graticule => Some(GRATICULE),
@@ -615,7 +787,9 @@ impl Resources {
         let pipeline = match kind {
             Some(RIM) => &self.plain[RIM],
             Some(kind) => &self.plain[kind + if flat { FLAT } else { 0 }],
+            None if flat && blend => &self.flat_blend_pipeline,
             None if flat => &self.flat_pipeline,
+            None if blend => &self.blend_pipeline,
             None => &self.pipeline,
         };
         if let Pass::Layer(layer) = draw.pass {
@@ -624,13 +798,13 @@ impl Resources {
             };
             pass.set_bind_group(1, &tiles, &[]);
             pass.set_bind_group(2, &levels, &[]);
-            pass.set_bind_group(3, self.edges.group(layer), &[]);
+            pass.set_bind_group(3, self.edges.group((target, layer)), &[]);
         }
         pass.set_bind_group(0, &slot.bind_group, &[]);
         pass.set_pipeline(pipeline);
         if !flat {
             pass.draw(0..3, 0..1);
-        } else if let Some(mesh) = &self.mesh {
+        } else if let View::Flat(Some(mesh)) = view {
             // The shader places the mesh on the whole render target.
             pass.set_viewport(0.0, 0.0, screen[0] as f32, screen[1] as f32, 0.0, 1.0);
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
@@ -639,6 +813,322 @@ impl Resources {
         }
     }
 }
+
+/// A texture of 1 by 1 pixels for a binding that a pass does not read.
+fn empty_float(label: &str, device: &wgpu::Device) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// The coverage of a shape for each pixel of a target, from 0 to 255.
+pub struct Mask {
+    /// A number for the pixels. A group that has the mask of this number on
+    /// the GPU does not send it again.
+    pub id: u64,
+    pub size: [u32; 2],
+    pub alpha: Vec<u8>,
+}
+
+/// Passes that draw into a target of their own, and then put it on the
+/// screen. A pass can mix its colors with the passes before it, because the
+/// target holds them.
+pub struct Group {
+    pub target: TargetId,
+    /// The left, the top, the width, and the height of the target on the
+    /// screen, in pixels. `None`: the whole screen.
+    pub place: Option<[u32; 4]>,
+    /// The mesh of the flat view, or `None` for the globe.
+    pub mesh: Option<Arc<FlatMesh>>,
+    /// A shape that cuts the pixels. The mask has the size of the target.
+    pub mask: Option<Arc<Mask>>,
+    pub draws: Vec<Draw>,
+}
+
+/// The longest time that the target of a group stays after the last frame
+/// that drew it.
+const TARGET_LIFE: Duration = Duration::from_secs(2);
+
+/// The target of a group, and the layers below the pass that is drawn.
+struct Offscreen {
+    number: u64,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+    layers: wgpu::Texture,
+    layers_view: wgpu::TextureView,
+    below: wgpu::Texture,
+    below_view: wgpu::TextureView,
+    place: wgpu::Buffer,
+    /// The number of the mask on the GPU, and its view.
+    mask: Option<(u64, wgpu::TextureView)>,
+    bind: Option<wgpu::BindGroup>,
+    used: Instant,
+}
+
+impl Resources {
+    /// The mesh of a projection on the GPU, or `None`.
+    fn mesh_of(&self, spec: vale_sphere::ProjectionSpec) -> Option<&GpuMesh> {
+        self.meshes.iter().find(|m| m.spec == spec)
+    }
+
+    /// Puts the mesh on the GPU if it is not there.
+    fn ensure_mesh(&mut self, device: &wgpu::Device, mesh: &FlatMesh) {
+        if self.mesh_of(mesh.spec).is_some() {
+            return;
+        }
+        // A frame and the canvas show a few projections at one time.
+        if self.meshes.len() >= MESHES {
+            self.meshes.remove(0);
+        }
+        self.meshes.push(GpuMesh::new(device, mesh));
+        self.version += 1;
+    }
+
+    /// The view of a pass that draws `flat`.
+    fn view_of(&self, flat: Option<&FlatMesh>) -> View {
+        match flat {
+            None => View::Globe,
+            Some(mesh) => View::Flat(self.mesh_of(mesh.spec).cloned()),
+        }
+    }
+
+    fn ensure_offscreen(&mut self, device: &wgpu::Device, id: TargetId, size: [u32; 2]) {
+        let now = Instant::now();
+        self.targets
+            .retain(|key, t| *key == id || now.duration_since(t.used) < TARGET_LIFE);
+        if let Some(target) = self.targets.get_mut(&id)
+            && target.size == size
+            && target.format == self.format
+        {
+            target.used = now;
+            return;
+        }
+        let texture = |label| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let (layers, below) = (texture("group layers"), texture("group below"));
+        self.target_count += 1;
+        let place = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("group place"),
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let target = Offscreen {
+            number: self.target_count,
+            size,
+            format: self.format,
+            layers_view: layers.create_view(&Default::default()),
+            below_view: below.create_view(&Default::default()),
+            layers,
+            below,
+            place,
+            mask: None,
+            bind: None,
+            used: now,
+        };
+        self.targets.insert(id, target);
+    }
+
+    /// Makes the mask of a target the mask `mask`, or none.
+    fn set_mask(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        id: TargetId,
+        mask: Option<&Mask>,
+    ) {
+        let Some(target) = self.targets.get_mut(&id) else {
+            return;
+        };
+        let have = target.mask.as_ref().map(|(number, _)| *number);
+        if have == mask.map(|m| m.id) && target.bind.is_some() {
+            return;
+        }
+        target.mask = mask.map(|mask| {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("group mask"),
+                size: wgpu::Extent3d {
+                    width: mask.size[0],
+                    height: mask.size[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                texture.as_image_copy(),
+                &mask.alpha,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(mask.size[0]),
+                    rows_per_image: Some(mask.size[1]),
+                },
+                texture.size(),
+            );
+            (mask.id, texture.create_view(&Default::default()))
+        });
+        let mask_view = target.mask.as_ref().map_or(&self.no_mask, |(_, v)| v);
+        target.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("group"),
+            layout: &self.composite_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: target.place.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&target.layers_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(mask_view),
+                },
+            ],
+        }));
+    }
+
+    /// Draws the passes of a group into its target.
+    fn render_group(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        screen: [u32; 2],
+        group: &Group,
+    ) {
+        let rect = group.place.unwrap_or([0, 0, screen[0], screen[1]]);
+        let size = [rect[2].max(1), rect[3].max(1)];
+        let view = match &group.mesh {
+            Some(mesh) => {
+                self.ensure_mesh(device, mesh);
+                self.view_of(Some(mesh))
+            }
+            None => View::Globe,
+        };
+        self.ensure_offscreen(device, group.target, size);
+        self.set_mask(device, queue, group.target, group.mask.as_deref());
+        let target = &self.targets[&group.target];
+        let place = [
+            rect[0] as f32,
+            rect[1] as f32,
+            (rect[0] + size[0]) as f32,
+            (rect[1] + size[1]) as f32,
+            screen[0] as f32,
+            screen[1] as f32,
+            if target.mask.is_some() { 1.0 } else { 0.0 },
+            0.0,
+        ];
+        queue.write_buffer(&target.place, 0, bytemuck::bytes_of(&place));
+        let (layers, below) = (target.layers_view.clone(), target.below_view.clone());
+        let backdrop = (target.number, below);
+        let extent = wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        };
+        let copy = (target.layers.clone(), target.below.clone());
+        let mut load = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+        // A group with no pass leaves an empty target.
+        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("group"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &layers,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        }));
+        load = wgpu::LoadOp::Load;
+        for draw in &group.draws {
+            let mut draw = *draw;
+            draw.uniforms.screen = [size[0] as f32, size[1] as f32, 0.0, 0.0];
+            let blend = draw.uniforms.turn[2] >= 1.0;
+            let below = || blend.then(|| backdrop.clone());
+            // A write to the queue lands before the passes of the frame, so
+            // the passes of the lines and the layer pass read the second
+            // write, with the radius.
+            self.write(device, queue, &draw, group.target, false, below());
+            let radius = self.encode_edges(device, encoder, &draw, group.target, size, &view);
+            if let Some(radius) = radius {
+                draw.uniforms.edges = [1.0, radius as f32, 0.0, 0.0];
+                self.write(device, queue, &draw, group.target, false, below());
+            }
+            if blend {
+                encoder.copy_texture_to_texture(
+                    copy.0.as_image_copy(),
+                    copy.1.as_image_copy(),
+                    extent,
+                );
+            }
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("group"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &layers,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            self.draw(&mut pass, &draw, group.target, false, &view, size);
+        }
+    }
+
+    /// Puts the target of a group on the screen.
+    fn composite(&self, pass: &mut wgpu::RenderPass<'_>, id: TargetId, screen: [u32; 2]) {
+        let Some(bind) = self.targets.get(&id).and_then(|t| t.bind.as_ref()) else {
+            return;
+        };
+        pass.set_viewport(0.0, 0.0, screen[0] as f32, screen[1] as f32, 0.0, 1.0);
+        pass.set_pipeline(&self.composite);
+        pass.set_bind_group(0, bind, &[]);
+        pass.draw(0..4, 0..1);
+    }
+}
+
+/// The most meshes of projections on the GPU.
+const MESHES: usize = 8;
 
 /// One change of the GPU heightmap. The changes run in the order of the queue.
 pub enum Op {
@@ -980,6 +1470,9 @@ pub enum Job {
     /// Draws the passes into the small target of the blurred copy that the
     /// cards show, and blurs it. It draws nothing on the screen.
     Backdrop(Canvas, Vec<Draw>),
+    /// Draws the passes into a target of their own, and puts it on the
+    /// screen.
+    Group(Box<Group>),
 }
 
 /// One callback of a frame of the globe. egui calls it inside its own
@@ -1297,14 +1790,11 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         }
         let res: &mut Resources = resources.get_mut().expect("inserted above");
         run_ops(device, queue, res, frame);
-        if let Some(mesh) = &frame.flat
-            && res.mesh.as_ref().is_none_or(|m| m.spec != mesh.spec)
-        {
-            res.mesh = Some(GpuMesh::new(device, mesh));
-            res.version += 1;
+        if let Some(mesh) = &frame.flat {
+            res.ensure_mesh(device, mesh);
         }
+        let view = res.view_of(frame.flat.as_deref());
         let size = screen_descriptor.size_in_pixels;
-        let flat = frame.flat.is_some();
         match &self.job {
             Job::Draw(draw) => {
                 let mut draw = **draw;
@@ -1312,18 +1802,21 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
                 // A write to the queue lands before each pass of the frame,
                 // so the passes of the lines and the layer pass all read the
                 // second write, with the radius.
-                res.write(device, queue, &draw, false);
-                if let Some(radius) = res.encode_edges(device, egui_encoder, &draw, size, flat) {
+                res.write(device, queue, &draw, CANVAS, false, None);
+                if let Some(radius) =
+                    res.encode_edges(device, egui_encoder, &draw, CANVAS, size, &view)
+                {
                     draw.uniforms.edges = [1.0, radius as f32, 0.0, 0.0];
-                    res.write(device, queue, &draw, false);
+                    res.write(device, queue, &draw, CANVAS, false, None);
                 }
             }
+            Job::Group(group) => res.render_group(device, queue, egui_encoder, size, group),
             Job::Backdrop(canvas, draws) => {
                 let small = size.map(|s| s.max(1).div_ceil(REDUCTION));
                 for draw in draws {
                     let mut draw = *draw;
                     draw.uniforms.screen = [small[0] as f32, small[1] as f32, 0.0, 0.0];
-                    res.write(device, queue, &draw, true);
+                    res.write(device, queue, &draw, CANVAS, true, None);
                 }
                 let kept = resources.remove::<Backdrop>();
                 let mut backdrop = kept
@@ -1332,7 +1825,7 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
                 let res: &Resources = resources.get().expect("inserted above");
                 backdrop.render(device, queue, egui_encoder, size, canvas, |pass| {
                     for draw in draws {
-                        res.draw(pass, draw, true, flat, small);
+                        res.draw(pass, draw, CANVAS, true, &view, small);
                     }
                 });
                 resources.insert(backdrop);
@@ -1347,11 +1840,17 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         resources: &egui_wgpu::CallbackResources,
     ) {
-        let (Job::Draw(draw), Some(res)) = (&self.job, resources.get::<Resources>()) else {
+        let Some(res) = resources.get::<Resources>() else {
             return;
         };
-        let flat = self.frame.flat.is_some();
-        res.draw(render_pass, draw, false, flat, info.screen_size_px);
+        match &self.job {
+            Job::Draw(draw) => {
+                let view = res.view_of(self.frame.flat.as_deref());
+                res.draw(render_pass, draw, CANVAS, false, &view, info.screen_size_px);
+            }
+            Job::Group(group) => res.composite(render_pass, group.target, info.screen_size_px),
+            Job::Backdrop(..) => {}
+        }
     }
 }
 
