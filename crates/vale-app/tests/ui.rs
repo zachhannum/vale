@@ -213,6 +213,23 @@ fn the_toolbar_toggles_the_graticule() {
 }
 
 #[test]
+fn the_side_list_shows_a_raster_layer_per_map() {
+    let mut h = harness();
+    let height = RasterSpec::height("Height", 64);
+    let height = h.state_mut().add_raster(height).unwrap();
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    h.run_steps(2);
+    let map = vale_app::ui::atlas::selected_map(h.state());
+    assert!(h.state().doc.shown(map, layer));
+    h.get_by_label("Show Height in map").click();
+    h.run_steps(2);
+    assert!(!h.state().doc.shown(map, layer));
+    h.get_by_label("Show Height in map").click();
+    h.run_steps(2);
+    assert!(h.state().doc.shown(map, layer));
+}
+
+#[test]
 fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
     let mut h = globe_harness();
     let height = RasterSpec::height("Height", 64);

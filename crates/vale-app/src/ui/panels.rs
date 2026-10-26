@@ -852,6 +852,29 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     }
+    let map = atlas::selected_map(state);
+    let rasters: Vec<_> = state
+        .doc
+        .project
+        .layers()
+        .iter()
+        .rev()
+        .filter(|l| l.raster().is_some())
+        .map(|l| (l.id, l.name.clone()))
+        .collect();
+    for (id, name) in rasters {
+        let mut on = state.doc.shown(map, id);
+        let resp = ui.checkbox(&mut on, name.as_str());
+        named(
+            &resp,
+            egui::WidgetType::Checkbox,
+            on,
+            format!("Show {name} in map"),
+        );
+        if resp.changed() && state.doc.set_shown(map, id, on) {
+            state.touch();
+        }
+    }
     ui.add_space(6.0);
 }
 
