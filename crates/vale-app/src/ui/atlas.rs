@@ -66,6 +66,7 @@ pub enum FrameTab {
     #[default]
     Frame,
     Projection,
+    Layers,
 }
 
 /// The pan and the zoom of the page on the screen.

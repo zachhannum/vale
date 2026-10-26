@@ -1235,7 +1235,7 @@ fn limit_rows(
 pub const NO_LAYERS: &str = "No layers yet.";
 
 /// The icon of the kind of a layer.
-fn layer_icon(layer: &Layer) -> Icon {
+pub(super) fn layer_icon(layer: &Layer) -> Icon {
     match layer.kind {
         LayerKind::Raster(_) => Icon::Raster,
         LayerKind::Vector(GeometryKind::Point) => Icon::Point,

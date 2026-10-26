@@ -4,13 +4,13 @@
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::ProjectionKind;
-use vale_store::{FrameShape, PageUnits};
+use vale_store::{FrameShape, LayerKind, PageUnits};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW};
 use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
-use super::{rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
+use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
 use crate::ui::atlas::{self, AtlasSelection, AtlasTool, FrameTab};
 use crate::ui::{AppState, Workspace};
@@ -25,7 +25,7 @@ pub const ADD: &str = "Add";
 pub const MAP_FRAME: &str = "Map frame";
 /// The rows of the Add menu that other tasks add.
 const LATER_ITEMS: [&str; 4] = ["Text", "Legend", "Scale bar", "North arrow"];
-/// The tabs of the panel of a frame. The last two come in other tasks.
+/// The tabs of the panel of a frame. The last one comes in another task.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
 pub const MAP_NAME: &str = "Map name";
 pub const SHAPE: &str = "Shape";
@@ -552,6 +552,7 @@ fn selection_panel(
             let key = match state.atlas.tab {
                 FrameTab::Frame => "pad-atlas-frame",
                 FrameTab::Projection => "pad-atlas-projection",
+                FrameTab::Layers => "pad-atlas-layers",
             };
             let card = Card {
                 key,
@@ -566,6 +567,7 @@ fn selection_panel(
                 {
                     FrameTab::Frame => frame_tab(ui, state, controls, id),
                     FrameTab::Projection => projection_tab(ui, state, controls, id),
+                    FrameTab::Layers => layers_tab(ui, state, controls, id),
                 };
             show_card(
                 ctx, state, controls, rects, card, on_title, frame_tabs, body,
@@ -657,13 +659,14 @@ fn frame_tabs(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     let items = [
         (FRAME_TABS[0], true),
         (FRAME_TABS[1], true),
-        (FRAME_TABS[2], false),
+        (FRAME_TABS[2], true),
         (FRAME_TABS[3], false),
     ];
     let active = state.atlas.tab as usize;
     match tabs(ui, controls, &items, active) {
         Some(0) => state.atlas.tab = FrameTab::Frame,
         Some(1) => state.atlas.tab = FrameTab::Projection,
+        Some(2) => state.atlas.tab = FrameTab::Layers,
         _ => {}
     }
     ui.add_space(6.0);
@@ -745,6 +748,40 @@ fn frame_tab(
     let delete = widgets::button_row_in(ui, controls, DELETE_FRAME, true, theme::WARN);
     if delete.clicked() {
         atlas::delete_frame(state);
+    }
+}
+
+/// The layers that the map of a frame can draw, in the order of the Layers
+/// panel. The eye of a row turns the layer on or off in the map.
+fn layers_tab(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: vale_store::FrameId,
+) {
+    let Some(map) = state.doc.project.atlas.frame(id).map(|f| f.map) else {
+        return;
+    };
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let rows: Vec<_> = (state.doc.project.layers().iter())
+        .filter(|l| matches!(l.kind, LayerKind::Vector(_)))
+        .map(|l| (l.id, layer_icon(l), l.name.clone()))
+        .collect();
+    if rows.is_empty() {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
+        return;
+    }
+    for (layer, icon, name) in rows {
+        let shown = state.doc.shown(map, layer);
+        let tapped = ui
+            .push_id(layer.0, |ui| {
+                widgets::eye_row(ui, controls, icon, &name, shown)
+            })
+            .inner;
+        if tapped {
+            state.set_map_shown(map, layer, !shown);
+        }
     }
 }
 

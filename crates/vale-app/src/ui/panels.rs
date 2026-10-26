@@ -831,8 +831,8 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             };
             let resp = ui.checkbox(&mut visible, text);
             ui.weak(format!("{count}"));
-            if resp.changed() && state.doc.set_shown(map, id, visible) {
-                state.touch();
+            if resp.changed() {
+                state.set_map_shown(map, id, visible);
             }
             if resp.clicked() {
                 state.select(Some(LayerRef::Vector(id)));

@@ -9,7 +9,8 @@ use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
-    BlendMode, Feature, GeometryKind, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay,
+    BlendMode, Feature, GeometryKind, Layer, LayerId, LayerKind, MapId, Project, Raster,
+    RasterDisplay,
     RasterId, Rgb, StoreError, World,
 };
 use vale_terrain::{Bands, Heightmap, Mode};
@@ -1028,6 +1029,16 @@ impl AppState {
         self.doc.set_visible(id, visible);
         self.sync_globe();
         self.touch();
+    }
+
+    /// Turns a layer on or off in a map, as one undo step. The eye of the
+    /// World workspace keeps its state.
+    pub fn set_map_shown(&mut self, map: MapId, layer: LayerId, on: bool) {
+        self.save_edit();
+        if self.doc.set_shown(map, layer, on) {
+            self.touch();
+            self.save_edit();
+        }
     }
 
     /// Shows or hides a raster layer.
