@@ -89,6 +89,7 @@ A feature session keeps its context small on purpose.
 
 ## Pull requests
 
+- Before you start a task, pull the latest `main` (`git fetch origin main`), and start the branch from it. Before you push, rebase the branch on `origin/main`.
 - Use one branch for each issue: `feat/<issue>-slug`, `fix/<issue>-slug`, or `chore/<issue>-slug`.
 - Write `Closes #N` in the PR description. Before you ask for review, make sure that each item of the "done when" list is true.
 - Do not wrap PR and issue bodies. Write one line for each paragraph and each list item, with blank lines between them. GitHub shows a single newline as a line break.
