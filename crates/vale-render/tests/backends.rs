@@ -185,6 +185,49 @@ fn rgba_and_png() {
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 }
 
+fn red_blue_png() -> Vec<u8> {
+    let mut list = DisplayList::new(2.0, 1.0);
+    list.push(Item::Fill {
+        path: rect_path(0.0, 0.0, 1.0, 1.0),
+        color: RED,
+        rule: FillRule::NonZero,
+    });
+    list.push(Item::Fill {
+        path: rect_path(1.0, 0.0, 2.0, 1.0),
+        color: BLUE,
+        rule: FillRule::NonZero,
+    });
+    render_png(&list, 1.0).unwrap()
+}
+
+#[test]
+fn png_image_draws_in_its_page_rectangle() {
+    let mut list = DisplayList::new(40.0, 20.0);
+    page_fill(&mut list, WHITE);
+    list.push(Item::Image {
+        png: red_blue_png(),
+        rect: Rect::new(10.0, 5.0, 30.0, 15.0),
+        interpolate: false,
+    });
+    let pm = render_pixmap(&list, 1.0).unwrap();
+    assert_eq!(px(&pm, 5, 10), [255, 255, 255, 255]);
+    assert_eq!(px(&pm, 12, 10), [255, 0, 0, 255]);
+    assert_eq!(px(&pm, 28, 10), [0, 0, 255, 255]);
+}
+
+#[test]
+fn pdf_embeds_a_png_image() {
+    let mut list = DisplayList::new(40.0, 20.0);
+    list.push(Item::Image {
+        png: red_blue_png(),
+        rect: Rect::new(10.0, 5.0, 30.0, 15.0),
+        interpolate: true,
+    });
+    let bytes = render_pdf(&list).unwrap();
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(raw.contains("/Subtype/Image"), "PDF has no image object");
+}
+
 #[test]
 fn errors() {
     let list = DisplayList::new(0.0, 10.0);

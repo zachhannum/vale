@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use krilla::color::rgb;
-use krilla::geom::{PathBuilder, Point, Transform};
+use krilla::geom::{PathBuilder, Point, Size, Transform};
+use krilla::image::Image;
 use krilla::num::NormalizedF32;
 use krilla::page::PageSettings;
 use krilla::paint::{Fill, FillRule, LineCap, LineJoin, Stroke};
@@ -221,6 +222,21 @@ impl PdfDocument {
                     s.draw_path(&p);
                 }
                 Item::Glyphs(run) => draw_run(&mut s, run, &mut self.fonts),
+                Item::Image {
+                    png,
+                    rect,
+                    interpolate,
+                } => {
+                    let Some(size) = Size::from_wh(rect.width() as f32, rect.height() as f32)
+                    else {
+                        continue;
+                    };
+                    let image = Image::from_png(png.clone().into(), *interpolate)
+                        .map_err(RenderError::Pdf)?;
+                    s.push_transform(&Transform::from_translate(rect.x0 as f32, rect.y0 as f32));
+                    s.draw_image(image, size);
+                    s.pop();
+                }
             }
         }
         for pushed in clips {

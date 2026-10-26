@@ -87,6 +87,12 @@ pub enum Item {
         round: bool,
     },
     Glyphs(GlyphRun),
+    /// A PNG image in a page-space rectangle.
+    Image {
+        png: Vec<u8>,
+        rect: Rect,
+        interpolate: bool,
+    },
     /// Clips the items up to the matching `PopClip` to the inside of `path`.
     PushClip {
         path: BezPath,
