@@ -6,10 +6,12 @@ use anyhow::anyhow;
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
 use vale_labeler::Fonts;
 use vale_render::{DisplayList, FillRule, Item};
-use vale_sphere::{LonLat, Projection, ProjectionSpec, graticule, nice_step};
+use vale_sphere::{
+    ClipRect, LonLat, Projection, ProjectionSpec, auto_interval, graticule, graticule_in, wrap180,
+};
 use vale_store::{FrameRecord, Geometry, GeometryKind, Layer, LayerId, MapId, PageRecord, Value};
 use vale_style::expr::Context;
-use vale_style::{Extent, Paint, scale_denominator};
+use vale_style::{Extent, Paint, Stroke, scale_denominator};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
@@ -112,7 +114,16 @@ struct Cache {
     outline: Vec<Point>,
     bounds: Rect,
     layers: HashMap<LayerId, Vec<Option<ProjFeature>>>,
+    /// The graticule lines over the whole sphere, by interval. Only intervals of 1° or more.
     graticules: HashMap<u64, Vec<Vec<Point>>>,
+    /// The graticule lines of the last window, for an interval under 1°.
+    window_graticule: Option<WindowGraticule>,
+}
+
+struct WindowGraticule {
+    interval: f64,
+    window: ClipRect,
+    lines: Vec<Vec<Point>>,
 }
 
 /// The most caches that a pipeline keeps.
@@ -419,10 +430,75 @@ const SELECTION: vale_render::Color = vale_render::Color::rgb(230, 70, 30);
 /// The color of the paper of a page.
 pub const PAPER: vale_render::Color = vale_render::Color::rgb(255, 255, 255);
 
-/// The graticule step of a view, in degrees. `None` when the graticule is off.
+/// The graticule interval of a window view, in degrees. The lines are at
+/// least 80 points apart. `None` when the graticule is off.
 fn graticule_step(on: bool, view: &View, radius_m: f64) -> Option<f64> {
-    let degrees_per_point = 1.0 / (view.scale * radius_m * std::f64::consts::PI / 180.0);
-    on.then(|| nice_step(80.0 * degrees_per_point))
+    let degrees_per_point = 1.0 / (view.scale * radius_m.to_radians());
+    on.then(|| auto_interval(80.0 * degrees_per_point))
+}
+
+/// The smallest interval that has a graticule over the whole sphere.
+const WORLD_GRATICULE_MIN: f64 = 1.0 - 1e-9;
+
+/// The part of the sphere that `area` shows, padded by one interval. The
+/// longitudes are unwrapped about `center_lon`, so they can go past ±180.
+/// A pole inside the area gives all longitudes. The window is empty when
+/// the area shows no part of the sphere.
+fn graticule_window(
+    projection: &Projection,
+    vt: &ViewTransform,
+    area: Rect,
+    center_lon: f64,
+    interval: f64,
+) -> ClipRect {
+    const N: usize = 17;
+    let mut w = ClipRect {
+        lon_min: f64::INFINITY,
+        lon_max: f64::NEG_INFINITY,
+        lat_min: f64::INFINITY,
+        lat_max: f64::NEG_INFINITY,
+    };
+    for i in 0..N {
+        for j in 0..N {
+            let t = |k: usize| k as f64 / (N - 1) as f64;
+            let q = Point::new(
+                area.x0 + area.width() * t(i),
+                area.y0 + area.height() * t(j),
+            );
+            let Some([lon, lat]) = projection.inverse(vt.from_page(q)) else {
+                continue;
+            };
+            let lon = center_lon + wrap180(lon - center_lon);
+            w.lon_min = w.lon_min.min(lon);
+            w.lon_max = w.lon_max.max(lon);
+            w.lat_min = w.lat_min.min(lat);
+            w.lat_max = w.lat_max.max(lat);
+        }
+    }
+    if w.lon_min > w.lon_max {
+        return w;
+    }
+    w.lon_min -= interval;
+    w.lon_max += interval;
+    w.lat_min = (w.lat_min - interval).max(-90.0);
+    w.lat_max = (w.lat_max + interval).min(90.0);
+    let shows = |lat: f64| {
+        projection
+            .forward([center_lon, lat])
+            .is_some_and(|p| area.contains(vt.to_page(p)))
+    };
+    for (pole, south) in [(90.0, false), (-90.0, true)] {
+        if shows(pole) {
+            if south {
+                w.lat_min = -90.0;
+            } else {
+                w.lat_max = 90.0;
+            }
+            w.lon_min = center_lon - 180.0;
+            w.lon_max = center_lon + 180.0;
+        }
+    }
+    w
 }
 
 /// A closed path through rings of page millimeters, in target points.
@@ -438,17 +514,62 @@ fn shape_path(rings: &[Vec<[f64; 2]>], target: FrameTarget) -> BezPath {
 }
 
 impl Cache {
-    /// Projects the graticule lines of a step.
-    fn ensure_graticule(&mut self, step: Option<f64>) {
+    /// Projects the graticule lines of an interval in the part of the
+    /// sphere that `area` shows. An interval of 1° or more covers the
+    /// whole sphere.
+    fn ensure_graticule(
+        &mut self,
+        step: Option<f64>,
+        vt: &ViewTransform,
+        area: Rect,
+        center_lon: f64,
+    ) {
         let Some(step) = step else { return };
-        if self.graticules.contains_key(&step.to_bits()) {
+        if step >= WORLD_GRATICULE_MIN {
+            if !self.graticules.contains_key(&step.to_bits()) {
+                let lines = self.project_lines(&graticule(step));
+                self.graticules.insert(step.to_bits(), lines);
+            }
             return;
         }
-        let lines: Vec<Vec<Point>> = graticule(step)
+        let window = graticule_window(&self.projection, vt, area, center_lon, step);
+        if self
+            .window_graticule
+            .as_ref()
+            .is_some_and(|w| w.interval == step && w.window == window)
+        {
+            return;
+        }
+        let lines = self.project_lines(&graticule_in(step, window));
+        self.window_graticule = Some(WindowGraticule {
+            interval: step,
+            window,
+            lines,
+        });
+    }
+
+    fn project_lines(&self, lines: &[Vec<LonLat>]) -> Vec<Vec<Point>> {
+        lines
             .iter()
             .flat_map(|l| self.projection.project_line(l))
-            .collect();
-        self.graticules.insert(step.to_bits(), lines);
+            .collect()
+    }
+
+    /// The projected graticule lines of an interval that `ensure_graticule` made.
+    fn graticule_lines(&self, step: f64) -> Option<&[Vec<Point>]> {
+        if step >= WORLD_GRATICULE_MIN {
+            self.graticules.get(&step.to_bits()).map(Vec::as_slice)
+        } else {
+            let w = self.window_graticule.as_ref()?;
+            (w.interval == step).then_some(w.lines.as_slice())
+        }
+    }
+
+    /// The longitude at the center of a view.
+    fn center_lon(&self, vt: &ViewTransform) -> f64 {
+        self.projection
+            .inverse(vt.view.center)
+            .map_or(self.spec.lon0, |p| p[0])
     }
 }
 
@@ -470,7 +591,7 @@ fn draw_map<'a>(
     background: bool,
     water: bool,
     ids: &[LayerId],
-    graticule_step: Option<f64>,
+    graticule: Option<(&[Vec<Point>], Stroke)>,
     selection: Option<Selection>,
 ) -> DrawnMap<'a> {
     let style = &doc.frame.style;
@@ -504,9 +625,7 @@ fn draw_map<'a>(
     }
 
     // 4: graticule.
-    if let Some(step) = graticule_step
-        && let Some(lines) = cache.graticules.get(&step.to_bits())
-    {
+    if let Some((lines, stroke)) = graticule {
         let mut path = BezPath::new();
         for l in lines {
             let pts = map_pts(vt, l);
@@ -521,8 +640,8 @@ fn draw_map<'a>(
         if !path.elements().is_empty() {
             list.push(Item::Stroke {
                 path,
-                color: style.graticule.color,
-                width: style.graticule.width,
+                color: stroke.color,
+                width: stroke.width,
                 round: false,
             });
         }
@@ -627,6 +746,7 @@ impl Pipeline {
                     bounds,
                     layers: HashMap::new(),
                     graticules: HashMap::new(),
+                    window_graticule: None,
                 };
                 self.caches.insert(0, cache);
                 self.caches.truncate(MAX_CACHES);
@@ -764,12 +884,16 @@ impl Pipeline {
         let step = graticule_step(doc.frame.graticule, &view, radius_m);
         let ids = drawn_layers(doc, None);
         let cache = self.ensure(doc, doc.first_map(), &ids)?;
-        cache.ensure_graticule(step);
+        let center_lon = cache.center_lon(&vt);
+        cache.ensure_graticule(step, &vt, page, center_lon);
         let cache = &*cache;
+        let graticule = step
+            .and_then(|s| cache.graticule_lines(s))
+            .map(|lines| (lines, doc.frame.style.graticule));
 
         let mut list = DisplayList::new(size.0, size.1);
         let drawn = draw_map(
-            &mut list, doc, cache, &vt, page, true, true, &ids, step, selection,
+            &mut list, doc, cache, &vt, page, true, true, &ids, graticule, selection,
         );
 
         // 7 to 9: scale bar, labels.
@@ -902,22 +1026,29 @@ impl Pipeline {
         selection: Option<Selection>,
         water: bool,
     ) -> anyhow::Result<Composed> {
-        let radius_m = doc.project.world.radius_km * 1000.0;
         let ids = drawn_layers(doc, Some(frame.map));
         let cache = self.ensure(doc, frame.map, &ids)?;
         let vt = atlas::frame_transform(&cache.projection, frame, target);
-        let step = graticule_step(frame.graticule, &vt.view, radius_m);
-        cache.ensure_graticule(step);
+        let area = frame_area(frame, target).intersect(part);
+        let step = atlas::graticule_interval(&cache.projection, frame);
+        cache.ensure_graticule(step, &vt, area, frame.center[0]);
         let cache = &*cache;
+        let [r, g, b] = frame.graticule.color;
+        let stroke = Stroke {
+            color: vale_render::Color::rgb(r, g, b),
+            width: frame.graticule.width,
+        };
+        let graticule = step
+            .and_then(|s| cache.graticule_lines(s))
+            .map(|lines| (lines, stroke));
 
         let mut list = DisplayList::new(part.x1, part.y1);
-        let area = frame_area(frame, target).intersect(part);
         list.push(Item::PushClip {
             path: shape_path(&frame.shape.rings(), target),
             rule: FillRule::EvenOdd,
         });
         let drawn = draw_map(
-            &mut list, doc, cache, &vt, area, false, water, &ids, step, selection,
+            &mut list, doc, cache, &vt, area, false, water, &ids, graticule, selection,
         );
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {

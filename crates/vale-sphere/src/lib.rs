@@ -8,7 +8,9 @@ pub mod spec;
 
 pub use clip::{ClipRect, EPS, clip_line_rect, clip_ring_rect, densify, shifts, unwrap};
 pub use frame::{Frame, LonLat, oblique_center, oblique_pole, wrap180};
-pub use graticule::{distance_km, graticule, nice_step};
+pub use graticule::{
+    INTERVALS, auto_interval, distance_km, graticule, graticule_in, interval_text,
+};
 pub use kurbo::{Point, Rect};
 pub use projection::{Mesh, Projection, SphereError};
 pub use spec::*;

@@ -3,16 +3,16 @@
 //! shows only with a selection.
 
 use eframe::egui;
-use vale_sphere::ProjectionKind;
-use vale_store::{FrameRecord, FrameShape, PageUnits};
+use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
+use vale_store::{FrameRecord, FrameShape, Graticule, PageUnits};
 
 use super::atlas::{self, AtlasSelection, FrameTab};
 use super::pad::atlas::{
-    ADD_HOLE, ADD_PAGE, AZIMUTH, CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME,
-    DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, HEIGHT, LATITUDE, LONGITUDE,
-    MAP_NAME, OBLIQUE, ORIENTATIONS, PAGE_NAME, POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_VERTEX,
-    ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
-    length_text, unit_name,
+    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME,
+    DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR,
+    GRATICULE_WIDTH, HEIGHT, INTERVAL, LATITUDE, LONGITUDE, MAP_NAME, OBLIQUE, ORIENTATIONS,
+    PAGE_NAME, POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_VERTEX, ROTATION, SAVE_PROJECTION,
+    SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row, length_text, unit_name,
 };
 use super::pad::{GRATICULE, NO_LAYERS};
 use super::{AppState, inspector};
@@ -160,14 +160,67 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             }
             ui.end_row();
         });
-    let mut graticule = frame.graticule;
+    let mut graticule = frame.graticule.on;
     if ui.checkbox(&mut graticule, GRATICULE).changed() {
         atlas::set_graticule(state, id, graticule);
+    }
+    if frame.graticule.on {
+        graticule_rows(ui, state, frame);
     }
     ui.add_space(4.0);
     if ui.button(DELETE_FRAME).clicked() {
         atlas::delete_frame(state);
     }
+}
+
+/// The interval, the color, and the width of the graticule of a frame.
+fn graticule_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let (id, g) = (frame.id, &frame.graticule);
+    let Some((drawn, auto)) = atlas::graticule_intervals(state, id) else {
+        return;
+    };
+    let mut automatic = g.interval.is_none();
+    if ui.checkbox(&mut automatic, AUTO_INTERVAL).changed() {
+        atlas::set_graticule_interval(state, id, (!automatic).then_some(auto));
+    }
+    egui::Grid::new("atlas-graticule")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label(INTERVAL);
+            let combo = egui::ComboBox::from_id_salt("atlas-graticule-interval")
+                .selected_text(interval_text(drawn))
+                .show_ui(ui, |ui| {
+                    for i in INTERVALS.into_iter().rev() {
+                        let chosen = g.interval == Some(i);
+                        if ui.selectable_label(chosen, interval_text(i)).clicked() {
+                            atlas::set_graticule_interval(state, id, Some(i));
+                        }
+                    }
+                });
+            named(&combo.response, egui::WidgetType::ComboBox, INTERVAL);
+            ui.end_row();
+            ui.label(GRATICULE_COLOR);
+            let mut color = g.color;
+            let button = ui.color_edit_button_srgb(&mut color);
+            named(&button, egui::WidgetType::ColorButton, GRATICULE_COLOR);
+            if button.changed() {
+                atlas::set_graticule_color(state, id, color);
+            }
+            ui.end_row();
+            ui.label(GRATICULE_WIDTH);
+            let mut width = g.width;
+            let drag = egui::DragValue::new(&mut width)
+                .range(Graticule::WIDTHS)
+                .speed(0.05)
+                .fixed_decimals(1)
+                .suffix(" pt");
+            let drag = ui.add(drag);
+            named(&drag, egui::WidgetType::DragValue, GRATICULE_WIDTH);
+            if drag.changed() {
+                atlas::set_graticule_width(state, id, width);
+            }
+            ui.end_row();
+        });
 }
 
 /// A switch for each layer, which turns the layer on or off in the

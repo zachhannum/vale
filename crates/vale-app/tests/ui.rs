@@ -78,11 +78,20 @@ fn graticule_checkbox_recomposes() {
     let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
     h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
     h.run_steps(3);
-    assert!(h.state().doc.project.atlas.frame(frame).unwrap().graticule);
+    assert!(
+        h.state()
+            .doc
+            .project
+            .atlas
+            .frame(frame)
+            .unwrap()
+            .graticule
+            .on
+    );
     h.get_by_label("Graticule").click();
     h.run_steps(3);
     let s = h.state();
-    assert!(!s.doc.project.atlas.frame(frame).unwrap().graticule);
+    assert!(!s.doc.project.atlas.frame(frame).unwrap().graticule.on);
     assert_ne!(s.composed.as_ref().unwrap().list.items.len(), before);
 }
 
