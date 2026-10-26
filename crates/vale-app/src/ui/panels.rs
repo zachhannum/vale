@@ -220,6 +220,8 @@ pub const LAYER_NAME: &str = "Layer name";
 /// The slider of the Layers menu with the opacity of the selected raster
 /// layer.
 pub const OPACITY: &str = "Layer opacity";
+/// The menu of the blend mode of a raster layer.
+pub const BLEND: &str = "Blend mode";
 /// The button of the Layers menu that deletes the selected layer.
 pub const DELETE_LAYER: &str = "Delete layer";
 
@@ -334,6 +336,30 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
         );
         if slider.changed() {
             state.set_raster_opacity(raster, percent / 100.0);
+        }
+        let blend = state
+            .doc
+            .project
+            .raster(raster)
+            .map(|r| r.blend)
+            .unwrap_or_default();
+        let mut chosen = blend;
+        let menu = egui::ComboBox::from_label(BLEND)
+            .selected_text(elevation::blend_label(blend))
+            .show_ui(ui, |ui| {
+                for mode in vale_store::BlendMode::ALL {
+                    let label = elevation::blend_label(mode);
+                    ui.selectable_value(&mut chosen, mode, label);
+                }
+            });
+        named(
+            &menu.response,
+            egui::WidgetType::ComboBox,
+            false,
+            BLEND.to_string(),
+        );
+        if chosen != blend {
+            state.set_raster_blend(raster, chosen);
         }
     }
     if ui.button(DELETE_LAYER).clicked() {

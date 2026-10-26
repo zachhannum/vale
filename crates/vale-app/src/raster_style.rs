@@ -12,6 +12,7 @@ pub fn symbolizer_of(r: &Raster) -> RasterSymbolizer {
     RasterSymbolizer {
         display: r.display,
         opacity: r.opacity,
+        blend: r.blend,
         stops: r.stops.clone(),
         colors: r.colors.clone(),
     }
@@ -63,6 +64,7 @@ pub fn load_raster_styles(p: &mut Project) {
         };
         record.display = colors.display;
         record.opacity = colors.opacity;
+        record.blend = colors.blend;
         record.stops.clone_from(&colors.stops);
         record.colors.clone_from(&colors.colors);
     }
