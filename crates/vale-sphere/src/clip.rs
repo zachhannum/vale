@@ -14,6 +14,16 @@ pub struct ClipRect {
     pub lat_max: f64,
 }
 
+impl ClipRect {
+    /// The whole sphere.
+    pub const WORLD: ClipRect = ClipRect {
+        lon_min: -180.0,
+        lon_max: 180.0,
+        lat_min: -90.0,
+        lat_max: 90.0,
+    };
+}
+
 /// Adds points so that no edge is longer than `step` degrees. Linear in the two coordinates.
 pub fn densify(pts: &[LonLat], step: f64, closed: bool) -> Vec<LonLat> {
     let mut out = Vec::new();
