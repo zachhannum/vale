@@ -606,7 +606,7 @@ pub fn layer_row(
             fade(theme::TEXT, shown),
         );
     let eye_icon = if shown { Icon::Eye } else { Icon::EyeOff };
-    let eye_name = format!("{} {name}", if shown { "Hide" } else { "Show" });
+    let eye_name = eye_name(name, shown);
     let open_name = format!("Open {name}");
     let (mut eye, mut open) = (false, false);
     if live && shift == 0.0 {
@@ -640,6 +640,44 @@ pub fn layer_row(
         open,
         delete,
     }
+}
+
+/// The name of the eye of a layer that is on or off.
+pub fn eye_name(name: &str, shown: bool) -> String {
+    format!("{} {name}", if shown { "Hide" } else { "Show" })
+}
+
+/// A row with the icon of the kind of a layer, its name, and an eye at the
+/// right. Returns true if the eye was tapped.
+pub fn eye_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    icon: Icon,
+    name: &str,
+    shown: bool,
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let center = pos2(rect.right() + 8.0 - TOUCH / 2.0, rect.center().y);
+    let eye = Rect::from_center_size(center, vec2(TOUCH, TOUCH));
+    let painter = ui.painter();
+    let kind = Rect::from_center_size(pos2(rect.left() + 10.0, rect.center().y), vec2(18.0, 18.0));
+    icons::paint(painter, kind, icon, 18.0, theme::MUTE);
+    let clip = Rect::from_min_max(
+        pos2(rect.left() + 28.0, rect.top()),
+        pos2(eye.left() - 4.0, rect.bottom()),
+    );
+    painter
+        .with_clip_rect(painter.clip_rect().intersect(clip))
+        .text(
+            clip.left_center(),
+            Align2::LEFT_CENTER,
+            name,
+            theme::body(),
+            fade(theme::TEXT, shown),
+        );
+    let icon = if shown { Icon::Eye } else { Icon::EyeOff };
+    let name = eye_name(name, shown);
+    icon_button_at(ui, controls, eye, &name, icon, false, true).clicked()
 }
 
 /// A row of a panel or of a menu, with a text. Returns the response of the

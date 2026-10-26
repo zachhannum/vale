@@ -18,11 +18,13 @@ use vale_app::ui::pad::atlas::{
     PREVIOUS_PAGE, PROJECTION, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, WIDTH, custom_row,
     page_title, readout_text,
 };
+use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
 use vale_render::Item;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
-    Feature, FrameRecord, FrameShape, Geometry, PageUnits, Project, ProjectFile, World,
+    Feature, FrameRecord, FrameShape, Geometry, GeometryKind, LayerId, MapId, PageUnits, Project,
+    ProjectFile, World,
 };
 
 type Pad = Harness<'static, AppState>;
@@ -828,8 +830,8 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
     for size in BOARDS {
         let mut h = inset_pad(size);
         check_controls(&h, "frame tab");
-        // The other tabs come in other tasks.
-        assert!(control(&h, "Layers").is_none() && control(&h, "Labels").is_none());
+        // The Labels tab comes in another task.
+        assert!(control(&h, "Labels").is_none());
         tap(&mut h, POLYGON);
         check_controls(&h, "polygon");
         tap(&mut h, SCALE);
@@ -1288,4 +1290,139 @@ fn many_maps_survive_a_close_and_an_open() {
     let _session = Session::open(&path, &mut doc).unwrap();
     assert_eq!(doc.project.atlas, project.atlas);
     assert_eq!(doc.project.atlas.maps.len(), 2);
+}
+
+/// The ID of a layer by its name.
+fn layer_id(h: &Pad, name: &str) -> LayerId {
+    let layers = h.state().doc.project.layers();
+    layers.iter().find(|l| l.name == name).unwrap().id
+}
+
+/// True if a map shows a layer.
+fn shows(h: &Pad, map: MapId, layer: &str) -> bool {
+    h.state().doc.shown(map, layer_id(h, layer))
+}
+
+#[test]
+fn the_layers_tab_turns_a_layer_off_in_the_map_of_the_frame_only() {
+    for size in BOARDS {
+        let mut h = inset_pad(size);
+        let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+        tap(&mut h, FRAME_TABS[2]);
+        assert_eq!(h.state().atlas.tab, FrameTab::Layers);
+        check_controls(&h, "layers tab");
+        tap(&mut h, &eye_name("Rivers", true));
+        assert!(!shows(&h, inset, "Rivers"), "{size:?}");
+        assert!(shows(&h, main, "Rivers") && shows(&h, inset, "Land"));
+        assert!(control(&h, &eye_name("Rivers", false)).is_some());
+        check_controls(&h, "a layer is off");
+
+        // The frame of the other map shows its own switches.
+        let first = frame(&h, 0).id;
+        h.state_mut().atlas.selection = AtlasSelection::Frame(first);
+        h.run_steps(3);
+        assert!(control(&h, &eye_name("Rivers", true)).is_some(), "{size:?}");
+    }
+}
+
+#[test]
+fn a_change_of_a_switch_shows_in_each_frame_of_the_map() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).id);
+    h.state_mut()
+        .doc
+        .project
+        .atlas
+        .frame_mut(inset)
+        .unwrap()
+        .map = main;
+    h.run_steps(2);
+    tap(&mut h, FRAME_TABS[2]);
+    let composes = h.state().atlas.composes;
+    tap(&mut h, &eye_name("Land", true));
+    assert!(!shows(&h, main, "Land"));
+    assert_eq!(h.state().atlas.composes, composes + 2);
+}
+
+#[test]
+fn the_eye_of_the_world_workspace_does_not_change_a_map() {
+    let mut h = inset_pad(BOARDS[0]);
+    let land = layer_id(&h, "Land");
+    h.state_mut().set_layer_visible(land, false);
+    h.run_steps(2);
+    let maps: Vec<MapId> = h
+        .state()
+        .doc
+        .project
+        .atlas
+        .maps
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(maps.len(), 2);
+    for map in maps {
+        assert!(shows(&h, map, "Land"));
+    }
+    tap(&mut h, FRAME_TABS[2]);
+    assert!(control(&h, &eye_name("Land", true)).is_some());
+}
+
+#[test]
+fn a_new_layer_is_on_in_each_map() {
+    let mut h = inset_pad(BOARDS[0]);
+    let inset = frame(&h, 1).map;
+    tap(&mut h, FRAME_TABS[2]);
+    tap(&mut h, &eye_name("Land", true));
+    let added = h.state_mut().doc.add_layer(GeometryKind::Line);
+    for map in h.state().doc.project.atlas.maps.iter() {
+        assert!(map.hidden.iter().all(|l| *l != added));
+    }
+    assert!(h.state().doc.shown(inset, added));
+    assert!(!shows(&h, inset, "Land"));
+}
+
+#[test]
+fn each_change_of_a_switch_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    tap(&mut h, FRAME_TABS[2]);
+    tap(&mut h, &eye_name("Land", true));
+    tap(&mut h, &eye_name("Rivers", true));
+    assert!(!shows(&h, map, "Land") && !shows(&h, map, "Rivers"));
+
+    tap(&mut h, "Undo");
+    assert!(!shows(&h, map, "Land") && shows(&h, map, "Rivers"));
+    tap(&mut h, "Undo");
+    assert!(shows(&h, map, "Land") && shows(&h, map, "Rivers"));
+}
+
+#[test]
+fn the_switches_of_each_map_survive_a_close_and_an_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    tap(&mut h, FRAME_TABS[2]);
+    tap(&mut h, &eye_name("Places", true));
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.project.atlas, project.atlas);
+    let places = layer_id(&h, "Places");
+    assert!(!doc.shown(inset, places) && doc.shown(main, places));
 }

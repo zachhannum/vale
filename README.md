@@ -53,12 +53,13 @@ The default face size is 8,192 pixels for a height layer and 2,048 pixels for ea
 Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atlas" in the workspace switch. You can do these things there.
 
 - Click "Add map frame" to add a frame to the page. The frame shows the map of the project. On iPad, tap the Add button and then "Map frame".
-- Click a frame to select it. Drag the frame to move it, and drag a handle to resize it. The dock shows the Frame tab and the Projection tab.
+- Click a frame to select it. Drag the frame to move it, and drag a handle to resize it. The dock shows the tabs Frame, Projection, and Layers.
 - In the Frame tab, change the shape to a polygon. Drag a vertex to move it, drag the middle of an edge to add a vertex, and double-click a vertex to remove it. "Add hole" adds a hole.
 - With the Move tool, drag in the selected frame to pan its map. The key H selects the Move tool, and V selects the Select tool. Scroll in the selected frame to zoom its map. On a touch screen, two fingers in the selected frame pan, zoom, and rotate the map.
 - Drag the page outside the frames to pan it, and scroll outside the selected frame to zoom it. On a touch screen, two fingers pan and zoom the page. Double-click outside the page to fit the page in the window again.
 - To delete the selected frame, click "Delete frame" in the Frame tab, or press Delete when no vertex is selected.
 - Type the scale, the center, and the rotation of a frame in the Frame tab. Select a projection in the Projection tab. Each frame of the map shows the new projection.
+- In the Layers tab, the eye of a layer turns the layer on or off in the map of the frame. Each frame of that map shows the change. The eye in the globe workspace does not change a map.
 - Click the page outside the frames to set the page size, to add a page, or to delete the page. The arrows in the tool bar go to the previous page and the next page.
 - Tick a layer in the left panel to show it in the map. Click "Edit" on a layer to select it. The inspector then shows its name and its style.
 - Click a feature in a frame to see its attributes. The inspector lists the labels that did not fit.

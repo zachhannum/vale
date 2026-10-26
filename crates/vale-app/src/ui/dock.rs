@@ -7,7 +7,6 @@ use vale_sphere::ProjectionKind;
 use vale_store::{FrameRecord, FrameShape, PageUnits};
 
 use super::atlas::{self, AtlasSelection, FrameTab};
-use super::pad::GRATICULE;
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AZIMUTH, CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME,
     DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, HEIGHT, LATITUDE, LONGITUDE,
@@ -15,6 +14,7 @@ use super::pad::atlas::{
     ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
     length_text, unit_name,
 };
+use super::pad::{GRATICULE, NO_LAYERS};
 use super::{AppState, inspector};
 use crate::atlas::{self as math, PAGE_PRESETS};
 
@@ -81,11 +81,13 @@ fn frame_panel(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         let tab = &mut state.atlas.tab;
         ui.selectable_value(tab, FrameTab::Frame, FRAME_TABS[0]);
         ui.selectable_value(tab, FrameTab::Projection, FRAME_TABS[1]);
+        ui.selectable_value(tab, FrameTab::Layers, FRAME_TABS[2]);
     });
     ui.add_space(4.0);
     match state.atlas.tab {
         FrameTab::Frame => frame_tab(ui, state, frame),
         FrameTab::Projection => projection_tab(ui, state, frame),
+        FrameTab::Layers => layers_tab(ui, state, frame),
     }
     ui.add_space(6.0);
 }
@@ -165,6 +167,23 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     ui.add_space(4.0);
     if ui.button(DELETE_FRAME).clicked() {
         atlas::delete_frame(state);
+    }
+}
+
+/// A switch for each layer, which turns the layer on or off in the
+/// map of the frame.
+fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let rows: Vec<_> = (state.doc.project.layers().iter().rev())
+        .map(|l| (l.id, l.name.clone()))
+        .collect();
+    if rows.is_empty() {
+        ui.weak(NO_LAYERS);
+    }
+    for (layer, name) in rows {
+        let mut shown = state.doc.shown(frame.map, layer);
+        if ui.checkbox(&mut shown, name).changed() {
+            state.set_map_shown(frame.map, layer, shown);
+        }
     }
 }
 
