@@ -4,9 +4,10 @@ use std::path::Path;
 
 use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
-use vale_sphere::{ProjectionKind, ProjectionSpec};
+use vale_sphere::ProjectionSpec;
 use vale_store::{
-    Field, FieldType, GeometryKind, Layer, LayerId, MapId, MapRecord, Project, Units, World,
+    Field, FieldType, GeometryKind, Layer, LayerId, MapId, MapRecord, Project, ProjectionPreset,
+    Units, World,
 };
 use vale_style::{Color, LayerStyle, MapStyle, Stroke};
 
@@ -377,29 +378,55 @@ impl Document {
         &self.project.atlas.maps[0]
     }
 
-    /// The projection of the map. An unknown kind is the default projection.
+    /// The projection of the map. A string that the app cannot read is the
+    /// default projection.
     pub fn projection(&self) -> ProjectionSpec {
-        let map = self.map();
-        match ProjectionKind::from_id(&map.projection) {
-            Some(kind) => ProjectionSpec {
-                kind,
-                lon0: map.lon0,
-                lat0: map.lat0,
-            }
-            .normalized(),
-            None => ProjectionSpec::default(),
-        }
+        ProjectionSpec::from_proj(&self.map().projection).unwrap_or_default()
     }
 
     pub fn set_projection(&mut self, spec: ProjectionSpec) {
-        let spec = spec.normalized();
-        if spec != self.projection() {
-            let map = &mut self.project.atlas.maps[0];
-            map.projection = spec.kind.id().to_string();
-            map.lon0 = spec.lon0;
-            map.lat0 = spec.lat0;
+        let text = spec.to_proj();
+        if text != self.map().projection {
+            self.project.atlas.maps[0].projection = text;
             self.frame.view = None;
         }
+    }
+
+    /// The custom projections of the project.
+    pub fn presets(&self) -> &[ProjectionPreset] {
+        &self.project.atlas.presets
+    }
+
+    /// Saves the projection of the map as a custom projection. The name must
+    /// not be empty. A custom projection with that name changes.
+    pub fn save_preset(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let text = self.projection().to_proj();
+        self.project.atlas.save_preset(name, &text);
+        true
+    }
+
+    /// Removes a custom projection. A map that uses it keeps its projection.
+    pub fn remove_preset(&mut self, name: &str) -> bool {
+        self.project.atlas.remove_preset(name)
+    }
+
+    /// Gives the map the projection of a custom projection. Returns false if
+    /// the project has none with that name, or if the string is not one of the app.
+    pub fn apply_preset(&mut self, name: &str) -> bool {
+        let spec = self
+            .presets()
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| ProjectionSpec::from_proj(&p.projection));
+        let Some(spec) = spec else {
+            return false;
+        };
+        self.set_projection(spec);
+        true
     }
 
     /// True if a map shows a layer.

@@ -487,6 +487,7 @@ pub fn move_shape(shape: &mut FrameShape, d: Vec2) {
 /// the center of the projection, and the scale fits the projection in the
 /// frame. The ID is a placeholder.
 pub fn new_frame(page: &PageRecord, map: &MapRecord, projection: &Projection) -> FrameRecord {
+    let spec = projection.spec();
     let (w, h) = (page.width_mm, page.height_mm);
     let inner = Rect::new(MARGIN_MM, MARGIN_MM, w - MARGIN_MM, h - MARGIN_MM);
     let rect = if page.frames.is_empty() {
@@ -499,7 +500,7 @@ pub fn new_frame(page: &PageRecord, map: &MapRecord, projection: &Projection) ->
         id: FrameId(0),
         map: map.id,
         shape: FrameShape::Rectangle([rect.x0, rect.y0, rect.x1, rect.y1]),
-        center: [map.lon0, map.lat0],
+        center: [spec.lon0, spec.lat0],
         scale: fit_scale(projection.bounds(), rect.width(), rect.height()),
         rotation: 0.0,
         graticule: true,
@@ -516,11 +517,7 @@ mod tests {
     use super::*;
 
     fn projection(kind: ProjectionKind, radius_m: f64) -> Projection {
-        let spec = ProjectionSpec {
-            kind,
-            lon0: 0.0,
-            lat0: 0.0,
-        };
+        let spec = ProjectionSpec::new(kind, 0.0, 0.0);
         Projection::new(spec, radius_m).unwrap()
     }
 
@@ -551,9 +548,7 @@ mod tests {
         MapRecord {
             id: MapId(0),
             name: "Map".to_string(),
-            projection: "equal-earth".to_string(),
-            lon0: 15.0,
-            lat0: 0.0,
+            projection: "+proj=eqearth +lon_0=15".to_string(),
             hidden: BTreeSet::new(),
         }
     }
@@ -760,7 +755,8 @@ mod tests {
 
     #[test]
     fn a_new_frame_fills_the_page_then_takes_a_third() {
-        let p = projection(ProjectionKind::EqualEarth, 6_371_000.0);
+        let spec = ProjectionSpec::new(ProjectionKind::EqualEarth, 15.0, 0.0);
+        let p = Projection::new(spec, 6_371_000.0).unwrap();
         let first = new_frame(&page(0), &map(), &p);
         assert_eq!(
             first.shape,

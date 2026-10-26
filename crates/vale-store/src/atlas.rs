@@ -269,6 +269,19 @@ impl Atlas {
         })
     }
 
+    /// Adds a map at the end, with a projection. Returns its ID.
+    pub fn add_map(&mut self, name: &str, projection: &str) -> MapId {
+        let id = MapId(self.next_map_id);
+        self.next_map_id += 1;
+        self.maps.push(MapRecord {
+            id,
+            name: name.to_string(),
+            projection: projection.to_string(),
+            hidden: BTreeSet::new(),
+        });
+        id
+    }
+
     /// Saves a projection under a name. A preset with that name changes.
     pub fn save_preset(&mut self, name: &str, projection: &str) {
         match self.presets.iter_mut().find(|p| p.name == name) {

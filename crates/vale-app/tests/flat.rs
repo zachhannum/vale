@@ -228,7 +228,7 @@ fn a_stroke_across_the_180_degree_meridian_continues_at_the_other_edge() {
 }
 
 fn spec(kind: ProjectionKind, lon0: f64, lat0: f64) -> ProjectionSpec {
-    ProjectionSpec { kind, lon0, lat0 }
+    ProjectionSpec::new(kind, lon0, lat0)
 }
 
 /// Stamps one time at a place, and compares the ground that changed with the

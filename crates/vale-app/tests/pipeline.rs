@@ -77,11 +77,11 @@ fn colors() {
 #[test]
 fn orthographic_hides_the_far_side() {
     let mut doc = plain();
-    doc.set_projection(ProjectionSpec {
-        kind: ProjectionKind::Orthographic,
-        lon0: 20.0,
-        lat0: 30.0,
-    });
+    doc.set_projection(ProjectionSpec::new(
+        ProjectionKind::Orthographic,
+        20.0,
+        30.0,
+    ));
     assert_eq!(color_at(&doc, [-150.0, -30.0]), None);
     assert_eq!(color_at(&doc, [25.0, 25.0]), Some(LAND));
 }
@@ -517,12 +517,8 @@ fn a_new_projection_changes_each_frame() {
         .iter()
         .map(|id| format!("{:?}", compose_frame(&doc, &mut pipeline, *id)))
         .collect();
-    doc.set_projection(ProjectionSpec {
-        kind: ProjectionKind::Mercator,
-        lon0: 0.0,
-        lat0: 0.0,
-    });
-    assert_eq!(doc.project.atlas.maps[0].projection, "mercator");
+    doc.set_projection(ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0));
+    assert_eq!(doc.project.atlas.maps[0].projection, "+proj=merc +lon_0=0");
     for (id, before) in frames.iter().zip(&before) {
         let after = format!("{:?}", compose_frame(&doc, &mut pipeline, *id));
         assert_ne!(&after, before);

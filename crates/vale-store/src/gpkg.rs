@@ -2782,6 +2782,9 @@ mod tests {
         atlas.maps[0].hidden.insert(towns);
         atlas.maps[0].projection = "+proj=ortho +lon_0=40 +lat_0=10".into();
         atlas.save_preset("Home", "+proj=laea +lon_0=40 +lat_0=10");
+        // A second map uses the custom projection.
+        let preset = atlas.presets[0].projection.clone();
+        atlas.add_map("Inset", &preset);
         let first = atlas.pages[0].id;
         let second = atlas.add_page(Some(first), 420.0, 297.0, PageUnits::In);
         atlas.page_mut(second).unwrap().name = "North".into();

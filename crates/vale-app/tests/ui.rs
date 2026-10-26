@@ -394,11 +394,8 @@ fn projection_change_recomposes() {
     h.run_steps(3);
     let before = h.state().atlas.composes;
     let s = h.state_mut();
-    s.doc.set_projection(ProjectionSpec {
-        kind: ProjectionKind::Mercator,
-        lon0: 0.0,
-        lat0: 0.0,
-    });
+    s.doc
+        .set_projection(ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0));
     s.touch();
     h.run_steps(2);
     assert_eq!(h.state().atlas.composes, before + 1);

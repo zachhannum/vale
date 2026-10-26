@@ -291,7 +291,7 @@ fn projection_spec(id: &str, center: Option<&str>) -> anyhow::Result<ProjectionS
         Some(c) => parse_pair(c)?,
         None => [0.0, 0.0],
     };
-    Ok(ProjectionSpec { kind, lon0, lat0 })
+    Ok(ProjectionSpec::new(kind, lon0, lat0))
 }
 
 impl Args {

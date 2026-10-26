@@ -157,6 +157,21 @@ impl ProjectionSpec {
         }
     }
 
+    /// The same center in another kind. The parallels of a conic projection
+    /// stay, and another kind gets the parallels of its preset. The azimuth
+    /// stays when the new kind can tilt.
+    pub fn with_kind(self, kind: ProjectionKind) -> Self {
+        let preset = ProjectionSpec::new(kind, self.lon0, self.lat0);
+        let keep = self.kind.is_conic() && kind.is_conic();
+        ProjectionSpec {
+            lat1: if keep { self.lat1 } else { preset.lat1 },
+            lat2: if keep { self.lat2 } else { preset.lat2 },
+            azimuth: self.azimuth,
+            ..preset
+        }
+        .normalized()
+    }
+
     /// Wraps `lon0` into -180..=180 and clamps the latitudes. A parameter that
     /// the kind does not use is reset. A polar stereographic projection
     /// centers on the pole that `lat0` is nearer to, and on the north pole at 0.
@@ -415,6 +430,22 @@ mod tests {
             ..ProjectionSpec::new(ProjectionKind::Orthographic, 10.0, 20.0)
         };
         assert_eq!(a.normalized().azimuth, None);
+    }
+
+    #[test]
+    fn a_new_kind_gets_its_parallels() {
+        let a = ProjectionSpec::new(ProjectionKind::EqualEarth, 10.0, 0.0);
+        let l = a.with_kind(ProjectionKind::LambertConformal);
+        assert_eq!((l.lon0, l.lat1, l.lat2), (10.0, 30.0, 60.0));
+        let custom = ProjectionSpec {
+            lat1: 40.0,
+            lat2: 50.0,
+            ..l
+        };
+        let b = custom.with_kind(ProjectionKind::AlbersEqualArea);
+        assert_eq!((b.lat1, b.lat2), (40.0, 50.0));
+        let m = b.with_kind(ProjectionKind::Mercator);
+        assert_eq!((m.lat1, m.lat2), (0.0, 0.0));
     }
 
     #[test]
