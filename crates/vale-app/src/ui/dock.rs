@@ -4,7 +4,7 @@
 
 use eframe::egui;
 use vale_sphere::ProjectionKind;
-use vale_store::{FrameRecord, FrameShape, LayerKind, PageUnits};
+use vale_store::{FrameRecord, FrameShape, PageUnits};
 
 use super::atlas::{self, AtlasSelection, FrameTab};
 use super::pad::atlas::{
