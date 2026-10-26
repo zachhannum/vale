@@ -103,6 +103,7 @@ A feature session keeps its context small on purpose.
 - If a crate has more than one test file, you can run only the test files that cover the change, for example `cargo test -p vale-app --test pad`. Do not run `cargo test --workspace` before a push. The full run is the work of CI.
 
 - If the PR has CI runs, watch them with `gh run watch`. After they pass, ask for review.
+- When you implement an issue, open a PR at the end of the work, without waiting to be asked.
 - Claude does not merge. A person reviews and merges each PR.
 - Do not force-push `main`. While the PR of a feature branch is open, you can rewrite the history of that branch.
 - Do not add Co-Authored-By trailers to commits.
