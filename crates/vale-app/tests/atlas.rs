@@ -14,13 +14,13 @@ use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION,
-    FIRST_PARALLEL, FRAME_TABS, HEIGHT, MAP_FRAME, NEXT_PAGE, OBLIQUE, POLYGON, PREVIOUS_PAGE,
-    PROJECTION, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, WIDTH, custom_row, page_title,
-    readout_text,
+    FIRST_PARALLEL, FRAME_TABS, HEIGHT, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON,
+    PREVIOUS_PAGE, PROJECTION, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, WIDTH, custom_row,
+    page_title, readout_text,
 };
 use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
 use vale_render::Item;
-use vale_sphere::ProjectionKind;
+use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
     Feature, FrameRecord, FrameShape, Geometry, PageUnits, Project, ProjectFile, World,
 };
@@ -229,6 +229,17 @@ fn pinch(h: &mut Pad, center: Pos2, from: f32, to: f32, turn: f32, shift: Vec2) 
     h.run_steps(8);
 }
 
+fn first_projection(h: &Pad) -> ProjectionSpec {
+    let doc = &h.state().doc;
+    doc.projection(doc.first_map())
+}
+
+/// The projection of the map of the selected frame.
+fn selected_projection(h: &Pad) -> ProjectionSpec {
+    let doc = &h.state().doc;
+    doc.projection(vale_app::ui::atlas::selected_map(h.state()))
+}
+
 fn open_page(h: &Pad) -> vale_store::PageRecord {
     vale_app::ui::atlas::open_page(h.state()).clone()
 }
@@ -276,7 +287,7 @@ fn place_at(h: &mut Pad, index: usize, pos: Pos2) -> [f64; 2] {
     let f = frame(h, index);
     let target = h.state().atlas.place.unwrap().target();
     let s = h.state_mut();
-    let projection = s.pipeline.projection(&s.doc).unwrap();
+    let projection = s.pipeline.projection(&s.doc, f.map).unwrap();
     let vt = frame_transform(projection, &f, target);
     let q = Point::new(f64::from(pos.x), f64::from(pos.y));
     projection.inverse(vt.from_page(q)).unwrap()
@@ -286,7 +297,7 @@ fn pos_of(h: &mut Pad, index: usize, lonlat: [f64; 2]) -> Pos2 {
     let f = frame(h, index);
     let target = h.state().atlas.place.unwrap().target();
     let s = h.state_mut();
-    let projection = s.pipeline.projection(&s.doc).unwrap();
+    let projection = s.pipeline.projection(&s.doc, f.map).unwrap();
     let vt = frame_transform(projection, &f, target);
     let p = vt.to_page(projection.forward(lonlat).unwrap());
     pos2(p.x as f32, p.y as f32)
@@ -462,7 +473,7 @@ fn the_add_button_adds_a_frame_that_shows_the_map_of_the_project() {
     let page = open_page(&h);
     assert_eq!(page.frames.len(), 1);
     let f = &page.frames[0];
-    assert_eq!(f.map, h.state().doc.map_id());
+    assert_eq!(f.map, h.state().doc.first_map());
     assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(f.id));
     assert!(h.state().atlas.has_image(f.id));
     let list = &h.state().composed.as_ref().unwrap().list;
@@ -688,12 +699,21 @@ fn a_globe_edit_composes_each_frame_again() {
 #[test]
 fn a_change_of_the_projection_shows_in_each_frame_of_the_map() {
     let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).id);
+    h.state_mut()
+        .doc
+        .project
+        .atlas
+        .frame_mut(inset)
+        .unwrap()
+        .map = main;
+    h.run_steps(2);
     tap(&mut h, "Projection");
     assert_eq!(h.state().atlas.tab, FrameTab::Projection);
     let composes = h.state().atlas.composes;
     tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::Mercator.name());
-    assert_eq!(h.state().doc.projection().kind, ProjectionKind::Mercator);
+    assert_eq!(first_projection(&h).kind, ProjectionKind::Mercator);
     assert_eq!(h.state().atlas.composes, composes + 2);
 
     // The projection centers on the place in the middle of the frame.
@@ -702,26 +722,41 @@ fn a_change_of_the_projection_shows_in_each_frame_of_the_map() {
     s.doc.project.atlas.frame_mut(id).unwrap().center = [40.0, 20.0];
     h.run_steps(2);
     tap(&mut h, CENTER_ON_FRAME);
-    assert_eq!(h.state().doc.projection().lon0, 40.0);
+    assert_eq!(first_projection(&h).lon0, 40.0);
+}
+
+#[test]
+fn a_frame_changes_the_projection_of_its_own_map_only() {
+    let mut h = inset_pad(BOARDS[0]);
+    let source = frame(&h, 0).map;
+    let copy = frame(&h, 1).map;
+    h.run_steps(2);
+    tap(&mut h, "Projection");
+    tap(&mut h, PROJECTION);
+    tap(&mut h, ProjectionKind::Mercator.name());
+    let doc = &h.state().doc;
+    assert_eq!(doc.projection(copy).kind, ProjectionKind::Mercator);
+    assert_ne!(doc.projection(source).kind, ProjectionKind::Mercator);
 }
 
 #[test]
 fn the_projection_tab_switches_the_map_through_all_presets() {
     for size in BOARDS {
         let mut h = inset_pad(size);
+        let map = frame(&h, 1).map;
         tap(&mut h, "Projection");
         for kind in ProjectionKind::ALL {
             scroll_up_to(&mut h, PROJECTION);
             tap(&mut h, PROJECTION);
             scroll_to(&mut h, kind.name());
             tap(&mut h, kind.name());
-            assert_eq!(h.state().doc.projection().kind, kind, "{size:?}");
+            assert_eq!(h.state().doc.projection(map).kind, kind, "{size:?}");
             h.run_steps(3);
             check_controls(&h, kind.name());
             let state = h.state_mut();
-            let projection = state.pipeline.projection(&state.doc).unwrap();
+            let projection = state.pipeline.projection(&state.doc, map).unwrap();
             assert!(projection.bounds().width() > 0.0, "{kind:?}");
-            let text = state.doc.project.atlas.maps[0].projection.clone();
+            let text = state.doc.project.atlas.map(map).unwrap().projection.clone();
             assert!(text.starts_with("+proj="), "{text}");
         }
     }
@@ -730,35 +765,37 @@ fn the_projection_tab_switches_the_map_through_all_presets() {
 #[test]
 fn a_conic_projection_has_two_parallels_and_an_oblique_aspect_a_tilt() {
     let mut h = inset_pad(BOARDS[0]);
+    let map = frame(&h, 1).map;
     tap(&mut h, "Projection");
     assert!(control(&h, FIRST_PARALLEL).is_none());
     tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::LambertConformal.name());
     h.run_steps(2);
     assert!(control(&h, FIRST_PARALLEL).is_some());
-    let spec = h.state().doc.projection();
+    let spec = h.state().doc.projection(map);
     assert_eq!((spec.lat1, spec.lat2), (30.0, 60.0));
 
     tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::EqualEarth.name());
     h.run_steps(2);
     assert!(control(&h, FIRST_PARALLEL).is_none());
-    assert_eq!(h.state().doc.projection().azimuth, None);
+    assert_eq!(h.state().doc.projection(map).azimuth, None);
     tap(&mut h, OBLIQUE);
     h.run_steps(2);
-    assert!(h.state().doc.projection().azimuth.is_some());
+    assert!(h.state().doc.projection(map).azimuth.is_some());
     let state = h.state_mut();
-    let text = state.doc.project.atlas.maps[0].projection.clone();
+    let text = state.doc.project.atlas.map(map).unwrap().projection.clone();
     assert!(text.starts_with("+proj=ob_tran +o_proj=eqearth"), "{text}");
-    assert!(state.pipeline.projection(&state.doc).is_ok());
+    assert!(state.pipeline.projection(&state.doc, map).is_ok());
     tap(&mut h, OBLIQUE);
     h.run_steps(2);
-    assert_eq!(h.state().doc.projection().azimuth, None);
+    assert_eq!(h.state().doc.projection(map).azimuth, None);
 }
 
 #[test]
 fn a_custom_projection_is_saved_in_the_project_and_picked_again() {
     let mut h = inset_pad(BOARDS[0]);
+    let map = frame(&h, 1).map;
     tap(&mut h, "Projection");
     tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::AlbersEqualArea.name());
@@ -767,7 +804,7 @@ fn a_custom_projection_is_saved_in_the_project_and_picked_again() {
     h.state_mut().atlas.preset_name = "Home".into();
     h.run_steps(2);
     tap(&mut h, SAVE_PROJECTION);
-    let saved = h.state().doc.projection().to_proj();
+    let saved = h.state().doc.projection(map).to_proj();
     assert_eq!(h.state().doc.presets().len(), 1);
     assert_eq!(h.state().doc.presets()[0].projection, saved);
 
@@ -775,15 +812,15 @@ fn a_custom_projection_is_saved_in_the_project_and_picked_again() {
     tap(&mut h, PROJECTION);
     tap(&mut h, ProjectionKind::Mercator.name());
     h.run_steps(2);
-    assert_eq!(h.state().doc.projection().kind, ProjectionKind::Mercator);
+    assert_eq!(h.state().doc.projection(map).kind, ProjectionKind::Mercator);
     tap(&mut h, PROJECTION);
     scroll_to(&mut h, &custom_row("Home"));
     tap(&mut h, &custom_row("Home"));
-    assert_eq!(h.state().doc.projection().to_proj(), saved);
+    assert_eq!(h.state().doc.projection(map).to_proj(), saved);
 
     tap(&mut h, DELETE_PROJECTION);
     assert!(h.state().doc.presets().is_empty());
-    assert_eq!(h.state().doc.projection().to_proj(), saved);
+    assert_eq!(h.state().doc.projection(map).to_proj(), saved);
 }
 
 #[test]
@@ -807,7 +844,7 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         tap(&mut h, PROJECTION);
         check_controls(&h, "projection list");
         tap(&mut h, ProjectionKind::Mercator.name());
-        assert_eq!(h.state().doc.projection().kind, ProjectionKind::Mercator);
+        assert_eq!(selected_projection(&h).kind, ProjectionKind::Mercator);
         let at = screen(&h, Point::new(4.0, 50.0));
         tap_with(&mut h, at, Input::Finger);
         assert_eq!(h.state().atlas.selection, AtlasSelection::Page, "{size:?}");
@@ -1169,4 +1206,86 @@ fn the_pad_atlas_renders_a_page_with_a_main_frame_and_an_inset() {
     assert_eq!(paper, [255, 255, 255, 255]);
     let colors: std::collections::HashSet<_> = img.pixels().map(|p| p.0).collect();
     assert!(colors.len() > 50, "{}", colors.len());
+}
+
+/// The names of the maps of the project, in atlas order.
+fn map_names(h: &Pad) -> Vec<String> {
+    let maps = &h.state().doc.project.atlas.maps;
+    maps.iter().map(|m| m.name.clone()).collect()
+}
+
+/// The name of the map of a frame of the open page.
+fn map_of(h: &Pad, index: usize) -> String {
+    let map = frame(h, index).map;
+    h.state().doc.project.atlas.map(map).unwrap().name.clone()
+}
+
+/// Types a text in place of the text of a field.
+fn type_text(h: &mut Pad, name: &str, text: &str) {
+    tap(h, name);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text(text.to_owned()));
+    h.run_steps(2);
+}
+
+#[test]
+fn each_new_frame_shows_a_map_of_its_own() {
+    let h = inset_pad(BOARDS[0]);
+    assert_eq!(map_names(&h), ["Map", "Map 2"]);
+    assert_eq!(map_of(&h, 0), "Map");
+    assert_eq!(map_of(&h, 1), "Map 2");
+    assert_ne!(frame(&h, 0).map, frame(&h, 1).map);
+}
+
+#[test]
+fn the_frame_tab_renames_the_map_of_the_frame() {
+    for size in BOARDS {
+        let mut h = inset_pad(size);
+        check_controls(&h, "frame tab");
+        type_text(&mut h, MAP_NAME, "Vesperan");
+        assert_eq!(map_names(&h), ["Map", "Vesperan"], "{size:?}");
+        assert_eq!(map_of(&h, 1), "Vesperan");
+        check_controls(&h, "renamed");
+    }
+}
+
+#[test]
+fn deleting_a_frame_deletes_its_map_but_the_last_map_stays() {
+    let mut h = inset_pad(BOARDS[0]);
+    scroll_to(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_FRAME);
+    assert_eq!(map_names(&h), ["Map"]);
+    let first = h.state().doc.project.atlas.pages[0].frames[0].id;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(first);
+    h.run_steps(2);
+    scroll_to(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_FRAME);
+    assert_eq!(map_names(&h), ["Map"]);
+    // The next frame takes the map that no frame shows.
+    add_frame(&mut h);
+    assert_eq!(map_names(&h), ["Map"]);
+}
+
+#[test]
+fn many_maps_survive_a_close_and_an_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    type_text(&mut h, MAP_NAME, "Vesperan");
+    assert_eq!(map_names(&h), ["Map", "Vesperan"]);
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.project.atlas, project.atlas);
+    assert_eq!(doc.project.atlas.maps.len(), 2);
 }

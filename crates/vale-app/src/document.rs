@@ -6,8 +6,7 @@ use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
 use vale_sphere::ProjectionSpec;
 use vale_store::{
-    Field, FieldType, GeometryKind, Layer, LayerId, MapId, MapRecord, Project, ProjectionPreset,
-    Units, World,
+    Field, FieldType, GeometryKind, Layer, LayerId, MapId, Project, ProjectionPreset, Units, World,
 };
 use vale_style::{Color, LayerStyle, MapStyle, Stroke};
 
@@ -218,9 +217,11 @@ impl Document {
     /// Replaces the project. An entry stays if the new project has a layer
     /// with its ID and its kind. Each other layer gets a new entry.
     pub fn set_project(&mut self, project: Project) {
-        let projection = self.projection();
+        let projection = self.projection(self.first_map());
         let old = std::mem::replace(&mut self.project, project);
-        if old.world.radius_km != self.project.world.radius_km || projection != self.projection() {
+        if old.world.radius_km != self.project.world.radius_km
+            || projection != self.projection(self.first_map())
+        {
             self.frame.view = None;
         }
         let kind = |p: &Project, id| p.layer(id).map(|l| l.kind);
@@ -369,25 +370,32 @@ impl Document {
         self.project.world.radius_km = new;
     }
 
-    /// The map of every frame.
-    pub fn map_id(&self) -> MapId {
-        self.map().id
+    /// The first map of the atlas. The single map view draws it.
+    pub fn first_map(&self) -> MapId {
+        self.project.atlas.maps[0].id
     }
 
-    fn map(&self) -> &MapRecord {
-        &self.project.atlas.maps[0]
+    /// The projection of a map. An unknown map, or a string that the app
+    /// cannot read, is the default projection.
+    pub fn projection(&self, map: MapId) -> ProjectionSpec {
+        self.project
+            .atlas
+            .map(map)
+            .and_then(|m| ProjectionSpec::from_proj(&m.projection))
+            .unwrap_or_default()
     }
 
-    /// The projection of the map. A string that the app cannot read is the
-    /// default projection.
-    pub fn projection(&self) -> ProjectionSpec {
-        ProjectionSpec::from_proj(&self.map().projection).unwrap_or_default()
-    }
-
-    pub fn set_projection(&mut self, spec: ProjectionSpec) {
+    pub fn set_projection(&mut self, map: MapId, spec: ProjectionSpec) {
         let text = spec.to_proj();
-        if text != self.map().projection {
-            self.project.atlas.maps[0].projection = text;
+        let first = self.first_map();
+        let Some(record) = self.project.atlas.map_mut(map) else {
+            return;
+        };
+        if record.projection == text {
+            return;
+        }
+        record.projection = text;
+        if map == first {
             self.frame.view = None;
         }
     }
@@ -397,14 +405,14 @@ impl Document {
         &self.project.atlas.presets
     }
 
-    /// Saves the projection of the map as a custom projection. The name must
+    /// Saves the projection of a map as a custom projection. The name must
     /// not be empty. A custom projection with that name changes.
-    pub fn save_preset(&mut self, name: &str) -> bool {
+    pub fn save_preset(&mut self, map: MapId, name: &str) -> bool {
         let name = name.trim();
         if name.is_empty() {
             return false;
         }
-        let text = self.projection().to_proj();
+        let text = self.projection(map).to_proj();
         self.project.atlas.save_preset(name, &text);
         true
     }
@@ -414,9 +422,9 @@ impl Document {
         self.project.atlas.remove_preset(name)
     }
 
-    /// Gives the map the projection of a custom projection. Returns false if
+    /// Gives a map the projection of a custom projection. Returns false if
     /// the project has none with that name, or if the string is not one of the app.
-    pub fn apply_preset(&mut self, name: &str) -> bool {
+    pub fn apply_preset(&mut self, map: MapId, name: &str) -> bool {
         let spec = self
             .presets()
             .iter()
@@ -425,7 +433,7 @@ impl Document {
         let Some(spec) = spec else {
             return false;
         };
-        self.set_projection(spec);
+        self.set_projection(map, spec);
         true
     }
 

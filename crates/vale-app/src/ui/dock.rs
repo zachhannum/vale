@@ -11,8 +11,8 @@ use super::pad::GRATICULE;
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AZIMUTH, CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME,
     DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, HEIGHT, LATITUDE, LONGITUDE,
-    OBLIQUE, ORIENTATIONS, PAGE_NAME, POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_VERTEX, ROTATION,
-    SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
+    MAP_NAME, OBLIQUE, ORIENTATIONS, PAGE_NAME, POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_VERTEX,
+    ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
     length_text, unit_name,
 };
 use super::{AppState, inspector};
@@ -92,6 +92,16 @@ fn frame_panel(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 
 fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let id = frame.id;
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        let mut name =
+            (state.doc.project.atlas.map(frame.map)).map_or_else(String::new, |m| m.name.clone());
+        let field = ui.add(egui::TextEdit::singleline(&mut name).desired_width(160.0));
+        named(&field, egui::WidgetType::TextEdit, MAP_NAME);
+        if field.changed() {
+            atlas::rename_map(state, id, &name);
+        }
+    });
     let polygon = matches!(frame.shape, FrameShape::Polygon(_));
     ui.horizontal(|ui| {
         ui.label(SHAPE);
@@ -159,20 +169,21 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 }
 
 fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
-    let spec = state.doc.projection();
+    let map = frame.map;
+    let spec = state.doc.projection(map);
     for k in ProjectionKind::ALL {
         if ui.selectable_label(spec.kind == k, k.name()).clicked() {
-            atlas::set_projection_kind(state, k);
+            atlas::set_projection_kind(state, frame.id, k);
         }
     }
-    let current = atlas::current_preset(state);
+    let current = atlas::current_preset(state, frame.id);
     let names: Vec<String> = state.doc.presets().iter().map(|p| p.name.clone()).collect();
     for name in names {
         let on = current.as_deref() == Some(name.as_str());
         let resp = ui.selectable_label(on, &name);
         named(&resp, egui::WidgetType::SelectableLabel, &custom_row(&name));
         if resp.clicked() {
-            atlas::apply_preset(state, &name);
+            atlas::apply_preset(state, frame.id, &name);
         }
     }
     ui.add_space(4.0);
@@ -182,7 +193,7 @@ fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
             ui.label(CENTER_LONGITUDE);
             let typed = field(ui, CENTER_LONGITUDE, &math::lon_text(spec.lon0));
             if let Some(lon) = typed.as_deref().and_then(math::parse_degrees) {
-                atlas::set_projection_longitude(state, lon);
+                atlas::set_projection_longitude(state, frame.id, lon);
             }
             ui.end_row();
             let has_latitude = spec.kind.has_origin_latitude() || spec.azimuth.is_some();
@@ -190,7 +201,7 @@ fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
                 ui.label(CENTER_LATITUDE);
                 let typed = field(ui, CENTER_LATITUDE, &math::lat_text(spec.lat0));
                 if let Some(lat) = typed.as_deref().and_then(math::parse_degrees) {
-                    atlas::set_projection_latitude(state, lat);
+                    atlas::set_projection_latitude(state, frame.id, lat);
                 }
                 ui.end_row();
             }
@@ -207,7 +218,7 @@ fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
                         } else {
                             (spec.lat1, v)
                         };
-                        atlas::set_parallels(state, a, b);
+                        atlas::set_parallels(state, frame.id, a, b);
                     }
                     ui.end_row();
                 }
@@ -219,7 +230,7 @@ fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
                 let drag = ui.add(drag);
                 named(&drag, egui::WidgetType::DragValue, AZIMUTH);
                 if drag.changed() {
-                    atlas::set_azimuth(state, value);
+                    atlas::set_azimuth(state, frame.id, value);
                 }
                 ui.end_row();
             }
@@ -228,7 +239,7 @@ fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
         let mut oblique = spec.azimuth.is_some();
         let resp = ui.checkbox(&mut oblique, OBLIQUE);
         if resp.changed() {
-            atlas::set_oblique(state, oblique);
+            atlas::set_oblique(state, frame.id, oblique);
         }
     }
     ui.add_space(4.0);
@@ -246,7 +257,7 @@ fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
     ui.horizontal(|ui| {
         let save = ui.add_enabled(named_now, egui::Button::new(SAVE_PROJECTION));
         if save.clicked() {
-            atlas::save_preset(state);
+            atlas::save_preset(state, frame.id);
         }
         let saved = state
             .doc

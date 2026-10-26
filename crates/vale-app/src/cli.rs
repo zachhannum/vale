@@ -227,7 +227,8 @@ impl Args {
         };
         doc.set_radius_km(self.radius_km);
 
-        doc.set_projection(projection_spec(&self.projection, self.center.as_deref())?);
+        let spec = projection_spec(&self.projection, self.center.as_deref())?;
+        doc.set_projection(doc.first_map(), spec);
 
         for name in &self.hide {
             let id = doc

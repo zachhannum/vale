@@ -7,7 +7,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
-use vale_store::{FrameId, FrameRecord, FrameShape, PageId, PageRecord, PageUnits};
+use vale_store::{FrameId, FrameRecord, FrameShape, MapId, PageId, PageRecord, PageUnits};
 
 use super::{AppState, LayerRef};
 use crate::atlas::{self as math, FrameTarget, Handle, PagePreset, Vertex};
@@ -348,13 +348,22 @@ pub fn go_to_page(state: &mut AppState, step: isize) {
     }
 }
 
-/// Adds a frame of the map of the project to the open page and selects
-/// it.
+/// The map of the selected frame, or the first map if no frame is
+/// selected.
+pub fn selected_map(state: &AppState) -> MapId {
+    let frame = state.atlas.frame();
+    let frame = frame.and_then(|id| state.doc.project.atlas.frame(id));
+    frame.map_or_else(|| state.doc.first_map(), |f| f.map)
+}
+
+/// Adds a frame to the open page and selects it. The frame shows a new
+/// map, or a map that no frame shows.
 pub fn add_frame(state: &mut AppState) -> Option<FrameId> {
     let page = open_page(state).clone();
-    let map_id = state.doc.map_id();
-    let map = state.doc.project.atlas.map(map_id)?.clone();
-    let projection = match state.pipeline.projection(&state.doc) {
+    let atlas = &mut state.doc.project.atlas;
+    let map_id = atlas.unshown_map().unwrap_or_else(|| atlas.add_map());
+    let map = atlas.map(map_id)?.clone();
+    let projection = match state.pipeline.projection(&state.doc, map_id) {
         Ok(p) => p,
         Err(e) => {
             state.status = format!("{e:#}");
@@ -379,7 +388,7 @@ pub fn edit_frame(
     let Some(mut frame) = state.doc.project.atlas.frame(id).cloned() else {
         return false;
     };
-    let Ok(projection) = state.pipeline.projection(&state.doc) else {
+    let Ok(projection) = state.pipeline.projection(&state.doc, frame.map) else {
         return false;
     };
     if !edit(&mut frame, projection) {
@@ -585,7 +594,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         }
         state.cursor_lonlat = frame_at(&page, at).and_then(|id| {
             let frame = page.frames.iter().find(|f| f.id == id)?;
-            let projection = state.pipeline.projection(&state.doc).ok()?;
+            let projection = state.pipeline.projection(&state.doc, frame.map).ok()?;
             let vt = math::frame_transform(projection, frame, place.target());
             let q = Point::new(f64::from(pos.x), f64::from(pos.y));
             projection.inverse(vt.from_page(q))
@@ -663,6 +672,7 @@ pub fn delete_frame(state: &mut AppState) {
         return;
     };
     state.doc.project.atlas.remove_frame(id);
+    state.doc.project.atlas.prune_maps();
     state.atlas.selection = AtlasSelection::None;
     state.atlas.vertex = None;
     state.atlas.images.remove(&id);
@@ -868,7 +878,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             target,
             shown,
         ));
-        let Ok(projection) = state.pipeline.projection(&state.doc) else {
+        let Ok(projection) = state.pipeline.projection(&state.doc, frame.map) else {
             continue;
         };
         let vt = math::frame_transform(projection, frame, target);
@@ -1130,70 +1140,85 @@ pub fn set_graticule(state: &mut AppState, id: FrameId, on: bool) {
     });
 }
 
-/// Changes the projection of the map.
-pub fn edit_projection(state: &mut AppState, edit: impl FnOnce(&mut ProjectionSpec)) {
-    let before = state.doc.projection();
+/// The map of a frame.
+fn map_of(state: &AppState, id: FrameId) -> Option<vale_store::MapId> {
+    state.doc.project.atlas.frame(id).map(|f| f.map)
+}
+
+/// Changes the projection of the map of a frame.
+pub fn edit_projection(state: &mut AppState, id: FrameId, edit: impl FnOnce(&mut ProjectionSpec)) {
+    let Some(map) = map_of(state, id) else {
+        return;
+    };
+    let before = state.doc.projection(map);
     let mut spec = before;
     edit(&mut spec);
-    state.doc.set_projection(spec);
-    if state.doc.projection().to_proj() != before.to_proj() {
+    state.doc.set_projection(map, spec);
+    if state.doc.projection(map).to_proj() != before.to_proj() {
         state.touch();
     }
 }
 
-/// Sets the kind of the projection of the map and keeps its center.
-pub fn set_projection_kind(state: &mut AppState, kind: ProjectionKind) {
-    edit_projection(state, |s| *s = s.with_kind(kind));
+/// Sets the kind of the projection of the map of a frame and keeps its
+/// center.
+pub fn set_projection_kind(state: &mut AppState, id: FrameId, kind: ProjectionKind) {
+    edit_projection(state, id, |s| *s = s.with_kind(kind));
 }
 
 /// Sets the central meridian, or the longitude of the center.
-pub fn set_projection_longitude(state: &mut AppState, lon: f64) {
-    edit_projection(state, |s| s.lon0 = lon);
+pub fn set_projection_longitude(state: &mut AppState, id: FrameId, lon: f64) {
+    edit_projection(state, id, |s| s.lon0 = lon);
 }
 
 /// Sets the latitude of origin, or the latitude of the center.
-pub fn set_projection_latitude(state: &mut AppState, lat: f64) {
-    edit_projection(state, |s| s.lat0 = lat);
+pub fn set_projection_latitude(state: &mut AppState, id: FrameId, lat: f64) {
+    edit_projection(state, id, |s| s.lat0 = lat);
 }
 
 /// Sets the standard parallels of a conic projection.
-pub fn set_parallels(state: &mut AppState, lat1: f64, lat2: f64) {
-    edit_projection(state, |s| (s.lat1, s.lat2) = (lat1, lat2));
+pub fn set_parallels(state: &mut AppState, id: FrameId, lat1: f64, lat2: f64) {
+    edit_projection(state, id, |s| (s.lat1, s.lat2) = (lat1, lat2));
 }
 
 /// Turns the oblique aspect on or off.
-pub fn set_oblique(state: &mut AppState, on: bool) {
-    edit_projection(state, |s| {
+pub fn set_oblique(state: &mut AppState, id: FrameId, on: bool) {
+    edit_projection(state, id, |s| {
         s.azimuth = on.then_some(s.azimuth.unwrap_or(OBLIQUE_AZIMUTH));
     });
 }
 
 /// Sets the azimuth of the center line of an oblique aspect.
-pub fn set_azimuth(state: &mut AppState, azimuth: f64) {
-    edit_projection(state, |s| s.azimuth = Some(azimuth));
+pub fn set_azimuth(state: &mut AppState, id: FrameId, azimuth: f64) {
+    edit_projection(state, id, |s| s.azimuth = Some(azimuth));
 }
 
 /// The azimuth of a new oblique aspect. A tilt of 45 degrees shows well.
 pub const OBLIQUE_AZIMUTH: f64 = 45.0;
 
-/// Saves the projection of the map under the typed name. Returns false if
-/// the name is empty.
-pub fn save_preset(state: &mut AppState) -> bool {
+/// Saves the projection of the map of a frame under the typed name. Returns
+/// false if the name is empty.
+pub fn save_preset(state: &mut AppState, id: FrameId) -> bool {
+    let Some(map) = map_of(state, id) else {
+        return false;
+    };
     let name = state.atlas.preset_name.trim().to_string();
-    let saved = state.doc.save_preset(&name);
+    let saved = state.doc.save_preset(map, &name);
     if saved {
         state.atlas.preset_name = name;
     }
     saved
 }
 
-/// Gives the map the projection of a custom projection, and puts its name in
-/// the name field.
-pub fn apply_preset(state: &mut AppState, name: &str) {
-    let before = state.doc.projection().to_proj();
-    if state.doc.apply_preset(name) {
+/// Gives the map of a frame the projection of a custom projection, and puts
+/// its name in the name field.
+pub fn apply_preset(state: &mut AppState, id: FrameId, name: &str) {
+    let Some(map) = map_of(state, id) else {
+        return;
+    };
+    let before = state.doc.projection(map).to_proj();
+    if state.doc.apply_preset(map, name) {
         state.atlas.preset_name = name.to_string();
-        if state.doc.projection().to_proj() != before {
+        if state.doc.projection(map).to_proj() != before {
             state.touch();
         }
     }
@@ -1207,9 +1232,9 @@ pub fn delete_preset(state: &mut AppState) {
     }
 }
 
-/// The custom projection that has the projection of the map.
-pub fn current_preset(state: &AppState) -> Option<String> {
-    let now = state.doc.projection().to_proj();
+/// The custom projection that has the projection of the map of a frame.
+pub fn current_preset(state: &AppState, id: FrameId) -> Option<String> {
+    let now = state.doc.projection(map_of(state, id)?).to_proj();
     let same = |p: &&vale_store::ProjectionPreset| {
         ProjectionSpec::from_proj(&p.projection).is_some_and(|s| s.to_proj() == now)
     };
@@ -1221,19 +1246,20 @@ pub fn current_preset(state: &AppState) -> Option<String> {
         .map(|p| p.name.clone())
 }
 
-/// Moves the center of the projection to the center of a frame. A
-/// projection that is not azimuthal keeps its latitude.
+/// Moves the center of the projection of the map of a frame to the center
+/// of the frame. A projection that is not azimuthal keeps its latitude.
 pub fn center_projection(state: &mut AppState, id: FrameId) {
     let Some(frame) = state.doc.project.atlas.frame(id) else {
         return;
     };
     let [lon, lat] = frame.center;
-    let mut spec = state.doc.projection();
+    let map = frame.map;
+    let mut spec = state.doc.projection(map);
     spec.lon0 = lon;
     if spec.kind.is_azimuthal() || spec.azimuth.is_some() {
         spec.lat0 = lat;
     }
-    state.doc.set_projection(spec);
+    state.doc.set_projection(map, spec);
     state.touch();
 }
 
@@ -1293,9 +1319,21 @@ pub fn delete_page(state: &mut AppState) {
     let atlas = &mut state.doc.project.atlas;
     let index = atlas.page_index(id).unwrap_or(0);
     if atlas.remove_page(id).is_some() {
+        atlas.prune_maps();
         let open = index.saturating_sub(1).min(atlas.pages.len() - 1);
         state.atlas.page = atlas.pages[open].id;
         state.atlas.selection = AtlasSelection::Page;
+    }
+}
+
+/// Gives the map of a frame a new name.
+pub fn rename_map(state: &mut AppState, id: FrameId, name: &str) {
+    let atlas = &mut state.doc.project.atlas;
+    let Some(map) = atlas.frame(id).map(|f| f.map) else {
+        return;
+    };
+    if let Some(record) = atlas.map_mut(map) {
+        record.name = name.to_string();
     }
 }
 

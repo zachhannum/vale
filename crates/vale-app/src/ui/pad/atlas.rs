@@ -27,6 +27,7 @@ pub const MAP_FRAME: &str = "Map frame";
 const LATER_ITEMS: [&str; 4] = ["Text", "Legend", "Scale bar", "North arrow"];
 /// The tabs of the panel of a frame. The last two come in other tasks.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
+pub const MAP_NAME: &str = "Map name";
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
@@ -678,8 +679,10 @@ fn frame_tab(
         return;
     };
     let map = state.doc.project.atlas.map(frame.map);
-    let name = map.map_or_else(String::new, |m| m.name.clone());
-    widgets::value_row(ui, "Map", &name);
+    let mut name = map.map_or_else(String::new, |m| m.name.clone());
+    if widgets::text_field(ui, controls, MAP_NAME, "Name", None, &mut name, true).changed() {
+        atlas::rename_map(state, id, &name);
+    }
 
     let polygon = matches!(frame.shape, FrameShape::Polygon(_));
     let shapes = [RECTANGLE, POLYGON];
@@ -751,8 +754,11 @@ fn projection_tab(
     controls: &mut Controls,
     id: vale_store::FrameId,
 ) {
-    let spec = state.doc.projection();
-    let current = atlas::current_preset(state);
+    let Some(map) = state.doc.project.atlas.frame(id).map(|f| f.map) else {
+        return;
+    };
+    let spec = state.doc.projection(map);
+    let current = atlas::current_preset(state, id);
     let shown = current
         .clone()
         .unwrap_or_else(|| spec.kind.name().to_string());
@@ -764,7 +770,7 @@ fn projection_tab(
             let on = spec.kind == kind && current.is_none();
             let row = widgets::option_row(ui, controls, kind.name(), kind.name(), &[], on);
             if row.clicked() {
-                atlas::set_projection_kind(state, kind);
+                atlas::set_projection_kind(state, id, kind);
                 state.atlas.kinds = false;
             }
         }
@@ -773,7 +779,7 @@ fn projection_tab(
             let on = current.as_deref() == Some(name.as_str());
             let row = widgets::option_row(ui, controls, &custom_row(&name), &name, &[], on);
             if row.clicked() {
-                atlas::apply_preset(state, &name);
+                atlas::apply_preset(state, id, &name);
                 state.atlas.kinds = false;
             }
         }
@@ -782,7 +788,7 @@ fn projection_tab(
 
     let keys = Keys::Number;
     let degrees = |text: &str| math::parse_degrees(text);
-    let spec = state.doc.projection();
+    let spec = state.doc.projection(map);
     let shown = math::lon_text(spec.lon0);
     let typed = widgets::key_field(
         ui,
@@ -795,7 +801,7 @@ fn projection_tab(
         |t| degrees(t).is_some(),
     );
     if let Some(lon) = typed.as_deref().and_then(degrees) {
-        atlas::set_projection_longitude(state, lon);
+        atlas::set_projection_longitude(state, id, lon);
     }
     keypad_below(ui, controls, CENTER_LONGITUDE);
     let has_latitude = spec.kind.has_origin_latitude() || spec.azimuth.is_some();
@@ -813,7 +819,7 @@ fn projection_tab(
             valid,
         );
         if let Some(lat) = typed.as_deref().and_then(degrees) {
-            atlas::set_projection_latitude(state, lat);
+            atlas::set_projection_latitude(state, id, lat);
         }
         keypad_below(ui, controls, CENTER_LATITUDE);
     }
@@ -821,7 +827,7 @@ fn projection_tab(
         let pole = ["South pole", "North pole"];
         let north = usize::from(spec.lat0 >= 0.0);
         if let Some(chosen) = widgets::choice_row(ui, controls, "Pole", &pole, Some(north)) {
-            atlas::set_projection_latitude(state, if chosen == 1 { 90.0 } else { -90.0 });
+            atlas::set_projection_latitude(state, id, if chosen == 1 { 90.0 } else { -90.0 });
         }
     }
     if spec.kind.is_conic() {
@@ -838,7 +844,7 @@ fn projection_tab(
                 } else {
                     (spec.lat1, v)
                 };
-                atlas::set_parallels(state, a, b);
+                atlas::set_parallels(state, id, a, b);
             }
             keypad_below(ui, controls, name);
         }
@@ -846,12 +852,12 @@ fn projection_tab(
     if spec.kind.can_tilt() {
         let mut oblique = spec.azimuth.is_some();
         if widgets::switch_row(ui, controls, OBLIQUE, OBLIQUE, &mut oblique) {
-            atlas::set_oblique(state, oblique);
+            atlas::set_oblique(state, id, oblique);
         }
         if let Some(azimuth) = spec.azimuth {
             let mut angle = azimuth as f32;
             if widgets::compass_row(ui, controls, AZIMUTH, AZIMUTH, &mut angle) {
-                atlas::set_azimuth(state, f64::from(angle));
+                atlas::set_azimuth(state, id, f64::from(angle));
             }
         }
     }
@@ -868,7 +874,7 @@ fn projection_tab(
     }
     let named = !state.atlas.preset_name.trim().is_empty();
     if widgets::button_row(ui, controls, SAVE_PROJECTION, named).clicked() {
-        atlas::save_preset(state);
+        atlas::save_preset(state, id);
     }
     let saved = state
         .doc

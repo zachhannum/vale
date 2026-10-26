@@ -148,9 +148,12 @@ fn projection_resets_view() {
         rotation: 0.0,
     };
     d.frame.view = Some(view);
-    d.set_projection(ProjectionSpec::default());
+    d.set_projection(d.first_map(), ProjectionSpec::default());
     assert_eq!(d.frame.view, Some(view));
-    d.set_projection(ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0));
+    d.set_projection(
+        d.first_map(),
+        ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0),
+    );
     assert_eq!(d.frame.view, None);
 }
 

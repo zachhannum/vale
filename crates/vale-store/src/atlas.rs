@@ -269,19 +269,6 @@ impl Atlas {
         })
     }
 
-    /// Adds a map at the end, with a projection. Returns its ID.
-    pub fn add_map(&mut self, name: &str, projection: &str) -> MapId {
-        let id = MapId(self.next_map_id);
-        self.next_map_id += 1;
-        self.maps.push(MapRecord {
-            id,
-            name: name.to_string(),
-            projection: projection.to_string(),
-            hidden: BTreeSet::new(),
-        });
-        id
-    }
-
     /// Saves a projection under a name. A preset with that name changes.
     pub fn save_preset(&mut self, name: &str, projection: &str) {
         match self.presets.iter_mut().find(|p| p.name == name) {
@@ -307,6 +294,61 @@ impl Atlas {
 
     pub fn map_mut(&mut self, id: MapId) -> Option<&mut MapRecord> {
         self.maps.iter_mut().find(|m| m.id == id)
+    }
+
+    /// Adds a map with an Equal Earth projection at 0, 0 that shows each
+    /// layer, after the last map. Its name is the first free name of "Map",
+    /// "Map 2", "Map 3", and so on.
+    pub fn add_map(&mut self) -> MapId {
+        let name = self.free_name("Map");
+        self.push_map(MapRecord {
+            id: MapId(0),
+            name,
+            projection: EQUAL_EARTH.to_string(),
+            hidden: BTreeSet::new(),
+        })
+    }
+
+    /// The first map that no frame shows.
+    pub fn unshown_map(&self) -> Option<MapId> {
+        let free = self
+            .maps
+            .iter()
+            .find(|m| self.frames_of_map(m.id).next().is_none());
+        free.map(|m| m.id)
+    }
+
+    /// Removes each map that no frame shows. If no frame shows a map, the
+    /// first map stays.
+    pub fn prune_maps(&mut self) {
+        let shown: Vec<bool> = (self.maps.iter())
+            .map(|m| self.frames_of_map(m.id).next().is_some())
+            .collect();
+        let keep = shown.iter().any(|&s| s).then_some(0);
+        let mut i = 0;
+        self.maps.retain(|_| {
+            i += 1;
+            shown[i - 1] || keep.is_none() && i == 1
+        });
+    }
+
+    fn push_map(&mut self, mut map: MapRecord) -> MapId {
+        map.id = MapId(self.next_map_id);
+        self.next_map_id += 1;
+        self.maps.push(map);
+        MapId(self.next_map_id - 1)
+    }
+
+    /// `base`, or `base` with the first free number from 2.
+    fn free_name(&self, base: &str) -> String {
+        let taken = |n: &str| self.maps.iter().any(|m| m.name == n);
+        if !taken(base) {
+            return base.to_string();
+        }
+        (2..)
+            .map(|i| format!("{base} {i}"))
+            .find(|n| !taken(n))
+            .expect("a free name")
     }
 
     /// Each frame of a map, with its page, in atlas order.
@@ -419,6 +461,42 @@ mod tests {
         assert_eq!(atlas.pages.len(), 1);
         // The ID of a removed page is not used again.
         assert!(atlas.add_page(None, 1.0, 1.0, PageUnits::Mm) > end);
+    }
+
+    #[test]
+    fn new_maps_get_free_names_and_new_ids() {
+        let mut atlas = Atlas::new(Units::Metric);
+        let first = atlas.maps[0].id;
+        let second = atlas.add_map();
+        let third = atlas.add_map();
+        let names: Vec<&str> = atlas.maps.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["Map", "Map 2", "Map 3"]);
+        assert!(first < second && second < third);
+        atlas.map_mut(second).unwrap().name = "Map 4".to_string();
+        let fourth = atlas.add_map();
+        assert_eq!(atlas.map(fourth).unwrap().name, "Map 2");
+    }
+
+    #[test]
+    fn a_map_that_no_frame_shows_goes_away_but_the_last_map_stays() {
+        let mut atlas = Atlas::new(Units::Metric);
+        let shown = atlas.maps[0].id;
+        let page = atlas.pages[0].id;
+        assert_eq!(atlas.unshown_map(), Some(shown));
+        let frame_id = atlas.add_frame(page, frame(shown)).unwrap();
+        assert_eq!(atlas.unshown_map(), None);
+
+        let free = atlas.add_map();
+        assert_eq!(atlas.unshown_map(), Some(free));
+        atlas.prune_maps();
+        assert_eq!(atlas.maps.len(), 1);
+        // The ID of a removed map is not used again.
+        assert!(atlas.add_map() > free);
+
+        atlas.remove_frame(frame_id);
+        atlas.prune_maps();
+        assert_eq!(atlas.maps.len(), 1);
+        assert_eq!(atlas.maps[0].id, shown);
     }
 
     #[test]

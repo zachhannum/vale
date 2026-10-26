@@ -11,7 +11,8 @@ use vale_app::session::Session;
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::MORE;
 use vale_app::ui::pad::atlas::{
-    ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, NEXT_PAGE, PAGE_NAME, PREVIOUS_PAGE, SCALE,
+    ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, MAP_NAME, NEXT_PAGE, PAGE_NAME,
+    PREVIOUS_PAGE, SCALE,
 };
 use vale_app::ui::panels::ADD_MAP_FRAME;
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
@@ -99,7 +100,7 @@ fn land_checkbox_hides_layer() {
         .find(|l| l.name == "Land")
         .unwrap()
         .id;
-    assert!(!doc.shown(doc.map_id(), land));
+    assert!(!doc.shown(doc.first_map(), land));
 }
 
 #[test]
@@ -394,8 +395,10 @@ fn projection_change_recomposes() {
     h.run_steps(3);
     let before = h.state().atlas.composes;
     let s = h.state_mut();
-    s.doc
-        .set_projection(ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0));
+    s.doc.set_projection(
+        s.doc.first_map(),
+        ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0),
+    );
     s.touch();
     h.run_steps(2);
     assert_eq!(h.state().atlas.composes, before + 1);
@@ -930,11 +933,14 @@ fn a_projection_preset_changes_the_projection() {
     h.run_steps(3);
     let kind = ProjectionKind::ALL
         .into_iter()
-        .find(|k| *k != h.state().doc.projection().kind)
+        .find(|k| *k != h.state().doc.projection(h.state().doc.first_map()).kind)
         .unwrap();
     h.get_by_label(kind.name()).click();
     h.run_steps(2);
-    assert_eq!(h.state().doc.projection().kind, kind);
+    assert_eq!(
+        h.state().doc.projection(h.state().doc.first_map()).kind,
+        kind
+    );
 }
 
 #[test]
@@ -1080,4 +1086,17 @@ fn the_desktop_atlas_renders_offscreen() {
     std::fs::create_dir_all("../../target/app").unwrap();
     img.save("../../target/app/atlas.png").unwrap();
     assert_eq!((img.width(), img.height()), (1440, 900));
+}
+
+#[test]
+fn the_desktop_frame_tab_renames_the_map_of_the_frame() {
+    let mut h = harness();
+    let s = h.state_mut();
+    let frame = s.doc.project.atlas.pages[0].frames[0].id;
+    s.atlas.selection = AtlasSelection::Frame(frame);
+    h.run_steps(3);
+    type_in(&mut h, MAP_NAME, "Dravenhold");
+    let atlas = &h.state().doc.project.atlas;
+    let map = atlas.pages[0].frames[0].map;
+    assert_eq!(atlas.map(map).unwrap().name, "Dravenhold");
 }

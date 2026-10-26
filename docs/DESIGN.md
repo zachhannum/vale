@@ -543,7 +543,7 @@ Clean-room has a strict meaning here. The design comes from published research a
 
 The atlas has three levels: maps, pages, and map frames.
 
-A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. The Map menu of a frame lists the maps of the project, with "New map" and "Copy of this map". A map stays in the menu when no frame shows it. You delete a map in the menu, and only a map that no frame shows has the delete action. Each map has one projection center. For another center, you copy the map and change the projection of the copy.
+A map shows the layers of the world in one projection. It has a name, a projection, a switch for each layer, style overrides, and label classes. A map has no extent, no scale, and no page size. A map frame shows one map. The Add button makes a map frame and its map together, and a delete of the frame deletes its map. The Frame tab of a map frame has the name of its map, and you rename the map there. Each map has one projection center. For another center, you add another map frame.
 
 The app has two workspaces, World and Atlas. In the World workspace you draw and edit the features, and its attribute table edits their attributes. The Atlas workspace holds the maps, the pages, and the map frames. You edit a map in a frame, at the scale of the page, so that the labels and the styles show as they export.
 
@@ -694,7 +694,7 @@ The brush panel has a Floor setting and a Ceiling setting. Each one has a switch
 5. `vale-sphere` clips with one simple method: rotate, unwrap, and clip in a plane. A polygon that covers more than half of the sphere is not supported. A ring closes along the short longitude way. `geo` and `rstar` are not dependencies yet.
 6. `vale-style` has rule-based styles, with a solid fill, a solid stroke, a circle symbol, and one label class. The inspector edits only a style with one rule. On the globe, the scale denominator comes from the radius of the world and the radius of the globe on the screen.
 7. The map pipeline (query, clip, project, style, label, emit) lives in the library part of `vale-app`, in modules that do not use egui.
-8. A map stores its projection as a PROJ string with no radius. The app reads the string back into one of ten presets with its center, standard parallels, and an oblique aspect, and it adds the radius of the world when it builds the projection. The project keeps custom projections as named PROJ strings. The Projection tab of a frame lists the presets and the custom projections, edits the parameters, and saves the projection under a name. The project can have more than one map, but the Atlas workspace edits the first map only.
+8. A map stores its projection as a PROJ string with no radius. The app reads the string back into one of ten presets with its center, standard parallels, and an oblique aspect, and it adds the radius of the world when it builds the projection. The project keeps custom projections as named PROJ strings. The Projection tab of a frame lists the presets and the custom projections, edits the parameters, and saves the projection under a name.
 9. `vale-labeler-demo` stays as the regression test of the labeler. It keeps its own GeoJSON reader and its two hand-written projections, and it now draws through the display list of `vale-render`.
 
 The prototype leaves out the following.
@@ -705,7 +705,7 @@ The prototype leaves out the following.
 - The rows "From file…" and "From tool" in the menu of the new layers.
 - An editor for the rules of a style, and all symbolizers other than a solid fill, a solid stroke, and a circle.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
-- More than one map, the overview of the pages, page templates, map furniture on a page, graticule labels, SVG export, and tiled raster export.
+- The overview of the pages, page templates, map furniture on a page, graticule labels, SVG export, and tiled raster export.
 - Projection suggestions and Tissot circles.
 - All editing tools other than the freehand line tool, the freehand polygon tool, and point placement: the attribute table and vertex editing.
 - The GPU Vello backend. The prototype draws with `vello_cpu`.
