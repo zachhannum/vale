@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use kurbo::Point;
-use vale_app::atlas::{FrameTarget, PT_PER_MM, new_frame};
+use vale_app::atlas::{FrameTarget, PT_PER_MM, auto_graticule_interval, new_frame};
 use vale_app::document::Document;
 use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{PAPER, Pipeline, Quality, fonts};
@@ -364,6 +364,63 @@ fn compose_frame(doc: &Document, pipeline: &mut Pipeline, id: FrameId) -> Vec<It
     composed.list.items
 }
 
+fn compose_frame_full(
+    doc: &Document,
+    pipeline: &mut Pipeline,
+    id: FrameId,
+) -> vale_app::pipeline::Composed {
+    let atlas = &doc.project.atlas;
+    let page = atlas.page(atlas.page_of_frame(id).unwrap()).unwrap();
+    let frame = atlas.frame(id).unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut f = fonts().unwrap();
+    pipeline
+        .compose_frame(doc, page, frame, target, &mut f, Quality::Final, None)
+        .unwrap()
+}
+
+#[test]
+fn each_projection_draws_a_graticule_in_a_frame() {
+    const RED: [u8; 3] = [200, 10, 20];
+    let red = Color::rgb(RED[0], RED[1], RED[2]);
+    let has_stroke = |c: &vale_app::pipeline::Composed| {
+        c.list.items.iter().any(|i| {
+            matches!(i, Item::Stroke { color, width, path, .. }
+                if *color == red && *width == 1.5 && !path.elements().is_empty())
+        })
+    };
+    for kind in ProjectionKind::ALL {
+        let mut doc = plain();
+        let mut pipeline = Pipeline::new();
+        let map = doc.first_map();
+        doc.set_projection(map, ProjectionSpec::new(kind, 0.0, 0.0));
+        let page = doc.project.atlas.pages[0].id;
+        let id = frame_on(&mut doc, &mut pipeline, page);
+        let frame = doc.project.atlas.frame_mut(id).unwrap();
+        frame.graticule.color = RED;
+        frame.graticule.width = 1.5;
+
+        let frame = doc.project.atlas.frame(id).unwrap().clone();
+        let auto = auto_graticule_interval(pipeline.projection(&doc, map).unwrap(), &frame);
+        let world = compose_frame_full(&doc, &mut pipeline, id);
+        assert_eq!(world.graticule_step, Some(auto), "{kind:?}");
+        assert!(has_stroke(&world), "{kind:?}");
+
+        doc.project.atlas.frame_mut(id).unwrap().scale /= 100.0;
+        let closer = compose_frame_full(&doc, &mut pipeline, id);
+        assert!(closer.graticule_step.unwrap() < auto, "{kind:?}");
+        assert!(has_stroke(&closer), "{kind:?}");
+
+        doc.project.atlas.frame_mut(id).unwrap().scale = 5_000.0;
+        let street = compose_frame_full(&doc, &mut pipeline, id);
+        assert!(street.graticule_step.unwrap() < 1.0, "{kind:?}");
+        assert!(has_stroke(&street), "{kind:?}");
+    }
+}
+
 #[test]
 fn a_frame_draws_only_inside_its_shape() {
     let mut doc = plain();
@@ -371,7 +428,7 @@ fn a_frame_draws_only_inside_its_shape() {
     let page = doc.project.atlas.pages[0].id;
     let id = frame_on(&mut doc, &mut pipeline, page);
     let frame = doc.project.atlas.frame_mut(id).unwrap();
-    frame.graticule = false;
+    frame.graticule.on = false;
     // The outer ring has a notch at the bottom, and the polygon has a hole.
     frame.shape = FrameShape::Polygon(vec![
         vec![

@@ -123,14 +123,6 @@ fn steps(a: f64, b: f64, n: usize) -> impl Iterator<Item = f64> {
     })
 }
 
-/// The smallest of 1, 2, 5, 10, 15, 30 that is at least `min_step_deg`, or 30.
-pub fn nice_step(min_step_deg: f64) -> f64 {
-    [1.0, 2.0, 5.0, 10.0, 15.0, 30.0]
-        .into_iter()
-        .find(|s| *s >= min_step_deg)
-        .unwrap_or(30.0)
-}
-
 /// Great-circle distance in kilometers (haversine).
 pub fn distance_km(a: LonLat, b: LonLat, radius_km: f64) -> f64 {
     let (la, lb) = (a[1].to_radians(), b[1].to_radians());
@@ -155,8 +147,6 @@ mod tests {
 
     #[test]
     fn steps_and_distance() {
-        assert_eq!(nice_step(7.0), 10.0);
-        assert_eq!(nice_step(40.0), 30.0);
         assert!((distance_km([0.0, 0.0], [90.0, 0.0], 6371.0) - 10007.5).abs() < 0.5);
     }
 

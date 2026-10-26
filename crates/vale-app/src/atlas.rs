@@ -4,8 +4,8 @@
 //! with y down.
 
 use kurbo::{Point, Rect, Vec2};
-use vale_sphere::Projection;
-use vale_store::{FrameId, FrameRecord, FrameShape, MapRecord, PageRecord};
+use vale_sphere::{Projection, auto_interval};
+use vale_store::{FrameId, FrameRecord, FrameShape, Graticule, MapRecord, PageRecord};
 
 use crate::view::{View, ViewTransform};
 
@@ -503,8 +503,38 @@ pub fn new_frame(page: &PageRecord, map: &MapRecord, projection: &Projection) ->
         center: [spec.lon0, spec.lat0],
         scale: fit_scale(projection.bounds(), rect.width(), rect.height()),
         rotation: 0.0,
-        graticule: true,
+        graticule: Graticule::default(),
     }
+}
+
+/// Degrees of latitude per millimeter of paper at the center of a frame.
+fn degrees_per_mm(projection: &Projection, frame: &FrameRecord) -> f64 {
+    let local = projection
+        .local_scale(frame.center)
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0);
+    frame.scale / 1000.0 / local / projection.radius_m().to_radians()
+}
+
+/// The graticule interval of a frame from its scale, in degrees. The lines
+/// are at least 25 mm apart on the paper.
+pub fn auto_graticule_interval(projection: &Projection, frame: &FrameRecord) -> f64 {
+    auto_interval(25.0 * degrees_per_mm(projection, frame))
+}
+
+/// The graticule interval that a frame draws, in degrees. `None` when the
+/// graticule is off. A set interval is never less than the interval that
+/// puts the lines 1.5 mm apart.
+pub fn graticule_interval(projection: &Projection, frame: &FrameRecord) -> Option<f64> {
+    let g = &frame.graticule;
+    if !g.on {
+        return None;
+    }
+    let deg_per_mm = degrees_per_mm(projection, frame);
+    Some(match g.interval {
+        Some(i) => i.max(auto_interval(1.5 * deg_per_mm)),
+        None => auto_interval(25.0 * deg_per_mm),
+    })
 }
 
 #[cfg(test)]
@@ -529,7 +559,10 @@ mod tests {
             center: [10.0, 20.0],
             scale,
             rotation: 30.0,
-            graticule: false,
+            graticule: Graticule {
+                on: false,
+                ..Graticule::default()
+            },
         }
     }
 
@@ -774,5 +807,47 @@ mod tests {
         assert!((x1 - 287.0).abs() < 1e-9 && (y1 - 200.0).abs() < 1e-9);
         assert!((x1 - x0 - 277.0 / 3.0).abs() < 1e-9 && (y1 - y0 - 190.0 / 3.0).abs() < 1e-9);
         assert!(later.scale > first.scale);
+    }
+
+    #[test]
+    fn the_auto_interval_follows_the_frame_scale() {
+        let p = projection(ProjectionKind::Equirectangular, 6_371_000.0);
+        let mut f = frame(1e8);
+        f.center = [0.0, 0.0];
+        // 25 mm at 1:100,000,000 is about 22.5°.
+        assert_eq!(auto_graticule_interval(&p, &f), 30.0);
+        f.scale = 1e6;
+        // 25 mm at 1:1,000,000 is about 13.5′.
+        assert_eq!(auto_graticule_interval(&p, &f), 15.0 / 60.0);
+        f.scale = 5e3;
+        assert!(auto_graticule_interval(&p, &f) < 5.0 / 3600.0 + 1e-12);
+    }
+
+    #[test]
+    fn the_graticule_interval_is_off_set_or_auto() {
+        let p = projection(ProjectionKind::Equirectangular, 6_371_000.0);
+        let mut f = frame(1e6);
+        f.center = [0.0, 0.0];
+        assert_eq!(graticule_interval(&p, &f), None);
+        f.graticule.on = true;
+        assert_eq!(
+            graticule_interval(&p, &f),
+            Some(auto_graticule_interval(&p, &f))
+        );
+        f.graticule.interval = Some(1.0);
+        assert_eq!(graticule_interval(&p, &f), Some(1.0));
+        f.graticule.interval = Some(1.0 / 60.0);
+        assert_eq!(graticule_interval(&p, &f), Some(1.0 / 60.0));
+    }
+
+    #[test]
+    fn a_fine_set_interval_coarsens_on_a_small_scale() {
+        let p = projection(ProjectionKind::Equirectangular, 6_371_000.0);
+        let mut f = frame(1e8);
+        f.center = [0.0, 0.0];
+        f.graticule.on = true;
+        f.graticule.interval = Some(1.0 / 3600.0);
+        // 1.5 mm at 1:100,000,000 is about 1.35°.
+        assert_eq!(graticule_interval(&p, &f), Some(2.0));
     }
 }

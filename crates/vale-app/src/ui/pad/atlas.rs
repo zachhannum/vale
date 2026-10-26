@@ -739,7 +739,7 @@ fn frame_tab(
     if widgets::compass_row(ui, controls, ROTATION, ROTATION, &mut rotation) {
         atlas::set_rotation(state, id, f64::from(rotation));
     }
-    let mut graticule = frame.graticule;
+    let mut graticule = frame.graticule.on;
     if widgets::switch_row(ui, controls, GRATICULE, GRATICULE, &mut graticule) {
         atlas::set_graticule(state, id, graticule);
     }

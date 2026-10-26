@@ -160,7 +160,7 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             }
             ui.end_row();
         });
-    let mut graticule = frame.graticule;
+    let mut graticule = frame.graticule.on;
     if ui.checkbox(&mut graticule, GRATICULE).changed() {
         atlas::set_graticule(state, id, graticule);
     }
