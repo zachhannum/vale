@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
+use vale_app::atlas_export;
 use vale_app::cli::{Args, apply_globe, apply_import, apply_view, export_heightmap, parse_pair};
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
@@ -19,6 +20,12 @@ fn run() -> anyhow::Result<u8> {
         println!("wrote {path} ({} x {})", done.width, done.height);
         return Ok(0);
     }
+    if (args.export_atlas.is_some() || !args.export_page.is_empty())
+        && let Some(path) = &args.project
+        && !path.is_file()
+    {
+        anyhow::bail!("the project file {} does not exist", path.display());
+    }
     let mut doc = args.document()?;
     let session = match &args.project {
         Some(path) => {
@@ -26,12 +33,47 @@ fn run() -> anyhow::Result<u8> {
         }
         None => None,
     };
+    if let Some(path) = &args.export_atlas {
+        let pages = doc.project.atlas.pages.clone();
+        atlas_export::export_pdf(&doc, pages, path)?;
+        println!("wrote {}", path.display());
+        return Ok(0);
+    }
+    if let Some((number, path)) = args.page_export()? {
+        let page = doc
+            .project
+            .atlas
+            .pages
+            .get(number - 1)
+            .cloned()
+            .with_context(|| {
+                format!(
+                    "page {number} is outside the atlas of {} pages",
+                    doc.project.atlas.pages.len()
+                )
+            })?;
+        let pdf = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+        if pdf {
+            atlas_export::export_pdf(&doc, vec![page], &path)?;
+        } else {
+            let mut pipeline = Pipeline::new();
+            let mut fonts = vale_app::pipeline::fonts()?;
+            headless::export_page(&mut pipeline, &doc, &page, &mut fonts, &path)?;
+        }
+        println!("wrote {}", path.display());
+        return Ok(0);
+    }
     let size = args.size()?;
     let mut pipeline = Pipeline::new();
     apply_view(&args, &mut doc, &mut pipeline, size)?;
     let ratio = args.pixel_ratio;
 
     let headless_run = args.export.is_some()
+        || args.export_atlas.is_some()
+        || !args.export_page.is_empty()
         || args.screenshot.is_some()
         || !args.probe.is_empty()
         || args.report

@@ -312,12 +312,12 @@ fn toolbar_buttons_push_actions() {
     h.get_by_label("Open GeoJSON…").click();
     h.run_steps(1);
     assert!(h.state().actions.contains(&Action::OpenDialog));
-    h.get_by_label("Export PDF…").click();
+    h.get_by_label("Export atlas PDF…").click();
     h.run_steps(1);
     assert!(
         h.state()
             .actions
-            .contains(&Action::ExportDialog(ExportFormat::Pdf))
+            .contains(&Action::ExportDialog(ExportFormat::AtlasPdf))
     );
 }
 
@@ -330,7 +330,7 @@ fn file_buttons_can_be_hidden() {
         .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
     h.run_steps(2);
     assert!(h.query_by_label("Open GeoJSON…").is_none());
-    assert!(h.query_by_label("Export PDF…").is_none());
+    assert!(h.query_by_label("Export atlas PDF…").is_none());
 }
 
 #[test]
@@ -413,6 +413,42 @@ fn the_export_writes_a_png_and_a_pdf_of_the_open_page() {
         mediabox.contains(&pt(100.0)) && mediabox.contains(&pt(50.0)),
         "{mediabox}"
     );
+}
+
+#[test]
+fn the_atlas_export_writes_each_page_and_can_be_canceled() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("atlas.pdf");
+    let mut state = state_with(Document::sample());
+    state.headless = false;
+    for i in 1..20 {
+        vale_app::ui::atlas::add_page(&mut state);
+        vale_app::ui::atlas::edit_page(&mut state, |page| {
+            page.width_mm = 100.0 + f64::from(i);
+            page.height_mm = 50.0;
+        });
+    }
+
+    state.run_action(Action::ExportAtlas(out.clone()));
+    assert_eq!(
+        state.atlas_export_progress().as_deref(),
+        Some("Exporting atlas.pdf: page 1 of 20")
+    );
+    state.poll_atlas_export();
+    assert_eq!(
+        state.atlas_export_progress().as_deref(),
+        Some("Exporting atlas.pdf: page 2 of 20")
+    );
+    state.run_action(Action::CancelExport);
+    assert!(state.atlas_export.is_none() && !out.exists());
+    assert_eq!(state.status, "Canceled export of atlas.pdf");
+
+    state.headless = true;
+    state.run_action(Action::ExportAtlas(out.clone()));
+    let bytes = std::fs::read(&out).unwrap();
+    assert!(bytes.starts_with(b"%PDF-"));
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("/Count 20"), "{text}");
 }
 
 #[test]

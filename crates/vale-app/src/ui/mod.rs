@@ -14,6 +14,7 @@ use vale_store::{
 };
 use vale_terrain::{Bands, Heightmap, Mode};
 
+use crate::atlas_export::PdfExport;
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, file_name};
@@ -51,6 +52,10 @@ pub enum Action {
     ExportDialog(ExportFormat),
     /// Exports the open page to this PNG or PDF file.
     Export(PathBuf),
+    /// Exports all pages to this PDF file.
+    ExportAtlas(PathBuf),
+    /// Stops the PDF export before its next page.
+    CancelExport,
     ImportHeightmapDialog,
     /// Imports this equirectangular image into a height layer. A world with
     /// no height layer gets one.
@@ -160,6 +165,7 @@ pub fn is_heightmap_path(path: &Path) -> bool {
 pub enum ExportFormat {
     Png,
     Pdf,
+    AtlasPdf,
 }
 
 /// A full-window view with its own canvas and panels.
@@ -343,6 +349,8 @@ pub struct AppState {
     pub import_note: Option<Note>,
     /// The text of the last export of the heightmap.
     pub export_note: Option<Note>,
+    /// The PDF export that composes one page in each UI frame.
+    pub atlas_export: Option<PdfExport>,
     /// The color ramps of the app.
     pub ramps: crate::ramps::Ramps,
     /// The text of the last import of a color ramp.
@@ -435,6 +443,7 @@ impl AppState {
             status: String::new(),
             import_note: None,
             export_note: None,
+            atlas_export: None,
             ramps: Default::default(),
             ramp_note: None,
             import_layer: None,
@@ -1915,6 +1924,65 @@ impl AppState {
         self.export_note = Some(note);
     }
 
+    /// Starts a PDF export of `pages`. The document and the pages are a
+    /// snapshot of the time that the export starts.
+    fn start_pdf_export(&mut self, path: PathBuf, pages: Vec<vale_store::PageRecord>) {
+        if self.atlas_export.is_some() {
+            self.status = "A PDF is already exporting".to_string();
+            return;
+        }
+        match PdfExport::new(self.doc.clone(), path, pages) {
+            Ok(job) => {
+                self.atlas_export = Some(job);
+                self.status = self.atlas_export_progress().unwrap_or_default();
+                if self.headless {
+                    while self.atlas_export.is_some() {
+                        self.poll_atlas_export();
+                    }
+                }
+            }
+            Err(error) => self.status = format!("{error:#}"),
+        }
+    }
+
+    /// The progress text of the PDF export that runs.
+    pub fn atlas_export_progress(&self) -> Option<String> {
+        let job = self.atlas_export.as_ref()?;
+        let (page, count) = job.progress();
+        Some(format!(
+            "Exporting {}: page {page} of {count}",
+            file_name(job.path())
+        ))
+    }
+
+    /// Composes the next page of a PDF export.
+    pub fn poll_atlas_export(&mut self) {
+        let Some(mut job) = self.atlas_export.take() else {
+            return;
+        };
+        match job.step() {
+            None => {
+                self.atlas_export = Some(job);
+                self.status = self.atlas_export_progress().unwrap_or_default();
+            }
+            Some(Ok(path)) => {
+                self.status = format!("Exported {}", path.display());
+                if self.share_exports {
+                    self.share = Some(path);
+                }
+            }
+            Some(Err(error)) => self.status = format!("{error:#}"),
+        }
+    }
+
+    /// Stops the PDF export before it composes another page.
+    pub fn cancel_atlas_export(&mut self) {
+        let Some(job) = self.atlas_export.take() else {
+            return;
+        };
+        self.status = format!("Canceled export of {}", file_name(job.path()));
+    }
+
     /// Ends the hand-off of the export file `path` to the Files app. A
     /// cancelled hand-off removes the file and the text of the export.
     pub fn end_share(&mut self, event: ExportEvent, path: &Path) {
@@ -2005,13 +2073,31 @@ impl AppState {
             }
             Action::Export(path) => {
                 let page = atlas::open_page(self).clone();
-                let (pipeline, fonts) = (&mut self.pipeline, &mut self.fonts);
-                self.status = match headless::export_page(pipeline, &self.doc, &page, fonts, &path)
-                {
-                    Ok(()) => format!("Exported {}", path.display()),
-                    Err(e) => format!("{e:#}"),
-                };
+                let pdf = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+                if pdf {
+                    self.start_pdf_export(path, vec![page]);
+                } else {
+                    let shared = path.clone();
+                    let (pipeline, fonts) = (&mut self.pipeline, &mut self.fonts);
+                    match headless::export_page(pipeline, &self.doc, &page, fonts, &path) {
+                        Ok(()) => {
+                            self.status = format!("Exported {}", path.display());
+                            if self.share_exports {
+                                self.share = Some(shared);
+                            }
+                        }
+                        Err(error) => self.status = format!("{error:#}"),
+                    }
+                }
             }
+            Action::ExportAtlas(path) => {
+                let pages = self.doc.project.atlas.pages.clone();
+                self.start_pdf_export(path, pages);
+            }
+            Action::CancelExport => self.cancel_atlas_export(),
             Action::ImportHeightmap(path) => {
                 self.import_note = None;
                 // A second import gets its refusal from the globe, and the
@@ -2101,6 +2187,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
     state.poll_export();
+    state.poll_atlas_export();
+    if state.atlas_export.is_some() {
+        ui.ctx().request_repaint();
+    }
     state.pump_layers(state.headless);
     if state.screen == Screen::Browser {
         if state.poll_downloads(Instant::now()) {

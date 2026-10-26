@@ -11,7 +11,6 @@ use crate::projects::Location;
 #[cfg(not(target_os = "ios"))]
 use crate::session::EXTENSION;
 use crate::session::Session;
-#[cfg(not(target_os = "ios"))]
 use crate::ui::ExportFormat;
 use crate::ui::{self, Action, AppState};
 
@@ -113,6 +112,22 @@ impl eframe::App for ValeApp {
                     let path = crate::files::export_dir().join(state.export_name());
                     state.run_action(Action::ExportHeightmap(path));
                 }
+                #[cfg(target_os = "ios")]
+                Action::ExportDialog(format) if self.sharing.is_none() => {
+                    crate::files::clear_exports();
+                    let (index, _) = crate::ui::atlas::page_index(state);
+                    let (name, atlas) = match format {
+                        ExportFormat::Png => (format!("page-{}.png", index + 1), false),
+                        ExportFormat::Pdf => (format!("page-{}.pdf", index + 1), false),
+                        ExportFormat::AtlasPdf => ("atlas.pdf".to_string(), true),
+                    };
+                    let path = crate::files::export_dir().join(name);
+                    state.run_action(if atlas {
+                        Action::ExportAtlas(path)
+                    } else {
+                        Action::Export(path)
+                    });
+                }
                 #[cfg(not(target_os = "ios"))]
                 Action::ExportHeightmapDialog => {
                     let picked = rfd::FileDialog::new()
@@ -134,14 +149,18 @@ impl eframe::App for ValeApp {
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::ExportDialog(format) => {
-                    let ext = match format {
-                        ExportFormat::Png => "png",
-                        ExportFormat::Pdf => "pdf",
-                    };
                     let (index, _) = crate::ui::atlas::page_index(state);
-                    let name = format!("page-{}.{ext}", index + 1);
+                    let (name, atlas) = match format {
+                        ExportFormat::Png => (format!("page-{}.png", index + 1), false),
+                        ExportFormat::Pdf => (format!("page-{}.pdf", index + 1), false),
+                        ExportFormat::AtlasPdf => ("atlas.pdf".to_string(), true),
+                    };
                     if let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() {
-                        state.run_action(Action::Export(path));
+                        state.run_action(if atlas {
+                            Action::ExportAtlas(path)
+                        } else {
+                            Action::Export(path)
+                        });
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
