@@ -58,6 +58,12 @@ fn fs_blur(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     return sum / total;
 }
 
+// The picture of the canvas that the CPU drew, at the reduced size.
+@fragment
+fn fs_blit(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureSampleLevel(source, bilinear, frag.xy / g.small.xy, 0.0);
+}
+
 struct CardVertex {
     @builtin(position) position: vec4<f32>,
     // The center of the card, then half of its width and height, in pixels.

@@ -1793,3 +1793,101 @@ fn the_texture_of_a_frame_holds_the_whole_border() {
     h.run_steps(3);
     assert!(reach(&h) < 1.0);
 }
+
+/// A quick tap of `count` fingers side by side about `center`.
+fn fingers_tap(h: &mut Pad, count: u64, center: Pos2) {
+    let at = |id: u64| center + vec2(40.0 * id as f32, 0.0);
+    for id in 1..=count {
+        touch(h, id, egui::TouchPhase::Start, at(id), None);
+    }
+    h.step();
+    for id in (1..=count).rev() {
+        touch(h, id, egui::TouchPhase::End, at(id), None);
+    }
+    h.run_steps(3);
+}
+
+#[test]
+fn a_tap_of_two_fingers_undoes_and_a_tap_of_three_redoes_in_the_atlas() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    // A tap lasts less than 0.3 seconds, and a step of the harness is short.
+    let mut h = Harness::builder()
+        .with_size(vec2(BOARDS[0].0, BOARDS[0].1))
+        .with_pixels_per_point(1.0)
+        .with_step_dt(0.01)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), s);
+    h.run_steps(3);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    assert_eq!(open_page(&h).frames.len(), 2);
+
+    let empty = pos2(200.0, 780.0);
+    fingers_tap(&mut h, 2, empty);
+    assert_eq!(open_page(&h).frames.len(), 1);
+    fingers_tap(&mut h, 3, empty);
+    assert_eq!(open_page(&h).frames.len(), 2);
+
+    // Command+Z and Shift+Command+Z do the same.
+    let key = |h: &mut Pad, modifiers| {
+        h.event(egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        h.run_steps(3);
+    };
+    key(&mut h, Modifiers::COMMAND);
+    assert_eq!(open_page(&h).frames.len(), 1);
+    key(&mut h, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(open_page(&h).frames.len(), 2);
+}
+
+/// The red values of a row of pixels near the bottom of a card, inside its
+/// round corners.
+fn card_row(image: &image::RgbaImage, card: Rect) -> Vec<i32> {
+    let y = card.bottom() as u32 - 3;
+    let (left, right) = (card.left() as u32 + 16, card.right() as u32 - 16);
+    (left..right)
+        .map(|x| i32::from(image.get_pixel(x, y).0[0]))
+        .collect()
+}
+
+#[test]
+fn the_cards_of_the_atlas_show_the_blurred_page() {
+    let _gpu = one_gpu_test();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = vale_app::headless::ui_harness(state(), (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    // The left edge of the page goes through the middle of the card of the
+    // workspace switch, and the page reaches above the card.
+    let card = h.state().pad.rects.unwrap().workspace;
+    let rect = h.state().atlas.place.unwrap().rect;
+    let view = &mut h.state_mut().atlas.view;
+    view.offset.x += card.center().x - rect.left();
+    view.offset.y += card.top() - 20.0 - rect.top();
+    h.run_steps(3);
+    let blurred = h.render().unwrap();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    blurred
+        .save("../../target/app/test-atlas-blur.png")
+        .unwrap();
+    h.state_mut().globe.blur = false;
+    h.run_steps(2);
+    let plain = h.render().unwrap();
+
+    let row = card_row(&blurred, card);
+    let width = row.len() as i32;
+    let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
+    assert!(step <= 5, "a step of {step}");
+    let sharp = card_row(&plain, card);
+    let difference: i32 = row.iter().zip(&sharp).map(|(a, b)| (a - b).abs()).sum();
+    assert!(difference > width * 2, "{difference}");
+}

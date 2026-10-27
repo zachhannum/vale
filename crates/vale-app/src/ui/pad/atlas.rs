@@ -268,7 +268,7 @@ fn top_row(
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
-        None,
+        state.globe.backdrop(),
         "pad-workspace",
         rects.workspace,
         Order::Middle,
@@ -307,7 +307,7 @@ fn top_row(
     let (index, count) = atlas::page_index(state);
     widgets::card(
         ctx,
-        None,
+        state.globe.backdrop(),
         "pad-pages",
         page_card,
         Order::Middle,
@@ -351,7 +351,7 @@ fn top_row(
 
     widgets::card(
         ctx,
-        None,
+        state.globe.backdrop(),
         "pad-actions",
         rects.actions,
         Order::Middle,
@@ -389,7 +389,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
-        None,
+        state.globe.backdrop(),
         "pad-tools",
         rects.tools,
         Order::Middle,
@@ -431,7 +431,7 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     let radius = theme::CONTROL_RADIUS.into();
     widgets::card(
         ctx,
-        None,
+        state.globe.backdrop(),
         "pad-readout",
         rect,
         Order::Middle,

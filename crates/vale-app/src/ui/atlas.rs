@@ -15,9 +15,10 @@ use std::sync::Arc;
 
 use vale_store::RasterId;
 
+use super::pad::theme;
 use super::{AppState, LayerRef};
 use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
-use crate::globe::backdrop::Canvas;
+use crate::globe::backdrop::{Canvas, REDUCTION, Scene, SceneCallback};
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
@@ -154,8 +155,47 @@ impl PagePlace {
 }
 
 /// The last compose of a frame.
+/// A texture of a frame at the reduced size of the blurred backdrop, in
+/// premultiplied bytes.
+struct Thumb {
+    serial: u64,
+    size: [usize; 2],
+    rgba: Vec<u8>,
+}
+
+impl Thumb {
+    /// Averages `REDUCTION` by `REDUCTION` pixels of a premultiplied image.
+    fn new(img: &vale_render::Rgba) -> Thumb {
+        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = REDUCTION as usize;
+        let size = [img.width.div_ceil(n), img.height.div_ceil(n)];
+        let mut rgba = vec![0u8; size[0] * size[1] * 4];
+        for y in 0..size[1] {
+            for x in 0..size[0] {
+                let (mut sum, mut count) = ([0u32; 4], 0);
+                for sy in y * n..((y + 1) * n).min(img.height) {
+                    for sx in x * n..((x + 1) * n).min(img.width) {
+                        let at = (sy * img.width + sx) * 4;
+                        for (total, byte) in sum.iter_mut().zip(&img.data[at..at + 4]) {
+                            *total += u32::from(*byte);
+                        }
+                        count += 1;
+                    }
+                }
+                for c in 0..4 {
+                    rgba[(y * size[0] + x) * 4 + c] = (sum[c] / count.max(1)) as u8;
+                }
+            }
+        }
+        let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Thumb { serial, size, rgba }
+    }
+}
+
 struct FrameImage {
     texture: egui::TextureHandle,
+    /// A reduced copy for the blurred backdrop of the cards.
+    thumb: Arc<Thumb>,
     /// The key of what the frame shows.
     content: u64,
     /// The key of the place of the frame and of its view.
@@ -1131,6 +1171,34 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let painted = state.globe.paint_frames(canvas, draws);
         painted.unwrap_or_default().into_iter().collect()
     };
+    if let Some(format) = state.globe.backdrop() {
+        let mut items = Vec::new();
+        for p in &placed {
+            let by = p.layered.then(|| state.atlas.unders.get(&p.id)).flatten();
+            let images = [by, state.atlas.images.get(&p.id)];
+            for image in images.into_iter().flatten() {
+                let corners = [image.rect.min, image.rect.max].map(|c| {
+                    let q = p.vt.to_page(
+                        image
+                            .vt
+                            .from_page(Point::new(f64::from(c.x), f64::from(c.y))),
+                    );
+                    pos2(q.x as f32, q.y as f32)
+                });
+                let rect = Rect::from_two_pos(corners[0], corners[1]);
+                items.push((image.thumb.clone(), rect.intersect(p.shown)));
+            }
+        }
+        let scene = scene_of(area, place.rect, &items, canvas);
+        let callback = SceneCallback {
+            format,
+            scene: Arc::new(scene),
+            canvas,
+        };
+        painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
+            area, callback,
+        ));
+    }
     for p in placed {
         let by = p.layered.then(|| state.atlas.unders.get(&p.id)).flatten();
         if let Some(image) = by {
@@ -1144,6 +1212,82 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         if let Some(image) = state.atlas.images.get(&p.id) {
             paint_image(&painter, image, &p.vt, p.shown);
         }
+    }
+}
+
+/// Draws the canvas of the atlas at the reduced size of the blurred
+/// backdrop: the background, the page, and the textures of the frames. The
+/// raster layers of a frame are not in it.
+fn scene_of(area: Rect, page: Rect, items: &[(Arc<Thumb>, Rect)], canvas: Canvas) -> Scene {
+    let n = REDUCTION as f32;
+    let k = canvas.pixels_per_point / n;
+    let px = |v: f32| (v * canvas.pixels_per_point).round().max(1.0) as u32;
+    let size = [
+        px(area.width()).div_ceil(REDUCTION),
+        px(area.height()).div_ceil(REDUCTION),
+    ];
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    (
+        size,
+        area.min.x.to_bits(),
+        area.min.y.to_bits(),
+        k.to_bits(),
+    )
+        .hash(&mut hasher);
+    for r in std::iter::once(&page).chain(items.iter().map(|(_, r)| r)) {
+        [r.min.x, r.min.y, r.max.x, r.max.y]
+            .map(f32::to_bits)
+            .hash(&mut hasher);
+    }
+    for (thumb, _) in items {
+        thumb.serial.hash(&mut hasher);
+    }
+    canvas.background.to_array().hash(&mut hasher);
+    let [w, h] = size.map(|s| s as usize);
+    let back = theme::CANVAS.to_array();
+    let mut rgba: Vec<u8> = (0..w * h).flat_map(|_| back).collect();
+    // The rectangle in pixels of the scene.
+    let pixels = |r: Rect| {
+        let at = |p: Pos2, up: bool| {
+            let v = (p - area.min) * k;
+            let round = |c: f32| if up { c.ceil() } else { c.floor() };
+            [
+                round(v.x).clamp(0.0, w as f32) as usize,
+                round(v.y).clamp(0.0, h as f32) as usize,
+            ]
+        };
+        (at(r.min, false), at(r.max, true))
+    };
+    let (from, to) = pixels(page);
+    for y in from[1]..to[1] {
+        for x in from[0]..to[0] {
+            let at = (y * w + x) * 4;
+            rgba[at..at + 4].copy_from_slice(&PAPER.to_array());
+        }
+    }
+    for (thumb, rect) in items {
+        let (from, to) = pixels(*rect);
+        let [tw, th] = thumb.size;
+        let (width, height) = ((to[0] - from[0]).max(1), (to[1] - from[1]).max(1));
+        for y in from[1]..to[1] {
+            for x in from[0]..to[0] {
+                let tx = ((x - from[0]) * tw / width).min(tw - 1);
+                let ty = ((y - from[1]) * th / height).min(th - 1);
+                let t = (ty * tw + tx) * 4;
+                let over = 255 - u32::from(thumb.rgba[t + 3]);
+                let at = (y * w + x) * 4;
+                for c in 0..3 {
+                    let v = u32::from(thumb.rgba[t + c]) + u32::from(rgba[at + c]) * over / 255;
+                    rgba[at + c] = v.min(255) as u8;
+                }
+            }
+        }
+    }
+    Scene {
+        key: hasher.finish(),
+        size,
+        rgba,
     }
 }
 
@@ -1289,6 +1433,7 @@ fn upload(
         id,
         FrameImage {
             texture,
+            thumb: Arc::new(Thumb::new(&img)),
             content,
             place,
             vt,

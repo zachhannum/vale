@@ -74,7 +74,11 @@ pub struct Backdrop {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     blur: wgpu::RenderPipeline,
+    blit: wgpu::RenderPipeline,
     card: wgpu::RenderPipeline,
+    /// The picture of a canvas that the CPU drew: its key, and the bind
+    /// group that reads it.
+    scene: Option<(u64, wgpu::BindGroup)>,
     /// The values for the cards, and for each of the two blur passes.
     globals: [wgpu::Buffer; 3],
     targets: Option<Targets>,
@@ -170,6 +174,8 @@ impl Backdrop {
         Backdrop {
             format,
             blur: pipeline("backdrop blur", "vs_full", "fs_blur", None, &[]),
+            blit: pipeline("backdrop blit", "vs_full", "fs_blit", None, &[]),
+            scene: None,
             card: pipeline(
                 "backdrop card",
                 "vs_card",
@@ -194,6 +200,69 @@ impl Backdrop {
                 mapped_at_creation: false,
             }),
         }
+    }
+
+    /// Uploads a picture of the canvas, unless the key is that of the
+    /// picture that the backdrop holds.
+    fn set_scene(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene) {
+        if self
+            .scene
+            .as_ref()
+            .is_some_and(|(key, _)| *key == scene.key)
+        {
+            return;
+        }
+        // The bytes are gamma values. A target in sRGB reads them as such.
+        let format = if self.format.is_srgb() {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
+        let extent = wgpu::Extent3d {
+            width: scene.size[0],
+            height: scene.size[1],
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("backdrop scene"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            texture.as_image_copy(),
+            &scene.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * scene.size[0]),
+                rows_per_image: None,
+            },
+            extent,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("backdrop scene"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.globals[0].as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.scene = Some((scene.key, bind_group));
     }
 
     fn targets(&self, device: &wgpu::Device, size: [u32; 2]) -> Targets {
@@ -311,6 +380,61 @@ impl Backdrop {
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+}
+
+/// A picture of a canvas that the CPU drew, at the reduced size of the
+/// backdrop. The canvas of the atlas has no GPU pass, so the CPU draws it.
+pub struct Scene {
+    /// Names the content. A picture with the same key as the last one is
+    /// not uploaded again.
+    pub key: u64,
+    pub size: [u32; 2],
+    /// Gamma bytes of the colors, with no transparency.
+    pub rgba: Vec<u8>,
+}
+
+/// Draws a picture of the canvas into the blurred copy. egui calls it
+/// before its own render pass.
+pub struct SceneCallback {
+    pub format: wgpu::TextureFormat,
+    pub scene: std::sync::Arc<Scene>,
+    pub canvas: Canvas,
+}
+
+impl egui_wgpu::CallbackTrait for SceneCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        egui_encoder: &mut wgpu::CommandEncoder,
+        resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let kept = resources.remove::<Backdrop>();
+        let mut backdrop = kept
+            .filter(|b| b.format == self.format)
+            .unwrap_or_else(|| Backdrop::new(device, self.format));
+        backdrop.set_scene(device, queue, &self.scene);
+        if let Some((_, bind_group)) = backdrop.scene.clone() {
+            let pipeline = backdrop.blit.clone();
+            let size = screen_descriptor.size_in_pixels;
+            backdrop.render(device, queue, egui_encoder, size, &self.canvas, |pass| {
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            });
+        }
+        resources.insert(backdrop);
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: egui::PaintCallbackInfo,
+        _pass: &mut wgpu::RenderPass<'static>,
+        _resources: &egui_wgpu::CallbackResources,
+    ) {
     }
 }
 
