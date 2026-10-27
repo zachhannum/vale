@@ -1767,3 +1767,29 @@ fn the_texture_of_a_frame_is_on_whole_pixels() {
         }
     }
 }
+
+#[test]
+fn the_texture_of_a_frame_holds_the_whole_border() {
+    let mut h = inset_pad(BOARDS[0]);
+    let id = frame(&h, 1).id;
+    let width = 8.0;
+    let set = |h: &mut Pad, on: bool| {
+        let frame = h.state_mut().doc.project.atlas.frame_mut(id).unwrap();
+        frame.border.width = width;
+        frame.border.on = on;
+    };
+    set(&mut h, true);
+    h.run_steps(3);
+    let place = h.state().atlas.place.unwrap();
+    let bbox = place.rect_to_screen(shape_bbox(&frame(&h, 1).shape));
+    let reach = |h: &Pad| {
+        let rects = h.state().atlas.texture_rects();
+        let r = rects.iter().find(|r| r.intersects(bbox)).unwrap();
+        bbox.min.x - r.min.x
+    };
+    // Half the width of the border is outside the shape.
+    assert!(reach(&h) >= width as f32 / 2.0, "{}", reach(&h));
+    set(&mut h, false);
+    h.run_steps(3);
+    assert!(reach(&h) < 1.0);
+}

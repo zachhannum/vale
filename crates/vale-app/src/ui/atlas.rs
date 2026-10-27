@@ -144,7 +144,7 @@ impl PagePlace {
     }
 
     /// A box in page millimeters to the screen.
-    fn rect_to_screen(&self, r: kurbo::Rect) -> Rect {
+    pub fn rect_to_screen(&self, r: kurbo::Rect) -> Rect {
         Rect::from_min_max(
             self.to_screen(Point::new(r.x0, r.y0)),
             self.to_screen(Point::new(r.x1, r.y1)),
@@ -1017,9 +1017,17 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             layered,
         ));
         // Only the part of the frame on the canvas has a texture.
+        // The border reaches out of the shape by half its width, and a sharp
+        // corner reaches further.
+        let reach = if frame.border.on {
+            (frame.border.width * f64::from(place.pts_per_mm) / PT_PER_MM) as f32
+        } else {
+            0.0
+        };
         let shown = snap(
             place
                 .rect_to_screen(math::shape_bbox(&frame.shape))
+                .expand(reach)
                 .intersect(area),
             ppp,
         );
