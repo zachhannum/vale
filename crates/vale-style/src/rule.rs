@@ -196,9 +196,110 @@ impl Rule {
     pub fn matches(&self, ctx: &Context) -> bool {
         self.in_scale(ctx.scale) && self.filter.matches(ctx)
     }
+
+    /// The fill of the rule, or the fill of its marker.
+    pub fn fill(&self) -> Option<Color> {
+        self.symbolizers
+            .iter()
+            .find_map(|s| match s {
+                Symbolizer::Fill { color } => Some(Some(color.fallback)),
+                Symbolizer::Marker { fill, .. } => Some(fill.as_ref().map(|c| c.fallback)),
+                Symbolizer::Stroke(_) | Symbolizer::Raster(_) => None,
+            })
+            .flatten()
+    }
+
+    /// Sets the fill of the rule, or the fill of its marker. `None` removes the fill.
+    pub fn set_fill(&mut self, color: Option<Color>) {
+        if let Some(Symbolizer::Marker { fill, .. }) = self
+            .symbolizers
+            .iter_mut()
+            .find(|s| matches!(s, Symbolizer::Marker { .. }))
+        {
+            *fill = color.map(Property::constant);
+            return;
+        }
+        let at = self
+            .symbolizers
+            .iter()
+            .position(|s| matches!(s, Symbolizer::Fill { .. }));
+        let fill = |c| Symbolizer::Fill {
+            color: Property::constant(c),
+        };
+        match (at, color) {
+            (Some(i), Some(c)) => self.symbolizers[i] = fill(c),
+            (Some(i), None) => {
+                self.symbolizers.remove(i);
+            }
+            (None, Some(c)) => self.symbolizers.insert(0, fill(c)),
+            (None, None) => {}
+        }
+    }
+
+    /// The stroke of the rule, or the stroke of its marker.
+    pub fn stroke(&self) -> Option<Stroke> {
+        self.symbolizers
+            .iter()
+            .find_map(|s| match s {
+                Symbolizer::Stroke(s) => Some(Some(s.fallback())),
+                Symbolizer::Marker { stroke, .. } => {
+                    Some(stroke.as_ref().map(StrokeSymbolizer::fallback))
+                }
+                Symbolizer::Fill { .. } | Symbolizer::Raster(_) => None,
+            })
+            .flatten()
+    }
+
+    /// Sets the stroke of the rule, or the stroke of its marker. `None` removes the stroke.
+    pub fn set_stroke(&mut self, value: Option<Stroke>) {
+        if let Some(Symbolizer::Marker { stroke, .. }) = self
+            .symbolizers
+            .iter_mut()
+            .find(|s| matches!(s, Symbolizer::Marker { .. }))
+        {
+            *stroke = value.map(StrokeSymbolizer::constant);
+            return;
+        }
+        let at = self
+            .symbolizers
+            .iter()
+            .position(|s| matches!(s, Symbolizer::Stroke(_)));
+        match (at, value) {
+            (Some(i), Some(v)) => {
+                self.symbolizers[i] = Symbolizer::Stroke(StrokeSymbolizer::constant(v))
+            }
+            (Some(i), None) => {
+                self.symbolizers.remove(i);
+            }
+            (None, Some(v)) => self
+                .symbolizers
+                .push(Symbolizer::Stroke(StrokeSymbolizer::constant(v))),
+            (None, None) => {}
+        }
+    }
 }
 
 impl Style {
+    /// The first name "Rule N" that no rule has, from N = 1.
+    pub fn unique_name(&self) -> String {
+        (1..)
+            .map(|n| format!("Rule {n}"))
+            .find(|name| self.rules.iter().all(|r| &r.name != name))
+            .expect("a free name")
+    }
+
+    /// Swaps rule `i` with the rule below it (`up` false) or above it (`up` true), and returns its new index. A rule at the end does not move.
+    pub fn move_rule(&mut self, i: usize, up: bool) -> usize {
+        let j = if up { i.checked_sub(1) } else { Some(i + 1) };
+        match j {
+            Some(j) if i < self.rules.len() && j < self.rules.len() => {
+                self.rules.swap(i, j);
+                j
+            }
+            _ => i,
+        }
+    }
+
     /// The rules that draw at the scale denominator `scale`.
     pub fn visible(&self, scale: f64) -> impl Iterator<Item = &Rule> {
         self.rules.iter().filter(move |r| r.in_scale(scale))
