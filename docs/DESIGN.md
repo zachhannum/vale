@@ -571,7 +571,7 @@ The atlas exports to three formats.
 
 | Format | Use | Notes |
 | --- | --- | --- |
-| PDF | Print and books | One file with all pages. Text stays selectable, and fonts are subset and embedded. |
+| PDF | Print and books | One file with all pages, or one file for one page. Text stays selectable, and fonts are subset and embedded. |
 | SVG | More work in Illustrator or Inkscape | One file per page, with layers kept as groups. |
 | PNG or TIFF | Web and virtual tabletop tools | One file per page at a set resolution, rendered in tiles. |
 
