@@ -139,7 +139,7 @@ impl PdfExport {
             page.width_mm,
             page.height_mm,
         ));
-        if bbox.is_zero_area() {
+        if !(bbox.width() > 0.0 && bbox.height() > 0.0) {
             anyhow::bail!("the map frame has no area on the page");
         }
         let point_min = Point::new(bbox.x0 * PT_PER_MM, bbox.y0 * PT_PER_MM);
@@ -277,7 +277,10 @@ impl PdfExport {
             }
             let page = self.pages[self.page].clone();
             while let Some(frame) = page.frames.get(self.frame) {
-                if self.shown_rasters(frame).is_empty() {
+                let page_rect = Rect::new(0.0, 0.0, page.width_mm, page.height_mm);
+                let bbox = atlas::shape_bbox(&frame.shape).intersect(page_rect);
+                let raster_area = bbox.width() > 0.0 && bbox.height() > 0.0;
+                if self.shown_rasters(frame).is_empty() || !raster_area {
                     let target = FrameTarget {
                         origin: Point::ZERO,
                         pts_per_mm: PT_PER_MM,
