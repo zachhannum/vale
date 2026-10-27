@@ -40,6 +40,7 @@ pub mod pad;
 pub mod panels;
 pub mod point_form;
 pub mod raster_form;
+pub mod style_editor;
 pub mod world_form;
 
 /// A request that needs the host: a dialog or a file.

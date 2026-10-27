@@ -24,9 +24,11 @@ use crate::world;
 pub mod atlas;
 pub mod browser;
 pub mod fields;
+pub mod filter;
 pub mod geometry;
 pub mod icons;
 pub mod raster;
+pub mod rules;
 pub mod theme;
 pub mod widgets;
 
@@ -163,6 +165,10 @@ pub enum Page {
     /// The field with this index.
     Field(usize),
     NewField,
+    /// The rule with this index.
+    Rule(usize),
+    /// The new condition of the filter of the rule with this index.
+    Condition(usize),
 }
 
 /// The state of the iPad layout.
@@ -228,6 +234,8 @@ pub struct PadState {
     heights: HashMap<&'static str, f32>,
     /// The Style section of the panel of a raster layer.
     pub style: raster::StyleState,
+    /// The Style section of the panel of a vector layer.
+    pub rules: rules::RulesState,
 }
 
 impl PadState {
@@ -367,6 +375,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
     raster::shade_color_frame(&ctx, state);
+    rules::picker_frame(&ctx, state);
     raster::reset_card(&ctx, state, &mut controls, &rects);
     raster::ramp_card(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);
@@ -801,6 +810,17 @@ fn show_panel(
         _ => None,
     }
     .map(|field| field.name.clone());
+    let rules = match state.pad.layer {
+        Some(LayerRef::Vector(id)) => state.doc.entry(id).map(|e| &e.style.style.rules),
+        _ => None,
+    };
+    let rule_count = rules.map_or(0, Vec::len);
+    let rule_name = match state.pad.page {
+        Some(Page::Rule(i) | Page::Condition(i)) => {
+            rules.and_then(|r| r.get(i)).map(|r| r.name.clone())
+        }
+        _ => None,
+    };
     if name.is_none() {
         state.pad.layer = None;
     }
@@ -812,6 +832,7 @@ fn show_panel(
         ) => true,
         (Some(LayerRef::Vector(_)), Some(Page::NewField)) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
+        (Some(LayerRef::Vector(_)), Some(Page::Rule(i) | Page::Condition(i))) => i < rule_count,
         _ => false,
     };
     if panel == Panel::Layers && !fits {
@@ -854,6 +875,14 @@ fn show_panel(
             field_name.as_deref().unwrap_or_default(),
             Some(name),
         ),
+        (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Condition(_))) => {
+            ("pad-condition", filter::ADD_CONDITION, rule_name.as_deref())
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Rule(_))) => (
+            "pad-rule",
+            rule_name.as_deref().unwrap_or_default(),
+            Some(name),
+        ),
         (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
         (Panel::Layers, None) => (panel.key(), "Layers", None),
         (Panel::Toolbox, _) => (panel.key(), "Toolbox", None),
@@ -889,6 +918,8 @@ fn show_panel(
         }
         if row.back && page == Some(Page::Ramps) {
             state.pad.page = Some(Page::Stops);
+        } else if let (true, Some(Page::Condition(i))) = (row.back, page) {
+            state.pad.page = Some(Page::Rule(i));
         } else if row.back && page.is_some() {
             state.pad.page = None;
             state.globe.preview.selected = None;
@@ -918,6 +949,8 @@ fn show_panel(
                 Some(Page::Field(i)) => {
                     fields::field_body(ui, state, controls, id, i);
                 }
+                Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
+                Some(Page::Condition(i)) => filter::condition_body(ui, state, controls, id, i),
                 _ => vector_body(ui, state, controls, id),
             },
             (Panel::Layers, None) => layers_body(ui, state, controls),
@@ -1528,7 +1561,7 @@ fn add_menu(
 }
 
 /// The panel of a vector layer: its name, its kind, the number of its
-/// features, and its fields.
+/// features, its style, and its fields.
 fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(layer) = state.doc.layer(id) else {
         return;
@@ -1559,6 +1592,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
     widgets::value_row(ui, "Features", &features);
+    rules::section(ui, state, controls, id);
     fields::list(ui, state, controls, id);
 }
 

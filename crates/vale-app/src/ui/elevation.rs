@@ -2,12 +2,12 @@
 //! raster layer.
 
 use eframe::egui;
-use vale_store::{Hillshade, Raster, RasterDisplay, RasterId, Smoothing};
+use vale_store::{Hillshade, LayerId, Raster, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, Rgb, StopLine};
 
 use super::gradient::{self, DESKTOP};
 use super::pad::raster::RampChoice;
-use super::{Action, AppState, LayerRef, pad};
+use super::{Action, AppState, LayerRef, pad, style_editor};
 use crate::globe::preview::Preview;
 use crate::world;
 
@@ -106,6 +106,30 @@ pub fn display_name(display: RasterDisplay) -> &'static str {
     DISPLAYS[index.unwrap_or(0)]
 }
 
+/// The name and the rules of the style of a vector layer.
+fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
+    let Some(layer) = state.doc.layer(id) else {
+        return;
+    };
+    let Some(kind) = layer.geometry() else {
+        return;
+    };
+    ui.heading(&layer.name);
+    let fields = layer.fields.clone();
+    ui.label(pad::rules::STYLE);
+    let Some(entry) = state.doc.entry_mut(id) else {
+        return;
+    };
+    let style = &mut entry.style;
+    let scroll = egui::ScrollArea::vertical();
+    if scroll
+        .show(ui, |ui| style_editor::rules(ui, id, style, kind, &fields))
+        .inner
+    {
+        state.touch();
+    }
+}
+
 /// The selected color stop of a raster layer.
 pub fn selected(preview: &Preview, id: Option<RasterId>) -> Option<usize> {
     let (of, index) = preview.selected?;
@@ -119,6 +143,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::right("elevation")
         .default_size(210.0)
         .show(ui, |ui| {
+            if let Some(id) = state.selected_vector() {
+                vector_style(ui, state, id);
+                return;
+            }
             let raster = state.panel_raster().cloned();
             let layer = raster.as_ref().map(|raster| LayerRef::Raster(raster.id));
             let layer = layer.and_then(|layer| state.layer_of(layer));

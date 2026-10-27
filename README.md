@@ -182,7 +182,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - With GeoJSON files and no `--project`, undo and redo are for brush strokes only, and the session ends when the window closes.
 - Rasters and blend modes in the PNG and PDF export, regional source extents over a world source, SVG and Shapefile import, and the command Replace from file.
 - Vector layers in the flat view of the globe workspace and in the picture of the globe on the start screen.
-- An editor for the rules of a style. The inspector edits the fill, the stroke, and the circle symbol of a style with one rule.
+- All symbolizers other than a solid fill, a solid stroke, and a circle. The style editor sets constant values only.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
 - The overview of the pages, page templates, map furniture on a page, SVG export, and graticule labels.
 - Projection suggestions and Tissot circles.

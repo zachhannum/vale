@@ -200,80 +200,65 @@ impl LayerStyle {
 
     /// The fill of the first rule, or the fill of its marker.
     pub fn fill(&self) -> Option<Color> {
-        self.first_rule()?
-            .symbolizers
-            .iter()
-            .find_map(|s| match s {
-                Symbolizer::Fill { color } => Some(Some(color.fallback)),
-                Symbolizer::Marker { fill, .. } => Some(fill.as_ref().map(|c| c.fallback)),
-                Symbolizer::Stroke(_) | Symbolizer::Raster(_) => None,
-            })
-            .flatten()
+        self.first_rule()?.fill()
     }
 
     /// Sets the fill of the first rule, or the fill of its marker.
     pub fn set_fill(&mut self, color: Option<Color>) {
-        let rule = self.first_rule_mut();
-        if let Some(Symbolizer::Marker { fill, .. }) = rule
-            .symbolizers
-            .iter_mut()
-            .find(|s| matches!(s, Symbolizer::Marker { .. }))
-        {
-            *fill = color.map(Property::constant);
-            return;
-        }
-        let at = rule
-            .symbolizers
-            .iter()
-            .position(|s| matches!(s, Symbolizer::Fill { .. }));
-        match (at, color) {
-            (Some(i), Some(c)) => rule.symbolizers[i] = fill(c),
-            (Some(i), None) => {
-                rule.symbolizers.remove(i);
-            }
-            (None, Some(c)) => rule.symbolizers.insert(0, fill(c)),
-            (None, None) => {}
-        }
+        self.first_rule_mut().set_fill(color);
     }
 
     /// The stroke of the first rule, or the stroke of its marker.
     pub fn stroke(&self) -> Option<Stroke> {
-        self.first_rule()?
-            .symbolizers
-            .iter()
-            .find_map(|s| match s {
-                Symbolizer::Stroke(s) => Some(Some(s.fallback())),
-                Symbolizer::Marker { stroke, .. } => {
-                    Some(stroke.as_ref().map(StrokeSymbolizer::fallback))
-                }
-                Symbolizer::Fill { .. } | Symbolizer::Raster(_) => None,
-            })
-            .flatten()
+        self.first_rule()?.stroke()
     }
 
     /// Sets the stroke of the first rule, or the stroke of its marker.
     pub fn set_stroke(&mut self, value: Option<Stroke>) {
-        let rule = self.first_rule_mut();
-        if let Some(Symbolizer::Marker { stroke, .. }) = rule
-            .symbolizers
-            .iter_mut()
-            .find(|s| matches!(s, Symbolizer::Marker { .. }))
-        {
-            *stroke = value.map(StrokeSymbolizer::constant);
-            return;
-        }
-        let at = rule
-            .symbolizers
-            .iter()
-            .position(|s| matches!(s, Symbolizer::Stroke(_)));
-        match (at, value) {
-            (Some(i), Some(v)) => rule.symbolizers[i] = stroke(v.color, v.width),
-            (Some(i), None) => {
-                rule.symbolizers.remove(i);
+        self.first_rule_mut().set_stroke(value);
+    }
+
+    /// Appends a rule with a unique name, no filter, and no scale range, and returns its index. It copies the symbolizers of the last rule, or of the default style of `kind`. The rule gets the next default color of `kind`, so that it shows on the map: the stroke color of a line layer, and the fill color of a polygon layer or a point layer.
+    pub fn add_rule(&mut self, kind: GeometryKind) -> usize {
+        let n = self.style.rules.len();
+        // The color of a rule that tells it apart: the stroke of a line layer, or else the fill.
+        let color = |r: &Rule| match kind {
+            GeometryKind::Line => r.stroke().map(|s| s.color),
+            GeometryKind::Polygon | GeometryKind::Point => r.fill(),
+        };
+        let used: Vec<Color> = self.style.rules.iter().filter_map(color).collect();
+        let defaults =
+            (n..n + 6).map(|o| LayerStyle::default_for(kind, o, &[]).style.rules[0].clone());
+        let mut colors = None;
+        for d in defaults {
+            let free = color(&d).is_some_and(|c| !used.contains(&c));
+            if free || colors.is_none() {
+                colors = Some(d);
             }
-            (None, Some(v)) => rule.symbolizers.push(stroke(v.color, v.width)),
-            (None, None) => {}
+            if free {
+                break;
+            }
         }
+        let colors = colors.expect("six defaults");
+        let mut rule = match self.style.rules.last() {
+            Some(r) => Rule::new(self.style.unique_name(), r.symbolizers.clone()),
+            None => Rule::new(self.style.unique_name(), colors.symbolizers.clone()),
+        };
+        match kind {
+            GeometryKind::Line => {
+                if let (Some(mut s), Some(c)) = (rule.stroke(), colors.stroke()) {
+                    s.color = c.color;
+                    rule.set_stroke(Some(s));
+                }
+            }
+            GeometryKind::Polygon | GeometryKind::Point => {
+                if rule.fill().is_some() {
+                    rule.set_fill(colors.fill());
+                }
+            }
+        }
+        self.style.rules.push(rule);
+        n
     }
 
     /// The marker radius of the first rule, or 0 with no marker.
@@ -383,6 +368,63 @@ mod tests {
         assert!(l.label.italic);
         assert!(l.fill().is_none());
         assert!(l.is_simple());
+    }
+
+    #[test]
+    fn move_rule_swaps_with_a_neighbor() {
+        let mut st = Style {
+            rules: ["a", "b", "c"].map(|n| Rule::new(n, Vec::new())).to_vec(),
+        };
+        assert_eq!(st.move_rule(0, true), 0);
+        assert_eq!(st.move_rule(2, false), 2);
+        assert_eq!(st.move_rule(2, true), 1);
+        assert_eq!(st.move_rule(0, false), 1);
+        let names: Vec<_> = st.rules.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn rule_stroke_and_fill() {
+        let mut r = Rule::new("r", Vec::new());
+        let s = Stroke {
+            color: Color::rgb(1, 2, 3),
+            width: 2.5,
+        };
+        r.set_stroke(Some(s));
+        r.set_fill(Some(Color::rgb(4, 5, 6)));
+        assert_eq!(r.stroke(), Some(s));
+        assert_eq!(r.fill(), Some(Color::rgb(4, 5, 6)));
+        assert!(matches!(r.symbolizers[0], Symbolizer::Fill { .. }));
+        r.set_fill(None);
+        r.set_stroke(None);
+        assert!(r.symbolizers.is_empty());
+    }
+
+    #[test]
+    fn add_rule_copies_the_last_rule() {
+        let mut l = LayerStyle::default_for(GeometryKind::Line, 0, &[]);
+        l.style.rules[0].name = "Rule 2".into();
+        assert_eq!(l.add_rule(GeometryKind::Line), 1);
+        assert_eq!(l.style.rules[1].name, "Rule 1");
+        let (first, second) = (l.style.rules[0].stroke(), l.style.rules[1].stroke());
+        assert_eq!(first.map(|s| s.width), second.map(|s| s.width));
+        assert_ne!(first.map(|s| s.color), second.map(|s| s.color));
+        assert_eq!(l.add_rule(GeometryKind::Line), 2);
+        assert_eq!(l.style.rules[2].name, "Rule 3");
+        let mut colors: Vec<_> = l
+            .style
+            .rules
+            .iter()
+            .map(|r| r.stroke().unwrap().color.r)
+            .collect();
+        colors.dedup();
+        assert_eq!(colors.len(), 3);
+        let mut empty = LayerStyle {
+            style: Style::default(),
+            label: l.label.clone(),
+        };
+        empty.add_rule(GeometryKind::Polygon);
+        assert!(empty.fill().is_some());
     }
 
     #[test]

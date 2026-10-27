@@ -3,9 +3,8 @@
 
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
-use vale_style::{LayerStyle, Stroke};
 
-use super::AppState;
+use super::{AppState, style_editor};
 
 const MAX_UNPLACED: usize = 200;
 
@@ -76,17 +75,27 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     fields_section(ui, state, info.id);
     ui.add_space(4.0);
 
+    let fields = state
+        .doc
+        .layer(info.id)
+        .map_or(Vec::new(), |l| l.fields.clone());
     let Some(entry) = state.doc.entry_mut(info.id) else {
         return;
     };
-    let default = LayerStyle::default_for(info.kind, 0, &info.fields);
     let style = &mut entry.style;
-    let mut changed = false;
-
-    if style.is_simple() {
-        changed |= simple_style(ui, style, &default, info.kind);
-    } else {
-        ui.label("This layer has a rule-based style.");
+    let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields);
+    if info.kind == GeometryKind::Point {
+        ui.horizontal(|ui| {
+            ui.label("Point size");
+            let mut radius = style.point_radius();
+            let drag = egui::DragValue::new(&mut radius)
+                .speed(0.1)
+                .range(0.0..=30.0);
+            if ui.add(drag).changed() {
+                style.set_point_radius(radius);
+                changed = true;
+            }
+        });
     }
 
     if info.kind == GeometryKind::Polygon {
@@ -137,7 +146,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
         ui.horizontal(|ui| {
             changed |= ui.checkbox(&mut label.italic, "Italic").changed();
-            changed |= color_button(ui, &mut label.color);
+            changed |= style_editor::color_button(ui, &mut label.color);
         });
     }
     if changed {
@@ -265,17 +274,6 @@ fn fields_section(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
         });
 }
 
-/// Edits the RGB part of a color and keeps the alpha.
-fn color_button(ui: &mut egui::Ui, c: &mut vale_style::Color) -> bool {
-    let mut rgb = [c.r, c.g, c.b];
-    if ui.color_edit_button_srgb(&mut rgb).changed() {
-        (c.r, c.g, c.b) = (rgb[0], rgb[1], rgb[2]);
-        true
-    } else {
-        false
-    }
-}
-
 fn feature_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.separator();
     ui.heading("Feature");
@@ -331,83 +329,4 @@ fn unplaced_section(ui: &mut egui::Ui, state: &AppState) {
                 ui.weak(format!("… and {} more", unplaced.len() - MAX_UNPLACED));
             }
         });
-}
-
-/// The controls of a style with one rule. Returns true if the style changed.
-fn simple_style(
-    ui: &mut egui::Ui,
-    style: &mut LayerStyle,
-    default: &LayerStyle,
-    kind: GeometryKind,
-) -> bool {
-    let mut changed = false;
-    if kind != GeometryKind::Line {
-        ui.horizontal(|ui| {
-            let mut fill = style.fill();
-            let mut on = fill.is_some();
-            if ui.checkbox(&mut on, "Fill").changed() {
-                fill = on.then(|| {
-                    default
-                        .fill()
-                        .unwrap_or(vale_style::Color::rgb(180, 180, 180))
-                });
-                changed = true;
-            }
-            if let Some(c) = &mut fill {
-                changed |= color_button(ui, c);
-            }
-            if fill != style.fill() {
-                style.set_fill(fill);
-            }
-        });
-    }
-    let mut stroke = style.stroke();
-    ui.horizontal(|ui| {
-        let mut on = stroke.is_some();
-        if ui.checkbox(&mut on, "Stroke").changed() {
-            stroke = on.then(|| {
-                default.stroke().unwrap_or(Stroke {
-                    color: vale_style::Color::rgb(80, 80, 80),
-                    width: 1.0,
-                })
-            });
-            changed = true;
-        }
-        if let Some(s) = &mut stroke {
-            changed |= color_button(ui, &mut s.color);
-        }
-    });
-    if let Some(s) = &mut stroke {
-        ui.horizontal(|ui| {
-            ui.label("Stroke width");
-            changed |= ui
-                .add(
-                    egui::DragValue::new(&mut s.width)
-                        .speed(0.1)
-                        .range(0.1..=20.0),
-                )
-                .changed();
-        });
-    }
-    if stroke != style.stroke() {
-        style.set_stroke(stroke);
-    }
-    if kind == GeometryKind::Point {
-        ui.horizontal(|ui| {
-            ui.label("Point size");
-            let mut radius = style.point_radius();
-            if ui
-                .add(
-                    egui::DragValue::new(&mut radius)
-                        .speed(0.1)
-                        .range(0.0..=30.0),
-                )
-                .changed()
-            {
-                style.set_point_radius(radius);
-                changed = true;
-            }
-        });
-    }
-    changed
 }

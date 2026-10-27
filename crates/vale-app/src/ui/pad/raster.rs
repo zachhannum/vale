@@ -79,8 +79,6 @@ pub const HILLSHADE_AZIMUTH: &str = "Light direction";
 pub const HILLSHADE_ALTITUDE: &str = "Light height";
 pub const HILLSHADE_RELIEF: &str = "Relief";
 pub const HILLSHADE_COLOR: &str = "Shade color";
-/// The size of the swatch of a color row.
-pub(super) const SWATCH: f32 = 24.0;
 pub const RIVERS: &str = "Rivers";
 /// The switch of the lines of the stops of a raster layer.
 pub const BAND_LINES: &str = "Band lines";
@@ -451,16 +449,7 @@ pub fn hillshade_body(
     }
 
     let open = state.pad.style.shade_color == Some(id);
-    let row = widgets::text_row(ui, controls, HILLSHADE_COLOR, 0.0, open, true);
-    let [r, g, b] = hillshade.color;
-    let swatch = Rect::from_center_size(
-        pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
-        vec2(SWATCH, SWATCH),
-    );
-    let painter = ui.painter();
-    painter.rect_filled(swatch, 6.0, egui::Color32::from_rgb(r, g, b));
-    let stroke = egui::Stroke::new(1.0, theme::divider());
-    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    let row = widgets::color_row(ui, controls, HILLSHADE_COLOR, hillshade.color, open);
     if row.clicked() {
         state.pad.style.shade_color = (!open).then_some(id);
         if open {
@@ -551,7 +540,7 @@ fn ramp_row(
 }
 
 /// A small muted text across the panel.
-fn note(ui: &mut egui::Ui, text: &str) {
+pub fn note(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
     let text = egui::RichText::new(text)
         .font(theme::small())

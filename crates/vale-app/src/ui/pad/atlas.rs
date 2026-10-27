@@ -8,7 +8,6 @@ use vale_store::{Border, FrameShape, Graticule, PageUnits};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
-use super::raster::SWATCH;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW};
 use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
 use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
@@ -809,16 +808,7 @@ fn graticule_rows(
     }
 
     let open = state.atlas.graticule_color;
-    let row = widgets::text_row(ui, controls, GRATICULE_COLOR, 0.0, open, true);
-    let [r, gr, b] = g.color;
-    let swatch = Rect::from_center_size(
-        pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
-        vec2(SWATCH, SWATCH),
-    );
-    let painter = ui.painter();
-    painter.rect_filled(swatch, 6.0, egui::Color32::from_rgb(r, gr, b));
-    let stroke = egui::Stroke::new(1.0, theme::divider());
-    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    let row = widgets::color_row(ui, controls, GRATICULE_COLOR, g.color, open);
     if row.clicked() {
         state.atlas.graticule_color = !open;
         if open {
@@ -854,16 +844,7 @@ fn border_rows(
     let id = frame.id;
     let b = &frame.border;
     let open = state.atlas.border_color;
-    let row = widgets::text_row(ui, controls, BORDER_COLOR, 0.0, open, true);
-    let [r, g, bl] = b.color;
-    let swatch = Rect::from_center_size(
-        pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
-        vec2(SWATCH, SWATCH),
-    );
-    let painter = ui.painter();
-    painter.rect_filled(swatch, 6.0, egui::Color32::from_rgb(r, g, bl));
-    let stroke = egui::Stroke::new(1.0, theme::divider());
-    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    let row = widgets::color_row(ui, controls, BORDER_COLOR, b.color, open);
     if row.clicked() {
         state.atlas.border_color = !open;
         if open {

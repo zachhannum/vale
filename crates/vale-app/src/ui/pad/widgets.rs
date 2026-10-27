@@ -714,6 +714,32 @@ pub fn text_row(
     resp
 }
 
+/// The size of the swatch of a color row.
+pub const SWATCH: f32 = 24.0;
+
+/// A row with the name at the left and a swatch of `color` at the right.
+/// A tap opens or closes the color picker of the row. `open`: the picker is
+/// open.
+pub fn color_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    color: [u8; 3],
+    open: bool,
+) -> Response {
+    let row = text_row(ui, controls, name, 0.0, open, true);
+    let [r, g, b] = color;
+    let swatch = Rect::from_center_size(
+        pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
+        vec2(SWATCH, SWATCH),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(swatch, 6.0, Color32::from_rgb(r, g, b));
+    let stroke = egui::Stroke::new(1.0, theme::divider());
+    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    row
+}
+
 /// Paints the arrow of a row that opens a page, at the right of the row.
 pub fn paint_open(ui: &egui::Ui, row: Rect) {
     let rect = Rect::from_center_size(
@@ -1512,10 +1538,8 @@ pub fn chips(
     let mut rects = Vec::with_capacity(choices.len());
     let mut at = pos2(left, top);
     for choice in choices {
-        let size = vec2(
-            text_width(ui, choice, theme::body()) + 2.0 * CHIP_PAD,
-            TOUCH,
-        );
+        let wide = text_width(ui, choice, theme::body()) + 2.0 * CHIP_PAD;
+        let size = vec2(wide.max(TOUCH), TOUCH);
         if at.x > left && at.x + size.x > left + width {
             at = pos2(left, at.y + TOUCH);
         }
