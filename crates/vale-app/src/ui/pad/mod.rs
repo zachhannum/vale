@@ -84,6 +84,8 @@ const WORLD_ROWS: usize = 6;
 pub const IMPORT_HEIGHTMAP: &str = "Import heightmap…";
 /// The name of the row that exports the heightmap.
 pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
+/// The row that exports the heightmap as a PNG.
+pub const EXPORT_PNG: &str = "Export PNG…";
 
 /// The button of the Layers panel that opens the menu of the new layers.
 pub const ADD_LAYER: &str = "Add layer";
@@ -1639,6 +1641,9 @@ fn export_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
     let enabled = state.can_export();
     if widgets::text_row(ui, controls, EXPORT_GEOTIFF, 0.0, false, enabled).clicked() {
         state.actions.push(Action::ExportHeightmapDialog);
+    }
+    if widgets::text_row(ui, controls, EXPORT_PNG, 0.0, false, enabled).clicked() {
+        state.actions.push(Action::ExportHeightmapPngDialog);
     }
     let progress = state.globe.export_progress();
     note_text(ui, progress, &mut state.export_note, Some(layer));
