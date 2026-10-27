@@ -305,18 +305,16 @@ fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
                 state.select(Some(layer));
             }
             ui.weak(kind);
-            if let LayerRef::Raster(_) = layer {
-                let open = ui.small_button("›");
-                named(
-                    &open,
-                    egui::WidgetType::Button,
-                    false,
-                    format!("Open {name}"),
-                );
-                if open.clicked() {
-                    state.select(Some(layer));
-                    state.globe.preview.panel = true;
-                }
+            let open = ui.small_button("›");
+            named(
+                &open,
+                egui::WidgetType::Button,
+                false,
+                format!("Open {name}"),
+            );
+            if open.clicked() {
+                state.select(Some(layer));
+                state.globe.preview.panel = true;
             }
         });
     }

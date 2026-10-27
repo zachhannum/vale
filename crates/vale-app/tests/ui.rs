@@ -1162,3 +1162,31 @@ fn the_desktop_frame_tab_renames_the_map_of_the_frame() {
     let map = atlas.pages[0].frames[0].map;
     assert_eq!(atlas.map(map).unwrap().name, "Dravenhold");
 }
+
+#[test]
+fn the_style_editor_opens_from_layers_on_the_globe_and_the_flat_view() {
+    use vale_app::globe::WorldView;
+    use vale_app::ui::pad::rules::{ADD_RULE, FILTER, MIN_SCALE};
+    for view in [WorldView::Globe, WorldView::Flat] {
+        let mut h = globe_harness();
+        h.state_mut().globe.world_view = view;
+        h.run_steps(2);
+        h.get_by_label(LAYERS_MENU).click();
+        h.run_steps(2);
+        h.get_by_label("Open Rivers").click();
+        h.run_steps(2);
+        let rivers = h.state().selected_vector().unwrap();
+        assert!(h.state().globe.preview.panel, "{view:?}");
+        h.get_by_label(ADD_RULE).click();
+        h.run_steps(2);
+        let rules = &h.state().doc.entry(rivers).unwrap().style.style.rules;
+        assert_eq!(rules.len(), 2, "{view:?}");
+        // The new rule is the selected rule.
+        type_in(&mut h, FILTER, "scalerank < 3");
+        type_in(&mut h, MIN_SCALE, "25000");
+        let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[1];
+        let text = rule.filter.source().map(|s| s.text());
+        assert_eq!(text, Some("scalerank < 3"), "{view:?}");
+        assert_eq!(rule.min_scale, Some(25_000.0), "{view:?}");
+    }
+}

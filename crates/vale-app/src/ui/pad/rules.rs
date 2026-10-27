@@ -31,8 +31,8 @@ pub const STROKE_COLOR: &str = "Stroke color";
 pub const STROKE_WIDTH: &str = "Width";
 pub const FILL: &str = "Fill";
 pub const FILL_COLOR: &str = "Fill color";
-pub const MOVE_UP: &str = "Move up";
-pub const MOVE_DOWN: &str = "Move down";
+pub const MOVE_UP: &str = "Move rule up";
+pub const MOVE_DOWN: &str = "Move rule down";
 pub const DELETE_RULE: &str = "Delete rule";
 /// The range of the width slider, in points. The slider has a log scale.
 const WIDTHS: (f64, f64) = (0.1, 20.0);

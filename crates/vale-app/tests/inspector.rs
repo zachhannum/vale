@@ -102,6 +102,30 @@ fn polygon_layer_has_no_point_controls() {
 }
 
 #[test]
+fn the_dock_edits_the_rules_of_a_layer() {
+    use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE, MOVE_UP};
+    let mut h = harness();
+    let land = id_of(&h, "Land");
+    h.state_mut().selected_layer = Some(LayerRef::Vector(land));
+    h.run_steps(2);
+    let names = |h: &Harness<'static, AppState>| -> Vec<String> {
+        let rules = &h.state().doc.entry(land).unwrap().style.style.rules;
+        rules.iter().map(|r| r.name.clone()).collect()
+    };
+    let generation = h.state().map_generation;
+    h.get_by_label(ADD_RULE).click();
+    h.run_steps(2);
+    assert_eq!(names(&h), ["Default", "Rule 1"]);
+    assert!(h.state().map_generation > generation);
+    h.get_by_label(MOVE_UP).click();
+    h.run_steps(2);
+    assert_eq!(names(&h), ["Rule 1", "Default"]);
+    h.get_by_label(DELETE_RULE).click();
+    h.run_steps(2);
+    assert_eq!(names(&h), ["Default"]);
+}
+
+#[test]
 fn select_label_selects_layer() {
     let mut h = harness();
     h.get_by_label("Select Rivers").click();
@@ -221,5 +245,5 @@ fn inspector_screenshots() {
     std::fs::create_dir_all("../../target/app").unwrap();
     img.save("../../target/app/test-inspector.png").unwrap();
     // No dark margin: the top-left pixel is the tool bar, not the outer background.
-    assert_eq!(img.get_pixel(0, 0), img.get_pixel(900, 10));
+    assert_eq!(img.get_pixel(0, 0), img.get_pixel(1300, 10));
 }
