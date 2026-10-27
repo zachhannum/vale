@@ -3,6 +3,7 @@
 pub mod list;
 pub mod pdf;
 pub mod raster;
+pub mod stroke;
 
 pub use list::*;
 pub use pdf::{PdfDocument, render_pdf};
