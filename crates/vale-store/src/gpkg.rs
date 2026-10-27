@@ -21,8 +21,8 @@ use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
 
 use crate::atlas::{
-    self, Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
-    PageUnits, ProjectionPreset,
+    self, Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId,
+    PageRecord, PageUnits, ProjectionPreset,
 };
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};

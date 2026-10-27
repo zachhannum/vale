@@ -5,7 +5,7 @@
 
 use kurbo::{Point, Rect, Vec2};
 use vale_sphere::{Projection, auto_interval};
-use vale_store::{FrameId, FrameRecord, FrameShape, Graticule, MapRecord, PageRecord};
+use vale_store::{Border, FrameId, FrameRecord, FrameShape, Graticule, MapRecord, PageRecord};
 
 use crate::view::{View, ViewTransform};
 
@@ -504,6 +504,7 @@ pub fn new_frame(page: &PageRecord, map: &MapRecord, projection: &Projection) ->
         scale: fit_scale(projection.bounds(), rect.width(), rect.height()),
         rotation: 0.0,
         graticule: Graticule::default(),
+        border: Border::default(),
     }
 }
 
@@ -563,6 +564,7 @@ mod tests {
                 on: false,
                 ..Graticule::default()
             },
+            border: Border::default(),
         }
     }
 

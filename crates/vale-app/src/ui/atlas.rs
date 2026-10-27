@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
-    FrameId, FrameRecord, FrameShape, Graticule, MapId, PageId, PageRecord, PageUnits, Rgb,
+    Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, PageId, PageRecord, PageUnits, Rgb,
 };
 
 use std::sync::Arc;
@@ -210,6 +210,10 @@ pub struct AtlasState {
     pub graticule_color: bool,
     /// The color picker of the graticule showed in this frame.
     pub(crate) graticule_shown: bool,
+    /// The color picker of the border is open.
+    pub border_color: bool,
+    /// The color picker of the border showed in this frame.
+    pub(crate) border_shown: bool,
     /// The text of the name field of the custom projections.
     pub preset_name: String,
     /// The Add menu is open.
@@ -270,6 +274,8 @@ impl Default for AtlasState {
             kinds: false,
             graticule_color: false,
             graticule_shown: false,
+            border_color: false,
+            border_shown: false,
             preset_name: String::new(),
             add: false,
             add_rect: None,
@@ -982,6 +988,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             state.map_generation,
             frame.map,
             graticule_key(&frame.graticule),
+            border_key(&frame.border),
             ppp.to_bits(),
             state.selection,
             layered,
@@ -1393,6 +1400,11 @@ fn graticule_key(g: &Graticule) -> (bool, Option<u64>, Rgb, u64) {
     )
 }
 
+/// The parts of a border as a hash key.
+fn border_key(b: &Border) -> (bool, Rgb, u64) {
+    (b.on, b.color, b.width.to_bits())
+}
+
 /// Turns the graticule of a frame on or off.
 pub fn set_graticule(state: &mut AppState, id: FrameId, on: bool) {
     edit_frame(state, id, |f, _| {
@@ -1659,4 +1671,33 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
             let back = Color32::from_rgb(58, 62, 68);
             canvas(ui, state, area, area.shrink(24.0), back);
         });
+}
+
+/// Turns the border of a frame on or off.
+pub fn set_border(state: &mut AppState, id: FrameId, on: bool) {
+    edit_frame(state, id, |f, _| {
+        f.border.on = on;
+        true
+    });
+}
+
+pub fn set_border_color(state: &mut AppState, id: FrameId, color: Rgb) {
+    edit_frame(state, id, |f, _| {
+        f.border.color = color;
+        true
+    });
+}
+
+/// Sets the border width of a frame, in points, rounded to 0.25.
+pub fn set_border_width(state: &mut AppState, id: FrameId, width: f64) {
+    if !width.is_finite() {
+        return;
+    }
+    let range = Border::WIDTHS;
+    let width = ((width.clamp(*range.start(), *range.end()) * 4.0).round() / 4.0)
+        .clamp(*range.start(), *range.end());
+    edit_frame(state, id, |f, _| {
+        f.border.width = width;
+        true
+    });
 }

@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
-use vale_store::{FrameShape, Graticule, PageUnits};
+use vale_store::{Border, FrameShape, Graticule, PageUnits};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
@@ -43,6 +43,9 @@ pub const AUTO_INTERVAL: &str = "Auto interval";
 pub const INTERVAL: &str = "Interval";
 pub const GRATICULE_COLOR: &str = "Graticule color";
 pub const GRATICULE_WIDTH: &str = "Graticule width";
+pub const BORDER: &str = "Border";
+pub const BORDER_COLOR: &str = "Border color";
+pub const BORDER_WIDTH: &str = "Border width";
 pub const CENTER_ON_FRAME: &str = "Center on frame";
 pub const PROJECTION: &str = "Map projection";
 pub const CENTER_LONGITUDE: &str = "Center longitude";
@@ -206,6 +209,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         selection_panel(&ctx, state, &mut controls, &rects);
     }
     graticule_color_frame(&ctx, state);
+    border_color_frame(&ctx, state);
     readout(&ctx, ui, state, &rects);
     state.atlas.add_rect = None;
     if state.atlas.add {
@@ -756,6 +760,13 @@ fn frame_tab(
     if frame.graticule.on {
         graticule_rows(ui, state, controls, &frame);
     }
+    let mut border = frame.border.on;
+    if widgets::switch_row(ui, controls, BORDER, BORDER, &mut border) {
+        atlas::set_border(state, id, border);
+    }
+    if frame.border.on {
+        border_rows(ui, state, controls, &frame);
+    }
 
     ui.add_space(6.0);
     let delete = widgets::button_row_in(ui, controls, DELETE_FRAME, true, theme::WARN);
@@ -829,6 +840,66 @@ fn graticule_rows(
     let name = GRATICULE_WIDTH;
     if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
         atlas::set_graticule_width(state, id, lo + fraction * (hi - lo));
+    }
+}
+
+/// The rows of the border of a frame: the color and the width. A tap on the
+/// color opens a color picker below it.
+fn border_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    frame: &vale_store::FrameRecord,
+) {
+    let id = frame.id;
+    let b = &frame.border;
+    let open = state.atlas.border_color;
+    let row = widgets::text_row(ui, controls, BORDER_COLOR, 0.0, open, true);
+    let [r, g, bl] = b.color;
+    let swatch = Rect::from_center_size(
+        pos2(row.rect.right() - SWATCH / 2.0, row.rect.center().y),
+        vec2(SWATCH, SWATCH),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(swatch, 6.0, egui::Color32::from_rgb(r, g, bl));
+    let stroke = egui::Stroke::new(1.0, theme::divider());
+    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    if row.clicked() {
+        state.atlas.border_color = !open;
+        if open {
+            widgets::close_keypad(ui.ctx());
+        }
+    }
+    if state.atlas.border_color {
+        ui.add_space(4.0);
+        let mut color = b.color;
+        if widgets::color_picker(ui, controls, BORDER_COLOR, &mut color) {
+            atlas::set_border_color(state, id, color);
+        }
+        state.atlas.border_shown = true;
+    }
+
+    let (lo, hi) = (*Border::WIDTHS.start(), *Border::WIDTHS.end());
+    let mut fraction = (b.width - lo) / (hi - lo);
+    let text = format!("{} pt", (b.width * 4.0).round() / 4.0);
+    if widgets::row_slider(
+        ui,
+        controls,
+        BORDER_WIDTH,
+        BORDER_WIDTH,
+        &mut fraction,
+        &text,
+    ) {
+        atlas::set_border_width(state, id, lo + fraction * (hi - lo));
+    }
+}
+
+/// Closes the color picker of the border when it did not show in this
+/// frame, with the keypad of its field.
+fn border_color_frame(ctx: &egui::Context, state: &mut AppState) {
+    let shown = std::mem::take(&mut state.atlas.border_shown);
+    if !shown && std::mem::take(&mut state.atlas.border_color) {
+        widgets::close_keypad(ctx);
     }
 }
 

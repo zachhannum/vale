@@ -15,8 +15,8 @@ use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
-    Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
-    PageUnits, ProjectionPreset, encode_rings, read_rings,
+    Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId,
+    PageRecord, PageUnits, ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
