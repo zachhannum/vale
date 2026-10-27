@@ -245,10 +245,9 @@ fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind) -> bool {
         let mut on = stroke.is_some();
         if ui.checkbox(&mut on, STROKE).changed() {
             stroke = on.then(|| {
-                default.stroke().unwrap_or(Stroke {
-                    color: Color::rgb(90, 90, 90),
-                    width: 1.0,
-                })
+                default
+                    .stroke()
+                    .unwrap_or(Stroke::solid(Color::rgb(90, 90, 90), 1.0))
             });
             changed = true;
         }

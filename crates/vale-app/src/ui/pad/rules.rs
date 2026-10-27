@@ -285,10 +285,9 @@ fn paint_rows(
 
     let mut on = rule.stroke().is_some();
     if widgets::switch_row(ui, controls, STROKE, STROKE, &mut on) {
-        let stroke = default.stroke().unwrap_or(Stroke {
-            color: Color::rgb(90, 90, 90),
-            width: 1.0,
-        });
+        let stroke = default
+            .stroke()
+            .unwrap_or(Stroke::solid(Color::rgb(90, 90, 90), 1.0));
         rule.set_stroke(on.then_some(stroke));
     }
     if let Some(mut stroke) = rule.stroke() {

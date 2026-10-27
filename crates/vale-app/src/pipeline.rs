@@ -1034,10 +1034,7 @@ impl Pipeline {
         cache.ensure_graticule(step, &vt, area, frame.center[0]);
         let cache = &*cache;
         let [r, g, b] = frame.graticule.color;
-        let stroke = Stroke {
-            color: vale_render::Color::rgb(r, g, b),
-            width: frame.graticule.width,
-        };
+        let stroke = Stroke::solid(vale_render::Color::rgb(r, g, b), frame.graticule.width);
         let graticule = step
             .and_then(|s| cache.graticule_lines(s))
             .map(|lines| (lines, stroke));

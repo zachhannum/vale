@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use vale_store::GeometryKind;
 use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
-    Color, LayerStyle, Paint, Rule, STYLE_VERSION, Stroke, StrokeSymbolizer, Style, StyleError,
-    Symbolizer, scale_denominator,
+    Color, LayerStyle, Paint, Rule, STYLE_VERSION, Stroke, StrokeKind, StrokeSymbolizer, Style,
+    StyleError, Symbolizer, scale_denominator,
 };
 
 fn river(kind: &str, flow: f64) -> BTreeMap<String, Value> {
@@ -26,7 +26,7 @@ fn paints(style: &Style, attrs: &BTreeMap<String, Value>, scale: f64) -> Vec<Pai
 }
 
 fn stroke(color: Color, width: f64) -> Symbolizer {
-    Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke { color, width }))
+    Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke::solid(color, width)))
 }
 
 const BLUE: Color = Color::rgb(0, 0, 255);
@@ -48,6 +48,7 @@ fn width_from_flow() -> LayerStyle {
     style.style.rules[0].symbolizers = vec![Symbolizer::Stroke(StrokeSymbolizer {
         color: Property::constant(BLUE),
         width: Property::expression("flow * 0.5", 1.0),
+        kind: StrokeKind::Solid,
     })];
     style
 }
@@ -59,17 +60,11 @@ fn rules_draw_by_filter_and_scale_range() {
     let minor = river("minor", 1.0);
     assert_eq!(
         paints(&style, &major, 500_000.0),
-        vec![Paint::Stroke(Stroke {
-            color: BLUE,
-            width: 2.0
-        })]
+        vec![Paint::Stroke(Stroke::solid(BLUE, 2.0))]
     );
     assert_eq!(
         paints(&style, &minor, 500_000.0),
-        vec![Paint::Stroke(Stroke {
-            color: RED,
-            width: 0.5
-        })]
+        vec![Paint::Stroke(Stroke::solid(RED, 0.5))]
     );
     assert!(paints(&style, &minor, 1_000_000.0).is_empty());
     assert!(paints(&style, &river("other", 1.0), 500_000.0).is_empty());
@@ -141,10 +136,7 @@ fn simple_controls_edit_the_first_rule() {
     assert_eq!(polygon.fill(), Some(RED));
     assert_eq!(polygon.stroke(), None);
     assert_eq!(polygon.point_radius(), 0.0);
-    polygon.set_stroke(Some(Stroke {
-        color: BLUE,
-        width: 2.0,
-    }));
+    polygon.set_stroke(Some(Stroke::solid(BLUE, 2.0)));
     assert_eq!(polygon.style.rules[0].symbolizers.len(), 2);
     assert!(matches!(
         polygon.style.rules[0].symbolizers[0],
@@ -326,4 +318,88 @@ fn a_raster_style_without_a_blend_mode_blends_as_normal() {
         back.raster_symbolizer().unwrap().blend,
         vale_store::BlendMode::Normal
     );
+}
+
+fn line_with(kind: StrokeKind) -> LayerStyle {
+    let mut style = LayerStyle::default_for(GeometryKind::Line, 0, &[]);
+    style.style.rules[0].set_stroke(Some(Stroke {
+        color: BLUE,
+        width: 2.0,
+        kind,
+    }));
+    style
+}
+
+#[test]
+fn each_stroke_kind_round_trips() {
+    for kind in [
+        StrokeKind::Solid,
+        StrokeKind::dashed(),
+        StrokeKind::Dashed {
+            dash: 6.5,
+            gap: 1.5,
+        },
+        StrokeKind::Brush,
+        StrokeKind::taper(),
+        StrokeKind::Taper { start: 0.1 },
+    ] {
+        let style = line_with(kind);
+        let json = style.to_json();
+        let back = LayerStyle::from_json(&json).unwrap();
+        assert_eq!(back, style);
+        assert_eq!(back.style.rules[0].stroke().unwrap().kind, kind);
+        assert_eq!(back.to_json(), json);
+    }
+}
+
+#[test]
+fn a_stroke_without_kind_reads_as_solid() {
+    let base = line_with(StrokeKind::Solid).to_json();
+    let read = |extra: &str| {
+        let json = base.replace("\"width\":2.0", &format!("\"width\":2.0{extra}"));
+        assert!(extra.is_empty() || json != base);
+        let style = LayerStyle::from_json(&json).unwrap();
+        style.style.rules[0].stroke().unwrap().kind
+    };
+    assert_eq!(read(""), StrokeKind::Solid);
+    assert_eq!(read(",\"kind\":\"wavy\""), StrokeKind::Solid);
+    assert_eq!(read(",\"kind\":\"dashed\""), StrokeKind::dashed());
+    assert_eq!(
+        read(",\"kind\":\"dashed\",\"gap\":3.0"),
+        StrokeKind::Dashed {
+            dash: 4.0,
+            gap: 3.0
+        }
+    );
+    assert_eq!(
+        read(",\"kind\":\"taper\""),
+        StrokeKind::Taper { start: 0.25 }
+    );
+    assert_eq!(read(",\"kind\":\"brush\""), StrokeKind::Brush);
+}
+
+#[test]
+fn solid_json_is_unchanged() {
+    assert_eq!(Stroke::solid(BLUE, 2.0).kind, StrokeKind::default());
+    let json = line_with(StrokeKind::Solid).to_json();
+    let expected = concat!(
+        r##"{"label":{"color":"#2864a0","enabled":false,"field":null,"italic":true,"priority_field":null,"size":11.0},"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":1}"##,
+    );
+    assert_eq!(json, expected);
+}
+
+#[test]
+fn set_stroke_keeps_the_kind() {
+    let mut rule = Rule::new("r", vec![stroke(BLUE, 1.0)]);
+    for kind in [StrokeKind::dashed(), StrokeKind::Brush, StrokeKind::taper()] {
+        let s = Stroke {
+            color: RED,
+            width: 1.5,
+            kind,
+        };
+        rule.set_stroke(Some(s));
+        assert_eq!(rule.stroke(), Some(s));
+        assert_eq!(rule.symbolizers.len(), 1);
+    }
 }

@@ -3,7 +3,7 @@
 use vale_store::{BlendMode, RasterDisplay, Rgb, Stop};
 
 use crate::expr::{Context, Filter, Property};
-use crate::{Color, Stroke};
+use crate::{Color, Stroke, StrokeKind};
 
 /// The length of one point, in meters.
 pub const METERS_PER_POINT: f64 = 0.0254 / 72.0;
@@ -36,6 +36,7 @@ pub struct Rule {
 pub struct StrokeSymbolizer {
     pub color: Property<Color>,
     pub width: Property<f64>,
+    pub kind: StrokeKind,
 }
 
 /// An instruction that draws a feature.
@@ -95,6 +96,7 @@ impl StrokeSymbolizer {
         StrokeSymbolizer {
             color: Property::constant(stroke.color),
             width: Property::constant(stroke.width),
+            kind: stroke.kind,
         }
     }
 
@@ -102,6 +104,7 @@ impl StrokeSymbolizer {
         Stroke {
             color: self.color.eval(ctx),
             width: self.width.eval(ctx),
+            kind: self.kind,
         }
     }
 
@@ -110,6 +113,7 @@ impl StrokeSymbolizer {
         Stroke {
             color: self.color.fallback,
             width: self.width.fallback,
+            kind: self.kind,
         }
     }
 

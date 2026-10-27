@@ -9,7 +9,7 @@ use vale_render::{FillRule, Item, render_pixmap};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{FrameId, FrameShape, PageId, PageUnits};
 use vale_style::expr::{Filter, Property};
-use vale_style::{Color, Rule, Stroke, StrokeSymbolizer, Style, Symbolizer};
+use vale_style::{Color, Rule, Stroke, StrokeKind, StrokeSymbolizer, Style, Symbolizer};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 const LAND: [u8; 3] = [244, 241, 232];
@@ -297,10 +297,9 @@ fn line_strokes(doc: &Document) -> Vec<(f64, [u8; 3])> {
 fn stroke_rule(name: &str, filter: &str, color: Color, width: f64) -> Rule {
     let mut rule = Rule::new(
         name,
-        vec![Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke {
-            color,
-            width,
-        }))],
+        vec![Symbolizer::Stroke(StrokeSymbolizer::constant(
+            Stroke::solid(color, width),
+        ))],
     );
     rule.filter = Filter::new(filter);
     rule
@@ -335,6 +334,7 @@ fn a_width_expression_follows_the_attribute() {
             vec![Symbolizer::Stroke(StrokeSymbolizer {
                 color: Property::constant(blue),
                 width: Property::expression("flow * 0.5", 1.0),
+                kind: StrokeKind::Solid,
             })],
         )],
     };

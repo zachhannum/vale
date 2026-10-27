@@ -404,7 +404,7 @@ fn the_globe_draws_vector_layers_with_great_circle_edges_up_to_its_edge() {
     ] {
         let style = &mut state.doc.entry_mut(id).unwrap().style;
         style.set_fill(fill);
-        style.set_stroke(stroke.map(|color| Stroke { color, width: 4.0 }));
+        style.set_stroke(stroke.map(|color| Stroke::solid(color, 4.0)));
         style.set_point_radius(5.0);
     }
     let hidden = state.doc.add_imported(
