@@ -14,11 +14,11 @@ use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::GRATICULE;
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
-    DELETE_PROJECTION, EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL,
-    FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, MAP_FRAME, MAP_NAME, NEXT_PAGE,
-    OBLIQUE, POLYGON, PREVIOUS_PAGE, PROJECTION, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE,
-    WIDTH, custom_row, page_title, readout_text,
+    ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_COLOR, BORDER_WIDTH, CENTER_ON_FRAME,
+    DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF,
+    EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
+    INTERVAL, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON, PREVIOUS_PAGE, PROJECTION,
+    REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, WIDTH, custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
@@ -1609,4 +1609,108 @@ fn the_graticule_settings_survive_a_close_and_an_open() {
     assert_eq!(g.color, [10, 20, 30]);
     assert_eq!(g.width, 1.3);
     assert!(!doc.project.atlas.frame(inset).unwrap().graticule.on);
+}
+
+#[test]
+fn two_frames_of_one_map_have_their_own_border() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).id);
+    h.state_mut()
+        .doc
+        .project
+        .atlas
+        .frame_mut(inset)
+        .unwrap()
+        .map = main;
+    h.run_steps(2);
+    let first = frame(&h, 0).border;
+    let shade = format!("{BORDER_COLOR} shade");
+    scroll_to(&mut h, BORDER_COLOR);
+    tap(&mut h, BORDER_COLOR);
+    scroll_to(&mut h, &shade);
+    let square = control(&h, &shade).unwrap();
+    tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+    let color = frame(&h, 1).border.color;
+    assert_ne!(color, first.color);
+    assert_eq!(frame(&h, 0).border, first);
+    assert!(strokes(&mut h, 0, first.color, first.width) > 0);
+    assert_eq!(strokes(&mut h, 0, color, first.width), 0);
+    assert!(strokes(&mut h, 1, color, first.width) > 0);
+
+    scroll_up_to(&mut h, BORDER);
+    tap(&mut h, BORDER);
+    assert!(!frame(&h, 1).border.on);
+    assert_eq!(frame(&h, 0).border, first);
+    assert_eq!(strokes(&mut h, 1, color, first.width), 0);
+    assert!(strokes(&mut h, 0, first.color, first.width) > 0);
+}
+
+#[test]
+fn the_border_controls_work_with_a_finger() {
+    let hue = format!("{BORDER_COLOR} hue");
+    let shade = format!("{BORDER_COLOR} shade");
+    for size in BOARDS {
+        let mut h = inset_pad(size);
+        scroll_to(&mut h, BORDER);
+        assert!(frame(&h, 1).border.on, "{size:?}");
+        check_controls(&h, "border");
+        tap(&mut h, BORDER);
+        assert!(!frame(&h, 1).border.on, "{size:?}");
+        assert!(control(&h, BORDER_WIDTH).is_none(), "{size:?}");
+        tap(&mut h, BORDER);
+        assert!(frame(&h, 1).border.on, "{size:?}");
+
+        scroll_to(&mut h, BORDER_COLOR);
+        tap(&mut h, BORDER_COLOR);
+        scroll_to(&mut h, &hue);
+        check_controls(&h, "border color");
+        let before = frame(&h, 1).border.color;
+        let square = control(&h, &shade).unwrap();
+        tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+        assert_ne!(frame(&h, 1).border.color, before, "{size:?}");
+
+        scroll_to(&mut h, BORDER_WIDTH);
+        let slider = control(&h, BORDER_WIDTH).unwrap();
+        tap_with(
+            &mut h,
+            slider.right_center() - vec2(70.0, 0.0),
+            Input::Finger,
+        );
+        let width = frame(&h, 1).border.width;
+        assert!(width > 3.0, "{size:?}: {width}");
+        assert_eq!((width * 4.0).round() / 4.0, width);
+        check_controls(&h, "border width");
+    }
+}
+
+#[test]
+fn the_border_survives_a_close_and_an_open() {
+    use vale_app::ui::atlas::{set_border, set_border_color, set_border_width};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
+    let st = h.state_mut();
+    set_border_color(st, main, [10, 20, 30]);
+    set_border_width(st, main, 2.3);
+    set_border(st, inset, false);
+    h.run_steps(2);
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.project.atlas, project.atlas);
+    let b = &doc.project.atlas.frame(main).unwrap().border;
+    assert!(b.on);
+    assert_eq!(b.color, [10, 20, 30]);
+    assert_eq!(b.width, 2.25);
+    assert!(!doc.project.atlas.frame(inset).unwrap().border.on);
 }

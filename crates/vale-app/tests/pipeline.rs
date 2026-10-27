@@ -608,3 +608,71 @@ fn a_new_projection_changes_each_frame() {
     }
     assert_eq!(pipeline.cache_count(), 2);
 }
+
+fn border_items(list: &vale_render::DisplayList, color: [u8; 3], width: f64) -> Vec<&Item> {
+    let color = vale_render::Color::rgb(color[0], color[1], color[2]);
+    (list.items.iter())
+        .filter(
+            |i| matches!(i, Item::Stroke { color: c, width: w, .. } if *c == color && *w == width),
+        )
+        .collect()
+}
+
+#[test]
+fn the_border_follows_each_ring_of_the_shape_and_stays_vector() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.graticule.on = false;
+    frame.shape = FrameShape::Polygon(vec![
+        vec![
+            [10.0, 10.0],
+            [287.0, 10.0],
+            [287.0, 200.0],
+            [148.5, 120.0],
+            [10.0, 200.0],
+        ],
+        vec![[40.0, 40.0], [80.0, 40.0], [80.0, 80.0], [40.0, 80.0]],
+    ]);
+    frame.border.color = [200, 10, 20];
+    frame.border.width = 3.0;
+    let render = |doc: &Document, pipeline: &mut Pipeline| {
+        let page = doc.project.atlas.page(page).unwrap();
+        let mut f = fonts().unwrap();
+        pipeline
+            .compose_page(doc, page, &mut f, Quality::Final)
+            .unwrap()
+    };
+    let list = render(&doc, &mut pipeline);
+    let borders = border_items(&list, [200, 10, 20], 3.0);
+    assert_eq!(borders.len(), 1);
+    let Item::Stroke { path, .. } = borders[0] else {
+        unreachable!()
+    };
+    let rings = path
+        .elements()
+        .iter()
+        .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_)))
+        .count();
+    assert_eq!(rings, 2, "the outer ring and the hole");
+    assert!(list.items.iter().all(|i| !matches!(i, Item::Image { .. })));
+    assert!(
+        vale_render::render_pdf(&list)
+            .unwrap()
+            .starts_with(b"%PDF-")
+    );
+
+    // The border is on the edge of the notch.
+    let pixmap = render_pixmap(&list, 1.0).unwrap();
+    let w = usize::from(pixmap.width());
+    let data = pixmap.data_as_u8_slice();
+    let (x, y) = ((148.5 * PT_PER_MM) as usize, (120.0 * PT_PER_MM) as usize);
+    let i = (y * w + x) * 4;
+    assert_eq!(&data[i..i + 3], &[200, 10, 20]);
+
+    doc.project.atlas.frame_mut(id).unwrap().border.on = false;
+    let list = render(&doc, &mut pipeline);
+    assert!(border_items(&list, [200, 10, 20], 3.0).is_empty());
+}
