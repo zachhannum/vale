@@ -15,7 +15,7 @@ use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
-    Atlas, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
+    Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
     PageUnits, ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
@@ -495,6 +495,10 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
             }
             out.extend_from_slice(&graticule.color);
             put_f64(out, graticule.width);
+            let border = &frame.border;
+            out.push(border.on as u8);
+            out.extend_from_slice(&border.color);
+            put_f64(out, border.width);
         }
     }
     put_u32(out, atlas.presets.len());
@@ -553,6 +557,11 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                 graticule: Graticule {
                     on: flag(r)?,
                     interval: if flag(r)? { Some(r.f64()?) } else { None },
+                    color: r.take::<3>()?,
+                    width: r.f64()?,
+                },
+                border: Border {
+                    on: flag(r)?,
                     color: r.take::<3>()?,
                     width: r.f64()?,
                 },
@@ -1004,13 +1013,22 @@ mod tests {
         let first = before.pages[0].id;
         let second = before.add_page(Some(first), 420.0, 297.0, PageUnits::In);
         before.page_mut(second).unwrap().name = "North".into();
-        let frame = |shape, graticule| FrameRecord {
+        let frame = |shape, graticule: Graticule| FrameRecord {
             id: FrameId(0),
             map: MapId(0),
             shape,
             center: [-12.5, 33.25],
             scale: 25_000_000.0,
             rotation: 271.5,
+            border: if graticule.on {
+                Border::default()
+            } else {
+                Border {
+                    on: false,
+                    color: [0xaa, 0x10, 0x20],
+                    width: 3.5,
+                }
+            },
             graticule,
         };
         let manual = Graticule {

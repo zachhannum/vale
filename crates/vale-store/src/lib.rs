@@ -11,7 +11,7 @@ mod tile;
 mod undo;
 
 pub use atlas::{
-    Atlas, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
+    Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
     PageUnits, ProjectionPreset,
 };
 pub use gpkg::{
