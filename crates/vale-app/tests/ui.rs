@@ -434,7 +434,7 @@ fn the_atlas_export_writes_each_page_and_can_be_canceled() {
         state.atlas_export_progress().as_deref(),
         Some("Exporting atlas.pdf: page 1 of 20")
     );
-    state.poll_atlas_export();
+    state.poll_atlas_export(None);
     assert_eq!(
         state.atlas_export_progress().as_deref(),
         Some("Exporting atlas.pdf: page 2 of 20")

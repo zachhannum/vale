@@ -78,6 +78,43 @@ fn args(project: &Path, out: &Path) -> Args {
     Args::try_parse_from(list).unwrap()
 }
 
+#[test]
+fn the_command_line_exports_the_atlas_and_one_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let (file, out) = (dir.path().join("w.gpkg"), dir.path().join("atlas.pdf"));
+    project(&file, 6371.0, false);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_vale-app"))
+        .args(["--project", file.to_str().unwrap(), "--export-atlas"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(std::fs::read(out).unwrap().starts_with(b"%PDF-"));
+
+    let page = dir.path().join("page.png");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_vale-app"))
+        .args(["--project", file.to_str().unwrap(), "--export-page", "1"])
+        .arg(&page)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        std::fs::read(page)
+            .unwrap()
+            .starts_with(b"\x89PNG\r\n\x1a\n")
+    );
+}
+
 /// A state with no window, with a small height layer that has a painted
 /// place.
 fn state() -> AppState {

@@ -14,7 +14,7 @@ use vale_store::{
 };
 use vale_terrain::{Bands, Heightmap, Mode};
 
-use crate::atlas_export::PdfExport;
+use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, file_name};
@@ -22,7 +22,6 @@ use crate::globe::line::{self, LineEdit};
 use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
-use crate::headless;
 use crate::pipeline::{Composed, Pipeline, Selection, fonts};
 use crate::projects::{self, Location, Locations};
 use crate::raster_style;
@@ -1937,7 +1936,7 @@ impl AppState {
                 self.status = self.atlas_export_progress().unwrap_or_default();
                 if self.headless {
                     while self.atlas_export.is_some() {
-                        self.poll_atlas_export();
+                        self.poll_atlas_export(None);
                     }
                 }
             }
@@ -1956,22 +1955,44 @@ impl AppState {
     }
 
     /// Composes the next page of a PDF export.
-    pub fn poll_atlas_export(&mut self) {
+    pub fn poll_atlas_export(&mut self, ui: Option<&egui::Ui>) {
         let Some(mut job) = self.atlas_export.take() else {
             return;
         };
         match job.step() {
-            None => {
+            ExportStep::More => {
                 self.atlas_export = Some(job);
                 self.status = self.atlas_export_progress().unwrap_or_default();
             }
-            Some(Ok(path)) => {
+            ExportStep::Capture(draw) => {
+                let Some(ui) = ui else {
+                    self.status = "A raster layer needs a GPU for export".to_string();
+                    return;
+                };
+                let canvas = crate::globe::backdrop::Canvas {
+                    background: egui::Color32::TRANSPARENT,
+                    pixels_per_point: RASTER_PIXEL_RATIO as f32,
+                };
+                let Some((callback, receiver)) = self.globe.capture_frame(canvas, draw) else {
+                    self.status = "The GPU is not ready for raster export".to_string();
+                    return;
+                };
+                job.set_capture_receiver(receiver);
+                ui.painter()
+                    .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                        ui.max_rect(),
+                        callback,
+                    ));
+                self.atlas_export = Some(job);
+                self.status = self.atlas_export_progress().unwrap_or_default();
+            }
+            ExportStep::Done(Ok(path)) => {
                 self.status = format!("Exported {}", path.display());
                 if self.share_exports {
                     self.share = Some(path);
                 }
             }
-            Some(Err(error)) => self.status = format!("{error:#}"),
+            ExportStep::Done(Err(error)) => self.status = format!("{error:#}"),
         }
     }
 
@@ -2073,25 +2094,7 @@ impl AppState {
             }
             Action::Export(path) => {
                 let page = atlas::open_page(self).clone();
-                let pdf = path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
-                if pdf {
-                    self.start_pdf_export(path, vec![page]);
-                } else {
-                    let shared = path.clone();
-                    let (pipeline, fonts) = (&mut self.pipeline, &mut self.fonts);
-                    match headless::export_page(pipeline, &self.doc, &page, fonts, &path) {
-                        Ok(()) => {
-                            self.status = format!("Exported {}", path.display());
-                            if self.share_exports {
-                                self.share = Some(shared);
-                            }
-                        }
-                        Err(error) => self.status = format!("{error:#}"),
-                    }
-                }
+                self.start_pdf_export(path, vec![page]);
             }
             Action::ExportAtlas(path) => {
                 let pages = self.doc.project.atlas.pages.clone();
@@ -2187,7 +2190,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
     state.poll_export();
-    state.poll_atlas_export();
+    state.poll_atlas_export(Some(ui));
     if state.atlas_export.is_some() {
         ui.ctx().request_repaint();
     }

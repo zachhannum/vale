@@ -855,6 +855,83 @@ pub struct Group {
     /// A shape that cuts the pixels. The mask has the size of the target.
     pub mask: Option<Arc<Mask>>,
     pub draws: Vec<Draw>,
+    /// A one-time copy of the target. A captured group does not paint on the
+    /// screen.
+    pub capture: Option<Arc<Capture>>,
+}
+
+/// Premultiplied pixels copied from a group target, row by row.
+pub struct Captured {
+    pub size: [u32; 2],
+    pub rgba: Vec<u8>,
+}
+
+/// A one-time request for the pixels of a group target.
+pub struct Capture {
+    started: AtomicBool,
+    sender: Mutex<Option<mpsc::Sender<Result<Captured, String>>>>,
+}
+
+impl Capture {
+    pub fn new() -> (Arc<Capture>, mpsc::Receiver<Result<Captured, String>>) {
+        let (sender, receiver) = mpsc::channel();
+        let capture = Capture {
+            started: AtomicBool::new(false),
+            sender: Mutex::new(Some(sender)),
+        };
+        (Arc::new(capture), receiver)
+    }
+}
+
+struct CaptureReadback {
+    buffer: Arc<wgpu::Buffer>,
+    sender: Option<mpsc::Sender<Result<Captured, String>>>,
+    token: Token,
+    row: u32,
+    size: [u32; 2],
+    format: wgpu::TextureFormat,
+}
+
+impl CaptureReadback {
+    fn start(self) {
+        let mapped = self.buffer.clone();
+        let CaptureReadback {
+            buffer,
+            sender,
+            token,
+            row,
+            size,
+            format,
+        } = self;
+        buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+            let result = result.map_err(|error| format!("GPU readback failed: {error:?}"));
+            let result = result.map(|()| {
+                let bytes = mapped
+                    .slice(..)
+                    .get_mapped_range()
+                    .expect("capture is mapped");
+                let mut rgba = Vec::with_capacity(size[0] as usize * size[1] as usize * 4);
+                for source in bytes.chunks(row as usize) {
+                    rgba.extend_from_slice(&source[..size[0] as usize * 4]);
+                }
+                drop(bytes);
+                mapped.unmap();
+                if matches!(
+                    format,
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+                ) {
+                    for pixel in rgba.as_chunks_mut::<4>().0 {
+                        pixel.swap(0, 2);
+                    }
+                }
+                Captured { size, rgba }
+            });
+            if let Some(sender) = sender {
+                let _ = sender.send(result);
+            }
+            drop(token);
+        });
+    }
 }
 
 /// The longest time that the target of a group stays after the last frame
@@ -1029,7 +1106,7 @@ impl Resources {
         encoder: &mut wgpu::CommandEncoder,
         screen: [u32; 2],
         group: &Group,
-    ) {
+    ) -> Option<CaptureReadback> {
         let rect = group.place.unwrap_or([0, 0, screen[0], screen[1]]);
         let size = [rect[2].max(1), rect[3].max(1)];
         let view = match &group.mesh {
@@ -1061,6 +1138,7 @@ impl Resources {
             depth_or_array_layers: 1,
         };
         let copy = (target.layers.clone(), target.below.clone());
+        let format = target.format;
         let mut load = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
         // A group with no pass leaves an empty target.
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1113,6 +1191,43 @@ impl Resources {
             });
             self.draw(&mut pass, &draw, group.target, false, &view, size);
         }
+        let mut readback = None;
+        if let Some(capture) = &group.capture
+            && !capture.started.swap(true, Ordering::Relaxed)
+        {
+            let row = (size[0] * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+            let buffer = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("group capture"),
+                size: u64::from(row * size[1]),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }));
+            encoder.copy_texture_to_buffer(
+                copy.0.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(row),
+                        rows_per_image: Some(size[1]),
+                    },
+                },
+                extent,
+            );
+            readback = Some(CaptureReadback {
+                buffer,
+                sender: capture
+                    .sender
+                    .lock()
+                    .expect("no panic holds the lock")
+                    .take(),
+                token: self._poller.busy.token(),
+                row,
+                size,
+                format,
+            });
+        }
+        readback
     }
 
     /// Puts the target of a group on the screen.
@@ -1810,7 +1925,18 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
                     res.write(device, queue, &draw, CANVAS, false, None);
                 }
             }
-            Job::Group(group) => res.render_group(device, queue, egui_encoder, size, group),
+            Job::Group(group) if group.capture.is_some() => {
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("group capture"),
+                });
+                if let Some(readback) = res.render_group(device, queue, &mut encoder, size, group) {
+                    queue.submit([encoder.finish()]);
+                    readback.start();
+                }
+            }
+            Job::Group(group) => {
+                let _ = res.render_group(device, queue, egui_encoder, size, group);
+            }
             Job::Backdrop(canvas, draws) => {
                 let small = size.map(|s| s.max(1).div_ceil(REDUCTION));
                 for draw in draws {
@@ -1848,7 +1974,10 @@ impl egui_wgpu::CallbackTrait for GlobeCallback {
                 let view = res.view_of(self.frame.flat.as_deref());
                 res.draw(render_pass, draw, CANVAS, false, &view, info.screen_size_px);
             }
-            Job::Group(group) => res.composite(render_pass, group.target, info.screen_size_px),
+            Job::Group(group) if group.capture.is_none() => {
+                res.composite(render_pass, group.target, info.screen_size_px)
+            }
+            Job::Group(_) => {}
             Job::Backdrop(..) => {}
         }
     }

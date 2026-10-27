@@ -6,7 +6,7 @@ use kurbo::Point;
 use vale_app::atlas::anchor;
 use vale_app::document::Document;
 use vale_app::headless;
-use vale_app::ui::{AppState, Layout, Workspace};
+use vale_app::ui::{Action, AppState, Layout, Workspace};
 use vale_store::{BlendMode, RasterDisplay, RasterId};
 
 type App = Harness<'static, AppState>;
@@ -133,5 +133,68 @@ fn the_blend_mode_works_in_a_frame() {
     assert!(
         r.abs_diff(want) <= 3 && r == g && g == b,
         "{r} {g} {b} and {want}"
+    );
+}
+
+#[test]
+fn a_pdf_export_embeds_the_raster_layers_of_a_frame() {
+    let _gpu = one_gpu_test();
+    let below_level = 40000;
+    let (mut h, _) = atlas(below_level);
+    let (upper_level, upper) = (30000, {
+        let state = h.state_mut();
+        let id = state.add_height();
+        state.set_raster_display(id, RasterDisplay::Grey);
+        state.globe.raster_map_mut(id).unwrap().fill(30000);
+        id
+    });
+    h.state_mut().set_raster_blend(upper, BlendMode::Multiply);
+    h.state_mut().touch();
+    h.run_steps(3);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("atlas.pdf");
+    h.state_mut().headless = false;
+    h.state_mut().run_action(Action::ExportAtlas(path.clone()));
+    for _ in 0..60 {
+        h.run_steps(1);
+        if h.state().atlas_export.is_none() {
+            break;
+        }
+    }
+    assert!(h.state().atlas_export.is_none(), "the export did not end");
+    assert!(
+        h.state().status.starts_with("Exported"),
+        "{}",
+        h.state().status
+    );
+    let bytes = std::fs::read(path).unwrap();
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(
+        raw.contains("/Subtype/Image"),
+        "the PDF has no raster image"
+    );
+
+    let png = dir.path().join("page.png");
+    h.state_mut().run_action(Action::Export(png.clone()));
+    for _ in 0..60 {
+        h.run_steps(1);
+        if h.state().atlas_export.is_none() {
+            break;
+        }
+    }
+    assert!(
+        h.state().status.starts_with("Exported"),
+        "{}",
+        h.state().status
+    );
+    let image = image::open(png).unwrap().to_rgba8();
+    let at = anchor(&open_frame(&h).shape) + kurbo::Vec2::new(23.0, 17.0);
+    let pixels_per_mm = 300.0 / 25.4;
+    let pixel = image.get_pixel((at.x * pixels_per_mm) as u32, (at.y * pixels_per_mm) as u32);
+    let want =
+        (f32::from(grey_of(below_level)) * f32::from(grey_of(upper_level)) / 255.0).round() as u8;
+    assert!(
+        pixel[0].abs_diff(want) <= 3 && pixel[0] == pixel[1] && pixel[1] == pixel[2],
+        "{pixel:?} and {want}"
     );
 }

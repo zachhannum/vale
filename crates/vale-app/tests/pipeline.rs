@@ -187,6 +187,7 @@ fn one_layer_of_each_kind() {
             Item::Fill { rule, .. } => format!("fill {rule:?}"),
             Item::Stroke { round, .. } => format!("stroke {round}"),
             Item::Glyphs(_) => "glyphs".to_string(),
+            Item::Image { .. } => "image".to_string(),
             Item::PushClip { .. } => "push clip".to_string(),
             Item::PopClip => "pop clip".to_string(),
         })
@@ -219,6 +220,7 @@ fn describe(item: &Item) -> String {
             color.r, color.g, color.b, color.a
         ),
         Item::Glyphs(_) => "glyphs".to_string(),
+        Item::Image { .. } => "image".to_string(),
         Item::PushClip { rule, .. } => format!("push clip {rule:?}"),
         Item::PopClip => "pop clip".to_string(),
     }
