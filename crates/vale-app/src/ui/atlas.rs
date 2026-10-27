@@ -1299,7 +1299,12 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
                 if let Some(&first) = points.first() {
                     points.push(first);
                 }
-                painter.add(egui::Shape::line(points, stroke));
+                if frame.border.on {
+                    // The border shows between the dashes.
+                    painter.extend(egui::Shape::dashed_line(&points, stroke, 6.0, 5.0));
+                } else {
+                    painter.add(egui::Shape::line(points, stroke));
+                }
             }
             let dark = egui::Stroke::new(1.5, Color32::from_rgb(11, 31, 26));
             let mut handles = Vec::new();
