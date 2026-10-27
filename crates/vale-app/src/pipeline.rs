@@ -5,13 +5,13 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::anyhow;
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
 use vale_labeler::Fonts;
-use vale_render::{DisplayList, FillRule, Item};
+use vale_render::{DisplayList, FillRule, Item, stroke};
 use vale_sphere::{
     ClipRect, LonLat, Projection, ProjectionSpec, auto_interval, graticule, graticule_in, wrap180,
 };
 use vale_store::{FrameRecord, Geometry, GeometryKind, Layer, LayerId, MapId, PageRecord, Value};
 use vale_style::expr::Context;
-use vale_style::{Extent, Paint, Stroke, scale_denominator};
+use vale_style::{Extent, Paint, Stroke, StrokeKind, scale_denominator};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
@@ -291,7 +291,7 @@ struct Batch {
 }
 
 /// The bits of a paint, for grouping.
-fn paint_key(paint: &Paint) -> [u64; 6] {
+fn paint_key(paint: &Paint) -> [u64; 8] {
     let color = |c: Option<vale_render::Color>| {
         c.map_or(1 << 32, |c| {
             u64::from(u32::from_be_bytes([c.r, c.g, c.b, c.a]))
@@ -301,10 +301,16 @@ fn paint_key(paint: &Paint) -> [u64; 6] {
         s.map_or([1 << 32, 0], |s| [color(Some(s.color)), s.width.to_bits()])
     };
     match *paint {
-        Paint::Fill(c) => [0, color(Some(c)), 0, 0, 0, 0],
+        Paint::Fill(c) => [0, color(Some(c)), 0, 0, 0, 0, 0, 0],
         Paint::Stroke(s) => {
             let [c, w] = stroke(Some(s));
-            [1, c, w, 0, 0, 0]
+            let [k, a, b] = match s.kind {
+                StrokeKind::Solid => [0, 0, 0],
+                StrokeKind::Dashed { dash, gap } => [1, dash.to_bits(), gap.to_bits()],
+                StrokeKind::Brush => [2, 0, 0],
+                StrokeKind::Taper { start } => [3, start.to_bits(), 0],
+            };
+            [1, c, w, k, a, b, 0, 0]
         }
         Paint::Marker {
             radius,
@@ -312,7 +318,7 @@ fn paint_key(paint: &Paint) -> [u64; 6] {
             stroke: st,
         } => {
             let [c, w] = stroke(st);
-            [2, radius.to_bits(), color(fill), c, w, 0]
+            [2, radius.to_bits(), color(fill), c, w, 0, 0, 0]
         }
     }
 }
@@ -332,7 +338,7 @@ fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
             .collect();
     }
     let mut out: Vec<Batch> = Vec::new();
-    let mut index: HashMap<(usize, usize, [u64; 6]), usize> = HashMap::new();
+    let mut index: HashMap<(usize, usize, [u64; 8]), usize> = HashMap::new();
     let rules: Vec<_> = style
         .rules
         .iter()
@@ -380,14 +386,48 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch) {
             }
         }
         (GeometryKind::Polygon | GeometryKind::Line, Paint::Stroke(stroke)) => {
-            let path = lines();
-            if !path.elements().is_empty() {
-                list.push(Item::Stroke {
-                    path,
-                    color: stroke.color,
-                    width: stroke.width,
-                    round: pl.kind == GeometryKind::Line,
-                });
+            let line = pl.kind == GeometryKind::Line;
+            match stroke.kind {
+                StrokeKind::Dashed { dash, gap } => {
+                    let parts: Vec<_> = features()
+                        .flat_map(|f| stroke::dash(&f.lines, dash, gap))
+                        .collect();
+                    push_stroke(list, polylines_path(&parts, false), &stroke, false);
+                }
+                StrokeKind::Taper { start } if line => {
+                    for f in features().filter(|f| !f.lines.is_empty()) {
+                        let pieces = stroke::taper(&f.lines, start * stroke.width, stroke.width);
+                        list.push(Item::Fill {
+                            path: stroke::taper_path(&pieces),
+                            color: stroke.color,
+                            rule: FillRule::NonZero,
+                        });
+                    }
+                }
+                StrokeKind::Brush => {
+                    let mut items = Vec::new();
+                    let mut bounds: Option<Rect> = None;
+                    for f in features() {
+                        for d in stroke::brush_dabs(&f.lines, stroke.width, f.index as u64) {
+                            let circle = Circle::new(d.center, d.radius);
+                            let b = circle.bounding_box();
+                            bounds = Some(bounds.map_or(b, |r| r.union(b)));
+                            let mut color = stroke.color;
+                            color.a = (f32::from(color.a) * d.alpha).round() as u8;
+                            items.push(Item::Fill {
+                                path: circle.to_path(0.1),
+                                color,
+                                rule: FillRule::NonZero,
+                            });
+                        }
+                    }
+                    if let Some(bounds) = bounds {
+                        list.push(Item::Rasterize { bounds, items });
+                    }
+                }
+                StrokeKind::Solid | StrokeKind::Taper { .. } => {
+                    push_stroke(list, lines(), &stroke, line);
+                }
             }
         }
         (
@@ -422,6 +462,17 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch) {
             }
         }
         _ => {}
+    }
+}
+
+fn push_stroke(list: &mut DisplayList, path: BezPath, stroke: &Stroke, round: bool) {
+    if !path.elements().is_empty() {
+        list.push(Item::Stroke {
+            path,
+            color: stroke.color,
+            width: stroke.width,
+            round,
+        });
     }
 }
 
