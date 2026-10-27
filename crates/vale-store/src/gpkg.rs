@@ -21,8 +21,8 @@ use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
 
 use crate::atlas::{
-    self, Atlas, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord,
-    PageUnits, ProjectionPreset,
+    self, Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId,
+    PageRecord, PageUnits, ProjectionPreset,
 };
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
@@ -33,7 +33,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 25;
+pub const FORMAT_VERSION: u32 = 26;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -63,6 +63,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v23,
     v24,
     v25,
+    v26,
 ];
 
 /// `GPKG` in ASCII.
@@ -909,6 +910,31 @@ fn v25(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// The border of a frame. The frames of an older file have no border. The
+/// undo images of the atlas have the old form, so the step removes them, and
+/// the steps that hold nothing else.
+fn v26(tx: &Transaction) -> rusqlite::Result<()> {
+    for (column, kind) in [
+        ("border", "INTEGER NOT NULL DEFAULT 0"),
+        ("border_color", "TEXT NOT NULL DEFAULT '2B2B2B'"),
+        ("border_width", "REAL NOT NULL DEFAULT 1.0"),
+    ] {
+        let sql = "SELECT count(*) FROM pragma_table_info('vale_frame') WHERE name = ?1";
+        let count: i64 = tx.query_row(sql, [column], |r| r.get(0))?;
+        if count == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE vale_frame ADD COLUMN {column} {kind}"
+            ))?;
+        }
+    }
+    tx.execute_batch(
+        "DELETE FROM vale_undo_record WHERE kind = 'atlas';
+         DELETE FROM vale_undo_step
+           WHERE id NOT IN (SELECT step_id FROM vale_undo_record)
+             AND id NOT IN (SELECT step_id FROM vale_undo_tile);",
+    )
+}
+
 /// The atlas. An older file gets one map with an Equal Earth projection and
 /// one page in the units of the world. A file with an older version number
 /// can already have the tables.
@@ -1404,8 +1430,8 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     let mut frame = tx.prepare(
         "INSERT INTO vale_frame (id, page_id, position, map_id, shape, rings, center_lon,
            center_lat, scale, rotation, graticule, graticule_interval, graticule_color,
-           graticule_width)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+           graticule_width, border, border_color, border_width)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
     )?;
     for (position, p) in atlas.pages.iter().enumerate() {
         let units = p.units.id();
@@ -1433,6 +1459,9 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.graticule.interval,
                 hex(f.graticule.color),
                 f.graticule.width,
+                f.border.on,
+                hex(f.border.color),
+                f.border.width,
             ])?;
         }
     }
@@ -2189,7 +2218,8 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
     }
     let mut rows = conn.prepare(
         "SELECT id, page_id, map_id, shape, rings, center_lon, center_lat, scale, rotation,
-           graticule, graticule_interval, graticule_color, graticule_width
+           graticule, graticule_interval, graticule_color, graticule_width,
+           border, border_color, border_width
          FROM vale_frame ORDER BY page_id, position",
     )?;
     let mut rows = rows.query([])?;
@@ -2213,6 +2243,16 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             color: parse_color(&color).ok_or_else(bad)?,
             width,
         };
+        let border_color: String = r.get(14)?;
+        let border_width: f64 = r.get(15)?;
+        if !positive(border_width) {
+            return Err(bad());
+        }
+        let border = Border {
+            on: r.get(13)?,
+            color: parse_color(&border_color).ok_or_else(bad)?,
+            width: border_width,
+        };
         let frame = FrameRecord {
             id: FrameId(id),
             map,
@@ -2221,6 +2261,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             scale: r.get(7)?,
             rotation: r.get(8)?,
             graticule,
+            border,
         };
         if atlas.map(map).is_none() {
             return Err(bad());
@@ -2857,6 +2898,7 @@ mod tests {
             scale: 90_000_000.0,
             rotation: 45.0,
             graticule: Graticule::default(),
+            border: Border::default(),
         };
         atlas.add_frame(first, frame.clone()).unwrap();
         let ring = vec![
@@ -2875,6 +2917,11 @@ mod tests {
                 interval: Some(7.5),
                 color: [0x12, 0x34, 0xab],
                 width: 1.25,
+            },
+            border: Border {
+                on: false,
+                color: [0xaa, 0x10, 0x20],
+                width: 3.5,
             },
             ..frame
         };
@@ -2963,6 +3010,61 @@ mod tests {
         }
         // The undo image of the atlas has the old form, so it goes.
         assert!(!file.can_undo());
+    }
+
+    /// Removes the border columns, as in a file before format version 26.
+    const V25_DROP: &str = "ALTER TABLE vale_frame DROP COLUMN border;
+         ALTER TABLE vale_frame DROP COLUMN border_color;
+         ALTER TABLE vale_frame DROP COLUMN border_width;";
+
+    #[test]
+    fn a_frame_of_version_25_has_no_border() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        atlas_edit(&mut project);
+        file.save(&project).unwrap();
+        assert!(file.can_undo());
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(V25_DROP).unwrap();
+        drop(conn);
+        set_format_version(&dir, 25);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        let frames: Vec<&FrameRecord> = loaded.atlas.pages.iter().flat_map(|p| &p.frames).collect();
+        assert_eq!(frames.len(), 3);
+        for frame in frames {
+            assert_eq!(
+                frame.border,
+                Border {
+                    on: false,
+                    ..Border::default()
+                }
+            );
+        }
+        assert!(!file.can_undo());
+    }
+
+    #[test]
+    fn a_bad_border_is_corrupt() {
+        for update in ["border_width = 0", "border_color = 'blue'"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut project = Project::new(World::default());
+            project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+            atlas_edit(&mut project);
+            drop(ProjectFile::create(&path(&dir), &project).unwrap());
+            let conn = Connection::open(path(&dir)).unwrap();
+            conn.execute_batch(&format!("UPDATE vale_frame SET {update}"))
+                .unwrap();
+            drop(conn);
+            assert!(
+                matches!(ProjectFile::open(&path(&dir)), Err(StoreError::Corrupt(_))),
+                "{update}"
+            );
+        }
     }
 
     #[test]

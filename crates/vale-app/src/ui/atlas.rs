@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
-    FrameId, FrameRecord, FrameShape, Graticule, MapId, PageId, PageRecord, PageUnits, Rgb,
+    Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, PageId, PageRecord, PageUnits, Rgb,
 };
 
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use vale_store::RasterId;
 
 use super::{AppState, LayerRef};
-use crate::atlas::{self as math, FrameTarget, Handle, PagePreset, Vertex};
+use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
 use crate::globe::backdrop::Canvas;
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
@@ -144,7 +144,7 @@ impl PagePlace {
     }
 
     /// A box in page millimeters to the screen.
-    fn rect_to_screen(&self, r: kurbo::Rect) -> Rect {
+    pub fn rect_to_screen(&self, r: kurbo::Rect) -> Rect {
         Rect::from_min_max(
             self.to_screen(Point::new(r.x0, r.y0)),
             self.to_screen(Point::new(r.x1, r.y1)),
@@ -210,6 +210,10 @@ pub struct AtlasState {
     pub graticule_color: bool,
     /// The color picker of the graticule showed in this frame.
     pub(crate) graticule_shown: bool,
+    /// The color picker of the border is open.
+    pub border_color: bool,
+    /// The color picker of the border showed in this frame.
+    pub(crate) border_shown: bool,
     /// The text of the name field of the custom projections.
     pub preset_name: String,
     /// The Add menu is open.
@@ -258,6 +262,13 @@ pub struct AtlasState {
     last_tap: Option<(f64, Pos2)>,
 }
 
+impl AtlasState {
+    /// The screen rectangle of the texture of each frame.
+    pub fn texture_rects(&self) -> Vec<Rect> {
+        self.images.values().map(|i| i.rect).collect()
+    }
+}
+
 impl Default for AtlasState {
     fn default() -> AtlasState {
         AtlasState {
@@ -270,6 +281,8 @@ impl Default for AtlasState {
             kinds: false,
             graticule_color: false,
             graticule_shown: false,
+            border_color: false,
+            border_shown: false,
             preset_name: String::new(),
             add: false,
             add_rect: None,
@@ -890,11 +903,27 @@ struct Placed {
     layered: bool,
 }
 
+/// A rectangle grown to whole physical pixels. A texture on whole pixels
+/// stays sharp, so a line has the same width at each angle.
+fn snap(rect: Rect, ppp: f32) -> Rect {
+    let to_points = |v: f32| v / ppp;
+    Rect::from_min_max(
+        pos2(
+            to_points((rect.min.x * ppp).floor()),
+            to_points((rect.min.y * ppp).floor()),
+        ),
+        pos2(
+            to_points((rect.max.x * ppp).ceil()),
+            to_points((rect.max.y * ppp).ceil()),
+        ),
+    )
+}
+
 /// The pixels of the part of a frame on the canvas: the left, the top, the
 /// width, and the height. The pixels cover `shown`.
 fn pixel_rect(shown: Rect, ppp: f32) -> [u32; 4] {
-    let (x0, y0) = ((shown.min.x * ppp).floor(), (shown.min.y * ppp).floor());
-    let (x1, y1) = ((shown.max.x * ppp).ceil(), (shown.max.y * ppp).ceil());
+    let (x0, y0) = ((shown.min.x * ppp).round(), (shown.min.y * ppp).round());
+    let (x1, y1) = ((shown.max.x * ppp).round(), (shown.max.y * ppp).round());
     let side = |a: f32, b: f32| (b - a).clamp(1.0, 8192.0) as u32;
     [
         x0.max(0.0) as u32,
@@ -982,14 +1011,26 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             state.map_generation,
             frame.map,
             graticule_key(&frame.graticule),
+            border_key(&frame.border),
             ppp.to_bits(),
             state.selection,
             layered,
         ));
         // Only the part of the frame on the canvas has a texture.
-        let shown = place
-            .rect_to_screen(math::shape_bbox(&frame.shape))
-            .intersect(area);
+        // The border reaches out of the shape by half its width, and a sharp
+        // corner reaches further.
+        let reach = if frame.border.on {
+            (frame.border.width * f64::from(place.pts_per_mm) / PT_PER_MM) as f32
+        } else {
+            0.0
+        };
+        let shown = snap(
+            place
+                .rect_to_screen(math::shape_bbox(&frame.shape))
+                .expand(reach)
+                .intersect(area),
+            ppp,
+        );
         if !shown.is_positive() {
             continue;
         }
@@ -1108,20 +1149,24 @@ fn compose(
     (primary, layered): (bool, bool),
 ) {
     let ppp = ctx.pixels_per_point();
-    let px = |points: f32| ((points * ppp).ceil() as usize).clamp(1, 8192);
+    let px = |points: f32| ((points * ppp).round() as usize).clamp(1, 8192);
     let (w, h) = (px(shown.width()), px(shown.height()));
-    // The list starts at the top-left corner of the part of the frame on
-    // the canvas.
+    // The list is in points of paper, so a width in the style is the width
+    // on the printed page, and the texture is rendered at the scale of the
+    // zoom. It starts at the top-left corner of the part of the frame on the
+    // canvas.
+    let zoom = f64::from(place.pts_per_mm) / PT_PER_MM;
+    let scale = f64::from(ppp) * zoom;
     let origin = place.rect.min - shown.min;
     let target = FrameTarget {
-        origin: Point::new(f64::from(origin.x), f64::from(origin.y)),
-        pts_per_mm: place.pts_per_mm,
+        origin: Point::new(f64::from(origin.x) / zoom, f64::from(origin.y) / zoom),
+        pts_per_mm: PT_PER_MM,
     };
     let part = kurbo::Rect::new(
         0.0,
         0.0,
-        f64::from(shown.width()),
-        f64::from(shown.height()),
+        f64::from(shown.width()) / zoom,
+        f64::from(shown.height()) / zoom,
     );
     let selection = state.selection;
     // A frame with raster layers has the water below them and the rest
@@ -1155,7 +1200,7 @@ fn compose(
             return;
         }
     };
-    let (width, height) = (w as f64 / f64::from(ppp), h as f64 / f64::from(ppp));
+    let (width, height) = (w as f64 / scale, h as f64 / scale);
     composed.list.width = width;
     composed.list.height = height;
     let settled = quality == Quality::Final;
@@ -1169,7 +1214,16 @@ fn compose(
                 list.width = width;
                 list.height = height;
                 let images = &mut state.atlas.unders;
-                match upload(ctx, images, frame.id, &list, (shown, vt), keys, settled) {
+                match upload(
+                    ctx,
+                    images,
+                    frame.id,
+                    &list,
+                    scale,
+                    (shown, vt),
+                    keys,
+                    settled,
+                ) {
                     Ok(()) => {}
                     Err(e) => state.status = e,
                 }
@@ -1185,6 +1239,7 @@ fn compose(
         images,
         frame.id,
         &composed.list,
+        scale,
         (shown, vt),
         keys,
         settled,
@@ -1203,12 +1258,13 @@ fn upload(
     images: &mut HashMap<FrameId, FrameImage>,
     id: FrameId,
     list: &vale_render::DisplayList,
+    scale: f64,
     (shown, vt): (Rect, ViewTransform),
     (content, place): (u64, u64),
     settled: bool,
 ) -> Result<(), String> {
     let ppp = ctx.pixels_per_point();
-    let img = vale_render::render_rgba(list, f64::from(ppp)).map_err(|e| format!("{e}"))?;
+    let img = vale_render::render_rgba(list, scale).map_err(|e| format!("{e}"))?;
     let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
     let options = egui::TextureOptions::LINEAR;
     let texture = match images.remove(&id) {
@@ -1292,7 +1348,12 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
                 if let Some(&first) = points.first() {
                     points.push(first);
                 }
-                painter.add(egui::Shape::line(points, stroke));
+                if frame.border.on {
+                    // The border shows between the dashes.
+                    painter.extend(egui::Shape::dashed_line(&points, stroke, 6.0, 5.0));
+                } else {
+                    painter.add(egui::Shape::line(points, stroke));
+                }
             }
             let dark = egui::Stroke::new(1.5, Color32::from_rgb(11, 31, 26));
             let mut handles = Vec::new();
@@ -1391,6 +1452,11 @@ fn graticule_key(g: &Graticule) -> (bool, Option<u64>, Rgb, u64) {
         g.color,
         g.width.to_bits(),
     )
+}
+
+/// The parts of a border as a hash key.
+fn border_key(b: &Border) -> (bool, Rgb, u64) {
+    (b.on, b.color, b.width.to_bits())
 }
 
 /// Turns the graticule of a frame on or off.
@@ -1659,4 +1725,33 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
             let back = Color32::from_rgb(58, 62, 68);
             canvas(ui, state, area, area.shrink(24.0), back);
         });
+}
+
+/// Turns the border of a frame on or off.
+pub fn set_border(state: &mut AppState, id: FrameId, on: bool) {
+    edit_frame(state, id, |f, _| {
+        f.border.on = on;
+        true
+    });
+}
+
+pub fn set_border_color(state: &mut AppState, id: FrameId, color: Rgb) {
+    edit_frame(state, id, |f, _| {
+        f.border.color = color;
+        true
+    });
+}
+
+/// Sets the border width of a frame, in points, rounded to 0.25.
+pub fn set_border_width(state: &mut AppState, id: FrameId, width: f64) {
+    if !width.is_finite() {
+        return;
+    }
+    let range = Border::WIDTHS;
+    let width = ((width.clamp(*range.start(), *range.end()) * 4.0).round() / 4.0)
+        .clamp(*range.start(), *range.end());
+    edit_frame(state, id, |f, _| {
+        f.border.width = width;
+        true
+    });
 }

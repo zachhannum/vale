@@ -1057,6 +1057,15 @@ impl Pipeline {
             label_summary = summary;
         }
         list.push(Item::PopClip);
+        if frame.border.on {
+            let [r, g, b] = frame.border.color;
+            list.push(Item::Stroke {
+                path: shape_path(&frame.shape.rings(), target),
+                color: vale_render::Color::rgb(r, g, b),
+                width: frame.border.width,
+                round: false,
+            });
+        }
 
         Ok(Composed {
             list,
