@@ -8,9 +8,9 @@ use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
 use vale_app::pipeline::Pipeline;
 use vale_app::session::Session;
-use vale_app::ui::AppState;
 use vale_app::ui::raster_form::RasterForm;
 use vale_app::ui::world_form::WorldForm;
+use vale_app::ui::{Action, AppState};
 
 fn run() -> anyhow::Result<u8> {
     let args = Args::parse();
@@ -19,6 +19,12 @@ fn run() -> anyhow::Result<u8> {
         println!("wrote {path} ({} x {})", done.width, done.height);
         return Ok(0);
     }
+    if (args.export_atlas.is_some() || !args.export_page.is_empty())
+        && let Some(path) = &args.project
+        && !path.is_file()
+    {
+        anyhow::bail!("the project file {} does not exist", path.display());
+    }
     let mut doc = args.document()?;
     let session = match &args.project {
         Some(path) => {
@@ -26,12 +32,15 @@ fn run() -> anyhow::Result<u8> {
         }
         None => None,
     };
+    let page_export = args.page_export()?;
     let size = args.size()?;
     let mut pipeline = Pipeline::new();
     apply_view(&args, &mut doc, &mut pipeline, size)?;
     let ratio = args.pixel_ratio;
 
     let headless_run = args.export.is_some()
+        || args.export_atlas.is_some()
+        || page_export.is_some()
         || args.screenshot.is_some()
         || !args.probe.is_empty()
         || args.report
@@ -73,6 +82,56 @@ fn run() -> anyhow::Result<u8> {
         let restore = args.starts_on_projects(true) && !args.start_screen;
         let frames = args.smoke_frames.map(u64::from);
         run_window(state, size, frames, session, restore)?;
+        return Ok(0);
+    }
+    if args.export_atlas.is_some() || page_export.is_some() {
+        let mut state = new_state(doc.clone(), FACE_SIZE)?;
+        state.headless = false;
+        let action = match (&args.export_atlas, &page_export) {
+            (Some(path), _) => Action::ExportAtlas(path.clone()),
+            (None, Some((number, path))) => {
+                let page = state
+                    .doc
+                    .project
+                    .atlas
+                    .pages
+                    .get(number - 1)
+                    .with_context(|| {
+                        format!(
+                            "page {number} is outside the atlas of {} pages",
+                            state.doc.project.atlas.pages.len()
+                        )
+                    })?;
+                state.atlas.page = page.id;
+                Action::Export(path.clone())
+            }
+            (None, None) => unreachable!(),
+        };
+        let setup = egui_kittest::wgpu::default_wgpu_setup();
+        let mut harness = headless::ui_harness(state, (128.0, 128.0), 1.0, setup);
+        harness.set_render_every_step(true);
+        harness.run_steps(3);
+        harness.state_mut().run_action(action);
+        let limit = harness.state().doc.project.atlas.pages.len() * 20 + 20;
+        for _ in 0..limit {
+            harness.run_steps(1);
+            if harness.state().atlas_export.is_none() {
+                break;
+            }
+        }
+        if harness.state().atlas_export.is_some() {
+            anyhow::bail!("the atlas export did not end");
+        }
+        let status = &harness.state().status;
+        if !status.starts_with("Exported ") {
+            anyhow::bail!("{status}");
+        }
+        let path = args
+            .export_atlas
+            .as_ref()
+            .or_else(|| page_export.as_ref().map(|(_, path)| path))
+            .unwrap();
+        println!("wrote {}", path.display());
         return Ok(0);
     }
     if args.stroke_test {

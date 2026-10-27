@@ -1,9 +1,12 @@
 //! The `vello_cpu` raster backend.
 
-use kurbo::{Affine, BezPath, Cap, Join, Stroke};
+use std::io::Cursor;
+use std::sync::Arc;
+
+use kurbo::{Affine, BezPath, Cap, Join, Rect, Stroke};
 use vello_cpu::color::{AlphaColor, Srgb};
-use vello_cpu::peniko::Fill;
-use vello_cpu::{Level, Pixmap, RenderContext, RenderSettings, Resources};
+use vello_cpu::peniko::{Fill, ImageQuality, ImageSampler};
+use vello_cpu::{Image, ImageSource, Level, Pixmap, RenderContext, RenderSettings, Resources};
 
 use crate::list::{Color, DisplayList, FillRule, GlyphRun, Item, RenderError};
 
@@ -93,6 +96,35 @@ pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderErr
                 ctx.set_fill_rule(Fill::NonZero);
                 ctx.set_paint(paint(run.color));
                 ctx.fill_path(&glyph_run_outline(run));
+            }
+            Item::Image {
+                png,
+                rect,
+                interpolate,
+            } => {
+                let pixmap = Pixmap::from_png(Cursor::new(png))
+                    .map_err(|e| RenderError::Png(format!("{e:?}")))?;
+                let (iw, ih) = (f64::from(pixmap.width()), f64::from(pixmap.height()));
+                if !(rect.width() > 0.0 && rect.height() > 0.0) {
+                    continue;
+                }
+                let transform = Affine::scale(scale)
+                    * Affine::translate((rect.x0, rect.y0))
+                    * Affine::scale_non_uniform(rect.width() / iw, rect.height() / ih);
+                ctx.set_transform(transform);
+                ctx.set_paint(Image {
+                    image: ImageSource::Pixmap(Arc::new(pixmap)),
+                    sampler: ImageSampler {
+                        quality: if *interpolate {
+                            ImageQuality::Medium
+                        } else {
+                            ImageQuality::Low
+                        },
+                        ..Default::default()
+                    },
+                });
+                ctx.fill_rect(&Rect::new(0.0, 0.0, iw, ih));
+                ctx.set_transform(Affine::scale(scale));
             }
             Item::PushClip { path, rule } => {
                 ctx.set_fill_rule(fill_rule(*rule));

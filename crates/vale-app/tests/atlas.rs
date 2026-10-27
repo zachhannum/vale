@@ -15,12 +15,13 @@ use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::GRATICULE;
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
-    DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
-    INTERVAL, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON, PREVIOUS_PAGE, PROJECTION,
-    REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, WIDTH, custom_row, page_title, readout_text,
+    DELETE_PROJECTION, EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL,
+    FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, MAP_FRAME, MAP_NAME, NEXT_PAGE,
+    OBLIQUE, POLYGON, PREVIOUS_PAGE, PROJECTION, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE,
+    WIDTH, custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::widgets::eye_name;
-use vale_app::ui::{AppState, Layout, Screen, Workspace, draw};
+use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
 use vale_render::Item;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
@@ -401,6 +402,25 @@ fn the_panel_of_the_page_sets_the_page_size() {
     }
     tap(&mut h, &format!("{HEIGHT} Done"));
     assert!((open_page(&h).height_mm - 279.4).abs() < 1e-9);
+}
+
+#[test]
+fn the_page_panel_exports_one_page_or_the_atlas() {
+    let mut h = pad();
+    h.state_mut().atlas.selection = AtlasSelection::Page;
+    h.run_steps(2);
+    for name in [EXPORT_PAGE_PNG, EXPORT_PAGE_PDF, EXPORT_ATLAS_PDF] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+
+    let at = control(&h, EXPORT_ATLAS_PDF).unwrap().center();
+    tap_with(&mut h, at, Input::Finger);
+    h.step();
+    assert!(
+        h.state()
+            .actions
+            .contains(&Action::ExportDialog(ExportFormat::AtlasPdf))
+    );
 }
 
 #[test]

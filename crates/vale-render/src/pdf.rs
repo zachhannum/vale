@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use krilla::color::rgb;
-use krilla::geom::{PathBuilder, Point, Transform};
+use krilla::geom::{PathBuilder, Point, Size, Transform};
+use krilla::image::Image;
 use krilla::num::NormalizedF32;
 use krilla::page::PageSettings;
 use krilla::paint::{Fill, FillRule, LineCap, LineJoin, Stroke};
@@ -149,72 +150,122 @@ fn draw_run(s: &mut Surface, run: &GlyphRun, fonts: &mut HashMap<(u64, u32), Opt
     }
 }
 
-/// Draws the list as one PDF page of `width` by `height` points.
-pub fn render_pdf(list: &DisplayList) -> Result<Vec<u8>, RenderError> {
-    let settings = PageSettings::from_wh(list.width as f32, list.height as f32)
-        .ok_or(RenderError::EmptyPage)?;
-    let mut doc = krilla::Document::new();
-    let mut page = doc.start_page_with(settings);
-    let mut s = page.surface();
-    let mut fonts = HashMap::new();
-    // One entry for each open clip. `false` marks an empty clip, which hides all items.
-    let mut clips: Vec<bool> = Vec::new();
-    for item in &list.items {
-        let hidden = clips.contains(&false);
-        match item {
-            Item::PushClip { path, rule } => {
-                match to_path(path).filter(|_| !hidden) {
-                    Some(p) => {
-                        s.push_clip_path(&p, &krilla_rule(*rule));
-                        clips.push(true);
+/// A PDF document that takes one display list at a time.
+pub struct PdfDocument {
+    doc: krilla::Document,
+    fonts: HashMap<(u64, u32), Option<Font>>,
+}
+
+impl PdfDocument {
+    pub fn new() -> PdfDocument {
+        PdfDocument {
+            doc: krilla::Document::new(),
+            fonts: HashMap::new(),
+        }
+    }
+
+    /// Adds one page of `width` by `height` points.
+    pub fn add_page(&mut self, list: &DisplayList) -> Result<(), RenderError> {
+        let settings = PageSettings::from_wh(list.width as f32, list.height as f32)
+            .ok_or(RenderError::EmptyPage)?;
+        let mut page = self.doc.start_page_with(settings);
+        let mut s = page.surface();
+        // One entry for each open clip. `false` marks an empty clip, which hides all items.
+        let mut clips: Vec<bool> = Vec::new();
+        for item in &list.items {
+            let hidden = clips.contains(&false);
+            match item {
+                Item::PushClip { path, rule } => {
+                    match to_path(path).filter(|_| !hidden) {
+                        Some(p) => {
+                            s.push_clip_path(&p, &krilla_rule(*rule));
+                            clips.push(true);
+                        }
+                        None => clips.push(false),
                     }
-                    None => clips.push(false),
+                    continue;
                 }
-                continue;
-            }
-            Item::PopClip => {
-                if clips.pop() == Some(true) {
+                Item::PopClip => {
+                    if clips.pop() == Some(true) {
+                        s.pop();
+                    }
+                    continue;
+                }
+                _ if hidden => continue,
+                Item::Fill { path, color, rule } => {
+                    fill_path(&mut s, path, *color, krilla_rule(*rule))
+                }
+                Item::Stroke {
+                    path,
+                    color,
+                    width,
+                    round,
+                } => {
+                    let Some(p) = to_path(path) else { continue };
+                    s.set_fill(None);
+                    s.set_stroke(Some(Stroke {
+                        paint: rgb::Color::new(color.r, color.g, color.b).into(),
+                        width: *width as f32,
+                        opacity: opacity(*color),
+                        line_cap: if *round {
+                            LineCap::Round
+                        } else {
+                            LineCap::Butt
+                        },
+                        line_join: if *round {
+                            LineJoin::Round
+                        } else {
+                            LineJoin::Miter
+                        },
+                        ..Default::default()
+                    }));
+                    s.draw_path(&p);
+                }
+                Item::Glyphs(run) => draw_run(&mut s, run, &mut self.fonts),
+                Item::Image {
+                    png,
+                    rect,
+                    interpolate,
+                } => {
+                    let Some(size) = Size::from_wh(rect.width() as f32, rect.height() as f32)
+                    else {
+                        continue;
+                    };
+                    let image = Image::from_png(png.clone().into(), *interpolate)
+                        .map_err(RenderError::Pdf)?;
+                    s.push_transform(&Transform::from_translate(rect.x0 as f32, rect.y0 as f32));
+                    s.draw_image(image, size);
                     s.pop();
                 }
-                continue;
             }
-            _ if hidden => continue,
-            Item::Fill { path, color, rule } => fill_path(&mut s, path, *color, krilla_rule(*rule)),
-            Item::Stroke {
-                path,
-                color,
-                width,
-                round,
-            } => {
-                let Some(p) = to_path(path) else { continue };
-                s.set_fill(None);
-                s.set_stroke(Some(Stroke {
-                    paint: rgb::Color::new(color.r, color.g, color.b).into(),
-                    width: *width as f32,
-                    opacity: opacity(*color),
-                    line_cap: if *round {
-                        LineCap::Round
-                    } else {
-                        LineCap::Butt
-                    },
-                    line_join: if *round {
-                        LineJoin::Round
-                    } else {
-                        LineJoin::Miter
-                    },
-                    ..Default::default()
-                }));
-                s.draw_path(&p);
+        }
+        for pushed in clips {
+            if pushed {
+                s.pop();
             }
-            Item::Glyphs(run) => draw_run(&mut s, run, &mut fonts),
         }
+        s.finish();
+        page.finish();
+        Ok(())
     }
-    for pushed in clips {
-        if pushed {
-            s.pop();
-        }
+
+    /// Finishes the document and returns its bytes.
+    pub fn finish(self) -> Result<Vec<u8>, RenderError> {
+        self.doc
+            .finish()
+            .map_err(|e| RenderError::Pdf(format!("{e:?}")))
     }
-    s.finish();
-    page.finish();
-    doc.finish().map_err(|e| RenderError::Pdf(format!("{e:?}")))
+}
+
+impl Default for PdfDocument {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Draws the list as one PDF page of `width` by `height` points.
+pub fn render_pdf(list: &DisplayList) -> Result<Vec<u8>, RenderError> {
+    let mut doc = PdfDocument::new();
+    doc.add_page(list)?;
+    doc.finish()
 }

@@ -14,7 +14,7 @@ use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_
 use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
 use crate::ui::atlas::{self, AtlasSelection, AtlasTool, FrameTab};
-use crate::ui::{AppState, Workspace};
+use crate::ui::{Action, AppState, ExportFormat, Workspace};
 
 pub const SELECT: &str = "Select";
 pub const MOVE: &str = "Move";
@@ -66,6 +66,10 @@ pub const HEIGHT: &str = "Height";
 pub const UNIT_NAMES: [&str; 2] = ["mm", "in"];
 pub const ADD_PAGE: &str = "Add page";
 pub const DELETE_PAGE: &str = "Delete page";
+pub const EXPORT_PAGE_PNG: &str = "Export page PNG…";
+pub const EXPORT_PAGE_PDF: &str = "Export page PDF…";
+pub const EXPORT_ATLAS_PDF: &str = "Export atlas PDF…";
+pub const CANCEL_EXPORT: &str = "Cancel export";
 
 /// The width of the actions card: three buttons and a divider.
 const ACTIONS_WIDTH: f32 = 3.0 * TOUCH + 3.0 * PAD + 9.0 + 2.0 * PAD;
@@ -1066,6 +1070,26 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if let Some(chosen) = widgets::choice_row(ui, controls, "Units", &UNIT_NAMES, active) {
         let units = PageUnits::ALL[chosen];
         atlas::edit_page(state, |p| p.units = units);
+    }
+
+    ui.add_space(6.0);
+    let ready = state.atlas_export.is_none();
+    if widgets::button_row(ui, controls, EXPORT_PAGE_PNG, ready).clicked() {
+        state.actions.push(Action::ExportDialog(ExportFormat::Png));
+    }
+    if widgets::button_row(ui, controls, EXPORT_PAGE_PDF, ready).clicked() {
+        state.actions.push(Action::ExportDialog(ExportFormat::Pdf));
+    }
+    if widgets::button_row(ui, controls, EXPORT_ATLAS_PDF, ready).clicked() {
+        state
+            .actions
+            .push(Action::ExportDialog(ExportFormat::AtlasPdf));
+    }
+    if let Some(progress) = state.atlas_export_progress() {
+        ui.label(progress);
+        if widgets::button_row_in(ui, controls, CANCEL_EXPORT, true, theme::WARN).clicked() {
+            state.actions.push(Action::CancelExport);
+        }
     }
 
     ui.add_space(6.0);

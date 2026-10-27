@@ -46,8 +46,8 @@ use erode::{Eroder, Ground, brush_window, erode_window, near_side};
 use export::ExportResult;
 use flat::FlatView;
 use gpu::{
-    Changes, Draw, Event, Frame, GlobeCallback, Group, Job as GpuJob, LayerKey, Link, MapKey, Mask,
-    Op, Pass, TargetId, Uniforms, Uploads,
+    Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, Job as GpuJob, LayerKey,
+    Link, MapKey, Mask, Op, Pass, TargetId, Uniforms, Uploads,
 };
 use import::{ImportResult, Job, Step};
 use line::LineSettings;
@@ -3079,6 +3079,7 @@ impl Globe {
                     mesh: Some(frame.mesh),
                     mask: frame.mask,
                     draws: group,
+                    capture: None,
                 },
             ));
         }
@@ -3098,6 +3099,90 @@ impl Globe {
                 })
                 .collect(),
         )
+    }
+
+    /// Makes a callback that draws and returns the raster layers of one map
+    /// frame. The callback does not paint on the screen.
+    pub fn capture_frame(
+        &mut self,
+        canvas: Canvas,
+        frame: FrameDraw,
+    ) -> Option<(GlobeCallback, mpsc::Receiver<Result<Captured, String>>)> {
+        let format = self.format?;
+        self.queue_changes();
+        let river_layers = self.send_rivers();
+        let stack = self.stack.as_deref().unwrap_or_default();
+        let mut smooth_full = false;
+        let cover = |layer: &LayerDraw| Some(layer.key) == self.full;
+        let mut sources: Vec<(RasterId, LayerDraw)> = Vec::new();
+        for item in stack {
+            let StackItem::Raster {
+                id,
+                opacity,
+                display,
+                smoothing,
+                hillshade,
+                lines,
+                blend,
+                ..
+            } = *item
+            else {
+                continue;
+            };
+            let source = self.source(id).zip(self.display_map(id));
+            let Some((key, map)) = source else { continue };
+            let layer = LayerDraw {
+                key,
+                bands: &map.bands,
+                opacity: opacity.clamp(0.0, 1.0),
+                display,
+                smoothing,
+                hillshade,
+                rivers: None,
+                window: false,
+                lines,
+                blend,
+            };
+            smooth_full |= cover(&layer);
+            sources.push((id, layer));
+        }
+        let clip = [0.0, 0.0, frame.rect[2] as f32, frame.rect[3] as f32];
+        let layers: Vec<&LayerDraw> = sources
+            .iter()
+            .filter(|(id, _)| frame.shown.contains(id))
+            .map(|(_, layer)| layer)
+            .collect();
+        let start = layers
+            .iter()
+            .rposition(|layer| layer.opacity >= 1.0 && layer.blend == BlendMode::Normal);
+        let draws = layers[start.unwrap_or(0)..]
+            .iter()
+            .map(|layer| Draw {
+                pass: Pass::Layer(layer.key.layer),
+                source: Some(layer.key),
+                rivers: false,
+                lines: layer.lines
+                    && layer.display == RasterDisplay::Bands
+                    && layer.bands.stops().iter().any(|stop| stop.line.on),
+                clip,
+                uniforms: self.uniforms(canvas, Some(layer), false, false, Some(&frame.place)),
+            })
+            .collect();
+        let (capture, receiver) = Capture::new();
+        let group = Group {
+            target: CAPTURE_TARGET + u64::from(frame.id),
+            place: Some([0, 0, frame.rect[2], frame.rect[3]]),
+            mesh: Some(frame.mesh),
+            mask: frame.mask,
+            draws,
+            capture: Some(capture),
+        };
+        let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
+        let callback = GlobeCallback {
+            frame: gpu,
+            job: GpuJob::Group(Box::new(group)),
+        };
+        Some((callback, receiver))
     }
 
     /// The things that the canvas paints in this frame, from the bottom, or
@@ -3265,6 +3350,7 @@ impl Globe {
                 mesh: flat_mesh.clone(),
                 mask: None,
                 draws,
+                capture: None,
             };
             out.push(callback(GpuJob::Group(Box::new(group))));
         };
@@ -3355,8 +3441,10 @@ pub struct FramePlace {
 /// The first number of a target of a map frame. The numbers below it are for
 /// the groups of the canvas.
 pub const FRAME_TARGET: TargetId = 1 << 32;
+const CAPTURE_TARGET: TargetId = 1 << 48;
 
 /// A map frame to draw.
+#[derive(Clone)]
 pub struct FrameDraw {
     pub id: u32,
     pub place: FramePlace,

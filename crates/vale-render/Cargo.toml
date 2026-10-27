@@ -9,5 +9,5 @@ license.workspace = true
 [dependencies]
 kurbo.workspace = true
 vello_cpu.workspace = true
-krilla.workspace = true
+krilla = { workspace = true, features = ["raster-images"] }
 vale-labeler.workspace = true

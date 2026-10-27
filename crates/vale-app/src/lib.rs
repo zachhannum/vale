@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod atlas;
+pub mod atlas_export;
 pub mod cli;
 pub mod clipboard;
 pub mod document;

@@ -101,3 +101,32 @@ fn the_export_of_the_heightmap_needs_a_project() {
     );
     assert!(error.to_string().contains("--project"), "{error}");
 }
+
+#[test]
+fn atlas_exports_take_a_project_and_a_one_based_page() {
+    let atlas = parse(&["--project", "w.gpkg", "--export-atlas", "atlas.pdf"]);
+    assert_eq!(atlas.export_atlas, Some("atlas.pdf".into()));
+
+    let page = parse(&["--project", "w.gpkg", "--export-page", "2", "page.pdf"]);
+    assert_eq!(page.page_export().unwrap(), Some((2, "page.pdf".into())));
+    let zero = parse(&["--project", "w.gpkg", "--export-page", "0", "page.png"]);
+    assert!(
+        zero.page_export()
+            .unwrap_err()
+            .to_string()
+            .contains("above zero")
+    );
+
+    for flags in [
+        vec!["--export-atlas", "atlas.pdf"],
+        vec!["--export-page", "1", "page.pdf"],
+    ] {
+        let args = std::iter::once("vale-app").chain(flags);
+        let error = Args::try_parse_from(args).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--project"), "{error}");
+    }
+}

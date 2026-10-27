@@ -124,6 +124,18 @@ pub struct Args {
     /// Headless: export the map to .png or .pdf and exit.
     #[arg(long, value_name = "FILE")]
     pub export: Option<PathBuf>,
+    /// Headless: export all atlas pages to one PDF file and exit.
+    #[arg(long, value_name = "FILE", requires = "project")]
+    pub export_atlas: Option<PathBuf>,
+    /// Headless: export one atlas page. N is its one-based place in the atlas.
+    #[arg(
+        long,
+        num_args = 2,
+        value_names = ["N", "FILE"],
+        requires = "project",
+        conflicts_with = "export_atlas"
+    )]
+    pub export_page: Vec<String>,
     /// Headless: print the color of the map pixel at this place.
     #[arg(long, value_name = "LON,LAT", allow_hyphen_values = true)]
     pub probe: Vec<String>,
@@ -179,6 +191,23 @@ pub fn parse_pair(s: &str) -> anyhow::Result<[f64; 2]> {
 }
 
 impl Args {
+    /// The one-based page number and output path of `--export-page`.
+    pub fn page_export(&self) -> anyhow::Result<Option<(usize, PathBuf)>> {
+        if self.export_page.is_empty() {
+            return Ok(None);
+        }
+        if self.export_page.len() != 2 {
+            bail!("--export-page needs a page number and a file");
+        }
+        let number = self.export_page[0]
+            .parse::<usize>()
+            .with_context(|| format!("`{}` is not a page number", self.export_page[0]))?;
+        if number == 0 {
+            bail!("the page number must be above zero");
+        }
+        Ok(Some((number, PathBuf::from(&self.export_page[1]))))
+    }
+
     /// The projects folder: `--projects-dir`, or the folder of `--project`.
     /// With a start screen, it is else the folder of the system.
     pub fn projects_folder(&self, window: bool) -> Option<PathBuf> {

@@ -177,11 +177,29 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
             if ui.button("Open GeoJSON…").clicked() {
                 state.actions.push(Action::OpenDialog);
             }
-            if ui.button("Export PNG…").clicked() {
+            let ready = state.atlas_export.is_none();
+            if ui
+                .add_enabled(ready, egui::Button::new("Export page PNG…"))
+                .clicked()
+            {
                 state.actions.push(Action::ExportDialog(ExportFormat::Png));
             }
-            if ui.button("Export PDF…").clicked() {
+            if ui
+                .add_enabled(ready, egui::Button::new("Export page PDF…"))
+                .clicked()
+            {
                 state.actions.push(Action::ExportDialog(ExportFormat::Pdf));
+            }
+            if ui
+                .add_enabled(ready, egui::Button::new("Export atlas PDF…"))
+                .clicked()
+            {
+                state
+                    .actions
+                    .push(Action::ExportDialog(ExportFormat::AtlasPdf));
+            }
+            if state.atlas_export.is_some() && ui.button("Cancel export").clicked() {
+                state.actions.push(Action::CancelExport);
             }
         });
     });

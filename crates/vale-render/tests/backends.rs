@@ -5,8 +5,8 @@ use vale_labeler::{
     TextStyle, place_labels,
 };
 use vale_render::{
-    Affine, BezPath, Color, DisplayList, FillRule, GlyphRun, Item, Point, Rect, RenderError,
-    glyph_run_outline, render_pdf, render_pixmap, render_png, render_rgba,
+    Affine, BezPath, Color, DisplayList, FillRule, GlyphRun, Item, PdfDocument, Point, Rect,
+    RenderError, glyph_run_outline, render_pdf, render_pixmap, render_png, render_rgba,
 };
 
 const RED: Color = Color::rgb(255, 0, 0);
@@ -185,6 +185,49 @@ fn rgba_and_png() {
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 }
 
+fn red_blue_png() -> Vec<u8> {
+    let mut list = DisplayList::new(2.0, 1.0);
+    list.push(Item::Fill {
+        path: rect_path(0.0, 0.0, 1.0, 1.0),
+        color: RED,
+        rule: FillRule::NonZero,
+    });
+    list.push(Item::Fill {
+        path: rect_path(1.0, 0.0, 2.0, 1.0),
+        color: BLUE,
+        rule: FillRule::NonZero,
+    });
+    render_png(&list, 1.0).unwrap()
+}
+
+#[test]
+fn png_image_draws_in_its_page_rectangle() {
+    let mut list = DisplayList::new(40.0, 20.0);
+    page_fill(&mut list, WHITE);
+    list.push(Item::Image {
+        png: red_blue_png(),
+        rect: Rect::new(10.0, 5.0, 30.0, 15.0),
+        interpolate: false,
+    });
+    let pm = render_pixmap(&list, 1.0).unwrap();
+    assert_eq!(px(&pm, 5, 10), [255, 255, 255, 255]);
+    assert_eq!(px(&pm, 12, 10), [255, 0, 0, 255]);
+    assert_eq!(px(&pm, 28, 10), [0, 0, 255, 255]);
+}
+
+#[test]
+fn pdf_embeds_a_png_image() {
+    let mut list = DisplayList::new(40.0, 20.0);
+    list.push(Item::Image {
+        png: red_blue_png(),
+        rect: Rect::new(10.0, 5.0, 30.0, 15.0),
+        interpolate: true,
+    });
+    let bytes = render_pdf(&list).unwrap();
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(raw.contains("/Subtype/Image"), "PDF has no image object");
+}
+
 #[test]
 fn errors() {
     let list = DisplayList::new(0.0, 10.0);
@@ -241,6 +284,41 @@ fn pdf_keeps_text() {
     {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("Tokyo"), "pdftotext printed {text:?}");
+    }
+}
+
+#[test]
+fn pdf_has_pages_of_different_sizes_and_keeps_their_text() {
+    let (run, _) = tokyo();
+    let first = pdf_list(run.clone());
+    let mut second = pdf_list(run);
+    second.width = 300.0;
+    second.height = 150.0;
+
+    let mut doc = PdfDocument::new();
+    doc.add_page(&first).unwrap();
+    doc.add_page(&second).unwrap();
+    let bytes = doc.finish().unwrap();
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(raw.contains("/Count 2"), "{raw}");
+    assert!(raw.contains("/MediaBox[0 0 200 100]"), "{raw}");
+    assert!(raw.contains("/MediaBox[0 0 300 150]"), "{raw}");
+
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/app");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("test-multi-page.pdf");
+    std::fs::write(&file, &bytes).unwrap();
+    if let Ok(out) = std::process::Command::new("pdftotext")
+        .arg(&file)
+        .arg("-")
+        .output()
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            text.matches("Tokyo").count(),
+            2,
+            "pdftotext printed {text:?}"
+        );
     }
 }
 
