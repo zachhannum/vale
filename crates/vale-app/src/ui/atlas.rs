@@ -262,6 +262,13 @@ pub struct AtlasState {
     last_tap: Option<(f64, Pos2)>,
 }
 
+impl AtlasState {
+    /// The screen rectangle of the texture of each frame.
+    pub fn texture_rects(&self) -> Vec<Rect> {
+        self.images.values().map(|i| i.rect).collect()
+    }
+}
+
 impl Default for AtlasState {
     fn default() -> AtlasState {
         AtlasState {
@@ -896,11 +903,27 @@ struct Placed {
     layered: bool,
 }
 
+/// A rectangle grown to whole physical pixels. A texture on whole pixels
+/// stays sharp, so a line has the same width at each angle.
+fn snap(rect: Rect, ppp: f32) -> Rect {
+    let to_points = |v: f32| v / ppp;
+    Rect::from_min_max(
+        pos2(
+            to_points((rect.min.x * ppp).floor()),
+            to_points((rect.min.y * ppp).floor()),
+        ),
+        pos2(
+            to_points((rect.max.x * ppp).ceil()),
+            to_points((rect.max.y * ppp).ceil()),
+        ),
+    )
+}
+
 /// The pixels of the part of a frame on the canvas: the left, the top, the
 /// width, and the height. The pixels cover `shown`.
 fn pixel_rect(shown: Rect, ppp: f32) -> [u32; 4] {
-    let (x0, y0) = ((shown.min.x * ppp).floor(), (shown.min.y * ppp).floor());
-    let (x1, y1) = ((shown.max.x * ppp).ceil(), (shown.max.y * ppp).ceil());
+    let (x0, y0) = ((shown.min.x * ppp).round(), (shown.min.y * ppp).round());
+    let (x1, y1) = ((shown.max.x * ppp).round(), (shown.max.y * ppp).round());
     let side = |a: f32, b: f32| (b - a).clamp(1.0, 8192.0) as u32;
     [
         x0.max(0.0) as u32,
@@ -994,9 +1017,12 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             layered,
         ));
         // Only the part of the frame on the canvas has a texture.
-        let shown = place
-            .rect_to_screen(math::shape_bbox(&frame.shape))
-            .intersect(area);
+        let shown = snap(
+            place
+                .rect_to_screen(math::shape_bbox(&frame.shape))
+                .intersect(area),
+            ppp,
+        );
         if !shown.is_positive() {
             continue;
         }
@@ -1115,7 +1141,7 @@ fn compose(
     (primary, layered): (bool, bool),
 ) {
     let ppp = ctx.pixels_per_point();
-    let px = |points: f32| ((points * ppp).ceil() as usize).clamp(1, 8192);
+    let px = |points: f32| ((points * ppp).round() as usize).clamp(1, 8192);
     let (w, h) = (px(shown.width()), px(shown.height()));
     // The list is in points of paper, so a width in the style is the width
     // on the printed page, and the texture is rendered at the scale of the

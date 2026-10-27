@@ -1752,3 +1752,18 @@ fn the_screen_draws_the_line_widths_of_the_page_at_each_zoom() {
         );
     }
 }
+
+#[test]
+fn the_texture_of_a_frame_is_on_whole_pixels() {
+    let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().atlas.view.zoom = 1.37;
+    h.state_mut().atlas.view.offset = vec2(13.3, -7.9);
+    h.run_steps(3);
+    let rects = h.state().atlas.texture_rects();
+    assert!(!rects.is_empty());
+    for r in rects {
+        for v in [r.min.x, r.min.y, r.max.x, r.max.y] {
+            assert_eq!(v, v.round(), "{r:?}");
+        }
+    }
+}
