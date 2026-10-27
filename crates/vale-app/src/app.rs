@@ -107,9 +107,16 @@ impl eframe::App for ValeApp {
                 // The export goes to a temporary file. The Files app moves it
                 // after the export is complete.
                 #[cfg(target_os = "ios")]
-                Action::ExportHeightmapDialog if self.sharing.is_none() => {
+                Action::ExportHeightmapDialog | Action::ExportHeightmapPngDialog
+                    if self.sharing.is_none() =>
+                {
                     crate::files::clear_exports();
-                    let path = crate::files::export_dir().join(state.export_name());
+                    let ext = if action == Action::ExportHeightmapDialog {
+                        "tif"
+                    } else {
+                        "png"
+                    };
+                    let path = crate::files::export_dir().join(state.export_name(ext));
                     state.run_action(Action::ExportHeightmap(path));
                 }
                 #[cfg(target_os = "ios")]
@@ -129,11 +136,19 @@ impl eframe::App for ValeApp {
                     });
                 }
                 #[cfg(not(target_os = "ios"))]
-                Action::ExportHeightmapDialog => {
-                    let picked = rfd::FileDialog::new()
-                        .set_file_name(state.export_name())
-                        .add_filter("GeoTIFF", &["tif", "tiff"])
-                        .save_file();
+                Action::ExportHeightmapDialog | Action::ExportHeightmapPngDialog => {
+                    let png = action == Action::ExportHeightmapPngDialog;
+                    let dialog = rfd::FileDialog::new().set_file_name(state.export_name(if png {
+                        "png"
+                    } else {
+                        "tif"
+                    }));
+                    let picked = if png {
+                        dialog.add_filter("PNG", &["png"])
+                    } else {
+                        dialog.add_filter("GeoTIFF", &["tif", "tiff"])
+                    }
+                    .save_file();
                     if let Some(path) = picked {
                         state.run_action(Action::ExportHeightmap(path));
                     }

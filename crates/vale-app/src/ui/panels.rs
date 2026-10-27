@@ -21,6 +21,8 @@ use crate::world::{self, three_significant};
 pub const WORLD_BUTTON: &str = "World…";
 /// The button of the tool bar that exports the heightmap.
 pub const EXPORT_GEOTIFF: &str = "Export GeoTIFF…";
+/// The button of the tool bar that exports the heightmap as a PNG.
+pub const EXPORT_PNG: &str = "Export PNG…";
 /// The button of the line tool.
 pub const LINE_TOOL: &str = "Line";
 /// The button of the polygon tool.
@@ -163,6 +165,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 let export = egui::Button::new(EXPORT_GEOTIFF);
                 if ui.add_enabled(state.can_export(), export).clicked() {
                     state.actions.push(Action::ExportHeightmapDialog);
+                }
+                let export_png = egui::Button::new(EXPORT_PNG);
+                if ui.add_enabled(state.can_export(), export_png).clicked() {
+                    state.actions.push(Action::ExportHeightmapPngDialog);
                 }
             }
             if state.workspace != Workspace::Atlas {

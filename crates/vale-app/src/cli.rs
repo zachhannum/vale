@@ -156,7 +156,7 @@ pub struct Args {
     #[arg(long, value_name = "FILE")]
     pub import_ramp: Option<PathBuf>,
     /// Headless: export the first height layer of the project to a GeoTIFF
-    /// file and exit.
+    /// file, or to a 16-bit PNG file if the name ends in `.png`, and exit.
     #[arg(long, value_name = "FILE", requires = "project")]
     pub export_heightmap: Option<PathBuf>,
     /// Headless: paint a fixed stroke on the globe, print the stroke delay,

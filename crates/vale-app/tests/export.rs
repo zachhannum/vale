@@ -315,7 +315,7 @@ fn the_export_file_has_the_name_of_the_world() {
     let mut state = AppState::new(Document::sample()).unwrap();
     let mut name = |text: &str| -> String {
         state.doc.project.world.name = text.to_string();
-        state.export_name()
+        state.export_name("tif")
     };
     assert_eq!(name("Terra Nova"), "Terra Nova.tif");
     assert_eq!(name(" a/b:c "), "a_b_c.tif");
@@ -412,4 +412,24 @@ fn the_status_bar_shows_the_text_of_an_export() {
     h.state_mut().run_action(Action::ExportHeightmap(out));
     h.run_steps(2);
     assert!(h.query_by_label("Exported Terra.tif (256 × 128)").is_some());
+}
+
+#[test]
+fn the_command_line_exports_the_heightmap_as_a_png() {
+    let dir = tempfile::tempdir().unwrap();
+    let (file, out) = (dir.path().join("w.gpkg"), dir.path().join("out/w.png"));
+    project(&file, 3000.0, true);
+
+    let done = export_heightmap(&args(&file, &out)).unwrap().unwrap();
+    assert_eq!((done.name.as_str(), &done.path), ("w.png", &out));
+
+    let mut doc = Document::sample();
+    let session = Session::open(&file, &mut doc).unwrap();
+    let (_, map) = session.load_maps().unwrap().remove(0);
+    let image = image::open(&out).unwrap().into_luma16();
+    assert_eq!(
+        image.dimensions(),
+        (4 * FACE_SIZE as u32, 2 * FACE_SIZE as u32)
+    );
+    assert!(image.into_raw() == equirect(&map), "the levels differ");
 }

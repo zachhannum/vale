@@ -67,7 +67,9 @@ pub enum Action {
     ImportRamp(RasterId, PathBuf),
     /// Asks for the file of an export of the selected raster layer.
     ExportHeightmapDialog,
-    /// Exports the selected raster layer to this GeoTIFF file.
+    /// Asks for a PNG file, and exports the selected raster layer to it.
+    ExportHeightmapPngDialog,
+    /// Exports the selected raster layer to this GeoTIFF or PNG file.
     ExportHeightmap(PathBuf),
     /// Makes a project of this world and opens it. With a folder of
     /// projects, the project is a new file there.
@@ -2023,13 +2025,13 @@ impl AppState {
 
     /// The file name of an export of a raster layer, from the name of the
     /// world.
-    pub fn export_name(&self) -> String {
+    pub fn export_name(&self, ext: &str) -> String {
         let stem = session::file_stem(&self.doc.project.world.name);
         let stem = if stem.is_empty() { "raster" } else { &stem };
-        format!("{stem}.tif")
+        format!("{stem}.{ext}")
     }
 
-    /// Starts the export of a raster layer to a GeoTIFF file. A layer that
+    /// Starts the export of a raster layer to a GeoTIFF or PNG file. A layer that
     /// has only its reduced heightmap in the main memory gets its whole
     /// heightmap from the project file, so the file has the full detail.
     pub fn export_raster(&mut self, id: RasterId, path: PathBuf) {
@@ -2180,6 +2182,7 @@ impl AppState {
             | Action::ImportHeightmapDialog
             | Action::ImportRampDialog(_)
             | Action::ExportHeightmapDialog
+            | Action::ExportHeightmapPngDialog
             | Action::OpenProjectDialog => {}
         }
     }

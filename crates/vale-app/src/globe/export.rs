@@ -1,5 +1,5 @@
-//! The export of the heightmap to an equirectangular GeoTIFF file, on a
-//! worker thread.
+//! The export of the heightmap to an equirectangular GeoTIFF or PNG file, on
+//! a worker thread.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,7 +38,8 @@ impl Exported {
 /// The result of an export. The error is a text for the user.
 pub type ExportResult = Result<Exported, String>;
 
-/// Writes the heightmap to a GeoTIFF file. The image has 4 pixels across
+/// Writes the heightmap to a GeoTIFF file, or to a 16-bit grayscale PNG file
+/// if the path ends in `.png`. The PNG has no georeference. The image has 4 pixels across
 /// for each texel along one side of a face, and it is half as tall. The call
 /// returns after the file is complete. `progress` gets the count of the rows
 /// that are done.
@@ -53,15 +54,54 @@ pub fn write_heightmap(
 ) -> ExportResult {
     let grid = EquirectGrid::for_face_size(map.face_size());
     let (width, height) = (grid.width(), grid.height());
-    let tags = GeoTiff::new(world, raster, width as u32, height as u32);
     let rows = |row: usize, out: &mut [u16]| map.equirect_row(&grid, row, out);
-    geotiff::write_file(path, &tags, &rows, progress).map_err(|e| e.to_string())?;
+    if is_png(path) {
+        write_png(path, width, height, &rows, progress)?;
+    } else {
+        let tags = GeoTiff::new(world, raster, width as u32, height as u32);
+        geotiff::write_file(path, &tags, &rows, progress).map_err(|e| e.to_string())?;
+    }
     Ok(Exported {
         name: file_name(path),
         path: path.to_path_buf(),
         width,
         height,
     })
+}
+
+/// True if the path names a PNG file.
+pub fn is_png(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+}
+
+/// Writes 16-bit grayscale PNG rows. Makes the parent folders, and removes
+/// the file if the write fails.
+fn write_png(
+    path: &Path,
+    width: usize,
+    height: usize,
+    rows: &(dyn Fn(usize, &mut [u16]) + Sync),
+    progress: &(dyn Fn(u32) + Sync),
+) -> Result<(), String> {
+    let mut levels = vec![0u16; width * height];
+    for (row, out) in levels.chunks_mut(width).enumerate() {
+        rows(row, out);
+        progress(row as u32 + 1);
+    }
+    let image =
+        image::ImageBuffer::<image::Luma<u16>, _>::from_raw(width as u32, height as u32, levels)
+            .ok_or("bad image size")?;
+    let io = |e: &dyn std::fmt::Display| format!("Cannot write {}: {e}", path.display());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| io(&e))?;
+    }
+    image
+        .save_with_format(path, image::ImageFormat::Png)
+        .map_err(|e| {
+            let _ = std::fs::remove_file(path);
+            io(&e)
+        })
 }
 
 /// An export that runs on a worker thread. A dropped job writes its file to
