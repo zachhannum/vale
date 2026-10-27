@@ -388,3 +388,79 @@ fn pdf_accepts_clips() {
     let bytes = render_pdf(&list).unwrap();
     assert!(bytes.starts_with(b"%PDF-"));
 }
+
+/// Brush dabs inside a clip, as a textured stroke draws them.
+fn textured_items() -> Vec<Item> {
+    use kurbo::Shape;
+    let line = vec![vec![Point::new(5.0, 10.0), Point::new(45.0, 30.0)]];
+    let mut items = vec![Item::PushClip {
+        path: rect_path(0.0, 0.0, 40.0, 40.0),
+        rule: FillRule::NonZero,
+    }];
+    for dab in vale_render::stroke::brush_dabs(&line, 4.0, 3) {
+        items.push(Item::Fill {
+            path: kurbo::Circle::new(dab.center, dab.radius).to_path(0.05),
+            color: Color::rgba(40, 60, 90, (200.0 * dab.alpha) as u8),
+            rule: FillRule::NonZero,
+        });
+    }
+    items.push(Item::PopClip);
+    items
+}
+
+#[test]
+fn rasterize_draws_like_its_items() {
+    let mut direct = DisplayList::new(50.0, 40.0);
+    page_fill(&mut direct, WHITE);
+    let mut wrapped = direct.clone();
+    direct.items.extend(textured_items());
+    wrapped.push(Item::Rasterize {
+        bounds: Rect::new(0.0, 0.0, 50.0, 40.0),
+        items: textured_items(),
+    });
+    // An item after the group is not clipped by the clip inside it.
+    let after = Item::Fill {
+        path: rect_path(44.0, 0.0, 50.0, 6.0),
+        color: RED,
+        rule: FillRule::NonZero,
+    };
+    direct.push(after.clone());
+    wrapped.push(after);
+    let a = render_rgba(&direct, 2.0).unwrap();
+    let b = render_rgba(&wrapped, 2.0).unwrap();
+    assert_eq!(a, b);
+    let pm = render_pixmap(&wrapped, 1.0).unwrap();
+    assert_eq!(px(&pm, 47, 3), [255, 0, 0, 255]);
+}
+
+#[test]
+fn pdf_turns_rasterize_into_an_image() {
+    let mut list = DisplayList::new(50.0, 40.0);
+    list.push(Item::Rasterize {
+        bounds: Rect::new(-10.0, -10.0, 60.0, 60.0),
+        items: textured_items(),
+    });
+    let bytes = render_pdf(&list).unwrap();
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(raw.contains("/Subtype/Image"), "PDF has no image object");
+}
+
+#[test]
+fn pdf_keeps_strokes_vector() {
+    let mut list = DisplayList::new(50.0, 40.0);
+    let mut p = BezPath::new();
+    p.move_to((5.0, 10.0));
+    p.line_to((45.0, 30.0));
+    list.push(Item::Stroke {
+        path: p,
+        color: BLUE,
+        width: 2.0,
+        round: true,
+    });
+    let bytes = render_pdf(&list).unwrap();
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(
+        !raw.contains("/Subtype/Image"),
+        "a plain stroke became an image"
+    );
+}

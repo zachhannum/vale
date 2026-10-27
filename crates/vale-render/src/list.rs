@@ -93,6 +93,12 @@ pub enum Item {
         rect: Rect,
         interpolate: bool,
     },
+    /// Items that the PDF backend draws as one image in `bounds`, at 300 dpi. The raster
+    /// backend draws them as usual.
+    Rasterize {
+        bounds: Rect,
+        items: Vec<Item>,
+    },
     /// Clips the items up to the matching `PopClip` to the inside of `path`.
     PushClip {
         path: BezPath,
