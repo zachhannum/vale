@@ -1538,10 +1538,8 @@ pub fn chips(
     let mut rects = Vec::with_capacity(choices.len());
     let mut at = pos2(left, top);
     for choice in choices {
-        let size = vec2(
-            text_width(ui, choice, theme::body()) + 2.0 * CHIP_PAD,
-            TOUCH,
-        );
+        let wide = text_width(ui, choice, theme::body()) + 2.0 * CHIP_PAD;
+        let size = vec2(wide.max(TOUCH), TOUCH);
         if at.x > left && at.x + size.x > left + width {
             at = pos2(left, at.y + TOUCH);
         }

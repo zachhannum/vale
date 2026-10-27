@@ -9,7 +9,7 @@ use vale_style::{Color, LayerStyle, Rule, Stroke};
 
 use super::raster::heading;
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
-use super::{Page, theme};
+use super::{Page, filter, theme};
 use crate::ui::AppState;
 
 /// The heading of the section.
@@ -18,6 +18,8 @@ pub const ADD_RULE: &str = "Add rule";
 /// The text at the right of the row of a rule with no filter.
 pub const ALL_FEATURES: &str = "All features";
 pub const FILTER: &str = "Filter";
+/// The field of the whole filter as text.
+pub const EXPRESSION: &str = "Expression";
 /// The text below a filter that does not parse.
 pub const BAD_FILTER: &str = "Not a valid filter.";
 pub const MIN_SCALE: &str = "Min scale";
@@ -57,6 +59,8 @@ pub struct RulesState {
     picker: Option<(LayerId, usize, Part)>,
     /// The picker showed in this frame.
     shown: bool,
+    /// The condition of the page of a new condition.
+    pub(super) draft: filter::Draft,
 }
 
 /// The Style section: a row for each rule, first rule first, and the row
@@ -105,8 +109,7 @@ fn row_filter(filter: &Filter) -> String {
     }
 }
 
-/// The page of rule `i`: the filter with chips that add a field, the scale
-/// range, the stroke, the fill, and the buttons that move and delete the
+/// The page of rule `i`: the conditions of the filter, the scale range, the stroke, the fill, and the buttons that move and delete the
 /// rule. A tap on a color opens a color picker below it.
 pub fn rule_body(
     ui: &mut egui::Ui,
@@ -121,7 +124,6 @@ pub fn rule_body(
     let Some(kind) = layer.geometry() else {
         return;
     };
-    let fields: Vec<String> = layer.fields.iter().map(|f| f.name.clone()).collect();
     let Some(rule) = state.doc.entry(id).and_then(|e| e.style.style.rules.get(i)) else {
         return;
     };
@@ -130,7 +132,7 @@ pub fn rule_body(
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut changed = rule.clone();
 
-    filter_rows(ui, state, controls, id, i, &fields, &mut changed);
+    filter_rows(ui, state, controls, (id, i), &mut changed);
     if scale_rows(ui, controls, &mut changed) {
         state.pad.rules.picker = None;
     }
@@ -173,50 +175,26 @@ pub fn rule_body(
     }
 }
 
-/// The filter field, a note while the filter does not parse, and a chip for
-/// each field of the layer. A tap on a chip adds the field to the end of
-/// the filter.
+/// The conditions of the filter, and the text of the whole filter.
 fn filter_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
-    id: LayerId,
-    i: usize,
-    fields: &[String],
+    (id, i): (LayerId, usize),
     rule: &mut Rule,
 ) {
     let current = rule
         .filter
         .source()
         .map_or(String::new(), |s| s.text().to_owned());
-    let mut text = match state.pad.rules.filter.take() {
+    let mut typed = match state.pad.rules.filter.take() {
         Some((layer, at, text)) if layer == id && at == i => text,
         _ => current.clone(),
     };
-    let valid = Filter::new(&text).error().is_none();
-    let field = widgets::text_field(ui, controls, FILTER, FILTER, None, &mut text, valid);
-    if field.changed() {
+    if let Some(text) = filter::rows(ui, state, controls, (id, i), &current, &mut typed) {
         rule.filter = Filter::new(&text);
-    } else if !field.has_focus() {
-        // The field shows the filter again after an undo.
-        text = current;
     }
-    if !valid {
-        widgets::form_note(ui, BAD_FILTER, 20.0);
-    }
-    let names: Vec<&str> = fields.iter().map(String::as_str).collect();
-    if !names.is_empty() {
-        ui.add_space(4.0);
-        if let Some(chosen) = widgets::chips(ui, controls, &names, names.len()) {
-            let name = field_name(names[chosen]);
-            text = match text.trim_end() {
-                "" => name,
-                start => format!("{start} {name}"),
-            };
-            rule.filter = Filter::new(&text);
-        }
-    }
-    state.pad.rules.filter = Some((id, i, text));
+    state.pad.rules.filter = Some((id, i, typed));
 }
 
 /// The words of the filter syntax that a plain field name cannot be.

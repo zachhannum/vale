@@ -115,7 +115,7 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
         return;
     };
     ui.heading(&layer.name);
-    let fields: Vec<String> = layer.fields.iter().map(|f| f.name.clone()).collect();
+    let fields = layer.fields.clone();
     ui.label(pad::rules::STYLE);
     let Some(entry) = state.doc.entry_mut(id) else {
         return;

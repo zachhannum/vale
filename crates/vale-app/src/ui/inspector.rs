@@ -75,11 +75,15 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     fields_section(ui, state, info.id);
     ui.add_space(4.0);
 
+    let fields = state
+        .doc
+        .layer(info.id)
+        .map_or(Vec::new(), |l| l.fields.clone());
     let Some(entry) = state.doc.entry_mut(info.id) else {
         return;
     };
     let style = &mut entry.style;
-    let mut changed = style_editor::rules(ui, info.id, style, info.kind, &info.fields);
+    let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields);
     if info.kind == GeometryKind::Point {
         ui.horizontal(|ui| {
             ui.label("Point size");

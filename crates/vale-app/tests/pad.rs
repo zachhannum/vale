@@ -5812,9 +5812,11 @@ fn the_style_section_adds_moves_and_deletes_rules() {
         tap(&mut h, ADD_RULE);
         save_frames(&mut h);
         assert_eq!(rule_names(&h, rivers), ["Default", "Rule 1", "Rule 2"]);
-        // A new rule copies the stroke of the last rule.
+        // A new rule copies the stroke of the last rule, with a new color.
         let r = rules(&h, rivers);
-        assert_eq!(r[2].symbolizers, r[0].symbolizers, "{what}");
+        let (first, last) = (r[0].stroke().unwrap(), r[2].stroke().unwrap());
+        assert_eq!(first.width, last.width, "{what}");
+        assert_ne!(first.color, last.color, "{what}");
 
         scroll_to_control(&mut h, MOVE_UP);
         tap(&mut h, MOVE_UP);
@@ -5836,7 +5838,8 @@ fn the_style_section_adds_moves_and_deletes_rules() {
 
 #[test]
 fn a_rule_page_sets_the_filter_and_the_scale_range() {
-    use vale_app::ui::pad::rules::{BAD_FILTER, BAD_RANGE, FILTER, MAX_SCALE, MIN_SCALE};
+    use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CONDITION, REMOVE_CONDITION, VALUE};
+    use vale_app::ui::pad::rules::{BAD_FILTER, BAD_RANGE, EXPRESSION, MAX_SCALE, MIN_SCALE};
     for size in [BOARDS[1], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -5848,16 +5851,49 @@ fn a_rule_page_sets_the_filter_and_the_scale_range() {
         };
         open_rule(&mut h, "Rivers", "Default");
 
-        type_text(&mut h, FILTER, "scalerank < 5 and");
-        assert_eq!(filter(&h).as_deref(), Some("scalerank < 5 and"), "{what}");
-        assert!(rule(&h).filter.error().is_some(), "{what}");
-        assert!(h.query_by_label(BAD_FILTER).is_some(), "{what}");
-        // A tap on the chip of a field adds the field.
+        assert!(h.query_by_label(NO_CONDITION).is_some(), "{what}");
+        // A condition on a number: a field chip, an operator chip, and the
+        // keypad.
+        scroll_to_control(&mut h, ADD_CONDITION);
+        tap(&mut h, ADD_CONDITION);
+        assert_eq!(h.state().pad.page, Some(Page::Condition(0)), "{what}");
+        check_controls(&h, &format!("{what} on the page of a new condition"));
+        scroll_to_control(&mut h, "scalerank");
+        tap(&mut h, "scalerank");
+        scroll_to_control(&mut h, "<");
+        tap(&mut h, "<");
+        type_scrolled_keys(&mut h, VALUE, "5");
+        check_controls(&h, &format!("{what} with the keypad of a value"));
+        scroll_to_control(&mut h, ADD_CONDITION);
+        tap(&mut h, ADD_CONDITION);
+        assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
+        assert_eq!(filter(&h).as_deref(), Some("scalerank < 5"), "{what}");
+
+        // A condition on a text: a chip of a common value.
+        scroll_to_control(&mut h, ADD_CONDITION);
+        tap(&mut h, ADD_CONDITION);
         scroll_to_control(&mut h, "featurecla");
         tap(&mut h, "featurecla");
-        let text = "scalerank < 5 and featurecla";
+        scroll_to_control(&mut h, "River");
+        tap(&mut h, "River");
+        scroll_to_control(&mut h, ADD_CONDITION);
+        tap(&mut h, ADD_CONDITION);
+        let text = "scalerank < 5 and featurecla = 'River'";
         assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
         assert!(rule(&h).filter.error().is_none(), "{what}");
+
+        // The button of a condition removes it.
+        let first = format!("{REMOVE_CONDITION} 1");
+        scroll_to_control(&mut h, &first);
+        tap(&mut h, &first);
+        let text = "featurecla = 'River'";
+        assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
+
+        // The expression field takes any filter, and warns about a wrong one.
+        type_text(&mut h, EXPRESSION, "scalerank < 5 and");
+        assert!(rule(&h).filter.error().is_some(), "{what}");
+        assert!(h.query_by_label(BAD_FILTER).is_some(), "{what}");
+        type_text(&mut h, EXPRESSION, "scalerank < 5");
         assert!(h.query_by_label(BAD_FILTER).is_none(), "{what}");
 
         scroll_to_control(&mut h, MIN_SCALE);
@@ -6016,7 +6052,7 @@ fn the_style_editor_opens_on_the_globe_and_the_flat_view_and_fits_a_finger() {
             check_controls(&h, &format!("{what} with the color picker"));
             scroll_to_control(&mut h, MIN_SCALE);
             tap(&mut h, MIN_SCALE);
-            assert!(control(&h, &format!("{MIN_SCALE} 5")).is_some(), "{what}");
+            scroll_to_control(&mut h, &format!("{MIN_SCALE} 5"));
             check_controls(&h, &format!("{what} with the keypad"));
         }
     }

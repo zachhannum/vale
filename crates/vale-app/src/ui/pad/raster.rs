@@ -540,7 +540,7 @@ fn ramp_row(
 }
 
 /// A small muted text across the panel.
-fn note(ui: &mut egui::Ui, text: &str) {
+pub fn note(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
     let text = egui::RichText::new(text)
         .font(theme::small())

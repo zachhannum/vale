@@ -2,13 +2,15 @@
 //! filter, the scale range, the stroke, and the fill of the selected rule.
 
 use eframe::egui;
-use vale_store::{GeometryKind, LayerId};
+use vale_store::{Field, FieldType, GeometryKind, LayerId};
 use vale_style::expr::Filter;
 use vale_style::{Color, LayerStyle, Rule, Stroke};
 
+use super::pad::filter::{self, ADD_CONDITION, REMOVE_CONDITION};
 use super::pad::rules::{
-    ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, DELETE_RULE, FILL, FILTER, MAX_SCALE, MIN_SCALE,
-    MOVE_DOWN, MOVE_UP, NO_LIMIT, STROKE, STROKE_WIDTH, field_name, parse_scale, scale_text,
+    ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, DELETE_RULE, EXPRESSION, FILL, FILTER,
+    MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, STROKE, STROKE_WIDTH, parse_scale,
+    scale_text,
 };
 
 /// The editor of the rules of the style of layer `id`. Returns true if the
@@ -18,7 +20,7 @@ pub fn rules(
     id: LayerId,
     style: &mut LayerStyle,
     kind: GeometryKind,
-    fields: &[String],
+    fields: &[Field],
 ) -> bool {
     let key = egui::Id::new(("style-rule", id.0));
     let count = style.style.rules.len();
@@ -66,44 +68,120 @@ pub fn rules(
     if let Some(rule) = style.style.rules.get_mut(at) {
         ui.separator();
         let salt = key.with(at);
-        changed |= filter_rows(ui, rule, fields);
+        changed |= filter_rows(ui, rule, fields, salt);
         changed |= scale_rows(ui, rule, salt);
         changed |= paint_rows(ui, rule, kind);
     }
     changed
 }
 
-/// The filter field, its error, and a menu that adds a field.
-fn filter_rows(ui: &mut egui::Ui, rule: &mut Rule, fields: &[String]) -> bool {
-    let mut text = rule
+/// The conditions of the filter, each with a button that removes it, the
+/// controls of a new condition, and the text of the whole filter.
+fn filter_rows(ui: &mut egui::Ui, rule: &mut Rule, fields: &[Field], salt: egui::Id) -> bool {
+    let current = rule
         .filter
         .source()
         .map_or(String::new(), |s| s.text().to_owned());
-    let mut changed = false;
+    let mut parts = filter::conditions(&current);
+    let mut out = None;
+    ui.label(FILTER);
+    if parts.is_empty() {
+        ui.weak(filter::NO_CONDITION);
+    }
+    let mut remove = None;
+    for (n, part) in parts.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let name = format!("{REMOVE_CONDITION} {}", n + 1);
+            let button = ui.small_button("×");
+            button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+            if button.clicked() {
+                remove = Some(n);
+            }
+            ui.monospace(part);
+        });
+    }
+    if let Some(n) = remove {
+        parts.remove(n);
+        out = Some(filter::join(&parts));
+    }
+
+    // The new condition: a field, an operator, and a value.
+    let key = salt.with("condition");
+    let (mut field, mut op, mut value): (usize, usize, String) =
+        ui.data(|d| d.get_temp(key)).unwrap_or_default();
+    field = field.min(fields.len().saturating_sub(1));
+    if let Some(f) = fields.get(field) {
+        let number = matches!(f.kind, FieldType::Integer | FieldType::Real);
+        let count = if number { filter::OPERATORS.len() } else { 2 };
+        op = op.min(count - 1);
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt(key.with("field"))
+                .selected_text(&f.name)
+                .width(110.0)
+                .show_ui(ui, |ui| {
+                    for (i, f) in fields.iter().enumerate() {
+                        ui.selectable_value(&mut field, i, &f.name);
+                    }
+                });
+            egui::ComboBox::from_id_salt(key.with("op"))
+                .selected_text(filter::OPERATORS[op].0)
+                .width(40.0)
+                .show_ui(ui, |ui| {
+                    for (i, (label, _)) in filter::OPERATORS[..count].iter().enumerate() {
+                        ui.selectable_value(&mut op, i, *label);
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            match f.kind {
+                FieldType::Bool => {
+                    for choice in [filter::TRUE, filter::FALSE] {
+                        if ui.selectable_label(value == choice, choice).clicked() {
+                            value = choice.to_owned();
+                        }
+                    }
+                }
+                _ => {
+                    let edit = egui::TextEdit::singleline(&mut value)
+                        .hint_text(filter::VALUE)
+                        .desired_width(110.0);
+                    let resp = ui.add(edit);
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, filter::VALUE)
+                    });
+                }
+            }
+            let made = filter::condition(&f.name, f.kind, op, &value);
+            if ui
+                .add_enabled(made.is_some(), egui::Button::new(ADD_CONDITION))
+                .clicked()
+                && let Some(made) = made
+            {
+                parts.push(made);
+                out = Some(filter::join(&parts));
+                value.clear();
+            }
+        });
+    }
+    ui.data_mut(|d| d.insert_temp(key, (field, op, value)));
+
+    // The whole filter as text.
+    let mut text = out.clone().unwrap_or(current);
     ui.horizontal(|ui| {
-        ui.label(FILTER);
+        ui.label(EXPRESSION);
         let edit = egui::TextEdit::singleline(&mut text)
             .hint_text(ALL_FEATURES)
             .desired_width(150.0);
         let field = ui.add(edit);
-        field.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, FILTER));
-        changed |= field.changed();
-        ui.menu_button("+", |ui| {
-            for name in fields {
-                if ui.button(name).clicked() {
-                    let start = text.trim_end();
-                    let name = field_name(name);
-                    text = if start.is_empty() {
-                        name
-                    } else {
-                        format!("{start} {name}")
-                    };
-                    changed = true;
-                }
-            }
+        field.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, EXPRESSION)
         });
+        if field.changed() {
+            out = Some(text.clone());
+        }
     });
-    if changed {
+    let changed = out.is_some();
+    if let Some(text) = out {
         rule.filter = Filter::new(&text);
     }
     if rule.filter.error().is_some() {
