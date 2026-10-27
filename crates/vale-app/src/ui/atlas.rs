@@ -20,6 +20,7 @@ use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Ver
 use crate::globe::backdrop::Canvas;
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
+use crate::globe::nav::Nav;
 use crate::globe::{FrameDraw, FramePlace};
 use crate::pipeline::Quality;
 use crate::view::ViewTransform;
@@ -260,6 +261,8 @@ pub struct AtlasState {
     wheel_at: Option<f64>,
     /// The time and the place of the last tap.
     last_tap: Option<(f64, Pos2)>,
+    /// Finds the taps of two and three fingers, which undo and redo.
+    nav: Nav,
 }
 
 impl AtlasState {
@@ -306,6 +309,7 @@ impl Default for AtlasState {
             fingers: false,
             wheel_at: None,
             last_tap: None,
+            nav: Nav::default(),
         }
     }
 }
@@ -538,6 +542,12 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     let place = fit.viewed(state.atlas.view);
     state.atlas.place = Some(place);
     input(ui, state, &resp, place);
+    state.atlas.nav.track_taps(ui, area);
+    match super::globe::history_input(ui, &mut state.atlas.nav) {
+        Some(true) => state.redo(),
+        Some(false) => state.undo(),
+        None => {}
+    }
     sync(state);
     let place = PagePlace::fit(open_page(state), free).viewed(state.atlas.view);
     state.atlas.place = Some(place);

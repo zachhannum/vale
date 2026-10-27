@@ -14,7 +14,7 @@ use crate::document::Document;
 use crate::globe::backdrop::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
-use crate::globe::nav::{Painting, Tap, on_canvas};
+use crate::globe::nav::{Nav, Painting, Tap, on_canvas};
 use crate::globe::snap::Highlight;
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
@@ -240,9 +240,9 @@ fn brush_input(
 /// undo. A tap of three fingers, Shift+Command+Z, and Command+Y redo. On
 /// Windows and Linux, Ctrl is the Command key.
 /// Returns `Some(true)` for a redo and `Some(false)` for an undo.
-fn history_input(ui: &egui::Ui, globe: &mut Globe) -> Option<bool> {
+pub(super) fn history_input(ui: &egui::Ui, nav: &mut Nav) -> Option<bool> {
     use egui::{Key, KeyboardShortcut, Modifiers};
-    let tap = globe.nav.take_tap();
+    let tap = nav.take_tap();
     let typing = ui.ctx().egui_wants_keyboard_input();
     let key = |modifiers, key| {
         let shortcut = KeyboardShortcut::new(modifiers, key);
@@ -504,7 +504,7 @@ pub(super) fn canvas_input(
     }
     state.poll_line();
     state.poll_point();
-    match history_input(ui, &mut state.globe) {
+    match history_input(ui, &mut state.globe.nav) {
         Some(true) => state.redo(),
         Some(false) => state.undo(),
         None => {}
