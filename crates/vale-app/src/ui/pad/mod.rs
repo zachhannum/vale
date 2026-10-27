@@ -1034,10 +1034,7 @@ fn show_card(
     };
     let sheet = rects.sheet.is_some();
     let id = if sheet { "pad-sheet" } else { key };
-    let backdrop = match state.workspace {
-        Workspace::Globe => state.globe.backdrop(),
-        Workspace::Atlas => None,
-    };
+    let backdrop = state.globe.backdrop();
     widgets::card(ctx, backdrop, id, rect, Order::Middle, radius, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         if sheet {

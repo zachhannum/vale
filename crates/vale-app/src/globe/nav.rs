@@ -175,6 +175,26 @@ impl Nav {
         }
     }
 
+    /// Reads the touches only to find taps of two and three fingers. A
+    /// canvas that moves its own view calls this and not `update`.
+    pub fn track_taps(&mut self, ui: &egui::Ui, rect: Rect) {
+        self.time = ui.input(|i| i.time);
+        let events = ui.input(|i| i.events.clone());
+        for event in &events {
+            if let egui::Event::Touch {
+                id,
+                phase,
+                pos,
+                force,
+                ..
+            } = event
+            {
+                let on_canvas = on_canvas(ui, rect, *pos);
+                self.touch(id.0, *phase, *pos, on_canvas, force.is_some());
+            }
+        }
+    }
+
     /// Takes the tap that ended after the last call.
     pub fn take_tap(&mut self) -> Option<Tap> {
         self.tap.take()
