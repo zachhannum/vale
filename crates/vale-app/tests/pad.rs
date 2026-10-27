@@ -5721,6 +5721,8 @@ fn the_pages_of_the_fields_have_large_controls() {
         tap(&mut h, ADD_LAYER);
         tap(&mut h, "Points");
         check_controls(&h, &format!("{size:?} on the panel of a point layer"));
+        // The Style section is above the fields.
+        scroll_to(&mut h, ADD_FIELD);
         tap(&mut h, ADD_FIELD);
         check_controls(&h, &format!("{size:?} on the page of a new field"));
         tap(&mut h, "True or false");
@@ -5733,5 +5735,289 @@ fn the_pages_of_the_fields_have_large_controls() {
         h.run_steps(2);
         check_controls(&h, &format!("{size:?} on the page of a field"));
         assert_eq!(h.state().doc.layer(id).unwrap().field_names(), ["name"]);
+    }
+}
+
+/// Runs three frames and the saves of the app, as the window does, and
+/// saves a change that waits.
+fn save_frames(h: &mut Pad) {
+    for _ in 0..3 {
+        step_and_save(h, false);
+    }
+    h.state_mut().save_waiting().unwrap();
+}
+
+/// Scrolls the Layers panel down until a control is inside the card, or up
+/// while the control is above the card.
+fn scroll_to_control(h: &mut Pad, name: &str) {
+    scroll_to(h, name);
+    for _ in 0..8 {
+        if control(h, name).is_some() {
+            return;
+        }
+        let card = panel(h, Panel::Layers).unwrap();
+        let from = pos2(card.left() + 6.0, card.top() + 60.0);
+        drag(h, from, from + vec2(0.0, 200.0), None);
+    }
+}
+
+/// Types on the keypad of a field, and scrolls to each key.
+fn type_scrolled_keys(h: &mut Pad, field: &str, text: &str) {
+    use vale_app::ui::pad::widgets::DONE;
+    scroll_to_control(h, field);
+    tap(h, field);
+    for key in text.chars().map(|c| format!("{field} {c}")) {
+        scroll_to_control(h, &key);
+        tap(h, &key);
+    }
+    let done = format!("{field} {DONE}");
+    scroll_to_control(h, &done);
+    tap(h, &done);
+}
+
+/// The rules of the style of a vector layer.
+fn rules(h: &Pad, id: vale_store::LayerId) -> Vec<vale_style::Rule> {
+    h.state().doc.entry(id).unwrap().style.style.rules.clone()
+}
+
+fn rule_names(h: &Pad, id: vale_store::LayerId) -> Vec<String> {
+    rules(h, id).into_iter().map(|r| r.name).collect()
+}
+
+/// Opens the panel of a vector layer and the page of its rule `rule`.
+fn open_rule(h: &mut Pad, layer: &str, rule: &str) {
+    tap(h, "Layers");
+    tap(h, &format!("Open {layer}"));
+    scroll_to_control(h, rule);
+    tap(h, rule);
+    assert!(matches!(h.state().pad.page, Some(Page::Rule(_))));
+}
+
+#[test]
+fn the_style_section_adds_moves_and_deletes_rules() {
+    use vale_app::ui::pad::rules::{ADD_RULE, DELETE_RULE, MOVE_UP};
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        let rivers = vector(&h, "Rivers");
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Rivers");
+        scroll_to_control(&mut h, ADD_RULE);
+        tap(&mut h, ADD_RULE);
+        save_frames(&mut h);
+        assert_eq!(h.state().pad.page, Some(Page::Rule(1)), "{what}");
+        tap(&mut h, "Back to Rivers");
+        scroll_to_control(&mut h, ADD_RULE);
+        tap(&mut h, ADD_RULE);
+        save_frames(&mut h);
+        assert_eq!(rule_names(&h, rivers), ["Default", "Rule 1", "Rule 2"]);
+        // A new rule copies the stroke of the last rule.
+        let r = rules(&h, rivers);
+        assert_eq!(r[2].symbolizers, r[0].symbolizers, "{what}");
+
+        scroll_to_control(&mut h, MOVE_UP);
+        tap(&mut h, MOVE_UP);
+        save_frames(&mut h);
+        assert_eq!(rule_names(&h, rivers), ["Default", "Rule 2", "Rule 1"]);
+        assert_eq!(h.state().pad.page, Some(Page::Rule(1)), "{what}");
+        scroll_to_control(&mut h, DELETE_RULE);
+        tap(&mut h, DELETE_RULE);
+        save_frames(&mut h);
+        assert_eq!(rule_names(&h, rivers), ["Default", "Rule 1"], "{what}");
+        assert_eq!(h.state().pad.page, None, "{what}");
+
+        tap(&mut h, "Undo");
+        assert_eq!(rule_names(&h, rivers), ["Default", "Rule 2", "Rule 1"]);
+        tap(&mut h, "Undo");
+        assert_eq!(rule_names(&h, rivers), ["Default", "Rule 1", "Rule 2"]);
+    }
+}
+
+#[test]
+fn a_rule_page_sets_the_filter_and_the_scale_range() {
+    use vale_app::ui::pad::rules::{BAD_FILTER, BAD_RANGE, FILTER, MAX_SCALE, MIN_SCALE};
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let rivers = vector(&h, "Rivers");
+        let rule = |h: &Pad| rules(h, rivers)[0].clone();
+        let filter = |h: &Pad| {
+            let r = rule(h);
+            r.filter.source().map(|s| s.text().to_owned())
+        };
+        open_rule(&mut h, "Rivers", "Default");
+
+        type_text(&mut h, FILTER, "scalerank < 5 and");
+        assert_eq!(filter(&h).as_deref(), Some("scalerank < 5 and"), "{what}");
+        assert!(rule(&h).filter.error().is_some(), "{what}");
+        assert!(h.query_by_label(BAD_FILTER).is_some(), "{what}");
+        // A tap on the chip of a field adds the field.
+        scroll_to_control(&mut h, "featurecla");
+        tap(&mut h, "featurecla");
+        let text = "scalerank < 5 and featurecla";
+        assert_eq!(filter(&h).as_deref(), Some(text), "{what}");
+        assert!(rule(&h).filter.error().is_none(), "{what}");
+        assert!(h.query_by_label(BAD_FILTER).is_none(), "{what}");
+
+        scroll_to_control(&mut h, MIN_SCALE);
+        type_scrolled_keys(&mut h, MIN_SCALE, "50000");
+        assert_eq!(rule(&h).min_scale, Some(50_000.0), "{what}");
+        scroll_to_control(&mut h, MAX_SCALE);
+        type_scrolled_keys(&mut h, MAX_SCALE, "1000");
+        assert_eq!(rule(&h).max_scale, Some(1000.0), "{what}");
+        assert!(h.query_by_label(BAD_RANGE).is_some(), "{what}");
+        scroll_to_control(&mut h, MAX_SCALE);
+        type_scrolled_keys(&mut h, MAX_SCALE, "1000000");
+        assert_eq!(rule(&h).max_scale, Some(1_000_000.0), "{what}");
+        assert!(h.query_by_label(BAD_RANGE).is_none(), "{what}");
+        assert!(rule(&h).in_scale(100_000.0), "{what}");
+        assert!(!rule(&h).in_scale(10_000.0), "{what}");
+    }
+}
+
+#[test]
+fn a_rule_page_sets_the_stroke_and_the_fill() {
+    use vale_app::ui::pad::rules::{FILL, FILL_COLOR, STROKE_COLOR, STROKE_WIDTH};
+    use vale_style::Color;
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let land = vector(&h, "Land");
+        let rule = |h: &Pad| rules(h, land)[0].clone();
+        open_rule(&mut h, "Land", "Default");
+
+        scroll_to_control(&mut h, STROKE_COLOR);
+        tap(&mut h, STROKE_COLOR);
+        let hex = format!("{STROKE_COLOR} hex");
+        scroll_to_control(&mut h, &hex);
+        type_scrolled_keys(&mut h, &hex, "C04020");
+        let stroke = rule(&h).stroke().unwrap();
+        assert_eq!(stroke.color, Color::rgb(0xc0, 0x40, 0x20), "{what}");
+
+        // A tap on the width slider sets a width in twentieths of a point.
+        scroll_to_control(&mut h, STROKE_WIDTH);
+        let slider = control(&h, STROKE_WIDTH).unwrap();
+        let at = pos2(slider.right() - 30.0, slider.center().y);
+        touch(&mut h, egui::TouchPhase::Start, at, None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, at, None);
+        h.run_steps(3);
+        let width = rule(&h).stroke().unwrap().width;
+        assert!(width > stroke.width, "{what}: {width}");
+        assert_eq!((width * 20.0).round() / 20.0, width, "{what}");
+
+        scroll_to_control(&mut h, FILL_COLOR);
+        tap(&mut h, FILL_COLOR);
+        // One picker is open at a time.
+        assert!(control(&h, &hex).is_none(), "{what}");
+        let hex = format!("{FILL_COLOR} hex");
+        scroll_to_control(&mut h, &hex);
+        type_scrolled_keys(&mut h, &hex, "E0F0A0");
+        assert_eq!(
+            rule(&h).fill(),
+            Some(Color::rgb(0xe0, 0xf0, 0xa0)),
+            "{what}"
+        );
+
+        scroll_to_control(&mut h, FILL);
+        tap(&mut h, FILL);
+        assert_eq!(rule(&h).fill(), None, "{what}");
+        assert!(control(&h, FILL_COLOR).is_none(), "{what}");
+        tap(&mut h, FILL);
+        assert!(rule(&h).fill().is_some(), "{what}");
+    }
+}
+
+#[test]
+fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
+    use vale_app::ui::pad::rules::{STROKE_COLOR, STROKE_WIDTH};
+    let size = BOARDS[1];
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(size, dir.path());
+    let rivers = vector(&h, "Rivers");
+    let stroke = |h: &Pad| rules(h, rivers)[0].stroke().unwrap();
+    let before = stroke(&h);
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, STROKE_WIDTH);
+    save_frames(&mut h);
+    let saved = saves(&h);
+
+    // Each step of a drag changes the style that the map draws, and the
+    // drag saves once.
+    let held = |h: &mut Pad, name: &str, from: f32, to: f32, value: &dyn Fn(&Pad) -> f64| {
+        let rect = control(h, name).unwrap();
+        let y = rect.center().y;
+        let (from, to) = (pos2(rect.left() + from, y), pos2(rect.left() + to, y));
+        touch(h, egui::TouchPhase::Start, from, None);
+        step_and_save(h, true);
+        let mut values = vec![value(h)];
+        for i in 1..=6 {
+            let at = from.lerp(to, i as f32 / 6.0);
+            touch(h, egui::TouchPhase::Move, at, None);
+            step_and_save(h, true);
+            values.push(value(h));
+        }
+        touch(h, egui::TouchPhase::End, to, None);
+        save_frames(h);
+        values.dedup();
+        values
+    };
+    let rect = control(&h, STROKE_WIDTH).unwrap();
+    let widths = held(&mut h, STROKE_WIDTH, 30.0, rect.width() - 20.0, &|h| {
+        stroke(h).width
+    });
+    // The press sets the width at the left of the track.
+    assert!(widths.len() >= 5, "{widths:?}");
+    assert!(widths[1..].is_sorted(), "{widths:?}");
+    assert_eq!(saves(&h), saved + 1);
+
+    scroll_to_control(&mut h, STROKE_COLOR);
+    tap(&mut h, STROKE_COLOR);
+    let shade = format!("{STROKE_COLOR} shade");
+    scroll_to_control(&mut h, &shade);
+    save_frames(&mut h);
+    let saved = saves(&h);
+    let rect = control(&h, &shade).unwrap();
+    let reds = held(&mut h, &shade, 10.0, rect.width() - 10.0, &|h| {
+        f64::from(stroke(h).color.r) + 256.0 * f64::from(stroke(h).color.g)
+    });
+    assert!(reds.len() >= 4, "{reds:?}");
+    assert_eq!(saves(&h), saved + 1);
+
+    tap(&mut h, "Undo");
+    assert_eq!(stroke(&h).width, *widths.last().unwrap());
+    tap(&mut h, "Undo");
+    assert_eq!(stroke(&h), before);
+}
+
+#[test]
+fn the_style_editor_opens_on_the_globe_and_the_flat_view_and_fits_a_finger() {
+    use vale_app::ui::pad::rules::{ADD_RULE, FILL_COLOR, MIN_SCALE, STROKE, STROKE_COLOR};
+    for size in BOARDS {
+        for view in WORLD_VIEWS {
+            let what = format!("{size:?} {view:?}");
+            let mut h = pad(size);
+            h.state_mut().globe.world_view = view;
+            h.run_steps(2);
+            tap(&mut h, "Layers");
+            tap(&mut h, "Open Land");
+            scroll_to_control(&mut h, ADD_RULE);
+            assert!(control(&h, "Default").is_some(), "{what}");
+            check_controls(&h, &format!("{what} with the Style section"));
+            tap(&mut h, "Default");
+            for name in [STROKE, STROKE_COLOR, FILL_COLOR, "Back to Land"] {
+                scroll_to_control(&mut h, name);
+                assert!(control(&h, name).is_some(), "{what}: {name}");
+            }
+            check_controls(&h, &format!("{what} on the page of a rule"));
+            scroll_to_control(&mut h, FILL_COLOR);
+            tap(&mut h, FILL_COLOR);
+            check_controls(&h, &format!("{what} with the color picker"));
+            scroll_to_control(&mut h, MIN_SCALE);
+            tap(&mut h, MIN_SCALE);
+            assert!(control(&h, &format!("{MIN_SCALE} 5")).is_some(), "{what}");
+            check_controls(&h, &format!("{what} with the keypad"));
+        }
     }
 }
