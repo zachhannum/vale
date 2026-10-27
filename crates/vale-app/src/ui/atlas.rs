@@ -16,7 +16,7 @@ use std::sync::Arc;
 use vale_store::RasterId;
 
 use super::{AppState, LayerRef};
-use crate::atlas::{self as math, FrameTarget, Handle, PagePreset, Vertex};
+use crate::atlas::{self as math, FrameTarget, Handle, PT_PER_MM, PagePreset, Vertex};
 use crate::globe::backdrop::Canvas;
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
@@ -1117,18 +1117,22 @@ fn compose(
     let ppp = ctx.pixels_per_point();
     let px = |points: f32| ((points * ppp).ceil() as usize).clamp(1, 8192);
     let (w, h) = (px(shown.width()), px(shown.height()));
-    // The list starts at the top-left corner of the part of the frame on
-    // the canvas.
+    // The list is in points of paper, so a width in the style is the width
+    // on the printed page, and the texture is rendered at the scale of the
+    // zoom. It starts at the top-left corner of the part of the frame on the
+    // canvas.
+    let zoom = f64::from(place.pts_per_mm) / PT_PER_MM;
+    let scale = f64::from(ppp) * zoom;
     let origin = place.rect.min - shown.min;
     let target = FrameTarget {
-        origin: Point::new(f64::from(origin.x), f64::from(origin.y)),
-        pts_per_mm: place.pts_per_mm,
+        origin: Point::new(f64::from(origin.x) / zoom, f64::from(origin.y) / zoom),
+        pts_per_mm: PT_PER_MM,
     };
     let part = kurbo::Rect::new(
         0.0,
         0.0,
-        f64::from(shown.width()),
-        f64::from(shown.height()),
+        f64::from(shown.width()) / zoom,
+        f64::from(shown.height()) / zoom,
     );
     let selection = state.selection;
     // A frame with raster layers has the water below them and the rest
@@ -1162,7 +1166,7 @@ fn compose(
             return;
         }
     };
-    let (width, height) = (w as f64 / f64::from(ppp), h as f64 / f64::from(ppp));
+    let (width, height) = (w as f64 / scale, h as f64 / scale);
     composed.list.width = width;
     composed.list.height = height;
     let settled = quality == Quality::Final;
@@ -1176,7 +1180,16 @@ fn compose(
                 list.width = width;
                 list.height = height;
                 let images = &mut state.atlas.unders;
-                match upload(ctx, images, frame.id, &list, (shown, vt), keys, settled) {
+                match upload(
+                    ctx,
+                    images,
+                    frame.id,
+                    &list,
+                    scale,
+                    (shown, vt),
+                    keys,
+                    settled,
+                ) {
                     Ok(()) => {}
                     Err(e) => state.status = e,
                 }
@@ -1192,6 +1205,7 @@ fn compose(
         images,
         frame.id,
         &composed.list,
+        scale,
         (shown, vt),
         keys,
         settled,
@@ -1210,12 +1224,13 @@ fn upload(
     images: &mut HashMap<FrameId, FrameImage>,
     id: FrameId,
     list: &vale_render::DisplayList,
+    scale: f64,
     (shown, vt): (Rect, ViewTransform),
     (content, place): (u64, u64),
     settled: bool,
 ) -> Result<(), String> {
     let ppp = ctx.pixels_per_point();
-    let img = vale_render::render_rgba(list, f64::from(ppp)).map_err(|e| format!("{e}"))?;
+    let img = vale_render::render_rgba(list, scale).map_err(|e| format!("{e}"))?;
     let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
     let options = egui::TextureOptions::LINEAR;
     let texture = match images.remove(&id) {

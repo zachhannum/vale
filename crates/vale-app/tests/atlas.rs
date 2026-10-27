@@ -1714,3 +1714,41 @@ fn the_border_survives_a_close_and_an_open() {
     assert_eq!(b.width, 2.25);
     assert!(!doc.project.atlas.frame(inset).unwrap().border.on);
 }
+
+#[test]
+fn the_screen_draws_the_line_widths_of_the_page_at_each_zoom() {
+    let mut h = inset_pad(BOARDS[0]);
+    let id = frame(&h, 0).id;
+    let frame = h.state_mut().doc.project.atlas.frame_mut(id).unwrap();
+    frame.border.width = 2.5;
+    frame.graticule.on = true;
+    frame.graticule.width = 0.7;
+    let (border, graticule) = (frame.border.clone(), frame.graticule.clone());
+    let mut ground = None;
+    for zoom in [1.0, 3.0, 0.5] {
+        h.state_mut().atlas.view.zoom = zoom;
+        h.state_mut().atlas.selection = AtlasSelection::Frame(id);
+        h.run_steps(3);
+        // The list is in points of paper, so the widths are the ones of the
+        // export at every zoom.
+        let composed = h.state().composed.as_ref().unwrap();
+        // One point is the same ground distance at every zoom.
+        let km = *ground.get_or_insert(composed.km_per_point);
+        assert!(
+            (composed.km_per_point / km - 1.0).abs() < 1e-9,
+            "zoom {zoom}"
+        );
+        let list = &composed.list;
+        let wide = |c: [u8; 3], w: f64| {
+            let c = vale_render::Color::rgb(c[0], c[1], c[2]);
+            (list.items.iter()).any(
+                |i| matches!(i, Item::Stroke { color, width, .. } if *color == c && *width == w),
+            )
+        };
+        assert!(wide(border.color, border.width), "border at {zoom}");
+        assert!(
+            wide(graticule.color, graticule.width),
+            "graticule at {zoom}"
+        );
+    }
+}
