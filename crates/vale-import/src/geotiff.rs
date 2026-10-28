@@ -466,6 +466,7 @@ mod tests {
             stops: Vec::new(),
             colors: Vec::new(),
             opacity: 1.0,
+            blend: vale_store::BlendMode::Normal,
         };
         let mut tags = GeoTiff::new(&world, Some(&raster), 4, 2);
         assert_eq!(tags.radius_m, 1200500.0);

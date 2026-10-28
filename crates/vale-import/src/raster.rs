@@ -20,6 +20,17 @@ pub struct Greyscale {
     pub width: usize,
     pub height: usize,
     pub levels: Vec<u16>,
+    /// The bit depth of a sample in the file: 8 or 16. A float sample counts as 16.
+    pub bits: u8,
+}
+
+impl Greyscale {
+    /// The darkest level and the brightest level, or `None` for an image with no pixels.
+    pub fn range(&self) -> Option<(u16, u16)> {
+        let mut levels = self.levels.iter().copied();
+        let first = levels.next()?;
+        Some(levels.fold((first, first), |(lo, hi), v| (lo.min(v), hi.max(v))))
+    }
 }
 
 /// Reads a PNG or TIFF image. The format comes from the content, not from the file name.
@@ -62,11 +73,17 @@ fn read<R: BufRead + Seek>(name: &str, reader: R) -> Result<Greyscale, ImportErr
     reader.limits(limits);
     let image = reader.decode().map_err(|e| parse(e.to_string()))?;
     let (width, height) = (image.width() as usize, image.height() as usize);
+    let bits = if image.color().bytes_per_pixel() / image.color().channel_count() == 1 {
+        8
+    } else {
+        16
+    };
     let levels = levels(image).ok_or_else(|| parse("the pixel format is not supported".into()))?;
     Ok(Greyscale {
         width,
         height,
         levels,
+        bits,
     })
 }
 
@@ -181,6 +198,32 @@ mod tests {
         let b = ImageBuffer::<Luma<u8>, _>::from_raw(3, 1, vec![0, 255, 128]).unwrap();
         let bytes = encode(DynamicImage::ImageLuma8(b), ImageFormat::Png);
         assert_eq!(read_bytes("g", &bytes).unwrap().levels, [0, 65535, 32896]);
+    }
+
+    #[test]
+    fn bits_and_range() {
+        let g = read_bytes("g", &grey16(ImageFormat::Png)).unwrap();
+        assert_eq!((g.bits, g.range()), (16, Some((0, 65535))));
+
+        let b = ImageBuffer::<Luma<u8>, _>::from_raw(3, 1, vec![10, 200, 128]).unwrap();
+        let g = read_bytes("g", &encode(DynamicImage::ImageLuma8(b), ImageFormat::Png)).unwrap();
+        assert_eq!((g.bits, g.range()), (8, Some((10 * 257, 200 * 257))));
+
+        let b = ImageBuffer::<Rgb<u8>, _>::from_raw(1, 1, vec![9, 9, 9]).unwrap();
+        let g = read_bytes("c", &encode(DynamicImage::ImageRgb8(b), ImageFormat::Png)).unwrap();
+        assert_eq!((g.bits, g.range()), (8, Some((9 * 257, 9 * 257))));
+
+        let samples = [0.25f32; 3];
+        let bytes = tiff::<colortype::RGB32Float>(Compression::Uncompressed, 1, 1, &samples);
+        assert_eq!(read_bytes("f", &bytes).unwrap().bits, 16);
+
+        let empty = Greyscale {
+            width: 0,
+            height: 0,
+            levels: Vec::new(),
+            bits: 8,
+        };
+        assert_eq!(empty.range(), None);
     }
 
     #[test]
