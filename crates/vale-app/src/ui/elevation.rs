@@ -117,13 +117,21 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     ui.heading(&layer.name);
     let fields = layer.fields.clone();
     ui.label(pad::rules::STYLE);
+    let symbols = state.doc.symbols().clone();
     let Some(entry) = state.doc.entry_mut(id) else {
         return;
     };
     let style = &mut entry.style;
+    let mut library = style_editor::Library {
+        symbols: &symbols,
+        note: state.symbol_note.as_ref(),
+        actions: &mut state.actions,
+    };
     let scroll = egui::ScrollArea::vertical();
     if scroll
-        .show(ui, |ui| style_editor::rules(ui, id, style, kind, &fields))
+        .show(ui, |ui| {
+            style_editor::rules(ui, id, style, kind, &fields, &mut library)
+        })
         .inner
     {
         state.touch();
