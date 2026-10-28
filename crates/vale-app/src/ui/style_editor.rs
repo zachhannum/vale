@@ -4,13 +4,13 @@
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId};
 use vale_style::expr::Filter;
-use vale_style::{Color, LayerStyle, Rule, Stroke};
+use vale_style::{Color, LayerStyle, Rule, Stroke, StrokeKind};
 
 use super::pad::filter::{self, ADD_CONDITION, REMOVE_CONDITION};
 use super::pad::rules::{
-    ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, DELETE_RULE, EXPRESSION, FILL, FILTER,
-    MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, STROKE, STROKE_WIDTH, parse_scale,
-    scale_text,
+    ADD_RULE, ALL_FEATURES, BAD_FILTER, BAD_RANGE, BRUSH, DASH, DASHED, DELETE_RULE, EXPRESSION,
+    FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID, STROKE,
+    STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
 };
 
 /// The editor of the rules of the style of layer `id`. Returns true if the
@@ -70,7 +70,7 @@ pub fn rules(
         let salt = key.with(at);
         changed |= filter_rows(ui, rule, fields, salt);
         changed |= scale_rows(ui, rule, salt);
-        changed |= paint_rows(ui, rule, kind);
+        changed |= paint_rows(ui, rule, kind, salt);
     }
     changed
 }
@@ -237,7 +237,7 @@ fn scale_rows(ui: &mut egui::Ui, rule: &mut Rule, salt: egui::Id) -> bool {
 }
 
 /// The stroke and its width, and the fill. A line layer has no fill.
-fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind) -> bool {
+fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind, salt: egui::Id) -> bool {
     let default = LayerStyle::default_for(kind, 0, &[]);
     let mut changed = false;
     let mut stroke = rule.stroke();
@@ -264,6 +264,7 @@ fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind) -> bool {
                 .suffix(" pt");
             changed |= ui.add(drag).changed();
         });
+        changed |= line_rows(ui, s, kind, salt);
     }
     if changed {
         rule.set_stroke(stroke);
@@ -287,6 +288,72 @@ fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind) -> bool {
         rule.set_fill(fill);
     }
     changed || fill_changed
+}
+
+/// The line type of a stroke, and the lengths of its dashes or its start width.
+fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::Id) -> bool {
+    let mut changed = false;
+    let mut kinds = vec![
+        (SOLID, StrokeKind::Solid),
+        (DASHED, StrokeKind::dashed()),
+        (BRUSH, StrokeKind::Brush),
+    ];
+    if kind == GeometryKind::Line {
+        kinds.push((TAPER, StrokeKind::taper()));
+    }
+    let name = |k: StrokeKind| match k {
+        StrokeKind::Solid => SOLID,
+        StrokeKind::Dashed { .. } => DASHED,
+        StrokeKind::Brush => BRUSH,
+        StrokeKind::Taper { .. } => TAPER,
+    };
+    ui.horizontal(|ui| {
+        ui.label(LINE);
+        egui::ComboBox::from_id_salt(salt.with("line"))
+            .selected_text(name(s.kind))
+            .show_ui(ui, |ui| {
+                for (label, k) in kinds {
+                    let on = name(s.kind) == label;
+                    if ui.selectable_label(on, label).clicked() && !on {
+                        s.kind = k;
+                        changed = true;
+                    }
+                }
+            });
+    });
+    let length = |ui: &mut egui::Ui, label: &str, value: &mut f64| {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            let drag = egui::DragValue::new(value)
+                .speed(0.05)
+                .range(0.5..=20.0)
+                .suffix(" pt");
+            ui.add(drag).changed()
+        })
+        .inner
+    };
+    match &mut s.kind {
+        StrokeKind::Dashed { dash, gap } => {
+            changed |= length(ui, DASH, dash);
+            changed |= length(ui, GAP, gap);
+        }
+        StrokeKind::Taper { start } => {
+            ui.horizontal(|ui| {
+                ui.label(TAPER_START);
+                let mut percent = *start * 100.0;
+                let drag = egui::DragValue::new(&mut percent)
+                    .speed(1.0)
+                    .range(0.0..=100.0)
+                    .suffix(" %");
+                if ui.add(drag).changed() {
+                    *start = percent / 100.0;
+                    changed = true;
+                }
+            });
+        }
+        StrokeKind::Solid | StrokeKind::Brush => {}
+    }
+    changed
 }
 
 /// A color button that keeps the alpha of `c`.
