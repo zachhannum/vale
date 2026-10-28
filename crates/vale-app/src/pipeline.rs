@@ -1,6 +1,7 @@
 //! The map pipeline: query, clip, project, style, label, emit.
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use anyhow::anyhow;
 use kurbo::{BezPath, Circle, Point, Rect, Shape};
@@ -300,6 +301,11 @@ fn paint_key(paint: &Paint) -> [u64; 8] {
     let stroke = |s: Option<vale_style::Stroke>| {
         s.map_or([1 << 32, 0], |s| [color(Some(s.color)), s.width.to_bits()])
     };
+    let name = |s: &str| {
+        let mut h = DefaultHasher::new();
+        s.hash(&mut h);
+        h.finish()
+    };
     match *paint {
         Paint::Fill(c) => [0, color(Some(c)), 0, 0, 0, 0, 0, 0],
         Paint::Stroke(s) => {
@@ -320,6 +326,38 @@ fn paint_key(paint: &Paint) -> [u64; 8] {
             let [c, w] = stroke(st);
             [2, radius.to_bits(), color(fill), c, w, 0, 0, 0]
         }
+        Paint::Symbol {
+            ref symbol,
+            size,
+            rotation,
+            tint,
+        } => [
+            3,
+            name(symbol),
+            size.to_bits(),
+            rotation.to_bits(),
+            color(tint),
+            0,
+            0,
+            0,
+        ],
+        Paint::Scatter {
+            ref symbol,
+            size,
+            spacing,
+            size_jitter,
+            rotation_jitter,
+            tint,
+        } => [
+            4,
+            name(symbol),
+            size.to_bits(),
+            spacing.to_bits(),
+            size_jitter.to_bits(),
+            rotation_jitter.to_bits(),
+            color(tint),
+            0,
+        ],
     }
 }
 
@@ -375,7 +413,7 @@ fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
 fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch) {
     let features = || batch.features.iter().map(|&i| &pl.features[i]);
     let lines = || polylines_path(features().flat_map(|f| &f.lines), false);
-    match (pl.kind, batch.paint) {
+    match (pl.kind, batch.paint.clone()) {
         (GeometryKind::Polygon, Paint::Fill(color)) => {
             for f in features().filter(|f| !f.rings.is_empty()) {
                 list.push(Item::Fill {
