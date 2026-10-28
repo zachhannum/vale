@@ -1579,7 +1579,8 @@ pub const TILE: f32 = 72.0;
 /// The height of the name at the bottom of a tile.
 const TILE_NAME: f32 = 18.0;
 
-/// A grid of square tiles that wraps to the width of the form. Each tile has
+/// A grid of tiles that wraps to the width of the form. The tiles share the
+/// width of the form, and each one is at least `TILE` wide. Each tile has
 /// a picture at the top and its name at the bottom. `paint` paints the
 /// picture of a tile in the rectangle that it gets. `active` is the tile that
 /// is on. Returns the tile that the user tapped, if it is not on.
@@ -1593,12 +1594,13 @@ pub fn tiles(
     let (left, top, width) = (ui.cursor().left(), ui.cursor().top(), ui.available_width());
     let columns = ((width / TILE).floor() as usize).max(1);
     let rows = names.len().div_ceil(columns);
+    let wide = width / columns as f32;
     ui.allocate_exact_size(vec2(width, rows as f32 * TILE), Sense::hover());
     let mut chosen = None;
     for (index, name) in names.iter().enumerate() {
         let (row, column) = (index / columns, index % columns);
-        let min = pos2(left + column as f32 * TILE, top + row as f32 * TILE);
-        let rect = Rect::from_min_size(min, vec2(TILE, TILE));
+        let min = pos2(left + column as f32 * wide, top + row as f32 * TILE);
+        let rect = Rect::from_min_size(min, vec2(wide, TILE));
         let on = active == Some(index);
         let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
         let back = rect.shrink(HIGHLIGHT_INSET);

@@ -218,7 +218,16 @@ fn library_row(
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(PREVIEW, PREVIEW), egui::Sense::hover());
         if let Some(symbol) = library.symbols.get(current) {
-            paint_symbol(ui.painter(), symbol, rect.center(), PREVIEW, 0.0, tint);
+            ui.painter()
+                .rect_filled(rect, 3.0, super::pad::rules::PAPER);
+            paint_symbol(
+                ui.painter(),
+                symbol,
+                rect.center(),
+                PREVIEW - 4.0,
+                0.0,
+                tint,
+            );
         }
         egui::ComboBox::from_id_salt(salt.with("symbol"))
             .selected_text(current)

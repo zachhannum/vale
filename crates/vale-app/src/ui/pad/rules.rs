@@ -81,6 +81,8 @@ pub const MAX_SPACING: f64 = 100.0;
 const NEW_SYMBOL: (&str, f64) = ("city", 12.0);
 /// The symbol, the size, and the spacing of a new scatter.
 const NEW_SCATTER: (&str, f64, f64) = ("tree", 8.0, 10.0);
+/// The color behind the preview of a symbol.
+pub const PAPER: egui::Color32 = egui::Color32::from_rgb(236, 232, 220);
 /// The tint of a symbol with no default tint.
 const TINT_GRAY: Color = Color::rgb(60, 60, 60);
 /// The height of the keypad of the scale fields.
@@ -537,6 +539,10 @@ fn library_rows(
         let side = rect.width().min(rect.height());
         match symbols.get(names[index]) {
             Some(symbol) if index < count => {
+                // The symbols draw on the color of paper, as on a map.
+                let paper = egui::Rect::from_center_size(rect.center(), egui::vec2(side, side));
+                painter.rect_filled(paper, 6.0, PAPER);
+                let side = side - 6.0;
                 let tint = if Some(index) == active {
                     tint
                 } else {

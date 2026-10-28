@@ -90,7 +90,13 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         actions: &mut state.actions,
     };
     let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields, &mut library);
-    if info.kind == GeometryKind::Point {
+    // A rule with an SVG symbol has no circle.
+    let circle = style
+        .style
+        .rules
+        .first()
+        .is_none_or(|r| r.symbol().is_none());
+    if info.kind == GeometryKind::Point && circle {
         ui.horizontal(|ui| {
             ui.label("Point size");
             let mut radius = style.point_radius();
