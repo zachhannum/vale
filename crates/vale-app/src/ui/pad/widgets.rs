@@ -1574,6 +1574,82 @@ pub fn chips(
     chosen
 }
 
+/// The smallest width of a tile of a tile grid.
+pub const TILE: f32 = 76.0;
+/// The space between two tiles.
+const TILE_GAP: f32 = 8.0;
+/// The height of the name at the bottom of a tile.
+const TILE_NAME: f32 = 20.0;
+
+/// A grid of tiles that wraps to the width of the form. The tiles share the
+/// width of the form, with a gap between them, and each one is at least
+/// `TILE` wide. The edges of the grid line up with the edges of a button
+/// row. Each tile has a picture at the top and its name at the bottom.
+/// `paint` paints the picture of a tile in the square that it gets. `active`
+/// is the tile that is on. Returns the tile that the user tapped.
+pub fn tiles(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    names: &[&str],
+    active: Option<usize>,
+    paint: impl Fn(&egui::Painter, Rect, usize),
+) -> Option<usize> {
+    let width = ui.available_width() - 2.0 * HIGHLIGHT_INSET;
+    let (left, top) = (ui.cursor().left() + HIGHLIGHT_INSET, ui.cursor().top());
+    let columns = (((width + TILE_GAP) / (TILE + TILE_GAP)).floor() as usize).max(1);
+    let rows = names.len().div_ceil(columns);
+    let side = (width - (columns - 1) as f32 * TILE_GAP) / columns as f32;
+    let picture = (side - TILE_NAME - 8.0).min(56.0);
+    let height = 8.0 + picture + TILE_NAME + 4.0;
+    let total = rows as f32 * height + rows.saturating_sub(1) as f32 * TILE_GAP;
+    ui.allocate_exact_size(vec2(ui.available_width(), total), Sense::hover());
+    let mut chosen = None;
+    for (index, name) in names.iter().enumerate() {
+        let (row, column) = (index / columns, index % columns);
+        let min = pos2(
+            left + column as f32 * (side + TILE_GAP),
+            top + row as f32 * (height + TILE_GAP),
+        );
+        let rect = Rect::from_min_size(min, vec2(side, height));
+        let on = active == Some(index);
+        let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
+        let fill = if on || resp.is_pointer_button_down_on() {
+            theme::raise()
+        } else {
+            theme::track()
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, theme::CONTROL_RADIUS, fill);
+        if on {
+            let stroke = egui::Stroke::new(2.0, theme::ACCENT);
+            painter.rect_stroke(
+                rect,
+                theme::CONTROL_RADIUS,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        let square = Rect::from_center_size(
+            pos2(rect.center().x, rect.top() + 8.0 + picture / 2.0),
+            vec2(picture, picture),
+        );
+        paint(painter, square, index);
+        let color = if on { theme::TEXT } else { theme::MUTE };
+        let mut text = (*name).to_owned();
+        let mut galley = painter.layout_no_wrap(text.clone(), theme::small(), color);
+        while galley.size().x > rect.width() - 8.0 && text.pop().is_some() {
+            galley = painter.layout_no_wrap(format!("{text}…"), theme::small(), color);
+        }
+        let middle = pos2(rect.center().x, rect.bottom() - 4.0 - TILE_NAME / 2.0);
+        let at = middle - galley.size() / 2.0;
+        painter.galley(at, galley, color);
+        if resp.clicked() {
+            chosen = Some(index);
+        }
+    }
+    chosen
+}
+
 /// The width of the value at the right of a row of a form.
 const FORM_VALUE: f32 = 132.0;
 /// The height of the names below the ticks of a tick slider.

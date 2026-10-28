@@ -1,13 +1,14 @@
 use std::time::Instant;
 
 use vale_app::document::Document;
+use vale_app::pipeline::Quality;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
-use vale_app::ui::{AppState, LayerRef, RasterSpec};
+use vale_app::ui::{Action, AppState, LayerRef, RasterSpec};
 use vale_store::{
     GeometryKind, Hillshade, Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World,
 };
-use vale_style::LayerStyle;
 use vale_style::expr::Filter;
+use vale_style::{LayerStyle, PointSymbolizer, Rule, Style, Symbolizer};
 use vale_terrain::math::lonlat_to_dir;
 use vale_terrain::{Bands, FACES, Heightmap, Limits, Mode, Stamp, TexelRect, meters_to_level};
 
@@ -1596,4 +1597,83 @@ fn a_raster_layer_from_an_image_and_its_levels_are_one_undo_step() {
     state.redo();
     assert_eq!(state.doc.project.rasters()[0].id, id);
     assert!(layer_texels(&state, id) == texels);
+}
+
+#[test]
+fn an_added_svg_is_saved_in_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::empty();
+    let session = Session::open(&path, &mut doc).unwrap();
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.session = Some(session);
+
+    let svg = dir.path().join("oak.svg");
+    std::fs::write(
+        &svg,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="#8040c0"/></svg>"##,
+    )
+    .unwrap();
+    state.run_action(Action::AddSymbol(svg.clone()));
+    let note = state.symbol_note.clone().unwrap();
+    assert_eq!(note.text, "Added symbol oak");
+    assert!(!note.warning);
+    assert!(state.doc.symbols().get("oak").is_some());
+    // A second file with the name gets a free name.
+    state.run_action(Action::AddSymbol(svg.clone()));
+    assert_eq!(
+        state.symbol_note.clone().unwrap().text,
+        "Added symbol oak 2"
+    );
+
+    // A file that is not an SVG file, and a file over 1 MB, give a warning.
+    let bad = dir.path().join("bad.svg");
+    std::fs::write(&bad, "not svg").unwrap();
+    state.run_action(Action::AddSymbol(bad));
+    assert!(state.symbol_note.clone().unwrap().warning);
+    let big = dir.path().join("big.svg");
+    std::fs::write(&big, vec![b' '; 1 << 21]).unwrap();
+    state.run_action(Action::AddSymbol(big));
+    let note = state.symbol_note.clone().unwrap();
+    assert!(note.warning && note.text.contains("1 MB"), "{}", note.text);
+    // A new project has no symbols, so any name is free.
+    let tree = dir.path().join("tree.svg");
+    std::fs::copy(&svg, &tree).unwrap();
+    state.run_action(Action::AddSymbol(tree));
+    assert_eq!(state.symbol_note.clone().unwrap().text, "Added symbol tree");
+    drop(state);
+
+    // The reopened project has the symbols, and a style can use them.
+    let mut doc = Document::empty();
+    drop(Session::open(&path, &mut doc).unwrap());
+    let names: Vec<_> = doc
+        .project
+        .symbols()
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(names, ["oak", "oak 2", "tree"]);
+    let points = vale_import::geojson::read_str(
+        "pts",
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}"#,
+    )
+    .unwrap();
+    let id = doc.add_imported(points, None)[0];
+    doc.frame.labels = false;
+    doc.entry_mut(id).unwrap().style.style = Style {
+        rules: vec![Rule::new(
+            "Oak",
+            vec![Symbolizer::Symbol(PointSymbolizer::constant("oak", 20.0))],
+        )],
+    };
+    let mut fonts = vale_app::pipeline::fonts().unwrap();
+    let c = vale_app::pipeline::Pipeline::new()
+        .compose(&doc, (800.0, 600.0), &mut fonts, Quality::Final, None)
+        .unwrap();
+    assert_eq!(c.symbols.len(), 1);
+    let purple = c.list.items.iter().any(|i| {
+        matches!(i, vale_render::Item::Fill { color, .. } if (color.r, color.g, color.b) == (0x80, 0x40, 0xc0))
+    });
+    assert!(purple, "the symbol of the file does not draw");
 }

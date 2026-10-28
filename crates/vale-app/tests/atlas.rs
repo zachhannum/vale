@@ -1783,8 +1783,7 @@ fn the_texture_of_a_frame_holds_the_whole_border() {
     let place = h.state().atlas.place.unwrap();
     let bbox = place.rect_to_screen(shape_bbox(&frame(&h, 1).shape));
     let reach = |h: &Pad| {
-        let rects = h.state().atlas.texture_rects();
-        let r = rects.iter().find(|r| r.intersects(bbox)).unwrap();
+        let r = h.state().atlas.texture_rect(id).unwrap();
         bbox.min.x - r.min.x
     };
     // Half the width of the border is outside the shape.

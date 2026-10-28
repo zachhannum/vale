@@ -1,6 +1,6 @@
 //! The label step of the map pipeline.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kurbo::Rect;
 use vale_labeler::{
@@ -10,21 +10,30 @@ use vale_labeler::{
 use vale_render::{Color, GlyphRun, Item};
 use vale_store::GeometryKind;
 
-use crate::pipeline::{LabelSummary, PageLayer, Quality, UnplacedInfo};
+use crate::pipeline::{LabelSummary, PageLayer, PlacedSymbol, Quality, UnplacedInfo};
 
 const MAX_FEATURES: usize = 3000;
+
+/// The most scatter symbols that labels avoid.
+const MAX_SOFT: usize = 20_000;
+
+/// The cost of a label over one scatter symbol.
+const SCATTER_COST: f64 = 0.5;
 
 /// Places labels for the visible layers.
 ///
 /// `layers` runs from the bottom of the drawing to the top. A layer nearer the top gets a higher
-/// class priority.
+/// class priority. Labels do not overlap `obstacles` or a point symbol. A label over a scatter
+/// symbol has a cost.
 pub fn place(
     layers: &[PageLayer<'_>],
     page: Rect,
     fonts: &mut Fonts,
     quality: Quality,
     obstacles: &[Rect],
+    symbols: &[PlacedSymbol],
 ) -> (Vec<Item>, LabelSummary) {
+    let mut labeled = HashSet::new();
     let mut classes: Vec<LabelClass> = Vec::new();
     let mut class_colors: Vec<Color> = Vec::new();
     let mut features: Vec<Feature> = Vec::new();
@@ -85,6 +94,7 @@ pub fn place(
             } else {
                 0.0
             };
+            labeled.insert((pl.layer.id, f.index));
             let mut push = |geometry: Geometry| {
                 features.push(Feature {
                     id: next_id,
@@ -142,13 +152,7 @@ pub fn place(
         bounds: page,
         classes,
         features,
-        obstacles: obstacles
-            .iter()
-            .map(|r| Obstacle {
-                rect: *r,
-                kind: ObstacleKind::Hard,
-            })
-            .collect(),
+        obstacles: symbol_obstacles(obstacles, symbols, &labeled, page),
         options: Options {
             seed: 24301,
             improve: quality == Quality::Final,
@@ -192,4 +196,39 @@ pub fn place(
             .collect(),
     };
     (items, summary)
+}
+
+/// The obstacles: each rectangle of `hard`, each point symbol, and the
+/// scatter symbols. The label of a feature avoids its own symbol by its
+/// symbol radius, so the symbol of a labeled feature is not an obstacle.
+fn symbol_obstacles(
+    hard: &[Rect],
+    symbols: &[PlacedSymbol],
+    labeled: &HashSet<(vale_store::LayerId, usize)>,
+    page: Rect,
+) -> Vec<Obstacle> {
+    let mut out: Vec<Obstacle> = hard
+        .iter()
+        .map(|r| Obstacle {
+            rect: *r,
+            kind: ObstacleKind::Hard,
+        })
+        .collect();
+    let meets = |r: Rect| r.x0 <= page.x1 && r.x1 >= page.x0 && r.y0 <= page.y1 && r.y1 >= page.y0;
+    let shown = symbols.iter().filter(|s| meets(s.bounds));
+    let (scatter, points): (Vec<_>, Vec<_>) = shown.partition(|s| s.lonlat.is_some());
+    out.extend(
+        points
+            .into_iter()
+            .filter(|s| !labeled.contains(&(s.layer, s.feature)))
+            .map(|s| Obstacle {
+                rect: s.bounds,
+                kind: ObstacleKind::Hard,
+            }),
+    );
+    out.extend(scatter.into_iter().take(MAX_SOFT).map(|s| Obstacle {
+        rect: s.bounds,
+        kind: ObstacleKind::Soft { cost: SCATTER_COST },
+    }));
+    out
 }

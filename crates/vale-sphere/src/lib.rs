@@ -4,6 +4,7 @@ pub mod clip;
 pub mod frame;
 pub mod graticule;
 pub mod projection;
+pub mod scatter;
 pub mod spec;
 
 pub use clip::{ClipRect, EPS, clip_line_rect, clip_ring_rect, densify, shifts, unwrap};
@@ -13,4 +14,5 @@ pub use graticule::{
 };
 pub use kurbo::{Point, Rect};
 pub use projection::{Mesh, Projection, SphereError};
+pub use scatter::{ScatterParams, ScatterPlane, ScatterPoint, min_distance, scatter, seed_from};
 pub use spec::*;

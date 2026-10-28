@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use vale_store::GeometryKind;
 use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
-    Color, LayerStyle, Paint, Rule, STYLE_VERSION, Stroke, StrokeKind, StrokeSymbolizer, Style,
-    StyleError, Symbolizer, scale_denominator,
+    Color, Extent, LayerStyle, Paint, PointSymbolizer, Rule, STYLE_VERSION, ScatterSymbolizer,
+    Stroke, StrokeKind, StrokeSymbolizer, Style, StyleError, Symbolizer, extent_of,
+    scale_denominator,
 };
 
 fn river(kind: &str, flow: f64) -> BTreeMap<String, Value> {
@@ -89,7 +90,7 @@ fn each_matching_rule_draws_in_list_order() {
 #[test]
 fn a_line_width_comes_from_the_flow_attribute() {
     let style = width_from_flow();
-    let width = |flow| match paints(&style.style, &river("major", flow), 1.0)[0] {
+    let width = |flow| match paints(&style.style, &river("major", flow), 1.0).remove(0) {
         Paint::Stroke(s) => s.width,
         p => panic!("{p:?}"),
     };
@@ -156,7 +157,7 @@ fn the_json_has_a_version() {
     let json = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     let root: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(root["version"], STYLE_VERSION);
-    assert_eq!(STYLE_VERSION, 1);
+    assert_eq!(STYLE_VERSION, 2);
 }
 
 #[test]
@@ -202,11 +203,11 @@ fn json_errors() {
         root.to_string()
     };
     let newer = edit(&|m| {
-        m.insert("version".into(), 2.into());
+        m.insert("version".into(), 3.into());
     });
     assert_eq!(
         LayerStyle::from_json(&newer),
-        Err(StyleError::Version(Some(2)))
+        Err(StyleError::Version(Some(3)))
     );
     let none = edit(&|m| {
         m.remove("version");
@@ -384,7 +385,7 @@ fn solid_json_is_unchanged() {
     let json = line_with(StrokeKind::Solid).to_json();
     let expected = concat!(
         r##"{"label":{"color":"#2864a0","enabled":false,"field":null,"italic":true,"priority_field":null,"size":11.0},"##,
-        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":1}"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":2}"##,
     );
     assert_eq!(json, expected);
 }
@@ -402,4 +403,312 @@ fn set_stroke_keeps_the_kind() {
         assert_eq!(rule.stroke(), Some(s));
         assert_eq!(rule.symbolizers.len(), 1);
     }
+}
+
+fn tree_field(size: f64, angle: f64) -> BTreeMap<String, Value> {
+    let mut a = BTreeMap::new();
+    a.insert("size".into(), Value::Number(size));
+    a.insert("angle".into(), Value::Number(angle));
+    a.insert("tint".into(), Value::Text("#ff0000".into()));
+    a
+}
+
+fn symbol_rule(symbolizer: Symbolizer) -> LayerStyle {
+    let mut style = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
+    style.style.rules[0].symbolizers = vec![symbolizer];
+    style
+}
+
+fn symbol_styles() -> Vec<LayerStyle> {
+    let constant = PointSymbolizer::constant("pine", 8.0);
+    let tinted = PointSymbolizer {
+        tint: Some(Property::constant(RED)),
+        rotation: Property::constant(30.0),
+        ..PointSymbolizer::constant("mountain", 12.0)
+    };
+    let from_attributes = PointSymbolizer {
+        symbol: "tree".into(),
+        size: Property::expression("size * 2", 6.0),
+        rotation: Property::expression("angle", 0.0),
+        tint: Some(Property::expression("tint", BLUE)),
+    };
+    let scatter = ScatterSymbolizer::new("tree", 6.0, 10.0);
+    let scatter_from_attributes = ScatterSymbolizer {
+        size: Property::expression("size", 4.0),
+        spacing: Property::expression("size * 3", 12.0),
+        size_jitter: 0.35,
+        rotation_jitter: 15.0,
+        tint: Some(Property::constant(BLUE)),
+        ..ScatterSymbolizer::new("marsh", 5.0, 5.0)
+    };
+    vec![
+        symbol_rule(Symbolizer::Symbol(constant)),
+        symbol_rule(Symbolizer::Symbol(tinted)),
+        symbol_rule(Symbolizer::Symbol(from_attributes)),
+        symbol_rule(Symbolizer::Scatter(scatter)),
+        symbol_rule(Symbolizer::Scatter(scatter_from_attributes)),
+    ]
+}
+
+#[test]
+fn symbols_and_scatters_round_trip() {
+    for style in symbol_styles() {
+        let json = style.to_json();
+        let back = LayerStyle::from_json(&json).unwrap();
+        assert_eq!(back, style);
+        assert_eq!(back.to_json(), json);
+    }
+}
+
+#[test]
+fn symbol_json_has_its_form() {
+    let style = symbol_rule(Symbolizer::Symbol(PointSymbolizer {
+        rotation: Property::expression("angle", 0.0),
+        ..PointSymbolizer::constant("pine", 8.0)
+    }));
+    let root: serde_json::Value = serde_json::from_str(&style.to_json()).unwrap();
+    let s = &root["rules"][0]["symbolizers"][0];
+    assert_eq!(s["type"], "symbol");
+    assert_eq!(s["symbol"], "pine");
+    assert_eq!(s["size"], 8.0);
+    assert_eq!(s["rotation"]["expr"], "angle");
+    assert!(s["tint"].is_null());
+    let style = symbol_rule(Symbolizer::Scatter(ScatterSymbolizer {
+        rotation_jitter: 15.0,
+        tint: Some(Property::constant(RED)),
+        ..ScatterSymbolizer::new("tree", 6.0, 10.0)
+    }));
+    let root: serde_json::Value = serde_json::from_str(&style.to_json()).unwrap();
+    let s = &root["rules"][0]["symbolizers"][0];
+    assert_eq!(s["type"], "scatter");
+    assert_eq!(s["spacing"], 10.0);
+    assert_eq!(s["size_jitter"], 0.2);
+    assert_eq!(s["rotation_jitter"], 15.0);
+    assert_eq!(s["tint"], "#ff0000");
+}
+
+#[test]
+fn version_1_still_reads() {
+    let v1 = concat!(
+        r##"{"label":{"color":"#2864a0","enabled":false,"field":null,"italic":true,"priority_field":null,"size":11.0},"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":1}"##,
+    );
+    let style = LayerStyle::from_json(v1).unwrap();
+    assert_eq!(style, line_with(StrokeKind::Solid));
+    let zero = v1.replace("\"version\":1", "\"version\":0");
+    assert_eq!(
+        LayerStyle::from_json(&zero),
+        Err(StyleError::Version(Some(0)))
+    );
+}
+
+fn point_paints(symbolizer: Symbolizer, attrs: &BTreeMap<String, Value>) -> Vec<Paint> {
+    let ctx = Context {
+        attributes: attrs,
+        scale: 1.0,
+        geometry: GeometryKind::Point,
+    };
+    let mut out = Vec::new();
+    symbol_rule(symbolizer).style.paints(&ctx, &mut out);
+    out
+}
+
+#[test]
+fn a_symbol_takes_size_and_rotation_from_attributes() {
+    let styles = symbol_styles();
+    let symbolizer = styles[2].style.rules[0].symbolizers[0].clone();
+    assert!(!symbolizer.is_constant());
+    assert_eq!(
+        point_paints(symbolizer.clone(), &tree_field(5.0, 45.0)),
+        vec![Paint::Symbol {
+            symbol: "tree".into(),
+            size: 10.0,
+            rotation: 45.0,
+            tint: Some(RED),
+        }]
+    );
+    assert_eq!(
+        point_paints(symbolizer, &BTreeMap::new()),
+        vec![Paint::Symbol {
+            symbol: "tree".into(),
+            size: 6.0,
+            rotation: 0.0,
+            tint: Some(BLUE),
+        }]
+    );
+    let constant = &styles[0].style;
+    assert!(constant.rules[0].symbolizers[0].is_constant());
+    assert_eq!(
+        constant.constant_paints(1.0),
+        Some(vec![Paint::Symbol {
+            symbol: "pine".into(),
+            size: 8.0,
+            rotation: 0.0,
+            tint: None,
+        }])
+    );
+}
+
+#[test]
+fn a_scatter_keeps_spacing_at_least_size() {
+    let scatter = |size: f64, spacing: f64, size_jitter: f64, rotation_jitter: f64| {
+        Symbolizer::Scatter(ScatterSymbolizer {
+            size_jitter,
+            rotation_jitter,
+            ..ScatterSymbolizer::new("tree", size, spacing)
+        })
+    };
+    let paint = |s: Symbolizer| point_paints(s, &BTreeMap::new()).remove(0);
+    assert_eq!(
+        paint(scatter(6.0, 2.0, 0.9, 400.0)),
+        Paint::Scatter {
+            symbol: "tree".into(),
+            size: 6.0,
+            spacing: 6.0,
+            size_jitter: 0.5,
+            rotation_jitter: 180.0,
+            tint: None,
+        }
+    );
+    assert_eq!(
+        paint(scatter(6.0, 9.0, -1.0, -5.0)),
+        Paint::Scatter {
+            symbol: "tree".into(),
+            size: 6.0,
+            spacing: 9.0,
+            size_jitter: 0.0,
+            rotation_jitter: 0.0,
+            tint: None,
+        }
+    );
+    let from_attributes = symbol_styles()[4].style.rules[0].symbolizers[0].clone();
+    let Paint::Scatter { size, spacing, .. } = paint_with(from_attributes, 4.0) else {
+        panic!("a scatter")
+    };
+    assert_eq!((size, spacing), (4.0, 12.0));
+    let constant = symbol_rule(scatter(6.0, 2.0, 0.2, 0.0));
+    let Some(paints) = constant.style.constant_paints(1.0) else {
+        panic!("constant")
+    };
+    assert!(matches!(paints[0], Paint::Scatter { spacing: 6.0, .. }));
+}
+
+fn paint_with(s: Symbolizer, size: f64) -> Paint {
+    point_paints(s, &tree_field(size, 0.0)).remove(0)
+}
+
+fn fill(color: Color) -> Symbolizer {
+    Symbolizer::Fill {
+        color: Property::constant(color),
+    }
+}
+
+#[test]
+fn set_scatter_goes_after_the_fill_and_before_the_stroke() {
+    let tree = ScatterSymbolizer::new("tree", 6.0, 10.0);
+    let mut rule = Rule::new("r", vec![fill(RED), stroke(BLUE, 1.0), stroke(RED, 0.5)]);
+    rule.set_scatter(Some(tree.clone()));
+    assert!(matches!(rule.symbolizers[0], Symbolizer::Fill { .. }));
+    assert!(matches!(rule.symbolizers[1], Symbolizer::Scatter(_)));
+    assert!(matches!(rule.symbolizers[2], Symbolizer::Stroke(_)));
+    assert_eq!(rule.scatter(), Some(&tree));
+    let pine = ScatterSymbolizer::new("pine", 4.0, 4.0);
+    rule.set_scatter(Some(pine.clone()));
+    assert_eq!(rule.symbolizers.len(), 4);
+    assert_eq!(rule.scatter(), Some(&pine));
+    rule.set_scatter(None);
+    assert_eq!(rule.scatter(), None);
+    assert_eq!(rule.symbolizers.len(), 3);
+
+    let mut strokes = Rule::new("r", vec![stroke(BLUE, 1.0)]);
+    strokes.set_scatter(Some(tree.clone()));
+    assert!(matches!(strokes.symbolizers[0], Symbolizer::Scatter(_)));
+    let mut fill_only = Rule::new("r", vec![fill(RED)]);
+    fill_only.set_scatter(Some(tree));
+    assert!(matches!(fill_only.symbolizers[1], Symbolizer::Scatter(_)));
+}
+
+#[test]
+fn set_symbol_replaces_a_marker() {
+    let mut style = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
+    let rule = &mut style.style.rules[0];
+    rule.symbolizers.push(stroke(BLUE, 1.0));
+    let pine = PointSymbolizer::constant("pine", 8.0);
+    rule.set_symbol(Some(pine.clone()));
+    assert_eq!(rule.symbolizers.len(), 2);
+    assert!(matches!(rule.symbolizers[0], Symbolizer::Symbol(_)));
+    assert_eq!(rule.symbol(), Some(&pine));
+    let palm = PointSymbolizer::constant("palm", 10.0);
+    rule.set_symbol(Some(palm.clone()));
+    assert_eq!(rule.symbol(), Some(&palm));
+    assert_eq!(rule.symbolizers.len(), 2);
+    rule.set_symbol(None);
+    assert_eq!(rule.symbol(), None);
+    assert_eq!(rule.symbolizers.len(), 1);
+    assert!(matches!(rule.symbolizers[0], Symbolizer::Stroke(_)));
+    rule.set_symbol(Some(pine));
+    assert!(matches!(rule.symbolizers[1], Symbolizer::Symbol(_)));
+}
+
+#[test]
+fn the_extent_of_symbols() {
+    let symbol = Paint::Symbol {
+        symbol: "pine".into(),
+        size: 10.0,
+        rotation: 45.0,
+        tint: None,
+    };
+    let marker = Paint::Marker {
+        radius: 3.0,
+        fill: None,
+        stroke: Some(Stroke::solid(RED, 1.5)),
+    };
+    let scatter = Paint::Scatter {
+        symbol: "tree".into(),
+        size: 40.0,
+        spacing: 40.0,
+        size_jitter: 0.2,
+        rotation_jitter: 0.0,
+        tint: None,
+    };
+    assert_eq!(
+        extent_of(&[marker, symbol, scatter.clone()]),
+        Extent {
+            stroke_width: 1.5,
+            marker_radius: 5.0,
+        }
+    );
+    assert_eq!(extent_of(&[scatter]), Extent::default());
+}
+
+#[test]
+fn add_rule_tints_a_copied_symbol() {
+    let mut style = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
+    style.style.rules[0].set_symbol(Some(PointSymbolizer {
+        tint: Some(Property::constant(Color::rgb(0x2f, 0x5a, 0x2f))),
+        ..PointSymbolizer::constant("pine", 8.0)
+    }));
+    style.add_rule(GeometryKind::Point);
+    style.add_rule(GeometryKind::Point);
+    let tints: Vec<_> = style
+        .style
+        .rules
+        .iter()
+        .map(|r| {
+            let s = r.symbol().unwrap();
+            assert_eq!(s.symbol, "pine");
+            s.tint.as_ref().unwrap().fallback
+        })
+        .collect();
+    assert_ne!(tints[0], tints[1]);
+    assert_ne!(tints[1], tints[2]);
+    assert_ne!(tints[0], tints[2]);
+
+    let mut plain = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
+    plain.style.rules[0].set_symbol(Some(PointSymbolizer::constant("city", 8.0)));
+    plain.add_rule(GeometryKind::Point);
+    assert_eq!(
+        plain.style.rules[1].symbol(),
+        Some(&PointSymbolizer::constant("city", 8.0))
+    );
 }

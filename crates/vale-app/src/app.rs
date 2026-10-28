@@ -24,6 +24,8 @@ enum PickFor {
     Ramp(vale_store::RasterId),
     /// The image of the form of a new raster layer.
     RasterImage,
+    /// A new symbol of the project.
+    Symbol,
 }
 
 struct ValeApp {
@@ -75,6 +77,7 @@ impl eframe::App for ValeApp {
                 PickFor::Heightmap => state.run_action(Action::ImportHeightmap(path)),
                 PickFor::Ramp(id) => state.run_action(Action::ImportRamp(id, path)),
                 PickFor::RasterImage => state.run_action(Action::RasterImage(path)),
+                PickFor::Symbol => state.run_action(Action::AddSymbol(path)),
             }
         }
 
@@ -120,6 +123,14 @@ impl eframe::App for ValeApp {
                         && picker.pick_heightmap()
                     {
                         self.pick_for = PickFor::RasterImage;
+                    }
+                }
+                #[cfg(target_os = "ios")]
+                Action::AddSymbolDialog => {
+                    if let Some(picker) = &self.picker
+                        && picker.pick_svg()
+                    {
+                        self.pick_for = PickFor::Symbol;
                     }
                 }
                 #[cfg(target_os = "ios")]
@@ -220,6 +231,15 @@ impl eframe::App for ValeApp {
                         .pick_file();
                     if let Some(path) = picked {
                         state.run_action(Action::RasterImage(path));
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
+                Action::AddSymbolDialog => {
+                    let picked = rfd::FileDialog::new()
+                        .add_filter("SVG", &["svg"])
+                        .pick_file();
+                    if let Some(path) = picked {
+                        state.run_action(Action::AddSymbol(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]

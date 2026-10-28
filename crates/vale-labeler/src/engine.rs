@@ -173,6 +173,11 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
     for (i, b) in hard.iter().enumerate() {
         hard_grid.insert(i as u32, b.aabb());
     }
+    let mut soft_grid = GridIndex::new(bounds, 32.0);
+    for (i, (b, _)) in soft.iter().enumerate() {
+        soft_grid.insert(i as u32, b.aabb());
+    }
+    let mut soft_hits: Vec<u32> = Vec::new();
 
     // Segments of every line feature, for the crossing cost.
     let mut seg_grid = GridIndex::new(bounds, 32.0);
@@ -260,7 +265,16 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                 obstructed = true;
                 continue;
             }
-            for (rect, cost) in &soft {
+            // Each soft obstacle adds its cost one time, in obstacle order.
+            soft_hits.clear();
+            for b in &c.boxes {
+                soft_grid.query(b.aabb(), &mut hits);
+                soft_hits.extend_from_slice(&hits);
+            }
+            soft_hits.sort_unstable();
+            soft_hits.dedup();
+            for &s in &soft_hits {
+                let (rect, cost) = &soft[s as usize];
                 if c.boxes.iter().any(|b| rect.intersects(b)) {
                     c.cost += cost;
                 }

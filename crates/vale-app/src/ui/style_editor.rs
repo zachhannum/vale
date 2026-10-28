@@ -1,9 +1,11 @@
 //! The rule editor of the desktop layout: the list of the rules, and the
-//! filter, the scale range, the stroke, and the fill of the selected rule.
+//! filter, the scale range, the stroke, the fill, the point symbol, and the
+//! scatter of the selected rule.
 
 use eframe::egui;
+use vale_render::Symbols;
 use vale_store::{Field, FieldType, GeometryKind, LayerId};
-use vale_style::expr::Filter;
+use vale_style::expr::{Filter, Property};
 use vale_style::{Color, LayerStyle, Rule, Stroke, StrokeKind};
 
 use super::pad::filter::{self, ADD_CONDITION, REMOVE_CONDITION};
@@ -12,6 +14,22 @@ use super::pad::rules::{
     FILL, FILTER, GAP, LINE, MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, SOLID, STROKE,
     STROKE_WIDTH, TAPER, TAPER_START, parse_scale, scale_text,
 };
+use super::pad::rules::{
+    ADD_SYMBOL, CIRCLE, CIRCLE_SIZES, MARKER, MAX_SPACING, NO_FIELD, NO_SYMBOL_LIST, POINT_SIZES,
+    ROTATION, ROTATION_FIELD, ROTATION_VARIATION, SCATTER, SCATTER_SIZES, SIZE, SIZE_FIELD,
+    SIZE_VARIATION, SPACING, SVG_SYMBOL, SYMBOL, TINT, marker_radius, new_tint, numeric_fields,
+    pick_symbol, property_field, to_circle, with_field,
+};
+use super::{Action, Note};
+use crate::globe::symbol::paint_symbol;
+
+/// The symbols that the editor lists, the text of the last addition of a
+/// symbol, and the actions of the app.
+pub struct Library<'a> {
+    pub symbols: &'a Symbols,
+    pub note: Option<&'a Note>,
+    pub actions: &'a mut Vec<Action>,
+}
 
 /// The editor of the rules of the style of layer `id`. Returns true if the
 /// user changed the style.
@@ -21,6 +39,7 @@ pub fn rules(
     style: &mut LayerStyle,
     kind: GeometryKind,
     fields: &[Field],
+    library: &mut Library,
 ) -> bool {
     let key = egui::Id::new(("style-rule", id.0));
     let count = style.style.rules.len();
@@ -70,9 +89,281 @@ pub fn rules(
         let salt = key.with(at);
         changed |= filter_rows(ui, rule, fields, salt);
         changed |= scale_rows(ui, rule, salt);
-        changed |= paint_rows(ui, rule, kind, salt);
+        let numbers = numeric_fields(fields);
+        if kind == GeometryKind::Point {
+            changed |= symbol_rows(ui, rule, &numbers, library, salt);
+        }
+        // An SVG symbol has no stroke and no fill.
+        if rule.symbol().is_none() {
+            changed |= paint_rows(ui, rule, kind, salt);
+        }
+        if kind == GeometryKind::Polygon {
+            changed |= scatter_rows(ui, rule, library, salt);
+        }
     }
     changed
+}
+
+/// The choice of a circle or an SVG symbol, the size of a circle, and the
+/// symbol, the size, the rotation, their fields, and the tint of an SVG
+/// symbol. "SVG symbol" picks the first symbol of the library. With no
+/// symbols, the rule stays a circle until the user adds one.
+fn symbol_rows(
+    ui: &mut egui::Ui,
+    rule: &mut Rule,
+    fields: &[String],
+    library: &mut Library,
+    salt: egui::Id,
+) -> bool {
+    let mut changed = false;
+    let key = salt.with("want-symbol");
+    let mut want = ui.data(|d| d.get_temp(key)).unwrap_or(false) && rule.symbol().is_none();
+    let mut svg = rule.symbol().is_some() || want;
+    let mut chose = false;
+    ui.horizontal(|ui| {
+        ui.label(MARKER);
+        egui::ComboBox::from_id_salt(salt.with("symbol-kind"))
+            .selected_text(if svg { SVG_SYMBOL } else { CIRCLE })
+            .show_ui(ui, |ui| {
+                chose |= ui.selectable_value(&mut svg, false, CIRCLE).changed();
+                chose |= ui.selectable_value(&mut svg, true, SVG_SYMBOL).changed();
+            });
+    });
+    if chose && !svg {
+        to_circle(rule);
+        want = false;
+        changed = true;
+    }
+    want |= chose && svg;
+    if want && let Some(first) = library.symbols.names().first() {
+        pick_symbol(rule, GeometryKind::Point, first);
+        want = false;
+        changed = true;
+    }
+    ui.data_mut(|d| d.insert_temp(key, want));
+    let Some(before) = rule.symbol() else {
+        if want {
+            library_row(ui, library, None, None, salt);
+        }
+        if let Some(radius) = marker_radius(rule) {
+            let mut size = 2.0 * radius.fallback;
+            if number_row(ui, SIZE, &mut size, CIRCLE_SIZES, " pt") {
+                radius.fallback = size / 2.0;
+                changed = true;
+            }
+        }
+        return changed;
+    };
+    let mut s = before.clone();
+    let tint = s.tint.as_ref().map(|t| t.fallback);
+    if let Some(name) = library_row(ui, library, Some(&s.symbol), tint, salt) {
+        s.symbol = name;
+    }
+    number_row(ui, SIZE, &mut s.size.fallback, POINT_SIZES, " pt");
+    number_row(
+        ui,
+        ROTATION,
+        &mut s.rotation.fallback,
+        (0.0, 359.0),
+        "\u{b0}",
+    );
+    field_row(ui, SIZE_FIELD, &mut s.size, fields, salt);
+    field_row(ui, ROTATION_FIELD, &mut s.rotation, fields, salt);
+    tint_row(ui, &mut s.tint);
+    if Some(&s) != rule.symbol() {
+        rule.set_symbol(Some(s));
+        changed = true;
+    }
+    changed
+}
+
+/// The switch of the scatter, and its symbol, size, spacing, variations, and
+/// tint. The switch picks the first symbol of the library. With no symbols,
+/// the scatter starts when the user adds one.
+fn scatter_rows(ui: &mut egui::Ui, rule: &mut Rule, library: &mut Library, salt: egui::Id) -> bool {
+    let key = salt.with("want-scatter");
+    let mut want = ui.data(|d| d.get_temp(key)).unwrap_or(false) && rule.scatter().is_none();
+    let mut on = rule.scatter().is_some() || want;
+    let mut changed = false;
+    if ui.checkbox(&mut on, SCATTER).changed() {
+        want = on;
+        if !on {
+            rule.set_scatter(None);
+            changed = true;
+        }
+    }
+    if want && let Some(first) = library.symbols.names().first() {
+        pick_symbol(rule, GeometryKind::Polygon, first);
+        want = false;
+        changed = true;
+    }
+    ui.data_mut(|d| d.insert_temp(key, want));
+    let Some(before) = rule.scatter() else {
+        if want {
+            library_row(ui, library, None, None, salt);
+        }
+        return changed;
+    };
+    let mut s = before.clone();
+    let tint = s.tint.as_ref().map(|t| t.fallback);
+    if let Some(name) = library_row(ui, library, Some(&s.symbol), tint, salt) {
+        s.symbol = name;
+    }
+    number_row(ui, SIZE, &mut s.size.fallback, SCATTER_SIZES, " pt");
+    let size = s.size.fallback;
+    s.spacing.fallback = s.spacing.fallback.max(size);
+    number_row(
+        ui,
+        SPACING,
+        &mut s.spacing.fallback,
+        (size, MAX_SPACING.max(size)),
+        " pt",
+    );
+    let mut percent = s.size_jitter * 100.0;
+    if number_row(ui, SIZE_VARIATION, &mut percent, (0.0, 50.0), " %") {
+        s.size_jitter = percent / 100.0;
+    }
+    number_row(
+        ui,
+        ROTATION_VARIATION,
+        &mut s.rotation_jitter,
+        (0.0, 180.0),
+        "\u{b0}",
+    );
+    tint_row(ui, &mut s.tint);
+    if Some(&s) != rule.scatter() {
+        rule.set_scatter(Some(s));
+        return true;
+    }
+    changed
+}
+
+/// The side of the preview of a symbol.
+const PREVIEW: f32 = 20.0;
+
+/// A preview of `current`, a list of the symbols of the library, and the
+/// button that adds a symbol. With no symbols, the list is off. Returns the
+/// symbol that the user picked.
+fn library_row(
+    ui: &mut egui::Ui,
+    library: &mut Library,
+    current: Option<&str>,
+    tint: Option<Color>,
+    salt: egui::Id,
+) -> Option<String> {
+    let mut picked = None;
+    let names = library.symbols.names();
+    ui.horizontal(|ui| {
+        ui.label(SYMBOL);
+        if let Some(symbol) = current.and_then(|c| library.symbols.get(c)) {
+            let size = egui::vec2(PREVIEW, PREVIEW);
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, 3.0, super::pad::rules::PAPER);
+            paint_symbol(
+                ui.painter(),
+                symbol,
+                rect.center(),
+                PREVIEW - 4.0,
+                0.0,
+                tint,
+            );
+        }
+        let text = if names.is_empty() {
+            NO_SYMBOL_LIST
+        } else {
+            current.unwrap_or_default()
+        };
+        ui.add_enabled_ui(!names.is_empty(), |ui| {
+            egui::ComboBox::from_id_salt(salt.with("symbol"))
+                .selected_text(text)
+                .show_ui(ui, |ui| {
+                    for name in &names {
+                        let on = Some(*name) == current;
+                        if ui.selectable_label(on, *name).clicked() && !on {
+                            picked = Some((*name).to_owned());
+                        }
+                    }
+                });
+        });
+        if ui.button(ADD_SYMBOL).clicked() {
+            library.actions.push(Action::AddSymbolDialog);
+        }
+    });
+    if let Some(note) = library.note {
+        let color = if note.warning {
+            ui.visuals().warn_fg_color
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        ui.label(egui::RichText::new(&note.text).color(color));
+    }
+    picked
+}
+
+/// A label and a drag value from `lo` to `hi`. Returns true if the user
+/// changed the value.
+fn number_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f64,
+    (lo, hi): (f64, f64),
+    suffix: &str,
+) -> bool {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let drag = egui::DragValue::new(value)
+            .speed(0.5)
+            .range(lo..=hi)
+            .suffix(suffix);
+        ui.add(drag).changed()
+    })
+    .inner
+}
+
+/// A list of "None" and the number fields, which sets the field of a
+/// property.
+fn field_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    property: &mut Property<f64>,
+    fields: &[String],
+    salt: egui::Id,
+) {
+    let current = property_field(property, fields);
+    let mut field = None;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(salt.with(label))
+            .selected_text(current.as_deref().unwrap_or(NO_FIELD))
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(current.is_none(), NO_FIELD).clicked() {
+                    field = Some(None);
+                }
+                for f in fields {
+                    let on = current.as_deref() == Some(f.as_str());
+                    if ui.selectable_label(on, f).clicked() {
+                        field = Some(Some(f.as_str()));
+                    }
+                }
+            });
+    });
+    if let Some(field) = field {
+        *property = with_field(property, field);
+    }
+}
+
+/// The switch of a tint and its color button.
+fn tint_row(ui: &mut egui::Ui, tint: &mut Option<Property<Color>>) {
+    ui.horizontal(|ui| {
+        let mut on = tint.is_some();
+        if ui.checkbox(&mut on, TINT).changed() {
+            *tint = on.then(|| Property::constant(new_tint()));
+        }
+        if let Some(t) = tint {
+            color_button(ui, &mut t.fallback);
+        }
+    });
 }
 
 /// The conditions of the filter, each with a button that removes it, the

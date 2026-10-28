@@ -9,12 +9,12 @@ use vale_store::{BlendMode, RasterDisplay, Rgb, Stop, StopLine};
 
 use crate::expr::{Filter, FromValue, Property};
 use crate::{
-    Color, LabelStyle, LayerStyle, RasterSymbolizer, Rule, StrokeKind, StrokeSymbolizer, Style,
-    Symbolizer,
+    Color, LabelStyle, LayerStyle, PointSymbolizer, RasterSymbolizer, Rule, ScatterSymbolizer,
+    StrokeKind, StrokeSymbolizer, Style, Symbolizer,
 };
 
-/// The version of the style JSON that this build writes and reads.
-pub const STYLE_VERSION: u64 = 1;
+/// The version of the style JSON that this build writes. It reads this version and each earlier version.
+pub const STYLE_VERSION: u64 = 2;
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -66,7 +66,7 @@ impl LayerStyle {
         let root: Json = serde_json::from_str(text).map_err(|e| StyleError::Json(e.to_string()))?;
         let root = root.as_object().ok_or_else(|| invalid("not an object"))?;
         match root.get("version").and_then(Json::as_u64) {
-            Some(STYLE_VERSION) => {}
+            Some(1..=STYLE_VERSION) => {}
             v => return Err(StyleError::Version(v)),
         }
         let rules = root
@@ -118,6 +118,22 @@ fn symbolizer_json(s: &Symbolizer) -> Json {
             "radius": number_json(radius),
             "fill": fill.as_ref().map(color_json),
             "stroke": stroke.as_ref().map(|s| Json::Object(stroke_json(s))),
+        }),
+        Symbolizer::Symbol(s) => json!({
+            "type": "symbol",
+            "symbol": s.symbol,
+            "size": number_json(&s.size),
+            "rotation": number_json(&s.rotation),
+            "tint": s.tint.as_ref().map(color_json),
+        }),
+        Symbolizer::Scatter(s) => json!({
+            "type": "scatter",
+            "symbol": s.symbol,
+            "size": number_json(&s.size),
+            "spacing": number_json(&s.spacing),
+            "size_jitter": s.size_jitter,
+            "rotation_jitter": s.rotation_jitter,
+            "tint": s.tint.as_ref().map(color_json),
         }),
     }
 }
@@ -210,9 +226,43 @@ fn read_symbolizer(j: &Json) -> Result<Symbolizer, StyleError> {
                 Some(_) => return Err(invalid("a marker stroke is not an object")),
             },
         }),
+        Some("symbol") => Ok(Symbolizer::Symbol(PointSymbolizer {
+            symbol: read_symbol_name(m)?,
+            size: read_number(m.get("size"))?,
+            rotation: match m.get("rotation") {
+                None => Property::constant(0.0),
+                r => read_number(r)?,
+            },
+            tint: read_tint(m)?,
+        })),
+        Some("scatter") => Ok(Symbolizer::Scatter(ScatterSymbolizer {
+            symbol: read_symbol_name(m)?,
+            size: read_number(m.get("size"))?,
+            spacing: read_number(m.get("spacing"))?,
+            size_jitter: m
+                .get("size_jitter")
+                .and_then(Json::as_f64)
+                .unwrap_or(ScatterSymbolizer::SIZE_JITTER),
+            rotation_jitter: m
+                .get("rotation_jitter")
+                .and_then(Json::as_f64)
+                .unwrap_or(0.0),
+            tint: read_tint(m)?,
+        })),
         Some("raster") => Ok(Symbolizer::Raster(read_raster(m)?)),
         Some(t) => Err(invalid(format!("unknown symbolizer {t}"))),
         None => Err(invalid("a symbolizer has no type")),
+    }
+}
+
+fn read_symbol_name(m: &Map<String, Json>) -> Result<String, StyleError> {
+    optional_text(m, "symbol").ok_or_else(|| invalid("a symbol has no name"))
+}
+
+fn read_tint(m: &Map<String, Json>) -> Result<Option<Property<Color>>, StyleError> {
+    match m.get("tint") {
+        None | Some(Json::Null) => Ok(None),
+        c => Ok(Some(read_color(c)?)),
     }
 }
 

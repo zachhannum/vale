@@ -34,6 +34,7 @@ pub mod snap;
 pub mod stats;
 pub mod stops;
 pub mod stroke_test;
+pub mod symbol;
 pub mod thumbnail;
 pub mod vector;
 pub mod view;

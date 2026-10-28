@@ -1,6 +1,8 @@
+mod common;
+
 use eframe::egui;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
 use vale_app::headless;
 use vale_app::ui::atlas::{self, AtlasSelection};
@@ -78,7 +80,7 @@ fn places_controls_and_labels_switch() {
     h.state_mut().selected_layer = Some(LayerRef::Vector(places));
     h.run_steps(2);
     assert!(h.query_by_label("Show labels").is_some());
-    assert!(h.query_by_label("Point size").is_some());
+    assert!(h.query_by_label(vale_app::ui::pad::rules::SIZE).is_some());
     assert!(h.query_by_label("Label field").is_some());
     let before = h.state().composed.as_ref().unwrap().labels.placed;
     h.get_by_label("Show labels").click();
@@ -98,7 +100,7 @@ fn polygon_layer_has_no_point_controls() {
         h.query_by_label("Polygon labels are not available yet.")
             .is_some()
     );
-    assert!(h.query_by_label("Point size").is_none());
+    assert!(h.query_by_label(vale_app::ui::pad::rules::SIZE).is_none());
 }
 
 #[test]
@@ -123,6 +125,75 @@ fn the_dock_edits_the_rules_of_a_layer() {
     h.get_by_label(DELETE_RULE).click();
     h.run_steps(2);
     assert_eq!(names(&h), ["Default"]);
+}
+
+#[test]
+fn the_dock_sets_a_point_symbol_and_a_scatter() {
+    use vale_app::ui::Action;
+    use vale_app::ui::pad::rules::{
+        ADD_SYMBOL, CIRCLE, NO_SYMBOL_LIST, SCATTER, SIZE, SVG_SYMBOL, SYMBOL,
+    };
+    let mut h = harness();
+    let places = id_of(&h, "Places");
+    let rule = |h: &Harness<'static, AppState>, id| {
+        h.state().doc.entry(id).unwrap().style.style.rules[0].clone()
+    };
+    h.state_mut().selected_layer = Some(LayerRef::Vector(places));
+    h.run_steps(2);
+    assert!(h.query_by_label(ADD_SYMBOL).is_none());
+    assert!(h.query_by_label(SIZE).is_some());
+
+    // With no symbols, the rule stays a circle, and the list is off.
+    h.get_by_value(CIRCLE).click();
+    h.run_steps(2);
+    h.get_by_label(SVG_SYMBOL).click();
+    h.run_steps(2);
+    assert!(rule(&h, places).symbol().is_none());
+    assert!(h.query_by_label(SYMBOL).is_some());
+    let list = h.get_by_value(NO_SYMBOL_LIST);
+    assert!(list.accesskit_node().is_disabled());
+    h.get_by_label(ADD_SYMBOL).click();
+    h.run_steps(2);
+    assert!(h.state().actions.contains(&Action::AddSymbolDialog));
+    std::fs::create_dir_all("../../target/app").unwrap();
+    h.render()
+        .unwrap()
+        .save("../../target/app/test-dock-symbol-empty.png")
+        .unwrap();
+
+    // The first symbol that the user adds becomes the symbol of the rule.
+    common::add_symbols(&mut h.state_mut().doc, &["pine", "castle", "tree"]);
+    h.run_steps(2);
+    assert_eq!(rule(&h, places).symbol().unwrap().symbol, "pine");
+    h.get_by_value("pine").click();
+    h.run_steps(2);
+    h.get_by_label("castle").click();
+    h.run_steps(2);
+    let s = rule(&h, places).symbol().cloned().unwrap();
+    assert_eq!(s.symbol, "castle");
+    assert_eq!(s.size.fallback, 12.0);
+    assert!(s.tint.is_none());
+    h.render()
+        .unwrap()
+        .save("../../target/app/test-dock-symbol.png")
+        .unwrap();
+
+    let land = id_of(&h, "Land");
+    h.state_mut().selected_layer = Some(LayerRef::Vector(land));
+    h.run_steps(2);
+    h.get_by_label(SCATTER).click();
+    h.run_steps(2);
+    let scatter = rule(&h, land).scatter().cloned().unwrap();
+    assert_eq!(scatter.symbol, "pine");
+    assert_eq!(
+        (scatter.size.fallback, scatter.spacing.fallback),
+        (8.0, 10.0)
+    );
+    assert!(scatter.tint.is_none());
+    h.render()
+        .unwrap()
+        .save("../../target/app/test-dock-scatter.png")
+        .unwrap();
 }
 
 #[test]

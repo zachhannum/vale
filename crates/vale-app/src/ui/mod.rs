@@ -70,6 +70,11 @@ pub enum Action {
     /// Adds the colors of the blocks of this legend image to the color
     /// ramps. The panel of this raster layer shows the result.
     ImportRamp(RasterId, PathBuf),
+    /// Asks for an SVG file to add to the symbols of the project.
+    AddSymbolDialog,
+    /// Adds this SVG file to the symbols of the project, and saves.
+    /// `symbol_note` shows the result.
+    AddSymbol(PathBuf),
     /// Asks for the file of an export of the selected raster layer.
     ExportHeightmapDialog,
     /// Asks for a PNG file, and exports the selected raster layer to it.
@@ -361,6 +366,8 @@ pub struct AppState {
     pub ramps: crate::ramps::Ramps,
     /// The text of the last import of a color ramp.
     pub ramp_note: Option<Note>,
+    /// The text of the last addition of a symbol.
+    pub symbol_note: Option<Note>,
     /// The raster layers of the last import and of the last export.
     pub import_layer: Option<RasterId>,
     pub export_layer: Option<RasterId>,
@@ -454,6 +461,7 @@ impl AppState {
             atlas_export: None,
             ramps: Default::default(),
             ramp_note: None,
+            symbol_note: None,
             import_layer: None,
             export_layer: None,
             share_exports: false,
@@ -1887,6 +1895,26 @@ impl AppState {
 
     /// Adds the colors of the blocks of a legend image to the ramps, and
     /// returns the name of the ramp and the number of colors.
+    /// Adds an SVG file to the symbols of the project, and saves. The name
+    /// of the symbol comes from the name of the file.
+    fn add_symbol(&mut self, path: &Path) -> Result<String, String> {
+        let name = file_name(path);
+        let size = std::fs::metadata(path)
+            .map_err(|e| format!("{name}: {e}"))?
+            .len();
+        if size > crate::document::MAX_SYMBOL_BYTES {
+            return Err(format!("{name}: The file is larger than 1 MB"));
+        }
+        let svg = std::fs::read_to_string(path).map_err(|e| format!("{name}: {e}"))?;
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let added = self
+            .doc
+            .add_symbol(stem, svg)
+            .map_err(|e| format!("{name}: {e}"))?;
+        self.save(Instant::now());
+        Ok(added)
+    }
+
     fn import_ramp(&mut self, path: &Path) -> Result<(String, usize), String> {
         let name = file_name(path);
         let image = image::open(path).map_err(|e| format!("{name}: {e}"))?;
@@ -2193,6 +2221,14 @@ impl AppState {
                 self.status = note.text.clone();
                 self.ramp_note = Some(note);
             }
+            Action::AddSymbol(path) => {
+                let note = match self.add_symbol(&path) {
+                    Ok(name) => Note::new(format!("Added symbol {name}"), false, None),
+                    Err(text) => Note::new(text, true, None),
+                };
+                self.status = note.text.clone();
+                self.symbol_note = Some(note);
+            }
             Action::ExportHeightmap(path) => {
                 self.export_note = None;
                 let project = &self.doc.project;
@@ -2238,6 +2274,7 @@ impl AppState {
             | Action::ImportHeightmapDialog
             | Action::RasterImageDialog
             | Action::ImportRampDialog(_)
+            | Action::AddSymbolDialog
             | Action::ExportHeightmapDialog
             | Action::ExportHeightmapPngDialog
             | Action::OpenProjectDialog => {}

@@ -734,6 +734,15 @@ pub struct Project {
     rasters: Vec<Raster>,
     next_raster_id: u32,
     pub atlas: Atlas,
+    symbols: Vec<SymbolRecord>,
+}
+
+/// A point symbol that the user adds to the project, as the text of an SVG
+/// file. Each symbol has a unique name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SymbolRecord {
+    pub name: String,
+    pub svg: String,
 }
 
 impl Project {
@@ -746,6 +755,7 @@ impl Project {
             next_id: 0,
             rasters: Vec::new(),
             next_raster_id: 0,
+            symbols: Vec::new(),
         }
     }
 
@@ -988,6 +998,35 @@ impl Project {
     /// The layers in draw order. The first layer is at the bottom.
     pub fn layers(&self) -> &[Layer] {
         &self.layers
+    }
+
+    /// The symbols that the user added, in the order of addition.
+    pub fn symbols(&self) -> &[SymbolRecord] {
+        &self.symbols
+    }
+
+    /// Adds a symbol and returns its name. The name is trimmed, and an empty
+    /// name becomes "Symbol". If a symbol of the project or a name in
+    /// `reserved` has the name, the symbol gets the first free name of the
+    /// form "oak 2", "oak 3", and so on. A symbol is not an edit, so it gets
+    /// no undo step.
+    pub fn add_symbol(&mut self, name: &str, svg: String, reserved: &[&str]) -> String {
+        let base = match name.trim() {
+            "" => "Symbol",
+            name => name,
+        };
+        let taken = |n: &str| reserved.contains(&n) || self.symbols.iter().any(|s| s.name == n);
+        let mut name = base.to_string();
+        let mut n = 2;
+        while taken(&name) {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        self.symbols.push(SymbolRecord {
+            name: name.clone(),
+            svg,
+        });
+        name
     }
 
     /// Moves a layer to this index of the draw order. An index past the end
@@ -1668,5 +1707,23 @@ mod tests {
         assert_eq!(Geometry::Polygons(vec![]).kind().name(), "polygon");
         assert_eq!(Geometry::Points(vec![]).kind().name(), "point");
         assert_eq!(World::default().radius_km, 6371.0);
+    }
+
+    #[test]
+    fn add_symbol_makes_unique_names() {
+        let mut project = Project::new(World::default());
+        let svg = || "<svg/>".to_string();
+        assert_eq!(project.add_symbol(" oak ", svg(), &[]), "oak");
+        assert_eq!(project.add_symbol("oak", svg(), &[]), "oak 2");
+        assert_eq!(project.add_symbol("oak", svg(), &[]), "oak 3");
+        assert_eq!(project.add_symbol("  ", svg(), &[]), "Symbol");
+        assert_eq!(project.add_symbol("", svg(), &[]), "Symbol 2");
+        let reserved = ["Circle", "Circle 2"];
+        assert_eq!(project.add_symbol("Circle", svg(), &reserved), "Circle 3");
+        let names: Vec<&str> = project.symbols().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["oak", "oak 2", "oak 3", "Symbol", "Symbol 2", "Circle 3"]
+        );
     }
 }

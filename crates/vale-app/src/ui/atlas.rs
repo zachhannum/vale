@@ -310,6 +310,11 @@ impl AtlasState {
     pub fn texture_rects(&self) -> Vec<Rect> {
         self.images.values().map(|i| i.rect).collect()
     }
+
+    /// The screen rectangle of the texture of frame `id`.
+    pub fn texture_rect(&self, id: FrameId) -> Option<Rect> {
+        self.images.get(&id).map(|i| i.rect)
+    }
 }
 
 impl Default for AtlasState {

@@ -1,5 +1,7 @@
 //! Rule-based styles.
 
+use std::sync::Arc;
+
 use vale_store::{BlendMode, RasterDisplay, Rgb, Stop};
 
 use crate::expr::{Context, Filter, Property};
@@ -52,8 +54,88 @@ pub enum Symbolizer {
         fill: Option<Property<Color>>,
         stroke: Option<StrokeSymbolizer>,
     },
+    /// A symbol from the library at each point.
+    Symbol(PointSymbolizer),
+    /// Symbols spread over the inside of each polygon.
+    Scatter(ScatterSymbolizer),
     /// The colors of a raster layer.
     Raster(RasterSymbolizer),
+}
+
+/// A symbol at each point. The size is the longer side of the symbol in points. The rotation is in degrees clockwise from page up, about the center. A tint replaces the colors of the symbol.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointSymbolizer {
+    /// The name of the symbol in the library.
+    pub symbol: String,
+    pub size: Property<f64>,
+    pub rotation: Property<f64>,
+    pub tint: Option<Property<Color>>,
+}
+
+/// Symbols spread over the inside of a polygon. The size is the longer side of a symbol in points, and the spacing is the smallest distance between the centers of two symbols in points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScatterSymbolizer {
+    /// The name of the symbol in the library.
+    pub symbol: String,
+    pub size: Property<f64>,
+    pub spacing: Property<f64>,
+    /// From 0 to 0.5. A symbol becomes smaller by up to this fraction of the size.
+    pub size_jitter: f64,
+    /// From 0 to 180. A symbol turns by up to this angle in degrees, in each direction.
+    pub rotation_jitter: f64,
+    pub tint: Option<Property<Color>>,
+}
+
+impl PointSymbolizer {
+    /// A symbol with a constant size, no rotation, and no tint.
+    pub fn constant(symbol: &str, size: f64) -> Self {
+        PointSymbolizer {
+            symbol: symbol.to_string(),
+            size: Property::constant(size),
+            rotation: Property::constant(0.0),
+            tint: None,
+        }
+    }
+
+    fn is_constant(&self) -> bool {
+        self.size.is_constant()
+            && self.rotation.is_constant()
+            && self.tint.as_ref().is_none_or(Property::is_constant)
+    }
+}
+
+impl ScatterSymbolizer {
+    pub const SIZE_JITTER: f64 = 0.2;
+
+    /// A scatter with constant values, no rotation jitter, and no tint.
+    pub fn new(symbol: &str, size: f64, spacing: f64) -> Self {
+        ScatterSymbolizer {
+            symbol: symbol.to_string(),
+            size: Property::constant(size),
+            spacing: Property::constant(spacing),
+            size_jitter: Self::SIZE_JITTER,
+            rotation_jitter: 0.0,
+            tint: None,
+        }
+    }
+
+    fn is_constant(&self) -> bool {
+        self.size.is_constant()
+            && self.spacing.is_constant()
+            && self.tint.as_ref().is_none_or(Property::is_constant)
+    }
+
+    /// The paint for a size, a spacing, and a tint. The spacing is at least the size, and the jitters are in their ranges.
+    fn paint(&self, size: f64, spacing: f64, tint: Option<Color>) -> Paint {
+        Paint::Scatter {
+            symbol: Arc::from(self.symbol.as_str()),
+            size,
+            spacing: spacing.max(size),
+            size_jitter: self.size_jitter.clamp(0.0, 0.5),
+            rotation_jitter: self.rotation_jitter.clamp(0.0, 180.0),
+            tint,
+        }
+    }
 }
 
 /// The colors of a raster layer. A raster layer draws with the first raster symbolizer of its style. The filter and the scale range of its rule do not apply.
@@ -71,7 +153,7 @@ pub struct RasterSymbolizer {
 }
 
 /// A symbolizer with the values for one feature.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Paint {
     Fill(Color),
     Stroke(Stroke),
@@ -80,6 +162,20 @@ pub enum Paint {
         fill: Option<Color>,
         stroke: Option<Stroke>,
     },
+    Symbol {
+        symbol: Arc<str>,
+        size: f64,
+        rotation: f64,
+        tint: Option<Color>,
+    },
+    Scatter {
+        symbol: Arc<str>,
+        size: f64,
+        spacing: f64,
+        size_jitter: f64,
+        rotation_jitter: f64,
+        tint: Option<Color>,
+    },
 }
 
 /// How far the paint of a feature reaches out from its geometry, in points.
@@ -87,7 +183,7 @@ pub enum Paint {
 pub struct Extent {
     /// The widest stroke.
     pub stroke_width: f64,
-    /// The largest marker radius.
+    /// The largest marker radius, or half the size of the largest symbol.
     pub marker_radius: f64,
 }
 
@@ -138,6 +234,17 @@ impl Symbolizer {
                 fill: fill.as_ref().map(|c| c.eval(ctx)),
                 stroke: stroke.as_ref().map(|s| s.resolve(ctx)),
             },
+            Symbolizer::Symbol(s) => Paint::Symbol {
+                symbol: Arc::from(s.symbol.as_str()),
+                size: s.size.eval(ctx),
+                rotation: s.rotation.eval(ctx),
+                tint: s.tint.as_ref().map(|c| c.eval(ctx)),
+            },
+            Symbolizer::Scatter(s) => s.paint(
+                s.size.eval(ctx),
+                s.spacing.eval(ctx),
+                s.tint.as_ref().map(|c| c.eval(ctx)),
+            ),
         })
     }
 
@@ -156,6 +263,8 @@ impl Symbolizer {
                     && fill.as_ref().is_none_or(Property::is_constant)
                     && stroke.as_ref().is_none_or(StrokeSymbolizer::is_constant)
             }
+            Symbolizer::Symbol(s) => s.is_constant(),
+            Symbolizer::Scatter(s) => s.is_constant(),
         }
     }
 
@@ -174,6 +283,17 @@ impl Symbolizer {
                 fill: fill.as_ref().map(|c| c.fallback),
                 stroke: stroke.as_ref().map(StrokeSymbolizer::fallback),
             },
+            Symbolizer::Symbol(s) => Paint::Symbol {
+                symbol: Arc::from(s.symbol.as_str()),
+                size: s.size.fallback,
+                rotation: s.rotation.fallback,
+                tint: s.tint.as_ref().map(|c| c.fallback),
+            },
+            Symbolizer::Scatter(s) => s.paint(
+                s.size.fallback,
+                s.spacing.fallback,
+                s.tint.as_ref().map(|c| c.fallback),
+            ),
         })
     }
 }
@@ -208,7 +328,7 @@ impl Rule {
             .find_map(|s| match s {
                 Symbolizer::Fill { color } => Some(Some(color.fallback)),
                 Symbolizer::Marker { fill, .. } => Some(fill.as_ref().map(|c| c.fallback)),
-                Symbolizer::Stroke(_) | Symbolizer::Raster(_) => None,
+                _ => None,
             })
             .flatten()
     }
@@ -249,7 +369,7 @@ impl Rule {
                 Symbolizer::Marker { stroke, .. } => {
                     Some(stroke.as_ref().map(StrokeSymbolizer::fallback))
                 }
-                Symbolizer::Fill { .. } | Symbolizer::Raster(_) => None,
+                _ => None,
             })
             .flatten()
     }
@@ -278,6 +398,74 @@ impl Rule {
             (None, Some(v)) => self
                 .symbolizers
                 .push(Symbolizer::Stroke(StrokeSymbolizer::constant(v))),
+            (None, None) => {}
+        }
+    }
+
+    /// The first symbol of the rule.
+    pub fn symbol(&self) -> Option<&PointSymbolizer> {
+        self.symbolizers.iter().find_map(|s| match s {
+            Symbolizer::Symbol(p) => Some(p),
+            _ => None,
+        })
+    }
+
+    /// Sets the first symbol of the rule. A new symbol takes the place of the first marker, or else goes at the end. `None` removes the symbol.
+    pub fn set_symbol(&mut self, value: Option<PointSymbolizer>) {
+        let at = self
+            .symbolizers
+            .iter()
+            .position(|s| matches!(s, Symbolizer::Symbol(_)));
+        match (at, value) {
+            (Some(i), Some(v)) => self.symbolizers[i] = Symbolizer::Symbol(v),
+            (Some(i), None) => {
+                self.symbolizers.remove(i);
+            }
+            (None, Some(v)) => {
+                let marker = self
+                    .symbolizers
+                    .iter()
+                    .position(|s| matches!(s, Symbolizer::Marker { .. }));
+                match marker {
+                    Some(i) => self.symbolizers[i] = Symbolizer::Symbol(v),
+                    None => self.symbolizers.push(Symbolizer::Symbol(v)),
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
+    /// The first scatter of the rule.
+    pub fn scatter(&self) -> Option<&ScatterSymbolizer> {
+        self.symbolizers.iter().find_map(|s| match s {
+            Symbolizer::Scatter(p) => Some(p),
+            _ => None,
+        })
+    }
+
+    /// Sets the first scatter of the rule. A new scatter goes after the fill and before the first stroke. `None` removes the scatter.
+    pub fn set_scatter(&mut self, value: Option<ScatterSymbolizer>) {
+        let at = self
+            .symbolizers
+            .iter()
+            .position(|s| matches!(s, Symbolizer::Scatter(_)));
+        match (at, value) {
+            (Some(i), Some(v)) => self.symbolizers[i] = Symbolizer::Scatter(v),
+            (Some(i), None) => {
+                self.symbolizers.remove(i);
+            }
+            (None, Some(v)) => {
+                let after_fill = self
+                    .symbolizers
+                    .iter()
+                    .position(|s| matches!(s, Symbolizer::Fill { .. }))
+                    .map_or(0, |i| i + 1);
+                let i = self.symbolizers[after_fill..]
+                    .iter()
+                    .position(|s| matches!(s, Symbolizer::Stroke(_)))
+                    .map_or(self.symbolizers.len(), |i| after_fill + i);
+                self.symbolizers.insert(i, Symbolizer::Scatter(v));
+            }
             (None, None) => {}
         }
     }
@@ -349,6 +537,8 @@ pub fn extent_of(paints: &[Paint]) -> Extent {
                     e.stroke_width = e.stroke_width.max(s.width);
                 }
             }
+            Paint::Symbol { size, .. } => e.marker_radius = e.marker_radius.max(size / 2.0),
+            Paint::Scatter { .. } => {}
         }
     }
     e
