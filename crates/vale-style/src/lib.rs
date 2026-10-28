@@ -7,7 +7,7 @@ mod rule;
 pub use json::{STYLE_VERSION, StyleError};
 pub use rule::{
     Extent, METERS_PER_POINT, Paint, PointSymbolizer, RasterSymbolizer, Rule, ScatterSymbolizer,
-    StrokeSymbolizer, Style, Symbolizer, default_tint, extent_of, scale_denominator,
+    StrokeSymbolizer, Style, Symbolizer, extent_of, scale_denominator,
 };
 pub use vale_render::Color;
 use vale_store::GeometryKind;

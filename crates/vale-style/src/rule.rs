@@ -138,15 +138,6 @@ impl ScatterSymbolizer {
     }
 }
 
-/// The tint that a new symbol gets: dark green for plants, brown for mountains and hills.
-pub fn default_tint(symbol: &str) -> Option<Color> {
-    match symbol {
-        "tree" | "pine" | "palm" | "marsh" => Some(Color::rgb(0x2f, 0x5a, 0x2f)),
-        "mountain" | "hill" => Some(Color::rgb(0x6b, 0x54, 0x40)),
-        _ => None,
-    }
-}
-
 /// The colors of a raster layer. A raster layer draws with the first raster symbolizer of its style. The filter and the scale range of its rule do not apply.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RasterSymbolizer {

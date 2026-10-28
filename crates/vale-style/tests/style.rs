@@ -4,7 +4,7 @@ use vale_store::GeometryKind;
 use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
     Color, Extent, LayerStyle, Paint, PointSymbolizer, Rule, STYLE_VERSION, ScatterSymbolizer,
-    Stroke, StrokeKind, StrokeSymbolizer, Style, StyleError, Symbolizer, default_tint, extent_of,
+    Stroke, StrokeKind, StrokeSymbolizer, Style, StyleError, Symbolizer, extent_of,
     scale_denominator,
 };
 
@@ -685,7 +685,7 @@ fn the_extent_of_symbols() {
 fn add_rule_tints_a_copied_symbol() {
     let mut style = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
     style.style.rules[0].set_symbol(Some(PointSymbolizer {
-        tint: default_tint("pine").map(Property::constant),
+        tint: Some(Property::constant(Color::rgb(0x2f, 0x5a, 0x2f))),
         ..PointSymbolizer::constant("pine", 8.0)
     }));
     style.add_rule(GeometryKind::Point);
@@ -711,17 +711,4 @@ fn add_rule_tints_a_copied_symbol() {
         plain.style.rules[1].symbol(),
         Some(&PointSymbolizer::constant("city", 8.0))
     );
-}
-
-#[test]
-fn default_tints() {
-    let green = Some(Color::rgb(0x2f, 0x5a, 0x2f));
-    let brown = Some(Color::rgb(0x6b, 0x54, 0x40));
-    for s in ["tree", "pine", "palm", "marsh"] {
-        assert_eq!(default_tint(s), green);
-    }
-    for s in ["mountain", "hill"] {
-        assert_eq!(default_tint(s), brown);
-    }
-    assert_eq!(default_tint("city"), None);
 }
