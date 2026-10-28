@@ -4,7 +4,7 @@ Oct 8, 2026 · Zach Hannum
 
 ## Summary
 
-Vale is a GIS for fictional worlds, for desktop and iPad. One world dataset is the source of truth, and each regional map is a projected, styled, labeled view of that dataset.
+Vale is a GIS for fictional worlds, for desktop, iPad, and iPhone. One world dataset is the source of truth, and each regional map is a projected, styled, labeled view of that dataset.
 
 You draw the world in the app, on a globe. You paint a heightmap (a greyscale image where brightness is elevation) with a soft brush, and the app turns it into vector topography.
 
@@ -18,7 +18,7 @@ The app and the labeling library are free and open source, under a dual MIT and 
 
 Version 1 has ten goals.
 
-- Run on macOS, Windows, Linux, and iPad, with pen input on each. iPad is an equal platform and not a later port.
+- Run on macOS, Windows, Linux, iPad, and iPhone, with pen input on each platform but iPhone. iPad is an equal platform and not a later port. On iPhone, a finger paints.
 - Paint a heightmap on a globe with a pressure-sensitive brush, and see it as stepped elevation tints while you paint.
 - Turn the heightmap into vector topography polygons with a tool from the toolbox.
 - Import equirectangular vector and raster sources, and georeference them (assign world coordinates to them) in under a minute.
@@ -36,7 +36,7 @@ Version 1 does not include the items that follow.
 - Erosion and other terrain effects. The app prototype tests live rivers, a Carve mode, an Erode mode, a Weather mode, and an Uplift mode of the brush. Those modes erode only where you paint. The prototype also tests a Ridge mode, which raises the land between the rivers, and a Deposit mode, which fills pits and valley floors. The prototype also tests a Warp mode, which moves the ground under the brush by a noise field.
 - Time-based data such as historical borders, and non-spherical worlds. These items come after version 1.
 - Real-world GIS analysis such as routing or geocoding.
-- Web and phone versions. The section "iPhone layout" gives a design for a later phone version.
+- A web version.
 
 ## Core workflow
 
@@ -631,7 +631,9 @@ The labeling prototype came first, and it is done. The work after it has eleven 
 | 7 | Labeling in the app | Labels come from attributes, polygon labels and fallbacks work, and manual changes stay. |
 | 8 | Atlas and export | An atlas of pages exports as a multi-page PDF, SVG files, and raster files. |
 | 9 | Import | Files from other tools come in as layers, and a replaced file keeps its extents, styles, and overrides. |
-| 10 | Version 1 release | Version 1 is in the App Store and on the three desktop platforms. |
+| 10 | Derived values | Styles, labels, and fields use the measures of features, the values of raster layers, and the flow of rivers. |
+| 11 | iPhone | The app installs on iPhone, a finger paints the globe, and each screen has an iPhone layout. |
+| 12 | Version 1 release | Version 1 is in the App Store and on the three desktop platforms. |
 
 From phase 1 on, a phase is done only when it works on desktop and on iPad.
 

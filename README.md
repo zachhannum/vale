@@ -1,6 +1,6 @@
 # Vale
 
-Vale is a GIS for fictional worlds, for desktop and iPad. It draws maps of invented planets with the right projections and with good labels.
+Vale is a GIS for fictional worlds, for desktop, iPad, and iPhone. It draws maps of invented planets with the right projections and with good labels.
 
 This repository holds an app prototype and the labeling library `vale-labeler`. The prototype is a thin slice of the whole design. It runs, but it is not finished.
 
