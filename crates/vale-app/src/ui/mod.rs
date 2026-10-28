@@ -1171,6 +1171,41 @@ impl AppState {
         }
     }
 
+    /// Runs `edit`, which edits the style of `layer` in the panel of the
+    /// Layers tab of a frame of `map`. With "This map", the layer has the
+    /// style of the map during `edit`, and a change becomes the overrides of
+    /// the map. During `edit`, `pad.page` is the page of that panel.
+    pub fn edit_map_style(&mut self, map: MapId, layer: LayerId, edit: impl FnOnce(&mut AppState)) {
+        let world_page = std::mem::replace(&mut self.pad.page, self.atlas.layer_page);
+        let this_map = self.atlas.this_map;
+        self.pad.rules_fixed = this_map;
+        let base = this_map
+            .then(|| self.doc.entry(layer).map(|e| e.style.clone()))
+            .flatten();
+        let shown = base.as_ref().and_then(|_| self.doc.map_style(map, layer));
+        if let (Some(shown), Some(entry)) = (&shown, self.doc.entry_mut(layer)) {
+            entry.style = shown.clone();
+        }
+        edit(self);
+        if let (Some(base), Some(shown), Some(entry)) = (base, shown, self.doc.entry_mut(layer)) {
+            let edited = std::mem::replace(&mut entry.style, base);
+            if edited != shown && self.doc.set_map_style(map, layer, &edited) {
+                self.touch();
+            }
+        }
+        self.pad.rules_fixed = false;
+        self.atlas.layer_page = std::mem::replace(&mut self.pad.page, world_page);
+    }
+
+    /// Removes the style overrides of a layer in a map, as one undo step.
+    pub fn clear_overrides(&mut self, map: MapId, layer: LayerId) {
+        self.save_edit();
+        if self.doc.clear_overrides(map, layer) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
     /// Shows or hides a raster layer.
     pub fn set_raster_visible(&mut self, id: RasterId, visible: bool) {
         if let Some(layer) = self.doc.project.raster_layer(id).map(|layer| layer.id) {

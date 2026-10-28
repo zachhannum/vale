@@ -241,6 +241,9 @@ pub struct PadState {
     pub style: raster::StyleState,
     /// The Style section of the panel of a vector layer.
     pub rules: rules::RulesState,
+    /// The panel edits the style of a map, so the rules cannot be added,
+    /// moved, or deleted.
+    pub rules_fixed: bool,
 }
 
 impl PadState {

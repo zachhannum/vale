@@ -12,11 +12,12 @@ use super::pad::atlas::{
     CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
     DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
     INTERVAL, LATITUDE, LONGITUDE, MAP_NAME, OBLIQUE, ORIENTATIONS, PAGE_NAME, POLYGON,
-    PROJECTION_NAME, RECTANGLE, REMOVE_VERTEX, ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL,
-    SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row, length_text, unit_name,
+    PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION, SAVE_PROJECTION, SCALE,
+    SECOND_PARALLEL, SHAPE, SIZE, STYLE_SCOPES, UNIT_NAMES, WIDTH, custom_row, length_text,
+    unit_name,
 };
 use super::pad::{GRATICULE, NO_LAYERS};
-use super::{AppState, inspector};
+use super::{AppState, inspector, style_editor};
 use crate::atlas::{self as math, PAGE_PRESETS};
 
 /// True if the dock shows: a frame, the page, or a layer is selected.
@@ -262,19 +263,68 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 }
 
 /// A switch for each layer, which turns the layer on or off in the
-/// map of the frame.
+/// map of the frame, and the style of the chosen vector layer, for all maps
+/// or for the map of the frame.
 fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let rows: Vec<_> = (state.doc.project.layers().iter().rev())
-        .map(|l| (l.id, l.name.clone()))
+        .map(|l| (l.id, l.name.clone(), l.geometry().is_some()))
         .collect();
     if rows.is_empty() {
         ui.weak(NO_LAYERS);
     }
-    for (layer, name) in rows {
-        let mut shown = state.doc.shown(frame.map, layer);
-        if ui.checkbox(&mut shown, name).changed() {
-            state.set_map_shown(frame.map, layer, shown);
+    let open = state.atlas.open_layer();
+    for (layer, name, vector) in rows {
+        ui.horizontal(|ui| {
+            let mut shown = state.doc.shown(frame.map, layer);
+            if ui.checkbox(&mut shown, &name).changed() {
+                state.set_map_shown(frame.map, layer, shown);
+            }
+            if vector && ui.selectable_label(open == Some(layer), "Style").clicked() {
+                state.atlas.layer = (open != Some(layer)).then_some((frame.id, layer));
+            }
+        });
+    }
+    let Some(layer) = state.atlas.open_layer() else {
+        return;
+    };
+    let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
+        return;
+    };
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut state.atlas.this_map, false, STYLE_SCOPES[0]);
+        ui.selectable_value(&mut state.atlas.this_map, true, STYLE_SCOPES[1]);
+    });
+    let fields = state
+        .doc
+        .layer(layer)
+        .map_or(Vec::new(), |l| l.fields.clone());
+    let symbols = state.doc.symbols().clone();
+    let mut library = style_editor::Library {
+        symbols: &symbols,
+        note: state.symbol_note.as_ref(),
+        actions: &mut state.actions,
+    };
+    if state.atlas.this_map {
+        let Some(mut style) = state.doc.map_style(frame.map, layer) else {
+            return;
+        };
+        if style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library)
+            && state.doc.set_map_style(frame.map, layer, &style)
+        {
+            state.touch();
         }
+        let any = !state.doc.overrides(frame.map, layer).is_empty();
+        if ui
+            .add_enabled(any, egui::Button::new(REMOVE_OVERRIDES))
+            .clicked()
+        {
+            state.clear_overrides(frame.map, layer);
+        }
+    } else if let Some(entry) = state.doc.entry_mut(layer)
+        && style_editor::rules(ui, layer, &mut entry.style, kind, &fields, &mut library)
+    {
+        state.touch();
     }
 }
 

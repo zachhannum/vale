@@ -28,6 +28,9 @@ const LATER_ITEMS: [&str; 4] = ["Text", "Legend", "Scale bar", "North arrow"];
 /// The tabs of the panel of a frame. The last one comes in another task.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
 pub const MAP_NAME: &str = "Map name";
+pub const STYLE_SCOPES: [&str; 2] = ["All maps", "This map"];
+pub const STYLE_FOR_THIS_MAP: &str = "Style for this map";
+pub const REMOVE_OVERRIDES: &str = "Remove overrides";
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
@@ -209,6 +212,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     graticule_color_frame(&ctx, state);
     border_color_frame(&ctx, state);
+    super::rules::picker_frame(&ctx, state);
     readout(&ctx, ui, state, &rects);
     state.atlas.add_rect = None;
     if state.atlas.add {
@@ -551,6 +555,12 @@ fn selection_panel(
     };
     let rect = match state.atlas.selection {
         AtlasSelection::None => return,
+        AtlasSelection::Frame(id) if open_layer(state).is_some() => {
+            let Some(rect) = layer_panel(ctx, state, controls, rects, id) else {
+                return;
+            };
+            rect
+        }
         AtlasSelection::Frame(id) => {
             let Some(frame) = state.doc.project.atlas.frame(id) else {
                 return;
@@ -906,24 +916,188 @@ fn layers_tab(
     };
     ui.spacing_mut().item_spacing.y = 0.0;
     let rows: Vec<_> = (state.doc.project.layers().iter())
-        .map(|l| (l.id, layer_icon(l), l.name.clone()))
+        .map(|l| (l.id, layer_icon(l), l.name.clone(), l.geometry().is_some()))
         .collect();
     if rows.is_empty() {
         ui.add_space(4.0);
         ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
         return;
     }
-    for (layer, icon, name) in rows {
+    let mut open = None;
+    for &(layer, icon, ref name, vector) in &rows {
         let shown = state.doc.shown(map, layer);
-        let tapped = ui
+        if !vector {
+            let tapped = ui
+                .push_id(layer.0, |ui| {
+                    widgets::eye_row(ui, controls, icon, name, shown)
+                })
+                .inner;
+            if tapped {
+                state.set_map_shown(map, layer, !shown);
+            }
+            continue;
+        }
+        let (rect, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
+        let row = ui
             .push_id(layer.0, |ui| {
-                widgets::eye_row(ui, controls, icon, &name, shown)
+                widgets::layer_row(
+                    ui,
+                    controls,
+                    rect,
+                    icon,
+                    name,
+                    Some(shown),
+                    false,
+                    true,
+                    false,
+                    0.0,
+                )
             })
             .inner;
-        if tapped {
+        if row.eye {
             state.set_map_shown(map, layer, !shown);
         }
+        if row.open || row.body.is_some_and(|b| b.clicked()) {
+            open = Some((layer, state.atlas.this_map));
+        }
     }
+    // The layers that have style overrides in this map.
+    let changed: Vec<_> = (rows.iter())
+        .filter_map(|(layer, _, name, _)| {
+            let n = state.doc.overrides(map, *layer).len();
+            (n > 0).then(|| (*layer, name.clone(), n))
+        })
+        .collect();
+    if !changed.is_empty() {
+        ui.add_space(8.0);
+        super::raster::heading(ui, STYLE_FOR_THIS_MAP);
+        for (layer, name, n) in changed {
+            let value = if n == 1 {
+                "1 change".to_string()
+            } else {
+                format!("{n} changes")
+            };
+            let tapped = ui
+                .push_id(("changed", layer.0), |ui| {
+                    widgets::open_row(ui, controls, &name, &value).clicked()
+                })
+                .inner;
+            if tapped {
+                open = Some((layer, true));
+            }
+        }
+    }
+    if let Some((layer, this_map)) = open {
+        state.atlas.layer = Some((id, layer));
+        state.atlas.layer_page = None;
+        state.atlas.this_map = this_map;
+        state.pad.rules = Default::default();
+    }
+}
+
+/// The vector layer whose panel the Layers tab of the selected frame shows.
+fn open_layer(state: &AppState) -> Option<vale_store::LayerId> {
+    let layer = state.atlas.open_layer()?;
+    state.doc.layer(layer)?.geometry()?;
+    state.doc.entry(layer)?;
+    Some(layer)
+}
+
+/// The panel of a layer in the Layers tab of frame `id`: the switch between
+/// the style of the layer and the style of the map of the frame, and the
+/// style section with its pages.
+fn layer_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    id: vale_store::FrameId,
+) -> Option<Rect> {
+    use super::Page;
+    let layer = open_layer(state)?;
+    let map = state.doc.project.atlas.frame(id)?.map;
+    let name = state.doc.layer(layer)?.name.clone();
+    let rules = &state.doc.entry(layer)?.style.style.rules;
+    let page = match state.atlas.layer_page {
+        Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)) if i >= rules.len() => None,
+        Some(Page::Rule(_) | Page::Condition(_) | Page::Symbols(_)) => state.atlas.layer_page,
+        _ => None,
+    };
+    state.atlas.layer_page = page;
+    let rule_name = match page {
+        Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)) => rules[i].name.clone(),
+        _ => String::new(),
+    };
+    let (key, title, back) = match page {
+        Some(Page::Condition(_)) => (
+            "pad-atlas-condition",
+            super::filter::ADD_CONDITION,
+            rule_name.as_str(),
+        ),
+        Some(Page::Symbols(_)) => ("pad-atlas-symbols", super::rules::SYMBOLS, &*rule_name),
+        Some(_) => ("pad-atlas-rule", rule_name.as_str(), name.as_str()),
+        None => ("pad-atlas-layer", name.as_str(), FRAME_TABS[2]),
+    };
+    let head = CardTitle {
+        title,
+        back: Some(back),
+        action: None,
+    };
+    let card = Card {
+        key,
+        place: (rects.right_panel, panel_width(ctx)),
+        head,
+        scroll: egui::scroll_area::ScrollSource::default(),
+    };
+    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
+        if row.back {
+            state.atlas.layer_page = match page {
+                Some(Page::Condition(i) | Page::Symbols(i)) => Some(Page::Rule(i)),
+                Some(_) => None,
+                None => {
+                    state.atlas.layer = None;
+                    None
+                }
+            };
+            state.pad.rules = Default::default();
+        }
+        if row.close {
+            state.atlas.selection = AtlasSelection::None;
+            state.atlas.vertex = None;
+        }
+    };
+    let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        let items = [(STYLE_SCOPES[0], true), (STYLE_SCOPES[1], true)];
+        let active = state.atlas.this_map as usize;
+        if let Some(chosen) = tabs(ui, controls, &items, active)
+            && chosen != active
+        {
+            state.atlas.this_map = chosen == 1;
+            state.pad.rules = Default::default();
+        }
+        ui.add_space(6.0);
+    };
+    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        state.edit_map_style(map, layer, |state| match page {
+            Some(Page::Rule(i)) => super::rules::rule_body(ui, state, controls, layer, i),
+            Some(Page::Condition(i)) => {
+                super::filter::condition_body(ui, state, controls, layer, i);
+            }
+            Some(Page::Symbols(i)) => super::rules::symbols_body(ui, state, controls, layer, i),
+            _ => super::rules::section(ui, state, controls, layer),
+        });
+        if page.is_none() && state.atlas.this_map {
+            ui.add_space(8.0);
+            let any = !state.doc.overrides(map, layer).is_empty();
+            if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
+                state.clear_overrides(map, layer);
+            }
+        }
+    };
+    Some(show_card(
+        ctx, state, controls, rects, card, on_title, top, body,
+    ))
 }
 
 fn projection_tab(
