@@ -104,7 +104,7 @@ impl Mapping {
 }
 
 /// An image that a probe read.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Probe {
     pub image: Greyscale,
     /// The darkest level and the brightest level of the image.

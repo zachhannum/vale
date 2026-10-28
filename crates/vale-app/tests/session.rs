@@ -1552,3 +1552,48 @@ fn undo_of_a_stop_move_goes_through_the_style() {
     assert_eq!(map.bands.stops()[2].value, moved);
     assert_eq!(stop(&path), moved);
 }
+
+#[test]
+fn a_raster_layer_from_an_image_and_its_levels_are_one_undo_step() {
+    use vale_app::globe::import::{Mapping, Source};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    let levels = (0..32).map(|i| if i % 8 < 4 { 0 } else { 65535 }).collect();
+    let image = vale_import::Greyscale {
+        width: 8,
+        height: 4,
+        levels,
+        bits: 16,
+    };
+    let spec = RasterSpec {
+        name: "Rain".into(),
+        unit: "mm".into(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 16,
+    };
+    let source = Source::Image {
+        name: "rain.png".into(),
+        image,
+        mapping: Mapping {
+            levels: (0, 65535),
+            values: (0.0, 4000.0),
+            range: (0.0, 4000.0),
+        },
+    };
+    let id = state.add_raster_from(spec, source).unwrap();
+    let texels = layer_texels(&state, id);
+    assert!(texels.contains(&0) && texels.contains(&65535));
+
+    // The next frame saves the layer and its levels.
+    state.save_tick(false, Instant::now());
+    assert!(state.can_undo());
+    state.undo();
+    assert!(state.doc.project.rasters().is_empty() && !state.can_undo());
+    state.redo();
+    assert_eq!(state.doc.project.rasters()[0].id, id);
+    assert!(layer_texels(&state, id) == texels);
+}
