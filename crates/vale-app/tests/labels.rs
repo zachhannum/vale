@@ -512,9 +512,10 @@ fn labels_avoid_point_symbols() {
     let forest = add_layer(
         &mut doc,
         "Forest",
-        &[format!(
-            r#"{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[[-4,-3],[4,-3],[4,3],[-4,3],[-4,-3]]]}}}}"#
-        )],
+        &[
+            r#"{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[-4,-3],[4,-3],[4,3],[-4,3],[-4,-3]]]}}"#
+                .to_string(),
+        ],
     );
     doc.entry_mut(forest).unwrap().style.style = Style {
         rules: vec![Rule::new(
