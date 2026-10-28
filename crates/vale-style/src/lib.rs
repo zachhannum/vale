@@ -6,8 +6,8 @@ mod rule;
 
 pub use json::{STYLE_VERSION, StyleError};
 pub use rule::{
-    Extent, METERS_PER_POINT, Paint, RasterSymbolizer, Rule, StrokeSymbolizer, Style, Symbolizer,
-    extent_of, scale_denominator,
+    Extent, METERS_PER_POINT, Paint, PointSymbolizer, RasterSymbolizer, Rule, ScatterSymbolizer,
+    StrokeSymbolizer, Style, Symbolizer, default_tint, extent_of, scale_denominator,
 };
 pub use vale_render::Color;
 use vale_store::GeometryKind;
@@ -263,13 +263,13 @@ impl LayerStyle {
         self.first_rule_mut().set_stroke(value);
     }
 
-    /// Appends a rule with a unique name, no filter, and no scale range, and returns its index. It copies the symbolizers of the last rule, or of the default style of `kind`. The rule gets the next default color of `kind`, so that it shows on the map: the stroke color of a line layer, and the fill color of a polygon layer or a point layer.
+    /// Appends a rule with a unique name, no filter, and no scale range, and returns its index. It copies the symbolizers of the last rule, or of the default style of `kind`. The rule gets the next default color of `kind`, so that it shows on the map: the stroke color of a line layer, and the fill color of a polygon layer or a point layer. A point symbol with a tint gets the color as its tint.
     pub fn add_rule(&mut self, kind: GeometryKind) -> usize {
         let n = self.style.rules.len();
         // The color of a rule that tells it apart: the stroke of a line layer, or else the fill.
         let color = |r: &Rule| match kind {
             GeometryKind::Line => r.stroke().map(|s| s.color),
-            GeometryKind::Polygon | GeometryKind::Point => r.fill(),
+            GeometryKind::Polygon | GeometryKind::Point => r.fill().or_else(|| symbol_tint(r)),
         };
         let used: Vec<Color> = self.style.rules.iter().filter_map(color).collect();
         let defaults =
@@ -299,6 +299,12 @@ impl LayerStyle {
             GeometryKind::Polygon | GeometryKind::Point => {
                 if rule.fill().is_some() {
                     rule.set_fill(colors.fill());
+                } else if let (Some(s), Some(c)) = (rule.symbol(), colors.fill())
+                    && s.tint.is_some()
+                {
+                    let mut s = s.clone();
+                    s.tint = Some(Property::constant(c));
+                    rule.set_symbol(Some(s));
                 }
             }
         }
@@ -327,6 +333,10 @@ impl LayerStyle {
             }
         }
     }
+}
+
+fn symbol_tint(r: &Rule) -> Option<Color> {
+    r.symbol()?.tint.as_ref().map(|t| t.fallback)
 }
 
 /// The style of the whole map.
