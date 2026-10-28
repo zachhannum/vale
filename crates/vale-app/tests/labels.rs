@@ -354,7 +354,7 @@ fn hand_made(
 fn hit(kind: GeometryKind, geometry: Geometry, f: PageFeature, at: Point) -> bool {
     let (layer, entry, f) = hand_made(kind, geometry, f);
     let layers = [PageLayer {
-        entry: &entry,
+        entry: std::borrow::Cow::Borrowed(&entry),
         layer: &layer,
         kind,
         features: vec![f],

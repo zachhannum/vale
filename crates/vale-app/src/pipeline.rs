@@ -1,5 +1,6 @@
 //! The map pipeline: query, clip, project, style, label, emit.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -47,7 +48,8 @@ pub struct LabelSummary {
 
 /// One visible layer in page space. Only features whose bounding box meets the page are present.
 pub struct PageLayer<'a> {
-    pub entry: &'a LayerEntry,
+    /// The layer with the style of the map.
+    pub entry: Cow<'a, LayerEntry>,
     pub layer: &'a Layer,
     /// The geometry kind of the layer.
     pub kind: GeometryKind,
@@ -254,9 +256,11 @@ fn drawn_layers(doc: &Document, map: Option<MapId>) -> Vec<LayerId> {
     }
 }
 
-/// The features of the layers that meet `area`, in page space.
+/// The features of the layers that meet `area`, in page space, with the
+/// style overrides of `map`.
 fn build_page_layers<'a>(
     doc: &'a Document,
+    map: Option<MapId>,
     cache: &Cache,
     vt: &ViewTransform,
     area: Rect,
@@ -265,7 +269,7 @@ fn build_page_layers<'a>(
 ) -> Vec<PageLayer<'a>> {
     let page = area.inflate(8.0, 8.0);
     let mut out = Vec::new();
-    for entry in ids.iter().filter_map(|id| doc.entry(*id)) {
+    for entry in ids.iter().filter_map(|id| doc.map_entry(map, *id)) {
         let (Some(layer), Some(feats)) = (doc.layer(entry.layer), cache.layers.get(&entry.layer))
         else {
             continue;
@@ -858,6 +862,7 @@ struct SymbolScale {
 fn draw_map<'a>(
     list: &mut DisplayList,
     doc: &'a Document,
+    map: Option<MapId>,
     cache: &Cache,
     vt: &ViewTransform,
     area: Rect,
@@ -892,7 +897,7 @@ fn draw_map<'a>(
     // 3: layers.
     let km_per_point = km_per_point(cache, vt);
     let scale = scale_denominator(km_per_point * 1000.0);
-    let page_layers = build_page_layers(doc, cache, vt, area, ids, scale);
+    let page_layers = build_page_layers(doc, map, cache, vt, area, ids, scale);
     let mut sd = SymbolDraw {
         symbols: doc.symbols(),
         scatter,
@@ -1144,7 +1149,7 @@ impl Pipeline {
         let ids = drawn_layers(doc, None);
         let cache = self.ensure(doc, doc.first_map(), &ids)?;
         let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
-        let layers = build_page_layers(doc, cache, &vt, vt.page_rect(), &ids, scale);
+        let layers = build_page_layers(doc, None, cache, &vt, vt.page_rect(), &ids, scale);
         Ok(pick::pick(&layers, at))
     }
 
@@ -1165,7 +1170,7 @@ impl Pipeline {
         let vt = atlas::frame_transform(&cache.projection, frame, target);
         let scale = scale_denominator(km_per_point(cache, &vt) * 1000.0);
         let area = frame_area(frame, target);
-        let layers = build_page_layers(doc, cache, &vt, area, &ids, scale);
+        let layers = build_page_layers(doc, Some(frame.map), cache, &vt, area, &ids, scale);
         Ok(pick::pick(&layers, at))
     }
 
@@ -1201,6 +1206,7 @@ impl Pipeline {
         let drawn = draw_map(
             &mut list,
             doc,
+            None,
             cache,
             &vt,
             page,
@@ -1377,6 +1383,7 @@ impl Pipeline {
         let drawn = draw_map(
             &mut list,
             doc,
+            Some(frame.map),
             cache,
             &vt,
             area,
