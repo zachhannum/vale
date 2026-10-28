@@ -3844,7 +3844,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 180 * 1024, "{bytes} bytes");
+        assert!(bytes < 188 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();
@@ -5898,5 +5898,232 @@ mod tests {
         drop(file);
         let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded.symbols(), project.symbols());
+    }
+
+    /// The tiles of one level of an image, as `(column, row, png)`.
+    fn image_level(file: &ProjectFile, id: ImageId, level: u32) -> Vec<(u32, u32, Vec<u8>)> {
+        let mut tiles = Vec::new();
+        file.load_image_level(id, level, |c, r, png| tiles.push((c, r, png)))
+            .unwrap();
+        tiles
+    }
+
+    /// The tiles of an image of 300 by 100 pixels: two tiles at level 0 and
+    /// one at level 1. Each tile has a gradient of alpha.
+    fn image_tiles() -> Vec<(u32, u32, u32, Vec<u8>)> {
+        let tile = |level, column, width: u32, height: u32| {
+            let rgba: Vec<u8> = (0..width * height)
+                .flat_map(|i| [column as u8 * 100, level as u8 * 50, 7, (i % 256) as u8])
+                .collect();
+            (level, column, 0, crate::encode_tile(width, height, &rgba))
+        };
+        vec![
+            tile(0, 0, 256, 100),
+            tile(0, 1, 44, 100),
+            tile(1, 0, 150, 50),
+        ]
+    }
+
+    fn image_tile_count(file: &ProjectFile) -> i64 {
+        let sql = "SELECT count(*) FROM vale_image_tile";
+        file.conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn the_file_keeps_each_image_layer_in_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_raster("Height".into(), 512, "m".into(), -100.0, 100.0);
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let plates = project.add_image("Plates".into(), 300, 100);
+        project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let coasts = project.add_image("Coasts".into(), 16_384, 8_192);
+        assert!(project.set_image_opacity(plates, 0.5));
+        assert!(project.set_image_blend(plates, BlendMode::Multiply));
+        let id = project.image_layer(coasts).unwrap().id;
+        assert!(project.set_layer_visible(id, false));
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        let names: Vec<&str> = loaded.layers().iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Height", "Towns", "Plates", "Roads", "Coasts"]);
+        let image = loaded.image(plates).unwrap();
+        assert_eq!((image.opacity, image.blend), (0.5, BlendMode::Multiply));
+        assert_eq!(loaded.image(coasts).unwrap().levels, 7);
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT table_name FROM vale_layer WHERE kind = 'image'"
+            ),
+            ["vale_image_0", "vale_image_1"]
+        );
+    }
+
+    #[test]
+    fn the_file_keeps_the_tiles_of_an_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let id = project.add_image("Plates".into(), 300, 100);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let tiles = image_tiles();
+        file.put_image_tiles(id, &tiles).unwrap();
+        assert!(!file.can_undo());
+        drop(file);
+
+        let (file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        let level = |n| -> Vec<_> {
+            let tiles = image_tiles().into_iter().filter(|t| t.0 == n);
+            tiles.map(|(_, c, r, png)| (c, r, png)).collect()
+        };
+        assert_eq!(image_level(&file, id, 0), level(0));
+        assert_eq!(image_level(&file, id, 1), level(1));
+        assert_eq!(image_level(&file, id, 2), []);
+        let (_, _, png) = &image_level(&file, id, 0)[1];
+        let (width, height, rgba) = crate::decode_tile(png).unwrap();
+        assert_eq!((width, height), (44, 100));
+        assert_eq!(&rgba[..8], &[100, 0, 7, 0, 100, 0, 7, 1]);
+    }
+
+    #[test]
+    fn undo_puts_back_an_added_image_and_a_removed_one_with_their_tiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let empty = project.clone();
+
+        // Add.
+        let id = project.add_image("Plates".into(), 300, 100);
+        assert!(project.set_image_blend(id, BlendMode::Screen));
+        file.put_image_tiles(id, &image_tiles()).unwrap();
+        file.save(&project).unwrap();
+        let added = project.clone();
+        file.undo().unwrap().unwrap();
+        // The counters stay, so the ID of the image is not used again.
+        assert_eq!(file.project().layers(), empty.layers());
+        assert_eq!(file.project().images(), []);
+        assert_eq!(file.project().next_image_id, 1);
+        assert_eq!(image_tile_count(&file), 3);
+        file.redo().unwrap().unwrap();
+        assert_eq!(file.project(), &added);
+        assert_eq!(image_level(&file, id, 1).len(), 1);
+
+        // Remove.
+        let layer = project.image_layer(id).unwrap().id;
+        project.remove_layer(layer).unwrap();
+        file.save(&project).unwrap();
+        assert!(file.project().image(id).is_none());
+        assert_eq!(image_tile_count(&file), 3);
+        file.undo().unwrap().unwrap();
+        assert_eq!(file.project(), &added);
+        assert_eq!(image_level(&file, id, 0).len(), 2);
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, added);
+        assert_eq!(image_tile_count(&file), 3);
+
+        // A new edit removes the redo step of the removal, and the image stays.
+        let mut renamed = added.clone();
+        renamed.world.name = "Renamed".into();
+        file.save(&renamed).unwrap();
+        assert!(!file.can_redo());
+        assert_eq!(image_tile_count(&file), 3);
+    }
+
+    #[test]
+    fn the_tiles_of_an_image_go_when_no_record_holds_the_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let kept = project.add_image("Kept".into(), 300, 100);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        file.put_image_tiles(kept, &image_tiles()).unwrap();
+
+        // Tiles with no record, as after an import that did not end.
+        file.put_image_tiles(ImageId(9), &image_tiles()).unwrap();
+        assert_eq!(file.gc_images().unwrap(), 3);
+        assert_eq!(image_tile_count(&file), 3);
+        file.put_image_tiles(ImageId(9), &image_tiles()).unwrap();
+        drop(file);
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(image_tile_count(&file), 3);
+
+        // An undo step holds the removed image until the log loses the step.
+        project.remove_image(kept).unwrap();
+        file.save(&project).unwrap();
+        assert_eq!(file.gc_images().unwrap(), 0);
+        file.save_base(&project).unwrap();
+        assert_eq!(image_tile_count(&file), 0);
+
+        // The same is true of the redo step of an added image.
+        let added = project.add_image("Added".into(), 300, 100);
+        file.put_image_tiles(added, &image_tiles()).unwrap();
+        file.save(&project).unwrap();
+        file.undo().unwrap().unwrap();
+        assert_eq!(image_tile_count(&file), 3);
+        let mut renamed = file.project().clone();
+        renamed.world.name = "Renamed".into();
+        file.save(&renamed).unwrap();
+        assert_eq!(image_tile_count(&file), 0);
+
+        // And of a step that goes over the limit of the log.
+        let mut project = renamed;
+        let big = project.add_image("Big".into(), 300, 100);
+        file.put_image_tiles(big, &image_tiles()).unwrap();
+        file.save(&project).unwrap();
+        project.remove_image(big).unwrap();
+        file.set_undo_limit(0);
+        file.save(&project).unwrap();
+        assert_eq!(image_tile_count(&file), 0);
+    }
+
+    #[test]
+    fn a_file_of_version_27_gets_the_image_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = Connection::open(path(&dir)).unwrap();
+        let tx = conn.transaction().unwrap();
+        for step in &MIGRATIONS[..27] {
+            step(&tx).unwrap();
+        }
+        tx.execute_batch(
+            "INSERT INTO vale_meta VALUES ('format_version', '27'), ('next_layer_id', '1');
+             INSERT INTO vale_world (id, name, radius_km, units, seed)
+               VALUES (1, 'Old', 1234.5, 'metric', 0);
+             INSERT INTO gpkg_spatial_ref_sys
+               VALUES ('Old', 100000, 'NONE', 100000, 'undefined', NULL);
+             INSERT INTO vale_layer (id, position, name, kind, table_name)
+               VALUES (0, 0, 'Towns', 'point', 'Towns');
+             CREATE TABLE Towns (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+               geom MULTIPOINT, uuid TEXT NOT NULL UNIQUE);
+             INSERT INTO gpkg_contents (table_name, data_type, identifier, srs_id)
+               VALUES ('Towns', 'features', 'Towns', 100000);
+             INSERT INTO gpkg_geometry_columns
+               VALUES ('Towns', 'geom', 'MULTIPOINT', 100000, 0, 0);",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+
+        let (mut file, mut project) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        let names: Vec<&str> = project.layers().iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Towns"]);
+        assert!(project.images().is_empty());
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT table_name FROM gpkg_extensions
+                 WHERE table_name GLOB 'vale_image*' ORDER BY table_name"
+            ),
+            ["vale_image", "vale_image_tile"]
+        );
+        let id = project.add_image("Plates".into(), 300, 100);
+        assert_eq!(id, ImageId(0));
+        file.put_image_tiles(id, &image_tiles()).unwrap();
+        file.save(&project).unwrap();
+        drop(file);
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(image_tile_count(&file), 3);
     }
 }
