@@ -90,25 +90,6 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         actions: &mut state.actions,
     };
     let mut changed = style_editor::rules(ui, info.id, style, info.kind, &fields, &mut library);
-    // A rule with an SVG symbol has no circle.
-    let circle = style
-        .style
-        .rules
-        .first()
-        .is_none_or(|r| r.symbol().is_none());
-    if info.kind == GeometryKind::Point && circle {
-        ui.horizontal(|ui| {
-            ui.label("Point size");
-            let mut radius = style.point_radius();
-            let drag = egui::DragValue::new(&mut radius)
-                .speed(0.1)
-                .range(0.0..=30.0);
-            if ui.add(drag).changed() {
-                style.set_point_radius(radius);
-                changed = true;
-            }
-        });
-    }
 
     if info.kind == GeometryKind::Polygon {
         ui.add_space(4.0);
