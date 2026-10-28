@@ -60,6 +60,26 @@ pub enum Symbolizer {
     Scatter(ScatterSymbolizer),
     /// The colors of a raster layer.
     Raster(RasterSymbolizer),
+    /// The look of an image layer.
+    Image(ImageSymbolizer),
+}
+
+/// The look of an image layer. An image layer holds colors, not values, so it has no stops. An image layer draws with the first image symbolizer of its style. The filter and the scale range of its rule do not apply.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ImageSymbolizer {
+    /// From 0 to 1.
+    pub opacity: f32,
+    /// How the layer mixes with the layers below it.
+    pub blend: BlendMode,
+}
+
+impl Default for ImageSymbolizer {
+    fn default() -> Self {
+        ImageSymbolizer {
+            opacity: 1.0,
+            blend: BlendMode::default(),
+        }
+    }
 }
 
 /// A symbol at each point. The size is the longer side of the symbol in points. The rotation is in degrees clockwise from page up, about the center. A tint replaces the colors of the symbol.
@@ -219,12 +239,12 @@ impl StrokeSymbolizer {
 }
 
 impl Symbolizer {
-    /// The paint for the feature of `ctx`. A raster symbolizer has none.
+    /// The paint for the feature of `ctx`. A raster symbolizer and an image symbolizer have none.
     pub fn resolve(&self, ctx: &Context) -> Option<Paint> {
         Some(match self {
             Symbolizer::Fill { color } => Paint::Fill(color.eval(ctx)),
             Symbolizer::Stroke(s) => Paint::Stroke(s.resolve(ctx)),
-            Symbolizer::Raster(_) => return None,
+            Symbolizer::Raster(_) | Symbolizer::Image(_) => return None,
             Symbolizer::Marker {
                 radius,
                 fill,
@@ -253,7 +273,7 @@ impl Symbolizer {
         match self {
             Symbolizer::Fill { color } => color.is_constant(),
             Symbolizer::Stroke(s) => s.is_constant(),
-            Symbolizer::Raster(_) => true,
+            Symbolizer::Raster(_) | Symbolizer::Image(_) => true,
             Symbolizer::Marker {
                 radius,
                 fill,
@@ -273,7 +293,7 @@ impl Symbolizer {
         Some(match self {
             Symbolizer::Fill { color } => Paint::Fill(color.fallback),
             Symbolizer::Stroke(s) => Paint::Stroke(s.fallback()),
-            Symbolizer::Raster(_) => return None,
+            Symbolizer::Raster(_) | Symbolizer::Image(_) => return None,
             Symbolizer::Marker {
                 radius,
                 fill,

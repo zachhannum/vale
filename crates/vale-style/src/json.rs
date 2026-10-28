@@ -9,8 +9,8 @@ use vale_store::{BlendMode, RasterDisplay, Rgb, Stop, StopLine};
 
 use crate::expr::{Filter, FromValue, Property};
 use crate::{
-    Color, LabelStyle, LayerStyle, PointSymbolizer, RasterSymbolizer, Rule, ScatterSymbolizer,
-    StrokeKind, StrokeSymbolizer, Style, Symbolizer,
+    Color, ImageSymbolizer, LabelStyle, LayerStyle, PointSymbolizer, RasterSymbolizer, Rule,
+    ScatterSymbolizer, StrokeKind, StrokeSymbolizer, Style, Symbolizer,
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
@@ -104,6 +104,11 @@ fn symbolizer_json(s: &Symbolizer) -> Json {
     match s {
         Symbolizer::Fill { color } => json!({ "type": "fill", "color": color_json(color) }),
         Symbolizer::Raster(r) => raster_json(r),
+        Symbolizer::Image(i) => json!({
+            "type": "image",
+            "opacity": f64::from(i.opacity),
+            "blend": i.blend.id(),
+        }),
         Symbolizer::Stroke(s) => {
             let mut m = stroke_json(s);
             m.insert("type".into(), json!("stroke"));
@@ -250,6 +255,10 @@ fn read_symbolizer(j: &Json) -> Result<Symbolizer, StyleError> {
             tint: read_tint(m)?,
         })),
         Some("raster") => Ok(Symbolizer::Raster(read_raster(m)?)),
+        Some("image") => {
+            let (opacity, blend) = read_mix(m);
+            Ok(Symbolizer::Image(ImageSymbolizer { opacity, blend }))
+        }
         Some(t) => Err(invalid(format!("unknown symbolizer {t}"))),
         None => Err(invalid("a symbolizer has no type")),
     }
@@ -402,13 +411,8 @@ fn read_line(j: Option<&Json>) -> Result<StopLine, StyleError> {
     })
 }
 
-fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
-    let display = match m.get("display").and_then(Json::as_str) {
-        Some("bands") => RasterDisplay::Bands,
-        Some("gradient") => RasterDisplay::Gradient,
-        Some("grey") => RasterDisplay::Grey,
-        _ => return Err(invalid("a raster has no valid display")),
-    };
+/// The opacity and the blend mode of a raster or an image.
+fn read_mix(m: &Map<String, Json>) -> (f32, BlendMode) {
     let opacity = m.get("opacity").and_then(Json::as_f64).unwrap_or(1.0) as f32;
     let opacity = if opacity.is_nan() {
         1.0
@@ -420,6 +424,17 @@ fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
         .and_then(Json::as_str)
         .and_then(BlendMode::from_id)
         .unwrap_or_default();
+    (opacity, blend)
+}
+
+fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
+    let display = match m.get("display").and_then(Json::as_str) {
+        Some("bands") => RasterDisplay::Bands,
+        Some("gradient") => RasterDisplay::Gradient,
+        Some("grey") => RasterDisplay::Grey,
+        _ => return Err(invalid("a raster has no valid display")),
+    };
+    let (opacity, blend) = read_mix(m);
     let stops = m
         .get("stops")
         .and_then(Json::as_array)

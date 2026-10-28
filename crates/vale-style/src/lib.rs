@@ -6,8 +6,8 @@ mod rule;
 
 pub use json::{STYLE_VERSION, StyleError};
 pub use rule::{
-    Extent, METERS_PER_POINT, Paint, PointSymbolizer, RasterSymbolizer, Rule, ScatterSymbolizer,
-    StrokeSymbolizer, Style, Symbolizer, extent_of, scale_denominator,
+    Extent, ImageSymbolizer, METERS_PER_POINT, Paint, PointSymbolizer, RasterSymbolizer, Rule,
+    ScatterSymbolizer, StrokeSymbolizer, Style, Symbolizer, extent_of, scale_denominator,
 };
 pub use vale_render::Color;
 use vale_store::GeometryKind;
@@ -171,9 +171,14 @@ impl LayerStyle {
 
     /// The style of a raster layer: one rule with `colors`.
     pub fn raster(colors: RasterSymbolizer) -> Self {
+        LayerStyle::grid("Colors", Symbolizer::Raster(colors))
+    }
+
+    /// One rule named `name` with `symbolizer`, and no labels.
+    fn grid(name: &str, symbolizer: Symbolizer) -> Self {
         LayerStyle {
             style: Style {
-                rules: vec![Rule::new("Colors", vec![Symbolizer::Raster(colors)])],
+                rules: vec![Rule::new(name, vec![symbolizer])],
             },
             label: LabelStyle {
                 enabled: false,
@@ -194,6 +199,23 @@ impl LayerStyle {
             .flat_map(|r| &r.symbolizers)
             .find_map(|s| match s {
                 Symbolizer::Raster(r) => Some(r),
+                _ => None,
+            })
+    }
+
+    /// The style of an image layer: one rule with the default image symbolizer.
+    pub fn image() -> Self {
+        LayerStyle::grid("Image", Symbolizer::Image(ImageSymbolizer::default()))
+    }
+
+    /// The first image symbolizer, in rule order.
+    pub fn image_symbolizer(&self) -> Option<&ImageSymbolizer> {
+        self.style
+            .rules
+            .iter()
+            .flat_map(|r| &r.symbolizers)
+            .find_map(|s| match s {
+                Symbolizer::Image(i) => Some(i),
                 _ => None,
             })
     }
