@@ -6109,6 +6109,231 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
     assert!(control(&h, LINE).is_none());
 }
 
+/// A tap near the right end of a slider.
+fn touch_right(h: &mut Pad, name: &str) {
+    scroll_to_control(h, name);
+    let slider = control(h, name).unwrap();
+    let at = pos2(slider.right() - 30.0, slider.center().y);
+    touch(h, egui::TouchPhase::Start, at, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
+}
+
+/// Makes sure that each tile of a symbol is at least the touch size.
+fn check_tiles(h: &Pad, what: &str) {
+    use vale_app::ui::pad::geometry::TOUCH;
+    use vale_app::ui::pad::rules::ADD_SYMBOL;
+    for name in vale_render::BUILTIN_SYMBOLS.iter().chain([&ADD_SYMBOL]) {
+        if let Some(tile) = control(h, name) {
+            assert!(
+                tile.width() >= TOUCH && tile.height() >= TOUCH,
+                "{what}: {name} {tile:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_rule_page_sets_a_point_symbol() {
+    use vale_app::ui::pad::rules::{
+        ADD_SYMBOL, CIRCLE, FILL, NO_FIELD, ROTATION, SIZE, SIZE_FIELD, STROKE, SVG_SYMBOL, TINT,
+        TINT_COLOR,
+    };
+    use vale_style::{Symbolizer, default_tint};
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let places = vector(&h, "Places");
+        let symbol = |h: &Pad| rules(h, places)[0].symbol().cloned();
+        open_rule(&mut h, "Places", "Default");
+        assert!(symbol(&h).is_none(), "{what}");
+        assert!(control(&h, "pine").is_none(), "{what}");
+
+        scroll_to_control(&mut h, SVG_SYMBOL);
+        tap(&mut h, SVG_SYMBOL);
+        let s = symbol(&h).unwrap_or_else(|| panic!("{what}: no symbol"));
+        assert_eq!(s.symbol, "city", "{what}");
+        // The symbol takes the place of the circle, with its stroke and its fill.
+        let r = &rules(&h, places)[0];
+        assert!(
+            !r.symbolizers
+                .iter()
+                .any(|s| matches!(s, Symbolizer::Marker { .. })),
+            "{what}"
+        );
+        assert!(control(&h, STROKE).is_none() && control(&h, FILL).is_none());
+
+        scroll_to_control(&mut h, "pine");
+        check_tiles(&h, &what);
+        tap(&mut h, "pine");
+        let s = symbol(&h).unwrap();
+        assert_eq!(s.symbol, "pine", "{what}");
+        // The tint follows the default tint of the symbol.
+        assert_eq!(s.tint.map(|t| t.fallback), default_tint("pine"), "{what}");
+
+        touch_right(&mut h, SIZE);
+        let s = symbol(&h).unwrap();
+        let points = s.size.fallback;
+        assert!(points > 12.0 && points <= 64.0, "{what}: {points}");
+        assert_eq!(points.round(), points, "{what}");
+
+        // A tap at the right of the dial turns the symbol to the east.
+        scroll_to_control(&mut h, ROTATION);
+        let dial = control(&h, ROTATION).unwrap();
+        let at = pos2(dial.right() - 12.0, dial.center().y);
+        touch(&mut h, egui::TouchPhase::Start, at, None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, at, None);
+        h.run_steps(3);
+        assert_eq!(symbol(&h).unwrap().rotation.fallback, 90.0, "{what}");
+
+        scroll_to_control(&mut h, SIZE_FIELD);
+        tap(&mut h, SIZE_FIELD);
+        scroll_to_control(&mut h, "pop_max");
+        check_controls(&h, &format!("{what} with the fields"));
+        tap(&mut h, "pop_max");
+        let s = symbol(&h).unwrap();
+        assert_eq!(s.size.source().map(|s| s.text()), Some("pop_max"), "{what}");
+        assert_eq!(s.size.fallback, points, "{what}");
+        assert!(s.rotation.is_constant(), "{what}");
+        assert!(control(&h, "pop_max").is_none(), "{what}");
+        scroll_to_control(&mut h, SIZE_FIELD);
+        tap(&mut h, SIZE_FIELD);
+        scroll_to_control(&mut h, NO_FIELD);
+        tap(&mut h, NO_FIELD);
+        assert!(symbol(&h).unwrap().size.is_constant(), "{what}");
+
+        // The tint switch turns the tint off and on.
+        scroll_to_control(&mut h, TINT);
+        tap(&mut h, TINT);
+        assert!(symbol(&h).unwrap().tint.is_none(), "{what}");
+        assert!(control(&h, TINT_COLOR).is_none(), "{what}");
+        tap(&mut h, TINT);
+        assert!(symbol(&h).unwrap().tint.is_some(), "{what}");
+        check_controls(&h, &what);
+        h.render()
+            .unwrap()
+            .save(format!("../../target/app/test-pad-symbol-{}.png", size.0))
+            .unwrap();
+
+        scroll_to_control(&mut h, ADD_SYMBOL);
+        tap(&mut h, ADD_SYMBOL);
+        assert!(
+            h.state().actions.contains(&Action::AddSymbolDialog),
+            "{what}"
+        );
+
+        scroll_to_control(&mut h, CIRCLE);
+        tap(&mut h, CIRCLE);
+        assert!(symbol(&h).is_none(), "{what}");
+        assert!(rules(&h, places)[0].fill().is_some(), "{what}");
+    }
+}
+
+#[test]
+fn a_rule_page_adds_a_scatter() {
+    use vale_app::ui::pad::rules::{
+        ROTATION_VARIATION, SCATTER, SIZE, SIZE_VARIATION, SPACING, TINT,
+    };
+    use vale_style::default_tint;
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let land = vector(&h, "Land");
+        let scatter = |h: &Pad| rules(h, land)[0].scatter().cloned();
+        open_rule(&mut h, "Land", "Default");
+        scroll_to_control(&mut h, SCATTER);
+        assert!(control(&h, SPACING).is_none(), "{what}");
+        tap(&mut h, SCATTER);
+        let s = scatter(&h).unwrap_or_else(|| panic!("{what}: no scatter"));
+        assert_eq!(s.symbol, "tree", "{what}");
+        assert_eq!((s.size.fallback, s.spacing.fallback), (8.0, 10.0), "{what}");
+        assert_eq!(s.tint.map(|t| t.fallback), default_tint("tree"), "{what}");
+
+        scroll_to_control(&mut h, "pine");
+        check_tiles(&h, &what);
+        tap(&mut h, "pine");
+        assert_eq!(scatter(&h).unwrap().symbol, "pine", "{what}");
+
+        touch_right(&mut h, SPACING);
+        let s = scatter(&h).unwrap();
+        let spacing = s.spacing.fallback;
+        assert!(spacing > 10.0 && spacing <= 100.0, "{what}: {spacing}");
+        assert!(spacing >= s.size.fallback, "{what}");
+
+        // A larger size pushes the spacing up with it.
+        touch_right(&mut h, SIZE);
+        let s = scatter(&h).unwrap();
+        assert!(s.size.fallback > 8.0 && s.size.fallback <= 48.0, "{what}");
+        assert!(s.spacing.fallback >= s.size.fallback, "{what}");
+
+        touch_right(&mut h, SIZE_VARIATION);
+        touch_right(&mut h, ROTATION_VARIATION);
+        let s = scatter(&h).unwrap();
+        assert!(s.size_jitter > 0.2 && s.size_jitter <= 0.5, "{what}");
+        assert!(
+            s.rotation_jitter > 0.0 && s.rotation_jitter <= 180.0,
+            "{what}"
+        );
+        scroll_to_control(&mut h, TINT);
+        check_controls(&h, &what);
+        h.render()
+            .unwrap()
+            .save(format!("../../target/app/test-pad-scatter-{}.png", size.0))
+            .unwrap();
+
+        scroll_to_control(&mut h, SCATTER);
+        tap(&mut h, SCATTER);
+        assert!(scatter(&h).is_none(), "{what}");
+        assert!(rules(&h, land)[0].fill().is_some(), "{what}");
+    }
+}
+
+#[test]
+fn a_spacing_drag_is_one_undo_step() {
+    use vale_app::ui::pad::rules::{SCATTER, SPACING};
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[1], dir.path());
+    let land = vector(&h, "Land");
+    let spacing = |h: &Pad| rules(h, land)[0].scatter().map(|s| s.spacing.fallback);
+    open_rule(&mut h, "Land", "Default");
+    scroll_to_control(&mut h, SCATTER);
+    tap(&mut h, SCATTER);
+    scroll_to_control(&mut h, SPACING);
+    save_frames(&mut h);
+    let saved = saves(&h);
+    let rect = control(&h, SPACING).unwrap();
+
+    let y = rect.center().y;
+    let (from, to) = (pos2(rect.left() + 100.0, y), pos2(rect.right() - 60.0, y));
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    step_and_save(&mut h, true);
+    let mut values = Vec::new();
+    for i in 1..=6 {
+        touch(
+            &mut h,
+            egui::TouchPhase::Move,
+            from.lerp(to, i as f32 / 6.0),
+            None,
+        );
+        step_and_save(&mut h, true);
+        values.extend(spacing(&h));
+    }
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    save_frames(&mut h);
+    values.dedup();
+    assert!(values.len() >= 4, "{values:?}");
+    assert!(values.is_sorted(), "{values:?}");
+    assert_eq!(saves(&h), saved + 1);
+
+    // One undo takes back the whole drag, and the next takes back the scatter.
+    tap(&mut h, "Undo");
+    assert_eq!(spacing(&h), Some(10.0));
+    tap(&mut h, "Undo");
+    assert_eq!(spacing(&h), None);
+}
+
 #[test]
 fn a_start_width_drag_is_one_undo_step() {
     use vale_app::ui::pad::rules::{TAPER, TAPER_START};

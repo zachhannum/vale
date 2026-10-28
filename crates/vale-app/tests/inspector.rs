@@ -126,6 +126,46 @@ fn the_dock_edits_the_rules_of_a_layer() {
 }
 
 #[test]
+fn the_dock_sets_a_point_symbol_and_a_scatter() {
+    use vale_app::ui::Action;
+    use vale_app::ui::pad::rules::{ADD_SYMBOL, CIRCLE, SCATTER, SVG_SYMBOL};
+    let mut h = harness();
+    let places = id_of(&h, "Places");
+    let rule = |h: &Harness<'static, AppState>, id| {
+        h.state().doc.entry(id).unwrap().style.style.rules[0].clone()
+    };
+    h.state_mut().selected_layer = Some(LayerRef::Vector(places));
+    h.run_steps(2);
+    assert!(h.query_by_label(ADD_SYMBOL).is_none());
+    h.get_by_value(CIRCLE).click();
+    h.run_steps(2);
+    h.get_by_label(SVG_SYMBOL).click();
+    h.run_steps(2);
+    assert_eq!(rule(&h, places).symbol().unwrap().symbol, "city");
+    h.get_by_label(ADD_SYMBOL).click();
+    h.run_steps(2);
+    assert!(h.state().actions.contains(&Action::AddSymbolDialog));
+    std::fs::create_dir_all("../../target/app").unwrap();
+    h.render()
+        .unwrap()
+        .save("../../target/app/test-dock-symbol.png")
+        .unwrap();
+
+    let land = id_of(&h, "Land");
+    h.state_mut().selected_layer = Some(LayerRef::Vector(land));
+    h.run_steps(2);
+    h.get_by_label(SCATTER).click();
+    h.run_steps(2);
+    let scatter = rule(&h, land).scatter().cloned().unwrap();
+    assert_eq!(scatter.symbol, "tree");
+    assert!(scatter.spacing.fallback >= scatter.size.fallback);
+    h.render()
+        .unwrap()
+        .save("../../target/app/test-dock-scatter.png")
+        .unwrap();
+}
+
+#[test]
 fn select_label_selects_layer() {
     let mut h = harness();
     h.get_by_label("Select Rivers").click();
