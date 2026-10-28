@@ -1206,3 +1206,76 @@ fn the_style_editor_opens_from_layers_on_the_globe_and_the_flat_view() {
         assert_eq!(rule.min_scale, Some(25_000.0), "{view:?}");
     }
 }
+
+#[test]
+fn the_desktop_form_makes_a_raster_layer_from_an_image_file() {
+    use vale_app::ui::raster_form::{self, RasterForm};
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/app/test-raster-file");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("desktop.png");
+    let pixels: Vec<u16> = (0..64 * 32)
+        .map(|i| if i % 64 < 32 { 2000 } else { 50000 })
+        .collect();
+    let image = image::ImageBuffer::<image::Luma<u16>, _>::from_raw(64, 32, pixels).unwrap();
+    image.save(&path).unwrap();
+    let notes = dir.join("desktop-notes.png");
+    std::fs::write(&notes, "these bytes are not an image").unwrap();
+
+    let mut h = globe_harness();
+    let rasters = h.state().doc.project.rasters().len();
+    let state = h.state_mut();
+    state.form_face_size = Some(64);
+    state.raster_form = Some(RasterForm::open(state));
+    // The modal takes clicks after it fades in.
+    h.run_steps(10);
+    h.get_by_label(raster_form::SOURCES[1]).click();
+    h.run_steps(2);
+    // A form with no image opens the file picker at once.
+    assert_eq!(h.state().actions, [Action::RasterImageDialog]);
+    h.state_mut().actions.clear();
+    h.get_by_label(raster_form::CHOOSE_IMAGE).click();
+    h.run_steps(2);
+    assert_eq!(h.state().actions, [Action::RasterImageDialog]);
+    h.state_mut().actions.clear();
+
+    // A file that is not an image shows a note, and the add button is off.
+    h.state_mut().run_action(Action::RasterImage(notes));
+    h.run_steps(2);
+    assert!(
+        h.query_by_label("desktop-notes is not a PNG or TIFF image")
+            .is_some()
+    );
+    assert!(
+        h.get_by_label(raster_form::ADD)
+            .accesskit_node()
+            .is_disabled()
+    );
+
+    h.state_mut().run_action(Action::RasterImage(path));
+    h.run_steps(2);
+    assert!(h.query_by_label("2,000 of 65,535").is_some());
+    assert!(h.query_by_label("50,000 of 65,535").is_some());
+    for label in [raster_form::DARKEST_VALUE, raster_form::BRIGHTEST_VALUE] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    h.get_by_label(raster_form::ADD).click();
+    h.run_steps(2);
+    let state = h.state();
+    assert!(state.raster_form.is_none());
+    let raster = state.doc.project.rasters().last().unwrap();
+    assert_eq!(state.doc.project.rasters().len(), rasters + 1);
+    let map = state.globe.raster_map(raster.id).unwrap();
+    let mut texels = Vec::new();
+    for face in 0..FACES {
+        let full = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: 64,
+            y1: 64,
+        };
+        map.read_rect(face, full, &mut texels);
+    }
+    assert_eq!(texels.iter().min(), Some(&0));
+    assert_eq!(texels.iter().max(), Some(&65535));
+}

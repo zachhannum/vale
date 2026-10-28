@@ -14,6 +14,18 @@ use crate::session::Session;
 use crate::ui::ExportFormat;
 use crate::ui::{self, Action, AppState};
 
+/// What a file from the file picker of the system is for.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+enum PickFor {
+    #[default]
+    Heightmap,
+    /// The colors of the file go into the ramps of this raster layer.
+    Ramp(vale_store::RasterId),
+    /// The image of the form of a new raster layer.
+    RasterImage,
+}
+
 struct ValeApp {
     /// The observer of the life cycle of the app has the state too.
     state: Rc<RefCell<AppState>>,
@@ -21,9 +33,8 @@ struct ValeApp {
     closing: bool,
     /// The files that the file picker of the system gave.
     picked: PickQueue,
-    /// The raster layer that gets the colors of the picked file. With no
-    /// layer, the picked file is a heightmap.
-    colors_for: Option<vale_store::RasterId>,
+    /// What the picked file is for.
+    pick_for: PickFor,
     /// The ends of the hand-offs of export files to the Files app.
     exports: ExportQueue,
     /// The export file that the Files app shows.
@@ -48,15 +59,22 @@ impl eframe::App for ValeApp {
         if !paths.is_empty() {
             state.run_action(Action::OpenFiles(paths));
         }
-        // One image fills the globe, so the last one wins.
+        // One image fills the globe, so the last one wins. The form of a
+        // new raster layer takes it when the form reads a file.
         if let Some(path) = heightmaps.into_iter().next_back() {
-            state.run_action(Action::ImportHeightmap(path));
+            let form = state.raster_form.as_ref();
+            if form.is_some_and(|form| form.from_file) {
+                state.run_action(Action::RasterImage(path));
+            } else {
+                state.run_action(Action::ImportHeightmap(path));
+            }
         }
 
         for path in self.picked.take() {
-            match self.colors_for.take() {
-                Some(id) => state.run_action(Action::ImportRamp(id, path)),
-                None => state.run_action(Action::ImportHeightmap(path)),
+            match std::mem::take(&mut self.pick_for) {
+                PickFor::Heightmap => state.run_action(Action::ImportHeightmap(path)),
+                PickFor::Ramp(id) => state.run_action(Action::ImportRamp(id, path)),
+                PickFor::RasterImage => state.run_action(Action::RasterImage(path)),
             }
         }
 
@@ -93,7 +111,15 @@ impl eframe::App for ValeApp {
                     if let Some(picker) = &self.picker
                         && picker.pick_heightmap()
                     {
-                        self.colors_for = None;
+                        self.pick_for = PickFor::Heightmap;
+                    }
+                }
+                #[cfg(target_os = "ios")]
+                Action::RasterImageDialog => {
+                    if let Some(picker) = &self.picker
+                        && picker.pick_heightmap()
+                    {
+                        self.pick_for = PickFor::RasterImage;
                     }
                 }
                 #[cfg(target_os = "ios")]
@@ -101,7 +127,7 @@ impl eframe::App for ValeApp {
                     if let Some(picker) = &self.picker
                         && picker.pick_image()
                     {
-                        self.colors_for = Some(id);
+                        self.pick_for = PickFor::Ramp(id);
                     }
                 }
                 // The export goes to a temporary file. The Files app moves it
@@ -185,6 +211,15 @@ impl eframe::App for ValeApp {
                         .pick_file();
                     if let Some(path) = picked {
                         state.run_action(Action::ImportHeightmap(path));
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
+                Action::RasterImageDialog => {
+                    let picked = rfd::FileDialog::new()
+                        .add_filter("Image", &["png", "tif", "tiff"])
+                        .pick_file();
+                    if let Some(path) = picked {
+                        state.run_action(Action::RasterImage(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
@@ -281,7 +316,7 @@ pub fn run_window(
         smoke_frames,
         closing: false,
         picked: PickQueue::default(),
-        colors_for: None,
+        pick_for: PickFor::default(),
         exports: ExportQueue::default(),
         sharing: None,
         #[cfg(target_os = "ios")]

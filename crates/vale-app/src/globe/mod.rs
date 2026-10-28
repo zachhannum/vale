@@ -49,7 +49,7 @@ use gpu::{
     Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, Job as GpuJob, LayerKey,
     Link, MapKey, Mask, Op, Pass, TargetId, Uniforms, Uploads,
 };
-use import::{ImportResult, Job, Step};
+use import::{ImportResult, Job, Source, Step};
 use line::LineSettings;
 use math::{V3, angle};
 use nav::Nav;
@@ -2148,19 +2148,28 @@ impl Globe {
     /// Starts the import of an equirectangular image on a worker thread. The
     /// image replaces the heightmap. One import runs at a time.
     pub fn start_import(&mut self, path: PathBuf) {
+        // The import is for the raster layer that the brush paints after
+        // the stroke that runs.
+        let target = self.pending.unwrap_or(self.raster);
+        self.start_import_into(target, Source::Path(path));
+    }
+
+    /// Starts the import of an image into a raster layer. The faces wait
+    /// until the brush paints that layer.
+    pub fn start_import_into(&mut self, target: Option<RasterId>, source: Source) {
         if let Some(job) = &self.import {
-            let name = import::file_name(&path);
+            let name = match &source {
+                Source::Path(path) => import::file_name(path),
+                Source::Image { name, .. } => name.clone(),
+            };
             let text = format!("Cannot import {name}: {} is still importing", job.name);
             self.import_result = Some(Err(text));
             return;
         }
         self.import_result = None;
-        // The import is for the raster layer that the brush paints after
-        // the stroke that runs.
-        let target = self.pending.unwrap_or(self.raster);
         let layer = target.and_then(|id| self.layer(id));
         let face_size = layer.map_or(self.map.face_size(), |layer| layer.face_size);
-        self.import = Some(Job::start(path, face_size));
+        self.import = Some(Job::start(source, face_size));
         self.import_target = target;
     }
 

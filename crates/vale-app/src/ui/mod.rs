@@ -17,7 +17,7 @@ use vale_terrain::{Bands, Heightmap, Mode};
 use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
-use crate::globe::import::{ImportResult, file_name};
+use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
@@ -60,6 +60,10 @@ pub enum Action {
     /// Imports this equirectangular image into a height layer. A world with
     /// no height layer gets one.
     ImportHeightmap(PathBuf),
+    /// Asks for the image of the form of a new raster layer.
+    RasterImageDialog,
+    /// Reads this image for the form of a new raster layer.
+    RasterImage(PathBuf),
     /// Asks for a legend image for a new color ramp. The panel of this
     /// raster layer shows the result.
     ImportRampDialog(RasterId),
@@ -370,6 +374,8 @@ pub struct AppState {
     pub point_form: Option<point_form::PointForm>,
     /// The open form of a new raster layer.
     pub raster_form: Option<raster_form::RasterForm>,
+    /// The read of the image of the form of a new raster layer.
+    pub raster_probe: Option<ProbeJob>,
     /// The face size of `--face-size`. The form of a new raster layer
     /// offers it, and it is on at first. `None`: the preset of the form
     /// gives the face size.
@@ -455,6 +461,7 @@ impl AppState {
             world_form: None,
             point_form: None,
             raster_form: None,
+            raster_probe: None,
             form_face_size: None,
             actions: Vec::new(),
             headless: false,
@@ -794,6 +801,47 @@ impl AppState {
         let id = self.new_raster(spec)?;
         self.save_edit();
         Some(id)
+    }
+
+    /// Adds a raster layer with the levels of an image, and selects it. The
+    /// new layer and its levels are one undo step. Returns `None` while
+    /// another import runs, or for a spec that `add_raster` refuses.
+    pub fn add_raster_from(&mut self, spec: RasterSpec, source: Source) -> Option<RasterId> {
+        if self.globe.importing() {
+            return None;
+        }
+        self.import_note = None;
+        self.save_edit();
+        let id = self.new_raster(spec)?;
+        self.import_layer = Some(id);
+        self.pad.layer = Some(LayerRef::Raster(id));
+        if self.headless {
+            // The new layer has its whole heightmap.
+            self.pump_layers(true);
+        }
+        self.globe.start_import_into(Some(id), source);
+        if self.headless {
+            self.globe.wait_import();
+        }
+        self.poll_import();
+        Some(id)
+    }
+
+    /// Moves the result of the read of the image to the form of a new
+    /// raster layer. `block`: waits for it.
+    pub fn poll_probe(&mut self, block: bool) {
+        let Some(job) = &self.raster_probe else {
+            return;
+        };
+        let Some(form) = &mut self.raster_form else {
+            // The form closed, and the read ends with no result.
+            self.raster_probe = None;
+            return;
+        };
+        if let Some(result) = job.poll(block) {
+            form.set_read(result);
+            self.raster_probe = None;
+        }
     }
 
     /// Adds a height layer in meters with the face size of the globe, and
@@ -2127,6 +2175,13 @@ impl AppState {
                 }
                 self.poll_import();
             }
+            Action::RasterImage(path) => {
+                if let Some(form) = &mut self.raster_form {
+                    form.set_image(path.clone());
+                    self.raster_probe = Some(ProbeJob::start(path));
+                    self.poll_probe(self.headless);
+                }
+            }
             Action::ImportRamp(id, path) => {
                 let note = match self.import_ramp(&path) {
                     Ok((name, count)) => {
@@ -2181,6 +2236,7 @@ impl AppState {
             Action::OpenDialog
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog
+            | Action::RasterImageDialog
             | Action::ImportRampDialog(_)
             | Action::ExportHeightmapDialog
             | Action::ExportHeightmapPngDialog
@@ -2193,6 +2249,10 @@ impl AppState {
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
+    state.poll_probe(false);
+    if state.raster_probe.is_some() {
+        ui.ctx().request_repaint();
+    }
     state.poll_export();
     state.poll_atlas_export(Some(ui));
     if state.atlas_export.is_some() {
