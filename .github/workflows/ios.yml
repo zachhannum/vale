@@ -14,16 +14,16 @@ concurrency:
 
 jobs:
   build:
-    name: Build vale-app (${{ matrix.sdk }})
+    name: Build vale-app (${{ matrix.device }} simulator)
     runs-on: macos-15
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - sdk: iphonesimulator
-            target: aarch64-apple-ios-sim
-            destination: generic/platform=iOS Simulator
+        device: [iPad, iPhone]
+    env:
+      SDK: iphonesimulator
+      TARGET: aarch64-apple-ios-sim
     steps:
       - uses: actions/checkout@v4
 
@@ -31,14 +31,22 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-          rustup target add ${{ matrix.target }}
+          rustup target add "$TARGET"
 
       - name: Install xcodegen
         run: command -v xcodegen || brew install xcodegen
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: aarch64-apple-ios-sim-${{ matrix.device }}
+
+      # The build is for the first simulator of the device family.
+      - name: Find the simulator
+        id: simulator
+        run: |
+          id=$(xcrun simctl list devices available -j | python3 -c 'import json, sys; devices = [d for r in json.load(sys.stdin)["devices"].values() for d in r]; print(next(d["udid"] for d in devices if d["name"].startswith(sys.argv[1] + " ")))' "${{ matrix.device }}")
+          xcrun simctl list devices | grep "$id"
+          echo "destination=platform=iOS Simulator,id=$id" >> "$GITHUB_OUTPUT"
 
       # The build has no code signing, so it needs no secrets.
       - name: Build the app
@@ -46,8 +54,8 @@ jobs:
         run: |
           xcodegen generate
           xcodebuild -project ValeApp.xcodeproj -scheme ValeApp \
-            -configuration Release -sdk ${{ matrix.sdk }} \
-            -destination "${{ matrix.destination }}" \
+            -configuration Release -sdk "$SDK" \
+            -destination "${{ steps.simulator.outputs.destination }}" \
             -derivedDataPath "$RUNNER_TEMP/xcode" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
             -quiet build
@@ -138,8 +146,12 @@ jobs:
           # The export keeps the entitlements of the archive.
           codesign -d --entitlements - --xml "$app" | plutil -p - | tee "$RUNNER_TEMP/entitlements.txt"
           grep -q CloudDocuments "$RUNNER_TEMP/entitlements.txt" || { echo "::error::The archive has no iCloud entitlement"; exit 1; }
-          # The app is for iPad only, so the icon name is in the iPad key.
+          # The app is for iPhone and iPad, so the icon name is in both keys.
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName" "$app/Info.plist"
           /usr/libexec/PlistBuddy -c "Print :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName" "$app/Info.plist"
+          families=$(/usr/libexec/PlistBuddy -c "Print :UIDeviceFamily" "$app/Info.plist")
+          echo "$families" | grep -qw 1 || { echo "::error::The app does not target iPhone"; exit 1; }
+          echo "$families" | grep -qw 2 || { echo "::error::The app does not target iPad"; exit 1; }
           echo "bundle_id=$(read_key CFBundleIdentifier)" >> "$GITHUB_OUTPUT"
 
       - name: Write the comment
