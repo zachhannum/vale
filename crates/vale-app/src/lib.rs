@@ -20,6 +20,7 @@ pub mod projects;
 pub mod ramps;
 pub mod raster_style;
 pub mod resume;
+pub mod scatter;
 pub mod session;
 pub mod ui;
 pub mod view;

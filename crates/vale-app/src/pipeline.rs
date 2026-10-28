@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use anyhow::anyhow;
-use kurbo::{BezPath, Circle, Point, Rect, Shape};
+use kurbo::{Affine, BezPath, Circle, Point, Rect, Shape};
 use vale_labeler::Fonts;
-use vale_render::{DisplayList, FillRule, Item, stroke};
+use vale_render::{DisplayList, FillRule, Item, Symbol, Symbols, stroke, symbol_items};
 use vale_sphere::{
     ClipRect, LonLat, Projection, ProjectionSpec, auto_interval, graticule, graticule_in, wrap180,
 };
@@ -16,6 +16,7 @@ use vale_style::{Extent, Paint, Stroke, StrokeKind, scale_denominator};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
+use crate::scatter::{self, ScatterCache, ScatterFill};
 use crate::view::{View, ViewTransform};
 use crate::{furniture, labels, pick};
 
@@ -89,9 +90,26 @@ pub struct PageFeature {
     pub bbox: Rect,
 }
 
+/// A symbol that a map drew.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlacedSymbol {
+    pub layer: LayerId,
+    /// Index in `layer.features`.
+    pub feature: usize,
+    /// The center in target points.
+    pub center: Point,
+    /// The box of the symbol in target points.
+    pub bounds: Rect,
+    /// The place on the sphere of a symbol of a scatter fill. `None` for a
+    /// point symbol.
+    pub lonlat: Option<LonLat>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Composed {
     pub list: DisplayList,
+    /// The symbols of the point symbols and the scatter fills.
+    pub symbols: Vec<PlacedSymbol>,
     /// The view that was used (the fitted one when the document had none).
     pub view: View,
     pub labels: LabelSummary,
@@ -134,6 +152,7 @@ const MAX_CACHES: usize = 3;
 pub struct Pipeline {
     /// The most recently used cache first.
     caches: Vec<Cache>,
+    scatter: ScatterCache,
 }
 
 /// Registers both Noto Sans files.
@@ -409,8 +428,112 @@ fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
     out
 }
 
+/// What the symbols of a map need.
+struct SymbolDraw<'a> {
+    symbols: &'a Symbols,
+    scatter: &'a mut ScatterCache,
+    projection: &'a Projection,
+    vt: &'a ViewTransform,
+    area: Rect,
+    /// The nominal scale denominator of the view. It does not change with a
+    /// pan. The spacing of a scatter fill follows it.
+    scale: f64,
+    /// Target points per point.
+    unit: f64,
+    /// The sphere radius in meters.
+    radius: f64,
+    /// Points on the sphere that `area` shows, made at the first scatter.
+    view: Option<Vec<LonLat>>,
+    /// The scatter symbols of the current layer.
+    layer_count: usize,
+    placed: Vec<PlacedSymbol>,
+}
+
+/// The box of a symbol in symbol units.
+fn symbol_box(symbol: &Symbol) -> Rect {
+    symbol
+        .paths()
+        .iter()
+        .map(|p| p.path.bounding_box())
+        .reduce(|a, b| a.union(b))
+        .unwrap_or_default()
+}
+
+/// The radius of the dot that stands for a missing symbol, in symbol units.
+const MISSING_DOT: f64 = 1.0 / 6.0;
+
+impl SymbolDraw<'_> {
+    fn view(&mut self) -> &[LonLat] {
+        let (projection, vt, area) = (self.projection, self.vt, self.area);
+        self.view.get_or_insert_with(|| {
+            const N: usize = 9;
+            let mut out = Vec::with_capacity(N * N);
+            for i in 0..N {
+                for j in 0..N {
+                    let t = |k: usize| k as f64 / (N - 1) as f64;
+                    let q = Point::new(
+                        area.x0 + area.width() * t(i),
+                        area.y0 + area.height() * t(j),
+                    );
+                    out.extend(projection.inverse(vt.from_page(q)));
+                }
+            }
+            out
+        })
+    }
+
+    /// Draws the instances of a symbol. A missing symbol draws a dot.
+    fn push(
+        &mut self,
+        list: &mut DisplayList,
+        name: &str,
+        instances: Vec<(usize, Affine, Option<LonLat>)>,
+        layer: LayerId,
+        tint: Option<vale_render::Color>,
+    ) {
+        if instances.is_empty() {
+            return;
+        }
+        let symbol = self.symbols.get(name);
+        let unit_box = symbol.map_or(
+            Rect::new(-MISSING_DOT, -MISSING_DOT, MISSING_DOT, MISSING_DOT),
+            |s| symbol_box(s),
+        );
+        for (feature, a, lonlat) in &instances {
+            self.placed.push(PlacedSymbol {
+                layer,
+                feature: *feature,
+                center: *a * Point::ZERO,
+                bounds: a.transform_rect_bbox(unit_box),
+                lonlat: *lonlat,
+            });
+        }
+        let affines: Vec<Affine> = instances.iter().map(|(_, a, _)| *a).collect();
+        match symbol {
+            Some(symbol) => list.items.extend(symbol_items(symbol, &affines, tint)),
+            None => {
+                let mut path = BezPath::new();
+                for a in &affines {
+                    path.extend(*a * Circle::new(Point::ZERO, MISSING_DOT).to_path(0.01));
+                }
+                list.push(Item::Fill {
+                    path,
+                    color: tint.unwrap_or(vale_render::Color::rgb(80, 80, 80)),
+                    rule: FillRule::NonZero,
+                });
+            }
+        }
+    }
+}
+
+/// The affine that maps symbol units to target points: `size` points big,
+/// turned `rotation` degrees clockwise, at `at`.
+fn symbol_affine(at: Point, size: f64, rotation: f64) -> Affine {
+    Affine::translate(at.to_vec2()) * Affine::rotate(rotation.to_radians()) * Affine::scale(size)
+}
+
 /// Draws one batch. A paint that does not fit the kind of the layer draws nothing.
-fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch) {
+fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mut SymbolDraw<'_>) {
     let features = || batch.features.iter().map(|&i| &pl.features[i]);
     let lines = || polylines_path(features().flat_map(|f| &f.lines), false);
     match (pl.kind, batch.paint.clone()) {
@@ -498,6 +621,57 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch) {
                     round: true,
                 });
             }
+        }
+        (
+            GeometryKind::Point,
+            Paint::Symbol {
+                symbol,
+                size,
+                rotation,
+                tint,
+            },
+        ) if size > 0.0 => {
+            let size = size * sd.unit;
+            let instances = features()
+                .flat_map(|f| f.points.iter().map(move |p| (f.index, *p)))
+                .map(|(i, p)| (i, symbol_affine(p, size, rotation), None))
+                .collect();
+            sd.push(list, &symbol, instances, pl.layer.id, tint);
+        }
+        (GeometryKind::Polygon, Paint::Scatter { symbol, tint, .. }) => {
+            let Some(fill) = ScatterFill::of(&batch.paint) else {
+                return;
+            };
+            let size = fill.size * sd.unit;
+            let reach = size / 2.0;
+            let shown = sd.area.inflate(reach, reach);
+            let (scale, radius) = (sd.scale, sd.radius);
+            let view = sd.view().to_vec();
+            let mut instances = Vec::new();
+            for f in features() {
+                let Some(feature) = pl.layer.features.get(f.index) else {
+                    continue;
+                };
+                let points =
+                    sd.scatter
+                        .get(pl.layer.id, f.index, feature, &fill, scale, radius, &view);
+                for p in points.iter() {
+                    if sd.layer_count >= scatter::MAX_POINTS {
+                        break;
+                    }
+                    let Some(q) = sd.projection.forward(p.lonlat) else {
+                        continue;
+                    };
+                    let q = sd.vt.to_page(q);
+                    if !shown.contains(q) {
+                        continue;
+                    }
+                    sd.layer_count += 1;
+                    let a = symbol_affine(q, size * p.scale, p.rotation);
+                    instances.push((f.index, a, Some(p.lonlat)));
+                }
+            }
+            sd.push(list, &symbol, instances, pl.layer.id, tint);
         }
         _ => {}
     }
@@ -662,10 +836,20 @@ impl Cache {
     }
 }
 
-/// The layers that `draw_map` drew, and the ground size of one point.
+/// The layers that `draw_map` drew, its symbols, and the ground size of one point.
 struct DrawnMap<'a> {
     layers: Vec<PageLayer<'a>>,
+    symbols: Vec<PlacedSymbol>,
     km_per_point: f64,
+}
+
+/// The scale of the symbols of a map.
+#[derive(Copy, Clone)]
+struct SymbolScale {
+    /// The nominal scale denominator of the view.
+    nominal: f64,
+    /// Target points per point.
+    unit: f64,
 }
 
 /// Draws a map in `area`: the background if it has one, the water, the
@@ -682,6 +866,8 @@ fn draw_map<'a>(
     ids: &[LayerId],
     graticule: Option<(&[Vec<Point>], Stroke)>,
     selection: Option<Selection>,
+    scatter: &mut ScatterCache,
+    symbol_scale: SymbolScale,
 ) -> DrawnMap<'a> {
     let style = &doc.frame.style;
 
@@ -707,11 +893,26 @@ fn draw_map<'a>(
     let km_per_point = km_per_point(cache, vt);
     let scale = scale_denominator(km_per_point * 1000.0);
     let page_layers = build_page_layers(doc, cache, vt, area, ids, scale);
+    let mut sd = SymbolDraw {
+        symbols: doc.symbols(),
+        scatter,
+        projection: &cache.projection,
+        vt,
+        area,
+        scale: symbol_scale.nominal,
+        unit: symbol_scale.unit,
+        radius: cache.radius_m,
+        view: None,
+        layer_count: 0,
+        placed: Vec::new(),
+    };
     for pl in &page_layers {
+        sd.layer_count = 0;
         for batch in batches(pl) {
-            draw_batch(list, pl, &batch);
+            draw_batch(list, pl, &batch, &mut sd);
         }
     }
+    let symbols = sd.placed;
 
     // 4: graticule.
     if let Some((lines, stroke)) = graticule {
@@ -782,13 +983,14 @@ fn draw_map<'a>(
 
     DrawnMap {
         layers: page_layers,
+        symbols,
         km_per_point,
     }
 }
 
 impl Pipeline {
     pub fn new() -> Self {
-        Pipeline { caches: Vec::new() }
+        Pipeline::default()
     }
 
     /// Projects the features of a layer again at the next compose.
@@ -796,6 +998,12 @@ impl Pipeline {
         for cache in &mut self.caches {
             cache.layers.remove(&id);
         }
+        self.scatter.forget(id);
+    }
+
+    /// The scatters that the pipeline keeps.
+    pub fn scatter_cache(&self) -> &ScatterCache {
+        &self.scatter
     }
 
     /// The number of projections that the pipeline keeps.
@@ -841,10 +1049,10 @@ impl Pipeline {
                 self.caches.truncate(MAX_CACHES);
             }
         }
+        let exists = |id: LayerId| doc.project.layers().iter().any(|l| l.id == id);
+        self.scatter.retain(exists);
         let cache = &mut self.caches[0];
-        cache
-            .layers
-            .retain(|id, _| doc.project.layers().iter().any(|l| l.id == *id));
+        cache.layers.retain(|id, _| exists(*id));
         for id in ids {
             if cache.layers.contains_key(id) {
                 continue;
@@ -975,14 +1183,30 @@ impl Pipeline {
         let cache = self.ensure(doc, doc.first_map(), &ids)?;
         let center_lon = cache.center_lon(&vt);
         cache.ensure_graticule(step, &vt, page, center_lon);
-        let cache = &*cache;
+        let cache = &self.caches[0];
         let graticule = step
             .and_then(|s| cache.graticule_lines(s))
             .map(|lines| (lines, doc.frame.style.graticule));
 
+        // The view scale is the nominal scale: it is the same after a pan.
+        let symbol_scale = SymbolScale {
+            nominal: scale_denominator(1.0 / view.scale),
+            unit: 1.0,
+        };
         let mut list = DisplayList::new(size.0, size.1);
         let drawn = draw_map(
-            &mut list, doc, cache, &vt, page, true, true, &ids, graticule, selection,
+            &mut list,
+            doc,
+            cache,
+            &vt,
+            page,
+            true,
+            true,
+            &ids,
+            graticule,
+            selection,
+            &mut self.scatter,
+            symbol_scale,
         );
 
         // 7 to 9: scale bar, labels.
@@ -990,7 +1214,14 @@ impl Pipeline {
             furniture::scale_bar(page, drawn.km_per_point, doc.project.world.units, fonts);
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {
-            let (items, summary) = labels::place(&drawn.layers, page, fonts, quality, &[bar_rect]);
+            let (items, summary) = labels::place(
+                &drawn.layers,
+                page,
+                fonts,
+                quality,
+                &[bar_rect],
+                &drawn.symbols,
+            );
             list.items.extend(items);
             label_summary = summary;
         }
@@ -998,6 +1229,7 @@ impl Pipeline {
 
         Ok(Composed {
             list,
+            symbols: drawn.symbols,
             view,
             labels: label_summary,
             km_per_point: drawn.km_per_point,
@@ -1121,7 +1353,7 @@ impl Pipeline {
         let area = frame_area(frame, target).intersect(part);
         let step = atlas::graticule_interval(&cache.projection, frame);
         cache.ensure_graticule(step, &vt, area, frame.center[0]);
-        let cache = &*cache;
+        let cache = &self.caches[0];
         let [r, g, b] = frame.graticule.color;
         let stroke = Stroke::solid(vale_render::Color::rgb(r, g, b), frame.graticule.width);
         let graticule = step
@@ -1133,12 +1365,29 @@ impl Pipeline {
             path: shape_path(&frame.shape.rings(), target),
             rule: FillRule::EvenOdd,
         });
+        // The frame scale is the nominal scale, in each target.
+        let symbol_scale = SymbolScale {
+            nominal: frame.scale,
+            unit: target.pts_per_mm / PT_PER_MM,
+        };
         let drawn = draw_map(
-            &mut list, doc, cache, &vt, area, false, water, &ids, graticule, selection,
+            &mut list,
+            doc,
+            cache,
+            &vt,
+            area,
+            false,
+            water,
+            &ids,
+            graticule,
+            selection,
+            &mut self.scatter,
+            symbol_scale,
         );
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {
-            let (items, summary) = labels::place(&drawn.layers, area, fonts, quality, &[]);
+            let (items, summary) =
+                labels::place(&drawn.layers, area, fonts, quality, &[], &drawn.symbols);
             list.items.extend(items);
             label_summary = summary;
         }
@@ -1155,6 +1404,7 @@ impl Pipeline {
 
         Ok(Composed {
             list,
+            symbols: drawn.symbols,
             view: vt.view,
             labels: label_summary,
             km_per_point: drawn.km_per_point,
