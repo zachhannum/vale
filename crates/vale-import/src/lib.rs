@@ -2,7 +2,10 @@
 
 pub mod geojson;
 pub mod geotiff;
+pub mod psd;
+pub mod pyramid;
 pub mod raster;
+pub mod rgba;
 
 use std::fmt;
 use std::path::PathBuf;
@@ -14,6 +17,7 @@ pub enum ImportError {
     Parse { name: String, message: String },
     NotGeoJson { name: String },
     NotRaster { name: String },
+    NotImage { name: String },
     Empty { name: String },
 }
 
@@ -26,6 +30,9 @@ impl fmt::Display for ImportError {
             ImportError::Parse { name, message } => write!(f, "cannot parse {name}: {message}"),
             ImportError::NotGeoJson { name } => write!(f, "{name} is not GeoJSON"),
             ImportError::NotRaster { name } => write!(f, "{name} is not a PNG or TIFF image"),
+            ImportError::NotImage { name } => {
+                write!(f, "{name} is not a PNG, TIFF, or PSD image")
+            }
             ImportError::Empty { name } => write!(f, "{name} has no usable features"),
         }
     }

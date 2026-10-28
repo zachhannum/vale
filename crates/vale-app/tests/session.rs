@@ -1,3 +1,5 @@
+mod images;
+
 use std::time::Instant;
 
 use vale_app::document::Document;
@@ -1676,4 +1678,110 @@ fn an_added_svg_is_saved_in_the_project() {
         matches!(i, vale_render::Item::Fill { color, .. } if (color.r, color.g, color.b) == (0x80, 0x40, 0xc0))
     });
     assert!(purple, "the symbol of the file does not draw");
+}
+
+/// Level 0 of an image of the file, row by row, in straight RGBA8.
+fn image_pixels(session: &Session, id: vale_store::ImageId, width: u32, height: u32) -> Vec<u8> {
+    let mut out = vec![0; (width * height * 4) as usize];
+    let tile = vale_store::IMAGE_TILE_SIZE;
+    for row in 0..height.div_ceil(tile) {
+        for column in 0..width.div_ceil(tile) {
+            let png = session
+                .load_image_tile(id, 0, column, row)
+                .unwrap()
+                .unwrap();
+            let (w, h, rgba) = vale_store::decode_tile(&png).unwrap();
+            for y in 0..h {
+                let from = (y * w * 4) as usize;
+                let to = (((row * tile + y) * width + column * tile) * 4) as usize;
+                out[to..to + (w * 4) as usize]
+                    .copy_from_slice(&rgba[from..from + (w * 4) as usize]);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn an_image_layer_is_the_same_after_a_close_and_an_open() {
+    use vale_store::BlendMode;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    state.add_height();
+    // An image of 600 by 300 pixels has edge tiles and two levels.
+    let picture = image::RgbaImage::from_fn(600, 300, |x, y| {
+        image::Rgba([(x % 256) as u8, (y % 256) as u8, 40, ((x + y) % 256) as u8])
+    });
+    let file = images::write_png(&dir.path().join("plates.png"), &picture);
+    state.run_action(vale_app::ui::Action::ImportImageLayer(file));
+    let id = state.doc.project.images()[0].id;
+    assert_eq!(state.selected_layer, Some(LayerRef::Image(id)));
+    assert!(state.set_image_opacity(id, 0.4));
+    assert!(state.set_image_blend(id, BlendMode::Screen));
+    let layer = state.doc.project.image_layer(id).unwrap().id;
+    state.move_layer(layer, 0);
+    assert!(state.save_now());
+    let record = state.doc.project.image(id).unwrap().clone();
+    drop(state);
+
+    let mut doc = Document::empty();
+    let session = Session::open(&path, &mut doc).unwrap();
+    let image = doc.project.image(id).unwrap();
+    assert_eq!(image, &record);
+    assert_eq!((image.width, image.height, image.levels), (600, 300, 3));
+    assert_eq!((image.opacity, image.blend), (0.4, BlendMode::Screen));
+    let layers = doc.project.layers();
+    assert_eq!(layers[0].image(), Some(id));
+    assert_eq!(layers[0].name, "plates");
+    let style = LayerStyle::from_json(layers[0].style.as_deref().unwrap()).unwrap();
+    let look = style.image_symbolizer().unwrap();
+    assert_eq!((look.opacity, look.blend), (0.4, BlendMode::Screen));
+    assert!(image_pixels(&session, id, 600, 300) == picture.into_raw());
+
+    // The globe gets the tiles of the copy of the image from the file.
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.session = Some(session);
+    state.sync_globe();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = vale_app::headless::ui_harness(state, (320.0, 240.0), 1.0, setup);
+    for _ in 0..20 {
+        h.step();
+        if !h.state().globe.loading() {
+            break;
+        }
+    }
+    let globe = &h.state().globe;
+    assert_eq!(globe.image_level(id), Some(0));
+    assert!(!globe.loading());
+    assert_eq!(globe.image_bytes(), (600 * 300 + 300 * 150 + 150 * 75) * 4);
+}
+
+#[test]
+fn the_removal_of_an_image_layer_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    let file = images::write_png(&dir.path().join("plates.png"), &images::half_red(512, 256));
+    state.run_action(vale_app::ui::Action::ImportImageLayer(file));
+    let id = state.doc.project.images()[0].id;
+    let layer = state.doc.project.image_layer(id).unwrap().id;
+    assert!(state.remove_layer(layer));
+    assert!(state.doc.project.images().is_empty());
+    assert!(!state.globe.holds_image(id));
+    state.undo();
+    assert_eq!(state.doc.project.images()[0].id, id);
+    assert!(state.globe.holds_image(id));
+    let session = state.session.as_ref().unwrap();
+    assert!(session.load_image_tile(id, 0, 1, 0).unwrap().is_some());
+    // The step before it adds the layer.
+    state.undo();
+    assert!(state.doc.project.images().is_empty() && !state.can_undo());
+    state.redo();
+    assert_eq!(state.doc.project.images()[0].id, id);
 }

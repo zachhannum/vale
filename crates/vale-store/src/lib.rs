@@ -7,6 +7,7 @@ pub use uuid::Uuid;
 
 mod atlas;
 mod gpkg;
+mod image_tile;
 mod tile;
 mod undo;
 
@@ -18,6 +19,7 @@ pub use gpkg::{
     FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,
     TileKey, summary,
 };
+pub use image_tile::{IMAGE_TILE_SIZE, decode_tile, encode_tile, image_levels, level_size};
 pub use tile::TILE_SIZE;
 pub use undo::UNDO_LIMIT;
 
@@ -305,6 +307,8 @@ pub enum LayerKind {
     Vector(GeometryKind),
     /// The raster with this ID.
     Raster(RasterId),
+    /// The image with this ID.
+    Image(ImageId),
 }
 
 impl LayerKind {
@@ -313,12 +317,14 @@ impl LayerKind {
         match self {
             LayerKind::Vector(kind) => kind.name(),
             LayerKind::Raster(_) => "raster",
+            LayerKind::Image(_) => "image",
         }
     }
 }
 
-/// One row of the draw order: a set of features of one geometry kind, or a
-/// raster. A raster layer has no source, no fields, and no features.
+/// One row of the draw order: a set of features of one geometry kind, a
+/// raster, or an image. A raster layer and an image layer have no source, no
+/// fields, and no features.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
     pub id: LayerId,
@@ -344,15 +350,23 @@ impl Layer {
     pub fn geometry(&self) -> Option<GeometryKind> {
         match self.kind {
             LayerKind::Vector(kind) => Some(kind),
-            LayerKind::Raster(_) => None,
+            LayerKind::Raster(_) | LayerKind::Image(_) => None,
         }
     }
 
     /// The raster of a raster layer.
     pub fn raster(&self) -> Option<RasterId> {
         match self.kind {
-            LayerKind::Vector(_) => None,
             LayerKind::Raster(id) => Some(id),
+            LayerKind::Vector(_) | LayerKind::Image(_) => None,
+        }
+    }
+
+    /// The image of an image layer.
+    pub fn image(&self) -> Option<ImageId> {
+        match self.kind {
+            LayerKind::Image(id) => Some(id),
+            LayerKind::Vector(_) | LayerKind::Raster(_) => None,
         }
     }
 
@@ -427,6 +441,30 @@ pub struct Raster {
     pub rivers: bool,
     /// The globe draws the lines of the stops.
     pub lines: bool,
+}
+
+/// The identity of an image. It is never reused.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ImageId(pub u32);
+
+/// The record of one image: an equirectangular picture of the full globe in
+/// straight RGBA8, with no value range and no color stops. Its layer has the
+/// name and the visibility. The project file holds the tiles of its pyramid,
+/// and the project in memory does not. The tiles do not change after the
+/// import.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Image {
+    pub id: ImageId,
+    /// The size of level 0, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// The number of levels of the pyramid, as `image_levels` gives it.
+    pub levels: u32,
+    /// How much the image hides the layers below it, from 0 to 1, on top of
+    /// the alpha of each pixel. A copy of the style of the layer.
+    pub opacity: f32,
+    /// How the image mixes with the layers below it. A copy of the style of the layer.
+    pub blend: BlendMode,
 }
 
 /// The hillshade of a height layer. It keeps its opacity and its highlights
@@ -613,7 +651,7 @@ impl RasterDisplay {
     }
 }
 
-/// How a raster layer mixes its colors with the layers below it.
+/// How a raster layer or an image layer mixes its colors with the layers below it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BlendMode {
     #[default]
@@ -724,7 +762,7 @@ impl Default for World {
 }
 
 /// A world, its layers, and its atlas. Each raster has one layer, and each
-/// raster layer has one raster.
+/// raster layer has one raster. The same is true of the images.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Project {
     pub world: World,
@@ -733,6 +771,9 @@ pub struct Project {
     /// In ID order.
     rasters: Vec<Raster>,
     next_raster_id: u32,
+    /// In ID order.
+    images: Vec<Image>,
+    next_image_id: u32,
     pub atlas: Atlas,
     symbols: Vec<SymbolRecord>,
 }
@@ -756,6 +797,8 @@ impl Project {
             rasters: Vec::new(),
             next_raster_id: 0,
             symbols: Vec::new(),
+            images: Vec::new(),
+            next_image_id: 0,
         }
     }
 
@@ -960,6 +1003,79 @@ impl Project {
         let i = self.rasters.iter().position(|r| r.id == id)?;
         self.layers.retain(|l| l.raster() != Some(id));
         Some(self.rasters.remove(i))
+    }
+
+    /// Adds an image of `width` by `height` pixels with no tiles, and its
+    /// layer on top, and returns the ID of the image. The layer is visible,
+    /// and the image is opaque and blends as normal.
+    pub fn add_image(&mut self, name: String, width: u32, height: u32) -> ImageId {
+        let id = ImageId(self.next_image_id);
+        self.next_image_id += 1;
+        self.images.push(Image {
+            id,
+            width,
+            height,
+            levels: image_levels(width, height),
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+        });
+        self.layers.push(Layer {
+            id: LayerId(self.next_id),
+            name,
+            kind: LayerKind::Image(id),
+            visible: true,
+            source: None,
+            fields: Vec::new(),
+            features: Vec::new(),
+            style: None,
+        });
+        self.next_id += 1;
+        id
+    }
+
+    /// The ID that the next `add_image` gives.
+    pub fn next_image_id(&self) -> ImageId {
+        ImageId(self.next_image_id)
+    }
+
+    /// The images in ID order.
+    pub fn images(&self) -> &[Image] {
+        &self.images
+    }
+
+    /// The image with this ID.
+    pub fn image(&self, id: ImageId) -> Option<&Image> {
+        self.images.iter().find(|i| i.id == id)
+    }
+
+    /// The image with this ID. The ID and the size must stay as they are.
+    pub fn image_mut(&mut self, id: ImageId) -> Option<&mut Image> {
+        self.images.iter_mut().find(|i| i.id == id)
+    }
+
+    /// The layer of the image with this ID.
+    pub fn image_layer(&self, id: ImageId) -> Option<&Layer> {
+        self.layers.iter().find(|l| l.image() == Some(id))
+    }
+
+    /// Sets the opacity of an image. A value outside 0 to 1 gets the nearest
+    /// limit, and NaN gives 1.
+    pub fn set_image_opacity(&mut self, id: ImageId, opacity: f32) -> bool {
+        let image = self.image_mut(id);
+        image.map(|i| i.opacity = clamp_opacity(opacity)).is_some()
+    }
+
+    /// Sets how an image mixes with the layers below it.
+    pub fn set_image_blend(&mut self, id: ImageId, blend: BlendMode) -> bool {
+        self.image_mut(id).map(|i| i.blend = blend).is_some()
+    }
+
+    /// Removes an image and its layer. Its ID is not used again. The file
+    /// removes its tiles when no undo step holds the image.
+    pub fn remove_image(&mut self, id: ImageId) -> Option<Image> {
+        let i = self.images.iter().position(|x| x.id == id)?;
+        self.layers.retain(|l| l.image() != Some(id));
+        Some(self.images.remove(i))
     }
 
     /// Adds a layer on top and returns its ID. Each attribute name of the
@@ -1215,7 +1331,8 @@ impl Project {
 
     /// Removes a layer. Its ID is not used again. A raster layer takes its
     /// raster, and the next save removes the tiles of that raster from the
-    /// file.
+    /// file. An image layer takes its image, and the file removes the tiles
+    /// of the image when no undo step holds the image.
     pub fn remove_layer(&mut self, id: LayerId) -> Option<Layer> {
         let i = self.layers.iter().position(|l| l.id == id)?;
         let layer = self.layers.remove(i);
@@ -1224,6 +1341,9 @@ impl Project {
         }
         if let Some(raster) = layer.raster() {
             self.rasters.retain(|r| r.id != raster);
+        }
+        if let Some(image) = layer.image() {
+            self.images.retain(|i| i.id != image);
         }
         Some(layer)
     }
@@ -1629,6 +1749,43 @@ mod tests {
         assert!(ids.iter().all(|id| d > *id));
         let rasters: Vec<RasterId> = p.rasters().iter().map(|r| r.id).collect();
         assert_eq!(rasters, [ids[1], ids[2], d]);
+    }
+
+    #[test]
+    fn an_image_gets_its_layer_on_top() {
+        let mut p = Project::new(World::default());
+        let towns = p.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let a = p.add_image("Plates".into(), 1000, 501);
+        let b = p.add_image("Coasts".into(), 200, 100);
+        assert!(b > a);
+        let order: Vec<LayerKind> = p.layers().iter().map(|l| l.kind).collect();
+        let towns = p.layer(towns).unwrap().kind;
+        assert_eq!(order, [towns, LayerKind::Image(a), LayerKind::Image(b)]);
+        let layer = p.image_layer(a).unwrap();
+        assert_eq!((layer.name.as_str(), layer.visible), ("Plates", true));
+        assert_eq!(
+            (layer.image(), layer.raster(), layer.geometry()),
+            (Some(a), None, None)
+        );
+        assert_eq!(layer.kind.name(), "image");
+        let image = p.image(a).unwrap();
+        assert_eq!((image.width, image.height, image.levels), (1000, 501, 3));
+        assert_eq!((image.opacity, image.blend), (1.0, BlendMode::Normal));
+
+        assert!(p.set_image_opacity(a, 0.25));
+        assert!(p.set_image_blend(a, BlendMode::Multiply));
+        assert_eq!(p.image(a).unwrap().opacity, 0.25);
+        assert_eq!(p.image(a).unwrap().blend, BlendMode::Multiply);
+        assert!(p.set_image_opacity(a, 3.0));
+        assert_eq!(p.image(a).unwrap().opacity, 1.0);
+
+        let id = p.image_layer(b).unwrap().id;
+        assert_eq!(p.remove_layer(id).unwrap().image(), Some(b));
+        assert!(p.image(b).is_none());
+        assert!(p.remove_image(a).is_some());
+        assert!(p.image_layer(a).is_none() && p.remove_image(a).is_none());
+        assert!(!p.set_image_opacity(a, 0.5) && !p.set_image_blend(a, BlendMode::Screen));
+        assert!(p.add_image("c".into(), 10, 10) > b);
     }
 
     fn names(p: &Project) -> Vec<&str> {

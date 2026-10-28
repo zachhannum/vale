@@ -1,9 +1,9 @@
 //! The project file: a GeoPackage with extra `vale_` tables.
 //!
-//! Each vector layer is one GeoPackage feature table. A raster layer has no
-//! feature table. The `vale_` tables hold the world, the layer order, the
-//! attribute schema, the rasters, and the raster tiles, the undo log, and the
-//! picture of the world. They are in
+//! Each vector layer is one GeoPackage feature table. A raster layer and an
+//! image layer have no feature table. The `vale_` tables hold the world, the
+//! layer order, the attribute schema, the rasters and their tiles, the images
+//! and their tiles, the undo log, and the picture of the world. They are in
 //! `gpkg_contents` with the data type `vale`. GDAL, and thus QGIS, lists a
 //! table that is not in `gpkg_contents` as a layer, and it does not list a
 //! table with a data type that it does not know.
@@ -24,16 +24,17 @@ use crate::atlas::{
     self, Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId,
     PageRecord, PageUnits, ProjectionPreset,
 };
+use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
-    BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Layer, LayerId,
-    LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine,
-    SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
+    BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Image, ImageId, Layer,
+    LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop,
+    StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 27;
+pub const FORMAT_VERSION: u32 = 28;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -65,6 +66,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v25,
     v26,
     v27,
+    v28,
 ];
 
 /// `GPKG` in ASCII.
@@ -321,6 +323,7 @@ impl ProjectFile {
             migrate(&mut conn, version)?;
         }
         let project = load(&conn)?;
+        remove_image_tiles(&conn)?;
         Ok((ProjectFile::with(conn, project.clone())?, project))
     }
 
@@ -432,6 +435,7 @@ impl ProjectFile {
         write_records(&tx, &project)?;
         let tiles = undo::swap_tiles(&tx, step)?;
         remove_rasters(&tx, &project)?;
+        remove_images(&tx, &project)?;
         undo::moved(&tx, step, !redo, self.undo_limit)?;
         tx.commit()?;
         self.project = project;
@@ -528,6 +532,71 @@ impl ProjectFile {
                 return Ok(());
             }
         }
+    }
+
+    /// Writes tiles of an image as `(level, column, row, png)`, in one
+    /// transaction with no undo step. A tile that the file holds is
+    /// replaced. The tiles stay while the file or an undo step holds the
+    /// record of the image.
+    pub fn put_image_tiles(
+        &mut self,
+        id: ImageId,
+        tiles: &[(u32, u32, u32, Vec<u8>)],
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut put = tx.prepare(
+                "INSERT OR REPLACE INTO vale_image_tile (image_id, level, tile_column, tile_row, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (level, column, row, png) in tiles {
+                put.execute(params![id.0, level, column, row, png])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Reads each tile of one level of an image, row by row. `f` gets the
+    /// column, the row, and the PNG of each tile.
+    pub fn load_image_level(
+        &self,
+        id: ImageId,
+        level: u32,
+        mut f: impl FnMut(u32, u32, Vec<u8>),
+    ) -> Result<(), StoreError> {
+        let mut rows = self.conn.prepare(
+            "SELECT tile_column, tile_row, data FROM vale_image_tile
+             WHERE image_id = ?1 AND level = ?2 ORDER BY tile_row, tile_column",
+        )?;
+        let mut rows = rows.query(params![id.0, level])?;
+        while let Some(r) = rows.next()? {
+            f(r.get(0)?, r.get(1)?, r.get(2)?);
+        }
+        Ok(())
+    }
+
+    /// The PNG of one tile of an image, or `None` if the file has no such
+    /// tile.
+    pub fn load_image_tile(
+        &self,
+        id: ImageId,
+        level: u32,
+        column: u32,
+        row: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let mut query = self.conn.prepare_cached(
+            "SELECT data FROM vale_image_tile
+             WHERE image_id = ?1 AND level = ?2 AND tile_column = ?3 AND tile_row = ?4",
+        )?;
+        let tile = query.query_row(params![id.0, level, column, row], |r| r.get(0));
+        Ok(rusqlite::OptionalExtension::optional(tile)?)
+    }
+
+    /// Removes the tiles of each image that has no record in the file and no
+    /// record in an undo step. Returns the tile count.
+    pub fn gc_images(&mut self) -> Result<usize, StoreError> {
+        remove_image_tiles(&self.conn)
     }
 }
 
@@ -950,6 +1019,46 @@ fn v27(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// The image tables. The tiles of an image have no reference to its row,
+/// because an undo step can hold an image that the file has no row of. A
+/// file with an older version number can already have the tables.
+fn v28(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_image (
+           id INTEGER PRIMARY KEY,
+           width INTEGER NOT NULL,
+           height INTEGER NOT NULL,
+           levels INTEGER NOT NULL,
+           opacity REAL NOT NULL DEFAULT 1,
+           blend TEXT NOT NULL DEFAULT 'normal');
+         CREATE TABLE IF NOT EXISTS vale_image_tile (
+           image_id INTEGER NOT NULL,
+           level INTEGER NOT NULL,
+           tile_column INTEGER NOT NULL,
+           tile_row INTEGER NOT NULL,
+           data BLOB NOT NULL,
+           PRIMARY KEY (image_id, level, tile_column, tile_row));
+         INSERT OR IGNORE INTO vale_meta (key, value) VALUES ('next_image_id', '0');
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_image', 'vale', 'vale_image'),
+                  ('vale_image_tile', 'vale', 'vale_image_tile');
+         INSERT INTO gpkg_extensions
+           SELECT c.table_name, NULL, 'vale_project', 'Records of the Vale app', 'read-write'
+           FROM gpkg_contents c
+           WHERE c.table_name IN ('vale_image', 'vale_image_tile')
+             AND NOT EXISTS (SELECT 1 FROM gpkg_extensions e
+               WHERE e.table_name = c.table_name AND e.extension_name = 'vale_project');",
+    )?;
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_layer') WHERE name = 'image_id'";
+    let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
+    if count == 0 {
+        tx.execute_batch(
+            "ALTER TABLE vale_layer ADD COLUMN image_id INTEGER REFERENCES vale_image(id)",
+        )?;
+    }
+    Ok(())
+}
+
 /// The atlas. An older file gets one map with an Equal Earth projection and
 /// one page in the units of the world. A file with an older version number
 /// can already have the tables.
@@ -1355,6 +1464,7 @@ fn write_edit(
         write_symbols(tx, project)?;
     }
     remove_rasters(tx, project)?;
+    remove_images(tx, project)?;
     for change in changes {
         write_tiles(tx, change, step, &mut stats)?;
     }
@@ -1372,6 +1482,8 @@ fn same_base(a: &Project, b: &Project) -> bool {
         && a.next_id == b.next_id
         && a.rasters == b.rasters
         && a.next_raster_id == b.next_raster_id
+        && a.images == b.images
+        && a.next_image_id == b.next_image_id
 }
 
 /// Writes all the records of a project.
@@ -1380,13 +1492,14 @@ fn write_records(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
     write_atlas(tx, project)
 }
 
-/// Writes the world, the raster records, and the layers. The record of a
-/// raster that is not in the project stays.
+/// Writes the world, the raster records, the image records, and the layers.
+/// The record of a raster or an image that is not in the project stays.
 fn write_base(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     clear(tx)?;
     write_world(tx, &project.world)?;
     // A raster layer refers to the row of its raster.
     write_rasters(tx, project)?;
+    write_images(tx, project)?;
     tx.execute(
         "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('next_layer_id', ?1)",
         [project.next_id.to_string()],
@@ -1396,7 +1509,7 @@ fn write_base(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
         match layer.kind {
             LayerKind::Vector(kind) => {
                 let table = table_name(layer, &mut tables);
-                write_layer(tx, position, layer, &table, None)?;
+                write_layer(tx, position, layer, &table, None, None)?;
                 write_features(tx, layer, kind, &table)?;
             }
             LayerKind::Raster(raster) => {
@@ -1406,7 +1519,14 @@ fn write_base(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 // No table has this name. A feature table cannot have it,
                 // because the prefix is reserved.
                 let table = format!("vale_raster_{}", raster.0);
-                write_layer(tx, position, layer, &table, Some(raster))?;
+                write_layer(tx, position, layer, &table, Some(raster), None)?;
+            }
+            LayerKind::Image(image) => {
+                if project.image(image).is_none() {
+                    return Err(corrupt(format!("layer {:?} has no image", layer.name)));
+                }
+                let table = format!("vale_image_{}", image.0);
+                write_layer(tx, position, layer, &table, None, Some(image))?;
             }
         }
     }
@@ -1508,7 +1628,7 @@ fn write_symbols(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
 /// Removes the world, the layer records, and the feature tables.
 fn clear(tx: &Transaction) -> Result<(), StoreError> {
     let tables: Vec<String> = tx
-        .prepare("SELECT table_name FROM vale_layer WHERE raster_id IS NULL")?
+        .prepare("SELECT table_name FROM vale_layer WHERE raster_id IS NULL AND image_id IS NULL")?
         .query_map([], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
     for table in tables {
@@ -1675,11 +1795,12 @@ fn write_layer(
     layer: &Layer,
     table: &str,
     raster: Option<RasterId>,
+    image: Option<ImageId>,
 ) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO vale_layer
-           (id, position, name, kind, table_name, source, visible, raster_id, style)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+           (id, position, name, kind, table_name, source, visible, raster_id, style, image_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             layer.id.0,
             position as i64,
@@ -1689,7 +1810,8 @@ fn write_layer(
             layer.source,
             layer.visible,
             raster.map(|id| id.0),
-            layer.style
+            layer.style,
+            image.map(|id| id.0)
         ],
     )?;
     Ok(())
@@ -1983,6 +2105,59 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
     Ok(())
 }
 
+/// Removes the record of each image that is not in the project. Its tiles
+/// stay until `remove_image_tiles` finds no record of the image.
+fn remove_images(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    let stored: Vec<u32> = tx
+        .prepare("SELECT id FROM vale_image")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for id in stored {
+        if project.image(ImageId(id)).is_none() {
+            tx.execute("DELETE FROM vale_image WHERE id = ?1", [id])?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes the image records.
+fn write_images(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    for i in &project.images {
+        tx.execute(
+            "INSERT INTO vale_image (id, width, height, levels, opacity, blend)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (id) DO UPDATE SET
+               width = excluded.width, height = excluded.height,
+               levels = excluded.levels, opacity = excluded.opacity,
+               blend = excluded.blend",
+            params![
+                i.id.0,
+                i.width,
+                i.height,
+                i.levels,
+                f64::from(clamp_opacity(i.opacity)),
+                i.blend.id(),
+            ],
+        )?;
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('next_image_id', ?1)",
+        [project.next_image_id.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Removes the tiles of each image that has no record in the file and no
+/// record in an undo step. Returns the tile count.
+pub(crate) fn remove_image_tiles(conn: &Connection) -> Result<usize, StoreError> {
+    Ok(conn.execute(
+        "DELETE FROM vale_image_tile
+         WHERE image_id NOT IN (SELECT id FROM vale_image)
+           AND image_id NOT IN (SELECT id FROM vale_undo_record WHERE kind = 'image')",
+        [],
+    )?)
+}
+
 /// Writes the changed tiles of one raster. A step keeps the image of each
 /// tile from before the change. A tile with the pixels that the file holds
 /// is not a change.
@@ -2097,6 +2272,35 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
     Ok(rasters)
 }
 
+fn load_images(conn: &Connection) -> Result<Vec<Image>, StoreError> {
+    let mut rows = conn
+        .prepare("SELECT id, width, height, levels, opacity, blend FROM vale_image ORDER BY id")?;
+    let mut rows = rows.query([])?;
+    let mut images = Vec::new();
+    while let Some(r) = rows.next()? {
+        let id: u32 = r.get(0)?;
+        let size = |i: usize| -> Result<u32, StoreError> {
+            let n: i64 = r.get(i)?;
+            let n = u32::try_from(n).ok().filter(|&n| n > 0);
+            n.ok_or_else(|| corrupt(format!("the size of image {id}")))
+        };
+        let (width, height) = (size(1)?, size(2)?);
+        let levels: i64 = r.get(3)?;
+        if levels != i64::from(image_levels(width, height)) {
+            return Err(corrupt(format!("the levels of image {id}")));
+        }
+        images.push(Image {
+            id: ImageId(id),
+            width,
+            height,
+            levels: levels as u32,
+            opacity: clamp_opacity(r.get::<_, f64>(4)? as f32),
+            blend: BlendMode::from_id(&r.get::<_, String>(5)?).unwrap_or_default(),
+        });
+    }
+    Ok(images)
+}
+
 fn load(conn: &Connection) -> Result<Project, StoreError> {
     use rusqlite::OptionalExtension;
     let (name, radius_km, units, seed) = conn
@@ -2123,21 +2327,34 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         .parse()
         .map_err(|_| corrupt(format!("next raster ID {next_raster_id:?}")))?;
 
+    let next_image_id = counter(conn, "next_image_id")?;
+
     let rasters = load_rasters(conn)?;
+    let images = load_images(conn)?;
     let mut layers = Vec::new();
     let mut rows = conn.prepare(
-        "SELECT id, name, kind, table_name, source, visible, raster_id, style FROM vale_layer
-         ORDER BY position",
+        "SELECT id, name, kind, table_name, source, visible, raster_id, style, image_id
+         FROM vale_layer ORDER BY position",
     )?;
     let mut rows = rows.query([])?;
     while let Some(r) = rows.next()? {
         let name: String = r.get(1)?;
         let kind: String = r.get(2)?;
         let raster: Option<u32> = r.get(6)?;
+        let image: Option<u32> = r.get(8)?;
         let geometry = GeometryKind::from_name(&kind);
-        let kind = match (kind.as_str(), geometry, raster) {
-            (_, Some(geometry), None) => LayerKind::Vector(geometry),
-            ("raster", _, Some(id)) => {
+        let kind = match (kind.as_str(), geometry, raster, image) {
+            (_, Some(geometry), None, None) => LayerKind::Vector(geometry),
+            ("image", _, None, Some(id)) => {
+                let id = ImageId(id);
+                let known = images.iter().any(|x| x.id == id);
+                let twice = layers.iter().any(|l: &Layer| l.image() == Some(id));
+                if !known || twice {
+                    return Err(corrupt(format!("the image of layer {name:?}")));
+                }
+                LayerKind::Image(id)
+            }
+            ("raster", _, Some(id), None) => {
                 let id = RasterId(id);
                 let known = rasters.iter().any(|x| x.id == id);
                 let twice = layers.iter().any(|l: &Layer| l.raster() == Some(id));
@@ -2168,6 +2385,10 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
     if let Some(raster) = rasters.iter().find(|r| alone(r)) {
         return Err(corrupt(format!("raster {} has no layer", raster.id.0)));
     }
+    let alone = |i: &Image| !layers.iter().any(|l| l.image() == Some(i.id));
+    if let Some(image) = images.iter().find(|i| alone(i)) {
+        return Err(corrupt(format!("image {} has no layer", image.id.0)));
+    }
     let symbols = conn
         .prepare("SELECT name, svg FROM vale_symbol ORDER BY position")?
         .query_map([], |r| {
@@ -2185,6 +2406,8 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         rasters,
         next_raster_id,
         symbols,
+        images,
+        next_image_id,
     })
 }
 
@@ -2718,6 +2941,8 @@ mod tests {
             [
                 "vale_field",
                 "vale_frame",
+                "vale_image",
+                "vale_image_tile",
                 "vale_layer",
                 "vale_map",
                 "vale_map_hidden",
@@ -3636,7 +3861,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 176 * 1024, "{bytes} bytes");
+        assert!(bytes < 188 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();
@@ -5690,5 +5915,246 @@ mod tests {
         drop(file);
         let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded.symbols(), project.symbols());
+    }
+
+    /// The tiles of one level of an image, as `(column, row, png)`.
+    fn image_level(file: &ProjectFile, id: ImageId, level: u32) -> Vec<(u32, u32, Vec<u8>)> {
+        let mut tiles = Vec::new();
+        file.load_image_level(id, level, |c, r, png| tiles.push((c, r, png)))
+            .unwrap();
+        tiles
+    }
+
+    /// The tiles of an image of 300 by 100 pixels: two tiles at level 0 and
+    /// one at level 1. Each tile has a gradient of alpha.
+    fn image_tiles() -> Vec<(u32, u32, u32, Vec<u8>)> {
+        let tile = |level, column, width: u32, height: u32| {
+            let rgba: Vec<u8> = (0..width * height)
+                .flat_map(|i| [column as u8 * 100, level as u8 * 50, 7, (i % 256) as u8])
+                .collect();
+            (level, column, 0, crate::encode_tile(width, height, &rgba))
+        };
+        vec![
+            tile(0, 0, 256, 100),
+            tile(0, 1, 44, 100),
+            tile(1, 0, 150, 50),
+        ]
+    }
+
+    fn image_tile_count(file: &ProjectFile) -> i64 {
+        let sql = "SELECT count(*) FROM vale_image_tile";
+        file.conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn the_file_keeps_each_image_layer_in_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_raster("Height".into(), 512, "m".into(), -100.0, 100.0);
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let plates = project.add_image("Plates".into(), 300, 100);
+        project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let coasts = project.add_image("Coasts".into(), 16_384, 8_192);
+        assert!(project.set_image_opacity(plates, 0.5));
+        assert!(project.set_image_blend(plates, BlendMode::Multiply));
+        let id = project.image_layer(coasts).unwrap().id;
+        assert!(project.set_layer_visible(id, false));
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        let names: Vec<&str> = loaded.layers().iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Height", "Towns", "Plates", "Roads", "Coasts"]);
+        let image = loaded.image(plates).unwrap();
+        assert_eq!((image.opacity, image.blend), (0.5, BlendMode::Multiply));
+        assert_eq!(loaded.image(coasts).unwrap().levels, 7);
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT table_name FROM vale_layer WHERE kind = 'image'"
+            ),
+            ["vale_image_0", "vale_image_1"]
+        );
+    }
+
+    #[test]
+    fn the_file_keeps_the_tiles_of_an_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let id = project.add_image("Plates".into(), 300, 100);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let tiles = image_tiles();
+        file.put_image_tiles(id, &tiles).unwrap();
+        assert!(!file.can_undo());
+        drop(file);
+
+        let (file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        let level = |n| -> Vec<_> {
+            let tiles = image_tiles().into_iter().filter(|t| t.0 == n);
+            tiles.map(|(_, c, r, png)| (c, r, png)).collect()
+        };
+        assert_eq!(image_level(&file, id, 0), level(0));
+        assert_eq!(image_level(&file, id, 1), level(1));
+        assert_eq!(image_level(&file, id, 2), []);
+        let (_, _, png) = &image_level(&file, id, 0)[1];
+        let (width, height, rgba) = crate::decode_tile(png).unwrap();
+        assert_eq!((width, height), (44, 100));
+        assert_eq!(&rgba[..8], &[100, 0, 7, 0, 100, 0, 7, 1]);
+    }
+
+    #[test]
+    fn one_tile_of_an_image_comes_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        assert_eq!(project.next_image_id(), ImageId(0));
+        let id = project.add_image("Plates".into(), 300, 100);
+        assert_eq!(project.next_image_id(), ImageId(1));
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        file.put_image_tiles(id, &image_tiles()).unwrap();
+        let tile = file.load_image_tile(id, 0, 1, 0).unwrap().unwrap();
+        assert_eq!(tile, image_tiles()[1].3);
+        assert_eq!(file.load_image_tile(id, 1, 1, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn undo_puts_back_an_added_image_and_a_removed_one_with_their_tiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let empty = project.clone();
+
+        // Add.
+        let id = project.add_image("Plates".into(), 300, 100);
+        assert!(project.set_image_blend(id, BlendMode::Screen));
+        file.put_image_tiles(id, &image_tiles()).unwrap();
+        file.save(&project).unwrap();
+        let added = project.clone();
+        file.undo().unwrap().unwrap();
+        // The counters stay, so the ID of the image is not used again.
+        assert_eq!(file.project().layers(), empty.layers());
+        assert_eq!(file.project().images(), []);
+        assert_eq!(file.project().next_image_id, 1);
+        assert_eq!(image_tile_count(&file), 3);
+        file.redo().unwrap().unwrap();
+        assert_eq!(file.project(), &added);
+        assert_eq!(image_level(&file, id, 1).len(), 1);
+
+        // Remove.
+        let layer = project.image_layer(id).unwrap().id;
+        project.remove_layer(layer).unwrap();
+        file.save(&project).unwrap();
+        assert!(file.project().image(id).is_none());
+        assert_eq!(image_tile_count(&file), 3);
+        file.undo().unwrap().unwrap();
+        assert_eq!(file.project(), &added);
+        assert_eq!(image_level(&file, id, 0).len(), 2);
+        drop(file);
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, added);
+        assert_eq!(image_tile_count(&file), 3);
+
+        // A new edit removes the redo step of the removal, and the image stays.
+        let mut renamed = added.clone();
+        renamed.world.name = "Renamed".into();
+        file.save(&renamed).unwrap();
+        assert!(!file.can_redo());
+        assert_eq!(image_tile_count(&file), 3);
+    }
+
+    #[test]
+    fn the_tiles_of_an_image_go_when_no_record_holds_the_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let kept = project.add_image("Kept".into(), 300, 100);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        file.put_image_tiles(kept, &image_tiles()).unwrap();
+
+        // Tiles with no record, as after an import that did not end.
+        file.put_image_tiles(ImageId(9), &image_tiles()).unwrap();
+        assert_eq!(file.gc_images().unwrap(), 3);
+        assert_eq!(image_tile_count(&file), 3);
+        file.put_image_tiles(ImageId(9), &image_tiles()).unwrap();
+        drop(file);
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(image_tile_count(&file), 3);
+
+        // An undo step holds the removed image until the log loses the step.
+        project.remove_image(kept).unwrap();
+        file.save(&project).unwrap();
+        assert_eq!(file.gc_images().unwrap(), 0);
+        file.save_base(&project).unwrap();
+        assert_eq!(image_tile_count(&file), 0);
+
+        // The same is true of the redo step of an added image.
+        let added = project.add_image("Added".into(), 300, 100);
+        file.put_image_tiles(added, &image_tiles()).unwrap();
+        file.save(&project).unwrap();
+        file.undo().unwrap().unwrap();
+        assert_eq!(image_tile_count(&file), 3);
+        let mut renamed = file.project().clone();
+        renamed.world.name = "Renamed".into();
+        file.save(&renamed).unwrap();
+        assert_eq!(image_tile_count(&file), 0);
+
+        // And of a step that goes over the limit of the log.
+        let mut project = renamed;
+        let big = project.add_image("Big".into(), 300, 100);
+        file.put_image_tiles(big, &image_tiles()).unwrap();
+        file.save(&project).unwrap();
+        project.remove_image(big).unwrap();
+        file.set_undo_limit(0);
+        file.save(&project).unwrap();
+        assert_eq!(image_tile_count(&file), 0);
+    }
+
+    #[test]
+    fn a_file_of_version_27_gets_the_image_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = Connection::open(path(&dir)).unwrap();
+        let tx = conn.transaction().unwrap();
+        for step in &MIGRATIONS[..27] {
+            step(&tx).unwrap();
+        }
+        tx.execute_batch(
+            "INSERT INTO vale_meta VALUES ('format_version', '27'), ('next_layer_id', '1');
+             INSERT INTO vale_world (id, name, radius_km, units, seed)
+               VALUES (1, 'Old', 1234.5, 'metric', 0);
+             INSERT INTO gpkg_spatial_ref_sys
+               VALUES ('Old', 100000, 'NONE', 100000, 'undefined', NULL);
+             INSERT INTO vale_layer (id, position, name, kind, table_name)
+               VALUES (0, 0, 'Towns', 'point', 'Towns');
+             CREATE TABLE Towns (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+               geom MULTIPOINT, uuid TEXT NOT NULL UNIQUE);
+             INSERT INTO gpkg_contents (table_name, data_type, identifier, srs_id)
+               VALUES ('Towns', 'features', 'Towns', 100000);
+             INSERT INTO gpkg_geometry_columns
+               VALUES ('Towns', 'geom', 'MULTIPOINT', 100000, 0, 0);",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+
+        let (mut file, mut project) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        let names: Vec<&str> = project.layers().iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Towns"]);
+        assert!(project.images().is_empty());
+        assert_eq!(
+            strings(
+                &file.conn,
+                "SELECT table_name FROM gpkg_extensions
+                 WHERE table_name GLOB 'vale_image*' ORDER BY table_name"
+            ),
+            ["vale_image", "vale_image_tile"]
+        );
+        let id = project.add_image("Plates".into(), 300, 100);
+        assert_eq!(id, ImageId(0));
+        file.put_image_tiles(id, &image_tiles()).unwrap();
+        file.save(&project).unwrap();
+        drop(file);
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(image_tile_count(&file), 3);
     }
 }

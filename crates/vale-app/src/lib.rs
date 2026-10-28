@@ -10,6 +10,7 @@ pub mod files;
 pub mod furniture;
 pub mod globe;
 pub mod headless;
+pub mod image_layer;
 pub mod labels;
 #[cfg(target_os = "ios")]
 pub mod lifecycle;

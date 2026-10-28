@@ -376,13 +376,38 @@ pub fn blend_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     let Some(current) = state.doc.project.raster(id).map(|r| r.blend) else {
         return;
     };
+    if let Some(mode) = blend_rows(ui, controls, current) {
+        state.set_raster_blend(id, mode);
+    }
+}
+
+/// The page of the blend mode of an image layer.
+pub fn image_blend_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: vale_store::ImageId,
+) {
+    let Some(current) = state.doc.project.image(id).map(|i| i.blend) else {
+        return;
+    };
+    if let Some(mode) = blend_rows(ui, controls, current) {
+        state.set_image_blend(id, mode);
+    }
+}
+
+/// A row for each blend mode, with a mark on `current`. Returns the mode of
+/// a tapped row.
+fn blend_rows(ui: &mut egui::Ui, controls: &mut Controls, current: BlendMode) -> Option<BlendMode> {
+    let mut chosen = None;
     for mode in BlendMode::ALL {
         let label = elevation::blend_label(mode);
         let name = format!("{BLEND} {label}");
         if widgets::option_row(ui, controls, &name, label, &[], mode == current).clicked() {
-            state.set_raster_blend(id, mode);
+            chosen = Some(mode);
         }
     }
+    chosen
 }
 
 /// The page of the hillshade of the Layers panel: the switch, and while the

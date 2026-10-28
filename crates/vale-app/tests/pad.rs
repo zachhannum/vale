@@ -1,6 +1,7 @@
 //! The iPad layout of the world workspace.
 
 mod common;
+mod images;
 
 use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
@@ -17,9 +18,9 @@ use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
-    NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE,
-    SNAP_EDGES, SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
-    brush_size_text, readout_text, theme,
+    NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP,
+    SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS,
+    WORLDS_ROW, brush_size_text, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -231,7 +232,14 @@ fn check_controls(h: &Pad, what: &str) {
                         "Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp",
                     ]
                     .contains(&name);
-                let rows = [NEW_RASTER, "Lines", "Points", "Polygons", IMPORT_HEIGHTMAP];
+                let rows = [
+                    NEW_RASTER,
+                    NEW_IMAGE,
+                    "Lines",
+                    "Points",
+                    "Polygons",
+                    IMPORT_HEIGHTMAP,
+                ];
                 let add = in_add && rows.contains(&name);
                 let stop = in_stop
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
@@ -348,7 +356,7 @@ fn drawn(h: &Pad) -> Vec<vale_store::RasterId> {
     let stack = h.state().globe.stack().unwrap_or_default();
     let ids = stack.iter().filter_map(|item| match item {
         StackItem::Raster { id, .. } => Some(*id),
-        StackItem::Vector(_) => None,
+        StackItem::Vector(_) | StackItem::Image { .. } => None,
     });
     ids.collect()
 }
@@ -6826,4 +6834,137 @@ fn a_file_that_is_not_an_image_makes_no_layer() {
         form_tap(&mut h, raster_form::ADD);
         assert_eq!(h.state().doc.project.rasters().len(), 1, "{what}");
     }
+}
+
+#[test]
+fn the_menu_of_the_new_layers_asks_for_the_file_of_an_image_layer() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        tap(&mut h, ADD_LAYER);
+        check_controls(&h, &format!("{what} with the menu of the new layers"));
+        let row = control(&h, NEW_IMAGE).unwrap_or_else(|| panic!("{what}: no row"));
+        let menu = h.state().pad.add_rect.unwrap();
+        assert!(menu.contains_rect(row), "{what}: {row:?}");
+        assert!(h.state().actions.is_empty());
+        tap(&mut h, NEW_IMAGE);
+        assert_eq!(h.state().actions, [Action::ImageLayerDialog], "{what}");
+        assert!(!h.state().pad.add, "{what}");
+    }
+}
+
+/// The straight RGBA8 pixel of level 0 of an image of a project with no
+/// file, at a pixel of the image.
+fn image_pixel(h: &Pad, id: vale_store::ImageId, x: u32, y: u32) -> [u8; 4] {
+    let tile = vale_store::IMAGE_TILE_SIZE;
+    let key = (id, 0, x / tile, y / tile);
+    let png = &h.state().image_tiles[&key];
+    let (w, _, rgba) = vale_store::decode_tile(png).unwrap();
+    let at = (((y % tile) * w + x % tile) * 4) as usize;
+    rgba[at..at + 4].try_into().unwrap()
+}
+
+#[test]
+fn an_image_layer_comes_from_a_png_a_tiff_or_a_psd_with_alpha() {
+    let dir = tempfile::tempdir().unwrap();
+    let picture = images::half_red(512, 256);
+    let files = [
+        images::write_png(&dir.path().join("plates.png"), &picture),
+        images::write_tiff(&dir.path().join("plates.tif"), &picture),
+        images::write_psd(&dir.path().join("plates.psd"), &picture),
+    ];
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    for (at, file) in files.into_iter().enumerate() {
+        let what = file.display().to_string();
+        h.state_mut().run_action(Action::ImportImageLayer(file));
+        h.run_steps(2);
+        let images = h.state().doc.project.images();
+        assert_eq!(images.len(), at + 1, "{what}");
+        let image = &images[at];
+        let id = image.id;
+        assert_eq!((image.width, image.height), (512, 256), "{what}");
+        let layer = h.state().doc.project.image_layer(id).unwrap();
+        assert_eq!(layer.name, "plates", "{what}");
+        let style = vale_style::LayerStyle::from_json(layer.style.as_deref().unwrap()).unwrap();
+        assert!(style.image_symbolizer().is_some(), "{what}");
+        assert_eq!(image_pixel(&h, id, 100, 50)[3], 0, "{what}");
+        assert_eq!(image_pixel(&h, id, 400, 50), [255, 0, 0, 255], "{what}");
+        // The panel of the new layer opens with the result.
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Image(id)), "{what}");
+        let note = h.query_by_label_contains("Imported plates.");
+        assert!(note.is_some(), "{what}");
+    }
+}
+
+#[test]
+fn the_panel_of_an_image_layer_works_with_a_finger() {
+    use vale_store::BlendMode;
+    let dir = tempfile::tempdir().unwrap();
+    let file = images::write_png(&dir.path().join("plates.png"), &images::half_red(512, 256));
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        h.state_mut()
+            .run_action(Action::ImportImageLayer(file.clone()));
+        let id = h.state().doc.project.images()[0].id;
+        h.state_mut().pad.layer = None;
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open plates");
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Image(id)), "{what}");
+        assert_eq!(h.state().selected_layer, Some(LayerRef::Image(id)));
+        check_controls(&h, &format!("{what} with the panel of an image layer"));
+        let card = panel(&h, Panel::Layers).unwrap();
+        for name in [LAYER_NAME, OPACITY, raster::BLEND] {
+            let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
+            assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
+        }
+        let texts: Vec<String> = painted_texts(&h).into_iter().map(|t| t.0).collect();
+        assert!(
+            texts.iter().any(|t| t == "512 × 256 px"),
+            "{what}: {texts:?}"
+        );
+        // An image layer has no color stops and no values.
+        assert!(control(&h, raster::COLOR_STOPS).is_none(), "{what}");
+        assert!(!texts.iter().any(|t| t == "Values"), "{what}: {texts:?}");
+        // The brush paints no image.
+        assert!(!h.state().globe.paintable, "{what}");
+
+        // A tap on the track sets a whole percent.
+        let slider = control(&h, OPACITY).unwrap();
+        let middle = pos2(slider.center().x + 3.3, slider.center().y);
+        touch(&mut h, egui::TouchPhase::Start, middle, None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, middle, None);
+        h.run_steps(3);
+        let opacity = h.state().doc.project.image(id).unwrap().opacity;
+        assert!(opacity > 0.3 && opacity < 0.7, "{what}: {opacity}");
+
+        tap(&mut h, raster::BLEND);
+        assert_eq!(h.state().pad.page, Some(Page::Blend), "{what}");
+        check_controls(&h, &format!("{what} with the blend page of an image layer"));
+        tap(&mut h, "Blend mode Multiply");
+        let image = h.state().doc.project.image(id).unwrap();
+        assert_eq!(image.blend, BlendMode::Multiply, "{what}");
+        let layer = h.state().doc.project.image_layer(id).unwrap();
+        let style = vale_style::LayerStyle::from_json(layer.style.as_deref().unwrap()).unwrap();
+        let look = style.image_symbolizer().unwrap();
+        assert_eq!((look.opacity, look.blend), (opacity, BlendMode::Multiply));
+        tap(&mut h, "Back to plates");
+        assert_eq!(h.state().pad.page, None, "{what}");
+    }
+}
+
+#[test]
+fn the_layers_panel_shows_why_an_image_layer_did_not_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.png");
+    std::fs::write(&file, b"not an image").unwrap();
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    h.state_mut().run_action(Action::ImportImageLayer(file));
+    h.run_steps(2);
+    assert!(h.state().doc.project.images().is_empty());
+    assert!(h.query_by_label_contains("notes").is_some());
 }

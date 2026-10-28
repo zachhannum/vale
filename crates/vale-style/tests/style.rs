@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use vale_store::GeometryKind;
 use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
-    Color, Extent, LayerStyle, Paint, PointSymbolizer, Rule, STYLE_VERSION, ScatterSymbolizer,
-    Stroke, StrokeKind, StrokeSymbolizer, Style, StyleError, Symbolizer, extent_of,
-    scale_denominator,
+    Color, Extent, ImageSymbolizer, LayerStyle, Paint, PointSymbolizer, Rule, STYLE_VERSION,
+    ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style, StyleError, Symbolizer,
+    extent_of, scale_denominator,
 };
 
 fn river(kind: &str, flow: f64) -> BTreeMap<String, Value> {
@@ -298,6 +298,35 @@ fn wrong_raster_stops_do_not_load() {
             Err(StyleError::Invalid(_))
         ));
     }
+}
+
+#[test]
+fn the_default_image_style_is_opaque_and_normal() {
+    let style = LayerStyle::image();
+    assert_eq!(
+        style.image_symbolizer(),
+        Some(&ImageSymbolizer {
+            opacity: 1.0,
+            blend: vale_store::BlendMode::Normal,
+        })
+    );
+    assert_eq!(style.raster_symbolizer(), None);
+    assert_eq!(style.style.constant_paints(1.0), Some(Vec::new()));
+    assert!(!style.label.enabled);
+}
+
+#[test]
+fn an_image_style_round_trips() {
+    let mut style = LayerStyle::image();
+    style.style.rules[0].symbolizers[0] = Symbolizer::Image(ImageSymbolizer {
+        opacity: 0.5,
+        blend: vale_store::BlendMode::Overlay,
+    });
+    let json = style.to_json();
+    assert!(json.contains("\"type\":\"image\""));
+    let back = LayerStyle::from_json(&json).unwrap();
+    assert_eq!(back, style);
+    assert_eq!(back.image_symbolizer().unwrap().opacity, 0.5);
 }
 
 #[test]

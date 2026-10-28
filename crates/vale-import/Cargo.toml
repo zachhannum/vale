@@ -11,6 +11,7 @@ vale-store.workspace = true
 serde_json.workspace = true
 image = { workspace = true, features = ["tiff"] }
 tiff.workspace = true
+png.workspace = true
 flate2.workspace = true
 
 [dev-dependencies]

@@ -949,6 +949,15 @@ fn map_rasters(state: &AppState, map: MapId) -> Vec<RasterId> {
         .collect()
 }
 
+/// The image layers that a map shows, from the bottom.
+fn map_images(state: &AppState, map: MapId) -> Vec<vale_store::ImageId> {
+    let layers = state.doc.project.layers().iter();
+    let on = layers.filter(|layer| state.doc.shown(map, layer.id));
+    on.filter_map(|layer| layer.image())
+        .filter(|id| state.globe.holds_image(*id))
+        .collect()
+}
+
 /// A frame of the page to draw in this pass.
 struct Placed {
     id: FrameId,
@@ -1060,7 +1069,8 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             continue;
         };
         let rasters = map_rasters(state, frame.map);
-        let layered = !rasters.is_empty();
+        let images = map_images(state, frame.map);
+        let layered = !rasters.is_empty() || !images.is_empty();
         let content = hash_of((
             map,
             state.map_generation,
@@ -1156,6 +1166,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                     mesh,
                     mask,
                     shown: rasters,
+                    images,
                 });
             }
         }

@@ -1,9 +1,10 @@
 //! The colors of a raster layer in the style of the layer. The style is the
 //! stored truth. The raster record holds a copy of the colors for the editors
-//! and the globe.
+//! and the globe. The record of an image holds a copy of its opacity and its
+//! blend mode in the same way.
 
-use vale_store::{LayerId, Project, Raster, RasterId};
-use vale_style::{LayerStyle, RasterSymbolizer};
+use vale_store::{ImageId, LayerId, Project, Raster, RasterId};
+use vale_style::{ImageSymbolizer, LayerStyle, RasterSymbolizer, Symbolizer};
 
 use crate::session::{bands_of, record_stops};
 
@@ -91,4 +92,61 @@ pub fn migrate(p: &mut Project) -> bool {
         }
     }
     store_raster_styles(p) || changed
+}
+
+/// Each image layer of the project, with its image.
+fn image_layers(p: &Project) -> Vec<(LayerId, ImageId)> {
+    let layers = p.layers().iter();
+    layers.filter_map(|l| Some((l.id, l.image()?))).collect()
+}
+
+/// Puts the opacity and the blend mode of each image record into the style
+/// of its layer. Returns `true` if a style changed.
+pub fn store_image_styles(p: &mut Project) -> bool {
+    let mut changed = false;
+    for (layer, image) in image_layers(p) {
+        let Some(record) = p.image(image) else {
+            continue;
+        };
+        let look = ImageSymbolizer {
+            opacity: record.opacity,
+            blend: record.blend,
+        };
+        let mut style = match parsed(p, layer) {
+            Some(style) if style.image_symbolizer() == Some(&look) => continue,
+            Some(style) if style.image_symbolizer().is_some() => style,
+            _ => LayerStyle::image(),
+        };
+        let symbolizers = style
+            .style
+            .rules
+            .iter_mut()
+            .flat_map(|r| &mut r.symbolizers);
+        for symbolizer in symbolizers {
+            if let Symbolizer::Image(first) = symbolizer {
+                *first = look;
+                break;
+            }
+        }
+        let json = style.to_json();
+        if p.layer(layer).and_then(|l| l.style.as_deref()) != Some(json.as_str()) {
+            changed |= p.set_layer_style(layer, Some(json));
+        }
+    }
+    changed
+}
+
+/// Puts the opacity and the blend mode of the style of each image layer
+/// into its record.
+pub fn load_image_styles(p: &mut Project) {
+    for (layer, image) in image_layers(p) {
+        let Some(style) = parsed(p, layer) else {
+            continue;
+        };
+        let Some(&look) = style.image_symbolizer() else {
+            continue;
+        };
+        p.set_image_opacity(image, look.opacity);
+        p.set_image_blend(image, look.blend);
+    }
 }

@@ -1,5 +1,7 @@
 //! Raster layers in the map frames of the Atlas workspace.
 
+mod images;
+
 use eframe::egui::{Pos2, pos2};
 use egui_kittest::Harness;
 use kurbo::Point;
@@ -134,6 +136,57 @@ fn the_blend_mode_works_in_a_frame() {
         r.abs_diff(want) <= 3 && r == g && g == b,
         "{r} {g} {b} and {want}"
     );
+}
+
+/// The atlas of `atlas` with an image layer above the height layer whose
+/// west half is transparent and whose east half is red, and the screen
+/// points west and east of the middle of the frame.
+fn atlas_with_image(level: u16) -> (App, vale_store::ImageId, Pos2, Pos2) {
+    let (mut h, _) = atlas(level);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("plates.png");
+    images::write_png(&path, &images::half_red(512, 256));
+    h.state_mut().run_action(Action::ImportImageLayer(path));
+    let id = h.state().doc.project.images()[0].id;
+    h.state_mut().workspace = Workspace::Atlas;
+    h.state_mut().touch();
+    h.run_steps(3);
+    let frame = open_frame(&h);
+    let middle = screen(&h, anchor(&frame.shape));
+    let side = eframe::egui::vec2(40.0, 7.0);
+    (h, id, middle - side, middle + side)
+}
+
+fn near(got: [u8; 3], want: [u8; 3], what: &str) {
+    let close = got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 3);
+    assert!(close, "{what}: {got:?} and {want:?}");
+}
+
+#[test]
+fn a_frame_draws_an_image_layer_with_its_colors_over_the_layers_below() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, id, west, east) = atlas_with_image(level);
+    assert!(h.state().globe.image_level(id).is_some());
+    near(pixel(&mut h, east), [255, 0, 0], "opaque");
+    near(pixel(&mut h, west), [grey_of(level); 3], "transparent");
+}
+
+#[test]
+fn the_opacity_and_the_blend_mode_of_an_image_layer_work_in_a_frame() {
+    let _gpu = one_gpu_test();
+    let level = 32768;
+    let (mut h, id, west, east) = atlas_with_image(level);
+    let g = grey_of(level);
+    let half = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
+    h.state_mut().set_image_opacity(id, 0.5);
+    near(pixel(&mut h, east), [half(255, g), g / 2, g / 2], "half");
+    h.state_mut().set_image_opacity(id, 1.0);
+    h.state_mut().set_image_blend(id, BlendMode::Multiply);
+    near(pixel(&mut h, east), [g, 0, 0], "multiply");
+    near(pixel(&mut h, west), [g; 3], "multiply, transparent");
+    h.state_mut().set_image_blend(id, BlendMode::Screen);
+    near(pixel(&mut h, east), [255, g, g], "screen");
 }
 
 #[test]
