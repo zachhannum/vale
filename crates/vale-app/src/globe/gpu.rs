@@ -11,7 +11,7 @@ use eframe::egui_wgpu::{self, wgpu};
 
 use std::collections::HashMap;
 
-use vale_store::RasterId;
+use vale_store::{ImageId, RasterId};
 use vale_terrain::{
     ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid, GpuTiles,
     Heightmap, MAX_BANDS, Readback, StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
@@ -139,6 +139,50 @@ pub struct MapKey {
     pub face_size: u32,
 }
 
+/// The copy of an image on the GPU: one level of its pyramid, with the next
+/// levels as its mip chain. The GPU takes a tile only if it still holds the
+/// copy with this key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ImageKey {
+    pub image: ImageId,
+    /// The count of the copies that the globe made before this one.
+    pub generation: u64,
+    /// The level of the pyramid in the first mip.
+    pub level: u32,
+    /// The size of that level, in pixels.
+    pub width: u32,
+    pub height: u32,
+    pub mips: u32,
+}
+
+impl ImageKey {
+    /// The size of a mip of the texture, in pixels.
+    pub fn mip_size(&self, mip: u32) -> (u32, u32) {
+        ((self.width >> mip).max(1), (self.height >> mip).max(1))
+    }
+
+    /// The memory of the texture, in bytes.
+    pub fn bytes(&self) -> u64 {
+        let mip = |m| {
+            let (w, h) = self.mip_size(m);
+            u64::from(w) * u64::from(h) * 4
+        };
+        (0..self.mips).map(mip).sum()
+    }
+}
+
+/// One tile of premultiplied RGBA8 pixels for a mip of an image copy.
+pub struct ImageUpload {
+    pub key: ImageKey,
+    pub mip: u32,
+    /// The first pixel of the tile in the mip.
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 /// What one pass draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Pass {
@@ -146,6 +190,8 @@ pub enum Pass {
     Ground,
     /// One raster layer.
     Layer(LayerKey),
+    /// One image layer.
+    Image(ImageId),
     /// The graticule above the raster layers.
     Graticule,
     /// The soft edge of the globe. The other passes have a hard edge, so
@@ -175,9 +221,22 @@ struct Channels {
     view: wgpu::TextureView,
 }
 
+/// The copy of an image on the GPU.
+struct GpuImage {
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+}
+
 struct Resources {
     format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
+    /// The passes of the image layers: on the globe and in the flat view,
+    /// each with no blend and with a blend.
+    image_pipelines: [wgpu::RenderPipeline; 4],
+    image_layout: wgpu::BindGroupLayout,
+    image_sampler: wgpu::Sampler,
+    /// The copies of the images that the globe draws.
+    images: HashMap<ImageKey, GpuImage>,
     pipeline: wgpu::RenderPipeline,
     flat_pipeline: wgpu::RenderPipeline,
     /// The layer passes that mix with the backdrop.
@@ -229,9 +288,10 @@ impl Resources {
             label: Some("globe"),
             source: wgpu::ShaderSource::Wgsl(
                 format!(
-                    "{TILES_WGSL}\n{FIELD_WGSL}\n{}\n{}",
+                    "{TILES_WGSL}\n{FIELD_WGSL}\n{}\n{}\n{}",
                     include_str!("globe.wgsl"),
-                    include_str!("edges.wgsl")
+                    include_str!("edges.wgsl"),
+                    include_str!("image.wgsl")
                 )
                 .into(),
             ),
@@ -302,6 +362,44 @@ impl Resources {
             label: Some("globe plain"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
+        });
+        // The bindings of `image.wgsl`. The numbers come after those of
+        // `tiles.wgsl`, which shares the group.
+        let image_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("image"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let with_image = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("image"),
+            bind_group_layouts: &[Some(&layout), Some(&image_layout)],
+            immediate_size: 0,
+        });
+        // The longitude wraps, and the latitude stops at the poles.
+        let image_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("image"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
         });
         let pipeline = |label, layout, vertex, fragment, flat: bool, replace: bool| {
             let buffers = [Some(vertex_layout.clone())];
@@ -419,6 +517,36 @@ impl Resources {
         };
         Resources {
             format,
+            image_pipelines: [
+                pipeline("image", &with_image, "vs_main", "fs_image", false, false),
+                pipeline(
+                    "image blend",
+                    &with_image,
+                    "vs_main",
+                    "fs_image_blend",
+                    false,
+                    true,
+                ),
+                pipeline(
+                    "flat image",
+                    &with_image,
+                    "vs_flat",
+                    "fs_flat_image",
+                    true,
+                    false,
+                ),
+                pipeline(
+                    "flat image blend",
+                    &with_image,
+                    "vs_flat",
+                    "fs_flat_image_blend",
+                    true,
+                    true,
+                ),
+            ],
+            image_layout,
+            image_sampler,
+            images: HashMap::new(),
             flat_pipeline: pipeline("flat", &with_tiles, "vs_flat", "fs_flat", true, false),
             pipeline: pipeline("globe", &with_tiles, "vs_main", "fs_main", false, false),
             blend_pipeline: pipeline(
@@ -525,17 +653,99 @@ impl Resources {
         if changed {
             self.version += 1;
         }
+        self.images.retain(|key, _| frame.images.contains(key));
+        for key in &frame.images {
+            if !self.images.contains_key(key) {
+                let image = self.new_image(device, key);
+                self.images.insert(*key, image);
+            }
+        }
         let live = |pass: &Pass| match pass {
             Pass::Layer(layer) => {
                 let full = frame.full.is_some_and(|key| key.layer == *layer);
                 full || frame.copies.iter().any(|key| key.layer == *layer)
             }
+            Pass::Image(id) => frame.images.iter().any(|key| key.image == *id),
             Pass::Ground | Pass::Graticule | Pass::Rim => true,
         };
         self.slots.retain(|(_, pass, _), _| live(pass));
         self.edges.retain(|layer| live(&Pass::Layer(*layer)));
         self.channels
             .retain(|layer, _| frame.rivers.contains(layer));
+    }
+
+    /// A copy of an image with no pixels, which is transparent.
+    fn new_image(&self, device: &wgpu::Device, key: &ImageKey) -> GpuImage {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("image"),
+            size: wgpu::Extent3d {
+                width: key.width,
+                height: key.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: key.mips,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("image"),
+            layout: &self.image_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::Sampler(&self.image_sampler),
+                },
+            ],
+        });
+        GpuImage {
+            texture,
+            bind_group,
+        }
+    }
+
+    /// Writes the tiles that wait into the copies of the images. A tile
+    /// past the edge of its mip loses the pixels outside it.
+    fn upload_images(&self, queue: &wgpu::Queue, uploads: Vec<ImageUpload>) {
+        for tile in uploads {
+            let Some(image) = self.images.get(&tile.key) else {
+                continue;
+            };
+            let (w, h) = tile.key.mip_size(tile.mip);
+            if tile.mip >= tile.key.mips || tile.x >= w || tile.y >= h {
+                continue;
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &image.texture,
+                    mip_level: tile.mip,
+                    origin: wgpu::Origin3d {
+                        x: tile.x,
+                        y: tile.y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &tile.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(tile.width * 4),
+                    rows_per_image: Some(tile.height),
+                },
+                wgpu::Extent3d {
+                    width: tile.width.min(w - tile.x),
+                    height: tile.height.min(h - tile.y),
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
     }
 
     /// Writes the channel map of the rivers of one layer.
@@ -778,7 +988,7 @@ impl Resources {
             Pass::Ground => Some(GROUND),
             Pass::Graticule => Some(GRATICULE),
             Pass::Rim => Some(RIM),
-            Pass::Layer(_) => None,
+            Pass::Layer(_) | Pass::Image(_) => None,
         };
         // The flat view has no edge of a globe.
         if flat && kind == Some(RIM) {
@@ -792,6 +1002,7 @@ impl Resources {
             None if blend => &self.blend_pipeline,
             None => &self.pipeline,
         };
+        let mut pipeline = pipeline;
         if let Pass::Layer(layer) = draw.pass {
             let Some((tiles, levels)) = self.layer_groups(draw) else {
                 return;
@@ -799,6 +1010,13 @@ impl Resources {
             pass.set_bind_group(1, &tiles, &[]);
             pass.set_bind_group(2, &levels, &[]);
             pass.set_bind_group(3, self.edges.group((target, layer)), &[]);
+        }
+        if let Pass::Image(_) = draw.pass {
+            let Some(image) = draw.image.and_then(|key| self.images.get(&key)) else {
+                return;
+            };
+            pass.set_bind_group(1, &image.bind_group, &[]);
+            pipeline = &self.image_pipelines[usize::from(flat) * 2 + usize::from(blend)];
         }
         pass.set_bind_group(0, &slot.bind_group, &[]);
         pass.set_pipeline(pipeline);
@@ -1387,6 +1605,8 @@ pub struct Link {
     /// heightmap. egui can run a frame and not paint it, so the queue keeps
     /// them until `prepare` runs.
     ops: Arc<Mutex<Vec<(MapKey, Op)>>>,
+    /// The tiles of the image copies that wait for the GPU.
+    images: Arc<Mutex<Vec<ImageUpload>>>,
     events: mpsc::Sender<Event>,
     pub busy: Arc<Busy>,
     /// The memory of the reduced copies on the GPU, with the epoch of the
@@ -1399,6 +1619,7 @@ impl Link {
         let (events, receiver) = mpsc::channel();
         let link = Link {
             ops: Arc::default(),
+            images: Arc::default(),
             events,
             busy: Arc::default(),
             copy_bytes: Arc::default(),
@@ -1409,6 +1630,16 @@ impl Link {
     pub fn push(&self, map: MapKey, op: Op) {
         let mut ops = self.ops.lock().expect("no panic holds the lock");
         ops.push((map, op));
+    }
+
+    pub fn push_image(&self, upload: ImageUpload) {
+        let mut images = self.images.lock().expect("no panic holds the lock");
+        images.push(upload);
+    }
+
+    /// The number of tiles of image copies that wait for the GPU.
+    pub fn image_queue(&self) -> usize {
+        self.images.lock().expect("no panic holds the lock").len()
     }
 
     /// The epoch of the last frame that the GPU prepared, and the memory of
@@ -1557,6 +1788,8 @@ pub struct Frame {
     pub smooth_full: bool,
     /// The layers that have a channel map of their rivers.
     pub rivers: Vec<LayerKey>,
+    /// The copies of the images that the globe draws.
+    pub images: Vec<ImageKey>,
     /// `Some`: the canvas shows the flat view with this mesh.
     pub flat: Option<Arc<FlatMesh>>,
     /// The count of the sets of reduced copies before this one.
@@ -1569,6 +1802,8 @@ pub struct Draw {
     pub pass: Pass,
     /// The heightmap that a layer pass reads.
     pub source: Option<MapKey>,
+    /// The copy that an image pass reads.
+    pub image: Option<ImageKey>,
     /// The pass draws the rivers of its layer.
     pub rivers: bool,
     /// The layer pass draws the lines of its stops.
@@ -1822,6 +2057,8 @@ impl Batch<'_> {
 fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, frame: &Frame) {
     res.sync(device, frame);
     let link = &frame.link;
+    let images = std::mem::take(&mut *link.images.lock().expect("no panic holds the lock"));
+    res.upload_images(queue, images);
     let mut ops = std::mem::take(&mut *link.ops.lock().expect("no panic holds the lock"));
     if !ops.is_empty() {
         res.version += 1;

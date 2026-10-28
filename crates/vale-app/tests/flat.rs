@@ -1,5 +1,6 @@
 //! The flat view of the world workspace.
 
+mod images;
 mod lines;
 
 use eframe::egui::{self, Pos2, Vec2};
@@ -13,7 +14,7 @@ use vale_app::globe::view::GlobeView;
 use vale_app::globe::{Tool, WorldView};
 use vale_app::headless;
 use vale_app::ui::pad::{RECENTER, RESET};
-use vale_app::ui::{AppState, draw};
+use vale_app::ui::{Action, AppState, draw};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::RasterDisplay;
 use vale_terrain::{Mode, meters_to_level};
@@ -643,4 +644,73 @@ fn a_stop_line_next_to_a_flat_sea_has_its_weight_in_the_flat_view() {
 fn a_stop_line_next_to_flat_land_has_its_weight_in_the_flat_view() {
     let _gpu = one_gpu_test();
     assert_flat_coasts(lines::flat_land, "flat land");
+}
+
+/// A flat view with a grey height layer of `level`, and right above it an
+/// image layer whose west half is transparent and whose east half is red.
+/// Returns the image and the screen points west and east of the center.
+fn flat_with_image(level: u16) -> (App, vale_store::ImageId, Pos2, Pos2) {
+    let mut h = flat_harness();
+    let height = h.state().globe.raster().unwrap();
+    h.state_mut()
+        .globe
+        .raster_map_mut(height)
+        .unwrap()
+        .fill(level);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("plates.png");
+    images::write_png(&path, &images::half_red(512, 256));
+    h.state_mut().run_action(Action::ImportImageLayer(path));
+    let id = h.state().doc.project.images()[0].id;
+    // The image goes right above the height layer, below the vector layers,
+    // so a blend mixes it with the height layer.
+    let layer = h.state().doc.project.image_layer(id).unwrap().id;
+    h.state_mut().move_layer(layer, 1);
+    h.run_steps(3);
+    let c = h.state().globe.rect.center();
+    (h, id, c - Vec2::new(60.0, 0.0), c + Vec2::new(60.0, 0.0))
+}
+
+fn rgb(h: &App, image: &image::RgbaImage, pos: Pos2) -> [u8; 3] {
+    let at = pos - h.state().globe.rect.min;
+    let p = image.get_pixel(at.x as u32, at.y as u32).0;
+    [p[0], p[1], p[2]]
+}
+
+fn near(got: [u8; 3], want: [u8; 3], what: &str) {
+    let close = got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 3);
+    assert!(close, "{what}: {got:?} and {want:?}");
+}
+
+#[test]
+fn the_flat_view_draws_an_image_layer_with_its_colors_over_the_layers_below() {
+    let _gpu = one_gpu_test();
+    let level = 16000;
+    let (mut h, _, west, east) = flat_with_image(level);
+    let g = (f32::from(level) / 65535.0 * 255.0).round() as u8;
+    let image = canvas_image(&mut h);
+    near(rgb(&h, &image, east), [255, 0, 0], "opaque");
+    near(rgb(&h, &image, west), [g; 3], "transparent");
+}
+
+#[test]
+fn the_opacity_and_the_blend_mode_apply_to_an_image_layer_in_the_flat_view() {
+    use vale_store::BlendMode;
+    let _gpu = one_gpu_test();
+    let level = 32768;
+    let (mut h, id, west, east) = flat_with_image(level);
+    let g = (f32::from(level) / 65535.0 * 255.0).round() as u8;
+    let half = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
+    h.state_mut().set_image_opacity(id, 0.5);
+    let image = canvas_image(&mut h);
+    near(rgb(&h, &image, east), [half(255, g), g / 2, g / 2], "half");
+    near(rgb(&h, &image, west), [g; 3], "half, transparent");
+    h.state_mut().set_image_opacity(id, 1.0);
+    h.state_mut().set_image_blend(id, BlendMode::Multiply);
+    let image = canvas_image(&mut h);
+    near(rgb(&h, &image, east), [g, 0, 0], "multiply");
+    near(rgb(&h, &image, west), [g; 3], "multiply, transparent");
+    h.state_mut().set_image_blend(id, BlendMode::Screen);
+    let image = canvas_image(&mut h);
+    near(rgb(&h, &image, east), [255, g, g], "screen");
 }

@@ -9,7 +9,7 @@ use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
-    BlendMode, Feature, GeometryKind, Layer, LayerId, LayerKind, MapId, Project, Raster,
+    BlendMode, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, Project, Raster,
     RasterDisplay, RasterId, Rgb, StoreError, World,
 };
 use vale_terrain::{Bands, Heightmap, Mode};
@@ -22,6 +22,7 @@ use crate::globe::line::{self, LineEdit};
 use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
+use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::pipeline::{Composed, Pipeline, Selection, fonts};
 use crate::projects::{self, Location, Locations};
 use crate::raster_style;
@@ -64,6 +65,11 @@ pub enum Action {
     RasterImageDialog,
     /// Reads this image for the form of a new raster layer.
     RasterImage(PathBuf),
+    /// Asks for the file of a new image layer.
+    ImageLayerDialog,
+    /// Adds an image layer with the colors and the transparency of this
+    /// PNG, TIFF, or PSD file.
+    ImportImageLayer(PathBuf),
     /// Asks for a legend image for a new color ramp. The panel of this
     /// raster layer shows the result.
     ImportRampDialog(RasterId),
@@ -213,15 +219,17 @@ impl Default for Layout {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LayerRef {
     Raster(RasterId),
+    Image(ImageId),
     Vector(LayerId),
 }
 
 impl LayerRef {
     /// The reference of a layer record.
     pub fn of(layer: &Layer) -> LayerRef {
-        match layer.raster() {
-            Some(id) => LayerRef::Raster(id),
-            None => LayerRef::Vector(layer.id),
+        match layer.kind {
+            LayerKind::Raster(id) => LayerRef::Raster(id),
+            LayerKind::Image(id) => LayerRef::Image(id),
+            LayerKind::Vector(_) => LayerRef::Vector(layer.id),
         }
     }
 }
@@ -370,6 +378,13 @@ pub struct AppState {
     pub symbol_note: Option<Note>,
     /// The raster layers of the last import and of the last export.
     pub import_layer: Option<RasterId>,
+    /// The import of a new image layer that runs.
+    pub image_import: Option<ImageImport>,
+    /// The text of the last import of an image layer, and its layer.
+    /// `None` for the layer: the import failed.
+    pub image_note: Option<(Note, Option<ImageId>)>,
+    /// The tiles of the images of a project with no file.
+    pub image_tiles: ImageTiles,
     pub export_layer: Option<RasterId>,
     /// True: a complete export goes to `share`.
     pub share_exports: bool,
@@ -463,6 +478,9 @@ impl AppState {
             ramp_note: None,
             symbol_note: None,
             import_layer: None,
+            image_import: None,
+            image_note: None,
+            image_tiles: ImageTiles::new(),
             export_layer: None,
             share_exports: false,
             share: None,
@@ -526,6 +544,14 @@ impl AppState {
         }
     }
 
+    /// The selected image layer.
+    pub fn selected_image(&self) -> Option<ImageId> {
+        match self.selected_layer {
+            Some(LayerRef::Image(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     /// Selects a layer, or no layer.
     pub fn select(&mut self, layer: Option<LayerRef>) {
         self.selected_layer = layer;
@@ -541,14 +567,21 @@ impl AppState {
         let (project, globe) = (&self.doc.project, &mut self.globe);
         let gone = match self.selected_layer {
             Some(LayerRef::Raster(id)) => project.raster(id).is_none(),
+            Some(LayerRef::Image(id)) => project.image(id).is_none(),
             Some(LayerRef::Vector(id)) => project.layer(id).is_none(),
             None => false,
         };
         if gone {
             self.selected_layer = None;
         }
-        let item = |layer: &Layer| match layer.raster() {
-            Some(id) => {
+        globe.set_images(project.images());
+        let item = |layer: &Layer| match layer.kind {
+            LayerKind::Image(id) => {
+                let image = project.image(id)?;
+                let (opacity, blend) = (image.opacity, image.blend);
+                Some(StackItem::Image { id, opacity, blend })
+            }
+            LayerKind::Raster(id) => {
                 let raster = project.raster(id)?;
                 let (opacity, display) = (raster.opacity, raster.display);
                 let held = globe.holds(id);
@@ -565,7 +598,7 @@ impl AppState {
                     blend: raster.blend,
                 })
             }
-            None => Some(StackItem::Vector(layer.id)),
+            LayerKind::Vector(_) => Some(StackItem::Vector(layer.id)),
         };
         let visible = project.layers().iter().filter(|layer| layer.visible);
         let stack: Vec<StackItem> = visible.filter_map(item).collect();
@@ -640,6 +673,7 @@ impl AppState {
     pub fn layer_of(&self, layer: LayerRef) -> Option<&Layer> {
         match layer {
             LayerRef::Raster(id) => self.doc.project.raster_layer(id),
+            LayerRef::Image(id) => self.doc.project.image_layer(id),
             LayerRef::Vector(id) => self.doc.project.layer(id),
         }
     }
@@ -899,6 +933,25 @@ impl AppState {
         set
     }
 
+    /// Sets how much an image layer hides the layers below it, from 0 to 1,
+    /// on top of the alpha of each pixel.
+    pub fn set_image_opacity(&mut self, id: ImageId, opacity: f32) -> bool {
+        let set = self.doc.project.set_image_opacity(id, opacity);
+        raster_style::store_image_styles(&mut self.doc.project);
+        self.sync_globe();
+        self.touch();
+        set
+    }
+
+    /// Sets how an image layer mixes with the layers below it.
+    pub fn set_image_blend(&mut self, id: ImageId, blend: BlendMode) -> bool {
+        let set = self.doc.project.set_image_blend(id, blend);
+        raster_style::store_image_styles(&mut self.doc.project);
+        self.sync_globe();
+        self.touch();
+        set
+    }
+
     /// Sets how a raster layer colors its values on the globe.
     pub fn set_raster_display(&mut self, id: RasterId, display: RasterDisplay) -> bool {
         let set = self.doc.project.set_raster_display(id, display);
@@ -1023,9 +1076,20 @@ impl AppState {
     /// Removes a layer of each kind. A raster layer takes its heightmap, as
     /// one undo step.
     pub fn remove_layer(&mut self, id: LayerId) -> bool {
-        match self.doc.layer(id).map(Layer::raster) {
-            Some(Some(raster)) => self.remove_raster(raster),
-            Some(None) => {
+        match self.doc.layer(id).map(|layer| layer.kind) {
+            Some(LayerKind::Raster(raster)) => self.remove_raster(raster),
+            Some(LayerKind::Image(image)) => {
+                self.save_edit();
+                let removed = self.doc.project.remove_image(image).is_some();
+                if self.pad.layer == Some(LayerRef::Image(image)) {
+                    self.pad.layer = None;
+                }
+                self.sync_globe();
+                self.touch();
+                self.save_edit();
+                removed
+            }
+            Some(LayerKind::Vector(_)) => {
                 let removed = self.doc.remove_layer(id);
                 if self.pad.layer == Some(LayerRef::Vector(id)) {
                     self.pad.layer = None;
@@ -1548,6 +1612,9 @@ impl AppState {
         self.raster_form = None;
         self.import_note = None;
         self.export_note = None;
+        self.image_import = None;
+        self.image_note = None;
+        self.image_tiles.clear();
         self.pad.layer = None;
         self.pad.add = false;
         self.pad.reorder = None;
@@ -1781,7 +1848,7 @@ impl AppState {
         self.globe.refresh_stops();
         let layers = self.doc.project.layers().iter();
         let vectors: Vec<&Layer> = layers
-            .filter(|l| l.visible && l.raster().is_none())
+            .filter(|l| l.visible && l.geometry().is_some())
             .collect();
         let key = TargetsKey {
             layers: vectors.iter().map(|l| (l.id, l.features.len())).collect(),
@@ -1879,6 +1946,120 @@ impl AppState {
     /// Marks the maps as needing a new compose.
     pub fn touch(&mut self) {
         self.map_generation += 1;
+    }
+
+    /// Starts the import of a new image layer from a PNG, TIFF, or PSD
+    /// file. One such import runs at a time.
+    pub fn start_image_import(&mut self, path: PathBuf) {
+        if let Some(job) = &self.image_import {
+            let name = file_name(&path);
+            let text = format!("Cannot import {name}: {} is still importing", job.name);
+            self.note_image(Note::new(text, true, None), None);
+            return;
+        }
+        self.image_note = None;
+        let id = self.doc.project.next_image_id();
+        self.image_import = Some(ImageImport::start(path, id));
+    }
+
+    /// The text that tells how far the import of an image layer is.
+    pub fn image_progress(&self) -> Option<String> {
+        self.image_import.as_ref().map(ImageImport::progress)
+    }
+
+    fn note_image(&mut self, note: Note, layer: Option<ImageId>) {
+        self.status = note.text.clone();
+        self.image_note = Some((note, layer));
+    }
+
+    /// Moves the tiles of the import of an image layer into the project
+    /// file, or into the main memory with no file. At the end, it adds the
+    /// layer and its image as one undo step, and selects it. `block`: waits
+    /// for the end. Without `block`, one call takes a short time.
+    pub fn poll_image_import(&mut self, block: bool) {
+        let start = Instant::now();
+        while block || start.elapsed() < LOAD_TIME {
+            let Some(job) = &mut self.image_import else {
+                return;
+            };
+            let id = job.id;
+            match job.next(block) {
+                ImportStep::Wait => return,
+                ImportStep::Tiles(tiles) => {
+                    let written = match &mut self.session {
+                        Some(session) => session.put_image_tiles(id, &tiles),
+                        None => {
+                            let tiles = tiles.into_iter();
+                            let keyed = tiles.map(|(l, c, r, png)| ((id, l, c, r), png));
+                            self.image_tiles.extend(keyed);
+                            Ok(())
+                        }
+                    };
+                    if let Err(e) = written {
+                        let name = self.image_import.take().map(|job| job.name);
+                        let text = format!("Cannot import {}: {e}", name.unwrap_or_default());
+                        self.note_image(Note::new(text, true, None), None);
+                    }
+                }
+                ImportStep::Done(info) => {
+                    self.image_import = None;
+                    self.add_image_layer(id, &info);
+                }
+                ImportStep::Failed(text) => {
+                    self.image_import = None;
+                    self.note_image(Note::new(text, true, None), None);
+                }
+            }
+        }
+    }
+
+    /// Adds the image layer of an import with its tiles under `id`, as one
+    /// undo step, and selects it.
+    fn add_image_layer(&mut self, id: ImageId, info: &crate::image_layer::ImageInfo) {
+        self.save_edit();
+        if self.doc.project.next_image_id() != id {
+            let text = format!("Cannot import {}: the project changed", info.name);
+            self.note_image(Note::new(text, true, None), None);
+            return;
+        }
+        let project = &mut self.doc.project;
+        let id = project.add_image(info.stem.clone(), info.width, info.height);
+        if let Some(layer) = project.image_layer(id).map(|layer| layer.id) {
+            let style = vale_style::LayerStyle::image().to_json();
+            project.set_layer_style(layer, Some(style));
+        }
+        raster_style::store_image_styles(project);
+        self.select(Some(LayerRef::Image(id)));
+        self.pad.layer = Some(LayerRef::Image(id));
+        self.touch();
+        self.save_edit();
+        let (text, warning) = info.message();
+        self.note_image(Note::new(text, warning, None), Some(id));
+    }
+
+    /// Gives the copies of the visible images on the GPU their tiles, from
+    /// the project file or from the main memory. Without `all`, one call
+    /// reads tiles for a short time.
+    pub fn pump_images(&mut self, all: bool) {
+        let start = Instant::now();
+        while all || start.elapsed() < LOAD_TIME {
+            let Some((id, level, column, row)) = self.globe.image_request() else {
+                return;
+            };
+            let blob = match &self.session {
+                Some(session) => session.load_image_tile(id, level, column, row),
+                None => Ok(self.image_tiles.get(&(id, level, column, row)).cloned()),
+            };
+            let tile =
+                blob.and_then(|blob| blob.as_deref().map(vale_store::decode_tile).transpose());
+            match tile {
+                Ok(tile) => self.globe.give_image_tile(id, tile),
+                Err(e) => {
+                    self.status = format!("Could not load image: {e}");
+                    self.globe.give_image_tile(id, None);
+                }
+            }
+        }
     }
 
     /// Moves the result of an import of a heightmap to the status text.
@@ -2203,6 +2384,13 @@ impl AppState {
                 }
                 self.poll_import();
             }
+            Action::ImportImageLayer(path) => {
+                self.start_image_import(path);
+                self.poll_image_import(self.headless);
+                if self.headless {
+                    self.pump_images(true);
+                }
+            }
             Action::RasterImage(path) => {
                 if let Some(form) = &mut self.raster_form {
                     form.set_image(path.clone());
@@ -2273,6 +2461,7 @@ impl AppState {
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog
             | Action::RasterImageDialog
+            | Action::ImageLayerDialog
             | Action::ImportRampDialog(_)
             | Action::AddSymbolDialog
             | Action::ExportHeightmapDialog
@@ -2296,6 +2485,11 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.ctx().request_repaint();
     }
     state.pump_layers(state.headless);
+    state.poll_image_import(false);
+    if state.image_import.is_some() {
+        ui.ctx().request_repaint();
+    }
+    state.pump_images(state.headless);
     if state.screen == Screen::Browser {
         if state.poll_downloads(Instant::now()) {
             ui.ctx().request_repaint_after(DOWNLOAD_POLL);

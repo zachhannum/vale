@@ -10,7 +10,7 @@ use kurbo::{Point, Rect, Shape};
 use vale_labeler::Fonts;
 use vale_render::{DisplayList, FillRule, Item, PdfDocument};
 use vale_sphere::Projection;
-use vale_store::{FrameRecord, PageRecord, RasterId};
+use vale_store::{FrameRecord, ImageId, PageRecord, RasterId};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::Document;
@@ -128,6 +128,16 @@ impl PdfExport {
             .collect()
     }
 
+    fn shown_images(&self, frame: &FrameRecord) -> Vec<ImageId> {
+        self.doc
+            .project
+            .layers()
+            .iter()
+            .filter(|layer| self.doc.shown(frame.map, layer.id))
+            .filter_map(|layer| layer.image())
+            .collect()
+    }
+
     fn capture(
         &mut self,
         page: &PageRecord,
@@ -207,6 +217,7 @@ impl PdfExport {
             mesh: Arc::new(FlatMesh::new(&unit_projection)),
             mask: Some(mask),
             shown,
+            images: self.shown_images(frame),
         };
         Ok(PendingCapture {
             draw,
@@ -280,7 +291,9 @@ impl PdfExport {
                 let page_rect = Rect::new(0.0, 0.0, page.width_mm, page.height_mm);
                 let bbox = atlas::shape_bbox(&frame.shape).intersect(page_rect);
                 let raster_area = bbox.width() > 0.0 && bbox.height() > 0.0;
-                if self.shown_rasters(frame).is_empty() || !raster_area {
+                let layered =
+                    !self.shown_rasters(frame).is_empty() || !self.shown_images(frame).is_empty();
+                if !layered || !raster_area {
                     let target = FrameTarget {
                         origin: Point::ZERO,
                         pts_per_mm: PT_PER_MM,

@@ -9,7 +9,9 @@ use std::time::Instant;
 
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
-use vale_store::{BlendMode, Hillshade, LayerId, LonLat, RasterDisplay, RasterId, Smoothing};
+use vale_store::{
+    BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing,
+};
 use vale_terrain::{
     Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, Pyramid, SEA_LEVEL,
     Stamp, TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap,
@@ -23,6 +25,7 @@ pub mod erode;
 pub mod export;
 pub mod flat;
 pub mod gpu;
+pub mod image;
 pub mod import;
 pub mod line;
 pub mod math;
@@ -47,8 +50,8 @@ use erode::{Eroder, Ground, brush_window, erode_window, near_side};
 use export::ExportResult;
 use flat::FlatView;
 use gpu::{
-    Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, Job as GpuJob, LayerKey,
-    Link, MapKey, Mask, Op, Pass, TargetId, Uniforms, Uploads,
+    Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, ImageKey, Job as GpuJob,
+    LayerKey, Link, MapKey, Mask, Op, Pass, TargetId, Uniforms, Uploads,
 };
 use import::{ImportResult, Job, Source, Step};
 use line::LineSettings;
@@ -269,6 +272,13 @@ pub enum StackItem {
         rivers: bool,
         lines: bool,
         /// How the layer mixes with the layers below it.
+        blend: BlendMode,
+    },
+    /// An image layer, how much it hides the layers below it, from 0 to 1,
+    /// on top of the alpha of each pixel, and how it mixes with them.
+    Image {
+        id: ImageId,
+        opacity: f32,
         blend: BlendMode,
     },
     Vector(LayerId),
@@ -581,6 +591,8 @@ pub struct Globe {
     height: bool,
     /// The raster layers of the world.
     layers: Vec<Layer>,
+    /// The image layers of the world.
+    images: Vec<image::ImageLayer>,
     /// The visible layers in draw order, from the bottom. `None`: the globe
     /// draws `map` as one layer.
     stack: Option<Vec<StackItem>>,
@@ -741,6 +753,7 @@ impl Globe {
             raster: None,
             height: true,
             layers: Vec::new(),
+            images: Vec::new(),
             stack: None,
             pending: None,
             generations: 0,
@@ -839,6 +852,7 @@ impl Globe {
     /// heightmap with no undo step, and the first views.
     pub fn clear(&mut self) {
         self.layers.clear();
+        self.images.clear();
         self.raster = None;
         self.height = true;
         self.pending = None;
@@ -1191,7 +1205,7 @@ impl Globe {
         };
         let layer = |item: &StackItem| match *item {
             StackItem::Raster { id, opacity, .. } => Some((self.display_map(id)?, opacity)),
-            StackItem::Vector(_) => None,
+            StackItem::Vector(_) | StackItem::Image { .. } => None,
         };
         stack.iter().filter_map(layer).collect()
     }
@@ -1230,7 +1244,7 @@ impl Globe {
         let rasters = |stack: &[StackItem]| -> Vec<RasterId> {
             let ids = stack.iter().filter_map(|item| match item {
                 StackItem::Raster { id, .. } => Some(*id),
-                StackItem::Vector(_) => None,
+                StackItem::Vector(_) | StackItem::Image { .. } => None,
             });
             let mut ids: Vec<RasterId> = ids.collect();
             ids.sort();
@@ -1249,6 +1263,7 @@ impl Globe {
             self.display_cap = self.first_cap();
         }
         self.sync_copies();
+        self.sync_images();
         self.sync_rivers();
     }
 
@@ -1366,7 +1381,8 @@ impl Globe {
                 .as_ref()
                 .is_some_and(|copy| copy.key.face_size != size)
         };
-        self.format.is_some() && (waits || self.layers.iter().any(wrong))
+        let images = self.images_loading();
+        self.format.is_some() && (waits || images || self.layers.iter().any(wrong))
     }
 
     /// The memory of the channel maps of the rivers of the layers on the GPU
@@ -1408,15 +1424,17 @@ impl Globe {
         self.raster == Some(id) && self.full.is_some() && self.full_loaded
     }
 
-    /// Makes each reduced copy smaller if the copies hold more memory than
-    /// the budget.
+    /// Makes each reduced copy and each copy of an image smaller if the
+    /// copies hold more memory than the budget.
     fn check_budget(&mut self) {
         let (epoch, bytes, _) = self.link.copy_bytes();
+        let bytes = bytes + self.image_bytes();
         let over = epoch == self.epoch && bytes > self.display_budget && !self.loading();
         if over && self.display_cap > DISPLAY_CAP_MIN {
             self.display_cap /= 2;
         }
         self.sync_copies();
+        self.sync_images();
     }
 
     /// The key of the full heightmap on the GPU for the changes in the
@@ -1510,6 +1528,7 @@ impl Globe {
             (layer.copy, layer.old_copy, layer.rivers) = (None, None, None);
         }
         self.sync_copies();
+        self.reset_images();
         self.sync_rivers();
         self.reset_state();
         self.begin_full();
@@ -1621,7 +1640,7 @@ impl Globe {
                     blend,
                     ..
                 } => Some((id, hides(opacity, blend), display, smoothing)),
-                StackItem::Vector(_) => None,
+                StackItem::Vector(_) | StackItem::Image { .. } => None,
             })
             .filter(|&(id, ..)| self.source(id).is_some())
             .collect();
@@ -3006,15 +3025,134 @@ impl Globe {
                 layers.flat_map(keys).flatten().collect()
             },
             rivers: river_layers.iter().map(|(layer, _)| *layer).collect(),
+            images: self.image_keys(),
             flat,
             epoch: self.epoch,
         })
     }
 
-    /// The callbacks that draw the raster layers in the map frames of a
-    /// page, one for each frame, or `None` with no wgpu renderer. A frame
-    /// draws the layers of the list that its map shows, in the flat map of
-    /// its projection, in a target of its own. It draws no rivers.
+    /// The raster layers and the image layers of the list that the GPU has,
+    /// for the map frames, and `true` if one reads the full heightmap.
+    fn frame_layers(&self) -> (Vec<FrameLayer<'_>>, bool) {
+        let stack = self.stack.as_deref().unwrap_or_default();
+        let mut smooth_full = false;
+        let mut layers = Vec::new();
+        for item in stack {
+            match *item {
+                StackItem::Raster {
+                    id,
+                    opacity,
+                    display,
+                    smoothing,
+                    hillshade,
+                    lines,
+                    blend,
+                    ..
+                } => {
+                    let source = self.source(id).zip(self.display_map(id));
+                    let Some((key, map)) = source else { continue };
+                    smooth_full |= Some(key) == self.full;
+                    let layer = LayerDraw {
+                        key,
+                        bands: &map.bands,
+                        opacity: opacity.clamp(0.0, 1.0),
+                        display,
+                        smoothing,
+                        hillshade,
+                        rivers: None,
+                        window: false,
+                        lines,
+                        blend,
+                    };
+                    layers.push(FrameLayer::Raster(id, layer));
+                }
+                StackItem::Image { id, opacity, blend } => {
+                    if let Some(key) = self.image_source(id) {
+                        let opacity = opacity.clamp(0.0, 1.0);
+                        layers.push(FrameLayer::Image(ImageDraw {
+                            key,
+                            opacity,
+                            blend,
+                        }));
+                    }
+                }
+                StackItem::Vector(_) => {}
+            }
+        }
+        (layers, smooth_full)
+    }
+
+    /// The passes of the layers that a map frame shows. The layers below the
+    /// top raster layer that hides them do not show.
+    fn frame_passes(
+        &self,
+        canvas: Canvas,
+        layers: &[FrameLayer],
+        frame: &FrameDraw,
+        clip: [f32; 4],
+    ) -> Vec<Draw> {
+        let shown: Vec<&FrameLayer> = layers
+            .iter()
+            .filter(|layer| match layer {
+                FrameLayer::Raster(id, _) => frame.shown.contains(id),
+                FrameLayer::Image(image) => frame.images.contains(&image.key.image),
+            })
+            .collect();
+        let hides = |layer: &&FrameLayer| matches!(layer, FrameLayer::Raster(_, l) if l.opacity >= 1.0 && l.blend == BlendMode::Normal);
+        let start = shown.iter().rposition(hides).unwrap_or(0);
+        let place = Some(&frame.place);
+        let pass = |layer: &&FrameLayer| match layer {
+            FrameLayer::Raster(_, layer) => Draw {
+                pass: Pass::Layer(layer.key.layer),
+                source: Some(layer.key),
+                image: None,
+                rivers: false,
+                lines: layer.lines
+                    && layer.display == RasterDisplay::Bands
+                    && layer.bands.stops().iter().any(|stop| stop.line.on),
+                clip,
+                uniforms: self.uniforms(canvas, Some(layer), false, false, place),
+            },
+            FrameLayer::Image(image) => self.image_pass(canvas, image, clip, false, place),
+        };
+        shown[start..].iter().map(pass).collect()
+    }
+
+    /// The pass of an image layer. `small`: the pass draws into the small
+    /// target of the blurred copy, which mixes nothing.
+    fn image_pass(
+        &self,
+        canvas: Canvas,
+        image: &ImageDraw,
+        clip: [f32; 4],
+        small: bool,
+        frame: Option<&FramePlace>,
+    ) -> Draw {
+        let mut uniforms = self.uniforms(canvas, None, false, small, frame);
+        let key = image.key;
+        uniforms.params = [key.width as f32, key.mips as f32, 0.0, 0.0];
+        uniforms.layer[0] = image.opacity;
+        uniforms.turn[2] = if small {
+            0.0
+        } else {
+            image.blend.index() as f32
+        };
+        Draw {
+            pass: Pass::Image(key.image),
+            source: None,
+            image: Some(key),
+            rivers: false,
+            lines: false,
+            clip,
+            uniforms,
+        }
+    }
+
+    /// The callbacks that draw the raster layers and the image layers in the
+    /// map frames of a page, one for each frame, or `None` with no wgpu
+    /// renderer. A frame draws the layers of the list that its map shows, in
+    /// the flat map of its projection, in a target of its own. It draws no
+    /// rivers.
     pub fn paint_frames(
         &mut self,
         canvas: Canvas,
@@ -3023,64 +3161,12 @@ impl Globe {
         let format = self.format?;
         self.queue_changes();
         let river_layers = self.send_rivers();
-        let stack = self.stack.as_deref().unwrap_or_default();
+        let (layers, smooth_full) = self.frame_layers();
         let mut draws = Vec::new();
-        let mut smooth_full = false;
-        let cover = |layer: &LayerDraw| Some(layer.key) == self.full;
-        let mut sources: Vec<(RasterId, LayerDraw)> = Vec::new();
-        for item in stack {
-            let StackItem::Raster {
-                id,
-                opacity,
-                display,
-                smoothing,
-                hillshade,
-                lines,
-                blend,
-                ..
-            } = *item
-            else {
-                continue;
-            };
-            let source = self.source(id).zip(self.display_map(id));
-            let Some((key, map)) = source else { continue };
-            let layer = LayerDraw {
-                key,
-                bands: &map.bands,
-                opacity: opacity.clamp(0.0, 1.0),
-                display,
-                smoothing,
-                hillshade,
-                rivers: None,
-                window: false,
-                lines,
-                blend,
-            };
-            smooth_full |= cover(&layer);
-            sources.push((id, layer));
-        }
         for frame in frames {
             let [x, y, w, h] = frame.rect;
             let clip = [0.0, 0.0, w as f32, h as f32];
-            let layers = sources.iter().filter(|(id, _)| frame.shown.contains(id));
-            // The layers below the top layer that hides them do not show.
-            let layers: Vec<&LayerDraw> = layers.map(|(_, layer)| layer).collect();
-            let start = layers
-                .iter()
-                .rposition(|l| l.opacity >= 1.0 && l.blend == BlendMode::Normal);
-            let mut group = Vec::new();
-            for layer in &layers[start.unwrap_or(0)..] {
-                group.push(Draw {
-                    pass: Pass::Layer(layer.key.layer),
-                    source: Some(layer.key),
-                    rivers: false,
-                    lines: layer.lines
-                        && layer.display == RasterDisplay::Bands
-                        && layer.bands.stops().iter().any(|stop| stop.line.on),
-                    clip,
-                    uniforms: self.uniforms(canvas, Some(layer), false, false, Some(&frame.place)),
-                });
-            }
+            let group = self.frame_passes(canvas, &layers, &frame, clip);
             draws.push((
                 frame.id,
                 Group {
@@ -3111,8 +3197,9 @@ impl Globe {
         )
     }
 
-    /// Makes a callback that draws and returns the raster layers of one map
-    /// frame. The callback does not paint on the screen.
+    /// Makes a callback that draws and returns the raster layers and the
+    /// image layers of one map frame. The callback does not paint on the
+    /// screen.
     pub fn capture_frame(
         &mut self,
         canvas: Canvas,
@@ -3121,63 +3208,9 @@ impl Globe {
         let format = self.format?;
         self.queue_changes();
         let river_layers = self.send_rivers();
-        let stack = self.stack.as_deref().unwrap_or_default();
-        let mut smooth_full = false;
-        let cover = |layer: &LayerDraw| Some(layer.key) == self.full;
-        let mut sources: Vec<(RasterId, LayerDraw)> = Vec::new();
-        for item in stack {
-            let StackItem::Raster {
-                id,
-                opacity,
-                display,
-                smoothing,
-                hillshade,
-                lines,
-                blend,
-                ..
-            } = *item
-            else {
-                continue;
-            };
-            let source = self.source(id).zip(self.display_map(id));
-            let Some((key, map)) = source else { continue };
-            let layer = LayerDraw {
-                key,
-                bands: &map.bands,
-                opacity: opacity.clamp(0.0, 1.0),
-                display,
-                smoothing,
-                hillshade,
-                rivers: None,
-                window: false,
-                lines,
-                blend,
-            };
-            smooth_full |= cover(&layer);
-            sources.push((id, layer));
-        }
+        let (layers, smooth_full) = self.frame_layers();
         let clip = [0.0, 0.0, frame.rect[2] as f32, frame.rect[3] as f32];
-        let layers: Vec<&LayerDraw> = sources
-            .iter()
-            .filter(|(id, _)| frame.shown.contains(id))
-            .map(|(_, layer)| layer)
-            .collect();
-        let start = layers
-            .iter()
-            .rposition(|layer| layer.opacity >= 1.0 && layer.blend == BlendMode::Normal);
-        let draws = layers[start.unwrap_or(0)..]
-            .iter()
-            .map(|layer| Draw {
-                pass: Pass::Layer(layer.key.layer),
-                source: Some(layer.key),
-                rivers: false,
-                lines: layer.lines
-                    && layer.display == RasterDisplay::Bands
-                    && layer.bands.stops().iter().any(|stop| stop.line.on),
-                clip,
-                uniforms: self.uniforms(canvas, Some(layer), false, false, Some(&frame.place)),
-            })
-            .collect();
+        let draws = self.frame_passes(canvas, &layers, &frame, clip);
         let (capture, receiver) = Capture::new();
         let group = Group {
             target: CAPTURE_TARGET + u64::from(frame.id),
@@ -3217,6 +3250,7 @@ impl Globe {
         // Each layer of the list, with the heightmap of a raster layer.
         enum Item<'a> {
             Raster(LayerDraw<'a>),
+            Image(ImageDraw),
             Vector(LayerId),
         }
         let mut items: Vec<Item> = Vec::new();
@@ -3241,6 +3275,16 @@ impl Globe {
                 for item in stack {
                     match *item {
                         StackItem::Vector(id) => items.push(Item::Vector(id)),
+                        StackItem::Image { id, opacity, blend } => {
+                            if let Some(key) = self.image_source(id) {
+                                let opacity = opacity.clamp(0.0, 1.0);
+                                items.push(Item::Image(ImageDraw {
+                                    key,
+                                    opacity,
+                                    blend,
+                                }));
+                            }
+                        }
                         StackItem::Raster {
                             id,
                             opacity,
@@ -3274,7 +3318,9 @@ impl Globe {
         // A layer that blends shows the layers below it through itself.
         let opaque = |item: &Item| matches!(item, Item::Raster(layer) if layer.opacity >= 1.0 && layer.blend == BlendMode::Normal);
         let start = items.iter().rposition(opaque);
-        let top = items.iter().rposition(|i| matches!(i, Item::Raster(..)));
+        let top = items
+            .iter()
+            .rposition(|i| matches!(i, Item::Raster(..) | Item::Image(..)));
 
         let smooth_full = items
             .iter()
@@ -3295,6 +3341,7 @@ impl Globe {
         let plain = |pass, graticule, small| Draw {
             pass,
             source: None,
+            image: None,
             rivers: false,
             lines: false,
             clip,
@@ -3304,6 +3351,7 @@ impl Globe {
             Item::Raster(layer) => Some(Draw {
                 pass: Pass::Layer(layer.key.layer),
                 source: Some(layer.key),
+                image: None,
                 rivers: layer.rivers.is_some() && !small,
                 // The blurred copy has no lines of the stops.
                 lines: !small
@@ -3320,6 +3368,7 @@ impl Globe {
                     uniforms
                 },
             }),
+            Item::Image(image) => Some(self.image_pass(canvas, image, clip, small, None)),
             Item::Vector(_) => None,
         };
 
@@ -3377,7 +3426,7 @@ impl Globe {
                     flush(&mut run, &mut out);
                     out.push(Paint::Vector(*id));
                 }
-                Item::Raster(..) => {
+                Item::Raster(..) | Item::Image(..) => {
                     run.extend(layer(item, false));
                     if top == Some(at) {
                         flush(&mut run, &mut out);
@@ -3433,6 +3482,21 @@ struct LayerDraw<'a> {
     blend: BlendMode,
 }
 
+/// One image layer in a frame.
+#[derive(Clone, Copy)]
+struct ImageDraw {
+    /// The copy on the GPU that the pass reads.
+    key: ImageKey,
+    opacity: f32,
+    blend: BlendMode,
+}
+
+/// One layer of a map frame.
+enum FrameLayer<'a> {
+    Raster(RasterId, LayerDraw<'a>),
+    Image(ImageDraw),
+}
+
 /// Where a map frame draws the flat map in its target of pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FramePlace {
@@ -3466,6 +3530,8 @@ pub struct FrameDraw {
     pub mask: Option<Arc<Mask>>,
     /// The raster layers that the map shows.
     pub shown: Vec<RasterId>,
+    /// The image layers that the map shows.
+    pub images: Vec<ImageId>,
 }
 
 #[cfg(test)]

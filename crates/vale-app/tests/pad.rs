@@ -348,7 +348,7 @@ fn drawn(h: &Pad) -> Vec<vale_store::RasterId> {
     let stack = h.state().globe.stack().unwrap_or_default();
     let ids = stack.iter().filter_map(|item| match item {
         StackItem::Raster { id, .. } => Some(*id),
-        StackItem::Vector(_) => None,
+        StackItem::Vector(_) | StackItem::Image { .. } => None,
     });
     ids.collect()
 }

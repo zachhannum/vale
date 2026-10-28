@@ -139,6 +139,11 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         state.raster_form = Some(RasterForm::open(state));
                         ui.close();
                     }
+                    let free = state.image_import.is_none();
+                    if ui.add_enabled(free, egui::Button::new(ADD_IMAGE)).clicked() {
+                        state.actions.push(Action::ImageLayerDialog);
+                        ui.close();
+                    }
                     layer_rows(ui, state);
                     selected_layer(ui, state);
                 });
@@ -239,6 +244,8 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 pub const LAYERS_MENU: &str = "Layers";
 /// The button that opens the form of a new raster layer.
 pub const ADD_RASTER: &str = "Add raster…";
+/// The button that adds an image layer from a file.
+pub const ADD_IMAGE: &str = "Add image…";
 /// The field of the Layers menu with the name of the selected layer.
 pub const LAYER_NAME: &str = "Layer name";
 /// The slider of the Layers menu with the opacity of the selected raster
@@ -292,6 +299,7 @@ fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
             }
             let kind = match layer {
                 LayerRef::Raster(_) => "raster",
+                LayerRef::Image(_) => "image",
                 LayerRef::Vector(_) => "vector",
             };
             let pick = ui.selectable_label(selected, &name);
@@ -342,8 +350,13 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
     if field.changed() && state.doc.rename_layer(id, &text) {
         state.touch();
     }
-    if let LayerRef::Raster(raster) = layer {
-        let opacity = state.doc.project.raster(raster).map_or(1.0, |r| r.opacity);
+    let project = &state.doc.project;
+    let look = match layer {
+        LayerRef::Raster(id) => project.raster(id).map(|r| (r.opacity, r.blend)),
+        LayerRef::Image(id) => project.image(id).map(|i| (i.opacity, i.blend)),
+        LayerRef::Vector(_) => None,
+    };
+    if let Some((opacity, blend)) = look {
         let mut percent = (opacity * 100.0).round();
         let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
             .suffix(" %")
@@ -357,14 +370,12 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
             OPACITY.to_string(),
         );
         if slider.changed() {
-            state.set_raster_opacity(raster, percent / 100.0);
+            match layer {
+                LayerRef::Raster(id) => state.set_raster_opacity(id, percent / 100.0),
+                LayerRef::Image(id) => state.set_image_opacity(id, percent / 100.0),
+                LayerRef::Vector(_) => false,
+            };
         }
-        let blend = state
-            .doc
-            .project
-            .raster(raster)
-            .map(|r| r.blend)
-            .unwrap_or_default();
         let mut chosen = blend;
         let menu = egui::ComboBox::from_label(BLEND)
             .selected_text(elevation::blend_label(blend))
@@ -381,8 +392,22 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
             BLEND.to_string(),
         );
         if chosen != blend {
-            state.set_raster_blend(raster, chosen);
+            match layer {
+                LayerRef::Raster(id) => state.set_raster_blend(id, chosen),
+                LayerRef::Image(id) => state.set_image_blend(id, chosen),
+                LayerRef::Vector(_) => false,
+            };
         }
+    }
+    if let LayerRef::Image(id) = layer
+        && let Some(image) = state.doc.project.image(id)
+    {
+        ui.label(format!("{} × {} px", image.width, image.height));
+    }
+    if let Some((note, of)) = &state.image_note
+        && (*of == state.selected_image() || of.is_none())
+    {
+        ui.label(&note.text);
     }
     if ui.button(DELETE_LAYER).clicked() {
         state.remove_layer(id);
@@ -881,7 +906,7 @@ fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         .layers()
         .iter()
         .rev()
-        .filter(|l| l.raster().is_some())
+        .filter(|l| l.raster().is_some() || l.image().is_some())
         .map(|l| (l.id, l.name.clone()))
         .collect();
     for (id, name) in rasters {

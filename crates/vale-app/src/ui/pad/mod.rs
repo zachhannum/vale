@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
 use vale_sphere::{LonLat, ProjectionKind, ProjectionSpec};
-use vale_store::{GeometryKind, Layer, LayerId, LayerKind, RasterId};
+use vale_store::{GeometryKind, ImageId, Layer, LayerId, LayerKind, RasterId};
 use vale_terrain::Mode;
 
 pub use super::LayerRef;
@@ -98,6 +98,9 @@ pub const OPACITY: &str = "Layer opacity";
 /// The row of the menu of the new layers that opens the form of a new raster
 /// layer.
 pub const NEW_RASTER: &str = "Raster…";
+/// The row of the menu of the new layers that adds an image layer from a
+/// file.
+pub const NEW_IMAGE: &str = "Image…";
 /// The rows of the menu of the new vector layers.
 const NEW_LAYERS: [(&str, GeometryKind); 3] = [
     ("Lines", GeometryKind::Line),
@@ -832,6 +835,7 @@ fn show_panel(
             Some(LayerRef::Raster(_)),
             Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend),
         ) => true,
+        (Some(LayerRef::Image(_)), Some(Page::Blend)) => true,
         (Some(LayerRef::Vector(_)), Some(Page::NewField)) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
@@ -847,8 +851,9 @@ fn show_panel(
     if panel == Panel::Layers && !matches!(page, Some(Page::Field(_) | Page::NewField)) {
         state.pad.field = None;
     }
-    // The panel of a raster layer has the controls of the selected layer.
-    if let Some(LayerRef::Raster(_)) = layer
+    // The panel of a raster layer or of an image layer has the controls of
+    // the selected layer.
+    if let Some(LayerRef::Raster(_) | LayerRef::Image(_)) = layer
         && state.selected_layer != layer
     {
         state.select(layer);
@@ -872,6 +877,10 @@ fn show_panel(
             ("pad-blend", raster::BLEND, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) => ("pad-layer", name, Some("Layers")),
+        (Panel::Layers, Some(LayerRef::Image(_))) if page == Some(Page::Blend) => {
+            ("pad-blend", raster::BLEND, Some(name))
+        }
+        (Panel::Layers, Some(LayerRef::Image(_))) => ("pad-image", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
             ("pad-new-field", fields::NEW_FIELD, Some(name))
         }
@@ -949,6 +958,10 @@ fn show_panel(
                 }
                 Some(Page::Blend) => raster::blend_body(ui, state, controls, id),
                 _ => raster_body(ui, state, controls, id),
+            },
+            (Panel::Layers, Some(LayerRef::Image(id))) => match page {
+                Some(Page::Blend) => raster::image_blend_body(ui, state, controls, id),
+                _ => image_body(ui, state, controls, id),
             },
             (Panel::Layers, Some(LayerRef::Vector(id))) => match page {
                 Some(Page::NewField) => {
@@ -1299,7 +1312,36 @@ struct ListRow {
 /// shows or hides it. A finger that holds a row lifts it, and the row then
 /// moves with the finger to a new place in the order. A swipe to the left
 /// shows the Delete button of the row, and a long swipe deletes the layer.
+/// The list of the layers, and below it the text of the import of an image
+/// layer that runs or that failed.
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    layer_list(ui, state, controls);
+    image_note(ui, state, None);
+}
+
+/// Shows the text of the import of an image layer. `layer` is the image
+/// layer of the panel, or `None` for the list of the layers, which shows the
+/// progress and a failed import.
+fn image_note(ui: &mut egui::Ui, state: &mut AppState, layer: Option<ImageId>) {
+    let progress = layer.is_none().then(|| state.image_progress()).flatten();
+    let ours = state
+        .image_note
+        .as_ref()
+        .is_some_and(|(_, of)| *of == layer);
+    let mut note = match state.image_note.take() {
+        Some((note, _)) if ours => Some(note),
+        other => {
+            state.image_note = other;
+            None
+        }
+    };
+    note_text(ui, progress, &mut note, None);
+    if ours {
+        state.image_note = note.map(|note| (note, layer));
+    }
+}
+
+fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
     let layers = state.doc.project.layers().iter();
     let rows: Vec<ListRow> = layers
@@ -1494,7 +1536,7 @@ fn add_menu(
 ) {
     // A world with no height layer gets one from an import.
     let import = !state.doc.project.rasters().iter().any(is_height);
-    let rows = 1 + NEW_LAYERS.len() + usize::from(import);
+    let rows = 2 + NEW_LAYERS.len() + usize::from(import);
     let size = vec2(ADD_WIDTH, 10.0 + rows as f32 * PANEL_ROW + 10.0);
     let beside = pos2(
         rects.right_panel.x - geometry::PANEL_GAP - size.x,
@@ -1543,6 +1585,11 @@ fn add_menu(
             icons::paint(ui.painter(), arrow, Icon::Open, 18.0, theme::MUTE);
             if raster.clicked() {
                 state.raster_form = Some(RasterForm::open(state));
+                state.pad.add = false;
+            }
+            let free = state.image_import.is_none();
+            if widgets::text_row(ui, controls, NEW_IMAGE, 0.0, false, free).clicked() {
+                state.actions.push(Action::ImageLayerDialog);
                 state.pad.add = false;
             }
             for (name, kind) in NEW_LAYERS {
@@ -1645,18 +1692,19 @@ fn note_text(
 /// last pass, because the user left its panel.
 fn expire_notes(ctx: &egui::Context, state: &mut AppState) {
     let pass = ctx.cumulative_pass_nr();
+    let gone = |n: &Note| n.shown.is_some() && n.last_pass < pass;
     for note in [
         &mut state.import_note,
         &mut state.export_note,
         &mut state.ramp_note,
         &mut state.symbol_note,
     ] {
-        if note
-            .as_ref()
-            .is_some_and(|n| n.shown.is_some() && n.last_pass < pass)
-        {
+        if note.as_ref().is_some_and(gone) {
             *note = None;
         }
+    }
+    if state.image_note.as_ref().is_some_and(|(n, _)| gone(n)) {
+        state.image_note = None;
     }
 }
 
@@ -1738,6 +1786,48 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
     export_row(ui, state, controls, id);
     raster::style(ui, state, controls, id);
+}
+
+/// The panel of an image layer: its name, its size, its opacity, its blend
+/// mode, and the text of its import.
+fn image_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: ImageId) {
+    let Some(image) = state.doc.project.image(id) else {
+        return;
+    };
+    let (opacity, blend) = (image.opacity, image.blend);
+    let size = format!("{} × {} px", image.width, image.height);
+    let layer = state.doc.project.image_layer(id);
+    let Some((layer, name)) = layer.map(|layer| (layer.id, layer.name.clone())) else {
+        return;
+    };
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    let of = LayerRef::Image(id);
+    let mut text = match state.pad.name.take() {
+        Some((layer, text)) if layer == of => text,
+        _ => name.clone(),
+    };
+    let valid = !text.trim().is_empty();
+    let field = widgets::text_field(ui, controls, LAYER_NAME, "Name", None, &mut text, valid);
+    if field.changed() {
+        state.doc.rename_layer(layer, &text);
+    } else if !field.has_focus() {
+        // The field shows the name again after an undo and after a blank text.
+        text = name;
+    }
+    state.pad.name = Some((of, text));
+    widgets::value_row(ui, "Size", &size);
+    let mut fraction = f64::from(opacity);
+    let text = format!("{:.0}%", fraction * 100.0);
+    if widgets::row_slider(ui, controls, OPACITY, "Opacity", &mut fraction, &text) {
+        // The steps are whole percents.
+        state.set_image_opacity(id, ((fraction * 100.0).round() / 100.0) as f32);
+    }
+    let label = super::elevation::blend_label(blend);
+    if widgets::open_row(ui, controls, raster::BLEND, label).clicked() {
+        state.pad.page = Some(Page::Blend);
+    }
+    image_note(ui, state, Some(id));
 }
 
 fn toolbox_body(ui: &mut egui::Ui, state: &mut AppState) {

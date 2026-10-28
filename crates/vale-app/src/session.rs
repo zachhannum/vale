@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use vale_store::{
-    Project, ProjectFile, Raster, RasterId, Restored, SaveStats, StoreError, TileChanges, TileKey,
+    ImageId, Project, ProjectFile, Raster, RasterId, Restored, SaveStats, StoreError, TileChanges,
+    TileKey,
 };
 use vale_terrain::{Bands, FACES, Heightmap, Stop, StopLine, reduced_face_size};
 
@@ -14,7 +15,9 @@ use crate::document::Document;
 use crate::files::Files;
 use crate::globe::view::GlobeView;
 use crate::globe::{DISPLAY_CAP, reduce_tile, thumbnail};
-use crate::raster_style::{self, load_raster_styles, store_raster_styles};
+use crate::raster_style::{
+    self, load_image_styles, load_raster_styles, store_image_styles, store_raster_styles,
+};
 use crate::workcopy::WorkCopy;
 
 /// The time from a change to its save. One drag of a control changes the
@@ -188,6 +191,7 @@ impl Session {
         // log goes, because its steps have no colors in the styles.
         let mut project = file.project().clone();
         load_raster_styles(&mut project);
+        load_image_styles(&mut project);
         let migrated = raster_style::migrate(&mut project);
         if migrated || project != *file.project() {
             file.save_base(&project)?;
@@ -307,6 +311,28 @@ impl Session {
             row: row as u32,
         };
         self.file.load_tile(raster, key)
+    }
+
+    /// Writes tiles of an image as `(level, column, row, png)`, with no undo
+    /// step.
+    pub fn put_image_tiles(
+        &mut self,
+        id: ImageId,
+        tiles: &[(u32, u32, u32, Vec<u8>)],
+    ) -> Result<(), StoreError> {
+        self.file.put_image_tiles(id, tiles)
+    }
+
+    /// The PNG of one tile of an image, or `None` if the file has no such
+    /// tile.
+    pub fn load_image_tile(
+        &self,
+        id: ImageId,
+        level: u32,
+        column: u32,
+        row: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.file.load_image_tile(id, level, column, row)
     }
 
     /// The heightmap of the picture of each raster layer of the file: the
@@ -480,6 +506,7 @@ impl Session {
     ) -> Result<(), StoreError> {
         doc.set_project(self.file.project().clone());
         load_raster_styles(&mut doc.project);
+        load_image_styles(&mut doc.project);
         let project = &doc.project;
         for (id, map) in maps.iter_mut() {
             if let Some(raster) = record(project, *id, map) {
@@ -537,6 +564,7 @@ impl Session {
         }
         // A change of the colors and the change of the style are one save.
         store_raster_styles(project);
+        store_image_styles(project);
         painted || project != self.file.project()
     }
 }
