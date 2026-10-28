@@ -1,5 +1,8 @@
 //! The form that adds a raster layer to the world.
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_store::World;
 use vale_terrain::{Bands, face_size_values};
@@ -7,7 +10,8 @@ use vale_terrain::{Bands, face_size_values};
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
-use super::{AppState, HEIGHT_UNIT, LayerRef, RasterSpec};
+use super::{Action, AppState, HEIGHT_UNIT, LayerRef, RasterSpec};
+use crate::globe::import::{Mapping, Probe, Source, file_name};
 use crate::world;
 
 /// The title of the form.
@@ -20,6 +24,18 @@ pub const MINIMUM: &str = "Minimum";
 pub const MAXIMUM: &str = "Maximum";
 /// The name of the choice of the preset.
 pub const KIND: &str = "Kind";
+/// The choice between an empty layer and a layer from an image file.
+pub const SOURCE: &str = "Source";
+pub const SOURCES: [&str; 2] = ["Empty", "Image file"];
+/// The row that opens the file picker in the iPad layout.
+pub const IMAGE: &str = "Image";
+/// The button that opens the file picker in the desktop layout.
+pub const CHOOSE_IMAGE: &str = "Choose image…";
+pub const DARKEST_LEVEL: &str = "Darkest level";
+pub const BRIGHTEST_LEVEL: &str = "Brightest level";
+/// The fields of the layer values of the darkest and the brightest level.
+pub const DARKEST_VALUE: &str = "Darkest value";
+pub const BRIGHTEST_VALUE: &str = "Brightest value";
 
 /// The first values of a new raster layer of one kind.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -112,6 +128,12 @@ pub fn first_face_size(sizes: &[usize], wanted: usize) -> usize {
     fits.or(sizes.first()).copied().unwrap_or(wanted)
 }
 
+/// The number of the text of a field, or `None`.
+fn number(text: &str) -> Option<f64> {
+    let value = text.trim().replace(',', "").parse::<f64>().ok();
+    value.filter(|value| value.is_finite())
+}
+
 /// A number as the text of a field of the form.
 fn number_text(value: f64) -> String {
     format!("{value}")
@@ -150,6 +172,16 @@ pub fn face_size_text(face_size: usize, world: &World) -> [String; 3] {
     [ground, map, memory]
 }
 
+/// A level of an image in the values of its file, with the highest value.
+pub fn level_text(level: u16, bits: u8) -> String {
+    if bits == 8 {
+        let level = (f64::from(level) / 257.0).round() as u64;
+        format!("{level} of 255")
+    } else {
+        format!("{} of 65,535", world::grouped(u64::from(level)))
+    }
+}
+
 /// The two lines of text next to a face size.
 fn face_size_lines(face_size: usize, world: &World) -> [String; 2] {
     let [ground, map, memory] = face_size_text(face_size, world);
@@ -180,6 +212,29 @@ pub struct RasterForm {
     /// The face size of `--face-size`. With it, the face size does not
     /// follow the preset.
     flag: Option<usize>,
+    /// True: the levels of the layer come from an image file.
+    pub from_file: bool,
+    /// The image file, and its read.
+    pub image: Option<(PathBuf, Read)>,
+    /// The layer values of the darkest and of the brightest level of the
+    /// image, as the user typed them.
+    pub darkest: String,
+    pub brightest: String,
+    /// The values that the form gave. A value that the user did not change
+    /// follows the range.
+    given_values: (String, String),
+    /// True until the first frame of the form in the iPad layout. A new
+    /// form opens at the top, with no height from an earlier form.
+    fresh: bool,
+}
+
+/// The read of the image of the form.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Read {
+    Reading,
+    Ready(Arc<Probe>),
+    /// A text for the user.
+    Failed(String),
 }
 
 /// What the user did on the form in one frame.
@@ -206,6 +261,12 @@ impl RasterForm {
             sizes: face_sizes(flag, limit),
             face_size: 0,
             flag,
+            from_file: false,
+            image: None,
+            darkest: String::new(),
+            brightest: String::new(),
+            given_values: (String::new(), String::new()),
+            fresh: true,
         };
         form.set_preset(CUSTOM, state);
         form
@@ -235,6 +296,62 @@ impl RasterForm {
         self.max = number_text(values.range.1);
         let wanted = self.flag.unwrap_or(values.face_size);
         self.face_size = first_face_size(&self.sizes, wanted);
+        self.follow_range();
+    }
+
+    /// Gives the mapped values that the user did not change the values of
+    /// the range.
+    pub fn follow_range(&mut self) {
+        let Some((min, max)) = self.range() else {
+            return;
+        };
+        let (given_low, given_high) = &mut self.given_values;
+        for (text, given, value) in [
+            (&mut self.darkest, given_low, min),
+            (&mut self.brightest, given_high, max),
+        ] {
+            if text == given {
+                *text = number_text(value);
+                *given = text.clone();
+            }
+        }
+    }
+
+    /// Starts the read of an image file.
+    pub fn set_image(&mut self, path: PathBuf) {
+        self.from_file = true;
+        self.image = Some((path, Read::Reading));
+    }
+
+    /// Takes the result of the read of the image.
+    pub fn set_read(&mut self, result: Result<Probe, String>) {
+        if let Some((_, read)) = &mut self.image {
+            *read = match result {
+                Ok(probe) => Read::Ready(Arc::new(probe)),
+                Err(text) => Read::Failed(text),
+            };
+        }
+    }
+
+    /// The image that the form read.
+    pub fn probe(&self) -> Option<&Probe> {
+        match &self.image {
+            Some((_, Read::Ready(probe))) => Some(probe),
+            _ => None,
+        }
+    }
+
+    /// The line from the levels of the image to the values of the layer.
+    /// `None`: the form has no image, or a wrong value.
+    pub fn mapping(&self) -> Option<Mapping> {
+        let probe = self.probe()?;
+        let range = self.range()?;
+        let values = (number(&self.darkest)?, number(&self.brightest)?);
+        Some(Mapping {
+            levels: probe.levels,
+            values,
+            range,
+        })
     }
 
     /// The value range of the layer. `None`: a text is not a number, or the
@@ -243,20 +360,46 @@ impl RasterForm {
         if self.height() {
             return Some(PRESETS[HEIGHT].range);
         }
-        let number = |text: &str| text.trim().replace(',', "").parse::<f64>().ok();
         let (min, max) = (number(&self.min)?, number(&self.max)?);
         Bands::with_range(min, max, false).map(|_| (min, max))
     }
 
     /// The text that tells what is wrong with the form.
-    pub fn note(&self) -> Option<&'static str> {
+    pub fn note(&self) -> Option<String> {
         if self.name.trim().is_empty() {
-            Some("Enter a name.")
-        } else if self.range().is_none() {
-            Some("Maximum must be greater than minimum.")
-        } else {
-            None
+            return Some("Enter a name.".into());
         }
+        if self.range().is_none() {
+            return Some("Maximum must be greater than minimum.".into());
+        }
+        if !self.from_file {
+            return None;
+        }
+        match &self.image {
+            None => Some("Choose an image.".into()),
+            Some((_, Read::Reading)) => Some("Reading image…".into()),
+            Some((_, Read::Failed(text))) => Some(text.clone()),
+            Some((_, Read::Ready(_))) if self.mapping().is_none() => {
+                Some("Enter a value for each level.".into())
+            }
+            Some((_, Read::Ready(_))) => None,
+        }
+    }
+
+    /// The source of the levels of the layer, or `None` for an empty layer.
+    /// `take`: moves the image out of the form.
+    fn source(&mut self) -> Option<Source> {
+        let mapping = self.mapping()?;
+        let (path, read) = self.image.take()?;
+        let Read::Ready(probe) = read else {
+            return None;
+        };
+        let probe = Arc::try_unwrap(probe).unwrap_or_else(|probe| (*probe).clone());
+        Some(Source::Image {
+            name: file_name(&path),
+            image: probe.image,
+            mapping,
+        })
     }
 
     /// The layer of the form. `None`: the form has a wrong value.
@@ -291,16 +434,27 @@ impl RasterForm {
 
 /// Acts on what the user did, and keeps or closes the form. Returns the new
 /// layer.
-fn finish(state: &mut AppState, form: RasterForm, did: Did) -> Option<LayerRef> {
+fn finish(state: &mut AppState, mut form: RasterForm, did: Did) -> Option<LayerRef> {
     match did {
         Did::Close => None,
-        Did::Add => match form.spec().and_then(|spec| state.add_raster(spec)) {
-            Some(id) => Some(LayerRef::Raster(id)),
-            None => {
-                state.raster_form = Some(form);
-                None
+        Did::Add => {
+            let added = match form.spec() {
+                // Another import keeps the image in the form.
+                Some(_) if form.from_file && state.globe.importing() => None,
+                Some(spec) if form.from_file => form
+                    .source()
+                    .and_then(|source| state.add_raster_from(spec, source)),
+                Some(spec) => state.add_raster(spec),
+                None => None,
+            };
+            match added {
+                Some(id) => Some(LayerRef::Raster(id)),
+                None => {
+                    state.raster_form = Some(form);
+                    None
+                }
             }
-        },
+        }
         Did::Nothing => {
             state.raster_form = Some(form);
             None
@@ -308,12 +462,21 @@ fn finish(state: &mut AppState, form: RasterForm, did: Did) -> Option<LayerRef> 
     }
 }
 
+/// The note of the form, with the import that runs.
+fn form_note(form: &RasterForm, state: &AppState) -> Option<String> {
+    let busy = form.from_file && state.globe.importing();
+    form.note()
+        .or_else(|| busy.then(|| "Wait for the import to end.".to_string()))
+}
+
 /// The form in the desktop layout.
 pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
     let Some(mut form) = state.raster_form.take() else {
         return;
     };
+    form.follow_range();
     let mut did = Did::Nothing;
+    let mut choose = false;
     let world = state.doc.project.world.clone();
     let modal = egui::Modal::new(egui::Id::new("raster-form")).show(ctx, |ui| {
         ui.set_width(340.0);
@@ -354,6 +517,59 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                     }
                 }
 
+                ui.label(SOURCE);
+                ui.horizontal(|ui| {
+                    for (index, name) in SOURCES.iter().enumerate() {
+                        let on = form.from_file == (index == 1);
+                        if ui.selectable_label(on, *name).clicked() {
+                            form.from_file = index == 1;
+                            // The file picker opens at once for a form with no image.
+                            choose |= form.from_file && form.image.is_none();
+                        }
+                    }
+                });
+                ui.end_row();
+
+                if form.from_file {
+                    ui.label(IMAGE);
+                    ui.horizontal(|ui| {
+                        choose |= ui.button(CHOOSE_IMAGE).clicked();
+                        if let Some((path, read)) = &form.image {
+                            if *read == Read::Reading {
+                                ui.spinner();
+                            }
+                            ui.weak(file_name(path));
+                        }
+                    });
+                    ui.end_row();
+                    if let Some(probe) = form.probe() {
+                        let bits = probe.image.bits;
+                        let (darkest, brightest) = probe.levels;
+                        let unit = form.unit.trim().to_string();
+                        let range = form.range().is_some();
+                        for (label, level, value_label, text) in [
+                            (DARKEST_LEVEL, darkest, DARKEST_VALUE, &mut form.darkest),
+                            (
+                                BRIGHTEST_LEVEL,
+                                brightest,
+                                BRIGHTEST_VALUE,
+                                &mut form.brightest,
+                            ),
+                        ] {
+                            ui.label(label);
+                            ui.label(level_text(level, bits));
+                            ui.end_row();
+                            ui.label(value_label);
+                            ui.horizontal(|ui| {
+                                let edit = egui::TextEdit::singleline(text).desired_width(90.0);
+                                ui.add_enabled(range, edit);
+                                ui.label(&unit);
+                            });
+                            ui.end_row();
+                        }
+                    }
+                }
+
                 ui.label("Face size");
                 ui.vertical(|ui| {
                     for size in form.sizes.clone() {
@@ -365,13 +581,14 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                 });
                 ui.end_row();
             });
-        if let Some(note) = form.note() {
+        let note = form_note(&form, state);
+        if let Some(note) = &note {
             ui.colored_label(ui.visuals().warn_fg_color, note);
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let add = egui::Button::new(ADD);
-            if ui.add_enabled(form.spec().is_some(), add).clicked() {
+            if ui.add_enabled(note.is_none(), add).clicked() {
                 did = Did::Add;
             }
             if ui.button("Cancel").clicked() {
@@ -381,6 +598,9 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
     });
     if modal.should_close() && did == Did::Nothing {
         did = Did::Close;
+    }
+    if choose {
+        state.actions.push(Action::RasterImageDialog);
     }
     finish(state, form, did);
 }
@@ -392,20 +612,29 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let Some(mut form) = state.raster_form.take() else {
         return;
     };
-    let note = form.note();
+    form.follow_range();
+    let note = form_note(&form, state);
     let world = state.doc.project.world.clone();
     // The rows are in three groups: the kind with its values, the name, and
     // the face size. The first frame of the form has an estimate of the
     // height of the rows, and each later frame has the height of the frame
     // before it.
     let kind_rows = if form.height() { 1.0 } else { 3.0 };
-    let rows = 1.0 + kind_rows + form.sizes.len() as f32 + 1.0;
+    let file_rows = match (form.from_file, form.probe().is_some()) {
+        (false, _) => 0.0,
+        (true, false) => 1.0,
+        (true, true) => 5.0,
+    };
+    let rows = 1.0 + kind_rows + 1.0 + file_rows + form.sizes.len() as f32 + 1.0;
     let mut body = 2.0 * TOUCH + rows * PANEL_ROW + 3.0 * GROUP_GAP + LABEL + BUTTON_GAP + BOTTOM;
     if note.is_some() {
         body += NOTE;
     }
     let body_id = egui::Id::new("raster-form-body");
-    if let Some(last) = ctx.data(|data| data.get_temp::<f32>(body_id)) {
+    let fresh = std::mem::take(&mut form.fresh);
+    if let Some(last) = ctx.data(|data| data.get_temp::<f32>(body_id))
+        && !fresh
+    {
         body = last;
     }
     let screen = rects.screen;
@@ -432,6 +661,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     // The form covers each other control.
     controls.clear();
     let mut did = Did::Nothing;
+    let mut choose = false;
     let radius = theme::CARD_RADIUS.into();
     widgets::card(ctx, None, CARD, rect, Order::Foreground, radius, |ui| {
         ui.painter()
@@ -441,10 +671,13 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             did = Did::Close;
         }
         // A short screen scrolls the rows.
-        let scroll = egui::ScrollArea::vertical()
+        let mut scroll = egui::ScrollArea::vertical()
             .id_salt(CARD)
             .max_height(height - ROW)
             .auto_shrink([false, false]);
+        if fresh {
+            scroll = scroll.vertical_scroll_offset(0.0);
+        }
         let out = scroll.show(ui, |ui| {
             let margin = egui::Margin::symmetric(BODY_PAD as i8, 0);
             egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
@@ -469,6 +702,32 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 }
                 ui.add_space(GROUP_GAP);
 
+                let active = Some(usize::from(form.from_file));
+                if let Some(index) = widgets::choice_row(ui, controls, SOURCE, &SOURCES, active) {
+                    form.from_file = index == 1;
+                    choose = form.from_file && form.image.is_none();
+                }
+                if form.from_file {
+                    let file = form.image.as_ref().map(|(path, _)| file_name(path));
+                    let file = file.as_deref().unwrap_or("None");
+                    choose |= widgets::open_row(ui, controls, IMAGE, file).clicked();
+                }
+                if let Some(probe) = form.probe() {
+                    let bits = probe.image.bits;
+                    let (darkest, brightest) = probe.levels;
+                    let unit = form.unit.trim().to_string();
+                    let unit = Some(unit.as_str()).filter(|unit| !unit.is_empty());
+                    for (label, level, name, text) in [
+                        ("Darkest", darkest, DARKEST_VALUE, &mut form.darkest),
+                        ("Brightest", brightest, BRIGHTEST_VALUE, &mut form.brightest),
+                    ] {
+                        widgets::value_row(ui, label, &level_text(level, bits));
+                        let valid = number(text).is_some();
+                        widgets::text_field(ui, controls, name, "Value", unit, text, valid);
+                    }
+                }
+                ui.add_space(GROUP_GAP);
+
                 let (label, _) =
                     ui.allocate_exact_size(vec2(ui.available_width(), LABEL), egui::Sense::hover());
                 ui.painter().text(
@@ -487,11 +746,11 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                         form.face_size = size;
                     }
                 }
-                if let Some(note) = note {
+                if let Some(note) = &note {
                     widgets::form_note(ui, note, NOTE);
                 }
                 ui.add_space(BUTTON_GAP);
-                let enabled = form.spec().is_some();
+                let enabled = note.is_none();
                 if widgets::button_row(ui, controls, ADD, enabled).clicked() {
                     did = Did::Add;
                 }
@@ -502,6 +761,9 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     });
     // A touch on the dark fill does not put it above the card.
     ctx.move_to_top(egui::LayerId::new(Order::Foreground, egui::Id::new(CARD)));
+    if choose {
+        state.actions.push(Action::RasterImageDialog);
+    }
     // The panel of the new layer opens.
     if let Some(layer) = finish(state, form, did) {
         state.pad.layer = Some(layer);

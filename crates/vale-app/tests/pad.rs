@@ -6057,3 +6057,220 @@ fn the_style_editor_opens_on_the_globe_and_the_flat_view_and_fits_a_finger() {
         }
     }
 }
+
+/// Taps a control of the form of a new raster layer, after drags on the
+/// margin at the left of the rows that scroll the control into the card.
+fn form_tap(h: &mut Pad, name: &str) {
+    for _ in 0..8 {
+        if control(h, name).is_some() {
+            break;
+        }
+        let close = control(h, &format!("Close {}", raster_form::TITLE)).unwrap();
+        let width = h.state().pad.rects.unwrap().screen.width();
+        let from = pos2(width - close.right() + 4.0, close.bottom() + 260.0);
+        drag(h, from, from - vec2(0.0, 200.0), None);
+    }
+    tap(h, name);
+}
+
+/// Writes a 2:1 greyscale PNG with three bands of levels from west to east:
+/// `low`, the level halfway, and `high`. `wide`: 16-bit, or else 8-bit.
+fn band_image(name: &str, low: u16, high: u16, wide: bool) -> std::path::PathBuf {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/app/test-raster-file");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    let (width, height) = (96u32, 48u32);
+    let levels = [low, low + (high - low) / 2, high];
+    let level = |x: u32| levels[(x * 3 / width) as usize];
+    if wide {
+        let pixels: Vec<u16> = (0..width * height).map(|i| level(i % width)).collect();
+        let image = image::ImageBuffer::<image::Luma<u16>, _>::from_raw(width, height, pixels);
+        image.unwrap().save(&path).unwrap();
+    } else {
+        let pixels: Vec<u8> = (0..width * height)
+            .map(|i| level(i % width) as u8)
+            .collect();
+        let image = image::ImageBuffer::<image::Luma<u8>, _>::from_raw(width, height, pixels);
+        image.unwrap().save(&path).unwrap();
+    }
+    path
+}
+
+/// All texels of the heightmap of a raster layer.
+fn raster_texels(h: &Pad, id: RasterId) -> Vec<u16> {
+    let map = h.state().globe.raster_map(id).unwrap();
+    let n = map.face_size();
+    let mut out = Vec::new();
+    for face in 0..vale_terrain::FACES {
+        let full = vale_terrain::TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: n,
+            y1: n,
+        };
+        map.read_rect(face, full, &mut out);
+    }
+    out
+}
+
+/// Opens the form with a small face size, picks a preset, and reads an
+/// image as the source.
+fn form_with_image(h: &mut Pad, preset: &str, path: std::path::PathBuf) {
+    h.state_mut().form_face_size = Some(64);
+    open_raster_form(h);
+    tap(h, preset);
+    tap(h, raster_form::SOURCES[1]);
+    // A form with no image opens the file picker at once.
+    let actions = std::mem::take(&mut h.state_mut().actions);
+    assert_eq!(actions, [Action::RasterImageDialog]);
+    h.state_mut().run_action(Action::RasterImage(path));
+    h.run_steps(2);
+}
+
+#[test]
+fn the_form_reads_the_darkest_and_the_brightest_level_of_an_image() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = empty_pad(size);
+        tap(&mut h, "Layers");
+        form_with_image(
+            &mut h,
+            "Custom",
+            band_image("levels16.png", 1000, 60000, true),
+        );
+        let form = h.state().raster_form.clone().unwrap();
+        let probe = form.probe().unwrap();
+        assert_eq!((probe.levels, probe.image.bits), ((1000, 60000), 16));
+        check_controls(&h, &format!("{what} with the levels of an image"));
+        for name in [
+            raster_form::IMAGE,
+            raster_form::DARKEST_VALUE,
+            raster_form::BRIGHTEST_VALUE,
+        ] {
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+        }
+        // The tap on the image row opens the file picker again.
+        tap(&mut h, raster_form::IMAGE);
+        assert_eq!(h.state().actions, [Action::RasterImageDialog]);
+        h.state_mut().actions.clear();
+
+        // An 8-bit image shows its levels in 8-bit values.
+        h.state_mut().run_action(Action::RasterImage(band_image(
+            "levels8.png",
+            10,
+            200,
+            false,
+        )));
+        h.run_steps(2);
+        let form = h.state().raster_form.clone().unwrap();
+        let probe = form.probe().unwrap();
+        assert_eq!((probe.levels, probe.image.bits), ((10 * 257, 200 * 257), 8));
+        assert_eq!(raster_form::level_text(probe.levels.0, 8), "10 of 255");
+        assert_eq!(raster_form::level_text(1000, 16), "1,000 of 65,535");
+    }
+}
+
+#[test]
+fn an_image_makes_a_layer_of_each_kind_with_its_levels_at_the_ends_of_the_range() {
+    let mut h = empty_pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    let path = band_image("kinds.png", 1000, 60000, true);
+    for (index, preset) in PRESETS.iter().enumerate() {
+        form_with_image(&mut h, preset.name, path.clone());
+        let form = h.state().raster_form.clone().unwrap();
+        let (min, max) = preset.range;
+        assert_eq!(
+            (form.darkest.as_str(), form.brightest.as_str()),
+            (&*min.to_string(), &*max.to_string())
+        );
+        form_tap(&mut h, raster_form::ADD);
+        h.run_steps(2);
+        assert!(h.state().raster_form.is_none(), "{}", preset.name);
+        let raster = h.state().doc.project.rasters()[index].clone();
+        assert_eq!(
+            (raster.unit.as_str(), raster.value_min, raster.value_max),
+            (preset.unit, min, max)
+        );
+        let texels = raster_texels(&h, raster.id);
+        // The darkest level is the minimum, and the brightest level is the
+        // maximum.
+        assert_eq!(texels.iter().min(), Some(&0), "{}", preset.name);
+        assert_eq!(texels.iter().max(), Some(&65535), "{}", preset.name);
+        assert!(texels.contains(&32768), "{}", preset.name);
+        assert_eq!(h.state().pad.layer, Some(LayerRef::Raster(raster.id)));
+    }
+}
+
+#[test]
+fn the_mapped_values_scale_the_levels_of_the_image() {
+    let mut h = empty_pad(BOARDS[3]);
+    tap(&mut h, "Layers");
+    form_with_image(
+        &mut h,
+        "Precipitation",
+        band_image("scale.png", 1000, 61000, true),
+    );
+    let form = h.state_mut().raster_form.as_mut().unwrap();
+    form.darkest = "0".into();
+    form.brightest = "3,000".into();
+    h.run_steps(1);
+    form_tap(&mut h, raster_form::ADD);
+    h.run_steps(2);
+    let raster = h.state().doc.project.rasters()[0].clone();
+    assert_eq!((raster.value_min, raster.value_max), (0.0, 4000.0));
+    let texels = raster_texels(&h, raster.id);
+    // 0 mm, 1,500 mm, and 3,000 mm in a range of 0 to 4,000 mm.
+    let level = |mm: f64| (mm / 4000.0 * 65535.0).round() as u16;
+    assert_eq!(texels.iter().min(), Some(&level(0.0)));
+    assert_eq!(texels.iter().max(), Some(&level(3000.0)));
+    assert!(texels.contains(&level(1500.0)));
+
+    // A value past the range gets the end of the range.
+    form_with_image(
+        &mut h,
+        "Precipitation",
+        band_image("scale.png", 1000, 61000, true),
+    );
+    h.state_mut().raster_form.as_mut().unwrap().brightest = "5000".into();
+    h.run_steps(1);
+    form_tap(&mut h, raster_form::ADD);
+    h.run_steps(2);
+    let raster = h.state().doc.project.rasters()[1].clone();
+    let texels = raster_texels(&h, raster.id);
+    assert_eq!(texels.iter().max(), Some(&65535));
+    assert!(texels.contains(&level(2500.0)));
+}
+
+#[test]
+fn a_file_that_is_not_an_image_makes_no_layer() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = empty_pad(size);
+        tap(&mut h, "Layers");
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/app/test-raster-file");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("notes.png");
+        std::fs::write(&path, "these bytes are not an image").unwrap();
+        form_with_image(&mut h, "Custom", path);
+        let note = h.state().raster_form.as_ref().unwrap().note().unwrap();
+        assert_eq!(note, "notes is not a PNG or TIFF image", "{what}");
+        assert!(control(&h, raster_form::DARKEST_VALUE).is_none(), "{what}");
+        // The add button is off, and the form stays open.
+        assert!(
+            h.get_by_label(raster_form::ADD)
+                .accesskit_node()
+                .is_disabled(),
+            "{what}"
+        );
+        assert!(h.state().raster_form.is_some(), "{what}");
+        assert!(h.state().doc.project.rasters().is_empty(), "{what}");
+
+        // The empty source makes a layer again.
+        tap(&mut h, raster_form::SOURCES[0]);
+        assert!(h.state().actions.is_empty(), "{what}");
+        form_tap(&mut h, raster_form::ADD);
+        assert_eq!(h.state().doc.project.rasters().len(), 1, "{what}");
+    }
+}
