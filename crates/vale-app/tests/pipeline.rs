@@ -9,7 +9,10 @@ use vale_render::{FillRule, Item, render_pixmap, render_rgba};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{FrameId, FrameShape, PageId, PageUnits};
 use vale_style::expr::{Filter, Property};
-use vale_style::{Color, Rule, Stroke, StrokeKind, StrokeSymbolizer, Style, Symbolizer};
+use vale_style::{
+    Color, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style,
+    Symbolizer,
+};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 const LAND: [u8; 3] = [244, 241, 232];
@@ -893,4 +896,301 @@ fn each_stroke_kind_draws_in_a_frame_and_in_pdf() {
     doc.entry_mut(id).unwrap().style.style = style(&no_brush);
     let list = compose_frame_full(&doc, &mut pipeline, frame).list;
     assert!(!images(&list), "a vector stroke became an image");
+}
+
+/// A document with one layer of the GeoJSON features `features`.
+fn one_layer(name: &str, features: &[String]) -> (Document, vale_store::LayerId) {
+    let text = format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    );
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let imported = vale_import::geojson::read_str(name, &text).unwrap();
+    let id = doc.add_imported(imported, None)[0];
+    (doc, id)
+}
+
+fn square(lon0: f64, lat0: f64, lon1: f64, lat1: f64) -> String {
+    format!(
+        r#"{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[[{lon0},{lat0}],[{lon1},{lat0}],[{lon1},{lat1}],[{lon0},{lat1}],[{lon0},{lat0}]]]}}}}"#
+    )
+}
+
+fn style_of(symbolizer: Symbolizer) -> Style {
+    Style {
+        rules: vec![Rule::new("Symbols", vec![symbolizer])],
+    }
+}
+
+/// A view centered on `center` that shows `degrees` of longitude in `width` points.
+fn view_on(
+    doc: &Document,
+    pipeline: &mut Pipeline,
+    center: [f64; 2],
+    degrees: f64,
+    width: f64,
+) -> vale_app::view::View {
+    let [lon, lat] = center;
+    let mut at = |lon: f64| pipeline.project_lonlat(doc, [lon, lat]).unwrap().unwrap();
+    let (a, b, c) = (at(lon - degrees / 2.0), at(lon + degrees / 2.0), at(lon));
+    vale_app::view::View {
+        center: c,
+        scale: width / (b.x - a.x),
+        rotation: 0.0,
+    }
+}
+
+/// The scatter symbols of a composition, by place on the sphere.
+fn scatter_places(c: &vale_app::pipeline::Composed) -> Vec<([u64; 2], Point)> {
+    let mut out: Vec<_> = c
+        .symbols
+        .iter()
+        .filter_map(|s| {
+            s.lonlat
+                .map(|[x, y]| ([x.to_bits(), y.to_bits()], s.center))
+        })
+        .collect();
+    out.sort_by_key(|(k, _)| *k);
+    out
+}
+
+fn item_bbox(item: &Item) -> Option<kurbo::Rect> {
+    use kurbo::Shape;
+    match item {
+        Item::Fill { path, .. } | Item::Stroke { path, .. } => Some(path.bounding_box()),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_point_symbol_takes_its_size_and_rotation_from_attributes() {
+    let point = |lon: f64, size: f64, rot: f64| {
+        format!(
+            r#"{{"type":"Feature","properties":{{"size":{size},"rot":{rot}}},"geometry":{{"type":"Point","coordinates":[{lon},0]}}}}"#
+        )
+    };
+    let (mut doc, id) = one_layer(
+        "trees",
+        &[
+            point(-20.0, 10.0, 0.0),
+            point(0.0, 10.0, 90.0),
+            point(20.0, 20.0, 0.0),
+        ],
+    );
+    doc.entry_mut(id).unwrap().style.style = style_of(Symbolizer::Symbol(PointSymbolizer {
+        symbol: "pine".to_string(),
+        size: Property::expression("size * 2", 5.0),
+        rotation: Property::expression("rot", 0.0),
+        tint: None,
+    }));
+    let mut p = Pipeline::new();
+    let c = compose(&doc, &mut p);
+    assert_eq!(c.symbols.len(), 3);
+    for (i, lon) in [-20.0, 0.0, 20.0].into_iter().enumerate() {
+        let s = &c.symbols[i];
+        assert_eq!(s.feature, i);
+        let at = p.lonlat_to_page(&doc, SIZE, [lon, 0.0]).unwrap().unwrap();
+        assert!((s.center - at).hypot() < 1e-6, "{:?} {at:?}", s.center);
+        // The items of the symbol fill its box.
+        let union = c
+            .list
+            .items
+            .iter()
+            .filter_map(item_bbox)
+            .filter(|b| s.bounds.inflate(0.01, 0.01).contains_rect(*b))
+            .reduce(|a, b| a.union(b))
+            .unwrap();
+        assert!((union.width() - s.bounds.width()).abs() < 0.01);
+        assert!((union.height() - s.bounds.height()).abs() < 0.01);
+    }
+    let ((w0, h0), (w1, h1), (w2, h2)) = (dims(&c, 0), dims(&c, 1), dims(&c, 2));
+    // A pine is taller than wide. Turned by 90 degrees, it is wider than tall.
+    assert!((h0 - 20.0).abs() < 0.01 && w0 < 18.0, "{w0} x {h0}");
+    assert!((w1 - 20.0).abs() < 0.01 && h1 < 18.0, "{w1} x {h1}");
+    assert!((h2 - 40.0).abs() < 0.01 && w2 < 36.0, "{w2} x {h2}");
+    assert!((w1 - h0).abs() < 0.01 && (h1 - w0).abs() < 0.01);
+}
+
+fn dims(c: &vale_app::pipeline::Composed, i: usize) -> (f64, f64) {
+    (c.symbols[i].bounds.width(), c.symbols[i].bounds.height())
+}
+
+/// A document with one forest polygon that a scatter of trees fills.
+fn forest(
+    lon: (f64, f64),
+    lat: (f64, f64),
+    size: f64,
+    spacing: f64,
+) -> (Document, vale_store::LayerId) {
+    let (mut doc, id) = one_layer("forest", &[square(lon.0, lat.0, lon.1, lat.1)]);
+    let mut scatter = ScatterSymbolizer::new("tree", size, spacing);
+    scatter.rotation_jitter = 10.0;
+    scatter.tint = Some(Property::constant(Color::rgb(30, 120, 40)));
+    doc.entry_mut(id).unwrap().style.style = style_of(Symbolizer::Scatter(scatter));
+    (doc, id)
+}
+
+#[test]
+fn a_scatter_fill_draws_symbols_that_do_not_overlap() {
+    let (size, spacing) = (8.0, 16.0);
+    let (mut doc, id) = forest((-5.0, 5.0), (-5.0, 5.0), size, spacing);
+    // The page is the plane of the scatter.
+    let spec = ProjectionSpec::new(ProjectionKind::LambertAzimuthal, 0.0, 0.0);
+    doc.set_projection(doc.first_map(), spec);
+    let mut p = Pipeline::new();
+    doc.frame.view = Some(view_on(&doc, &mut p, [0.0, 0.0], 12.0, 1080.0));
+    let c = compose(&doc, &mut p);
+    let centers: Vec<Point> = scatter_places(&c).into_iter().map(|(_, q)| q).collect();
+    let n = centers.len();
+    let mut nearest = f64::INFINITY;
+    for (i, a) in centers.iter().enumerate() {
+        for b in &centers[i + 1..] {
+            nearest = nearest.min((*a - *b).hypot());
+        }
+    }
+    // The real minimum distance is from the spacing to twice the spacing.
+    let view = doc.frame.view.unwrap();
+    let plane = vale_sphere::ScatterPlane::new([0.0, 0.0], 6_371_000.0);
+    let distance = vale_sphere::min_distance(&plane, spacing / view.scale) * view.scale;
+    assert!((spacing..=2.0 * spacing).contains(&distance), "{distance}");
+    assert!(nearest >= size, "{nearest}");
+    assert!(nearest >= 0.999 * distance, "{nearest} {distance}");
+    // The polygon is 900 points wide.
+    let area = 900.0 * 900.0;
+    let d2 = distance * distance;
+    let (low, high) = (area / (12.0 * d2), 1.2 * area / d2);
+    assert!(
+        n as f64 >= low && n as f64 <= high,
+        "{n} not in {low}..{high}"
+    );
+    // Each symbol is inside the polygon.
+    let bounds = {
+        let a = p.lonlat_to_page(&doc, SIZE, [-5.0, -5.0]).unwrap().unwrap();
+        let b = p.lonlat_to_page(&doc, SIZE, [5.0, 5.0]).unwrap().unwrap();
+        kurbo::Rect::from_points(a, b)
+    };
+    for s in &c.symbols {
+        assert!(bounds.contains_rect(s.bounds), "{:?}", s.bounds);
+    }
+    // The instances merge into a few items.
+    let mut empty = doc.clone();
+    empty.entry_mut(id).unwrap().style.style = Style { rules: vec![] };
+    let items = c.list.items.len() - compose(&empty, &mut p).list.items.len();
+    assert!(items * 20 < n, "{items} items for {n} symbols");
+}
+
+/// The keys of the places that are inside `rect` of the page of `c`.
+fn keys_in(places: &[([u64; 2], Point)], rect: kurbo::Rect) -> Vec<[u64; 2]> {
+    places
+        .iter()
+        .filter(|(_, q)| rect.contains(*q))
+        .map(|(k, _)| *k)
+        .collect()
+}
+
+#[test]
+fn a_scatter_stays_on_the_ground() {
+    // A big forest: the view shows a small part of it.
+    let (mut doc, _) = forest((-40.0, 40.0), (-30.0, 30.0), 10.0, 16.0);
+    let mut p = Pipeline::new();
+    let view = view_on(&doc, &mut p, [0.0, 0.0], 2.0, 1280.0);
+    doc.frame.view = Some(view);
+    let first = scatter_places(&compose(&doc, &mut p));
+    assert!(first.len() > 200, "{}", first.len());
+    let page = kurbo::Rect::new(0.0, 0.0, SIZE.0, SIZE.1);
+
+    // A pan with a new pipeline: the symbols in both views are the same.
+    let shift = kurbo::Vec2::new(400.0, 250.0);
+    let mut panned = view;
+    panned.center.x += shift.x / view.scale;
+    panned.center.y -= shift.y / view.scale;
+    doc.frame.view = Some(panned);
+    let second = scatter_places(&compose(&doc, &mut Pipeline::new()));
+    let both = page.intersect(page + shift).inset(-12.0);
+    let before = keys_in(&first, both);
+    let after = keys_in(
+        &second
+            .iter()
+            .map(|(k, q)| (*k, *q + shift))
+            .collect::<Vec<_>>(),
+        both,
+    );
+    assert!(before.len() > 100, "{}", before.len());
+    assert_eq!(before, after);
+
+    // A zoom in keeps each symbol and adds more.
+    let mut zoomed = view;
+    zoomed.scale *= 2.5;
+    doc.frame.view = Some(zoomed);
+    let third = scatter_places(&compose(&doc, &mut p));
+    let middle = page.center();
+    let inner = page.inset(-12.0);
+    let kept: Vec<_> = first
+        .iter()
+        .filter(|(_, q)| inner.contains(middle + (*q - middle) * 2.5))
+        .map(|(k, _)| *k)
+        .collect();
+    let now: Vec<_> = third.iter().map(|(k, _)| *k).collect();
+    assert!(!kept.is_empty());
+    for k in &kept {
+        assert!(now.binary_search(k).is_ok(), "a symbol moved in the zoom");
+    }
+    assert!(third.len() > kept.len());
+
+    // A save and a reload give the same symbols.
+    doc.frame.view = Some(view);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forest.gpkg");
+    drop(vale_app::session::Session::open(&path, &mut doc).unwrap());
+    let mut reloaded = Document::empty();
+    drop(vale_app::session::Session::open(&path, &mut reloaded).unwrap());
+    reloaded.frame.labels = false;
+    reloaded.frame.graticule = false;
+    reloaded.frame.view = Some(view);
+    let again = scatter_places(&compose(&reloaded, &mut Pipeline::new()));
+    assert_eq!(first, again);
+}
+
+#[test]
+fn a_scatter_is_the_same_in_each_target_of_a_frame() {
+    let (mut doc, _) = forest((-40.0, 40.0), (-30.0, 30.0), 2.5, 3.0);
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let atlas = &doc.project.atlas;
+    let page = atlas.page(page).unwrap();
+    let frame = atlas.frame(id).unwrap();
+    let mut f = fonts().unwrap();
+    let mut compose_in = |pts_per_mm: f64| {
+        let target = FrameTarget {
+            origin: Point::new(30.0, 20.0),
+            pts_per_mm,
+        };
+        pipeline
+            .compose_frame(&doc, page, frame, target, &mut f, Quality::Final, None)
+            .unwrap()
+    };
+    let pdf = compose_in(PT_PER_MM);
+    let raster = compose_in(3.0 * PT_PER_MM);
+    let (a, b) = (scatter_places(&pdf), scatter_places(&raster));
+    assert!(a.len() > 50, "{}", a.len());
+    let keys = |v: &[([u64; 2], Point)]| v.iter().map(|(k, _)| *k).collect::<Vec<_>>();
+    assert_eq!(keys(&a), keys(&b));
+    // The sizes follow the target.
+    let side = |c: &vale_app::pipeline::Composed| {
+        let s = &c.symbols[0];
+        s.bounds.width().max(s.bounds.height())
+    };
+    assert!((side(&raster) / side(&pdf) - 3.0).abs() < 1e-6);
+    // The symbols stay vector in the PDF.
+    let bytes = vale_render::render_pdf(&pdf.list).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("/Subtype/Image"));
+    let px = render_rgba(&raster.list, 1.0).unwrap();
+    assert!(
+        px.data
+            .chunks(4)
+            .any(|p| p[1] > p[0] + 40 && p[1] > p[2] + 40)
+    );
 }
