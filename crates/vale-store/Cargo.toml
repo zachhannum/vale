@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 flate2.workspace = true
+png.workspace = true
 rusqlite.workspace = true
 uuid.workspace = true
 

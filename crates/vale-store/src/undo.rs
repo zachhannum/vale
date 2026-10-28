@@ -4,8 +4,11 @@
 //! that the edit changed, from before the edit. An undo swaps each image with
 //! the record or the tile in the file, so the step then holds the images from
 //! after the edit, and a redo swaps them back. A record is the world, one
-//! raster, one layer with its features, or the atlas. The step of a new raster layer or
+//! raster, one image, one layer with its features, or the atlas. The step of a new raster layer or
 //! of a removed one holds the image of the layer and the image of the raster.
+//! The same is true of an image layer. A step does not hold the tiles of an
+//! image, because they do not change. They stay in the file while a step
+//! holds the record of the image.
 
 use std::io::{Read, Write};
 
@@ -19,12 +22,13 @@ use crate::atlas::{
     PageRecord, PageUnits, ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
-    Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry, v14_bands,
+    Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry,
+    remove_image_tiles, v14_bands,
 };
 use crate::{
-    BlendMode, Feature, Field, FieldType, GeometryKind, Hillshade, Layer, LayerId, LayerKind,
-    Project, Raster, RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid, Value, World,
-    clamp_feature_size, clamp_opacity, infer_fields,
+    BlendMode, Feature, Field, FieldType, GeometryKind, Hillshade, Image, ImageId, Layer, LayerId,
+    LayerKind, Project, Raster, RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid,
+    Value, World, clamp_feature_size, clamp_opacity, infer_fields,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -35,6 +39,7 @@ const DEFLATE: u8 = 1;
 
 const WORLD: &str = "world";
 const RASTER: &str = "raster";
+const IMAGE: &str = "image";
 const LAYER: &str = "layer";
 const ATLAS: &str = "atlas";
 
@@ -111,6 +116,12 @@ pub(crate) fn keep_records(
     let mut rasters = ids(old, new);
     rasters.extend(ids(new, old));
     let ids = |a: &Project, b: &Project| -> Vec<u32> {
+        let images = a.images.iter().filter(|i| b.image(i.id) != Some(i));
+        images.map(|i| i.id.0).collect()
+    };
+    let mut images = ids(old, new);
+    images.extend(ids(new, old));
+    let ids = |a: &Project, b: &Project| -> Vec<u32> {
         let layers = a.layers.iter().enumerate();
         let layers = layers.filter(|(i, l)| b.layers.get(*i) != Some(l));
         layers.map(|(_, l)| l.id.0).collect()
@@ -118,6 +129,7 @@ pub(crate) fn keep_records(
     let mut layers = ids(old, new);
     layers.extend(ids(new, old));
     changed.extend(rasters.into_iter().map(|id| (RASTER, id)));
+    changed.extend(images.into_iter().map(|id| (IMAGE, id)));
     changed.extend(layers.into_iter().map(|id| (LAYER, id)));
 
     let mut keep = tx.prepare(
@@ -216,6 +228,12 @@ pub(crate) fn swap_records(
                     next.rasters.push(raster(&mut r).ok_or_else(bad)?);
                 }
             }
+            IMAGE => {
+                next.images.retain(|x| x.id.0 != id);
+                if payload.is_some() {
+                    next.images.push(read_image(&mut r).ok_or_else(bad)?);
+                }
+            }
             LAYER => {
                 next.layers.retain(|x| x.id.0 != id);
                 if payload.is_some() {
@@ -231,6 +249,7 @@ pub(crate) fn swap_records(
         }
     }
     next.rasters.sort_by_key(|r| r.id);
+    next.images.sort_by_key(|i| i.id);
     // Each layer that did not change has its old place, so each image goes
     // to its old place when the images go in from the first place up.
     layers.sort_by_key(|(position, _)| *position);
@@ -338,6 +357,7 @@ fn trim(tx: &Transaction, limit: u64) -> Result<(), StoreError> {
             |r| r.get(0),
         )?;
         if bytes <= limit {
+            remove_image_tiles(tx)?;
             return Ok(());
         }
         let step: Option<i64> = tx
@@ -350,7 +370,10 @@ fn trim(tx: &Transaction, limit: u64) -> Result<(), StoreError> {
             .optional()?;
         match step {
             Some(step) => remove(tx, step)?,
-            None => return Ok(()),
+            None => {
+                remove_image_tiles(tx)?;
+                return Ok(());
+            }
         }
     }
 }
@@ -360,6 +383,7 @@ pub(crate) fn clear(tx: &Transaction) -> Result<(), StoreError> {
     tx.execute_batch(
         "DELETE FROM vale_undo_record; DELETE FROM vale_undo_tile; DELETE FROM vale_undo_step;",
     )?;
+    remove_image_tiles(tx)?;
     Ok(())
 }
 
@@ -377,6 +401,7 @@ fn image(project: &Project, kind: &str, id: u32) -> Option<Vec<u8>> {
     match kind {
         WORLD => put_world(&mut out, &project.world),
         RASTER => put_raster(&mut out, project.raster(RasterId(id))?),
+        IMAGE => put_image(&mut out, project.image(ImageId(id))?),
         ATLAS => put_atlas(&mut out, &project.atlas),
         _ => {
             let at = project.layers.iter().position(|l| l.id.0 == id)?;
@@ -653,6 +678,28 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     put_bytes(out, raster.blend.id().as_bytes());
 }
 
+fn put_image(out: &mut Vec<u8>, image: &Image) {
+    put_u32(out, image.id.0 as usize);
+    put_u32(out, image.width as usize);
+    put_u32(out, image.height as usize);
+    put_u32(out, image.levels as usize);
+    out.extend_from_slice(&image.opacity.to_le_bytes());
+    put_bytes(out, image.blend.id().as_bytes());
+}
+
+/// An unknown blend mode blends as normal.
+fn read_image(r: &mut Reader) -> Option<Image> {
+    let image = Image {
+        id: ImageId(r.u32()?),
+        width: r.u32()?,
+        height: r.u32()?,
+        levels: r.u32()?,
+        opacity: clamp_opacity(f32::from_le_bytes(r.take()?)),
+        blend: BlendMode::from_id(&string(r)?).unwrap_or_default(),
+    };
+    r.0.is_empty().then_some(image)
+}
+
 /// A raster image of format version 13 with the stops `old`.
 #[cfg(test)]
 fn put_raster_v13(out: &mut Vec<u8>, raster: &Raster, old: &[V13Stop]) {
@@ -860,6 +907,9 @@ const KINDS: [GeometryKind; 3] = [
 /// The kind byte of the image of a raster layer. The ID of the raster comes
 /// after it.
 const RASTER_KIND: u8 = KINDS.len() as u8;
+/// The kind byte of the image of an image layer. The ID of the image comes
+/// after it.
+const IMAGE_KIND: u8 = RASTER_KIND + 1;
 
 fn put_layer(out: &mut Vec<u8>, position: usize, layer: &Layer) {
     put_u32(out, position);
@@ -872,6 +922,10 @@ fn put_layer(out: &mut Vec<u8>, position: usize, layer: &Layer) {
         LayerKind::Raster(raster) => {
             out.push(RASTER_KIND);
             put_u32(out, raster.0 as usize);
+        }
+        LayerKind::Image(image) => {
+            out.push(IMAGE_KIND);
+            put_u32(out, image.0 as usize);
         }
     }
     out.push(layer.source.is_some() as u8);
@@ -936,6 +990,7 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
     let name = string(r)?;
     let kind = match r.take()? {
         [RASTER_KIND] => LayerKind::Raster(RasterId(r.u32()?)),
+        [IMAGE_KIND] => LayerKind::Image(ImageId(r.u32()?)),
         [kind] => LayerKind::Vector(*KINDS.get(kind as usize)?),
     };
     let [has_source] = r.take()?;

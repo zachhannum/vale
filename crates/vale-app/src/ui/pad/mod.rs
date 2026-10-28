@@ -1278,7 +1278,7 @@ pub const NO_LAYERS: &str = "No layers yet.";
 /// The icon of the kind of a layer.
 pub(super) fn layer_icon(layer: &Layer) -> Icon {
     match layer.kind {
-        LayerKind::Raster(_) => Icon::Raster,
+        LayerKind::Raster(_) | LayerKind::Image(_) => Icon::Raster,
         LayerKind::Vector(GeometryKind::Point) => Icon::Point,
         LayerKind::Vector(GeometryKind::Line) => Icon::Line,
         LayerKind::Vector(GeometryKind::Polygon) => Icon::Polygon,
