@@ -306,6 +306,54 @@ fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
 }
 
 #[test]
+fn the_desktop_list_shows_the_panel_of_an_image_layer() {
+    use vale_store::BlendMode;
+    let mut h = globe_harness();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("plates.png");
+    image::RgbaImage::from_pixel(64, 32, image::Rgba([255, 0, 0, 128]))
+        .save(&file)
+        .unwrap();
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    h.get_by_label(vale_app::ui::panels::ADD_IMAGE).click();
+    h.run_steps(1);
+    assert!(h.state().actions.contains(&Action::ImageLayerDialog));
+    h.state_mut().actions.clear();
+    h.state_mut().run_action(Action::ImportImageLayer(file));
+    let id = h.state().doc.project.images()[0].id;
+    // An image layer gets no entry of a vector layer in the map frame.
+    let layer = h.state().doc.project.image_layer(id).unwrap().id;
+    assert!(h.state().doc.entry(layer).is_none());
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    assert_eq!(h.state().selected_layer, Some(LayerRef::Image(id)));
+    for name in [
+        "Select plates",
+        LAYER_NAME,
+        OPACITY,
+        "Blend mode",
+        DELETE_LAYER,
+    ] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    assert!(h.query_by_label("64 × 32 px").is_some());
+    assert!(h.state_mut().set_image_blend(id, BlendMode::Screen));
+    assert!(h.state_mut().set_image_opacity(id, 0.25));
+    h.run_steps(2);
+    let stack = h.state().globe.stack().unwrap();
+    let item = StackItem::Image {
+        id,
+        opacity: 0.25,
+        blend: BlendMode::Screen,
+    };
+    assert!(stack.contains(&item));
+    h.get_by_label(DELETE_LAYER).click();
+    h.run_steps(2);
+    assert!(h.state().doc.project.images().is_empty());
+}
+
+#[test]
 fn toolbar_buttons_push_actions() {
     let mut h = harness();
     h.run_steps(2);
