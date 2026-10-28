@@ -2,6 +2,7 @@
 
 pub mod geojson;
 pub mod geotiff;
+pub mod psd;
 pub mod pyramid;
 pub mod raster;
 
