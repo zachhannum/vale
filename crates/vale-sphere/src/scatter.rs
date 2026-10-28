@@ -10,8 +10,6 @@
 //! is at least `s_l / 2` from all of them. Thus a smaller spacing only adds
 //! points, and a point never moves.
 
-use std::collections::HashMap;
-
 use kurbo::{Point, Rect};
 
 use crate::frame::{LonLat, wrap180};
@@ -268,21 +266,44 @@ fn lattice(seed: u64, top: f64, level: u32, window: Rect) -> Vec<Cand> {
         let s = top / 2f64.powi(l as i32);
         let region = window.inflate(s, s);
         let key = |p: Point| ((p.x / s).floor() as i64, (p.y / s).floor() as i64);
-        let mut grid: HashMap<(i64, i64), Vec<Point>> = HashMap::new();
+        let (i0, j0) = key(Point::new(region.x0, region.y0));
+        let (i1, j1) = key(Point::new(region.x1, region.y1));
+        // The points of the last level in cells, with one more cell on each
+        // side. A point farther out is more than `s / 2` from the region.
+        let (w, h) = ((i1 - i0 + 3) as usize, (j1 - j0 + 3) as usize);
+        let cell = |(i, j): (i64, i64)| {
+            let (gi, gj) = (i - i0 + 1, j - j0 + 1);
+            (gi >= 0 && gj >= 0 && (gi as usize) < w && (gj as usize) < h)
+                .then(|| gj as usize * w + gi as usize)
+        };
+        let mut start = vec![0u32; w * h + 1];
         for c in &points {
-            grid.entry(key(c.p)).or_default().push(c.p);
+            if let Some(k) = cell(key(c.p)) {
+                start[k + 1] += 1;
+            }
         }
-        let near = |p: Point| {
-            let (ci, cj) = key(p);
-            (cj - 1..=cj + 1).any(|gj| {
-                (ci - 1..=ci + 1).any(|gi| {
-                    grid.get(&(gi, gj))
-                        .is_some_and(|v| v.iter().any(|q| (*q - p).hypot() < s / 2.0))
+        for k in 0..w * h {
+            start[k + 1] += start[k];
+        }
+        let mut fill = start.clone();
+        let mut grid = vec![Point::ZERO; start[w * h] as usize];
+        for c in &points {
+            if let Some(k) = cell(key(c.p)) {
+                grid[fill[k] as usize] = c.p;
+                fill[k] += 1;
+            }
+        }
+        let near = |p: Point, i: i64, j: i64| {
+            (j - 1..=j + 1).any(|gj| {
+                (i - 1..=i + 1).any(|gi| {
+                    cell((gi, gj)).is_some_and(|k| {
+                        grid[start[k] as usize..start[k + 1] as usize]
+                            .iter()
+                            .any(|q| (*q - p).hypot() < s / 2.0)
+                    })
                 })
             })
         };
-        let (i0, j0) = key(Point::new(region.x0, region.y0));
-        let (i1, j1) = key(Point::new(region.x1, region.y1));
         let mut added = Vec::new();
         for j in j0..=j1 {
             for i in i0..=i1 {
@@ -291,7 +312,7 @@ fn lattice(seed: u64, top: f64, level: u32, window: Rect) -> Vec<Cand> {
                     (i as f64 + 0.25 + 0.5 * unit(mix(h ^ 1))) * s,
                     (j as f64 + 0.25 + 0.5 * unit(mix(h ^ 2))) * s,
                 );
-                if region.contains(p) && !near(p) {
+                if region.contains(p) && !near(p, i, j) {
                     added.push(Cand { p, level: l, i, j });
                 }
             }
