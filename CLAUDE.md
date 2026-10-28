@@ -1,6 +1,6 @@
 # Vale
 
-Vale is a GIS for fictional worlds, for desktop and iPad. You draw the world in the app, on a globe. The design is in `docs/DESIGN.md`. Read it before you plan or write code.
+Vale is a GIS for fictional worlds, for desktop, iPad, and iPhone. You draw the world in the app, on a globe. The design is in `docs/DESIGN.md`. Read it before you plan or write code.
 
 ## Current phase
 

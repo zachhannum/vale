@@ -4,7 +4,7 @@ Oct 8, 2026 · Zach Hannum
 
 ## Summary
 
-Vale is a GIS for fictional worlds, for desktop and iPad. One world dataset is the source of truth, and each regional map is a projected, styled, labeled view of that dataset.
+Vale is a GIS for fictional worlds, for desktop, iPad, and iPhone. One world dataset is the source of truth, and each regional map is a projected, styled, labeled view of that dataset.
 
 You draw the world in the app, on a globe. You paint a heightmap (a greyscale image where brightness is elevation) with a soft brush, and the app turns it into vector topography.
 
@@ -18,7 +18,7 @@ The app and the labeling library are free and open source, under a dual MIT and 
 
 Version 1 has ten goals.
 
-- Run on macOS, Windows, Linux, and iPad, with pen input on each. iPad is an equal platform and not a later port.
+- Run on macOS, Windows, Linux, iPad, and iPhone, with pen input on each platform but iPhone. iPad is an equal platform and not a later port. On iPhone, a finger paints.
 - Paint a heightmap on a globe with a pressure-sensitive brush, and see it as stepped elevation tints while you paint.
 - Turn the heightmap into vector topography polygons with a tool from the toolbox.
 - Import equirectangular vector and raster sources, and georeference them (assign world coordinates to them) in under a minute.
@@ -36,7 +36,7 @@ Version 1 does not include the items that follow.
 - Erosion and other terrain effects. The app prototype tests live rivers, a Carve mode, an Erode mode, a Weather mode, and an Uplift mode of the brush. Those modes erode only where you paint. The prototype also tests a Ridge mode, which raises the land between the rivers, and a Deposit mode, which fills pits and valley floors. The prototype also tests a Warp mode, which moves the ground under the brush by a noise field.
 - Time-based data such as historical borders, and non-spherical worlds. These items come after version 1.
 - Real-world GIS analysis such as routing or geocoding.
-- Web and phone versions.
+- A web version.
 
 ## Core workflow
 
@@ -454,6 +454,20 @@ These rules apply to the layout:
 
 The core crates have no UI dependency, so both platforms share them. The shell is egui on both platforms. The crate `vale-globe-proto` checked how well egui handles pen input and touch on iPad, and the section "Globe prototype" gives the results.
 
+### iPhone layout
+
+The iPhone layout is the compact layout of the iPad, below 600 points, with these changes:
+
+- The tool strip is a row at the bottom of the screen. The Size slider, the Flow slider, and the Brush button are a row above it.
+- The phone has no pen. With a brush tool, one finger paints, and two fingers turn and zoom the globe. With Move, one finger turns the globe.
+- The Brush panel has no pressure settings.
+- A sheet opens at half height. You pull it up to the full height, or down to its title row.
+- In the Atlas workspace, the page controls are below the top row.
+- The form of a new point is a card below the top row, above the keyboard of the system.
+- In landscape, the tool strip is a column at the left edge, and the card below it holds the Brush button alone. The width is 600 points or more, so the view switch is in the top row, and a panel floats at the right.
+
+The safe area of the iPhone is larger than the bands of the iPad. In portrait, it leaves out the top 59 points and the bottom 34 points.
+
 ### Desktop layout
 
 The desktop layout has the workspaces, switches, tools, and panels of the iPad layout. The panels are docked, and the controls are for a mouse and a keyboard. macOS is the primary desktop platform, and the app uses its materials and conventions. The app prototype does not have this layout yet.
@@ -622,7 +636,9 @@ The labeling prototype came first, and it is done. The work after it has eleven 
 | 7 | Labeling in the app | Labels come from attributes, polygon labels and fallbacks work, and manual changes stay. |
 | 8 | Atlas and export | An atlas of pages exports as a multi-page PDF, SVG files, and raster files. |
 | 9 | Import | Files from other tools come in as layers, and a replaced file keeps its extents, styles, and overrides. |
-| 10 | Version 1 release | Version 1 is in the App Store and on the three desktop platforms. |
+| 10 | Derived values | Styles, labels, and fields use the measures of features, the values of raster layers, and the flow of rivers. |
+| 11 | iPhone | The app installs on iPhone, a finger paints the globe, and each screen has an iPhone layout. |
+| 12 | Version 1 release | Version 1 is in the App Store and on the three desktop platforms. |
 
 From phase 1 on, a phase is done only when it works on desktop and on iPad.
 
