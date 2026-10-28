@@ -7,7 +7,7 @@ use vale_app::pick::pick;
 use vale_app::pipeline::{Composed, PageFeature, PageLayer, Pipeline, Quality, Selection, fonts};
 use vale_render::Item;
 use vale_store::{Feature, Geometry, GeometryKind, LayerId, Units, Value};
-use vale_style::LayerStyle;
+use vale_style::{LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Style, Symbolizer};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 const REGULAR_LEN: usize = include_bytes!("../../../assets/fonts/NotoSans-Regular.ttf").len();
@@ -417,4 +417,129 @@ fn pick_hand_made() {
         poly(),
         Point::new(50.0, 50.0)
     ));
+}
+
+/// Adds a layer of GeoJSON features and returns its ID.
+fn add_layer(doc: &mut Document, name: &str, features: &[String]) -> LayerId {
+    let text = format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    );
+    let imported = vale_import::geojson::read_str(name, &text).unwrap();
+    doc.add_imported(imported, None)[0]
+}
+
+fn point_at(name: Option<&str>, [lon, lat]: [f64; 2]) -> String {
+    let props = name.map_or(String::new(), |n| format!(r#""name":"{n}""#));
+    format!(
+        r#"{{"type":"Feature","properties":{{{props}}},"geometry":{{"type":"Point","coordinates":[{lon},{lat}]}}}}"#
+    )
+}
+
+/// A document with one city, in a view that shows 10 degrees.
+fn city_doc(p: &mut Pipeline) -> Document {
+    let mut doc = Document::empty();
+    doc.frame.graticule = false;
+    add_layer(&mut doc, "Cities", &[point_at(Some("Oakton"), [0.0, 0.0])]);
+    let at = |doc: &Document, p: &mut Pipeline, lon: f64| {
+        p.project_lonlat(doc, [lon, 0.0]).unwrap().unwrap()
+    };
+    let (a, b) = (at(&doc, p, -5.0), at(&doc, p, 5.0));
+    doc.frame.view = Some(vale_app::view::View {
+        center: at(&doc, p, 0.0),
+        scale: SIZE.0 / (b.x - a.x),
+        rotation: 0.0,
+    });
+    doc
+}
+
+/// The box of the halo of each label.
+fn halos(c: &Composed) -> Vec<Rect> {
+    c.list
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Stroke { path, color, .. } if (color.r, color.a) == (255, 217) => {
+                Some(path.bounding_box())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn compose_in(doc: &Document, p: &mut Pipeline) -> Composed {
+    let mut f = fonts().unwrap();
+    p.compose(doc, SIZE, &mut f, Quality::Final, None).unwrap()
+}
+
+#[test]
+fn labels_avoid_point_symbols() {
+    let mut p = Pipeline::new();
+    let mut doc = city_doc(&mut p);
+    let alone = compose_in(&doc, &mut p);
+    assert_eq!(oakton(&alone), 1);
+    let label = halos(&alone)[0];
+
+    // A castle on another layer, with no labels, where the label was.
+    let place = p
+        .page_to_lonlat(&doc, SIZE, label.center())
+        .unwrap()
+        .unwrap();
+    let castles = add_layer(&mut doc, "Castles", &[point_at(None, place)]);
+    let entry = doc.entry_mut(castles).unwrap();
+    entry.style.label.enabled = false;
+    entry.style.style = Style {
+        rules: vec![Rule::new(
+            "Castle",
+            vec![Symbolizer::Symbol(PointSymbolizer::constant(
+                "castle", 14.0,
+            ))],
+        )],
+    };
+    let c = compose_in(&doc, &mut p);
+    let castle = c.symbols.iter().find(|s| s.layer == castles).unwrap();
+    assert!(castle.bounds.overlaps(label));
+    assert_eq!(oakton(&c), 1);
+    let moved = halos(&c)[0];
+    assert!(
+        !moved.overlaps(castle.bounds),
+        "{moved:?} {:?}",
+        castle.bounds
+    );
+
+    // A city in a dense forest still has its label, over the trees.
+    let mut doc = city_doc(&mut p);
+    let forest = add_layer(
+        &mut doc,
+        "Forest",
+        &[format!(
+            r#"{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[[-4,-3],[4,-3],[4,3],[-4,3],[-4,-3]]]}}}}"#
+        )],
+    );
+    doc.entry_mut(forest).unwrap().style.style = Style {
+        rules: vec![Rule::new(
+            "Trees",
+            vec![Symbolizer::Scatter(ScatterSymbolizer::new(
+                "tree", 10.0, 10.0,
+            ))],
+        )],
+    };
+    // The forest draws under the cities.
+    doc.move_layer(forest, 0);
+    let c = compose_in(&doc, &mut p);
+    let trees: Vec<Rect> = c
+        .symbols
+        .iter()
+        .filter(|s| s.layer == forest)
+        .map(|s| s.bounds)
+        .collect();
+    assert!(trees.len() > 1000, "{}", trees.len());
+    assert_eq!(oakton(&c), 1);
+    let label = halos(&c)[0];
+    assert!(trees.iter().any(|t| t.overlaps(label)));
+}
+
+/// The count of the labels of the city. The labels come before the scale bar.
+fn oakton(c: &Composed) -> usize {
+    texts(c).iter().filter(|t| *t == "Oakton").count()
 }
