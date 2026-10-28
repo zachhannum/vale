@@ -1,5 +1,6 @@
 mod common;
 
+mod images;
 mod lines;
 
 use clap::Parser;
@@ -3426,6 +3427,29 @@ fn is_grey(color: [u8; 3], level: u16) -> bool {
 
 const LOW: u16 = 16000;
 const HIGH: u16 = 50000;
+
+#[test]
+fn the_globe_draws_an_image_layer_with_its_colors_over_the_layers_below() {
+    let _gpu = one_gpu_test();
+    let (mut h, _) = layers_harness(&[LOW]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("plates.png");
+    images::write_png(&path, &images::half_red(512, 256));
+    let action = vale_app::ui::Action::ImportImageLayer(path);
+    h.state_mut().run_action(action);
+    assert_eq!(h.state().doc.project.images().len(), 1);
+    h.run_steps(3);
+    let img = canvas_image(&mut h);
+    let (x, y) = (img.width() / 2, img.height() / 2);
+    let at = |x: u32| {
+        let p = img.get_pixel(x, y).0;
+        [p[0], p[1], p[2]]
+    };
+    // The globe looks at longitude 0, so the east half is at the right.
+    let (west, east) = (at(x - 30), at(x + 30));
+    assert!(close(east, [255, 0, 0]), "{east:?}");
+    assert!(is_grey(west, LOW), "{west:?}");
+}
 
 #[test]
 fn two_raster_layers_blend_by_the_opacity_of_the_top_one() {
