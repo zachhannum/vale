@@ -1,7 +1,6 @@
 use kurbo::Shape;
 use vale_render::{
-    Affine, BUILTIN_SYMBOLS, Color, FillRule, Item, Rect, Symbol, SymbolError, Symbols,
-    symbol_items,
+    Affine, Color, FillRule, Item, Rect, Symbol, SymbolError, Symbols, symbol_items,
 };
 
 fn bounds(symbol: &Symbol) -> Rect {
@@ -17,12 +16,24 @@ fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-6
 }
 
+/// The test symbols in `tests/data`.
+const FIXTURES: [&str; 4] = ["tree", "marsh", "city", "mountain"];
+
+fn library() -> Symbols {
+    let mut lib = Symbols::default();
+    for name in FIXTURES {
+        let path = format!("{}/tests/data/{name}.svg", env!("CARGO_MANIFEST_DIR"));
+        let svg = std::fs::read_to_string(&path).unwrap();
+        lib.insert(name, Symbol::from_svg(&svg).unwrap());
+    }
+    lib
+}
+
 #[test]
-fn builtins_parse_and_are_normalized() {
-    let lib = Symbols::builtin();
-    assert_eq!(lib.names(), BUILTIN_SYMBOLS.to_vec());
-    for name in BUILTIN_SYMBOLS {
-        assert!(Symbols::is_builtin(name));
+fn svg_files_parse_and_are_normalized() {
+    let lib = library();
+    assert_eq!(lib.names(), FIXTURES.to_vec());
+    for name in FIXTURES {
         let s = lib.get(name).unwrap();
         let b = bounds(s);
         assert!(close(b.width().max(b.height()), 1.0), "{name}: {b:?}");
@@ -31,7 +42,13 @@ fn builtins_parse_and_are_normalized() {
             "{name}: {b:?}"
         );
     }
-    assert!(!Symbols::is_builtin("mine"));
+}
+
+#[test]
+fn the_default_library_is_empty() {
+    let lib = Symbols::default();
+    assert!(lib.names().is_empty());
+    assert!(lib.get("tree").is_none());
 }
 
 #[test]
@@ -88,7 +105,8 @@ fn group_opacity_gradient_and_stroke_scale() {
 
 #[test]
 fn a_tint_replaces_colors() {
-    let s = Symbols::builtin().get("mountain").unwrap();
+    let lib = library();
+    let s = lib.get("mountain").unwrap();
     let tint = Color::rgba(10, 120, 30, 128);
     let items = symbol_items(s, &[Affine::scale(20.0)], Some(tint));
     assert_eq!(items.len(), s.paths().len());
@@ -104,7 +122,8 @@ fn a_tint_replaces_colors() {
 
 #[test]
 fn stroke_width_scales_with_the_instance() {
-    let s = Symbols::builtin().get("marsh").unwrap();
+    let lib = library();
+    let s = lib.get("marsh").unwrap();
     let width = s.paths()[0].stroke.unwrap().1;
     let a = Affine::translate((50.0, 50.0)) * Affine::rotate(0.7) * Affine::scale(30.0);
     let items = symbol_items(s, &[a], None);
@@ -120,7 +139,7 @@ fn stroke_width_scales_with_the_instance() {
 
 #[test]
 fn many_instances_merge_into_one_item_per_path() {
-    let lib = Symbols::builtin();
+    let lib = library();
     let instances: Vec<Affine> = (0..10_000)
         .map(|i| Affine::translate(((i % 100) as f64 * 10.0, (i / 100) as f64 * 10.0)))
         .map(|t| t * Affine::scale(8.0))
@@ -140,7 +159,8 @@ fn many_instances_merge_into_one_item_per_path() {
 
 #[test]
 fn many_instances_cover_all_of_them() {
-    let s = Symbols::builtin().get("tree").unwrap();
+    let lib = library();
+    let s = lib.get("tree").unwrap();
     let instances = [
         Affine::translate((10.0, 10.0)) * Affine::scale(8.0),
         Affine::translate((90.0, 50.0)) * Affine::scale(8.0),
@@ -155,17 +175,17 @@ fn many_instances_cover_all_of_them() {
 
 #[test]
 fn library_insert_get_and_names() {
-    let mut lib = Symbols::with_builtins();
+    let mut lib = library();
     let dot = Symbol::from_svg(
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><circle cx="2" cy="2" r="2"/></svg>"#,
     )
     .unwrap();
     lib.insert("dot", dot.clone());
-    assert_eq!(lib.names().len(), 10);
-    assert_eq!(lib.names()[9], "dot");
+    assert_eq!(lib.names().len(), 5);
+    assert_eq!(lib.names()[4], "dot");
     assert_eq!(**lib.get("dot").unwrap(), dot);
     assert!(lib.get("nothing").is_none());
-    assert!(Symbols::builtin().get("dot").is_none());
+    assert!(library().get("dot").is_none());
 }
 
 #[test]

@@ -2,28 +2,11 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use kurbo::{Affine, BezPath, Shape};
 
 use crate::list::{Color, FillRule, Item};
-
-/// The names of the built-in symbols, in library order.
-pub const BUILTIN_SYMBOLS: [&str; 9] = [
-    "tree", "pine", "palm", "mountain", "hill", "marsh", "city", "capital", "castle",
-];
-
-const BUILTIN_SVG: [&str; 9] = [
-    include_str!("../symbols/tree.svg"),
-    include_str!("../symbols/pine.svg"),
-    include_str!("../symbols/palm.svg"),
-    include_str!("../symbols/mountain.svg"),
-    include_str!("../symbols/hill.svg"),
-    include_str!("../symbols/marsh.svg"),
-    include_str!("../symbols/city.svg"),
-    include_str!("../symbols/capital.svg"),
-    include_str!("../symbols/castle.svg"),
-];
 
 /// One path of a symbol, with its paint. The stroke width is in symbol units.
 #[derive(Clone, Debug, PartialEq)]
@@ -288,24 +271,6 @@ pub struct Symbols {
 }
 
 impl Symbols {
-    /// The built-in symbols.
-    pub fn builtin() -> &'static Symbols {
-        static BUILTIN: OnceLock<Symbols> = OnceLock::new();
-        BUILTIN.get_or_init(|| {
-            let mut s = Symbols::default();
-            for (name, svg) in BUILTIN_SYMBOLS.iter().zip(BUILTIN_SVG) {
-                let symbol = Symbol::from_svg(svg).expect("a built-in symbol is valid");
-                s.insert(name, symbol);
-            }
-            s
-        })
-    }
-
-    /// A copy of the built-in symbols, to add more to.
-    pub fn with_builtins() -> Symbols {
-        Symbols::builtin().clone()
-    }
-
     /// Adds a symbol at the end, or replaces the symbol with the same name in its place.
     pub fn insert(&mut self, name: &str, symbol: Symbol) {
         let symbol = Arc::new(symbol);
@@ -323,10 +288,5 @@ impl Symbols {
     /// The names in insertion order.
     pub fn names(&self) -> Vec<&str> {
         self.entries.iter().map(|(n, _)| n.as_str()).collect()
-    }
-
-    /// Whether the name is the name of a built-in symbol.
-    pub fn is_builtin(name: &str) -> bool {
-        BUILTIN_SYMBOLS.contains(&name)
     }
 }

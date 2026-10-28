@@ -6,7 +6,7 @@ use vale_labeler::{
 };
 use vale_render::{
     Affine, BezPath, Color, DisplayList, FillRule, GlyphRun, Item, PdfDocument, Point, Rect,
-    RenderError, Symbols, glyph_run_outline, render_pdf, render_pixmap, render_png, render_rgba,
+    RenderError, Symbol, glyph_run_outline, render_pdf, render_pixmap, render_png, render_rgba,
     symbol_items,
 };
 
@@ -469,11 +469,11 @@ fn pdf_keeps_strokes_vector() {
 #[test]
 fn pdf_keeps_symbols_vector() {
     let mut list = DisplayList::new(80.0, 40.0);
-    let lib = Symbols::builtin();
     for (i, name) in ["tree", "marsh", "city"].into_iter().enumerate() {
+        let path = format!("{}/tests/data/{name}.svg", env!("CARGO_MANIFEST_DIR"));
+        let symbol = Symbol::from_svg(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let at = Affine::translate((15.0 + 25.0 * i as f64, 20.0)) * Affine::scale(20.0);
-        list.items
-            .extend(symbol_items(lib.get(name).unwrap(), &[at], None));
+        list.items.extend(symbol_items(&symbol, &[at], None));
     }
     let bytes = render_pdf(&list).unwrap();
     let raw = String::from_utf8_lossy(&bytes);
