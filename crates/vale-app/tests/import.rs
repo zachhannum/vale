@@ -311,6 +311,7 @@ fn canvas_image(h: &mut Harness<'static, AppState>) -> image::RgbaImage {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn an_import_during_a_stroke_waits_for_the_stroke() {
     let _gpu = one_gpu_test();
     let path = write_png("stroke.png", WIDTH, HEIGHT);
@@ -447,6 +448,7 @@ fn an_image_of_one_level_gives_that_level_at_each_texel() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn no_seam_shows_on_the_globe_after_an_import() {
     const ZOOM: f64 = 15.0;
     let _gpu = one_gpu_test();
@@ -503,6 +505,7 @@ fn no_seam_shows_on_the_globe_after_an_import() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_stroke_paints_on_the_imported_map() {
     let _gpu = one_gpu_test();
     let path = write_png("paint.png", WIDTH, HEIGHT);
@@ -646,6 +649,7 @@ fn the_command_line_fails_for_a_missing_heightmap() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_screenshot_shows_the_imported_heightmap() {
     const DARK: u16 = 8_000;
     const BRIGHT: u16 = 56_000;

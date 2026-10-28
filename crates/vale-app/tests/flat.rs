@@ -152,6 +152,7 @@ fn one_click_switches_the_view_and_the_tool_stays() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn each_mode_paints_in_the_flat_view_and_the_globe_shows_the_stroke() {
     let _gpu = one_gpu_test();
     for with_pen in [false, true] {
@@ -200,6 +201,7 @@ fn each_mode_paints_in_the_flat_view_and_the_globe_shows_the_stroke() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_stroke_across_the_180_degree_meridian_continues_at_the_other_edge() {
     let _gpu = one_gpu_test();
     let mut h = flat_harness();
@@ -265,6 +267,7 @@ fn check_outline(h: &mut App, lon: f64, lat: f64) -> (f32, f32) {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn each_projection_paints_at_the_place_under_the_pen() {
     let _gpu = one_gpu_test();
     for kind in ProjectionKind::ALL {
@@ -324,6 +327,7 @@ fn the_tool_bar_picks_the_projection_of_the_flat_view() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_brush_outline_matches_the_ground_that_the_stamp_covers() {
     let _gpu = one_gpu_test();
     let (w, h) = check_outline(&mut flat_harness(), 30.0, 0.0);
@@ -388,6 +392,7 @@ fn river_pixels(h: &App, img: &image::RgbaImage) -> usize {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
     let _gpu = one_gpu_test();
     let mut h = flat_harness();
@@ -465,6 +470,7 @@ fn river_parts(globe: &vale_app::globe::Globe) -> (f64, f64) {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn zooming_in_gives_finer_rivers_in_the_flat_view() {
     let _gpu = one_gpu_test();
     let mut state = state();
@@ -497,6 +503,7 @@ fn zooming_in_gives_finer_rivers_in_the_flat_view() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_flat_view_blends_the_raster_layers_by_their_opacity() {
     let _gpu = one_gpu_test();
     let mut h = flat_harness();
@@ -540,6 +547,7 @@ fn the_flat_view_blends_the_raster_layers_by_their_opacity() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_flat_view_mixes_a_layer_with_the_layers_below_by_its_blend_mode() {
     use vale_store::BlendMode;
     let _gpu = one_gpu_test();
@@ -629,18 +637,21 @@ fn assert_flat_coasts(ground: fn(f64) -> f64, name: &str) {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_stop_line_on_an_even_slope_has_its_weight_in_the_flat_view() {
     let _gpu = one_gpu_test();
     assert_flat_coasts(lines::even_slope, "even slope");
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_stop_line_next_to_a_flat_sea_has_its_weight_in_the_flat_view() {
     let _gpu = one_gpu_test();
     assert_flat_coasts(lines::flat_sea, "flat sea");
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_stop_line_next_to_flat_land_has_its_weight_in_the_flat_view() {
     let _gpu = one_gpu_test();
     assert_flat_coasts(lines::flat_land, "flat land");

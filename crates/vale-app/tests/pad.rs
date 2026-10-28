@@ -2,6 +2,7 @@
 
 mod common;
 mod images;
+mod screenshot;
 
 use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
@@ -2206,6 +2207,7 @@ fn difference(a: &[i32], b: &[i32]) -> i32 {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
     let _gpu = one_gpu_test();
     // Light and dark stripes along the meridians, each 20 degrees wide.
@@ -2262,6 +2264,7 @@ fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn text_on_a_card_is_easy_to_read_over_a_white_canvas() {
     let _gpu = one_gpu_test();
     let mut h = blur_pad(|_| u16::MAX);
@@ -2282,6 +2285,7 @@ fn text_on_a_card_is_easy_to_read_over_a_white_canvas() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_pen_paints_on_the_canvas_and_a_panel_stays_open() {
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[0]);
@@ -2378,6 +2382,7 @@ fn middle_level(h: &Pad) -> u16 {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_new_world_has_an_empty_heightmap_on_the_gpu() {
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[0]);
@@ -2403,6 +2408,7 @@ fn a_new_world_has_an_empty_heightmap_on_the_gpu() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_tap_of_two_fingers_is_undo_and_a_tap_of_three_fingers_is_redo() {
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[0]);
@@ -2430,6 +2436,7 @@ fn a_tap_of_two_fingers_is_undo_and_a_tap_of_three_fingers_is_redo() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_undo_button_and_the_redo_button_work() {
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[0]);
@@ -2492,6 +2499,7 @@ fn settle_and_save(h: &mut Pad) {
 /// The iPad test of the undo log: paint, stop the app with no exit call,
 /// start it, and undo.
 #[test]
+#[ignore = "gpu"]
 fn the_undo_button_works_after_the_app_stops_and_starts() {
     let _gpu = one_gpu_test();
     let dir = tempfile::tempdir().unwrap();
@@ -2989,6 +2997,7 @@ const IPHONES: [((f64, f64), [f32; 4]); 2] = [
 ];
 
 #[test]
+#[ignore = "gpu"]
 fn the_screenshot_of_an_iphone_keeps_the_controls_in_the_safe_area() {
     let _gpu = one_gpu_test();
     std::fs::create_dir_all("../../target/app").unwrap();
@@ -3049,6 +3058,7 @@ fn the_readout_shows_the_place_and_the_elevation() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_screenshots_show_the_export_row() {
     let _gpu = one_gpu_test();
     std::fs::create_dir_all("../../target/app").unwrap();
@@ -3077,6 +3087,7 @@ fn the_screenshots_show_the_export_row() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_screenshots_show_the_boards() {
     let _gpu = one_gpu_test();
     std::fs::create_dir_all("../../target/app").unwrap();
@@ -4587,6 +4598,7 @@ fn a_tap_chooses_each_display() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame() {
     let _gpu = one_gpu_test();
     let mut h = gpu_pad(BOARDS[1]);
@@ -4887,14 +4899,7 @@ fn the_style_section_has_the_smoothing_and_the_minimum_feature_size() {
             assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
         }
         check_controls(&h, &format!("{what} with the smoothing"));
-        let image = h.render().unwrap();
-        std::fs::create_dir_all("../../target/app").unwrap();
-        image
-            .save(format!(
-                "../../target/app/test-pad-smoothing-{}.png",
-                size.0
-            ))
-            .unwrap();
+        screenshot::save(&mut h, &format!("pad-smoothing-{}", size.0));
 
         // A tap at the left end of the slider gives a size of zero.
         let slider = control(&h, FEATURE_SIZE).unwrap();
@@ -5014,14 +5019,7 @@ fn the_hillshade_page_has_each_control_inside_the_card() {
             assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
             check_controls(&h, &format!("{what} at {name}"));
         }
-        let image = h.render().unwrap();
-        std::fs::create_dir_all("../../target/app").unwrap();
-        image
-            .save(format!(
-                "../../target/app/test-pad-hillshade-{}.png",
-                size.0
-            ))
-            .unwrap();
+        screenshot::save(&mut h, &format!("pad-hillshade-{}", size.0));
 
         // A tap at the left end of the opacity slider gives zero.
         scroll_to_row(&mut h, HILLSHADE_OPACITY);
@@ -5208,10 +5206,7 @@ fn the_snap_controls_work_with_a_pen_a_finger_and_a_mouse() {
         }
         tap(&mut h, "Brush settings");
         check_controls(&h, &format!("{what} with the snap controls"));
-        let image = h.render().unwrap();
-        std::fs::create_dir_all("../../target/app").unwrap();
-        let path = format!("../../target/app/test-pad-snap-{}.png", size.0);
-        image.save(path).unwrap();
+        screenshot::save(&mut h, &format!("pad-snap-{}", size.0));
         let snap = |h: &Pad| {
             let s = &h.state().globe.snap;
             [s.on, s.vertices, s.edges]
@@ -5278,14 +5273,7 @@ fn the_snap_sheet_has_a_switch_for_the_stops_of_each_raster_layer() {
             assert!(on(&h), "{what}: {name}");
         }
         check_controls(&h, &format!("{what} with the switches of the stops"));
-        let image = h.render().unwrap();
-        std::fs::create_dir_all("../../target/app").unwrap();
-        image
-            .save(format!(
-                "../../target/app/test-pad-snap-stops-{}.png",
-                size.0
-            ))
-            .unwrap();
+        screenshot::save(&mut h, &format!("pad-snap-stops-{}", size.0));
     }
 }
 
@@ -6145,10 +6133,7 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
             "{what}: {start}"
         );
         check_controls(&h, &format!("{what} with a taper"));
-        h.render()
-            .unwrap()
-            .save(format!("../../target/app/test-pad-line-{}.png", size.0))
-            .unwrap();
+        screenshot::save(&mut h, &format!("pad-line-{}", size.0));
 
         scroll_to_control(&mut h, BRUSH);
         tap(&mut h, BRUSH);
@@ -6252,10 +6237,7 @@ fn a_rule_page_sets_a_point_symbol() {
         scroll_to_control(&mut h, SYMBOL);
         tap(&mut h, SYMBOL);
         assert_eq!(h.state().pad.page, Some(Page::Symbols(0)), "{what}");
-        h.render()
-            .unwrap()
-            .save(format!("../../target/app/test-pad-symbols-{}.png", size.0))
-            .unwrap();
+        screenshot::save(&mut h, &format!("pad-symbols-{}", size.0));
         tap(&mut h, "castle");
         assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
         assert_eq!(symbol(&h).unwrap().symbol, "castle", "{what}");
@@ -6302,10 +6284,7 @@ fn a_rule_page_sets_a_point_symbol() {
         assert!(symbol(&h).unwrap().tint.is_none(), "{what}");
         check_controls(&h, &what);
         scroll_to_control(&mut h, SYMBOL);
-        h.render()
-            .unwrap()
-            .save(format!("../../target/app/test-pad-symbol-{}.png", size.0))
-            .unwrap();
+        screenshot::save(&mut h, &format!("pad-symbol-{}", size.0));
 
         scroll_to_control(&mut h, CIRCLE);
         tap(&mut h, CIRCLE);
@@ -6337,13 +6316,7 @@ fn the_symbol_page_of_an_empty_library_adds_an_svg_file() {
             "{what}: {button:?} {card:?}"
         );
         check_controls(&h, &format!("{what} with no symbols"));
-        h.render()
-            .unwrap()
-            .save(format!(
-                "../../target/app/test-pad-symbols-empty-{}.png",
-                size.0
-            ))
-            .unwrap();
+        screenshot::save(&mut h, &format!("pad-symbols-empty-{}", size.0));
         tap(&mut h, ADD_SYMBOL);
         assert!(
             h.state().actions.contains(&Action::AddSymbolDialog),
@@ -6484,10 +6457,7 @@ fn a_rule_page_adds_a_scatter() {
         );
         scroll_to_control(&mut h, TINT);
         check_controls(&h, &what);
-        h.render()
-            .unwrap()
-            .save(format!("../../target/app/test-pad-scatter-{}.png", size.0))
-            .unwrap();
+        screenshot::save(&mut h, &format!("pad-scatter-{}", size.0));
 
         scroll_to_control(&mut h, SCATTER);
         tap(&mut h, SCATTER);

@@ -1,4 +1,5 @@
 mod common;
+mod screenshot;
 
 use eframe::egui;
 use egui_kittest::Harness;
@@ -155,11 +156,7 @@ fn the_dock_sets_a_point_symbol_and_a_scatter() {
     h.get_by_label(ADD_SYMBOL).click();
     h.run_steps(2);
     assert!(h.state().actions.contains(&Action::AddSymbolDialog));
-    std::fs::create_dir_all("../../target/app").unwrap();
-    h.render()
-        .unwrap()
-        .save("../../target/app/test-dock-symbol-empty.png")
-        .unwrap();
+    screenshot::save(&mut h, "dock-symbol-empty");
 
     // The first symbol that the user adds becomes the symbol of the rule.
     common::add_symbols(&mut h.state_mut().doc, &["pine", "castle", "tree"]);
@@ -173,10 +170,7 @@ fn the_dock_sets_a_point_symbol_and_a_scatter() {
     assert_eq!(s.symbol, "castle");
     assert_eq!(s.size.fallback, 12.0);
     assert!(s.tint.is_none());
-    h.render()
-        .unwrap()
-        .save("../../target/app/test-dock-symbol.png")
-        .unwrap();
+    screenshot::save(&mut h, "dock-symbol");
 
     let land = id_of(&h, "Land");
     h.state_mut().selected_layer = Some(LayerRef::Vector(land));
@@ -190,10 +184,7 @@ fn the_dock_sets_a_point_symbol_and_a_scatter() {
         (8.0, 10.0)
     );
     assert!(scatter.tint.is_none());
-    h.render()
-        .unwrap()
-        .save("../../target/app/test-dock-scatter.png")
-        .unwrap();
+    screenshot::save(&mut h, "dock-scatter");
 }
 
 #[test]
@@ -288,6 +279,7 @@ fn unplaced_summary() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn inspector_screenshots() {
     use vale_app::pipeline::Selection;
     let mut state = AppState::new(Document::sample()).unwrap();
