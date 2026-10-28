@@ -1006,6 +1006,10 @@ impl Pipeline {
         &self.scatter
     }
 
+    pub fn scatter_cache_mut(&mut self) -> &mut ScatterCache {
+        &mut self.scatter
+    }
+
     /// The number of projections that the pipeline keeps.
     pub fn cache_count(&self) -> usize {
         self.caches.len()

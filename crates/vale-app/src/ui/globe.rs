@@ -16,10 +16,12 @@ use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Nav, Painting, Tap, on_canvas};
 use crate::globe::snap::Highlight;
+use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
 use crate::globe::{Globe, Paint, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
+use crate::scatter::{ScatterCache, ScatterFill};
 use crate::ui::pad::theme;
 use vale_style::expr::Context;
 use vale_style::{Paint as StylePaint, StrokeKind, scale_denominator};
@@ -266,7 +268,6 @@ fn color(c: vale_style::Color) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
 }
 
-/// Draws one vector layer over the globe.
 /// Draws the target that a stroke snaps to or traces.
 fn snap_highlight(
     painter: &egui::Painter,
@@ -330,15 +331,19 @@ fn snap_highlight(
     }
 }
 
+/// Draws one vector layer over the globe. The symbols go to one mesh, which
+/// goes to the painter before the next shape that is not a symbol.
 fn vector_layer(
     painter: &egui::Painter,
     rect: egui::Rect,
     doc: &Document,
     view: &GlobeView,
     id: LayerId,
+    scatter: &mut ScatterCache,
 ) {
     let radius = view.radius(rect);
-    let scale = scale_denominator(doc.project.world.radius_km * 1000.0 / radius);
+    let radius_m = doc.project.world.radius_km * 1000.0;
+    let scale = scale_denominator(radius_m / radius);
     let step = vector::step(radius * f64::from(painter.ctx().pixels_per_point()));
     let center = rect.center();
     let to_screen = |p: &vector::P2| {
@@ -351,6 +356,14 @@ fn vector_layer(
         let q = to_screen(p);
         kurbo::Point::new(f64::from(q.x), f64::from(q.y))
     };
+    let symbols = doc.symbols();
+    let mut places = None;
+    let mut pending = egui::Mesh::default();
+    let flush = |pending: &mut egui::Mesh| {
+        if !pending.is_empty() {
+            painter.add(std::mem::take(pending));
+        }
+    };
     let entries = doc.frame.entries.iter().filter(|e| e.layer == id);
     for entry in entries {
         let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
@@ -359,6 +372,7 @@ fn vector_layer(
         let style = &entry.style.style;
         let constant = style.constant_paints(scale);
         let mut paints = Vec::new();
+        let mut count = 0;
         for (index, feature) in layer.features.iter().enumerate() {
             let paints = match &constant {
                 Some(c) => c.as_slice(),
@@ -376,10 +390,6 @@ fn vector_layer(
             if paints.is_empty() {
                 continue;
             }
-            let fills = paints.iter().filter_map(|p| match p {
-                StylePaint::Fill(c) => Some(color(*c)),
-                _ => None,
-            });
             let strokes = paints.iter().filter_map(|p| match p {
                 StylePaint::Stroke(s) => Some(*s),
                 _ => None,
@@ -387,24 +397,48 @@ fn vector_layer(
             let seed = index as u64;
             match &feature.geometry {
                 Geometry::Points(points) => {
-                    let markers = paints.iter().filter_map(|p| match p {
-                        StylePaint::Marker {
-                            radius,
-                            fill,
-                            stroke,
-                        } => Some((
-                            *radius as f32,
-                            fill.map_or(egui::Color32::TRANSPARENT, color),
-                            stroke.map_or(egui::Stroke::NONE, |s| {
-                                egui::Stroke::new(s.width as f32, color(s.color))
-                            }),
-                        )),
-                        _ => None,
-                    });
                     for p in points {
-                        if let Some(pos) = view.project(rect, lonlat_to_dir(p[0], p[1])) {
-                            for (radius, fill, stroke) in markers.clone() {
-                                painter.circle(pos, radius, fill, stroke);
+                        let Some(pos) = view.project(rect, lonlat_to_dir(p[0], p[1])) else {
+                            continue;
+                        };
+                        for paint in paints {
+                            match paint {
+                                StylePaint::Marker {
+                                    radius,
+                                    fill,
+                                    stroke,
+                                } => {
+                                    flush(&mut pending);
+                                    painter.circle(
+                                        pos,
+                                        *radius as f32,
+                                        fill.map_or(egui::Color32::TRANSPARENT, color),
+                                        stroke.map_or(egui::Stroke::NONE, |s| {
+                                            egui::Stroke::new(s.width as f32, color(s.color))
+                                        }),
+                                    );
+                                }
+                                StylePaint::Symbol {
+                                    symbol,
+                                    size,
+                                    rotation,
+                                    tint,
+                                } if *size > 0.0 => {
+                                    let size = *size as f32;
+                                    if rect.expand(size).contains(pos) {
+                                        match symbols.get(symbol) {
+                                            Some(s) => SymbolMesh::of(s).append(
+                                                &mut pending,
+                                                pos,
+                                                size,
+                                                *rotation as f32,
+                                                *tint,
+                                            ),
+                                            None => append_missing(&mut pending, pos, size, *tint),
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -419,58 +453,101 @@ fn vector_layer(
                         .collect();
                     if !parts.is_empty() {
                         for stroke in strokes.clone() {
+                            flush(&mut pending);
                             painter.extend(vector::stroke_shapes(&parts, &stroke, seed));
                         }
                     }
                 }
                 Geometry::Polygons(polygons) => {
-                    for polygon in polygons {
-                        let rings: Vec<_> = polygon
-                            .iter()
-                            .enumerate()
-                            .map(|(i, ring)| vector::ring(ring, i > 0))
-                            .collect();
-                        if rings.first().is_none_or(|outer| outer.is_empty()) {
-                            continue;
-                        }
-                        let rings: Vec<_> = rings.into_iter().filter(|r| !r.is_empty()).collect();
-                        let clipped = vector::clip_polygon(&view.rot, &rings, step);
-                        let mut triangles = None;
-                        for fill in fills.clone() {
-                            let (points, indices) = triangles
-                                .get_or_insert_with(|| vector::triangulate(&clipped.loops));
-                            let vertices = points
+                    let clipped: Vec<_> = polygons
+                        .iter()
+                        .filter_map(|polygon| {
+                            let rings: Vec<_> = polygon
                                 .iter()
-                                .map(|p| egui::epaint::Vertex {
-                                    pos: to_screen(p),
-                                    uv: egui::epaint::WHITE_UV,
-                                    color: fill,
-                                })
+                                .enumerate()
+                                .map(|(i, ring)| vector::ring(ring, i > 0))
                                 .collect();
-                            let mesh = egui::Mesh {
-                                indices: indices.clone(),
-                                vertices,
-                                ..Default::default()
-                            };
-                            painter.add(mesh);
-                        }
-                        let outlines: Vec<_> = clipped
-                            .outlines
-                            .iter()
-                            .map(|part| part.iter().map(|p| (point(p), 0.0)).collect())
-                            .collect();
-                        for mut stroke in strokes.clone() {
-                            // A polygon outline has no start and no end to taper.
-                            if matches!(stroke.kind, StrokeKind::Taper { .. }) {
-                                stroke.kind = StrokeKind::Solid;
+                            if rings.first().is_none_or(|outer| outer.is_empty()) {
+                                return None;
                             }
-                            painter.extend(vector::stroke_shapes(&outlines, &stroke, seed));
+                            let rings: Vec<_> =
+                                rings.into_iter().filter(|r| !r.is_empty()).collect();
+                            Some(vector::clip_polygon(&view.rot, &rings, step))
+                        })
+                        .collect();
+                    let mut triangles = vec![None; clipped.len()];
+                    for paint in paints {
+                        match paint {
+                            StylePaint::Fill(c) => {
+                                flush(&mut pending);
+                                for (part, triangles) in clipped.iter().zip(&mut triangles) {
+                                    let (points, indices) = triangles
+                                        .get_or_insert_with(|| vector::triangulate(&part.loops));
+                                    let vertices = points
+                                        .iter()
+                                        .map(|p| egui::epaint::Vertex {
+                                            pos: to_screen(p),
+                                            uv: egui::epaint::WHITE_UV,
+                                            color: color(*c),
+                                        })
+                                        .collect();
+                                    painter.add(egui::Mesh {
+                                        indices: indices.clone(),
+                                        vertices,
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                            StylePaint::Stroke(stroke) => {
+                                flush(&mut pending);
+                                let mut stroke = *stroke;
+                                // A polygon outline has no start and no end to taper.
+                                if matches!(stroke.kind, StrokeKind::Taper { .. }) {
+                                    stroke.kind = StrokeKind::Solid;
+                                }
+                                for part in &clipped {
+                                    let outlines: Vec<_> = part
+                                        .outlines
+                                        .iter()
+                                        .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
+                                        .collect();
+                                    painter.extend(vector::stroke_shapes(&outlines, &stroke, seed));
+                                }
+                            }
+                            StylePaint::Scatter { symbol, tint, .. } => {
+                                let Some(fill) = ScatterFill::of(paint) else {
+                                    continue;
+                                };
+                                let places = places.get_or_insert_with(|| view_places(view, rect));
+                                let mut on_globe = GlobeScatter {
+                                    cache: scatter,
+                                    view,
+                                    rect,
+                                    radius_m,
+                                    places,
+                                    count,
+                                };
+                                let instances =
+                                    on_globe.instances(entry.layer, index, feature, &fill);
+                                count = on_globe.count;
+                                let mesh = symbols.get(symbol).map(SymbolMesh::of);
+                                for i in instances {
+                                    match &mesh {
+                                        Some(m) => {
+                                            m.append(&mut pending, i.pos, i.size, i.rotation, *tint)
+                                        }
+                                        None => append_missing(&mut pending, i.pos, i.size, *tint),
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
         }
     }
+    flush(&mut pending);
 }
 
 /// Draws the globe in the free space of `ui` and reads its input. `cards`:
@@ -569,6 +646,9 @@ pub(super) fn paint_canvas(
         background,
         pixels_per_point,
     };
+    let doc = &state.doc;
+    let scatter = state.pipeline.scatter_cache_mut();
+    scatter.retain(|id| doc.layer(id).is_some());
     match globe.paint(canvas, cards && globe.blur) {
         Some(paints) => {
             for paint in paints {
@@ -577,7 +657,7 @@ pub(super) fn paint_canvas(
                         painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
                     }
                     Paint::Vector(id) if globe_view => {
-                        vector_layer(&painter, rect, &state.doc, &globe.view, id);
+                        vector_layer(&painter, rect, doc, &globe.view, id, scatter);
                     }
                     Paint::Vector(_) => {}
                 }
