@@ -6028,6 +6028,134 @@ fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
 }
 
 #[test]
+fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
+    use vale_app::ui::pad::rules::{
+        BRUSH, DASH, DASHED, GAP, LINE, SOLID, STROKE_WIDTH, TAPER, TAPER_START,
+    };
+    use vale_style::StrokeKind;
+    // A tap near the right end of a slider.
+    let touch_right = |h: &mut Pad, name: &str| {
+        scroll_to_control(h, name);
+        let slider = control(h, name).unwrap();
+        let at = pos2(slider.right() - 30.0, slider.center().y);
+        touch(h, egui::TouchPhase::Start, at, None);
+        h.step();
+        touch(h, egui::TouchPhase::End, at, None);
+        h.run_steps(3);
+    };
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let rivers = vector(&h, "Rivers");
+        let kind = |h: &Pad| rules(h, rivers)[0].stroke().unwrap().kind;
+        open_rule(&mut h, "Rivers", "Default");
+        assert_eq!(kind(&h), StrokeKind::Solid, "{what}");
+        assert!(control(&h, DASH).is_none(), "{what}");
+
+        scroll_to_control(&mut h, DASHED);
+        tap(&mut h, DASHED);
+        assert_eq!(kind(&h), StrokeKind::dashed(), "{what}");
+        touch_right(&mut h, DASH);
+        touch_right(&mut h, GAP);
+        let StrokeKind::Dashed { dash, gap } = kind(&h) else {
+            panic!("{what}: {:?}", kind(&h));
+        };
+        assert!(
+            dash > StrokeKind::DASH && gap > StrokeKind::GAP,
+            "{what}: {dash} {gap}"
+        );
+        assert!(dash <= 20.0 && gap <= 20.0, "{what}: {dash} {gap}");
+        assert_eq!((dash * 20.0).round() / 20.0, dash, "{what}");
+        assert_eq!((gap * 20.0).round() / 20.0, gap, "{what}");
+
+        scroll_to_control(&mut h, TAPER);
+        tap(&mut h, TAPER);
+        assert_eq!(kind(&h), StrokeKind::taper(), "{what}");
+        assert!(control(&h, DASH).is_none(), "{what}");
+        touch_right(&mut h, TAPER_START);
+        let StrokeKind::Taper { start } = kind(&h) else {
+            panic!("{what}: {:?}", kind(&h));
+        };
+        assert!(
+            start > StrokeKind::TAPER_START && start <= 1.0,
+            "{what}: {start}"
+        );
+        check_controls(&h, &format!("{what} with a taper"));
+        h.render()
+            .unwrap()
+            .save(format!("../../target/app/test-pad-line-{}.png", size.0))
+            .unwrap();
+
+        scroll_to_control(&mut h, BRUSH);
+        tap(&mut h, BRUSH);
+        assert_eq!(kind(&h), StrokeKind::Brush, "{what}");
+        assert!(control(&h, TAPER_START).is_none(), "{what}");
+        tap(&mut h, SOLID);
+        assert_eq!(kind(&h), StrokeKind::Solid, "{what}");
+    }
+
+    // A polygon outline has no taper.
+    let mut h = pad(BOARDS[1]);
+    open_rule(&mut h, "Land", "Default");
+    scroll_to_control(&mut h, DASHED);
+    assert!(control(&h, DASHED).is_some());
+    assert!(control(&h, TAPER).is_none());
+
+    // A marker has no line type.
+    let mut h = pad(BOARDS[1]);
+    open_rule(&mut h, "Places", "Default");
+    scroll_to_control(&mut h, STROKE_WIDTH);
+    assert!(control(&h, STROKE_WIDTH).is_some());
+    assert!(control(&h, LINE).is_none());
+}
+
+#[test]
+fn a_start_width_drag_is_one_undo_step() {
+    use vale_app::ui::pad::rules::{TAPER, TAPER_START};
+    use vale_style::StrokeKind;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[1], dir.path());
+    let rivers = vector(&h, "Rivers");
+    let kind = |h: &Pad| rules(h, rivers)[0].stroke().unwrap().kind;
+    open_rule(&mut h, "Rivers", "Default");
+    scroll_to_control(&mut h, TAPER);
+    tap(&mut h, TAPER);
+    scroll_to_control(&mut h, TAPER_START);
+    save_frames(&mut h);
+    let saved = saves(&h);
+    let rect = control(&h, TAPER_START).unwrap();
+    let y = rect.center().y;
+    let (from, to) = (pos2(rect.right() - 20.0, y), pos2(rect.left() + 20.0, y));
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    step_and_save(&mut h, true);
+    let mut starts = Vec::new();
+    for i in 1..=6 {
+        touch(
+            &mut h,
+            egui::TouchPhase::Move,
+            from.lerp(to, i as f32 / 6.0),
+            None,
+        );
+        step_and_save(&mut h, true);
+        if let StrokeKind::Taper { start } = kind(&h) {
+            starts.push(start);
+        }
+    }
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    save_frames(&mut h);
+    starts.dedup();
+    assert!(starts.len() >= 4, "{starts:?}");
+    assert!(starts.iter().rev().is_sorted(), "{starts:?}");
+    assert_eq!(saves(&h), saved + 1);
+
+    // One undo takes back the whole drag, and the next takes back the taper.
+    tap(&mut h, "Undo");
+    assert_eq!(kind(&h), StrokeKind::taper());
+    tap(&mut h, "Undo");
+    assert_eq!(kind(&h), StrokeKind::Solid);
+}
+
+#[test]
 fn the_style_editor_opens_on_the_globe_and_the_flat_view_and_fits_a_finger() {
     use vale_app::ui::pad::rules::{ADD_RULE, FILL_COLOR, MIN_SCALE, STROKE, STROKE_COLOR};
     for size in BOARDS {

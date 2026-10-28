@@ -9,7 +9,8 @@ use vale_store::{BlendMode, RasterDisplay, Rgb, Stop, StopLine};
 
 use crate::expr::{Filter, FromValue, Property};
 use crate::{
-    Color, LabelStyle, LayerStyle, RasterSymbolizer, Rule, StrokeSymbolizer, Style, Symbolizer,
+    Color, LabelStyle, LayerStyle, RasterSymbolizer, Rule, StrokeKind, StrokeSymbolizer, Style,
+    Symbolizer,
 };
 
 /// The version of the style JSON that this build writes and reads.
@@ -125,6 +126,21 @@ fn stroke_json(s: &StrokeSymbolizer) -> Map<String, Json> {
     let mut m = Map::new();
     m.insert("color".into(), color_json(&s.color));
     m.insert("width".into(), number_json(&s.width));
+    match s.kind {
+        StrokeKind::Solid => {}
+        StrokeKind::Dashed { dash, gap } => {
+            m.insert("kind".into(), json!("dashed"));
+            m.insert("dash".into(), json!(dash));
+            m.insert("gap".into(), json!(gap));
+        }
+        StrokeKind::Brush => {
+            m.insert("kind".into(), json!("brush"));
+        }
+        StrokeKind::Taper { start } => {
+            m.insert("kind".into(), json!("taper"));
+            m.insert("start".into(), json!(start));
+        }
+    }
     m
 }
 
@@ -204,7 +220,24 @@ fn read_stroke(m: &Map<String, Json>) -> Result<StrokeSymbolizer, StyleError> {
     Ok(StrokeSymbolizer {
         color: read_color(m.get("color"))?,
         width: read_number(m.get("width"))?,
+        kind: read_kind(m),
     })
+}
+
+/// A missing or unknown kind is solid. A missing number is the default.
+fn read_kind(m: &Map<String, Json>) -> StrokeKind {
+    let number = |k: &str, d: f64| m.get(k).and_then(Json::as_f64).unwrap_or(d);
+    match m.get("kind").and_then(Json::as_str) {
+        Some("dashed") => StrokeKind::Dashed {
+            dash: number("dash", StrokeKind::DASH),
+            gap: number("gap", StrokeKind::GAP),
+        },
+        Some("brush") => StrokeKind::Brush,
+        Some("taper") => StrokeKind::Taper {
+            start: number("start", StrokeKind::TAPER_START),
+        },
+        _ => StrokeKind::Solid,
+    }
 }
 
 /// Reads a bare value or an object with `expr` and `fallback`.

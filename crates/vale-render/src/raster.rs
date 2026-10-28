@@ -45,33 +45,11 @@ pub fn glyph_run_outline(run: &GlyphRun) -> BezPath {
     out
 }
 
-/// Draws the list at `scale` pixels per point.
-pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderError> {
-    if !scale.is_finite() || scale <= 0.0 {
-        return Err(RenderError::EmptyPage);
-    }
-    let (pw, ph) = ((list.width * scale).ceil(), (list.height * scale).ceil());
-    if !(pw >= 1.0 && ph >= 1.0) {
-        return Err(RenderError::EmptyPage);
-    }
-    if pw > MAX_SIDE || ph > MAX_SIDE {
-        return Err(RenderError::TooLarge {
-            width: pw,
-            height: ph,
-        });
-    }
-    let (w, h) = (pw as u16, ph as u16);
-    let mut ctx = RenderContext::new_with(
-        w,
-        h,
-        RenderSettings {
-            level: Level::baseline(),
-            num_threads: 0,
-        },
-    );
-    ctx.set_transform(Affine::scale(scale));
+/// Draws the items under `base`, and closes the clips that they leave open.
+fn draw_items(ctx: &mut RenderContext, items: &[Item], base: Affine) -> Result<(), RenderError> {
+    ctx.set_transform(base);
     let mut clips = 0usize;
-    for item in &list.items {
+    for item in items {
         match item {
             Item::Fill { path, color, rule } => {
                 ctx.set_fill_rule(fill_rule(*rule));
@@ -108,7 +86,7 @@ pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderErr
                 if !(rect.width() > 0.0 && rect.height() > 0.0) {
                     continue;
                 }
-                let transform = Affine::scale(scale)
+                let transform = base
                     * Affine::translate((rect.x0, rect.y0))
                     * Affine::scale_non_uniform(rect.width() / iw, rect.height() / ih);
                 ctx.set_transform(transform);
@@ -124,8 +102,9 @@ pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderErr
                     },
                 });
                 ctx.fill_rect(&Rect::new(0.0, 0.0, iw, ih));
-                ctx.set_transform(Affine::scale(scale));
+                ctx.set_transform(base);
             }
+            Item::Rasterize { items, .. } => draw_items(ctx, items, base)?,
             Item::PushClip { path, rule } => {
                 ctx.set_fill_rule(fill_rule(*rule));
                 ctx.push_clip_path(path);
@@ -139,6 +118,75 @@ pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderErr
             }
         }
     }
+    for _ in 0..clips {
+        ctx.pop_clip();
+    }
+    Ok(())
+}
+
+fn new_context(w: u16, h: u16) -> RenderContext {
+    RenderContext::new_with(
+        w,
+        h,
+        RenderSettings {
+            level: Level::baseline(),
+            num_threads: 0,
+        },
+    )
+}
+
+/// Draws `items` inside the page-space rectangle `rect` to a PNG with a transparent background,
+/// at `scale` pixels per point or less. Returns the PNG and the page-space rectangle that its
+/// pixels cover.
+pub(crate) fn render_items_png(
+    items: &[Item],
+    rect: Rect,
+    scale: f64,
+) -> Result<(Vec<u8>, Rect), RenderError> {
+    let side = rect.width().max(rect.height());
+    let scale = scale.min(MAX_SIDE / side);
+    let (pw, ph) = (
+        (rect.width() * scale).ceil(),
+        (rect.height() * scale).ceil(),
+    );
+    if !(pw >= 1.0 && ph >= 1.0) {
+        return Err(RenderError::EmptyPage);
+    }
+    let (w, h) = (pw as u16, ph as u16);
+    let mut ctx = new_context(w, h);
+    draw_items(
+        &mut ctx,
+        items,
+        Affine::scale(scale) * Affine::translate((-rect.x0, -rect.y0)),
+    )?;
+    ctx.flush();
+    let mut pixmap = Pixmap::new(w, h);
+    ctx.render(&mut pixmap, &mut Resources::new());
+    let png = pixmap
+        .into_png()
+        .map_err(|e| RenderError::Png(format!("{e:?}")))?;
+    let covered = Rect::new(rect.x0, rect.y0, rect.x0 + pw / scale, rect.y0 + ph / scale);
+    Ok((png, covered))
+}
+
+/// Draws the list at `scale` pixels per point.
+pub fn render_pixmap(list: &DisplayList, scale: f64) -> Result<Pixmap, RenderError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(RenderError::EmptyPage);
+    }
+    let (pw, ph) = ((list.width * scale).ceil(), (list.height * scale).ceil());
+    if !(pw >= 1.0 && ph >= 1.0) {
+        return Err(RenderError::EmptyPage);
+    }
+    if pw > MAX_SIDE || ph > MAX_SIDE {
+        return Err(RenderError::TooLarge {
+            width: pw,
+            height: ph,
+        });
+    }
+    let (w, h) = (pw as u16, ph as u16);
+    let mut ctx = new_context(w, h);
+    draw_items(&mut ctx, &list.items, Affine::scale(scale))?;
     ctx.flush();
     let mut pixmap = Pixmap::new(w, h);
     ctx.render(&mut pixmap, &mut Resources::new());

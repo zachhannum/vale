@@ -5,11 +5,11 @@ use vale_app::atlas::{FrameTarget, PT_PER_MM, auto_graticule_interval, new_frame
 use vale_app::document::Document;
 use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{PAPER, Pipeline, Quality, fonts};
-use vale_render::{FillRule, Item, render_pixmap};
+use vale_render::{FillRule, Item, render_pixmap, render_rgba};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{FrameId, FrameShape, PageId, PageUnits};
 use vale_style::expr::{Filter, Property};
-use vale_style::{Color, Rule, Stroke, StrokeSymbolizer, Style, Symbolizer};
+use vale_style::{Color, Rule, Stroke, StrokeKind, StrokeSymbolizer, Style, Symbolizer};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 const LAND: [u8; 3] = [244, 241, 232];
@@ -188,6 +188,7 @@ fn one_layer_of_each_kind() {
             Item::Stroke { round, .. } => format!("stroke {round}"),
             Item::Glyphs(_) => "glyphs".to_string(),
             Item::Image { .. } => "image".to_string(),
+            Item::Rasterize { .. } => "rasterize".to_string(),
             Item::PushClip { .. } => "push clip".to_string(),
             Item::PopClip => "pop clip".to_string(),
         })
@@ -221,6 +222,7 @@ fn describe(item: &Item) -> String {
         ),
         Item::Glyphs(_) => "glyphs".to_string(),
         Item::Image { .. } => "image".to_string(),
+        Item::Rasterize { .. } => "rasterize".to_string(),
         Item::PushClip { rule, .. } => format!("push clip {rule:?}"),
         Item::PopClip => "pop clip".to_string(),
     }
@@ -297,10 +299,9 @@ fn line_strokes(doc: &Document) -> Vec<(f64, [u8; 3])> {
 fn stroke_rule(name: &str, filter: &str, color: Color, width: f64) -> Rule {
     let mut rule = Rule::new(
         name,
-        vec![Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke {
-            color,
-            width,
-        }))],
+        vec![Symbolizer::Stroke(StrokeSymbolizer::constant(
+            Stroke::solid(color, width),
+        ))],
     );
     rule.filter = Filter::new(filter);
     rule
@@ -335,6 +336,7 @@ fn a_width_expression_follows_the_attribute() {
             vec![Symbolizer::Stroke(StrokeSymbolizer {
                 color: Property::constant(blue),
                 width: Property::expression("flow * 0.5", 1.0),
+                kind: StrokeKind::Solid,
             })],
         )],
     };
@@ -675,4 +677,220 @@ fn the_border_follows_each_ring_of_the_shape_and_stays_vector() {
     doc.project.atlas.frame_mut(id).unwrap().border.on = false;
     let list = render(&doc, &mut pipeline);
     assert!(border_items(&list, [200, 10, 20], 3.0).is_empty());
+}
+
+/// A document with one line layer. Each line has a `kind` and its coordinates.
+fn lines_at(features: &[(&str, &[[f64; 2]])]) -> (Document, vale_store::LayerId) {
+    let features: Vec<String> = features
+        .iter()
+        .map(|(kind, coords)| {
+            let coords: Vec<String> = coords.iter().map(|[x, y]| format!("[{x},{y}]")).collect();
+            format!(
+                r#"{{"type":"Feature","properties":{{"kind":"{kind}"}},"geometry":{{"type":"LineString","coordinates":[{}]}}}}"#,
+                coords.join(",")
+            )
+        })
+        .collect();
+    let text = format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    );
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let imported = vale_import::geojson::read_str("lines", &text).unwrap();
+    let id = doc.add_imported(imported, None)[0];
+    (doc, id)
+}
+
+fn kind_rule(kind: &str, color: Color, width: f64, stroke_kind: StrokeKind) -> Rule {
+    let mut rule = stroke_rule(kind, &format!("kind = '{kind}'"), color, width);
+    if let Symbolizer::Stroke(s) = &mut rule.symbolizers[0] {
+        s.kind = stroke_kind;
+    }
+    rule
+}
+
+/// The polylines of a path. A path of lines only.
+fn subpaths(path: &kurbo::BezPath) -> Vec<Vec<Point>> {
+    let mut out: Vec<Vec<Point>> = Vec::new();
+    for el in path.elements() {
+        match *el {
+            kurbo::PathEl::MoveTo(p) => out.push(vec![p]),
+            kurbo::PathEl::LineTo(p) => out.last_mut().unwrap().push(p),
+            _ => panic!("not a polyline: {el:?}"),
+        }
+    }
+    out
+}
+
+fn length(pts: &[Point]) -> f64 {
+    pts.windows(2).map(|w| w[0].distance(w[1])).sum()
+}
+
+#[test]
+fn a_dashed_curved_line_has_even_dashes() {
+    // A parallel, which an oblique orthographic map shows as an arc.
+    let parallel: Vec<[f64; 2]> = (0..=24)
+        .map(|i| [-60.0 + 5.0 * f64::from(i), 45.0])
+        .collect();
+    let (mut doc, id) = lines_at(&[("a", &parallel)]);
+    doc.set_projection(
+        doc.first_map(),
+        ProjectionSpec::new(ProjectionKind::Orthographic, 0.0, 60.0),
+    );
+    let (dash, gap) = (6.0, 3.0);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        rules: vec![kind_rule(
+            "a",
+            Color::rgb(0, 0, 200),
+            1.5,
+            StrokeKind::Dashed { dash, gap },
+        )],
+    };
+    let composed = compose(&doc, &mut Pipeline::new());
+    let dashed: Vec<&Item> = composed
+        .list
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Stroke { round: false, color, .. } if color.b == 200))
+        .collect();
+    assert_eq!(dashed.len(), 1);
+    let Item::Stroke { path, .. } = dashed[0] else {
+        unreachable!()
+    };
+    let dashes = subpaths(path);
+    assert!(dashes.len() > 10, "{} dashes", dashes.len());
+    // The line is curved on the page: the dashes do not all point the same way.
+    let dir = |d: &Vec<Point>| (d[d.len() - 1] - d[0]).atan2();
+    let turn = (dir(&dashes[0]) - dir(&dashes[dashes.len() - 2])).abs();
+    assert!(turn > 0.2, "the line turns {turn} rad");
+    // Each dash but the last is one full dash long, along the curve.
+    for d in &dashes[..dashes.len() - 1] {
+        assert!((length(d) - dash).abs() < 1e-6, "a dash of {}", length(d));
+    }
+    // Each gap is one full gap long.
+    for w in dashes.windows(2) {
+        let g = w[0][w[0].len() - 1].distance(w[1][0]);
+        assert!(g <= gap + 1e-6 && g > gap * 0.95, "a gap of {g}");
+    }
+}
+
+/// The pixels of a row, between `x0` and `x1`, that are mostly `red`.
+fn red_run(px: &vale_render::Rgba, y: f64, x0: f64, x1: f64) -> usize {
+    let y = y.floor() as usize;
+    (x0.floor() as usize..x1.ceil() as usize)
+        .filter(|&x| {
+            let i = (y * px.width + x) * 4;
+            let [r, g, b] = [px.data[i], px.data[i + 1], px.data[i + 2]].map(i32::from);
+            r - g.max(b) >= 100
+        })
+        .count()
+}
+
+#[test]
+fn a_tapered_tributary_joins_a_wider_river_with_no_step() {
+    let (mut doc, id) = lines_at(&[
+        ("main", &[[-40.0, 0.0], [40.0, 0.0]]),
+        ("trib", &[[0.0, 30.0], [0.0, 0.0]]),
+    ]);
+    doc.set_projection(
+        doc.first_map(),
+        ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, 0.0),
+    );
+    let (main_w, trib_w, start) = (4.0, 2.0, 0.25);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        rules: vec![
+            kind_rule("main", Color::rgb(0, 0, 200), main_w, StrokeKind::Solid),
+            kind_rule(
+                "trib",
+                Color::rgb(200, 0, 0),
+                trib_w,
+                StrokeKind::Taper { start },
+            ),
+        ],
+    };
+    let mut pipeline = Pipeline::new();
+    let join = pipeline
+        .lonlat_to_page(&doc, SIZE, [0.0, 0.0])
+        .unwrap()
+        .unwrap();
+    let source = pipeline
+        .lonlat_to_page(&doc, SIZE, [0.0, 30.0])
+        .unwrap()
+        .unwrap();
+    // The tributary runs straight up the page to the main river.
+    assert!((join.x - source.x).abs() < 1e-9 && source.y < join.y);
+    let len = join.y - source.y;
+    let scale = 4.0;
+    let px = render_rgba(&compose(&doc, &mut pipeline).list, scale).unwrap();
+    let x = join.x * scale;
+    // The width in pixels at `t` points upstream of the join.
+    let width_at = |t: f64| red_run(&px, (join.y - t) * scale, x - 20.0, x + 20.0) as f64;
+    let expected = |t: f64| trib_w * (1.0 - (1.0 - start) * t / len) * scale;
+    // Inside the main band and just upstream of it, the tributary has its full width.
+    for t in [0.5, 1.5, 2.5, 3.0, 4.0] {
+        let w = width_at(t);
+        assert!((w - trib_w * scale).abs() <= 1.0, "{w} px at {t} pt");
+        assert!((w - expected(t)).abs() <= 1.0, "{w} px at {t} pt");
+    }
+    // Upstream, the width shrinks to the start width.
+    let far = len - 2.0;
+    assert!((width_at(far) - expected(far)).abs() <= 1.0);
+    // No tributary pixel shows on the far side of the main river.
+    for t in [-2.5, -3.0, -4.0, -6.0] {
+        assert_eq!(width_at(t), 0.0, "red at {t} pt");
+    }
+}
+
+#[test]
+fn each_stroke_kind_draws_in_a_frame_and_in_pdf() {
+    let line = |y: f64| [[-60.0, y], [-20.0, y + 8.0], [20.0, y], [60.0, y + 8.0]];
+    let (a, b, c, d) = (line(-45.0), line(-15.0), line(15.0), line(45.0));
+    let (mut doc, id) = lines_at(&[("solid", &a), ("dashed", &b), ("brush", &c), ("taper", &d)]);
+    let kinds = [
+        ("solid", [200, 0, 0], StrokeKind::Solid),
+        ("dashed", [0, 150, 0], StrokeKind::dashed()),
+        ("brush", [200, 0, 200], StrokeKind::Brush),
+        ("taper", [0, 0, 200], StrokeKind::taper()),
+    ];
+    let style = |kinds: &[(&str, [u8; 3], StrokeKind)]| Style {
+        rules: kinds
+            .iter()
+            .map(|(k, [r, g, b], s)| kind_rule(k, Color::rgb(*r, *g, *b), 4.0, *s))
+            .collect(),
+    };
+    doc.entry_mut(id).unwrap().style.style = style(&kinds);
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let frame = frame_on(&mut doc, &mut pipeline, page);
+    let list = compose_frame_full(&doc, &mut pipeline, frame).list;
+    let px = render_rgba(&list, 2.0).unwrap();
+    for (name, color, _) in kinds {
+        let hits = px
+            .data
+            .chunks(4)
+            .filter(|p| {
+                let near = |a: u8, b: u8| a.abs_diff(b) <= 40;
+                near(p[0], color[0]) && near(p[1], color[1]) && near(p[2], color[2])
+            })
+            .count();
+        assert!(hits > 50, "{name}: {hits} pixels");
+    }
+    // Only the brush is a raster image in the PDF.
+    let images = |list: &vale_render::DisplayList| {
+        let pdf = vale_render::render_pdf(list).unwrap();
+        String::from_utf8_lossy(&pdf).contains("/Subtype/Image")
+    };
+    let rasters = list
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Rasterize { .. }))
+        .count();
+    assert_eq!(rasters, 1);
+    assert!(images(&list));
+    let no_brush: Vec<_> = kinds.iter().copied().filter(|k| k.0 != "brush").collect();
+    doc.entry_mut(id).unwrap().style.style = style(&no_brush);
+    let list = compose_frame_full(&doc, &mut pipeline, frame).list;
+    assert!(!images(&list), "a vector stroke became an image");
 }

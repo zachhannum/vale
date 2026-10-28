@@ -112,16 +112,10 @@ impl Document {
 
         let s = &mut doc.entry_mut(land).unwrap().style;
         s.set_fill(Some(Color::rgb(244, 241, 232)));
-        s.set_stroke(Some(Stroke {
-            color: Color::rgb(150, 160, 165),
-            width: 0.6,
-        }));
+        s.set_stroke(Some(Stroke::solid(Color::rgb(150, 160, 165), 0.6)));
 
         let s = &mut doc.entry_mut(rivers).unwrap().style;
-        s.set_stroke(Some(Stroke {
-            color: Color::rgb(90, 150, 200),
-            width: 1.2,
-        }));
+        s.set_stroke(Some(Stroke::solid(Color::rgb(90, 150, 200), 1.2)));
         s.label.enabled = true;
         s.label.field = Some("name".to_string());
         s.label.size = 11.0;
@@ -130,10 +124,7 @@ impl Document {
 
         let s = &mut doc.entry_mut(places).unwrap().style;
         s.set_fill(Some(Color::rgb(60, 60, 60)));
-        s.set_stroke(Some(Stroke {
-            color: Color::rgb(255, 255, 255),
-            width: 1.0,
-        }));
+        s.set_stroke(Some(Stroke::solid(Color::rgb(255, 255, 255), 1.0)));
         s.set_point_radius(2.5);
         s.label.enabled = true;
         s.label.field = Some("name".to_string());

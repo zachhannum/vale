@@ -10,10 +10,10 @@ use krilla::page::PageSettings;
 use krilla::paint::{Fill, FillRule, LineCap, LineJoin, Stroke};
 use krilla::surface::Surface;
 use krilla::text::{Font, GlyphId, KrillaGlyph};
-use kurbo::{BezPath, PathEl};
+use kurbo::{BezPath, PathEl, Rect};
 
 use crate::list::{Color, DisplayList, FillRule as ListRule, GlyphRun, Item, RenderError};
-use crate::raster::glyph_run_outline;
+use crate::raster::{glyph_run_outline, render_items_png};
 
 fn krilla_rule(rule: ListRule) -> FillRule {
     match rule {
@@ -150,6 +150,25 @@ fn draw_run(s: &mut Surface, run: &GlyphRun, fonts: &mut HashMap<(u64, u32), Opt
     }
 }
 
+/// Pixels per point of a `Rasterize` item: 300 dpi.
+const RASTER_SCALE: f64 = 300.0 / 72.0;
+
+fn draw_png(
+    s: &mut Surface,
+    png: Vec<u8>,
+    rect: Rect,
+    interpolate: bool,
+) -> Result<(), RenderError> {
+    let Some(size) = Size::from_wh(rect.width() as f32, rect.height() as f32) else {
+        return Ok(());
+    };
+    let image = Image::from_png(png.into(), interpolate).map_err(RenderError::Pdf)?;
+    s.push_transform(&Transform::from_translate(rect.x0 as f32, rect.y0 as f32));
+    s.draw_image(image, size);
+    s.pop();
+    Ok(())
+}
+
 /// A PDF document that takes one display list at a time.
 pub struct PdfDocument {
     doc: krilla::Document,
@@ -226,16 +245,15 @@ impl PdfDocument {
                     png,
                     rect,
                     interpolate,
-                } => {
-                    let Some(size) = Size::from_wh(rect.width() as f32, rect.height() as f32)
-                    else {
+                } => draw_png(&mut s, png.clone(), *rect, *interpolate)?,
+                Item::Rasterize { bounds, items } => {
+                    let page = Rect::new(0.0, 0.0, list.width, list.height);
+                    let crop = bounds.intersect(page);
+                    if !(crop.width() > 0.0 && crop.height() > 0.0) {
                         continue;
-                    };
-                    let image = Image::from_png(png.clone().into(), *interpolate)
-                        .map_err(RenderError::Pdf)?;
-                    s.push_transform(&Transform::from_translate(rect.x0 as f32, rect.y0 as f32));
-                    s.draw_image(image, size);
-                    s.pop();
+                    }
+                    let (png, rect) = render_items_png(items, crop, RASTER_SCALE)?;
+                    draw_png(&mut s, png, rect, true)?;
                 }
             }
         }

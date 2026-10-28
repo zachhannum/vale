@@ -5,7 +5,7 @@
 use eframe::egui;
 use vale_store::{GeometryKind, LayerId};
 use vale_style::expr::Filter;
-use vale_style::{Color, LayerStyle, Rule, Stroke};
+use vale_style::{Color, LayerStyle, Rule, Stroke, StrokeKind};
 
 use super::raster::heading;
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
@@ -31,6 +31,14 @@ pub const BAD_RANGE: &str = "Min scale must be less than max scale.";
 pub const STROKE: &str = "Stroke";
 pub const STROKE_COLOR: &str = "Stroke color";
 pub const STROKE_WIDTH: &str = "Width";
+pub const LINE: &str = "Line";
+pub const SOLID: &str = "Solid";
+pub const DASHED: &str = "Dashed";
+pub const BRUSH: &str = "Brush";
+pub const TAPER: &str = "Taper";
+pub const DASH: &str = "Dash";
+pub const GAP: &str = "Gap";
+pub const TAPER_START: &str = "Start width";
 pub const FILL: &str = "Fill";
 pub const FILL_COLOR: &str = "Fill color";
 pub const MOVE_UP: &str = "Move rule up";
@@ -38,6 +46,8 @@ pub const MOVE_DOWN: &str = "Move rule down";
 pub const DELETE_RULE: &str = "Delete rule";
 /// The range of the width slider, in points. The slider has a log scale.
 const WIDTHS: (f64, f64) = (0.1, 20.0);
+/// The range of the dash and gap sliders, in points. The sliders have a log scale.
+const DASHES: (f64, f64) = (0.5, 20.0);
 /// The height of the keypad of the scale fields.
 const KEYPAD: f32 = 4.0 * PANEL_ROW;
 /// The longest filter text that the row of a rule shows, in characters.
@@ -285,10 +295,9 @@ fn paint_rows(
 
     let mut on = rule.stroke().is_some();
     if widgets::switch_row(ui, controls, STROKE, STROKE, &mut on) {
-        let stroke = default.stroke().unwrap_or(Stroke {
-            color: Color::rgb(90, 90, 90),
-            width: 1.0,
-        });
+        let stroke = default
+            .stroke()
+            .unwrap_or(Stroke::solid(Color::rgb(90, 90, 90), 1.0));
         rule.set_stroke(on.then_some(stroke));
     }
     if let Some(mut stroke) = rule.stroke() {
@@ -302,21 +311,13 @@ fn paint_rows(
             };
             rule.set_stroke(Some(stroke));
         }
-        let (lo, hi) = WIDTHS;
-        let mut fraction = (stroke.width.clamp(lo, hi) / lo).ln() / (hi / lo).ln();
-        let text = format!("{} pt", width_text(stroke.width));
-        if widgets::row_slider(
-            ui,
-            controls,
-            STROKE_WIDTH,
-            STROKE_WIDTH,
-            &mut fraction,
-            &text,
-        ) {
-            // The steps are twentieths of a point.
-            let width = lo * (hi / lo).powf(fraction);
-            stroke.width = ((width * 20.0).round() / 20.0).max(lo);
+        if let Some(width) = points_slider(ui, controls, STROKE_WIDTH, stroke.width, WIDTHS) {
+            stroke.width = width;
             rule.set_stroke(Some(stroke));
+        }
+        // A marker ignores the line type.
+        if kind != GeometryKind::Point {
+            line_rows(ui, controls, rule, stroke, kind);
         }
     }
     if kind == GeometryKind::Line {
@@ -339,6 +340,77 @@ fn paint_rows(
             }));
         }
     }
+}
+
+/// The line type of a stroke, with its dash and gap or its start width.
+fn line_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    rule: &mut Rule,
+    mut stroke: Stroke,
+    kind: GeometryKind,
+) {
+    let mut kinds = vec![SOLID, DASHED, BRUSH];
+    if kind == GeometryKind::Line {
+        kinds.push(TAPER);
+    }
+    let active = match stroke.kind {
+        StrokeKind::Solid => 0,
+        StrokeKind::Dashed { .. } => 1,
+        StrokeKind::Brush => 2,
+        StrokeKind::Taper { .. } => 3,
+    };
+    if let Some(index) = widgets::choice_row(ui, controls, LINE, &kinds, Some(active))
+        && index != active
+    {
+        stroke.kind = match index {
+            1 => StrokeKind::dashed(),
+            2 => StrokeKind::Brush,
+            3 => StrokeKind::taper(),
+            _ => StrokeKind::Solid,
+        };
+        rule.set_stroke(Some(stroke));
+    }
+    match stroke.kind {
+        StrokeKind::Dashed { dash, gap } => {
+            if let Some(dash) = points_slider(ui, controls, DASH, dash, DASHES) {
+                stroke.kind = StrokeKind::Dashed { dash, gap };
+                rule.set_stroke(Some(stroke));
+            }
+            if let Some(gap) = points_slider(ui, controls, GAP, gap, DASHES) {
+                stroke.kind = StrokeKind::Dashed { dash, gap };
+                rule.set_stroke(Some(stroke));
+            }
+        }
+        StrokeKind::Taper { start } => {
+            let mut fraction = start.clamp(0.0, 1.0);
+            let text = format!("{:.0} %", fraction * 100.0);
+            if widgets::row_slider(ui, controls, TAPER_START, TAPER_START, &mut fraction, &text) {
+                let start = (fraction * 100.0).round() / 100.0;
+                stroke.kind = StrokeKind::Taper { start };
+                rule.set_stroke(Some(stroke));
+            }
+        }
+        StrokeKind::Solid | StrokeKind::Brush => {}
+    }
+}
+
+/// A slider of a length in points, with a log scale from `lo` to `hi`.
+/// Returns the new length, in steps of a twentieth of a point.
+fn points_slider(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    value: f64,
+    (lo, hi): (f64, f64),
+) -> Option<f64> {
+    let mut fraction = (value.clamp(lo, hi) / lo).ln() / (hi / lo).ln();
+    let text = format!("{} pt", width_text(value));
+    if !widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
+        return None;
+    }
+    let value = lo * (hi / lo).powf(fraction);
+    Some(((value * 20.0).round() / 20.0).max(lo))
 }
 
 /// A width with at most two decimals and no trailing zeros.

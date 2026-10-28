@@ -22,7 +22,7 @@ use crate::globe::{Globe, Paint, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 use crate::ui::pad::theme;
 use vale_style::expr::Context;
-use vale_style::{Paint as StylePaint, scale_denominator};
+use vale_style::{Paint as StylePaint, StrokeKind, scale_denominator};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(22, 25, 31);
 /// The largest angle between two drawn points of a highlight on the flat map.
@@ -347,7 +347,10 @@ fn vector_layer(
             center.y - (p[1] * radius) as f32,
         )
     };
-    let path = |part: &Vec<vector::P2>| part.iter().map(to_screen).collect::<Vec<_>>();
+    let point = |p: &vector::P2| {
+        let q = to_screen(p);
+        kurbo::Point::new(f64::from(q.x), f64::from(q.y))
+    };
     let entries = doc.frame.entries.iter().filter(|e| e.layer == id);
     for entry in entries {
         let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
@@ -356,7 +359,7 @@ fn vector_layer(
         let style = &entry.style.style;
         let constant = style.constant_paints(scale);
         let mut paints = Vec::new();
-        for feature in &layer.features {
+        for (index, feature) in layer.features.iter().enumerate() {
             let paints = match &constant {
                 Some(c) => c.as_slice(),
                 None => {
@@ -378,9 +381,10 @@ fn vector_layer(
                 _ => None,
             });
             let strokes = paints.iter().filter_map(|p| match p {
-                StylePaint::Stroke(s) => Some(egui::Stroke::new(s.width as f32, color(s.color))),
+                StylePaint::Stroke(s) => Some(*s),
                 _ => None,
             });
+            let seed = index as u64;
             match &feature.geometry {
                 Geometry::Points(points) => {
                     let markers = paints.iter().filter_map(|p| match p {
@@ -406,12 +410,16 @@ fn vector_layer(
                     }
                 }
                 Geometry::Lines(lines) => {
-                    for line in lines {
-                        for part in vector::clip_line(&view.rot, &vector::line(line), step) {
-                            let part = path(&part);
-                            for stroke in strokes.clone() {
-                                painter.line(part.clone(), stroke);
-                            }
+                    let parts: Vec<_> = lines
+                        .iter()
+                        .flat_map(|line| {
+                            vector::clip_line_measured(&view.rot, &vector::line(line), step)
+                        })
+                        .map(|part| part.iter().map(|(p, f)| (point(p), *f)).collect())
+                        .collect();
+                    if !parts.is_empty() {
+                        for stroke in strokes.clone() {
+                            painter.extend(vector::stroke_shapes(&parts, &stroke, seed));
                         }
                     }
                 }
@@ -446,10 +454,17 @@ fn vector_layer(
                             };
                             painter.add(mesh);
                         }
-                        for stroke in strokes.clone() {
-                            for part in &clipped.outlines {
-                                painter.line(path(part), stroke);
+                        let outlines: Vec<_> = clipped
+                            .outlines
+                            .iter()
+                            .map(|part| part.iter().map(|p| (point(p), 0.0)).collect())
+                            .collect();
+                        for mut stroke in strokes.clone() {
+                            // A polygon outline has no start and no end to taper.
+                            if matches!(stroke.kind, StrokeKind::Taper { .. }) {
+                                stroke.kind = StrokeKind::Solid;
                             }
+                            painter.extend(vector::stroke_shapes(&outlines, &stroke, seed));
                         }
                     }
                 }

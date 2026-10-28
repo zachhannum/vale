@@ -14,11 +14,56 @@ use vale_store::GeometryKind;
 
 use expr::Property;
 
-/// A solid stroke. The width is in points.
+/// How a stroke draws its line.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub enum StrokeKind {
+    #[default]
+    Solid,
+    /// Dashes and gaps, in points.
+    Dashed { dash: f64, gap: f64 },
+    /// A textured brush line.
+    Brush,
+    /// The width grows along the line. `start` is the fraction of the width at the first vertex. The last vertex has the full width.
+    Taper { start: f64 },
+}
+
+impl StrokeKind {
+    pub const DASH: f64 = 4.0;
+    pub const GAP: f64 = 2.0;
+    pub const TAPER_START: f64 = 0.25;
+
+    /// A dashed kind with the default dash and gap.
+    pub const fn dashed() -> Self {
+        StrokeKind::Dashed {
+            dash: Self::DASH,
+            gap: Self::GAP,
+        }
+    }
+
+    /// A taper with the default start.
+    pub const fn taper() -> Self {
+        StrokeKind::Taper {
+            start: Self::TAPER_START,
+        }
+    }
+}
+
+/// A stroke. The width is in points. A marker ignores the kind.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Stroke {
     pub color: Color,
     pub width: f64,
+    pub kind: StrokeKind,
+}
+
+impl Stroke {
+    pub const fn solid(color: Color, width: f64) -> Self {
+        Stroke {
+            color,
+            width,
+            kind: StrokeKind::Solid,
+        }
+    }
 }
 
 /// How a layer is labeled.
@@ -63,7 +108,7 @@ fn fill(color: Color) -> Symbolizer {
 }
 
 fn stroke(color: Color, width: f64) -> Symbolizer {
-    Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke { color, width }))
+    Symbolizer::Stroke(StrokeSymbolizer::constant(Stroke::solid(color, width)))
 }
 
 impl LayerStyle {
@@ -101,10 +146,10 @@ impl LayerStyle {
                 vec![Symbolizer::Marker {
                     radius: Property::constant(2.5),
                     fill: Some(Property::constant(pick(&POINT_FILLS, ordinal))),
-                    stroke: Some(StrokeSymbolizer::constant(Stroke {
-                        color: Color::rgb(255, 255, 255),
-                        width: 1.0,
-                    })),
+                    stroke: Some(StrokeSymbolizer::constant(Stroke::solid(
+                        Color::rgb(255, 255, 255),
+                        1.0,
+                    ))),
                 }],
                 LabelStyle {
                     enabled: on,
@@ -298,14 +343,8 @@ impl Default for MapStyle {
         MapStyle {
             background: Color::rgb(236, 236, 232),
             water: Color::rgb(214, 232, 242),
-            outline: Stroke {
-                color: Color::rgb(90, 100, 105),
-                width: 0.8,
-            },
-            graticule: Stroke {
-                color: Color::rgba(120, 140, 150, 110),
-                width: 0.5,
-            },
+            outline: Stroke::solid(Color::rgb(90, 100, 105), 0.8),
+            graticule: Stroke::solid(Color::rgba(120, 140, 150, 110), 0.5),
         }
     }
 }
@@ -386,10 +425,7 @@ mod tests {
     #[test]
     fn rule_stroke_and_fill() {
         let mut r = Rule::new("r", Vec::new());
-        let s = Stroke {
-            color: Color::rgb(1, 2, 3),
-            width: 2.5,
-        };
+        let s = Stroke::solid(Color::rgb(1, 2, 3), 2.5);
         r.set_stroke(Some(s));
         r.set_fill(Some(Color::rgb(4, 5, 6)));
         assert_eq!(r.stroke(), Some(s));

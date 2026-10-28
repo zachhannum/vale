@@ -7,6 +7,11 @@
 
 use std::f64::consts::TAU;
 
+use eframe::egui;
+use kurbo::Point;
+use vale_render::stroke::{self, TaperPiece};
+use vale_style::StrokeKind;
+
 use super::brush::slerp;
 use super::math::{Mat3, V3, add, angle, cross, dot, length, lonlat_to_dir, normalize, scale};
 
@@ -238,6 +243,115 @@ pub fn clip_line(rot: &Mat3, pts: &[V3], step: f64) -> Vec<Vec<P2>> {
         .map(|p| p.pts)
         .filter(|p| p.len() >= 2)
         .collect()
+}
+
+/// A drawn point and its fraction from 0 to 1 of the length of the whole line.
+pub type Measured = (P2, f64);
+
+/// Like `clip_line`, but each point carries its fraction of the whole line,
+/// so that a part keeps its place on the line after the clip.
+pub fn clip_line_measured(rot: &Mat3, pts: &[V3], step: f64) -> Vec<Vec<Measured>> {
+    let view = to_view(rot, pts);
+    let mut along = vec![0.0];
+    for w in view.windows(2) {
+        along.push(along[along.len() - 1] + angle(w[0], w[1]));
+    }
+    let total = along[along.len() - 1];
+    let frac = |s: f64| if total > 0.0 { s / total } else { 0.0 };
+    let near = |v: V3| v[2] > 0.0;
+    let mut out = Vec::new();
+    let mut cur: Vec<Measured> = Vec::new();
+    for (k, w) in view.windows(2).enumerate() {
+        let (a, b) = (w[0], w[1]);
+        let (sa, sb) = (along[k], along[k + 1]);
+        // The arc from `x` to `y`, which start at `sx` and `sy` along the line, without `x`.
+        let arc = |cur: &mut Vec<Measured>, x: V3, sx: f64, y: V3, sy: f64| {
+            let n = (angle(x, y) / step).ceil().max(1.0) as usize;
+            for i in 1..=n {
+                let t = i as f64 / n as f64;
+                let p = if i == n { y } else { slerp(x, y, t) };
+                cur.push(([p[0], p[1]], frac(sx + (sy - sx) * t)));
+            }
+        };
+        let at = |x: V3| sa + angle(a, x);
+        match (near(a), near(b)) {
+            (false, false) => {}
+            (false, true) => {
+                let x = crossing(a, b);
+                cur = vec![([x[0], x[1]], frac(at(x)))];
+                arc(&mut cur, x, at(x), b, sb);
+            }
+            (true, to) => {
+                if cur.is_empty() {
+                    cur.push(([a[0], a[1]], frac(sa)));
+                }
+                if to {
+                    arc(&mut cur, a, sa, b, sb);
+                } else {
+                    let x = crossing(a, b);
+                    arc(&mut cur, a, sa, x, at(x));
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+        }
+    }
+    out.push(cur);
+    out.retain(|p| p.len() >= 2);
+    out
+}
+
+/// The shapes of a stroke on screen. Each point of `parts` is in screen
+/// points and carries its fraction of the whole line. `seed` picks the dabs
+/// of a brush.
+pub fn stroke_shapes(
+    parts: &[Vec<(Point, f64)>],
+    stroke: &vale_style::Stroke,
+    seed: u64,
+) -> Vec<egui::Shape> {
+    let c = stroke.color;
+    let color = egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
+    let width = stroke.width as f32;
+    let pos = |p: Point| egui::pos2(p.x as f32, p.y as f32);
+    let plain = || -> Vec<Vec<Point>> {
+        parts
+            .iter()
+            .map(|part| part.iter().map(|(p, _)| *p).collect())
+            .collect()
+    };
+    let lines = |parts: Vec<Vec<Point>>| -> Vec<egui::Shape> {
+        parts
+            .into_iter()
+            .map(|part| {
+                let pts = part.into_iter().map(pos).collect();
+                egui::Shape::line(pts, egui::Stroke::new(width, color))
+            })
+            .collect()
+    };
+    match stroke.kind {
+        StrokeKind::Solid => lines(plain()),
+        StrokeKind::Dashed { dash, gap } => lines(stroke::dash(&plain(), dash, gap)),
+        StrokeKind::Taper { start } => {
+            stroke::taper_measured(parts, start * stroke.width, stroke.width)
+                .into_iter()
+                .map(|piece| match piece {
+                    TaperPiece::Circle(c, r) => egui::Shape::circle_filled(pos(c), r as f32, color),
+                    TaperPiece::Quad(q) => egui::Shape::convex_polygon(
+                        q.iter().map(|p| pos(*p)).collect(),
+                        color,
+                        egui::Stroke::NONE,
+                    ),
+                })
+                .collect()
+        }
+        StrokeKind::Brush => stroke::brush_dabs(&plain(), stroke.width, seed)
+            .into_iter()
+            .map(|d| {
+                let a = (f32::from(c.a) * d.alpha).round() as u8;
+                let color = egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, a);
+                egui::Shape::circle_filled(pos(d.center), d.radius as f32, color)
+            })
+            .collect(),
+    }
 }
 
 /// The part of a polygon on the near side of the globe.
@@ -636,5 +750,114 @@ mod tests {
                 check_fill(rings, &twist.mul(&view));
             }
         }
+    }
+
+    fn measured_line(n: usize) -> Vec<Vec<(Point, f64)>> {
+        let pts: Vec<(Point, f64)> = (0..=n)
+            .map(|i| {
+                let t = i as f64 / n as f64;
+                (
+                    Point::new(10.0 + 200.0 * t, 50.0 + 30.0 * (t * 3.0).sin()),
+                    t,
+                )
+            })
+            .collect();
+        vec![pts]
+    }
+
+    #[test]
+    fn each_stroke_kind_gives_shapes() {
+        use egui::Shape;
+        let parts = measured_line(40);
+        let color = vale_style::Color::rgb(200, 0, 0);
+        let shapes = |kind| {
+            stroke_shapes(
+                &parts,
+                &vale_style::Stroke {
+                    color,
+                    width: 4.0,
+                    kind,
+                },
+                7,
+            )
+        };
+        let solid = shapes(StrokeKind::Solid);
+        assert_eq!(solid.len(), 1);
+        assert!(matches!(&solid[0], Shape::Path(p) if p.points.len() == 41));
+        let dashed = shapes(StrokeKind::Dashed {
+            dash: 5.0,
+            gap: 3.0,
+        });
+        assert!(dashed.len() > 20, "{} dashes", dashed.len());
+        assert!(dashed.iter().all(|s| matches!(s, Shape::Path(_))));
+        let taper = shapes(StrokeKind::taper());
+        assert!(taper.iter().any(|s| matches!(s, Shape::Circle(_))));
+        assert!(
+            taper
+                .iter()
+                .any(|s| matches!(s, Shape::Path(p) if p.closed))
+        );
+        let brush = shapes(StrokeKind::Brush);
+        assert!(brush.len() > 100);
+        assert!(
+            brush
+                .iter()
+                .all(|s| matches!(s, Shape::Circle(c) if c.fill.a() < 255))
+        );
+        // The same seed gives the same brush.
+        assert_eq!(brush, shapes(StrokeKind::Brush));
+    }
+
+    /// The radius of each circle of a taper, in order along the line.
+    fn taper_radii(shapes: &[egui::Shape]) -> Vec<(f32, f32)> {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::Circle(c) => Some((c.center.x, c.radius)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_clipped_taper_keeps_the_fraction_of_the_whole_line() {
+        // A line along the equator from longitude -150 to 30, with the view
+        // centered on longitude 0: the far side cuts off the first part.
+        let line = line(&[[-150.0, 0.0], [-90.0, 0.0], [-30.0, 0.0], [30.0, 0.0]]);
+        let view = rot(0.0, 0.0);
+        let parts = clip_line_measured(&view, &line, STEP);
+        assert_eq!(parts.len(), 1);
+        let part = &parts[0];
+        // The part starts at the edge of the globe, 60 of 180 degrees along.
+        let (first, f0) = part[0];
+        assert!((first[0] + 1.0).abs() < 1e-9, "{first:?}");
+        assert!((f0 - 60.0 / 180.0).abs() < 1e-9, "{f0}");
+        let (_, f1) = part[part.len() - 1];
+        assert!((f1 - 1.0).abs() < 1e-12);
+        // The plain clip has the same points.
+        let plain = clip_line(&view, &line, STEP);
+        assert_eq!(plain[0], part.iter().map(|(p, _)| *p).collect::<Vec<_>>());
+
+        let width = 6.0;
+        let start = 0.25;
+        let screen: Vec<Vec<(Point, f64)>> = parts
+            .iter()
+            .map(|p| {
+                p.iter()
+                    .map(|(q, f)| (Point::new(100.0 * q[0], -100.0 * q[1]), *f))
+                    .collect()
+            })
+            .collect();
+        let stroke = vale_style::Stroke {
+            color: vale_style::Color::rgb(0, 0, 200),
+            width,
+            kind: StrokeKind::Taper { start },
+        };
+        let radii = taper_radii(&stroke_shapes(&screen, &stroke, 0));
+        let w0 = 2.0 * f64::from(radii[0].1);
+        let expected = width * (start + (1.0 - start) * f0);
+        assert!((w0 - expected).abs() < 1e-4, "{w0} and {expected}");
+        let wn = 2.0 * f64::from(radii[radii.len() - 1].1);
+        assert!((wn - width).abs() < 1e-4);
     }
 }

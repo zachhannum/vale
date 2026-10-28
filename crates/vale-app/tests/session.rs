@@ -1396,10 +1396,10 @@ fn a_style_edit_is_an_undo_step() {
     let mut session = Session::open(&path, &mut doc).unwrap();
     let before = doc.entry(roads).unwrap().style.clone();
     let mut after = before.clone();
-    after.set_stroke(Some(vale_style::Stroke {
-        color: vale_style::Color::rgb(200, 0, 0),
-        width: 3.0,
-    }));
+    after.set_stroke(Some(vale_style::Stroke::solid(
+        vale_style::Color::rgb(200, 0, 0),
+        3.0,
+    )));
     doc.entry_mut(roads).unwrap().style = after.clone();
     doc.store_styles();
     assert_eq!(doc.changed_styles(), []);
