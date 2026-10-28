@@ -1,0 +1,45 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test the workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      # Lavapipe is the software Vulkan driver of Mesa. The GPU tier draws on it.
+      - name: Install the software GPU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the format
+        run: cargo fmt --all --check
+
+      - name: Run the fast tier and the UI tier
+        run: cargo test --workspace
+
+      # The GPU tier is the ignored tests of vale-app. The screenshot tests
+      # and the timing tests are also ignored, and they run only by hand.
+      - name: Run the GPU tier
+        run: cargo test -p vale-app -- --ignored --skip screenshots_ --skip step_time_
