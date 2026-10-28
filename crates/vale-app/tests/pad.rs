@@ -6029,7 +6029,9 @@ fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
 
 #[test]
 fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
-    use vale_app::ui::pad::rules::{BRUSH, DASH, DASHED, GAP, SOLID, TAPER, TAPER_START};
+    use vale_app::ui::pad::rules::{
+        BRUSH, DASH, DASHED, GAP, LINE, SOLID, STROKE_WIDTH, TAPER, TAPER_START,
+    };
     use vale_style::StrokeKind;
     // A tap near the right end of a slider.
     let touch_right = |h: &mut Pad, name: &str| {
@@ -6098,6 +6100,13 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
     scroll_to_control(&mut h, DASHED);
     assert!(control(&h, DASHED).is_some());
     assert!(control(&h, TAPER).is_none());
+
+    // A marker has no line type.
+    let mut h = pad(BOARDS[1]);
+    open_rule(&mut h, "Places", "Default");
+    scroll_to_control(&mut h, STROKE_WIDTH);
+    assert!(control(&h, STROKE_WIDTH).is_some());
+    assert!(control(&h, LINE).is_none());
 }
 
 #[test]

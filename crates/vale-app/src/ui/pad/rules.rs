@@ -315,49 +315,9 @@ fn paint_rows(
             stroke.width = width;
             rule.set_stroke(Some(stroke));
         }
-        let mut kinds = vec![SOLID, DASHED, BRUSH];
-        if kind == GeometryKind::Line {
-            kinds.push(TAPER);
-        }
-        let active = match stroke.kind {
-            StrokeKind::Solid => 0,
-            StrokeKind::Dashed { .. } => 1,
-            StrokeKind::Brush => 2,
-            StrokeKind::Taper { .. } => 3,
-        };
-        if let Some(index) = widgets::choice_row(ui, controls, LINE, &kinds, Some(active))
-            && index != active
-        {
-            stroke.kind = match index {
-                1 => StrokeKind::dashed(),
-                2 => StrokeKind::Brush,
-                3 => StrokeKind::taper(),
-                _ => StrokeKind::Solid,
-            };
-            rule.set_stroke(Some(stroke));
-        }
-        match stroke.kind {
-            StrokeKind::Dashed { dash, gap } => {
-                if let Some(dash) = points_slider(ui, controls, DASH, dash, DASHES) {
-                    stroke.kind = StrokeKind::Dashed { dash, gap };
-                    rule.set_stroke(Some(stroke));
-                }
-                if let Some(gap) = points_slider(ui, controls, GAP, gap, DASHES) {
-                    stroke.kind = StrokeKind::Dashed { dash, gap };
-                    rule.set_stroke(Some(stroke));
-                }
-            }
-            StrokeKind::Taper { start } => {
-                let mut fraction = start.clamp(0.0, 1.0);
-                let text = format!("{:.0} %", fraction * 100.0);
-                if widgets::row_slider(ui, controls, TAPER_START, TAPER_START, &mut fraction, &text)
-                {
-                    let start = (fraction * 100.0).round() / 100.0;
-                    stroke.kind = StrokeKind::Taper { start };
-                    rule.set_stroke(Some(stroke));
-                }
-            }
-            StrokeKind::Solid | StrokeKind::Brush => {}
+        // A marker ignores the line type.
+        if kind != GeometryKind::Point {
+            line_rows(ui, controls, rule, stroke, kind);
         }
     }
     if kind == GeometryKind::Line {
@@ -379,6 +339,59 @@ fn paint_rows(
                 ..fill
             }));
         }
+    }
+}
+
+/// The line type of a stroke, with its dash and gap or its start width.
+fn line_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    rule: &mut Rule,
+    mut stroke: Stroke,
+    kind: GeometryKind,
+) {
+    let mut kinds = vec![SOLID, DASHED, BRUSH];
+    if kind == GeometryKind::Line {
+        kinds.push(TAPER);
+    }
+    let active = match stroke.kind {
+        StrokeKind::Solid => 0,
+        StrokeKind::Dashed { .. } => 1,
+        StrokeKind::Brush => 2,
+        StrokeKind::Taper { .. } => 3,
+    };
+    if let Some(index) = widgets::choice_row(ui, controls, LINE, &kinds, Some(active))
+        && index != active
+    {
+        stroke.kind = match index {
+            1 => StrokeKind::dashed(),
+            2 => StrokeKind::Brush,
+            3 => StrokeKind::taper(),
+            _ => StrokeKind::Solid,
+        };
+        rule.set_stroke(Some(stroke));
+    }
+    match stroke.kind {
+        StrokeKind::Dashed { dash, gap } => {
+            if let Some(dash) = points_slider(ui, controls, DASH, dash, DASHES) {
+                stroke.kind = StrokeKind::Dashed { dash, gap };
+                rule.set_stroke(Some(stroke));
+            }
+            if let Some(gap) = points_slider(ui, controls, GAP, gap, DASHES) {
+                stroke.kind = StrokeKind::Dashed { dash, gap };
+                rule.set_stroke(Some(stroke));
+            }
+        }
+        StrokeKind::Taper { start } => {
+            let mut fraction = start.clamp(0.0, 1.0);
+            let text = format!("{:.0} %", fraction * 100.0);
+            if widgets::row_slider(ui, controls, TAPER_START, TAPER_START, &mut fraction, &text) {
+                let start = (fraction * 100.0).round() / 100.0;
+                stroke.kind = StrokeKind::Taper { start };
+                rule.set_stroke(Some(stroke));
+            }
+        }
+        StrokeKind::Solid | StrokeKind::Brush => {}
     }
 }
 

@@ -264,7 +264,10 @@ fn paint_rows(ui: &mut egui::Ui, rule: &mut Rule, kind: GeometryKind, salt: egui
                 .suffix(" pt");
             changed |= ui.add(drag).changed();
         });
-        changed |= line_rows(ui, s, kind, salt);
+        // A marker ignores the line type.
+        if kind != GeometryKind::Point {
+            changed |= line_rows(ui, s, kind, salt);
+        }
     }
     if changed {
         rule.set_stroke(stroke);
