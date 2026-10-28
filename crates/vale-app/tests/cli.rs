@@ -53,6 +53,22 @@ fn sizes() {
 }
 
 #[test]
+fn safe_areas() {
+    let insets = parse(&["--safe-area", "59,0,34,0"])
+        .safe_area()
+        .unwrap()
+        .unwrap()
+        .0;
+    assert_eq!(
+        (insets.top, insets.right, insets.bottom, insets.left),
+        (59.0, 0.0, 34.0, 0.0)
+    );
+    assert!(parse(&[]).safe_area().unwrap().is_none());
+    assert!(parse(&["--safe-area", "59,0,34"]).safe_area().is_err());
+    assert!(parse(&["--safe-area", "59,0,-34,0"]).safe_area().is_err());
+}
+
+#[test]
 fn look_at_and_zoom() {
     let a = parse(&["--look-at", "139.7,35.7", "--zoom", "4"]);
     let size = a.size().unwrap();

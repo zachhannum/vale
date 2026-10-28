@@ -2971,6 +2971,60 @@ fn the_cards_stay_out_of_the_safe_area_of_the_device() {
     }
 }
 
+/// The size of an iPhone 16 in portrait and in landscape, and its safe area:
+/// the bands at the top, the right, the bottom, and the left.
+const IPHONES: [((f64, f64), [f32; 4]); 2] = [
+    ((393.0, 852.0), [59.0, 0.0, 34.0, 0.0]),
+    ((852.0, 393.0), [0.0, 59.0, 21.0, 59.0]),
+];
+
+#[test]
+fn the_screenshot_of_an_iphone_keeps_the_controls_in_the_safe_area() {
+    let _gpu = one_gpu_test();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    for ((size, [top, right, bottom, left]), name) in
+        IPHONES.into_iter().zip(["portrait", "landscape"])
+    {
+        for panel in [None, Some(Panel::Layers)] {
+            let mut state = state();
+            state.globe.set_face_size(64);
+            state.add_height();
+            if let Some(panel) = panel {
+                state.pad.open(panel);
+            }
+            let insets = egui::epaint::MarginF32 {
+                left,
+                right,
+                top,
+                bottom,
+            };
+            let safe = Some(egui::SafeAreaInsets(insets));
+            let (image, state) = headless::ui_png_safe(state, size, 1.0, safe, |_| Ok(())).unwrap();
+            let what = format!("{name}, {panel:?}");
+            assert_eq!(image.dimensions(), (size.0 as u32, size.1 as u32), "{what}");
+            let file = match panel {
+                None => format!("../../target/app/test-pad-iphone-{name}.png"),
+                Some(_) => format!("../../target/app/test-pad-iphone-{name}-layers.png"),
+            };
+            image.save(file).unwrap();
+            let (width, height) = (size.0 as f32, size.1 as f32);
+            let controls = &state.pad.controls;
+            assert!(controls.len() >= 7, "{what}: {} controls", controls.len());
+            for c in controls {
+                let r = c.rect;
+                assert!(
+                    r.top() >= top
+                        && r.bottom() <= height - bottom
+                        && r.left() >= left
+                        && r.right() <= width - right,
+                    "{what}: {} is {r:?}",
+                    c.name
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn the_readout_shows_the_place_and_the_elevation() {
     assert_eq!(
