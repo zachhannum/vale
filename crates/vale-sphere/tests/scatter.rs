@@ -333,6 +333,10 @@ fn a_large_forest_is_fast() {
     let pts = scatter(&plane, &rings, &p, None);
     let ms = start.elapsed().as_secs_f64() * 1000.0;
     eprintln!("1000 km forest at 2 km: {} points in {ms:.1} ms", pts.len());
-    let limit = if cfg!(debug_assertions) { 2000.0 } else { 200.0 };
+    let limit = if cfg!(debug_assertions) {
+        2000.0
+    } else {
+        200.0
+    };
     assert!(ms < limit, "{ms} ms");
 }
