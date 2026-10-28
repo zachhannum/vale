@@ -617,7 +617,8 @@ The labeling prototype came first, and it is done. The work after it has eleven 
 | 7 | Labeling in the app | Labels come from attributes, polygon labels and fallbacks work, and manual changes stay. |
 | 8 | Atlas and export | An atlas of pages exports as a multi-page PDF, SVG files, and raster files. |
 | 9 | Import | Files from other tools come in as layers, and a replaced file keeps its extents, styles, and overrides. |
-| 10 | Version 1 release | Version 1 is in the App Store and on the three desktop platforms. |
+| 10 | Derived values | Styles, labels, and fields use the measures of features, the values of raster layers, and the flow of rivers. |
+| 11 | Version 1 release | Version 1 is in the App Store and on the three desktop platforms. |
 
 From phase 1 on, a phase is done only when it works on desktop and on iPad.
 
