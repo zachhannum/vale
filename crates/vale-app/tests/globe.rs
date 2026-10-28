@@ -5872,3 +5872,144 @@ fn a_layer_that_is_not_a_height_layer_has_no_hillshade() {
     set_hillshade(&mut h, id, true, 1.0);
     assert!(canvas_image(&mut h) == off, "the layer has a hillshade");
 }
+
+/// A document with a forest polygon that a scatter of trees fills, over a
+/// light green fill, and a point layer of castles.
+fn symbol_world() -> (Document, vale_store::LayerId, vale_store::LayerId) {
+    use vale_style::expr::Property;
+    use vale_style::{PointSymbolizer, Rule, ScatterSymbolizer, Style, Symbolizer};
+    let mut doc = Document::empty();
+    let forest = r#"{"type":"Polygon","coordinates":[[[-8,-8],[8,-8],[8,8],[-8,8],[-8,-8]]]}"#;
+    let forest = doc.add_imported(geojson::read_str("forest", forest).unwrap(), None)[0];
+    let mut scatter = ScatterSymbolizer::new("tree", 8.0, 10.0);
+    scatter.rotation_jitter = 10.0;
+    scatter.size_jitter = 0.2;
+    scatter.tint = Some(Property::constant(Color::rgb(30, 100, 40)));
+    let fill = Symbolizer::Fill {
+        color: Property::constant(Color::rgb(200, 230, 180)),
+    };
+    doc.entry_mut(forest).unwrap().style.style = Style {
+        rules: vec![Rule::new(
+            "Forest",
+            vec![fill, Symbolizer::Scatter(scatter)],
+        )],
+    };
+    let castles = r#"{"type":"MultiPoint","coordinates":[[14,0],[-14,0]]}"#;
+    let castles = doc.add_imported(geojson::read_str("castles", castles).unwrap(), None)[0];
+    doc.entry_mut(castles).unwrap().style.style = Style {
+        rules: vec![Rule::new(
+            "Castles",
+            vec![Symbolizer::Symbol(PointSymbolizer {
+                symbol: "castle".to_string(),
+                size: Property::constant(40.0),
+                rotation: Property::constant(0.0),
+                tint: Some(Property::constant(Color::rgb(255, 0, 0))),
+            })],
+        )],
+    };
+    (doc, forest, castles)
+}
+
+#[test]
+fn the_globe_draws_point_symbols_and_scatter_fills() {
+    let _gpu = one_gpu_test();
+    let (doc, _, _) = symbol_world();
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    state.globe.view.zoom = 3.0;
+    let (img, state) = headless::ui_png(state, (1280.0, 800.0), 1.0).unwrap();
+    img.save("../../target/app/test-globe-symbols.png").unwrap();
+    let (rect, view) = (state.globe.rect, state.globe.view);
+    let pixel = |p: Pos2| {
+        let [r, g, b, _] = img.get_pixel(p.x as u32, p.y as u32).0;
+        [r, g, b]
+    };
+    let count = |center: Pos2, half: f32, test: &dyn Fn([u8; 3]) -> bool| {
+        let mut n = 0;
+        for dx in -half as i32..=half as i32 {
+            for dy in -half as i32..=half as i32 {
+                n += usize::from(test(pixel(center + Vec2::new(dx as f32, dy as f32))));
+            }
+        }
+        n
+    };
+    let red = |c: [u8; 3]| c == [255, 0, 0];
+    let castle = view.project(rect, lonlat_to_dir(14.0, 0.0)).unwrap();
+    let castle_red = count(castle, 20.0, &red);
+    // The castle covers about half of its box, and its door is a hole.
+    assert!(castle_red > 500 && castle_red < 1300, "{castle_red}");
+    assert!(!red(pixel(castle + Vec2::new(0.0, 16.0))));
+    // The trees are on the fill of the forest.
+    let middle = view.project(rect, lonlat_to_dir(0.0, 0.0)).unwrap();
+    let trees = count(middle, 40.0, &|c| c == [30, 100, 40]);
+    let ground = count(middle, 40.0, &|c| c == [200, 230, 180]);
+    assert!(trees > 150 && ground > 3000, "{trees} {ground}");
+}
+
+#[test]
+fn a_scatter_stays_on_the_ground_when_the_globe_turns() {
+    use vale_app::globe::symbol::{GlobeScatter, Instance, view_places};
+    use vale_app::globe::view::Camera;
+    use vale_app::scatter::{ScatterCache, ScatterFill};
+    let (doc, forest, _) = symbol_world();
+    let layer = doc.layer(forest).unwrap();
+    let feature = &layer.features[0];
+    let paint = vale_style::Paint::Scatter {
+        symbol: "tree".into(),
+        size: 8.0,
+        spacing: 10.0,
+        size_jitter: 0.2,
+        rotation_jitter: 10.0,
+        tint: None,
+    };
+    let fill = ScatterFill::of(&paint).unwrap();
+    let rect = egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
+    let radius_m = doc.project.world.radius_km * 1000.0;
+    let mut cache = ScatterCache::default();
+    let mut draw = |view: &GlobeView| -> Vec<Instance> {
+        let places = view_places(view, rect);
+        let mut on_globe = GlobeScatter {
+            cache: &mut cache,
+            view,
+            rect,
+            radius_m,
+            places: &places,
+            count: 0,
+        };
+        on_globe.instances(forest, 0, feature, &fill)
+    };
+    let mut first = GlobeView::centered(0.0, 0.0);
+    first.zoom = 3.0;
+    // A pan and a turn.
+    let mut second = first;
+    second.gesture(
+        rect,
+        rect.center(),
+        rect.center() + Vec2::new(90.0, 40.0),
+        1.0,
+        0.5,
+    );
+    // A pan that puts half of the forest off the screen.
+    let mut third = first;
+    third.gesture(rect, rect.center(), Pos2::new(1280.0, 400.0), 1.0, 0.0);
+    let a = draw(&first);
+    let b = draw(&second);
+    let c = draw(&third);
+    assert!(a.len() > 100, "{}", a.len());
+    assert_eq!(a.len(), b.len());
+    assert!(
+        c.len() > a.len() / 4 && c.len() < a.len() * 3 / 4,
+        "{}",
+        c.len()
+    );
+    let find = |i: &Instance| a.iter().find(|j| j.lonlat == i.lonlat).copied();
+    for (view, instances) in [(&second, &b), (&third, &c)] {
+        for i in instances {
+            let same = find(i).expect("each symbol is on the same place");
+            assert_eq!((same.size, same.rotation), (i.size, i.rotation));
+            let at = view.project(rect, lonlat_to_dir(i.lonlat[0], i.lonlat[1]));
+            assert!((at.unwrap() - i.pos).length() < 1e-3);
+        }
+    }
+}
