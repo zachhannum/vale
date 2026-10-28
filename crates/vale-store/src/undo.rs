@@ -479,8 +479,9 @@ fn world(r: &mut Reader) -> Option<World> {
     })
 }
 
-/// The image of the atlas holds the maps, the pages, and the custom
-/// projections, and not the counters of the IDs.
+/// The image of the atlas holds the maps, the pages, the custom
+/// projections, and the style overrides of the maps, and not the counters of
+/// the IDs. An image that ends after the projections has no overrides.
 fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     put_u32(out, atlas.maps.len());
     for map in &atlas.maps {
@@ -531,6 +532,19 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
         put_bytes(out, preset.name.as_bytes());
         put_bytes(out, preset.projection.as_bytes());
     }
+    let overrides: Vec<_> = (atlas.maps.iter())
+        .flat_map(|m| {
+            m.overrides
+                .iter()
+                .map(move |(layer, text)| (m.id, layer, text))
+        })
+        .collect();
+    put_u32(out, overrides.len());
+    for (map, layer, text) in overrides {
+        put_u32(out, map.0 as usize);
+        put_u32(out, layer.0 as usize);
+        put_bytes(out, text.as_bytes());
+    }
 }
 
 fn flag(r: &mut Reader) -> Option<bool> {
@@ -558,6 +572,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             name,
             projection,
             hidden,
+            overrides: std::collections::BTreeMap::new(),
         });
     }
     let mut pages = Vec::new();
@@ -607,6 +622,15 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             name: string(r)?,
             projection: string(r)?,
         });
+    }
+    if !r.0.is_empty() {
+        for _ in 0..count(r)? {
+            let id = MapId(r.u32()?);
+            let layer = LayerId(r.u32()?);
+            let text = string(r)?;
+            let map = maps.iter_mut().find(|m| m.id == id)?;
+            map.overrides.insert(layer, text);
+        }
     }
     r.0.is_empty().then_some((maps, pages, presets))
 }
@@ -1065,6 +1089,14 @@ mod tests {
         let mut before = Atlas::new(Units::Metric);
         before.maps[0].hidden.insert(LayerId(3));
         before.maps[0].name = "Wide".into();
+        let second_map = before.add_map();
+        let text = r#"{"/label/size":20.0}"#.to_string();
+        before.maps[0].overrides.insert(LayerId(3), text.clone());
+        before
+            .map_mut(second_map)
+            .unwrap()
+            .overrides
+            .insert(LayerId(4), text);
         let first = before.pages[0].id;
         let second = before.add_page(Some(first), 420.0, 297.0, PageUnits::In);
         before.page_mut(second).unwrap().name = "North".into();
@@ -1121,6 +1153,17 @@ mod tests {
         );
         out.pop();
         assert_eq!(atlas(&mut Reader(&out)), None);
+    }
+
+    #[test]
+    fn an_atlas_image_without_overrides_reads() {
+        let before = Atlas::new(Units::Metric);
+        let mut out = Vec::new();
+        put_atlas(&mut out, &before);
+        // An image of an older build ends after the projections.
+        assert_eq!(out.split_off(out.len() - 4), [0, 0, 0, 0]);
+        let image = atlas(&mut Reader(&out)).unwrap();
+        assert_eq!(image.0, before.maps);
     }
 
     #[test]

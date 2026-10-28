@@ -3,7 +3,7 @@
 //! A page coordinate is in millimeters from the top-left corner of the page,
 //! with y down.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 
 use crate::gpkg::Reader;
@@ -30,6 +30,8 @@ pub struct MapRecord {
     pub projection: String,
     /// The layers that the map does not show.
     pub hidden: BTreeSet<LayerId>,
+    /// The style overrides of each layer, as the JSON text of `vale_style::Overrides`. A layer with no overrides has no entry.
+    pub overrides: BTreeMap<LayerId, String>,
 }
 
 /// The units in which the app shows the size of a page.
@@ -223,6 +225,7 @@ impl Atlas {
                 name: "Map".to_string(),
                 projection: EQUAL_EARTH.to_string(),
                 hidden: BTreeSet::new(),
+                overrides: BTreeMap::new(),
             }],
             presets: Vec::new(),
             pages: vec![PageRecord {
@@ -360,6 +363,7 @@ impl Atlas {
             name,
             projection: EQUAL_EARTH.to_string(),
             hidden: BTreeSet::new(),
+            overrides: BTreeMap::new(),
         })
     }
 
