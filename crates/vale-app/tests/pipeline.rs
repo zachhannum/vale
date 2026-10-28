@@ -1,3 +1,5 @@
+mod common;
+
 use std::path::Path;
 
 use kurbo::Point;
@@ -979,6 +981,7 @@ fn a_point_symbol_takes_its_size_and_rotation_from_attributes() {
             point(20.0, 20.0, 0.0),
         ],
     );
+    common::add_symbols(&mut doc, &["pine"]);
     doc.entry_mut(id).unwrap().style.style = style_of(Symbolizer::Symbol(PointSymbolizer {
         symbol: "pine".to_string(),
         size: Property::expression("size * 2", 5.0),
@@ -1025,6 +1028,7 @@ fn forest(
     spacing: f64,
 ) -> (Document, vale_store::LayerId) {
     let (mut doc, id) = one_layer("forest", &[square(lon.0, lat.0, lon.1, lat.1)]);
+    common::add_symbols(&mut doc, &["tree"]);
     let mut scatter = ScatterSymbolizer::new("tree", size, spacing);
     scatter.rotation_jitter = 10.0;
     scatter.tint = Some(Property::constant(Color::rgb(30, 120, 40)));

@@ -467,10 +467,20 @@ impl GlobeScatter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vale_render::Symbols;
+    use vale_render::{Symbol, Symbols};
+
+    /// The test symbols in `tests/data`.
+    const FIXTURES: [&str; 9] = [
+        "tree", "pine", "palm", "mountain", "hill", "marsh", "city", "capital", "castle",
+    ];
+
+    fn symbol(name: &str) -> Symbol {
+        let path = format!("{}/tests/data/{name}.svg", env!("CARGO_MANIFEST_DIR"));
+        Symbol::from_svg(&std::fs::read_to_string(&path).unwrap()).unwrap()
+    }
 
     fn mesh(name: &str) -> SymbolMesh {
-        SymbolMesh::new(Symbols::builtin().get(name).unwrap())
+        SymbolMesh::new(&symbol(name))
     }
 
     /// A point of the 32 by 32 box of the castle file in symbol units. The
@@ -492,8 +502,8 @@ mod tests {
     }
 
     #[test]
-    fn each_builtin_symbol_has_triangles() {
-        for name in Symbols::builtin().names() {
+    fn each_test_symbol_has_triangles() {
+        for name in FIXTURES {
             assert!(!mesh(name).indices.is_empty(), "{name}");
         }
     }
@@ -508,14 +518,14 @@ mod tests {
 
     #[test]
     fn a_replaced_symbol_gets_a_new_mesh() {
-        let mut symbols = Symbols::with_builtins();
+        let mut symbols = Symbols::default();
+        symbols.insert("tree", symbol("tree"));
         let first = SymbolMesh::of(symbols.get("tree").unwrap());
         assert!(Arc::ptr_eq(
             &first,
             &SymbolMesh::of(symbols.get("tree").unwrap())
         ));
-        let castle = Symbols::builtin().get("castle").unwrap().as_ref().clone();
-        symbols.insert("tree", castle);
+        symbols.insert("tree", symbol("castle"));
         let second = SymbolMesh::of(symbols.get("tree").unwrap());
         assert!(!Arc::ptr_eq(&first, &second));
         assert_eq!(second.indices, mesh("castle").indices);

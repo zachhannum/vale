@@ -1,3 +1,5 @@
+mod common;
+
 use clap::Parser;
 use kurbo::{Point, Rect, Shape};
 use vale_app::cli::{Args, apply_view};
@@ -485,6 +487,7 @@ fn labels_avoid_point_symbols() {
         .page_to_lonlat(&doc, SIZE, label.center())
         .unwrap()
         .unwrap();
+    common::add_symbols(&mut doc, &["castle"]);
     let castles = add_layer(&mut doc, "Castles", &[point_at(None, place)]);
     let entry = doc.entry_mut(castles).unwrap();
     entry.style.label.enabled = false;
@@ -509,6 +512,7 @@ fn labels_avoid_point_symbols() {
 
     // A city in a dense forest still has its label, over the trees.
     let mut doc = city_doc(&mut p);
+    common::add_symbols(&mut doc, &["tree"]);
     let forest = add_layer(
         &mut doc,
         "Forest",

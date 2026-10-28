@@ -1,3 +1,5 @@
+mod common;
+
 mod lines;
 
 use clap::Parser;
@@ -5879,6 +5881,7 @@ fn symbol_world() -> (Document, vale_store::LayerId, vale_store::LayerId) {
     use vale_style::expr::Property;
     use vale_style::{PointSymbolizer, Rule, ScatterSymbolizer, Style, Symbolizer};
     let mut doc = Document::empty();
+    common::add_symbols(&mut doc, &["tree", "castle"]);
     let forest = r#"{"type":"Polygon","coordinates":[[[-8,-8],[8,-8],[8,8],[-8,8],[-8,-8]]]}"#;
     let forest = doc.add_imported(geojson::read_str("forest", forest).unwrap(), None)[0];
     let mut scatter = ScatterSymbolizer::new("tree", 8.0, 10.0);

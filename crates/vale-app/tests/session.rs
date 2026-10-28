@@ -1637,14 +1637,11 @@ fn an_added_svg_is_saved_in_the_project() {
     state.run_action(Action::AddSymbol(big));
     let note = state.symbol_note.clone().unwrap();
     assert!(note.warning && note.text.contains("1 MB"), "{}", note.text);
-    // A built-in name is taken.
+    // A new project has no symbols, so any name is free.
     let tree = dir.path().join("tree.svg");
     std::fs::copy(&svg, &tree).unwrap();
     state.run_action(Action::AddSymbol(tree));
-    assert_eq!(
-        state.symbol_note.clone().unwrap().text,
-        "Added symbol tree 2"
-    );
+    assert_eq!(state.symbol_note.clone().unwrap().text, "Added symbol tree");
     drop(state);
 
     // The reopened project has the symbols, and a style can use them.
@@ -1656,7 +1653,7 @@ fn an_added_svg_is_saved_in_the_project() {
         .iter()
         .map(|s| s.name.as_str())
         .collect();
-    assert_eq!(names, ["oak", "oak 2", "tree 2"]);
+    assert_eq!(names, ["oak", "oak 2", "tree"]);
     let points = vale_import::geojson::read_str(
         "pts",
         r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}"#,

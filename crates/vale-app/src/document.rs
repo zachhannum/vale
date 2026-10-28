@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
-use vale_render::{BUILTIN_SYMBOLS, Symbol, Symbols};
+use vale_render::{Symbol, Symbols};
 use vale_sphere::ProjectionSpec;
 use vale_store::{
     Field, FieldType, GeometryKind, Layer, LayerId, MapId, Project, ProjectionPreset, Units, World,
@@ -43,8 +43,7 @@ pub struct Document {
     symbols: SymbolLibrary,
 }
 
-/// The symbols that the styles can use: the built-in symbols, then the
-/// symbols of the project.
+/// The symbols that the styles can use: the symbols of the project.
 #[derive(Clone, Debug)]
 struct SymbolLibrary {
     symbols: Arc<Symbols>,
@@ -60,7 +59,7 @@ impl PartialEq for SymbolLibrary {
 
 impl SymbolLibrary {
     fn of(project: &Project) -> SymbolLibrary {
-        let mut symbols = Symbols::with_builtins();
+        let mut symbols = Symbols::default();
         for record in project.symbols() {
             match Symbol::from_svg(&record.svg) {
                 Ok(symbol) => symbols.insert(&record.name, symbol),
@@ -276,8 +275,7 @@ impl Document {
         self.sync_symbols();
     }
 
-    /// The symbols that the styles can use: the built-in symbols, then the
-    /// symbols of the project.
+    /// The symbols that the styles can use: the symbols of the project.
     pub fn symbols(&self) -> &Arc<Symbols> {
         &self.symbols.symbols
     }
@@ -295,8 +293,8 @@ impl Document {
     }
 
     /// Adds an SVG file to the symbols of the project, and returns its name.
-    /// The name comes from `name`, and it is not the name of a built-in
-    /// symbol or of another symbol of the project.
+    /// The name comes from `name`, and it is not the name of another symbol of
+    /// the project.
     pub fn add_symbol(&mut self, name: &str, svg: String) -> Result<String, String> {
         if svg.len() as u64 > MAX_SYMBOL_BYTES {
             return Err("The file is larger than 1 MB".to_string());
@@ -308,7 +306,7 @@ impl Document {
             }
             text
         })?;
-        let name = self.project.add_symbol(name, svg, &BUILTIN_SYMBOLS);
+        let name = self.project.add_symbol(name, svg, &[]);
         self.sync_symbols();
         Ok(name)
     }
