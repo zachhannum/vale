@@ -1,5 +1,7 @@
 //! The iPad layout of the world workspace.
 
+mod common;
+
 use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -6120,11 +6122,21 @@ fn touch_right(h: &mut Pad, name: &str) {
     h.run_steps(3);
 }
 
-/// Makes sure that each tile of a symbol is at least the touch size.
+/// The test symbols that the symbol tests add to the project.
+const TEST_SYMBOLS: [&str; 5] = ["city", "pine", "castle", "tree", "mountain"];
+
+/// Adds the test symbols to the project of the harness.
+fn add_test_symbols(h: &mut Pad) {
+    common::add_symbols(&mut h.state_mut().doc, &TEST_SYMBOLS);
+    h.run_steps(2);
+}
+
+/// Makes sure that each tile of a symbol and the "Add symbol…" button are at
+/// least the touch size.
 fn check_tiles(h: &Pad, what: &str) {
     use vale_app::ui::pad::geometry::TOUCH;
     use vale_app::ui::pad::rules::ADD_SYMBOL;
-    for name in vale_render::BUILTIN_SYMBOLS.iter().chain([&ADD_SYMBOL]) {
+    for name in TEST_SYMBOLS.iter().chain([&ADD_SYMBOL]) {
         if let Some(tile) = control(h, name) {
             assert!(
                 tile.width() >= TOUCH && tile.height() >= TOUCH,
@@ -6137,23 +6149,33 @@ fn check_tiles(h: &Pad, what: &str) {
 #[test]
 fn a_rule_page_sets_a_point_symbol() {
     use vale_app::ui::pad::rules::{
-        ADD_SYMBOL, CIRCLE, FILL, NO_FIELD, ROTATION, SIZE, SIZE_FIELD, STROKE, SVG_SYMBOL, TINT,
+        CIRCLE, FILL, NO_FIELD, ROTATION, SIZE, SIZE_FIELD, STROKE, SVG_SYMBOL, SYMBOL, TINT,
         TINT_COLOR,
     };
-    use vale_style::{Symbolizer, default_tint};
+    use vale_style::Symbolizer;
     for size in [BOARDS[1], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
+        add_test_symbols(&mut h);
         let places = vector(&h, "Places");
         let symbol = |h: &Pad| rules(h, places)[0].symbol().cloned();
         open_rule(&mut h, "Places", "Default");
         assert!(symbol(&h).is_none(), "{what}");
-        assert!(control(&h, "pine").is_none(), "{what}");
+        assert!(control(&h, SYMBOL).is_none(), "{what}");
 
+        // "SVG symbol" opens the symbol page, and the rule changes after a pick.
         scroll_to_control(&mut h, SVG_SYMBOL);
         tap(&mut h, SVG_SYMBOL);
+        assert_eq!(h.state().pad.page, Some(Page::Symbols(0)), "{what}");
+        assert!(symbol(&h).is_none(), "{what}");
+        check_tiles(&h, &what);
+        check_controls(&h, &format!("{what} with the symbols"));
+        tap(&mut h, "pine");
+        assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
         let s = symbol(&h).unwrap_or_else(|| panic!("{what}: no symbol"));
-        assert_eq!(s.symbol, "city", "{what}");
+        assert_eq!(s.symbol, "pine", "{what}");
+        assert_eq!(s.size.fallback, 12.0, "{what}");
+        assert!(s.tint.is_none(), "{what}");
         // The symbol takes the place of the circle, with its stroke and its fill.
         let r = &rules(&h, places)[0];
         assert!(
@@ -6164,13 +6186,17 @@ fn a_rule_page_sets_a_point_symbol() {
         );
         assert!(control(&h, STROKE).is_none() && control(&h, FILL).is_none());
 
-        scroll_to_control(&mut h, "pine");
-        check_tiles(&h, &what);
-        tap(&mut h, "pine");
-        let s = symbol(&h).unwrap();
-        assert_eq!(s.symbol, "pine", "{what}");
-        // The tint follows the default tint of the symbol.
-        assert_eq!(s.tint.map(|t| t.fallback), default_tint("pine"), "{what}");
+        // The Symbol row opens the page again, and a tile picks another symbol.
+        scroll_to_control(&mut h, SYMBOL);
+        tap(&mut h, SYMBOL);
+        assert_eq!(h.state().pad.page, Some(Page::Symbols(0)), "{what}");
+        h.render()
+            .unwrap()
+            .save(format!("../../target/app/test-pad-symbols-{}.png", size.0))
+            .unwrap();
+        tap(&mut h, "castle");
+        assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
+        assert_eq!(symbol(&h).unwrap().symbol, "castle", "{what}");
 
         touch_right(&mut h, SIZE);
         let s = symbol(&h).unwrap();
@@ -6204,25 +6230,20 @@ fn a_rule_page_sets_a_point_symbol() {
         tap(&mut h, NO_FIELD);
         assert!(symbol(&h).unwrap().size.is_constant(), "{what}");
 
-        // The tint switch turns the tint off and on.
+        // The tint switch turns the tint on and off.
         scroll_to_control(&mut h, TINT);
-        tap(&mut h, TINT);
-        assert!(symbol(&h).unwrap().tint.is_none(), "{what}");
         assert!(control(&h, TINT_COLOR).is_none(), "{what}");
         tap(&mut h, TINT);
         assert!(symbol(&h).unwrap().tint.is_some(), "{what}");
+        assert!(control(&h, TINT_COLOR).is_some(), "{what}");
+        tap(&mut h, TINT);
+        assert!(symbol(&h).unwrap().tint.is_none(), "{what}");
         check_controls(&h, &what);
+        scroll_to_control(&mut h, SYMBOL);
         h.render()
             .unwrap()
             .save(format!("../../target/app/test-pad-symbol-{}.png", size.0))
             .unwrap();
-
-        scroll_to_control(&mut h, ADD_SYMBOL);
-        tap(&mut h, ADD_SYMBOL);
-        assert!(
-            h.state().actions.contains(&Action::AddSymbolDialog),
-            "{what}"
-        );
 
         scroll_to_control(&mut h, CIRCLE);
         tap(&mut h, CIRCLE);
@@ -6232,27 +6253,150 @@ fn a_rule_page_sets_a_point_symbol() {
 }
 
 #[test]
-fn a_rule_page_adds_a_scatter() {
-    use vale_app::ui::pad::rules::{
-        ROTATION_VARIATION, SCATTER, SIZE, SIZE_VARIATION, SPACING, TINT,
-    };
-    use vale_style::default_tint;
+fn the_symbol_page_of_an_empty_library_adds_an_svg_file() {
+    use vale_app::ui::pad::geometry::TOUCH;
+    use vale_app::ui::pad::rules::{ADD_SYMBOL, NO_SYMBOLS, SVG_SYMBOL, SYMBOL};
+    let dir = tempfile::tempdir().unwrap();
     for size in [BOARDS[1], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
+        let places = vector(&h, "Places");
+        let symbol = |h: &Pad| rules(h, places)[0].symbol().cloned();
+        open_rule(&mut h, "Places", "Default");
+        scroll_to_control(&mut h, SVG_SYMBOL);
+        tap(&mut h, SVG_SYMBOL);
+        assert_eq!(h.state().pad.page, Some(Page::Symbols(0)), "{what}");
+        assert!(h.query_by_label(NO_SYMBOLS).is_some(), "{what}");
+        let button = control(&h, ADD_SYMBOL).unwrap_or_else(|| panic!("{what}: no button"));
+        assert!(button.height() >= TOUCH, "{what}: {button:?}");
+        let card = panel(&h, Panel::Layers).unwrap();
+        assert!(
+            button.left() >= card.left() + 8.0 && button.right() <= card.right() - 8.0,
+            "{what}: {button:?} {card:?}"
+        );
+        check_controls(&h, &format!("{what} with no symbols"));
+        h.render()
+            .unwrap()
+            .save(format!(
+                "../../target/app/test-pad-symbols-empty-{}.png",
+                size.0
+            ))
+            .unwrap();
+        tap(&mut h, ADD_SYMBOL);
+        assert!(
+            h.state().actions.contains(&Action::AddSymbolDialog),
+            "{what}"
+        );
+        assert!(symbol(&h).is_none(), "{what}");
+
+        // The file that the user picks shows as a tile, with a note.
+        let file = dir.path().join("tree.svg");
+        std::fs::write(&file, common::svg("tree")).unwrap();
+        h.state_mut().run_action(Action::AddSymbol(file));
+        h.run_steps(3);
+        assert!(h.query_by_label("Added symbol tree").is_some(), "{what}");
+        assert!(h.query_by_label(NO_SYMBOLS).is_none(), "{what}");
+        assert!(control(&h, "tree").is_some(), "{what}");
+        assert!(symbol(&h).is_none(), "{what}");
+
+        // The back button keeps the circle.
+        tap(&mut h, "Back to Default");
+        assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
+        assert!(symbol(&h).is_none(), "{what}");
+        assert!(control(&h, SYMBOL).is_none(), "{what}");
+    }
+}
+
+#[test]
+fn a_circle_size_drag_is_one_undo_step() {
+    use vale_app::ui::pad::rules::{CIRCLE_SIZES, SIZE};
+    use vale_style::Symbolizer;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[1], dir.path());
+    let places = vector(&h, "Places");
+    let radius = |h: &Pad| {
+        rules(h, places)[0]
+            .symbolizers
+            .iter()
+            .find_map(|s| match s {
+                Symbolizer::Marker { radius, .. } => Some(radius.fallback),
+                _ => None,
+            })
+    };
+    let before = radius(&h).unwrap();
+    open_rule(&mut h, "Places", "Default");
+    scroll_to_control(&mut h, SIZE);
+    save_frames(&mut h);
+    let saved = saves(&h);
+    let rect = control(&h, SIZE).unwrap();
+
+    let y = rect.center().y;
+    let (from, to) = (pos2(rect.left() + 100.0, y), pos2(rect.right() - 20.0, y));
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    step_and_save(&mut h, true);
+    let mut values = Vec::new();
+    for i in 1..=6 {
+        touch(
+            &mut h,
+            egui::TouchPhase::Move,
+            from.lerp(to, i as f32 / 6.0),
+            None,
+        );
+        step_and_save(&mut h, true);
+        values.extend(radius(&h));
+    }
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    save_frames(&mut h);
+    values.dedup();
+    assert!(values.len() >= 4, "{values:?}");
+    assert!(values.is_sorted(), "{values:?}");
+    // The slider sets the diameter in half points.
+    let last = *values.last().unwrap();
+    assert!(last > before && 2.0 * last <= CIRCLE_SIZES.1, "{values:?}");
+    assert_eq!((4.0 * last).round(), 4.0 * last, "{values:?}");
+    assert_eq!(saves(&h), saved + 1);
+
+    tap(&mut h, "Undo");
+    assert_eq!(radius(&h), Some(before));
+}
+
+#[test]
+fn a_rule_page_adds_a_scatter() {
+    use vale_app::ui::pad::rules::{
+        ROTATION_VARIATION, SCATTER, SIZE, SIZE_VARIATION, SPACING, SYMBOL, TINT,
+    };
+    for size in [BOARDS[1], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        add_test_symbols(&mut h);
         let land = vector(&h, "Land");
         let scatter = |h: &Pad| rules(h, land)[0].scatter().cloned();
         open_rule(&mut h, "Land", "Default");
         scroll_to_control(&mut h, SCATTER);
         assert!(control(&h, SPACING).is_none(), "{what}");
+
+        // The switch opens the symbol page, and the back button adds no scatter.
         tap(&mut h, SCATTER);
+        assert_eq!(h.state().pad.page, Some(Page::Symbols(0)), "{what}");
+        assert!(scatter(&h).is_none(), "{what}");
+        tap(&mut h, "Back to Default");
+        assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
+        assert!(scatter(&h).is_none(), "{what}");
+        scroll_to_control(&mut h, SCATTER);
+        assert!(control(&h, SPACING).is_none(), "{what}");
+
+        // A pick adds the scatter.
+        tap(&mut h, SCATTER);
+        check_tiles(&h, &what);
+        tap(&mut h, "tree");
+        assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
         let s = scatter(&h).unwrap_or_else(|| panic!("{what}: no scatter"));
         assert_eq!(s.symbol, "tree", "{what}");
         assert_eq!((s.size.fallback, s.spacing.fallback), (8.0, 10.0), "{what}");
-        assert_eq!(s.tint.map(|t| t.fallback), default_tint("tree"), "{what}");
+        assert!(s.tint.is_none(), "{what}");
 
-        scroll_to_control(&mut h, "pine");
-        check_tiles(&h, &what);
+        scroll_to_control(&mut h, SYMBOL);
+        tap(&mut h, SYMBOL);
         tap(&mut h, "pine");
         assert_eq!(scatter(&h).unwrap().symbol, "pine", "{what}");
 
@@ -6295,11 +6439,13 @@ fn a_spacing_drag_is_one_undo_step() {
     use vale_app::ui::pad::rules::{SCATTER, SPACING};
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[1], dir.path());
+    add_test_symbols(&mut h);
     let land = vector(&h, "Land");
     let spacing = |h: &Pad| rules(h, land)[0].scatter().map(|s| s.spacing.fallback);
     open_rule(&mut h, "Land", "Default");
     scroll_to_control(&mut h, SCATTER);
     tap(&mut h, SCATTER);
+    tap(&mut h, "tree");
     scroll_to_control(&mut h, SPACING);
     save_frames(&mut h);
     let saved = saves(&h);

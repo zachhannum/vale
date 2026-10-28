@@ -1,16 +1,15 @@
 //! The Style section of the panel of a vector layer: the list of the rules,
 //! and the page of a rule with its filter, its scale range, its stroke, its
-//! fill, its point symbol, and its scatter.
+//! fill, its point symbol, and its scatter, and the page of the symbols.
 
 use eframe::egui;
+use vale_render::Symbols;
 use vale_store::{Field, FieldType, GeometryKind, LayerId};
 use vale_style::expr::{Filter, Property};
 use vale_style::{
     Color, LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, Symbolizer,
-    default_tint,
 };
 
-use super::icons::{self, Icon};
 use super::raster::heading;
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
 use super::{Page, filter, theme};
@@ -46,12 +45,24 @@ pub const GAP: &str = "Gap";
 pub const TAPER_START: &str = "Start width";
 pub const FILL: &str = "Fill";
 pub const FILL_COLOR: &str = "Fill color";
-/// The choice of the symbol of a point layer, and its two choices.
-pub const SYMBOL: &str = "Symbol";
+/// The choice of the marker of a point layer, and its two choices.
+pub const MARKER: &str = "Marker";
 pub const CIRCLE: &str = "Circle";
 pub const SVG_SYMBOL: &str = "SVG symbol";
-/// The last tile of the symbols, which asks for an SVG file.
+/// The row of the SVG symbol of a point symbol or of a scatter. A tap opens
+/// the symbol page.
+pub const SYMBOL: &str = "Symbol";
+/// The title of the symbol page.
+pub const SYMBOLS: &str = "Symbols";
+/// The button of the symbol page that asks for an SVG file.
 pub const ADD_SYMBOL: &str = "Add symbol…";
+/// The text of the list of the symbols of the desktop editor when the
+/// project has no symbols.
+pub const NO_SYMBOL_LIST: &str = "No symbols";
+/// The text of the symbol page when the project has no symbols.
+pub const NO_SYMBOLS: &str = "Add an SVG file to use it as a symbol.";
+/// The size of a circle or of a symbol, in points. The size of a circle is
+/// its diameter.
 pub const SIZE: &str = "Size";
 pub const ROTATION: &str = "Rotation";
 pub const SIZE_FIELD: &str = "Size from field";
@@ -71,20 +82,24 @@ pub const DELETE_RULE: &str = "Delete rule";
 const WIDTHS: (f64, f64) = (0.1, 20.0);
 /// The range of the dash and gap sliders, in points. The sliders have a log scale.
 const DASHES: (f64, f64) = (0.5, 20.0);
+/// The range of the diameter of a circle, in points.
+pub const CIRCLE_SIZES: (f64, f64) = (2.0, 32.0);
 /// The range of the size of a point symbol, in points.
 pub const POINT_SIZES: (f64, f64) = (4.0, 64.0);
 /// The range of the size of a scatter symbol, in points.
 pub const SCATTER_SIZES: (f64, f64) = (4.0, 48.0);
 /// The largest spacing of a scatter, in points. The smallest is its size.
 pub const MAX_SPACING: f64 = 100.0;
-/// The symbol and the size of a new SVG symbol of a point layer.
-const NEW_SYMBOL: (&str, f64) = ("city", 12.0);
-/// The symbol, the size, and the spacing of a new scatter.
-const NEW_SCATTER: (&str, f64, f64) = ("tree", 8.0, 10.0);
+/// The size of a new SVG symbol of a point layer.
+const NEW_SYMBOL: f64 = 12.0;
+/// The size and the spacing of a new scatter.
+const NEW_SCATTER: (f64, f64) = (8.0, 10.0);
 /// The color behind the preview of a symbol.
 pub const PAPER: egui::Color32 = egui::Color32::from_rgb(236, 232, 220);
-/// The tint of a symbol with no default tint.
+/// The color that a tint switch turns on.
 const TINT_GRAY: Color = Color::rgb(60, 60, 60);
+/// The side of the preview of a symbol in its row.
+const PREVIEW: f32 = 30.0;
 /// The height of the keypad of the scale fields.
 const KEYPAD: f32 = 4.0 * PANEL_ROW;
 /// The longest filter text that the row of a rule shows, in characters.
@@ -389,9 +404,11 @@ fn paint_rows(
     }
 }
 
-/// The choice of a circle or an SVG symbol at each point. An SVG symbol has
-/// its tiles, its size, its rotation, the fields of the size and the
-/// rotation, and its tint. Returns true if the rule has an SVG symbol.
+/// The choice of a circle or an SVG symbol at each point. A circle has its
+/// size. An SVG symbol has the row of its symbol, its size, its rotation,
+/// the fields of the size and the rotation, and its tint. A tap on "SVG
+/// symbol" opens the symbol page, and the circle stays until the user picks
+/// a symbol. Returns true if the rule has an SVG symbol.
 fn symbol_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -401,22 +418,28 @@ fn symbol_rows(
 ) -> bool {
     let active = usize::from(rule.symbol().is_some());
     if let Some(index) =
-        widgets::choice_row(ui, controls, SYMBOL, &[CIRCLE, SVG_SYMBOL], Some(active))
+        widgets::choice_row(ui, controls, MARKER, &[CIRCLE, SVG_SYMBOL], Some(active))
     {
-        state.pad.rules.picker = None;
         if index == 1 {
-            rule.set_symbol(Some(new_point_symbol()));
+            open_symbols(state, i);
         } else {
+            state.pad.rules.picker = None;
             to_circle(rule);
         }
     }
     let Some(before) = rule.symbol() else {
+        if let Some(radius) = marker_radius(rule) {
+            let size = 2.0 * radius.fallback;
+            if let Some(size) = step_slider(ui, controls, SIZE, size, CIRCLE_SIZES, 0.5, "pt") {
+                radius.fallback = size / 2.0;
+            }
+        }
         return false;
     };
     let mut s = before.clone();
     let tint = s.tint.as_ref().map(|t| t.fallback);
-    if let Some(name) = library_rows(ui, state, controls, &s.symbol, tint) {
-        pick_symbol(&mut s.symbol, &mut s.tint, &name);
+    if symbol_row(ui, state, controls, &s.symbol, tint).clicked() {
+        open_symbols(state, i);
     }
     if let Some(size) = step_slider(ui, controls, SIZE, s.size.fallback, POINT_SIZES, 1.0, "pt") {
         s.size.fallback = size;
@@ -442,15 +465,25 @@ fn symbol_rows(
         &mut s.rotation,
         &fields,
     );
-    tint_rows(ui, state, controls, (id, i), &mut s.tint, &s.symbol);
+    tint_rows(ui, state, controls, (id, i), &mut s.tint);
     if Some(&s) != rule.symbol() {
         rule.set_symbol(Some(s));
     }
     true
 }
 
-/// The switch of the scatter of a polygon layer and, while it is on, its
-/// tiles, its size, its spacing, its variations, and its tint.
+/// The radius of the circle of a rule.
+pub fn marker_radius(rule: &mut Rule) -> Option<&mut Property<f64>> {
+    rule.symbolizers.iter_mut().find_map(|s| match s {
+        Symbolizer::Marker { radius, .. } => Some(radius),
+        _ => None,
+    })
+}
+
+/// The switch of the scatter of a polygon layer and, while it is on, the
+/// row of its symbol, its size, its spacing, its variations, and its tint.
+/// A switch that turns on opens the symbol page, and the scatter starts when
+/// the user picks a symbol.
 fn scatter_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -460,15 +493,19 @@ fn scatter_rows(
 ) {
     let mut on = rule.scatter().is_some();
     if widgets::switch_row(ui, controls, SCATTER, SCATTER, &mut on) {
-        rule.set_scatter(on.then(new_scatter));
+        if on {
+            open_symbols(state, i);
+        } else {
+            rule.set_scatter(None);
+        }
     }
     let Some(before) = rule.scatter() else {
         return;
     };
     let mut s = before.clone();
     let tint = s.tint.as_ref().map(|t| t.fallback);
-    if let Some(name) = library_rows(ui, state, controls, &s.symbol, tint) {
-        pick_symbol(&mut s.symbol, &mut s.tint, &name);
+    if symbol_row(ui, state, controls, &s.symbol, tint).clicked() {
+        open_symbols(state, i);
     }
     if let Some(size) = step_slider(
         ui,
@@ -513,60 +550,125 @@ fn scatter_rows(
     if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
         s.rotation_jitter = (fraction * 180.0).round();
     }
-    tint_rows(ui, state, controls, (id, i), &mut s.tint, &s.symbol);
+    tint_rows(ui, state, controls, (id, i), &mut s.tint);
     if Some(&s) != rule.scatter() {
         rule.set_scatter(Some(s));
     }
 }
 
-/// A tile for each symbol of the library, with the tile of `current` on,
-/// the tile that adds a symbol, and the text of the last addition. The tile
-/// of `current` shows `tint`. Returns the symbol that the user picked.
-fn library_rows(
+/// Opens the symbol page of rule `i`.
+fn open_symbols(state: &mut AppState, i: usize) {
+    state.pad.page = Some(Page::Symbols(i));
+    state.pad.rules.picker = None;
+    state.pad.rules.field = None;
+    state.symbol_note = None;
+}
+
+/// The row of the symbol `current`, with its preview in `tint` and its name.
+/// A tap opens the symbol page.
+fn symbol_row(
     ui: &mut egui::Ui,
-    state: &mut AppState,
+    state: &AppState,
     controls: &mut Controls,
     current: &str,
     tint: Option<Color>,
-) -> Option<String> {
-    let symbols = state.doc.symbols().clone();
-    let mut names = symbols.names();
-    let count = names.len();
-    let active = names.iter().position(|n| *n == current);
-    names.push(ADD_SYMBOL);
-    ui.add_space(4.0);
-    let paint = |painter: &egui::Painter, rect: egui::Rect, index: usize| {
-        let side = rect.width().min(rect.height());
-        match symbols.get(names[index]) {
-            Some(symbol) if index < count => {
-                // The symbols draw on the color of paper, as on a map.
-                let paper = egui::Rect::from_center_size(rect.center(), egui::vec2(side, side));
-                painter.rect_filled(paper, 6.0, PAPER);
-                let side = side - 6.0;
-                let tint = if Some(index) == active {
-                    tint
-                } else {
-                    default_tint(names[index])
-                };
-                paint_symbol(painter, symbol, rect.center(), side, 0.0, tint);
-            }
-            _ => {
-                let square = egui::Rect::from_center_size(rect.center(), egui::vec2(side, side));
-                icons::paint(painter, square, Icon::Plus, widgets::ICON, theme::MUTE);
-            }
-        }
+) -> egui::Response {
+    let resp = widgets::open_row(ui, controls, SYMBOL, current);
+    let row = resp.rect;
+    let name = ui
+        .painter()
+        .layout_no_wrap(current.to_owned(), theme::body(), theme::MUTE);
+    let right = row.right() - widgets::ICON - 8.0 - name.size().x - 10.0;
+    let square = egui::Rect::from_center_size(
+        egui::pos2(right - PREVIEW / 2.0, row.center().y),
+        egui::vec2(PREVIEW, PREVIEW),
+    );
+    paint_preview(ui.painter(), state.doc.symbols(), current, square, tint);
+    resp
+}
+
+/// Paints symbol `name` on the color of paper, as on a map. A name that the
+/// library does not have paints the paper only.
+fn paint_preview(
+    painter: &egui::Painter,
+    symbols: &Symbols,
+    name: &str,
+    square: egui::Rect,
+    tint: Option<Color>,
+) {
+    painter.rect_filled(square, theme::CONTROL_RADIUS.min(6.0), PAPER);
+    if let Some(symbol) = symbols.get(name) {
+        let side = 0.75 * square.width();
+        paint_symbol(painter, symbol, square.center(), side, 0.0, tint);
+    }
+}
+
+/// The symbol page of rule `i`: a tile for each symbol of the project, with
+/// the tile of the current symbol on, the button that adds an SVG file, and
+/// the text of the last addition. A tap on a tile picks the symbol and goes
+/// back to the page of the rule.
+pub fn symbols_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+    i: usize,
+) {
+    let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
+        return;
     };
-    let tapped = widgets::tiles(ui, controls, &names, active, paint);
+    let Some(rule) = state.doc.entry(id).and_then(|e| e.style.style.rules.get(i)) else {
+        return;
+    };
+    let (current, tint) = match kind {
+        GeometryKind::Point => rule.symbol().map(|s| (s.symbol.clone(), s.tint.clone())),
+        _ => rule.scatter().map(|s| (s.symbol.clone(), s.tint.clone())),
+    }
+    .unzip();
+    let tint = tint.flatten().map(|t| t.fallback);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let symbols = state.doc.symbols().clone();
+    let names = symbols.names();
+    let mut picked = None;
+    ui.add_space(8.0);
+    if names.is_empty() {
+        let text = egui::RichText::new(NO_SYMBOLS)
+            .font(theme::body())
+            .color(theme::MUTE);
+        ui.vertical_centered(|ui| {
+            ui.add_space(12.0);
+            ui.add(egui::Label::new(text).wrap().selectable(false));
+            ui.add_space(12.0);
+        });
+    } else {
+        let active = names.iter().position(|n| Some(*n) == current.as_deref());
+        let paint = |painter: &egui::Painter, square: egui::Rect, index: usize| {
+            let tint = if Some(index) == active { tint } else { None };
+            paint_preview(painter, &symbols, names[index], square, tint);
+        };
+        picked = widgets::tiles(ui, controls, &names, active, paint).map(|n| names[n].to_owned());
+    }
+    ui.add_space(16.0);
+    if widgets::button_row(ui, controls, ADD_SYMBOL, true).clicked() {
+        state.actions.push(Action::AddSymbolDialog);
+    }
     ui.add_space(4.0);
     super::note_text(ui, None, &mut state.symbol_note, None);
-    match tapped {
-        Some(index) if index == count => {
-            state.actions.push(Action::AddSymbolDialog);
-            None
+    let Some(name) = picked else {
+        return;
+    };
+    if let Some(rule) = state
+        .doc
+        .entry_mut(id)
+        .and_then(|e| e.style.style.rules.get_mut(i))
+    {
+        let before = rule.clone();
+        pick_symbol(rule, kind, &name);
+        if *rule != before {
+            state.touch();
         }
-        Some(index) => Some(names[index].to_owned()),
-        None => None,
     }
+    state.pad.page = Some(Page::Rule(i));
 }
 
 /// The row of the field of a property and, while it is open, a chip for
@@ -619,11 +721,10 @@ fn tint_rows(
     controls: &mut Controls,
     (id, i): (LayerId, usize),
     tint: &mut Option<Property<Color>>,
-    symbol: &str,
 ) {
     let mut on = tint.is_some();
     if widgets::switch_row(ui, controls, TINT, TINT, &mut on) {
-        *tint = on.then(|| Property::constant(new_tint(symbol)));
+        *tint = on.then(|| Property::constant(TINT_GRAY));
     }
     let open = state.pad.rules.picker.filter(|p| p.0 == id && p.1 == i);
     if let Some(t) = tint {
@@ -662,24 +763,19 @@ fn step_slider(
 }
 
 /// The SVG symbol that replaces the circle of a point layer.
-pub fn new_point_symbol() -> PointSymbolizer {
-    let (name, size) = NEW_SYMBOL;
-    let mut s = PointSymbolizer::constant(name, size);
-    s.tint = default_tint(name).map(Property::constant);
-    s
+pub fn new_point_symbol(name: &str) -> PointSymbolizer {
+    PointSymbolizer::constant(name, NEW_SYMBOL)
 }
 
-/// The scatter that a switch turns on.
-pub fn new_scatter() -> ScatterSymbolizer {
-    let (name, size, spacing) = NEW_SCATTER;
-    let mut s = ScatterSymbolizer::new(name, size, spacing);
-    s.tint = default_tint(name).map(Property::constant);
-    s
+/// The scatter that starts when the user picks its symbol.
+pub fn new_scatter(name: &str) -> ScatterSymbolizer {
+    let (size, spacing) = NEW_SCATTER;
+    ScatterSymbolizer::new(name, size, spacing)
 }
 
 /// The tint that a tint switch turns on.
-pub fn new_tint(symbol: &str) -> Color {
-    default_tint(symbol).unwrap_or(TINT_GRAY)
+pub fn new_tint() -> Color {
+    TINT_GRAY
 }
 
 /// Replaces the SVG symbol of a rule with the circle of a new point layer.
@@ -701,14 +797,26 @@ pub fn to_circle(rule: &mut Rule) {
     rule.symbolizers[at] = marker;
 }
 
-/// Sets the symbol of a point symbol or of a scatter to `name`. A tint that
-/// is the default tint of the old symbol becomes the default tint of the new
-/// one.
-pub fn pick_symbol(symbol: &mut String, tint: &mut Option<Property<Color>>, name: &str) {
-    if tint.as_ref().map(|t| t.fallback) == default_tint(symbol) {
-        *tint = default_tint(name).map(Property::constant);
+/// Sets the symbol of the point symbol of a point layer, or of the scatter
+/// of a polygon layer, to `name`. A circle becomes a new point symbol, and a
+/// polygon rule with no scatter gets a new scatter.
+pub fn pick_symbol(rule: &mut Rule, kind: GeometryKind, name: &str) {
+    match kind {
+        GeometryKind::Point => {
+            let mut s = rule
+                .symbol()
+                .cloned()
+                .unwrap_or_else(|| new_point_symbol(name));
+            s.symbol = name.to_owned();
+            rule.set_symbol(Some(s));
+        }
+        GeometryKind::Polygon => {
+            let mut s = rule.scatter().cloned().unwrap_or_else(|| new_scatter(name));
+            s.symbol = name.to_owned();
+            rule.set_scatter(Some(s));
+        }
+        GeometryKind::Line => {}
     }
-    *symbol = name.to_owned();
 }
 
 /// The names of the number fields of a layer.

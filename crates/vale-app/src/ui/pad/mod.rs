@@ -169,6 +169,8 @@ pub enum Page {
     Rule(usize),
     /// The new condition of the filter of the rule with this index.
     Condition(usize),
+    /// The symbols that the rule with this index can pick.
+    Symbols(usize),
 }
 
 /// The state of the iPad layout.
@@ -816,7 +818,7 @@ fn show_panel(
     };
     let rule_count = rules.map_or(0, Vec::len);
     let rule_name = match state.pad.page {
-        Some(Page::Rule(i) | Page::Condition(i)) => {
+        Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)) => {
             rules.and_then(|r| r.get(i)).map(|r| r.name.clone())
         }
         _ => None,
@@ -832,7 +834,10 @@ fn show_panel(
         ) => true,
         (Some(LayerRef::Vector(_)), Some(Page::NewField)) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
-        (Some(LayerRef::Vector(_)), Some(Page::Rule(i) | Page::Condition(i))) => i < rule_count,
+        (
+            Some(LayerRef::Vector(_)),
+            Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)),
+        ) => i < rule_count,
         _ => false,
     };
     if panel == Panel::Layers && !fits {
@@ -878,6 +883,9 @@ fn show_panel(
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Condition(_))) => {
             ("pad-condition", filter::ADD_CONDITION, rule_name.as_deref())
         }
+        (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Symbols(_))) => {
+            ("pad-symbols", rules::SYMBOLS, rule_name.as_deref())
+        }
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Rule(_))) => (
             "pad-rule",
             rule_name.as_deref().unwrap_or_default(),
@@ -918,7 +926,7 @@ fn show_panel(
         }
         if row.back && page == Some(Page::Ramps) {
             state.pad.page = Some(Page::Stops);
-        } else if let (true, Some(Page::Condition(i))) = (row.back, page) {
+        } else if let (true, Some(Page::Condition(i) | Page::Symbols(i))) = (row.back, page) {
             state.pad.page = Some(Page::Rule(i));
         } else if row.back && page.is_some() {
             state.pad.page = None;
@@ -951,6 +959,7 @@ fn show_panel(
                 }
                 Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
                 Some(Page::Condition(i)) => filter::condition_body(ui, state, controls, id, i),
+                Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
                 _ => vector_body(ui, state, controls, id),
             },
             (Panel::Layers, None) => layers_body(ui, state, controls),
