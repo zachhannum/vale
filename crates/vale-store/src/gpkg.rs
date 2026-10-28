@@ -576,6 +576,23 @@ impl ProjectFile {
         Ok(())
     }
 
+    /// The PNG of one tile of an image, or `None` if the file has no such
+    /// tile.
+    pub fn load_image_tile(
+        &self,
+        id: ImageId,
+        level: u32,
+        column: u32,
+        row: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let mut query = self.conn.prepare_cached(
+            "SELECT data FROM vale_image_tile
+             WHERE image_id = ?1 AND level = ?2 AND tile_column = ?3 AND tile_row = ?4",
+        )?;
+        let tile = query.query_row(params![id.0, level, column, row], |r| r.get(0));
+        Ok(rusqlite::OptionalExtension::optional(tile)?)
+    }
+
     /// Removes the tiles of each image that has no record in the file and no
     /// record in an undo step. Returns the tile count.
     pub fn gc_images(&mut self) -> Result<usize, StoreError> {
@@ -5983,6 +6000,20 @@ mod tests {
         let (width, height, rgba) = crate::decode_tile(png).unwrap();
         assert_eq!((width, height), (44, 100));
         assert_eq!(&rgba[..8], &[100, 0, 7, 0, 100, 0, 7, 1]);
+    }
+
+    #[test]
+    fn one_tile_of_an_image_comes_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        assert_eq!(project.next_image_id(), ImageId(0));
+        let id = project.add_image("Plates".into(), 300, 100);
+        assert_eq!(project.next_image_id(), ImageId(1));
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        file.put_image_tiles(id, &image_tiles()).unwrap();
+        let tile = file.load_image_tile(id, 0, 1, 0).unwrap().unwrap();
+        assert_eq!(tile, image_tiles()[1].3);
+        assert_eq!(file.load_image_tile(id, 1, 1, 0).unwrap(), None);
     }
 
     #[test]

@@ -1033,6 +1033,11 @@ impl Project {
         id
     }
 
+    /// The ID that the next `add_image` gives.
+    pub fn next_image_id(&self) -> ImageId {
+        ImageId(self.next_image_id)
+    }
+
     /// The images in ID order.
     pub fn images(&self) -> &[Image] {
         &self.images
