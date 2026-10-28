@@ -29,11 +29,11 @@ use crate::undo::{self, UNDO_LIMIT};
 use crate::{
     BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Layer, LayerId,
     LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop, StopLine,
-    Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
+    SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 26;
+pub const FORMAT_VERSION: u32 = 27;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -64,6 +64,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v24,
     v25,
     v26,
+    v27,
 ];
 
 /// `GPKG` in ASCII.
@@ -935,6 +936,20 @@ fn v26(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// The point symbols that the user adds. An older file has none.
+fn v27(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_symbol (
+           position INTEGER PRIMARY KEY,
+           name TEXT NOT NULL UNIQUE,
+           svg TEXT NOT NULL);
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_symbol', 'vale', 'vale_symbol');
+         INSERT OR IGNORE INTO gpkg_extensions
+           VALUES ('vale_symbol', NULL, 'vale_project', 'Records of the Vale app', 'read-write');",
+    )
+}
+
 /// The atlas. An older file gets one map with an Equal Earth projection and
 /// one page in the units of the world. A file with an older version number
 /// can already have the tables.
@@ -1336,6 +1351,9 @@ fn write_edit(
         write_base(tx, project)?;
     }
     write_atlas(tx, project)?;
+    if old.is_none_or(|old| old.symbols != project.symbols) {
+        write_symbols(tx, project)?;
+    }
     remove_rasters(tx, project)?;
     for change in changes {
         write_tiles(tx, change, step, &mut stats)?;
@@ -1472,6 +1490,17 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
         ("next_frame_id", atlas.next_frame_id),
     ] {
         meta.execute(params![key, n.to_string()])?;
+    }
+    Ok(())
+}
+
+/// Writes the symbols in their order.
+fn write_symbols(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    tx.execute("DELETE FROM vale_symbol", [])?;
+    let mut insert =
+        tx.prepare("INSERT INTO vale_symbol (position, name, svg) VALUES (?1, ?2, ?3)")?;
+    for (position, symbol) in project.symbols.iter().enumerate() {
+        insert.execute(params![position, symbol.name, symbol.svg])?;
     }
     Ok(())
 }
@@ -2139,6 +2168,15 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
     if let Some(raster) = rasters.iter().find(|r| alone(r)) {
         return Err(corrupt(format!("raster {} has no layer", raster.id.0)));
     }
+    let symbols = conn
+        .prepare("SELECT name, svg FROM vale_symbol ORDER BY position")?
+        .query_map([], |r| {
+            Ok(SymbolRecord {
+                name: r.get(0)?,
+                svg: r.get(1)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
     Ok(Project {
         atlas: load_atlas(conn, units)?,
         world,
@@ -2146,6 +2184,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         next_id,
         rasters,
         next_raster_id,
+        symbols,
     })
 }
 
@@ -2687,6 +2726,7 @@ mod tests {
                 "vale_projection",
                 "vale_raster",
                 "vale_raster_tile",
+                "vale_symbol",
                 "vale_thumbnail",
                 "vale_undo_record",
                 "vale_undo_step",
@@ -3596,7 +3636,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 168 * 1024, "{bytes} bytes");
+        assert!(bytes < 176 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();
@@ -5577,5 +5617,78 @@ mod tests {
         assert_eq!((steps(&file), file.undo_bytes()), (0, 0));
         assert_eq!(content(&file).1, states[2].1);
         assert_eq!(file.project().world.name, "Base");
+    }
+
+    #[test]
+    fn symbols_survive_a_save_and_a_load_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_symbol("Oak", "<svg id=\"1\"/>".into(), &[]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        project.add_symbol("Castle", "<svg id=\"2\"/>".into(), &[]);
+        project.add_symbol("Ash", "<svg id=\"3\"/>".into(), &[]);
+        file.save(&project).unwrap();
+        // A symbol is not an edit.
+        assert!(!file.can_undo());
+        drop(file);
+
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let names: Vec<&str> = loaded.symbols().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Oak", "Castle", "Ash"]);
+        assert_eq!(loaded.symbols()[2].svg, "<svg id=\"3\"/>");
+        assert_eq!(loaded, project);
+    }
+
+    #[test]
+    fn an_undo_keeps_the_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        project.world.name = "Renamed".into();
+        file.save(&project).unwrap();
+        project.add_symbol("Oak", "<svg/>".into(), &[]);
+        file.save(&project).unwrap();
+        file.undo().unwrap().unwrap();
+        assert_eq!(file.project().world.name, World::default().name);
+        assert_eq!(file.project().symbols(), project.symbols());
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.symbols(), project.symbols());
+    }
+
+    #[test]
+    fn a_file_of_version_26_has_no_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let file = ProjectFile::create(&path(&dir), &project).unwrap();
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "DROP TABLE vale_symbol;
+             DELETE FROM gpkg_extensions WHERE table_name = 'vale_symbol';
+             DELETE FROM gpkg_contents WHERE table_name = 'vale_symbol';",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 26);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded.symbols(), []);
+        let registered: i64 = file
+            .conn
+            .query_row(
+                "SELECT count(*) FROM gpkg_contents c JOIN gpkg_extensions e USING (table_name)
+                 WHERE table_name = 'vale_symbol'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(registered, 1);
+        project.add_symbol("Oak", "<svg/>".into(), &[]);
+        file.save(&project).unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.symbols(), project.symbols());
     }
 }

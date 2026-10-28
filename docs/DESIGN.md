@@ -145,6 +145,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Raster | Face size, unit, value range, base level, smoothing, river switch, band line switch, and a copy of the colors of the style of its layer |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Thumbnail | A small picture of the globe, for the list of projects |
+| Symbol | A point symbol that the user adds: a unique name and the text of an SVG file. The symbols are in the order of addition, and they are not in the undo log. |
 | Layer | Name, type (raster, points, lines, or polygons), visibility, attribute schema (fields with a name, a type, and a default value), link to a source, to a raster, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Style | Ordered rules of one layer, stored as JSON. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, the opacity, and the blend mode. |
