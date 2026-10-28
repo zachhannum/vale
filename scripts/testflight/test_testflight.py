@@ -18,14 +18,25 @@ class WhatToTest(unittest.TestCase):
 
     def test_reads_a_paragraph(self):
         body = "Closes #1\n\niPad test: Open the app.\nDraw a line.\n\nDesign reference: x"
-        self.assertEqual(testflight.ipad_test_section(body), "Open the app.\nDraw a line.")
+        self.assertEqual(testflight.test_section(body), "Open the app.\nDraw a line.")
+
+    def test_reads_an_iphone_paragraph(self):
+        body = "Closes #1\n\niPhone test: Turn the globe.\n"
+        self.assertEqual(testflight.test_section(body), "Turn the globe.")
+
+    def test_reads_both_devices(self):
+        body = "iPad test: Draw a line.\n\niPhone test: Turn the globe."
+        self.assertEqual(
+            testflight.test_section(body),
+            "iPad test:\nDraw a line.\n\niPhone test:\nTurn the globe.",
+        )
 
     def test_skips_template_comments(self):
         body = "### iPad test steps\n<!-- Write the steps. -->\n1. Pan.\n#### Detail\nMore.\n## Other"
-        self.assertEqual(testflight.ipad_test_section(body), "1. Pan.\n#### Detail\nMore.")
+        self.assertEqual(testflight.test_section(body), "1. Pan.\n#### Detail\nMore.")
 
     def test_no_section(self):
-        self.assertIn("has no iPad test section", testflight.what_to_test("12", "Globe", None, "abc1234"))
+        self.assertIn("has no iPad or iPhone test section", testflight.what_to_test("12", "Globe", None, "abc1234"))
 
     def test_main_shows_the_commit(self):
         self.assertEqual(testflight.what_to_test("", "", "", "abc1234def"), "main at commit abc1234")

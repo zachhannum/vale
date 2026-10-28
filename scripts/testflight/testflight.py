@@ -32,22 +32,24 @@ NOTES_LIMIT = 4000
 STATES = {
     "uploading": "CI uploads it to TestFlight now.",
     "processing": "The upload is complete. Apple processes the build now.",
-    "ready": "It is ready in the TestFlight app on the iPad.",
+    "ready": "It is ready in the TestFlight app on the iPad and the iPhone.",
     "slow": "The upload is complete, but Apple did not finish in time. "
     "The build will appear in the TestFlight app, with no \"What to Test\" text.",
     "failed": "The upload failed.",
 }
 
 
-def ipad_test_section(body):
-    """Returns the iPad test steps of a PR description, or an empty string.
+def test_section(body):
+    """Returns the iPad and iPhone test steps of a PR description, or an empty string.
 
-    The steps are below a heading that starts with "iPad test", or in a
-    paragraph that starts with "iPad test:".
+    The steps are below a heading that starts with "iPad test" or "iPhone test",
+    or in a paragraph that starts with "iPad test:" or "iPhone test:". Each
+    section starts with its name.
     """
     lines = re.sub(r"<!--.*?-->", "", body or "", flags=re.S).splitlines()
+    sections = []
     for i, line in enumerate(lines):
-        heading = re.match(r"^(#{1,6})\s*iPad test", line, re.I)
+        heading = re.match(r"^(#{1,6})\s*(iPad|iPhone) test", line, re.I)
         if heading:
             out = []
             for rest in lines[i + 1 :]:
@@ -55,23 +57,25 @@ def ipad_test_section(body):
                 if other and len(other.group(1)) <= len(heading.group(1)):
                     break
                 out.append(rest)
-            return "\n".join(out).strip()
-        paragraph = re.match(r"^iPad test:\s*(.*)", line, re.I)
+            sections.append((heading.group(2), "\n".join(out).strip()))
+        paragraph = re.match(r"^(iPad|iPhone) test:\s*(.*)", line, re.I)
         if paragraph:
-            out = [paragraph.group(1)]
+            out = [paragraph.group(2)]
             for rest in lines[i + 1 :]:
                 if not rest.strip():
                     break
                 out.append(rest)
-            return "\n".join(out).strip()
-    return ""
+            sections.append((paragraph.group(1), "\n".join(out).strip()))
+    if len(sections) == 1:
+        return sections[0][1]
+    return "\n\n".join(f"{device} test:\n{steps}" for device, steps in sections)
 
 
 def what_to_test(pr, title, body, sha):
     """Makes the "What to Test" text of a build."""
     if not pr:
         return f"main at commit {sha[:7]}"
-    steps = ipad_test_section(body) or "The PR description has no iPad test section."
+    steps = test_section(body) or "The PR description has no iPad or iPhone test section."
     return f"PR #{int(pr)}: {title}\n\n{steps}"[:NOTES_LIMIT]
 
 
