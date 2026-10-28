@@ -1640,6 +1640,7 @@ fn expire_notes(ctx: &egui::Context, state: &mut AppState) {
         &mut state.import_note,
         &mut state.export_note,
         &mut state.ramp_note,
+        &mut state.symbol_note,
     ] {
         if note
             .as_ref()
