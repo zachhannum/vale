@@ -1666,6 +1666,7 @@ impl AppState {
         self.session = None;
         self.world_form = None;
         self.raster_form = None;
+        self.image_import = None;
         self.screen = Screen::Browser;
         self.reload_projects();
     }

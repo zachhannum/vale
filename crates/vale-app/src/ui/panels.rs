@@ -956,6 +956,7 @@ pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
                 ));
             }
             let progress = state.globe.import_progress();
+            let progress = progress.or_else(|| state.image_progress());
             let progress = progress.or_else(|| state.globe.export_progress());
             let text = progress.as_deref().unwrap_or(&state.status);
             if !text.is_empty() {
