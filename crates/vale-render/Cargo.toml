@@ -10,4 +10,5 @@ license.workspace = true
 kurbo.workspace = true
 vello_cpu.workspace = true
 krilla = { workspace = true, features = ["raster-images"] }
+usvg.workspace = true
 vale-labeler.workspace = true
