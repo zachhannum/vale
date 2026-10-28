@@ -75,7 +75,11 @@ pub fn keep_name(device: &str, modified: Option<SystemTime>) -> String {
 
 /// The name of this device in the list of the versions.
 pub fn this_device(pad: bool) -> &'static str {
-    if pad { "this iPad" } else { "this computer" }
+    match (pad, projects::phone()) {
+        (true, true) => "this iPhone",
+        (true, false) => "this iPad",
+        (false, _) => "this computer",
+    }
 }
 
 /// The buttons of the dialog with the versions: the name, and the version

@@ -36,12 +36,13 @@ pub enum Location {
 impl Location {
     pub const ALL: [Location; 2] = [Location::Cloud, Location::Local];
 
-    /// The name of the location. `pad`: the device is an iPad.
+    /// The name of the location. `pad`: the iPad layout.
     pub fn label(self, pad: bool) -> &'static str {
-        match (self, pad) {
-            (Location::Cloud, _) => "iCloud Drive",
-            (Location::Local, true) => "On this iPad",
-            (Location::Local, false) => "On this computer",
+        match (self, pad, phone()) {
+            (Location::Cloud, _, _) => "iCloud Drive",
+            (Location::Local, true, true) => "On this iPhone",
+            (Location::Local, true, false) => "On this iPad",
+            (Location::Local, false, _) => "On this computer",
         }
     }
 
@@ -337,6 +338,24 @@ fn var(name: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(name).filter(|v| !v.is_empty())
 }
 
+/// True: the device is an iPhone. The first call must be on the main thread.
+#[cfg(target_os = "ios")]
+pub fn phone() -> bool {
+    use objc2_ui_kit::{UIDevice, UIUserInterfaceIdiom};
+    static PHONE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PHONE.get_or_init(|| {
+        objc2::MainThreadMarker::new().is_some_and(|mtm| {
+            UIDevice::currentDevice(mtm).userInterfaceIdiom() == UIUserInterfaceIdiom::Phone
+        })
+    })
+}
+
+/// True: the device is an iPhone.
+#[cfg(not(target_os = "ios"))]
+pub fn phone() -> bool {
+    false
+}
+
 /// The folder of the state of the app on Apple platforms.
 fn apple_support_dir() -> Option<PathBuf> {
     // On iOS, `HOME` is the container of the app.
@@ -376,7 +395,8 @@ fn mac_cloud_dir() -> Option<PathBuf> {
 /// home folder.
 pub fn default_dir() -> Option<PathBuf> {
     if cfg!(target_os = "ios") {
-        // The Files app shows this folder as "On My iPad > Vale".
+        // The Files app shows this folder as "On My iPad > Vale" or
+        // "On My iPhone > Vale".
         Some(PathBuf::from(var("HOME")?).join("Documents"))
     } else if cfg!(target_os = "macos") {
         apple_support_dir()

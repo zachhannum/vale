@@ -21,11 +21,12 @@ targets:
         # The app has no encryption of its own, so TestFlight does not ask about it.
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
-        # The Files app shows the Documents folder as "On My iPad > Vale".
+        # The Files app shows the Documents folder as "On My iPad > Vale" or
+        # "On My iPhone > Vale".
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         # The Files app shows the Documents folder of the container as
-        # "iCloud Drive > Vale". iPadOS reads this key again only when
+        # "iCloud Drive > Vale". The system reads this key again only when
         # CFBundleVersion changes.
         NSUbiquitousContainers:
           iCloud.dev.vale.app:
@@ -52,6 +53,10 @@ targets:
                 - application/geopackage+sqlite3
         UIApplicationSupportsIndirectInputEvents: true
         CADisableMinimumFrameDurationOnPhone: true
+        UISupportedInterfaceOrientations~iphone:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
@@ -71,7 +76,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.vale.app
-        TARGETED_DEVICE_FAMILY: "2"
+        # 1 is iPhone, and 2 is iPad.
+        TARGETED_DEVICE_FAMILY: "1,2"
         # CI sets the version and the build number of each TestFlight build.
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1

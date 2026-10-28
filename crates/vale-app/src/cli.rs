@@ -103,6 +103,11 @@ pub struct Args {
     /// Size of the window or of the image, in points.
     #[arg(long, value_name = "WxH", default_value = "1280x800")]
     pub size: String,
+    /// The safe area of headless output: the bands at the top, the right,
+    /// the bottom, and the left, in points. An iPhone 16 in portrait has
+    /// `59,0,34,0`.
+    #[arg(long, value_name = "T,R,B,L", value_delimiter = ',')]
+    pub safe_area: Option<Vec<f32>>,
     /// Pixels per point of headless output.
     #[arg(long, value_name = "F", default_value_t = 1.0)]
     pub pixel_ratio: f64,
@@ -289,6 +294,26 @@ impl Args {
             doc.frame.graticule = false;
         }
         Ok(doc)
+    }
+
+    /// The insets of `--safe-area`.
+    pub fn safe_area(&self) -> anyhow::Result<Option<eframe::egui::SafeAreaInsets>> {
+        let Some(bands) = &self.safe_area else {
+            return Ok(None);
+        };
+        if bands.iter().any(|b| !(b.is_finite() && *b >= 0.0)) {
+            bail!("each band of the safe area must be 0 or more, got {bands:?}");
+        }
+        let &[top, right, bottom, left] = bands.as_slice() else {
+            bail!("expected four bands of the safe area, got {bands:?}");
+        };
+        let insets = eframe::egui::epaint::MarginF32 {
+            left,
+            right,
+            top,
+            bottom,
+        };
+        Ok(Some(eframe::egui::SafeAreaInsets(insets)))
     }
 
     pub fn size(&self) -> anyhow::Result<(f64, f64)> {

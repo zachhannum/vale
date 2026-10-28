@@ -28,6 +28,12 @@ This command renders the iPad layout of the globe workspace to a PNG:
 cargo run --release -p vale-app -- --layout pad --panel layers --screenshot target/app/pad.png --size 1194x834
 ```
 
+This command renders the globe workspace of an iPhone 16 in portrait, with its safe area:
+
+```sh
+cargo run --release -p vale-app -- --layout pad --screenshot target/app/phone.png --size 393x852 --safe-area 59,0,34,0
+```
+
 This command builds the app and starts it on a connected iPad:
 
 ```sh

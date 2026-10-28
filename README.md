@@ -79,7 +79,7 @@ This command keeps the world, the vector layers, and the heightmap in a project 
 cargo run --release -p vale-app -- --project path/to/world.gpkg
 ```
 
-The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after a change, and at once after a brush stroke. "Save" in the File menu, or Ctrl+S, saves a change that waits at once. The mark next to the File menu shows the state of the save. Each save is one undo step. A save after a brush stroke writes only the tiles that the stroke changed. The file holds the style of each layer. On iPad, each world is one project file in "On My iPad > Vale" or in "iCloud Drive > Vale" of the Files app. The form of a new world picks the folder.
+The project file is a GeoPackage, and QGIS opens its layers. If the file is not there, the app makes it from the sample world or from the GeoJSON files that you give. The app saves half a second after a change, and at once after a brush stroke. "Save" in the File menu, or Ctrl+S, saves a change that waits at once. The mark next to the File menu shows the state of the save. Each save is one undo step. A save after a brush stroke writes only the tiles that the stroke changed. The file holds the style of each layer. On iPad, each world is one project file in "On My iPad > Vale" or in "iCloud Drive > Vale" of the Files app. On iPhone, the local folder is "On My iPhone > Vale". The form of a new world picks the folder.
 
 The start screen keeps each world in a project file in the data folder of the system. On Linux, the folder is `~/.local/share/vale`. On macOS, it is `~/Library/Application Support/Vale`. On Windows, it is `%APPDATA%\Vale`. The flag `--projects-dir` sets another folder. The flag `--cloud-dir` gives a second folder, which the app shows as the iCloud Drive folder. With `--project`, the app opens that file with no start screen, and "All worlds" shows the project files of its folder.
 
@@ -101,7 +101,7 @@ cargo run --release -p vale-app -- --zoom-test --import-heightmap path/to/height
 cargo run --release -p vale-app -- --project path/to/world.gpkg --export-heightmap target/app/world.tif
 ```
 
-`--screenshot` draws the full UI in the globe workspace. With `--layout pad` it draws the iPad layout. In that layout, `--panel brush`, `--panel layers`, or `--panel toolbox` opens a panel, `--more-tools` opens the menu of the More cell, and `--worlds-menu` opens the menu of the worlds. `--world-form new` or `--world-form properties` opens the form of the world. With `--view flat` it draws the flat view of the world, and `--flat-projection` and `--flat-center` set its projection. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. `--export-atlas` writes one PDF with every page. `--export-page` writes one page as PNG or PDF. Text in a PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
+`--screenshot` draws the full UI in the globe workspace. With `--layout pad` it draws the iPad layout. In that layout, `--panel brush`, `--panel layers`, or `--panel toolbox` opens a panel, `--more-tools` opens the menu of the More cell, and `--worlds-menu` opens the menu of the worlds. `--world-form new` or `--world-form properties` opens the form of the world. `--safe-area` gives the bands of the device at the top, the right, the bottom, and the left. For example, `--size 393x852 --safe-area 59,0,34,0` draws an iPhone 16 in portrait. With `--view flat` it draws the flat view of the world, and `--flat-projection` and `--flat-center` set its projection. With `--workspace map` it draws the flat map and its panels. With `--map-only` it draws the map alone. `--export` picks PNG or PDF from the file name. `--export-atlas` writes one PDF with every page. `--export-page` writes one page as PNG or PDF. Text in a PDF stays text. `--probe` prints the color of one map pixel. `--report` prints the layers and the label counts. `--stroke-test` paints the fixed strokes of the debug panel and prints the stroke delay.
 
 | Argument | Meaning |
 | --- | --- |
@@ -152,7 +152,7 @@ The iOS target is in `crates/vale-app/ios`. `project.yml` describes the Xcode pr
 
 ## Get a PR build on an iPad
 
-CI uploads a build to TestFlight for each PR from a branch of this repository, and for each push to `main`. The TestFlight app on the iPad then offers the build. The upload needs a membership in the Apple Developer Program.
+CI uploads a build to TestFlight for each PR from a branch of this repository, and for each push to `main`. The TestFlight app on the iPad or on the iPhone then offers the build. The upload needs a membership in the Apple Developer Program.
 
 Do these steps one time:
 
@@ -169,7 +169,7 @@ Do these steps one time:
 
 After a push to a PR, a comment on the PR shows the build number and the state of the upload. Apple needs some minutes to process each upload. When the comment says that the build is ready, open TestFlight on the iPad and install it.
 
-The version of a build is `0.1.<PR>`, and `main` is `0.1.0`. TestFlight thus shows one row for each PR. The build number is the number of the workflow run and its attempt, for example `57.1`. The "What to Test" text of a build holds the PR number, the PR title, and the iPad test section of the PR description.
+The version of a build is `0.1.<PR>`, and `main` is `0.1.0`. TestFlight thus shows one row for each PR. The build number is the number of the workflow run and its attempt, for example `57.1`. The "What to Test" text of a build holds the PR number, the PR title, and the iPad test section and the iPhone test section of the PR description.
 
 A PR from a fork gets no secrets. CI then makes the archive with no signature and uploads nothing.
 

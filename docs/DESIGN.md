@@ -432,6 +432,8 @@ The path of a stroke is a curve through the pen samples, so a fast stroke has no
 
 iPad is an equal platform. The layout for iPad is its own design, with a full-screen canvas, floating panels, and touch-size controls. It is not the desktop layout made smaller.
 
+The app also installs on iPhone, with the same layout. In portrait, an iPhone screen is compact. The safe area of an iPhone holds the Dynamic Island and the status bar at the top, and the home indicator at the bottom. In landscape, it also holds a band at each side. The Files app shows the local folder as "On My iPhone > Vale", and the app names it "On this iPhone".
+
 The layout has four places. The top row holds the workspace switch at the left, the view switch in the center, and the actions at the right. The left edge holds the tool strip, and below it a card with the Size slider, the Flow slider, and the Brush button. Layers and Toolbox open a panel in one shared place at the right, and Brush opens a panel next to the left edge. The bottom holds the position readout, with the save mark at its left.
 
 These rules apply to the layout:

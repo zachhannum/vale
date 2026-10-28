@@ -164,7 +164,8 @@ fn run() -> anyhow::Result<u8> {
             // The renderer can make the face size smaller, and that drops an
             // import. So the import runs after the renderer is there.
             let import = |state: &mut AppState| apply_import(&args, state, true);
-            let (image, state) = headless::ui_png_with(state, size, ratio, import)?;
+            let safe_area = args.safe_area()?;
+            let (image, state) = headless::ui_png_safe(state, size, ratio, safe_area, import)?;
             if args.import_heightmap.is_some() || args.import_ramp.is_some() {
                 println!("{}", state.status);
             }
