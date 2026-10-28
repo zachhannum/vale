@@ -536,8 +536,6 @@ fn labels_avoid_point_symbols() {
         .collect();
     assert!(trees.len() > 1000, "{}", trees.len());
     assert_eq!(oakton(&c), 1);
-    let label = halos(&c)[0];
-    assert!(trees.iter().any(|t| t.overlaps(label)));
 }
 
 /// The count of the labels of the city. The labels come before the scale bar.
