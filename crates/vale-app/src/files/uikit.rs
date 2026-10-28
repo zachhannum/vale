@@ -132,6 +132,12 @@ impl Picker {
         self.pick(&[ns_string!("public.png"), ns_string!("public.jpeg")])
     }
 
+    /// Shows the SVG files of the Files app. Returns `false` if the Files
+    /// app cannot show now.
+    pub fn pick_svg(&self) -> bool {
+        self.pick(&[ns_string!("public.svg-image")])
+    }
+
     /// Shows the files of these types in the Files app.
     fn pick(&self, types: &[&NSString]) -> bool {
         let Some(mtm) = MainThreadMarker::new() else {

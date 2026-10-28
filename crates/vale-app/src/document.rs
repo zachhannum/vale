@@ -1,9 +1,11 @@
 //! The document: project, map frame, and layer entries.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use vale_import::ImportError;
 use vale_import::geojson::{self, Imported};
+use vale_render::{BUILTIN_SYMBOLS, Symbol, Symbols};
 use vale_sphere::ProjectionSpec;
 use vale_store::{
     Field, FieldType, GeometryKind, Layer, LayerId, MapId, Project, ProjectionPreset, Units, World,
@@ -38,7 +40,42 @@ pub struct MapFrame {
 pub struct Document {
     pub project: Project,
     pub frame: MapFrame,
+    symbols: SymbolLibrary,
 }
+
+/// The symbols that the styles can use: the built-in symbols, then the
+/// symbols of the project.
+#[derive(Clone, Debug)]
+struct SymbolLibrary {
+    symbols: Arc<Symbols>,
+    /// The names of the project symbols that the library holds.
+    names: Vec<String>,
+}
+
+impl PartialEq for SymbolLibrary {
+    fn eq(&self, other: &Self) -> bool {
+        self.names == other.names
+    }
+}
+
+impl SymbolLibrary {
+    fn of(project: &Project) -> SymbolLibrary {
+        let mut symbols = Symbols::with_builtins();
+        for record in project.symbols() {
+            match Symbol::from_svg(&record.svg) {
+                Ok(symbol) => symbols.insert(&record.name, symbol),
+                Err(e) => eprintln!("The symbol {:?} is not valid: {e}", record.name),
+            }
+        }
+        SymbolLibrary {
+            symbols: Arc::new(symbols),
+            names: project.symbols().iter().map(|r| r.name.clone()).collect(),
+        }
+    }
+}
+
+/// The largest SVG file that a project takes as a symbol, in bytes.
+pub const MAX_SYMBOL_BYTES: u64 = 1 << 20;
 
 /// The style that a layer holds. A style that does not parse is the default style.
 fn stored_style(layer: &Layer) -> Option<LayerStyle> {
@@ -64,8 +101,10 @@ fn layer_rank(layer: &Layer) -> u8 {
 
 impl Document {
     pub fn empty() -> Self {
+        let project = Project::new(World::default());
         Document {
-            project: Project::new(World::default()),
+            symbols: SymbolLibrary::of(&project),
+            project,
             frame: MapFrame {
                 view: None,
                 entries: Vec::new(),
@@ -234,6 +273,44 @@ impl Document {
             }
         }
         self.sync_entries();
+        self.sync_symbols();
+    }
+
+    /// The symbols that the styles can use: the built-in symbols, then the
+    /// symbols of the project.
+    pub fn symbols(&self) -> &Arc<Symbols> {
+        &self.symbols.symbols
+    }
+
+    /// Reads the symbols of the project again, if they changed.
+    pub fn sync_symbols(&mut self) {
+        let same = self.symbols.names.iter().map(String::as_str).eq(self
+            .project
+            .symbols()
+            .iter()
+            .map(|r| r.name.as_str()));
+        if !same {
+            self.symbols = SymbolLibrary::of(&self.project);
+        }
+    }
+
+    /// Adds an SVG file to the symbols of the project, and returns its name.
+    /// The name comes from `name`, and it is not the name of a built-in
+    /// symbol or of another symbol of the project.
+    pub fn add_symbol(&mut self, name: &str, svg: String) -> Result<String, String> {
+        if svg.len() as u64 > MAX_SYMBOL_BYTES {
+            return Err("The file is larger than 1 MB".to_string());
+        }
+        Symbol::from_svg(&svg).map_err(|e| {
+            let mut text = e.to_string();
+            if let Some(first) = text.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            text
+        })?;
+        let name = self.project.add_symbol(name, svg, &BUILTIN_SYMBOLS);
+        self.sync_symbols();
+        Ok(name)
     }
 
     /// The style of each vector layer whose project layer does not hold it, as JSON.
