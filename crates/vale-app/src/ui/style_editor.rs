@@ -255,8 +255,9 @@ fn library_row(
     let names = library.symbols.names();
     ui.horizontal(|ui| {
         ui.label(SYMBOL);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(PREVIEW, PREVIEW), egui::Sense::hover());
         if let Some(symbol) = current.and_then(|c| library.symbols.get(c)) {
+            let size = egui::vec2(PREVIEW, PREVIEW);
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
             ui.painter()
                 .rect_filled(rect, 3.0, super::pad::rules::PAPER);
             paint_symbol(
