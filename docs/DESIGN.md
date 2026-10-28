@@ -36,7 +36,7 @@ Version 1 does not include the items that follow.
 - Erosion and other terrain effects. The app prototype tests live rivers, a Carve mode, an Erode mode, a Weather mode, and an Uplift mode of the brush. Those modes erode only where you paint. The prototype also tests a Ridge mode, which raises the land between the rivers, and a Deposit mode, which fills pits and valley floors. The prototype also tests a Warp mode, which moves the ground under the brush by a noise field.
 - Time-based data such as historical borders, and non-spherical worlds. These items come after version 1.
 - Real-world GIS analysis such as routing or geocoding.
-- Web and phone versions.
+- Web and phone versions. The section "iPhone layout" gives a design for a later phone version.
 
 ## Core workflow
 
@@ -452,6 +452,20 @@ These rules apply to the layout:
 - The value field and the hex field of the card of a band have a keypad in the card, in place of the keyboard of the system. A tap on the field opens the keypad in the place of the color picker, so the card does not move. The first key replaces the whole text. Done or a second tap on the field closes the keypad.
 
 The core crates have no UI dependency, so both platforms share them. The shell is egui on both platforms. The crate `vale-globe-proto` checked how well egui handles pen input and touch on iPad, and the section "Globe prototype" gives the results.
+
+### iPhone layout
+
+The iPhone layout is the compact layout of the iPad, below 600 points, with these changes:
+
+- The tool strip is a row at the bottom of the screen. The Size slider, the Flow slider, and the Brush button are a row above it.
+- The phone has no pen. With a brush tool, one finger paints, and two fingers turn and zoom the globe. With Move, one finger turns the globe.
+- The Brush panel has no pressure settings.
+- A sheet opens at half height. You pull it up to the full height, or down to its title row.
+- In the Atlas workspace, the page controls are below the top row.
+- The form of a new point is a card below the top row, above the keyboard of the system.
+- In landscape, the tool strip is a column at the left edge, and the card below it holds the Brush button alone. The width is 600 points or more, so the view switch is in the top row, and a panel floats at the right.
+
+The safe area of the iPhone is larger than the bands of the iPad. In portrait, it leaves out the top 59 points and the bottom 34 points.
 
 ### Desktop layout
 
