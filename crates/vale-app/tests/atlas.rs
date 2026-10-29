@@ -1213,6 +1213,7 @@ fn one_gpu_test() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_pad_atlas_renders_a_page_with_a_main_frame_and_an_inset() {
     let _gpu = one_gpu_test();
     let prepare = |s: &mut AppState| {
@@ -1861,6 +1862,7 @@ fn card_row(image: &image::RgbaImage, card: Rect) -> Vec<i32> {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_cards_of_the_atlas_show_the_blurred_page() {
     let _gpu = one_gpu_test();
     let setup = egui_kittest::wgpu::default_wgpu_setup();

@@ -60,3 +60,22 @@ opt-level = 3
 
 [profile.test.package.vale-import]
 opt-level = 3
+
+# The tests draw frames on a software GPU, so the dependencies build with
+# optimization in the dev and test profiles.
+[profile.dev.package."*"]
+opt-level = 2
+
+# The tests of the app run the terrain, the map projections, and the
+# labeler, so these crates also build with optimization.
+[profile.dev.package.vale-terrain]
+opt-level = 2
+
+[profile.dev.package.vale-sphere]
+opt-level = 2
+
+[profile.dev.package.vale-render]
+opt-level = 2
+
+[profile.dev.package.vale-labeler]
+opt-level = 2

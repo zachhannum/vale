@@ -61,6 +61,7 @@ fn grey_of(level: u16) -> u8 {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_frame_draws_the_raster_layers_that_its_map_shows() {
     let _gpu = one_gpu_test();
     let level = 40000;
@@ -88,6 +89,7 @@ fn a_frame_draws_the_raster_layers_that_its_map_shows() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_raster_layer_switch_changes_only_the_frames_of_its_map() {
     let _gpu = one_gpu_test();
     let level = 40000;
@@ -108,6 +110,7 @@ fn a_raster_layer_switch_changes_only_the_frames_of_its_map() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_blend_mode_works_in_a_frame() {
     let _gpu = one_gpu_test();
     let level = 40000;
@@ -163,6 +166,7 @@ fn near(got: [u8; 3], want: [u8; 3], what: &str) {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_frame_draws_an_image_layer_with_its_colors_over_the_layers_below() {
     let _gpu = one_gpu_test();
     let level = 40000;
@@ -173,6 +177,7 @@ fn a_frame_draws_an_image_layer_with_its_colors_over_the_layers_below() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_opacity_and_the_blend_mode_of_an_image_layer_work_in_a_frame() {
     let _gpu = one_gpu_test();
     let level = 32768;
@@ -190,6 +195,7 @@ fn the_opacity_and_the_blend_mode_of_an_image_layer_work_in_a_frame() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_pdf_export_embeds_the_raster_layers_of_a_frame() {
     let _gpu = one_gpu_test();
     let below_level = 40000;
@@ -253,6 +259,7 @@ fn a_pdf_export_embeds_the_raster_layers_of_a_frame() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_raster_override_shows_in_the_frames_of_its_map_only() {
     let _gpu = one_gpu_test();
     let level = 40000;
@@ -283,6 +290,7 @@ fn a_raster_override_shows_in_the_frames_of_its_map_only() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn an_image_override_shows_in_the_frame_of_its_map() {
     let _gpu = one_gpu_test();
     let level = 32768;
@@ -299,6 +307,7 @@ fn an_image_override_shows_in_the_frame_of_its_map() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_band_color_of_a_map_shows_in_the_frames_of_that_map_only() {
     let _gpu = one_gpu_test();
     let level = 40000;

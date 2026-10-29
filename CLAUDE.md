@@ -109,6 +109,16 @@ A feature session keeps its context small on purpose.
 
 - If a crate has more than one test file, you can run only the test files that cover the change, for example `cargo test -p vale-app --test pad`. Do not run `cargo test --workspace` before a push. The full run is the work of CI.
 
+- The tests have three tiers. The fast tier is the unit tests and the app tests with no harness. The UI tier is the tests with an egui harness and no GPU pixels. The GPU tier is the tests that read pixels from a GPU render. A GPU test has the attribute `#[ignore = "gpu"]`. CI runs the GPU tier on each push to `main`. To run it on a branch, start the workflow "Test" from the Actions tab. Before a push, run the fast tier and the UI tier with `cargo test -p <crate>`.
+
+- Run only the GPU tests that cover the change, by name. This command runs the GPU tests of `globe.rs` that have `hillshade` in the name:
+
+  ```sh
+  cargo test -p vale-app --test globe -- --ignored hillshade
+  ```
+
+- Put a new test that reads GPU pixels in the GPU tier. If a test needs a GPU only for a picture that a person looks at, save the picture with `screenshot::save`. It renders only when the variable `VALE_SCREENSHOTS` is set. A test that only saves pictures or gives times has the prefix `manual_`, and CI skips it.
+
 - If the PR has CI runs, watch them with `gh run watch`. After they pass, ask for review.
 - When you implement an issue, open a PR at the end of the work, without waiting to be asked.
 - Claude does not merge. A person reviews and merges each PR.

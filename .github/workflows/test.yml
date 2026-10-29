@@ -1,0 +1,89 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+# CI does not use a debugger, and the builds without debug info are faster
+# and make a smaller cache.
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  test:
+    name: Test the fast tier and the UI tier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+
+      - name: Install the system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the format
+        run: cargo fmt --all --check
+
+      - name: Run the fast tier and the UI tier
+        run: cargo test --workspace
+
+  gpu:
+    name: Test the GPU tier (${{ matrix.name }})
+    # The GPU tier takes about an hour, so it runs only on `main` and by hand.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: globe
+            tests: -p vale-app --test globe
+          - name: flat
+            tests: -p vale-app --test flat
+          - name: pad
+            tests: -p vale-app --test pad
+          - name: other files
+            tests: -p vale-app --test atlas --test export --test frame_raster --test import --test inspector --test session --test ui
+          - name: terrain
+            tests: -p vale-terrain --features gpu --test gpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      # Lavapipe is the software Vulkan driver of Mesa. The GPU tier draws on it.
+      - name: Install the software GPU and the system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 \
+            libfontconfig1-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The GPU tier is the tests with `#[ignore = "gpu"]`. The ignored tests with
+      # the prefix `manual_` save pictures or give times, and they run only by hand.
+      # The runner has few cores. If tests render in parallel, a frame can
+      # take longer than egui_kittest waits, so the tests run one at a time.
+      - name: Run the GPU tier
+        run: cargo test ${{ matrix.tests }} -- --ignored --skip manual_ --test-threads=1

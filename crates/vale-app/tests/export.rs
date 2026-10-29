@@ -79,6 +79,7 @@ fn args(project: &Path, out: &Path) -> Args {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_command_line_exports_the_atlas_and_one_page() {
     let dir = tempfile::tempdir().unwrap();
     let (file, out) = (dir.path().join("w.gpkg"), dir.path().join("atlas.pdf"));

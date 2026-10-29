@@ -515,6 +515,7 @@ fn projection_change_recomposes() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn full_ui_renders_offscreen() {
     let _gpu = one_gpu_test();
     let state = state_with(Document::sample());
@@ -809,6 +810,7 @@ fn middle_level(h: &Harness<'static, AppState>) -> u16 {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_stroke_on_the_second_raster_layer_leaves_the_first() {
     let _gpu = one_gpu_test();
     let mut h = gpu_globe();
@@ -867,6 +869,7 @@ fn a_stroke_on_the_second_raster_layer_leaves_the_first() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_new_world_has_no_raster_layer() {
     let _gpu = one_gpu_test();
     let dir = tempfile::tempdir().unwrap();
@@ -1184,6 +1187,7 @@ fn the_keys_v_and_h_choose_the_tools() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_desktop_atlas_renders_offscreen() {
     let _gpu = one_gpu_test();
     let mut state = state_with(Document::sample());
