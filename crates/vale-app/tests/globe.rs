@@ -3413,6 +3413,7 @@ fn ridge_harness(seed: u32) -> Harness<'static, AppState> {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn an_ocean_ridge_shows_on_the_globe_while_you_paint() {
     let _gpu = one_gpu_test();
     let mut h = ridge_harness(7);
@@ -3458,6 +3459,7 @@ fn ridge_samples() -> Vec<vale_app::globe::brush::Sample> {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn an_ocean_ridge_stroke_gives_the_levels_of_the_cpu_ridge() {
     use vale_app::globe::brush::Stroke;
     use vale_terrain::{Heightmap, RidgeLine};
@@ -3527,6 +3529,7 @@ fn an_ocean_ridge_stroke_gives_the_levels_of_the_cpu_ridge() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn two_equal_ocean_ridge_strokes_with_the_same_seed_give_equal_results() {
     let _gpu = one_gpu_test();
     let mut h = ridge_harness(7);
@@ -3554,6 +3557,7 @@ fn two_equal_ocean_ridge_strokes_with_the_same_seed_give_equal_results() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn one_undo_puts_back_the_ground_from_before_an_ocean_ridge_stroke() {
     let _gpu = one_gpu_test();
     let mut h = ridge_harness(7);
@@ -3622,7 +3626,11 @@ fn save_ridge_shots(h: &mut Harness<'static, AppState>, name: &str) {
             let globe = &mut h.state_mut().globe;
             globe.view = GlobeView::centered(lon, lat);
             globe.view.zoom = zoom;
-            globe.preview.greyscale = grey;
+            globe.preview.display = if grey {
+                vale_store::RasterDisplay::Grey
+            } else {
+                vale_store::RasterDisplay::Bands
+            };
             save(&canvas_image(h), &format!("{name}{view}{tail}"));
         }
     }
@@ -3633,7 +3641,7 @@ fn save_ridge_shots(h: &mut Harness<'static, AppState>, name: &str) {
 /// sea.
 #[test]
 #[ignore]
-fn screenshot_of_an_ocean_ridge() {
+fn manual_screenshots_of_an_ocean_ridge() {
     let _gpu = one_gpu_test();
     let mut h = ridge_shot(7, |_| {});
     save_ridge_shots(&mut h, "ocean-ridge-default");

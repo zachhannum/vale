@@ -2857,13 +2857,13 @@ impl Globe {
     /// plan goes with the ground from before the stroke, which the
     /// heightmap holds until the texels of the stroke come back.
     fn ridge(&mut self, now: Instant) {
+        let tag = self.tag();
         let Some(active) = &mut self.stroke else {
             return;
         };
         let Some(ridge) = &mut active.ridge else {
             return;
         };
-        let face_size = self.map.face_size() as u32;
         let time = active.sampled.unwrap_or(now);
         while ridge.sent < ridge.line.len() {
             let plan = ridge.line.plan(ridge.sent);
@@ -2888,7 +2888,7 @@ impl Globe {
                 stroke,
                 time,
             };
-            self.link.push(face_size, op);
+            self.link.push(tag, op);
         }
     }
 

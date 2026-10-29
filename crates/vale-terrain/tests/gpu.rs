@@ -2869,6 +2869,7 @@ fn the_shader_field_matches_the_cpu_field() {
             "{point:?}: the shader gives {value}, the CPU gives {expected}"
         );
     }
+}
 
 /// The largest difference between a GPU level and a CPU level after an ocean
 /// ridge stroke. The shader finds the place of a texel on the line with

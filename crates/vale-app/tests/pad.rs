@@ -240,7 +240,16 @@ fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
 }
 
 /// The rows of the menu of the More cell.
-const MORE_ROWS: [&str; 8] = ["Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift", "Warp", "Ocean ridge"];
+const MORE_ROWS: [&str; 8] = [
+    "Carve",
+    "Ridge",
+    "Deposit",
+    "Erode",
+    "Weather",
+    "Uplift",
+    "Warp",
+    "Ocean ridge",
+];
 
 /// Makes sure that a finger can hit each control of the frame.
 fn check_controls(h: &Pad, what: &str) {

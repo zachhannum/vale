@@ -1458,13 +1458,9 @@ fn linear_slider(
 fn ridge_rows(ui: &mut egui::Ui, controls: &mut Controls, brush: &mut BrushSettings) {
     let text = format!("{:.0} m", brush.ridge_crest_m);
     let crest = &mut brush.ridge_crest_m;
-    linear_slider(
-        crest,
-        RIDGE_CREST_M,
-        50.0,
-        &text,
-        |fraction, text| widgets::row_slider(ui, controls, "Brush crest", "Crest", fraction, text),
-    );
+    linear_slider(crest, RIDGE_CREST_M, 50.0, &text, |fraction, text| {
+        widgets::row_slider(ui, controls, "Brush crest", "Crest", fraction, text)
+    });
     let text = format!("{} km", world::three_significant(brush.ridge_segment_km));
     let segment = log_slider(
         brush.ridge_segment_km,
