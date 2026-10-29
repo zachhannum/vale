@@ -29,6 +29,8 @@ pub const LINE_TOOL: &str = "Line";
 pub const POLYGON_TOOL: &str = "Polygon";
 /// The button of the point tool.
 pub const POINT_TOOL: &str = "Point";
+/// The button of the Measure tool.
+pub const MEASURE_TOOL: &str = "Measure";
 /// The slider of the smoothing of the line tool.
 pub const SMOOTHING: &str = "Smoothing";
 /// The check box that turns all snapping on and off.
@@ -79,7 +81,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 // With no layer for the tool, the tool is Navigate.
                 let globe = &mut state.globe;
                 let (paintable, lineable) = (globe.paintable, globe.lineable);
-                let navigate = !globe.brushing() && !globe.editing();
+                let navigate = !globe.brushing() && !globe.editing() && !globe.measuring();
                 if ui.selectable_label(navigate, "Navigate").clicked() {
                     globe.tool = Tool::Navigate;
                 }
@@ -101,7 +103,13 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if ui.add_enabled(able, draw).clicked() {
                     globe.tool = tool;
                 }
-                if globe.editing() {
+                if ui
+                    .selectable_label(globe.measuring(), MEASURE_TOOL)
+                    .clicked()
+                {
+                    globe.tool = Tool::Measure;
+                }
+                if globe.editing() || globe.measuring() {
                     if globe.drawing() {
                         let mut percent = globe.line.smoothing * 100.0;
                         let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
@@ -129,6 +137,22 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                             .text(SNAP_DISTANCE);
                         ui.add(slider);
                     });
+                }
+                if state.globe.measuring() {
+                    let path = &mut state.measure;
+                    let filled = !path.is_empty();
+                    let close = egui::Button::new(pad::CLOSE_PATH);
+                    if ui.add_enabled(path.can_close(), close).clicked() {
+                        path.close();
+                    }
+                    let remove = egui::Button::new(pad::REMOVE_POINT);
+                    if ui.add_enabled(filled, remove).clicked() {
+                        path.remove_last();
+                    }
+                    let clear = egui::Button::new(pad::CLEAR_PATH);
+                    if ui.add_enabled(filled, clear).clicked() {
+                        path.clear();
+                    }
                 }
                 // The menu stays open while the user works on the list.
                 let stay = egui::containers::menu::MenuConfig::new()
@@ -935,12 +959,16 @@ fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
 pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
-            match state.cursor_lonlat {
-                Some([lon, lat]) => ui.label(format!("lon {lon:.2}, lat {lat:.2}")),
-                None => ui.label("lon –, lat –"),
-            };
-            if let Some(value) = state.readout_value() {
-                ui.label(value);
+            if state.measuring() {
+                ui.label(state.measure_readout());
+            } else {
+                match state.cursor_lonlat {
+                    Some([lon, lat]) => ui.label(format!("lon {lon:.2}, lat {lat:.2}")),
+                    None => ui.label("lon –, lat –"),
+                };
+                if let Some(value) = state.readout_value() {
+                    ui.label(value);
+                }
             }
             ui.separator();
             if let Some(c) = &state.composed

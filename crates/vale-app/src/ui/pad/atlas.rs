@@ -176,6 +176,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         view_width: page_width,
         panel: state.atlas.selection != AtlasSelection::None,
         sheet_offset: state.pad.sheet_offset,
+        measure: false,
+        measure_button: false,
     };
     let mut rects = geometry::layout(&input);
     rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH;

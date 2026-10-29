@@ -133,6 +133,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         view_width: 0.0,
         panel: false,
         sheet_offset: 0.0,
+        measure: false,
+        measure_button: false,
     });
     world_form::pad(&ctx, state, &mut controls, &rects);
     state.pad.controls = controls;

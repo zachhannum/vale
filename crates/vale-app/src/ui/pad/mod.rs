@@ -33,7 +33,7 @@ pub mod rules;
 pub mod theme;
 pub mod widgets;
 
-use geometry::{BrushCard, CELL, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
+use geometry::{BrushCard, CELL, Input, MEASURE_CELLS, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
 use icons::Icon;
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
 
@@ -52,6 +52,12 @@ pub const POINT: &str = "Point";
 pub const SMOOTHING: &str = "Smoothing";
 /// The button of the brush card that turns all snapping on and off.
 pub const SNAP: &str = "Snap";
+/// The button of the top row that opens and closes the Measure tool.
+pub const MEASURE: &str = "Measure";
+/// The cells of the card of the Measure tool.
+pub const CLOSE_PATH: &str = "Close path";
+pub const REMOVE_POINT: &str = "Remove point";
+pub const CLEAR_PATH: &str = "Clear path";
 /// The switch of the sheet that turns all snapping on and off.
 pub const SNAPPING: &str = "Snapping";
 pub const SNAP_VERTICES: &str = "Snap to vertices";
@@ -319,6 +325,16 @@ pub fn readout_text(lonlat: Option<LonLat>, value: Option<&str>) -> String {
     }
 }
 
+/// The text of the readout: the place and the value, or the result of the
+/// Measure tool.
+pub fn readout_line(state: &AppState) -> String {
+    if state.measuring() {
+        return state.measure_readout();
+    }
+    let value = state.readout_value();
+    readout_text(state.cursor_lonlat, value.as_deref())
+}
+
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
@@ -350,6 +366,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             + if flat { 3.0 * TOUCH + 9.0 + PAD } else { 0.0 },
         panel: state.pad.brush || state.pad.right.is_some(),
         sheet_offset: state.pad.sheet_offset,
+        measure: state.globe.measuring(),
+        measure_button: true,
     };
     let mut rects = geometry::layout(&input);
     if rects.one_panel && state.pad.brush && state.pad.right.is_some() {
@@ -374,6 +392,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     brush_card(&ctx, state, &mut controls, &rects);
     // A button above can open or close a panel. The panels use the new state.
     input.panel = state.pad.brush || state.pad.right.is_some();
+    input.measure = state.globe.measuring();
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
     for panel in [Panel::Brush, Panel::Layers, Panel::Toolbox] {
@@ -576,7 +595,11 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
             ui.painter().rect_filled(line, 0.0, theme::divider());
-            let x = 2.0 * step + 9.0 + PAD;
+            let mut x = 2.0 * step + 9.0 + PAD;
+            if rects.measure.is_none() {
+                measure_button(ui, state, controls, at(x));
+                x += step;
+            }
             for (panel, name, icon, x) in [
                 (Panel::Layers, "Layers", Icon::Layers, x),
                 (Panel::Toolbox, "Toolbox", Icon::Toolbox, x + step),
@@ -589,6 +612,38 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             }
         },
     );
+    if let Some(rect) = rects.measure {
+        widgets::card(
+            ctx,
+            state.globe.backdrop(),
+            "pad-measure",
+            rect,
+            Order::Middle,
+            radius,
+            |ui| measure_button(ui, state, controls, rect.shrink(PAD)),
+        );
+    }
+}
+
+/// The button that opens and closes the Measure tool.
+fn measure_button(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, rect: Rect) {
+    let measuring = state.globe.measuring();
+    let button =
+        widgets::icon_button_at(ui, controls, rect, MEASURE, Icon::Measure, measuring, true);
+    if button.clicked() {
+        toggle_measure(state);
+    }
+}
+
+/// Chooses the Measure tool, or goes back to Move from it.
+pub fn toggle_measure(state: &mut AppState) {
+    let globe = &mut state.globe;
+    globe.tool = if globe.measuring() {
+        Tool::Navigate
+    } else {
+        Tool::Measure
+    };
+    state.pad.more = false;
 }
 
 /// The child of a card, inside the padding of the card.
@@ -648,7 +703,7 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     more_cell(ui, state, controls, paint);
                 }
                 let globe = &mut state.globe;
-                let active = !globe.brushing() && !globe.editing();
+                let active = !globe.brushing() && !globe.editing() && !globe.measuring();
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()
                 {
@@ -748,6 +803,17 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         radius,
         |ui| {
             let mut ui = padded(ui);
+            if rects.measure_cells > 0 {
+                let mut cells = |ui: &mut egui::Ui| measure_cells(ui, state, controls, rects);
+                if rects.measure_cells < MEASURE_CELLS {
+                    egui::ScrollArea::vertical()
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(&mut ui, cells);
+                } else {
+                    cells(&mut ui);
+                }
+                return;
+            }
             let paint = state.globe.paintable;
             let line = state.globe.lineable || state.globe.fillable;
             let vector = line || state.globe.pointable;
@@ -802,6 +868,71 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             }
         },
     );
+}
+
+/// The cells of the card of the Measure tool: the snap switch, the three
+/// actions on the path, and the Brush button, which opens the snapping
+/// settings.
+fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let snap = &mut state.globe.snap.on;
+    if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
+        *snap = !*snap;
+    }
+    let path = &mut state.measure;
+    let filled = !path.is_empty();
+    let close = path.can_close();
+    if widgets::tool_cell(
+        ui,
+        controls,
+        CLOSE_PATH,
+        "Close",
+        Icon::ClosePath,
+        false,
+        close,
+    )
+    .clicked()
+    {
+        path.close();
+    }
+    if widgets::tool_cell(
+        ui,
+        controls,
+        REMOVE_POINT,
+        "Remove",
+        Icon::Delete,
+        false,
+        filled,
+    )
+    .clicked()
+    {
+        path.remove_last();
+    }
+    if widgets::tool_cell(
+        ui,
+        controls,
+        CLEAR_PATH,
+        "Clear",
+        Icon::Close,
+        false,
+        filled,
+    )
+    .clicked()
+    {
+        path.clear();
+    }
+    let open = state.pad.brush;
+    let button = widgets::tool_cell(
+        ui,
+        controls,
+        "Brush settings",
+        "Brush",
+        Icon::Brush,
+        open,
+        true,
+    );
+    if button.clicked() {
+        state.pad.toggle(Panel::Brush, rects.one_panel);
+    }
 }
 
 fn show_panel(
@@ -864,6 +995,7 @@ fn show_panel(
     }
     let name = name.as_deref().unwrap_or_default();
     let (key, title, back) = match (panel, layer) {
+        (Panel::Brush, _) if state.globe.measuring() => (panel.key(), MEASURE, None),
         (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
         (Panel::Brush, _) if state.globe.fillable => (panel.key(), POLYGON, None),
         (Panel::Brush, _) if state.globe.pointable => (panel.key(), POINT, None),
@@ -1139,8 +1271,9 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, travel: f
 
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let line = state.globe.lineable || state.globe.fillable;
-    if line || state.globe.pointable {
+    let measuring = state.globe.measuring();
+    let line = !measuring && (state.globe.lineable || state.globe.fillable);
+    if line || measuring || state.globe.pointable {
         if line {
             percent_slider(
                 &mut state.globe.line.smoothing,
@@ -1857,8 +1990,7 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     let Some(band) = rects.readout else {
         return;
     };
-    let value = state.readout_value();
-    let text = readout_text(state.cursor_lonlat, value.as_deref());
+    let text = readout_line(state);
     let galley = ui
         .painter()
         .layout_no_wrap(text, theme::mono(), theme::MUTE);

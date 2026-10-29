@@ -41,6 +41,8 @@ pub enum Icon {
     Delete,
     Magnet,
     Select,
+    Measure,
+    ClosePath,
 }
 
 impl Icon {
@@ -88,6 +90,8 @@ impl Icon {
             }
             Icon::Grid => "M12 3v18M3 12h18",
             Icon::Select => "M5 3l14 8-6 2-2 6z",
+            Icon::Measure => "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
+            Icon::ClosePath => "M5 18L8 6l11 3-2 10z",
             Icon::Magnet => {
                 "M5 4h4v8c0 1.66 1.34 3 3 3s3-1.34 3-3V4h4v8c0 3.87-3.13 7-7 7s-7-3.13-7-7zM5 8h4M15 8h4"
             }
@@ -107,6 +111,12 @@ impl Icon {
             ],
             Icon::Eye | Icon::EyeOff | Icon::Point => &[(12.0, 12.0, 3.0, false)],
             Icon::Grid => &[(12.0, 12.0, 9.0, false)],
+            Icon::ClosePath => &[
+                (5.0, 18.0, 2.0, true),
+                (8.0, 6.0, 2.0, true),
+                (19.0, 9.0, 2.0, true),
+                (17.0, 19.0, 2.0, true),
+            ],
             Icon::More => &[
                 (5.0, 12.0, 1.5, true),
                 (12.0, 12.0, 1.5, true),
@@ -368,6 +378,8 @@ mod tests {
             Icon::Grid,
             Icon::Delete,
             Icon::Select,
+            Icon::Measure,
+            Icon::ClosePath,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

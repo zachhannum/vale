@@ -17,6 +17,8 @@ pub const ROW: f32 = TOUCH + 2.0 * PAD;
 /// The size of one cell of the tool strip.
 pub const CELL: (f32, f32) = (56.0, 52.0);
 pub const TOOLS: usize = 6;
+/// The number of cells of the card of the Measure tool.
+pub const MEASURE_CELLS: usize = 5;
 /// The height of one of the two sliders at the left edge.
 pub const SLIDER: f32 = 140.0;
 /// Below this height, a slider at the left edge is too short to use.
@@ -30,8 +32,10 @@ pub const WORLDS_WIDTH: f32 = 300.0;
 pub const MORE_WIDTH: f32 = 180.0;
 pub const SHEET_HEIGHT: f32 = 400.0;
 pub const READOUT_HEIGHT: f32 = 32.0;
-/// The width of the actions bar: four buttons and a divider.
-pub const ACTIONS_WIDTH: f32 = 4.0 * TOUCH + 4.0 * PAD + 9.0 + 2.0 * PAD;
+/// The width of the actions bar: five buttons and a divider.
+pub const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 5.0 * PAD + 9.0 + 2.0 * PAD;
+/// The width of the actions bar with no Measure button.
+const SHORT_ACTIONS_WIDTH: f32 = ACTIONS_WIDTH - TOUCH - PAD;
 
 /// The bands at the screen edges that the system uses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -107,6 +111,10 @@ pub struct Input {
     pub panel: bool,
     /// The distance that the sheet is pulled down from its open place.
     pub sheet_offset: f32,
+    /// The Measure tool is the tool.
+    pub measure: bool,
+    /// The layout has the Measure button.
+    pub measure_button: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -118,14 +126,22 @@ pub struct Rects {
     /// `None`: the workspace menu holds the views.
     pub view: Option<Rect>,
     pub actions: Rect,
+    /// The card of the Measure button, below the actions bar. `None`: the
+    /// button is in the actions bar, or the layout has no Measure button.
+    pub measure: Option<Rect>,
     /// The top-left corner of the workspace menu.
     pub menu: Pos2,
     pub tools: Rect,
     /// The number of tool cells that show. With fewer than `TOOLS`, the strip scrolls.
     pub tool_cells: usize,
     pub brush_card: BrushCard,
-    /// The card of the two sliders and the Brush button.
+    /// The card of the two sliders and the Brush button, or the card of the
+    /// Measure tool.
     pub brush: Option<Rect>,
+    /// The number of cells of the card of the Measure tool that show. With
+    /// fewer than `MEASURE_CELLS`, the card scrolls. Zero: the card is not
+    /// the card of the Measure tool.
+    pub measure_cells: usize,
     /// The top-left corner of the Brush panel.
     pub brush_panel: Pos2,
     /// The top-left corner of the Layers and Toolbox panel.
@@ -156,11 +172,45 @@ pub fn layout(input: &Input) -> Rects {
     let column_top = top + ROW + GAP;
 
     let workspace = Rect::from_min_size(pos2(left, top), vec2(input.workspace_width, ROW));
-    let actions = Rect::from_min_max(pos2(right - ACTIONS_WIDTH, top), pos2(right, top + ROW));
-    let view = (class != WidthClass::Compact).then(|| {
-        let center = pos2(screen.center().x, top + ROW / 2.0);
-        Rect::from_center_size(center, vec2(input.view_width, ROW))
-    });
+    // The view switch is at the middle of the screen. With no room there, it
+    // moves to the middle of the space between the workspace card and the
+    // actions bar. The flag is true if the top row has room for the cards.
+    let place_view = |actions_left: f32| {
+        let (low, high) = (workspace.right() + GAP, actions_left - GAP);
+        let width = input.view_width;
+        if class == WidthClass::Compact {
+            return (None, low <= high);
+        }
+        let fits = high - low >= width;
+        let x = if fits {
+            screen
+                .center()
+                .x
+                .clamp(low + width / 2.0, high - width / 2.0)
+        } else {
+            (low + high) / 2.0
+        };
+        let rect = Rect::from_center_size(pos2(x, top + ROW / 2.0), vec2(width, ROW));
+        (Some(rect), fits)
+    };
+    // With no room in the top row, the Measure button has a card below the
+    // actions bar.
+    let (actions_width, view, measure) = match place_view(right - ACTIONS_WIDTH) {
+        (view, true) if input.measure_button => (ACTIONS_WIDTH, view, None),
+        _ if input.measure_button => {
+            let (view, _) = place_view(right - SHORT_ACTIONS_WIDTH);
+            let card = Rect::from_min_size(pos2(right - ROW, column_top), vec2(ROW, ROW));
+            (SHORT_ACTIONS_WIDTH, view, Some(card))
+        }
+        _ => {
+            let view = (class != WidthClass::Compact).then(|| {
+                let center = pos2(screen.center().x, top + ROW / 2.0);
+                Rect::from_center_size(center, vec2(input.view_width, ROW))
+            });
+            (SHORT_ACTIONS_WIDTH, view, None)
+        }
+    };
+    let actions = Rect::from_min_max(pos2(right - actions_width, top), pos2(right, top + ROW));
 
     let (sheet, sheet_travel) = if class == WidthClass::Compact {
         let height = SHEET_HEIGHT.min(screen.bottom() - column_top);
@@ -222,8 +272,34 @@ pub fn layout(input: &Input) -> Rects {
     }
     .map(|height| Rect::from_min_size(pos2(left, brush_top), vec2(width, height)));
 
-    let brush_panel = pos2(tools.right() + GAP, column_top);
-    let right_panel = pos2(right - RIGHT_PANEL_WIDTH, column_top);
+    // The card of the Measure tool goes below the tool strip. With no room
+    // there, it goes to the right of the strip.
+    let mut brush_panel = pos2(tools.right() + GAP, column_top);
+    let (brush, measure_cells) = match brush {
+        Some(_) if input.measure && limit - brush_top >= strip_height(MEASURE_CELLS) => {
+            let size = vec2(width, strip_height(MEASURE_CELLS));
+            (
+                Some(Rect::from_min_size(pos2(left, brush_top), size)),
+                MEASURE_CELLS,
+            )
+        }
+        Some(_) if input.measure => {
+            let cells = ((limit - column_top - 2.0 * PAD) / CELL.1).floor();
+            let cells = (cells.max(1.0) as usize).min(MEASURE_CELLS);
+            let size = vec2(width, strip_height(cells));
+            let card = Rect::from_min_size(brush_panel, size);
+            brush_panel.x = card.right() + GAP;
+            (Some(card), cells)
+        }
+        brush => (brush, 0),
+    };
+
+    let mut right_panel = pos2(right - RIGHT_PANEL_WIDTH, column_top);
+    if let Some(measure) = measure
+        && class != WidthClass::Compact
+    {
+        right_panel.y = measure.bottom() + GAP;
+    }
     let one_panel = class == WidthClass::Compact
         || brush_panel.x + BRUSH_PANEL_WIDTH + PANEL_GAP > right_panel.x;
     let panel_bottom = readout.map_or(bottom, |r| r.top()) - 8.0;
@@ -235,11 +311,13 @@ pub fn layout(input: &Input) -> Rects {
         workspace,
         view,
         actions,
+        measure,
         menu: pos2(left, top + ROW + PAD),
         tools,
         tool_cells,
         brush_card,
         brush,
+        measure_cells,
         brush_panel,
         right_panel,
         panel_bottom,
@@ -262,6 +340,8 @@ mod tests {
             view_width: 140.0,
             panel: false,
             sheet_offset: 0.0,
+            measure: false,
+            measure_button: true,
         }
     }
 
@@ -284,7 +364,7 @@ mod tests {
         assert_eq!(r.class, WidthClass::Wide);
         assert_eq!(r.workspace, rect(16.0, 32.0, 230.0, 52.0));
         assert_eq!(r.view, Some(rect(527.0, 32.0, 140.0, 52.0)));
-        assert_eq!(r.actions, rect(969.0, 32.0, 209.0, 52.0));
+        assert_eq!(r.actions, rect(921.0, 32.0, 257.0, 52.0));
         assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
         assert_eq!(r.brush_card, BrushCard::Full(140.0));
         assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
@@ -301,7 +381,7 @@ mod tests {
         let r = layout(&board(834.0, 1194.0));
         assert_eq!(r.class, WidthClass::Medium);
         assert_eq!(r.view.unwrap().center().x, 417.0);
-        assert_eq!(r.actions, rect(609.0, 32.0, 209.0, 52.0));
+        assert_eq!(r.actions, rect(561.0, 32.0, 257.0, 52.0));
         assert_eq!(r.right_panel, pos2(498.0, 96.0));
         assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
         assert!(!r.one_panel);
@@ -368,5 +448,75 @@ mod tests {
         assert_eq!(r.workspace.min, pos2(46.0, 48.0));
         assert_eq!(r.actions.right(), 1148.0);
         assert_eq!(r.readout.unwrap().bottom(), 792.0);
+    }
+
+    #[test]
+    fn the_card_of_the_measure_tool_holds_its_cells() {
+        let measure = |width: f32, height: f32| {
+            let mut input = board(width, height);
+            input.measure = true;
+            layout(&input)
+        };
+        // Below the tool strip.
+        for (width, height) in [(1194.0, 834.0), (1024.0, 744.0), (375.0, 834.0)] {
+            let r = measure(width, height);
+            assert_eq!(r.measure_cells, MEASURE_CELLS, "{width}x{height}");
+            let card = r.brush.unwrap();
+            assert_eq!(card.left(), r.tools.left());
+            assert_eq!(card.top(), r.tools.bottom() + GAP);
+            assert_eq!(card.height(), strip_height(MEASURE_CELLS));
+        }
+        // At the right of the tool strip.
+        let r = measure(1024.0, 700.0);
+        assert_eq!(r.measure_cells, MEASURE_CELLS);
+        let card = r.brush.unwrap();
+        assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));
+        assert_eq!(r.brush_panel.x, card.right() + GAP);
+        // A short screen scrolls the card.
+        let r = measure(852.0, 393.0);
+        assert_eq!(r.measure_cells, 4);
+        assert!(r.brush.unwrap().bottom() <= 393.0 - 20.0 - MARGIN);
+        // The card is not the card of the Measure tool for another tool.
+        assert_eq!(layout(&board(1194.0, 834.0)).measure_cells, 0);
+    }
+
+    #[test]
+    fn the_measure_button_has_a_card_when_the_top_row_has_no_room() {
+        // The iPad in landscape and in portrait has the button in the top row.
+        for (width, height) in [(1194.0, 834.0), (834.0, 1194.0)] {
+            let r = layout(&board(width, height));
+            assert_eq!(r.measure, None);
+            assert_eq!(r.actions.width(), ACTIONS_WIDTH);
+            let view = r.view.unwrap();
+            assert!(view.left() >= r.workspace.right() + GAP);
+            assert!(view.right() + GAP <= r.actions.left());
+        }
+        // A wide view switch moves to the space between the cards.
+        let mut input = board(834.0, 1194.0);
+        input.workspace_width = 147.0;
+        input.view_width = 340.0;
+        let r = layout(&input);
+        assert_eq!(r.measure, None);
+        assert!(r.view.unwrap().right() + GAP <= r.actions.left());
+        // An iPhone and a narrow split view have the card below the actions.
+        for (width, height) in [(393.0, 852.0), (375.0, 834.0)] {
+            let mut input = board(width, height);
+            input.workspace_width = 94.0;
+            let r = layout(&input);
+            let card = r.measure.unwrap();
+            assert_eq!(card.right(), r.actions.right());
+            assert_eq!(card.top(), r.tools.top());
+            assert!(r.workspace.right() + GAP <= r.actions.left());
+        }
+        // With no room for the view switch, the panels go below the card.
+        let mut input = board(852.0, 393.0);
+        input.view_width = 340.0;
+        let r = layout(&input);
+        let card = r.measure.unwrap();
+        assert_eq!(r.right_panel.y, card.bottom() + GAP);
+        // A layout with no Measure button has the short actions bar.
+        input.measure_button = false;
+        let r = layout(&input);
+        assert_eq!((r.measure, r.actions.width()), (None, SHORT_ACTIONS_WIDTH));
     }
 }

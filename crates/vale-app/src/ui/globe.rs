@@ -20,7 +20,7 @@ use crate::globe::snap::Highlight;
 use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
-use crate::globe::{Globe, Paint, WorldView};
+use crate::globe::{Globe, Paint, Tool, WorldView};
 use crate::measure::{DENSIFY_DEG, MOUSE, Measure};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 use crate::scatter::{ScatterCache, ScatterFill};
@@ -323,6 +323,32 @@ fn measure_input(
     let down = down || ui.input(|i| i.pointer.any_down());
     let hover = globe.pen.hover.filter(|pos| on_canvas(ui, rect, *pos));
     globe.input.pos = resp.hover_pos().or(hover).filter(|_| !down);
+}
+
+/// Reads the keys of the Measure tool. M chooses the tool. While it is the
+/// tool, Return closes the path, Backspace removes the last point, and
+/// Escape clears the path.
+fn measure_keys(ui: &egui::Ui, state: &mut AppState) {
+    use egui::{Key, Modifiers};
+    if ui.ctx().egui_wants_keyboard_input() {
+        return;
+    }
+    let key = |key| ui.input_mut(|i| i.consume_key(Modifiers::NONE, key));
+    if key(Key::M) {
+        state.globe.tool = Tool::Measure;
+    }
+    if !state.globe.measuring() {
+        return;
+    }
+    if key(Key::Enter) {
+        state.measure.close();
+    }
+    if key(Key::Backspace) {
+        state.measure.remove_last();
+    }
+    if key(Key::Escape) {
+        state.measure.clear();
+    }
 }
 
 /// Reads the undo and redo commands. A tap of two fingers and Command+Z
@@ -783,6 +809,7 @@ pub(super) fn canvas_input(
     state.poll_line();
     state.poll_point();
     state.poll_measure();
+    measure_keys(ui, state);
     match history_input(ui, &mut state.globe.nav) {
         Some(true) => state.redo(),
         Some(false) => state.undo(),

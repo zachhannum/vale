@@ -18,10 +18,11 @@ use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
-    NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP,
-    SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS,
-    WORLDS_ROW, brush_size_text, readout_text, theme,
+    ADD_LAYER, CLEAR_PATH, CLOSE_PATH, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME,
+    LINE, LayerRef, MEASURE, MORE, NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER,
+    REMOVE_POINT, RESET, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING,
+    VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line,
+    readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -154,6 +155,7 @@ fn cards(h: &Pad) -> Vec<Rect> {
     let r = pad.rects.unwrap();
     let mut cards = vec![r.workspace, r.actions, r.tools];
     cards.extend(r.view);
+    cards.extend(r.measure);
     cards.extend(r.brush);
     cards.extend(pad.panels.iter().map(|(_, rect)| *rect));
     cards.extend(pad.menu_rect);
@@ -2702,7 +2704,10 @@ fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it
         let card = match rects.view {
             Some(view) => {
                 assert_eq!(h.state().pad.center_rect, None);
-                assert_eq!(view.center().x, size.0 / 2.0, "{size:?}");
+                // With no room at the middle of the screen, the card moves
+                // to the left.
+                assert!(view.center().x <= size.0 / 2.0, "{size:?}");
+                assert!(view.left() >= rects.workspace.right() + 12.0, "{size:?}");
                 assert!(view.right() + 12.0 <= rects.actions.left(), "{size:?}");
                 view
             }
@@ -2766,10 +2771,10 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert!(r.view.unwrap().contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(
         r.actions,
-        Rect::from_min_size(pos2(969.0, 32.0), vec2(209.0, 52.0))
+        Rect::from_min_size(pos2(921.0, 32.0), vec2(257.0, 52.0))
     );
-    let lefts = ["Layers", "Toolbox"].map(|name| control(&h, name).unwrap().left());
-    assert_eq!(lefts, [1082.0, 1130.0]);
+    let lefts = ["Measure", "Layers", "Toolbox"].map(|name| control(&h, name).unwrap().left());
+    assert_eq!(lefts, [1034.0, 1082.0, 1130.0]);
     assert_eq!(
         r.tools,
         Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 320.0))
@@ -6973,5 +6978,181 @@ fn the_font_row_asks_for_the_font_picker() {
         let warning = "Font Lora is missing. Labels use Noto Sans.";
         assert!(h.query_by_label(warning).is_some(), "{what}");
         screenshot::save(&mut h, &format!("pad-font-row-{}", size.0));
+    }
+}
+
+/// The screens of the Measure tool, and their safe areas: the bands at the
+/// top, the right, the bottom, and the left.
+fn measure_screens() -> Vec<((f32, f32), [f32; 4])> {
+    let mut screens: Vec<_> = BOARDS.iter().map(|&size| (size, [0.0; 4])).collect();
+    screens.push(((1133.0, 744.0), [0.0; 4]));
+    screens.extend(IPHONES.map(|((w, h), safe)| ((w as f32, h as f32), safe)));
+    screens
+}
+
+/// The layout of a world with a height layer, on a screen with a safe area.
+fn safe_pad(size: (f32, f32), [top, right, bottom, left]: [f32; 4]) -> Pad {
+    let mut h = pad(size);
+    let insets = egui::epaint::MarginF32 {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.run_steps(3);
+    h
+}
+
+fn toggled(h: &Pad, name: &str) -> Option<bool> {
+    let node = h.query_by_label(name)?;
+    Some(node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True))
+}
+
+fn disabled(h: &Pad, name: &str) -> bool {
+    h.get_by_label(name).accesskit_node().is_disabled()
+}
+
+/// Makes sure that each control is inside the safe area.
+fn check_safe(h: &Pad, size: (f32, f32), [top, right, bottom, left]: [f32; 4], what: &str) {
+    let top = top.max(BANDS.0);
+    let bottom = size.1 - bottom.max(BANDS.1);
+    for c in &h.state().pad.controls {
+        let r = c.rect;
+        let inside = r.top() >= top
+            && r.bottom() <= bottom
+            && r.left() >= left
+            && r.right() <= size.0 - right;
+        assert!(inside, "{what}: {} is {r:?}", c.name);
+    }
+}
+
+#[test]
+fn the_measure_button_opens_the_tool_with_any_layer_on_each_screen() {
+    use vale_store::GeometryKind;
+    for (size, safe) in measure_screens() {
+        let mut h = safe_pad(size, safe);
+        let height = h.state().doc.project.rasters()[0].id;
+        let mut layers = vec![None, Some(LayerRef::Raster(height))];
+        for kind in [
+            GeometryKind::Line,
+            GeometryKind::Point,
+            GeometryKind::Polygon,
+        ] {
+            let id = h.state_mut().doc.add_layer(kind);
+            layers.push(Some(LayerRef::Vector(id)));
+        }
+        for layer in layers {
+            let what = format!("{size:?} with {layer:?}");
+            h.state_mut().select(layer);
+            h.run_steps(2);
+            assert!(!h.state().globe.measuring(), "{what}");
+            tap(&mut h, MEASURE);
+            assert!(h.state().globe.measuring(), "{what}");
+            assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
+            // No cell of the tool strip is active.
+            for name in ["Pan", "Raise", LINE, POLYGON, vale_app::ui::pad::POINT] {
+                assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
+            }
+            // A disabled cell is not in the list of the controls, so the
+            // path gets three points.
+            let center = pos2(size.0 / 2.0, size.1 / 2.0);
+            for offset in [vec2(-50.0, -40.0), vec2(50.0, -40.0), vec2(0.0, 50.0)] {
+                finger_tap(&mut h, center + offset);
+            }
+            assert_eq!(h.state().measure.points.len(), 3, "{what}");
+            for name in [MEASURE, SNAP, CLOSE_PATH, REMOVE_POINT, CLEAR_PATH] {
+                assert!(control(&h, name).is_some(), "{what}: {name}");
+            }
+            let card = h.state().pad.rects.unwrap().brush.unwrap();
+            for name in [SNAP, CLOSE_PATH, REMOVE_POINT, CLEAR_PATH] {
+                assert!(card.contains_rect(control(&h, name).unwrap()), "{what}");
+            }
+            check_controls(&h, &format!("{what} with Measure"));
+            check_safe(&h, size, safe, &what);
+            let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+            for card in cards(&h) {
+                assert!(screen.contains_rect(card), "{what}: {card:?}");
+            }
+            // The button again goes back to Move.
+            tap(&mut h, MEASURE);
+            assert!(!h.state().globe.measuring(), "{what}");
+            assert_eq!(h.state().globe.tool, Tool::Navigate, "{what}");
+        }
+    }
+}
+
+#[test]
+fn the_cells_of_the_measure_card_act_on_the_path() {
+    let screens = [
+        (BOARDS[0], [0.0; 4]),
+        ((393.0, 852.0), [59.0, 0.0, 34.0, 0.0]),
+        ((852.0, 393.0), [0.0, 59.0, 21.0, 59.0]),
+    ];
+    for (size, safe) in screens {
+        let what = format!("{size:?}");
+        let mut h = safe_pad(size, safe);
+        h.state_mut().select(None);
+        h.run_steps(2);
+        tap(&mut h, MEASURE);
+        assert_eq!(readout_line(h.state()), "Tap to add a point.", "{what}");
+        for name in [CLOSE_PATH, REMOVE_POINT, CLEAR_PATH] {
+            assert!(disabled(&h, name), "{what}: {name}");
+        }
+        let center = pos2(size.0 / 2.0, size.1 / 2.0);
+        for offset in [vec2(-50.0, -40.0), vec2(50.0, -40.0), vec2(0.0, 50.0)] {
+            finger_tap(&mut h, center + offset);
+        }
+        assert_eq!(h.state().measure.points.len(), 3, "{what}");
+        let text = readout_line(h.state());
+        assert!(text.starts_with("Length "), "{what}: {text}");
+        assert_eq!(text, h.state().measure_readout(), "{what}");
+
+        tap(&mut h, CLOSE_PATH);
+        assert!(h.state().measure.closed, "{what}");
+        assert!(disabled(&h, CLOSE_PATH), "{what}");
+        let text = readout_line(h.state());
+        assert!(text.starts_with("Perimeter "), "{what}: {text}");
+        tap(&mut h, REMOVE_POINT);
+        assert!(!h.state().measure.closed, "{what}");
+        tap(&mut h, REMOVE_POINT);
+        assert_eq!(h.state().measure.points.len(), 2, "{what}");
+        assert!(disabled(&h, CLOSE_PATH), "{what}");
+        tap(&mut h, CLEAR_PATH);
+        assert!(h.state().measure.is_empty(), "{what}");
+        assert!(disabled(&h, CLEAR_PATH), "{what}");
+
+        let snap = h.state().globe.snap.on;
+        tap(&mut h, SNAP);
+        assert_eq!(h.state().globe.snap.on, !snap, "{what}");
+        tap(&mut h, SNAP);
+
+        // A cell of the tool strip leaves the tool and clears the path.
+        let height = h.state().doc.project.rasters()[0].id;
+        h.state_mut().select(Some(LayerRef::Raster(height)));
+        finger_tap(&mut h, center);
+        assert!(!h.state().measure.is_empty(), "{what}");
+        tap(&mut h, "Raise");
+        assert!(!h.state().globe.measuring(), "{what}");
+        assert!(h.state().measure.is_empty(), "{what}");
+    }
+}
+
+#[test]
+fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let points = h.state_mut().doc.add_layer(vale_store::GeometryKind::Point);
+        h.state_mut().select(Some(LayerRef::Vector(points)));
+        h.run_steps(2);
+        tap(&mut h, MEASURE);
+        tap(&mut h, "Brush settings");
+        assert!(h.state().pad.is_open(Panel::Brush), "{what}");
+        for name in [SNAPPING, SNAP_VERTICES, SNAP_EDGES, SNAP_DISTANCE] {
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+        }
+        assert!(control(&h, "Brush size").is_none(), "{what}");
+        check_controls(&h, &format!("{what} with the snapping settings"));
     }
 }

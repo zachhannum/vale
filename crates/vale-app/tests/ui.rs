@@ -1331,3 +1331,73 @@ fn the_desktop_form_makes_a_raster_layer_from_an_image_file() {
     assert_eq!(texels.iter().min(), Some(&0));
     assert_eq!(texels.iter().max(), Some(&65535));
 }
+
+#[test]
+fn the_toolbar_and_the_keys_work_the_measure_tool() {
+    use vale_app::ui::pad::{CLEAR_PATH, CLOSE_PATH, REMOVE_POINT};
+    use vale_app::ui::panels::{MEASURE_TOOL, SNAP, SNAP_OPTIONS};
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    state.select(None);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    assert_eq!(h.state().workspace, Workspace::Globe);
+    assert!(h.query_by_label(CLOSE_PATH).is_none());
+    h.get_by_label(MEASURE_TOOL).click();
+    h.run_steps(3);
+    assert!(h.state().globe.measuring());
+    for name in [SNAP, SNAP_OPTIONS, CLOSE_PATH, REMOVE_POINT, CLEAR_PATH] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    assert!(h.query_by_label("Tap to add a point.").is_some());
+
+    let center = h.state().globe.rect.center();
+    for offset in [(-50.0, -40.0), (50.0, -40.0), (0.0, 50.0)] {
+        click_at(&mut h, center + egui::vec2(offset.0, offset.1));
+    }
+    assert_eq!(h.state().measure.points.len(), 3);
+    let text = h.state().measure_readout();
+    assert!(text.starts_with("Length "), "{text}");
+    assert!(h.query_by_label(&text).is_some(), "{text}");
+
+    // Return closes the path, Backspace removes a point, and Escape clears
+    // the path.
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().measure.closed);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert!(!h.state().measure.closed);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(h.state().measure.points.len(), 2);
+    assert!(h.get_by_label(CLOSE_PATH).accesskit_node().is_disabled());
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().measure.is_empty());
+
+    // The buttons of the tool bar.
+    for offset in [(-50.0, -40.0), (50.0, -40.0), (0.0, 50.0)] {
+        click_at(&mut h, center + egui::vec2(offset.0, offset.1));
+    }
+    h.get_by_label(CLOSE_PATH).click();
+    h.run_steps(3);
+    assert!(h.state().measure.closed);
+    h.get_by_label(REMOVE_POINT).click();
+    h.run_steps(3);
+    assert!(!h.state().measure.closed);
+    h.get_by_label(CLEAR_PATH).click();
+    h.run_steps(3);
+    assert!(h.state().measure.is_empty());
+
+    // Navigate leaves the tool, and M chooses it.
+    h.get_by_label("Navigate").click();
+    h.run_steps(3);
+    assert!(!h.state().globe.measuring());
+    h.key_press(egui::Key::M);
+    h.run_steps(2);
+    assert!(h.state().globe.measuring());
+}
