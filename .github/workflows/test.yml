@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   test:
-    name: Test the workspace
+    name: Test the fast tier and the UI tier
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -22,7 +22,44 @@ jobs:
 
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+
+      - name: Install the system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the format
+        run: cargo fmt --all --check
+
+      - name: Run the fast tier and the UI tier
+        run: cargo test --workspace
+
+  gpu:
+    name: Test the GPU tier (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: globe
+            tests: --test globe
+          - name: flat
+            tests: --test flat
+          - name: pad
+            tests: --test pad
+          - name: other files
+            tests: --test atlas --test export --test frame_raster --test import --test inspector --test ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
           rustup default stable
 
       # Lavapipe is the software Vulkan driver of Mesa. The GPU tier draws on it.
@@ -34,13 +71,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check the format
-        run: cargo fmt --all --check
-
-      - name: Run the fast tier and the UI tier
-        run: cargo test --workspace
-
       # The GPU tier is the ignored tests of vale-app. The ignored tests with
       # the prefix `manual_` save pictures or give times, and they run only by hand.
+      # The runner has few cores. If tests render in parallel, a frame can
+      # take longer than egui_kittest waits, so the tests run one at a time.
       - name: Run the GPU tier
-        run: cargo test -p vale-app -- --ignored --skip manual_
+        run: cargo test -p vale-app ${{ matrix.tests }} -- --ignored --skip manual_ --test-threads=1
