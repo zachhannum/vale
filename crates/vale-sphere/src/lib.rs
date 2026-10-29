@@ -3,6 +3,7 @@
 pub mod clip;
 pub mod frame;
 pub mod graticule;
+pub mod measure;
 pub mod projection;
 pub mod scatter;
 pub mod spec;
