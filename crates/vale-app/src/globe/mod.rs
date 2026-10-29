@@ -10,7 +10,7 @@ use std::time::Instant;
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 use vale_store::{
-    BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing,
+    BlendMode, Extents, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing,
 };
 use vale_terrain::{
     Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, Pyramid, SEA_LEVEL,
@@ -275,11 +275,13 @@ pub enum StackItem {
         blend: BlendMode,
     },
     /// An image layer, how much it hides the layers below it, from 0 to 1,
-    /// on top of the alpha of each pixel, and how it mixes with them.
+    /// on top of the alpha of each pixel, how it mixes with them, and where
+    /// it is on the globe.
     Image {
         id: ImageId,
         opacity: f32,
         blend: BlendMode,
+        extents: Extents,
     },
     Vector(LayerId),
 }
@@ -596,6 +598,9 @@ pub struct Globe {
     /// The visible layers in draw order, from the bottom. `None`: the globe
     /// draws `map` as one layer.
     stack: Option<Vec<StackItem>>,
+    /// An image layer that the globe and the flat view draw at other
+    /// extents. The map frames do not use it.
+    image_draft: Option<(ImageId, Extents)>,
     /// The raster layer that the brush paints after the stroke or the
     /// import that runs.
     pending: Option<Option<RasterId>>,
@@ -755,6 +760,7 @@ impl Globe {
             layers: Vec::new(),
             images: Vec::new(),
             stack: None,
+            image_draft: None,
             pending: None,
             generations: 0,
             full: None,
@@ -1805,6 +1811,12 @@ impl Globe {
             WorldView::Globe => self.view.unproject(self.rect, pos),
             WorldView::Flat => self.flat.unproject(self.rect, pos),
         }
+    }
+
+    /// Draws this image layer at these extents in the globe and the flat
+    /// view. `None`: each image layer is at its own extents.
+    pub fn set_image_draft(&mut self, draft: Option<(ImageId, Extents)>) {
+        self.image_draft = draft;
     }
 
     /// The screen position of a world direction, or `None` if it does not
@@ -3068,13 +3080,19 @@ impl Globe {
                     };
                     layers.push(FrameLayer::Raster(id, layer));
                 }
-                StackItem::Image { id, opacity, blend } => {
+                StackItem::Image {
+                    id,
+                    opacity,
+                    blend,
+                    extents,
+                } => {
                     if let Some(key) = self.image_source(id) {
                         let opacity = opacity.clamp(0.0, 1.0);
                         layers.push(FrameLayer::Image(ImageDraw {
                             key,
                             opacity,
                             blend,
+                            extents,
                         }));
                     }
                 }
@@ -3157,6 +3175,8 @@ impl Globe {
         let mut uniforms = self.uniforms(canvas, None, false, small, frame);
         let key = image.key;
         uniforms.params = [key.width as f32, key.mips as f32, 0.0, 0.0];
+        let e = image.extents;
+        uniforms.detail = [e.west, e.east, e.south, e.north].map(|n| n.to_radians() as f32);
         uniforms.layer[0] = image.opacity;
         uniforms.turn[2] = if small {
             0.0
@@ -3301,13 +3321,20 @@ impl Globe {
                 for item in stack {
                     match *item {
                         StackItem::Vector(id) => items.push(Item::Vector(id)),
-                        StackItem::Image { id, opacity, blend } => {
+                        StackItem::Image {
+                            id,
+                            opacity,
+                            blend,
+                            extents,
+                        } => {
                             if let Some(key) = self.image_source(id) {
                                 let opacity = opacity.clamp(0.0, 1.0);
+                                let draft = self.image_draft.filter(|(of, _)| *of == id);
                                 items.push(Item::Image(ImageDraw {
                                     key,
                                     opacity,
                                     blend,
+                                    extents: draft.map_or(extents, |(_, e)| e),
                                 }));
                             }
                         }
@@ -3516,6 +3543,7 @@ struct ImageDraw {
     key: ImageKey,
     opacity: f32,
     blend: BlendMode,
+    extents: Extents,
 }
 
 /// One layer of a map frame.

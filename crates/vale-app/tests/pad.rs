@@ -19,7 +19,7 @@ use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
-    NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP,
+    NEW_FROM_FILE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP,
     SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS,
     WORLDS_ROW, brush_size_text, readout_text, theme,
 };
@@ -235,7 +235,7 @@ fn check_controls(h: &Pad, what: &str) {
                     .contains(&name);
                 let rows = [
                     NEW_RASTER,
-                    NEW_IMAGE,
+                    NEW_FROM_FILE,
                     "Lines",
                     "Points",
                     "Polygons",
@@ -6814,12 +6814,12 @@ fn the_menu_of_the_new_layers_asks_for_the_file_of_an_image_layer() {
         tap(&mut h, "Layers");
         tap(&mut h, ADD_LAYER);
         check_controls(&h, &format!("{what} with the menu of the new layers"));
-        let row = control(&h, NEW_IMAGE).unwrap_or_else(|| panic!("{what}: no row"));
+        let row = control(&h, NEW_FROM_FILE).unwrap_or_else(|| panic!("{what}: no row"));
         let menu = h.state().pad.add_rect.unwrap();
         assert!(menu.contains_rect(row), "{what}: {row:?}");
         assert!(h.state().actions.is_empty());
-        tap(&mut h, NEW_IMAGE);
-        assert_eq!(h.state().actions, [Action::ImageLayerDialog], "{what}");
+        tap(&mut h, NEW_FROM_FILE);
+        assert_eq!(h.state().actions, [Action::ImportFileDialog], "{what}");
         assert!(!h.state().pad.add, "{what}");
     }
 }
@@ -6848,7 +6848,7 @@ fn an_image_layer_comes_from_a_png_a_tiff_or_a_psd_with_alpha() {
     tap(&mut h, "Layers");
     for (at, file) in files.into_iter().enumerate() {
         let what = file.display().to_string();
-        h.state_mut().run_action(Action::ImportImageLayer(file));
+        h.state_mut().run_action(Action::ImportFile(file));
         h.run_steps(2);
         let images = h.state().doc.project.images();
         assert_eq!(images.len(), at + 1, "{what}");
@@ -6876,8 +6876,7 @@ fn the_panel_of_an_image_layer_works_with_a_finger() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        h.state_mut()
-            .run_action(Action::ImportImageLayer(file.clone()));
+        h.state_mut().run_action(Action::ImportFile(file.clone()));
         let id = h.state().doc.project.images()[0].id;
         h.state_mut().pad.layer = None;
         tap(&mut h, "Layers");
@@ -6933,8 +6932,222 @@ fn the_layers_panel_shows_why_an_image_layer_did_not_import() {
     std::fs::write(&file, b"not an image").unwrap();
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Layers");
-    h.state_mut().run_action(Action::ImportImageLayer(file));
+    h.state_mut().run_action(Action::ImportFile(file));
     h.run_steps(2);
     assert!(h.state().doc.project.images().is_empty());
     assert!(h.query_by_label_contains("notes").is_some());
+}
+
+/// The layers panel of a new image layer of this size, from `plates.png`.
+fn place_image_pad(dir: &std::path::Path, width: u32, height: u32) -> (Pad, vale_store::LayerId) {
+    let file = images::write_png(&dir.join("plates.png"), &images::half_red(width, height));
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    h.state_mut().run_action(Action::ImportFile(file));
+    h.run_steps(3);
+    let image = h.state().doc.project.images()[0].id;
+    let layer = h.state().doc.project.image_layer(image).unwrap().id;
+    (h, layer)
+}
+
+/// The layers panel of a new vector layer of one line, from `coast.geojson`
+/// in units of 2000 by 1000.
+fn place_vector_pad(dir: &std::path::Path) -> (Pad, vale_store::LayerId) {
+    let line = r#"{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[0,0],[1000,500],[2000,1000]]}}"#;
+    let file = images::write_geojson(&dir.join("coast.geojson"), &[line]);
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    h.state_mut().run_action(Action::ImportFile(file));
+    h.run_steps(3);
+    let Some(LayerRef::Vector(layer)) = h.state().pad.layer else {
+        panic!("no vector layer");
+    };
+    (h, layer)
+}
+
+/// Scrolls the Layers panel to a control and taps it.
+fn tap_scrolled(h: &mut Pad, name: &str) {
+    scroll_to_control(h, name);
+    tap(h, name);
+}
+
+/// Types in place of the text of a field of the Layers panel.
+fn type_scrolled(h: &mut Pad, name: &str, text: &str) {
+    scroll_to_control(h, name);
+    type_text(h, name, text);
+}
+
+fn texts(h: &Pad) -> Vec<String> {
+    painted_texts(h).into_iter().map(|t| t.0).collect()
+}
+
+fn placement(h: &Pad, layer: vale_store::LayerId) -> Option<vale_store::Placement> {
+    h.state().doc.project.layer(layer).unwrap().placement
+}
+
+#[test]
+fn a_layer_from_a_file_opens_on_globe_with_the_name_of_its_file() {
+    use vale_app::ui::place_form::{FILE, HEADING, method_name, not_wide_text};
+    use vale_store::PlaceMethod;
+    let dir = tempfile::tempdir().unwrap();
+    let wide = place_image_pad(dir.path(), 512, 256).0;
+    let square = place_image_pad(dir.path(), 300, 300).0;
+    let vector = place_vector_pad(dir.path()).0;
+    for (h, file, warning) in [
+        (wide, "plates.png", false),
+        (square, "plates.png", true),
+        (vector, "coast.geojson", false),
+    ] {
+        let form = h.state().place_form.as_ref().unwrap();
+        assert_eq!(form.method, PlaceMethod::Globe, "{file}");
+        assert!(h.state().place_draft.is_none(), "{file}");
+        let texts = texts(&h);
+        for text in [FILE, file, HEADING] {
+            assert!(
+                texts.iter().any(|t| t == text),
+                "{file}: {text} in {texts:?}"
+            );
+        }
+        let warned = texts.contains(&not_wide_text());
+        assert_eq!(warned, warning, "{file}: {texts:?}");
+        assert!(control(&h, &method_name("Points")).is_some(), "{file}");
+        check_controls(&h, &format!("{file} with the section of its file"));
+    }
+}
+
+#[test]
+fn typed_edges_show_on_the_world_and_place_stores_them() {
+    use vale_app::ui::place_form::{BAD_EDGES, PLACE, method_name};
+    use vale_store::{Extents, Geometry, PlaceMethod};
+    let dir = tempfile::tempdir().unwrap();
+    let image = place_image_pad(dir.path(), 512, 256);
+    let vector = place_vector_pad(dir.path());
+    let extents = Extents {
+        west: -10.0,
+        east: 30.0,
+        south: 0.0,
+        north: 20.0,
+    };
+    for (what, (mut h, layer)) in [("image", image), ("vector", vector)] {
+        tap_scrolled(&mut h, &method_name("Extents"));
+        for (name, text) in [
+            ("West", "10 W"),
+            ("East", "30°E"),
+            ("South", "0"),
+            ("North", "20n"),
+        ] {
+            type_scrolled(&mut h, name, text);
+        }
+        let draft = h.state().place_draft.unwrap();
+        assert_eq!(
+            (draft.layer, draft.placement.extents),
+            (layer, extents),
+            "{what}"
+        );
+        assert_eq!(
+            placement(&h, layer).unwrap().extents,
+            Extents::GLOBE,
+            "{what}"
+        );
+        if what == "vector" {
+            screenshot::save(&mut h, "pad-place-extents");
+        }
+
+        // Edges that are not valid give a hint, and Place is off.
+        type_scrolled(&mut h, "North", "95N");
+        assert!(texts(&h).iter().any(|t| t == BAD_EDGES), "{what}");
+        assert!(control(&h, PLACE).is_none(), "{what}");
+        assert!(h.state().place_draft.is_none(), "{what}");
+        type_scrolled(&mut h, "North", "20N");
+        assert!(!texts(&h).iter().any(|t| t == BAD_EDGES), "{what}");
+
+        tap_scrolled(&mut h, PLACE);
+        let stored = placement(&h, layer).unwrap();
+        assert_eq!(
+            (stored.method, stored.extents),
+            (PlaceMethod::Extents, extents)
+        );
+        assert!(h.state().place_draft.is_none(), "{what}");
+        if what == "vector" {
+            // The middle of the line moves to the middle of the extents.
+            let line = &h.state().doc.project.layer(layer).unwrap().features[0];
+            let Geometry::Lines(lines) = &line.geometry else {
+                panic!("not a line");
+            };
+            let ends = (lines[0][0], lines[0][1], lines[0][2]);
+            assert_eq!(ends, ([-10.0, 0.0], [10.0, 10.0], [30.0, 20.0]));
+        }
+        // The stored placement is the new start, so Place is off.
+        scroll_to_control(&mut h, &method_name("Extents"));
+        assert!(control(&h, PLACE).is_none(), "{what}");
+    }
+}
+
+#[test]
+fn a_tap_on_the_picture_moves_the_nearest_point_and_place_stores_the_points() {
+    use vale_app::ui::place_form::Axis;
+    use vale_app::ui::place_form::{PICTURE, PLACE, coordinate_name, extents_text, method_name};
+    use vale_store::{ControlPoint, Extents, PlaceMethod};
+    let dir = tempfile::tempdir().unwrap();
+    let image = place_image_pad(dir.path(), 512, 256);
+    let vector = place_vector_pad(dir.path());
+    for (what, (mut h, layer)) in [("image", image), ("vector", vector)] {
+        tap_scrolled(&mut h, &method_name("Points"));
+        scroll_to_control(&mut h, PICTURE);
+        let picture = control(&h, PICTURE).unwrap();
+        let at = picture.lerp_inside(vec2(0.9, 0.8));
+        touch(&mut h, egui::TouchPhase::Start, at, None);
+        h.step();
+        touch(&mut h, egui::TouchPhase::End, at, None);
+        h.run_steps(3);
+        let marks = h.state().place_form.as_ref().unwrap().marks;
+        assert_eq!(marks[0], [0.25, 0.25], "{what}");
+        let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+        assert!(
+            near(marks[1][0], 0.9) && near(marks[1][1], 0.8),
+            "{what}: {marks:?}"
+        );
+
+        let coordinates = [["10E", "60N"], ["20E", "40N"]];
+        for (i, [lon, lat]) in coordinates.iter().enumerate() {
+            type_scrolled(&mut h, &coordinate_name(i, Axis::Lon), lon);
+            type_scrolled(&mut h, &coordinate_name(i, Axis::Lat), lat);
+        }
+        let point = |i: usize, lon, lat| ControlPoint {
+            x: marks[i][0],
+            y: marks[i][1],
+            lon,
+            lat,
+        };
+        let extents = Extents::from_points(point(0, 10.0, 60.0), point(1, 20.0, 40.0)).unwrap();
+        assert!(texts(&h).contains(&extents_text(&extents)), "{what}");
+        assert_eq!(h.state().place_draft.unwrap().placement.extents, extents);
+        check_controls(&h, &format!("{what} with the method Points"));
+        if what == "image" {
+            scroll_to_control(&mut h, PICTURE);
+            screenshot::save(&mut h, "pad-place-points");
+        }
+        tap_scrolled(&mut h, PLACE);
+        let stored = placement(&h, layer).unwrap();
+        assert_eq!(
+            (stored.method, stored.extents),
+            (PlaceMethod::Points, extents)
+        );
+        assert_eq!(stored.points[1].x, marks[1][0], "{what}");
+    }
+}
+
+#[test]
+fn closing_the_panel_cancels_the_draft() {
+    use vale_app::ui::place_form::method_name;
+    use vale_store::Extents;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, layer) = place_image_pad(dir.path(), 512, 256);
+    tap_scrolled(&mut h, &method_name("Extents"));
+    type_scrolled(&mut h, "North", "45N");
+    assert!(h.state().place_draft.is_some());
+    tap(&mut h, "Close plates");
+    assert!(h.state().place_draft.is_none());
+    assert!(h.state().place_form.is_none());
+    assert_eq!(placement(&h, layer).unwrap().extents, Extents::GLOBE);
 }

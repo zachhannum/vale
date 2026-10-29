@@ -3491,7 +3491,7 @@ fn the_globe_draws_an_image_layer_with_its_colors_over_the_layers_below() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("plates.png");
     images::write_png(&path, &images::half_red(512, 256));
-    let action = vale_app::ui::Action::ImportImageLayer(path);
+    let action = vale_app::ui::Action::ImportFile(path);
     h.state_mut().run_action(action);
     assert_eq!(h.state().doc.project.images().len(), 1);
     h.run_steps(3);
@@ -6150,4 +6150,140 @@ fn a_scatter_stays_on_the_ground_when_the_globe_turns() {
             assert!((at.unwrap() - i.pos).length() < 1e-3);
         }
     }
+}
+
+/// The color of the canvas at a longitude and a latitude.
+fn color_at_lonlat(h: &mut Harness<'static, AppState>, lon: f64, lat: f64) -> [u8; 3] {
+    let img = canvas_image(h);
+    let globe = &h.state().globe;
+    let pos = globe
+        .project(lonlat_to_dir(lon, lat))
+        .expect("a place in view");
+    let at = pos - globe.rect.min;
+    let p = img.get_pixel(at.x as u32, at.y as u32).0;
+    [p[0], p[1], p[2]]
+}
+
+/// A color with no hue: the grey layer, with the shade of the globe.
+fn hueless(c: [u8; 3]) -> bool {
+    c.iter().max().unwrap() - c.iter().min().unwrap() <= 3
+}
+
+fn reddish(c: [u8; 3]) -> bool {
+    c[0] > 200 && c[1] < 60 && c[2] < 60
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_globe_draws_an_image_layer_inside_its_extents_and_a_draft_moves_it() {
+    use vale_app::place::PlaceDraft;
+    use vale_store::{Extents, PlaceMethod};
+    let _gpu = one_gpu_test();
+    let (mut h, _) = layers_harness(&[LOW]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = images::write_png(
+        &dir.path().join("red.png"),
+        &images::solid(64, 32, [255, 0, 0]),
+    );
+    h.state_mut()
+        .run_action(vale_app::ui::Action::ImportFile(path));
+    let id = h.state().doc.project.images()[0].id;
+    let layer = h.state().doc.project.image_layer(id).unwrap().id;
+    let mut placement = h
+        .state()
+        .doc
+        .project
+        .layer(layer)
+        .unwrap()
+        .placement
+        .unwrap();
+    placement.method = PlaceMethod::Extents;
+    placement.extents = Extents {
+        west: 0.0,
+        east: 40.0,
+        south: -20.0,
+        north: 20.0,
+    };
+    assert!(h.state_mut().place_layer(layer, placement));
+    h.run_steps(3);
+    let inside = color_at_lonlat(&mut h, 20.0, 0.0);
+    assert!(close(inside, [255, 0, 0]), "inside: {inside:?}");
+    for (lon, lat) in [(-20.0, 0.0), (60.0, 0.0), (20.0, 35.0), (20.0, -35.0)] {
+        let c = color_at_lonlat(&mut h, lon, lat);
+        assert!(hueless(c), "{lon} {lat}: {c:?}");
+    }
+
+    // The draft draws the image at its extents, under a light fill.
+    let mut draft = placement;
+    draft.extents.west = -40.0;
+    draft.extents.east = 0.0;
+    h.state_mut().set_place_draft(Some(PlaceDraft {
+        layer,
+        placement: draft,
+    }));
+    h.run_steps(3);
+    let moved = color_at_lonlat(&mut h, -20.0, 0.0);
+    assert!(reddish(moved), "draft: {moved:?}");
+    let left = color_at_lonlat(&mut h, 20.0, 0.0);
+    assert!(is_grey(left, LOW), "old place: {left:?}");
+    let stored = h.state().doc.project.layer(layer).unwrap().placement;
+    assert_eq!(stored, Some(placement));
+    h.state_mut().cancel_place_draft();
+    h.run_steps(3);
+    let back = color_at_lonlat(&mut h, 20.0, 0.0);
+    assert!(close(back, [255, 0, 0]), "cancel: {back:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_draft_draws_a_vector_layer_at_its_extents() {
+    use vale_app::place::PlaceDraft;
+    let _gpu = one_gpu_test();
+    let (mut h, _) = layers_harness(&[LOW]);
+    let dir = tempfile::tempdir().unwrap();
+    // A thick square of polygons around longitude 20 and latitude 0.
+    let square = r#"{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[10,-10],[30,-10],[30,10],[10,10],[10,-10]]]}}"#;
+    let path = images::write_geojson(&dir.path().join("square.geojson"), &[square]);
+    h.state_mut()
+        .run_action(vale_app::ui::Action::ImportFile(path));
+    let Some(LayerRef::Vector(layer)) = h.state().selected_layer else {
+        panic!("no vector layer selected")
+    };
+    h.run_steps(3);
+    let filled = color_at_lonlat(&mut h, 20.0, 0.0);
+    assert!(!hueless(filled), "filled: {filled:?}");
+    assert!(hueless(color_at_lonlat(&mut h, -20.0, 0.0)));
+    // The draft puts the globe into 40 by 40 degrees, so the square goes
+    // to about longitude -17.8.
+    let mut placement = h
+        .state()
+        .doc
+        .project
+        .layer(layer)
+        .unwrap()
+        .placement
+        .unwrap();
+    placement.extents = vale_store::Extents {
+        west: -40.0,
+        east: 0.0,
+        south: -20.0,
+        north: 20.0,
+    };
+    h.state_mut()
+        .set_place_draft(Some(PlaceDraft { layer, placement }));
+    h.run_steps(3);
+    // The fill of the draft covers both places.
+    let (moved, empty) = (
+        color_at_lonlat(&mut h, -17.8, 0.0),
+        color_at_lonlat(&mut h, -32.0, 12.0),
+    );
+    let far = moved.iter().zip(empty).any(|(a, b)| a.abs_diff(b) > 40);
+    assert!(far, "{moved:?} and {empty:?}");
+    let left = color_at_lonlat(&mut h, 20.0, 0.0);
+    assert!(hueless(left), "old place: {left:?}");
+    let old = &h.state().doc.project.layer(layer).unwrap().features[0].geometry;
+    let vale_store::Geometry::Polygons(p) = old else {
+        panic!("{old:?}")
+    };
+    assert_eq!(p[0][0][0], [10.0, -10.0]);
 }

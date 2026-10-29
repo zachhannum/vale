@@ -26,8 +26,8 @@ enum PickFor {
     RasterImage,
     /// A new symbol of the project.
     Symbol,
-    /// The file of a new image layer.
-    ImageLayer,
+    /// A file to add as a layer.
+    ImportFile,
 }
 
 struct ValeApp {
@@ -80,7 +80,7 @@ impl eframe::App for ValeApp {
                 PickFor::Ramp(id) => state.run_action(Action::ImportRamp(id, path)),
                 PickFor::RasterImage => state.run_action(Action::RasterImage(path)),
                 PickFor::Symbol => state.run_action(Action::AddSymbol(path)),
-                PickFor::ImageLayer => state.run_action(Action::ImportImageLayer(path)),
+                PickFor::ImportFile => state.run_action(Action::ImportFile(path)),
             }
         }
 
@@ -137,11 +137,11 @@ impl eframe::App for ValeApp {
                     }
                 }
                 #[cfg(target_os = "ios")]
-                Action::ImageLayerDialog => {
+                Action::ImportFileDialog => {
                     if let Some(picker) = &self.picker
-                        && picker.pick_layer_image()
+                        && picker.pick_layer_file()
                     {
-                        self.pick_for = PickFor::ImageLayer;
+                        self.pick_for = PickFor::ImportFile;
                     }
                 }
                 #[cfg(target_os = "ios")]
@@ -254,12 +254,15 @@ impl eframe::App for ValeApp {
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
-                Action::ImageLayerDialog => {
+                Action::ImportFileDialog => {
                     let picked = rfd::FileDialog::new()
-                        .add_filter("Image", &["png", "tif", "tiff", "psd"])
+                        .add_filter(
+                            "Image or GeoJSON",
+                            &["png", "tif", "tiff", "psd", "geojson", "json"],
+                        )
                         .pick_file();
                     if let Some(path) = picked {
-                        state.run_action(Action::ImportImageLayer(path));
+                        state.run_action(Action::ImportFile(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]

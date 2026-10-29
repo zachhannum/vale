@@ -8,6 +8,7 @@ pub use uuid::Uuid;
 mod atlas;
 mod gpkg;
 mod image_tile;
+mod placement;
 mod tile;
 mod undo;
 
@@ -20,6 +21,7 @@ pub use gpkg::{
     TileKey, summary,
 };
 pub use image_tile::{IMAGE_TILE_SIZE, decode_tile, encode_tile, image_levels, level_size};
+pub use placement::{ControlPoint, Extents, PlaceMethod, Placement};
 pub use tile::TILE_SIZE;
 pub use undo::UNDO_LIMIT;
 
@@ -323,8 +325,8 @@ impl LayerKind {
 }
 
 /// One row of the draw order: a set of features of one geometry kind, a
-/// raster, or an image. A raster layer and an image layer have no source, no
-/// fields, and no features.
+/// raster, or an image. A raster layer has no source. A raster layer and an
+/// image layer have no fields and no features.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
     pub id: LayerId,
@@ -343,6 +345,9 @@ pub struct Layer {
     /// The style of the layer as JSON. `vale-store` does not read it. `None`
     /// means the default style.
     pub style: Option<String>,
+    /// Where the file of the layer sits on the globe. `None` means the layer
+    /// did not come from a file.
+    pub placement: Option<Placement>,
 }
 
 impl Layer {
@@ -845,6 +850,7 @@ impl Project {
             fields: Vec::new(),
             features: Vec::new(),
             style: None,
+            placement: None,
         };
         self.next_id += 1;
         self.layers.insert(top.map_or(0, |i| i + 1), layer);
@@ -1028,6 +1034,7 @@ impl Project {
             fields: Vec::new(),
             features: Vec::new(),
             style: None,
+            placement: None,
         });
         self.next_id += 1;
         id
@@ -1102,6 +1109,7 @@ impl Project {
             fields,
             features,
             style: None,
+            placement: None,
         });
         id
     }
@@ -1165,6 +1173,18 @@ impl Project {
     /// Sets the style JSON of a layer.
     pub fn set_layer_style(&mut self, id: LayerId, style: Option<String>) -> bool {
         self.layer_mut(id).map(|l| l.style = style).is_some()
+    }
+
+    /// Sets where the file of a layer sits on the globe.
+    pub fn set_layer_placement(&mut self, id: LayerId, placement: Option<Placement>) -> bool {
+        self.layer_mut(id)
+            .map(|l| l.placement = placement)
+            .is_some()
+    }
+
+    /// Sets the name of the file of a layer.
+    pub fn set_layer_source(&mut self, id: LayerId, source: Option<String>) -> bool {
+        self.layer_mut(id).map(|l| l.source = source).is_some()
     }
 
     /// Shows or hides a layer.

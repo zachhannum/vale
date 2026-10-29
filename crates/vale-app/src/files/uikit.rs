@@ -126,13 +126,16 @@ impl Picker {
         self.pick(&[ns_string!("public.png"), ns_string!("public.tiff")])
     }
 
-    /// Shows the PNG, TIFF, and Photoshop files of the Files app, for an
-    /// image layer. Returns `false` if the Files app cannot show now.
-    pub fn pick_layer_image(&self) -> bool {
+    /// Shows the PNG, TIFF, Photoshop, GeoJSON, and JSON files of the Files
+    /// app, for a new layer. Returns `false` if the Files app cannot show
+    /// now.
+    pub fn pick_layer_file(&self) -> bool {
         self.pick(&[
             ns_string!("public.png"),
             ns_string!("public.tiff"),
             ns_string!("com.adobe.photoshop-image"),
+            ns_string!("public.geojson"),
+            ns_string!("public.json"),
         ])
     }
 

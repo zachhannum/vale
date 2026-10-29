@@ -40,6 +40,10 @@ pub struct ImageInfo {
     pub has_alpha: bool,
 }
 
+/// The end of the warning about a file that is not twice as wide as it is
+/// high.
+pub const NOT_WIDE: &str = "is not 2:1, so it is stretched to cover the globe";
+
 impl ImageInfo {
     /// The text that tells the user what the import did, and `true` if the
     /// text has a warning.
@@ -53,7 +57,7 @@ impl ImageInfo {
         let mut text = format!("Imported {name} ({width} × {height})");
         let wide = *width == 2 * *height;
         if !wide {
-            text.push_str(". The image is not 2:1, so it is stretched to cover the globe");
+            text.push_str(&format!(". The image {NOT_WIDE}"));
         }
         if !self.has_alpha {
             text.push_str(". The image has no alpha channel, so it has no transparent parts");

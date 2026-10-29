@@ -39,6 +39,7 @@ pub mod gradient;
 pub mod inspector;
 pub mod pad;
 pub mod panels;
+pub mod place_form;
 pub mod point_form;
 pub mod raster_form;
 pub mod style_editor;
@@ -65,11 +66,12 @@ pub enum Action {
     RasterImageDialog,
     /// Reads this image for the form of a new raster layer.
     RasterImage(PathBuf),
-    /// Asks for the file of a new image layer.
-    ImageLayerDialog,
-    /// Adds an image layer with the colors and the transparency of this
-    /// PNG, TIFF, or PSD file.
-    ImportImageLayer(PathBuf),
+    /// Asks for a file to add as a layer.
+    ImportFileDialog,
+    /// Adds the layers of this file. A PNG, TIFF, or PSD file gives an image
+    /// layer with its colors and its transparency. A GeoJSON file gives a
+    /// vector layer for each geometry kind.
+    ImportFile(PathBuf),
     /// Asks for a legend image for a new color ramp. The panel of this
     /// raster layer shows the result.
     ImportRampDialog(RasterId),
@@ -383,6 +385,12 @@ pub struct AppState {
     /// The text of the last import of an image layer, and its layer.
     /// `None` for the layer: the import failed.
     pub image_note: Option<(Note, Option<ImageId>)>,
+    /// A new placement of a layer that the world view shows before it is
+    /// stored. Change it with `set_place_draft`.
+    pub place_draft: Option<crate::place::PlaceDraft>,
+    /// The texts of the section of the open panel that places a layer from
+    /// a file.
+    pub place_form: Option<place_form::PlaceForm>,
     /// The tiles of the images of a project with no file.
     pub image_tiles: ImageTiles,
     pub export_layer: Option<RasterId>,
@@ -480,6 +488,8 @@ impl AppState {
             import_layer: None,
             image_import: None,
             image_note: None,
+            place_draft: None,
+            place_form: None,
             image_tiles: ImageTiles::new(),
             export_layer: None,
             share_exports: false,
@@ -579,7 +589,13 @@ impl AppState {
             LayerKind::Image(id) => {
                 let image = project.image(id)?;
                 let (opacity, blend) = (image.opacity, image.blend);
-                Some(StackItem::Image { id, opacity, blend })
+                let extents = crate::place::layer_extents(layer);
+                Some(StackItem::Image {
+                    id,
+                    opacity,
+                    blend,
+                    extents,
+                })
             }
             LayerKind::Raster(id) => {
                 let raster = project.raster(id)?;
@@ -798,7 +814,7 @@ impl AppState {
 
     /// Saves each change that waits, so that the next change is its own
     /// undo step. A stroke that still waits for its texels saves at its end.
-    fn save_edit(&mut self) {
+    pub(crate) fn save_edit(&mut self) {
         let Some(session) = &mut self.session else {
             return;
         };
@@ -2171,7 +2187,7 @@ impl AppState {
         self.image_import.as_ref().map(ImageImport::progress)
     }
 
-    fn note_image(&mut self, note: Note, layer: Option<ImageId>) {
+    pub(crate) fn note_image(&mut self, note: Note, layer: Option<ImageId>) {
         self.status = note.text.clone();
         self.image_note = Some((note, layer));
     }
@@ -2231,6 +2247,9 @@ impl AppState {
         if let Some(layer) = project.image_layer(id).map(|layer| layer.id) {
             let style = vale_style::LayerStyle::image().to_json();
             project.set_layer_style(layer, Some(style));
+            let size = [f64::from(info.width), f64::from(info.height)];
+            project.set_layer_placement(layer, Some(vale_store::Placement::globe(size)));
+            project.set_layer_source(layer, Some(info.name.clone()));
         }
         raster_style::store_image_styles(project);
         self.select(Some(LayerRef::Image(id)));
@@ -2250,10 +2269,7 @@ impl AppState {
             let Some((id, level, column, row)) = self.globe.image_request() else {
                 return;
             };
-            let blob = match &self.session {
-                Some(session) => session.load_image_tile(id, level, column, row),
-                None => Ok(self.image_tiles.get(&(id, level, column, row)).cloned()),
-            };
+            let blob = self.image_tile(id, level, column, row);
             let tile =
                 blob.and_then(|blob| blob.as_deref().map(vale_store::decode_tile).transpose());
             match tile {
@@ -2263,6 +2279,21 @@ impl AppState {
                     self.globe.give_image_tile(id, None);
                 }
             }
+        }
+    }
+
+    /// The PNG of one tile of an image, from the project file or from the
+    /// main memory.
+    pub fn image_tile(
+        &self,
+        id: ImageId,
+        level: u32,
+        column: u32,
+        row: u32,
+    ) -> Result<Option<Vec<u8>>, vale_store::StoreError> {
+        match &self.session {
+            Some(session) => session.load_image_tile(id, level, column, row),
+            None => Ok(self.image_tiles.get(&(id, level, column, row)).cloned()),
         }
     }
 
@@ -2588,7 +2619,10 @@ impl AppState {
                 }
                 self.poll_import();
             }
-            Action::ImportImageLayer(path) => {
+            Action::ImportFile(path) if crate::place::is_vector_path(&path) => {
+                self.import_vector(&path);
+            }
+            Action::ImportFile(path) => {
                 self.start_image_import(path);
                 self.poll_image_import(self.headless);
                 if self.headless {
@@ -2665,7 +2699,7 @@ impl AppState {
             | Action::ExportDialog(_)
             | Action::ImportHeightmapDialog
             | Action::RasterImageDialog
-            | Action::ImageLayerDialog
+            | Action::ImportFileDialog
             | Action::ImportRampDialog(_)
             | Action::AddSymbolDialog
             | Action::ExportHeightmapDialog
@@ -2699,6 +2733,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             ui.ctx().request_repaint_after(DOWNLOAD_POLL);
         }
         browser::draw(ui, state);
+        place_form::end_frame(state);
         state.frames += 1;
         return;
     }
@@ -2710,6 +2745,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             Workspace::Globe => pad::draw(ui, state),
             Workspace::Atlas => pad::atlas::draw(ui, state),
         }
+        place_form::end_frame(state);
         state.frames += 1;
         return;
     }
@@ -2739,5 +2775,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::desktop(ui.ctx(), state);
     raster_form::desktop(ui.ctx(), state);
     point_form::desktop(ui.ctx(), state);
+    place_form::end_frame(state);
     state.frames += 1;
 }

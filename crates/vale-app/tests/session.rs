@@ -1724,7 +1724,7 @@ fn image_project(
         image::Rgba([(x % 256) as u8, (y % 256) as u8, 40, ((x + y) % 256) as u8])
     });
     let file = images::write_png(&dir.join("plates.png"), &picture);
-    state.run_action(vale_app::ui::Action::ImportImageLayer(file));
+    state.run_action(vale_app::ui::Action::ImportFile(file));
     let id = state.doc.project.images()[0].id;
     assert_eq!(state.selected_layer, Some(LayerRef::Image(id)));
     assert!(state.set_image_opacity(id, 0.4));
@@ -1793,7 +1793,7 @@ fn the_removal_of_an_image_layer_is_one_undo_step() {
     state.headless = true;
     state.session = Some(Session::open(&path, &mut state.doc).unwrap());
     let file = images::write_png(&dir.path().join("plates.png"), &images::half_red(512, 256));
-    state.run_action(vale_app::ui::Action::ImportImageLayer(file));
+    state.run_action(vale_app::ui::Action::ImportFile(file));
     let id = state.doc.project.images()[0].id;
     let layer = state.doc.project.image_layer(id).unwrap().id;
     assert!(state.remove_layer(layer));
@@ -1855,4 +1855,185 @@ fn a_raster_style_of_version_2_takes_the_lines_the_smoothing_and_the_hillshade_o
         Some(vale_style::STYLE_VERSION)
     );
     assert!(record(&doc.project, height).hillshade.on);
+}
+
+/// A headless state with a new project file in `dir`.
+fn file_state(dir: &std::path::Path) -> AppState {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(&dir.join("project.gpkg"), &mut state.doc).unwrap());
+    state
+}
+
+fn line_points(state: &AppState, layer: vale_store::LayerId) -> Vec<[f64; 2]> {
+    let layer = state.doc.project.layer(layer).unwrap();
+    match &layer.features[0].geometry {
+        vale_store::Geometry::Lines(lines) => lines[0].clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn near_points(got: &[[f64; 2]], want: &[[f64; 2]]) {
+    assert_eq!(got.len(), want.len(), "{got:?}");
+    for (g, w) in got.iter().zip(want) {
+        assert!(
+            (g[0] - w[0]).abs() < 1e-9 && (g[1] - w[1]).abs() < 1e-9,
+            "{got:?} and {want:?}"
+        );
+    }
+}
+
+const LINE: &str = r#"{"type":"Feature","properties":{"name":"a"},"geometry":{"type":"LineString","coordinates":[[0,0],[2000,1000],[500,250]]}}"#;
+
+#[test]
+fn a_png_from_a_file_gives_an_image_layer_on_the_whole_globe() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = file_state(dir.path());
+    let file = images::write_png(&dir.path().join("plates.png"), &images::half_red(64, 32));
+    state.run_action(Action::ImportFile(file));
+    let id = state.doc.project.images()[0].id;
+    let layer = state.doc.project.image_layer(id).unwrap();
+    let placement = vale_store::Placement::globe([64.0, 32.0]);
+    assert_eq!(layer.placement, Some(placement));
+    assert_eq!(state.selected_layer, Some(LayerRef::Image(id)));
+}
+
+#[test]
+fn a_geojson_file_in_degrees_keeps_its_coordinates_as_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = file_state(dir.path());
+    let point =
+        r#"{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[10,20]}}"#;
+    let line = r#"{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[-170,-80],[30,45]]}}"#;
+    let file = images::write_geojson(&dir.path().join("coast.geojson"), &[point, line]);
+    state.run_action(Action::ImportFile(file));
+    let layers = state.doc.project.layers();
+    assert_eq!(layers.len(), 2);
+    let names: Vec<_> = layers.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["coast (lines)", "coast (points)"]);
+    let globe = vale_store::Placement::globe([360.0, 180.0]);
+    assert!(layers.iter().all(|l| l.placement == Some(globe)));
+    assert!(
+        layers
+            .iter()
+            .all(|l| l.source.as_deref() == Some("coast.geojson"))
+    );
+    let (lines, points) = (layers[0].id, layers[1].id);
+    near_points(
+        &line_points(&state, lines),
+        &[[-170.0, -80.0], [30.0, 45.0]],
+    );
+    assert_eq!(state.selected_layer, Some(LayerRef::Vector(points)));
+    assert!(state.doc.entry(lines).is_some());
+    assert!(state.doc.project.layer(lines).unwrap().style.is_some());
+    state.undo();
+    assert!(state.doc.project.layers().is_empty());
+    assert!(!state.can_undo());
+}
+
+#[test]
+fn a_geojson_file_in_other_units_fills_the_globe() {
+    // A project with no file takes the layer too.
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    let dir = tempfile::tempdir().unwrap();
+    let file = images::write_geojson(&dir.path().join("map.json"), &[LINE]);
+    state.run_action(Action::ImportFile(file));
+    let layer = state.doc.project.layers()[0].id;
+    let want = [[-180.0, -90.0], [180.0, 90.0], [-90.0, -45.0]];
+    near_points(&line_points(&state, layer), &want);
+    let placement = state.doc.project.layer(layer).unwrap().placement;
+    assert_eq!(
+        placement,
+        Some(vale_store::Placement::globe([2000.0, 1000.0]))
+    );
+}
+
+#[test]
+fn a_new_placement_moves_the_points_of_a_vector_layer_and_undo_puts_them_back() {
+    use vale_store::{Extents, PlaceMethod};
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = file_state(dir.path());
+    let file = images::write_geojson(&dir.path().join("map.geojson"), &[LINE]);
+    state.run_action(Action::ImportFile(file));
+    let layer = state.doc.project.layers()[0].id;
+    let old = state.doc.project.layer(layer).unwrap().placement.unwrap();
+    let mut placement = old;
+    placement.method = PlaceMethod::Extents;
+    placement.extents = Extents {
+        west: 10.0,
+        east: 30.0,
+        south: -10.0,
+        north: 0.0,
+    };
+    assert!(state.place_layer(layer, placement));
+    let want = [[10.0, -10.0], [30.0, 0.0], [15.0, -7.5]];
+    near_points(&line_points(&state, layer), &want);
+    assert_eq!(
+        state.doc.project.layer(layer).unwrap().placement,
+        Some(placement)
+    );
+    // Extents that are not valid change nothing.
+    let mut bad = placement;
+    bad.extents.north = 100.0;
+    assert!(!state.place_layer(layer, bad));
+    state.undo();
+    let back = [[-180.0, -90.0], [180.0, 90.0], [-90.0, -45.0]];
+    near_points(&line_points(&state, layer), &back);
+    assert_eq!(state.doc.project.layer(layer).unwrap().placement, Some(old));
+    state.redo();
+    near_points(&line_points(&state, layer), &want);
+}
+
+#[test]
+fn a_draft_leaves_the_placement_until_a_commit() {
+    use vale_app::place::PlaceDraft;
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = file_state(dir.path());
+    let file = images::write_geojson(&dir.path().join("map.geojson"), &[LINE]);
+    state.run_action(Action::ImportFile(file));
+    let layer = state.doc.project.layers()[0].id;
+    let old = state.doc.project.layer(layer).unwrap().placement.unwrap();
+    let mut placement = old;
+    placement.extents.west = 0.0;
+    state.set_place_draft(Some(PlaceDraft { layer, placement }));
+    assert_eq!(state.draft_extents(), Some((layer, placement.extents)));
+    assert_eq!(state.doc.project.layer(layer).unwrap().placement, Some(old));
+    state.cancel_place_draft();
+    assert_eq!(state.draft_extents(), None);
+    assert_eq!(state.doc.project.layer(layer).unwrap().placement, Some(old));
+    // A draft that is not valid is not drawn, and it does not commit.
+    let mut bad = placement;
+    bad.extents.east = -10.0;
+    state.set_place_draft(Some(PlaceDraft {
+        layer,
+        placement: bad,
+    }));
+    assert_eq!(state.draft_extents(), None);
+    assert!(!state.commit_place_draft());
+    assert!(state.place_draft.is_some());
+    state.set_place_draft(Some(PlaceDraft { layer, placement }));
+    assert!(state.commit_place_draft());
+    assert!(state.place_draft.is_none());
+    assert_eq!(
+        state.doc.project.layer(layer).unwrap().placement,
+        Some(placement)
+    );
+    assert_eq!(line_points(&state, layer)[0], [0.0, -90.0]);
+}
+
+#[test]
+fn a_full_globe_image_of_16384_by_8192_pixels_imports_in_less_than_a_minute() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = images::write_large_png(&dir.path().join("world.png"), 16384, 8192);
+    let mut state = file_state(dir.path());
+    let start = Instant::now();
+    state.run_action(Action::ImportFile(file));
+    let took = start.elapsed();
+    let id = state.doc.project.images()[0].id;
+    let layer = state.doc.project.image_layer(id).unwrap();
+    let placement = vale_store::Placement::globe([16384.0, 8192.0]);
+    assert_eq!(layer.placement, Some(placement));
+    eprintln!("The import took {took:?}");
+    assert!(took.as_secs() < 60, "{took:?}");
 }

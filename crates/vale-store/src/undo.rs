@@ -25,10 +25,11 @@ use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry,
     remove_image_tiles, v14_bands,
 };
+use crate::placement::VALUES;
 use crate::{
     BlendMode, Feature, Field, FieldType, GeometryKind, Hillshade, Image, ImageId, Layer, LayerId,
-    LayerKind, Project, Raster, RasterDisplay, RasterId, Smoothing, Stop, StopLine, Units, Uuid,
-    Value, World, clamp_feature_size, clamp_opacity, infer_fields,
+    LayerKind, Placement, Project, Raster, RasterDisplay, RasterId, Smoothing, Stop, StopLine,
+    Units, Uuid, Value, World, clamp_feature_size, clamp_opacity, infer_fields,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -976,6 +977,16 @@ fn put_layer(out: &mut Vec<u8>, position: usize, layer: &Layer) {
     }
     out.push(layer.style.is_some() as u8);
     put_bytes(out, layer.style.as_deref().unwrap_or_default().as_bytes());
+    match layer.placement {
+        Some(placement) => {
+            let (method, values) = placement.values();
+            out.extend_from_slice(&[1, method]);
+            for n in values {
+                put_f64(out, n);
+            }
+        }
+        None => out.push(0),
+    }
 }
 
 fn put_value(out: &mut Vec<u8>, value: &Value) {
@@ -1005,7 +1016,8 @@ fn value(r: &mut Reader) -> Option<Value> {
 }
 
 /// A layer and its place in the project. An image of a format before
-/// version 20 ends before the style, and an image before version 19 ends
+/// version 30 ends before the placement, an image before version 20 ends
+/// before the style, and an image before version 19 ends
 /// after the visibility. Its fields get their types as an
 /// import gives them, and the values turn into values of those types.
 fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
@@ -1067,6 +1079,21 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
             (has_style == 1).then_some(style)
         }
     };
+    let placement = match r.0.is_empty() {
+        true => None,
+        false => match r.take()? {
+            [0] => None,
+            [1] => {
+                let [method] = r.take()?;
+                let mut values = [0.0; VALUES];
+                for value in &mut values {
+                    *value = r.f64()?;
+                }
+                Some(Placement::from_values(method, values)?)
+            }
+            _ => return None,
+        },
+    };
     let layer = Layer {
         id,
         name,
@@ -1076,6 +1103,7 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
         fields,
         features,
         style,
+        placement,
     };
     r.0.is_empty().then_some((position, layer))
 }
@@ -1083,6 +1111,7 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PlaceMethod;
 
     #[test]
     fn an_atlas_image_keeps_the_frames() {
@@ -1188,7 +1217,7 @@ mod tests {
         let mut out = Vec::new();
         put_layer(&mut out, 0, hidden);
         assert_eq!(layer(&mut Reader(&out)), Some((0, hidden.clone())));
-        out.pop();
+        out.truncate(out.len() - 2);
         assert_eq!(layer(&mut Reader(&out)), None);
     }
 
@@ -1203,10 +1232,31 @@ mod tests {
         put_layer(&mut out, 0, styled);
         assert_eq!(layer(&mut Reader(&out)), Some((0, styled.clone())));
         // An image of version 19 ends before the style.
-        out.truncate(out.len() - 5 - STYLE.len());
+        out.truncate(out.len() - 1 - 5 - STYLE.len());
         let old = Layer {
             style: None,
             ..styled.clone()
+        };
+        assert_eq!(layer(&mut Reader(&out)), Some((0, old)));
+    }
+
+    #[test]
+    fn a_layer_image_keeps_the_placement() {
+        let mut project = Project::new(World::default());
+        let id = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let mut placement = Placement::globe([800.0, 600.0]);
+        placement.method = PlaceMethod::Points;
+        placement.extents.west = -10.5;
+        project.set_layer_placement(id, Some(placement));
+        let placed = project.layer(id).unwrap();
+        let mut out = Vec::new();
+        put_layer(&mut out, 0, placed);
+        assert_eq!(layer(&mut Reader(&out)), Some((0, placed.clone())));
+        // An image of version 29 ends before the placement.
+        out.truncate(out.len() - 2 - 8 * VALUES);
+        let old = Layer {
+            placement: None,
+            ..placed.clone()
         };
         assert_eq!(layer(&mut Reader(&out)), Some((0, old)));
     }
@@ -1240,7 +1290,7 @@ mod tests {
         put_layer(&mut out, 0, towns);
         assert_eq!(layer(&mut Reader(&out)), Some((0, towns.clone())));
         // An image that ends inside the schema is not valid.
-        out.pop();
+        out.truncate(out.len() - 2);
         assert_eq!(layer(&mut Reader(&out)), None);
     }
 
@@ -1280,9 +1330,10 @@ mod tests {
             .insert("any".into(), Value::Bool(false));
         let mut out = Vec::new();
         put_layer(&mut out, 2, &old);
-        // Each field has a type byte and a null default, and the style
-        // has a presence byte and a length.
-        out.truncate(out.len() - 2 * old.fields.len() - 5);
+        // Each field has a type byte and a null default, the style
+        // has a presence byte and a length, and the placement has a
+        // presence byte.
+        out.truncate(out.len() - 2 * old.fields.len() - 5 - 1);
         assert_eq!(layer(&mut Reader(&out)), Some((2, towns.clone())));
         let kinds: Vec<FieldType> = towns.fields.iter().map(|f| f.kind).collect();
         assert_eq!(kinds, [FieldType::Text, FieldType::Bool, FieldType::Real]);

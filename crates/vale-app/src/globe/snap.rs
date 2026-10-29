@@ -1320,6 +1320,7 @@ pub(super) mod tests {
             source: None,
             fields: Vec::new(),
             style: None,
+            placement: None,
             features: geometries
                 .into_iter()
                 .map(|g| Feature::new(g, BTreeMap::new()))

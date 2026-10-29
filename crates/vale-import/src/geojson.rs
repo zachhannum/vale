@@ -24,8 +24,21 @@ pub struct Imported {
     pub skipped: usize,
 }
 
-/// Read GeoJSON text. `name` names the layers.
+/// Read GeoJSON text. `name` names the layers. A latitude past a pole
+/// moves to the pole.
 pub fn read_str(name: &str, text: &str) -> Result<Imported, ImportError> {
+    let mut imported = read_str_raw(name, text)?;
+    for layer in &mut imported.layers {
+        for feature in &mut layer.features {
+            clamp_latitudes(&mut feature.geometry);
+        }
+    }
+    Ok(imported)
+}
+
+/// Read GeoJSON text, and keep each coordinate as it is in the file. The
+/// coordinates can be in units other than degrees.
+pub fn read_str_raw(name: &str, text: &str) -> Result<Imported, ImportError> {
     let json: Json = serde_json::from_str(text).map_err(|e| ImportError::Parse {
         name: name.to_string(),
         message: e.to_string(),
@@ -105,6 +118,18 @@ pub fn read_str(name: &str, text: &str) -> Result<Imported, ImportError> {
 
 /// Read a GeoJSON file. The layer name is the file stem.
 pub fn read_file(path: &Path) -> Result<Imported, ImportError> {
+    let (name, text) = read_text(path)?;
+    read_str(&name, &text)
+}
+
+/// Read a GeoJSON file as [`read_str_raw`] reads text. The layer name is the
+/// file stem.
+pub fn read_file_raw(path: &Path) -> Result<Imported, ImportError> {
+    let (name, text) = read_text(path)?;
+    read_str_raw(&name, &text)
+}
+
+fn read_text(path: &Path) -> Result<(String, String), ImportError> {
     let text = std::fs::read_to_string(path).map_err(|e| ImportError::Io {
         path: path.to_path_buf(),
         message: e.to_string(),
@@ -113,7 +138,16 @@ pub fn read_file(path: &Path) -> Result<Imported, ImportError> {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "layer".to_string());
-    read_str(&name, &text)
+    Ok((name, text))
+}
+
+fn clamp_latitudes(geometry: &mut Geometry) {
+    let clamp = |p: &mut LonLat| p[1] = p[1].clamp(-90.0, 90.0);
+    match geometry {
+        Geometry::Points(points) => points.iter_mut().for_each(clamp),
+        Geometry::Lines(lines) => lines.iter_mut().flatten().for_each(clamp),
+        Geometry::Polygons(polygons) => polygons.iter_mut().flatten().flatten().for_each(clamp),
+    }
 }
 
 fn read_feature(f: &Json) -> (Option<Geometry>, BTreeMap<String, Value>) {
@@ -144,7 +178,7 @@ fn position(v: &Json) -> Option<LonLat> {
     if !lon.is_finite() || !lat.is_finite() {
         return None;
     }
-    Some([lon, lat.clamp(-90.0, 90.0)])
+    Some([lon, lat])
 }
 
 fn positions(v: &Json) -> Option<Vec<LonLat>> {
@@ -329,5 +363,13 @@ mod tests {
         assert_eq!(f.attributes["l"], Value::Text("[1,2]".into()));
         assert_eq!(f.attributes["n"], Value::Null);
         assert_eq!(f.attributes["b"], Value::Bool(true));
+    }
+
+    #[test]
+    fn the_raw_read_keeps_the_coordinates() {
+        let text = r#"{"type":"LineString","coordinates":[[0,0],[2000,1000]]}"#;
+        let i = read_str_raw("c", text).unwrap();
+        let line = vec![vec![[0.0, 0.0], [2000.0, 1000.0]]];
+        assert_eq!(i.layers[0].features[0].geometry, Geometry::Lines(line));
     }
 }

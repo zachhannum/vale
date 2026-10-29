@@ -140,8 +140,11 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         ui.close();
                     }
                     let free = state.image_import.is_none();
-                    if ui.add_enabled(free, egui::Button::new(ADD_IMAGE)).clicked() {
-                        state.actions.push(Action::ImageLayerDialog);
+                    if ui
+                        .add_enabled(free, egui::Button::new(ADD_FROM_FILE))
+                        .clicked()
+                    {
+                        state.actions.push(Action::ImportFileDialog);
                         ui.close();
                     }
                     layer_rows(ui, state);
@@ -244,8 +247,8 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 pub const LAYERS_MENU: &str = "Layers";
 /// The button that opens the form of a new raster layer.
 pub const ADD_RASTER: &str = "Add raster…";
-/// The button that adds an image layer from a file.
-pub const ADD_IMAGE: &str = "Add image…";
+/// The button that adds the layers of a file.
+pub const ADD_FROM_FILE: &str = "Add from file…";
 /// The field of the Layers menu with the name of the selected layer.
 pub const LAYER_NAME: &str = "Layer name";
 /// The slider of the Layers menu with the opacity of the selected raster
@@ -409,8 +412,113 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
     {
         ui.label(&note.text);
     }
+    place_section(ui, state, layer);
     if ui.button(DELETE_LAYER).clicked() {
         state.remove_layer(id);
+    }
+}
+
+/// The section of a layer from a file that places the file on the world.
+fn place_section(ui: &mut egui::Ui, state: &mut AppState, layer: LayerRef) {
+    use super::place_form::{self as form, Axis};
+    use vale_store::PlaceMethod;
+    let Some(file) = form::open(state, ui.ctx(), layer) else {
+        return;
+    };
+    ui.separator();
+    if let Some(source) = &file.source {
+        ui.horizontal(|ui| {
+            ui.weak(form::FILE);
+            ui.label(source);
+        });
+    }
+    ui.strong(form::HEADING);
+    let Some(place) = state.place_form.as_mut() else {
+        return;
+    };
+    let space = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(240.0, 0.0));
+    let rect = form::picture_rect(space, file.placement.size, 160.0);
+    ui.allocate_rect(rect.with_min_x(space.left()), egui::Sense::hover());
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    form::paint_picture(ui.painter(), rect, place, 4.0, 8.0, font);
+    if place.method == PlaceMethod::Points {
+        let resp = ui.interact(
+            rect,
+            ui.id().with(form::PICTURE),
+            egui::Sense::click_and_drag(),
+        );
+        named(&resp, egui::WidgetType::Other, false, form::PICTURE.into());
+        form::picture_input(place, rect, &resp);
+    }
+    ui.horizontal(|ui| {
+        for (method, label) in form::METHODS {
+            let on = place.method == method;
+            let pick = ui.selectable_label(on, label);
+            named(
+                &pick,
+                egui::WidgetType::SelectableLabel,
+                on,
+                form::method_name(label),
+            );
+            if pick.clicked() {
+                place.method = method;
+            }
+        }
+    });
+    let field = |ui: &mut egui::Ui, text: &mut String, name: String, axis: Axis| {
+        let valid = form::parse_degrees(text, axis).is_some();
+        let mut edit = egui::TextEdit::singleline(text).desired_width(72.0);
+        if !valid {
+            edit = edit.text_color(ui.visuals().warn_fg_color);
+        }
+        let resp = ui.add(edit);
+        named(&resp, egui::WidgetType::TextEdit, false, name);
+    };
+    match place.method {
+        PlaceMethod::Globe => {
+            if form::not_wide(file.placement.size) {
+                ui.colored_label(ui.visuals().warn_fg_color, form::not_wide_text());
+            }
+        }
+        PlaceMethod::Extents => {
+            let axes = [Axis::Lon, Axis::Lon, Axis::Lat, Axis::Lat];
+            egui::Grid::new("place-edges").show(ui, |ui| {
+                for (i, label) in form::EDGES.iter().enumerate() {
+                    ui.weak(*label);
+                    field(ui, &mut place.edges[i], (*label).into(), axes[i]);
+                    ui.end_row();
+                }
+            });
+        }
+        PlaceMethod::Points => {
+            egui::Grid::new("place-points").show(ui, |ui| {
+                for (i, label) in form::POINTS.iter().enumerate() {
+                    ui.weak(*label);
+                    let [lon, lat] = &mut place.coordinates[i];
+                    ui.horizontal(|ui| {
+                        field(ui, lon, form::coordinate_name(i, Axis::Lon), Axis::Lon);
+                        field(ui, lat, form::coordinate_name(i, Axis::Lat), Axis::Lat);
+                    });
+                    ui.end_row();
+                }
+                if let Ok(placement) = place.candidate() {
+                    ui.weak(form::EXTENTS);
+                    ui.weak(form::extents_text(&placement.extents));
+                    ui.end_row();
+                }
+            });
+        }
+    }
+    if let Err(hint) = place.candidate() {
+        ui.colored_label(ui.visuals().warn_fg_color, hint);
+    }
+    let ready = place.ready().is_some();
+    form::preview(state);
+    if ui
+        .add_enabled(ready, egui::Button::new(form::PLACE))
+        .clicked()
+    {
+        form::place(state);
     }
 }
 

@@ -29,12 +29,13 @@ use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
     BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Image, ImageId, Layer,
-    LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop,
-    StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
+    LayerId, LayerKind, LonLat, Placement, Project, Raster, RasterDisplay, RasterId, Rgb,
+    Smoothing, Stop, StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size,
+    clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 29;
+pub const FORMAT_VERSION: u32 = 30;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -68,6 +69,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v27,
     v28,
     v29,
+    v30,
 ];
 
 /// `GPKG` in ASCII.
@@ -1080,6 +1082,18 @@ fn v29(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// Where the file of a layer sits on the globe. The layers of an older file
+/// have no placement. A file with an older version number can already have
+/// the column.
+fn v30(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_layer') WHERE name = 'placement'";
+    let count: i64 = tx.query_row(sql, [], |r| r.get(0))?;
+    if count == 0 {
+        tx.execute_batch("ALTER TABLE vale_layer ADD COLUMN placement TEXT")?;
+    }
+    Ok(())
+}
+
 /// The atlas. An older file gets one map with an Equal Earth projection and
 /// one page in the units of the world. A file with an older version number
 /// can already have the tables.
@@ -1827,8 +1841,9 @@ fn write_layer(
 ) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO vale_layer
-           (id, position, name, kind, table_name, source, visible, raster_id, style, image_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+           (id, position, name, kind, table_name, source, visible, raster_id, style, image_id,
+            placement)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             layer.id.0,
             position as i64,
@@ -1839,7 +1854,8 @@ fn write_layer(
             layer.visible,
             raster.map(|id| id.0),
             layer.style,
-            image.map(|id| id.0)
+            image.map(|id| id.0),
+            layer.placement.map(Placement::to_text)
         ],
     )?;
     Ok(())
@@ -2361,7 +2377,8 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
     let images = load_images(conn)?;
     let mut layers = Vec::new();
     let mut rows = conn.prepare(
-        "SELECT id, name, kind, table_name, source, visible, raster_id, style, image_id
+        "SELECT id, name, kind, table_name, source, visible, raster_id, style, image_id,
+           placement
          FROM vale_layer ORDER BY position",
     )?;
     let mut rows = rows.query([])?;
@@ -2394,6 +2411,14 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
             _ => return Err(corrupt(format!("layer kind {kind:?}"))),
         };
         let table: String = r.get(3)?;
+        let placement: Option<String> = r.get(9)?;
+        let placement = match placement {
+            Some(text) => Some(
+                Placement::from_text(&text)
+                    .ok_or_else(|| corrupt(format!("the placement of layer {name:?}")))?,
+            ),
+            None => None,
+        };
         let mut layer = Layer {
             id: LayerId(r.get(0)?),
             name,
@@ -2403,6 +2428,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
             fields: Vec::new(),
             features: Vec::new(),
             style: r.get(7)?,
+            placement,
         };
         if let LayerKind::Vector(geometry) = kind {
             load_features(conn, &mut layer, geometry, &table)?;
@@ -3178,6 +3204,51 @@ mod tests {
         let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
         assert_eq!(loaded.layer(towns).unwrap().style, None);
+    }
+
+    #[test]
+    fn the_file_keeps_the_placement_of_a_layer_and_undo_puts_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let earlier = project.clone();
+        let mut placement = crate::Placement::globe([3000.0, 1500.0]);
+        placement.method = crate::PlaceMethod::Extents;
+        placement.extents = crate::Extents {
+            west: -12.25,
+            east: 40.0,
+            south: 1.0 / 3.0,
+            north: 60.0,
+        };
+        assert!(project.set_layer_placement(towns, Some(placement)));
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(loaded.layer(towns).unwrap().placement, Some(placement));
+        assert!(file.undo().unwrap().is_some());
+        assert_eq!(file.project(), &earlier);
+        assert!(file.redo().unwrap().is_some());
+        assert_eq!(file.project(), &project);
+    }
+
+    #[test]
+    fn a_layer_of_version_29_has_no_placement() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch("ALTER TABLE vale_layer DROP COLUMN placement")
+            .unwrap();
+        drop(conn);
+        set_format_version(&dir, 29);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded.layer(towns).unwrap().placement, None);
     }
 
     fn atlas_edit(project: &mut Project) {
