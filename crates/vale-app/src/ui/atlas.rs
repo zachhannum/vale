@@ -8,7 +8,8 @@ use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
-    Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, PageId, PageRecord, PageUnits, Rgb,
+    Border, FrameId, FrameRecord, FrameShape, Graticule, LayerId, MapId, PageId, PageRecord,
+    PageUnits, Rgb,
 };
 
 use std::sync::Arc;
@@ -276,6 +277,10 @@ pub struct AtlasState {
     pub handles: Vec<(Handle, Rect)>,
     /// The count of the frame composes.
     pub composes: u64,
+    /// The layer whose panel the Layers tab of this frame shows.
+    pub layer: Option<(FrameId, LayerId)>,
+    /// The page of the panel of `layer`.
+    pub layer_page: Option<super::pad::Page>,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The frame of `handles`.
@@ -306,6 +311,16 @@ pub struct AtlasState {
 }
 
 impl AtlasState {
+    /// The layer whose panel the Layers tab of the selected frame shows.
+    pub fn open_layer(&self) -> Option<LayerId> {
+        match (self.selection, self.tab, self.layer) {
+            (AtlasSelection::Frame(f), FrameTab::Layers, Some((of, layer))) if f == of => {
+                Some(layer)
+            }
+            _ => None,
+        }
+    }
+
     /// The screen rectangle of the texture of each frame.
     pub fn texture_rects(&self) -> Vec<Rect> {
         self.images.values().map(|i| i.rect).collect()
@@ -341,6 +356,8 @@ impl Default for AtlasState {
             fit: None,
             handles: Vec::new(),
             composes: 0,
+            layer: None,
+            layer_page: None,
             shown: None,
             handles_of: None,
             images: HashMap::new(),
@@ -1070,6 +1087,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         };
         let rasters = map_rasters(state, frame.map);
         let images = map_images(state, frame.map);
+        let (raster_looks, image_looks) = crate::raster_style::map_looks(&state.doc, frame.map);
         let layered = !rasters.is_empty() || !images.is_empty();
         let content = hash_of((
             map,
@@ -1167,6 +1185,8 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                     mask,
                     shown: rasters,
                     images,
+                    raster_looks,
+                    image_looks,
                 });
             }
         }

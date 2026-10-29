@@ -1785,3 +1785,49 @@ fn the_removal_of_an_image_layer_is_one_undo_step() {
     state.redo();
     assert_eq!(state.doc.project.images()[0].id, id);
 }
+
+#[test]
+fn a_raster_style_of_version_2_takes_the_lines_the_smoothing_and_the_hillshade_of_its_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.gpkg");
+    let (ids, _) = old_rasters(&path);
+    // The first open gives each raster layer a style.
+    drop(Session::open(&path, &mut Document::empty()).unwrap());
+    let (mut file, mut project) = ProjectFile::open(&path).unwrap();
+    let height = ids[0];
+    let layer = project.raster_layer(height).unwrap().id;
+    let old = project.raster_mut(height).unwrap();
+    old.lines = false;
+    old.hillshade.on = true;
+    old.hillshade.azimuth = 90.0;
+    old.smoothing.on = false;
+    // A style of version 2 has no lines, smoothing, or hillshade.
+    let text = project.layer(layer).unwrap().style.clone().unwrap();
+    let mut root: serde_json::Value = serde_json::from_str(&text).unwrap();
+    root["version"] = 2.into();
+    let raster = root["rules"][0]["symbolizers"][0].as_object_mut().unwrap();
+    for key in ["lines", "smoothing", "hillshade"] {
+        raster.remove(key);
+    }
+    project.set_layer_style(layer, Some(root.to_string()));
+    file.save_base(&project).unwrap();
+    drop(file);
+
+    let mut doc = Document::empty();
+    drop(Session::open(&path, &mut doc).unwrap());
+    let colors = raster_colors(&doc.project, height);
+    assert!(!colors.lines && colors.hillshade.on && !colors.smoothing.on);
+    assert_eq!(colors.hillshade.azimuth, 90.0);
+    let text = doc
+        .project
+        .raster_layer(height)
+        .unwrap()
+        .style
+        .clone()
+        .unwrap();
+    assert_eq!(
+        vale_style::style_version(&text),
+        Some(vale_style::STYLE_VERSION)
+    );
+    assert!(record(&doc.project, height).hillshade.on);
+}

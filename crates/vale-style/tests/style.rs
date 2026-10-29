@@ -157,7 +157,7 @@ fn the_json_has_a_version() {
     let json = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     let root: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(root["version"], STYLE_VERSION);
-    assert_eq!(STYLE_VERSION, 2);
+    assert_eq!(STYLE_VERSION, 3);
 }
 
 #[test]
@@ -203,11 +203,11 @@ fn json_errors() {
         root.to_string()
     };
     let newer = edit(&|m| {
-        m.insert("version".into(), 3.into());
+        m.insert("version".into(), 4.into());
     });
     assert_eq!(
         LayerStyle::from_json(&newer),
-        Err(StyleError::Version(Some(3)))
+        Err(StyleError::Version(Some(4)))
     );
     let none = edit(&|m| {
         m.remove("version");
@@ -253,6 +253,17 @@ fn colors() -> vale_style::RasterSymbolizer {
             },
         ],
         colors: vec![[1, 2, 3], [200, 210, 220]],
+        lines: false,
+        smoothing: vale_store::Smoothing {
+            on: false,
+            feature_size: 3.5,
+        },
+        hillshade: vale_store::Hillshade {
+            on: true,
+            azimuth: 90.0,
+            color: [5, 6, 7],
+            ..Default::default()
+        },
     }
 }
 
@@ -414,7 +425,7 @@ fn solid_json_is_unchanged() {
     let json = line_with(StrokeKind::Solid).to_json();
     let expected = concat!(
         r##"{"label":{"color":"#2864a0","enabled":false,"field":null,"italic":true,"priority_field":null,"size":11.0},"##,
-        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":2}"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":3}"##,
     );
     assert_eq!(json, expected);
 }
@@ -739,5 +750,27 @@ fn add_rule_tints_a_copied_symbol() {
     assert_eq!(
         plain.style.rules[1].symbol(),
         Some(&PointSymbolizer::constant("city", 8.0))
+    );
+}
+
+#[test]
+fn a_raster_style_of_version_2_reads_the_default_lines_smoothing_and_hillshade() {
+    let text = LayerStyle::raster(colors()).to_json();
+    let mut root: serde_json::Value = serde_json::from_str(&text).unwrap();
+    root["version"] = 2.into();
+    let raster = &mut root["rules"][0]["symbolizers"][0];
+    for key in ["lines", "smoothing", "hillshade"] {
+        raster.as_object_mut().unwrap().remove(key);
+    }
+    let old = root.to_string();
+    assert_eq!(vale_style::style_version(&old), Some(2));
+    let style = LayerStyle::from_json(&old).unwrap();
+    let r = style.raster_symbolizer().unwrap();
+    assert!(r.lines);
+    assert_eq!(r.smoothing, vale_store::Smoothing::default());
+    assert_eq!(r.hillshade, vale_store::Hillshade::default());
+    assert_eq!(
+        vale_style::style_version(&style.to_json()),
+        Some(STYLE_VERSION)
     );
 }

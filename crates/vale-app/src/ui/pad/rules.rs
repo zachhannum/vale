@@ -151,7 +151,7 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
             state.pad.page = Some(Page::Rule(i));
         }
     }
-    if widgets::button_row(ui, controls, ADD_RULE, true).clicked()
+    if widgets::button_row(ui, controls, ADD_RULE, !state.pad.rules_fixed).clicked()
         && let Some(entry) = state.doc.entry_mut(id)
     {
         let i = entry.style.add_rule(kind);
@@ -215,9 +215,10 @@ pub fn rule_body(
     }
 
     ui.add_space(8.0);
-    let moved = if widgets::button_row(ui, controls, MOVE_UP, i > 0).clicked() {
+    let free = !state.pad.rules_fixed;
+    let moved = if widgets::button_row(ui, controls, MOVE_UP, free && i > 0).clicked() {
         Some(true)
-    } else if widgets::button_row(ui, controls, MOVE_DOWN, i + 1 < count).clicked() {
+    } else if widgets::button_row(ui, controls, MOVE_DOWN, free && i + 1 < count).clicked() {
         Some(false)
     } else {
         None
@@ -230,7 +231,7 @@ pub fn rule_body(
         state.pad.rules = RulesState::default();
         state.touch();
     }
-    if widgets::button_row_in(ui, controls, DELETE_RULE, true, theme::WARN).clicked()
+    if widgets::button_row_in(ui, controls, DELETE_RULE, free, theme::WARN).clicked()
         && let Some(entry) = state.doc.entry_mut(id)
     {
         entry.style.style.rules.remove(i);

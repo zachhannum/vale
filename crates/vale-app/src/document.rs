@@ -1,5 +1,6 @@
 //! The document: project, map frame, and layer entries.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -10,7 +11,7 @@ use vale_sphere::ProjectionSpec;
 use vale_store::{
     Field, FieldType, GeometryKind, Layer, LayerId, MapId, Project, ProjectionPreset, Units, World,
 };
-use vale_style::{Color, LayerStyle, MapStyle, Stroke};
+use vale_style::{Color, LayerStyle, MapStyle, Overrides, Stroke};
 
 use crate::view::View;
 use crate::world;
@@ -500,6 +501,74 @@ impl Document {
             return false;
         };
         self.set_projection(map, spec);
+        true
+    }
+
+    /// The style overrides of a layer in a map.
+    pub fn overrides(&self, map: MapId, layer: LayerId) -> Overrides {
+        let map = self.project.atlas.map(map);
+        let text = map.and_then(|m| m.overrides.get(&layer));
+        text.map(|t| Overrides::from_json(t)).unwrap_or_default()
+    }
+
+    /// The layer with the style of a map. `None` is the style of the layer.
+    pub fn map_entry(&self, map: Option<MapId>, layer: LayerId) -> Option<Cow<'_, LayerEntry>> {
+        let entry = self.entry(layer)?;
+        let overrides = map.map(|m| self.overrides(m, layer)).unwrap_or_default();
+        if overrides.is_empty() {
+            return Some(Cow::Borrowed(entry));
+        }
+        Some(Cow::Owned(LayerEntry {
+            layer,
+            style: entry.style.with_overrides(&overrides),
+        }))
+    }
+
+    /// The style of a layer: the style of its entry, or the stored style of
+    /// a raster layer or an image layer.
+    pub fn layer_style(&self, layer: LayerId) -> Option<LayerStyle> {
+        match self.entry(layer) {
+            Some(entry) => Some(entry.style.clone()),
+            None => stored_style(self.project.layer(layer)?),
+        }
+    }
+
+    /// The style of a layer in a map.
+    pub fn map_style(&self, map: MapId, layer: LayerId) -> Option<LayerStyle> {
+        let base = self.layer_style(layer)?;
+        Some(base.with_overrides(&self.overrides(map, layer)))
+    }
+
+    /// Makes `edited` the style of a layer in a map, as overrides of the
+    /// style of the layer. Each override of the map stays. Returns false if
+    /// nothing changed.
+    pub fn set_map_style(&mut self, map: MapId, layer: LayerId, edited: &LayerStyle) -> bool {
+        let Some(base) = self.layer_style(layer) else {
+            return false;
+        };
+        let new = self.overrides(map, layer).merged(&base, edited);
+        self.put_overrides(map, layer, &new)
+    }
+
+    /// Removes the style overrides of a layer in a map. Returns false if
+    /// nothing changed.
+    pub fn clear_overrides(&mut self, map: MapId, layer: LayerId) -> bool {
+        self.put_overrides(map, layer, &Overrides::default())
+    }
+
+    fn put_overrides(&mut self, map: MapId, layer: LayerId, new: &Overrides) -> bool {
+        let Some(map) = self.project.atlas.map_mut(map) else {
+            return false;
+        };
+        let old = map.overrides.get(&layer);
+        let text = (!new.is_empty()).then(|| new.to_json());
+        if old == text.as_ref() {
+            return false;
+        }
+        match text {
+            Some(text) => map.overrides.insert(layer, text),
+            None => map.overrides.remove(&layer),
+        };
         true
     }
 

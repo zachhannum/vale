@@ -3084,24 +3084,48 @@ impl Globe {
 
     /// The passes of the layers that a map frame shows. The layers below the
     /// top raster layer that hides them do not show.
-    fn frame_passes(
+    fn frame_passes<'a>(
         &self,
         canvas: Canvas,
-        layers: &[FrameLayer],
-        frame: &FrameDraw,
+        layers: &[FrameLayer<'a>],
+        frame: &'a FrameDraw,
         clip: [f32; 4],
     ) -> Vec<Draw> {
-        let shown: Vec<&FrameLayer> = layers
+        let shown: Vec<FrameLayer> = layers
             .iter()
             .filter(|layer| match layer {
                 FrameLayer::Raster(id, _) => frame.shown.contains(id),
                 FrameLayer::Image(image) => frame.images.contains(&image.key.image),
             })
+            .map(|layer| match *layer {
+                FrameLayer::Raster(id, mut draw) => {
+                    if let Some((_, look)) = frame.raster_looks.iter().find(|(r, _)| *r == id) {
+                        draw.opacity = look.look.opacity.clamp(0.0, 1.0);
+                        draw.blend = look.look.blend;
+                        draw.display = look.look.display;
+                        draw.lines = look.lines;
+                        draw.smoothing = look.smoothing;
+                        draw.hillshade = look.hillshade;
+                        if let Some(bands) = &look.bands {
+                            draw.bands = bands;
+                        }
+                    }
+                    FrameLayer::Raster(id, draw)
+                }
+                FrameLayer::Image(mut image) => {
+                    let key = image.key.image;
+                    if let Some((_, look)) = frame.image_looks.iter().find(|(i, _)| *i == key) {
+                        image.opacity = look.opacity.clamp(0.0, 1.0);
+                        image.blend = look.blend;
+                    }
+                    FrameLayer::Image(image)
+                }
+            })
             .collect();
-        let hides = |layer: &&FrameLayer| matches!(layer, FrameLayer::Raster(_, l) if l.opacity >= 1.0 && l.blend == BlendMode::Normal);
+        let hides = |layer: &FrameLayer| matches!(layer, FrameLayer::Raster(_, l) if l.opacity >= 1.0 && l.blend == BlendMode::Normal);
         let start = shown.iter().rposition(hides).unwrap_or(0);
         let place = Some(&frame.place);
-        let pass = |layer: &&FrameLayer| match layer {
+        let pass = |layer: &FrameLayer| match layer {
             FrameLayer::Raster(_, layer) => Draw {
                 pass: Pass::Layer(layer.key.layer),
                 source: Some(layer.key),
@@ -3463,6 +3487,7 @@ fn light(h: &Hillshade) -> [f32; 4] {
 }
 
 /// One raster layer in a frame.
+#[derive(Clone, Copy)]
 struct LayerDraw<'a> {
     /// The heightmap on the GPU that the pass reads.
     key: MapKey,
@@ -3492,6 +3517,7 @@ struct ImageDraw {
 }
 
 /// One layer of a map frame.
+#[derive(Clone, Copy)]
 enum FrameLayer<'a> {
     Raster(RasterId, LayerDraw<'a>),
     Image(ImageDraw),
@@ -3532,6 +3558,30 @@ pub struct FrameDraw {
     pub shown: Vec<RasterId>,
     /// The image layers that the map shows.
     pub images: Vec<ImageId>,
+    /// The raster layers whose look the map overrides.
+    pub raster_looks: Vec<(RasterId, RasterLook)>,
+    /// The image layers whose look the map overrides.
+    pub image_looks: Vec<(ImageId, Look)>,
+}
+
+/// The look of a raster layer in a map.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RasterLook {
+    pub look: Look,
+    pub lines: bool,
+    pub smoothing: Smoothing,
+    pub hillshade: Hillshade,
+    /// The bands of the map. `None`: the bands of the layer.
+    pub bands: Option<Bands>,
+}
+
+/// The look of a raster layer or an image layer in a map. An image layer
+/// has no display.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub opacity: f32,
+    pub blend: BlendMode,
+    pub display: RasterDisplay,
 }
 
 #[cfg(test)]

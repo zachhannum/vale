@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use vale_store::{BlendMode, RasterDisplay, Rgb, Stop};
+use vale_store::{BlendMode, Hillshade, RasterDisplay, Rgb, Smoothing, Stop};
 
 use crate::expr::{Context, Filter, Property};
 use crate::{Color, Stroke, StrokeKind};
@@ -170,6 +170,10 @@ pub struct RasterSymbolizer {
     pub stops: Vec<Stop>,
     /// The color of each band, from the lowest band up. There is one color fewer than stops.
     pub colors: Vec<Rgb>,
+    /// The layer draws the lines of the stops.
+    pub lines: bool,
+    pub smoothing: Smoothing,
+    pub hillshade: Hillshade,
 }
 
 /// A symbolizer with the values for one feature.

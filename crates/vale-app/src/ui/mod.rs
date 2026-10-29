@@ -21,7 +21,7 @@ use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
-use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
+use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::pipeline::{Composed, Pipeline, Selection, fonts};
 use crate::projects::{self, Location, Locations};
@@ -963,6 +963,7 @@ impl AppState {
     /// Turns the smoothing of a raster layer on or off.
     pub fn set_raster_smoothing(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_smoothing(id, on);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -970,6 +971,7 @@ impl AppState {
     /// Turns the hillshade of a raster layer on or off.
     pub fn set_raster_hillshade(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_hillshade(id, on);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -978,6 +980,7 @@ impl AppState {
     /// 0 to 1.
     pub fn set_raster_hillshade_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
         let set = self.doc.project.set_raster_hillshade_opacity(id, opacity);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -985,6 +988,7 @@ impl AppState {
     /// Turns the highlights of the hillshade of a raster layer on or off.
     pub fn set_raster_hillshade_highlights(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_hillshade_highlights(id, on);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -993,6 +997,7 @@ impl AppState {
     /// in degrees clockwise from north.
     pub fn set_raster_hillshade_azimuth(&mut self, id: RasterId, azimuth: f32) -> bool {
         let set = self.doc.project.set_raster_hillshade_azimuth(id, azimuth);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1001,6 +1006,7 @@ impl AppState {
     /// degrees above the ground.
     pub fn set_raster_hillshade_altitude(&mut self, id: RasterId, altitude: f32) -> bool {
         let set = self.doc.project.set_raster_hillshade_altitude(id, altitude);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1012,6 +1018,7 @@ impl AppState {
             .doc
             .project
             .set_raster_hillshade_exaggeration(id, exaggeration);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1019,6 +1026,7 @@ impl AppState {
     /// Sets the shade color of the hillshade of a raster layer.
     pub fn set_raster_hillshade_color(&mut self, id: RasterId, color: Rgb) -> bool {
         let set = self.doc.project.set_raster_hillshade_color(id, color);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1026,6 +1034,7 @@ impl AppState {
     /// Turns the lines of the stops of a raster layer on or off.
     pub fn set_raster_lines(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_lines(id, on);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1040,6 +1049,7 @@ impl AppState {
     /// Sets the minimum feature size of a raster layer, in points.
     pub fn set_raster_feature_size(&mut self, id: RasterId, points: f32) -> bool {
         let set = self.doc.project.set_raster_feature_size(id, points);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1166,6 +1176,199 @@ impl AppState {
     pub fn set_map_shown(&mut self, map: MapId, layer: LayerId, on: bool) {
         self.save_edit();
         if self.doc.set_shown(map, layer, on) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// Runs `edit`, which edits the style of `layer` in the panel of the
+    /// Layers tab of a frame of `map`. During `edit`, the layer has the style
+    /// of the map, `pad.page` is the page of that panel, and the rules cannot
+    /// be added, moved, or deleted. A change becomes the overrides of the
+    /// map, and the style of the layer stays.
+    pub fn edit_map_style(&mut self, map: MapId, layer: LayerId, edit: impl FnOnce(&mut AppState)) {
+        let world_page = std::mem::replace(&mut self.pad.page, self.atlas.layer_page);
+        self.pad.rules_fixed = true;
+        let base = self.doc.entry(layer).map(|e| e.style.clone());
+        let shown = base.as_ref().and_then(|_| self.doc.map_style(map, layer));
+        if let (Some(shown), Some(entry)) = (&shown, self.doc.entry_mut(layer)) {
+            entry.style = shown.clone();
+        }
+        edit(self);
+        if let (Some(base), Some(shown), Some(entry)) = (base, shown, self.doc.entry_mut(layer)) {
+            let edited = std::mem::replace(&mut entry.style, base);
+            if edited != shown && self.doc.set_map_style(map, layer, &edited) {
+                self.touch();
+            }
+        }
+        self.pad.rules_fixed = false;
+        self.atlas.layer_page = std::mem::replace(&mut self.pad.page, world_page);
+    }
+
+    /// Runs `edit`, which shows the raster editors of raster layer `layer`
+    /// in the panel of the Layers tab of a frame of `map`. During `edit`,
+    /// `pad.page` is the page of that panel, and the raster record and the
+    /// bands of the globe hold the style of the map. The base comes back
+    /// after `edit`, and a change becomes the overrides of the map.
+    pub fn edit_map_raster(
+        &mut self,
+        map: MapId,
+        layer: LayerId,
+        id: RasterId,
+        edit: impl FnOnce(&mut AppState),
+    ) {
+        let world_page = std::mem::replace(&mut self.pad.page, self.atlas.layer_page);
+        self.with_map_raster(map, layer, id, edit);
+        self.atlas.layer_page = std::mem::replace(&mut self.pad.page, world_page);
+    }
+
+    fn with_map_raster(
+        &mut self,
+        map: MapId,
+        layer: LayerId,
+        id: RasterId,
+        edit: impl FnOnce(&mut AppState),
+    ) {
+        use raster_style::{apply_symbolizer, symbolizer_of};
+        // The record and the style of the layer take the live bands first.
+        let Some(base_bands) = self.globe.bands_mut(id).map(|b| b.clone()) else {
+            return;
+        };
+        let Some(record) = self.doc.project.raster_mut(id) else {
+            return;
+        };
+        record.stops = session::record_stops(base_bands.stops());
+        record.colors = base_bands.colors().to_vec();
+        raster_style::store_raster_styles(&mut self.doc.project);
+        let base_text = self.doc.project.layer(layer).and_then(|l| l.style.clone());
+        let Some(base) = self.doc.project.raster(id).map(symbolizer_of) else {
+            return;
+        };
+        let style = self.doc.map_style(map, layer);
+        let Some(mut shown) = style.as_ref().and_then(|s| s.raster_symbolizer()).cloned() else {
+            return;
+        };
+        if let Some(record) = self.doc.project.raster_mut(id) {
+            apply_symbolizer(record, &shown, true);
+            let bands = session::bands_of(record);
+            // The stops of the bands are the stops that an edit compares.
+            shown.stops = session::record_stops(bands.stops());
+            shown.colors = bands.colors().to_vec();
+            if let Some(b) = self.globe.bands_mut(id) {
+                *b = bands;
+            }
+        }
+
+        edit(self);
+
+        let Some(record) = self.doc.project.raster_mut(id) else {
+            return;
+        };
+        let mut edited = symbolizer_of(record);
+        if let Some(bands) = self.globe.bands_mut(id) {
+            edited.stops = session::record_stops(bands.stops());
+            edited.colors = bands.colors().to_vec();
+            *bands = base_bands;
+        }
+        apply_symbolizer(record, &base, true);
+        self.doc.project.set_layer_style(layer, base_text);
+        if edited != shown {
+            if let Some(mut style) = style {
+                style.set_raster_symbolizer(edited);
+                if self.doc.set_map_style(map, layer, &style) {
+                    self.touch();
+                }
+            }
+            self.sync_globe();
+        }
+    }
+
+    /// The look of a raster layer or an image layer: in the style of the
+    /// layer, or in the style of `map`.
+    pub fn look(&self, map: Option<MapId>, layer: LayerId) -> Option<Look> {
+        let style = match map {
+            Some(map) => self.doc.map_style(map, layer)?,
+            None => self.doc.layer_style(layer)?,
+        };
+        if let Some(r) = style.raster_symbolizer() {
+            return Some(Look {
+                opacity: r.opacity,
+                blend: r.blend,
+                display: r.display,
+            });
+        }
+        let i = style.image_symbolizer()?;
+        Some(Look {
+            opacity: i.opacity,
+            blend: i.blend,
+            display: RasterDisplay::default(),
+        })
+    }
+
+    /// Sets the look of a raster layer or an image layer: in the style of
+    /// the layer, or as overrides of `map`.
+    pub fn set_look(&mut self, map: Option<MapId>, layer: LayerId, look: Look) {
+        let Some(l) = self.doc.project.layer(layer) else {
+            return;
+        };
+        let (raster, image) = (l.raster(), l.image());
+        let Some(map) = map else {
+            let Some(old) = self.look(None, layer) else {
+                return;
+            };
+            if let Some(id) = raster {
+                if old.opacity != look.opacity {
+                    self.set_raster_opacity(id, look.opacity);
+                }
+                if old.blend != look.blend {
+                    self.set_raster_blend(id, look.blend);
+                }
+                if old.display != look.display {
+                    self.set_raster_display(id, look.display);
+                }
+            } else if let Some(id) = image {
+                if old.opacity != look.opacity {
+                    self.set_image_opacity(id, look.opacity);
+                }
+                if old.blend != look.blend {
+                    self.set_image_blend(id, look.blend);
+                }
+            }
+            return;
+        };
+        let Some(mut style) = self.doc.map_style(map, layer) else {
+            return;
+        };
+        let symbolizers = style
+            .style
+            .rules
+            .iter_mut()
+            .flat_map(|r| &mut r.symbolizers);
+        for symbolizer in symbolizers {
+            match symbolizer {
+                vale_style::Symbolizer::Raster(r) => {
+                    r.opacity = look.opacity;
+                    r.blend = look.blend;
+                    r.display = look.display;
+                    break;
+                }
+                vale_style::Symbolizer::Image(i) => {
+                    i.opacity = look.opacity;
+                    i.blend = look.blend;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if self.doc.set_map_style(map, layer, &style) {
+            self.touch();
+        }
+    }
+
+    /// Removes the style overrides of a layer in a map, as one undo step.
+    pub fn clear_overrides(&mut self, map: MapId, layer: LayerId) {
+        self.save_edit();
+        if self.doc.clear_overrides(map, layer) {
             self.touch();
             self.save_edit();
         }

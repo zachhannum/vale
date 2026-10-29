@@ -60,6 +60,7 @@ Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atla
 - To delete the selected frame, click "Delete frame" in the Frame tab, or press Delete when no vertex is selected.
 - Type the scale, the center, and the rotation of a frame in the Frame tab. Select a projection in the Projection tab. Each frame of the map shows the new projection.
 - In the Layers tab, the eye of a layer turns the layer on or off in the map of the frame. Each frame of that map shows the change. The eye in the globe workspace does not change a map.
+- In the Layers tab, open a layer to change its style in the map of the frame. Each frame of that map shows the change, and the other maps keep the style of the layer. The panel of a raster layer has the same style controls as in the World workspace, with the color stops and the hillshade. "Remove overrides" takes the changes of the map away. On the desktop, click "Style" next to a layer.
 - Click the page outside the frames to set the page size, to add a page, or to delete the page. The arrows in the tool bar go to the previous page and the next page.
 - Tick a layer in the left panel to show it in the map. Click "Edit" on a layer to select it. The inspector then shows its name and its style.
 - Click a feature in a frame to see its attributes. The inspector lists the labels that did not fit.

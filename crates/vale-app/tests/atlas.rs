@@ -18,8 +18,10 @@ use vale_app::ui::pad::atlas::{
     DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF,
     EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
     INTERVAL, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON, PREVIOUS_PAGE, PROJECTION,
-    REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, WIDTH, custom_row, page_title, readout_text,
+    REMOVE_OVERRIDES, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, STYLE_FOR_THIS_MAP, WIDTH,
+    custom_row, page_title, readout_text,
 };
+use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
 use vale_render::Item;
@@ -1889,4 +1891,415 @@ fn the_cards_of_the_atlas_show_the_blurred_page() {
     let sharp = card_row(&plain, card);
     let difference: i32 = row.iter().zip(&sharp).map(|(a, b)| (a - b).abs()).sum();
     assert!(difference > width * 2, "{difference}");
+}
+
+/// The width of the stroke of the first rule of Rivers: in the style of the
+/// layer, or in the style of a map.
+fn rivers_width(h: &Pad, map: Option<MapId>) -> f64 {
+    let rivers = layer_id(h, "Rivers");
+    let doc = &h.state().doc;
+    let style = match map {
+        Some(map) => doc.map_style(map, rivers).unwrap(),
+        None => doc.entry(rivers).unwrap().style.clone(),
+    };
+    style.style.rules[0].stroke().unwrap().width
+}
+
+fn rivers_rgb(h: &Pad) -> [u8; 3] {
+    let rivers = layer_id(h, "Rivers");
+    let style = &h.state().doc.entry(rivers).unwrap().style;
+    let c = style.style.rules[0].stroke().unwrap().color;
+    [c.r, c.g, c.b]
+}
+
+fn overrides(h: &Pad, map: MapId) -> vale_style::Overrides {
+    h.state().doc.overrides(map, layer_id(h, "Rivers"))
+}
+
+/// Opens the page of the first rule of Rivers in the Layers tab of the
+/// selected frame.
+fn open_rivers_rule(h: &mut Pad) {
+    tap(h, FRAME_TABS[2]);
+    scroll_to(h, "Open Rivers");
+    tap(h, "Open Rivers");
+    scroll_to(h, "Default");
+    tap(h, "Default");
+    scroll_to(h, STROKE_WIDTH);
+}
+
+/// A drag of a finger on the width slider, from the left to the right or
+/// back.
+fn drag_width(h: &mut Pad, right: bool) {
+    let rect = control(h, STROKE_WIDTH).unwrap();
+    let y = rect.center().y;
+    let (a, b) = (pos2(rect.left() + 30.0, y), pos2(rect.right() - 20.0, y));
+    let (from, to) = if right { (a, b) } else { (b, a) };
+    drag(h, from, to, Input::Finger);
+}
+
+/// The strokes of the flat view with a color and a width.
+fn flat_strokes(h: &mut Pad, rgb: [u8; 3], line: f64) -> usize {
+    use vale_app::pipeline::{Quality, fonts};
+    let mut fonts = fonts().unwrap();
+    let s = h.state_mut();
+    let composed = s
+        .pipeline
+        .compose(&s.doc, (1200.0, 800.0), &mut fonts, Quality::Final, None)
+        .unwrap();
+    let color = vale_render::Color::rgb(rgb[0], rgb[1], rgb[2]);
+    (composed.list.items.iter())
+        .filter(
+            |i| matches!(i, Item::Stroke { color: c, width, .. } if *c == color && *width == line),
+        )
+        .count()
+}
+
+#[test]
+fn a_change_of_the_style_of_a_layer_shows_on_the_globe_the_flat_view_and_two_maps() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    assert_ne!(main, inset);
+    let rgb = rivers_rgb(&h);
+    let before = rivers_width(&h, None);
+    assert!(strokes(&mut h, 0, rgb, before) > 0);
+    assert!(strokes(&mut h, 1, rgb, before) > 0);
+    assert!(flat_strokes(&mut h, rgb, before) > 0);
+
+    // A change of the width in the World workspace.
+    let rivers = layer_id(&h, "Rivers");
+    let s = h.state_mut();
+    let rule = &mut s.doc.entry_mut(rivers).unwrap().style.style.rules[0];
+    let mut stroke = rule.stroke().unwrap();
+    stroke.width = before + 1.5;
+    rule.set_stroke(Some(stroke));
+    s.touch();
+    h.run_steps(2);
+    let after = rivers_width(&h, None);
+    assert_ne!(after, before);
+    // The globe draws the style of the layer.
+    assert_eq!(rivers_width(&h, Some(main)), after);
+    assert_eq!(rivers_width(&h, Some(inset)), after);
+    for i in 0..2 {
+        assert!(strokes(&mut h, i, rgb, after) > 0, "frame {i}");
+        assert_eq!(strokes(&mut h, i, rgb, before), 0, "frame {i}");
+    }
+    assert!(flat_strokes(&mut h, rgb, after) > 0);
+    assert!(overrides(&h, main).is_empty() && overrides(&h, inset).is_empty());
+}
+
+#[test]
+fn the_panel_of_a_layer_in_a_frame_overrides_one_property_of_its_map_only() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let before = rivers_width(&h, None);
+    open_rivers_rule(&mut h);
+    // The panel has no switch to the style of the layer.
+    assert!(control(&h, "All maps").is_none());
+    drag_width(&mut h, true);
+    let width = rivers_width(&h, Some(inset));
+    assert_ne!(width, before);
+    assert_eq!(rivers_width(&h, None), before);
+    assert_eq!(rivers_width(&h, Some(main)), before);
+    let o = overrides(&h, inset);
+    assert_eq!(
+        o.pointers().collect::<Vec<_>>(),
+        ["/rules/Default/symbolizers/0/width"]
+    );
+    assert!(overrides(&h, main).is_empty());
+}
+
+#[test]
+fn an_override_shows_in_each_frame_of_its_map_and_not_in_another_map() {
+    let mut h = inset_pad(BOARDS[0]);
+    add_frame(&mut h);
+    // The second frame and the third frame show one map.
+    let (main, inset, third) = (frame(&h, 0).map, frame(&h, 1).map, frame(&h, 2).id);
+    h.state_mut()
+        .doc
+        .project
+        .atlas
+        .frame_mut(third)
+        .unwrap()
+        .map = inset;
+    h.run_steps(2);
+    let rgb = rivers_rgb(&h);
+    let before = rivers_width(&h, None);
+    open_rivers_rule(&mut h);
+    let composes = h.state().atlas.composes;
+    drag_width(&mut h, true);
+    let width = rivers_width(&h, Some(inset));
+    assert_ne!(width, before);
+    assert!(h.state().atlas.composes > composes);
+    assert!(strokes(&mut h, 1, rgb, width) > 0);
+    assert!(strokes(&mut h, 2, rgb, width) > 0);
+    assert_eq!(strokes(&mut h, 0, rgb, width), 0);
+    assert!(strokes(&mut h, 0, rgb, before) > 0);
+    assert_eq!(rivers_width(&h, Some(main)), before);
+    assert!(flat_strokes(&mut h, rgb, before) > 0);
+}
+
+#[test]
+fn a_change_of_the_style_of_the_layer_keeps_each_override() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    open_rivers_rule(&mut h);
+    drag_width(&mut h, true);
+    let width = rivers_width(&h, Some(inset));
+    // A change of the color of the layer, from the World workspace.
+    let rivers = layer_id(&h, "Rivers");
+    let red = vale_style::Color::rgb(200, 10, 10);
+    let s = h.state_mut();
+    let rule = &mut s.doc.entry_mut(rivers).unwrap().style.style.rules[0];
+    let mut stroke = rule.stroke().unwrap();
+    stroke.color = red;
+    rule.set_stroke(Some(stroke));
+    s.touch();
+    h.run_steps(2);
+    let style = h.state().doc.map_style(inset, rivers).unwrap();
+    assert_eq!(style.style.rules[0].stroke().unwrap().color, red);
+    assert_eq!(rivers_width(&h, Some(inset)), width);
+    assert!(strokes(&mut h, 1, [200, 10, 10], width) > 0);
+    let base = rivers_width(&h, None);
+    assert!(strokes(&mut h, 0, [200, 10, 10], base) > 0);
+    assert!(overrides(&h, main).is_empty());
+}
+
+#[test]
+fn the_controls_of_the_overrides_work_with_a_finger() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        let inset = frame(&h, 1).map;
+        tap(&mut h, FRAME_TABS[2]);
+        check_controls(&h, &format!("{what}: layers tab"));
+        scroll_to(&mut h, "Open Rivers");
+        tap(&mut h, "Open Rivers");
+        check_controls(&h, &format!("{what}: layer"));
+        scroll_to(&mut h, "Default");
+        tap(&mut h, "Default");
+        check_controls(&h, &format!("{what}: rule"));
+        scroll_to(&mut h, STROKE_WIDTH);
+        drag_width(&mut h, true);
+        assert_eq!(overrides(&h, inset).len(), 1, "{what}");
+
+        // The Layers tab lists the overrides, and Remove overrides takes them away.
+        tap(&mut h, "Back to Rivers");
+        check_controls(&h, &format!("{what}: overrides"));
+        scroll_to(&mut h, REMOVE_OVERRIDES);
+        tap(&mut h, REMOVE_OVERRIDES);
+        assert!(overrides(&h, inset).is_empty(), "{what}");
+    }
+}
+
+#[test]
+fn the_layers_tab_lists_the_layers_with_overrides() {
+    let mut h = inset_pad(BOARDS[0]);
+    let inset = frame(&h, 1).map;
+    open_rivers_rule(&mut h);
+    drag_width(&mut h, true);
+    tap(&mut h, "Back to Rivers");
+    tap(&mut h, "Back to Layers");
+    assert!(h.state().atlas.open_layer().is_none());
+    scroll_to(&mut h, STYLE_FOR_THIS_MAP);
+    assert!(control(&h, "Rivers").is_some());
+    // A tap opens the panel of the layer.
+    tap(&mut h, "Rivers");
+    assert_eq!(h.state().atlas.open_layer(), Some(layer_id(&h, "Rivers")));
+    assert_eq!(overrides(&h, inset).len(), 1);
+}
+
+#[test]
+fn each_drag_of_an_override_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    let before = rivers_width(&h, Some(map));
+    open_rivers_rule(&mut h);
+    drag_width(&mut h, true);
+    h.state_mut().save_waiting().unwrap();
+    assert_ne!(rivers_width(&h, Some(map)), before);
+    tap(&mut h, "Undo");
+    assert_eq!(rivers_width(&h, Some(map)), before);
+    assert!(overrides(&h, map).is_empty());
+}
+
+#[test]
+fn the_overrides_survive_a_close_and_an_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    open_rivers_rule(&mut h);
+    drag_width(&mut h, true);
+    let width = rivers_width(&h, Some(inset));
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.project.atlas, project.atlas);
+    let rivers = layer_id(&h, "Rivers");
+    let style = doc.map_style(inset, rivers).unwrap();
+    assert_eq!(style.style.rules[0].stroke().unwrap().width, width);
+    assert!(doc.overrides(main, rivers).is_empty());
+}
+
+#[test]
+fn the_panel_of_a_raster_layer_overrides_its_opacity_and_blend_mode_in_this_map() {
+    use vale_app::ui::pad::OPACITY;
+    use vale_app::ui::pad::raster::BLEND;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+        let height = h.state_mut().add_height();
+        let layer = h.state().doc.project.raster_layer(height).unwrap();
+        let (layer, name) = (layer.id, layer.name.clone());
+        h.run_steps(2);
+        tap(&mut h, FRAME_TABS[2]);
+        let open = format!("Open {name}");
+        scroll_to(&mut h, &open);
+        tap(&mut h, &open);
+        assert_eq!(h.state().atlas.open_layer(), Some(layer), "{what}");
+        check_controls(&h, &format!("{what}: look"));
+        let rect = control(&h, OPACITY).unwrap();
+        let y = rect.center().y;
+        let (from, to) = (pos2(rect.right() - 20.0, y), pos2(rect.left() + 40.0, y));
+        drag(&mut h, from, to, Input::Finger);
+        let look = h.state().look(Some(inset), layer).unwrap();
+        assert!(look.opacity < 0.5, "{what}: {look:?}");
+        assert_eq!(h.state().doc.project.raster(height).unwrap().opacity, 1.0);
+        assert_eq!(h.state().look(Some(main), layer).unwrap().opacity, 1.0);
+        let pointers: Vec<String> = h
+            .state()
+            .doc
+            .overrides(inset, layer)
+            .pointers()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(pointers.len(), 1, "{what}: {pointers:?}");
+        assert!(pointers[0].ends_with("/opacity"), "{what}: {pointers:?}");
+
+        scroll_to(&mut h, BLEND);
+        tap(&mut h, BLEND);
+        check_controls(&h, &format!("{what}: blend"));
+        let multiply = format!("{BLEND} Multiply");
+        scroll_to(&mut h, &multiply);
+        tap(&mut h, &multiply);
+        let look = h.state().look(Some(inset), layer).unwrap();
+        assert_eq!(look.blend, vale_store::BlendMode::Multiply, "{what}");
+        assert_eq!(h.state().doc.overrides(inset, layer).len(), 2, "{what}");
+        assert_eq!(
+            h.state().look(None, layer).unwrap().blend,
+            vale_store::BlendMode::Normal
+        );
+    }
+}
+
+/// The raster symbolizer of the style of a raster layer, in the style of the
+/// layer or in the style of a map.
+fn raster_style(h: &Pad, map: Option<MapId>, layer: LayerId) -> vale_style::RasterSymbolizer {
+    let doc = &h.state().doc;
+    let style = match map {
+        Some(map) => doc.map_style(map, layer).unwrap(),
+        None => doc.layer_style(layer).unwrap(),
+    };
+    style.raster_symbolizer().unwrap().clone()
+}
+
+#[test]
+fn the_raster_panel_overrides_a_band_color_and_the_hillshade_in_this_map_only() {
+    use vale_app::ui::gradient::band_row;
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::pad::raster::{COLOR, COLOR_STOPS, HILLSHADE, HILLSHADE_ON};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+        let height = h.state_mut().add_height();
+        let layer = h.state().doc.project.raster_layer(height).unwrap();
+        let (layer, name) = (layer.id, layer.name.clone());
+        h.run_steps(2);
+        let base_colors = h
+            .state_mut()
+            .globe
+            .bands_mut(height)
+            .unwrap()
+            .colors()
+            .to_vec();
+        tap(&mut h, FRAME_TABS[2]);
+        let open = format!("Open {name}");
+        scroll_to(&mut h, &open);
+        tap(&mut h, &open);
+        check_controls(&h, &format!("{what}: raster"));
+
+        // A band color.
+        scroll_to(&mut h, COLOR_STOPS);
+        tap(&mut h, COLOR_STOPS);
+        assert_eq!(h.state().atlas.layer_page, Some(Page::Stops), "{what}");
+        check_controls(&h, &format!("{what}: stops"));
+        scroll_to(&mut h, &band_row(0));
+        tap(&mut h, &band_row(0));
+        let shade = format!("{COLOR} shade");
+        let square = control(&h, &shade).unwrap_or_else(|| panic!("{what}: no band card"));
+        check_controls(&h, &format!("{what}: band card"));
+        tap_with(&mut h, square.center() + vec2(40.0, 30.0), Input::Finger);
+        let colors = raster_style(&h, Some(inset), layer).colors;
+        assert_ne!(colors[0], base_colors[0], "{what}");
+        assert_eq!(colors[1..], base_colors[1..], "{what}");
+        assert_eq!(raster_style(&h, None, layer).colors, base_colors, "{what}");
+        assert_eq!(
+            raster_style(&h, Some(main), layer).colors,
+            base_colors,
+            "{what}"
+        );
+        let globe_colors = h
+            .state_mut()
+            .globe
+            .bands_mut(height)
+            .unwrap()
+            .colors()
+            .to_vec();
+        assert_eq!(globe_colors, base_colors, "{what}");
+        let o = h.state().doc.overrides(inset, layer);
+        let pointers: Vec<_> = o.pointers().collect();
+        assert_eq!(pointers.len(), 2, "{what}: {pointers:?}");
+        assert!(h.state().doc.overrides(main, layer).is_empty());
+
+        // The hillshade.
+        // In a narrow sheet, the card can cover the back button, and a tap
+        // outside the card closes it.
+        let back = format!("Back to {name}");
+        let state = h.state_mut();
+        state.pad.style = Default::default();
+        state.globe.preview.selected = None;
+        h.run_steps(2);
+        tap(&mut h, &back);
+        assert_eq!(h.state().atlas.layer_page, None, "{what}");
+        scroll_to(&mut h, HILLSHADE);
+        tap(&mut h, HILLSHADE);
+        assert_eq!(h.state().atlas.layer_page, Some(Page::Hillshade), "{what}");
+        tap(&mut h, HILLSHADE_ON);
+        check_controls(&h, &format!("{what}: hillshade"));
+        assert!(raster_style(&h, Some(inset), layer).hillshade.on, "{what}");
+        assert!(!raster_style(&h, None, layer).hillshade.on, "{what}");
+        assert!(!h.state().doc.project.raster(height).unwrap().hillshade.on);
+        assert_eq!(
+            raster_style(&h, Some(inset), layer).colors,
+            colors,
+            "{what}"
+        );
+    }
 }

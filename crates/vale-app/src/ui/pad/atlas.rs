@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
-use vale_store::{Border, FrameShape, Graticule, PageUnits};
+use vale_store::{Border, FrameShape, Graticule, LayerId, MapId, PageUnits, RasterId};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
@@ -28,6 +28,9 @@ const LATER_ITEMS: [&str; 4] = ["Text", "Legend", "Scale bar", "North arrow"];
 /// The tabs of the panel of a frame. The last one comes in another task.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
 pub const MAP_NAME: &str = "Map name";
+pub const MAP_STYLE_HINT: &str = "Changes apply to this map only.";
+pub const STYLE_FOR_THIS_MAP: &str = "Style for this map";
+pub const REMOVE_OVERRIDES: &str = "Remove overrides";
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
@@ -209,6 +212,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     graticule_color_frame(&ctx, state);
     border_color_frame(&ctx, state);
+    super::rules::picker_frame(&ctx, state);
+    raster_cards(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);
     state.atlas.add_rect = None;
     if state.atlas.add {
@@ -551,6 +556,12 @@ fn selection_panel(
     };
     let rect = match state.atlas.selection {
         AtlasSelection::None => return,
+        AtlasSelection::Frame(id) if open_layer(state).is_some() => {
+            let Some(rect) = layer_panel(ctx, state, controls, rects, id) else {
+                return;
+            };
+            rect
+        }
         AtlasSelection::Frame(id) => {
             let Some(frame) = state.doc.project.atlas.frame(id) else {
                 return;
@@ -913,17 +924,384 @@ fn layers_tab(
         ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
         return;
     }
-    for (layer, icon, name) in rows {
+    let mut open = None;
+    for &(layer, icon, ref name) in &rows {
         let shown = state.doc.shown(map, layer);
-        let tapped = ui
+        let (rect, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
+        let row = ui
             .push_id(layer.0, |ui| {
-                widgets::eye_row(ui, controls, icon, &name, shown)
+                widgets::layer_row(
+                    ui,
+                    controls,
+                    rect,
+                    icon,
+                    name,
+                    Some(shown),
+                    false,
+                    true,
+                    false,
+                    0.0,
+                )
             })
             .inner;
-        if tapped {
+        if row.eye {
             state.set_map_shown(map, layer, !shown);
         }
+        if row.open || row.body.is_some_and(|b| b.clicked()) {
+            open = Some(layer);
+        }
     }
+    // The layers that have style overrides in this map.
+    let changed: Vec<_> = (rows.iter())
+        .filter_map(|(layer, _, name)| {
+            let n = state.doc.overrides(map, *layer).len();
+            (n > 0).then(|| (*layer, name.clone(), n))
+        })
+        .collect();
+    if !changed.is_empty() {
+        ui.add_space(8.0);
+        super::raster::heading(ui, STYLE_FOR_THIS_MAP);
+        for (layer, name, n) in changed {
+            let value = if n == 1 {
+                "1 change".to_string()
+            } else {
+                format!("{n} changes")
+            };
+            let tapped = ui
+                .push_id(("changed", layer.0), |ui| {
+                    widgets::open_row(ui, controls, &name, &value).clicked()
+                })
+                .inner;
+            if tapped {
+                open = Some(layer);
+            }
+        }
+    }
+    if let Some(layer) = open {
+        state.atlas.layer = Some((id, layer));
+        state.atlas.layer_page = None;
+        state.pad.rules = Default::default();
+        state.pad.style = Default::default();
+    }
+}
+
+/// The layer whose panel the Layers tab of the selected frame shows.
+fn open_layer(state: &AppState) -> Option<vale_store::LayerId> {
+    let layer = state.atlas.open_layer()?;
+    state.doc.layer_style(layer)?;
+    Some(layer)
+}
+
+/// The panel of a layer in the Layers tab of frame `id`: the switch between
+/// the style of the layer and the style of the map of the frame, and the
+/// style section with its pages.
+fn layer_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    id: vale_store::FrameId,
+) -> Option<Rect> {
+    use super::Page;
+    let layer = open_layer(state)?;
+    if state.doc.entry(layer).is_none() {
+        if let Some(raster) = state.doc.layer(layer).and_then(|l| l.raster()) {
+            return raster_panel(ctx, state, controls, rects, id, layer, raster);
+        }
+        return look_panel(ctx, state, controls, rects, id, layer);
+    }
+    let map = state.doc.project.atlas.frame(id)?.map;
+    let name = state.doc.layer(layer)?.name.clone();
+    let rules = &state.doc.entry(layer)?.style.style.rules;
+    let page = match state.atlas.layer_page {
+        Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)) if i >= rules.len() => None,
+        Some(Page::Rule(_) | Page::Condition(_) | Page::Symbols(_)) => state.atlas.layer_page,
+        _ => None,
+    };
+    state.atlas.layer_page = page;
+    let rule_name = match page {
+        Some(Page::Rule(i) | Page::Condition(i) | Page::Symbols(i)) => rules[i].name.clone(),
+        _ => String::new(),
+    };
+    let (key, title, back) = match page {
+        Some(Page::Condition(_)) => (
+            "pad-atlas-condition",
+            super::filter::ADD_CONDITION,
+            rule_name.as_str(),
+        ),
+        Some(Page::Symbols(_)) => ("pad-atlas-symbols", super::rules::SYMBOLS, &*rule_name),
+        Some(_) => ("pad-atlas-rule", rule_name.as_str(), name.as_str()),
+        None => ("pad-atlas-layer", name.as_str(), FRAME_TABS[2]),
+    };
+    let head = CardTitle {
+        title,
+        back: Some(back),
+        action: None,
+    };
+    let card = Card {
+        key,
+        place: (rects.right_panel, panel_width(ctx)),
+        head,
+        scroll: egui::scroll_area::ScrollSource::default(),
+    };
+    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
+        if row.back {
+            state.atlas.layer_page = match page {
+                Some(Page::Condition(i) | Page::Symbols(i)) => Some(Page::Rule(i)),
+                Some(_) => None,
+                None => {
+                    state.atlas.layer = None;
+                    None
+                }
+            };
+            state.pad.rules = Default::default();
+        }
+        if row.close {
+            state.atlas.selection = AtlasSelection::None;
+            state.atlas.vertex = None;
+        }
+    };
+    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        state.edit_map_style(map, layer, |state| match page {
+            Some(Page::Rule(i)) => super::rules::rule_body(ui, state, controls, layer, i),
+            Some(Page::Condition(i)) => {
+                super::filter::condition_body(ui, state, controls, layer, i);
+            }
+            Some(Page::Symbols(i)) => super::rules::symbols_body(ui, state, controls, layer, i),
+            _ => super::rules::section(ui, state, controls, layer),
+        });
+        if page.is_none() {
+            ui.add_space(8.0);
+            let any = !state.doc.overrides(map, layer).is_empty();
+            if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
+                state.clear_overrides(map, layer);
+            }
+        }
+    };
+    Some(show_card(
+        ctx, state, controls, rects, card, on_title, map_hint, body,
+    ))
+}
+
+/// The hint at the top of the panel of a layer.
+fn map_hint(ui: &mut egui::Ui, _: &mut AppState, _: &mut Controls) {
+    ui.label(egui::RichText::new(MAP_STYLE_HINT).color(theme::MUTE));
+    ui.add_space(4.0);
+}
+
+/// The open raster layer of the Layers tab, with the map of its frame.
+fn open_raster(state: &AppState) -> Option<(MapId, LayerId, RasterId)> {
+    let layer = open_layer(state)?;
+    let raster = state.doc.layer(layer)?.raster()?;
+    let frame = state.atlas.frame()?;
+    let map = state.doc.project.atlas.frame(frame)?.map;
+    Some((map, layer, raster))
+}
+
+/// The cards of the raster editors of the open raster layer: the band, the
+/// reset, the ramp, and the shade color.
+fn raster_cards(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let Some((map, layer, raster)) = open_raster(state) else {
+        return;
+    };
+    state.edit_map_raster(map, layer, raster, |state| {
+        super::raster::band_card(ctx, state, controls, rects);
+        super::raster::shade_color_frame(ctx, state);
+        super::raster::reset_card(ctx, state, controls, rects);
+        super::raster::ramp_card(ctx, state, controls, rects);
+    });
+}
+
+/// The panel of a raster layer in the Layers tab of frame `id`: the switch,
+/// the opacity, and the style of the layer, with the pages of the color
+/// stops, the color ramps, the hillshade, and the blend mode.
+fn raster_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    id: vale_store::FrameId,
+    layer: LayerId,
+    raster: RasterId,
+) -> Option<Rect> {
+    use super::Page;
+    use super::raster::{BLEND, COLOR_RAMPS, COLOR_STOPS, HILLSHADE};
+    let map = state.doc.project.atlas.frame(id)?.map;
+    let name = state.doc.layer(layer)?.name.clone();
+    let page = state
+        .atlas
+        .layer_page
+        .filter(|p| matches!(p, Page::Stops | Page::Ramps | Page::Hillshade | Page::Blend));
+    state.atlas.layer_page = page;
+    let (key, title, back) = match page {
+        Some(Page::Ramps) => ("pad-atlas-ramps", COLOR_RAMPS, COLOR_STOPS),
+        Some(Page::Stops) => ("pad-atlas-stops", COLOR_STOPS, name.as_str()),
+        Some(Page::Hillshade) => ("pad-atlas-hillshade", HILLSHADE, name.as_str()),
+        Some(_) => ("pad-atlas-blend", BLEND, name.as_str()),
+        None => ("pad-atlas-raster", name.as_str(), FRAME_TABS[2]),
+    };
+    let head = CardTitle {
+        title,
+        back: Some(back),
+        action: None,
+    };
+    let card = Card {
+        key,
+        place: (rects.right_panel, panel_width(ctx)),
+        head,
+        scroll: egui::scroll_area::ScrollSource::default(),
+    };
+    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
+        if row.back {
+            state.atlas.layer_page = match page {
+                Some(Page::Ramps) => Some(Page::Stops),
+                Some(_) => None,
+                None => {
+                    state.atlas.layer = None;
+                    None
+                }
+            };
+        }
+        if row.close {
+            state.atlas.selection = AtlasSelection::None;
+            state.atlas.vertex = None;
+        }
+    };
+    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        state.edit_map_raster(map, layer, raster, |state| match state.pad.page {
+            Some(Page::Stops) => super::raster::stops_body(ui, state, controls, raster),
+            Some(Page::Ramps) => super::raster::ramps_body(ui, state, controls, raster),
+            Some(Page::Hillshade) => {
+                super::raster::hillshade_body(ui, state, controls, raster);
+            }
+            Some(Page::Blend) => super::raster::blend_body(ui, state, controls, raster),
+            _ => {
+                let Some(opacity) = state.doc.project.raster(raster).map(|r| r.opacity) else {
+                    return;
+                };
+                let mut fraction = f64::from(opacity);
+                let text = format!("{:.0}%", fraction * 100.0);
+                let name = super::OPACITY;
+                if widgets::row_slider(ui, controls, name, "Opacity", &mut fraction, &text) {
+                    // The steps are whole percents.
+                    let opacity = ((fraction * 100.0).round() / 100.0) as f32;
+                    state.set_raster_opacity(raster, opacity);
+                }
+                super::raster::style(ui, state, controls, raster);
+            }
+        });
+        if page.is_none() {
+            ui.add_space(8.0);
+            let any = !state.doc.overrides(map, layer).is_empty();
+            if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
+                state.clear_overrides(map, layer);
+            }
+        }
+    };
+    let rect = show_card(ctx, state, controls, rects, card, on_title, map_hint, body);
+    // The cards of the editors take their place from the panel.
+    state.pad.panels.push((super::Panel::Layers, rect));
+    Some(rect)
+}
+
+/// The panel of an image layer in the Layers tab of frame `id`: the
+/// switch, the opacity, and the blend mode, with its page.
+fn look_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    id: vale_store::FrameId,
+    layer: vale_store::LayerId,
+) -> Option<Rect> {
+    use super::Page;
+    use super::raster::{BLEND, SHOW_AS, blend_rows};
+    let map = state.doc.project.atlas.frame(id)?.map;
+    let l = state.doc.layer(layer)?;
+    let (name, raster) = (l.name.clone(), l.raster().is_some());
+    let page = state.atlas.layer_page.filter(|p| *p == Page::Blend);
+    state.atlas.layer_page = page;
+    let (key, title, back) = match page {
+        Some(_) => ("pad-atlas-blend", BLEND, name.as_str()),
+        None => ("pad-atlas-look", name.as_str(), FRAME_TABS[2]),
+    };
+    let head = CardTitle {
+        title,
+        back: Some(back),
+        action: None,
+    };
+    let card = Card {
+        key,
+        place: (rects.right_panel, panel_width(ctx)),
+        head,
+        scroll: egui::scroll_area::ScrollSource::default(),
+    };
+    let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
+        if row.back {
+            if page.is_none() {
+                state.atlas.layer = None;
+            }
+            state.atlas.layer_page = None;
+        }
+        if row.close {
+            state.atlas.selection = AtlasSelection::None;
+            state.atlas.vertex = None;
+        }
+    };
+    let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let scope = Some(map);
+        let Some(mut look) = state.look(scope, layer) else {
+            return;
+        };
+        let old = look;
+        if page.is_some() {
+            if let Some(mode) = blend_rows(ui, controls, look.blend) {
+                look.blend = mode;
+            }
+        } else {
+            let mut fraction = f64::from(look.opacity);
+            let text = format!("{:.0}%", fraction * 100.0);
+            if widgets::row_slider(
+                ui,
+                controls,
+                super::OPACITY,
+                "Opacity",
+                &mut fraction,
+                &text,
+            ) {
+                // The steps are whole percents.
+                look.opacity = ((fraction * 100.0).round() / 100.0) as f32;
+            }
+            if raster {
+                let all = vale_store::RasterDisplay::ALL;
+                let active = all.iter().position(|d| *d == look.display);
+                let displays = &crate::ui::elevation::DISPLAYS;
+                if let Some(i) = widgets::choice_row(ui, controls, SHOW_AS, displays, active) {
+                    look.display = all[i];
+                }
+            }
+            let label = crate::ui::elevation::blend_label(look.blend);
+            if widgets::open_row(ui, controls, BLEND, label).clicked() {
+                state.atlas.layer_page = Some(Page::Blend);
+            }
+        }
+        if look != old {
+            state.set_look(scope, layer, look);
+        }
+        if page.is_none() {
+            ui.add_space(8.0);
+            let any = !state.doc.overrides(map, layer).is_empty();
+            if widgets::button_row(ui, controls, REMOVE_OVERRIDES, any).clicked() {
+                state.clear_overrides(map, layer);
+            }
+        }
+    };
+    Some(show_card(
+        ctx, state, controls, rects, card, on_title, map_hint, body,
+    ))
 }
 
 fn projection_tab(

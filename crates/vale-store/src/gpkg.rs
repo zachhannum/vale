@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 28;
+pub const FORMAT_VERSION: u32 = 29;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -67,6 +67,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v26,
     v27,
     v28,
+    v29,
 ];
 
 /// `GPKG` in ASCII.
@@ -1059,6 +1060,26 @@ fn v28(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The style overrides of the maps. An older file has no overrides. A file
+/// with an older version number can already have the table.
+fn v29(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_map_style (
+           map_id INTEGER NOT NULL REFERENCES vale_map(id),
+           layer_id INTEGER NOT NULL,
+           overrides TEXT NOT NULL,
+           PRIMARY KEY (map_id, layer_id));
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_map_style', 'vale', 'vale_map_style');
+         INSERT INTO gpkg_extensions
+           SELECT c.table_name, NULL, 'vale_project', 'Records of the Vale app', 'read-write'
+           FROM gpkg_contents c
+           WHERE c.table_name = 'vale_map_style'
+             AND NOT EXISTS (SELECT 1 FROM gpkg_extensions e
+               WHERE e.table_name = c.table_name AND e.extension_name = 'vale_project');",
+    )
+}
+
 /// The atlas. An older file gets one map with an Equal Earth projection and
 /// one page in the units of the world. A file with an older version number
 /// can already have the tables.
@@ -1534,12 +1555,13 @@ fn write_base(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
 }
 
 /// Writes the maps, the pages, and the frames. A map does not keep the
-/// hidden ID of a layer that the project does not have.
+/// hidden ID or the overrides of a layer that the project does not have.
 fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     let atlas = &project.atlas;
     tx.execute_batch(
         "DELETE FROM vale_frame;
          DELETE FROM vale_map_hidden;
+         DELETE FROM vale_map_style;
          DELETE FROM vale_page;
          DELETE FROM vale_map;
          DELETE FROM vale_projection;",
@@ -1555,10 +1577,16 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     )?;
     let mut hidden =
         tx.prepare("INSERT INTO vale_map_hidden (map_id, layer_id) VALUES (?1, ?2)")?;
+    let mut style =
+        tx.prepare("INSERT INTO vale_map_style (map_id, layer_id, overrides) VALUES (?1, ?2, ?3)")?;
     for (position, m) in atlas.maps.iter().enumerate() {
         map.execute(params![m.id.0, position, m.name, m.projection])?;
         for layer in m.hidden.iter().filter(|id| project.layer(**id).is_some()) {
             hidden.execute(params![m.id.0, layer.0])?;
+        }
+        let overrides = m.overrides.iter();
+        for (layer, text) in overrides.filter(|(id, _)| project.layer(**id).is_some()) {
+            style.execute(params![m.id.0, layer.0, text])?;
         }
     }
     let mut page = tx.prepare(
@@ -2436,6 +2464,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             name: r.get(1)?,
             projection: r.get(2)?,
             hidden: BTreeSet::new(),
+            overrides: BTreeMap::new(),
         });
     }
     let mut rows =
@@ -2454,6 +2483,14 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         let map = atlas.map_mut(id);
         let map = map.ok_or_else(|| corrupt(format!("hidden layers of map {}", id.0)))?;
         map.hidden.insert(LayerId(r.get(1)?));
+    }
+    let mut rows = conn.prepare("SELECT map_id, layer_id, overrides FROM vale_map_style")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id = MapId(r.get(0)?);
+        let map = atlas.map_mut(id);
+        let map = map.ok_or_else(|| corrupt(format!("style overrides of map {}", id.0)))?;
+        map.overrides.insert(LayerId(r.get(1)?), r.get(2)?);
     }
     let mut rows = conn
         .prepare("SELECT id, name, width_mm, height_mm, units FROM vale_page ORDER BY position")?;
@@ -2946,6 +2983,7 @@ mod tests {
                 "vale_layer",
                 "vale_map",
                 "vale_map_hidden",
+                "vale_map_style",
                 "vale_meta",
                 "vale_page",
                 "vale_projection",
@@ -3151,6 +3189,8 @@ mod tests {
         // A second map uses the custom projection.
         let copy = atlas.add_map();
         atlas.map_mut(copy).unwrap().projection = atlas.presets[0].projection.clone();
+        let size = r#"{"/label/size":20.0}"#.to_string();
+        atlas.map_mut(copy).unwrap().overrides.insert(towns, size);
         atlas.add_map();
         let first = atlas.pages[0].id;
         let second = atlas.add_page(Some(first), 420.0, 297.0, PageUnits::In);
@@ -3367,6 +3407,44 @@ mod tests {
 
         project.remove_layer(towns);
         assert!(!project.atlas.maps[0].hidden.contains(&towns));
+    }
+
+    #[test]
+    fn the_file_does_not_keep_the_overrides_of_a_missing_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let overrides = &mut project.atlas.maps[0].overrides;
+        overrides.insert(towns, "{}".into());
+        overrides.insert(LayerId(99), "{}".into());
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let keys: Vec<_> = loaded.atlas.maps[0].overrides.keys().copied().collect();
+        assert_eq!(keys, [towns]);
+
+        project.remove_layer(towns);
+        assert!(!project.atlas.maps[0].overrides.contains_key(&towns));
+    }
+
+    #[test]
+    fn a_file_of_version_28_has_no_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "DROP TABLE vale_map_style;
+             DELETE FROM gpkg_extensions WHERE table_name = 'vale_map_style';
+             DELETE FROM gpkg_contents WHERE table_name = 'vale_map_style';",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 28);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert!(loaded.atlas.maps.iter().all(|m| m.overrides.is_empty()));
     }
 
     #[test]
@@ -3861,7 +3939,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 188 * 1024, "{bytes} bytes");
+        assert!(bytes < 196 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();

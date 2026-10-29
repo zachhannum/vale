@@ -232,7 +232,8 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     let Some(mut rivers) = state.doc.project.raster(id).map(|r| r.rivers) else {
         return;
     };
-    if height {
+    // The rivers belong to the globe. A map frame draws no rivers.
+    if height && state.workspace != crate::ui::Workspace::Atlas {
         if widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut rivers) {
             state.set_raster_rivers(id, rivers);
         }
@@ -398,7 +399,11 @@ pub fn image_blend_body(
 
 /// A row for each blend mode, with a mark on `current`. Returns the mode of
 /// a tapped row.
-fn blend_rows(ui: &mut egui::Ui, controls: &mut Controls, current: BlendMode) -> Option<BlendMode> {
+pub fn blend_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    current: BlendMode,
+) -> Option<BlendMode> {
     let mut chosen = None;
     for mode in BlendMode::ALL {
         let label = elevation::blend_label(mode);

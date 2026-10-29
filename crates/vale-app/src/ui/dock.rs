@@ -4,19 +4,25 @@
 
 use eframe::egui;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
-use vale_store::{Border, FrameRecord, FrameShape, Graticule, PageUnits};
+use vale_store::{
+    BlendMode, Border, FrameRecord, FrameShape, Graticule, LayerId, PageUnits, RasterDisplay,
+};
+
+use super::elevation::{DISPLAYS, blend_label};
+use super::pad::raster::{BLEND, SHOW_AS};
 
 use super::atlas::{self, AtlasSelection, FrameTab};
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_WIDTH,
     CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
     DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
-    INTERVAL, LATITUDE, LONGITUDE, MAP_NAME, OBLIQUE, ORIENTATIONS, PAGE_NAME, POLYGON,
-    PROJECTION_NAME, RECTANGLE, REMOVE_VERTEX, ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL,
-    SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row, length_text, unit_name,
+    INTERVAL, LATITUDE, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, OBLIQUE, ORIENTATIONS, PAGE_NAME,
+    POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION,
+    SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
+    length_text, unit_name,
 };
 use super::pad::{GRATICULE, NO_LAYERS};
-use super::{AppState, inspector};
+use super::{AppState, inspector, style_editor};
 use crate::atlas::{self as math, PAGE_PRESETS};
 
 /// True if the dock shows: a frame, the page, or a layer is selected.
@@ -262,7 +268,8 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 }
 
 /// A switch for each layer, which turns the layer on or off in the
-/// map of the frame.
+/// map of the frame, and the style of the chosen vector layer, for all maps
+/// or for the map of the frame.
 fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let rows: Vec<_> = (state.doc.project.layers().iter().rev())
         .map(|l| (l.id, l.name.clone()))
@@ -270,12 +277,101 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     if rows.is_empty() {
         ui.weak(NO_LAYERS);
     }
+    let open = state.atlas.open_layer();
     for (layer, name) in rows {
-        let mut shown = state.doc.shown(frame.map, layer);
-        if ui.checkbox(&mut shown, name).changed() {
-            state.set_map_shown(frame.map, layer, shown);
-        }
+        ui.horizontal(|ui| {
+            let mut shown = state.doc.shown(frame.map, layer);
+            if ui.checkbox(&mut shown, &name).changed() {
+                state.set_map_shown(frame.map, layer, shown);
+            }
+            if ui.selectable_label(open == Some(layer), "Style").clicked() {
+                state.atlas.layer = (open != Some(layer)).then_some((frame.id, layer));
+            }
+        });
     }
+    let Some(layer) = state.atlas.open_layer() else {
+        return;
+    };
+    ui.separator();
+    ui.weak(MAP_STYLE_HINT);
+    let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
+        look_controls(ui, state, frame, layer);
+        return;
+    };
+    let fields = state
+        .doc
+        .layer(layer)
+        .map_or(Vec::new(), |l| l.fields.clone());
+    let symbols = state.doc.symbols().clone();
+    let mut library = style_editor::Library {
+        symbols: &symbols,
+        note: state.symbol_note.as_ref(),
+        actions: &mut state.actions,
+    };
+    let Some(mut style) = state.doc.map_style(frame.map, layer) else {
+        return;
+    };
+    if style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library)
+        && state.doc.set_map_style(frame.map, layer, &style)
+    {
+        state.touch();
+    }
+    remove_overrides(ui, state, frame, layer);
+}
+
+fn remove_overrides(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
+    let any = !state.doc.overrides(frame.map, layer).is_empty();
+    if ui
+        .add_enabled(any, egui::Button::new(REMOVE_OVERRIDES))
+        .clicked()
+    {
+        state.clear_overrides(frame.map, layer);
+    }
+}
+
+/// The opacity, the display, and the blend mode of a raster layer or an
+/// image layer in the map of the frame.
+fn look_controls(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
+    let scope = Some(frame.map);
+    let Some(mut look) = state.look(scope, layer) else {
+        return;
+    };
+    let old = look;
+    let raster = state.doc.layer(layer).is_some_and(|l| l.raster().is_some());
+    egui::Grid::new("look").num_columns(2).show(ui, |ui| {
+        ui.label("Opacity");
+        ui.add(egui::Slider::new(&mut look.opacity, 0.0..=1.0));
+        ui.end_row();
+        if raster {
+            ui.label(SHOW_AS);
+            egui::ComboBox::from_id_salt("look-display")
+                .selected_text(display_name(look.display))
+                .show_ui(ui, |ui| {
+                    for d in RasterDisplay::ALL {
+                        ui.selectable_value(&mut look.display, d, display_name(d));
+                    }
+                });
+            ui.end_row();
+        }
+        ui.label(BLEND);
+        egui::ComboBox::from_id_salt("look-blend")
+            .selected_text(blend_label(look.blend))
+            .show_ui(ui, |ui| {
+                for mode in BlendMode::ALL {
+                    ui.selectable_value(&mut look.blend, mode, blend_label(mode));
+                }
+            });
+        ui.end_row();
+    });
+    if look != old {
+        state.set_look(scope, layer, look);
+    }
+    remove_overrides(ui, state, frame, layer);
+}
+
+fn display_name(d: RasterDisplay) -> &'static str {
+    let i = RasterDisplay::ALL.iter().position(|x| *x == d).unwrap_or(0);
+    DISPLAYS[i]
 }
 
 fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
