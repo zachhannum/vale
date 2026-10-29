@@ -17,6 +17,7 @@ pub mod image_layer;
 pub mod labels;
 #[cfg(target_os = "ios")]
 pub mod lifecycle;
+pub mod measure;
 pub mod pen;
 pub mod pick;
 pub mod pipeline;

@@ -141,6 +141,8 @@ pub enum Tool {
     Line,
     Polygon,
     Point,
+    /// Measures a path on the world. It works with any layer selected.
+    Measure,
 }
 
 /// The way that the world workspace shows the world.
@@ -669,6 +671,11 @@ pub struct Globe {
     point_press: Option<Option<V3>>,
     /// The last point that the point tool placed, for the layer.
     point_done: Option<PlacedPoint>,
+    /// The press of the Measure tool that can be a tap.
+    pub measure_press: crate::measure::TapPress,
+    /// The last tap of the Measure tool: its screen position and the place
+    /// under it.
+    measure_tap: Option<(Pos2, V3)>,
     /// The radius of the world, in kilometers. Set by the canvas each frame.
     pub world_km: f64,
     /// The seed of the world. Set by the canvas each frame.
@@ -776,6 +783,8 @@ impl Globe {
             line_done: None,
             point_press: None,
             point_done: None,
+            measure_press: Default::default(),
+            measure_tap: None,
             channels_sent: false,
             test_wanted: None,
             new_face_size: face_size,
@@ -1575,6 +1584,46 @@ impl Globe {
         self.drawing() || self.placing()
     }
 
+    /// True if the Measure tool is the tool.
+    pub fn measuring(&self) -> bool {
+        self.tool == Tool::Measure
+    }
+
+    /// True if the tool snaps, so the snap targets are needed.
+    pub fn snapping(&self) -> bool {
+        self.editing() || self.measuring()
+    }
+
+    /// Records a tap of the Measure tool at a screen position on the world.
+    pub fn measure_tap(&mut self, pos: Pos2) {
+        self.measure_tap = self.unproject(pos).map(|dir| (pos, dir));
+    }
+
+    /// The last tap of the Measure tool.
+    pub fn take_measure_tap(&mut self) -> Option<(Pos2, V3)> {
+        self.measure_tap.take()
+    }
+
+    /// The point of the Measure tool at `dir`, snapped to the targets.
+    pub fn measure_point(&self, dir: V3) -> crate::measure::MeasurePoint {
+        let snap = self
+            .targets
+            .as_ref()
+            .and_then(|t| t.snap(dir, self.radius(), &self.snap, None));
+        let lonlat = |dir| {
+            let (lon, lat) = math::dir_to_lonlat(dir);
+            [lon, lat]
+        };
+        let (pos, exact) = match snap {
+            Some(snap) => match snap.exact {
+                Some(exact) => (exact, true),
+                None => (lonlat(snap.dir), false),
+            },
+            None => (lonlat(dir), false),
+        };
+        crate::measure::MeasurePoint { pos, exact }
+    }
+
     /// Starts a tap of the point tool.
     pub fn point_down(&mut self) {
         self.point_press = Some(None);
@@ -1650,7 +1699,7 @@ impl Globe {
             let (Some(key), Some(map)) = (self.source(id), self.display_map(id)) else {
                 continue;
             };
-            if !self.editing() || display != RasterDisplay::Bands {
+            if !self.snapping() || display != RasterDisplay::Bands {
                 continue;
             }
             let bands = &map.bands;
@@ -1752,6 +1801,17 @@ impl Globe {
     pub fn snap_highlight(&self) -> Option<Highlight> {
         if let Some(stroke) = &self.line_stroke {
             return stroke.tracer.as_ref()?.highlight();
+        }
+        if self.measuring() {
+            let dir = self.unproject(self.input.pos?)?;
+            let snap = self
+                .targets
+                .as_ref()?
+                .snap(dir, self.radius(), &self.snap, None)?;
+            return Some(Highlight {
+                span: Vec::new(),
+                point: Some(snap.dir),
+            });
         }
         if !self.editing() {
             return None;
