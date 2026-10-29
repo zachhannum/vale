@@ -148,7 +148,6 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Image tile | Image, level, column, row, and the RGBA pixels of one tile as a PNG |
 | Thumbnail | A small picture of the globe, for the list of projects |
 | Symbol | A point symbol that the user adds: a unique name and the text of an SVG file. The symbols are in the order of addition, and they are not in the undo log. |
-| Font | A font file that the user adds: the family name, the file name, and the bytes. The fonts are in the order of addition, and they are not in the undo log. |
 | Layer | Name, type (raster, image, points, lines, or polygons), visibility, attribute schema (fields with a name, a type, and a default value), link to a source, to a raster, to an image, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Style | Ordered rules of one layer, stored as JSON. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, the opacity, and the blend mode. |
@@ -568,7 +567,7 @@ Manual control is part of the design and not a repair tool. You can pin a label,
 
 The library takes its fonts through Parley and measures real glyph outlines. Collision tests use one box per glyph on curved text, so curved labels pack tightly.
 
-The app ships Noto Sans and Noto Serif. The project file holds the other font files that its labels use, so a project looks the same on each device. The app does not use system fonts. A label style names a font family. If no font of the app or of the project has that family, the labels use Noto Sans, and the panel of the layer shows a warning that names both fonts. PDF export embeds a subset of each font. The user is responsible for the license of a font file that they add, also if the license limits embedding.
+The labels use the fonts of the system. The app also ships Noto Sans, which is the default font. A label style names a font family, and the project file holds only that name. A project looks the same on two devices if both devices have its fonts. If the device has no font of that family, the labels use Noto Sans, and the panel of the layer shows a warning that names both fonts. PDF export embeds a subset of each font.
 
 The test set is real-world data, for example Natural Earth, rendered to images and compared with approved reference images. Real data has harder label problems than most fantasy maps.
 
