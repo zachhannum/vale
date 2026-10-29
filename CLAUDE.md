@@ -117,7 +117,7 @@ A feature session keeps its context small on purpose.
   cargo test -p vale-app --test globe -- --ignored hillshade
   ```
 
-- Put a new test that reads GPU pixels in the GPU tier. If a test needs a GPU only for a picture that a person looks at, save the picture with `screenshot::save`. It renders only when the variable `VALE_SCREENSHOTS` is set.
+- Put a new test that reads GPU pixels in the GPU tier. If a test needs a GPU only for a picture that a person looks at, save the picture with `screenshot::save`. It renders only when the variable `VALE_SCREENSHOTS` is set. A test that only saves pictures or gives times has the prefix `manual_`, and CI skips it.
 
 - If the PR has CI runs, watch them with `gh run watch`. After they pass, ask for review.
 - When you implement an issue, open a PR at the end of the work, without waiting to be asked.

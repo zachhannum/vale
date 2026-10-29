@@ -39,7 +39,7 @@ jobs:
       - name: Run the fast tier and the UI tier
         run: cargo test --workspace
 
-      # The GPU tier is the ignored tests of vale-app. The screenshot tests
-      # and the timing tests are also ignored, and they run only by hand.
+      # The GPU tier is the ignored tests of vale-app. The ignored tests with
+      # the prefix `manual_` save pictures or give times, and they run only by hand.
       - name: Run the GPU tier
-        run: cargo test -p vale-app -- --ignored --skip screenshots_ --skip step_time_
+        run: cargo test -p vale-app -- --ignored --skip manual_
