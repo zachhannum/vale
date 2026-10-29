@@ -3050,6 +3050,7 @@ fn assert_ridge(name: &str, run: &RidgeRun, faces: &[usize]) -> u16 {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_matches_cpu_for_a_straight_stroke() {
     let start = smooth_ground(256);
     for radius in [0.03, 0.1, 0.2] {
@@ -3083,6 +3084,7 @@ const RIDGE_BEND: [(f64, f64); 5] = [
 ];
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_matches_cpu_across_a_face_edge() {
     let start = smooth_ground(256);
     let run = ridge_run(&start, ridge_spec(0.1), &RIDGE_BEND, false, false);
@@ -3090,6 +3092,7 @@ fn gpu_ridge_matches_cpu_across_a_face_edge() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_matches_cpu_at_a_cube_corner() {
     let start = smooth_ground(256);
     // Faces 0, 2, and 4 meet at longitude 45 and latitude 35.264.
@@ -3102,6 +3105,7 @@ fn gpu_ridge_matches_cpu_at_a_cube_corner() {
 /// 32-bit number. The line is long, so the distance along it is large, and
 /// it goes in more than one plan.
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_matches_cpu_on_a_large_face() {
     let start = smooth_ground(2048);
     let places = [
@@ -3122,6 +3126,7 @@ fn gpu_ridge_matches_cpu_on_a_large_face() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_with_limits_matches_cpu() {
     let start = Heightmap::new(256, 30000);
     // With this seed, the line has a strong crack.
@@ -3147,6 +3152,7 @@ fn gpu_ridge_with_limits_matches_cpu() {
 /// A radius of 260 texels gives the fabric its three octaves, and the line
 /// has more than 10 cracks.
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_matches_cpu_for_a_wide_ridge_on_a_large_face() {
     let start = smooth_ground(2048);
     let spec = Ridge {
@@ -3166,6 +3172,7 @@ fn gpu_ridge_matches_cpu_for_a_wide_ridge_on_a_large_face() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_matches_cpu_for_a_stroke_that_crosses_its_line() {
     let start = smooth_ground(256);
     let places = [(-10.0, -5.0), (8.0, 5.0), (8.0, -5.0), (-10.0, 5.0)];
@@ -3175,6 +3182,7 @@ fn gpu_ridge_matches_cpu_for_a_stroke_that_crosses_its_line() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_in_steps_matches_one_plan_on_the_cpu() {
     let start = smooth_ground(256);
     let run = ridge_run(&start, ridge_spec(0.1), &RIDGE_BEND, true, false);
@@ -3182,6 +3190,7 @@ fn gpu_ridge_in_steps_matches_one_plan_on_the_cpu() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_batch_takes_a_limited_number_of_ridge_plans() {
     let gpu = gpu();
     let cpu = Heightmap::new(64, 1000);
@@ -3204,6 +3213,7 @@ fn a_batch_takes_a_limited_number_of_ridge_plans() {
 /// leg. The rectangle of a plan of the last leg holds a part of the first
 /// leg at its corner, and the pass keeps the ridge there.
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_keeps_an_older_part_of_the_line_in_the_corner_of_a_plan() {
     let start = smooth_ground(512);
     let places = [

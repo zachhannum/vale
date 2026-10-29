@@ -3764,7 +3764,7 @@ const RIDGE_SMALL: [f64; 4] = [-14.0, -12.0, 0.0, -3.8];
 /// that part in their names.
 #[test]
 #[ignore]
-fn pictures_of_a_cpu_ocean_ridge() {
+fn manual_pictures_of_a_cpu_ocean_ridge() {
     type Edit = fn(&mut vale_app::globe::brush::BrushSettings);
     let which = std::env::var("RIDGE_PICTURES").unwrap_or_default();
     let raised: Edit = |brush| brush.ridge_crest_m = RIDGE_SHOT_CREST_M;
@@ -3777,6 +3777,7 @@ fn pictures_of_a_cpu_ocean_ridge() {
         ("seed-8-near", 2048, 1000.0, 8, RIDGE_NEAR, default),
         ("300-km-near", 2048, 300.0, 7, RIDGE_SMALL, default),
         ("coarse-near", 1024, 1000.0, 7, RIDGE_NEAR, default),
+        ("fine-near", 4096, 1000.0, 7, RIDGE_NEAR, default),
         ("coarse-300-km-near", 1024, 300.0, 8, RIDGE_SMALL, default),
     ];
     for (name, n, radius_km, seed, window, edit) in pictures {
