@@ -694,6 +694,7 @@ fn near(got: [u8; 3], want: [u8; 3], what: &str) {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_flat_view_draws_an_image_layer_with_its_colors_over_the_layers_below() {
     let _gpu = one_gpu_test();
     let level = 16000;
@@ -705,6 +706,7 @@ fn the_flat_view_draws_an_image_layer_with_its_colors_over_the_layers_below() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_opacity_and_the_blend_mode_apply_to_an_image_layer_in_the_flat_view() {
     use vale_store::BlendMode;
     let _gpu = one_gpu_test();

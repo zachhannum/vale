@@ -166,6 +166,7 @@ fn near(got: [u8; 3], want: [u8; 3], what: &str) {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_frame_draws_an_image_layer_with_its_colors_over_the_layers_below() {
     let _gpu = one_gpu_test();
     let level = 40000;
@@ -176,6 +177,7 @@ fn a_frame_draws_an_image_layer_with_its_colors_over_the_layers_below() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_opacity_and_the_blend_mode_of_an_image_layer_work_in_a_frame() {
     let _gpu = one_gpu_test();
     let level = 32768;

@@ -3484,6 +3484,7 @@ const LOW: u16 = 16000;
 const HIGH: u16 = 50000;
 
 #[test]
+#[ignore = "gpu"]
 fn the_globe_draws_an_image_layer_with_its_colors_over_the_layers_below() {
     let _gpu = one_gpu_test();
     let (mut h, _) = layers_harness(&[LOW]);
