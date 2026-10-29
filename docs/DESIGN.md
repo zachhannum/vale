@@ -148,10 +148,11 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Image tile | Image, level, column, row, and the RGBA pixels of one tile as a PNG |
 | Thumbnail | A small picture of the globe, for the list of projects |
 | Symbol | A point symbol that the user adds: a unique name and the text of an SVG file. The symbols are in the order of addition, and they are not in the undo log. |
+| Font | A font file that the user adds: the family name, the file name, and the bytes. The fonts are in the order of addition, and they are not in the undo log. |
 | Layer | Name, type (raster, image, points, lines, or polygons), visibility, attribute schema (fields with a name, a type, and a default value), link to a source, to a raster, to an image, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Style | Ordered rules of one layer, stored as JSON. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, the opacity, and the blend mode. |
-| Label class | Text expression, font, placement rules, priority |
+| Label class | Text expression, font family, placement rules, priority |
 | Map | Name, projection preset and center, the layers that are off in the map, style overrides, label classes |
 | Page | Name, page size in millimeters, units of the page size, paper color, page border, page template, furniture |
 | Map frame | Page, map, shape on the page, center, scale, rotation, fill, border, graticule |
@@ -567,6 +568,8 @@ Manual control is part of the design and not a repair tool. You can pin a label,
 
 The library takes its fonts through Parley and measures real glyph outlines. Collision tests use one box per glyph on curved text, so curved labels pack tightly.
 
+The app ships Noto Sans and Noto Serif. The project file holds the other font files that its labels use, so a project looks the same on each device. The app does not use system fonts. A label style names a font family. If no font of the app or of the project has that family, the labels use Noto Sans, and the panel of the layer shows a warning that names both fonts. PDF export embeds a subset of each font. The user is responsible for the license of a font file that they add, also if the license limits embedding.
+
 The test set is real-world data, for example Natural Earth, rendered to images and compared with approved reference images. Real data has harder label problems than most fantasy maps.
 
 Clean-room has a strict meaning here. The design comes from published research and from the public description of Maplex behavior in Esri documentation. No one on the project reads Esri code or decompiles Esri software. The starting points are Imhof's rules for name placement (1975) and the label placement study by Christensen, Marks, and Shieber (1995).
@@ -663,13 +666,12 @@ The app prototype covers a thin part of phases 2, 4, 6, 8, and 9. It does not fi
 
 ### Labeling prototype
 
-The labeling prototype differs from the design above in five ways. Each difference ends when the crate named for it exists.
+The labeling prototype differs from the design above in four ways. Each difference ends when the crate named for it exists.
 
 1. A separate crate, `vale-labeler-demo`, holds the command-line tool for data loading, projection, and rendering. It is not published. It ends when `vale-render` and the later command-line tools take over its jobs.
 2. The demo rasterizes with `vello_cpu`. It now draws through the display list of `vale-render`. This difference ends when the GPU Vello backend exists.
 3. The demo has two hand-written spherical projections, Equal Earth and Lambert azimuthal equal-area. They stay in the demo as a fixed test input. The app uses PROJ through `vale-sphere`.
-4. The labeler uses fonts that the caller registers as bytes. System font discovery is available but off by default, so output is the same on every machine. This ends when `vale-app` and `vale-style` choose fonts for the user.
-5. Of the five fallbacks in the labeling engine, the prototype has only the last one, removal with a reason. The other four arrive in phase 7.
+4. Of the five fallbacks in the labeling engine, the prototype has only the last one, removal with a reason. The other four arrive in phase 7.
 
 The labeling prototype is done. The command `cargo run --release -p vale-labeler-demo -- --preset world` writes the labeled PNG.
 
