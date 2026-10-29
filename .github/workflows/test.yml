@@ -26,10 +26,11 @@ jobs:
           rustup default stable
 
       # Lavapipe is the software Vulkan driver of Mesa. The GPU tier draws on it.
-      - name: Install the software GPU
+      - name: Install the software GPU and the system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 \
+            libfontconfig1-dev pkg-config
 
       - uses: Swatinem/rust-cache@v2
 
