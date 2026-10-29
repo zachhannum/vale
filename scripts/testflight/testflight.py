@@ -27,6 +27,8 @@ import urllib.request
 MARKER = "<!-- vale-testflight -->"
 API = "https://api.appstoreconnect.apple.com"
 LOCALE = "en-US"
+# The waits in seconds before each new try of a request that failed.
+RETRY_WAITS = (5, 15, 30, 60)
 # The limit of the "What to Test" text.
 NOTES_LIMIT = 4000
 STATES = {
@@ -128,12 +130,22 @@ class Connect:
         request.add_header("Authorization", "Bearer " + token(*self.key))
         if data:
             request.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                text = response.read()
-        except urllib.error.HTTPError as error:
-            sys.exit(f"{method} {path} failed with status {error.code}:\n{error.read().decode(errors='replace')}")
-        return json.loads(text) if text else None
+        # A server error or a lost connection gets four more tries.
+        for wait in (*RETRY_WAITS, None):
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    text = response.read()
+                return json.loads(text) if text else None
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode(errors="replace")
+                if error.code < 500 or wait is None:
+                    sys.exit(f"{method} {path} failed with status {error.code}:\n{detail}")
+                print(f"{method} {path} failed with status {error.code}. The next try is in {wait} s.", flush=True)
+            except urllib.error.URLError as error:
+                if wait is None:
+                    sys.exit(f"{method} {path} failed: {error.reason}")
+                print(f"{method} {path} failed: {error.reason}. The next try is in {wait} s.", flush=True)
+            time.sleep(wait)
 
 
 def find_build(connect, app, version, build):

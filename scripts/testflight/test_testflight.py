@@ -5,8 +5,11 @@ import json
 import shutil
 import subprocess
 import tempfile
+import io
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest import mock
 
 import testflight
 
@@ -88,6 +91,46 @@ class Token(unittest.TestCase):
             json.loads(decode(claims)), {"iss": "ISSUER", "iat": 1000, "exp": 1600, "aud": "appstoreconnect-v1"}
         )
         self.assertEqual(len(decode(signature)), 64)
+
+
+class Request(unittest.TestCase):
+    def connect(self):
+        with mock.patch.dict("os.environ", {"ASC_KEY_PATH": "k", "ASC_KEY_ID": "i", "ASC_ISSUER_ID": "s"}):
+            return testflight.Connect()
+
+    def error(self, code):
+        return urllib.error.HTTPError("url", code, "error", {}, io.BytesIO(b"{}"))
+
+    def ok(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"data": []}'
+        return response
+
+    @mock.patch("testflight.time.sleep")
+    @mock.patch("testflight.token", return_value="t")
+    def test_a_server_error_gets_another_try(self, _token, sleep):
+        with mock.patch("urllib.request.urlopen", side_effect=[self.error(500), self.ok()]) as urlopen:
+            self.assertEqual(self.connect().request("GET", "/v1/builds"), {"data": []})
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(testflight.RETRY_WAITS[0])
+
+    @mock.patch("testflight.time.sleep")
+    @mock.patch("testflight.token", return_value="t")
+    def test_a_client_error_stops_at_once(self, _token, sleep):
+        with mock.patch("urllib.request.urlopen", side_effect=[self.error(404)]):
+            with self.assertRaises(SystemExit):
+                self.connect().request("GET", "/v1/builds")
+        sleep.assert_not_called()
+
+    @mock.patch("testflight.time.sleep")
+    @mock.patch("testflight.token", return_value="t")
+    def test_server_errors_stop_after_the_last_try(self, _token, sleep):
+        tries = len(testflight.RETRY_WAITS) + 1
+        with mock.patch("urllib.request.urlopen", side_effect=[self.error(500)] * tries) as urlopen:
+            with self.assertRaises(SystemExit):
+                self.connect().request("GET", "/v1/builds")
+        self.assertEqual(urlopen.call_count, tries)
+        self.assertEqual(sleep.call_count, tries - 1)
 
 
 if __name__ == "__main__":
