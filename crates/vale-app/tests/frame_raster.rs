@@ -297,3 +297,29 @@ fn an_image_override_shows_in_the_frame_of_its_map() {
     let image = h.state().doc.project.image(id).unwrap();
     assert_eq!(image.blend, BlendMode::Normal);
 }
+
+#[test]
+fn a_band_color_of_a_map_shows_in_the_frames_of_that_map_only() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, height) = atlas(level);
+    vale_app::ui::atlas::add_frame(h.state_mut()).expect("a page takes a frame");
+    let frames = vale_app::ui::atlas::open_page(h.state()).frames.clone();
+    let middle = |h: &App, f: &vale_store::FrameRecord| {
+        screen(h, anchor(&f.shape)) + eframe::egui::vec2(23.0, 17.0)
+    };
+    let (a, b) = (middle(&h, &frames[0]), middle(&h, &frames[1]));
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    let state = h.state_mut();
+    state.edit_map_raster(frames[1].map, layer, height, |s| {
+        s.set_raster_display(height, RasterDisplay::Bands);
+        let bands = s.globe.bands_mut(height).unwrap();
+        for i in 0..bands.colors().len() {
+            bands.set_color(i, [250, 0, 0]);
+        }
+    });
+    near(pixel(&mut h, b), [250, 0, 0], "the map with the colors");
+    near(pixel(&mut h, a), [grey_of(level); 3], "the other map");
+    let record = h.state().doc.project.raster(height).unwrap();
+    assert_eq!(record.display, RasterDisplay::Grey);
+}

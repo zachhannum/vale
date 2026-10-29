@@ -7,7 +7,7 @@ use vale_store::{ImageId, LayerId, MapId, Project, Raster, RasterDisplay, Raster
 use vale_style::{ImageSymbolizer, LayerStyle, RasterSymbolizer, Symbolizer, style_version};
 
 use crate::document::Document;
-use crate::globe::Look;
+use crate::globe::{Look, RasterLook};
 use crate::session::{bands_of, record_stops};
 
 /// The colors of a raster record.
@@ -171,7 +171,7 @@ pub fn load_image_styles(p: &mut Project) {
 }
 
 /// The raster looks and the image looks that a map overrides.
-pub type MapLooks = (Vec<(RasterId, Look)>, Vec<(ImageId, Look)>);
+pub type MapLooks = (Vec<(RasterId, RasterLook)>, Vec<(ImageId, Look)>);
 
 /// The looks of the raster layers and the image layers whose style a map
 /// overrides.
@@ -185,10 +185,28 @@ pub fn map_looks(doc: &Document, map: MapId) -> MapLooks {
             continue;
         };
         if let (Some(raster), Some(s)) = (l.raster(), style.raster_symbolizer()) {
-            let look = Look {
-                opacity: s.opacity,
-                blend: s.blend,
-                display: s.display,
+            let Some(base) = doc.project.raster(raster) else {
+                continue;
+            };
+            // The bands keep the range of the raster.
+            let bands = (s.stops != base.stops || s.colors != base.colors).then(|| {
+                let mut r = base.clone();
+                r.stops.clone_from(&s.stops);
+                r.colors.clone_from(&s.colors);
+                bands_of(&r)
+            });
+            let mut hillshade = s.hillshade;
+            hillshade.on &= crate::ui::is_height(base);
+            let look = RasterLook {
+                look: Look {
+                    opacity: s.opacity,
+                    blend: s.blend,
+                    display: s.display,
+                },
+                lines: s.lines,
+                smoothing: s.smoothing,
+                hillshade,
+                bands,
             };
             rasters.push((raster, look));
         } else if let (Some(image), Some(s)) = (l.image(), style.image_symbolizer()) {

@@ -3084,11 +3084,11 @@ impl Globe {
 
     /// The passes of the layers that a map frame shows. The layers below the
     /// top raster layer that hides them do not show.
-    fn frame_passes(
+    fn frame_passes<'a>(
         &self,
         canvas: Canvas,
-        layers: &[FrameLayer],
-        frame: &FrameDraw,
+        layers: &[FrameLayer<'a>],
+        frame: &'a FrameDraw,
         clip: [f32; 4],
     ) -> Vec<Draw> {
         let shown: Vec<FrameLayer> = layers
@@ -3100,9 +3100,15 @@ impl Globe {
             .map(|layer| match *layer {
                 FrameLayer::Raster(id, mut draw) => {
                     if let Some((_, look)) = frame.raster_looks.iter().find(|(r, _)| *r == id) {
-                        draw.opacity = look.opacity.clamp(0.0, 1.0);
-                        draw.blend = look.blend;
-                        draw.display = look.display;
+                        draw.opacity = look.look.opacity.clamp(0.0, 1.0);
+                        draw.blend = look.look.blend;
+                        draw.display = look.look.display;
+                        draw.lines = look.lines;
+                        draw.smoothing = look.smoothing;
+                        draw.hillshade = look.hillshade;
+                        if let Some(bands) = &look.bands {
+                            draw.bands = bands;
+                        }
                     }
                     FrameLayer::Raster(id, draw)
                 }
@@ -3553,9 +3559,20 @@ pub struct FrameDraw {
     /// The image layers that the map shows.
     pub images: Vec<ImageId>,
     /// The raster layers whose look the map overrides.
-    pub raster_looks: Vec<(RasterId, Look)>,
+    pub raster_looks: Vec<(RasterId, RasterLook)>,
     /// The image layers whose look the map overrides.
     pub image_looks: Vec<(ImageId, Look)>,
+}
+
+/// The look of a raster layer in a map.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RasterLook {
+    pub look: Look,
+    pub lines: bool,
+    pub smoothing: Smoothing,
+    pub hillshade: Hillshade,
+    /// The bands of the map. `None`: the bands of the layer.
+    pub bands: Option<Bands>,
 }
 
 /// The look of a raster layer or an image layer in a map. An image layer
