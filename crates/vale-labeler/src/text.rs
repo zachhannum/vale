@@ -103,6 +103,20 @@ impl Fonts {
         self.fcx.collection.family_id(name).is_some()
     }
 
+    /// The names of all families, registered and system, sorted and without
+    /// duplicates.
+    pub fn families(&mut self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .fcx
+            .collection
+            .family_names()
+            .map(String::from)
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// Measure `text` in `style`.
     pub fn measure(&mut self, text: &str, style: &TextStyle) -> TextMetrics {
         let s = self.shape(text, style);
@@ -331,6 +345,7 @@ mod tests {
         f.register(read("NotoSans-Regular.ttf")).unwrap();
         assert!(f.has_family("Noto Sans"));
         assert!(!f.has_family("Noto Serif"));
+        assert_eq!(f.families(), ["Noto Sans"]);
     }
 
     #[test]
