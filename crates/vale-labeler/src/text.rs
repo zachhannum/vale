@@ -98,6 +98,11 @@ impl Fonts {
         }
     }
 
+    /// Whether a registered font has the family `name`.
+    pub fn has_family(&mut self, name: &str) -> bool {
+        self.fcx.collection.family_id(name).is_some()
+    }
+
     /// Measure `text` in `style`.
     pub fn measure(&mut self, text: &str, style: &TextStyle) -> TextMetrics {
         let s = self.shape(text, style);
@@ -317,6 +322,15 @@ mod tests {
     fn registers_noto_sans() {
         let names = Fonts::new().register(read("NotoSans-Regular.ttf")).unwrap();
         assert_eq!(names, vec!["Noto Sans".to_string()]);
+    }
+
+    #[test]
+    fn knows_the_registered_families() {
+        let mut f = Fonts::new();
+        assert!(!f.has_family("Noto Sans"));
+        f.register(read("NotoSans-Regular.ttf")).unwrap();
+        assert!(f.has_family("Noto Sans"));
+        assert!(!f.has_family("Noto Serif"));
     }
 
     #[test]
