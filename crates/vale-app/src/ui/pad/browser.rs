@@ -134,8 +134,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         panel: false,
         sheet_offset: 0.0,
         measure: false,
-        measure_button: false,
-        actions_width: geometry::SHORT_ACTIONS_WIDTH,
         tools: geometry::TOOLS,
     });
     world_form::pad(&ctx, state, &mut controls, &rects);

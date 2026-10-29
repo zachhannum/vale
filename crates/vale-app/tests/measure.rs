@@ -1,6 +1,6 @@
 //! The Measure tool on the globe and in the flat view.
 
-use eframe::egui::{self, Pos2, vec2};
+use eframe::egui::{self, Pos2, pos2, vec2};
 use egui_kittest::Harness;
 use vale_app::document::Document;
 use vale_app::globe::math::lonlat_to_dir;
@@ -103,7 +103,7 @@ fn close_to(a: f64, b: f64, fraction: f64) -> bool {
 #[test]
 fn taps_add_points_and_the_length_is_the_great_circle_length() {
     let mut h = pad();
-    assert_eq!(h.state().measure_readout(), "Tap to add a point.");
+    assert_eq!(h.state().measure_readout(), None);
     tap_corners(&mut h, &SQUARE);
     let state = h.state();
     assert_eq!(state.measure.points.len(), 4);
@@ -111,7 +111,7 @@ fn taps_add_points_and_the_length_is_the_great_circle_length() {
     let length = state.measure.summary(EARTH).length_km;
     let exact = path_length(&SQUARE, false, EARTH);
     assert!(close_to(length, exact, 1e-4), "{length} {exact}");
-    assert!(state.measure_readout().starts_with("Length "));
+    assert!(state.measure_readout().unwrap().starts_with("Length "));
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn a_tap_on_the_first_point_closes_the_path_and_shows_the_area() {
         assert!(close_to(summary.area_km2.unwrap(), exact, 1e-3));
         let perimeter = path_length(&SQUARE, true, radius);
         assert!(close_to(summary.length_km, perimeter, 1e-4));
-        let text = state.measure_readout();
+        let text = state.measure_readout().unwrap();
         assert!(
             text.contains(" · Area ") && text.ends_with(" km²"),
             "{text}"
@@ -158,7 +158,7 @@ fn a_tap_on_the_first_point_closes_the_path_and_shows_the_area() {
 }
 
 #[test]
-fn a_closed_path_that_crosses_itself_shows_a_hint() {
+fn a_closed_path_that_crosses_itself_shows_the_perimeter_and_no_area() {
     let mut h = pad();
     let bow = [SQUARE[0], SQUARE[2], SQUARE[1], SQUARE[3]];
     tap_corners(&mut h, &bow);
@@ -166,11 +166,13 @@ fn a_closed_path_that_crosses_itself_shows_a_hint() {
     tap_at(&mut h, first, None);
     let state = h.state();
     assert!(state.measure.closed);
-    assert_eq!(state.measure.summary(EARTH).area_km2, None);
-    assert!(
-        state
-            .measure_readout()
-            .ends_with("The path crosses itself.")
+    let summary = state.measure.summary(EARTH);
+    assert_eq!(summary.area_km2, None);
+    let units = state.doc.project.world.units;
+    let length = vale_app::world::length(summary.length_km, units);
+    assert_eq!(
+        state.measure_readout().unwrap(),
+        format!("Perimeter {length}")
     );
 }
 
@@ -202,6 +204,150 @@ fn a_point_snaps_to_a_vertex_only_when_snap_is_on() {
     }
 }
 
+/// The state of the undo log of the project file.
+fn undo_log(h: &Pad) -> (bool, bool, u64) {
+    let session = h.state().session.as_ref().unwrap();
+    (session.can_undo(), session.can_redo(), session.undo_bytes())
+}
+
+/// A quick tap of `count` fingers side by side about `center`.
+fn fingers_tap(h: &mut Pad, count: u64, center: Pos2) {
+    let at = |id: u64| center + vec2(40.0 * id as f32, 0.0);
+    let touch = |h: &mut Pad, id, phase| {
+        h.event(egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(id),
+            phase,
+            pos: at(id),
+            force: None,
+        });
+    };
+    for id in 1..=count {
+        touch(h, id, egui::TouchPhase::Start);
+    }
+    h.step();
+    for id in (1..=count).rev() {
+        touch(h, id, egui::TouchPhase::End);
+    }
+    h.run_steps(3);
+}
+
+fn key(h: &mut Pad, modifiers: egui::Modifiers, key: egui::Key) {
+    h.event(egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    });
+    h.run_steps(3);
+}
+
+/// Whether the Undo button and the Redo button are enabled.
+fn history_buttons(h: &Pad) -> (bool, bool) {
+    let able = |name: &str| {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        !h.get_by_label(name).accesskit_node().is_disabled()
+    };
+    (able("Undo"), able("Redo"))
+}
+
+fn tap_button(h: &mut Pad, name: &str) {
+    let controls = &h.state().pad.controls;
+    let rect = controls.iter().find(|c| c.name == name).unwrap().rect;
+    tap_at(h, rect.center(), None);
+}
+
+#[test]
+fn undo_and_redo_act_on_the_path_and_leave_the_project_and_its_undo_log_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    // An edit before the Measure tool puts a step in the undo log.
+    state.add_height();
+    state.save_waiting().unwrap();
+    state.select(None);
+    state.globe.tool = Tool::Measure;
+    state.globe.snap.on = false;
+    state.globe.view = GlobeView::centered(10.0, 20.0);
+    // A tap of fingers lasts less than 0.3 seconds, and a step of the
+    // harness is short.
+    let mut h = Harness::builder()
+        .with_size(vec2(1194.0, 834.0))
+        .with_pixels_per_point(1.0)
+        .with_step_dt(0.01)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    let project = h.state().doc.project.clone();
+    let log = undo_log(&h);
+    assert!(log.0);
+    // With no path, there is nothing to undo.
+    assert_eq!(history_buttons(&h), (false, false));
+    tap_corners(&mut h, &SQUARE[..3]);
+    let first = screen(&h, SQUARE[0]);
+    tap_at(&mut h, first, None);
+    assert!(h.state().measure.closed);
+    assert_eq!(history_buttons(&h), (true, false));
+
+    let path = |h: &Pad| (h.state().measure.points.len(), h.state().measure.closed);
+    let empty = pos2(600.0, 700.0);
+    // A tap of two fingers reopens the path, and a tap of three closes it.
+    fingers_tap(&mut h, 2, empty);
+    assert_eq!(path(&h), (3, false));
+    assert_eq!(history_buttons(&h), (true, true));
+    fingers_tap(&mut h, 3, empty);
+    assert_eq!(path(&h), (3, true));
+    // Command+Z undoes, and Shift+Command+Z redoes.
+    use egui::{Key, Modifiers};
+    key(&mut h, Modifiers::COMMAND, Key::Z);
+    assert_eq!(path(&h), (3, false));
+    key(&mut h, Modifiers::COMMAND, Key::Z);
+    assert_eq!(path(&h), (2, false));
+    key(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    assert_eq!(path(&h), (3, false));
+    // The buttons do the same.
+    tap_button(&mut h, "Undo");
+    tap_button(&mut h, "Undo");
+    assert_eq!(path(&h), (1, false));
+    tap_button(&mut h, "Redo");
+    assert_eq!(path(&h), (2, false));
+    // A new point ends the redo.
+    let at = screen(&h, SQUARE[3]);
+    tap_at(&mut h, at, None);
+    assert_eq!(path(&h), (3, false));
+    assert_eq!(history_buttons(&h), (true, false));
+    // A tap after the close starts a new path, and undo brings back the
+    // closed path.
+    tap_at(&mut h, first, None);
+    assert_eq!(path(&h), (3, true));
+    let at = screen(&h, SQUARE[1]);
+    tap_at(&mut h, at, None);
+    assert_eq!(path(&h), (1, false));
+    tap_button(&mut h, "Undo");
+    assert_eq!(path(&h), (3, true));
+    // Escape clears the path, as one step.
+    key(&mut h, Modifiers::NONE, Key::Escape);
+    assert!(h.state().measure.is_empty());
+    key(&mut h, Modifiers::COMMAND, Key::Z);
+    assert_eq!(path(&h), (3, true));
+    // Backspace does nothing.
+    key(&mut h, Modifiers::NONE, Key::Backspace);
+    assert_eq!(path(&h), (3, true));
+
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    h.state_mut().save_tick(false, later);
+    assert_eq!(h.state().doc.project, project);
+    assert_eq!(undo_log(&h), log);
+    // After the Measure tool, undo acts on the project again.
+    h.state_mut().globe.tool = Tool::Navigate;
+    h.step();
+    assert!(h.state().can_undo());
+    h.state_mut().undo();
+    assert!(h.state().doc.project.rasters().is_empty());
+}
+
 #[test]
 fn the_path_is_not_saved_and_a_tool_change_or_a_workspace_switch_clears_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -211,10 +357,8 @@ fn the_path_is_not_saved_and_a_tool_change_or_a_workspace_switch_clears_it() {
     state.save_waiting().unwrap();
     h.run_steps(2);
     let project = h.state().doc.project.clone();
-    let (saves, undo) = (
-        h.state().session.as_ref().unwrap().saves(),
-        h.state().can_undo(),
-    );
+    let saves = h.state().session.as_ref().unwrap().saves();
+    let log = undo_log(&h);
     tap_corners(&mut h, &SQUARE);
     let first = screen(&h, SQUARE[0]);
     tap_at(&mut h, first, None);
@@ -223,7 +367,7 @@ fn the_path_is_not_saved_and_a_tool_change_or_a_workspace_switch_clears_it() {
     assert!(h.state().measure.closed);
     assert_eq!(h.state().doc.project, project);
     assert_eq!(h.state().session.as_ref().unwrap().saves(), saves);
-    assert_eq!(h.state().can_undo(), undo);
+    assert_eq!(undo_log(&h), log);
 
     h.state_mut().globe.tool = Tool::Navigate;
     h.step();

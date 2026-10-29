@@ -76,11 +76,10 @@ pub const EXPORT_PAGE_PDF: &str = "Export page PDF…";
 pub const EXPORT_ATLAS_PDF: &str = "Export atlas PDF…";
 pub const CANCEL_EXPORT: &str = "Cancel export";
 
-/// The width of the actions card with no Measure button: three buttons and
-/// a divider.
+/// The width of the actions card: three buttons and a divider.
 const ACTIONS_WIDTH: f32 = 3.0 * TOUCH + 3.0 * PAD + 9.0 + 2.0 * PAD;
 const ADD_WIDTH: f32 = 220.0;
-const TOOL_CELLS: usize = 2;
+const TOOL_CELLS: usize = 3;
 /// The height of the keypad of a field.
 const KEYPAD: f32 = 4.0 * PANEL_ROW;
 /// The smallest space at each side of the text of a tab.
@@ -185,11 +184,10 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         },
         sheet_offset: state.pad.sheet_offset,
         measure: measuring,
-        measure_button: true,
-        actions_width: ACTIONS_WIDTH,
         tools: TOOL_CELLS,
     };
     let mut rects = geometry::layout(&input);
+    rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH;
     rects.right_panel.x += geometry::RIGHT_PANEL_WIDTH - panel_width(&ctx);
     if !measuring {
         rects.brush = None;
@@ -402,12 +400,8 @@ fn top_row(
             if widgets::icon_button_at(ui, controls, add, ADD, Icon::Plus, open, true).clicked() {
                 state.atlas.add = !open;
             }
-            if rects.measure.is_none() {
-                super::measure_button(ui, state, controls, at(3.0 * step + 9.0 + PAD));
-            }
         },
     );
-    super::measure_button_card(ctx, state, controls, rects);
 }
 
 fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
@@ -421,14 +415,24 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         radius,
         |ui| {
             let mut ui = super::padded(ui);
-            for (name, icon, tool) in [
-                (SELECT, Icon::Select, AtlasTool::Select),
-                (MOVE, Icon::Move, AtlasTool::Move),
-            ] {
-                let active = state.atlas.tool == tool;
-                if widgets::tool_cell(&mut ui, controls, name, name, icon, active, true).clicked() {
-                    state.atlas.tool = tool;
+            let mut cells = |ui: &mut egui::Ui| {
+                for (name, icon, tool) in [
+                    (SELECT, Icon::Select, AtlasTool::Select),
+                    (MOVE, Icon::Move, AtlasTool::Move),
+                    (super::MEASURE, Icon::Measure, AtlasTool::Measure),
+                ] {
+                    let active = state.atlas.tool == tool;
+                    if widgets::tool_cell(ui, controls, name, name, icon, active, true).clicked() {
+                        state.atlas.tool = tool;
+                    }
                 }
+            };
+            if rects.tool_cells < TOOL_CELLS {
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(&mut ui, cells);
+            } else {
+                cells(&mut ui);
             }
         },
     );
@@ -438,11 +442,9 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     let Some(band) = rects.readout else {
         return;
     };
-    let text = if state.measuring() {
-        state.measure_readout()
-    } else {
-        readout_text(state)
-    };
+    let text = state
+        .measure_readout()
+        .unwrap_or_else(|| readout_text(state));
     let galley = ui
         .painter()
         .layout_no_wrap(text, theme::mono(), theme::MUTE);

@@ -1487,7 +1487,12 @@ impl AppState {
         Ok(())
     }
 
+    /// While the Measure tool is the tool, undo and redo act on its path
+    /// only.
     pub fn can_undo(&self) -> bool {
+        if self.measuring() {
+            return self.measure.can_undo();
+        }
         match &self.session {
             Some(session) if self.file_log() => !self.globe.busy() && session.can_undo(),
             _ => self.globe.can_undo(),
@@ -1495,6 +1500,9 @@ impl AppState {
     }
 
     pub fn can_redo(&self) -> bool {
+        if self.measuring() {
+            return self.measure.can_redo();
+        }
         match &self.session {
             Some(session) if self.file_log() => !self.globe.busy() && session.can_redo(),
             _ => self.globe.can_redo(),
@@ -1512,6 +1520,14 @@ impl AppState {
     }
 
     fn step(&mut self, redo: bool) {
+        if self.measuring() {
+            if redo {
+                self.measure.redo();
+            } else {
+                self.measure.undo();
+            }
+            return;
+        }
         self.commit_point_form();
         let able = if redo {
             self.can_redo()
@@ -1829,7 +1845,7 @@ impl AppState {
 
     /// Takes away the state of the UI that belongs to the last world.
     fn start_world(&mut self) {
-        self.measure.clear();
+        self.measure.reset();
         self.doc.frame.view = None;
         self.saved_edits = self.edits();
         self.history += 1;
@@ -2122,7 +2138,7 @@ impl AppState {
     pub fn sync_measure(&mut self) {
         let of = (self.workspace, self.atlas.page);
         if !self.measuring() || self.measure_of != of {
-            self.measure.clear();
+            self.measure.reset();
         }
         self.measure_of = of;
     }
@@ -2151,10 +2167,13 @@ impl AppState {
         self.measure.tap(at, Some(point), project, reach);
     }
 
-    /// The text of the readout of the Measure tool.
-    pub fn measure_readout(&self) -> String {
+    /// The text of the readout of the Measure tool. With no points, or
+    /// with another tool, the readout shows the place under the cursor.
+    pub fn measure_readout(&self) -> Option<String> {
         let world = &self.doc.project.world;
-        self.measure.readout(world.radius_km, world.units)
+        self.measuring()
+            .then(|| self.measure.readout(world.radius_km, world.units))
+            .flatten()
     }
 
     /// Puts the last stroke of the line tool or the polygon tool in the

@@ -233,20 +233,11 @@ fn snap_controls(ui: &mut egui::Ui, state: &mut AppState, rasters: &[(RasterId, 
     });
 }
 
-/// The buttons of the Measure tool that change the path.
+/// The button of the Measure tool that clears the path.
 fn path_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     let path = &mut state.measure;
-    let filled = !path.is_empty();
-    let close = egui::Button::new(pad::CLOSE_PATH);
-    if ui.add_enabled(path.can_close(), close).clicked() {
-        path.close();
-    }
-    let remove = egui::Button::new(pad::REMOVE_POINT);
-    if ui.add_enabled(filled, remove).clicked() {
-        path.remove_last();
-    }
     let clear = egui::Button::new(pad::CLEAR_PATH);
-    if ui.add_enabled(filled, clear).clicked() {
+    if ui.add_enabled(!path.is_empty(), clear).clicked() {
         path.clear();
     }
 }
@@ -979,8 +970,8 @@ fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
 pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
-            if state.measuring() {
-                ui.label(state.measure_readout());
+            if let Some(text) = state.measure_readout() {
+                ui.label(text);
             } else {
                 match state.cursor_lonlat {
                     Some([lon, lat]) => ui.label(format!("lon {lon:.2}, lat {lat:.2}")),

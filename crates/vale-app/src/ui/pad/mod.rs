@@ -53,11 +53,9 @@ pub const POINT: &str = "Point";
 pub const SMOOTHING: &str = "Smoothing";
 /// The button of the brush card that turns all snapping on and off.
 pub const SNAP: &str = "Snap";
-/// The button of the top row that opens and closes the Measure tool.
+/// The cell of the tool strip that chooses the Measure tool.
 pub const MEASURE: &str = "Measure";
-/// The cells of the card of the Measure tool.
-pub const CLOSE_PATH: &str = "Close path";
-pub const REMOVE_POINT: &str = "Remove point";
+/// The cell of the card of the Measure tool that clears the path.
 pub const CLEAR_PATH: &str = "Clear path";
 /// The switch of the sheet that turns all snapping on and off.
 pub const SNAPPING: &str = "Snapping";
@@ -329,8 +327,8 @@ pub fn readout_text(lonlat: Option<LonLat>, value: Option<&str>) -> String {
 /// The text of the readout: the place and the value, or the result of the
 /// Measure tool.
 pub fn readout_line(state: &AppState) -> String {
-    if state.measuring() {
-        return state.measure_readout();
+    if let Some(text) = state.measure_readout() {
+        return text;
     }
     let value = state.readout_value();
     readout_text(state.cursor_lonlat, value.as_deref())
@@ -368,8 +366,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         panel: state.pad.brush || state.pad.right.is_some(),
         sheet_offset: state.pad.sheet_offset,
         measure: state.globe.measuring(),
-        measure_button: true,
-        actions_width: geometry::SHORT_ACTIONS_WIDTH,
         tools: TOOLS,
     };
     let mut rects = geometry::layout(&input);
@@ -598,11 +594,7 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
             let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
             ui.painter().rect_filled(line, 0.0, theme::divider());
-            let mut x = 2.0 * step + 9.0 + PAD;
-            if rects.measure.is_none() {
-                measure_button(ui, state, controls, at(x));
-                x += step;
-            }
+            let x = 2.0 * step + 9.0 + PAD;
             for (panel, name, icon, x) in [
                 (Panel::Layers, "Layers", Icon::Layers, x),
                 (Panel::Toolbox, "Toolbox", Icon::Toolbox, x + step),
@@ -615,42 +607,6 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             }
         },
     );
-    measure_button_card(ctx, state, controls, rects);
-}
-
-/// The card of the Measure button when the top row has no room for it.
-pub(super) fn measure_button_card(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rects: &Rects,
-) {
-    if let Some(rect) = rects.measure {
-        widgets::card(
-            ctx,
-            state.globe.backdrop(),
-            "pad-measure",
-            rect,
-            Order::Middle,
-            theme::CARD_RADIUS.into(),
-            |ui| measure_button(ui, state, controls, rect.shrink(PAD)),
-        );
-    }
-}
-
-/// The button that opens and closes the Measure tool.
-pub(super) fn measure_button(
-    ui: &egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    rect: Rect,
-) {
-    let measuring = state.measuring();
-    let button =
-        widgets::icon_button_at(ui, controls, rect, MEASURE, Icon::Measure, measuring, true);
-    if button.clicked() {
-        toggle_measure(state);
-    }
 }
 
 /// Chooses the Measure tool, or goes back from it to Move on the globe and
@@ -738,6 +694,13 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     .clicked()
                 {
                     globe.tool = Tool::Navigate;
+                }
+                let active = globe.measuring();
+                let name = MEASURE;
+                if widgets::tool_cell(ui, controls, name, name, Icon::Measure, active, true)
+                    .clicked()
+                {
+                    globe.tool = Tool::Measure;
                 }
             };
             if rects.tool_cells < TOOLS {
@@ -924,9 +887,8 @@ pub(super) fn measure_card(
     );
 }
 
-/// The cells of the card of the Measure tool: the snap switch, the three
-/// actions on the path, and the Brush button, which opens the snapping
-/// settings.
+/// The cells of the card of the Measure tool: the snap switch, the Clear
+/// path cell, and the Brush button, which opens the snapping settings.
 fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
     let snap = &mut state.globe.snap.on;
     if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
@@ -934,33 +896,6 @@ fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
     }
     let path = &mut state.measure;
     let filled = !path.is_empty();
-    let close = path.can_close();
-    if widgets::tool_cell(
-        ui,
-        controls,
-        CLOSE_PATH,
-        "Close",
-        Icon::ClosePath,
-        false,
-        close,
-    )
-    .clicked()
-    {
-        path.close();
-    }
-    if widgets::tool_cell(
-        ui,
-        controls,
-        REMOVE_POINT,
-        "Remove",
-        Icon::Delete,
-        false,
-        filled,
-    )
-    .clicked()
-    {
-        path.remove_last();
-    }
     if widgets::tool_cell(
         ui,
         controls,

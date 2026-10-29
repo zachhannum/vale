@@ -24,8 +24,8 @@ use vale_app::ui::pad::atlas::{
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
 use vale_app::ui::pad::{
-    CLEAR_PATH, CLOSE_PATH, GRATICULE, MEASURE, Panel, REMOVE_POINT, SNAP, SNAP_DISTANCE,
-    SNAP_EDGES, SNAP_VERTICES, SNAPPING, readout_line,
+    CLEAR_PATH, GRATICULE, MEASURE, Panel, SNAP, SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES,
+    SNAPPING, readout_line,
 };
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
 use vale_render::Item;
@@ -2498,7 +2498,7 @@ fn the_path_is_not_saved_and_a_page_change_or_a_tool_change_clears_it() {
     h.run_steps(2);
     let project = h.state().doc.project.clone();
     let saves = h.state().session.as_ref().unwrap().saves();
-    let undo = h.state().can_undo();
+    let log = undo_log(&h);
     let taps = |h: &mut Pad| {
         for (x, y) in [(0.3, 0.3), (0.7, 0.35), (0.5, 0.7)] {
             let at = in_box(h, 0, x, y);
@@ -2513,7 +2513,7 @@ fn the_path_is_not_saved_and_a_page_change_or_a_tool_change_clears_it() {
     h.state_mut().save_tick(false, later);
     assert_eq!(h.state().doc.project, project);
     assert_eq!(h.state().session.as_ref().unwrap().saves(), saves);
-    assert_eq!(h.state().can_undo(), undo);
+    assert_eq!(undo_log(&h), log);
 
     // A page change clears the path.
     vale_app::ui::atlas::add_page(h.state_mut());
@@ -2532,32 +2532,112 @@ fn the_path_is_not_saved_and_a_page_change_or_a_tool_change_clears_it() {
     tap(&mut h, "Select");
     assert_eq!(h.state().atlas.tool, AtlasTool::Select);
     assert!(h.state().measure.is_empty());
-    // The Measure button again goes back to Select.
+    // The Measure cell chooses the tool again, and Move leaves it.
     tap(&mut h, MEASURE);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Measure);
+    assert_eq!(toggled(&h, MEASURE), Some(true));
     taps(&mut h);
-    tap(&mut h, MEASURE);
-    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    tap(&mut h, "Move");
+    assert_eq!(h.state().atlas.tool, AtlasTool::Move);
     assert!(h.state().measure.is_empty());
+}
+
+/// The state of the undo log of the project file.
+fn undo_log(h: &Pad) -> (bool, bool, u64) {
+    let session = h.state().session.as_ref().unwrap();
+    (session.can_undo(), session.can_redo(), session.undo_bytes())
+}
+
+#[test]
+fn undo_and_redo_act_on_the_path_in_the_atlas_and_not_on_the_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = state();
+    s.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut s.doc).unwrap());
+    // A tap lasts less than 0.3 seconds, and a step of the harness is short.
+    let mut h = Harness::builder()
+        .with_size(vec2(BOARDS[0].0, BOARDS[0].1))
+        .with_pixels_per_point(1.0)
+        .with_step_dt(0.01)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), s);
+    h.run_steps(3);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    h.state_mut().globe.snap.on = false;
+    tap(&mut h, MEASURE);
+    let (frames, log) = (open_page(&h).frames.clone(), undo_log(&h));
+    assert!(log.0);
+    let undo_able = |h: &Pad| {
+        use egui_kittest::kittest::NodeT;
+        let off = |name| h.get_by_label(name).accesskit_node().is_disabled();
+        (!off("Undo"), !off("Redo"))
+    };
+    assert_eq!(undo_able(&h), (false, false));
+    for (x, y) in [(0.3, 0.3), (0.7, 0.35), (0.5, 0.7), (0.3, 0.3)] {
+        let at = in_box(&h, 0, x, y);
+        tap_with(&mut h, at, Input::Finger);
+    }
+    let path = |h: &Pad| (h.state().measure.points.len(), h.state().measure.closed);
+    assert_eq!(path(&h), (3, true));
+    assert_eq!(undo_able(&h), (true, false));
+    // A tap of two fingers reopens the path, and a tap of three closes it.
+    let empty = pos2(200.0, 780.0);
+    fingers_tap(&mut h, 2, empty);
+    assert_eq!(path(&h), (3, false));
+    assert_eq!(undo_able(&h), (true, true));
+    fingers_tap(&mut h, 3, empty);
+    assert_eq!(path(&h), (3, true));
+    // The buttons and the keys do the same.
+    tap(&mut h, "Undo");
+    tap(&mut h, "Undo");
+    assert_eq!(path(&h), (2, false));
+    tap(&mut h, "Redo");
+    assert_eq!(path(&h), (3, false));
+    let key = |h: &mut Pad, modifiers| {
+        h.event(egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        h.run_steps(3);
+    };
+    key(&mut h, Modifiers::COMMAND);
+    assert_eq!(path(&h), (2, false));
+    key(&mut h, Modifiers::COMMAND | Modifiers::SHIFT);
+    key(&mut h, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(path(&h), (3, true));
+    // Clear path is one step.
+    tap(&mut h, CLEAR_PATH);
+    assert!(h.state().measure.is_empty());
+    tap(&mut h, "Undo");
+    assert_eq!(path(&h), (3, true));
+
+    assert_eq!(open_page(&h).frames, frames);
+    assert_eq!(undo_log(&h), log);
+    // After the Measure tool, undo takes away the frame.
+    tap(&mut h, "Select");
+    tap(&mut h, "Undo");
+    assert!(open_page(&h).frames.is_empty());
 }
 
 #[test]
 fn the_measure_card_acts_on_the_path_in_the_atlas() {
     let mut h = measure_pad(1);
-    assert_eq!(readout_line(h.state()), "Tap to add a point.");
+    // With no points, the readout is the readout of the page.
+    assert_eq!(h.state().measure_readout(), None);
     for (x, y) in [(0.3, 0.3), (0.7, 0.35), (0.5, 0.7)] {
         let at = in_box(&h, 0, x, y);
         tap_with(&mut h, at, Input::Finger);
     }
     let card = h.state().pad.rects.unwrap().brush.unwrap();
-    for name in [SNAP, CLOSE_PATH, REMOVE_POINT, CLEAR_PATH, "Brush settings"] {
+    for name in [SNAP, CLEAR_PATH, "Brush settings"] {
         let rect = control(&h, name).unwrap_or_else(|| panic!("{name}"));
         assert!(card.contains_rect(rect), "{name}");
     }
-    tap(&mut h, CLOSE_PATH);
-    assert!(h.state().measure.closed);
-    tap(&mut h, REMOVE_POINT);
-    tap(&mut h, REMOVE_POINT);
-    assert_eq!(h.state().measure.points.len(), 2);
+    for name in ["Close path", "Remove point"] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
     tap(&mut h, CLEAR_PATH);
     assert!(h.state().measure.is_empty());
     tap(&mut h, SNAP);

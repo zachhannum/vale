@@ -342,8 +342,8 @@ pub(super) fn press_input(
 }
 
 /// Reads the keys of the Measure tool in both workspaces. M chooses the
-/// tool. While it is the tool, Return closes the path, Backspace removes the
-/// last point, and Escape clears the path.
+/// tool. While it is the tool, Return closes the path and Escape clears the
+/// path.
 pub(super) fn measure_keys(ui: &egui::Ui, state: &mut AppState) {
     use egui::{Key, Modifiers};
     if ui.ctx().egui_wants_keyboard_input() {
@@ -358,9 +358,6 @@ pub(super) fn measure_keys(ui: &egui::Ui, state: &mut AppState) {
     }
     if key(Key::Enter) {
         state.measure.close();
-    }
-    if key(Key::Backspace) {
-        state.measure.remove_last();
     }
     if key(Key::Escape) {
         state.measure.clear();

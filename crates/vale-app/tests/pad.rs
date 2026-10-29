@@ -18,11 +18,10 @@ use vale_app::ui::pad::geometry::{BrushCard, WidthClass};
 use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    ADD_LAYER, CLEAR_PATH, CLOSE_PATH, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME,
-    LINE, LayerRef, MEASURE, MORE, NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER,
-    REMOVE_POINT, RESET, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING,
-    VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line,
-    readout_text, theme,
+    ADD_LAYER, CLEAR_PATH, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef,
+    MEASURE, MORE, NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET,
+    SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING, VIEW_OPTIONS,
+    WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -155,7 +154,6 @@ fn cards(h: &Pad) -> Vec<Rect> {
     let r = pad.rects.unwrap();
     let mut cards = vec![r.workspace, r.actions, r.tools];
     cards.extend(r.view);
-    cards.extend(r.measure);
     cards.extend(r.brush);
     cards.extend(pad.panels.iter().map(|(_, rect)| *rect));
     cards.extend(pad.menu_rect);
@@ -187,7 +185,7 @@ fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
 fn check_controls(h: &Pad, what: &str) {
     let screen = h.state().pad.rects.unwrap().screen;
     let controls = &h.state().pad.controls;
-    assert!(controls.len() >= 7, "{what}: {} controls", controls.len());
+    assert!(controls.len() >= 6, "{what}: {} controls", controls.len());
     let in_menu = h.state().pad.menu_rect.is_some();
     let in_more = h.state().pad.more_rect.is_some();
     let in_add = h.state().pad.add_rect.is_some();
@@ -293,6 +291,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             tap(&mut h, name);
             check_controls(&h, &format!("{size:?} after {name}"));
         }
+        scroll_strip_to(&mut h, MORE);
         tap(&mut h, MORE);
         assert!(h.state().pad.more);
         for name in [
@@ -1807,7 +1806,7 @@ fn the_more_cell_opens_a_menu_with_the_modes_that_have_no_cell() {
         let cells = controls.filter(|c| tools.contains_rect(c.rect));
         cells.map(|c| c.name.clone()).collect()
     };
-    let cells = ["Raise", "Lower", "Smooth", "Flatten", MORE, "Pan"];
+    let cells = ["Raise", "Lower", "Smooth", "Flatten", MORE, "Pan", MEASURE];
     assert_eq!(strip(&h), cells);
     assert!(!more_is_active(&h));
     for (name, mode) in [
@@ -2704,10 +2703,7 @@ fn the_flat_view_has_buttons_that_move_the_center_of_the_projection_and_reset_it
         let card = match rects.view {
             Some(view) => {
                 assert_eq!(h.state().pad.center_rect, None);
-                // With no room at the middle of the screen, the card moves
-                // to the left.
-                assert!(view.center().x <= size.0 / 2.0, "{size:?}");
-                assert!(view.left() >= rects.workspace.right() + 12.0, "{size:?}");
+                assert_eq!(view.center().x, size.0 / 2.0, "{size:?}");
                 assert!(view.right() + 12.0 <= rects.actions.left(), "{size:?}");
                 view
             }
@@ -2771,13 +2767,13 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert!(r.view.unwrap().contains_rect(control(&h, "Globe").unwrap()));
     assert_eq!(
         r.actions,
-        Rect::from_min_size(pos2(921.0, 32.0), vec2(257.0, 52.0))
+        Rect::from_min_size(pos2(969.0, 32.0), vec2(209.0, 52.0))
     );
-    let lefts = ["Measure", "Layers", "Toolbox"].map(|name| control(&h, name).unwrap().left());
-    assert_eq!(lefts, [1034.0, 1082.0, 1130.0]);
+    let lefts = ["Layers", "Toolbox"].map(|name| control(&h, name).unwrap().left());
+    assert_eq!(lefts, [1082.0, 1130.0]);
     assert_eq!(
         r.tools,
-        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 320.0))
+        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 372.0))
     );
     assert_eq!(
         control(&h, "Raise").unwrap(),
@@ -2785,11 +2781,11 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     );
     assert_eq!(
         r.brush.unwrap(),
-        Rect::from_min_size(pos2(16.0, 428.0), vec2(64.0, 340.0))
+        Rect::from_min_size(pos2(16.0, 480.0), vec2(64.0, 318.0))
     );
     assert_eq!(
         control(&h, "Brush settings").unwrap().min,
-        pos2(20.0, 712.0)
+        pos2(20.0, 742.0)
     );
 
     tap(&mut h, "Layers");
@@ -2945,20 +2941,20 @@ fn the_layout_follows_the_turn_of_the_ipad() {
 
 #[test]
 fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
-    // 1024 by 768 is an iPad in landscape. The sliders fit with less height.
-    let h = pad((1024.0, 768.0));
+    // The sliders fit with less height.
+    let h = pad((1024.0, 804.0));
     assert_eq!(
         h.state().pad.rects.unwrap().brush_card,
-        BrushCard::Full(122.0)
+        BrushCard::Full(114.0)
     );
-    check_controls(&h, "768 high");
+    check_controls(&h, "804 high");
 
-    // The smallest iPad in landscape. The strip of six cells leaves room for
-    // the sliders.
+    // The smallest iPad in landscape. The strip of seven cells leaves room
+    // for the Brush button.
     let mut h = pad((1133.0, 744.0));
     let rects = h.state().pad.rects.unwrap();
-    assert_eq!(rects.brush_card, BrushCard::Full(110.0));
-    assert_eq!(rects.tool_cells, 6);
+    assert_eq!(rects.brush_card, BrushCard::Button);
+    assert_eq!(rects.tool_cells, 7);
     tap(&mut h, MORE);
     check_controls(&h, "744 high with the More menu");
 
@@ -7027,8 +7023,21 @@ fn check_safe(h: &Pad, size: (f32, f32), [top, right, bottom, left]: [f32; 4], w
     }
 }
 
+/// Scrolls the tool strip down, and then up, until a cell shows in full.
+fn scroll_strip_to(h: &mut Pad, name: &str) {
+    for i in 0..10 {
+        let strip = h.state().pad.rects.unwrap().tools;
+        if control(h, name).is_some_and(|r| strip.contains_rect(r)) {
+            return;
+        }
+        let dy = if i < 5 { -120.0 } else { 120.0 };
+        let from = pos2(strip.center().x, strip.center().y - dy / 2.0);
+        drag(h, from, from + vec2(0.0, dy), None);
+    }
+}
+
 #[test]
-fn the_measure_button_opens_the_tool_with_any_layer_on_each_screen() {
+fn the_measure_cell_of_the_tool_strip_opens_the_tool_with_any_layer_on_each_screen() {
     use vale_store::GeometryKind;
     for (size, safe) in measure_screens() {
         let mut h = safe_pad(size, safe);
@@ -7047,10 +7056,20 @@ fn the_measure_button_opens_the_tool_with_any_layer_on_each_screen() {
             h.state_mut().select(layer);
             h.run_steps(2);
             assert!(!h.state().globe.measuring(), "{what}");
+            scroll_strip_to(&mut h, MEASURE);
+            let strip = h.state().pad.rects.unwrap().tools;
+            let cell = control(&h, MEASURE).unwrap_or_else(|| panic!("{what}"));
+            assert!(strip.contains_rect(cell), "{what}");
+            assert!(cell.width() >= 44.0 && cell.height() >= 44.0, "{what}");
+            // The cell comes after Move.
+            if let Some(pan) = control(&h, "Pan") {
+                assert!(pan.bottom() <= cell.top(), "{what}");
+            }
+            assert!(!disabled(&h, MEASURE), "{what}");
             tap(&mut h, MEASURE);
             assert!(h.state().globe.measuring(), "{what}");
             assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
-            // No cell of the tool strip is active.
+            // No other cell of the tool strip is active.
             for name in ["Pan", "Raise", LINE, POLYGON, vale_app::ui::pad::POINT] {
                 assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
             }
@@ -7061,12 +7080,13 @@ fn the_measure_button_opens_the_tool_with_any_layer_on_each_screen() {
                 finger_tap(&mut h, center + offset);
             }
             assert_eq!(h.state().measure.points.len(), 3, "{what}");
-            for name in [MEASURE, SNAP, CLOSE_PATH, REMOVE_POINT, CLEAR_PATH] {
-                assert!(control(&h, name).is_some(), "{what}: {name}");
-            }
             let card = h.state().pad.rects.unwrap().brush.unwrap();
-            for name in [SNAP, CLOSE_PATH, REMOVE_POINT, CLEAR_PATH] {
-                assert!(card.contains_rect(control(&h, name).unwrap()), "{what}");
+            for name in [SNAP, CLEAR_PATH] {
+                let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
+                assert!(card.contains_rect(rect), "{what}");
+            }
+            for name in ["Close path", "Remove point"] {
+                assert!(control(&h, name).is_none(), "{what}: {name}");
             }
             check_controls(&h, &format!("{what} with Measure"));
             check_safe(&h, size, safe, &what);
@@ -7074,10 +7094,12 @@ fn the_measure_button_opens_the_tool_with_any_layer_on_each_screen() {
             for card in cards(&h) {
                 assert!(screen.contains_rect(card), "{what}: {card:?}");
             }
-            // The button again goes back to Move.
-            tap(&mut h, MEASURE);
+            // Move leaves the tool and clears the path.
+            scroll_strip_to(&mut h, "Pan");
+            tap(&mut h, "Pan");
             assert!(!h.state().globe.measuring(), "{what}");
             assert_eq!(h.state().globe.tool, Tool::Navigate, "{what}");
+            assert!(h.state().measure.is_empty(), "{what}");
         }
     }
 }
@@ -7094,11 +7116,13 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         let mut h = safe_pad(size, safe);
         h.state_mut().select(None);
         h.run_steps(2);
+        scroll_strip_to(&mut h, MEASURE);
         tap(&mut h, MEASURE);
-        assert_eq!(readout_line(h.state()), "Tap to add a point.", "{what}");
-        for name in [CLOSE_PATH, REMOVE_POINT, CLEAR_PATH] {
-            assert!(disabled(&h, name), "{what}: {name}");
-        }
+        // With no points, the readout is the readout of the place.
+        let value = h.state().readout_value();
+        let place = readout_text(h.state().cursor_lonlat, value.as_deref());
+        assert_eq!(readout_line(h.state()), place, "{what}");
+        assert!(disabled(&h, CLEAR_PATH), "{what}");
         let center = pos2(size.0 / 2.0, size.1 / 2.0);
         for offset in [vec2(-50.0, -40.0), vec2(50.0, -40.0), vec2(0.0, 50.0)] {
             finger_tap(&mut h, center + offset);
@@ -7106,21 +7130,28 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         assert_eq!(h.state().measure.points.len(), 3, "{what}");
         let text = readout_line(h.state());
         assert!(text.starts_with("Length "), "{what}: {text}");
-        assert_eq!(text, h.state().measure_readout(), "{what}");
+        assert_eq!(Some(text), h.state().measure_readout(), "{what}");
 
-        tap(&mut h, CLOSE_PATH);
+        // A tap on the first point closes the path.
+        finger_tap(&mut h, center + vec2(-50.0, -40.0));
         assert!(h.state().measure.closed, "{what}");
-        assert!(disabled(&h, CLOSE_PATH), "{what}");
         let text = readout_line(h.state());
         assert!(text.starts_with("Perimeter "), "{what}: {text}");
-        tap(&mut h, REMOVE_POINT);
+        // Undo reopens the path and removes a point, and redo puts them
+        // back.
+        tap(&mut h, "Undo");
         assert!(!h.state().measure.closed, "{what}");
-        tap(&mut h, REMOVE_POINT);
+        tap(&mut h, "Undo");
         assert_eq!(h.state().measure.points.len(), 2, "{what}");
-        assert!(disabled(&h, CLOSE_PATH), "{what}");
+        tap(&mut h, "Redo");
+        tap(&mut h, "Redo");
+        assert!(h.state().measure.closed, "{what}");
+        assert!(disabled(&h, "Redo"), "{what}");
         tap(&mut h, CLEAR_PATH);
         assert!(h.state().measure.is_empty(), "{what}");
         assert!(disabled(&h, CLEAR_PATH), "{what}");
+        tap(&mut h, "Undo");
+        assert!(h.state().measure.closed, "{what}");
 
         let snap = h.state().globe.snap.on;
         tap(&mut h, SNAP);
@@ -7132,10 +7163,34 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         h.state_mut().select(Some(LayerRef::Raster(height)));
         finger_tap(&mut h, center);
         assert!(!h.state().measure.is_empty(), "{what}");
+        scroll_strip_to(&mut h, "Raise");
         tap(&mut h, "Raise");
         assert!(!h.state().globe.measuring(), "{what}");
         assert!(h.state().measure.is_empty(), "{what}");
     }
+}
+
+#[test]
+fn a_crossing_path_shows_the_perimeter_and_no_area_or_hint() {
+    let mut h = safe_pad(BOARDS[0], [0.0; 4]);
+    h.state_mut().select(None);
+    h.state_mut().globe.snap.on = false;
+    tap(&mut h, MEASURE);
+    let center = pos2(597.0, 417.0);
+    let bow = [
+        vec2(-60.0, -60.0),
+        vec2(60.0, 60.0),
+        vec2(60.0, -60.0),
+        vec2(-60.0, 60.0),
+    ];
+    for offset in bow.into_iter().chain([bow[0]]) {
+        finger_tap(&mut h, center + offset);
+    }
+    assert!(h.state().measure.closed);
+    let text = readout_line(h.state());
+    assert!(text.starts_with("Perimeter "), "{text}");
+    assert!(!text.contains("Area") && !text.contains('·'), "{text}");
+    assert!(h.query_by_label_contains("crosses").is_none());
 }
 
 #[test]
@@ -7146,6 +7201,7 @@ fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
         let points = h.state_mut().doc.add_layer(vale_store::GeometryKind::Point);
         h.state_mut().select(Some(LayerRef::Vector(points)));
         h.run_steps(2);
+        scroll_strip_to(&mut h, MEASURE);
         tap(&mut h, MEASURE);
         tap(&mut h, "Brush settings");
         assert!(h.state().pad.is_open(Panel::Brush), "{what}");
@@ -7158,7 +7214,7 @@ fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
 }
 
 #[test]
-fn the_measure_button_and_card_fit_in_the_atlas_on_each_screen() {
+fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::AtlasTool;
     for (size, safe) in measure_screens() {
         let what = format!("Atlas {size:?}");
@@ -7166,6 +7222,13 @@ fn the_measure_button_and_card_fit_in_the_atlas_on_each_screen() {
         h.state_mut().workspace = Workspace::Atlas;
         vale_app::ui::atlas::add_frame(h.state_mut());
         h.run_steps(3);
+        let strip = h.state().pad.rects.unwrap().tools;
+        let names = ["Select", "Move", MEASURE];
+        let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
+        for (i, cell) in cells.iter().enumerate() {
+            assert!(strip.contains_rect(*cell), "{what}: {}", names[i]);
+        }
+        assert!(cells[1].bottom() <= cells[2].top(), "{what}");
         tap(&mut h, MEASURE);
         assert!(h.state().measuring(), "{what}");
         assert_eq!(h.state().atlas.tool, AtlasTool::Measure, "{what}");
@@ -7173,11 +7236,11 @@ fn the_measure_button_and_card_fit_in_the_atlas_on_each_screen() {
         for name in ["Select", "Move"] {
             assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
         }
-        assert_eq!(readout_line(h.state()), "Tap to add a point.", "{what}");
+        assert!(!readout_line(h.state()).starts_with("Length"), "{what}");
         let card = h.state().pad.rects.unwrap().brush.unwrap();
         // On a short screen, the card scrolls, and the Brush button is
         // below its end.
-        let all = h.state().pad.rects.unwrap().measure_cells == 5;
+        let all = h.state().pad.rects.unwrap().measure_cells == 3;
         let names: &[&str] = if all {
             &[SNAP, "Brush settings"]
         } else {
@@ -7187,15 +7250,12 @@ fn the_measure_button_and_card_fit_in_the_atlas_on_each_screen() {
             let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
             assert!(card.contains_rect(rect), "{what}: {name}");
         }
-        for name in [CLOSE_PATH, REMOVE_POINT, CLEAR_PATH] {
-            assert!(disabled(&h, name), "{what}: {name}");
-        }
+        assert!(disabled(&h, CLEAR_PATH), "{what}");
         check_safe(&h, size, safe, &what);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions, r.tools, card];
         cards.extend(r.view);
-        cards.extend(r.measure);
         for (i, a) in cards.iter().enumerate() {
             assert!(screen.contains_rect(*a), "{what}: {a:?}");
             for b in &cards[i + 1..] {
@@ -7221,8 +7281,8 @@ fn the_measure_button_and_card_fit_in_the_atlas_on_each_screen() {
                 &format!("{what} with the snapping settings"),
             );
         }
-        // The button again goes back to Select.
-        tap(&mut h, MEASURE);
+        // Select leaves the tool.
+        tap(&mut h, "Select");
         assert_eq!(h.state().atlas.tool, AtlasTool::Select, "{what}");
     }
 }

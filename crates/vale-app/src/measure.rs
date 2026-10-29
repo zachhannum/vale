@@ -29,12 +29,19 @@ pub struct MeasurePoint {
     pub exact: bool,
 }
 
-/// The points of the path, and whether the path is closed.
+/// The points of the path, and whether the path is closed. Each change
+/// is one step of the history of the path, which undo and redo walk.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Measure {
     pub points: Vec<MeasurePoint>,
     pub closed: bool,
+    /// The paths before each change, the last change at the end.
+    undo: Vec<Path>,
+    /// The paths that undo took away, the last undo at the end.
+    redo: Vec<Path>,
 }
+
+type Path = (Vec<MeasurePoint>, bool);
 
 /// The values of a path.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,18 +50,24 @@ pub struct Summary {
     pub length_km: f64,
     /// The area of a closed path that does not cross itself.
     pub area_km2: Option<f64>,
-    /// The path is closed and crosses itself.
-    pub crosses: bool,
     /// The length of each segment. A closed path has the segment from the
     /// last point to the first.
     pub segments: Vec<f64>,
 }
 
 impl Measure {
+    /// Keeps the path before a change as a step of the history.
+    fn record(&mut self) {
+        self.undo.push((self.points.clone(), self.closed));
+        self.redo.clear();
+    }
+
     /// Adds a point. After the path closes, a point starts a new path.
     pub fn add(&mut self, pos: LonLat, exact: bool) {
+        self.record();
         if self.closed {
-            self.clear();
+            self.points.clear();
+            self.closed = false;
         }
         self.points.push(MeasurePoint { pos, exact });
     }
@@ -66,22 +79,51 @@ impl Measure {
     /// Closes a path of three or more points. Returns true if it closed.
     pub fn close(&mut self) -> bool {
         let close = self.can_close();
-        self.closed |= close;
+        if close {
+            self.record();
+            self.closed = true;
+        }
         close
     }
 
-    /// Removes the last point. A closed path opens first.
-    pub fn remove_last(&mut self) {
-        if self.closed {
+    /// Removes all points, as one step of the history.
+    pub fn clear(&mut self) {
+        if !self.is_empty() {
+            self.record();
+            self.points.clear();
             self.closed = false;
-        } else {
-            self.points.pop();
         }
     }
 
-    pub fn clear(&mut self) {
-        self.points.clear();
-        self.closed = false;
+    /// Removes the points and the history.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// Puts back the path from before the last change.
+    pub fn undo(&mut self) {
+        if let Some(path) = self.undo.pop() {
+            let now = std::mem::replace(&mut self.points, path.0);
+            self.redo
+                .push((now, std::mem::replace(&mut self.closed, path.1)));
+        }
+    }
+
+    /// Puts back the change that `undo` took away.
+    pub fn redo(&mut self) {
+        if let Some(path) = self.redo.pop() {
+            let now = std::mem::replace(&mut self.points, path.0);
+            self.undo
+                .push((now, std::mem::replace(&mut self.closed, path.1)));
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -127,7 +169,6 @@ impl Measure {
         Summary {
             length_km: path_length(&pos, self.closed, radius_km),
             area_km2: (self.closed && !crosses).then(|| ring_area(&pos, radius_km)),
-            crosses,
             segments: segments
                 .iter()
                 .map(|&(a, b)| central_angle(a, b) * radius_km)
@@ -142,20 +183,18 @@ impl Measure {
         summary.segments.iter().map(length).collect()
     }
 
-    /// The text of the readout.
-    pub fn readout(&self, radius_km: f64, units: Units) -> String {
+    /// The text of the readout. A path with no points has none.
+    pub fn readout(&self, radius_km: f64, units: Units) -> Option<String> {
         if self.is_empty() {
-            return "Tap to add a point.".to_string();
+            return None;
         }
         let summary = self.summary(radius_km);
         let length = world::length(summary.length_km, units);
-        if !self.closed {
-            return format!("Length {length}");
-        }
-        match summary.area_km2 {
-            Some(area) => format!("Perimeter {length} · Area {}", world::area(area, units)),
-            None => format!("Perimeter {length} · The path crosses itself."),
-        }
+        Some(match (self.closed, summary.area_km2) {
+            (false, _) => format!("Length {length}"),
+            (true, Some(area)) => format!("Perimeter {length} · Area {}", world::area(area, units)),
+            (true, None) => format!("Perimeter {length}"),
+        })
     }
 }
 
@@ -238,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn a_path_closes_with_three_points_and_reopens() {
+    fn a_path_closes_with_three_points_and_a_point_after_starts_a_new_path() {
         let mut m = Measure::default();
         m.add([0.0, 0.0], false);
         m.add([1.0, 0.0], false);
@@ -246,14 +285,6 @@ mod tests {
         m.add([1.0, 1.0], false);
         assert!(m.close());
         assert_eq!(m.segments().len(), 3);
-        m.remove_last();
-        assert!(!m.closed);
-        assert_eq!(m.points.len(), 3);
-        m.remove_last();
-        assert_eq!(m.points.len(), 2);
-        m.add([1.0, 1.0], false);
-        m.close();
-        // A point after the close starts a new path.
         m.add([5.0, 5.0], true);
         assert_eq!(
             m.points,
@@ -265,6 +296,48 @@ mod tests {
         assert!(!m.closed);
         m.clear();
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn undo_and_redo_walk_each_change_of_the_path() {
+        let mut m = Measure::default();
+        assert!(!m.can_undo() && !m.can_redo());
+        for p in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]] {
+            m.add(p, false);
+        }
+        m.close();
+        m.add([5.0, 5.0], false);
+        let last = m.clone();
+        // Undo takes away the new path, then the close, then each point.
+        m.undo();
+        assert!(m.closed && m.points.len() == 3);
+        m.undo();
+        assert!(!m.closed && m.points.len() == 3);
+        m.undo();
+        assert_eq!(m.points.len(), 2);
+        m.redo();
+        m.redo();
+        assert!(m.closed);
+        m.redo();
+        assert_eq!(m, last);
+        assert!(!m.can_redo());
+        // A clear is one step, and a new point ends the redo.
+        m.clear();
+        m.undo();
+        assert_eq!(m.points, last.points);
+        m.undo();
+        assert!(m.can_redo());
+        m.add([9.0, 9.0], false);
+        assert!(!m.can_redo());
+        // A close that cannot close and a clear of no points are no step.
+        let mut n = Measure::default();
+        n.clear();
+        n.add([0.0, 0.0], false);
+        n.close();
+        n.undo();
+        assert!(n.is_empty() && !n.can_undo());
+        n.reset();
+        assert!(!n.can_redo());
     }
 
     #[test]
@@ -296,23 +369,24 @@ mod tests {
             m.add(p, false);
         }
         m.close();
-        let summary = m.summary(EARTH);
-        assert!(summary.crosses);
-        assert_eq!(summary.area_km2, None);
-        let text = m.readout(EARTH, Units::Metric);
-        assert!(text.ends_with("The path crosses itself."), "{text}");
+        assert_eq!(m.summary(EARTH).area_km2, None);
+        let text = m.readout(EARTH, Units::Metric).unwrap();
+        assert!(
+            text.starts_with("Perimeter ") && !text.contains('·'),
+            "{text}"
+        );
     }
 
     #[test]
     fn the_readout_shows_the_length_or_the_perimeter_and_the_area() {
         let mut m = Measure::default();
-        assert_eq!(m.readout(EARTH, Units::Metric), "Tap to add a point.");
+        assert_eq!(m.readout(EARTH, Units::Metric), None);
         m.add([0.0, 0.0], false);
         m.add([0.0, 10.0], false);
-        assert_eq!(m.readout(EARTH, Units::Metric), "Length 1,112 km");
+        assert_eq!(m.readout(EARTH, Units::Metric).unwrap(), "Length 1,112 km");
         m.add([10.0, 10.0], false);
         m.close();
-        let text = m.readout(EARTH, Units::Imperial);
+        let text = m.readout(EARTH, Units::Imperial).unwrap();
         assert!(text.starts_with("Perimeter "), "{text}");
         assert!(
             text.contains(" mi · Area ") && text.ends_with(" mi²"),
@@ -328,7 +402,7 @@ mod tests {
         m.add([0.0, 10.05], false);
         let labels = m.segment_labels(EARTH, Units::Metric);
         assert_eq!(labels, ["1,112 km", "5.56 km"]);
-        assert_eq!(m.readout(EARTH, Units::Metric), "Length 1,118 km");
+        assert_eq!(m.readout(EARTH, Units::Metric).unwrap(), "Length 1,118 km");
         let miles = m.segment_labels(EARTH, Units::Imperial);
         assert_eq!(miles[0], "691 mi");
     }
