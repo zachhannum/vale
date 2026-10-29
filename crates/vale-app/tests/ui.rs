@@ -1,3 +1,5 @@
+mod screenshot;
+
 use std::path::Path;
 
 use eframe::egui;
@@ -352,6 +354,78 @@ fn the_desktop_list_shows_the_panel_of_an_image_layer() {
     h.get_by_label(DELETE_LAYER).click();
     h.run_steps(2);
     assert!(h.state().doc.project.images().is_empty());
+}
+
+#[test]
+fn the_desktop_layers_menu_places_a_layer_from_a_file() {
+    use vale_app::ui::place_form::{PICTURE, PLACE, method_name};
+    use vale_store::{Extents, PlaceMethod};
+    let mut h = globe_harness();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("plates.png");
+    image::RgbaImage::from_pixel(64, 32, image::Rgba([255, 0, 0, 128]))
+        .save(&file)
+        .unwrap();
+    h.state_mut().run_action(Action::ImportFile(file));
+    let id = h.state().doc.project.images()[0].id;
+    let layer = h.state().doc.project.image_layer(id).unwrap().id;
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    assert!(h.query_by_label("plates.png").is_some());
+    assert!(h.query_by_label(PICTURE).is_none());
+    assert!(h.get_by_label(PLACE).accesskit_node().is_disabled());
+
+    h.get_by_label(&method_name("Extents")).click();
+    h.run_steps(2);
+    for (name, text) in [
+        ("West", "10W"),
+        ("East", "30E"),
+        ("South", "0"),
+        ("North", "20N"),
+    ] {
+        type_in(&mut h, name, text);
+    }
+    let extents = Extents {
+        west: -10.0,
+        east: 30.0,
+        south: 0.0,
+        north: 20.0,
+    };
+    assert_eq!(h.state().place_draft.unwrap().placement.extents, extents);
+    h.get_by_label(PLACE).click();
+    h.run_steps(2);
+    let stored = h
+        .state()
+        .doc
+        .project
+        .layer(layer)
+        .unwrap()
+        .placement
+        .unwrap();
+    assert_eq!(
+        (stored.method, stored.extents),
+        (PlaceMethod::Extents, extents)
+    );
+
+    // A click on the picture moves the nearest point.
+    h.get_by_label(&method_name("Points")).click();
+    h.run_steps(2);
+    let picture = h.get_by_label(PICTURE).rect();
+    click_at(&mut h, picture.lerp_inside(egui::vec2(0.1, 0.2)));
+    let marks = h.state().place_form.as_ref().unwrap().marks;
+    let near = |a: f64, b: f64| (a - b).abs() < 0.02;
+    assert!(
+        near(marks[0][0], 0.1) && near(marks[0][1], 0.2),
+        "{marks:?}"
+    );
+    assert!(h.state().place_draft.is_some());
+    screenshot::save(&mut h, "desktop-place");
+
+    // The draft goes when the menu closes.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(h.query_by_label(PICTURE).is_none());
+    assert!(h.state().place_draft.is_none());
 }
 
 #[test]

@@ -325,8 +325,8 @@ impl LayerKind {
 }
 
 /// One row of the draw order: a set of features of one geometry kind, a
-/// raster, or an image. A raster layer and an image layer have no source, no
-/// fields, and no features.
+/// raster, or an image. A raster layer has no source. A raster layer and an
+/// image layer have no fields and no features.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layer {
     pub id: LayerId,
@@ -1180,6 +1180,11 @@ impl Project {
         self.layer_mut(id)
             .map(|l| l.placement = placement)
             .is_some()
+    }
+
+    /// Sets the name of the file of a layer.
+    pub fn set_layer_source(&mut self, id: LayerId, source: Option<String>) -> bool {
+        self.layer_mut(id).map(|l| l.source = source).is_some()
     }
 
     /// Shows or hides a layer.

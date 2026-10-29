@@ -39,6 +39,7 @@ pub mod gradient;
 pub mod inspector;
 pub mod pad;
 pub mod panels;
+pub mod place_form;
 pub mod point_form;
 pub mod raster_form;
 pub mod style_editor;
@@ -387,6 +388,9 @@ pub struct AppState {
     /// A new placement of a layer that the world view shows before it is
     /// stored. Change it with `set_place_draft`.
     pub place_draft: Option<crate::place::PlaceDraft>,
+    /// The texts of the section of the open panel that places a layer from
+    /// a file.
+    pub place_form: Option<place_form::PlaceForm>,
     /// The tiles of the images of a project with no file.
     pub image_tiles: ImageTiles,
     pub export_layer: Option<RasterId>,
@@ -485,6 +489,7 @@ impl AppState {
             image_import: None,
             image_note: None,
             place_draft: None,
+            place_form: None,
             image_tiles: ImageTiles::new(),
             export_layer: None,
             share_exports: false,
@@ -2244,6 +2249,7 @@ impl AppState {
             project.set_layer_style(layer, Some(style));
             let size = [f64::from(info.width), f64::from(info.height)];
             project.set_layer_placement(layer, Some(vale_store::Placement::globe(size)));
+            project.set_layer_source(layer, Some(info.name.clone()));
         }
         raster_style::store_image_styles(project);
         self.select(Some(LayerRef::Image(id)));
@@ -2263,10 +2269,7 @@ impl AppState {
             let Some((id, level, column, row)) = self.globe.image_request() else {
                 return;
             };
-            let blob = match &self.session {
-                Some(session) => session.load_image_tile(id, level, column, row),
-                None => Ok(self.image_tiles.get(&(id, level, column, row)).cloned()),
-            };
+            let blob = self.image_tile(id, level, column, row);
             let tile =
                 blob.and_then(|blob| blob.as_deref().map(vale_store::decode_tile).transpose());
             match tile {
@@ -2276,6 +2279,21 @@ impl AppState {
                     self.globe.give_image_tile(id, None);
                 }
             }
+        }
+    }
+
+    /// The PNG of one tile of an image, from the project file or from the
+    /// main memory.
+    pub fn image_tile(
+        &self,
+        id: ImageId,
+        level: u32,
+        column: u32,
+        row: u32,
+    ) -> Result<Option<Vec<u8>>, vale_store::StoreError> {
+        match &self.session {
+            Some(session) => session.load_image_tile(id, level, column, row),
+            None => Ok(self.image_tiles.get(&(id, level, column, row)).cloned()),
         }
     }
 
@@ -2715,6 +2733,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             ui.ctx().request_repaint_after(DOWNLOAD_POLL);
         }
         browser::draw(ui, state);
+        place_form::end_frame(state);
         state.frames += 1;
         return;
     }
@@ -2726,6 +2745,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             Workspace::Globe => pad::draw(ui, state),
             Workspace::Atlas => pad::atlas::draw(ui, state),
         }
+        place_form::end_frame(state);
         state.frames += 1;
         return;
     }
@@ -2755,5 +2775,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::desktop(ui.ctx(), state);
     raster_form::desktop(ui.ctx(), state);
     point_form::desktop(ui.ctx(), state);
+    place_form::end_frame(state);
     state.frames += 1;
 }

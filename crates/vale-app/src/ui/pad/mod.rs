@@ -27,6 +27,7 @@ pub mod fields;
 pub mod filter;
 pub mod geometry;
 pub mod icons;
+mod place;
 pub mod raster;
 pub mod rules;
 pub mod theme;
@@ -1647,6 +1648,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
     widgets::value_row(ui, "Features", &features);
+    place::section(ui, state, controls, of);
     rules::section(ui, state, controls, id);
     fields::list(ui, state, controls, id);
 }
@@ -1829,6 +1831,7 @@ fn image_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
     if widgets::open_row(ui, controls, raster::BLEND, label).clicked() {
         state.pad.page = Some(Page::Blend);
     }
+    place::section(ui, state, controls, of);
     image_note(ui, state, Some(id));
 }
 

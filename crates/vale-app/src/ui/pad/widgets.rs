@@ -949,6 +949,17 @@ pub fn value_row(ui: &mut egui::Ui, label: &str, value: &str) {
         .text(at, Align2::LEFT_CENTER, value, theme::body(), theme::TEXT);
 }
 
+/// A row of a form with a value that the user cannot change, in the muted
+/// color. A long value wraps to two lines.
+pub fn muted_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    let field = form_row(ui, label).shrink2(vec2(12.0, 0.0));
+    let galley = ui
+        .painter()
+        .layout(value.to_owned(), theme::body(), theme::MUTE, field.width());
+    let at = pos2(field.left(), field.center().y - galley.size().y / 2.0);
+    ui.painter().galley(at, galley, theme::MUTE);
+}
+
 /// A row of a form with a field for one line of text. `name` is the name
 /// of the control. `suffix` is a unit at the right end of the field. The
 /// text has the warning color if it is not `valid`.
@@ -962,6 +973,40 @@ pub fn text_field(
     valid: bool,
 ) -> Response {
     let field = form_row(ui, label);
+    field_in(ui, controls, field, name, suffix, text, valid)
+}
+
+/// A row of a form with two fields for one line of text each, side by
+/// side. Returns the responses of the two fields.
+pub fn text_pair(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    names: [&str; 2],
+    label: &str,
+    texts: [&mut String; 2],
+    valid: [bool; 2],
+) -> [Response; 2] {
+    let row = form_row(ui, label);
+    let half = (row.width() - 2.0 * HIGHLIGHT_INSET) / 2.0;
+    let left = Rect::from_min_size(row.min, vec2(half, row.height()));
+    let right = Rect::from_min_size(pos2(row.right() - half, row.top()), left.size());
+    let [a, b] = texts;
+    [
+        field_in(ui, controls, left, names[0], None, a, valid[0]),
+        field_in(ui, controls, right, names[1], None, b, valid[1]),
+    ]
+}
+
+/// A field for one line of text in this rectangle.
+fn field_in(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    field: Rect,
+    name: &str,
+    suffix: Option<&str>,
+    text: &mut String,
+    valid: bool,
+) -> Response {
     let back = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
         .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
@@ -1496,6 +1541,33 @@ pub fn choice_row(
     active: Option<usize>,
 ) -> Option<usize> {
     let field = form_row(ui, label);
+    let names: Vec<String> = choices.iter().map(|c| (*c).to_owned()).collect();
+    choices_in(ui, controls, field, &names, choices, active)
+}
+
+/// A segmented control across the width of a form, with no label. Each
+/// segment has the name of its control and its label. Returns the segment
+/// that the user chose.
+pub fn segment_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    names: &[String],
+    labels: &[&str],
+    active: usize,
+) -> Option<usize> {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let field = Rect::from_center_size(rect.center(), vec2(rect.width(), TOUCH));
+    choices_in(ui, controls, field, names, labels, Some(active))
+}
+
+fn choices_in(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    field: Rect,
+    names: &[String],
+    choices: &[&str],
+    active: Option<usize>,
+) -> Option<usize> {
     let track = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
         .rect_filled(track, theme::CONTROL_RADIUS, theme::track());
@@ -1505,7 +1577,8 @@ pub fn choice_row(
         let min = pos2(field.left() + index as f32 * width, field.top());
         let rect = Rect::from_min_size(min, vec2(width, TOUCH));
         let on = active == Some(index);
-        let resp = hit(ui, controls, rect, choice, Sense::click(), true, Some(on));
+        let name = &names[index];
+        let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(on));
         if on || resp.is_pointer_button_down_on() {
             let thumb = rect.intersect(track).shrink(2.0);
             ui.painter()
