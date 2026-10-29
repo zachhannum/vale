@@ -7,6 +7,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod document;
 pub mod files;
+pub mod fonts;
 pub mod furniture;
 pub mod globe;
 pub mod headless;

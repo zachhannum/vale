@@ -312,6 +312,16 @@ impl Document {
         Ok(name)
     }
 
+    /// The layers whose label font is missing, with the warning of each.
+    pub fn missing_fonts(&self) -> Vec<(LayerId, String)> {
+        (self.frame.entries.iter())
+            .filter_map(|e| {
+                let warning = crate::fonts::missing(&e.style.label, &self.project)?;
+                Some((e.layer, warning))
+            })
+            .collect()
+    }
+
     /// The style of each vector layer whose project layer does not hold it, as JSON.
     pub fn changed_styles(&self) -> Vec<(LayerId, String)> {
         self.frame

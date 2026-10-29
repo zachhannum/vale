@@ -11,7 +11,7 @@ use vale_labeler::Fonts;
 use vale_store::PageRecord;
 
 use crate::document::Document;
-use crate::pipeline::{Composed, Pipeline, Quality, fonts};
+use crate::pipeline::{Composed, Pipeline, Quality};
 
 /// The pixels of a PNG export of a page per point: 300 pixels per inch.
 pub const PAGE_PIXEL_RATIO: f64 = 300.0 / 72.0;
@@ -25,7 +25,7 @@ pub struct MapImage {
 
 fn compose_final(doc: &Document, size: (f64, f64)) -> anyhow::Result<(Pipeline, Composed)> {
     let mut pipeline = Pipeline::new();
-    let mut fonts = fonts()?;
+    let mut fonts = crate::fonts::for_project(&doc.project)?;
     let composed = pipeline.compose(doc, size, &mut fonts, Quality::Final, None)?;
     Ok((pipeline, composed))
 }

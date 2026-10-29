@@ -51,7 +51,7 @@ pub fn scale_bar(
         bounds: page,
         classes: vec![LabelClass {
             name: "scale".to_string(),
-            style: TextStyle::new("Noto Sans", 10.0),
+            style: TextStyle::new(crate::fonts::DEFAULT_FAMILY, 10.0),
             priority: 0,
             margin: 0.0,
             placement: Placement::Point(PointPlacement {
