@@ -175,8 +175,6 @@ pub enum Page {
     Condition(usize),
     /// The symbols that the rule with this index can pick.
     Symbols(usize),
-    /// The fonts that the labels can use.
-    Fonts,
 }
 
 /// The state of the iPad layout.
@@ -842,7 +840,7 @@ fn show_panel(
             Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend),
         ) => true,
         (Some(LayerRef::Image(_)), Some(Page::Blend)) => true,
-        (Some(LayerRef::Vector(_)), Some(Page::NewField | Page::Fonts)) => true,
+        (Some(LayerRef::Vector(_)), Some(Page::NewField)) => true,
         (Some(LayerRef::Vector(_)), Some(Page::Field(i))) => i < field_count,
         (
             Some(LayerRef::Vector(_)),
@@ -889,9 +887,6 @@ fn show_panel(
         (Panel::Layers, Some(LayerRef::Image(_))) => ("pad-image", name, Some("Layers")),
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::NewField) => {
             ("pad-new-field", fields::NEW_FIELD, Some(name))
-        }
-        (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Fonts) => {
-            ("pad-fonts", fonts::FONT, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::Field(_))) => (
             "pad-field",
@@ -982,7 +977,6 @@ fn show_panel(
                 Some(Page::Rule(i)) => rules::rule_body(ui, state, controls, id, i),
                 Some(Page::Condition(i)) => filter::condition_body(ui, state, controls, id, i),
                 Some(Page::Symbols(i)) => rules::symbols_body(ui, state, controls, id, i),
-                Some(Page::Fonts) => fonts::fonts_body(ui, state, controls, id),
                 _ => vector_body(ui, state, controls, id),
             },
             (Panel::Layers, None) => layers_body(ui, state, controls),

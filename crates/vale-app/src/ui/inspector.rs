@@ -81,7 +81,9 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         .layer(info.id)
         .map_or(Vec::new(), |l| l.fields.clone());
     let symbols = state.doc.symbols().clone();
-    let families = state.font_families.clone();
+    let font_warning = (state.doc.entry(info.id))
+        .and_then(|e| crate::fonts::missing(&e.style.label, &state.font_families));
+    let mut pick_font = false;
     let Some(entry) = state.doc.entry_mut(info.id) else {
         return;
     };
@@ -141,21 +143,10 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
         ui.horizontal(|ui| {
             ui.label("Font");
-            let current = label.font.as_deref().unwrap_or(DEFAULT_FAMILY).to_string();
-            egui::ComboBox::from_id_salt("label_font")
-                .selected_text(&current)
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    for family in &families {
-                        let on = *family == current;
-                        if ui.selectable_label(on, family).clicked() && !on {
-                            crate::fonts::set_font(label, family);
-                            changed = true;
-                        }
-                    }
-                });
+            let current = label.font.as_deref().unwrap_or(DEFAULT_FAMILY);
+            pick_font = ui.button(format!("{current}…")).clicked();
         });
-        if let Some(warning) = crate::fonts::missing(label, &families) {
+        if let Some(warning) = font_warning {
             ui.label(egui::RichText::new(warning).color(ui.visuals().warn_fg_color));
         }
         ui.horizontal(|ui| {
@@ -165,6 +156,9 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     }
     if changed {
         state.touch();
+    }
+    if pick_font {
+        state.font_dialog = Some(super::font_dialog::FontDialog::new(info.id));
     }
     ui.add_space(6.0);
 }

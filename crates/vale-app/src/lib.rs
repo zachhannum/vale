@@ -7,6 +7,8 @@ pub mod cli;
 pub mod clipboard;
 pub mod document;
 pub mod files;
+#[cfg(target_os = "ios")]
+pub mod font_picker;
 pub mod fonts;
 pub mod furniture;
 pub mod globe;

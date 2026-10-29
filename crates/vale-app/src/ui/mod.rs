@@ -34,6 +34,7 @@ pub mod atlas;
 pub mod browser;
 pub mod dock;
 pub mod elevation;
+pub mod font_dialog;
 pub mod globe;
 pub mod gradient;
 pub mod inspector;
@@ -81,6 +82,11 @@ pub enum Action {
     /// Adds this SVG file to the symbols of the project, and saves.
     /// `symbol_note` shows the result.
     AddSymbol(PathBuf),
+    /// Asks for the font of the labels of this layer: the font picker of the
+    /// system on iOS, and the font dialog on other systems.
+    PickFont(LayerId),
+    /// Sets the font family of the labels of this layer.
+    SetFont(LayerId, String),
     /// Asks for the file of an export of the selected raster layer.
     ExportHeightmapDialog,
     /// Asks for a PNG file, and exports the selected raster layer to it.
@@ -346,6 +352,8 @@ pub struct AppState {
     pub fonts: Fonts,
     /// The families of `fonts`, sorted.
     pub font_families: Vec<String>,
+    /// The font dialog of the desktop.
+    pub font_dialog: Option<font_dialog::FontDialog>,
     /// The last compose of the selected frame, or of the bottom frame of
     /// the open page.
     pub composed: Option<Composed>,
@@ -465,6 +473,7 @@ impl AppState {
             pipeline: Pipeline::new(),
             fonts: crate::fonts::system()?,
             font_families: Vec::new(),
+            font_dialog: None,
             composed: None,
             canvas_size: (0.0, 0.0),
             selection: None,
@@ -2632,6 +2641,12 @@ impl AppState {
                 self.status = note.text.clone();
                 self.ramp_note = Some(note);
             }
+            Action::SetFont(id, family) => {
+                if let Some(entry) = self.doc.entry_mut(id) {
+                    crate::fonts::set_font(&mut entry.style.label, &family);
+                    self.touch();
+                }
+            }
             Action::AddSymbol(path) => {
                 let note = match self.add_symbol(&path) {
                     Ok(name) => Note::new(format!("Added symbol {name}"), false, None),
@@ -2687,6 +2702,7 @@ impl AppState {
             | Action::ImageLayerDialog
             | Action::ImportRampDialog(_)
             | Action::AddSymbolDialog
+            | Action::PickFont(_)
             | Action::ExportHeightmapDialog
             | Action::ExportHeightmapPngDialog
             | Action::OpenProjectDialog => {}
@@ -2729,6 +2745,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             Workspace::Globe => pad::draw(ui, state),
             Workspace::Atlas => pad::atlas::draw(ui, state),
         }
+        font_dialog::show(ui.ctx(), state);
         state.frames += 1;
         return;
     }
@@ -2758,5 +2775,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::desktop(ui.ctx(), state);
     raster_form::desktop(ui.ctx(), state);
     point_form::desktop(ui.ctx(), state);
+    font_dialog::show(ui.ctx(), state);
     state.frames += 1;
 }

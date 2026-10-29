@@ -6940,38 +6940,38 @@ fn the_layers_panel_shows_why_an_image_layer_did_not_import() {
 }
 
 #[test]
-fn the_font_page_picks_a_font() {
+fn the_font_row_asks_for_the_font_picker() {
     use vale_app::ui::pad::fonts::FONT;
     let font = |h: &Pad, id| h.state().doc.entry(id).unwrap().style.label.font.clone();
-    let silkscreen = include_bytes!("data/fonts/Silkscreen-Regular.ttf");
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        // Silkscreen stands for a font of the system.
-        let mut fonts = vale_app::fonts::bundled().unwrap();
-        fonts.register(silkscreen.to_vec()).unwrap();
-        h.state_mut().set_fonts(fonts);
         let places = vector(&h, "Places");
         tap(&mut h, "Layers");
         tap(&mut h, "Open Places");
         scroll_to_control(&mut h, FONT);
-        tap(&mut h, FONT);
-        assert_eq!(h.state().pad.page, Some(Page::Fonts), "{what}");
         check_controls(&h, &what);
-        tap(&mut h, "Silkscreen");
-        assert_eq!(font(&h, places).as_deref(), Some("Silkscreen"), "{what}");
-        screenshot::save(&mut h, &format!("pad-fonts-{}", size.0));
-        tap(&mut h, "Noto Sans");
-        assert_eq!(font(&h, places), None, "{what}");
-        tap(&mut h, "Back to Places");
+        tap(&mut h, FONT);
+        assert!(
+            h.state().actions.contains(&Action::PickFont(places)),
+            "{what}"
+        );
         assert_eq!(h.state().pad.page, None, "{what}");
 
-        // A font that the device does not have gives a warning.
-        let entry = h.state_mut().doc.entry_mut(places).unwrap();
-        entry.style.label.font = Some("Lora".into());
-        h.run_steps(3);
+        // The picker gives a family.
+        let pick = |h: &mut Pad, family: &str| {
+            h.state_mut()
+                .run_action(Action::SetFont(places, family.into()));
+            h.run_steps(3);
+        };
+        pick(&mut h, "Noto Sans");
+        assert_eq!(font(&h, places), None, "{what}");
+        // A family that the device does not have gives a warning.
+        pick(&mut h, "Lora");
+        assert_eq!(font(&h, places).as_deref(), Some("Lora"), "{what}");
         scroll_to_control(&mut h, FONT);
         let warning = "Font Lora is missing. Labels use Noto Sans.";
         assert!(h.query_by_label(warning).is_some(), "{what}");
+        screenshot::save(&mut h, &format!("pad-font-row-{}", size.0));
     }
 }

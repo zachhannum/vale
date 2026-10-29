@@ -45,6 +45,14 @@ struct ValeApp {
     sharing: Option<std::path::PathBuf>,
     #[cfg(target_os = "ios")]
     picker: Option<crate::files::uikit::Picker>,
+    /// The families that the font picker of the system gave.
+    #[cfg(target_os = "ios")]
+    fonts: crate::font_picker::FontQueue,
+    /// The layer whose labels get the picked font.
+    #[cfg(target_os = "ios")]
+    font_for: Option<vale_store::LayerId>,
+    #[cfg(target_os = "ios")]
+    font_picker: Option<crate::font_picker::FontPicker>,
     #[cfg(target_os = "ios")]
     _lifecycle: Option<crate::lifecycle::Observer>,
 }
@@ -81,6 +89,13 @@ impl eframe::App for ValeApp {
                 PickFor::RasterImage => state.run_action(Action::RasterImage(path)),
                 PickFor::Symbol => state.run_action(Action::AddSymbol(path)),
                 PickFor::ImageLayer => state.run_action(Action::ImportImageLayer(path)),
+            }
+        }
+
+        #[cfg(target_os = "ios")]
+        for family in self.fonts.take() {
+            if let Some(id) = self.font_for {
+                state.run_action(Action::SetFont(id, family));
             }
         }
 
@@ -127,6 +142,18 @@ impl eframe::App for ValeApp {
                     {
                         self.pick_for = PickFor::RasterImage;
                     }
+                }
+                #[cfg(target_os = "ios")]
+                Action::PickFont(id) => {
+                    if let Some(picker) = &self.font_picker
+                        && picker.pick()
+                    {
+                        self.font_for = Some(id);
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
+                Action::PickFont(id) => {
+                    state.font_dialog = Some(crate::ui::font_dialog::FontDialog::new(id));
                 }
                 #[cfg(target_os = "ios")]
                 Action::AddSymbolDialog => {
@@ -362,6 +389,12 @@ pub fn run_window(
         #[cfg(target_os = "ios")]
         picker: None,
         #[cfg(target_os = "ios")]
+        fonts: Default::default(),
+        #[cfg(target_os = "ios")]
+        font_for: None,
+        #[cfg(target_os = "ios")]
+        font_picker: None,
+        #[cfg(target_os = "ios")]
         _lifecycle: None,
     };
     eframe::run_native(
@@ -404,6 +437,11 @@ pub fn run_window(
                     app.picker = handle.ui_view_controller.and_then(|controller| {
                         let wake = move || ctx.request_repaint();
                         crate::files::uikit::Picker::new(controller, picked, exports, wake)
+                    });
+                    let (fonts, ctx) = (app.fonts.clone(), cc.egui_ctx.clone());
+                    app.font_picker = handle.ui_view_controller.and_then(|controller| {
+                        let wake = move || ctx.request_repaint();
+                        crate::font_picker::FontPicker::new(controller, fonts, wake)
                     });
                 }
                 let shared = app.state.clone();

@@ -136,3 +136,15 @@ fn a_pdf_export_embeds_a_subset_of_each_font() {
     // The whole font is larger than the PDF.
     assert!(bytes.len() < NOTO_SANS.len(), "{} bytes", bytes.len());
 }
+
+#[test]
+fn the_search_of_the_font_dialog_ignores_case() {
+    use vale_app::ui::font_dialog::matches;
+    let families: Vec<String> = ["Noto Sans", "Noto Serif", "Silkscreen"]
+        .map(String::from)
+        .to_vec();
+    assert_eq!(matches(&families, "noto s").len(), 2);
+    assert_eq!(matches(&families, " SILK "), [&families[2]]);
+    assert_eq!(matches(&families, "").len(), 3);
+    assert!(matches(&families, "zzz").is_empty());
+}
