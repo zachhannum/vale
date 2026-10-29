@@ -16,10 +16,10 @@ use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_WIDTH,
     CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
     DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
-    INTERVAL, LATITUDE, LONGITUDE, MAP_NAME, OBLIQUE, ORIENTATIONS, PAGE_NAME, POLYGON,
-    PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION, SAVE_PROJECTION, SCALE,
-    SECOND_PARALLEL, SHAPE, SIZE, STYLE_SCOPES, UNIT_NAMES, WIDTH, custom_row, length_text,
-    unit_name,
+    INTERVAL, LATITUDE, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, OBLIQUE, ORIENTATIONS, PAGE_NAME,
+    POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION,
+    SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
+    length_text, unit_name,
 };
 use super::pad::{GRATICULE, NO_LAYERS};
 use super::{AppState, inspector, style_editor};
@@ -293,10 +293,7 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         return;
     };
     ui.separator();
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.atlas.this_map, false, STYLE_SCOPES[0]);
-        ui.selectable_value(&mut state.atlas.this_map, true, STYLE_SCOPES[1]);
-    });
+    ui.weak(MAP_STYLE_HINT);
     let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
         look_controls(ui, state, frame, layer);
         return;
@@ -311,33 +308,31 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         note: state.symbol_note.as_ref(),
         actions: &mut state.actions,
     };
-    if state.atlas.this_map {
-        let Some(mut style) = state.doc.map_style(frame.map, layer) else {
-            return;
-        };
-        if style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library)
-            && state.doc.set_map_style(frame.map, layer, &style)
-        {
-            state.touch();
-        }
-        let any = !state.doc.overrides(frame.map, layer).is_empty();
-        if ui
-            .add_enabled(any, egui::Button::new(REMOVE_OVERRIDES))
-            .clicked()
-        {
-            state.clear_overrides(frame.map, layer);
-        }
-    } else if let Some(entry) = state.doc.entry_mut(layer)
-        && style_editor::rules(ui, layer, &mut entry.style, kind, &fields, &mut library)
+    let Some(mut style) = state.doc.map_style(frame.map, layer) else {
+        return;
+    };
+    if style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library)
+        && state.doc.set_map_style(frame.map, layer, &style)
     {
         state.touch();
+    }
+    remove_overrides(ui, state, frame, layer);
+}
+
+fn remove_overrides(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
+    let any = !state.doc.overrides(frame.map, layer).is_empty();
+    if ui
+        .add_enabled(any, egui::Button::new(REMOVE_OVERRIDES))
+        .clicked()
+    {
+        state.clear_overrides(frame.map, layer);
     }
 }
 
 /// The opacity, the display, and the blend mode of a raster layer or an
-/// image layer, for all maps or for the map of the frame.
+/// image layer in the map of the frame.
 fn look_controls(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
-    let scope = state.atlas.this_map.then_some(frame.map);
+    let scope = Some(frame.map);
     let Some(mut look) = state.look(scope, layer) else {
         return;
     };
@@ -371,15 +366,7 @@ fn look_controls(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, l
     if look != old {
         state.set_look(scope, layer, look);
     }
-    if let Some(map) = scope {
-        let any = !state.doc.overrides(map, layer).is_empty();
-        if ui
-            .add_enabled(any, egui::Button::new(REMOVE_OVERRIDES))
-            .clicked()
-        {
-            state.clear_overrides(map, layer);
-        }
-    }
+    remove_overrides(ui, state, frame, layer);
 }
 
 fn display_name(d: RasterDisplay) -> &'static str {

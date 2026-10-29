@@ -281,9 +281,6 @@ pub struct AtlasState {
     pub layer: Option<(FrameId, LayerId)>,
     /// The page of the panel of `layer`.
     pub layer_page: Option<super::pad::Page>,
-    /// The panel of `layer` edits the style overrides of the map of the
-    /// frame, and not the style of the layer.
-    pub this_map: bool,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The frame of `handles`.
@@ -361,7 +358,6 @@ impl Default for AtlasState {
             composes: 0,
             layer: None,
             layer_page: None,
-            this_map: false,
             shown: None,
             handles_of: None,
             images: HashMap::new(),

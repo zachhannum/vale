@@ -232,7 +232,8 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     let Some(mut rivers) = state.doc.project.raster(id).map(|r| r.rivers) else {
         return;
     };
-    if height {
+    // The rivers belong to the globe. A map frame draws no rivers.
+    if height && state.workspace != crate::ui::Workspace::Atlas {
         if widgets::switch_row(ui, controls, RIVERS, RIVERS, &mut rivers) {
             state.set_raster_rivers(id, rivers);
         }

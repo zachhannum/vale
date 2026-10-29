@@ -1182,16 +1182,14 @@ impl AppState {
     }
 
     /// Runs `edit`, which edits the style of `layer` in the panel of the
-    /// Layers tab of a frame of `map`. With "This map", the layer has the
-    /// style of the map during `edit`, and a change becomes the overrides of
-    /// the map. During `edit`, `pad.page` is the page of that panel.
+    /// Layers tab of a frame of `map`. During `edit`, the layer has the style
+    /// of the map, `pad.page` is the page of that panel, and the rules cannot
+    /// be added, moved, or deleted. A change becomes the overrides of the
+    /// map, and the style of the layer stays.
     pub fn edit_map_style(&mut self, map: MapId, layer: LayerId, edit: impl FnOnce(&mut AppState)) {
         let world_page = std::mem::replace(&mut self.pad.page, self.atlas.layer_page);
-        let this_map = self.atlas.this_map;
-        self.pad.rules_fixed = this_map;
-        let base = this_map
-            .then(|| self.doc.entry(layer).map(|e| e.style.clone()))
-            .flatten();
+        self.pad.rules_fixed = true;
+        let base = self.doc.entry(layer).map(|e| e.style.clone());
         let shown = base.as_ref().and_then(|_| self.doc.map_style(map, layer));
         if let (Some(shown), Some(entry)) = (&shown, self.doc.entry_mut(layer)) {
             entry.style = shown.clone();
@@ -1205,6 +1203,84 @@ impl AppState {
         }
         self.pad.rules_fixed = false;
         self.atlas.layer_page = std::mem::replace(&mut self.pad.page, world_page);
+    }
+
+    /// Runs `edit`, which shows the raster editors of raster layer `layer`
+    /// in the panel of the Layers tab of a frame of `map`. During `edit`,
+    /// `pad.page` is the page of that panel, and the raster record and the
+    /// bands of the globe hold the style of the map. The base comes back
+    /// after `edit`, and a change becomes the overrides of the map.
+    pub fn edit_map_raster(
+        &mut self,
+        map: MapId,
+        layer: LayerId,
+        id: RasterId,
+        edit: impl FnOnce(&mut AppState),
+    ) {
+        let world_page = std::mem::replace(&mut self.pad.page, self.atlas.layer_page);
+        self.with_map_raster(map, layer, id, edit);
+        self.atlas.layer_page = std::mem::replace(&mut self.pad.page, world_page);
+    }
+
+    fn with_map_raster(
+        &mut self,
+        map: MapId,
+        layer: LayerId,
+        id: RasterId,
+        edit: impl FnOnce(&mut AppState),
+    ) {
+        use raster_style::{apply_symbolizer, symbolizer_of};
+        // The record and the style of the layer take the live bands first.
+        let Some(base_bands) = self.globe.bands_mut(id).map(|b| b.clone()) else {
+            return;
+        };
+        let Some(record) = self.doc.project.raster_mut(id) else {
+            return;
+        };
+        record.stops = session::record_stops(base_bands.stops());
+        record.colors = base_bands.colors().to_vec();
+        raster_style::store_raster_styles(&mut self.doc.project);
+        let base_text = self.doc.project.layer(layer).and_then(|l| l.style.clone());
+        let Some(base) = self.doc.project.raster(id).map(symbolizer_of) else {
+            return;
+        };
+        let style = self.doc.map_style(map, layer);
+        let Some(mut shown) = style.as_ref().and_then(|s| s.raster_symbolizer()).cloned() else {
+            return;
+        };
+        if let Some(record) = self.doc.project.raster_mut(id) {
+            apply_symbolizer(record, &shown, true);
+            let bands = session::bands_of(record);
+            // The stops of the bands are the stops that an edit compares.
+            shown.stops = session::record_stops(bands.stops());
+            shown.colors = bands.colors().to_vec();
+            if let Some(b) = self.globe.bands_mut(id) {
+                *b = bands;
+            }
+        }
+
+        edit(self);
+
+        let Some(record) = self.doc.project.raster_mut(id) else {
+            return;
+        };
+        let mut edited = symbolizer_of(record);
+        if let Some(bands) = self.globe.bands_mut(id) {
+            edited.stops = session::record_stops(bands.stops());
+            edited.colors = bands.colors().to_vec();
+            *bands = base_bands;
+        }
+        apply_symbolizer(record, &base, true);
+        self.doc.project.set_layer_style(layer, base_text);
+        if edited != shown {
+            if let Some(mut style) = style {
+                style.set_raster_symbolizer(edited);
+                if self.doc.set_map_style(map, layer, &style) {
+                    self.touch();
+                }
+            }
+            self.sync_globe();
+        }
     }
 
     /// The look of a raster layer or an image layer: in the style of the
