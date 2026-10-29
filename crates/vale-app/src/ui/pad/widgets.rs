@@ -35,7 +35,8 @@ fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
     galley.size().x.ceil()
 }
 
-fn fade(color: Color32, enabled: bool) -> Color32 {
+/// A color of a control, faded while the control is off.
+pub fn fade(color: Color32, enabled: bool) -> Color32 {
     if enabled {
         color
     } else {

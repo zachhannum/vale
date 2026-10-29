@@ -45,9 +45,9 @@ pub struct Args {
     /// With --layout pad: open this panel. You can give more than one.
     #[arg(long, value_enum, value_name = "PANEL")]
     pub panel: Vec<Panel>,
-    /// With --layout pad: open the menu of the More cell.
+    /// With --layout pad: open the flyout of the brush modes.
     #[arg(long)]
-    pub more_tools: bool,
+    pub brush_modes: bool,
     /// Choose the Measure tool, with a path through these places. A last
     /// place that is the first place closes the path.
     #[arg(long, value_name = "LON,LAT LON,LAT ...", allow_hyphen_values = true)]

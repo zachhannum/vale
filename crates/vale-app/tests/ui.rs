@@ -9,7 +9,7 @@ use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
-use vale_app::ui::pad::MORE;
+use vale_app::ui::pad::BRUSH;
 use vale_app::ui::pad::atlas::{
     ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, MAP_NAME, NEXT_PAGE, PAGE_NAME,
     PREVIOUS_PAGE, SCALE,
@@ -892,7 +892,7 @@ fn a_new_world_has_no_raster_layer() {
         let controls = &h.state().pad.controls;
         controls.iter().any(|control| control.name == name)
     };
-    assert!(!cell(&h, "Raise") && !cell(&h, MORE) && !cell(&h, "Size"));
+    assert!(!cell(&h, BRUSH) && !cell(&h, "Size"));
     assert!(cell(&h, "Pan"));
     let view = h.state().globe.view;
     let before = texels(&h.state().globe.map);
@@ -922,10 +922,10 @@ fn a_new_world_has_no_raster_layer() {
     // The brush paints a raster layer that is selected and visible.
     let height = h.state_mut().add_height();
     h.run_steps(2);
-    assert!(cell(&h, "Raise") && cell(&h, MORE) && cell(&h, "Size"));
+    assert!(cell(&h, BRUSH) && cell(&h, "Size"));
     h.state_mut().set_raster_visible(height, false);
     h.run_steps(2);
-    assert!(!cell(&h, "Raise"));
+    assert!(!cell(&h, BRUSH));
     pen_stroke(&mut h);
     assert!(
         h.state()
