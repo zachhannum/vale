@@ -2303,3 +2303,18 @@ fn the_raster_panel_overrides_a_band_color_and_the_hillshade_in_this_map_only() 
         );
     }
 }
+
+#[test]
+fn a_page_point_grows_and_shrinks_with_the_zoom_of_the_page() {
+    use vale_app::ui::atlas::{PagePlace, PageView};
+    let place = PagePlace {
+        rect: Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0)),
+        pts_per_mm: vale_app::atlas::PT_PER_MM,
+    };
+    assert_eq!(place.pixels_per_page_point(2.0), 2.0);
+    let zoomed = place.viewed(PageView {
+        zoom: 3.0,
+        offset: Vec2::ZERO,
+    });
+    assert_eq!(zoomed.pixels_per_page_point(2.0), 6.0);
+}

@@ -2835,10 +2835,7 @@ impl Globe {
             }
         };
         let pixels_per_point = canvas.pixels_per_point;
-        let scale = match small {
-            true => pixels_per_point / backdrop::REDUCTION as f32,
-            false => pixels_per_point,
-        };
+        let scale = point_scale(pixels_per_point, frame, small);
         // The blurred copy has no rivers.
         let rivers = layer.and_then(|layer| layer.rivers).filter(|_| !small);
         let sea = layer.map_or(0.0, |layer| {
@@ -2902,7 +2899,12 @@ impl Globe {
             ],
             screen: [0.0; 4],
             window,
-            rivers: [cell as f32, window_size, self.preview.river_width, 0.0],
+            rivers: [
+                cell as f32,
+                window_size,
+                self.preview.river_width * scale,
+                0.0,
+            ],
             layer: [layer.map_or(1.0, |layer| layer.opacity), 0.0, 0.0, 0.0],
             shade: match layer {
                 Some(layer) => {
@@ -3536,6 +3538,19 @@ pub struct FramePlace {
     pub rotation: f64,
     /// Points of the page in one radian of the world.
     pub points_per_radian: f64,
+    /// Pixels in one point of the page.
+    pub pixels_per_page_point: f32,
+}
+
+/// Pixels in one point of a width, with `pixels_per_point` pixels in one
+/// point of the screen. A map frame draws a width in points of the page.
+/// `small`: the pass draws into the small target of the blurred copy.
+fn point_scale(pixels_per_point: f32, frame: Option<&FramePlace>, small: bool) -> f32 {
+    let point = frame.map_or(pixels_per_point, |frame| frame.pixels_per_page_point);
+    match small {
+        true => point / backdrop::REDUCTION as f32,
+        false => point,
+    }
 }
 
 /// The first number of a target of a map frame. The numbers below it are for
@@ -3591,6 +3606,23 @@ mod tests {
 
     use super::*;
     use math::lonlat_to_dir;
+
+    #[test]
+    fn a_frame_scales_the_widths_by_the_page() {
+        let frame = |pixels_per_page_point| FramePlace {
+            center: [0.0; 2],
+            map_center: [0.0; 2],
+            units_to_pixels: 1.0,
+            rotation: 0.0,
+            points_per_radian: 1.0,
+            pixels_per_page_point,
+        };
+        assert_eq!(point_scale(2.0, None, false), 2.0);
+        assert_eq!(point_scale(2.0, Some(&frame(0.5)), false), 0.5);
+        assert_eq!(point_scale(2.0, Some(&frame(3.0)), false), 3.0);
+        let small = 3.0 / backdrop::REDUCTION as f32;
+        assert_eq!(point_scale(2.0, Some(&frame(3.0)), true), small);
+    }
     use snap::LayerTargets;
     use snap::tests::{layer, pen};
 
