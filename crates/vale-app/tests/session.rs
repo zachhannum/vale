@@ -1702,11 +1702,19 @@ fn image_pixels(session: &Session, id: vale_store::ImageId, width: u32, height: 
     out
 }
 
-#[test]
-fn an_image_layer_is_the_same_after_a_close_and_an_open() {
+/// A project file in `dir` with an image layer of 600 by 300 pixels, an
+/// opacity of 0.4, and the blend mode Screen. Gives the path, the image,
+/// the pixels, and the record of the image.
+fn image_project(
+    dir: &std::path::Path,
+) -> (
+    std::path::PathBuf,
+    vale_store::ImageId,
+    image::RgbaImage,
+    vale_store::Image,
+) {
     use vale_store::BlendMode;
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("project.gpkg");
+    let path = dir.join("project.gpkg");
     let mut state = AppState::new(Document::empty()).unwrap();
     state.headless = true;
     state.session = Some(Session::open(&path, &mut state.doc).unwrap());
@@ -1715,7 +1723,7 @@ fn an_image_layer_is_the_same_after_a_close_and_an_open() {
     let picture = image::RgbaImage::from_fn(600, 300, |x, y| {
         image::Rgba([(x % 256) as u8, (y % 256) as u8, 40, ((x + y) % 256) as u8])
     });
-    let file = images::write_png(&dir.path().join("plates.png"), &picture);
+    let file = images::write_png(&dir.join("plates.png"), &picture);
     state.run_action(vale_app::ui::Action::ImportImageLayer(file));
     let id = state.doc.project.images()[0].id;
     assert_eq!(state.selected_layer, Some(LayerRef::Image(id)));
@@ -1726,6 +1734,14 @@ fn an_image_layer_is_the_same_after_a_close_and_an_open() {
     assert!(state.save_now());
     let record = state.doc.project.image(id).unwrap().clone();
     drop(state);
+    (path, id, picture, record)
+}
+
+#[test]
+fn an_image_layer_is_the_same_after_a_close_and_an_open() {
+    use vale_store::BlendMode;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id, picture, record) = image_project(dir.path());
 
     let mut doc = Document::empty();
     let session = Session::open(&path, &mut doc).unwrap();
@@ -1740,6 +1756,15 @@ fn an_image_layer_is_the_same_after_a_close_and_an_open() {
     let look = style.image_symbolizer().unwrap();
     assert_eq!((look.opacity, look.blend), (0.4, BlendMode::Screen));
     assert!(image_pixels(&session, id, 600, 300) == picture.into_raw());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_globe_loads_the_tiles_of_an_image_layer_from_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id, _, _) = image_project(dir.path());
+    let mut doc = Document::empty();
+    let session = Session::open(&path, &mut doc).unwrap();
 
     // The globe gets the tiles of the copy of the image from the file.
     let mut state = AppState::new(doc).unwrap();

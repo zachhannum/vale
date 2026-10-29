@@ -202,10 +202,11 @@ cargo run --release -p vale-labeler-demo -- --preset world --out target/demo/wor
 cargo test --workspace
 ```
 
-The tests that read pixels from a GPU render have the attribute `#[ignore = "gpu"]`. This command runs them. It skips the ignored tests with the prefix `manual_`, which save pictures or give times:
+The tests that read pixels from a GPU render have the attribute `#[ignore = "gpu"]`. These commands run them. The first command skips the ignored tests with the prefix `manual_`, which save pictures or give times:
 
 ```sh
 cargo test -p vale-app -- --ignored --skip manual_
+cargo test -p vale-terrain --features gpu --test gpu -- --ignored
 ```
 
 On Linux, the GPU tests can use Lavapipe, the software Vulkan driver of Mesa. Set `VALE_SCREENSHOTS=1` to save the pictures of the UI tests in `target/app`.

@@ -248,6 +248,7 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn upload_and_read_rect_round_trip() {
     let gpu = gpu();
     let n = 256;
@@ -282,6 +283,7 @@ fn upload_and_read_rect_round_trip() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_matches_cpu_for_one_stamp() {
     let places = [
         ("face center", lonlat_to_dir(1.3, 0.7)),
@@ -313,6 +315,7 @@ fn gpu_matches_cpu_for_one_stamp() {
 /// A stroke of stamps that overlap, across a face edge and near a cube
 /// corner. The stroke needs more than one batch.
 #[test]
+#[ignore = "gpu"]
 fn gpu_matches_cpu_for_a_stroke() {
     let mut worst = [0; 4];
     let mut most_batches = 0;
@@ -355,6 +358,7 @@ fn weather(center: V3, radius: f64, hardness: f64) -> Stamp {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_weather_matches_cpu_for_one_stamp() {
     let places = [
         ("face center", lonlat_to_dir(1.3, 0.7)),
@@ -396,6 +400,7 @@ fn weather_stroke(lat: f64, radius: f64, hardness: f64) -> Vec<Stamp> {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_weather_matches_cpu_for_a_stroke() {
     let mut worst = 0;
     for (lat, radius, hardness) in [(4.0, 0.07, 0.5), (35.0, 0.12, 0.0), (20.0, 0.03, 0.95)] {
@@ -411,6 +416,7 @@ fn gpu_weather_matches_cpu_for_a_stroke() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_weather_keeps_the_sum_of_the_levels() {
     let sum = |faces: &[Vec<u16>]| -> u64 { faces.iter().flatten().map(|&l| u64::from(l)).sum() };
     let mut cpu = hills(256);
@@ -429,6 +435,7 @@ fn gpu_weather_keeps_the_sum_of_the_levels() {
 /// On a large face, a small brush is a few texels wide. The angles are then
 /// too small for a 32-bit cosine.
 #[test]
+#[ignore = "gpu"]
 fn gpu_matches_cpu_for_a_small_brush_on_a_large_face() {
     let n = 2048;
     let mut cpu = Heightmap::new(n, 30000);
@@ -529,6 +536,7 @@ fn smooth_and_check(levels: [u16; 3], center: V3, m: usize, edges: &[usize], mon
 }
 
 #[test]
+#[ignore = "gpu"]
 fn smooth_leaves_no_seam_at_a_face_edge() {
     // Face 0 and face 2 meet at longitude 45.
     smooth_and_check(
@@ -541,6 +549,7 @@ fn smooth_leaves_no_seam_at_a_face_edge() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn smooth_leaves_no_seam_at_a_cube_corner() {
     // Faces 0, 2, and 4 meet at this corner. Each line is 6 texels from it.
     let corner = lonlat_to_dir(45.0, 35.264);
@@ -592,6 +601,7 @@ fn levels(map: &Heightmap) -> Vec<u16> {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_carve_matches_cpu_for_one_stamp() {
     let places = [
         ("face center", lonlat_to_dir(1.3, 0.7)),
@@ -624,6 +634,7 @@ fn gpu_carve_matches_cpu_for_one_stamp() {
 /// Strokes across a face edge and past a cube corner. Many stamps touch
 /// each texel, so the ground at some rivers goes down to sea level.
 #[test]
+#[ignore = "gpu"]
 fn gpu_carve_matches_cpu_for_a_stroke() {
     let lines = [
         ("face edge", (31.0, 2.0), (59.0, 5.0)),
@@ -656,6 +667,7 @@ fn gpu_carve_matches_cpu_for_a_stroke() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn upload_channels_reaches_the_shader() {
     let gpu = gpu();
     let n = 256;
@@ -765,6 +777,7 @@ fn stamp_in_window(mode: Mode, lon: f64, lat: f64, face: usize, least: usize) ->
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_carve_in_a_window_matches_cpu_for_one_stamp() {
     let difference = stamp_in_window(Mode::Carve, 30.0, 3.0, 0, 300);
     eprintln!("carve in a window, largest difference: {difference}");
@@ -772,6 +785,7 @@ fn gpu_carve_in_a_window_matches_cpu_for_one_stamp() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_carve_in_a_window_matches_cpu_past_a_face_edge() {
     let difference = stamp_in_window(Mode::Carve, 53.0, 3.0, 2, 300);
     eprintln!("carve in a window past a face edge, largest difference: {difference}");
@@ -786,6 +800,7 @@ fn gpu_carve_in_a_window_matches_cpu_past_a_face_edge() {
 /// on a texel, and that effect is that near to a half step, each of them
 /// rounds to the other side, and the differences add without a limit.
 #[test]
+#[ignore = "gpu"]
 fn gpu_carve_in_a_window_matches_cpu_for_a_stroke() {
     let mut stamps = stroke((36.0, 2.0), (54.0, 5.0), 240, 0.05, Mode::Carve);
     for stamp in &mut stamps {
@@ -811,6 +826,7 @@ fn gpu_carve_in_a_window_matches_cpu_for_a_stroke() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_matches_cpu_for_one_stamp() {
     let places = [
         ("face center", lonlat_to_dir(1.3, 0.7)),
@@ -841,6 +857,7 @@ fn gpu_ridge_matches_cpu_for_one_stamp() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_matches_cpu_for_a_stroke() {
     let lines = [
         ("face edge", (31.0, 2.0), (59.0, 5.0)),
@@ -873,6 +890,7 @@ fn gpu_ridge_matches_cpu_for_a_stroke() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_in_a_window_matches_cpu_for_one_stamp() {
     let difference = stamp_in_window(Mode::Ridge, 30.0, 3.0, 0, 300);
     eprintln!("ridge in a window, largest difference: {difference}");
@@ -880,6 +898,7 @@ fn gpu_ridge_in_a_window_matches_cpu_for_one_stamp() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_in_a_window_matches_cpu_past_a_face_edge() {
     let difference = stamp_in_window(Mode::Ridge, 53.0, 3.0, 2, 300);
     eprintln!("ridge in a window past a face edge, largest difference: {difference}");
@@ -887,6 +906,7 @@ fn gpu_ridge_in_a_window_matches_cpu_past_a_face_edge() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_deposit_matches_cpu_for_one_stamp() {
     let places = [
         ("face center", lonlat_to_dir(1.3, 0.7)),
@@ -917,6 +937,7 @@ fn gpu_deposit_matches_cpu_for_one_stamp() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_deposit_matches_cpu_for_a_stroke() {
     let lines = [
         ("face edge", (31.0, 2.0), (59.0, 5.0)),
@@ -949,6 +970,7 @@ fn gpu_deposit_matches_cpu_for_a_stroke() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_deposit_in_a_window_matches_cpu_for_one_stamp() {
     let difference = stamp_in_window(Mode::Deposit, 30.0, 3.0, 0, 10);
     eprintln!("deposit in a window, largest difference: {difference}");
@@ -956,6 +978,7 @@ fn gpu_deposit_in_a_window_matches_cpu_for_one_stamp() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_deposit_in_a_window_matches_cpu_past_a_face_edge() {
     let difference = stamp_in_window(Mode::Deposit, 53.0, 3.0, 2, 10);
     eprintln!("deposit in a window past a face edge, largest difference: {difference}");
@@ -1055,6 +1078,7 @@ fn stroke(from: (f64, f64), to: (f64, f64), count: usize, radius: f64, mode: Mod
 /// Strokes of small stamps at about 0.1 of the radius apart, across a face
 /// edge and past a cube corner.
 #[test]
+#[ignore = "gpu"]
 fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
     let lines = [
         ("face edge", (31.0, 2.0), (59.0, 5.0)),
@@ -1103,6 +1127,7 @@ fn groups_match_single_stamps_and_the_cpu_for_a_stroke() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_group_has_one_mode_and_no_smooth_stamp() {
     use Mode::{Flatten, Lower, Raise, Smooth, Weather};
     let modes = [
@@ -1123,6 +1148,7 @@ fn a_group_has_one_mode_and_no_smooth_stamp() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_group_has_a_largest_size() {
     let stamps = vec![light(10.0, 5.0, 0.03, Mode::Raise); GROUP_STAMPS + 8];
     let mut cpu = hills(256);
@@ -1136,6 +1162,7 @@ fn a_group_has_a_largest_size() {
 /// Each stamp at the cube corner takes three passes, and a change of mode
 /// ends a group. The batch is full before the end of the list.
 #[test]
+#[ignore = "gpu"]
 fn a_full_batch_takes_no_group() {
     let count = STAMP_SLOTS as usize;
     let stamps: Vec<Stamp> = (0..count)
@@ -1161,6 +1188,7 @@ fn a_full_batch_takes_no_group() {
 /// Two places on one face. One pass for both would cover the texels between
 /// them.
 #[test]
+#[ignore = "gpu"]
 fn stamps_far_apart_are_not_one_group() {
     let stamps: Vec<Stamp> = (0..12)
         .map(|i| {
@@ -1197,6 +1225,7 @@ fn table_bytes(n: usize) -> usize {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn an_empty_world_takes_memory_for_the_table_only() {
     let gpu = gpu();
     for n in [4096, 8192] {
@@ -1219,6 +1248,7 @@ fn an_empty_world_takes_memory_for_the_table_only() {
 
 /// The same brush in texels takes the same memory at each face size.
 #[test]
+#[ignore = "gpu"]
 fn memory_grows_with_the_painted_tiles_and_not_with_the_face_size() {
     let gpu = gpu();
     let memory = |n: usize, stamps: usize| {
@@ -1255,6 +1285,7 @@ fn memory_grows_with_the_painted_tiles_and_not_with_the_face_size() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_tile_at_the_base_level_gives_its_memory_back() {
     let gpu = gpu();
     let n = 1024;
@@ -1330,6 +1361,7 @@ fn display_of(gpu: &Gpu, cpu: &Heightmap, factor: usize) -> GpuTiles {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_display_map_reads_the_same_levels_as_the_heightmap() {
     let gpu = gpu();
     let cpu = coded();
@@ -1366,6 +1398,7 @@ fn a_display_map_reads_the_same_levels_as_the_heightmap() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_display_map_holds_the_reduced_levels() {
     let gpu = gpu();
     let cpu = coded();
@@ -1381,6 +1414,7 @@ fn a_display_map_holds_the_reduced_levels() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn clear_puts_each_tile_of_a_display_map_back_to_the_base() {
     let gpu = gpu();
     let cpu = coded();
@@ -1590,6 +1624,7 @@ impl Show {
 /// The heightmap, a display map of the same size, and a display map of
 /// another size and another base level go through one pipeline.
 #[test]
+#[ignore = "gpu"]
 fn one_pipeline_draws_from_the_heightmap_and_from_each_display_map() {
     let gpu = gpu();
     let cpu = coded();
@@ -1630,6 +1665,7 @@ fn show(gpu: &Gpu, map: &GpuHeightmap, cpu: &mut Heightmap) {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_reset_shows_another_map_with_only_its_tiles() {
     let gpu = gpu();
     let n = 64;
@@ -1661,6 +1697,7 @@ fn a_reset_shows_another_map_with_only_its_tiles() {
 /// and a cube corner. Some of the tiles under the stamps have no memory. The
 /// levels do not depend on the tile size, so a tile edge is no seam.
 #[test]
+#[ignore = "gpu"]
 fn small_tiles_give_the_same_levels_as_one_tile_for_each_face() {
     let gpu = gpu();
     for mode in MODES {
@@ -1705,6 +1742,7 @@ fn small_tiles_give_the_same_levels_as_one_tile_for_each_face() {
 /// A smooth stamp on a bowl that crosses tile edges. The step from texel to
 /// texel changes by the same amount at a tile edge and inside a tile.
 #[test]
+#[ignore = "gpu"]
 fn smooth_leaves_no_seam_at_a_tile_edge() {
     let gpu = gpu();
     let n = 256;
@@ -1789,6 +1827,7 @@ fn window_erosion(cpu: &Heightmap) -> Erosion {
 /// sides of a face edge. Thus the test covers the mix of the cells and the
 /// cells past the edge.
 #[test]
+#[ignore = "gpu"]
 fn gpu_erode_matches_cpu_for_a_global_step() {
     let mut cpu = window_land();
     let coarse = CoarseHeights::new(&cpu);
@@ -1820,6 +1859,7 @@ fn gpu_erode_matches_cpu_for_a_global_step() {
 /// The cells of the window of the brush are 1 texel wide, and the water of a
 /// window with cells of 2 texels comes in.
 #[test]
+#[ignore = "gpu"]
 fn gpu_erode_matches_cpu_for_a_step_on_the_window_of_a_brush() {
     let mut cpu = window_land();
     let view = Window::centered(lonlat_to_dir(40.0, 3.0), WINDOW_FACE, 2, WINDOW_CELLS);
@@ -1837,6 +1877,7 @@ fn gpu_erode_matches_cpu_for_a_step_on_the_window_of_a_brush() {
 /// The ground under the brush is below sea level, and it goes down as the
 /// land does.
 #[test]
+#[ignore = "gpu"]
 fn gpu_erode_matches_cpu_below_sea_level() {
     let mut cpu = window_land();
     let sea = vale_terrain::meters_to_level(vale_terrain::SEA_LEVEL);
@@ -1855,6 +1896,7 @@ fn gpu_erode_matches_cpu_below_sea_level() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_erode_in_a_window_matches_cpu() {
     let mut cpu = window_land();
     let mut erosion = window_erosion(&cpu);
@@ -1869,6 +1911,7 @@ fn gpu_erode_in_a_window_matches_cpu() {
 /// On the next face, the place of a texel in the window has a small error on
 /// the GPU. The differences of the steps can add, so the test has one step.
 #[test]
+#[ignore = "gpu"]
 fn gpu_erode_in_a_window_matches_cpu_past_a_face_edge() {
     let mut cpu = window_land();
     let mut erosion = window_erosion(&cpu);
@@ -1940,6 +1983,7 @@ const WARP_PLACES: [(&str, f64, f64); 4] = [
 ];
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_warp_matches_cpu_for_one_stamp() {
     let mut worst = 0;
     for (place, lon, lat) in WARP_PLACES {
@@ -1980,6 +2024,7 @@ fn warp_stroke(lat: f64, radius: f64, hardness: f64) -> Vec<Stamp> {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_warp_matches_cpu_for_a_stroke() {
     let mut worst = 0;
     for (lat, radius, hardness) in [(4.0, 0.07, 0.5), (35.0, 0.12, 0.0), (20.0, 0.05, 0.95)] {
@@ -1999,6 +2044,7 @@ fn gpu_warp_matches_cpu_for_a_stroke() {
 /// On a large face, the place of a texel needs most of the digits of a
 /// 32-bit number.
 #[test]
+#[ignore = "gpu"]
 fn gpu_warp_matches_cpu_on_a_large_face() {
     let mut cpu = smooth_ground(2048);
     let mut stamps = Vec::new();
@@ -2019,6 +2065,7 @@ fn gpu_warp_matches_cpu_on_a_large_face() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_warp_leaves_flat_ground_flat() {
     let n = 256;
     let mut cpu = Heightmap::new(n, 30000);
@@ -2037,6 +2084,7 @@ fn gpu_warp_leaves_flat_ground_flat() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_warped_level_is_between_the_levels_under_the_brush() {
     let n = 256;
     for (place, lon, lat) in WARP_PLACES {
@@ -2112,6 +2160,7 @@ fn warp_and_check(stamps: &[Stamp], edges: &[usize], lines: &[usize]) {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn warp_leaves_no_seam_at_a_face_edge() {
     // Face 0 and face 2 meet at longitude 45.
     let stamps: Vec<Stamp> = (0..16)
@@ -2124,6 +2173,7 @@ fn warp_leaves_no_seam_at_a_face_edge() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn warp_leaves_no_seam_at_a_cube_corner() {
     // Faces 0, 2, and 4 meet at this corner.
     let corner = lonlat_to_dir(45.0, 35.264);
@@ -2139,6 +2189,7 @@ fn warp_leaves_no_seam_at_a_cube_corner() {
 /// At a cube corner, each of three faces takes levels from the other two.
 /// The CPU reads the levels from before the stamp on each face.
 #[test]
+#[ignore = "gpu"]
 fn gpu_warp_reads_no_level_that_it_wrote() {
     let n = 256;
     let mut cpu = smooth_ground(n);
@@ -2204,6 +2255,7 @@ const HILL_LIMITS: Limits = Limits {
 };
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_matches_cpu_with_limits_for_a_stroke() {
     let mut worst = [0; 4];
     for (m, mode) in MODES.into_iter().enumerate() {
@@ -2228,6 +2280,7 @@ fn gpu_matches_cpu_with_limits_for_a_stroke() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_weather_with_limits_matches_cpu_and_keeps_the_sum() {
     let sum = |levels: &[u16]| -> u64 { levels.iter().map(|&l| u64::from(l)).sum() };
     let before = levels(&hills(256));
@@ -2263,6 +2316,7 @@ fn floor_in_the_largest_drop(before: &[u16], after: &[u16]) -> Limits {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_ridge_with_a_ceiling_matches_cpu() {
     let before = levels(&river_land(256));
     let stamps = stroke((31.0, 2.0), (59.0, 5.0), 240, 0.05, Mode::Ridge);
@@ -2295,6 +2349,7 @@ fn gpu_ridge_with_a_ceiling_matches_cpu() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_carve_with_limits_matches_cpu() {
     let before = levels(&river_land(256));
     let carved = |stamps: &[Stamp]| {
@@ -2330,6 +2385,7 @@ fn gpu_carve_with_limits_matches_cpu() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_warp_with_limits_matches_cpu() {
     // The limits are on each side of the level at the brush center.
     let around = |lon: f64, lat: f64| {
@@ -2366,6 +2422,7 @@ fn gpu_warp_with_limits_matches_cpu() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_erode_with_a_floor_matches_cpu() {
     let brushes = [erode_brush(41.0, 3.0, 0.1), erode_brush(49.0, 6.0, 0.1)];
     let erosion = |cpu: &Heightmap| Erosion::global(&CoarseHeights::new(cpu), cpu.face_size());
@@ -2397,6 +2454,7 @@ fn gpu_erode_with_a_floor_matches_cpu() {
 /// A change of the limits ends a group. With one pair of limits for all
 /// stamps, the GPU result is far from the CPU result.
 #[test]
+#[ignore = "gpu"]
 fn a_group_has_one_pair_of_limits() {
     let center = lonlat_to_dir(44.0, 34.0);
     let low = Limits {
@@ -2466,6 +2524,7 @@ fn tiles_and_pyramid(gpu: &Gpu, cpu: &Heightmap, tile: usize) -> (GpuTiles, GpuP
 }
 
 #[test]
+#[ignore = "gpu"]
 fn gpu_levels_match_the_cpu_levels() {
     let gpu = gpu();
     for (n, tile) in [(64, 16), (44, 16), (8, 256)] {
@@ -2478,6 +2537,7 @@ fn gpu_levels_match_the_cpu_levels() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_cleared_pyramid_holds_the_base_level() {
     let gpu = gpu();
     let pyramid = GpuPyramid::new(&gpu.device, 32);
@@ -2493,6 +2553,7 @@ fn a_cleared_pyramid_holds_the_base_level() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn an_update_after_stamps_matches_a_full_build() {
     let gpu = gpu();
     let mut cpu = hills(64);
@@ -2781,6 +2842,7 @@ fn test_directions() -> Vec<V3> {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn the_shader_field_matches_the_cpu_field() {
     let gpu = gpu();
     let cpu = hills(64);

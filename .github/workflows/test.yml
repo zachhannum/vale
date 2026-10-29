@@ -50,13 +50,15 @@ jobs:
       matrix:
         include:
           - name: globe
-            tests: --test globe
+            tests: -p vale-app --test globe
           - name: flat
-            tests: --test flat
+            tests: -p vale-app --test flat
           - name: pad
-            tests: --test pad
+            tests: -p vale-app --test pad
           - name: other files
-            tests: --test atlas --test export --test frame_raster --test import --test inspector --test ui
+            tests: -p vale-app --test atlas --test export --test frame_raster --test import --test inspector --test session --test ui
+          - name: terrain
+            tests: -p vale-terrain --features gpu --test gpu
     steps:
       - uses: actions/checkout@v4
 
@@ -74,9 +76,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The GPU tier is the ignored tests of vale-app. The ignored tests with
+      # The GPU tier is the tests with `#[ignore = "gpu"]`. The ignored tests with
       # the prefix `manual_` save pictures or give times, and they run only by hand.
       # The runner has few cores. If tests render in parallel, a frame can
       # take longer than egui_kittest waits, so the tests run one at a time.
       - name: Run the GPU tier
-        run: cargo test -p vale-app ${{ matrix.tests }} -- --ignored --skip manual_ --test-threads=1
+        run: cargo test ${{ matrix.tests }} -- --ignored --skip manual_ --test-threads=1
