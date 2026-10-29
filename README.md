@@ -183,7 +183,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 ## What the prototype leaves out
 
 - With GeoJSON files and no `--project`, undo and redo are for brush strokes only, and the session ends when the window closes.
-- Rasters and blend modes in the PNG and PDF export, regional source extents over a world source, SVG and Shapefile import, and the command Replace from file.
+- Rasters and blend modes in the PNG and PDF export, regional extents for a raster layer of values, SVG and Shapefile import, and the command Replace from file.
 - Vector layers in the flat view of the globe workspace and in the picture of the globe on the start screen.
 - Pattern fills, texture fills, hatch fills, and edge effects. In the style editor, only the size and the rotation of a point symbol can come from a field.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.

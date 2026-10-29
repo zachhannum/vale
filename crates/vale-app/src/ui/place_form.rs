@@ -371,15 +371,13 @@ pub fn place(state: &mut AppState) -> bool {
     state.commit_place_draft()
 }
 
-/// Removes the form and the draft after a frame that did not show the
+/// Removes the form and its draft after a frame that did not show the
 /// section: the panel closed, or it shows another layer.
 pub fn end_frame(state: &mut AppState) {
     let frames = state.frames;
-    if state.place_form.as_ref().is_some_and(|f| f.shown != frames) {
-        state.place_form = None;
-    }
-    let layer = state.place_form.as_ref().map(|f| f.layer);
-    if state.place_draft.is_some_and(|d| Some(d.layer) != layer) {
+    if let Some(form) = state.place_form.take_if(|f| f.shown != frames)
+        && state.place_draft.is_some_and(|d| d.layer == form.layer)
+    {
         state.cancel_place_draft();
     }
 }
