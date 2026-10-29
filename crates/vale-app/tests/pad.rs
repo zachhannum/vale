@@ -19,7 +19,7 @@ use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE, LayerRef, MORE,
-    NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP,
+    NEW_FROM_FILE, NEW_RASTER, OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP,
     SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS,
     WORLDS_ROW, brush_size_text, readout_text, theme,
 };
@@ -235,7 +235,7 @@ fn check_controls(h: &Pad, what: &str) {
                     .contains(&name);
                 let rows = [
                     NEW_RASTER,
-                    NEW_IMAGE,
+                    NEW_FROM_FILE,
                     "Lines",
                     "Points",
                     "Polygons",
@@ -6814,12 +6814,12 @@ fn the_menu_of_the_new_layers_asks_for_the_file_of_an_image_layer() {
         tap(&mut h, "Layers");
         tap(&mut h, ADD_LAYER);
         check_controls(&h, &format!("{what} with the menu of the new layers"));
-        let row = control(&h, NEW_IMAGE).unwrap_or_else(|| panic!("{what}: no row"));
+        let row = control(&h, NEW_FROM_FILE).unwrap_or_else(|| panic!("{what}: no row"));
         let menu = h.state().pad.add_rect.unwrap();
         assert!(menu.contains_rect(row), "{what}: {row:?}");
         assert!(h.state().actions.is_empty());
-        tap(&mut h, NEW_IMAGE);
-        assert_eq!(h.state().actions, [Action::ImageLayerDialog], "{what}");
+        tap(&mut h, NEW_FROM_FILE);
+        assert_eq!(h.state().actions, [Action::ImportFileDialog], "{what}");
         assert!(!h.state().pad.add, "{what}");
     }
 }
@@ -6848,7 +6848,7 @@ fn an_image_layer_comes_from_a_png_a_tiff_or_a_psd_with_alpha() {
     tap(&mut h, "Layers");
     for (at, file) in files.into_iter().enumerate() {
         let what = file.display().to_string();
-        h.state_mut().run_action(Action::ImportImageLayer(file));
+        h.state_mut().run_action(Action::ImportFile(file));
         h.run_steps(2);
         let images = h.state().doc.project.images();
         assert_eq!(images.len(), at + 1, "{what}");
@@ -6876,8 +6876,7 @@ fn the_panel_of_an_image_layer_works_with_a_finger() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        h.state_mut()
-            .run_action(Action::ImportImageLayer(file.clone()));
+        h.state_mut().run_action(Action::ImportFile(file.clone()));
         let id = h.state().doc.project.images()[0].id;
         h.state_mut().pad.layer = None;
         tap(&mut h, "Layers");
@@ -6933,7 +6932,7 @@ fn the_layers_panel_shows_why_an_image_layer_did_not_import() {
     std::fs::write(&file, b"not an image").unwrap();
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Layers");
-    h.state_mut().run_action(Action::ImportImageLayer(file));
+    h.state_mut().run_action(Action::ImportFile(file));
     h.run_steps(2);
     assert!(h.state().doc.project.images().is_empty());
     assert!(h.query_by_label_contains("notes").is_some());

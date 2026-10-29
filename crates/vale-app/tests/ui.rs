@@ -316,11 +316,11 @@ fn the_desktop_list_shows_the_panel_of_an_image_layer() {
         .unwrap();
     h.get_by_label(LAYERS_MENU).click();
     h.run_steps(2);
-    h.get_by_label(vale_app::ui::panels::ADD_IMAGE).click();
+    h.get_by_label(vale_app::ui::panels::ADD_FROM_FILE).click();
     h.run_steps(1);
-    assert!(h.state().actions.contains(&Action::ImageLayerDialog));
+    assert!(h.state().actions.contains(&Action::ImportFileDialog));
     h.state_mut().actions.clear();
-    h.state_mut().run_action(Action::ImportImageLayer(file));
+    h.state_mut().run_action(Action::ImportFile(file));
     let id = h.state().doc.project.images()[0].id;
     // An image layer gets no entry of a vector layer in the map frame.
     let layer = h.state().doc.project.image_layer(id).unwrap().id;
@@ -346,6 +346,7 @@ fn the_desktop_list_shows_the_panel_of_an_image_layer() {
         id,
         opacity: 0.25,
         blend: BlendMode::Screen,
+        extents: vale_store::Extents::GLOBE,
     };
     assert!(stack.contains(&item));
     h.get_by_label(DELETE_LAYER).click();

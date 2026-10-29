@@ -39,7 +39,8 @@ targets:
             LSHandlerRank: Default
             LSItemContentTypes:
               - org.opengeospatial.geopackage
-        # Vale does not own the GeoPackage format, so the type is imported.
+        # Vale does not own the GeoPackage and GeoJSON formats, so the types are
+        # imported.
         UTImportedTypeDeclarations:
           - UTTypeIdentifier: org.opengeospatial.geopackage
             UTTypeDescription: GeoPackage
@@ -51,6 +52,16 @@ targets:
                 - gpkg
               public.mime-type:
                 - application/geopackage+sqlite3
+          # The picker of a new layer shows GeoJSON files with this type.
+          - UTTypeIdentifier: public.geojson
+            UTTypeDescription: GeoJSON
+            UTTypeConformsTo:
+              - public.json
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - geojson
+              public.mime-type:
+                - application/geo+json
         UIApplicationSupportsIndirectInputEvents: true
         CADisableMinimumFrameDurationOnPhone: true
         UISupportedInterfaceOrientations~iphone:

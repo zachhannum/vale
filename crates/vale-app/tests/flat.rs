@@ -671,7 +671,7 @@ fn flat_with_image(level: u16) -> (App, vale_store::ImageId, Pos2, Pos2) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("plates.png");
     images::write_png(&path, &images::half_red(512, 256));
-    h.state_mut().run_action(Action::ImportImageLayer(path));
+    h.state_mut().run_action(Action::ImportFile(path));
     let id = h.state().doc.project.images()[0].id;
     // The image goes right above the height layer, below the vector layers,
     // so a blend mixes it with the height layer.
@@ -726,4 +726,61 @@ fn the_opacity_and_the_blend_mode_apply_to_an_image_layer_in_the_flat_view() {
     h.state_mut().set_image_blend(id, BlendMode::Screen);
     let image = canvas_image(&mut h);
     near(rgb(&h, &image, east), [255, g, g], "screen");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_flat_view_draws_an_image_layer_inside_its_extents_across_the_date_line() {
+    use vale_store::{Extents, PlaceMethod};
+    let _gpu = one_gpu_test();
+    let level = 16000;
+    let mut h = flat_harness();
+    let height = h.state().globe.raster().unwrap();
+    h.state_mut()
+        .globe
+        .raster_map_mut(height)
+        .unwrap()
+        .fill(level);
+    let dir = tempfile::tempdir().unwrap();
+    let path = images::write_png(
+        &dir.path().join("red.png"),
+        &images::solid(64, 32, [255, 0, 0]),
+    );
+    h.state_mut().run_action(Action::ImportFile(path));
+    let id = h.state().doc.project.images()[0].id;
+    let layer = h.state().doc.project.image_layer(id).unwrap().id;
+    h.state_mut().move_layer(layer, 1);
+    let mut placement = h
+        .state()
+        .doc
+        .project
+        .layer(layer)
+        .unwrap()
+        .placement
+        .unwrap();
+    placement.method = PlaceMethod::Extents;
+    placement.extents = Extents {
+        west: 150.0,
+        east: 200.0,
+        south: -20.0,
+        north: 20.0,
+    };
+    assert!(h.state_mut().place_layer(layer, placement));
+    h.run_steps(3);
+    let g = (f32::from(level) / 65535.0 * 255.0).round() as u8;
+    let image = canvas_image(&mut h);
+    let at = |h: &App, lon: f64, lat: f64| {
+        let pos = h.state().globe.project(lonlat_to_dir(lon, lat)).unwrap();
+        rgb(h, &image, pos)
+    };
+    for (lon, lat) in [(165.0, 0.0), (-170.0, 10.0)] {
+        near(
+            at(&h, lon, lat),
+            [255, 0, 0],
+            &format!("inside {lon} {lat}"),
+        );
+    }
+    for (lon, lat) in [(140.0, 0.0), (-150.0, 0.0), (0.0, 0.0), (165.0, 30.0)] {
+        near(at(&h, lon, lat), [g; 3], &format!("outside {lon} {lat}"));
+    }
 }

@@ -98,9 +98,8 @@ pub const OPACITY: &str = "Layer opacity";
 /// The row of the menu of the new layers that opens the form of a new raster
 /// layer.
 pub const NEW_RASTER: &str = "Raster…";
-/// The row of the menu of the new layers that adds an image layer from a
-/// file.
-pub const NEW_IMAGE: &str = "Image…";
+/// The row of the menu of the new layers that adds the layers of a file.
+pub const NEW_FROM_FILE: &str = "From a file…";
 /// The rows of the menu of the new vector layers.
 const NEW_LAYERS: [(&str, GeometryKind); 3] = [
     ("Lines", GeometryKind::Line),
@@ -1591,8 +1590,8 @@ fn add_menu(
                 state.pad.add = false;
             }
             let free = state.image_import.is_none();
-            if widgets::text_row(ui, controls, NEW_IMAGE, 0.0, false, free).clicked() {
-                state.actions.push(Action::ImageLayerDialog);
+            if widgets::text_row(ui, controls, NEW_FROM_FILE, 0.0, false, free).clicked() {
+                state.actions.push(Action::ImportFileDialog);
                 state.pad.add = false;
             }
             for (name, kind) in NEW_LAYERS {

@@ -140,8 +140,11 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         ui.close();
                     }
                     let free = state.image_import.is_none();
-                    if ui.add_enabled(free, egui::Button::new(ADD_IMAGE)).clicked() {
-                        state.actions.push(Action::ImageLayerDialog);
+                    if ui
+                        .add_enabled(free, egui::Button::new(ADD_FROM_FILE))
+                        .clicked()
+                    {
+                        state.actions.push(Action::ImportFileDialog);
                         ui.close();
                     }
                     layer_rows(ui, state);
@@ -244,8 +247,8 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
 pub const LAYERS_MENU: &str = "Layers";
 /// The button that opens the form of a new raster layer.
 pub const ADD_RASTER: &str = "Add raster…";
-/// The button that adds an image layer from a file.
-pub const ADD_IMAGE: &str = "Add image…";
+/// The button that adds the layers of a file.
+pub const ADD_FROM_FILE: &str = "Add from file…";
 /// The field of the Layers menu with the name of the selected layer.
 pub const LAYER_NAME: &str = "Layer name";
 /// The slider of the Layers menu with the opacity of the selected raster

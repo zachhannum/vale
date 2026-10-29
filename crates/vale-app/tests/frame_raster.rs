@@ -149,7 +149,7 @@ fn atlas_with_image(level: u16) -> (App, vale_store::ImageId, Pos2, Pos2) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("plates.png");
     images::write_png(&path, &images::half_red(512, 256));
-    h.state_mut().run_action(Action::ImportImageLayer(path));
+    h.state_mut().run_action(Action::ImportFile(path));
     let id = h.state().doc.project.images()[0].id;
     h.state_mut().workspace = Workspace::Atlas;
     h.state_mut().touch();

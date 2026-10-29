@@ -55,7 +55,8 @@ pub struct Uniforms {
     /// The color of the canvas around the globe.
     pub back: [f32; 4],
     /// The level of the smooth field that the layer shows, and the coarsest
-    /// level of its source.
+    /// level of its source. For an image layer: the west, the east, the
+    /// south, and the north edge, in radians.
     pub detail: [f32; 4],
     /// 1 when the passes of the lines of the stops ran for this layer, then
     /// the radius of their search in pixels.

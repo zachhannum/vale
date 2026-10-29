@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use eframe::egui;
 use eframe::egui_wgpu;
-use vale_store::LayerId;
+use vale_store::{Extents, Layer, LayerId, LayerKind};
 
 use super::AppState;
 use vale_store::Geometry;
@@ -21,6 +21,7 @@ use crate::globe::vector;
 use crate::globe::view::GlobeView;
 use crate::globe::{Globe, Paint, WorldView};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
+use crate::place;
 use crate::scatter::{ScatterCache, ScatterFill};
 use crate::ui::pad::theme;
 use vale_style::expr::Context;
@@ -332,13 +333,16 @@ fn snap_highlight(
 }
 
 /// Draws one vector layer over the globe. The symbols go to one mesh, which
-/// goes to the painter before the next shape that is not a symbol.
+/// goes to the painter before the next shape that is not a symbol. `moved`
+/// is a copy of a layer at the extents of a draft, which draws in place of
+/// the layer.
 fn vector_layer(
     painter: &egui::Painter,
     rect: egui::Rect,
     doc: &Document,
     view: &GlobeView,
     id: LayerId,
+    moved: Option<&Layer>,
     scatter: &mut ScatterCache,
 ) {
     let radius = view.radius(rect);
@@ -366,7 +370,8 @@ fn vector_layer(
     };
     let entries = doc.frame.entries.iter().filter(|e| e.layer == id);
     for entry in entries {
-        let Some(layer) = doc.layer(entry.layer).filter(|l| l.visible) else {
+        let layer = moved.filter(|l| l.id == entry.layer);
+        let Some(layer) = layer.or(doc.layer(entry.layer)).filter(|l| l.visible) else {
             continue;
         };
         let style = &entry.style.style;
@@ -550,6 +555,77 @@ fn vector_layer(
     flush(&mut pending);
 }
 
+/// Draws the rectangle of a draft placement: a light fill and a dashed
+/// outline, along lines of one longitude or one latitude.
+fn draft_outline(painter: &egui::Painter, rect: egui::Rect, globe: &Globe, e: &Extents) {
+    let fill = egui::Color32::from_rgba_unmultiplied(0xf4, 0xf1, 0xe6, 38);
+    let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(0x17, 0x19, 0x1c));
+    // One step is at most two degrees.
+    let steps = |span: f64| (span / 2.0).ceil().max(1.0) as usize;
+    let (nx, ny) = (steps(e.east - e.west), steps(e.north - e.south));
+    let at = |i: usize, j: usize| {
+        let lon = e.west + (e.east - e.west) * i as f64 / nx as f64;
+        let lat = e.north - (e.north - e.south) * j as f64 / ny as f64;
+        globe.project(lonlat_to_dir(lon, lat))
+    };
+    // A step across the edge of the flat map is not drawn.
+    let jump = match globe.world_view {
+        WorldView::Globe => f32::INFINITY,
+        WorldView::Flat => globe.flat.map_width(rect) / 2.0,
+    };
+    let near = |a: egui::Pos2, b: egui::Pos2| (a.x - b.x).abs() <= jump;
+    let grid: Vec<Vec<Option<egui::Pos2>>> = (0..=ny)
+        .map(|j| (0..=nx).map(|i| at(i, j)).collect())
+        .collect();
+    let mut mesh = egui::Mesh::default();
+    for j in 0..ny {
+        for i in 0..nx {
+            let corners = [
+                grid[j][i],
+                grid[j][i + 1],
+                grid[j + 1][i + 1],
+                grid[j + 1][i],
+            ];
+            let Some(c) = corners.into_iter().collect::<Option<Vec<_>>>() else {
+                continue;
+            };
+            if !c.iter().all(|p| near(*p, c[0])) {
+                continue;
+            }
+            let base = mesh.vertices.len() as u32;
+            for pos in c {
+                mesh.colored_vertex(pos, fill);
+            }
+            mesh.add_triangle(base, base + 1, base + 2);
+            mesh.add_triangle(base, base + 2, base + 3);
+        }
+    }
+    painter.add(mesh);
+    let ring = (0..nx)
+        .map(|i| (i, 0))
+        .chain((0..ny).map(|j| (nx, j)))
+        .chain((1..=nx).rev().map(|i| (i, ny)))
+        .chain((1..=ny).rev().map(|j| (0, j)))
+        .chain([(0, 0)]);
+    let mut part: Vec<egui::Pos2> = Vec::new();
+    let mut parts = Vec::new();
+    for (i, j) in ring {
+        match grid[j][i] {
+            Some(pos) => {
+                if part.last().is_some_and(|last| !near(*last, pos)) {
+                    parts.push(std::mem::take(&mut part));
+                }
+                part.push(pos);
+            }
+            None => parts.push(std::mem::take(&mut part)),
+        }
+    }
+    parts.push(part);
+    for part in parts.iter().filter(|p| p.len() > 1) {
+        painter.extend(egui::Shape::dashed_line(part, stroke, 6.0, 4.0));
+    }
+}
+
 /// Draws the globe in the free space of `ui` and reads its input. `cards`:
 /// floating cards cover the canvas, and they can show a blurred copy of it.
 pub(super) fn canvas(
@@ -635,7 +711,26 @@ pub(super) fn paint_canvas(
             _ => None,
         }
     });
+    let draft = state.draft_extents();
+    let draft_layer = draft.and_then(|(id, _)| state.doc.layer(id));
+    let image_draft = draft
+        .zip(draft_layer)
+        .and_then(|((_, extents), layer)| match layer.kind {
+            LayerKind::Image(image) => Some((image, extents)),
+            _ => None,
+        });
+    // A vector layer draws at the extents of the draft.
+    let moved = draft.zip(draft_layer).and_then(|((_, to), layer)| {
+        layer.geometry()?;
+        let from = place::layer_extents(layer);
+        let mut moved = layer.clone();
+        for feature in &mut moved.features {
+            feature.geometry = place::map_geometry(&feature.geometry, &from, &to);
+        }
+        Some(moved)
+    });
     let globe = &mut state.globe;
+    globe.set_image_draft(image_draft);
     let more = globe.advance(Instant::now());
     let pixels_per_point = ui.ctx().pixels_per_point();
     // The passes of the raster layers and the shapes of the vector layers
@@ -657,7 +752,8 @@ pub(super) fn paint_canvas(
                         painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
                     }
                     Paint::Vector(id) if globe_view => {
-                        vector_layer(&painter, rect, doc, &globe.view, id, scatter);
+                        let moved = moved.as_ref();
+                        vector_layer(&painter, rect, doc, &globe.view, id, moved, scatter);
                     }
                     Paint::Vector(_) => {}
                 }
@@ -691,6 +787,9 @@ pub(super) fn paint_canvas(
                 }
             }
         }
+    }
+    if let Some((_, extents)) = draft {
+        draft_outline(&painter, rect, globe, &extents);
     }
     // The stroke of the layer, or a plain white one.
     let entries = state.doc.frame.entries.iter();

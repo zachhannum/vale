@@ -17,6 +17,7 @@ pub mod lifecycle;
 pub mod pen;
 pub mod pick;
 pub mod pipeline;
+pub mod place;
 pub mod projects;
 pub mod ramps;
 pub mod raster_style;

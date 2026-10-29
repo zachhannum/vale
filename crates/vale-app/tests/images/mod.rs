@@ -72,3 +72,37 @@ pub fn write_psd(path: &Path, image: &RgbaImage) -> PathBuf {
     std::fs::write(path, f).unwrap();
     path.to_path_buf()
 }
+
+/// Writes a large RGBA PNG row by row, with fast compression, so the image
+/// does not need to be in memory.
+pub fn write_large_png(path: &Path, width: u32, height: u32) -> PathBuf {
+    let file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    let mut encoder = png::Encoder::new(file, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    let mut stream = encoder
+        .write_header()
+        .unwrap()
+        .into_stream_writer()
+        .unwrap();
+    let mut row = vec![0u8; width as usize * 4];
+    for y in 0..height {
+        for (x, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            px.copy_from_slice(&[x as u8, y as u8, (x >> 6) as u8, 255]);
+        }
+        std::io::Write::write_all(&mut stream, &row).unwrap();
+    }
+    stream.finish().unwrap();
+    path.to_path_buf()
+}
+
+/// Writes a GeoJSON file of these features.
+pub fn write_geojson(path: &Path, features: &[&str]) -> PathBuf {
+    let text = format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    );
+    std::fs::write(path, text).unwrap();
+    path.to_path_buf()
+}
