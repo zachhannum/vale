@@ -4,11 +4,8 @@
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
 
-use super::{Action, AppState, style_editor};
+use super::{AppState, style_editor};
 use crate::fonts::DEFAULT_FAMILY;
-
-/// The command that adds a font file to the project.
-pub const ADD_FONT: &str = "Add font…";
 
 const MAX_UNPLACED: usize = 200;
 
@@ -84,7 +81,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         .layer(info.id)
         .map_or(Vec::new(), |l| l.fields.clone());
     let symbols = state.doc.symbols().clone();
-    let families = crate::fonts::families(&state.doc.project);
+    let families = state.font_families.clone();
     let Some(entry) = state.doc.entry_mut(info.id) else {
         return;
     };
@@ -157,20 +154,9 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
                         }
                     }
                 });
-            if ui.button(ADD_FONT).clicked() {
-                library.actions.push(Action::AddFontDialog);
-            }
         });
-        if let Some(warning) = crate::fonts::missing_in(label, &families) {
+        if let Some(warning) = crate::fonts::missing(label, &families) {
             ui.label(egui::RichText::new(warning).color(ui.visuals().warn_fg_color));
-        }
-        if let Some(note) = &state.font_note {
-            let color = if note.warning {
-                ui.visuals().warn_fg_color
-            } else {
-                ui.visuals().weak_text_color()
-            };
-            ui.label(egui::RichText::new(&note.text).color(color));
         }
         ui.horizontal(|ui| {
             changed |= ui.checkbox(&mut label.italic, "Italic").changed();

@@ -313,10 +313,12 @@ fn inspector_screenshots() {
 
 #[test]
 fn the_font_box_sets_the_font_of_the_labels() {
-    use vale_app::ui::Action;
-    use vale_app::ui::inspector::ADD_FONT;
-    let serif = include_bytes!("../../../assets/fonts/NotoSerif-Regular.ttf");
+    let silkscreen = include_bytes!("data/fonts/Silkscreen-Regular.ttf");
     let mut h = harness();
+    // Silkscreen stands for a font of the system.
+    let mut fonts = vale_app::fonts::bundled().unwrap();
+    fonts.register(silkscreen.to_vec()).unwrap();
+    h.state_mut().set_fonts(fonts);
     let places = id_of(&h, "Places");
     h.state_mut().selected_layer = Some(LayerRef::Vector(places));
     h.run_steps(2);
@@ -328,19 +330,15 @@ fn the_font_box_sets_the_font_of_the_labels() {
         .unwrap()
         .click();
     h.run_steps(2);
-    h.get_by_label("Noto Serif").click();
+    h.get_by_label("Silkscreen").click();
     h.run_steps(3);
     let s = h.state();
     let label = &s.doc.entry(places).unwrap().style.label;
-    assert_eq!(label.font.as_deref(), Some("Noto Serif"));
-    let serif_runs = s.composed.as_ref().unwrap().list.items.iter().any(
-        |i| matches!(i, vale_render::Item::Glyphs(g) if g.font.data.as_ref() == serif.as_slice()),
-    );
-    assert!(serif_runs, "no label is in Noto Serif");
-
-    h.get_by_label(ADD_FONT).click();
-    h.run_steps(1);
-    assert!(h.state().actions.contains(&Action::AddFontDialog));
+    assert_eq!(label.font.as_deref(), Some("Silkscreen"));
+    let in_silkscreen = s.composed.as_ref().unwrap().list.items.iter().any(|i| {
+        matches!(i, vale_render::Item::Glyphs(g) if g.font.data.as_ref() == silkscreen.as_slice())
+    });
+    assert!(in_silkscreen, "no label is in Silkscreen");
 
     let entry = h.state_mut().doc.entry_mut(places).unwrap();
     entry.style.label.font = Some("Lora".into());

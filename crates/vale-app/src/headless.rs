@@ -25,7 +25,7 @@ pub struct MapImage {
 
 fn compose_final(doc: &Document, size: (f64, f64)) -> anyhow::Result<(Pipeline, Composed)> {
     let mut pipeline = Pipeline::new();
-    let mut fonts = crate::fonts::for_project(&doc.project)?;
+    let mut fonts = crate::fonts::system()?;
     let composed = pipeline.compose(doc, size, &mut fonts, Quality::Final, None)?;
     Ok((pipeline, composed))
 }

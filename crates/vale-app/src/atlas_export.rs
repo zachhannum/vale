@@ -78,7 +78,7 @@ impl PdfExport {
                 path.display()
             ),
         };
-        let fonts = crate::fonts::for_project(&doc.project)?;
+        let fonts = crate::fonts::system()?;
         Ok(PdfExport {
             doc,
             path,

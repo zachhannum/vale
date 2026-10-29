@@ -23,7 +23,7 @@ use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
-use crate::pipeline::{Composed, Pipeline, Selection, fonts};
+use crate::pipeline::{Composed, Pipeline, Selection};
 use crate::projects::{self, Location, Locations};
 use crate::raster_style;
 use crate::resume::{self, Resume};
@@ -81,12 +81,6 @@ pub enum Action {
     /// Adds this SVG file to the symbols of the project, and saves.
     /// `symbol_note` shows the result.
     AddSymbol(PathBuf),
-    /// Asks for a TrueType or OpenType file to add to the fonts of the
-    /// project.
-    AddFontDialog,
-    /// Adds this font file to the fonts of the project, and saves.
-    /// `font_note` shows the result.
-    AddFont(PathBuf),
     /// Asks for the file of an export of the selected raster layer.
     ExportHeightmapDialog,
     /// Asks for a PNG file, and exports the selected raster layer to it.
@@ -350,8 +344,8 @@ pub struct AppState {
     pub doc: Document,
     pub pipeline: Pipeline,
     pub fonts: Fonts,
-    /// The family, the name, and the size of each font file in `fonts`.
-    font_key: Vec<(String, String, usize)>,
+    /// The families of `fonts`, sorted.
+    pub font_families: Vec<String>,
     /// The last compose of the selected frame, or of the bottom frame of
     /// the open page.
     pub composed: Option<Composed>,
@@ -384,8 +378,6 @@ pub struct AppState {
     pub ramp_note: Option<Note>,
     /// The text of the last addition of a symbol.
     pub symbol_note: Option<Note>,
-    /// The text of the last addition of a font.
-    pub font_note: Option<Note>,
     /// The raster layers of the last import and of the last export.
     pub import_layer: Option<RasterId>,
     /// The import of a new image layer that runs.
@@ -471,8 +463,8 @@ impl AppState {
             globe: Globe::default(),
             doc,
             pipeline: Pipeline::new(),
-            fonts: fonts()?,
-            font_key: Vec::new(),
+            fonts: crate::fonts::system()?,
+            font_families: Vec::new(),
             composed: None,
             canvas_size: (0.0, 0.0),
             selection: None,
@@ -488,7 +480,6 @@ impl AppState {
             ramps: Default::default(),
             ramp_note: None,
             symbol_note: None,
-            font_note: None,
             import_layer: None,
             image_import: None,
             image_note: None,
@@ -520,6 +511,7 @@ impl AppState {
             resume: None,
             resume_at: None,
         };
+        state.font_families = state.fonts.families();
         state.set_layout(Layout::default());
         state.sync_globe();
         Ok(state)
@@ -2045,7 +2037,12 @@ impl AppState {
         };
         self.doc = doc;
         self.status = format!("Opened {}", self.doc.project.world.name);
-        if let Some((_, warning)) = self.doc.missing_fonts().into_iter().next() {
+        if let Some((_, warning)) = self
+            .doc
+            .missing_fonts(&self.font_families)
+            .into_iter()
+            .next()
+        {
             self.status = format!("{}. {warning}", self.status);
         }
         self.open_rasters(maps);
@@ -2315,40 +2312,11 @@ impl AppState {
         Ok(added)
     }
 
-    /// Builds the fonts again if the fonts of the project changed.
-    pub fn sync_fonts(&mut self) {
-        let key: Vec<(String, String, usize)> = (self.doc.project.fonts().iter())
-            .map(|f| (f.family.clone(), f.name.clone(), f.data.len()))
-            .collect();
-        if key == self.font_key {
-            return;
-        }
-        match crate::fonts::for_project(&self.doc.project) {
-            Ok(fonts) => self.fonts = fonts,
-            Err(e) => self.status = format!("Could not load fonts: {e}"),
-        }
-        self.font_key = key;
+    /// Uses these fonts for the labels.
+    pub fn set_fonts(&mut self, mut fonts: Fonts) {
+        self.font_families = fonts.families();
+        self.fonts = fonts;
         self.map_generation += 1;
-    }
-
-    /// Adds a font file to the fonts of the project, and saves. Returns the
-    /// family of the font.
-    fn add_font(&mut self, path: &Path) -> Result<String, String> {
-        let name = file_name(path);
-        let size = std::fs::metadata(path)
-            .map_err(|e| format!("{name}: {e}"))?
-            .len();
-        if size > crate::fonts::MAX_FONT_BYTES {
-            return Err(format!("{name}: The file is larger than 20 MB"));
-        }
-        let data = std::fs::read(path).map_err(|e| format!("{name}: {e}"))?;
-        let family = crate::fonts::family_of(&data).map_err(|e| format!("{name}: {e}"))?;
-        if !self.doc.project.add_font(&family, &name, data) {
-            return Err(format!("{name}: The project already has this font"));
-        }
-        self.sync_fonts();
-        self.save(Instant::now());
-        Ok(family)
     }
 
     fn import_ramp(&mut self, path: &Path) -> Result<(String, usize), String> {
@@ -2672,14 +2640,6 @@ impl AppState {
                 self.status = note.text.clone();
                 self.symbol_note = Some(note);
             }
-            Action::AddFont(path) => {
-                let note = match self.add_font(&path) {
-                    Ok(family) => Note::new(format!("Added font {family}"), false, None),
-                    Err(text) => Note::new(text, true, None),
-                };
-                self.status = note.text.clone();
-                self.font_note = Some(note);
-            }
             Action::ExportHeightmap(path) => {
                 self.export_note = None;
                 let project = &self.doc.project;
@@ -2727,7 +2687,6 @@ impl AppState {
             | Action::ImageLayerDialog
             | Action::ImportRampDialog(_)
             | Action::AddSymbolDialog
-            | Action::AddFontDialog
             | Action::ExportHeightmapDialog
             | Action::ExportHeightmapPngDialog
             | Action::OpenProjectDialog => {}
@@ -2737,7 +2696,6 @@ impl AppState {
 
 /// Draws the whole UI.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
-    state.sync_fonts();
     state.globe.stats.tick(std::time::Instant::now());
     state.poll_import();
     state.poll_probe(false);
