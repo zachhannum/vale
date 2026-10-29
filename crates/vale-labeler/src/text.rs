@@ -48,6 +48,16 @@ pub struct TextMetrics {
     pub missing_glyphs: usize,
 }
 
+/// A clone shares the fonts, so it does not search the system fonts again.
+impl Clone for Fonts {
+    fn clone(&self) -> Self {
+        Self {
+            fcx: self.fcx.clone(),
+            lcx: LayoutContext::new(),
+        }
+    }
+}
+
 impl Default for Fonts {
     fn default() -> Self {
         Self::new()
@@ -346,6 +356,7 @@ mod tests {
         assert!(f.has_family("Noto Sans"));
         assert!(!f.has_family("Noto Serif"));
         assert_eq!(f.families(), ["Noto Sans"]);
+        assert!(f.clone().has_family("Noto Sans"));
     }
 
     #[test]
