@@ -12,6 +12,7 @@ use crate::globe::WorldView;
 use crate::globe::export::{Exported, write_heightmap};
 use crate::globe::flat::{self, FlatView};
 use crate::globe::view::{GlobeView, ZOOM_MAX, ZOOM_MIN};
+use crate::measure::Measure;
 use crate::pipeline::Pipeline;
 use crate::projects::{self, Locations};
 use crate::session::Session;
@@ -47,6 +48,10 @@ pub struct Args {
     /// With --layout pad: open the menu of the More cell.
     #[arg(long)]
     pub more_tools: bool,
+    /// Choose the Measure tool, with a path through these places. A last
+    /// place that is the first place closes the path.
+    #[arg(long, value_name = "LON,LAT LON,LAT ...", allow_hyphen_values = true)]
+    pub measure: Option<String>,
     /// With --layout pad: open the menu of the worlds.
     #[arg(long)]
     pub worlds_menu: bool,
@@ -193,6 +198,42 @@ pub fn parse_pair(s: &str) -> anyhow::Result<[f64; 2]> {
         Ok(v)
     };
     Ok([num(a)?, num(b)?])
+}
+
+/// Reads the path of `--measure`: places as `lon,lat`, with spaces between
+/// them. A last place that is the first place closes the path.
+pub fn parse_measure(s: &str) -> anyhow::Result<Measure> {
+    let mut places = s
+        .split_whitespace()
+        .map(parse_pair)
+        .collect::<anyhow::Result<Vec<_>>>()
+        .context("--measure")?;
+    let closed = places.len() >= 2 && places.first() == places.last();
+    if closed {
+        places.pop();
+    }
+    if places.len() < 2 {
+        bail!("--measure needs two or more places as LON,LAT LON,LAT, got `{s}`");
+    }
+    if closed && places.len() < 3 {
+        bail!("--measure needs three or more places before the first place again, got `{s}`");
+    }
+    let mut path = Measure::default();
+    for place in places {
+        path.add(place, false);
+    }
+    if closed {
+        path.close();
+    }
+    Ok(path)
+}
+
+/// Applies `--measure` to the open workspace.
+pub fn apply_measure(args: &Args, state: &mut AppState) -> anyhow::Result<()> {
+    if let Some(spec) = &args.measure {
+        state.start_measure(parse_measure(spec)?);
+    }
+    Ok(())
 }
 
 impl Args {

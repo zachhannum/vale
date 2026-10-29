@@ -520,8 +520,8 @@ fn measure_overlay(
         painter.line(part.clone(), line);
     }
     let ends = measure.segments();
-    let lengths = measure.summary(world.radius_km).segments;
-    for ((parts, (a, b)), km) in segments.iter().zip(ends).zip(lengths) {
+    let lengths = measure.segment_labels(world.radius_km, world.units);
+    for ((parts, (a, b)), text) in segments.iter().zip(ends).zip(lengths) {
         let on_screen: f32 = parts
             .iter()
             .flat_map(|p| p.windows(2))
@@ -531,7 +531,6 @@ fn measure_overlay(
         let Some(mid) = globe.project(slerp(a, b, 0.5)) else {
             continue;
         };
-        let text = crate::world::distance(km, world.units);
         let font = egui::FontId::proportional(12.0);
         let galley = painter.layout_no_wrap(text, font, theme::TEXT);
         let pill = egui::Rect::from_center_size(mid, galley.size() + egui::vec2(12.0, 4.0));

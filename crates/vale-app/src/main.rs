@@ -3,7 +3,9 @@ use std::process::ExitCode;
 use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
-use vale_app::cli::{Args, apply_globe, apply_import, apply_view, export_heightmap, parse_pair};
+use vale_app::cli::{
+    Args, apply_globe, apply_import, apply_measure, apply_view, export_heightmap, parse_pair,
+};
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
 use vale_app::pipeline::Pipeline;
@@ -60,6 +62,7 @@ fn run() -> anyhow::Result<u8> {
             state.pad.open(*panel);
         }
         state.pad.more = args.more_tools;
+        apply_measure(&args, &mut state)?;
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
         if args.worlds_menu {

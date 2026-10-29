@@ -2127,6 +2127,17 @@ impl AppState {
         self.measure_of = of;
     }
 
+    /// Chooses the Measure tool in the open workspace, with `path` as its
+    /// path.
+    pub fn start_measure(&mut self, path: Measure) {
+        match self.workspace {
+            Workspace::Globe => self.globe.tool = crate::globe::Tool::Measure,
+            Workspace::Atlas => self.atlas.tool = atlas::AtlasTool::Measure,
+        }
+        self.measure = path;
+        self.measure_of = (self.workspace, self.atlas.page);
+    }
+
     /// Adds the last tap of the Measure tool to the path, or closes the
     /// path.
     pub fn poll_measure(&mut self) {

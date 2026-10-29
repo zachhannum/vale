@@ -280,7 +280,7 @@ pub(super) fn overlay(ui: &egui::Ui, state: &mut AppState, place: PagePlace, are
     let world = state.doc.project.world.clone();
     let measure = state.measure.clone();
     let segments = measure.segments();
-    let lengths = measure.summary(world.radius_km).segments;
+    let lengths = measure.segment_labels(world.radius_km, world.units);
     let paths: Vec<_> = segments
         .iter()
         .map(|&(a, b)| densify_great_circle(&[a, b], DENSIFY_DEG, false))
@@ -294,13 +294,13 @@ pub(super) fn overlay(ui: &egui::Ui, state: &mut AppState, place: PagePlace, are
     let mut dashes = Vec::new();
     // The middle of a segment in a frame, and the length of the segment on
     // screen in that frame.
-    let mut labels: Vec<(Pos2, f32, f64)> = Vec::new();
+    let mut labels: Vec<(Pos2, f32, String)> = Vec::new();
     let mut dots = Vec::new();
     each_frame(state, &page, place, |shown| {
-        for (((a, b), path), km) in segments.iter().zip(&paths).zip(&lengths) {
+        for (((a, b), path), text) in segments.iter().zip(&paths).zip(&lengths) {
             let parts = shown.lines(path);
             if let Some(mid) = shown.at(middle(*a, *b)) {
-                labels.push((mid, screen_length(&parts), *km));
+                labels.push((mid, screen_length(&parts), text.clone()));
             }
             lines.extend(parts);
         }
@@ -325,8 +325,7 @@ pub(super) fn overlay(ui: &egui::Ui, state: &mut AppState, place: PagePlace, are
     for part in &lines {
         painter.line(part.clone(), line);
     }
-    for (mid, on_screen, km) in labels {
-        let text = crate::world::distance(km, world.units);
+    for (mid, on_screen, text) in labels {
         let font = egui::FontId::proportional(12.0);
         let galley = painter.layout_no_wrap(text, font, theme::TEXT);
         let pill = Rect::from_center_size(mid, galley.size() + egui::vec2(12.0, 4.0));

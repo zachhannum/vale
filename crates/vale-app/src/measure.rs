@@ -135,6 +135,13 @@ impl Measure {
         }
     }
 
+    /// The label of each segment on the map, in the format of the readout.
+    pub fn segment_labels(&self, radius_km: f64, units: Units) -> Vec<String> {
+        let summary = self.summary(radius_km);
+        let length = |km: &f64| world::length(*km, units);
+        summary.segments.iter().map(length).collect()
+    }
+
     /// The text of the readout.
     pub fn readout(&self, radius_km: f64, units: Units) -> String {
         if self.is_empty() {
@@ -311,6 +318,19 @@ mod tests {
             text.contains(" mi · Area ") && text.ends_with(" mi²"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_segment_label_has_the_format_of_the_readout() {
+        let mut m = Measure::default();
+        m.add([0.0, 0.0], false);
+        m.add([0.0, 10.0], false);
+        m.add([0.0, 10.05], false);
+        let labels = m.segment_labels(EARTH, Units::Metric);
+        assert_eq!(labels, ["1,112 km", "5.56 km"]);
+        assert_eq!(m.readout(EARTH, Units::Metric), "Length 1,118 km");
+        let miles = m.segment_labels(EARTH, Units::Imperial);
+        assert_eq!(miles[0], "691 mi");
     }
 
     #[test]
