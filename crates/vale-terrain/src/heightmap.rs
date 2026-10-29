@@ -3510,6 +3510,9 @@ mod tests {
             offset: 0.03,
             roughness: 300.0,
             valley: 500.0,
+            spread: 12.5 / 6371.0,
+            magma: 0.0,
+            world_km: 6371.0,
             seed: 7,
             limits: Limits::default(),
         };

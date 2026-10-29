@@ -92,6 +92,12 @@ pub struct BrushSettings {
     pub ridge_roughness_m: f64,
     /// The depth of the valley along the crest, in meters.
     pub ridge_valley_m: f64,
+    /// The full spreading rate of the ocean ridge mode, in millimeters per
+    /// year.
+    pub ridge_spread_mm: f64,
+    /// The change of the magma part of the spreading of the ocean ridge
+    /// mode.
+    pub ridge_magma: f64,
     /// The brush does not move ground across the floor.
     pub floor_on: bool,
     /// The value of the floor, in the unit of the layer. For a height, it
@@ -125,6 +131,8 @@ impl Default for BrushSettings {
             ridge_offset_km: 100.0,
             ridge_roughness_m: 300.0,
             ridge_valley_m: 300.0,
+            ridge_spread_mm: 25.0,
+            ridge_magma: 0.0,
             floor_on: false,
             floor_m: 0.0,
             ceiling_on: false,
@@ -197,6 +205,9 @@ impl BrushSettings {
             offset: self.ridge_offset_km / world_km,
             roughness: self.ridge_roughness_m * levels,
             valley: self.ridge_valley_m * levels,
+            spread: 0.5 * self.ridge_spread_mm / world_km,
+            magma: self.ridge_magma,
+            world_km,
             seed,
             limits: self.limits(),
         }

@@ -3730,6 +3730,30 @@ fn cpu_ridge_pictures(
         from = plan.end;
     }
     map.end_stroke();
+    // `RIDGE_DUMP` names a folder for the elevations of two patches of the
+    // ridge, as lines of latitude, longitude, and meters.
+    if let Ok(folder) = std::env::var("RIDGE_DUMP") {
+        let step = (90.0 / n as f64) * 0.75;
+        let patches = [
+            ("axis", [-12.0, -7.5, -8.0, -4.5]),
+            ("flank", [-12.0, -11.0, -8.0, -8.0]),
+        ];
+        for (patch, [west, south, east, north]) in patches {
+            let mut text = String::new();
+            let (cols, rows) = (
+                ((east - west) / step) as i32,
+                ((north - south) / step) as i32,
+            );
+            for y in 0..rows {
+                for x in 0..cols {
+                    let (lon, lat) = (west + f64::from(x) * step, south + f64::from(y) * step);
+                    let meters = level_to_meters(map.sample(lonlat_to_dir(lon, lat)));
+                    text += &format!("{lat},{lon},{meters}\n");
+                }
+            }
+            std::fs::write(format!("{folder}/{name}-{patch}.csv"), text).unwrap();
+        }
+    }
     let bands = Bands::default().bands();
     let tints = map_picture(&map, window, 1400, |meters, _| {
         let band = bands.iter().find(|band| meters < band.max);

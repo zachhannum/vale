@@ -2885,6 +2885,9 @@ fn ridge_spec(radius: f64) -> Ridge {
         offset: 0.4 * radius,
         roughness: 1500.0,
         valley: 1000.0,
+        spread: 12.5 / 6371.0,
+        magma: 0.0,
+        world_km: 6371.0,
         seed: 7,
         limits: Limits::default(),
     }
