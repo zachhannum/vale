@@ -1091,6 +1091,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         };
         let rasters = map_rasters(state, frame.map);
         let images = map_images(state, frame.map);
+        let (raster_looks, image_looks) = crate::raster_style::map_looks(&state.doc, frame.map);
         let layered = !rasters.is_empty() || !images.is_empty();
         let content = hash_of((
             map,
@@ -1188,6 +1189,8 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                     mask,
                     shown: rasters,
                     images,
+                    raster_looks,
+                    image_looks,
                 });
             }
         }

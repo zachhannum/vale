@@ -251,3 +251,49 @@ fn a_pdf_export_embeds_the_raster_layers_of_a_frame() {
         "{pixel:?} and {want}"
     );
 }
+
+#[test]
+fn a_raster_override_shows_in_the_frames_of_its_map_only() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, height) = atlas(level);
+    vale_app::ui::atlas::add_frame(h.state_mut()).expect("a page takes a frame");
+    let frames = vale_app::ui::atlas::open_page(h.state()).frames.clone();
+    let middle = |h: &App, f: &vale_store::FrameRecord| {
+        screen(h, anchor(&f.shape)) + eframe::egui::vec2(23.0, 17.0)
+    };
+    let (a, b) = (middle(&h, &frames[0]), middle(&h, &frames[1]));
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    let state = h.state_mut();
+    let mut look = state.look(None, layer).unwrap();
+    look.opacity = 0.0;
+    state.set_look(Some(frames[1].map), layer, look);
+    let [first, ..] = pixel(&mut h, a);
+    let [second, ..] = pixel(&mut h, b);
+    assert!(first.abs_diff(grey_of(level)) <= 3, "{first}");
+    assert!(second.abs_diff(grey_of(level)) > 20, "{second}");
+
+    // A change of the style of the layer keeps the override.
+    h.state_mut().set_raster_blend(height, BlendMode::Screen);
+    let map_look = h.state().look(Some(frames[1].map), layer).unwrap();
+    assert_eq!((map_look.opacity, map_look.blend), (0.0, BlendMode::Screen));
+    let [second, ..] = pixel(&mut h, b);
+    assert!(second.abs_diff(grey_of(level)) > 20, "{second}");
+    assert_eq!(h.state().doc.project.raster(height).unwrap().opacity, 1.0);
+}
+
+#[test]
+fn an_image_override_shows_in_the_frame_of_its_map() {
+    let _gpu = one_gpu_test();
+    let level = 32768;
+    let (mut h, id, _west, east) = atlas_with_image(level);
+    let map = open_frame(&h).map;
+    let layer = h.state().doc.project.image_layer(id).unwrap().id;
+    let state = h.state_mut();
+    let mut look = state.look(None, layer).unwrap();
+    look.blend = BlendMode::Multiply;
+    state.set_look(Some(map), layer, look);
+    near(pixel(&mut h, east), [grey_of(level), 0, 0], "multiply");
+    let image = h.state().doc.project.image(id).unwrap();
+    assert_eq!(image.blend, BlendMode::Normal);
+}

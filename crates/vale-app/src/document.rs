@@ -524,16 +524,26 @@ impl Document {
         }))
     }
 
+    /// The style of a layer: the style of its entry, or the stored style of
+    /// a raster layer or an image layer.
+    pub fn layer_style(&self, layer: LayerId) -> Option<LayerStyle> {
+        match self.entry(layer) {
+            Some(entry) => Some(entry.style.clone()),
+            None => stored_style(self.project.layer(layer)?),
+        }
+    }
+
     /// The style of a layer in a map.
     pub fn map_style(&self, map: MapId, layer: LayerId) -> Option<LayerStyle> {
-        Some(self.map_entry(Some(map), layer)?.into_owned().style)
+        let base = self.layer_style(layer)?;
+        Some(base.with_overrides(&self.overrides(map, layer)))
     }
 
     /// Makes `edited` the style of a layer in a map, as overrides of the
     /// style of the layer. Each override of the map stays. Returns false if
     /// nothing changed.
     pub fn set_map_style(&mut self, map: MapId, layer: LayerId, edited: &LayerStyle) -> bool {
-        let Some(base) = self.entry(layer).map(|e| e.style.clone()) else {
+        let Some(base) = self.layer_style(layer) else {
             return false;
         };
         let new = self.overrides(map, layer).merged(&base, edited);

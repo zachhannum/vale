@@ -19,6 +19,7 @@ use crate::globe::gpu::{Captured, Mask};
 use crate::globe::{FrameDraw, FramePlace};
 use crate::headless;
 use crate::pipeline::{PAPER, Pipeline, Quality};
+use crate::raster_style;
 
 /// The pixels in one point of an exported raster layer: 300 pixels per inch.
 pub const RASTER_PIXEL_RATIO: f64 = 300.0 / 72.0;
@@ -198,6 +199,7 @@ impl PdfExport {
                 .collect(),
         });
         let shown = self.shown_rasters(frame);
+        let (raster_looks, image_looks) = raster_style::map_looks(&self.doc, frame.map);
         let draw = FrameDraw {
             id: frame.id.0,
             place: FramePlace {
@@ -218,6 +220,8 @@ impl PdfExport {
             mask: Some(mask),
             shown,
             images: self.shown_images(frame),
+            raster_looks,
+            image_looks,
         };
         Ok(PendingCapture {
             draw,

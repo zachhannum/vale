@@ -3,9 +3,11 @@
 //! and the globe. The record of an image holds a copy of its opacity and its
 //! blend mode in the same way.
 
-use vale_store::{ImageId, LayerId, Project, Raster, RasterId};
+use vale_store::{ImageId, LayerId, MapId, Project, Raster, RasterDisplay, RasterId};
 use vale_style::{ImageSymbolizer, LayerStyle, RasterSymbolizer, Symbolizer};
 
+use crate::document::Document;
+use crate::globe::Look;
 use crate::session::{bands_of, record_stops};
 
 /// The colors of a raster record.
@@ -149,4 +151,37 @@ pub fn load_image_styles(p: &mut Project) {
         p.set_image_opacity(image, look.opacity);
         p.set_image_blend(image, look.blend);
     }
+}
+
+/// The raster looks and the image looks that a map overrides.
+pub type MapLooks = (Vec<(RasterId, Look)>, Vec<(ImageId, Look)>);
+
+/// The looks of the raster layers and the image layers whose style a map
+/// overrides.
+pub fn map_looks(doc: &Document, map: MapId) -> MapLooks {
+    let (mut rasters, mut images) = (Vec::new(), Vec::new());
+    let Some(record) = doc.project.atlas.map(map) else {
+        return (rasters, images);
+    };
+    for &layer in record.overrides.keys() {
+        let (Some(l), Some(style)) = (doc.project.layer(layer), doc.map_style(map, layer)) else {
+            continue;
+        };
+        if let (Some(raster), Some(s)) = (l.raster(), style.raster_symbolizer()) {
+            let look = Look {
+                opacity: s.opacity,
+                blend: s.blend,
+                display: s.display,
+            };
+            rasters.push((raster, look));
+        } else if let (Some(image), Some(s)) = (l.image(), style.image_symbolizer()) {
+            let look = Look {
+                opacity: s.opacity,
+                blend: s.blend,
+                display: RasterDisplay::default(),
+            };
+            images.push((image, look));
+        }
+    }
+    (rasters, images)
 }
