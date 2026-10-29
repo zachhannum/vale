@@ -28,6 +28,8 @@ enum PickFor {
     Symbol,
     /// The file of a new image layer.
     ImageLayer,
+    /// A GeoJSON file of new vector layers.
+    GeoJson,
 }
 
 struct ValeApp {
@@ -89,6 +91,7 @@ impl eframe::App for ValeApp {
                 PickFor::RasterImage => state.run_action(Action::RasterImage(path)),
                 PickFor::Symbol => state.run_action(Action::AddSymbol(path)),
                 PickFor::ImageLayer => state.run_action(Action::ImportImageLayer(path)),
+                PickFor::GeoJson => state.run_action(Action::ImportGeoJson(path)),
             }
         }
 
@@ -169,6 +172,14 @@ impl eframe::App for ValeApp {
                         && picker.pick_layer_image()
                     {
                         self.pick_for = PickFor::ImageLayer;
+                    }
+                }
+                #[cfg(target_os = "ios")]
+                Action::GeoJsonDialog => {
+                    if let Some(picker) = &self.picker
+                        && picker.pick_geojson()
+                    {
+                        self.pick_for = PickFor::GeoJson;
                     }
                 }
                 #[cfg(target_os = "ios")]
@@ -287,6 +298,15 @@ impl eframe::App for ValeApp {
                         .pick_file();
                     if let Some(path) = picked {
                         state.run_action(Action::ImportImageLayer(path));
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
+                Action::GeoJsonDialog => {
+                    let picked = rfd::FileDialog::new()
+                        .add_filter("GeoJSON", &["geojson", "json"])
+                        .pick_file();
+                    if let Some(path) = picked {
+                        state.run_action(Action::ImportGeoJson(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]

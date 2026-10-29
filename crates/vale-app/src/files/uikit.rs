@@ -136,6 +136,12 @@ impl Picker {
         ])
     }
 
+    /// Shows the GeoJSON and JSON files of the Files app. Returns `false`
+    /// if the Files app cannot show now.
+    pub fn pick_geojson(&self) -> bool {
+        self.pick(&[ns_string!("public.geojson"), ns_string!("public.json")])
+    }
+
     /// Shows the PNG and JPEG files of the Files app. Returns `false` if the
     /// Files app cannot show now.
     pub fn pick_image(&self) -> bool {

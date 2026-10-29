@@ -306,6 +306,16 @@ fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
 }
 
 #[test]
+fn the_desktop_layers_menu_asks_for_a_geojson_file() {
+    let mut h = globe_harness();
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    h.get_by_label(vale_app::ui::panels::ADD_GEOJSON).click();
+    h.run_steps(1);
+    assert!(h.state().actions.contains(&Action::GeoJsonDialog));
+}
+
+#[test]
 fn the_desktop_list_shows_the_panel_of_an_image_layer() {
     use vale_store::BlendMode;
     let mut h = globe_harness();

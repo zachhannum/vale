@@ -19,16 +19,16 @@ use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
     ADD_LAYER, BRUSH, BRUSH_MODES, CLEAR_PATH, DRAW, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP,
-    LAYER_NAME, LINE, LayerRef, MEASURE, NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON, Page, Panel,
-    RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES, SNAPPING,
-    VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line,
+    LAYER_NAME, LINE, LayerRef, MEASURE, NEW_GEOJSON, NEW_IMAGE, NEW_RASTER, OPACITY, POLYGON,
+    Page, Panel, RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES, SNAP_VERTICES,
+    SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line,
     readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, Layout, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
-use vale_store::{Hillshade, RasterDisplay, RasterId, Units, World};
+use vale_store::{GeometryKind, Hillshade, LayerKind, RasterDisplay, RasterId, Units, World};
 use vale_terrain::{Mode, meters_to_level};
 
 type Pad = Harness<'static, AppState>;
@@ -290,6 +290,7 @@ fn check_controls(h: &Pad, what: &str) {
                 let rows = [
                     NEW_RASTER,
                     NEW_IMAGE,
+                    NEW_GEOJSON,
                     "Lines",
                     "Points",
                     "Polygons",
@@ -6957,6 +6958,71 @@ fn the_menu_of_the_new_layers_asks_for_the_file_of_an_image_layer() {
         assert_eq!(h.state().actions, [Action::ImageLayerDialog], "{what}");
         assert!(!h.state().pad.add, "{what}");
     }
+}
+
+#[test]
+fn the_menu_of_the_new_layers_imports_a_geojson_file() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        tap(&mut h, "Layers");
+        tap(&mut h, ADD_LAYER);
+        check_controls(&h, &format!("{what} with the menu of the new layers"));
+        let row = control(&h, NEW_GEOJSON).unwrap_or_else(|| panic!("{what}: no row"));
+        let menu = h.state().pad.add_rect.unwrap();
+        assert!(menu.contains_rect(row), "{what}: {row:?}");
+        tap(&mut h, NEW_GEOJSON);
+        assert_eq!(h.state().actions, [Action::GeoJsonDialog], "{what}");
+        assert!(!h.state().pad.add, "{what}");
+    }
+}
+
+#[test]
+fn a_geojson_file_adds_a_vector_layer_for_each_kind_at_its_longitude_and_latitude() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("coast.geojson");
+    let json = r#"{"type":"FeatureCollection","features":[
+      {"type":"Feature","properties":{"name":"Port"},"geometry":{"type":"Point","coordinates":[-120.5,45.25]}},
+      {"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[0,0],[10,5]]}}
+    ]}"#;
+    std::fs::write(&file, json).unwrap();
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    let before = h.state().doc.project.layers().len();
+    h.state_mut().run_action(Action::ImportGeoJson(file));
+    h.run_steps(2);
+    let project = &h.state().doc.project;
+    assert_eq!(project.layers().len(), before + 2);
+    // The panel of the top new layer opens.
+    let top = h.state().pad.layer;
+    assert_eq!(h.state().selected_layer, top);
+    let Some(LayerRef::Vector(id)) = top else {
+        panic!("{top:?}");
+    };
+    let points = project.layer(id).unwrap();
+    assert_eq!(points.kind, LayerKind::Vector(GeometryKind::Point));
+    let geometry = &points.features[0].geometry;
+    assert_eq!(
+        *geometry,
+        vale_store::Geometry::Points(vec![[-120.5, 45.25]])
+    );
+}
+
+#[test]
+fn the_layers_panel_tells_of_a_geojson_file_that_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("broken.geojson");
+    std::fs::write(&file, "{ not json").unwrap();
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Layers");
+    let before = h.state().doc.project.layers().len();
+    h.state_mut().run_action(Action::ImportGeoJson(file));
+    h.run_steps(2);
+    assert_eq!(h.state().doc.project.layers().len(), before);
+    assert!(
+        h.query_by_label_contains("Cannot import broken.geojson")
+            .is_some()
+    );
 }
 
 /// The straight RGBA8 pixel of level 0 of an image of a project with no

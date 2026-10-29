@@ -139,6 +139,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         state.actions.push(Action::ImageLayerDialog);
                         ui.close();
                     }
+                    if ui.button(ADD_GEOJSON).clicked() {
+                        state.actions.push(Action::GeoJsonDialog);
+                        ui.close();
+                    }
                     layer_rows(ui, state);
                     selected_layer(ui, state);
                 });
@@ -281,6 +285,8 @@ pub const LAYERS_MENU: &str = "Layers";
 pub const ADD_RASTER: &str = "Add raster…";
 /// The button that adds an image layer from a file.
 pub const ADD_IMAGE: &str = "Add image…";
+/// The button that adds vector layers from a GeoJSON file.
+pub const ADD_GEOJSON: &str = "Add GeoJSON…";
 /// The field of the Layers menu with the name of the selected layer.
 pub const LAYER_NAME: &str = "Layer name";
 /// The slider of the Layers menu with the opacity of the selected raster
