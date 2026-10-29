@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -40,6 +41,8 @@ jobs:
 
   gpu:
     name: Test the GPU tier (${{ matrix.name }})
+    # The GPU tier takes about an hour, so it runs only on `main` and by hand.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:

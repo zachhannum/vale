@@ -109,7 +109,7 @@ A feature session keeps its context small on purpose.
 
 - If a crate has more than one test file, you can run only the test files that cover the change, for example `cargo test -p vale-app --test pad`. Do not run `cargo test --workspace` before a push. The full run is the work of CI.
 
-- The tests have three tiers. The fast tier is the unit tests and the app tests with no harness. The UI tier is the tests with an egui harness and no GPU pixels. The GPU tier is the tests that read pixels from a GPU render. A GPU test has the attribute `#[ignore = "gpu"]`, and CI runs it on each PR. Before a push, run the fast tier and the UI tier with `cargo test -p <crate>`.
+- The tests have three tiers. The fast tier is the unit tests and the app tests with no harness. The UI tier is the tests with an egui harness and no GPU pixels. The GPU tier is the tests that read pixels from a GPU render. A GPU test has the attribute `#[ignore = "gpu"]`. CI runs the GPU tier on each push to `main`. To run it on a branch, start the workflow "Test" from the Actions tab. Before a push, run the fast tier and the UI tier with `cargo test -p <crate>`.
 
 - Run only the GPU tests that cover the change, by name. This command runs the GPU tests of `globe.rs` that have `hillshade` in the name:
 
