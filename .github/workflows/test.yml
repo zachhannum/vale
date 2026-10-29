@@ -13,6 +13,11 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 
+# CI does not use a debugger, and the builds without debug info are faster
+# and make a smaller cache.
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
 jobs:
   test:
     name: Test the fast tier and the UI tier
