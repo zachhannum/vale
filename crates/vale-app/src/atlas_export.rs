@@ -214,6 +214,7 @@ impl PdfExport {
                 units_to_pixels: (vt.view.scale * radius * RASTER_PIXEL_RATIO) as f32,
                 rotation: vt.view.rotation,
                 points_per_radian: radius * PT_PER_MM * 1000.0 / frame.scale,
+                pixels_per_page_point: RASTER_PIXEL_RATIO as f32,
             },
             rect: [0, 0, size[0], size[1]],
             mesh: Arc::new(FlatMesh::new(&unit_projection)),

@@ -48,7 +48,7 @@ struct Uniforms {
     window: vec4<f32>,
     // The number of texels along one side of a cell of the window, the
     // number of channel texels along one side of the window, and the factor
-    // of the width of a river line.
+    // of the width of a river line in pixels.
     rivers: vec4<f32>,
     // The opacity of the layer, from 0 to 1.
     layer: vec4<f32>,

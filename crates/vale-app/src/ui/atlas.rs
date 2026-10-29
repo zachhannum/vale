@@ -127,6 +127,12 @@ impl PagePlace {
         }
     }
 
+    /// Pixels of the screen in one point of the page, with
+    /// `pixels_per_point` pixels in one point of the screen.
+    pub fn pixels_per_page_point(&self, pixels_per_point: f32) -> f32 {
+        (self.pts_per_mm / PT_PER_MM) as f32 * pixels_per_point
+    }
+
     pub fn target(&self) -> FrameTarget {
         FrameTarget {
             origin: Point::new(f64::from(self.rect.min.x), f64::from(self.rect.min.y)),
@@ -1179,6 +1185,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                         units_to_pixels: (units * f64::from(ppp)) as f32,
                         rotation: vt.view.rotation,
                         points_per_radian: radius * crate::atlas::PT_PER_MM * 1000.0 / scale,
+                        pixels_per_page_point: place.pixels_per_page_point(ppp),
                     },
                     rect,
                     mesh,
