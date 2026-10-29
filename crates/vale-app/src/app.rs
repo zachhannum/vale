@@ -26,6 +26,8 @@ enum PickFor {
     RasterImage,
     /// A new symbol of the project.
     Symbol,
+    /// A new font of the project.
+    Font,
     /// The file of a new image layer.
     ImageLayer,
 }
@@ -80,6 +82,7 @@ impl eframe::App for ValeApp {
                 PickFor::Ramp(id) => state.run_action(Action::ImportRamp(id, path)),
                 PickFor::RasterImage => state.run_action(Action::RasterImage(path)),
                 PickFor::Symbol => state.run_action(Action::AddSymbol(path)),
+                PickFor::Font => state.run_action(Action::AddFont(path)),
                 PickFor::ImageLayer => state.run_action(Action::ImportImageLayer(path)),
             }
         }
@@ -134,6 +137,14 @@ impl eframe::App for ValeApp {
                         && picker.pick_svg()
                     {
                         self.pick_for = PickFor::Symbol;
+                    }
+                }
+                #[cfg(target_os = "ios")]
+                Action::AddFontDialog => {
+                    if let Some(picker) = &self.picker
+                        && picker.pick_font()
+                    {
+                        self.pick_for = PickFor::Font;
                     }
                 }
                 #[cfg(target_os = "ios")]
@@ -251,6 +262,15 @@ impl eframe::App for ValeApp {
                         .pick_file();
                     if let Some(path) = picked {
                         state.run_action(Action::AddSymbol(path));
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
+                Action::AddFontDialog => {
+                    let picked = rfd::FileDialog::new()
+                        .add_filter("Font", &["ttf", "otf", "ttc"])
+                        .pick_file();
+                    if let Some(path) = picked {
+                        state.run_action(Action::AddFont(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]

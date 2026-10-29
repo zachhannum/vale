@@ -4,7 +4,11 @@
 use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
 
-use super::{AppState, style_editor};
+use super::{Action, AppState, style_editor};
+use crate::fonts::DEFAULT_FAMILY;
+
+/// The command that adds a font file to the project.
+pub const ADD_FONT: &str = "Add font…";
 
 const MAX_UNPLACED: usize = 200;
 
@@ -80,6 +84,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         .layer(info.id)
         .map_or(Vec::new(), |l| l.fields.clone());
     let symbols = state.doc.symbols().clone();
+    let families = crate::fonts::families(&state.doc.project);
     let Some(entry) = state.doc.entry_mut(info.id) else {
         return;
     };
@@ -137,6 +142,36 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
                 )
                 .changed();
         });
+        ui.horizontal(|ui| {
+            ui.label("Font");
+            let current = label.font.as_deref().unwrap_or(DEFAULT_FAMILY).to_string();
+            egui::ComboBox::from_id_salt("label_font")
+                .selected_text(&current)
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for family in &families {
+                        let on = *family == current;
+                        if ui.selectable_label(on, family).clicked() && !on {
+                            crate::fonts::set_font(label, family);
+                            changed = true;
+                        }
+                    }
+                });
+            if ui.button(ADD_FONT).clicked() {
+                library.actions.push(Action::AddFontDialog);
+            }
+        });
+        if let Some(warning) = crate::fonts::missing_in(label, &families) {
+            ui.label(egui::RichText::new(warning).color(ui.visuals().warn_fg_color));
+        }
+        if let Some(note) = &state.font_note {
+            let color = if note.warning {
+                ui.visuals().warn_fg_color
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.label(egui::RichText::new(&note.text).color(color));
+        }
         ui.horizontal(|ui| {
             changed |= ui.checkbox(&mut label.italic, "Italic").changed();
             changed |= style_editor::color_button(ui, &mut label.color);

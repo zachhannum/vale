@@ -310,3 +310,43 @@ fn inspector_screenshots() {
     // No dark margin: the top-left pixel is the tool bar, not the outer background.
     assert_eq!(img.get_pixel(0, 0), img.get_pixel(1300, 10));
 }
+
+#[test]
+fn the_font_box_sets_the_font_of_the_labels() {
+    use vale_app::ui::Action;
+    use vale_app::ui::inspector::ADD_FONT;
+    let serif = include_bytes!("../../../assets/fonts/NotoSerif-Regular.ttf");
+    let mut h = harness();
+    let places = id_of(&h, "Places");
+    h.state_mut().selected_layer = Some(LayerRef::Vector(places));
+    h.run_steps(2);
+    assert!(h.query_by_label("Font").is_some());
+    let is_font =
+        |n: &egui_kittest::Node<'_>| n.accesskit_node().value().as_deref() == Some("Noto Sans");
+    (h.get_all_by_role(egui::accesskit::Role::ComboBox))
+        .find(is_font)
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    h.get_by_label("Noto Serif").click();
+    h.run_steps(3);
+    let s = h.state();
+    let label = &s.doc.entry(places).unwrap().style.label;
+    assert_eq!(label.font.as_deref(), Some("Noto Serif"));
+    let serif_runs = s.composed.as_ref().unwrap().list.items.iter().any(
+        |i| matches!(i, vale_render::Item::Glyphs(g) if g.font.data.as_ref() == serif.as_slice()),
+    );
+    assert!(serif_runs, "no label is in Noto Serif");
+
+    h.get_by_label(ADD_FONT).click();
+    h.run_steps(1);
+    assert!(h.state().actions.contains(&Action::AddFontDialog));
+
+    let entry = h.state_mut().doc.entry_mut(places).unwrap();
+    entry.style.label.font = Some("Lora".into());
+    h.run_steps(2);
+    assert!(
+        h.query_by_label("Font Lora is missing. Labels use Noto Sans.")
+            .is_some()
+    );
+}
