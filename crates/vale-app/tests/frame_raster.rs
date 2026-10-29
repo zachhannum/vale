@@ -259,6 +259,7 @@ fn a_pdf_export_embeds_the_raster_layers_of_a_frame() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_raster_override_shows_in_the_frames_of_its_map_only() {
     let _gpu = one_gpu_test();
     let level = 40000;
@@ -289,6 +290,7 @@ fn a_raster_override_shows_in_the_frames_of_its_map_only() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn an_image_override_shows_in_the_frame_of_its_map() {
     let _gpu = one_gpu_test();
     let level = 32768;
@@ -305,6 +307,7 @@ fn an_image_override_shows_in_the_frame_of_its_map() {
 }
 
 #[test]
+#[ignore = "gpu"]
 fn a_band_color_of_a_map_shows_in_the_frames_of_that_map_only() {
     let _gpu = one_gpu_test();
     let level = 40000;
