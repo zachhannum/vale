@@ -599,7 +599,7 @@ mod tests {
     /// of a stroke on the window of a brush, and the time of one step.
     #[test]
     #[ignore]
-    fn step_time_on_the_window_of_a_brush() {
+    fn manual_step_time_on_the_window_of_a_brush() {
         let n = 8192;
         let mut map = Heightmap::new(n, meters_to_level(-100.0));
         for y in 0..n {
