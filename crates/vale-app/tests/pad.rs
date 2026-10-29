@@ -7156,3 +7156,73 @@ fn the_brush_button_of_the_measure_card_opens_the_snapping_settings() {
         check_controls(&h, &format!("{what} with the snapping settings"));
     }
 }
+
+#[test]
+fn the_measure_button_and_card_fit_in_the_atlas_on_each_screen() {
+    use vale_app::ui::atlas::AtlasTool;
+    for (size, safe) in measure_screens() {
+        let what = format!("Atlas {size:?}");
+        let mut h = safe_pad(size, safe);
+        h.state_mut().workspace = Workspace::Atlas;
+        vale_app::ui::atlas::add_frame(h.state_mut());
+        h.run_steps(3);
+        tap(&mut h, MEASURE);
+        assert!(h.state().measuring(), "{what}");
+        assert_eq!(h.state().atlas.tool, AtlasTool::Measure, "{what}");
+        assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
+        for name in ["Select", "Move"] {
+            assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
+        }
+        assert_eq!(readout_line(h.state()), "Tap to add a point.", "{what}");
+        let card = h.state().pad.rects.unwrap().brush.unwrap();
+        // On a short screen, the card scrolls, and the Brush button is
+        // below its end.
+        let all = h.state().pad.rects.unwrap().measure_cells == 5;
+        let names: &[&str] = if all {
+            &[SNAP, "Brush settings"]
+        } else {
+            &[SNAP]
+        };
+        for name in names {
+            let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
+            assert!(card.contains_rect(rect), "{what}: {name}");
+        }
+        for name in [CLOSE_PATH, REMOVE_POINT, CLEAR_PATH] {
+            assert!(disabled(&h, name), "{what}: {name}");
+        }
+        check_safe(&h, size, safe, &what);
+        let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+        let r = h.state().pad.rects.unwrap();
+        let mut cards = vec![r.workspace, r.actions, r.tools, card];
+        cards.extend(r.view);
+        cards.extend(r.measure);
+        for (i, a) in cards.iter().enumerate() {
+            assert!(screen.contains_rect(*a), "{what}: {a:?}");
+            for b in &cards[i + 1..] {
+                assert!(!a.intersects(*b), "{what}: {a:?} {b:?}");
+            }
+        }
+        for c in &h.state().pad.controls {
+            let r = c.rect;
+            assert!(
+                r.width() >= 44.0 && r.height() >= 44.0,
+                "{what}: {}",
+                c.name
+            );
+        }
+        if all {
+            tap(&mut h, "Brush settings");
+            assert!(h.state().pad.is_open(Panel::Brush), "{what}");
+            assert!(control(&h, SNAPPING).is_some(), "{what}");
+            check_safe(
+                &h,
+                size,
+                safe,
+                &format!("{what} with the snapping settings"),
+            );
+        }
+        // The button again goes back to Select.
+        tap(&mut h, MEASURE);
+        assert_eq!(h.state().atlas.tool, AtlasTool::Select, "{what}");
+    }
+}

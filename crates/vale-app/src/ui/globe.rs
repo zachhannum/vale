@@ -20,8 +20,8 @@ use crate::globe::snap::Highlight;
 use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
-use crate::globe::{Globe, Paint, Tool, WorldView};
-use crate::measure::{DENSIFY_DEG, MOUSE, Measure};
+use crate::globe::{Globe, Paint, WorldView};
+use crate::measure::{DENSIFY_DEG, MOUSE, Measure, TapPress};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 use crate::scatter::{ScatterCache, ScatterFill};
 use crate::ui::pad::theme;
@@ -266,6 +266,32 @@ fn measure_input(
             _ => {}
         }
     }
+    let touching = globe.nav.touching();
+    let on = |pos| on_canvas(ui, rect, pos);
+    let press = &mut globe.measure_press;
+    tap = press_input(ui, resp, press, on, from_queue, touching).or(tap);
+    if let Some(pos) = tap {
+        globe.measure_tap(pos);
+    }
+    let down = globe.measure_press.is_down() || globe.nav.touching();
+    let down = down || ui.input(|i| i.pointer.any_down());
+    let hover = globe.pen.hover.filter(|pos| on_canvas(ui, rect, *pos));
+    globe.input.pos = resp.hover_pos().or(hover).filter(|_| !down);
+}
+
+/// Feeds the touches and the mouse of this frame to a press of the Measure
+/// tool, and returns the position of a tap. A press starts where `on` is
+/// true. With `skip_pen`, the pen queue has the touches of the pen.
+/// `touching` is true while a finger or a pen is down on the canvas.
+pub(super) fn press_input(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    press: &mut TapPress,
+    on: impl Fn(egui::Pos2) -> bool,
+    skip_pen: bool,
+    touching: bool,
+) -> Option<egui::Pos2> {
+    let mut tap = None;
     let mut touched = false;
     let events = ui.input(|i| i.events.clone());
     for event in &events {
@@ -280,14 +306,11 @@ fn measure_input(
             continue;
         };
         touched = true;
-        if from_queue && force.is_some() {
+        if skip_pen && force.is_some() {
             continue;
         }
-        let press = &mut globe.measure_press;
         match phase {
-            egui::TouchPhase::Start if on_canvas(ui, rect, *pos) => {
-                press.down(id.0, *pos, force.is_some());
-            }
+            egui::TouchPhase::Start if on(*pos) => press.down(id.0, *pos, force.is_some()),
             egui::TouchPhase::Move => press.moved(id.0, *pos),
             egui::TouchPhase::End => tap = press.up(id.0, *pos).or(tap),
             egui::TouchPhase::Cancel => press.cancel(id.0),
@@ -295,13 +318,12 @@ fn measure_input(
         }
     }
     // The first touch is also the egui pointer.
-    if !touched && !globe.nav.touching() {
+    if !touched && !touching {
         let (pos, pressed, released, shift) = ui.input(|i| {
             let p = &i.pointer;
             let (pressed, released) = (p.primary_pressed(), p.primary_released());
             (p.latest_pos(), pressed, released, i.modifiers.shift)
         });
-        let press = &mut globe.measure_press;
         match pos {
             Some(pos) => {
                 if pressed && !shift && resp.contains_pointer() {
@@ -316,28 +338,22 @@ fn measure_input(
             None => {}
         }
     }
-    if let Some(pos) = tap {
-        globe.measure_tap(pos);
-    }
-    let down = globe.measure_press.is_down() || globe.nav.touching();
-    let down = down || ui.input(|i| i.pointer.any_down());
-    let hover = globe.pen.hover.filter(|pos| on_canvas(ui, rect, *pos));
-    globe.input.pos = resp.hover_pos().or(hover).filter(|_| !down);
+    tap
 }
 
-/// Reads the keys of the Measure tool. M chooses the tool. While it is the
-/// tool, Return closes the path, Backspace removes the last point, and
-/// Escape clears the path.
-fn measure_keys(ui: &egui::Ui, state: &mut AppState) {
+/// Reads the keys of the Measure tool in both workspaces. M chooses the
+/// tool. While it is the tool, Return closes the path, Backspace removes the
+/// last point, and Escape clears the path.
+pub(super) fn measure_keys(ui: &egui::Ui, state: &mut AppState) {
     use egui::{Key, Modifiers};
     if ui.ctx().egui_wants_keyboard_input() {
         return;
     }
     let key = |key| ui.input_mut(|i| i.consume_key(Modifiers::NONE, key));
-    if key(Key::M) {
-        state.globe.tool = Tool::Measure;
+    if key(Key::M) && !state.measuring() {
+        super::pad::toggle_measure(state);
     }
-    if !state.globe.measuring() {
+    if !state.measuring() {
         return;
     }
     if key(Key::Enter) {

@@ -408,9 +408,9 @@ pub struct AppState {
     pub point_form: Option<point_form::PointForm>,
     /// The path of the Measure tool, in both workspaces.
     pub measure: Measure,
-    /// The workspace of the last frame, which clears the path when it
-    /// changes.
-    measure_workspace: Workspace,
+    /// The workspace and the open page of the last frame, which clear the
+    /// path when they change.
+    measure_of: (Workspace, vale_store::PageId),
     /// The open form of a new raster layer.
     pub raster_form: Option<raster_form::RasterForm>,
     /// The read of the image of the form of a new raster layer.
@@ -506,7 +506,7 @@ impl AppState {
             world_form: None,
             point_form: None,
             measure: Measure::default(),
-            measure_workspace: Workspace::default(),
+            measure_of: (Workspace::default(), vale_store::PageId(0)),
             raster_form: None,
             raster_probe: None,
             form_face_size: None,
@@ -2113,17 +2113,18 @@ impl AppState {
     pub fn measuring(&self) -> bool {
         match self.workspace {
             Workspace::Globe => self.globe.measuring(),
-            Workspace::Atlas => false,
+            Workspace::Atlas => self.atlas.tool == atlas::AtlasTool::Measure,
         }
     }
 
     /// Clears the path of the Measure tool after a tool change away from
-    /// it and after a workspace switch.
+    /// it, a workspace switch, and a page change.
     pub fn sync_measure(&mut self) {
-        if !self.measuring() || self.measure_workspace != self.workspace {
+        let of = (self.workspace, self.atlas.page);
+        if !self.measuring() || self.measure_of != of {
             self.measure.clear();
         }
-        self.measure_workspace = self.workspace;
+        self.measure_of = of;
     }
 
     /// Adds the last tap of the Measure tool to the path, or closes the

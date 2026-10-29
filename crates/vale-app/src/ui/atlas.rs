@@ -27,6 +27,8 @@ use crate::globe::{FrameDraw, FramePlace};
 use crate::pipeline::Quality;
 use crate::view::ViewTransform;
 
+pub mod measure;
+
 /// The side of the square that takes the touch of a handle.
 pub const HANDLE_TARGET: f32 = 44.0;
 /// The radius of the circle of a handle.
@@ -63,6 +65,9 @@ pub enum AtlasTool {
     Select,
     /// A drag moves the map in a frame.
     Move,
+    /// A tap in a frame adds a point to the path of the Measure tool, and a
+    /// drag moves the page.
+    Measure,
 }
 
 /// A tab of the panel of a frame.
@@ -314,6 +319,8 @@ pub struct AtlasState {
     last_tap: Option<(f64, Pos2)>,
     /// Finds the taps of two and three fingers, which undo and redo.
     nav: Nav,
+    /// The press of the Measure tool that can be a tap.
+    measure_press: crate::measure::TapPress,
 }
 
 impl AtlasState {
@@ -378,6 +385,7 @@ impl Default for AtlasState {
             wheel_at: None,
             last_tap: None,
             nav: Nav::default(),
+            measure_press: Default::default(),
         }
     }
 }
@@ -545,6 +553,19 @@ fn selected_at(
     (frame_at(page, place.to_mm(pos)) == Some(id)).then_some(id)
 }
 
+/// The frame whose map a gesture of two fingers and the wheel change: the
+/// selected frame under a screen position. While the Measure tool is the
+/// tool, the gestures change the page.
+fn frame_gesture(
+    state: &AppState,
+    page: &PageRecord,
+    place: PagePlace,
+    pos: Pos2,
+) -> Option<FrameId> {
+    let measuring = state.atlas.tool == AtlasTool::Measure;
+    selected_at(state, page, place, pos).filter(|_| !measuring)
+}
+
 /// Moves the page on the screen by `d` points.
 fn pan_page(state: &mut AppState, d: egui::Vec2) {
     state.atlas.view.offset += d;
@@ -609,6 +630,7 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     state.atlas.fit = Some((fit, area));
     let place = fit.viewed(state.atlas.view);
     state.atlas.place = Some(place);
+    super::globe::measure_keys(ui, state);
     input(ui, state, &resp, place);
     state.atlas.nav.track_taps(ui, area);
     match super::globe::history_input(ui, &mut state.atlas.nav) {
@@ -632,6 +654,7 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     painter.rect_filled(place.rect, 0.0, PAPER);
     frames(ui, state, place, area);
     selection(ui, state, place);
+    measure::overlay(ui, state, place, area);
 }
 
 /// True while a gesture moves the maps, so the frames show their last
@@ -662,7 +685,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         let pinch = match state.atlas.pinch {
             Some(pinch) => Some(pinch),
             None if resp.rect.contains(touch.center_pos) => {
-                Some(match selected_at(state, &page, place, touch.center_pos) {
+                Some(match frame_gesture(state, &page, place, touch.center_pos) {
                     Some(id) => Pinch::Frame(id),
                     None => Pinch::Page,
                 })
@@ -700,7 +723,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         let factor = (f64::from(scroll) * 0.002).exp() * f64::from(pinch);
         let at = place.to_mm(pos);
         if (factor - 1.0).abs() > 1e-4 {
-            match selected_at(state, &page, place, pos) {
+            match frame_gesture(state, &page, place, pos) {
                 Some(id) => {
                     if edit_frame(state, id, |f, p| math::zoom(f, p, at, factor)) {
                         state.atlas.wheel_at = Some(now);
@@ -754,7 +777,9 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
 
     // A second quick tap on a vertex removes it. A second quick tap off the
     // page fits the page to the screen.
-    if resp.clicked()
+    if state.atlas.tool == AtlasTool::Measure {
+        measure::input(ui, state, resp, &page, place);
+    } else if resp.clicked()
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let last = state.atlas.last_tap.replace((now, pos));
@@ -832,6 +857,7 @@ fn start_drag(
             Some(id) => Drag::Pan(id),
             None => Drag::Page,
         },
+        AtlasTool::Measure => Drag::Page,
         AtlasTool::Select => {
             if let (Some(id), Some((handle, center))) = (state.atlas.frame(), handle_at(state, pos))
             {
@@ -1526,6 +1552,11 @@ fn paint_image(painter: &egui::Painter, image: &FrameImage, vt: &ViewTransform, 
 fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
     state.atlas.handles.clear();
     state.atlas.handles_of = state.atlas.frame();
+    // The Measure tool does not edit the frames, so the selection does not
+    // show.
+    if state.atlas.tool == AtlasTool::Measure {
+        return;
+    }
     let painter = ui.painter();
     let stroke = egui::Stroke::new(2.0, ACCENT);
     match state.atlas.selection {

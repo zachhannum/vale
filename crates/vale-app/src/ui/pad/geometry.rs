@@ -35,7 +35,7 @@ pub const READOUT_HEIGHT: f32 = 32.0;
 /// The width of the actions bar: five buttons and a divider.
 pub const ACTIONS_WIDTH: f32 = 5.0 * TOUCH + 5.0 * PAD + 9.0 + 2.0 * PAD;
 /// The width of the actions bar with no Measure button.
-const SHORT_ACTIONS_WIDTH: f32 = ACTIONS_WIDTH - TOUCH - PAD;
+pub const SHORT_ACTIONS_WIDTH: f32 = ACTIONS_WIDTH - TOUCH - PAD;
 
 /// The bands at the screen edges that the system uses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,6 +115,10 @@ pub struct Input {
     pub measure: bool,
     /// The layout has the Measure button.
     pub measure_button: bool,
+    /// The width of the actions bar with no Measure button.
+    pub actions_width: f32,
+    /// The number of cells of the tool strip.
+    pub tools: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -132,7 +136,7 @@ pub struct Rects {
     /// The top-left corner of the workspace menu.
     pub menu: Pos2,
     pub tools: Rect,
-    /// The number of tool cells that show. With fewer than `TOOLS`, the strip scrolls.
+    /// The number of tool cells that show. With fewer than `Input::tools`, the strip scrolls.
     pub tool_cells: usize,
     pub brush_card: BrushCard,
     /// The card of the two sliders and the Brush button, or the card of the
@@ -195,19 +199,20 @@ pub fn layout(input: &Input) -> Rects {
     };
     // With no room in the top row, the Measure button has a card below the
     // actions bar.
-    let (actions_width, view, measure) = match place_view(right - ACTIONS_WIDTH) {
-        (view, true) if input.measure_button => (ACTIONS_WIDTH, view, None),
+    let short = input.actions_width;
+    let (actions_width, view, measure) = match place_view(right - short - TOUCH - PAD) {
+        (view, true) if input.measure_button => (short + TOUCH + PAD, view, None),
         _ if input.measure_button => {
-            let (view, _) = place_view(right - SHORT_ACTIONS_WIDTH);
+            let (view, _) = place_view(right - short);
             let card = Rect::from_min_size(pos2(right - ROW, column_top), vec2(ROW, ROW));
-            (SHORT_ACTIONS_WIDTH, view, Some(card))
+            (short, view, Some(card))
         }
         _ => {
             let view = (class != WidthClass::Compact).then(|| {
                 let center = pos2(screen.center().x, top + ROW / 2.0);
                 Rect::from_center_size(center, vec2(input.view_width, ROW))
             });
-            (SHORT_ACTIONS_WIDTH, view, None)
+            (short, view, None)
         }
     };
     let actions = Rect::from_min_max(pos2(right - actions_width, top), pos2(right, top + ROW));
@@ -242,21 +247,22 @@ pub fn layout(input: &Input) -> Rects {
         _ => bottom - MARGIN,
     };
     let button = strip_height(1);
-    let room = limit - column_top - strip_height(TOOLS) - GAP;
+    let all = input.tools;
+    let room = limit - column_top - strip_height(all) - GAP;
     let slider = ((room - button) / 2.0).min(SLIDER);
     let (tool_cells, brush_card) = if slider >= SLIDER_MIN {
-        (TOOLS, BrushCard::Full(slider))
+        (all, BrushCard::Full(slider))
     } else if room >= button {
-        (TOOLS, BrushCard::Button)
+        (all, BrushCard::Button)
     } else if sheet.is_some() && room + GAP >= 0.0 {
-        (TOOLS, BrushCard::Hidden)
+        (all, BrushCard::Hidden)
     } else {
         let cells = ((limit - column_top - GAP - button - 2.0 * PAD) / CELL.1).floor();
         if cells >= 1.0 {
-            (cells as usize, BrushCard::Button)
+            ((cells as usize).min(all), BrushCard::Button)
         } else {
             let cells = ((limit - column_top - 2.0 * PAD) / CELL.1).floor().max(1.0);
-            (cells as usize, BrushCard::Hidden)
+            ((cells as usize).min(all), BrushCard::Hidden)
         }
     };
     let width = CELL.0 + 2.0 * PAD;
@@ -342,6 +348,8 @@ mod tests {
             sheet_offset: 0.0,
             measure: false,
             measure_button: true,
+            actions_width: SHORT_ACTIONS_WIDTH,
+            tools: TOOLS,
         }
     }
 

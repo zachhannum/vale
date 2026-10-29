@@ -9,6 +9,7 @@ use vale_store::{GeometryKind, ImageId, Layer, LayerId, LayerKind, RasterId};
 use vale_terrain::Mode;
 
 pub use super::LayerRef;
+use super::atlas::AtlasTool;
 use super::point_form;
 use super::raster_form::{self, RasterForm};
 use super::world_form::{self, WorldForm};
@@ -368,6 +369,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         sheet_offset: state.pad.sheet_offset,
         measure: state.globe.measuring(),
         measure_button: true,
+        actions_width: geometry::SHORT_ACTIONS_WIDTH,
+        tools: TOOLS,
     };
     let mut rects = geometry::layout(&input);
     if rects.one_panel && state.pad.brush && state.pad.right.is_some() {
@@ -612,6 +615,16 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             }
         },
     );
+    measure_button_card(ctx, state, controls, rects);
+}
+
+/// The card of the Measure button when the top row has no room for it.
+pub(super) fn measure_button_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
     if let Some(rect) = rects.measure {
         widgets::card(
             ctx,
@@ -619,15 +632,20 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             "pad-measure",
             rect,
             Order::Middle,
-            radius,
+            theme::CARD_RADIUS.into(),
             |ui| measure_button(ui, state, controls, rect.shrink(PAD)),
         );
     }
 }
 
 /// The button that opens and closes the Measure tool.
-fn measure_button(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, rect: Rect) {
-    let measuring = state.globe.measuring();
+pub(super) fn measure_button(
+    ui: &egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rect: Rect,
+) {
+    let measuring = state.measuring();
     let button =
         widgets::icon_button_at(ui, controls, rect, MEASURE, Icon::Measure, measuring, true);
     if button.clicked() {
@@ -635,14 +653,26 @@ fn measure_button(ui: &egui::Ui, state: &mut AppState, controls: &mut Controls, 
     }
 }
 
-/// Chooses the Measure tool, or goes back to Move from it.
+/// Chooses the Measure tool, or goes back from it to Move on the globe and
+/// to Select in the Atlas.
 pub fn toggle_measure(state: &mut AppState) {
-    let globe = &mut state.globe;
-    globe.tool = if globe.measuring() {
-        Tool::Navigate
-    } else {
-        Tool::Measure
-    };
+    let measuring = state.measuring();
+    match state.workspace {
+        Workspace::Globe => {
+            state.globe.tool = if measuring {
+                Tool::Navigate
+            } else {
+                Tool::Measure
+            };
+        }
+        Workspace::Atlas => {
+            state.atlas.tool = if measuring {
+                AtlasTool::Select
+            } else {
+                AtlasTool::Measure
+            };
+        }
+    }
     state.pad.more = false;
 }
 
@@ -793,6 +823,10 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     let Some(rect) = rects.brush else {
         return;
     };
+    if rects.measure_cells > 0 {
+        measure_card(ctx, state, controls, rects);
+        return;
+    }
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
@@ -803,17 +837,6 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         radius,
         |ui| {
             let mut ui = padded(ui);
-            if rects.measure_cells > 0 {
-                let mut cells = |ui: &mut egui::Ui| measure_cells(ui, state, controls, rects);
-                if rects.measure_cells < MEASURE_CELLS {
-                    egui::ScrollArea::vertical()
-                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                        .show(&mut ui, cells);
-                } else {
-                    cells(&mut ui);
-                }
-                return;
-            }
             let paint = state.globe.paintable;
             let line = state.globe.lineable || state.globe.fillable;
             let vector = line || state.globe.pointable;
@@ -865,6 +888,37 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
             );
             if button.clicked() {
                 state.pad.toggle(Panel::Brush, rects.one_panel);
+            }
+        },
+    );
+}
+
+/// The card of the Measure tool in the place of the brush card.
+pub(super) fn measure_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    let Some(rect) = rects.brush.filter(|_| rects.measure_cells > 0) else {
+        return;
+    };
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-brush-card",
+        rect,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            let mut ui = padded(ui);
+            let mut cells = |ui: &mut egui::Ui| measure_cells(ui, state, controls, rects);
+            if rects.measure_cells < MEASURE_CELLS {
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(&mut ui, cells);
+            } else {
+                cells(&mut ui);
             }
         },
     );
@@ -935,7 +989,7 @@ fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
     }
 }
 
-fn show_panel(
+pub(super) fn show_panel(
     ctx: &egui::Context,
     state: &mut AppState,
     controls: &mut Controls,
@@ -995,7 +1049,7 @@ fn show_panel(
     }
     let name = name.as_deref().unwrap_or_default();
     let (key, title, back) = match (panel, layer) {
-        (Panel::Brush, _) if state.globe.measuring() => (panel.key(), MEASURE, None),
+        (Panel::Brush, _) if state.measuring() => (panel.key(), MEASURE, None),
         (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
         (Panel::Brush, _) if state.globe.fillable => (panel.key(), POLYGON, None),
         (Panel::Brush, _) if state.globe.pointable => (panel.key(), POINT, None),
@@ -1271,7 +1325,7 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, travel: f
 
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let measuring = state.globe.measuring();
+    let measuring = state.measuring();
     let line = !measuring && (state.globe.lineable || state.globe.fillable);
     if line || measuring || state.globe.pointable {
         if line {
@@ -1284,7 +1338,11 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
                 },
             );
         }
-        let rasters = panels::raster_layers(state);
+        // The Measure tool in a map frame does not snap to color stops.
+        let rasters = match state.workspace {
+            Workspace::Atlas => Vec::new(),
+            Workspace::Globe => panels::raster_layers(state),
+        };
         let snap = &mut state.globe.snap;
         widgets::switch_row(ui, controls, SNAPPING, SNAPPING, &mut snap.on);
         widgets::switch_row(

@@ -120,39 +120,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         }
                     }
                     let rasters = raster_layers(state);
-                    let snap = &mut state.globe.snap;
-                    ui.checkbox(&mut snap.on, SNAP);
-                    ui.menu_button(SNAP_OPTIONS, |ui| {
-                        ui.checkbox(&mut snap.vertices, SNAP_VERTICES);
-                        ui.checkbox(&mut snap.edges, SNAP_EDGES);
-                        for (id, name) in &rasters {
-                            let mut on = snap.stops(*id);
-                            if ui.checkbox(&mut on, snap_stops_name(name)).changed() {
-                                snap.set_stops(*id, on);
-                            }
-                        }
-                        let slider = egui::Slider::new(&mut snap.distance, snap::DISTANCE_RANGE)
-                            .step_by(1.0)
-                            .suffix(" pt")
-                            .text(SNAP_DISTANCE);
-                        ui.add(slider);
-                    });
+                    snap_controls(ui, state, &rasters);
                 }
                 if state.globe.measuring() {
-                    let path = &mut state.measure;
-                    let filled = !path.is_empty();
-                    let close = egui::Button::new(pad::CLOSE_PATH);
-                    if ui.add_enabled(path.can_close(), close).clicked() {
-                        path.close();
-                    }
-                    let remove = egui::Button::new(pad::REMOVE_POINT);
-                    if ui.add_enabled(filled, remove).clicked() {
-                        path.remove_last();
-                    }
-                    let clear = egui::Button::new(pad::CLEAR_PATH);
-                    if ui.add_enabled(filled, clear).clicked() {
-                        path.clear();
-                    }
+                    path_buttons(ui, state);
                 }
                 // The menu stays open while the user works on the list.
                 let stay = egui::containers::menu::MenuConfig::new()
@@ -240,6 +211,46 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
+/// The Snap check box and the menu of the snap settings. `rasters` are the
+/// raster layers whose color stops can be targets.
+fn snap_controls(ui: &mut egui::Ui, state: &mut AppState, rasters: &[(RasterId, String)]) {
+    let snap = &mut state.globe.snap;
+    ui.checkbox(&mut snap.on, SNAP);
+    ui.menu_button(SNAP_OPTIONS, |ui| {
+        ui.checkbox(&mut snap.vertices, SNAP_VERTICES);
+        ui.checkbox(&mut snap.edges, SNAP_EDGES);
+        for (id, name) in rasters {
+            let mut on = snap.stops(*id);
+            if ui.checkbox(&mut on, snap_stops_name(name)).changed() {
+                snap.set_stops(*id, on);
+            }
+        }
+        let slider = egui::Slider::new(&mut snap.distance, snap::DISTANCE_RANGE)
+            .step_by(1.0)
+            .suffix(" pt")
+            .text(SNAP_DISTANCE);
+        ui.add(slider);
+    });
+}
+
+/// The buttons of the Measure tool that change the path.
+fn path_buttons(ui: &mut egui::Ui, state: &mut AppState) {
+    let path = &mut state.measure;
+    let filled = !path.is_empty();
+    let close = egui::Button::new(pad::CLOSE_PATH);
+    if ui.add_enabled(path.can_close(), close).clicked() {
+        path.close();
+    }
+    let remove = egui::Button::new(pad::REMOVE_POINT);
+    if ui.add_enabled(filled, remove).clicked() {
+        path.remove_last();
+    }
+    let clear = egui::Button::new(pad::CLEAR_PATH);
+    if ui.add_enabled(filled, clear).clicked() {
+        path.clear();
+    }
+}
+
 /// The button of the tool bar that adds a map frame to the open page.
 pub const ADD_MAP_FRAME: &str = "Add map frame";
 
@@ -261,6 +272,15 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     }
     if ui.button(ADD_MAP_FRAME).clicked() {
         atlas::add_frame(state);
+    }
+    ui.separator();
+    let measuring = state.measuring();
+    if ui.selectable_label(measuring, MEASURE_TOOL).clicked() {
+        pad::toggle_measure(state);
+    }
+    if measuring {
+        snap_controls(ui, state, &[]);
+        path_buttons(ui, state);
     }
 }
 

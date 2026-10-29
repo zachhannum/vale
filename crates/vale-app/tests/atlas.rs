@@ -11,8 +11,8 @@ use vale_app::atlas::{Handle, anchor, frame_transform, shape_bbox};
 use vale_app::document::Document;
 use vale_app::projects::Locations;
 use vale_app::session::{Session, new_project_path};
+use vale_app::ui::atlas::measure::measure_lines;
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
-use vale_app::ui::pad::GRATICULE;
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_COLOR, BORDER_WIDTH, CENTER_ON_FRAME,
     DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF,
@@ -23,8 +23,13 @@ use vale_app::ui::pad::atlas::{
 };
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
+use vale_app::ui::pad::{
+    CLEAR_PATH, CLOSE_PATH, GRATICULE, MEASURE, Panel, REMOVE_POINT, SNAP, SNAP_DISTANCE,
+    SNAP_EDGES, SNAP_VERTICES, SNAPPING, readout_line,
+};
 use vale_app::ui::{Action, AppState, ExportFormat, Layout, Screen, Workspace, draw};
 use vale_render::Item;
+use vale_sphere::measure::{path_length, ring_area};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
     Feature, FrameRecord, FrameShape, Geometry, GeometryKind, LayerId, MapId, PageUnits, Project,
@@ -2319,4 +2324,248 @@ fn a_page_point_grows_and_shrinks_with_the_zoom_of_the_page() {
         offset: Vec2::ZERO,
     });
     assert_eq!(zoomed.pixels_per_page_point(2.0), 6.0);
+}
+
+/// A page with one frame, or with a main frame and an inset frame, and the
+/// Measure tool, with no snap.
+fn measure_pad(frames: usize) -> Pad {
+    let mut h = pad();
+    for _ in 0..frames {
+        add_frame(&mut h);
+    }
+    h.state_mut().globe.snap.on = false;
+    tap(&mut h, MEASURE);
+    assert!(h.state().measuring());
+    h
+}
+
+/// A screen position in a frame, as fractions of the box of its shape.
+fn in_box(h: &Pad, index: usize, x: f64, y: f64) -> Pos2 {
+    let b = shape_bbox(&frame(h, index).shape);
+    screen(h, Point::new(b.x0 + x * b.width(), b.y0 + y * b.height()))
+}
+
+fn toggled(h: &Pad, name: &str) -> Option<bool> {
+    use egui_kittest::kittest::NodeT;
+    let node = h.query_by_label(name)?;
+    Some(node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True))
+}
+
+fn close_to(a: f64, b: f64, fraction: f64) -> bool {
+    ((a - b) / b).abs() < fraction
+}
+
+fn same_place(a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3
+}
+
+#[test]
+fn a_tap_in_a_frame_adds_the_place_under_it_with_the_great_circle_length() {
+    for input in INPUTS {
+        let mut h = measure_pad(1);
+        let mut places = Vec::new();
+        for (x, y) in [(0.3, 0.3), (0.7, 0.35), (0.5, 0.7)] {
+            let at = in_box(&h, 0, x, y);
+            places.push(place_at(&mut h, 0, at));
+            tap_with(&mut h, at, input);
+        }
+        let points = h.state().measure.positions();
+        assert_eq!(points.len(), 3, "{input:?}");
+        for (a, b) in points.iter().zip(&places) {
+            assert!(same_place(*a, *b), "{input:?}: {a:?} {b:?}");
+        }
+        let radius = h.state().doc.project.world.radius_km;
+        let length = h.state().measure.summary(radius).length_km;
+        let exact = path_length(&places, false, radius);
+        assert!(close_to(length, exact, 1e-4), "{input:?}: {length} {exact}");
+        let text = readout_line(h.state());
+        assert!(text.starts_with("Length "), "{input:?}: {text}");
+        // The overlay draws each segment in the frame.
+        let place = place(&h);
+        let lines = measure_lines(h.state_mut(), place);
+        assert!(lines.iter().all(|l| !l.is_empty()), "{input:?}");
+    }
+}
+
+#[test]
+fn a_tap_outside_the_frames_adds_nothing_and_a_drag_moves_the_page() {
+    for input in INPUTS {
+        let mut h = measure_pad(1);
+        let at = margin(&h);
+        tap_with(&mut h, at, input);
+        assert!(h.state().measure.is_empty(), "{input:?}");
+        let (before, maps_before) = (place(&h), maps(&h));
+        let from = middle(&h, 0);
+        drag(&mut h, from, from + vec2(60.0, 30.0), input);
+        let moved = place(&h).rect.min - before.rect.min;
+        assert!(
+            (moved - vec2(60.0, 30.0)).length() < 1.0,
+            "{input:?}: {moved:?}"
+        );
+        assert!(h.state().measure.is_empty(), "{input:?}");
+        assert_eq!(maps(&h), maps_before, "{input:?}");
+        // Two fingers move and zoom the page, and add no point.
+        let (center, before) = (middle(&h, 0), place(&h));
+        pinch(&mut h, center, 100.0, 150.0, 0.0, Vec2::ZERO);
+        let zoom = place(&h).pts_per_mm / before.pts_per_mm;
+        assert!((zoom - 1.5).abs() < 0.01, "{input:?}: {zoom}");
+        assert!(h.state().measure.is_empty(), "{input:?}");
+        assert_eq!(maps(&h), maps_before, "{input:?}");
+    }
+}
+
+#[test]
+fn a_path_crosses_two_frames_and_closes_on_its_first_point_in_either_frame() {
+    let ring = [[-60.0, 20.0], [100.0, 30.0], [30.0, -10.0]];
+    for (closing, radius) in [(1, 6371.0), (0, 1500.0)] {
+        let mut h = measure_pad(2);
+        h.state_mut().doc.project.world.radius_km = radius;
+        // The inset is above the main frame at the bottom right of the page.
+        for (place, index) in ring.iter().zip([0, 1, 0]) {
+            let at = pos_of(&mut h, index, *place);
+            tap_with(&mut h, at, Input::Finger);
+        }
+        let points = h.state().measure.positions();
+        assert_eq!(points.len(), 3);
+        for (a, b) in points.iter().zip(&ring) {
+            assert!(same_place(*a, *b), "{a:?} {b:?}");
+        }
+        // The segment into the inset shows in both frames.
+        let place = place(&h);
+        let lines = measure_lines(h.state_mut(), place);
+        let inset = place.rect_to_screen(shape_bbox(&frame(&h, 1).shape));
+        let parts = &lines[0];
+        assert!(
+            parts
+                .iter()
+                .flatten()
+                .any(|p| inset.shrink(1.0).contains(*p))
+        );
+        assert!(
+            parts
+                .iter()
+                .flatten()
+                .any(|p| !inset.expand(1.0).contains(*p))
+        );
+        let first = pos_of(&mut h, closing, ring[0]);
+        tap_with(&mut h, first + vec2(3.0, 2.0), Input::Finger);
+        assert!(h.state().measure.closed, "frame {closing}");
+        assert_eq!(h.state().measure.points.len(), 3);
+        let summary = h.state().measure.summary(radius);
+        let exact = ring_area(&ring, radius);
+        assert!(
+            close_to(summary.area_km2.unwrap(), exact, 1e-3),
+            "{summary:?}"
+        );
+        let text = readout_line(h.state());
+        assert!(text.contains(" · Area "), "{text}");
+    }
+}
+
+#[test]
+fn a_point_in_a_frame_snaps_to_a_vertex_only_when_snap_is_on() {
+    for on in [true, false] {
+        let mut h = measure_pad(1);
+        let layers = h.state().doc.project.layers();
+        let places = layers.iter().find(|l| l.name == "Places").unwrap();
+        let target = match &places.features[0].geometry {
+            Geometry::Points(points) => points[0],
+            _ => panic!("not a point"),
+        };
+        let state = h.state_mut();
+        state.globe.snap.on = on;
+        // The frame shows the place at a large scale, away from the coast.
+        let id = frame(&h, 0).id;
+        let record = h.state_mut().doc.project.atlas.frame_mut(id).unwrap();
+        record.center = target;
+        record.scale = 2.0e5;
+        h.run_steps(2);
+        let at = pos_of(&mut h, 0, target) + vec2(6.0, 6.0);
+        tap_with(&mut h, at, Input::Pen);
+        let point = h.state().measure.points[0];
+        assert_eq!(point.pos == target, on, "{on} {point:?} {target:?}");
+        assert_eq!(point.exact, on, "{on}");
+    }
+}
+
+#[test]
+fn the_path_is_not_saved_and_a_page_change_or_a_tool_change_clears_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = measure_pad(1);
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    h.run_steps(2);
+    let project = h.state().doc.project.clone();
+    let saves = h.state().session.as_ref().unwrap().saves();
+    let undo = h.state().can_undo();
+    let taps = |h: &mut Pad| {
+        for (x, y) in [(0.3, 0.3), (0.7, 0.35), (0.5, 0.7)] {
+            let at = in_box(h, 0, x, y);
+            tap_with(h, at, Input::Finger);
+        }
+    };
+    taps(&mut h);
+    let first = in_box(&h, 0, 0.3, 0.3);
+    tap_with(&mut h, first, Input::Finger);
+    assert!(h.state().measure.closed);
+    let later = Instant::now() + std::time::Duration::from_secs(5);
+    h.state_mut().save_tick(false, later);
+    assert_eq!(h.state().doc.project, project);
+    assert_eq!(h.state().session.as_ref().unwrap().saves(), saves);
+    assert_eq!(h.state().can_undo(), undo);
+
+    // A page change clears the path.
+    vale_app::ui::atlas::add_page(h.state_mut());
+    h.run_steps(2);
+    assert!(h.state().measuring());
+    assert!(h.state().measure.is_empty());
+    tap(&mut h, PREVIOUS_PAGE);
+    taps(&mut h);
+    assert_eq!(h.state().measure.points.len(), 3);
+    tap(&mut h, NEXT_PAGE);
+    assert!(h.state().measure.is_empty());
+    tap(&mut h, PREVIOUS_PAGE);
+    taps(&mut h);
+    // A cell of the tool strip leaves the Measure tool and clears the path.
+    assert_ne!(toggled(&h, "Select"), Some(true));
+    tap(&mut h, "Select");
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert!(h.state().measure.is_empty());
+    // The Measure button again goes back to Select.
+    tap(&mut h, MEASURE);
+    taps(&mut h);
+    tap(&mut h, MEASURE);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    assert!(h.state().measure.is_empty());
+}
+
+#[test]
+fn the_measure_card_acts_on_the_path_in_the_atlas() {
+    let mut h = measure_pad(1);
+    assert_eq!(readout_line(h.state()), "Tap to add a point.");
+    for (x, y) in [(0.3, 0.3), (0.7, 0.35), (0.5, 0.7)] {
+        let at = in_box(&h, 0, x, y);
+        tap_with(&mut h, at, Input::Finger);
+    }
+    let card = h.state().pad.rects.unwrap().brush.unwrap();
+    for name in [SNAP, CLOSE_PATH, REMOVE_POINT, CLEAR_PATH, "Brush settings"] {
+        let rect = control(&h, name).unwrap_or_else(|| panic!("{name}"));
+        assert!(card.contains_rect(rect), "{name}");
+    }
+    tap(&mut h, CLOSE_PATH);
+    assert!(h.state().measure.closed);
+    tap(&mut h, REMOVE_POINT);
+    tap(&mut h, REMOVE_POINT);
+    assert_eq!(h.state().measure.points.len(), 2);
+    tap(&mut h, CLEAR_PATH);
+    assert!(h.state().measure.is_empty());
+    tap(&mut h, SNAP);
+    assert!(h.state().globe.snap.on);
+    tap(&mut h, "Brush settings");
+    assert!(h.state().pad.is_open(Panel::Brush));
+    for name in [SNAPPING, SNAP_VERTICES, SNAP_EDGES, SNAP_DISTANCE] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    check_controls(&h, "Atlas with the snapping settings");
 }
