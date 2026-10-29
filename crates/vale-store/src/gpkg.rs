@@ -28,13 +28,14 @@ use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, UNDO_LIMIT};
 use crate::{
-    BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Image, ImageId, Layer,
-    LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Smoothing, Stop,
-    StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity,
+    BlendMode, Feature, Field, FieldType, FontRecord, Geometry, GeometryKind, Hillshade, Image,
+    ImageId, Layer, LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb,
+    Smoothing, Stop, StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size,
+    clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 29;
+pub const FORMAT_VERSION: u32 = 30;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -68,6 +69,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v27,
     v28,
     v29,
+    v30,
 ];
 
 /// `GPKG` in ASCII.
@@ -1020,6 +1022,21 @@ fn v27(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// The font files that the user adds. An older file has none.
+fn v30(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_font (
+           position INTEGER PRIMARY KEY,
+           family TEXT NOT NULL,
+           name TEXT NOT NULL,
+           data BLOB NOT NULL);
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_font', 'vale', 'vale_font');
+         INSERT OR IGNORE INTO gpkg_extensions
+           VALUES ('vale_font', NULL, 'vale_project', 'Records of the Vale app', 'read-write');",
+    )
+}
+
 /// The image tables. The tiles of an image have no reference to its row,
 /// because an undo step can hold an image that the file has no row of. A
 /// file with an older version number can already have the tables.
@@ -1484,6 +1501,9 @@ fn write_edit(
     if old.is_none_or(|old| old.symbols != project.symbols) {
         write_symbols(tx, project)?;
     }
+    if old.is_none_or(|old| old.fonts != project.fonts) {
+        write_fonts(tx, project)?;
+    }
     remove_rasters(tx, project)?;
     remove_images(tx, project)?;
     for change in changes {
@@ -1649,6 +1669,17 @@ fn write_symbols(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
         tx.prepare("INSERT INTO vale_symbol (position, name, svg) VALUES (?1, ?2, ?3)")?;
     for (position, symbol) in project.symbols.iter().enumerate() {
         insert.execute(params![position, symbol.name, symbol.svg])?;
+    }
+    Ok(())
+}
+
+/// Writes the fonts in their order.
+fn write_fonts(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    tx.execute("DELETE FROM vale_font", [])?;
+    let mut insert =
+        tx.prepare("INSERT INTO vale_font (position, family, name, data) VALUES (?1, ?2, ?3, ?4)")?;
+    for (position, font) in project.fonts.iter().enumerate() {
+        insert.execute(params![position, font.family, font.name, font.data])?;
     }
     Ok(())
 }
@@ -2426,6 +2457,16 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
             })
         })?
         .collect::<Result<_, _>>()?;
+    let fonts = conn
+        .prepare("SELECT family, name, data FROM vale_font ORDER BY position")?
+        .query_map([], |r| {
+            Ok(FontRecord {
+                family: r.get(0)?,
+                name: r.get(1)?,
+                data: r.get(2)?,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
     Ok(Project {
         atlas: load_atlas(conn, units)?,
         world,
@@ -2434,6 +2475,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         rasters,
         next_raster_id,
         symbols,
+        fonts,
         images,
         next_image_id,
     })
@@ -2977,6 +3019,7 @@ mod tests {
             ),
             [
                 "vale_field",
+                "vale_font",
                 "vale_frame",
                 "vale_image",
                 "vale_image_tile",
@@ -5940,6 +5983,53 @@ mod tests {
         assert_eq!(names, ["Oak", "Castle", "Ash"]);
         assert_eq!(loaded.symbols()[2].svg, "<svg id=\"3\"/>");
         assert_eq!(loaded, project);
+    }
+
+    #[test]
+    fn fonts_survive_a_save_and_a_load_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        assert!(project.add_font("Lora", "Lora.ttf", vec![1, 2, 3]));
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert!(project.add_font("Lora", "Lora-Italic.ttf", vec![4, 5]));
+        assert!(!project.add_font("Lora", "Copy.ttf", vec![4, 5]));
+        assert!(project.add_font("Inter", "Inter.otf", vec![6]));
+        file.save(&project).unwrap();
+        // A font is not an edit.
+        assert!(!file.can_undo());
+        drop(file);
+
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let names: Vec<&str> = loaded.fonts().iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Lora.ttf", "Lora-Italic.ttf", "Inter.otf"]);
+        assert_eq!(loaded.fonts()[1].data, [4, 5]);
+        assert_eq!(loaded.fonts()[2].family, "Inter");
+        assert_eq!(loaded, project);
+    }
+
+    #[test]
+    fn a_file_of_version_29_has_no_fonts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "DROP TABLE vale_font;
+             DELETE FROM gpkg_extensions WHERE table_name = 'vale_font';
+             DELETE FROM gpkg_contents WHERE table_name = 'vale_font';",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 29);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded.fonts(), []);
+        project.add_font("Lora", "Lora.ttf", vec![1]);
+        file.save(&project).unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.fonts(), project.fonts());
     }
 
     #[test]

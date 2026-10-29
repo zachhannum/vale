@@ -776,6 +776,18 @@ pub struct Project {
     next_image_id: u32,
     pub atlas: Atlas,
     symbols: Vec<SymbolRecord>,
+    fonts: Vec<FontRecord>,
+}
+
+/// A font file that the user adds to the project, so that the project looks
+/// the same on each device.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FontRecord {
+    /// The family name in the font.
+    pub family: String,
+    /// The name of the file.
+    pub name: String,
+    pub data: Vec<u8>,
 }
 
 /// A point symbol that the user adds to the project, as the text of an SVG
@@ -797,6 +809,7 @@ impl Project {
             rasters: Vec::new(),
             next_raster_id: 0,
             symbols: Vec::new(),
+            fonts: Vec::new(),
             images: Vec::new(),
             next_image_id: 0,
         }
@@ -1143,6 +1156,26 @@ impl Project {
             svg,
         });
         name
+    }
+
+    /// The font files that the user added, in the order of addition.
+    pub fn fonts(&self) -> &[FontRecord] {
+        &self.fonts
+    }
+
+    /// Adds a font file of the family `family`. Returns false if the project
+    /// already holds the same bytes. A font is not an edit, so it gets no undo
+    /// step.
+    pub fn add_font(&mut self, family: &str, name: &str, data: Vec<u8>) -> bool {
+        if self.fonts.iter().any(|f| f.data == data) {
+            return false;
+        }
+        self.fonts.push(FontRecord {
+            family: family.to_string(),
+            name: name.to_string(),
+            data,
+        });
+        true
     }
 
     /// Moves a layer to this index of the draw order. An index past the end
