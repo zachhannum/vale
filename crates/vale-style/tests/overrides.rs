@@ -144,3 +144,69 @@ fn bad_text_has_no_overrides() {
     assert!(Overrides::from_json("[1]").is_empty());
     assert!(Overrides::from_json("nope").is_empty());
 }
+
+fn raster() -> LayerStyle {
+    use vale_store::{RasterDisplay, Stop};
+    let stops = [0.0, 10.0, 20.0].map(|value| Stop {
+        value,
+        line: Default::default(),
+    });
+    LayerStyle::raster(vale_style::RasterSymbolizer {
+        display: RasterDisplay::Bands,
+        opacity: 1.0,
+        blend: vale_store::BlendMode::Normal,
+        stops: stops.to_vec(),
+        colors: vec![[10, 10, 10], [200, 200, 200]],
+        lines: true,
+        smoothing: Default::default(),
+        hillshade: Default::default(),
+    })
+}
+
+fn raster_mut(style: &mut LayerStyle) -> &mut vale_style::RasterSymbolizer {
+    let mut s = style.style.rules[0].symbolizers.iter_mut();
+    s.find_map(|s| match s {
+        Symbolizer::Raster(r) => Some(r),
+        _ => None,
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_band_color_overrides_the_stops_and_the_colors_together() {
+    let base = raster();
+    let mut edited = base.clone();
+    raster_mut(&mut edited).colors[1] = [255, 0, 0];
+    let o = Overrides::between(&base, &edited);
+    let pointers: Vec<_> = o.pointers().collect();
+    assert_eq!(pointers.len(), 2, "{pointers:?}");
+    assert!(pointers[0].ends_with("/colors") && pointers[1].ends_with("/stops"));
+    // A new band in the style of the layer keeps the colors of the map whole.
+    let mut more = base.clone();
+    let r = raster_mut(&mut more);
+    r.stops.insert(
+        1,
+        vale_store::Stop {
+            value: 5.0,
+            line: Default::default(),
+        },
+    );
+    r.colors.insert(0, [1, 2, 3]);
+    let out = more.with_overrides(&o);
+    assert_eq!(
+        out.raster_symbolizer().unwrap().colors,
+        [[10, 10, 10], [255, 0, 0]]
+    );
+}
+
+#[test]
+fn a_hillshade_value_is_one_override() {
+    let base = raster();
+    let mut edited = base.clone();
+    raster_mut(&mut edited).hillshade.azimuth = 90.0;
+    let o = Overrides::between(&base, &edited);
+    let pointers: Vec<_> = o.pointers().collect();
+    assert_eq!(pointers.len(), 1);
+    assert!(pointers[0].ends_with("/hillshade/azimuth"), "{pointers:?}");
+    assert_eq!(base.with_overrides(&o), edited);
+}

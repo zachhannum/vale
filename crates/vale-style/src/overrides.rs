@@ -119,7 +119,20 @@ fn walk(a: Option<&Json>, b: Option<&Json>, path: &str, out: &mut BTreeMap<Strin
                 && !y.contains_key("expr")
                 && x.get("type") == y.get("type") =>
         {
+            // The stops and the colors of a raster go together, because a
+            // band that is added or removed moves each index after it.
+            let raster = y.get("type").and_then(Json::as_str) == Some("raster");
+            let bands = ["stops", "colors"];
+            if raster && bands.iter().any(|k| x.get(*k) != y.get(*k)) {
+                for key in bands {
+                    let value = y.get(key).cloned().unwrap_or(Json::Null);
+                    out.insert(format!("{path}/{key}"), value);
+                }
+            }
             for key in x.keys().chain(y.keys().filter(|k| !x.contains_key(*k))) {
+                if raster && bands.contains(&key.as_str()) {
+                    continue;
+                }
                 walk(
                     x.get(key),
                     y.get(key),

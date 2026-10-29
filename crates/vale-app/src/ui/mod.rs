@@ -963,6 +963,7 @@ impl AppState {
     /// Turns the smoothing of a raster layer on or off.
     pub fn set_raster_smoothing(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_smoothing(id, on);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -970,6 +971,7 @@ impl AppState {
     /// Turns the hillshade of a raster layer on or off.
     pub fn set_raster_hillshade(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_hillshade(id, on);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -978,6 +980,7 @@ impl AppState {
     /// 0 to 1.
     pub fn set_raster_hillshade_opacity(&mut self, id: RasterId, opacity: f32) -> bool {
         let set = self.doc.project.set_raster_hillshade_opacity(id, opacity);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -985,6 +988,7 @@ impl AppState {
     /// Turns the highlights of the hillshade of a raster layer on or off.
     pub fn set_raster_hillshade_highlights(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_hillshade_highlights(id, on);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -993,6 +997,7 @@ impl AppState {
     /// in degrees clockwise from north.
     pub fn set_raster_hillshade_azimuth(&mut self, id: RasterId, azimuth: f32) -> bool {
         let set = self.doc.project.set_raster_hillshade_azimuth(id, azimuth);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1001,6 +1006,7 @@ impl AppState {
     /// degrees above the ground.
     pub fn set_raster_hillshade_altitude(&mut self, id: RasterId, altitude: f32) -> bool {
         let set = self.doc.project.set_raster_hillshade_altitude(id, altitude);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1012,6 +1018,7 @@ impl AppState {
             .doc
             .project
             .set_raster_hillshade_exaggeration(id, exaggeration);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1019,6 +1026,7 @@ impl AppState {
     /// Sets the shade color of the hillshade of a raster layer.
     pub fn set_raster_hillshade_color(&mut self, id: RasterId, color: Rgb) -> bool {
         let set = self.doc.project.set_raster_hillshade_color(id, color);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1026,6 +1034,7 @@ impl AppState {
     /// Turns the lines of the stops of a raster layer on or off.
     pub fn set_raster_lines(&mut self, id: RasterId, on: bool) -> bool {
         let set = self.doc.project.set_raster_lines(id, on);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }
@@ -1040,6 +1049,7 @@ impl AppState {
     /// Sets the minimum feature size of a raster layer, in points.
     pub fn set_raster_feature_size(&mut self, id: RasterId, points: f32) -> bool {
         let set = self.doc.project.set_raster_feature_size(id, points);
+        raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
     }

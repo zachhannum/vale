@@ -5,7 +5,7 @@
 use std::fmt;
 
 use serde_json::{Map, Value as Json, json};
-use vale_store::{BlendMode, RasterDisplay, Rgb, Stop, StopLine};
+use vale_store::{BlendMode, Hillshade, RasterDisplay, Rgb, Smoothing, Stop, StopLine};
 
 use crate::expr::{Filter, FromValue, Property};
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
-pub const STYLE_VERSION: u64 = 2;
+pub const STYLE_VERSION: u64 = 3;
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -381,6 +381,7 @@ fn raster_json(r: &RasterSymbolizer) -> Json {
         })
         .collect();
     let colors: Vec<Json> = r.colors.iter().map(|c| rgb_json(*c)).collect();
+    let h = &r.hillshade;
     json!({
         "type": "raster",
         "display": display_name(r.display),
@@ -388,7 +389,66 @@ fn raster_json(r: &RasterSymbolizer) -> Json {
         "blend": r.blend.id(),
         "stops": stops,
         "colors": colors,
+        "lines": r.lines,
+        "smoothing": {
+            "on": r.smoothing.on,
+            "feature_size": f64::from(r.smoothing.feature_size),
+        },
+        "hillshade": {
+            "on": h.on,
+            "opacity": f64::from(h.opacity),
+            "highlights": h.highlights,
+            "azimuth": f64::from(h.azimuth),
+            "altitude": f64::from(h.altitude),
+            "exaggeration": f64::from(h.exaggeration),
+            "color": rgb_json(h.color),
+        },
     })
+}
+
+/// The smoothing of a raster. A raster of style version 2 has none, and it reads as the default.
+fn read_smoothing(j: Option<&Json>) -> Smoothing {
+    let d = Smoothing::default();
+    let Some(m) = j.and_then(Json::as_object) else {
+        return d;
+    };
+    let size = m
+        .get("feature_size")
+        .and_then(Json::as_f64)
+        .map(|v| v as f32);
+    Smoothing {
+        on: m.get("on").and_then(Json::as_bool).unwrap_or(d.on),
+        feature_size: match size {
+            Some(v) if v.is_finite() => v.clamp(0.0, Smoothing::FEATURE_SIZE_MAX),
+            _ => d.feature_size,
+        },
+    }
+}
+
+/// The hillshade of a raster. A raster of style version 2 has none, and it reads as the default.
+fn read_hillshade(j: Option<&Json>) -> Hillshade {
+    let d = Hillshade::default();
+    let Some(m) = j.and_then(Json::as_object) else {
+        return d;
+    };
+    let number = |k: &str, d: f32| m.get(k).and_then(Json::as_f64).map_or(d, |v| v as f32);
+    let flag = |k: &str, d: bool| m.get(k).and_then(Json::as_bool).unwrap_or(d);
+    Hillshade {
+        on: flag("on", d.on),
+        opacity: number("opacity", d.opacity),
+        highlights: flag("highlights", d.highlights),
+        azimuth: number("azimuth", d.azimuth),
+        altitude: number("altitude", d.altitude),
+        exaggeration: number("exaggeration", d.exaggeration),
+        color: read_rgb(m.get("color")).unwrap_or(d.color),
+    }
+    .clamped()
+}
+
+/// The version of a style JSON text, or `None` if the text has none.
+pub fn style_version(text: &str) -> Option<u64> {
+    let root: Json = serde_json::from_str(text).ok()?;
+    root.get("version").and_then(Json::as_u64)
 }
 
 fn read_line(j: Option<&Json>) -> Result<StopLine, StyleError> {
@@ -471,5 +531,8 @@ fn read_raster(m: &Map<String, Json>) -> Result<RasterSymbolizer, StyleError> {
         blend,
         stops,
         colors,
+        lines: m.get("lines").and_then(Json::as_bool).unwrap_or(true),
+        smoothing: read_smoothing(m.get("smoothing")),
+        hillshade: read_hillshade(m.get("hillshade")),
     })
 }

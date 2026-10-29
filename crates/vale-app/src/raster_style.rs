@@ -4,7 +4,7 @@
 //! blend mode in the same way.
 
 use vale_store::{ImageId, LayerId, MapId, Project, Raster, RasterDisplay, RasterId};
-use vale_style::{ImageSymbolizer, LayerStyle, RasterSymbolizer, Symbolizer};
+use vale_style::{ImageSymbolizer, LayerStyle, RasterSymbolizer, Symbolizer, style_version};
 
 use crate::document::Document;
 use crate::globe::Look;
@@ -18,6 +18,25 @@ pub fn symbolizer_of(r: &Raster) -> RasterSymbolizer {
         blend: r.blend,
         stops: r.stops.clone(),
         colors: r.colors.clone(),
+        lines: r.lines,
+        smoothing: r.smoothing,
+        hillshade: r.hillshade,
+    }
+}
+
+/// Puts the style of a raster into its record. `all` false keeps the band
+/// lines, the smoothing, and the hillshade of the record, because a style
+/// of version 2 has none.
+pub fn apply_symbolizer(record: &mut Raster, s: &RasterSymbolizer, all: bool) {
+    record.display = s.display;
+    record.opacity = s.opacity;
+    record.blend = s.blend;
+    record.stops.clone_from(&s.stops);
+    record.colors.clone_from(&s.colors);
+    if all {
+        record.lines = s.lines;
+        record.smoothing = s.smoothing;
+        record.hillshade = s.hillshade;
     }
 }
 
@@ -56,20 +75,18 @@ pub fn store_raster_styles(p: &mut Project) -> bool {
     changed
 }
 
-/// Puts the colors of the style of each raster layer into its record.
+/// Puts the style of each raster layer into its record.
 pub fn load_raster_styles(p: &mut Project) {
     for (layer, raster) in raster_layers(p) {
         let Some(style) = parsed(p, layer) else {
             continue;
         };
+        let text = p.layer(layer).and_then(|l| l.style.as_deref());
+        let all = text.and_then(style_version).is_some_and(|v| v >= 3);
         let (Some(colors), Some(record)) = (style.raster_symbolizer(), p.raster_mut(raster)) else {
             continue;
         };
-        record.display = colors.display;
-        record.opacity = colors.opacity;
-        record.blend = colors.blend;
-        record.stops.clone_from(&colors.stops);
-        record.colors.clone_from(&colors.colors);
+        apply_symbolizer(record, colors, all);
     }
 }
 
