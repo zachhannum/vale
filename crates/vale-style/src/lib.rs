@@ -80,6 +80,8 @@ pub struct LabelStyle {
     pub size: f64,
     pub color: Color,
     pub italic: bool,
+    /// A font family. `None` is the default font.
+    pub font: Option<String>,
 }
 
 /// The style of one layer: its rules and its labels.
@@ -131,6 +133,7 @@ impl LayerStyle {
                     size: 11.0,
                     color: Color::rgb(40, 40, 40),
                     italic: false,
+                    font: None,
                 },
             ),
             GeometryKind::Line => (
@@ -142,6 +145,7 @@ impl LayerStyle {
                     size: 11.0,
                     color: Color::rgb(40, 100, 160),
                     italic: true,
+                    font: None,
                 },
             ),
             GeometryKind::Point => (
@@ -160,6 +164,7 @@ impl LayerStyle {
                     size: 11.0,
                     color: Color::rgb(30, 30, 30),
                     italic: false,
+                    font: None,
                 },
             ),
         };
@@ -189,6 +194,7 @@ impl LayerStyle {
                 size: 11.0,
                 color: Color::rgb(40, 40, 40),
                 italic: false,
+                font: None,
             },
         }
     }
