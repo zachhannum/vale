@@ -567,7 +567,7 @@ Manual control is part of the design and not a repair tool. You can pin a label,
 
 The library takes its fonts through Parley and measures real glyph outlines. Collision tests use one box per glyph on curved text, so curved labels pack tightly.
 
-The labels use the fonts of the system. The app also ships Noto Sans, which is the default font. A label style names a font family, and the project file holds only that name. A project looks the same on two devices if both devices have its fonts. If the device has no font of that family, the labels use Noto Sans, and the panel of the layer shows a warning that names both fonts. PDF export embeds a subset of each font.
+The labels use the fonts of the system. The app also ships Noto Sans, which is the default font. A label style names a font family, and the project file holds only that name. The font picker has a search field. On iPad, it is the font picker of the system. A project looks the same on two devices if both devices have its fonts. If the device has no font of that family, the labels use Noto Sans, and the panel of the layer shows a warning that names both fonts. PDF export embeds a subset of each font.
 
 The test set is real-world data, for example Natural Earth, rendered to images and compared with approved reference images. Real data has harder label problems than most fantasy maps.
 
