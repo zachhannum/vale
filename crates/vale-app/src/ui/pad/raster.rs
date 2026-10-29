@@ -398,7 +398,11 @@ pub fn image_blend_body(
 
 /// A row for each blend mode, with a mark on `current`. Returns the mode of
 /// a tapped row.
-fn blend_rows(ui: &mut egui::Ui, controls: &mut Controls, current: BlendMode) -> Option<BlendMode> {
+pub fn blend_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    current: BlendMode,
+) -> Option<BlendMode> {
     let mut chosen = None;
     for mode in BlendMode::ALL {
         let label = elevation::blend_label(mode);

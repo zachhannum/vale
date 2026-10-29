@@ -4,7 +4,12 @@
 
 use eframe::egui;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
-use vale_store::{Border, FrameRecord, FrameShape, Graticule, PageUnits};
+use vale_store::{
+    BlendMode, Border, FrameRecord, FrameShape, Graticule, LayerId, PageUnits, RasterDisplay,
+};
+
+use super::elevation::{DISPLAYS, blend_label};
+use super::pad::raster::{BLEND, SHOW_AS};
 
 use super::atlas::{self, AtlasSelection, FrameTab};
 use super::pad::atlas::{
@@ -267,19 +272,19 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 /// or for the map of the frame.
 fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let rows: Vec<_> = (state.doc.project.layers().iter().rev())
-        .map(|l| (l.id, l.name.clone(), l.geometry().is_some()))
+        .map(|l| (l.id, l.name.clone()))
         .collect();
     if rows.is_empty() {
         ui.weak(NO_LAYERS);
     }
     let open = state.atlas.open_layer();
-    for (layer, name, vector) in rows {
+    for (layer, name) in rows {
         ui.horizontal(|ui| {
             let mut shown = state.doc.shown(frame.map, layer);
             if ui.checkbox(&mut shown, &name).changed() {
                 state.set_map_shown(frame.map, layer, shown);
             }
-            if vector && ui.selectable_label(open == Some(layer), "Style").clicked() {
+            if ui.selectable_label(open == Some(layer), "Style").clicked() {
                 state.atlas.layer = (open != Some(layer)).then_some((frame.id, layer));
             }
         });
@@ -287,14 +292,15 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let Some(layer) = state.atlas.open_layer() else {
         return;
     };
-    let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
-        return;
-    };
     ui.separator();
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.atlas.this_map, false, STYLE_SCOPES[0]);
         ui.selectable_value(&mut state.atlas.this_map, true, STYLE_SCOPES[1]);
     });
+    let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
+        look_controls(ui, state, frame, layer);
+        return;
+    };
     let fields = state
         .doc
         .layer(layer)
@@ -326,6 +332,59 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     {
         state.touch();
     }
+}
+
+/// The opacity, the display, and the blend mode of a raster layer or an
+/// image layer, for all maps or for the map of the frame.
+fn look_controls(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
+    let scope = state.atlas.this_map.then_some(frame.map);
+    let Some(mut look) = state.look(scope, layer) else {
+        return;
+    };
+    let old = look;
+    let raster = state.doc.layer(layer).is_some_and(|l| l.raster().is_some());
+    egui::Grid::new("look").num_columns(2).show(ui, |ui| {
+        ui.label("Opacity");
+        ui.add(egui::Slider::new(&mut look.opacity, 0.0..=1.0));
+        ui.end_row();
+        if raster {
+            ui.label(SHOW_AS);
+            egui::ComboBox::from_id_salt("look-display")
+                .selected_text(display_name(look.display))
+                .show_ui(ui, |ui| {
+                    for d in RasterDisplay::ALL {
+                        ui.selectable_value(&mut look.display, d, display_name(d));
+                    }
+                });
+            ui.end_row();
+        }
+        ui.label(BLEND);
+        egui::ComboBox::from_id_salt("look-blend")
+            .selected_text(blend_label(look.blend))
+            .show_ui(ui, |ui| {
+                for mode in BlendMode::ALL {
+                    ui.selectable_value(&mut look.blend, mode, blend_label(mode));
+                }
+            });
+        ui.end_row();
+    });
+    if look != old {
+        state.set_look(scope, layer, look);
+    }
+    if let Some(map) = scope {
+        let any = !state.doc.overrides(map, layer).is_empty();
+        if ui
+            .add_enabled(any, egui::Button::new(REMOVE_OVERRIDES))
+            .clicked()
+        {
+            state.clear_overrides(map, layer);
+        }
+    }
+}
+
+fn display_name(d: RasterDisplay) -> &'static str {
+    let i = RasterDisplay::ALL.iter().position(|x| *x == d).unwrap_or(0);
+    DISPLAYS[i]
 }
 
 fn projection_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {

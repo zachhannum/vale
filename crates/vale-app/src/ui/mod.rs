@@ -21,7 +21,7 @@ use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
-use crate::globe::{Globe, START_ELEVATION, StackItem, Tool, brush};
+use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::pipeline::{Composed, Pipeline, Selection, fonts};
 use crate::projects::{self, Location, Locations};
@@ -1195,6 +1195,88 @@ impl AppState {
         }
         self.pad.rules_fixed = false;
         self.atlas.layer_page = std::mem::replace(&mut self.pad.page, world_page);
+    }
+
+    /// The look of a raster layer or an image layer: in the style of the
+    /// layer, or in the style of `map`.
+    pub fn look(&self, map: Option<MapId>, layer: LayerId) -> Option<Look> {
+        let style = match map {
+            Some(map) => self.doc.map_style(map, layer)?,
+            None => self.doc.layer_style(layer)?,
+        };
+        if let Some(r) = style.raster_symbolizer() {
+            return Some(Look {
+                opacity: r.opacity,
+                blend: r.blend,
+                display: r.display,
+            });
+        }
+        let i = style.image_symbolizer()?;
+        Some(Look {
+            opacity: i.opacity,
+            blend: i.blend,
+            display: RasterDisplay::default(),
+        })
+    }
+
+    /// Sets the look of a raster layer or an image layer: in the style of
+    /// the layer, or as overrides of `map`.
+    pub fn set_look(&mut self, map: Option<MapId>, layer: LayerId, look: Look) {
+        let Some(l) = self.doc.project.layer(layer) else {
+            return;
+        };
+        let (raster, image) = (l.raster(), l.image());
+        let Some(map) = map else {
+            let Some(old) = self.look(None, layer) else {
+                return;
+            };
+            if let Some(id) = raster {
+                if old.opacity != look.opacity {
+                    self.set_raster_opacity(id, look.opacity);
+                }
+                if old.blend != look.blend {
+                    self.set_raster_blend(id, look.blend);
+                }
+                if old.display != look.display {
+                    self.set_raster_display(id, look.display);
+                }
+            } else if let Some(id) = image {
+                if old.opacity != look.opacity {
+                    self.set_image_opacity(id, look.opacity);
+                }
+                if old.blend != look.blend {
+                    self.set_image_blend(id, look.blend);
+                }
+            }
+            return;
+        };
+        let Some(mut style) = self.doc.map_style(map, layer) else {
+            return;
+        };
+        let symbolizers = style
+            .style
+            .rules
+            .iter_mut()
+            .flat_map(|r| &mut r.symbolizers);
+        for symbolizer in symbolizers {
+            match symbolizer {
+                vale_style::Symbolizer::Raster(r) => {
+                    r.opacity = look.opacity;
+                    r.blend = look.blend;
+                    r.display = look.display;
+                    break;
+                }
+                vale_style::Symbolizer::Image(i) => {
+                    i.opacity = look.opacity;
+                    i.blend = look.blend;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if self.doc.set_map_style(map, layer, &style) {
+            self.touch();
+        }
     }
 
     /// Removes the style overrides of a layer in a map, as one undo step.

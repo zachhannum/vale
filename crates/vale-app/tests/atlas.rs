@@ -2168,3 +2168,56 @@ fn the_overrides_survive_a_close_and_an_open() {
     assert_eq!(style.style.rules[0].stroke().unwrap().width, width);
     assert!(doc.overrides(main, rivers).is_empty());
 }
+
+#[test]
+fn the_panel_of_a_raster_layer_overrides_its_opacity_and_blend_mode_in_this_map() {
+    use vale_app::ui::pad::OPACITY;
+    use vale_app::ui::pad::raster::BLEND;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+        let height = h.state_mut().add_height();
+        let layer = h.state().doc.project.raster_layer(height).unwrap();
+        let (layer, name) = (layer.id, layer.name.clone());
+        h.run_steps(2);
+        tap(&mut h, FRAME_TABS[2]);
+        let open = format!("Open {name}");
+        scroll_to(&mut h, &open);
+        tap(&mut h, &open);
+        assert_eq!(h.state().atlas.open_layer(), Some(layer), "{what}");
+        tap(&mut h, STYLE_SCOPES[1]);
+        check_controls(&h, &format!("{what}: look"));
+        let rect = control(&h, OPACITY).unwrap();
+        let y = rect.center().y;
+        let (from, to) = (pos2(rect.right() - 20.0, y), pos2(rect.left() + 40.0, y));
+        drag(&mut h, from, to, Input::Finger);
+        let look = h.state().look(Some(inset), layer).unwrap();
+        assert!(look.opacity < 0.5, "{what}: {look:?}");
+        assert_eq!(h.state().doc.project.raster(height).unwrap().opacity, 1.0);
+        assert_eq!(h.state().look(Some(main), layer).unwrap().opacity, 1.0);
+        let pointers: Vec<String> = h
+            .state()
+            .doc
+            .overrides(inset, layer)
+            .pointers()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(pointers.len(), 1, "{what}: {pointers:?}");
+        assert!(pointers[0].ends_with("/opacity"), "{what}: {pointers:?}");
+
+        scroll_to(&mut h, BLEND);
+        tap(&mut h, BLEND);
+        check_controls(&h, &format!("{what}: blend"));
+        let multiply = format!("{BLEND} Multiply");
+        scroll_to(&mut h, &multiply);
+        tap(&mut h, &multiply);
+        let look = h.state().look(Some(inset), layer).unwrap();
+        assert_eq!(look.blend, vale_store::BlendMode::Multiply, "{what}");
+        assert_eq!(h.state().doc.overrides(inset, layer).len(), 2, "{what}");
+        assert_eq!(
+            h.state().look(None, layer).unwrap().blend,
+            vale_store::BlendMode::Normal
+        );
+    }
+}
