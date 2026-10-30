@@ -17,7 +17,7 @@ pub use parley::FontData;
 
 pub use collide::OrientedBox;
 pub use model::*;
-pub use text::{FontError, Fonts, TextMetrics, glyph_outline};
+pub use text::{Face, FontError, Fonts, TextMetrics, glyph_outline};
 
 /// Place labels. Never panics on bad input; reports it as an [`UnplacedLabel`].
 /// The same input always gives the same output.

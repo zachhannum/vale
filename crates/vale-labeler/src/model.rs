@@ -19,6 +19,20 @@ pub struct TextStyle {
     pub italic: bool,
     /// Extra space after each glyph, in page units.
     pub letter_spacing: f64,
+    /// Small capitals.
+    pub caps: Caps,
+}
+
+/// Which letters show as small capitals.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Caps {
+    /// No small capitals.
+    #[default]
+    Normal,
+    /// Lowercase letters show as small capitals.
+    Small,
+    /// All letters show as small capitals.
+    AllSmall,
 }
 
 impl TextStyle {
@@ -30,6 +44,7 @@ impl TextStyle {
             weight: 400.0,
             italic: false,
             letter_spacing: 0.0,
+            caps: Caps::Normal,
         }
     }
 }
