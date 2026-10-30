@@ -175,7 +175,7 @@ pub struct Graticule {
 }
 
 /// The text of a latitude or a longitude.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CoordFormat {
     /// Degrees, minutes, and seconds, for example 45°30′ N.
     #[default]

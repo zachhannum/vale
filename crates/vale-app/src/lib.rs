@@ -6,6 +6,7 @@ pub mod atlas_export;
 pub mod cli;
 pub mod clipboard;
 pub mod document;
+pub mod edge_labels;
 pub mod files;
 #[cfg(target_os = "ios")]
 pub mod font_picker;

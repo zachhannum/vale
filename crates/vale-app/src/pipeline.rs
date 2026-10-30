@@ -19,7 +19,7 @@ use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
 use crate::scatter::{self, ScatterCache, ScatterFill};
 use crate::view::{View, ViewTransform};
-use crate::{furniture, labels, pick};
+use crate::{edge_labels, furniture, labels, pick};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Quality {
@@ -708,7 +708,7 @@ const WORLD_GRATICULE_MIN: f64 = 1.0 - 1e-9;
 /// longitudes are unwrapped about `center_lon`, so they can go past ±180.
 /// A pole inside the area gives all longitudes. The window is empty when
 /// the area shows no part of the sphere.
-fn graticule_window(
+pub(crate) fn graticule_window(
     projection: &Projection,
     vt: &ViewTransform,
     area: Rect,
@@ -1396,10 +1396,19 @@ impl Pipeline {
             &mut self.scatter,
             symbol_scale,
         );
+        let edge = if step.is_some() && frame.graticule.labels {
+            edge_labels::edge_labels(&cache.projection, frame, target, fonts)
+        } else {
+            Vec::new()
+        };
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {
             let classes: Vec<_> = (drawn.layers.iter())
                 .map(|pl| doc.label_classes(Some(frame.map), pl.layer.id))
+                .collect();
+            let obstacles: Vec<Rect> = edge
+                .iter()
+                .map(|l| edge_labels::quad_bounds(&l.quad))
                 .collect();
             let (items, summary) = labels::place(
                 &drawn.layers,
@@ -1407,12 +1416,13 @@ impl Pipeline {
                 area,
                 fonts,
                 quality,
-                &[],
+                &obstacles,
                 &drawn.symbols,
             );
             list.items.extend(items);
             label_summary = summary;
         }
+        list.items.extend(edge.into_iter().flat_map(|l| l.items));
         list.push(Item::PopClip);
         if frame.border.on {
             let [r, g, b] = frame.border.color;
@@ -1463,7 +1473,7 @@ impl Pipeline {
 }
 
 /// The box of the shape of a frame, in target points.
-fn frame_area(frame: &FrameRecord, target: FrameTarget) -> Rect {
+pub(crate) fn frame_area(frame: &FrameRecord, target: FrameTarget) -> Rect {
     let b = atlas::shape_bbox(&frame.shape);
     Rect::from_points(
         target.to_target(Point::new(b.x0, b.y0)),

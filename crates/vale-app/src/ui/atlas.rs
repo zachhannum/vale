@@ -8,8 +8,8 @@ use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
-    Border, FrameId, FrameRecord, FrameShape, Graticule, LayerId, MapId, PageId, PageRecord,
-    PageUnits, Rgb,
+    Border, CoordFormat, FrameId, FrameRecord, FrameShape, Graticule, LayerId, MapId, PageId,
+    PageRecord, PageUnits, Rgb,
 };
 
 use std::sync::Arc;
@@ -1763,12 +1763,14 @@ pub fn set_rotation(state: &mut AppState, id: FrameId, degrees: f64) {
 }
 
 /// The parts of a graticule as a hash key.
-fn graticule_key(g: &Graticule) -> (bool, Option<u64>, Rgb, u64) {
+fn graticule_key(g: &Graticule) -> (bool, Option<u64>, Rgb, u64, bool, CoordFormat) {
     (
         g.on,
         g.interval.map(f64::to_bits),
         g.color,
         g.width.to_bits(),
+        g.labels,
+        g.format,
     )
 }
 

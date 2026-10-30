@@ -3,13 +3,17 @@ mod common;
 use std::path::Path;
 
 use kurbo::Point;
-use vale_app::atlas::{FrameTarget, PT_PER_MM, auto_graticule_interval, new_frame};
+use vale_app::atlas::{
+    FrameTarget, PT_PER_MM, auto_graticule_interval, coord_text, frame_transform,
+    graticule_interval, new_frame,
+};
 use vale_app::document::Document;
+use vale_app::edge_labels::{edge_labels, quads_overlap};
 use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{PAPER, Pipeline, Quality, fonts};
 use vale_render::{FillRule, Item, render_pixmap, render_rgba};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{FrameId, FrameShape, PageId, PageUnits};
+use vale_store::{CoordFormat, FrameId, FrameShape, PageId, PageUnits};
 use vale_style::expr::{Filter, Property};
 use vale_style::{
     Color, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style,
@@ -1197,4 +1201,243 @@ fn a_scatter_is_the_same_in_each_target_of_a_frame() {
             .chunks(4)
             .any(|p| p[1] > p[0] + 40 && p[1] > p[2] + 40)
     );
+}
+
+/// Each edge label of a frame: its line meets the edge there, its text names
+/// that line, and it overlaps no other label.
+fn assert_edge_labels(doc: &Document, pipeline: &mut Pipeline, id: FrameId, what: &str) -> usize {
+    let frame = doc.project.atlas.frame(id).unwrap().clone();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut f = fonts().unwrap();
+    let projection = pipeline.projection(doc, frame.map).unwrap();
+    let interval = graticule_interval(projection, &frame).unwrap();
+    let labels = edge_labels(projection, &frame, target, &mut f);
+    let vt = frame_transform(projection, &frame, target);
+    let rings: Vec<Vec<Point>> = (frame.shape.rings().iter())
+        .map(|r| {
+            r.iter()
+                .map(|&[x, y]| target.to_target(Point::new(x, y)))
+                .collect()
+        })
+        .collect();
+    for label in &labels {
+        let on_edge = rings.iter().any(|ring| {
+            (0..ring.len()).any(|i| {
+                let line = kurbo::Line::new(ring[i], ring[(i + 1) % ring.len()]);
+                kurbo::ParamCurveNearest::nearest(&line, label.at, 1e-9).distance_sq < 1e-6
+            })
+        });
+        assert!(on_edge, "{what}: {} is not on the edge", label.text);
+        let [lon, lat] = projection.inverse(vt.from_page(label.at)).unwrap();
+        let near = |v: f64| {
+            let line = (v / interval).round() * interval;
+            ((v - line).abs() < 0.05 * interval).then_some(line)
+        };
+        let format = frame.graticule.format;
+        let named = near(lon)
+            .is_some_and(|l| coord_text(l, interval, format, 'E', 'W') == label.text)
+            || near(lat).is_some_and(|l| coord_text(l, interval, format, 'N', 'S') == label.text);
+        assert!(named, "{what}: {} at {lon}, {lat}", label.text);
+    }
+    for (i, a) in labels.iter().enumerate() {
+        for b in &labels[i + 1..] {
+            assert!(
+                !quads_overlap(&a.quad, &b.quad),
+                "{what}: {} and {} overlap",
+                a.text,
+                b.text
+            );
+        }
+    }
+
+    let page = doc
+        .project
+        .atlas
+        .page(doc.project.atlas.page_of_frame(id).unwrap())
+        .unwrap();
+    let composed = pipeline
+        .compose_frame(doc, page, &frame, target, &mut f, Quality::Final, None)
+        .unwrap();
+    let texts: Vec<&str> = (composed.list.items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(g) => Some(g.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    for label in &labels {
+        assert!(
+            texts.contains(&label.text.as_str()),
+            "{what}: {}",
+            label.text
+        );
+    }
+    labels.len()
+}
+
+#[test]
+fn each_projection_has_graticule_labels_at_the_frame_edge() {
+    for kind in ProjectionKind::ALL {
+        let mut doc = plain();
+        let mut pipeline = Pipeline::new();
+        let map = doc.first_map();
+        let spec = match kind {
+            ProjectionKind::LambertConformal | ProjectionKind::AlbersEqualArea => {
+                let mut s = ProjectionSpec::new(kind, 10.0, 40.0);
+                s.lat1 = 30.0;
+                s.lat2 = 50.0;
+                s
+            }
+            _ => ProjectionSpec::new(kind, 0.0, 0.0),
+        };
+        doc.set_projection(map, spec);
+        let page = doc.project.atlas.pages[0].id;
+        let id = frame_on(&mut doc, &mut pipeline, page);
+        let frame = doc.project.atlas.frame_mut(id).unwrap();
+        frame.graticule.on = true;
+        // The edge of a frame of the whole world is off the map.
+        frame.scale /= 4.0;
+        if kind == ProjectionKind::PolarStereographic {
+            frame.center = [0.0, 70.0];
+        } else if spec.lat1 != 0.0 {
+            frame.center = [10.0, 40.0];
+        }
+
+        let region = assert_edge_labels(&doc, &mut pipeline, id, &format!("{kind:?}"));
+        assert!(region > 0, "{kind:?} has no labels");
+
+        let frame = doc.project.atlas.frame_mut(id).unwrap();
+        frame.scale /= 20.0;
+        frame.rotation = 30.0;
+        frame.graticule.format = CoordFormat::Decimal;
+        let closer = assert_edge_labels(&doc, &mut pipeline, id, &format!("{kind:?} closer"));
+        assert!(closer > 0, "{kind:?} closer has no labels");
+    }
+}
+
+#[test]
+fn the_labels_at_a_corner_do_not_overlap() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let map = doc.first_map();
+    doc.set_projection(
+        map,
+        ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, 0.0),
+    );
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.graticule.on = true;
+    frame.graticule.interval = Some(10.0);
+    frame.rotation = 0.0;
+    frame.scale /= 4.0;
+    // The center moves so that a meridian and a parallel meet at the top
+    // left corner of the frame.
+    let frame = doc.project.atlas.frame(id).unwrap().clone();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let projection = pipeline.projection(&doc, map).unwrap();
+    let vt = frame_transform(projection, &frame, target);
+    let b = vale_app::atlas::shape_bbox(&frame.shape);
+    let corner = target.to_target(Point::new(b.x0, b.y0));
+    let [lon, lat] = projection.inverse(vt.from_page(corner)).unwrap();
+    let to = [(lon / 10.0).round() * 10.0, (lat / 10.0).round() * 10.0];
+    let center = &mut doc.project.atlas.frame_mut(id).unwrap().center;
+    center[0] += to[0] - lon;
+    center[1] += to[1] - lat;
+
+    let n = assert_edge_labels(&doc, &mut pipeline, id, "corner");
+    assert!(n > 0);
+}
+
+#[test]
+fn a_polygon_frame_has_labels_on_each_edge() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.graticule.on = true;
+    frame.scale /= 4.0;
+    let b = vale_app::atlas::shape_bbox(&frame.shape);
+    let (cx, cy) = (b.center().x, b.center().y);
+    // A frame with a notch at the top right.
+    frame.shape = FrameShape::Polygon(vec![vec![
+        [b.x0, b.y0],
+        [cx, b.y0],
+        [cx, cy],
+        [b.x1, cy],
+        [b.x1, b.y1],
+        [b.x0, b.y1],
+    ]]);
+    let n = assert_edge_labels(&doc, &mut pipeline, id, "polygon");
+    assert!(n > 0);
+}
+
+#[test]
+fn a_frame_with_the_labels_off_has_no_edge_labels() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.graticule.on = true;
+    frame.scale /= 4.0;
+    assert!(assert_edge_labels(&doc, &mut pipeline, id, "on") > 0);
+    doc.project.atlas.frame_mut(id).unwrap().graticule.labels = false;
+    let items = compose_frame(&doc, &mut pipeline, id);
+    assert!(!items.iter().any(|i| matches!(i, Item::Glyphs(_))));
+}
+
+/// Saves a conic frame and a polar frame with edge labels to
+/// `target/edge-labels-*.png` for a person to look at.
+#[test]
+#[ignore = "manual"]
+fn manual_edge_label_pictures() {
+    for (name, spec, center) in [
+        (
+            "conic",
+            {
+                let mut s = ProjectionSpec::new(ProjectionKind::LambertConformal, 10.0, 40.0);
+                s.lat1 = 30.0;
+                s.lat2 = 50.0;
+                s
+            },
+            [10.0, 45.0],
+        ),
+        (
+            "polar",
+            ProjectionSpec::new(ProjectionKind::PolarStereographic, 0.0, 90.0),
+            [0.0, 75.0],
+        ),
+    ] {
+        let mut doc = Document::sample();
+        let mut pipeline = Pipeline::new();
+        let map = doc.first_map();
+        doc.set_projection(map, spec);
+        let page = doc.project.atlas.pages[0].id;
+        let id = frame_on(&mut doc, &mut pipeline, page);
+        let frame = doc.project.atlas.frame_mut(id).unwrap();
+        frame.graticule.on = true;
+        frame.scale /= 3.0;
+        frame.center = center;
+        let page = doc.project.atlas.page(page).unwrap().clone();
+        let mut f = fonts().unwrap();
+        let list = pipeline
+            .compose_page(&doc, &page, &mut f, Quality::Final)
+            .unwrap();
+        let px = render_rgba(&list, 2.0).unwrap();
+        let path = format!(
+            "{}/../../target/edge-labels-{name}.png",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        image::RgbaImage::from_raw(px.width as u32, px.height as u32, px.data)
+            .unwrap()
+            .save(path)
+            .unwrap();
+    }
 }
