@@ -48,7 +48,9 @@ pub struct Ridge {
     pub offset: f64,
     /// The height of the hills, in 16-bit steps.
     pub roughness: f64,
-    /// The depth of the valley along the crest, in 16-bit steps.
+    /// The depth of the valley along the crest, in 16-bit steps. Only the
+    /// shader uses it. `RidgePlan::level` takes the axial valley from the
+    /// spreading rate and the magma.
     pub valley: f64,
     /// Half of the spreading rate, in radians per million years.
     pub spread: f64,
@@ -565,10 +567,14 @@ impl RidgePlan {
     /// The shift of crest segment `k` across the line. Most of it is the
     /// shift of its group.
     fn shift(&self, sg: &Segmenting, k: i32) -> f64 {
-        let seed = self.ridge.seed;
-        let part = |i: i32, channel: u32| 2.0 * unit(hash(i as u32, channel, 0, seed)) - 1.0;
-        let own = part(k, 4);
-        self.ridge.offset * (GROUP_SHIFT * part(self.group(sg, k), 3) + (1.0 - GROUP_SHIFT) * own)
+        let own = 2.0 * unit(hash(k as u32, 4, 0, self.ridge.seed)) - 1.0;
+        self.group_shift(self.group(sg, k)) + self.ridge.offset * (1.0 - GROUP_SHIFT) * own
+    }
+
+    /// The part of the shift of a crest segment that its group `c` gives.
+    fn group_shift(&self, c: i32) -> f64 {
+        let part = 2.0 * unit(hash(c as u32, 3, 0, self.ridge.seed)) - 1.0;
+        self.ridge.offset * GROUP_SHIFT * part
     }
 
     /// The move along the line that the history of the spreading direction
@@ -644,6 +650,20 @@ impl RidgePlan {
         let full_rate = 2.0 * self.ridge.spread * self.ridge.world_km;
         let part = (len / SECOND_ORDER_KM).clamp(0.5, 1.5);
         0.001 * lerp_table(&SEGMENT_DEPTH, full_rate) * part
+    }
+
+    /// The depth of the axial valley and the height of the axial high, in
+    /// kilometers.
+    fn axial(&self, f: &Faulting) -> (f64, f64) {
+        let full_rate = 2.0 * self.ridge.spread * self.ridge.world_km;
+        let faulted = (1.0 - f.magma) / (1.0 - magma_share(full_rate));
+        let part = faulted.clamp(0.0, VALLEY_MOST).powf(VALLEY_POWER);
+        let valley = lerp_table(&AXIAL_VALLEY, full_rate) * part;
+        let high = MAGMA_HIGH * smoothstep(HIGH_MAGMA, 1.0, f.magma);
+        (
+            0.001 * valley,
+            0.001 * lerp_table(&AXIAL_HIGH, full_rate).max(high),
+        )
     }
 
     /// The distance along the line with the bend of the noise. The curve
@@ -796,6 +816,13 @@ impl RidgePlan {
         // The blocks and the troughs fade toward the reach.
         let fade = 1.0 - smoothstep(HILL_FADE, REACH, far);
         let sg = self.segmenting();
+        let (valley, high) = self.axial(&f);
+        // The rise is flat over the floor of the axial valley.
+        let flat_floor = if f.level > 0.0 {
+            (valley / VALLEY_FLAT).min(1.0) * FLOOR_KM / km
+        } else {
+            0.0
+        };
         // The rise and the blocks of crest segment `k`, from the trace
         // `lower` at its start to the trace `upper` at its end. The age is
         // the distance from the crest of that segment.
@@ -804,7 +831,8 @@ impl RidgePlan {
             let crest = self.shift(&sg, k);
             let off = across - crest;
             let from_crest = off.hypot(at.past);
-            let w = ((foot - depth(age(from_crest / lens))) / (foot - top)).clamp(0.0, 1.0);
+            let from_rise = from_crest.max(flat_floor) / lens;
+            let w = ((foot - depth(age(from_rise))) / (foot - top)).clamp(0.0, 1.0);
             // The foot of the rise has no slope.
             let w = w * w * (1.0 + FOOT) / (w + FOOT);
             // The ends of the segment are deeper than its middle. The rise
@@ -813,28 +841,48 @@ impl RidgePlan {
             let len = (upper - lower).max(SHORTEST_PART * sg.length);
             let place = ((u - lower) / len).clamp(0.0, 1.0);
             let ends = 0.5 * (1.0 + (std::f64::consts::TAU * place).cos());
-            // The depth of the ends changes with the age and from segment
-            // to segment. The noise is of the age with a sign, so it has no
-            // step at the crest.
+            // The depth of each end changes with the age and from boundary
+            // to boundary. The noise is of the age with a sign from the
+            // middle of the two crests at the boundary, so it has no step at
+            // the crest, and the two segments at a boundary share it.
             let side = u32::from(off < 0.0);
             let tau = from_crest / v;
-            let (deeper, _) = noise1(off / v / SEGMENT_MYR, k as u32, 4, magma_seed);
+            let end = if place < 0.5 { k } else { k.wrapping_add(1) };
+            let middle = 0.5 * (self.shift(&sg, end.wrapping_sub(1)) + self.shift(&sg, end));
+            let (deeper, _) = noise1(
+                (across - middle) / v / SEGMENT_MYR,
+                end as u32,
+                4,
+                magma_seed,
+            );
             let deeper = 1.0 - SEGMENT_CHANGE * (1.0 - deeper);
             let sunk = self.segment_depth(len * km) * f.level * ends * deeper;
             // The depth of the ends fades slower than the rise.
-            let flat = mean + MAGMA_MEAN * MAGMA_RELIEF * f.level;
+            // The throw of a fault grows from the middle of the floor of the
+            // axial valley, and the rise is lower by the mean height of the
+            // blocks there.
+            let grow_end = flat_floor + GROW * f.spacing / km + t;
+            let grow = smoothstep(0.5 * flat_floor, grow_end, from_crest);
+            let flat = grow * (mean + MAGMA_MEAN * MAGMA_RELIEF * f.level);
             let rise = taper * (w * (lift - low * flat) - low * sunk * w * (2.0 - w)).max(0.0);
             // The magma of the segment changes with the age, so the faults
             // are closer together in some bands and farther apart in others.
             // The throw grows with the spacing.
             // The segments between two transform faults share the bands of
-            // the magma. The bands bend along the line.
-            let group = self.group(&sg, k) as u32;
-            let (wave, _) = noise1(u * km / WAVE_KM, group, side + 2, magma_seed);
-            let tau = (tau + WAVE_MYR * wave) / MAGMA_MYR;
-            let (band, slope) = noise1(tau, group, side, magma_seed);
-            let (zero, _) = noise1(0.0, group, side, magma_seed);
-            let rows = MAGMA_BAND * MAGMA_MYR * v * km / f.spacing;
+            // the magma, so the bands go on past an offset with no transform
+            // fault. The bands are of the age with a sign from the middle of
+            // the group, and they bend along the line.
+            let group = self.group(&sg, k);
+            let center = self.group_shift(group);
+            let (wave, _) = noise1(u * km / WAVE_KM, group as u32, 2, magma_seed);
+            let band_at = |off: f64| {
+                let tau = (off / v + WAVE_MYR * wave) / MAGMA_MYR;
+                noise1_round(tau, group as u32, 0, magma_seed)
+            };
+            let (band, slope) = band_at(across - center);
+            let (zero, _) = band_at(crest - center);
+            let away = if off < 0.0 { -1.0 } else { 1.0 };
+            let rows = away * MAGMA_BAND * MAGMA_MYR * v * km / f.spacing;
             let rate = 1.0 + MAGMA_BAND * slope;
             let grown = rate.powf(-THROW_SPACING);
             // Near the ends of the segment, the faults hook toward the
@@ -845,6 +893,14 @@ impl RidgePlan {
                 (1.0 - place, k.wrapping_add(1))
             };
             let hook = (1.0 - near / HOOK_PART).max(0.0);
+            // The axial valley and the rift mountains fade toward a
+            // transform fault, where the nodal deep is.
+            let transform = self.transform(&sg, if place < 0.5 { k } else { k.wrapping_add(1) });
+            let fade_out = if transform {
+                smoothstep(0.0, 1.0, hook)
+            } else {
+                0.0
+            };
             let toward = if (self.shift(&sg, next) - crest) * off > 0.0 {
                 -1.0
             } else {
@@ -853,16 +909,41 @@ impl RidgePlan {
             let x = from_crest * km / f.spacing
                 + rows * (band - zero)
                 + HOOK_ROWS * hook * hook * toward;
-            // The throw of a fault grows near the crest.
-            let grow = smoothstep(0.0, GROW * f.spacing / km + t, from_crest);
             let along = [(u - lower) * km, len * km];
-            let blocks = grow * grown * self.faults(&f, k, side, along, x);
+            let faults = grow * grown * self.faults(&f, k, side, along, x);
+            // Sediment fills the lows between the blocks up to twice its
+            // thickness above the low of the hills: `HILL_LOW` of the mean
+            // height of the blocks. The depth of the age is the depth with
+            // the sediment, so the blocks are lower by about the rise of
+            // their mean.
+            let held = BLOCK_MEAN * f.throw * grow * grown;
+            let fill = (2.0 * SEDIMENT_RATE * tau - HILL_LOW * held).max(0.0);
+            let ponded = smooth_max(faults, fill, SEDIMENT_SOFT * fill);
+            let gain = smooth_max(held, fill, held) - held;
+            let blocks = ponded - gain;
             // More magma gives a thicker crust, so the bands of the magma
             // are also bands of the depth.
             // The bands are narrower at their tops than at their feet.
             let top = 0.5 * (1.0 + band);
             let blocks = blocks + grow * MAGMA_RELIEF * top * top;
-            (rise, blocks * f.level * low * taper * fade)
+            // The axial valley, its rift mountains, and the axial high.
+            let (floor, rim) = axial_valley(from_crest * km);
+            let down = valley * (1.0 - RIM) * (1.0 - VALLEY_END * fade_out) * floor;
+            // At the inside corner, on the side of the transform fault, the
+            // rift mountains are higher.
+            let inside = if toward < 0.0 { INSIDE_CORNER } else { 0.0 };
+            // The rift mountains change along the segment, and each side
+            // has its own.
+            let (peaks, _) = noise1(u * km / PEAKS_KM, k as u32, side + 6, magma_seed);
+            let rim = rim * (1.0 + PEAKS * peaks);
+            let up = valley * RIM * (1.0 + (inside - 1.0) * fade_out) * rim
+                + high * bump(from_crest * km / HIGH_KM);
+            let axis = f.level * low * taper;
+            (
+                rise,
+                blocks * f.level * low * taper * fade,
+                [down * axis, up * axis],
+            )
         };
         // The traces of the boundaries near the texel. Crest segment `j`
         // has the part of a texel that is past trace `j` and before trace
@@ -872,6 +953,7 @@ impl RidgePlan {
         let turn = self.turn(&sg, across / v);
         let i = ((u - turn.0) / sg.length).floor() as i32;
         let (mut rise, mut hills, mut deep) = (0.0, 0.0, 0.0);
+        let (mut down, mut above) = (0.0, 0.0);
         let mut lower: Option<(f64, f64)> = None;
         for j in i - 1 - extra..=i + 2 + extra {
             let trace = self.trace(&sg, j, across, turn);
@@ -881,9 +963,11 @@ impl RidgePlan {
             if let Some((below, before)) = lower {
                 let weight = before - past;
                 if weight > 0.0 {
-                    let (a, b) = segment(j - 1, below, trace.u);
+                    let (a, b, [c, d]) = segment(j - 1, below, trace.u);
                     rise += weight * a;
                     hills += weight * b;
+                    down += weight * c;
+                    above += weight * d;
                 }
             }
             lower = Some((trace.u, past));
@@ -898,19 +982,24 @@ impl RidgePlan {
             let width = sg.blend + TROUGH_KM / km;
             let filled = 1.0 - TROUGH_FILL * smoothstep(0.0, TROUGH_MYR, trace.age);
             deep += trough * filled * bump(off / width);
-            // A deep at each end of the crest at a transform fault.
+            // A deep at each end of the crest at a transform fault. It is
+            // long along the transform fault, and its middle is inside it.
             if transform {
                 let nodal = (NODAL_DEPTH * step).min(NODAL_MAX);
                 let size = sg.blend + NODAL_KM / km;
-                for crest in [before, after] {
-                    deep += nodal * bump(off.hypot(across - crest) / size);
+                let long = sg.blend + NODAL_ALONG_KM / km;
+                for (crest, other) in [(before, after), (after, before)] {
+                    let middle = crest + (other - crest).signum() * NODAL_IN * long;
+                    let q = (off / size).hypot((across - middle) / long);
+                    deep += nodal * bump(q);
                 }
             }
         }
         let deep = deep * f.level * low * taper * fade;
         // The highest blocks bend down below the Crest setting.
         let hills = soft_cap(hills, (lift - rise).max(0.0));
-        let up = (rise + hills).min(lift) - deep;
+        // The rift mountains and the axial high go above the Crest setting.
+        let up = (rise + hills).min(lift) - deep - down + above;
         let change = at.flow * up;
         let new = (old + (change + 0.5).floor()).clamp(0.0, 65535.0);
         spec.limits.apply(old, new) as u16
@@ -1103,11 +1192,69 @@ const TROUGH_FILL: f64 = 0.4;
 const TROUGH_MYR: f64 = 20.0;
 
 /// The depth of a deep at an end of a crest at a transform fault for each
-/// kilometer of offset, its largest depth, in kilometers, and its radius
-/// past the blend, in kilometers.
-const NODAL_DEPTH: f64 = 0.01;
-const NODAL_MAX: f64 = 1.0;
-const NODAL_KM: f64 = 15.0;
+/// kilometer of offset, and its largest depth, in kilometers. Past the
+/// blend, the deep is `NODAL_ALONG_KM` long along the transform fault and
+/// `NODAL_KM` wide. Its middle is `NODAL_IN` of its length inside the
+/// transform fault.
+const NODAL_DEPTH: f64 = 0.005;
+const NODAL_MAX: f64 = 0.6;
+const NODAL_KM: f64 = 12.0;
+const NODAL_ALONG_KM: f64 = 30.0;
+const NODAL_IN: f64 = 0.3;
+
+/// The depth of the axial valley at a full spreading rate in millimeters
+/// per year, in meters, at the magma part of that rate (Chen and Morgan
+/// 1990; Ito and Behn 2008). Less magma gives a deeper valley: the depth
+/// is in proportion to the part of the spreading that the faults take, to
+/// the power `VALLEY_POWER`, up to `VALLEY_MOST` times the depth of the
+/// table.
+const AXIAL_VALLEY: [(f64, f64); 4] = [(20.0, 1500.0), (35.0, 1000.0), (50.0, 450.0), (70.0, 0.0)];
+const VALLEY_POWER: f64 = 1.0;
+const VALLEY_MOST: f64 = 1.5;
+
+/// The height of the axial high at a full spreading rate in millimeters
+/// per year, in meters. Near a magma part of 1, a high of up to
+/// `MAGMA_HIGH` meters takes the place of the valley.
+const AXIAL_HIGH: [(f64, f64); 3] = [(60.0, 0.0), (90.0, 250.0), (130.0, 350.0)];
+const MAGMA_HIGH: f64 = 300.0;
+const HIGH_MAGMA: f64 = 0.85;
+
+/// Half of the width of the floor of the axial valley, and the distance from
+/// the axis to the crests of the rift mountains, in kilometers. The depth of
+/// the valley is from its floor to the crests of the rift mountains. The
+/// crests are `RIM` of that depth above the depth of the age, and the
+/// rift mountains are `RIM_KM` wide on each side of their crests. The
+/// axial high is `HIGH_KM` wide on each side of the axis.
+const FLOOR_KM: f64 = 8.0;
+const WALL_KM: f64 = 16.0;
+const RIM: f64 = 0.5;
+const RIM_KM: f64 = 18.0;
+const HIGH_KM: f64 = 5.0;
+
+/// Near a transform fault, over `HOOK_PART` of the segment, the valley
+/// loses this part of its depth, and the nodal deep takes its place. There,
+/// the rift mountains are `INSIDE_CORNER` times as high on the side of the
+/// transform fault (Tucholke and Lin 1994), and they fade on the other side.
+const VALLEY_END: f64 = 0.5;
+
+/// The rise is flat over the floor of an axial valley this deep or deeper,
+/// in kilometers.
+const VALLEY_FLAT: f64 = 0.5;
+const INSIDE_CORNER: f64 = 1.4;
+
+/// The height of the rift mountains changes by up to this part, with a
+/// noise along the line that has cells of `PEAKS_KM` kilometers.
+const PEAKS: f64 = 0.35;
+const PEAKS_KM: f64 = 25.0;
+
+/// The sediment on the sea floor, in kilometers for each million years of
+/// age (Goff and Arbic 2010). It fills the lows between the fault blocks
+/// up to twice its thickness, with a round edge of up to `SEDIMENT_SOFT`
+/// kilometers. Both are in kilometers of throw, so the Roughness setting
+/// scales them with the blocks.
+const SEDIMENT_RATE: f64 = 0.005;
+const SEDIMENT_SOFT: f64 = 1.5;
+const HILL_LOW: f64 = 0.5;
 
 /// The ridge gets its full height and width at this number of brush radii
 /// from an end of the line.
@@ -1310,6 +1457,50 @@ fn noise1(x: f64, a: u32, b: u32, seed: u32) -> (f64, f64) {
         h0 + (h1 - h0) * s * s * (3.0 - 2.0 * s),
         (h1 - h0) * 6.0 * s * (1.0 - s),
     )
+}
+
+/// As `noise1`, with a cubic curve through four values. The curve has no
+/// flat part at each whole number, so a change goes over the full cell.
+fn noise1_round(x: f64, a: u32, b: u32, seed: u32) -> (f64, f64) {
+    let n = x.floor();
+    let (s, n) = (x - n, n as i32);
+    let value = |c: i32| 2.0 * unit(hash(c as u32, a, b, seed)) - 1.0;
+    let [h0, h1, h2, h3] = [-1, 0, 1, 2].map(|i| value(n.wrapping_add(i)));
+    // Catmull-Rom: the slope at each value is half of the change over the
+    // two cells next to it.
+    let (m1, m2) = (0.5 * (h2 - h0), 0.5 * (h3 - h1));
+    let (s2, s3) = (s * s, s * s * s);
+    let value = (2.0 * s3 - 3.0 * s2 + 1.0) * h1
+        + (s3 - 2.0 * s2 + s) * m1
+        + (-2.0 * s3 + 3.0 * s2) * h2
+        + (s3 - s2) * m2;
+    let slope = (6.0 * s2 - 6.0 * s) * (h1 - h2)
+        + (3.0 * s2 - 4.0 * s + 1.0) * m1
+        + (3.0 * s2 - 2.0 * s) * m2;
+    (value.clamp(-1.0, 1.0), slope)
+}
+
+/// The larger of `a` and `b`, with a round join over `k`. With `k` zero, it
+/// is the larger number.
+fn smooth_max(a: f64, b: f64, k: f64) -> f64 {
+    if k <= 0.0 {
+        return a.max(b);
+    }
+    let h = (k - (a - b).abs()).max(0.0) / k;
+    a.max(b) + 0.25 * k * h * h
+}
+
+/// The shape of the axial valley at `x` kilometers from the axis: 1 on its
+/// floor and 0 past its walls, and the rift mountains: 0 on the floor, 1 at
+/// their crests at the top of the walls, and 0 far from them.
+fn axial_valley(x: f64) -> (f64, f64) {
+    let wall = smoothstep(FLOOR_KM, WALL_KM, x);
+    let rim = if x < WALL_KM {
+        wall
+    } else {
+        bump((x - WALL_KM) / RIM_KM)
+    };
+    (1.0 - wall, rim)
 }
 
 /// A bump of height 1 at zero that is exactly zero at 1 and past it.
@@ -1535,9 +1726,13 @@ mod tests {
             FINE,
         );
         let r = plan.ridge.radius;
-        // A trough and two deeps can be at one place.
+        // A trough, two deeps, and the axial valley can be at one place. The
+        // rift mountains go above the crest.
         let f = plan.faulting();
-        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX) * f.level;
+        let (valley, high) = plan.axial(&f);
+        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX + (1.0 - RIM) * valley) * f.level;
+        let highest =
+            f64::from(CREST) + ((1.0 + PEAKS) * INSIDE_CORNER * RIM * valley + high) * f.level;
         let (mut past_foot, mut hills, mut lower, mut count) = (0, 0, 0, 0);
         for noise in [calm(), wild(), RidgeNoise::default()] {
             for j in 0..60 {
@@ -1549,16 +1744,18 @@ mod tests {
                         let new = plan.level(start, at(u, across), noise);
                         assert_eq!(new, start, "{u} {across}");
                     }
-                    // The ground does not go above the crest. Only a trough
-                    // or a deep takes it down, by no more than its depth.
+                    // The ground goes above the crest by no more than the
+                    // rift mountains. Only a trough, a deep, or the axial
+                    // valley takes it down, by no more than its depth.
                     let new = plan.level(START, at(u, across), noise);
-                    assert!(new <= CREST, "{u} {across}");
+                    assert!(f64::from(new) <= highest, "{u} {across}");
                     assert!(f64::from(new) >= f64::from(START) - deepest, "{u} {across}");
                     lower += usize::from(new < START);
                     count += 1;
                     // With no offset, there is no trough and no deep.
-                    let flat = straight.level(START, at(u, across), noise);
-                    assert!((START..=CREST).contains(&flat), "{u} {across}");
+                    let flat = f64::from(straight.level(START, at(u, across), noise));
+                    let valley_floor = f64::from(START) - valley * f.level;
+                    assert!((valley_floor..=highest).contains(&flat), "{u} {across}");
                     // Past the foot of the rise, the blocks only raise the
                     // ground.
                     let base = smooth.level(START, at(u, across), noise);
@@ -1568,15 +1765,128 @@ mod tests {
                     }
                     hills += usize::from(new != base);
                     // Ground a small distance below the crest gets a small
-                    // part of the blocks and of the troughs.
+                    // part of the blocks, the troughs, and the rift
+                    // mountains.
                     let near = plan.level(CREST - 10, at(u, across), noise);
-                    assert!((CREST - 20..=CREST).contains(&near), "{u} {across}");
+                    assert!((CREST - 20..=CREST + 5).contains(&near), "{u} {across}");
                 }
             }
         }
         assert!(hills > 30000, "{hills}");
         assert!(past_foot > 1000, "{past_foot}");
         assert!(lower > 0 && lower < count / 20, "{lower} {count}");
+    }
+
+    /// The mean level over many places along the line at `km` kilometers
+    /// from the line, with the calm noise.
+    fn mean_at(plan: &RidgePlan, km: f64) -> f64 {
+        let across = km / plan.ridge.world_km;
+        let levels = (0..400).map(|i| level(plan, 0.3 + f64::from(i) * 0.0013, across));
+        levels.sum::<f64>() / 400.0
+    }
+
+    /// A ridge with no offset at a full spreading rate in millimeters per
+    /// year.
+    fn at_rate(rate: f64) -> RidgePlan {
+        let spec = Ridge {
+            roughness: 2000.0,
+            spread: 0.5 * rate / 6371.0,
+            ..spec()
+        };
+        shape(spec, FINE)
+    }
+
+    #[test]
+    fn the_axial_valley_follows_the_spreading_rate() {
+        // The valley is deep at a slow rate, shallow at an intermediate
+        // rate, and gone at a fast rate, where a high takes its place.
+        let depths = [20.0, 40.0, 60.0, 100.0].map(|rate| {
+            let plan = at_rate(rate);
+            plan.axial(&plan.faulting())
+        });
+        assert!((1.0..=2.0).contains(&depths[0].0), "{depths:?}");
+        assert!(
+            depths[1].0 < 0.6 * depths[0].0 && depths[1].0 > 0.2,
+            "{depths:?}"
+        );
+        assert!(depths[2].0 < 0.3, "{depths:?}");
+        assert_eq!(depths[3].0, 0.0);
+        assert!((0.2..=0.4).contains(&depths[3].1), "{depths:?}");
+        assert_eq!(depths[0].1, 0.0);
+        // Less magma gives a deeper valley.
+        let plan = shape(
+            Ridge {
+                magma: -0.1,
+                ..at_rate(20.0).ridge
+            },
+            FINE,
+        );
+        assert!(plan.axial(&plan.faulting()).0 > depths[0].0);
+
+        // At a slow rate, the floor is below the crest and the rift
+        // mountains about 30 kilometers apart are above it.
+        let plan = at_rate(20.0);
+        let f = plan.faulting();
+        let valley = depths[0].0 * f.level;
+        let crest = f64::from(CREST);
+        let floor = mean_at(&plan, 0.0);
+        assert!(floor < crest - 0.4 * valley, "{floor} {valley}");
+        let profile: Vec<f64> = (0..=40).map(|km| mean_at(&plan, f64::from(km))).collect();
+        let top = (0..=40)
+            .max_by(|a, b| profile[*a].total_cmp(&profile[*b]))
+            .unwrap();
+        assert!((12..=20).contains(&top), "{top}");
+        assert!(profile[top] > floor + 0.7 * valley, "{profile:?}");
+        // The floor is flat over about 10 kilometers.
+        assert!(
+            (mean_at(&plan, 5.0) - floor).abs() < 0.1 * valley,
+            "{} {floor} {valley}",
+            mean_at(&plan, 5.0)
+        );
+
+        // At a fast rate, the axis is a high above the crest, about 10
+        // kilometers wide.
+        let plan = at_rate(100.0);
+        let high = depths[3].1 * plan.faulting().level;
+        let axis = mean_at(&plan, 0.0);
+        assert!(axis > crest + 0.8 * high, "{axis} {high}");
+        assert!(mean_at(&plan, 5.0) < crest + 0.1 * high);
+    }
+
+    #[test]
+    fn sediment_makes_old_sea_floor_smoother() {
+        // A slow rate gives old sea floor inside the brush radius.
+        let plan = at_rate(12.0);
+        let r = plan.ridge.radius;
+        // The mean change of the level over one kilometer across the line,
+        // near `across`.
+        let rough = |across: f64| {
+            let step = 1.0 / plan.ridge.world_km;
+            let mut sum = 0.0;
+            for i in 0..100 {
+                for k in 0..20 {
+                    let (u, a) = (0.3 + f64::from(i) * 0.0021, across + f64::from(k) * step);
+                    sum += (level(&plan, u, a + step) - level(&plan, u, a)).abs();
+                }
+            }
+            sum / 2000.0
+        };
+        // The sediment fills the lows of old sea floor. Without it, the
+        // change at 0.75 brush radii is within 5 percent of the change at
+        // 0.15 brush radii.
+        let (young, old) = (rough(0.15 * r), rough(0.75 * r));
+        assert!(old < 0.8 * young, "{young} {old}");
+        // Sediment does not reach past the ridge.
+        for across in [REACH * r * 1.001, 2.0 * r] {
+            assert_eq!(level(&plan, 0.4, across), f64::from(START));
+        }
+        // The round join is never below the larger number, and it is the
+        // larger number far from the other.
+        for (a, b) in [(0.0, 0.3), (0.3, 0.0), (0.2, 0.25), (1.0, 0.1)] {
+            assert!(smooth_max(a, b, 0.2) >= a.max(b));
+        }
+        assert_eq!(smooth_max(1.0, 0.1, 0.2), 1.0);
+        assert_eq!(smooth_max(0.4, 0.3, 0.0), 0.4);
     }
 
     #[test]
@@ -2215,8 +2525,12 @@ mod tests {
                 &wrong[..wrong.len().min(12)]
             );
             assert!(after != levels(&start), "{name}");
-            // No texel is above the crest.
-            assert!(after.iter().all(|l| *l <= CREST), "{name}");
+            // No texel is above the crest by more than the rift mountains.
+            let plan = line.plan(0);
+            let f = plan.faulting();
+            let rim = (1.0 + PEAKS) * INSIDE_CORNER * RIM * plan.axial(&f).0 * f.level;
+            let highest = f64::from(CREST) + rim;
+            assert!(after.iter().all(|l| f64::from(*l) <= highest), "{name}");
             // A second pass over the line changes nothing.
             assert_eq!(map.ridge(&line.plan(0)), 0, "{name}");
             for from in [1, line.len() / 2, line.len()] {
@@ -2287,21 +2601,30 @@ mod tests {
     #[test]
     fn the_floor_and_the_ceiling_apply_to_a_ridge() {
         let dirs = path(&[(-10.0, -5.0), (10.0, 5.0)], 0.025);
-        let laid = |limits: Limits| {
+        let laid_with = |spec: Ridge| {
             let mut map = Heightmap::new(128, START);
-            lay(&mut map, Ridge { limits, ..full() }, &dirs);
+            lay(&mut map, spec, &dirs);
             levels(&map)
         };
+        let laid = |limits: Limits| laid_with(Ridge { limits, ..full() });
         let free = laid(Limits::default());
         assert!(free.iter().any(|l| *l > 22000));
-        // Only the troughs and the deeps take the ground down, by no more
-        // than their depth.
-        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX) * full().roughness / ROUGHNESS_KM;
+        // Only the troughs, the deeps, and the axial valley take the ground
+        // down, by no more than their depth.
+        let plan = shape(full(), 128);
+        let (valley, _) = plan.axial(&plan.faulting());
+        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX + valley) * full().roughness / ROUGHNESS_KM;
         assert!(
             free.iter()
                 .all(|l| f64::from(*l) >= f64::from(START) - deepest)
         );
-        assert!(free.iter().any(|l| *l < START));
+        // The troughs and the deeps of the offsets take some ground lower
+        // than a ridge with no offset does.
+        let straight = laid_with(Ridge {
+            offset: 0.0,
+            ..full()
+        });
+        assert!(free.iter().zip(&straight).any(|(a, b)| a + 200 < *b));
         // A floor above the ground keeps the ground of the troughs and the
         // deeps.
         let floor = laid(Limits {
