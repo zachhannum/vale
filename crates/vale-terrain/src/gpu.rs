@@ -144,19 +144,41 @@ struct Uniforms {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct RidgeUniforms {
     radius: f32,
+    /// The mean length of a crest segment.
     segment: f32,
-    shift: f32,
-    roughness: f32,
-    valley: f32,
-    crest: f32,
     /// The texel step at the center of a face, and the sine of the reach.
     texel: f32,
     sin_reach: f32,
+    crest: f32,
+    world_km: f32,
+    spread: f32,
+    offset: f32,
     seed: u32,
     count: u32,
+    group: i32,
+    level: f32,
     /// The length of the line: the number of a multiple of `segment`, and
     /// the distance from that multiple.
     length: [f32; 2],
+    /// The other numbers of `RidgeShape`, in its order from `round`.
+    round: f32,
+    top: f32,
+    foot: f32,
+    mean: f32,
+    magma: f32,
+    spacing: f32,
+    mean_throw: f32,
+    heave: f32,
+    box_half: f32,
+    half_texel: f32,
+    turn_cell: f32,
+    blend: f32,
+    valley: f32,
+    high: f32,
+    valley_part: f32,
+    flat_floor: f32,
+    band_km: f32,
+    segment_depth: f32,
     segments: [[f32; 16]; RIDGE_SEGMENTS],
 }
 
@@ -1090,26 +1112,48 @@ impl GpuHeightmap {
         self.used_ridge_slots
             .store(ridge_slot + 1, Ordering::Relaxed);
         let spec = &plan.ridge;
-        let length_cell = (plan.length / spec.segment + 0.5).floor();
+        let shape = plan.shape();
+        let cell = shape.length;
+        let length_cell = (plan.length / cell + 0.5).floor();
         let mut line = RidgeUniforms {
             length: [
                 length_cell as f32,
-                (plan.length - length_cell * spec.segment) as f32,
+                (plan.length - length_cell * cell) as f32,
             ],
             radius: spec.radius as f32,
-            segment: spec.segment as f32,
-            shift: spec.offset as f32,
-            roughness: spec.roughness as f32,
-            valley: spec.valley as f32,
-            crest: f32::from(spec.crest),
+            segment: cell as f32,
             texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
             sin_reach: (1.5 * spec.radius).sin() as f32,
+            crest: f32::from(spec.crest),
+            world_km: spec.world_km as f32,
+            spread: spec.spread as f32,
+            offset: spec.offset as f32,
             seed: spec.seed,
             count: plan.segments.len() as u32,
+            group: shape.group,
+            level: shape.level as f32,
+            round: shape.round as f32,
+            top: shape.top as f32,
+            foot: shape.foot as f32,
+            mean: shape.mean as f32,
+            magma: shape.magma as f32,
+            spacing: shape.spacing as f32,
+            mean_throw: shape.throw as f32,
+            heave: shape.heave as f32,
+            box_half: shape.box_half as f32,
+            half_texel: shape.half_texel as f32,
+            turn_cell: shape.turn_cell as f32,
+            blend: shape.blend as f32,
+            valley: shape.valley as f32,
+            high: shape.high as f32,
+            valley_part: shape.valley_part as f32,
+            flat_floor: shape.flat_floor as f32,
+            band_km: shape.band_km as f32,
+            segment_depth: shape.segment_depth as f32,
             ..bytemuck::Zeroable::zeroed()
         };
         for (to, segment) in line.segments.iter_mut().zip(&plan.segments) {
-            *to = segment.to_f32(spec.segment);
+            *to = segment.to_f32(cell);
         }
         let used = size_of::<RidgeUniforms>()
             - (RIDGE_SEGMENTS - plan.segments.len()) * size_of::<[f32; 16]>();

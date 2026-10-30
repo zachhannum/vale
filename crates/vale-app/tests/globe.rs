@@ -3516,10 +3516,10 @@ fn an_ocean_ridge_stroke_gives_the_levels_of_the_cpu_ridge() {
     assert!((0..6).filter(|face| on_face(*face)).count() >= 2);
     let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
     assert!(worst.unwrap() <= 2, "{worst:?}");
-    // The top is near the Crest setting. A rim of the valley goes above it
-    // by 0.4 times the Valley setting at most.
+    // The top is near the Crest setting. The rift mountains and the axial
+    // high go above it by 800 m at most.
     let crest = meters_to_level(-500.0);
-    let rim = ((0.4 * spec.valley).ceil() as u16) + 2;
+    let rim = meters_to_level(300.0) - crest + 2;
     let top = *app.iter().max().unwrap();
     let lift = crest - meters_to_level(-2500.0);
     assert!(

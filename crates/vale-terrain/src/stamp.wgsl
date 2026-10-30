@@ -119,23 +119,45 @@ struct RidgeSegment {
 // The same number as `RIDGE_SEGMENTS` in `ridge.rs`.
 const RIDGE_SEGMENTS = 128;
 
-// The settings and the segments of a ridge pass.
+// The settings and the segments of a ridge pass, with the numbers of
+// `RidgePlan::level` that are the same for each texel. The numbers are those
+// of `RidgeUniforms` in `gpu.rs`.
 struct RidgeLine {
     radius: f32,
     // The mean length of a crest segment.
     segment: f32,
-    shift: f32,
-    roughness: f32,
-    valley: f32,
-    crest: f32,
     // The texel step at the center of a face, and the sine of the reach.
     texel: f32,
     sin_reach: f32,
+    crest: f32,
+    world_km: f32,
+    spread: f32,
+    offset: f32,
     seed: u32,
     count: u32,
+    group: i32,
+    level: f32,
     // The length of the line: the number of a multiple of the segment
     // length, and the distance from that multiple.
     length: vec2<f32>,
+    round: f32,
+    top: f32,
+    foot: f32,
+    mean: f32,
+    magma: f32,
+    spacing: f32,
+    mean_throw: f32,
+    heave: f32,
+    box_half: f32,
+    half_texel: f32,
+    turn_cell: f32,
+    blend: f32,
+    valley: f32,
+    high: f32,
+    valley_part: f32,
+    flat_floor: f32,
+    band_km: f32,
+    segment_depth: f32,
     segments: array<RidgeSegment, RIDGE_SEGMENTS>,
 }
 
@@ -616,6 +638,343 @@ fn warp_level(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
     return floor(level_between(source) + 0.5);
 }
 
+// A number from 0 to 1 from the low 24 bits of a hash.
+fn unit(h: u32) -> f32 {
+    return f32(h & 0xffffffu) / 16777216.0;
+}
+
+// The builtin `smoothstep` can use other steps.
+fn smooth_between(low: f32, high: f32, x: f32) -> f32 {
+    let t = clamp((x - low) / (high - low), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// The builtin functions of a driver can be wrong in the fifth digit, and a
+// level of the ridge needs about the sixth. These functions replace them.
+
+// The exponential function. The steps split the number into a power of 2
+// and a rest of less than half of ln 2.
+fn exp_precise(x: f32) -> f32 {
+    if x < -80.0 {
+        return 0.0;
+    }
+    let k = round(x * 1.4426950408889634);
+    // The high part of ln 2 has few bits, so its product with `k` is exact.
+    let r = (x - k * 0.693145751953125) - k * 1.4286068203094172e-6;
+    let e = 1.0 + r * (1.0 + r * (1.0 / 2.0 + r * (1.0 / 6.0 + r * (1.0 / 24.0
+        + r * (1.0 / 120.0 + r * (1.0 / 720.0 + r * (1.0 / 5040.0 + r / 40320.0)))))));
+    return ldexp(e, i32(k));
+}
+
+// The natural logarithm of a number above zero.
+fn ln_precise(x: f32) -> f32 {
+    let parts = frexp(x);
+    var m = parts.fract;
+    var e = parts.exp;
+    if m < 0.70710678 {
+        m *= 2.0;
+        e -= 1;
+    }
+    // ln m = 2 atanh z.
+    let z = (m - 1.0) / (m + 1.0);
+    let q = z * z;
+    let s = 2.0 * z * (1.0 + q * (1.0 / 3.0 + q * (1.0 / 5.0 + q * (1.0 / 7.0
+        + q * (1.0 / 9.0 + q / 11.0)))));
+    return f32(e) * 0.6931471805599453 + s;
+}
+
+// `x` to the power `y`, for `x` of zero or more. Zero to a power above zero
+// is zero.
+fn pow_precise(x: f32, y: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    return exp_precise(y * ln_precise(x));
+}
+
+// The cosine of `TAU * t`.
+fn cos_turn(t: f32) -> f32 {
+    let half_angle = 4.0 * PI_4 * (t - round(t));
+    let s = sin_series(vec2<f32>(half_angle)).x;
+    return 1.0 - 2.0 * s * s;
+}
+
+// The hyperbolic tangent of a number of zero or more.
+fn tanh_precise(x: f32) -> f32 {
+    let e = exp_precise(-2.0 * min(x, 40.0));
+    return (1.0 - e) / (1.0 + e);
+}
+
+// The constants of `ridge.rs`, with the same names. `RIDGE_REACH` is `REACH`.
+const RIDGE_REACH = 1.5;
+const BEND_ALONG = 0.08;
+const BEND_ACROSS = 0.08;
+const CURVE = 0.3;
+const SALT_FAULT = 0x1b873593u;
+const SALT_TURN = 0x6c8e9cf5u;
+const SALT_MIGRATE = 0x3d4fa1c7u;
+const SALT_MAGMA = 0x9b05688cu;
+const SALT_WALL = 0x4c95e1a3u;
+const SALT_LUMP = 0x2d8e7f19u;
+const SALT_FRACTURE = 0x5f3ac2e1u;
+const JITTER = 0.3;
+const SECOND_ORDER_KM = 130.0;
+const GROUP_SHIFT = 0.8;
+const TAN_TURN = 0.14;
+const MIGRATE = 0.1;
+const MIGRATE_MYR = 4.0;
+const WANDER_KM = 3.0;
+const WANDER_MYR = 0.8;
+const MIGRATE_ROUND = 0.5;
+const SHORTEST_PART = 0.2;
+const SEGMENT_MAGMA = 0.03;
+const KEEP_SOFT = 0.1;
+const MAGMA_MYR = 2.0;
+const MAGMA_BAND = 0.26;
+const THROW_SPACING = 0.65;
+const MAGMA_RELIEF = 0.12;
+const MAGMA_MEAN = 0.5;
+const WAVE_MYR = 0.8;
+const WAVE_KM = 40.0;
+const SEGMENT_MYR = 6.0;
+const SEGMENT_CHANGE = 0.35;
+const HOOK_PART = 0.15;
+const HOOK_ROWS = 1.0;
+const TROUGH_DEPTH = 1.3;
+const TROUGH_OFFSET_KM = 100.0;
+const TROUGH_POWER = 1.3;
+const STRENGTH = vec2<f32>(0.5, 1.6);
+const TROUGH_MAX = 1.5;
+const OFFSET_TROUGH = 0.8;
+const TROUGH_KM = 10.0;
+const TROUGH_WIDENS = 0.8;
+const TROUGH_KM_RANGE = vec2<f32>(2.0, 20.0);
+const TROUGH_FLOOR = 0.3;
+const ACTIVE = 0.4;
+const ACTIVE_MYR = 3.0;
+const PATCH_MYR = 4.0;
+const PATCH_OLD_MYR = 10.0;
+const PATCH = 0.5;
+const TROUGH_FILL = 0.4;
+const TROUGH_MYR = 20.0;
+const TRANSVERSE_SHARE = 0.5;
+const TRANSVERSE = 0.6;
+const TRANSVERSE_AT = 1.4;
+const TRANSVERSE_WIDTH = 0.9;
+const NODAL_DEPTH = 0.005;
+const NODAL_MAX = 0.6;
+const NODAL_KM = 12.0;
+const NODAL_ALONG_KM = 30.0;
+const NODAL_IN = 0.3;
+const HIGH_KM = 5.0;
+const FLOOR_HALF = vec2<f32>(5.0, 8.0);
+const WALL_WIDTH = vec2<f32>(10.0, 14.0);
+const VALLEY_ALONG = 0.15;
+const DOWN = 0.85;
+const DOWN_KM = 35.0;
+const BAND = 0.25;
+const WALL_FAULTS = 4;
+const STAIR = 0.65;
+const MOUNT_KM = 24.0;
+const WALL_JITTER = 0.3;
+const WALL_PIECE = vec2<f32>(15.0, 40.0);
+const JOG = 0.25;
+const RISE_BEND_KM = 70.0;
+const VALLEY_END = 0.5;
+const INSIDE_CORNER = 1.25;
+const ABOVE_CREST = 0.2;
+const LUMP_KM = 4.0;
+const LUMP_TEXELS = 1.2;
+const LUMP_HEIGHT = 0.25;
+const LUMP_SIZE = 0.4;
+const AVR_HEIGHT = 0.25;
+const AVR_KM = 2.0;
+const AVR_END = 0.12;
+const AVR_PIECE_KM = 18.0;
+const AVR_GAPS = 0.3;
+const SEDIMENT_RATE = 0.005;
+const SEDIMENT_SOFT = 0.3;
+const POND = 0.3;
+const HILL_LOW = 1.0;
+const TAPER = 1.2;
+const TAPER_WIDTH = 0.2;
+const FOOT = 0.25;
+const DIP_TAN = 1.2;
+const THROW_MIN = 0.6;
+const THROW_MAX = 3.0;
+const FAULT_JITTER = 0.4;
+const INWARD = 0.8;
+const GAMMA = 0.02;
+const PIECE_MIN = 10.0;
+const PIECE_MAX = 30.0;
+const PIECE_JITTER = 0.15;
+const OVERLAP = 0.3;
+const STEP_OVER = 0.3;
+const BOW = 0.2;
+const PLACE_SPREAD = 0.5 + FAULT_JITTER + STEP_OVER + BOW;
+const BLOCK_WIDTH = 2.5;
+const WIDTH_MIN = 1.0;
+const WIDTH_MAX = 5.0;
+const SCARP_MAX = 0.4;
+const BLOCK_MEAN = 1.08;
+const HILL_TOP = 3.6;
+const GROW = 1.5;
+const HILL_FADE = 0.8;
+const MAX_SMOOTH = 0.3;
+const CAP_KNEE = 0.85;
+const FAULT_SPACING = array<vec2<f32>, 5>(
+    vec2<f32>(0.5, 8.0),
+    vec2<f32>(0.6, 5.0),
+    vec2<f32>(0.7, 4.0),
+    vec2<f32>(0.8, 3.0),
+    vec2<f32>(0.9, 2.0),
+);
+const FAULT_HEAVE = array<vec2<f32>, 5>(
+    vec2<f32>(0.5, 5.0),
+    vec2<f32>(0.6, 2.5),
+    vec2<f32>(0.7, 1.2),
+    vec2<f32>(0.8, 0.7),
+    vec2<f32>(0.9, 0.3),
+);
+
+// `lerp_table` in `ridge.rs`, for a table of 5 points.
+fn lerp_table(table: array<vec2<f32>, 5>, x: f32) -> f32 {
+    var t = table;
+    if x <= t[0].x {
+        return t[0].y;
+    }
+    for (var i = 0; i < 4; i++) {
+        if x <= t[i + 1].x {
+            let a = t[i];
+            let b = t[i + 1];
+            return a.y + (b.y - a.y) * (x - a.x) / (b.x - a.x);
+        }
+    }
+    return t[4].y;
+}
+
+// `depth` in `ridge.rs`.
+fn ridge_depth(age: f32) -> f32 {
+    if age < 20.0 {
+        return 2600.0 + 365.0 * sqrt(age);
+    }
+    return 5651.0 - 2473.0 * exp_precise(-0.0278 * age);
+}
+
+// `mix` in `ridge.rs`. The builtin `mix` can use other steps.
+fn ridge_mix(a: f32, b: f32, t: f32) -> f32 {
+    return a + (b - a) * t;
+}
+
+// `bump` in `ridge.rs`.
+fn bump(q: f32) -> f32 {
+    let x = max(1.0 - q * q, 0.0);
+    return x * x;
+}
+
+// `soft_cap` in `ridge.rs`.
+fn soft_cap(value: f32, cap: f32) -> f32 {
+    let knee = CAP_KNEE * cap;
+    if value <= knee {
+        return value;
+    }
+    let room = cap - knee;
+    if room <= 0.0 {
+        return knee;
+    }
+    return knee + room * tanh_precise((value - knee) / room);
+}
+
+// `smooth_max` in `ridge.rs`.
+fn smooth_max(a: f32, b: f32, k: f32) -> f32 {
+    if k <= 0.0 {
+        return max(a, b);
+    }
+    let h = max(k - abs(a - b), 0.0) / k;
+    return max(a, b) + 0.25 * k * h * h;
+}
+
+// `pond` in `ridge.rs`.
+fn pond(height: f32, level: f32) -> f32 {
+    let full = smooth_max(height, level, SEDIMENT_SOFT * level);
+    return height + POND * (full - height);
+}
+
+// `block` in `ridge.rs`. `BACK` is 1, so the back of a block is a square.
+fn block_area(y: f32, scarp: f32, w: f32) -> f32 {
+    if y <= -scarp {
+        return 0.0;
+    } else if y < 0.0 {
+        return (y + scarp) * (y + scarp) / (2.0 * scarp);
+    } else if y < w {
+        let rest = 1.0 - y / w;
+        return 0.5 * scarp + w / 2.0 * (1.0 - rest * rest);
+    }
+    return 0.5 * scarp + w / 2.0;
+}
+
+fn block(y: f32, scarp: f32, w: f32, b: f32) -> f32 {
+    if y + b <= -scarp || y - b >= w {
+        return 0.0;
+    }
+    return (block_area(y + b, scarp, w) - block_area(y - b, scarp, w)) / (2.0 * b);
+}
+
+// `ellipse` in `ridge.rs`. The arc sine is the arc tangent of `x / s`, so
+// an error of `s` changes the area little.
+fn ellipse_area(x: f32) -> f32 {
+    let c = clamp(x, -1.0, 1.0);
+    let s = sqrt(max(1.0 - c * c, 0.0));
+    var angle = sign(c) * 2.0 * PI_4;
+    if s > 0.0 {
+        angle = atan_any(c / s);
+    }
+    return 0.5 * (c * s + angle);
+}
+
+fn ellipse(q: f32, b: f32) -> f32 {
+    return (ellipse_area(q + b) - ellipse_area(q - b)) / (2.0 * b);
+}
+
+// A hash of a whole number and two other numbers. A number below zero has
+// the bits of its whole number, as in Rust.
+fn ridge_hash(a: i32, b: u32, c: u32, seed: u32) -> u32 {
+    return hash(vec3<u32>(bitcast<u32>(a), b, c), seed);
+}
+
+// `noise1` in `ridge.rs`: the value and its change.
+fn noise1(x: f32, a: u32, b: u32, seed: u32) -> vec2<f32> {
+    let n = floor(x);
+    let s = x - n;
+    let c = i32(n);
+    let h0 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(c), a, b), seed)) - 1.0;
+    let h1 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(c + 1), a, b), seed)) - 1.0;
+    return vec2<f32>(h0 + (h1 - h0) * s * s * (3.0 - 2.0 * s), (h1 - h0) * 6.0 * s * (1.0 - s));
+}
+
+// `noise1_round` in `ridge.rs`.
+fn noise1_round(x: f32, a: u32, b: u32, seed: u32) -> vec2<f32> {
+    let n = floor(x);
+    let s = x - n;
+    let c = i32(n);
+    var h: array<f32, 4>;
+    for (var i = 0; i < 4; i++) {
+        h[i] = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(c + i - 1), a, b), seed)) - 1.0;
+    }
+    let m1 = 0.5 * (h[2] - h[0]);
+    let m2 = 0.5 * (h[3] - h[1]);
+    let s2 = s * s;
+    let s3 = s * s * s;
+    let value = (2.0 * s3 - 3.0 * s2 + 1.0) * h[1]
+        + (s3 - 2.0 * s2 + s) * m1
+        + (-2.0 * s3 + 3.0 * s2) * h[2]
+        + (s3 - s2) * m2;
+    let slope = (6.0 * s2 - 6.0 * s) * (h[1] - h[2])
+        + (3.0 * s2 - 4.0 * s + 1.0) * m1
+        + (3.0 * s2 - 2.0 * s) * m2;
+    return vec2<f32>(clamp(value, -1.0, 1.0), slope);
+}
+
 // The place of a direction on the line of a ridge. `cell` and `rest` give the
 // distance along the line: the number of a multiple of the segment length,
 // and the distance from that multiple.
@@ -646,7 +1005,7 @@ fn angle_to(p: vec3<f32>, q: vec3<f32>) -> f32 {
 // `RidgePlan::place`. The pool holds the ground from before the stroke, so a
 // texel far from the new part of the line has no own case.
 fn ridge_place(p: vec3<f32>) -> RidgePoint {
-    let reach = 1.5 * ridge.radius;
+    let reach = RIDGE_REACH * ridge.radius;
     var best = RidgePoint(false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     var best_distance = reach;
     for (var i = 0u; i < ridge.count; i++) {
@@ -710,33 +1069,10 @@ fn ridge_place(p: vec3<f32>) -> RidgePoint {
     return best;
 }
 
-// A number from 0 to 1 from the low 24 bits of a hash.
-fn unit(h: u32) -> f32 {
-    return f32(h & 0xffffffu) / 16777216.0;
-}
-
-// The builtin `smoothstep` can use other steps.
-fn smooth_between(low: f32, high: f32, x: f32) -> f32 {
-    let t = clamp((x - low) / (high - low), 0.0, 1.0);
-    return t * t * (3.0 - 2.0 * t);
-}
-
-// `bell` in `ridge.rs`.
-fn ridge_bell(x: f32) -> f32 {
-    let rest = max(1.0 - x * x, 0.0);
-    return rest * rest;
-}
-
-// `profile` in `ridge.rs`.
-fn ridge_profile(x: f32) -> f32 {
-    return sqrt(sqrt(x * x + 0.04)) - sqrt(0.2);
-}
-
 // The noise at the place of a texel, as `RidgeNoise` in `ridge.rs`.
 struct RidgeNoise {
     bend: vec3<f32>,
     slow: vec3<f32>,
-    mid: vec3<f32>,
 }
 
 // The steps are those of `RidgePlan::noise`.
@@ -744,237 +1080,500 @@ fn ridge_noise(p: vec3<f32>) -> RidgeNoise {
     let r = ridge.radius;
     let wide = noise3(p / (0.9 * r), ridge.seed ^ 0x51ed270bu);
     let fine = noise3(p / (0.37 * r), ridge.seed ^ 0x2f6b8a35u);
-    return RidgeNoise(
-        wide + fine * 0.5,
-        noise3(p / (1.7 * r), ridge.seed ^ 0x7a3c91d7u),
-        noise3(p / (0.55 * r), ridge.seed ^ 0x4cf5ad43u),
-    );
+    return RidgeNoise(wide + fine * 0.5, noise3(p / (1.7 * r), ridge.seed ^ 0x7a3c91d7u));
 }
 
-// A number from 0 to 1 for a whole number and a channel. A number below
-// zero has the bits of its whole number, as in Rust.
-fn ridge_unit(i: i32, channel: u32) -> f32 {
-    return unit(hash(vec3<u32>(u32(i), channel, 0u), ridge.seed));
+// The shader keeps each distance along the line as a distance from the
+// start of crest cell `cell`: the place `cell * ridge.segment` with no
+// bend. Thus the numbers stay small.
+
+// `RidgePlan::boundary`, from the start of crest cell `cell`.
+fn ridge_boundary(j: i32, cell: i32) -> f32 {
+    let jitter = 2.0 * unit(ridge_hash(j, 0u, 0u, ridge.seed)) - 1.0;
+    return (f32(j - cell) + JITTER * jitter) * ridge.segment;
 }
 
 // `RidgePlan::group_start`.
 fn ridge_group_start(c: i32) -> i32 {
-    let h = hash(vec3<u32>(u32(c), 1u, 0u), ridge.seed);
-    return c * 4 + i32(h & 3u);
+    let choices = u32(ridge.group / 2 + 1);
+    let h = ridge_hash(c, 1u, 0u, ridge.seed);
+    return c * ridge.group + i32(h % choices);
 }
 
-// `RidgePlan::strength`.
-fn ridge_strength(i: i32) -> f32 {
-    let x = ridge_unit(i, 2u);
-    if i == ridge_group_start(i >> 2u) {
-        return 0.7 + 0.3 * x;
+// `RidgePlan::group`. The division rounds down, as `div_euclid` does.
+fn ridge_group(k: i32) -> i32 {
+    var c = k / ridge.group;
+    if c * ridge.group > k {
+        c -= 1;
     }
-    return 0.1 + 0.4 * x * x;
+    if k >= ridge_group_start(c) {
+        return c;
+    }
+    return c - 1;
+}
+
+// `RidgePlan::transform`.
+fn ridge_transform(j: i32) -> bool {
+    return j == ridge_group_start(ridge_group(j));
+}
+
+// `RidgePlan::group_shift`.
+fn ridge_group_shift(c: i32) -> f32 {
+    let part = 2.0 * unit(ridge_hash(c, 3u, 0u, ridge.seed)) - 1.0;
+    return ridge.offset * GROUP_SHIFT * part;
 }
 
 // `RidgePlan::shift`.
 fn ridge_shift(k: i32) -> f32 {
-    let c = k >> 2u;
-    var group = c - 1;
-    if k >= ridge_group_start(c) {
-        group = c;
+    let own = 2.0 * unit(ridge_hash(k, 4u, 0u, ridge.seed)) - 1.0;
+    return ridge_group_shift(ridge_group(k)) + ridge.offset * (1.0 - GROUP_SHIFT) * own;
+}
+
+// `RidgePlan::turn`: the move and its change.
+fn ridge_turn(tau: f32) -> vec2<f32> {
+    let seed = ridge.seed ^ SALT_TURN;
+    let x = tau / ridge.turn_cell;
+    let nf = floor(x);
+    let s = x - nf;
+    let n = i32(nf);
+    var sum = 0.0;
+    var last = TAN_TURN * (2.0 * unit(ridge_hash(min(n, 0), 5u, 0u, seed)) - 1.0);
+    for (var c = min(n, 0); c < max(n, 0); c++) {
+        let next = TAN_TURN * (2.0 * unit(ridge_hash(c + 1, 5u, 0u, seed)) - 1.0);
+        sum += 0.5 * (last + next);
+        last = next;
     }
-    let wide = 2.0 * ridge_unit(group, 3u) - 1.0;
-    let own = 2.0 * ridge_unit(k, 4u) - 1.0;
-    return ridge.shift * (0.75 * wide + 0.25 * own);
-}
-
-// The move of boundary `i`, as a part of the segment length.
-fn ridge_jitter(i: i32) -> f32 {
-    return 0.35 * (2.0 * ridge_unit(i, 0u) - 1.0);
-}
-
-// The part of the strength of the crack at boundary `i` that a place gets
-// at `x` of the crest segment from that boundary.
-fn ridge_end(x: f32, i: i32) -> f32 {
-    let near = max(1.0 - 2.0 * x, 0.0);
-    let strength = ridge_strength(i);
-    return near * near * strength * strength;
-}
-
-// Each number from -1 to 1 as a number from 0 to 1, with more of the
-// numbers near the two ends.
-fn ridge_gain(v: vec3<f32>) -> vec3<f32> {
-    let t = clamp((v + 0.6) / 1.2, vec3<f32>(0.0), vec3<f32>(1.0));
-    return t * t * (3.0 - 2.0 * t);
-}
-
-// One row of `brick` in `ridge.rs`.
-fn brick_row(x: f32, j: u32, channel: u32, seed: u32) -> f32 {
-    let moved = x + unit(hash(vec3<u32>(j, 0x5bd1e995u, channel), seed));
-    let cell = floor(moved);
-    let i = u32(i32(cell));
-    let rest = moved - cell;
-    let a = unit(hash(vec3<u32>(i, j, channel), seed));
-    let b = unit(hash(vec3<u32>(i + 1u, j, channel), seed));
-    return a + (b - a) * (rest * rest * (3.0 - 2.0 * rest));
-}
-
-// `brick` in `ridge.rs`.
-fn brick(x: f32, y: f32, channel: u32, seed: u32) -> f32 {
-    let cell = floor(y);
-    let j = u32(i32(cell));
-    let rest = y - cell;
-    let a = brick_row(x, j, channel, seed);
-    let b = brick_row(x, j + 1u, channel, seed);
-    return a + (b - a) * (rest * rest * (3.0 - 2.0 * rest));
-}
-
-// The crack at boundary `j`, at `x` along the line from it. `before` is
-// true on the side of the crest segment before the boundary. `base` is the
-// depth of the strongest crack, and `narrow` makes a weak crack faint. The
-// numbers are the depth of the trough at the place, the part of the trough
-// from 0 to 1, and the height of the shoulder.
-fn ridge_crack(j: i32, x: f32, before: bool, base: f32, narrow: f32) -> vec3<f32> {
-    let strength = ridge_strength(j);
-    let half = max(0.02 * ridge.radius, 3.0 * ridge.texel) * (1.0 + 1.2 * strength);
-    let trough = ridge_bell(x / half);
-    let faint = 1.0 - 0.9 * (1.0 - strength) * narrow;
-    let depth = (0.02 + 0.3 * strength * strength) * base * faint;
-    var shoulder = 0.0;
-    let on_left = (hash(vec3<u32>(u32(j), 6u, 0u), ridge.seed) & 1u) == 1u;
-    if on_left == before {
-        shoulder = 0.4 * depth * ridge_bell((x / half - 1.6) / 0.9);
+    if n < 0 {
+        sum = -sum;
     }
-    return vec3<f32>(depth * trough, trough, shoulder);
+    let h0 = TAN_TURN * (2.0 * unit(ridge_hash(n, 5u, 0u, seed)) - 1.0);
+    let h1 = TAN_TURN * (2.0 * unit(ridge_hash(n + 1, 5u, 0u, seed)) - 1.0);
+    sum += h0 * s + (h1 - h0) * s * s * s * (1.0 - 0.5 * s);
+    let slope = h0 + (h1 - h0) * s * s * (3.0 - 2.0 * s);
+    return vec2<f32>(ridge.spread * ridge.turn_cell * sum, slope);
+}
+
+// `RidgePlan::migration`.
+fn ridge_migration(j: i32, tau: f32) -> vec2<f32> {
+    let seed = ridge.seed ^ SALT_MIGRATE;
+    let wander = WANDER_KM / ridge.world_km;
+    var migrate = MIGRATE * ridge.segment;
+    if ridge_transform(j) {
+        migrate = 0.0;
+    }
+    let a = bitcast<u32>(j);
+    let slow = noise1(tau / MIGRATE_MYR, a, 0u, seed);
+    let slow_zero = noise1(0.0, a, 0u, seed).x;
+    let small = noise1(tau / WANDER_MYR, a, 1u, seed);
+    let small_zero = noise1(0.0, a, 1u, seed).x;
+    var sum = vec2<f32>(0.0);
+    sum.x += 0.5 * migrate * (slow.x - slow_zero);
+    sum.y += 0.5 * migrate * slow.y / MIGRATE_MYR;
+    sum.x += 0.5 * wander * (small.x - small_zero);
+    sum.y += 0.5 * wander * small.y / WANDER_MYR;
+    return sum;
+}
+
+// `RidgePlan::trace`: the place along the line from the start of crest cell
+// `cell`, its change with the distance across the line, and the age.
+fn ridge_trace(j: i32, cell: i32, across: f32, turn: vec2<f32>) -> vec3<f32> {
+    let v = ridge.spread;
+    let middle = 0.5 * (ridge_shift(j - 1) + ridge_shift(j));
+    let off = across - middle;
+    let tau_off = off / v;
+    let tau = sqrt(tau_off * tau_off + MIGRATE_ROUND * MIGRATE_ROUND) - MIGRATE_ROUND;
+    let moved = ridge_migration(j, tau);
+    let to_tau = off / v / (tau + MIGRATE_ROUND);
+    return vec3<f32>(
+        ridge_boundary(j, cell) + turn.x + moved.x,
+        turn.y + moved.y * to_tau / v,
+        tau,
+    );
+}
+
+// `RidgePlan::fracture`: the depth, the half width, the height of the
+// transverse ridge, and its side.
+fn ridge_fracture(j: i32, offset_km: f32, is_transform: bool, age: f32) -> vec4<f32> {
+    let seed = ridge.seed ^ SALT_FRACTURE;
+    let size = offset_km / TROUGH_OFFSET_KM;
+    let strength = ridge_mix(STRENGTH.x, STRENGTH.y, unit(ridge_hash(j, 0u, 0u, seed)));
+    var kind = OFFSET_TROUGH;
+    if is_transform {
+        kind = 1.0;
+    }
+    let leave = 0.5 * offset_km / (ridge.spread * ridge.world_km);
+    let fresh = 1.0 + ACTIVE * (1.0 - smooth_between(leave, leave + ACTIVE_MYR, age));
+    let patches = noise1(age / PATCH_MYR, bitcast<u32>(j), 1u, seed).x;
+    let patchy = PATCH * smooth_between(0.0, PATCH_OLD_MYR, age);
+    let keep = 1.0 - patchy * (1.0 - smooth_between(-0.5, 0.5, patches));
+    let filled = 1.0 - TROUGH_FILL * smooth_between(0.0, TROUGH_MYR, age);
+    let full = TROUGH_DEPTH * pow_precise(size, TROUGH_POWER) * strength * kind * fresh;
+    let depth = min(full, TROUGH_MAX) * keep * filled;
+    let half_len = clamp(
+        TROUGH_KM * pow_precise(size * strength * kind, TROUGH_WIDENS),
+        TROUGH_KM_RANGE.x,
+        TROUGH_KM_RANGE.y,
+    );
+    var height = 0.0;
+    if is_transform && unit(ridge_hash(j, 2u, 0u, seed)) < TRANSVERSE_SHARE {
+        height = TRANSVERSE * depth;
+    }
+    var side = 1.0;
+    if unit(ridge_hash(j, 3u, 0u, seed)) < 0.5 {
+        side = -1.0;
+    }
+    return vec4<f32>(depth, half_len, height, side);
+}
+
+// A throw of `RidgePlan::fault_sum` from a number from 0 to 1.
+fn ridge_throw(u: f32) -> f32 {
+    return ridge.mean_throw * (THROW_MIN + (1.0 - THROW_MIN) * min(-ln_precise(1.0 - u), THROW_MAX));
+}
+
+// `RidgePlan::faults`.
+fn ridge_faults(k: i32, side: u32, along: f32, len: f32, x: f32) -> f32 {
+    let seed = ridge.seed ^ SALT_FAULT;
+    let b = ridge.box_half;
+    let key = bitcast<u32>(k) * 32u + side * 16u;
+    let reach = max(WIDTH_MAX, SCARP_MAX) + b;
+    let first = max(i32(floor(x - PLACE_SPREAD - reach)), 0);
+    let last = i32(floor(x + PLACE_SPREAD - 1.0 + reach));
+    let spacing = ridge.spacing;
+    let heave = ridge.heave;
+    var sum = 0.0;
+    for (var i = first; i <= last; i++) {
+        let piece = clamp(
+            ridge_throw(unit(hash(vec3<u32>(bitcast<u32>(i), 0xffffffffu, key), seed))) / GAMMA,
+            PIECE_MIN,
+            PIECE_MAX,
+        );
+        let phase = unit(hash(vec3<u32>(bitcast<u32>(i), 0xffffffffu, key + 1u), seed));
+        let cell = i32(floor(along / piece + phase));
+        for (var j = cell - 1; j <= cell + 1; j++) {
+            let at = vec2<u32>(bitcast<u32>(i), bitcast<u32>(j));
+            let middle = f32(j) + 0.5 - phase
+                + PIECE_JITTER * (2.0 * unit(hash(vec3<u32>(at, key + 3u), seed)) - 1.0);
+            let half_len = 0.5 * (1.0 + OVERLAP * unit(hash(vec3<u32>(at, key + 4u), seed)));
+            let soft_end = min(ridge.half_texel, MAX_SMOOTH * piece);
+            let start = (middle - half_len) * piece;
+            let end = (middle + half_len) * piece;
+            if along <= start - soft_end || along >= end + soft_end {
+                continue;
+            }
+            let place = middle * piece / len;
+            let magma = ridge.magma + SEGMENT_MAGMA * cos_turn(place - 0.5);
+            let grown = lerp_table(FAULT_HEAVE, magma) / heave;
+            let keep = min(spacing / lerp_table(FAULT_SPACING, magma), 1.0);
+            let kept = smooth_between(
+                -KEEP_SOFT,
+                KEEP_SOFT,
+                keep - unit(hash(vec3<u32>(at, key + 8u), seed)),
+            );
+            let q = (2.0 * along - start - end) / (end - start);
+            let bow = max(1.0 - q * q, 0.0);
+            let taper = ellipse(q, 2.0 * soft_end / (end - start));
+            let height = ridge_throw(unit(hash(vec3<u32>(at, key + 5u), seed))) * grown;
+            let inward = unit(hash(vec3<u32>(at, key + 2u), seed)) < INWARD;
+            let place_across = f32(i) + 0.5
+                + FAULT_JITTER * (2.0 * unit(hash(vec3<u32>(at, key + 1u), seed)) - 1.0)
+                + STEP_OVER * (2.0 * unit(hash(vec3<u32>(at, key + 6u), seed)) - 1.0)
+                + BOW * (2.0 * unit(hash(vec3<u32>(at, key + 7u), seed)) - 1.0) * bow;
+            let scarp = clamp(height / (DIP_TAN * spacing), 1e-6, SCARP_MAX);
+            var y = place_across - x;
+            if inward {
+                y = x - place_across;
+            }
+            let width = clamp(BLOCK_WIDTH * sqrt(height / ridge.mean_throw), WIDTH_MIN, WIDTH_MAX);
+            sum += height * taper * kept * block(y, scarp, width, b);
+        }
+    }
+    return sum;
+}
+
+// `RidgePlan::walls`.
+fn ridge_walls(band_group: i32, side: u32, along: f32, x: f32, floor_half: f32, wall: f32) -> f32 {
+    let seed = ridge.seed ^ SALT_WALL;
+    let key = (bitcast<u32>(band_group) * 2u + side) * 8u;
+    let row = wall / f32(WALL_FAULTS);
+    var sum = 0.0;
+    for (var n = 0; n < WALL_FAULTS; n++) {
+        let fault = bitcast<u32>(n);
+        let piece = ridge_mix(
+            WALL_PIECE.x,
+            WALL_PIECE.y,
+            unit(hash(vec3<u32>(fault, 0xffffffffu, key), seed)),
+        );
+        let phase = unit(hash(vec3<u32>(fault, 0xffffffffu, key + 1u), seed));
+        let cell = i32(floor(along / piece + phase));
+        for (var j = cell - 1; j <= cell + 1; j++) {
+            let at = vec2<u32>(fault, bitcast<u32>(j));
+            let middle = f32(j) + 0.5 - phase
+                + PIECE_JITTER * (2.0 * unit(hash(vec3<u32>(at, key + 2u), seed)) - 1.0);
+            let half_len = 0.5 * (1.0 + OVERLAP * unit(hash(vec3<u32>(at, key + 3u), seed)));
+            let soft_end = min(ridge.half_texel, MAX_SMOOTH * piece);
+            let start = (middle - half_len) * piece;
+            let end = (middle + half_len) * piece;
+            if along <= start - soft_end || along >= end + soft_end {
+                continue;
+            }
+            let q = (2.0 * along - start - end) / (end - start);
+            let taper = ellipse(q, 2.0 * soft_end / (end - start));
+            let fault_throw = (0.5 + unit(hash(vec3<u32>(at, key + 4u), seed))) / f32(WALL_FAULTS);
+            let jitter = WALL_JITTER * (2.0 * unit(hash(vec3<u32>(at, key + 5u), seed)) - 1.0);
+            let place = floor_half + row * (f32(n) + 0.5 + jitter);
+            let scarp = max(fault_throw * row / DIP_TAN, 1e-3);
+            sum += fault_throw * taper * block(x - place, scarp, MOUNT_KM, ridge.half_texel);
+        }
+    }
+    return sum;
+}
+
+// `RidgePlan::lumps`.
+fn ridge_lumps(band_group: i32, along: f32, across: f32, cell: f32) -> f32 {
+    let seed = ridge.seed ^ SALT_LUMP;
+    let a = along / cell;
+    let c = across / cell;
+    let ia = i32(floor(a));
+    let ic = i32(floor(c));
+    let key = bitcast<u32>(band_group) * 4u;
+    var sum = 0.0;
+    for (var i = ia - 1; i <= ia + 1; i++) {
+        for (var j = ic - 1; j <= ic + 1; j++) {
+            let at = vec2<u32>(bitcast<u32>(i), bitcast<u32>(j));
+            let pa = f32(i) + unit(hash(vec3<u32>(at, key), seed));
+            let pc = f32(j) + unit(hash(vec3<u32>(at, key + 1u), seed));
+            let radius = ridge_mix(LUMP_SIZE, 1.0, unit(hash(vec3<u32>(at, key + 2u), seed)));
+            let tall = unit(hash(vec3<u32>(at, key + 3u), seed));
+            let da = a - pa;
+            let dc = c - pc;
+            sum += tall * tall * bump(sqrt(da * da + dc * dc) / radius);
+        }
+    }
+    return sum;
+}
+
+// The numbers of a texel that `ridge_crest_segment` takes.
+struct RidgeTexel {
+    // The distance along the line with the bend, from the start of crest
+    // cell `cell`.
+    u: f32,
+    cell: i32,
+    across: f32,
+    past2: f32,
+    lift: f32,
+    low: f32,
+    lens: f32,
+    taper: f32,
+    fade: f32,
+}
+
+// The age of the sea floor at a distance from the crest, as `age` in
+// `RidgePlan::level_in`.
+fn ridge_age(d: f32) -> f32 {
+    let a = d / ridge.spread;
+    return sqrt(a * a + ridge.round * ridge.round) - ridge.round;
+}
+
+// The rise, the blocks, and the axial high of crest segment `k`, from the
+// trace `lower` at its start to the trace `upper` at its end. The steps are
+// those of `segment` in `RidgePlan::level_in`.
+fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f32> {
+    let km = ridge.world_km;
+    let v = ridge.spread;
+    let level = ridge.level;
+    let u = at.u;
+    let across = at.across;
+    let magma_seed = ridge.seed ^ SALT_MAGMA;
+    let crest = ridge_shift(k);
+    let off = across - crest;
+    let from_crest = sqrt(off * off + at.past2);
+    let len = max(upper - lower, SHORTEST_PART * ridge.segment);
+    let place = clamp((u - lower) / len, 0.0, 1.0);
+    let ends = 0.5 * (1.0 + cos_turn(place));
+    let side = select(0u, 1u, off < 0.0);
+    let tau = from_crest / v;
+    let end = select(k + 1, k, place < 0.5);
+    let middle = 0.5 * (ridge_shift(end - 1) + ridge_shift(end));
+    let deeper_noise = noise1(
+        (across - middle) / v / SEGMENT_MYR,
+        bitcast<u32>(end),
+        4u,
+        magma_seed,
+    ).x;
+    let deeper = 1.0 - SEGMENT_CHANGE * (1.0 - deeper_noise);
+    let sunk = ridge.segment_depth * clamp(len * km / SECOND_ORDER_KM, 0.5, 1.5)
+        * level * ends * deeper;
+    var near = 1.0 - place;
+    var next = k + 1;
+    if place < 0.5 {
+        near = place;
+        next = k - 1;
+    }
+    let hook = max(1.0 - near / HOOK_PART, 0.0);
+    let is_transform = ridge_transform(end);
+    var fade_out = 0.0;
+    var jog = 0.5 * (1.0 - smooth_between(0.0, JOG, near));
+    if is_transform {
+        fade_out = smooth_between(0.0, 1.0, hook);
+        jog = 0.0;
+    }
+    let next_shift = ridge_shift(next);
+    let valley_axis = crest + (next_shift - crest) * jog;
+    let valley_off = across - valley_axis;
+    let from_axis = sqrt(valley_off * valley_off + at.past2) * km;
+    let floor_half = ridge_mix(FLOOR_HALF.x, FLOOR_HALF.y, ends);
+    let wall = ridge_mix(WALL_WIDTH.x, WALL_WIDTH.y, ends);
+    let grow_end = floor_half + GROW * ridge.spacing + ridge.texel * km;
+    let grow = smooth_between(0.5 * floor_half, grow_end, min(from_axis, from_crest * km));
+    let flat_part = grow * (ridge.mean + MAGMA_MEAN * MAGMA_RELIEF * level);
+    let near_axis = 1.0
+        - ridge.valley_part * (1.0 - smooth_between(0.0, RISE_BEND_KM, from_crest * km));
+    let from_rise = max(ridge_mix(from_axis / km, from_crest, near_axis), ridge.flat_floor)
+        / at.lens;
+    let top = ridge.top;
+    let foot = ridge.foot;
+    let w0 = clamp((foot - ridge_depth(ridge_age(from_rise))) / (foot - top), 0.0, 1.0);
+    let w = w0 * w0 * (1.0 + FOOT) / (w0 + FOOT);
+    let rise = at.taper * max(w * (at.lift - at.low * flat_part) - at.low * sunk * w * (2.0 - w), 0.0);
+    let band_group = ridge_group(k);
+    let center = ridge_group_shift(band_group);
+    let origin = ridge_boundary(ridge_group_start(band_group), at.cell);
+    let group_along = (u - origin) * km;
+    let wave = noise1(group_along / WAVE_KM, bitcast<u32>(band_group), 2u, magma_seed).x;
+    let band = noise1_round(
+        ((across - center) / v + WAVE_MYR * wave) / MAGMA_MYR,
+        bitcast<u32>(band_group),
+        0u,
+        magma_seed,
+    );
+    let zero = noise1_round(
+        ((crest - center) / v + WAVE_MYR * wave) / MAGMA_MYR,
+        bitcast<u32>(band_group),
+        0u,
+        magma_seed,
+    ).x;
+    let away = select(1.0, -1.0, off < 0.0);
+    let rows = away * MAGMA_BAND * MAGMA_MYR * v * km / ridge.spacing;
+    let rate = 1.0 + MAGMA_BAND * band.y;
+    let grown = pow_precise(rate, -THROW_SPACING);
+    let toward = select(1.0, -1.0, (next_shift - crest) * off > 0.0);
+    let x = from_crest * km / ridge.spacing + rows * (band.x - zero) + HOOK_ROWS * hook * hook * toward;
+    let faults = grow * grown * ridge_faults(k, side, (u - lower) * km, len * km, x);
+    let held = BLOCK_MEAN * ridge.mean_throw * grow * grown;
+    let fill = max(2.0 * SEDIMENT_RATE * tau - HILL_LOW * held, 0.0);
+    let blocks = pond(faults, fill) - (pond(held, fill) - held)
+        + grow * MAGMA_RELIEF * 0.5 * (1.0 + band.x);
+    let valley = ridge.valley * (1.0 + VALLEY_ALONG * (2.0 * ends - 1.0));
+    let down = DOWN * valley * (1.0 - VALLEY_END * fade_out) * bump(from_axis / DOWN_KM);
+    var inside = 0.0;
+    if toward < 0.0 {
+        inside = INSIDE_CORNER;
+    }
+    let valley_side = select(0u, 1u, valley_off < 0.0);
+    let stairs = STAIR * valley * (1.0 + (inside - 1.0) * fade_out)
+        * ridge_walls(band_group, valley_side, group_along, from_axis, floor_half, wall);
+    let on_floor = 1.0 - smooth_between(floor_half, floor_half + 0.5 * wall, from_axis);
+    let cell = max(LUMP_KM, 2.0 * LUMP_TEXELS * ridge.half_texel);
+    let lumps = ridge_lumps(band_group, group_along, valley_off * km, cell);
+    let gaps = noise1(group_along / AVR_PIECE_KM, bitcast<u32>(k), 9u, magma_seed).x;
+    let ridge_top = smooth_between(AVR_END, 0.5, near) * smooth_between(-AVR_GAPS, AVR_GAPS, gaps);
+    let axial_ridge = AVR_HEIGHT * ridge_top * bump(from_axis / AVR_KM);
+    let floor_height = LUMP_HEIGHT * lumps * on_floor + axial_ridge;
+    let past_walls = smooth_between(floor_half, floor_half + wall, from_axis);
+    let young = BAND * valley * past_walls * bump(from_axis / ridge.band_km);
+    let relief = stairs - down + young + floor_height * (1.0 - fade_out);
+    let axis = level * at.low * at.taper;
+    return vec3<f32>(
+        rise,
+        blocks * level * at.low * at.taper * at.fade + relief * axis,
+        ridge.high * bump(from_axis / HIGH_KM) * axis,
+    );
 }
 
 // The level of a texel on the ridge. `old` is its level from before the
 // stroke. The steps are those of `RidgePlan::level`, without the limits.
 fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     let r = ridge.radius;
-    let t = ridge.texel;
-    let seed = ridge.seed;
+    let km = ridge.world_km;
+    let v = ridge.spread;
+    let level = ridge.level;
+    let cell_len = ridge.segment;
     let from_line = sqrt(at.across * at.across + at.past2);
-    let taper = smooth_between(0.0, 1.2 * r, at.end);
-    let lens = 0.2 + 0.8 * taper;
+    let taper = smooth_between(0.0, TAPER * r, at.end);
+    let lens = TAPER_WIDTH + (1.0 - TAPER_WIDTH) * taper;
     let far = from_line / (r * lens);
-    let hold = 1.0 - smooth_between(r, 1.5 * r, from_line);
-    // The numbers stay small, so the distance from the boundary of the
-    // crest segment keeps its digits.
-    let part_of_reach = from_line / (1.5 * r);
+    let hold = 1.0 - smooth_between(r, RIDGE_REACH * r, from_line);
+    // `RidgePlan::bent`.
+    let far_line = from_line / (RIDGE_REACH * r);
     let curve = 0.5 * (noise.slow.y - noise.slow.z);
-    let bent = at.rest
-        + r * (0.08 * noise.bend.x + 0.3 * curve * part_of_reach * part_of_reach);
-    let cells = floor(bent / ridge.segment + 0.5);
-    let across = at.across + 0.08 * r * hold * noise.bend.y;
-    let i = i32(at.cell + cells);
-    let jitter = ridge_jitter(i);
-    let s = bent - cells * ridge.segment - jitter * ridge.segment;
-    var k = i;
-    var along = s;
-    var len = 0.0;
-    if s < 0.0 {
-        len = ridge.segment * (1.0 + jitter - ridge_jitter(i - 1));
-        k = i - 1;
-        along = s + len;
-    } else {
-        len = ridge.segment * (1.0 + ridge_jitter(i + 1) - jitter);
-    }
-    let part = clamp(along / len, 0.0, 1.0);
-    let ends = ridge_end(part, k) + ridge_end(1.0 - part, k + 1);
-    // The steps of the crest at 3 boundaries can reach a place.
-    let zone = min(
-        max(0.02 * r, 3.0 * t) + 0.6 * max(from_line - ridge.shift, 0.0),
-        0.9 * ridge.segment,
-    );
-    var before = ridge_shift(i - 2);
-    var shift = before;
-    for (var near = -1; near <= 1; near++) {
-        let j = i + near;
-        let ahead = s + (jitter - f32(near) - ridge_jitter(j)) * ridge.segment;
-        let next = ridge_shift(j);
-        shift += (next - before) * smooth_between(-zone, zone, ahead);
-        before = next;
-    }
-    let off = across - shift;
-    let from_crest = sqrt(off * off + at.past2);
-    let slow = ridge_gain(noise.slow);
-    let mid = ridge_gain(noise.mid);
-    let less = 0.5 * slow + 0.5 * mid;
-    let height = 1.0 - 0.25 * less.x;
-    var side = 0.0;
-    if from_crest > 0.0 {
-        side = off / from_crest;
-    }
-    let narrow = 0.5 * (less.y + less.z) + 0.5 * (less.y - less.z) * side;
-    let width = r * (1.0 - 0.45 * narrow) * lens;
-    let soft = off / sqrt(from_crest * from_crest + 0.0025 * r * r);
-    let narrow_near = 0.5 * (less.y + less.z) + 0.5 * (less.y - less.z) * soft;
-    let valley_width = max(0.05 * r * (1.0 + 0.4 * noise.bend.z), 2.0 * t);
-    var top = 0.0;
-    if ridge.valley > 0.0 {
-        top = valley_width;
-    }
-    let x = min(max(from_crest - top, 0.0) / max(width - top, 0.25 * width), 1.0);
-    let sharp = 1.0 - ridge_profile(x) / ridge_profile(1.0);
-    let w = sharp * sharp * (1.0 + 0.25) / (sharp + 0.25);
+    let bent = at.rest + r * (BEND_ALONG * noise.bend.x + CURVE * curve * far_line * far_line);
+    let cells = floor(bent / cell_len + 0.5);
+    let cell = i32(at.cell + cells);
+    let u = bent - cells * cell_len;
+    let across = at.across + BEND_ACROSS * r * hold * noise.bend.y;
     let lift = max(ridge.crest - old, 0.0);
-    let rough = 1.9 * ridge.roughness + 1.4 * ridge.valley;
-    let low = min(lift / (rough + 1.0), 1.0);
-    let rise = (lift - low * 1.9 * ridge.roughness) * height * taper * w;
-    let deep = (0.6 + 0.4 * ends) * (0.75 + noise.bend.z / 6.0);
-    let in_valley = 1.0 - smooth_between(0.0, valley_width, from_crest);
-    let valley = ridge.valley * low * deep * taper * in_valley;
-    let rim_height = 0.5 * (mid.y + mid.z) + 0.5 * (mid.y - mid.z) * side;
-    let rim_place = ridge_bell((from_crest - 1.6 * valley_width) / (1.1 * valley_width));
-    let rim = 0.4 * ridge.valley * low * taper * rim_height * rim_place;
-    // The crack at each end of the crest segment.
-    let fade = taper * (1.0 - smooth_between(0.6, 1.5, far));
-    let base = lift * (0.4 + 0.6 * w) * fade;
-    let first = ridge_crack(k, along, false, base, narrow_near);
-    let second = ridge_crack(k + 1, len - along, true, base, narrow_near);
-    let crack = first.x + second.x;
-    let open = (1.0 - first.y) * (1.0 - second.y);
-    let shoulder = (first.z + second.z) * (1.0 - w);
-    let finest = max(0.02 * r, 7.0 * t);
-    // The weight of each octave of the hills, and the number of times that
-    // its cell is longer along the line than across it.
-    var octaves = array<vec2<f32>, 3>(
-        vec2<f32>(1.0, 3.0),
-        vec2<f32>(0.8, 2.5),
-        vec2<f32>(0.6, 2.0),
-    );
-    var sum = 0.0;
-    var total = 0.0;
-    var moved = 0.0;
-    for (var octave = 2; octave >= 0; octave--) {
-        let size = finest * f32(1u << u32(octave));
-        if octave > 0 && size > 0.15 * r {
-            continue;
+    let low = min(lift / (HILL_TOP * ridge.mean + 1.0), 1.0);
+    let fade = 1.0 - smooth_between(HILL_FADE, RIDGE_REACH, far);
+    let texel = RidgeTexel(u, cell, across, at.past2, lift, low, lens, taper, fade);
+    let blend_width = ridge.blend;
+    let turn = ridge_turn(across / v);
+    let i = cell + i32(floor((u - turn.x) / cell_len));
+    var rise = 0.0;
+    var hills = 0.0;
+    var deep = 0.0;
+    var above = 0.0;
+    var ridges = 0.0;
+    var below = 0.0;
+    var before = 0.0;
+    for (var j = i - 1; j <= i + 2; j++) {
+        let trace = ridge_trace(j, cell, across, turn);
+        let off = (u - trace.x) / sqrt(trace.y * trace.y + 1.0);
+        let past = smooth_between(-blend_width, blend_width, off);
+        if j > i - 1 {
+            let weight = before - past;
+            if weight > 0.0 {
+                let parts = ridge_crest_segment(texel, j - 1, below, trace.x);
+                rise += weight * parts.x;
+                hills += weight * parts.y;
+                above += weight * parts.z;
+            }
         }
-        let channel = u32(k) * 4u + u32(octave);
-        let n = brick(
-            along / (octaves[octave].y * size),
-            off / size + moved,
-            channel,
-            seed ^ 0x1b873593u,
-        );
-        moved = 0.5 * (2.0 * n - 1.0);
-        sum += octaves[octave].x * smooth_between(0.25, 0.75, n);
-        total += octaves[octave].x;
+        below = trace.x;
+        before = past;
+        let shift_before = ridge_shift(j - 1);
+        let shift_after = ridge_shift(j);
+        let offset_km = abs(shift_after - shift_before) * km;
+        let is_transform = ridge_transform(j);
+        let fz = ridge_fracture(j, offset_km, is_transform, trace.z);
+        let width = 0.5 * blend_width + fz.y / km;
+        deep += fz.x * (1.0 - smooth_between(TROUGH_FLOOR, 1.0, abs(off / width)));
+        let ridge_at = off - fz.w * TRANSVERSE_AT * width;
+        ridges += fz.z * bump(ridge_at / (TRANSVERSE_WIDTH * width));
+        if is_transform {
+            let nodal = min(NODAL_DEPTH * offset_km, NODAL_MAX);
+            let size = blend_width + NODAL_KM / km;
+            let long_size = blend_width + NODAL_ALONG_KM / km;
+            for (var end = 0; end < 2; end++) {
+                var crest = shift_before;
+                var other = shift_after;
+                if end == 1 {
+                    crest = shift_after;
+                    other = shift_before;
+                }
+                // `signum` in Rust is 1 for zero.
+                let toward = select(-1.0, 1.0, other - crest >= 0.0);
+                let middle = crest + toward * NODAL_IN * long_size;
+                let a = off / size;
+                let b = (across - middle) / long_size;
+                deep += nodal * bump(sqrt(a * a + b * b));
+            }
+        }
     }
-    let near_crest = 1.0 - smooth_between(0.0, 0.3 * r, from_crest);
-    let bury = smooth_between(0.5, 1.5, far);
-    let lumps = max(sum / total - bury, 0.0) * open * (1.0 + 0.6 * near_crest);
-    // The bands. The distance along the line is the one from the place of
-    // the cell.
-    let lane = (bent - cells * ridge.segment) / ridge.segment * 4.0;
-    let lane_cell = floor(lane);
-    let index = u32(i * 4 + i32(lane_cell));
-    let lane_rest = lane - lane_cell;
-    let band_a = unit(hash(vec3<u32>(index, 5u, 0u), seed ^ 0x1b873593u));
-    let band_b = unit(hash(vec3<u32>(index + 1u, 5u, 0u), seed ^ 0x1b873593u));
-    let band = band_a + (band_b - band_a) * (lane_rest * lane_rest * (3.0 - 2.0 * lane_rest));
-    let bands = 0.3 * band * mid.x * (1.0 - bury);
-    let hills = ridge.roughness * low * taper * (lumps + bands);
-    let q = at.flow;
-    let change = q * (max(rise + hills + rim - valley, 0.0) + shoulder - crack);
+    let axis = level * low * taper;
+    let room = ABOVE_CREST * ridge.valley * axis;
+    let capped = soft_cap(hills + ridges * axis * fade, max(lift - rise, 0.0) + room);
+    let up = min(rise + capped, lift + room) - deep * axis * fade + above;
+    let change = at.flow * up;
     return clamp(old + floor(change + 0.5), 0.0, 65535.0);
 }
 

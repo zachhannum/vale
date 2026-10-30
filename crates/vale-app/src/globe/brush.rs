@@ -197,14 +197,11 @@ impl BrushSettings {
     /// The settings of an ocean ridge stroke with this brush radius, in
     /// radians. `world_km` is the radius of the world.
     pub fn ridge_spec(&self, radius: f64, world_km: f64, seed: u32) -> Ridge {
-        let levels = 65535.0 / (ELEV_MAX - ELEV_MIN);
         Ridge {
             radius,
             crest: meters_to_level(self.ridge_crest_m),
             segment: self.ridge_segment_km / world_km,
             offset: self.ridge_offset_km / world_km,
-            roughness: self.ridge_roughness_m * levels,
-            valley: self.ridge_valley_m * levels,
             spread: 0.5 * self.ridge_spread_mm / world_km,
             magma: self.ridge_magma,
             world_km,

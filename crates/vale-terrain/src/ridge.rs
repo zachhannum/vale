@@ -9,7 +9,7 @@
 use std::f64::consts::FRAC_PI_2;
 use std::ops::Range;
 
-use crate::cube::{FACES, face_dir, unwarp};
+use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, unwarp};
 use crate::heightmap::{Limits, MAX_BRUSH_RADIUS, TexelRect, brush_rect, hash, noise3};
 use crate::math::{V3, add, angle, cross, dot, length, normalize, scale};
 
@@ -46,12 +46,6 @@ pub struct Ridge {
     /// The largest shift of a segment across the line as an angle, in
     /// radians.
     pub offset: f64,
-    /// The height of the hills, in 16-bit steps.
-    pub roughness: f64,
-    /// The depth of the valley along the crest, in 16-bit steps. Only the
-    /// shader uses it. `RidgePlan::level` takes the axial valley from the
-    /// spreading rate and the magma.
-    pub valley: f64,
     /// Half of the spreading rate, in radians per million years.
     pub spread: f64,
     /// The change of the magma part of the spreading from its value at the
@@ -160,6 +154,9 @@ struct LinePoint {
 #[derive(Clone, Debug)]
 pub struct RidgeLine {
     spec: Ridge,
+    /// The 16-bit steps of one kilometer of relief. The tests set it to
+    /// zero for the rise alone.
+    relief: f64,
     face_size: usize,
     points: Vec<LinePoint>,
 }
@@ -187,6 +184,8 @@ pub struct RidgePlan {
     pub end: usize,
     /// The length of the line, in radians.
     pub length: f64,
+    /// The 16-bit steps of one kilometer of relief.
+    pub(crate) relief: f64,
 }
 
 impl RidgeLine {
@@ -199,14 +198,13 @@ impl RidgeLine {
             radius,
             segment: spec.segment.max(20.0 * crack_half_width(radius, step)),
             offset: spec.offset.clamp(0.0, 0.5 * radius),
-            roughness: spec.roughness.max(0.0),
-            valley: spec.valley.max(0.0),
             spread: spec.spread.max(1e-12),
             world_km: spec.world_km.max(1.0),
             ..spec
         };
         RidgeLine {
             spec,
+            relief: LEVELS_PER_KM,
             face_size,
             points: Vec::new(),
         }
@@ -407,6 +405,7 @@ impl RidgeLine {
                 self.points.len()
             },
             length: self.points.last().map_or(0.0, |point| point.u),
+            relief: self.relief,
         }
     }
 }
@@ -688,7 +687,7 @@ impl RidgePlan {
             throw,
             box_half: (0.5 * self.step() * spec.world_km / spacing).min(MAX_BOX),
             half_texel: 0.5 * self.step() * spec.world_km,
-            level: spec.roughness / ROUGHNESS_KM,
+            level: self.relief,
         }
     }
 
@@ -1023,7 +1022,11 @@ impl RidgePlan {
             // the group, and they bend along the line.
             let group = self.group(&sg, k);
             let center = self.group_shift(group);
-            let (wave, _) = noise1(u * km / WAVE_KM, group as u32, 2, magma_seed);
+            // The distance along the line from the first boundary of the
+            // group. It stays small, so the shader keeps its digits.
+            let origin = self.boundary(&sg, self.group_start(&sg, group));
+            let group_along = (u - origin) * km;
+            let (wave, _) = noise1(group_along / WAVE_KM, group as u32, 2, magma_seed);
             let band_at = |off: f64| {
                 let tau = (off / v + WAVE_MYR * wave) / MAGMA_MYR;
                 noise1_round(tau, group as u32, 0, magma_seed)
@@ -1064,7 +1067,6 @@ impl RidgePlan {
             // At the inside corner, on the side of the transform fault, the
             // rift mountains are higher.
             let inside = if toward < 0.0 { INSIDE_CORNER } else { 0.0 };
-            let group_along = u * km;
             let valley_side = u32::from(valley_off < 0.0);
             let stairs = self.walls(
                 &f,
@@ -1157,6 +1159,85 @@ impl RidgePlan {
         let change = at.flow * up;
         let new = (old + (change + 0.5).floor()).clamp(0.0, 65535.0);
         spec.limits.apply(old, new) as u16
+    }
+}
+
+/// The numbers of `RidgePlan::level` that are the same for each texel of a
+/// plan. The shader gets them.
+#[cfg(feature = "gpu")]
+pub(crate) struct RidgeShape {
+    /// `Segmenting::length` and `Segmenting::group`.
+    pub length: f64,
+    pub group: i32,
+    pub turn_cell: f64,
+    pub blend: f64,
+    /// The roundness of the age at the crest, in millions of years.
+    pub round: f64,
+    /// The depth at the crest and at the brush radius, in meters.
+    pub top: f64,
+    pub foot: f64,
+    /// The mean height of the blocks, in 16-bit steps.
+    pub mean: f64,
+    pub magma: f64,
+    pub spacing: f64,
+    pub throw: f64,
+    /// The heave of a fault at the magma part, in kilometers.
+    pub heave: f64,
+    pub box_half: f64,
+    pub half_texel: f64,
+    pub level: f64,
+    /// The depth of the axial valley and the height of the axial high, in
+    /// kilometers.
+    pub valley: f64,
+    pub high: f64,
+    pub valley_part: f64,
+    pub flat_floor: f64,
+    pub band_km: f64,
+    /// The depth of the ends of a crest segment of `SECOND_ORDER_KM`, in
+    /// kilometers.
+    pub segment_depth: f64,
+}
+
+#[cfg(feature = "gpu")]
+impl RidgePlan {
+    /// The numbers of `level` that are the same for each texel. The steps
+    /// are those of `level_in`.
+    pub(crate) fn shape(&self) -> RidgeShape {
+        let spec = &self.ridge;
+        let (r, t, km, v) = (spec.radius, self.step(), spec.world_km, spec.spread);
+        let round = CREST_ROUND * t / v;
+        let age = |d: f64| (d / v).hypot(round) - round;
+        let f = self.faulting();
+        let sg = self.segmenting();
+        let (valley, high) = self.axial(&f);
+        let valley_part = if f.level > 0.0 {
+            (valley / VALLEY_FLAT).min(1.0)
+        } else {
+            0.0
+        };
+        RidgeShape {
+            length: sg.length,
+            group: sg.group,
+            turn_cell: sg.turn_cell,
+            blend: sg.blend,
+            round,
+            top: depth(0.0),
+            foot: depth(age(r)),
+            mean: BLOCK_MEAN * f.throw * f.level,
+            magma: f.magma,
+            spacing: f.spacing,
+            throw: f.throw,
+            heave: lerp_table(&FAULT_HEAVE, f.magma),
+            box_half: f.box_half,
+            half_texel: f.half_texel,
+            level: f.level,
+            valley,
+            high,
+            valley_part,
+            flat_floor: valley_part * FLOOR_KM / km,
+            band_km: BAND_KM.min(BAND_RADIUS * r * km),
+            segment_depth: self.segment_depth(SECOND_ORDER_KM),
+        }
     }
 }
 
@@ -1509,8 +1590,7 @@ const AVR_GAPS: f64 = 0.3;
 /// age (Goff and Arbic 2010). It ponds in the lows between the fault
 /// blocks up to twice its thickness, and fills `POND` of the depth of a
 /// low below that level, with a round edge of `SEDIMENT_SOFT` of the
-/// level. All are in kilometers of throw, so the Roughness setting scales
-/// them with the blocks.
+/// level. All are in kilometers of throw.
 const SEDIMENT_RATE: f64 = 0.005;
 const SEDIMENT_SOFT: f64 = 0.3;
 const POND: f64 = 0.3;
@@ -1577,9 +1657,8 @@ const DIP_TAN: f64 = 1.2;
 /// The throw of a fault divided by its heave and the tangent of its dip.
 const KAPPA: f64 = 0.42;
 
-/// The Roughness setting that gives the blocks their height in the model, in
-/// kilometers. Other settings scale the height.
-const ROUGHNESS_KM: f64 = 0.3;
+/// The 16-bit steps of one kilometer of height.
+const LEVELS_PER_KM: f64 = 1000.0 * 65535.0 / (ELEV_MAX - ELEV_MIN);
 
 /// The smallest throw of a fault as a part of the mean throw, and the
 /// largest exponential part, in mean throws.
@@ -1793,8 +1872,6 @@ mod tests {
             crest: CREST,
             segment: 0.1,
             offset: 0.0,
-            roughness: 0.0,
-            valley: 0.0,
             spread: 12.5 / 6371.0,
             magma: 0.0,
             world_km: 6371.0,
@@ -1803,8 +1880,15 @@ mod tests {
         }
     }
 
-    /// A plan with no segments, for the formula.
+    /// A plan with no segments and no relief, for the formula of the rise.
     fn shape(spec: Ridge, n: usize) -> RidgePlan {
+        let mut line = RidgeLine::new(spec, n);
+        line.relief = 0.0;
+        line.plan(0)
+    }
+
+    /// A plan with no segments, for the formula.
+    fn rough(spec: Ridge, n: usize) -> RidgePlan {
         RidgeLine::new(spec, n).plan(0)
     }
 
@@ -1961,23 +2045,16 @@ mod tests {
 
     #[test]
     fn the_ridge_raises_the_ground_up_to_the_crest() {
-        let rough = Ridge {
+        let rough_spec = Ridge {
             offset: 0.03,
-            roughness: 2000.0,
             ..spec()
         };
-        let plan = shape(rough, FINE);
-        let smooth = shape(
-            Ridge {
-                roughness: 0.0,
-                ..rough
-            },
-            FINE,
-        );
-        let straight = shape(
+        let plan = rough(rough_spec, FINE);
+        let smooth = shape(rough_spec, FINE);
+        let straight = rough(
             Ridge {
                 offset: 0.0,
-                ..rough
+                ..rough_spec
             },
             FINE,
         );
@@ -2046,11 +2123,10 @@ mod tests {
     /// year.
     fn at_rate(rate: f64) -> RidgePlan {
         let spec = Ridge {
-            roughness: 2000.0,
             spread: 0.5 * rate / 6371.0,
             ..spec()
         };
-        shape(spec, FINE)
+        rough(spec, FINE)
     }
 
     #[test]
@@ -2223,13 +2299,7 @@ mod tests {
 
     #[test]
     fn the_sum_of_the_faults_has_each_fault_in_its_window() {
-        let plan = shape(
-            Ridge {
-                roughness: 2000.0,
-                ..spec()
-            },
-            FINE,
-        );
+        let plan = rough(spec(), FINE);
         let f = plan.faulting();
         // The full rate of 25 mm per year gives a magma part of 0.767.
         assert!((f.spacing - 3.33).abs() < 0.01, "{}", f.spacing);
@@ -2537,10 +2607,9 @@ mod tests {
     fn the_level_does_not_depend_on_the_boundaries_that_the_search_starts_from() {
         let full = Ridge {
             offset: 0.05,
-            roughness: 2000.0,
             ..spec()
         };
-        let plan = shape(full, FINE);
+        let plan = rough(full, FINE);
         let r = plan.ridge.radius;
         let mut changed = 0;
         for j in 0..400 {
@@ -2567,12 +2636,7 @@ mod tests {
 
     #[test]
     fn the_ridge_gets_lower_and_narrower_to_an_end_of_the_line() {
-        let full = Ridge {
-            roughness: 1500.0,
-            valley: 1000.0,
-            ..spec()
-        };
-        for plan in [shape(spec(), FINE), shape(full, FINE)] {
+        for plan in [shape(spec(), FINE), rough(spec(), FINE)] {
             let r = plan.ridge.radius;
             let ground = f64::from(START);
             for k in 1..12 {
@@ -2600,7 +2664,7 @@ mod tests {
                     let whole = near(f64::MAX, across, calm());
                     assert_eq!(near(TAPER * r, across, calm()), whole);
                 }
-                if plan.ridge.roughness > 0.0 {
+                if plan.relief > 0.0 {
                     continue;
                 }
                 // At half of that distance, the crest has half of its
@@ -2617,11 +2681,9 @@ mod tests {
     fn the_level_has_no_step_along_the_line_and_across_it() {
         let full = Ridge {
             offset: 0.04,
-            roughness: 1500.0,
-            valley: 1000.0,
             ..spec()
         };
-        let plan = shape(full, FINE);
+        let plan = rough(full, FINE);
         let (r, fine) = (plan.ridge.radius, plan.step() / 64.0);
         // Along the line, over the traces of the boundaries and over the
         // middle of segments. At a trace, the step of the depth spreads over
@@ -2835,8 +2897,6 @@ mod tests {
     fn full() -> Ridge {
         Ridge {
             offset: 0.04,
-            roughness: 1500.0,
-            valley: 1000.0,
             segment: 0.08,
             ..spec()
         }
@@ -2972,9 +3032,9 @@ mod tests {
         assert!(free.iter().any(|l| *l > 22000));
         // Only the troughs, the deeps, and the axial valley take the ground
         // down, by no more than their depth.
-        let plan = shape(full(), 128);
+        let plan = rough(full(), 128);
         let (valley, _) = plan.axial(&plan.faulting());
-        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX + valley) * full().roughness / ROUGHNESS_KM;
+        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX + valley) * LEVELS_PER_KM;
         assert!(
             free.iter()
                 .all(|l| f64::from(*l) >= f64::from(START) - deepest)

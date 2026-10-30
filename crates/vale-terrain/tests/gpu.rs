@@ -2873,9 +2873,11 @@ fn the_shader_field_matches_the_cpu_field() {
 
 /// The largest difference between a GPU level and a CPU level after an ocean
 /// ridge stroke. The shader finds the place of a texel on the line with
-/// 32-bit numbers, so a level near a half step can round to the other side.
-/// The largest difference in the tests of this file is 1.
-const RIDGE_TOLERANCE: u16 = 1;
+/// 32-bit numbers, to about 1e-7 radians. On a face of 2048 texels, the ends
+/// of the fault pieces and the scarps change the level by up to about 1.5
+/// over that distance, so a level can differ by 2. The largest difference in
+/// the tests of this file is 2, at one texel of the wide ridge.
+const RIDGE_TOLERANCE: u16 = 2;
 
 fn ridge_spec(radius: f64) -> Ridge {
     Ridge {
@@ -2883,8 +2885,6 @@ fn ridge_spec(radius: f64) -> Ridge {
         crest: 52000,
         segment: 0.8 * radius,
         offset: 0.4 * radius,
-        roughness: 1500.0,
-        valley: 1000.0,
         spread: 12.5 / 6371.0,
         magma: 0.0,
         world_km: 6371.0,
@@ -3057,9 +3057,9 @@ fn assert_ridge(name: &str, run: &RidgeRun, faces: &[usize]) -> u16 {
 fn gpu_ridge_matches_cpu_for_a_straight_stroke() {
     let start = smooth_ground(256);
     for radius in [0.03, 0.1, 0.2] {
-        for valley in [0.0, 6000.0] {
+        for magma in [-0.1, 0.0, 0.1] {
             let spec = Ridge {
-                valley,
+                magma,
                 ..ridge_spec(radius)
             };
             let run = ridge_run(
@@ -3069,7 +3069,7 @@ fn gpu_ridge_matches_cpu_for_a_straight_stroke() {
                 false,
                 false,
             );
-            let name = format!("straight, radius {radius}, valley {valley}");
+            let name = format!("straight, radius {radius}, magma {magma}");
             assert_ridge(&name, &run, &[0]);
             assert_eq!(run.skipped, 0);
         }
@@ -3132,16 +3132,16 @@ fn gpu_ridge_matches_cpu_on_a_large_face() {
 #[ignore = "gpu"]
 fn gpu_ridge_with_limits_matches_cpu() {
     let start = Heightmap::new(256, 30000);
-    // With this seed, the line has a strong crack.
+    // With this seed, the line has a deep trough.
     let strong = Ridge {
         seed: 6,
         ..ridge_spec(0.1)
     };
     let free = ridge_run(&start, strong, &RIDGE_BEND, false, false);
     let lowest = free.levels.iter().flatten().min().copied().unwrap();
-    assert!(lowest < 29000, "a crack lowers the ground: {lowest}");
+    assert!(lowest < 29700, "a trough lowers the ground: {lowest}");
     let limits = Limits {
-        floor: 29500,
+        floor: 29800,
         ceiling: 40000,
     };
     let spec = Ridge { limits, ..strong };
@@ -3149,7 +3149,7 @@ fn gpu_ridge_with_limits_matches_cpu() {
     assert_ridge("floor and ceiling", &run, &[0, 2]);
     let levels = run.levels.iter().flatten();
     let (low, high) = levels.fold((u16::MAX, 0), |(low, high), l| (low.min(*l), high.max(*l)));
-    assert_eq!((low, high), (29500, 40000));
+    assert_eq!((low, high), (29800, 40000));
 }
 
 /// A radius of 260 texels gives the fabric its three octaves, and the line
@@ -3161,7 +3161,6 @@ fn gpu_ridge_matches_cpu_for_a_wide_ridge_on_a_large_face() {
     let spec = Ridge {
         segment: 0.08,
         offset: 0.05,
-        roughness: 3000.0,
         ..ridge_spec(0.2)
     };
     let places = [(-20.0, -14.0), (20.0, 6.0), (62.0, -8.0)];
