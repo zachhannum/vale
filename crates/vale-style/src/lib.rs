@@ -8,7 +8,9 @@ mod rule;
 
 pub use json::{STYLE_VERSION, StyleError, style_version};
 pub use label::{
-    CLASSES_VERSION, LabelClass, LabelPlacement, TextCase, classes_from_json, classes_to_json,
+    BUFFER, CLASSES_VERSION, CURVE_LIMIT, DUPLICATE_DISTANCE, LabelClass, LabelPlacement,
+    LabelPosition, PositionRank, REPEAT_DISTANCE, SMOOTHING, TextCase, classes_from_json,
+    classes_to_json, offset_for,
 };
 pub use overrides::Overrides;
 pub use rule::{

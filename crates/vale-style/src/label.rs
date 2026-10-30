@@ -12,12 +12,8 @@ pub const CLASSES_VERSION: u64 = 1;
 /// Where a label goes relative to its feature.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LabelPlacement {
-    /// The best of the positions around a point.
+    /// The best of the ranked positions around a point.
     Around,
-    Right,
-    Left,
-    Above,
-    Below,
     /// Along a line, on the side that fits.
     AboveOrBelow,
     LineAbove,
@@ -25,13 +21,7 @@ pub enum LabelPlacement {
     OnLine,
 }
 
-const POINT_PLACEMENTS: [LabelPlacement; 5] = [
-    LabelPlacement::Around,
-    LabelPlacement::Right,
-    LabelPlacement::Left,
-    LabelPlacement::Above,
-    LabelPlacement::Below,
-];
+const POINT_PLACEMENTS: [LabelPlacement; 1] = [LabelPlacement::Around];
 
 const LINE_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::AboveOrBelow,
@@ -40,12 +30,8 @@ const LINE_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::OnLine,
 ];
 
-const ALL_PLACEMENTS: [LabelPlacement; 9] = [
+const ALL_PLACEMENTS: [LabelPlacement; 5] = [
     LabelPlacement::Around,
-    LabelPlacement::Right,
-    LabelPlacement::Left,
-    LabelPlacement::Above,
-    LabelPlacement::Below,
     LabelPlacement::AboveOrBelow,
     LabelPlacement::LineAbove,
     LabelPlacement::LineBelow,
@@ -75,10 +61,6 @@ impl LabelPlacement {
     pub fn name(self) -> &'static str {
         match self {
             LabelPlacement::Around => "Around point",
-            LabelPlacement::Right => "Right",
-            LabelPlacement::Left => "Left",
-            LabelPlacement::Above => "Above",
-            LabelPlacement::Below => "Below",
             LabelPlacement::AboveOrBelow => "Above or below",
             LabelPlacement::LineAbove => "Above line",
             LabelPlacement::LineBelow => "Below line",
@@ -90,10 +72,6 @@ impl LabelPlacement {
     fn key(self) -> &'static str {
         match self {
             LabelPlacement::Around => "around",
-            LabelPlacement::Right => "right",
-            LabelPlacement::Left => "left",
-            LabelPlacement::Above => "above",
-            LabelPlacement::Below => "below",
             LabelPlacement::AboveOrBelow => "above_or_below",
             LabelPlacement::LineAbove => "line_above",
             LabelPlacement::LineBelow => "line_below",
@@ -105,6 +83,119 @@ impl LabelPlacement {
         ALL_PLACEMENTS.into_iter().find(|p| p.key() == key)
     }
 }
+
+/// A position of a point label relative to its symbol.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LabelPosition {
+    TopRight,
+    Right,
+    BottomRight,
+    Top,
+    Bottom,
+    TopLeft,
+    Left,
+    BottomLeft,
+}
+
+impl LabelPosition {
+    /// The default rank, best first. It equals the default order of the labeler.
+    pub const DEFAULT_ORDER: [LabelPosition; 8] = [
+        LabelPosition::TopRight,
+        LabelPosition::TopLeft,
+        LabelPosition::BottomRight,
+        LabelPosition::BottomLeft,
+        LabelPosition::Right,
+        LabelPosition::Left,
+        LabelPosition::Top,
+        LabelPosition::Bottom,
+    ];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            LabelPosition::TopRight => "Top right",
+            LabelPosition::Right => "Right",
+            LabelPosition::BottomRight => "Bottom right",
+            LabelPosition::Top => "Top",
+            LabelPosition::Bottom => "Bottom",
+            LabelPosition::TopLeft => "Top left",
+            LabelPosition::Left => "Left",
+            LabelPosition::BottomLeft => "Bottom left",
+        }
+    }
+
+    /// The JSON name.
+    fn key(self) -> &'static str {
+        match self {
+            LabelPosition::TopRight => "top_right",
+            LabelPosition::Right => "right",
+            LabelPosition::BottomRight => "bottom_right",
+            LabelPosition::Top => "top",
+            LabelPosition::Bottom => "bottom",
+            LabelPosition::TopLeft => "top_left",
+            LabelPosition::Left => "left",
+            LabelPosition::BottomLeft => "bottom_left",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<LabelPosition> {
+        LabelPosition::DEFAULT_ORDER
+            .into_iter()
+            .find(|p| p.key() == key)
+    }
+}
+
+/// One position in the rank of a point class. A blocked position is off.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PositionRank {
+    pub position: LabelPosition,
+    pub on: bool,
+}
+
+impl PositionRank {
+    /// All positions in the default order, all on.
+    pub fn defaults() -> Vec<PositionRank> {
+        LabelPosition::DEFAULT_ORDER
+            .into_iter()
+            .map(|position| PositionRank { position, on: true })
+            .collect()
+    }
+
+    /// All positions in the default order, with only `only` on.
+    fn only(only: LabelPosition) -> Vec<PositionRank> {
+        LabelPosition::DEFAULT_ORDER
+            .into_iter()
+            .map(|position| PositionRank {
+                position,
+                on: position == only,
+            })
+            .collect()
+    }
+}
+
+/// The default offset of a placement, in points.
+pub fn offset_for(placement: LabelPlacement) -> f64 {
+    if placement == LabelPlacement::Around {
+        2.0
+    } else {
+        4.0
+    }
+}
+
+/// The default distance between the repeats of a line label, in points.
+pub const REPEAT_DISTANCE: f64 = 600.0;
+
+/// The default curve limit, in radians between glyphs.
+pub const CURVE_LIMIT: f64 = 0.30;
+
+/// The default smoothing window, in multiples of the font size.
+pub const SMOOTHING: f64 = 1.5;
+
+/// The default buffer around a label, in points.
+pub const BUFFER: f64 = 1.0;
+
+/// The default distance between two labels with the same text, in points.
+pub const DUPLICATE_DISTANCE: f64 = 300.0;
 
 /// How the case of the label text changes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -213,6 +304,24 @@ pub struct LabelClass {
     /// A numeric attribute. Higher is placed first within the class.
     pub priority_field: Option<String>,
     pub placement: LabelPlacement,
+    /// The distance from the feature, in points.
+    pub offset: f64,
+    /// The ranked positions of a point label, best first.
+    pub positions: Vec<PositionRank>,
+    /// Lines. True repeats the label along a long line.
+    pub repeat: bool,
+    /// Lines. The distance between the repeats, in points.
+    pub repeat_distance: f64,
+    /// Lines. The largest turn of the text between two glyphs, in radians.
+    pub curve_limit: f64,
+    /// Lines. The smoothing window of the line, in multiples of `size`.
+    pub smoothing: f64,
+    /// The margin around the label that other labels keep free, in points.
+    pub buffer: f64,
+    /// True keeps labels with the same text apart.
+    pub remove_duplicates: bool,
+    /// The smallest distance between two labels with the same text, in points.
+    pub duplicate_distance: f64,
 }
 
 impl LabelClass {
@@ -244,8 +353,40 @@ impl LabelClass {
             halo_width: HALO_WIDTH,
             priority,
             priority_field: style.priority_field.clone(),
-            placement: LabelPlacement::default_for(kind)?,
+            ..LabelClass::placement_defaults(LabelPlacement::default_for(kind)?)
         })
+    }
+
+    /// A class with the default text and placement options of `placement`.
+    fn placement_defaults(placement: LabelPlacement) -> LabelClass {
+        LabelClass {
+            name: String::new(),
+            text: String::new(),
+            filter: String::new(),
+            font: None,
+            size: 11.0,
+            color: Color::rgb(0, 0, 0),
+            italic: false,
+            weight: 400.0,
+            case: TextCase::Normal,
+            letter_spacing: 0.0,
+            opacity: 1.0,
+            halo: true,
+            halo_color: HALO_COLOR,
+            halo_width: HALO_WIDTH,
+            priority: 0,
+            priority_field: None,
+            placement,
+            offset: offset_for(placement),
+            positions: PositionRank::defaults(),
+            repeat: true,
+            repeat_distance: REPEAT_DISTANCE,
+            curve_limit: CURVE_LIMIT,
+            smoothing: SMOOTHING,
+            buffer: BUFFER,
+            remove_duplicates: true,
+            duplicate_distance: DUPLICATE_DISTANCE,
+        }
     }
 
     /// A new class that labels each feature with its `name` field. `None` if the feature type has no placements.
@@ -274,7 +415,7 @@ impl LabelClass {
             halo_width: HALO_WIDTH,
             priority,
             priority_field: None,
-            placement,
+            ..LabelClass::placement_defaults(placement)
         })
     }
 }
@@ -302,6 +443,19 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "priority": c.priority,
                 "priority_field": c.priority_field,
                 "placement": c.placement.key(),
+                "offset": c.offset,
+                "positions": c
+                    .positions
+                    .iter()
+                    .map(|r| json!({ "position": r.position.key(), "on": r.on }))
+                    .collect::<Vec<_>>(),
+                "repeat": c.repeat,
+                "repeat_distance": c.repeat_distance,
+                "curve_limit": c.curve_limit,
+                "smoothing": c.smoothing,
+                "buffer": c.buffer,
+                "remove_duplicates": c.remove_duplicates,
+                "duplicate_distance": c.duplicate_distance,
             })
         })
         .collect();
@@ -341,16 +495,41 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         .and_then(Json::as_str)
         .and_then(Color::from_hex)
         .ok_or_else(|| invalid("a label class has no valid color"))?;
-    let placement = text(m, "placement")
-        .as_deref()
-        .and_then(LabelPlacement::from_key)
-        .ok_or_else(|| invalid("a label class has no valid placement"))?;
+    let key = text(m, "placement").unwrap_or_default();
+    // Older files have one side of a point as the placement.
+    let (placement, side) = match key.as_str() {
+        "right" => (LabelPlacement::Around, Some(LabelPosition::Right)),
+        "left" => (LabelPlacement::Around, Some(LabelPosition::Left)),
+        "above" => (LabelPlacement::Around, Some(LabelPosition::Top)),
+        "below" => (LabelPlacement::Around, Some(LabelPosition::Bottom)),
+        key => (
+            LabelPlacement::from_key(key)
+                .ok_or_else(|| invalid("a label class has no valid placement"))?,
+            None,
+        ),
+    };
+    let positions = match (side, m.get("positions").and_then(Json::as_array)) {
+        (Some(side), _) => PositionRank::only(side),
+        (None, Some(list)) => list
+            .iter()
+            .filter_map(|r| {
+                let position = r
+                    .get("position")
+                    .and_then(Json::as_str)
+                    .and_then(LabelPosition::from_key)?;
+                let on = r.get("on").and_then(Json::as_bool).unwrap_or(true);
+                Some(PositionRank { position, on })
+            })
+            .collect(),
+        (None, None) => PositionRank::defaults(),
+    };
     let priority = m
         .get("priority")
         .and_then(Json::as_i64)
         .and_then(|p| i32::try_from(p).ok())
         .unwrap_or(0);
     let number = |key: &str, fallback: f64| m.get(key).and_then(Json::as_f64).unwrap_or(fallback);
+    let flag = |key: &str, fallback: bool| m.get(key).and_then(Json::as_bool).unwrap_or(fallback);
     Ok(LabelClass {
         name: text(m, "name").unwrap_or_default(),
         text: text(m, "text").unwrap_or_default(),
@@ -358,7 +537,7 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         font: text(m, "font"),
         size: number("size", 11.0),
         color,
-        italic: m.get("italic").and_then(Json::as_bool).unwrap_or(false),
+        italic: flag("italic", false),
         weight: number("weight", 400.0) as f32,
         case: text(m, "case")
             .as_deref()
@@ -366,7 +545,7 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
             .unwrap_or(TextCase::Normal),
         letter_spacing: number("letter_spacing", 0.0),
         opacity: number("opacity", 1.0),
-        halo: m.get("halo").and_then(Json::as_bool).unwrap_or(true),
+        halo: flag("halo", true),
         halo_color: m
             .get("halo_color")
             .and_then(Json::as_str)
@@ -376,6 +555,15 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         priority,
         priority_field: text(m, "priority_field"),
         placement,
+        offset: number("offset", offset_for(placement)),
+        positions,
+        repeat: flag("repeat", true),
+        repeat_distance: number("repeat_distance", REPEAT_DISTANCE),
+        curve_limit: number("curve_limit", CURVE_LIMIT),
+        smoothing: number("smoothing", SMOOTHING),
+        buffer: number("buffer", BUFFER),
+        remove_duplicates: flag("remove_duplicates", true),
+        duplicate_distance: number("duplicate_distance", DUPLICATE_DISTANCE),
     })
 }
 
@@ -411,8 +599,26 @@ mod tests {
         a.halo = false;
         a.halo_color = Color::rgba(0, 0, 0, 100);
         a.halo_width = 1.5;
-        a.placement = LabelPlacement::Below;
-        let b = LabelClass::new("Rivers", GeometryKind::Line, -1).unwrap();
+        a.offset = 3.5;
+        a.positions = vec![
+            PositionRank {
+                position: LabelPosition::Left,
+                on: true,
+            },
+            PositionRank {
+                position: LabelPosition::TopRight,
+                on: false,
+            },
+        ];
+        a.repeat = false;
+        a.repeat_distance = 250.0;
+        a.curve_limit = 0.5;
+        a.smoothing = 2.0;
+        a.buffer = 3.0;
+        a.remove_duplicates = false;
+        a.duplicate_distance = 120.0;
+        let mut b = LabelClass::new("Rivers", GeometryKind::Line, -1).unwrap();
+        b.placement = LabelPlacement::LineBelow;
         let classes = vec![a, b];
         let text = classes_to_json(&classes);
         assert_eq!(classes_from_json(&text).unwrap(), classes);
@@ -431,6 +637,17 @@ mod tests {
         assert_eq!(read[0].letter_spacing, 0.0);
         assert_eq!(read[0].opacity, 1.0);
         assert_eq!(read[0].placement, LabelPlacement::OnLine);
+        assert_eq!(read[0].offset, 4.0);
+        assert_eq!(read[0].positions, PositionRank::defaults());
+        assert!(read[0].repeat);
+        assert_eq!(read[0].repeat_distance, 600.0);
+        assert_eq!(read[0].curve_limit, 0.30);
+        assert_eq!(read[0].smoothing, 1.5);
+        assert_eq!(read[0].buffer, 1.0);
+        assert!(read[0].remove_duplicates);
+        assert_eq!(read[0].duplicate_distance, 300.0);
+        let point = r##"{"version":1,"classes":[{"color":"#102030","placement":"around"}]}"##;
+        assert_eq!(classes_from_json(point).unwrap()[0].offset, 2.0);
         assert_eq!(
             classes_from_json(r#"{"version":9,"classes":[]}"#),
             Err(StyleError::Version(Some(9)))
@@ -457,16 +674,32 @@ mod tests {
         assert_eq!(c.priority, 5);
         assert_eq!(c.priority_field.as_deref(), Some("pop"));
         assert_eq!(c.placement, LabelPlacement::Around);
+        assert_eq!(c.offset, 2.0);
+        assert_eq!(c.positions.len(), 8);
+        assert!(c.positions.iter().all(|r| r.on));
+        assert_eq!(c.positions[0].position, LabelPosition::TopRight);
+        assert!(c.repeat);
+        assert_eq!(c.repeat_distance, 600.0);
+        assert_eq!(c.curve_limit, 0.30);
+        assert_eq!(c.smoothing, 1.5);
+        assert_eq!(c.buffer, 1.0);
+        assert!(c.remove_duplicates);
+        assert_eq!(c.duplicate_distance, 300.0);
 
         let line = LabelClass::from_style("D", &style("old name"), GeometryKind::Line, 0).unwrap();
         assert_eq!(line.text, "\"old name\"");
         assert_eq!(line.placement, LabelPlacement::AboveOrBelow);
         assert_eq!(line.letter_spacing, 0.5 / 13.0);
+        assert_eq!(line.offset, 4.0);
         let new = LabelClass::new("R", GeometryKind::Line, 0).unwrap();
+        assert_eq!(new.offset, 4.0);
+        assert_eq!(new.repeat_distance, 600.0);
         assert_eq!(new.letter_spacing * new.size, 0.5);
         assert_eq!(new.halo_width, 2.2);
         let point = LabelClass::new("T", GeometryKind::Point, 0).unwrap();
         assert_eq!(point.letter_spacing, 0.0);
+        assert_eq!(point.offset, 2.0);
+        assert_eq!(point.positions, PositionRank::defaults());
         assert_eq!(field_ref("end"), "\"end\"");
         assert_eq!(field_ref("a\"b"), "\"a\"\"b\"");
 
@@ -507,7 +740,7 @@ mod tests {
     #[test]
     fn the_placements_match_the_feature_type() {
         use GeometryKind::{Line, Point, Polygon};
-        assert_eq!(LabelPlacement::choices(Point).len(), 5);
+        assert_eq!(LabelPlacement::choices(Point), &[LabelPlacement::Around]);
         assert_eq!(LabelPlacement::choices(Line).len(), 4);
         assert!(LabelPlacement::choices(Polygon).is_empty());
         assert_eq!(
@@ -527,5 +760,31 @@ mod tests {
         assert_eq!(LabelPlacement::AboveOrBelow.name(), "Above or below");
         assert_eq!(LabelPlacement::Around.name(), "Around point");
         assert_eq!(LabelClass::new("A", Polygon, 0), None);
+        for p in LabelPosition::DEFAULT_ORDER {
+            assert_eq!(LabelPosition::from_key(p.key()), Some(p));
+        }
+        assert_eq!(LabelPosition::TopRight.name(), "Top right");
+        assert_eq!(LabelPosition::BottomLeft.key(), "bottom_left");
+    }
+
+    #[test]
+    fn a_point_placement_of_one_side_reads_as_a_ranked_position() {
+        for (key, side) in [
+            ("right", LabelPosition::Right),
+            ("left", LabelPosition::Left),
+            ("above", LabelPosition::Top),
+            ("below", LabelPosition::Bottom),
+        ] {
+            let text = format!(
+                r##"{{"version":1,"classes":[{{"color":"#102030","placement":"{key}"}}]}}"##
+            );
+            let c = &classes_from_json(&text).unwrap()[0];
+            assert_eq!(c.placement, LabelPlacement::Around);
+            assert_eq!(c.offset, 2.0);
+            assert_eq!(c.positions.len(), 8);
+            let on: Vec<_> = c.positions.iter().filter(|r| r.on).collect();
+            assert_eq!(on.len(), 1);
+            assert_eq!(on[0].position, side);
+        }
     }
 }
