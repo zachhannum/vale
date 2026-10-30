@@ -511,52 +511,139 @@ impl RidgePlan {
         }
     }
 
-    /// The move of boundary `i` along the line, as a part of the segment
-    /// length.
-    fn jitter(&self, i: i32) -> f64 {
-        JITTER * (2.0 * unit(hash(i as u32, 0, 0, self.ridge.seed)) - 1.0)
+    /// The crest segments of the settings.
+    fn segmenting(&self) -> Segmenting {
+        let spec = &self.ridge;
+        let km = spec.world_km;
+        let blend = 1.5 * self.step() + VALLEY_KM / km;
+        // A crest segment is long enough for the blends at its two ends.
+        let most = (spec.segment / (SEGMENT_BLENDS * blend)).floor().max(1.0);
+        let count = (spec.segment * km / SECOND_ORDER_KM)
+            .round()
+            .clamp(1.0, most);
+        // The loop of `turn` has no more than `TURN_CELLS` cells.
+        let oldest = TURN_REACH * spec.radius / spec.spread;
+        Segmenting {
+            length: spec.segment / count,
+            group: count as i32,
+            turn_cell: TURN_MYR.max(oldest / TURN_CELLS),
+            blend,
+        }
     }
 
-    /// The number of the boundary that starts a group of crest segments, for
-    /// group `c`. A group has 4 segments as a mean.
-    fn group_start(&self, c: i32) -> i32 {
+    /// The place of boundary `j` along the line at the crest, before the
+    /// bend of the spreading direction. Crest segment `j` starts at it.
+    fn boundary(&self, sg: &Segmenting, j: i32) -> f64 {
+        let jitter = 2.0 * unit(hash(j as u32, 0, 0, self.ridge.seed)) - 1.0;
+        (f64::from(j) + JITTER * jitter) * sg.length
+    }
+
+    /// The boundary that starts group `c` of crest segments. It is a
+    /// transform fault. The other boundaries are offsets with no transform
+    /// fault. A group has `sg.group` segments as a mean.
+    fn group_start(&self, sg: &Segmenting, c: i32) -> i32 {
+        let choices = (sg.group / 2 + 1) as u32;
         let h = hash(c as u32, 1, 0, self.ridge.seed);
-        c.wrapping_mul(4).wrapping_add((h & 3) as i32)
+        c.wrapping_mul(sg.group).wrapping_add((h % choices) as i32)
     }
 
     /// The group of crest segment `k`.
-    fn group(&self, k: i32) -> i32 {
-        let c = k >> 2;
-        if k >= self.group_start(c) { c } else { c - 1 }
-    }
-
-    /// The shift of crest segment `k` across the line.
-    fn shift(&self, k: i32) -> f64 {
-        let seed = self.ridge.seed;
-        let group = self.group(k);
-        let part = |i: i32, channel: u32| 2.0 * unit(hash(i as u32, channel, 0, seed)) - 1.0;
-        self.ridge.offset * (0.75 * part(group, 3) + 0.25 * part(k, 4))
-    }
-
-    /// The place of the crest across the line, at `s` from boundary `i`
-    /// along the line and at `from_line` from the line. The crest steps
-    /// sideways at each boundary. Near the line, the step is narrow. On the
-    /// outer flank, it is wide. The zone of a step is shorter than 0.9 of
-    /// the segment length on each side, so the steps of 3 boundaries can
-    /// reach a place.
-    fn crest(&self, i: i32, s: f64, from_line: f64) -> f64 {
-        let spec = &self.ridge;
-        let zone = crack_half_width(spec.radius, self.step())
-            + STEP_SPREAD * (from_line - spec.offset).max(0.0);
-        let zone = zone.min(0.9 * spec.segment);
-        let mut shift = self.shift(i.wrapping_sub(2));
-        for near in -1..=1 {
-            let j = i.wrapping_add(near);
-            let from = s + (self.jitter(i) - f64::from(near) - self.jitter(j)) * spec.segment;
-            let step = self.shift(j) - self.shift(j.wrapping_sub(1));
-            shift += step * smoothstep(-zone, zone, from);
+    fn group(&self, sg: &Segmenting, k: i32) -> i32 {
+        let c = k.div_euclid(sg.group);
+        if k >= self.group_start(sg, c) {
+            c
+        } else {
+            c - 1
         }
-        shift
+    }
+
+    /// Boundary `j` is a transform fault.
+    fn transform(&self, sg: &Segmenting, j: i32) -> bool {
+        j == self.group_start(sg, self.group(sg, j))
+    }
+
+    /// The shift of crest segment `k` across the line. Most of it is the
+    /// shift of its group.
+    fn shift(&self, sg: &Segmenting, k: i32) -> f64 {
+        let seed = self.ridge.seed;
+        let part = |i: i32, channel: u32| 2.0 * unit(hash(i as u32, channel, 0, seed)) - 1.0;
+        let own = part(k, 4);
+        self.ridge.offset * (GROUP_SHIFT * part(self.group(sg, k), 3) + (1.0 - GROUP_SHIFT) * own)
+    }
+
+    /// The move along the line that the history of the spreading direction
+    /// gives to the trace of a boundary, at `tau` million years of age from
+    /// the line. `tau` is negative on the right. The tangent of the angle of
+    /// the spreading direction is a noise of the age, and the move is its
+    /// integral. The result is the move in radians, and its change with the
+    /// distance across the line.
+    fn turn(&self, sg: &Segmenting, tau: f64) -> (f64, f64) {
+        let seed = self.ridge.seed ^ SALT_TURN;
+        let tangent = |c: i32| TAN_TURN * (2.0 * unit(hash(c as u32, 5, 0, seed)) - 1.0);
+        let cell_sum = |c: i32| 0.5 * (tangent(c) + tangent(c + 1));
+        let x = tau / sg.turn_cell;
+        let n = x.floor();
+        let (s, n) = (x - n, n as i32);
+        let mut sum = 0.0;
+        for c in 0..n {
+            sum += cell_sum(c);
+        }
+        for c in n..0 {
+            sum -= cell_sum(c);
+        }
+        let (h0, h1) = (tangent(n), tangent(n + 1));
+        sum += h0 * s + (h1 - h0) * s * s * s * (1.0 - 0.5 * s);
+        let slope = h0 + (h1 - h0) * s * s * (3.0 - 2.0 * s);
+        (self.ridge.spread * sg.turn_cell * sum, slope)
+    }
+
+    /// The move of boundary `j` along the line at `tau` million years of age
+    /// from the line, from the migration of the boundary. A transform fault
+    /// does not migrate. The result is the move in radians, and its change
+    /// with the age.
+    fn migration(&self, sg: &Segmenting, j: i32, tau: f64) -> (f64, f64) {
+        let seed = self.ridge.seed ^ SALT_MIGRATE;
+        let wander = WANDER_KM / self.ridge.world_km;
+        let migrate = if self.transform(sg, j) {
+            0.0
+        } else {
+            MIGRATE * sg.length
+        };
+        let mut sum = (0.0, 0.0);
+        for (size, cell, channel) in [(migrate, MIGRATE_MYR, 0), (wander, WANDER_MYR, 1)] {
+            let (value, slope) = noise1(tau / cell, j as u32, channel, seed);
+            let (zero, _) = noise1(0.0, j as u32, channel, seed);
+            sum.0 += 0.5 * size * (value - zero);
+            sum.1 += 0.5 * size * slope / cell;
+        }
+        sum
+    }
+
+    /// The trace of boundary `j` at `across`: the place along the line, and
+    /// the change of that place with `across`. The trace starts at the
+    /// boundary at the crest and follows the history of the spreading out
+    /// to the flanks. `turn` is the result of `turn` at `across`.
+    fn trace(&self, sg: &Segmenting, j: i32, across: f64, turn: (f64, f64)) -> Trace {
+        let v = self.ridge.spread;
+        let middle = 0.5 * (self.shift(sg, j.wrapping_sub(1)) + self.shift(sg, j));
+        let off = across - middle;
+        // The age is round at the crest, so the change has no step there.
+        let tau = (off / v).hypot(MIGRATE_ROUND) - MIGRATE_ROUND;
+        let (moved, change) = self.migration(sg, j, tau);
+        let to_tau = off / v / (tau + MIGRATE_ROUND);
+        Trace {
+            u: self.boundary(sg, j) + turn.0 + moved,
+            slope: turn.1 + change * to_tau / v,
+            age: tau,
+        }
+    }
+
+    /// The depth of the ends of a crest segment below its middle, in
+    /// kilometers. `len` is its length in kilometers.
+    fn segment_depth(&self, len: f64) -> f64 {
+        let full_rate = 2.0 * self.ridge.spread * self.ridge.world_km;
+        let part = (len / SECOND_ORDER_KM).clamp(0.5, 1.5);
+        0.001 * lerp_table(&SEGMENT_DEPTH, full_rate) * part
     }
 
     /// The distance along the line with the bend of the noise. The curve
@@ -576,6 +663,7 @@ impl RidgePlan {
         let spacing = lerp_table(&FAULT_SPACING, m);
         let throw = KAPPA * lerp_table(&FAULT_HEAVE, m) * DIP_TAN;
         Faulting {
+            magma: m,
             spacing,
             throw,
             box_half: (0.5 * self.step() * spec.world_km / spacing).min(MAX_BOX),
@@ -586,17 +674,25 @@ impl RidgePlan {
 
     /// The height of the fault blocks on one side of the axis, in kilometers
     /// of throw. Each crest segment `k` has its own faults. `along` is the
-    /// distance from the start of the segment in kilometers, and `x` is the
-    /// distance from the axis in fault spacings. The faults are in rows
-    /// along the line, one row for each fault spacing. Each fault is one
-    /// piece of a row. Its height is exactly zero outside its window, so the
-    /// sum does not depend on the cells that the search starts from.
-    fn faults(&self, f: &Faulting, k: i32, side: u32, along: f64, x: f64) -> f64 {
-        self.fault_sum(f, [k, 0], side, along, x)
+    /// distance from the start of the segment in kilometers, `len` is the
+    /// length of the segment in kilometers, and `x` is the distance from the
+    /// axis in fault spacings. The faults are in rows along the line, one
+    /// row for each fault spacing. Each fault is one piece of a row. Its
+    /// height is exactly zero outside its window, so the sum does not depend
+    /// on the cells that the search starts from.
+    fn faults(&self, f: &Faulting, k: i32, side: u32, [along, len]: [f64; 2], x: f64) -> f64 {
+        self.fault_sum(f, [k, 0], side, [along, len], x)
     }
 
     /// `faults`, with a search of `extra` more cells on each side.
-    fn fault_sum(&self, f: &Faulting, [k, extra]: [i32; 2], side: u32, along: f64, x: f64) -> f64 {
+    fn fault_sum(
+        &self,
+        f: &Faulting,
+        [k, extra]: [i32; 2],
+        side: u32,
+        [along, len]: [f64; 2],
+        x: f64,
+    ) -> f64 {
         let seed = self.ridge.seed ^ SALT_FAULT;
         let b = f.box_half;
         let draw = |i: i32, j: i32, channel: u32| {
@@ -613,6 +709,10 @@ impl RidgePlan {
         // distribution.
         let throw =
             |u: f64| f.throw * (THROW_MIN + (1.0 - THROW_MIN) * (-(1.0 - u).ln()).min(THROW_MAX));
+        let (spacing, heave) = (
+            lerp_table(&FAULT_SPACING, f.magma),
+            lerp_table(&FAULT_HEAVE, f.magma),
+        );
         for i in first..=last {
             // Row `i` of faults has pieces of one length, with its own
             // phase.
@@ -629,12 +729,20 @@ impl RidgePlan {
                 if along <= start - smooth || along >= end + smooth {
                     continue;
                 }
+                // The middle of a segment has more magma than its ends, so
+                // its faults are lower and closer together. At the ends,
+                // some rows have no piece.
+                let place = middle * piece / len;
+                let magma = f.magma + SEGMENT_MAGMA * (std::f64::consts::TAU * (place - 0.5)).cos();
+                let grown = lerp_table(&FAULT_HEAVE, magma) / heave;
+                let keep = (spacing / lerp_table(&FAULT_SPACING, magma)).min(1.0);
+                let kept = smoothstep(-KEEP_SOFT, KEEP_SOFT, keep - draw(i, j, 8));
                 let q = (2.0 * along - start - end) / (end - start);
                 let bow = (1.0 - q * q).max(0.0);
                 let taper = ellipse(q, 2.0 * smooth / (end - start));
                 // Each piece is a fault with its own throw and place. Most
                 // faults face the axis.
-                let height = throw(draw(i, j, 5)) * taper;
+                let height = throw(draw(i, j, 5)) * grown;
                 let inward = draw(i, j, 2) < INWARD;
                 let at = f64::from(i)
                     + 0.5
@@ -644,7 +752,7 @@ impl RidgePlan {
                 let scarp = (height / (DIP_TAN * f.spacing)).clamp(1e-6, SCARP_MAX);
                 let y = if inward { x - at } else { at - x };
                 let width = (BLOCK_WIDTH * (height / f.throw).sqrt()).clamp(WIDTH_MIN, WIDTH_MAX);
-                sum += height * block(y, scarp, width, b);
+                sum += height * taper * kept * block(y, scarp, width, b);
             }
         }
         sum
@@ -653,8 +761,13 @@ impl RidgePlan {
     /// The level of a texel on the ridge. `start` is its level from before
     /// the stroke, and `noise` is the noise at its place.
     pub(crate) fn level(&self, start: u16, at: RidgePoint, noise: RidgeNoise) -> u16 {
+        self.level_in(start, at, noise, 0)
+    }
+
+    /// `level`, with a search of `extra` more boundaries on each side.
+    fn level_in(&self, start: u16, at: RidgePoint, noise: RidgeNoise, extra: i32) -> u16 {
         let spec = &self.ridge;
-        let (r, t, km) = (spec.radius, self.step(), spec.world_km);
+        let (r, t, km, v) = (spec.radius, self.step(), spec.world_km, spec.spread);
         let old = f64::from(start);
         let from_line = at.across.hypot(at.past);
         // The ridge has no height at an end of the line.
@@ -668,61 +781,136 @@ impl RidgePlan {
         let hold = 1.0 - smoothstep(r, REACH * r, from_line);
         let u = self.bent(at, noise);
         let across = at.across + BEND_ACROSS * r * hold * noise.bend[1];
-        // The crest has a boundary near each multiple of the segment length.
-        // `s` is the distance from the nearest boundary `i`, the start of
-        // crest segment `i`.
-        let cell = (u / spec.segment + 0.5).floor();
-        let i = cell as i32;
-        let jitter = |i: i32| self.jitter(i);
-        let s = u - (cell + jitter(i)) * spec.segment;
-        let off = across - self.crest(i, s, from_line);
-        let from_crest = off.hypot(at.past);
         // The age of the sea floor, in millions of years. The crest is round
         // over a few texels.
-        let round = CREST_ROUND * t / spec.spread;
-        let age = |d: f64| (d / spec.spread).hypot(round) - round;
+        let round = CREST_ROUND * t / v;
+        let age = |d: f64| (d / v).hypot(round) - round;
         // The depth follows the age, and is zero at the crest and at the
         // brush radius.
         let (top, foot) = (depth(0.0), depth(age(r)));
-        let w = ((foot - depth(age(from_crest / lens))) / (foot - top)).clamp(0.0, 1.0);
-        // The foot of the rise has no slope.
-        let w = w * w * (1.0 + FOOT) / (w + FOOT);
         let lift = (f64::from(spec.crest) - old).max(0.0);
-        // The fault blocks.
         let f = self.faulting();
         let mean = BLOCK_MEAN * f.throw * f.level;
         // Ground at the crest level gets no faults.
         let low = (lift / (HILL_TOP * mean + 1.0)).min(1.0);
-        // The rise is lower by the mean height of the blocks, so the mean
-        // ground follows the depth.
-        let rise = (lift - low * mean) * taper * w;
-        // The blocks of crest segment `k` at `along` kilometers from its
-        // start. They are at the distance from the crest of that segment,
-        // and the throw of a fault grows near that crest.
-        let segment_blocks = |k: i32, along: f64| {
-            let off = across - self.shift(k);
-            let from_crest = off.hypot(at.past);
-            let x = from_crest * km / f.spacing;
-            let grow = smoothstep(0.0, GROW * f.spacing / km + t, from_crest);
-            grow * self.faults(&f, k, u32::from(off < 0.0), along, x)
-        };
-        // Near boundary `i`, the blocks of the two crest segments blend.
-        let zone = BLEND.min(0.1 * spec.segment * km);
-        let next = smoothstep(-zone, zone, s * km);
-        let mut blocks = 0.0;
-        if next > 0.0 {
-            blocks += next * segment_blocks(i, s * km);
-        }
-        if next < 1.0 {
-            let before = spec.segment * (1.0 + jitter(i) - jitter(i.wrapping_sub(1)));
-            blocks += (1.0 - next) * segment_blocks(i.wrapping_sub(1), (s + before) * km);
-        }
-        // The blocks fade toward the reach.
+        // The blocks and the troughs fade toward the reach.
         let fade = 1.0 - smoothstep(HILL_FADE, REACH, far);
-        let hills = blocks * f.level * low * taper * fade;
+        let sg = self.segmenting();
+        // The rise and the blocks of crest segment `k`, from the trace
+        // `lower` at its start to the trace `upper` at its end. The age is
+        // the distance from the crest of that segment.
+        let magma_seed = spec.seed ^ SALT_MAGMA;
+        let segment = |k: i32, lower: f64, upper: f64| {
+            let crest = self.shift(&sg, k);
+            let off = across - crest;
+            let from_crest = off.hypot(at.past);
+            let w = ((foot - depth(age(from_crest / lens))) / (foot - top)).clamp(0.0, 1.0);
+            // The foot of the rise has no slope.
+            let w = w * w * (1.0 + FOOT) / (w + FOOT);
+            // The ends of the segment are deeper than its middle. The rise
+            // is lower by the mean height of the blocks, so the mean ground
+            // follows the depth.
+            let len = (upper - lower).max(SHORTEST_PART * sg.length);
+            let place = ((u - lower) / len).clamp(0.0, 1.0);
+            let ends = 0.5 * (1.0 + (std::f64::consts::TAU * place).cos());
+            // The depth of the ends changes with the age and from segment
+            // to segment. The noise is of the age with a sign, so it has no
+            // step at the crest.
+            let side = u32::from(off < 0.0);
+            let tau = from_crest / v;
+            let (deeper, _) = noise1(off / v / SEGMENT_MYR, k as u32, 4, magma_seed);
+            let deeper = 1.0 - SEGMENT_CHANGE * (1.0 - deeper);
+            let sunk = self.segment_depth(len * km) * f.level * ends * deeper;
+            // The depth of the ends fades slower than the rise.
+            let flat = mean + MAGMA_MEAN * MAGMA_RELIEF * f.level;
+            let rise = taper * (w * (lift - low * flat) - low * sunk * w * (2.0 - w)).max(0.0);
+            // The magma of the segment changes with the age, so the faults
+            // are closer together in some bands and farther apart in others.
+            // The throw grows with the spacing.
+            // The segments between two transform faults share the bands of
+            // the magma. The bands bend along the line.
+            let group = self.group(&sg, k) as u32;
+            let (wave, _) = noise1(u * km / WAVE_KM, group, side + 2, magma_seed);
+            let tau = (tau + WAVE_MYR * wave) / MAGMA_MYR;
+            let (band, slope) = noise1(tau, group, side, magma_seed);
+            let (zero, _) = noise1(0.0, group, side, magma_seed);
+            let rows = MAGMA_BAND * MAGMA_MYR * v * km / f.spacing;
+            let rate = 1.0 + MAGMA_BAND * slope;
+            let grown = rate.powf(-THROW_SPACING);
+            // Near the ends of the segment, the faults hook toward the
+            // crest of the next segment.
+            let (near, next) = if place < 0.5 {
+                (place, k.wrapping_sub(1))
+            } else {
+                (1.0 - place, k.wrapping_add(1))
+            };
+            let hook = (1.0 - near / HOOK_PART).max(0.0);
+            let toward = if (self.shift(&sg, next) - crest) * off > 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            let x = from_crest * km / f.spacing
+                + rows * (band - zero)
+                + HOOK_ROWS * hook * hook * toward;
+            // The throw of a fault grows near the crest.
+            let grow = smoothstep(0.0, GROW * f.spacing / km + t, from_crest);
+            let along = [(u - lower) * km, len * km];
+            let blocks = grow * grown * self.faults(&f, k, side, along, x);
+            // More magma gives a thicker crust, so the bands of the magma
+            // are also bands of the depth.
+            // The bands are narrower at their tops than at their feet.
+            let top = 0.5 * (1.0 + band);
+            let blocks = blocks + grow * MAGMA_RELIEF * top * top;
+            (rise, blocks * f.level * low * taper * fade)
+        };
+        // The traces of the boundaries near the texel. Crest segment `j`
+        // has the part of a texel that is past trace `j` and before trace
+        // `j + 1`, with a blend over `sg.blend` on each side of a trace.
+        // Each part is exactly zero past its blend, so the sum does not
+        // depend on the boundaries that the search starts from.
+        let turn = self.turn(&sg, across / v);
+        let i = ((u - turn.0) / sg.length).floor() as i32;
+        let (mut rise, mut hills, mut deep) = (0.0, 0.0, 0.0);
+        let mut lower: Option<(f64, f64)> = None;
+        for j in i - 1 - extra..=i + 2 + extra {
+            let trace = self.trace(&sg, j, across, turn);
+            // The distance from the trace, square to it.
+            let off = (u - trace.u) / trace.slope.hypot(1.0);
+            let past = smoothstep(-sg.blend, sg.blend, off);
+            if let Some((below, before)) = lower {
+                let weight = before - past;
+                if weight > 0.0 {
+                    let (a, b) = segment(j - 1, below, trace.u);
+                    rise += weight * a;
+                    hills += weight * b;
+                }
+            }
+            lower = Some((trace.u, past));
+            // A trough along the trace, from the offset of the crest. It
+            // gets shallower with the age, and a transform fault has a deeper
+            // one.
+            let (before, after) = (self.shift(&sg, j - 1), self.shift(&sg, j));
+            let step = (after - before).abs() * km;
+            let transform = self.transform(&sg, j);
+            let kind = if transform { 1.0 } else { OFFSET_TROUGH };
+            let trough = kind * (TROUGH_DEPTH * step).min(TROUGH_MAX);
+            let width = sg.blend + TROUGH_KM / km;
+            let filled = 1.0 - TROUGH_FILL * smoothstep(0.0, TROUGH_MYR, trace.age);
+            deep += trough * filled * bump(off / width);
+            // A deep at each end of the crest at a transform fault.
+            if transform {
+                let nodal = (NODAL_DEPTH * step).min(NODAL_MAX);
+                let size = sg.blend + NODAL_KM / km;
+                for crest in [before, after] {
+                    deep += nodal * bump(off.hypot(across - crest) / size);
+                }
+            }
+        }
+        let deep = deep * f.level * low * taper * fade;
         // The highest blocks bend down below the Crest setting.
         let hills = soft_cap(hills, (lift - rise).max(0.0));
-        let up = (rise + hills).min(lift);
+        let up = (rise + hills).min(lift) - deep;
         let change = at.flow * up;
         let new = (old + (change + 0.5).floor()).clamp(0.0, 65535.0);
         spec.limits.apply(old, new) as u16
@@ -731,6 +919,8 @@ impl RidgePlan {
 
 /// The faults of a stroke.
 struct Faulting {
+    /// The magma part of the spreading.
+    magma: f64,
     /// The mean distance between two faults, in kilometers.
     spacing: f64,
     /// The mean throw of a fault, in kilometers.
@@ -741,6 +931,30 @@ struct Faulting {
     half_texel: f64,
     /// The 16-bit steps of one kilometer of throw.
     level: f64,
+}
+
+/// The crest segments of a stroke.
+struct Segmenting {
+    /// The mean length of a crest segment, in radians.
+    length: f64,
+    /// The mean number of crest segments between two transform faults.
+    group: i32,
+    /// The age of a cell of the noise of the spreading direction, in
+    /// millions of years.
+    turn_cell: f64,
+    /// Half of the width of the blend of two crest segments at their
+    /// boundary, in radians.
+    blend: f64,
+}
+
+/// The trace of a boundary at a distance across the line.
+struct Trace {
+    /// The place along the line, in radians.
+    u: f64,
+    /// The change of `u` with the distance across the line.
+    slope: f64,
+    /// The age of the sea floor at the trace, in millions of years.
+    age: f64,
 }
 
 /// The noise at the place of a texel.
@@ -773,9 +987,127 @@ const SALT_BEND: u32 = 0x51ed_270b;
 const SALT_BEND_FINE: u32 = 0x2f6b_8a35;
 const SALT_SLOW: u32 = 0x7a3c_91d7;
 const SALT_FAULT: u32 = 0x1b87_3593;
+const SALT_TURN: u32 = 0x6c8e_9cf5;
+const SALT_MIGRATE: u32 = 0x3d4f_a1c7;
+const SALT_MAGMA: u32 = 0x9b05_688c;
 
-/// The largest move of a boundary, as a part of the segment length.
-const JITTER: f64 = 0.35;
+/// The largest move of a boundary, as a part of the mean length of a crest
+/// segment.
+const JITTER: f64 = 0.3;
+
+/// The mean length of a crest segment between two offsets with no
+/// transform fault, in kilometers (Macdonald and others 1991). The Segment
+/// setting is the mean distance between two transform faults.
+const SECOND_ORDER_KM: f64 = 130.0;
+
+/// A crest segment is at least this number of blend widths long.
+const SEGMENT_BLENDS: f64 = 10.0;
+
+/// The width of the valley of a transform fault, in kilometers. Two crest
+/// segments blend over it and 1.5 texels on each side of their boundary.
+const VALLEY_KM: f64 = 4.0;
+
+/// The part of the shift of a crest segment that is the shift of its group.
+/// The rest is the offset of the segment from its group.
+const GROUP_SHIFT: f64 = 0.8;
+
+/// The tangent of the largest angle of the spreading direction to its mean,
+/// 8 degrees.
+const TAN_TURN: f64 = 0.14;
+
+/// The age of a cell of the noise of the spreading direction, in millions
+/// of years, and the largest number of cells out to `TURN_REACH` brush
+/// radii.
+const TURN_MYR: f64 = 8.0;
+const TURN_CELLS: f64 = 16.0;
+const TURN_REACH: f64 = 1.8;
+
+/// The largest move of an offset with no transform fault from its place at
+/// the crest, as a part of the mean length of a crest segment, and the age
+/// of a cell of its noise in millions of years. The offset migrates along
+/// the crest, so its trace is oblique to the crest (Hey 1977).
+const MIGRATE: f64 = 0.1;
+const MIGRATE_MYR: f64 = 4.0;
+
+/// The largest small move of each trace, in kilometers, and the age of a
+/// cell of its noise in millions of years.
+const WANDER_KM: f64 = 3.0;
+const WANDER_MYR: f64 = 0.8;
+
+/// The age of a trace is round over this number of millions of years at
+/// the crest.
+const MIGRATE_ROUND: f64 = 0.5;
+
+/// The depth of the ends of a crest segment below its middle at a full
+/// spreading rate in millimeters per year, in meters (Lin and others 1990;
+/// Shaw and Lin 1993).
+const SEGMENT_DEPTH: [(f64, f64); 3] = [(20.0, 600.0), (50.0, 300.0), (100.0, 100.0)];
+
+/// The shortest crest segment for its depth and its magma, as a part of the
+/// mean length.
+const SHORTEST_PART: f64 = 0.2;
+
+/// The magma part of the spreading at the middle of a crest segment is
+/// higher than its mean by this number, and at the ends it is lower.
+const SEGMENT_MAGMA: f64 = 0.03;
+
+/// A piece of a fault at the end of a segment fades in over this part of
+/// the chance that it is there.
+const KEEP_SOFT: f64 = 0.1;
+
+/// The age of a cell of the noise of the magma, in millions of years, and
+/// the largest change of the spacing of the faults, as a part of the
+/// spacing. The throw changes with the spacing to this power (Behn and Ito
+/// 2008).
+const MAGMA_MYR: f64 = 2.0;
+const MAGMA_BAND: f64 = 0.12;
+const THROW_SPACING: f64 = 1.0;
+
+/// The change of the depth with the magma, from the least to the most, in
+/// kilometers.
+const MAGMA_RELIEF: f64 = 1.0;
+
+/// The mean height of the bands of the magma, as a part of
+/// `MAGMA_RELIEF`.
+const MAGMA_MEAN: f64 = 0.33;
+
+/// The bands of the magma move by up to this age, in millions of years,
+/// with a noise along the segment that has cells of `WAVE_KM` kilometers.
+const WAVE_MYR: f64 = 0.8;
+const WAVE_KM: f64 = 40.0;
+
+/// The depth of the ends of a segment changes with the age, with cells of
+/// this number of millions of years, by up to `SEGMENT_CHANGE` of the
+/// depth.
+const SEGMENT_MYR: f64 = 6.0;
+const SEGMENT_CHANGE: f64 = 0.35;
+
+/// The faults hook over this part of a crest segment at each end, by up to
+/// `HOOK_ROWS` fault spacings.
+const HOOK_PART: f64 = 0.15;
+const HOOK_ROWS: f64 = 1.0;
+
+/// The depth of the trough along a transform fault for each kilometer of
+/// offset, and its largest depth, in kilometers. A trough along an offset
+/// with no transform fault is `OFFSET_TROUGH` times as deep.
+const TROUGH_DEPTH: f64 = 0.012;
+const TROUGH_MAX: f64 = 1.2;
+const OFFSET_TROUGH: f64 = 0.6;
+
+/// Half of the width of a trough past the blend, in kilometers.
+const TROUGH_KM: f64 = 6.0;
+
+/// The part of the depth of a trough that sediment fills, over this number
+/// of millions of years.
+const TROUGH_FILL: f64 = 0.4;
+const TROUGH_MYR: f64 = 20.0;
+
+/// The depth of a deep at an end of a crest at a transform fault for each
+/// kilometer of offset, its largest depth, in kilometers, and its radius
+/// past the blend, in kilometers.
+const NODAL_DEPTH: f64 = 0.01;
+const NODAL_MAX: f64 = 1.0;
+const NODAL_KM: f64 = 15.0;
 
 /// The ridge gets its full height and width at this number of brush radii
 /// from an end of the line.
@@ -790,10 +1122,6 @@ const CREST_ROUND: f64 = 2.0;
 
 /// The foot of the rise is round below about this part of the height.
 const FOOT: f64 = 0.25;
-
-/// The zone of a step of the crest gets wider by this part of the distance
-/// from the line past the Offset setting.
-const STEP_SPREAD: f64 = 0.6;
 
 /// The depth of the sea floor below the crest at an age in millions of
 /// years, in meters (Stein and Stein 1992).
@@ -879,10 +1207,6 @@ const BOW: f64 = 0.2;
 /// spacings.
 const PLACE_SPREAD: f64 = 0.5 + FAULT_JITTER + STEP_OVER + BOW;
 
-/// The faults of two crest segments blend over this distance on each side
-/// of their boundary, in kilometers.
-const BLEND: f64 = 10.0;
-
 /// The width of a block behind its scarp, in fault spacings, is
 /// `BLOCK_WIDTH` times the square root of its throw in mean throws, from
 /// `WIDTH_MIN` to `WIDTH_MAX`. A scarp is no wider than `SCARP_MAX` fault
@@ -962,8 +1286,8 @@ fn soft_cap(value: f64, cap: f64) -> f64 {
     knee + room * ((value - knee) / room).tanh()
 }
 
-/// Half of the width of the narrowest step of the crest before the bend of
-/// the noise, in radians.
+/// A small width in radians. The Segment setting is at least 20 times this
+/// width.
 fn crack_half_width(radius: f64, step: f64) -> f64 {
     (0.02 * radius).max(3.0 * step)
 }
@@ -972,6 +1296,26 @@ fn crack_half_width(radius: f64, step: f64) -> f64 {
 /// 32-bit number.
 fn unit(h: u32) -> f64 {
     f64::from(h & 0xff_ffff) / f64::from(1u32 << 24)
+}
+
+/// Noise of one number with cells of size 1, from -1 to 1, and its change.
+/// The value at each whole number is from a hash of that number and of `a`
+/// and `b`, and a smoothstep joins two values.
+fn noise1(x: f64, a: u32, b: u32, seed: u32) -> (f64, f64) {
+    let n = x.floor();
+    let (s, n) = (x - n, n as i32);
+    let value = |c: i32| 2.0 * unit(hash(c as u32, a, b, seed)) - 1.0;
+    let (h0, h1) = (value(n), value(n.wrapping_add(1)));
+    (
+        h0 + (h1 - h0) * s * s * (3.0 - 2.0 * s),
+        (h1 - h0) * 6.0 * s * (1.0 - s),
+    )
+}
+
+/// A bump of height 1 at zero that is exactly zero at 1 and past it.
+fn bump(q: f64) -> f64 {
+    let x = (1.0 - q * q).max(0.0);
+    x * x
 }
 
 fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
@@ -1047,9 +1391,16 @@ mod tests {
         f64::from(plan.level(START, at(u, across), plan.noise(p)))
     }
 
-    /// The place of boundary `i` along the line, with no bend.
+    /// The place of boundary `i` along the line at the crest, with no bend.
     fn boundary(plan: &RidgePlan, i: i32) -> f64 {
-        (f64::from(i) + plan.jitter(i)) * plan.ridge.segment
+        plan.boundary(&plan.segmenting(), i)
+    }
+
+    /// The place of the trace of boundary `j` along the line at `across`.
+    fn trace_at(plan: &RidgePlan, j: i32, across: f64) -> f64 {
+        let sg = plan.segmenting();
+        let turn = plan.turn(&sg, across / plan.ridge.spread);
+        plan.trace(&sg, j, across, turn).u
     }
 
     /// The middle of crest segment `k`.
@@ -1176,8 +1527,18 @@ mod tests {
             },
             FINE,
         );
+        let straight = shape(
+            Ridge {
+                offset: 0.0,
+                ..rough
+            },
+            FINE,
+        );
         let r = plan.ridge.radius;
-        let (mut past_foot, mut hills) = (0, 0);
+        // A trough and two deeps can be at one place.
+        let f = plan.faulting();
+        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX) * f.level;
+        let (mut past_foot, mut hills, mut lower, mut count) = (0, 0, 0, 0);
         for noise in [calm(), wild(), RidgeNoise::default()] {
             for j in 0..60 {
                 let u = f64::from(j) * 0.0537;
@@ -1188,26 +1549,34 @@ mod tests {
                         let new = plan.level(start, at(u, across), noise);
                         assert_eq!(new, start, "{u} {across}");
                     }
-                    // The ground does not go down, and it does not go above
-                    // the crest.
+                    // The ground does not go above the crest. Only a trough
+                    // or a deep takes it down, by no more than its depth.
                     let new = plan.level(START, at(u, across), noise);
-                    assert!((START..=CREST).contains(&new), "{u} {across}");
+                    assert!(new <= CREST, "{u} {across}");
+                    assert!(f64::from(new) >= f64::from(START) - deepest, "{u} {across}");
+                    lower += usize::from(new < START);
+                    count += 1;
+                    // With no offset, there is no trough and no deep.
+                    let flat = straight.level(START, at(u, across), noise);
+                    assert!((START..=CREST).contains(&flat), "{u} {across}");
                     // Past the foot of the rise, the blocks only raise the
                     // ground.
                     let base = smooth.level(START, at(u, across), noise);
+                    assert!(base >= START, "{u} {across}");
                     if base == START && new > START {
                         past_foot += 1;
                     }
                     hills += usize::from(new != base);
                     // Ground a small distance below the crest gets a small
-                    // part of the blocks.
+                    // part of the blocks and of the troughs.
                     let near = plan.level(CREST - 10, at(u, across), noise);
-                    assert!((CREST - 10..=CREST).contains(&near), "{u} {across}");
+                    assert!((CREST - 20..=CREST).contains(&near), "{u} {across}");
                 }
             }
         }
         assert!(hills > 30000, "{hills}");
         assert!(past_foot > 1000, "{past_foot}");
+        assert!(lower > 0 && lower < count / 20, "{lower} {count}");
     }
 
     #[test]
@@ -1247,12 +1616,12 @@ mod tests {
                 let along = f64::from(a) * 2.13 - 300.0;
                 for xi in 0..300 {
                     let x = f64::from(xi) * 0.071;
-                    let sum = plan.faults(&f, k, 0, along, x);
+                    let sum = plan.faults(&f, k, 0, [along, 130.0], x);
                     assert!(sum >= 0.0);
                     positive += usize::from(sum > 0.0);
                     // A search that starts from more cells gives the same
                     // sum.
-                    let more = plan.fault_sum(&f, [k, 3], 0, along, x);
+                    let more = plan.fault_sum(&f, [k, 3], 0, [along, 130.0], x);
                     assert_eq!(sum, more, "{k} {along} {x}");
                 }
             }
@@ -1267,18 +1636,31 @@ mod tests {
             ..spec()
         };
         let plan = shape(stairs, FINE);
-        let (r, segment) = (plan.ridge.radius, stairs.segment);
+        let sg = plan.segmenting();
+        let (r, length) = (plan.ridge.radius, sg.length);
+        // The Segment setting of 637 km gives 5 crest segments of 127 km
+        // between two transform faults as a mean.
+        assert_eq!(sg.group, 5);
+        assert!((length * plan.ridge.world_km - 127.4).abs() < 0.1);
         // The mean distance between two boundaries is the segment length,
         // and the distances are not equal.
         let gaps: Vec<f64> = (0..400)
             .map(|i| boundary(&plan, i + 1) - boundary(&plan, i))
             .collect();
         let mean = gaps.iter().sum::<f64>() / 400.0;
-        assert!((mean / segment - 1.0).abs() < 0.01, "{mean}");
+        assert!((mean / length - 1.0).abs() < 0.01, "{mean}");
         let low = gaps.iter().copied().fold(f64::MAX, f64::min);
         let high = gaps.iter().copied().fold(f64::MIN, f64::max);
-        assert!(low > 0.29 * segment && low < 0.6 * segment, "{low}");
-        assert!(high < 1.71 * segment && high > 1.4 * segment, "{high}");
+        assert!(low > 0.39 * length && low < 0.6 * length, "{low}");
+        assert!(high < 1.61 * length && high > 1.4 * length, "{high}");
+        // The transform faults are between 2 and 8 segments apart, and the
+        // Segment setting is the mean distance between them.
+        let transforms: Vec<i32> = (0..400).filter(|&j| plan.transform(&sg, j)).collect();
+        let apart: Vec<i32> = transforms.windows(2).map(|t| t[1] - t[0]).collect();
+        assert!(apart.iter().all(|a| (2..=8).contains(a)), "{apart:?}");
+        let mean = f64::from(transforms[transforms.len() - 1] - transforms[0])
+            / (transforms.len() - 1) as f64;
+        assert!((mean - 5.0).abs() < 0.3, "{mean}");
         // The place of the crest is the same along a segment, and it is no
         // farther from the line than the offset.
         let step = r / 500.0;
@@ -1292,10 +1674,10 @@ mod tests {
             let top: Vec<f64> = top.map(|(a, _)| *a).collect();
             top.iter().sum::<f64>() / top.len() as f64
         };
-        let shifts: Vec<f64> = (0..100).map(|k| plan.shift(k)).collect();
+        let shifts: Vec<f64> = (0..100).map(|k| plan.shift(&sg, k)).collect();
         for (k, &shift) in shifts.iter().enumerate() {
             let k = k as i32;
-            let (from, to) = (boundary(&plan, k), boundary(&plan, k + 1));
+            let (from, to) = (trace_at(&plan, k, shift), trace_at(&plan, k + 1, shift));
             for part in [0.3, 0.5, 0.7] {
                 let crest = crest_at(mix(from, to, part));
                 assert!((crest - shift).abs() <= step, "{k}: {crest} {shift}");
@@ -1305,14 +1687,12 @@ mod tests {
         let highest = shifts.iter().copied().fold(f64::MIN, f64::max);
         let lowest = shifts.iter().copied().fold(f64::MAX, f64::min);
         assert!(highest > 0.6 * stairs.offset && lowest < -0.6 * stairs.offset);
-        // The step of the crest at the start of a group is larger as a
-        // mean.
+        // The step of the crest at a transform fault is larger as a mean.
         let (mut strong, mut weak) = (Vec::new(), Vec::new());
         for i in 1..100 {
             let step = (shifts[i] - shifts[i - 1]).abs();
             assert!(step > 0.0);
-            let i = i as i32;
-            if i == plan.group_start(i >> 2) {
+            if plan.transform(&sg, i as i32) {
                 strong.push(step);
             } else {
                 weak.push(step);
@@ -1320,10 +1700,7 @@ mod tests {
         }
         let mean = |steps: &[f64]| steps.iter().sum::<f64>() / steps.len() as f64;
         assert!(mean(&strong) > 2.0 * mean(&weak));
-        // At the crest, the step is narrow. At the
-        // edge of the rise, a small part of the step is in that distance, so
-        // the outline of the rise has no cut.
-        let near = 2.0 * crack_half_width(r, plan.step());
+        // At the crest, the step is as narrow as the blend.
         let mut large = 0;
         for i in 1..100 {
             let step = shifts[i] - shifts[i - 1];
@@ -1331,14 +1708,17 @@ mod tests {
                 continue;
             }
             large += 1;
-            let u = boundary(&plan, i as i32);
-            // The crest of the level, then the crest of the formula.
-            let crest = crest_at(u + near) - crest_at(u - near);
-            assert!((crest - step).abs() <= 0.02 * step.abs() + 2.0 * r / 500.0);
             let i = i as i32;
-            let edge = plan.crest(i, near, r) - plan.crest(i, -near, r);
-            assert!(edge.abs() < 0.4 * step.abs(), "{i}: {edge} {step}");
-            assert!(edge * step > 0.0, "{i}: {edge} {step}");
+            let (before, after) = (
+                trace_at(&plan, i, shifts[i as usize - 1]),
+                trace_at(&plan, i, shifts[i as usize]),
+            );
+            let near = 2.0 * sg.blend;
+            let crest = crest_at(before.max(after) + near) - crest_at(before.min(after) - near);
+            assert!(
+                (crest - step).abs() <= 2.0 * r / 500.0,
+                "{i}: {crest} {step}"
+            );
         }
         assert!(large > 10);
         // An offset above half of the radius has the effect of that half.
@@ -1350,6 +1730,168 @@ mod tests {
             FINE,
         );
         assert_eq!(wide.spec().offset, 0.5 * r);
+    }
+
+    #[test]
+    fn a_transform_fault_leaves_a_step_of_the_depth_that_fades_with_the_age() {
+        let plan = shape(
+            Ridge {
+                offset: 0.04,
+                ..spec()
+            },
+            FINE,
+        );
+        let sg = plan.segmenting();
+        let (r, v) = (plan.ridge.radius, plan.ridge.spread);
+        let round = CREST_ROUND * plan.step() / v;
+        let age = |d: f64| (d / v).hypot(round) - round;
+        let foot = depth(age(r));
+        // The height of the rise at `d` from the crest.
+        let rise = |d: f64| {
+            let w = ((foot - depth(age(d))) / (foot - depth(0.0))).clamp(0.0, 1.0);
+            LIFT * w * w * (1.0 + FOOT) / (w + FOOT)
+        };
+        let mut count = 0;
+        for j in 1..200 {
+            let (before, after) = (plan.shift(&sg, j - 1), plan.shift(&sg, j));
+            if !plan.transform(&sg, j) || (after - before).abs() < 0.02 {
+                continue;
+            }
+            count += 1;
+            let mut steps = Vec::new();
+            for side in [-1.0, 1.0] {
+                for d in [0.1, 0.3, 0.6] {
+                    // A place past the two crests on one side.
+                    let across = if side > 0.0 {
+                        before.max(after) + d * r
+                    } else {
+                        before.min(after) - d * r
+                    };
+                    let at_trace = trace_at(&plan, j, across);
+                    let older = level(&plan, at_trace - 1.5 * sg.blend, across);
+                    let younger = level(&plan, at_trace + 1.5 * sg.blend, across);
+                    let start = f64::from(START);
+                    assert!((older - start - rise((across - before).abs())).abs() <= 1.0);
+                    assert!((younger - start - rise((across - after).abs())).abs() <= 1.0);
+                    let step = older - younger;
+                    let want = rise((across - before).abs()) - rise((across - after).abs());
+                    assert!((step - want).abs() <= 2.0, "{j}: {step} {want}");
+                    steps.push(step.abs());
+                }
+                // The step fades with the age.
+                let n = steps.len();
+                assert!(steps[n - 3] > steps[n - 2] && steps[n - 2] > steps[n - 1]);
+                assert!(steps[n - 3] > 1000.0, "{steps:?}");
+            }
+        }
+        assert!(count > 5, "{count}");
+    }
+
+    #[test]
+    fn the_traces_bend_with_the_spreading_direction() {
+        let plan = shape(
+            Ridge {
+                offset: 0.04,
+                ..spec()
+            },
+            FINE,
+        );
+        let sg = plan.segmenting();
+        let (r, km) = (plan.ridge.radius, plan.ridge.world_km);
+        let wander = WANDER_KM / km;
+        let places: Vec<f64> = (-150..=150).map(|i| r * f64::from(i) / 100.0).collect();
+        // The move of a trace from its boundary at the crest.
+        let moves = |j: i32| -> Vec<f64> {
+            let start = boundary(&plan, j);
+            places
+                .iter()
+                .map(|&a| trace_at(&plan, j, a) - start)
+                .collect()
+        };
+        let transforms: Vec<i32> = (0..60).filter(|&j| plan.transform(&sg, j)).collect();
+        let first = moves(transforms[0]);
+        // The trace of a transform fault is not straight.
+        let (a, b) = (first[0], first[first.len() - 1]);
+        let bend = first
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m - mix(a, b, i as f64 / 300.0)).abs())
+            .fold(0.0, f64::max);
+        assert!(bend * km > 10.0, "{}", bend * km);
+        // The traces of all transform faults bend together.
+        for &j in &transforms[1..] {
+            for (m, n) in moves(j).iter().zip(&first) {
+                assert!((m - n).abs() <= 2.0 * wander + 1e-12, "{j}");
+            }
+        }
+        // The angle of the spreading direction is no more than 8 degrees.
+        for &a in &places {
+            let (_, slope) = plan.turn(&sg, a / plan.ridge.spread);
+            assert!(slope.abs() <= TAN_TURN);
+        }
+        // An offset with no transform fault migrates, so its trace moves
+        // from the transform faults by up to a part of the segment length,
+        // and some of it is oblique.
+        let mut oblique = false;
+        for j in 0..60 {
+            if plan.transform(&sg, j) {
+                continue;
+            }
+            for (i, (m, n)) in moves(j).iter().zip(&first).enumerate() {
+                assert!((m - n).abs() <= MIGRATE * sg.length + 2.0 * wander + 1e-12);
+                let turn = plan.turn(&sg, places[i] / plan.ridge.spread);
+                let trace = plan.trace(&sg, j, places[i], turn);
+                oblique |= trace.slope.abs() > 0.4;
+            }
+        }
+        assert!(oblique);
+    }
+
+    #[test]
+    fn the_turn_is_the_sum_of_its_slope() {
+        let plan = shape(spec(), FINE);
+        let sg = plan.segmenting();
+        let v = plan.ridge.spread;
+        assert_eq!(plan.turn(&sg, 0.0).0, 0.0);
+        let h = 1e-4;
+        for i in -400..400 {
+            let tau = f64::from(i) * 0.37;
+            let (_, slope) = plan.turn(&sg, tau);
+            let change = (plan.turn(&sg, tau + h).0 - plan.turn(&sg, tau - h).0) / (2.0 * h);
+            assert!((change - v * slope).abs() < 1e-6 * v, "{tau}");
+        }
+    }
+
+    #[test]
+    fn the_level_does_not_depend_on_the_boundaries_that_the_search_starts_from() {
+        let full = Ridge {
+            offset: 0.05,
+            roughness: 2000.0,
+            ..spec()
+        };
+        let plan = shape(full, FINE);
+        let r = plan.ridge.radius;
+        let mut changed = 0;
+        for j in 0..400 {
+            let u = 0.3 + f64::from(j) * 0.00731;
+            for i in 0..=120 {
+                let across = r * (f64::from(i) / 40.0 - 1.5);
+                let p = lonlat_to_dir(u.to_degrees(), across.to_degrees());
+                let noise = plan.noise(p);
+                let new = plan.level_in(START, at(u, across), noise, 0);
+                assert_eq!(
+                    new,
+                    plan.level_in(START, at(u, across), noise, 3),
+                    "{u} {across}"
+                );
+                changed += usize::from(new != START);
+                // Nothing changes at the reach.
+                if i == 0 || i == 120 {
+                    assert_eq!(new, START);
+                }
+            }
+        }
+        assert!(changed > 30000, "{changed}");
     }
 
     #[test]
@@ -1410,7 +1952,9 @@ mod tests {
         };
         let plan = shape(full, FINE);
         let (r, fine) = (plan.ridge.radius, plan.step() / 64.0);
-        // Along the line, over cracks and over the middle of segments.
+        // Along the line, over the traces of the boundaries and over the
+        // middle of segments. At a trace, the step of the depth spreads over
+        // the blend.
         for across in [-1.3, -0.6, -0.04, 0.0, 0.02, 0.5, 1.1] {
             let mut last = real(&plan, 0.3, across * r);
             for i in 1..40000 {
@@ -1749,13 +2293,22 @@ mod tests {
             levels(&map)
         };
         let free = laid(Limits::default());
-        assert!(free.iter().all(|l| *l >= START) && free.iter().any(|l| *l > 22000));
-        // The ridge only raises the ground, so a floor changes nothing.
+        assert!(free.iter().any(|l| *l > 22000));
+        // Only the troughs and the deeps take the ground down, by no more
+        // than their depth.
+        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX) * full().roughness / ROUGHNESS_KM;
+        assert!(
+            free.iter()
+                .all(|l| f64::from(*l) >= f64::from(START) - deepest)
+        );
+        assert!(free.iter().any(|l| *l < START));
+        // A floor above the ground keeps the ground of the troughs and the
+        // deeps.
         let floor = laid(Limits {
             floor: START + 5000,
             ceiling: 65535,
         });
-        assert!(floor == free);
+        assert!(floor.iter().zip(&free).all(|(a, b)| *a == START.max(*b)));
         let ceiling = laid(Limits {
             floor: 0,
             ceiling: 20000,
