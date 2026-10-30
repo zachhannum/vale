@@ -239,18 +239,6 @@ fn the_canvas_fills_the_screen_and_the_panels_float_over_it() {
     }
 }
 
-/// The rows of the menu of the More cell.
-const MORE_ROWS: [&str; 8] = [
-    "Carve",
-    "Ridge",
-    "Deposit",
-    "Erode",
-    "Weather",
-    "Uplift",
-    "Warp",
-    "Ocean ridge",
-];
-
 /// Makes sure that a finger can hit each control of the frame.
 fn check_controls(h: &Pad, what: &str) {
     let screen = h.state().pad.rects.unwrap().screen;
@@ -2258,14 +2246,12 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
         assert!(control(&h, row).is_none(), "{row}");
     }
     assert!(control(&h, "Brush hardness").is_some());
-    tap(&mut h, MORE);
-    tap(&mut h, "Ocean ridge");
+    choose_mode(&mut h, "Ocean ridge");
     let s = h.state();
     assert_eq!(
         (s.globe.tool, s.globe.brush.mode),
         (Tool::Brush, Mode::OceanRidge)
     );
-    assert!(more_is_active(&h));
     assert_eq!(ridge_values(&h), [-700.0, 25.0, 0.0, 400.0, 100.0]);
     for row in RIDGE_ROWS {
         assert!(control(&h, row).is_some(), "{row}");
@@ -2314,15 +2300,16 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
 #[test]
 fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     let mut h = pad((1133.0, 744.0));
-    tap(&mut h, MORE);
-    assert!(h.state().pad.more);
-    let menu = h.state().pad.more_rect.unwrap();
+    open_modes(&mut h);
+    let menu = h.state().pad.modes_rect.unwrap();
     let screen = h.state().pad.rects.unwrap().screen;
     assert!(screen.contains_rect(menu), "{menu:?}");
-    for row in MORE_ROWS {
-        assert!(menu.contains_rect(control(&h, row).unwrap()), "{row}");
-    }
-    check_controls(&h, "744 high with the More menu");
+    // The flyout scrolls to its last row.
+    let from = menu.center();
+    drag(&mut h, from, from - vec2(0.0, 0.4 * menu.height()), None);
+    let row = control(&h, "Ocean ridge").unwrap();
+    assert!(menu.contains_rect(row), "{row:?}");
+    check_controls(&h, "744 high with the brush modes");
     tap(&mut h, "Ocean ridge");
     tap(&mut h, "Brush settings");
     // Each row of the panel and the edge age line show.
@@ -2364,7 +2351,7 @@ fn screenshot_of_the_ocean_ridge_panel() {
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = vale_app::headless::ui_harness(state, (1194.0, 834.0), 2.0, setup);
     h.run_steps(3);
-    tap(&mut h, MORE);
+    open_modes(&mut h);
     h.render()
         .unwrap()
         .save("../../target/app/ocean-ridge-more.png")

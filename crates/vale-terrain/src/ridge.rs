@@ -2236,6 +2236,23 @@ mod tests {
     }
 
     #[test]
+    fn more_magma_gives_closer_and_smaller_faults() {
+        // Behn & Ito (2008): the spacing and the heave of the faults fall
+        // as the magma part of the spreading grows.
+        let faulting = |magma: f64| shape(Ridge { magma, ..spec() }, FINE).faulting();
+        let (low, mid, high) = (faulting(-0.2), faulting(0.0), faulting(0.1));
+        assert!(low.magma < mid.magma && mid.magma < high.magma);
+        assert!(low.spacing > mid.spacing && mid.spacing > high.spacing);
+        assert!(low.throw > mid.throw && mid.throw > high.throw);
+        // A faster ridge has more magma, so its faults are closer.
+        let fast = Ridge {
+            spread: 4.0 * spec().spread,
+            ..spec()
+        };
+        assert!(shape(fast, FINE).faulting().spacing < mid.spacing);
+    }
+
+    #[test]
     fn sediment_makes_old_sea_floor_smoother() {
         // A slow rate gives old sea floor inside the brush radius.
         let plan = at_rate(12.0);
