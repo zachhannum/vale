@@ -18,6 +18,7 @@ mod heightmap;
 pub mod math;
 #[cfg(feature = "gpu")]
 mod pyramid;
+mod rain;
 mod reduce;
 mod ridge;
 mod smooth;
@@ -45,6 +46,7 @@ pub use heightmap::{
 };
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, pyramid_layout};
+pub use rain::Rain;
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{RIDGE_SEGMENTS, RIDGE_SPACING, Ridge, RidgeLine, RidgePlan, RidgeSegment};
 pub use smooth::{

@@ -8,13 +8,14 @@
 
 use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
-use crate::cube::{FACES, face_dir, unwarp};
+use crate::cube::{FACES, face_dir, face_of, unwarp, warp};
 use crate::flow::{
     CoarseHeights, CubeGrid, Drain, FlowMap, Grid, NONE, OUT, RIVER_MIN_AREA, RIVER_MIN_CELLS,
     STEPS, Window, WindowHeights, cell_past_edge, drain, index_corners, index_dir, solid_angles,
 };
 use crate::heightmap::{Limits, MAX_BRUSH_RADIUS, TexelRect, brush_rect, falloff};
 use crate::math::{V3, dot};
+use crate::rain::{Rain, TRACE_SPACING};
 
 /// The number of cells at each side of a window where the effect of the
 /// brush goes down to 0.
@@ -23,6 +24,10 @@ const FADE: usize = 4;
 /// The smallest number of cells between the cells of the brushes and the
 /// side of the rectangle that gives the flow of a step of `Erosion::steps`.
 const NEAR_ROOM: usize = 8;
+
+/// The number of cells between two places where a step computes the rain.
+/// The rain of a cell is a blend of the 4 places around it.
+const RAIN_STRIDE: usize = 8;
 
 /// One touch of the erode brush on the sphere.
 #[derive(Clone, Copy, Debug)]
@@ -233,6 +238,26 @@ impl Grid for BoxGrid<'_> {
     }
 }
 
+/// A grid where the water of each cell is its solid angle times its rain.
+struct Rainy<'a, G> {
+    grid: &'a G,
+    rain: &'a [f32],
+}
+
+impl<G: Grid> Grid for Rainy<'_, G> {
+    fn neighbors(&self, i: usize) -> [u32; 8] {
+        self.grid.neighbors(i)
+    }
+
+    fn scatter(&self, i: usize, k: usize) -> f64 {
+        self.grid.scatter(i, k)
+    }
+
+    fn solid_angle(&self, i: usize) -> f64 {
+        self.grid.solid_angle(i) * f64::from(self.rain[i])
+    }
+}
+
 impl Grid for WindowGrid<'_> {
     fn neighbors(&self, i: usize) -> [u32; 8] {
         self.window.neighbors(i)
@@ -427,6 +452,10 @@ pub struct Erosion {
     /// Whether `levels` changed after `flow`.
     stale: bool,
     limits: Limits,
+    rain: Rain,
+    /// The rain of each cell, from the heights of the first step after a
+    /// change of `rain`. It is empty when each cell gets the same rain.
+    rain_cells: Vec<f32>,
 }
 
 /// The effect of the brushes of one step.
@@ -549,6 +578,7 @@ impl Erosion {
         let mut erosion = Erosion::of_window(&heights, inflow);
         erosion.heights = kept;
         erosion.limits = self.limits;
+        erosion.rain = self.rain;
         erosion
     }
 
@@ -576,6 +606,8 @@ impl Erosion {
             flow: None,
             stale: true,
             limits: Limits::default(),
+            rain: Rain::default(),
+            rain_cells: Vec::new(),
         }
     }
 
@@ -584,6 +616,108 @@ impl Erosion {
     /// do not move a cell past a limit.
     pub fn set_limits(&mut self, limits: Limits) {
         self.limits = limits;
+    }
+
+    /// Sets the rain of each later step.
+    pub fn set_rain(&mut self, rain: Rain) {
+        if rain != self.rain {
+            self.rain = rain;
+            self.rain_cells.clear();
+            self.stale = true;
+        }
+    }
+
+    /// The rain of the cells of a rectangle of each square, in the order of
+    /// the squares, the rows, and the cells. The rectangle has its first
+    /// cell at `x0` and `y0`, and `width` by `height` cells. The rain is
+    /// computed at the corners of squares of `RAIN_STRIDE` cells, and a cell
+    /// takes a blend of the 4 corners around it. A corner on a face edge is
+    /// one direction on the sphere for the two faces, so the rain is
+    /// continuous across the edge.
+    fn rain_of(&self, x0: usize, y0: usize, width: usize, height: usize) -> Vec<f32> {
+        let side = self.side;
+        let (step, global) = match &self.cells {
+            Cells::Global(grid) => (FRAC_PI_2 / grid.m as f64, true),
+            Cells::Window { window, .. } => (
+                FRAC_PI_2 * window.cell as f64 / window.face_size as f64,
+                false,
+            ),
+        };
+        let at = |x: usize, y: usize| f64::from(self.levels[y * side + x]);
+        // The level at a place on the cells of one square. The center of
+        // the first cell is at 0.
+        let blend = |square: usize, u: f64, v: f64| {
+            let (i, j) = (u.floor(), v.floor());
+            let (tu, tv) = (u - i, v - j);
+            let (i, j) = (i as i64, j as i64);
+            let cell = |x: i64, y: i64| {
+                let last = side as i64 - 1;
+                if global {
+                    let (face, x, y) = if (0..=last).contains(&x) && (0..=last).contains(&y) {
+                        (square, x as usize, y as usize)
+                    } else {
+                        cell_past_edge(side, square, x, y)
+                    };
+                    f64::from(self.levels[(face * side + y) * side + x])
+                } else {
+                    at(x.clamp(0, last) as usize, y.clamp(0, last) as usize)
+                }
+            };
+            let top = cell(i, j) * (1.0 - tu) + cell(i + 1, j) * tu;
+            let bottom = cell(i, j + 1) * (1.0 - tu) + cell(i + 1, j + 1) * tu;
+            top * (1.0 - tv) + bottom * tv
+        };
+        let level = |d: V3| match &self.cells {
+            Cells::Global(_) => {
+                let (face, a, b) = face_of(d);
+                let place = |a: f64| (warp(a) + 1.0) * 0.5 * side as f64 - 0.5;
+                Some(blend(face, place(a), place(b)))
+            }
+            Cells::Window { window, .. } => {
+                let (u, v) = window.place(d)?;
+                Some(blend(0, u - 0.5, v - 0.5))
+            }
+        };
+        // The corner places along one side, in cells from the first cell.
+        let corners = |count: usize| {
+            let mut places: Vec<usize> = (0..count).step_by(RAIN_STRIDE).collect();
+            places.push(count);
+            places
+        };
+        let (us, vs) = (corners(width), corners(height));
+        let mut rain = Vec::with_capacity(self.faces().len() * width * height);
+        for face in self.faces() {
+            let dir = |x: usize, y: usize| match &self.cells {
+                Cells::Global(_) => {
+                    let flat = |i: usize| unwarp(i as f64 / side as f64 * 2.0 - 1.0);
+                    face_dir(face, flat(x0 + x), flat(y0 + y))
+                }
+                Cells::Window { window, .. } => window.dir((x0 + x) as f64, (y0 + y) as f64),
+            };
+            let mut corner = Vec::with_capacity(us.len() * vs.len());
+            for &v in &vs {
+                for &u in &us {
+                    corner.push(self.rain.at(dir(u, v), step * TRACE_SPACING, level));
+                }
+            }
+            // The corner before a place and the part of the way to the next.
+            let between = |places: &[usize], p: f64| {
+                let k = ((p / RAIN_STRIDE as f64) as usize).min(places.len() - 2);
+                let (a, b) = (places[k] as f64, places[k + 1] as f64);
+                (k, ((p - a) / (b - a)).clamp(0.0, 1.0))
+            };
+            for y in 0..height {
+                let (j, tv) = between(&vs, y as f64 + 0.5);
+                for x in 0..width {
+                    let (i, tu) = between(&us, x as f64 + 0.5);
+                    let c = |i: usize, j: usize| corner[j * us.len() + i];
+                    let top = c(i, j) * (1.0 - tu) + c(i + 1, j) * tu;
+                    let bottom = c(i, j + 1) * (1.0 - tu) + c(i + 1, j + 1) * tu;
+                    rain.push((top * (1.0 - tv) + bottom * tv) as f32);
+                }
+            }
+        }
+        rain
     }
 
     /// The cells of the erosion.
@@ -603,18 +737,29 @@ impl Erosion {
     }
 
     fn drain(&self) -> Drain {
+        let rain = &self.rain_cells;
         match &self.cells {
-            Cells::Global(grid) => drain(grid, &self.levels, &[], self.outlet),
+            Cells::Global(grid) => self.drain_on(grid, &self.levels, &[], rain),
             Cells::Window {
                 window,
                 inflow,
                 solid,
-            } => drain(
-                &WindowGrid { window, solid },
-                &self.levels,
-                inflow,
-                self.outlet,
-            ),
+            } => self.drain_on(&WindowGrid { window, solid }, &self.levels, inflow, rain),
+        }
+    }
+
+    /// The flow on a grid. With no `rain`, each cell gets the same rain.
+    fn drain_on(
+        &self,
+        grid: &impl Grid,
+        levels: &[u16],
+        inflow: &[(usize, f64)],
+        rain: &[f32],
+    ) -> Drain {
+        if rain.is_empty() {
+            drain(grid, levels, inflow, self.outlet)
+        } else {
+            drain(&Rainy { grid, rain }, levels, inflow, self.outlet)
         }
     }
 
@@ -823,14 +968,24 @@ impl Erosion {
                     .flat_map(|first| &self.levels[first..first + width])
                     .copied()
                     .collect();
-                let flow = drain(&grid, &levels, &[], self.outlet);
+                let rain = if self.rain.is_even() {
+                    Vec::new()
+                } else {
+                    self.rain_of(x0, y0, width, height)
+                };
+                let flow = self.drain_on(&grid, &levels, &[], &rain);
                 self.flow = None;
                 (flow, Some((x0, y0, width)))
             }
             _ => {
                 let flow = match self.flow.take() {
                     Some(flow) if !self.stale => flow,
-                    _ => self.drain(),
+                    _ => {
+                        if !self.rain.is_even() && self.rain_cells.is_empty() {
+                            self.rain_cells = self.rain_of(0, 0, self.side, self.side);
+                        }
+                        self.drain()
+                    }
                 };
                 (flow, None)
             }
@@ -2003,5 +2158,192 @@ mod tests {
             );
         }
         assert!(erosion.stale);
+    }
+
+    const WEST_WIND: Rain = Rain {
+        wind: 270.0,
+        shadow: 1.0,
+    };
+
+    /// A range from north to south on face 0, with sea at each side. The
+    /// range is 2,500 m high, and it has a ridge at each 4 cells along its
+    /// sides, so the slopes drain in many valleys.
+    fn ridge_range(m: usize) -> CoarseHeights {
+        from_cells(m, |face, x, y| {
+            let across = (x as f64 - m as f64 / 2.0 + 0.5).abs();
+            if face != 0 || across > 14.0 || !(m / 4..3 * m / 4).contains(&y) {
+                return OCEAN;
+            }
+            let ribs = 150.0 * ((y as f64 * std::f64::consts::FRAC_PI_2).sin() + 1.0);
+            100.0 + 2400.0 * (1.0 - across / 14.0) + ribs
+        })
+    }
+
+    /// The sum of the drops of the cells to the west and to the east of the
+    /// crest, after 4 weak steps of a brush over the range.
+    fn west_and_east_drops(rain: Rain) -> (u64, u64) {
+        let m = 64;
+        let heights = ridge_range(m);
+        let mut erosion = Erosion::global(&heights, 8192);
+        erosion.set_rain(rain);
+        let brush = ErodeBrush {
+            center: cell_dir(m, 0, m / 2, m / 2),
+            radius: 0.45,
+            hardness: 0.9,
+            flow: 1.0,
+        };
+        let (mut west, mut east) = (0, 0);
+        for _ in 0..4 {
+            let step = erosion.step(&[brush], 0.02);
+            for (i, &drop) in step.drops().iter().enumerate().take(m * m) {
+                // The coast cells drop to the sea floor, so they are left out.
+                let across = (i % m) as f64 - m as f64 / 2.0 + 0.5;
+                if across.abs() > 12.0 {
+                    continue;
+                }
+                if across < 0.0 {
+                    west += u64::from(drop);
+                } else {
+                    east += u64::from(drop);
+                }
+            }
+        }
+        (west, east)
+    }
+
+    #[test]
+    fn the_wind_side_of_a_range_gets_more_rain_and_deeper_valleys() {
+        let m = 64;
+        let mut erosion = Erosion::global(&ridge_range(m), 8192);
+        erosion.set_rain(WEST_WIND);
+        let rain = erosion.rain_of(0, 0, m, m);
+        let row = m / 2 * m;
+        let (mut wet, mut dry) = (0.0, 0.0);
+        for k in 3..12 {
+            let (west, east) = (rain[row + m / 2 - 1 - k], rain[row + m / 2 + k]);
+            assert!(west > east, "{k} {west} {east}");
+            (wet, dry) = (wet + west, dry + east);
+        }
+        assert!(wet > 1.5 * dry, "{wet} {dry}");
+
+        // The two sides of the range erode about the same with no wind. The
+        // wind takes much more from the erosion of the east side.
+        let (west, east) = west_and_east_drops(Rain::default());
+        assert!(west.abs_diff(east) * 4 < west + east, "{west} {east}");
+        let (wet, dry) = west_and_east_drops(WEST_WIND);
+        assert!(wet > dry, "{wet} {dry}");
+        let loss = |rain: u64, even: u64| 1.0 - rain as f64 / even as f64;
+        assert!(
+            loss(dry, east) > 2.0 * loss(wet, west),
+            "{wet} {west} {dry} {east}"
+        );
+    }
+
+    #[test]
+    fn no_rain_shadow_erodes_as_before() {
+        let m = 64;
+        let heights = ridge_range(m);
+        let brush = ErodeBrush {
+            center: cell_dir(m, 0, m / 2, m / 2),
+            radius: 0.45,
+            hardness: 0.5,
+            flow: 1.0,
+        };
+        let mut before = Erosion::global(&heights, 8192);
+        let mut after = Erosion::global(&heights, 8192);
+        after.set_rain(Rain {
+            shadow: 0.0,
+            ..WEST_WIND
+        });
+        for _ in 0..5 {
+            assert_eq!(
+                before.step(&[brush], 0.5).drops(),
+                after.step(&[brush], 0.5).drops()
+            );
+        }
+        let window = Window::centered(cell_dir(m, 0, m / 2, m / 2), 8192, 32, 128);
+        let heights = WindowHeights::from_fn(window, lumpy);
+        let mut before = Erosion::window_alone(&heights);
+        let mut after = Erosion::window_alone(&heights);
+        after.set_rain(Rain {
+            shadow: 0.0,
+            ..WEST_WIND
+        });
+        assert_eq!(
+            before.steps(&[brush], 1.0, 4).drops(),
+            after.steps(&[brush], 1.0, 4).drops()
+        );
+    }
+
+    #[test]
+    fn the_rain_is_continuous_across_a_face_edge() {
+        let m = 64;
+        // A range from north to south that crosses the edge of face 0 and
+        // face 4, with the wind from the west.
+        let heights = CoarseHeights::from_fn(m, |d| {
+            let (lon, lat) = crate::math::dir_to_lonlat(d);
+            let meters = if lon < -30.0 {
+                OCEAN
+            } else {
+                300.0 + 2500.0 * (1.0 - lon.abs() / 12.0).max(0.0) + 3.0 * lat
+            };
+            meters_to_level(meters)
+        });
+        let mut erosion = Erosion::global(&heights, 8192);
+        erosion.set_rain(WEST_WIND);
+        let rain = erosion.rain_of(0, 0, m, m);
+        let at = |face: usize, x: usize, y: usize| f64::from(rain[(face * m + y) * m + x]);
+        let (mut across, mut along) = (0.0f64, 0.0f64);
+        for x in 0..m {
+            // The last row of face 0 and the cell past it on face 4.
+            let (face, px, py) = cell_past_edge(m, 0, x as i64, m as i64);
+            let here = at(0, x, m - 1);
+            across = across.max((here - at(face, px, py)).abs());
+            along = along.max((here - at(0, x, m - 2)).abs());
+            if x > 0 {
+                along = along.max((here - at(0, x - 1, m - 1)).abs());
+            }
+        }
+        assert!(along > 0.0);
+        assert!(across < 1.5 * along, "{across} {along}");
+    }
+
+    /// Run with `--release --ignored --nocapture` for the time of the steps
+    /// with and without the rain. The first step of a stroke computes the
+    /// rain.
+    #[test]
+    #[ignore]
+    fn manual_rain_step_time() {
+        let heights = CoarseHeights::from_fn(FLOW_SIZE, lumpy);
+        let brushes = brushes_on_all_sides();
+        let window = Window::centered([1.0, 0.0, 0.0], 8192, 4, crate::flow::WINDOW_CELLS);
+        let window = WindowHeights::from_fn(window, lumpy);
+        for rain in [Rain::default(), WEST_WIND] {
+            let mut erosion = Erosion::global(&heights, 8192);
+            erosion.set_rain(rain);
+            let start = std::time::Instant::now();
+            erosion.step(&brushes, 1.0);
+            let global = start.elapsed();
+            let start = std::time::Instant::now();
+            erosion.step(&brushes, 1.0);
+            let second = start.elapsed();
+            let mut erosion = Erosion::window_alone(&window);
+            erosion.set_rain(rain);
+            let brush = ErodeBrush {
+                center: [1.0, 0.0, 0.0],
+                radius: 0.01,
+                ..brushes[0]
+            };
+            let start = std::time::Instant::now();
+            erosion.step(&[brush], 1.0);
+            let window_step = start.elapsed();
+            let start = std::time::Instant::now();
+            erosion.steps(&[brush], 1.0, 4);
+            let near = start.elapsed();
+            eprintln!(
+                "shadow {}: global {global:?}, second {second:?}, window {window_step:?}, 4 near steps {near:?}",
+                rain.shadow
+            );
+        }
     }
 }
