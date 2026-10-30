@@ -5,7 +5,9 @@
 
 use kurbo::{Point, Rect, Vec2};
 use vale_sphere::{Projection, auto_interval};
-use vale_store::{Border, FrameId, FrameRecord, FrameShape, Graticule, MapRecord, PageRecord};
+use vale_store::{
+    Border, CoordFormat, FrameId, FrameRecord, FrameShape, Graticule, MapRecord, PageRecord,
+};
 
 use crate::view::{View, ViewTransform};
 
@@ -262,6 +264,48 @@ pub fn lon_text(lon: f64) -> String {
 /// A latitude as text, for example "40° N".
 pub fn lat_text(lat: f64) -> String {
     degrees_text(lat, 'N', 'S')
+}
+
+/// A latitude or a longitude of a graticule line as text, with the
+/// precision of `interval`. The hemisphere letters are `positive` and
+/// `negative`. 0° and 180° have no letter.
+pub fn coord_text(
+    value: f64,
+    interval: f64,
+    format: CoordFormat,
+    positive: char,
+    negative: char,
+) -> String {
+    let (number, zero) = match format {
+        CoordFormat::Dms => {
+            let seconds = (value.abs() * 3600.0).round() as i64;
+            let (d, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+            let text = match (m, s) {
+                (0, 0) => format!("{d}°"),
+                (_, 0) => format!("{d}°{m}′"),
+                _ => format!("{d}°{m}′{s}″"),
+            };
+            (text, seconds == 0)
+        }
+        CoordFormat::Decimal => {
+            let digits = (-interval.log10() - 1e-9).ceil().max(0.0) as usize;
+            let text = format!("{:.*}", digits, value.abs());
+            let text = if text.contains('.') {
+                text.trim_end_matches('0').trim_end_matches('.')
+            } else {
+                &text
+            };
+            let zero = text == "0";
+            (format!("{text}°"), zero)
+        }
+    };
+    if zero || (value.abs() - 180.0).abs() < 1e-9 {
+        number
+    } else if value > 0.0 {
+        format!("{number} {positive}")
+    } else {
+        format!("{number} {negative}")
+    }
 }
 
 /// Reads degrees such as "-12.5", "12.5°", "12.5 W", or "40° n". N and E
@@ -811,6 +855,21 @@ mod tests {
         assert!((x1 - 287.0).abs() < 1e-9 && (y1 - 200.0).abs() < 1e-9);
         assert!((x1 - x0 - 277.0 / 3.0).abs() < 1e-9 && (y1 - y0 - 190.0 / 3.0).abs() < 1e-9);
         assert!(later.scale > first.scale);
+    }
+
+    #[test]
+    fn a_coordinate_has_the_text_of_its_format() {
+        let dms = |v, i| coord_text(v, i, CoordFormat::Dms, 'N', 'S');
+        let dec = |v, i| coord_text(v, i, CoordFormat::Decimal, 'E', 'W');
+        assert_eq!(dms(45.0, 15.0), "45° N");
+        assert_eq!(dms(-45.5, 0.5), "45°30′ S");
+        assert_eq!(dms(10.0 + 15.0 / 3600.0, 5.0 / 3600.0), "10°0′15″ N");
+        assert_eq!(dms(0.0, 10.0), "0°");
+        assert_eq!(dec(-12.5, 0.5), "12.5° W");
+        assert_eq!(dec(30.0, 30.0), "30° E");
+        assert_eq!(dec(1.0 / 60.0, 1.0 / 60.0), "0.02° E");
+        assert_eq!(dec(180.0, 30.0), "180°");
+        assert_eq!(dec(-180.0, 30.0), "180°");
     }
 
     #[test]

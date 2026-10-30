@@ -18,8 +18,8 @@ use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
-    Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId,
-    PageRecord, PageUnits, ProjectionPreset, encode_rings, read_rings,
+    Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Graticule, MapId,
+    MapRecord, PageId, PageRecord, PageUnits, ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry,
@@ -522,6 +522,9 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
             }
             out.extend_from_slice(&graticule.color);
             put_f64(out, graticule.width);
+            put_bytes(out, graticule.format.id().as_bytes());
+            put_bytes(out, graticule.meridians.to_json().as_bytes());
+            put_bytes(out, graticule.parallels.to_json().as_bytes());
             let border = &frame.border;
             out.push(border.on as u8);
             out.extend_from_slice(&border.color);
@@ -614,6 +617,9 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                     interval: if flag(r)? { Some(r.f64()?) } else { None },
                     color: r.take::<3>()?,
                     width: r.f64()?,
+                    format: CoordFormat::from_id(&string(r)?)?,
+                    meridians: EdgeLabels::from_json(&string(r)?)?,
+                    parallels: EdgeLabels::from_json(&string(r)?)?,
                 },
                 border: Border {
                     on: flag(r)?,
@@ -1107,6 +1113,7 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::atlas::EdgeOrientation;
 
     #[test]
     fn an_atlas_image_keeps_the_frames() {
@@ -1150,6 +1157,13 @@ mod tests {
             interval: Some(7.5),
             color: [0x12, 0x34, 0x56],
             width: 1.25,
+            format: CoordFormat::Decimal,
+            parallels: EdgeLabels {
+                outside: true,
+                orientation: EdgeOrientation::Horizontal,
+                ..EdgeLabels::default()
+            },
+            ..Graticule::default()
         };
         let rect = FrameShape::Rectangle([10.0, 10.0, 200.0, 150.0]);
         let ring = vec![

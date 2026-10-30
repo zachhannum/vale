@@ -5,22 +5,24 @@
 use eframe::egui;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
 use vale_store::{
-    BlendMode, Border, FrameRecord, FrameShape, Graticule, LayerId, PageUnits, RasterDisplay,
+    BlendMode, Border, CoordFormat, EdgeLabels, EdgeOrientation, FrameRecord, FrameShape,
+    Graticule, LayerId, PageUnits, RasterDisplay,
 };
 
 use super::elevation::{DISPLAYS, blend_label};
 use super::pad::raster::{BLEND, SHOW_AS};
 
-use super::atlas::{self, AtlasSelection, FrameTab};
+use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_WIDTH,
     CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
     DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
-    INTERVAL, LATITUDE, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, OBLIQUE, ORIENTATIONS, PAGE_NAME,
-    POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION,
-    SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
+    INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, OBLIQUE,
+    ORIENTATIONS, PAGE_NAME, POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX,
+    ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
     length_text, unit_name,
 };
+use super::pad::edge_labels::EDGE_LABELS;
 use super::pad::{GRATICULE, NO_LAYERS};
 use super::{AppState, inspector, style_editor};
 use crate::atlas::{self as math, PAGE_PRESETS};
@@ -189,7 +191,8 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     }
 }
 
-/// The interval, the color, and the width of the graticule of a frame.
+/// The interval, the color, the width, and the edge labels of the graticule
+/// of a frame.
 fn graticule_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let (id, g) = (frame.id, &frame.graticule);
     let Some((drawn, auto)) = atlas::graticule_intervals(state, id) else {
@@ -237,6 +240,153 @@ fn graticule_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
             }
             ui.end_row();
         });
+    egui::CollapsingHeader::new(EDGE_LABELS)
+        .id_salt("atlas-edge-labels")
+        .show(ui, |ui| edge_label_rows(ui, state, frame));
+}
+
+/// The label format and the two sets of edge labels of a frame, with the
+/// names of the iPad page.
+fn edge_label_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    use super::pad::edge_labels as edge;
+    let (id, g) = (frame.id, &frame.graticule);
+    ui.horizontal(|ui| {
+        ui.label(LABEL_FORMAT);
+        for (format, text) in CoordFormat::ALL.into_iter().zip(LABEL_FORMATS) {
+            if ui.selectable_label(g.format == format, text).clicked() {
+                atlas::set_graticule_format(state, id, format);
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        for (which, (name, label)) in EdgeSet::ALL.into_iter().zip(edge::SETS) {
+            let tab = ui.selectable_label(state.atlas.edge_set == which, label);
+            named(&tab, egui::WidgetType::SelectableLabel, name);
+            if tab.clicked() {
+                state.atlas.edge_set = which;
+            }
+        }
+    });
+    let which = state.atlas.edge_set;
+    let before = which.of(g).clone();
+    let mut set = before.clone();
+    ui.checkbox(&mut set.on, edge::SHOW_LABELS);
+    if set.on {
+        let family = set.font.as_deref().unwrap_or(crate::fonts::DEFAULT_FAMILY);
+        ui.horizontal(|ui| {
+            ui.label(edge::FONT);
+            let button = ui.button(format!("{family}…"));
+            named(&button, egui::WidgetType::Button, edge::FONT);
+            if button.clicked() {
+                let target = super::FontTarget::Edge(id, which);
+                state.actions.push(super::Action::PickFont(target));
+            }
+        });
+        let family = crate::fonts::family(set.font.as_deref(), &mut state.fonts).to_owned();
+        let mut faces = state.fonts.faces(&family);
+        if faces.is_empty() {
+            faces.push(vale_labeler::Face {
+                weight: 400.0,
+                italic: false,
+            });
+        }
+        let face = vale_labeler::Face {
+            weight: set.weight,
+            italic: set.italic,
+        };
+        ui.horizontal(|ui| {
+            ui.label(edge::STYLE);
+            let combo = egui::ComboBox::from_id_salt("atlas-edge-style")
+                .selected_text(face.name())
+                .show_ui(ui, |ui| {
+                    for f in faces {
+                        if ui.selectable_label(f == face, f.name()).clicked() {
+                            (set.weight, set.italic) = (f.weight, f.italic);
+                        }
+                    }
+                });
+            named(&combo.response, egui::WidgetType::ComboBox, edge::STYLE);
+        });
+        egui::Grid::new("atlas-edge-labels")
+            .num_columns(2)
+            .show(ui, |ui| {
+                let drag =
+                    |ui: &mut egui::Ui, name: &str, value: &mut f64, range, speed, suffix| {
+                        ui.label(name);
+                        let drag = egui::DragValue::new(value)
+                            .range(range)
+                            .speed(speed)
+                            .suffix(suffix);
+                        let drag = ui.add(drag);
+                        named(&drag, egui::WidgetType::DragValue, name);
+                        ui.end_row();
+                    };
+                drag(ui, edge::SIZE, &mut set.size, EdgeLabels::SIZES, 0.1, " pt");
+                ui.label(edge::COLOR);
+                ui.color_edit_button_srgb(&mut set.color);
+                ui.end_row();
+                let mut percent = set.opacity * 100.0;
+                drag(ui, edge::OPACITY, &mut percent, 0.0..=100.0, 1.0, " %");
+                set.opacity = (percent.round() / 100.0).clamp(0.0, 1.0);
+                ui.label(edge::HALO);
+                ui.checkbox(&mut set.halo, "");
+                ui.end_row();
+                if set.halo {
+                    ui.label(edge::HALO_COLOR);
+                    ui.color_edit_button_srgb(&mut set.halo_color);
+                    ui.end_row();
+                    let widths = EdgeLabels::HALO_WIDTHS;
+                    drag(
+                        ui,
+                        edge::HALO_WIDTH,
+                        &mut set.halo_width,
+                        widths,
+                        0.05,
+                        " pt",
+                    );
+                }
+                ui.label(edge::POSITION);
+                ui.horizontal(|ui| {
+                    for (i, text) in edge::PLACES.into_iter().enumerate() {
+                        let outside = i == 1;
+                        if ui.selectable_label(set.outside == outside, text).clicked() {
+                            set.outside = outside;
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label(edge::ORIENTATION);
+                ui.horizontal(|ui| {
+                    for (o, text) in EdgeOrientation::ALL.into_iter().zip(edge::ORIENTATIONS) {
+                        if ui.selectable_label(set.orientation == o, text).clicked() {
+                            set.orientation = o;
+                        }
+                    }
+                });
+                ui.end_row();
+                drag(
+                    ui,
+                    edge::OFFSET,
+                    &mut set.offset,
+                    EdgeLabels::OFFSETS,
+                    0.1,
+                    " pt",
+                );
+                ui.label(edge::EDGES);
+                ui.horizontal(|ui| {
+                    let e = &mut set.edges;
+                    let sides = [&mut e.top, &mut e.bottom, &mut e.left, &mut e.right];
+                    for (on, (name, label)) in sides.into_iter().zip(edge::SIDES) {
+                        let check = ui.checkbox(on, label);
+                        named(&check, egui::WidgetType::Checkbox, name);
+                    }
+                });
+                ui.end_row();
+            });
+    }
+    if set != before {
+        atlas::edit_edge_labels(state, id, which, |e| *e = set);
+    }
 }
 
 /// The color and the width of the border of a frame.

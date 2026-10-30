@@ -8,8 +8,8 @@ use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
-    Border, FrameId, FrameRecord, FrameShape, Graticule, LayerId, MapId, PageId, PageRecord,
-    PageUnits, Rgb,
+    Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Graticule, LayerId, MapId,
+    PageId, PageRecord, PageUnits, Rgb,
 };
 
 use std::sync::Arc;
@@ -114,6 +114,8 @@ pub enum ClassSegment {
 pub enum ClassColor {
     Text,
     Halo,
+    EdgeText,
+    EdgeHalo,
 }
 
 /// A row that a finger drags by its handle: a label class in the Labels
@@ -360,6 +362,12 @@ pub struct AtlasState {
     pub label_drag: Option<ClassDrag>,
     /// The position that a finger drags on the Positions page.
     pub position_drag: Option<ClassDrag>,
+    /// The frame whose Edge labels page the Frame tab shows.
+    pub edge: Option<FrameId>,
+    /// The set of edge labels that the page shows.
+    pub edge_set: EdgeSet,
+    /// The list of the faces of the font of the set is open.
+    pub edge_styles: bool,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The frame of `handles`.
@@ -398,6 +406,14 @@ impl AtlasState {
             (AtlasSelection::Frame(f), FrameTab::Layers, Some((of, layer))) if f == of => {
                 Some(layer)
             }
+            _ => None,
+        }
+    }
+
+    /// The frame whose Edge labels page the Frame tab shows.
+    pub fn open_edge(&self) -> Option<FrameId> {
+        match (self.selection, self.tab, self.edge) {
+            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
             _ => None,
         }
     }
@@ -460,6 +476,9 @@ impl Default for AtlasState {
             label_draft: Default::default(),
             label_drag: None,
             position_drag: None,
+            edge: None,
+            edge_set: EdgeSet::Meridians,
+            edge_styles: false,
             shown: None,
             handles_of: None,
             images: HashMap::new(),
@@ -1214,7 +1233,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             map,
             state.map_generation,
             frame.map,
-            graticule_key(&frame.graticule),
+            &frame.graticule,
             border_key(&frame.border),
             ppp.to_bits(),
             state.selection,
@@ -1223,11 +1242,14 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         // Only the part of the frame on the canvas has a texture.
         // The border reaches out of the shape by half its width, and a sharp
         // corner reaches further.
-        let reach = if frame.border.on {
-            (frame.border.width * f64::from(place.pts_per_mm) / PT_PER_MM) as f32
+        // The edge labels outside the shape reach further.
+        let border = if frame.border.on {
+            frame.border.width
         } else {
             0.0
         };
+        let labels = crate::edge_labels::outside_reach(frame, &mut state.fonts);
+        let reach = (border.max(labels) * f64::from(place.pts_per_mm) / PT_PER_MM) as f32;
         let shown = snap(
             place
                 .rect_to_screen(math::shape_bbox(&frame.shape))
@@ -1762,16 +1784,6 @@ pub fn set_rotation(state: &mut AppState, id: FrameId, degrees: f64) {
     });
 }
 
-/// The parts of a graticule as a hash key.
-fn graticule_key(g: &Graticule) -> (bool, Option<u64>, Rgb, u64) {
-    (
-        g.on,
-        g.interval.map(f64::to_bits),
-        g.color,
-        g.width.to_bits(),
-    )
-}
-
 /// The parts of a border as a hash key.
 fn border_key(b: &Border) -> (bool, Rgb, u64) {
     (b.on, b.color, b.width.to_bits())
@@ -1798,6 +1810,54 @@ pub fn set_graticule_interval(state: &mut AppState, id: FrameId, interval: Optio
 pub fn set_graticule_color(state: &mut AppState, id: FrameId, color: Rgb) {
     edit_frame(state, id, |f, _| {
         f.graticule.color = color;
+        true
+    });
+}
+
+/// The edge labels of one kind of graticule line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EdgeSet {
+    #[default]
+    Meridians,
+    Parallels,
+}
+
+impl EdgeSet {
+    pub const ALL: [EdgeSet; 2] = [EdgeSet::Meridians, EdgeSet::Parallels];
+
+    pub fn of(self, g: &Graticule) -> &EdgeLabels {
+        match self {
+            EdgeSet::Meridians => &g.meridians,
+            EdgeSet::Parallels => &g.parallels,
+        }
+    }
+
+    pub fn of_mut(self, g: &mut Graticule) -> &mut EdgeLabels {
+        match self {
+            EdgeSet::Meridians => &mut g.meridians,
+            EdgeSet::Parallels => &mut g.parallels,
+        }
+    }
+}
+
+/// Changes a set of edge labels of a frame. The change is one undo step.
+pub fn edit_edge_labels(
+    state: &mut AppState,
+    id: FrameId,
+    set: EdgeSet,
+    change: impl FnOnce(&mut EdgeLabels),
+) {
+    edit_frame(state, id, |f, _| {
+        let labels = set.of_mut(&mut f.graticule);
+        let before = labels.clone();
+        change(labels);
+        *labels != before
+    });
+}
+
+pub fn set_graticule_format(state: &mut AppState, id: FrameId, format: CoordFormat) {
+    edit_frame(state, id, |f, _| {
+        f.graticule.format = format;
         true
     });
 }

@@ -45,6 +45,9 @@ pub const AUTO_INTERVAL: &str = "Auto interval";
 pub const INTERVAL: &str = "Interval";
 pub const GRATICULE_COLOR: &str = "Graticule color";
 pub const GRATICULE_WIDTH: &str = "Graticule width";
+pub const LABEL_FORMAT: &str = "Label format";
+/// The choices of the label format, in the order of `CoordFormat::ALL`.
+pub const LABEL_FORMATS: [&str; 2] = ["DMS", "Decimal"];
 pub const BORDER: &str = "Border";
 pub const BORDER_COLOR: &str = "Border color";
 pub const BORDER_WIDTH: &str = "Border width";
@@ -596,6 +599,12 @@ fn selection_panel(
             };
             rect
         }
+        AtlasSelection::Frame(id) if state.atlas.open_edge().is_some() => {
+            let Some(rect) = super::edge_labels::panel(ctx, state, controls, rects, id) else {
+                return;
+            };
+            rect
+        }
         AtlasSelection::Frame(id) if open_layer(state).is_some() => {
             let Some(rect) = layer_panel(ctx, state, controls, rects, id) else {
                 return;
@@ -840,8 +849,8 @@ fn frame_tab(
     }
 }
 
-/// The rows of the graticule of a frame: the interval, the color, and the
-/// width. The interval slider shows the interval that the frame draws, and
+/// The rows of the graticule of a frame: the interval, the color, the
+/// width, and the edge labels. The interval slider shows the interval that the frame draws, and
 /// a drag on it sets the interval by hand. A tap on the color opens a color
 /// picker below it.
 fn graticule_rows(
@@ -896,6 +905,13 @@ fn graticule_rows(
     let name = GRATICULE_WIDTH;
     if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
         atlas::set_graticule_width(state, id, lo + fraction * (hi - lo));
+    }
+
+    let summary = super::edge_labels::summary(g);
+    if widgets::open_row(ui, controls, super::edge_labels::EDGE_LABELS, summary).clicked() {
+        state.atlas.edge = Some(id);
+        state.atlas.edge_styles = false;
+        state.atlas.graticule_color = false;
     }
 }
 

@@ -21,8 +21,8 @@ use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
 
 use crate::atlas::{
-    self, Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId,
-    PageRecord, PageUnits, ProjectionPreset,
+    self, Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Graticule,
+    MapId, MapRecord, PageId, PageRecord, PageUnits, ProjectionPreset,
 };
 use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 30;
+pub const FORMAT_VERSION: u32 = 31;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -69,6 +69,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v28,
     v29,
     v30,
+    v31,
 ];
 
 /// `GPKG` in ASCII.
@@ -1007,6 +1008,32 @@ fn v26(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// The edge labels of the graticule of a frame. The frames of an older file
+/// get the default labels, in degrees, minutes, and seconds. The undo images of the atlas have
+/// the old form, so the step removes them, and the steps that hold nothing
+/// else.
+fn v31(tx: &Transaction) -> rusqlite::Result<()> {
+    for (column, kind) in [
+        ("graticule_format", "TEXT NOT NULL DEFAULT 'dms'"),
+        ("meridian_labels", "TEXT NOT NULL DEFAULT '{}'"),
+        ("parallel_labels", "TEXT NOT NULL DEFAULT '{}'"),
+    ] {
+        let sql = "SELECT count(*) FROM pragma_table_info('vale_frame') WHERE name = ?1";
+        let count: i64 = tx.query_row(sql, [column], |r| r.get(0))?;
+        if count == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE vale_frame ADD COLUMN {column} {kind}"
+            ))?;
+        }
+    }
+    tx.execute_batch(
+        "DELETE FROM vale_undo_record WHERE kind = 'atlas';
+         DELETE FROM vale_undo_step
+           WHERE id NOT IN (SELECT step_id FROM vale_undo_record)
+             AND id NOT IN (SELECT step_id FROM vale_undo_tile);",
+    )
+}
+
 /// The point symbols that the user adds. An older file has none.
 fn v27(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(
@@ -1625,8 +1652,10 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     let mut frame = tx.prepare(
         "INSERT INTO vale_frame (id, page_id, position, map_id, shape, rings, center_lon,
            center_lat, scale, rotation, graticule, graticule_interval, graticule_color,
-           graticule_width, border, border_color, border_width)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+           graticule_width, border, border_color, border_width, graticule_format,
+           meridian_labels, parallel_labels)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+           ?18, ?19, ?20)",
     )?;
     for (position, p) in atlas.pages.iter().enumerate() {
         let units = p.units.id();
@@ -1657,6 +1686,9 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.border.on,
                 hex(f.border.color),
                 f.border.width,
+                f.graticule.format.id(),
+                f.graticule.meridians.to_json(),
+                f.graticule.parallels.to_json(),
             ])?;
         }
     }
@@ -1950,7 +1982,7 @@ fn write_features(
     Ok(())
 }
 
-fn parse_color(hex: &str) -> Option<Rgb> {
+pub(crate) fn parse_color(hex: &str) -> Option<Rgb> {
     let n = u32::from_str_radix(hex, 16).ok()?;
     (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some([
         (n >> 16) as u8,
@@ -1971,7 +2003,7 @@ fn parse_limits(text: &str) -> Option<Vec<f64>> {
     numbers.map(|s| s.parse().ok()).collect()
 }
 
-fn hex([r, g, b]: Rgb) -> String {
+pub(crate) fn hex([r, g, b]: Rgb) -> String {
     format!("{r:02x}{g:02x}{b:02x}")
 }
 
@@ -2556,7 +2588,8 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
     let mut rows = conn.prepare(
         "SELECT id, page_id, map_id, shape, rings, center_lon, center_lat, scale, rotation,
            graticule, graticule_interval, graticule_color, graticule_width,
-           border, border_color, border_width
+           border, border_color, border_width, graticule_format, meridian_labels,
+           parallel_labels
          FROM vale_frame ORDER BY page_id, position",
     )?;
     let mut rows = rows.query([])?;
@@ -2574,11 +2607,17 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         if !interval.is_none_or(positive) || !positive(width) {
             return Err(bad());
         }
+        let format: String = r.get(16)?;
+        let meridians: String = r.get(17)?;
+        let parallels: String = r.get(18)?;
         let graticule = Graticule {
             on: r.get(9)?,
             interval,
             color: parse_color(&color).ok_or_else(bad)?,
             width,
+            format: CoordFormat::from_id(&format).ok_or_else(bad)?,
+            meridians: EdgeLabels::from_json(&meridians).ok_or_else(bad)?,
+            parallels: EdgeLabels::from_json(&parallels).ok_or_else(bad)?,
         };
         let border_color: String = r.get(14)?;
         let border_width: f64 = r.get(15)?;
@@ -2802,6 +2841,7 @@ pub(crate) fn decode_geometry(blob: &[u8], kind: GeometryKind) -> Option<Geometr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::atlas::{EdgeOrientation, Edges};
 
     fn attributes(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
         pairs
@@ -3261,6 +3301,32 @@ mod tests {
                 interval: Some(7.5),
                 color: [0x12, 0x34, 0xab],
                 width: 1.25,
+                format: CoordFormat::Decimal,
+                meridians: EdgeLabels {
+                    on: false,
+                    ..EdgeLabels::default()
+                },
+                parallels: EdgeLabels {
+                    font: Some("Noto Serif".into()),
+                    weight: 700.0,
+                    italic: true,
+                    size: 9.5,
+                    color: [1, 2, 3],
+                    opacity: 0.5,
+                    halo: true,
+                    halo_color: [4, 5, 6],
+                    halo_width: 1.5,
+                    outside: true,
+                    edges: Edges {
+                        top: false,
+                        bottom: true,
+                        left: false,
+                        right: true,
+                    },
+                    offset: 4.0,
+                    orientation: EdgeOrientation::Horizontal,
+                    ..EdgeLabels::default()
+                },
             },
             border: Border {
                 on: false,
@@ -3348,11 +3414,45 @@ mod tests {
                 frame.graticule,
                 Graticule {
                     on,
+                    // The labels came after version 24.
+                    format: frame.graticule.format,
+                    meridians: frame.graticule.meridians.clone(),
+                    parallels: frame.graticule.parallels.clone(),
                     ..Graticule::default()
                 }
             );
         }
         // The undo image of the atlas has the old form, so it goes.
+        assert!(!file.can_undo());
+    }
+
+    #[test]
+    fn a_frame_of_version_30_gets_graticule_labels() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        atlas_edit(&mut project);
+        file.save(&project).unwrap();
+        assert!(file.can_undo());
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE vale_frame DROP COLUMN graticule_format;
+             ALTER TABLE vale_frame DROP COLUMN meridian_labels;
+             ALTER TABLE vale_frame DROP COLUMN parallel_labels;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 30);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        for frame in loaded.atlas.pages.iter().flat_map(|p| &p.frames) {
+            assert_eq!(frame.graticule.format, CoordFormat::Dms);
+            assert_eq!(frame.graticule.meridians, EdgeLabels::default());
+            assert_eq!(frame.graticule.parallels, EdgeLabels::default());
+        }
         assert!(!file.can_undo());
     }
 
@@ -3417,6 +3517,11 @@ mod tests {
             "graticule_interval = 0",
             "graticule_width = -1",
             "graticule_color = 'blue'",
+            "graticule_format = 'grads'",
+            "meridian_labels = 'none'",
+            r#"meridian_labels = '{"size": 0}'"#,
+            r#"parallel_labels = '{"orientation": "up"}'"#,
+            r#"parallel_labels = '{"color": "blue"}'"#,
         ] {
             let dir = tempfile::tempdir().unwrap();
             let mut project = Project::new(World::default());

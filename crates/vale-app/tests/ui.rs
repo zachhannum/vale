@@ -96,6 +96,34 @@ fn graticule_checkbox_recomposes() {
 }
 
 #[test]
+fn the_desktop_edge_label_controls_edit_one_set() {
+    let mut h = harness();
+    h.run_steps(3);
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
+    h.run_steps(3);
+    h.get_by_label("Edge labels").click();
+    h.run_steps(2);
+    h.get_by_label("Parallels segment").click();
+    h.run_steps(2);
+    h.get_by_label("Outside").click();
+    h.run_steps(2);
+    h.get_by_label("Top edge").click();
+    h.run_steps(2);
+    let g = &h.state().doc.project.atlas.frame(frame).unwrap().graticule;
+    assert!(g.parallels.outside && !g.meridians.outside);
+    assert!(!g.parallels.edges.top && g.meridians.edges.top);
+    if std::env::var_os("VALE_SCREENSHOTS").is_some() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/app");
+        std::fs::create_dir_all(dir).unwrap();
+        h.render()
+            .unwrap()
+            .save(format!("{dir}/test-desktop-edge-labels.png"))
+            .unwrap();
+    }
+}
+
+#[test]
 fn land_checkbox_hides_layer() {
     let mut h = harness();
     h.run_steps(3);

@@ -26,6 +26,7 @@ use crate::world;
 
 pub mod atlas;
 pub mod browser;
+pub mod edge_labels;
 pub mod fields;
 pub mod filter;
 pub mod fonts;

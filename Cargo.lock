@@ -4007,6 +4007,7 @@ dependencies = [
  "flate2",
  "png",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "uuid",
 ]

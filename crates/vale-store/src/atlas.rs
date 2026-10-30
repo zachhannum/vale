@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 
-use crate::gpkg::Reader;
+use crate::gpkg::{Reader, hex, parse_color};
 use crate::{LayerId, LonLat, Rgb, Units};
 
 /// The ID of a map.
@@ -169,6 +169,224 @@ pub struct Graticule {
     pub color: Rgb,
     /// The line width in points.
     pub width: f64,
+    pub format: CoordFormat,
+    /// The labels where the meridians meet the edge of the frame.
+    pub meridians: EdgeLabels,
+    /// The labels where the parallels meet the edge of the frame.
+    pub parallels: EdgeLabels,
+}
+
+/// The labels of one kind of graticule line at the edge of a map frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeLabels {
+    pub on: bool,
+    /// The font family. `None`: the default family of the app.
+    pub font: Option<String>,
+    pub weight: f32,
+    pub italic: bool,
+    /// The text size in points.
+    pub size: f64,
+    pub color: Rgb,
+    /// 0 to 1.
+    pub opacity: f64,
+    pub halo: bool,
+    pub halo_color: Rgb,
+    /// The halo width in points.
+    pub halo_width: f64,
+    /// The labels are outside the shape of the frame, not inside it.
+    pub outside: bool,
+    pub edges: Edges,
+    /// The distance from the edge to the text, in points.
+    pub offset: f64,
+    pub orientation: EdgeOrientation,
+}
+
+/// The sides of a frame that have edge labels. An edge of a polygon is on
+/// the side that it faces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Edges {
+    pub top: bool,
+    pub bottom: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
+/// The direction of the text of an edge label.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum EdgeOrientation {
+    /// Along the graticule line.
+    #[default]
+    Along,
+    /// Level on the page.
+    Horizontal,
+}
+
+impl EdgeOrientation {
+    pub const ALL: [EdgeOrientation; 2] = [EdgeOrientation::Along, EdgeOrientation::Horizontal];
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            EdgeOrientation::Along => "along",
+            EdgeOrientation::Horizontal => "horizontal",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<EdgeOrientation> {
+        EdgeOrientation::ALL.into_iter().find(|o| o.id() == id)
+    }
+}
+
+impl EdgeLabels {
+    /// The text sizes in points that the app offers.
+    pub const SIZES: RangeInclusive<f64> = 4.0..=24.0;
+    /// The halo widths in points that the app offers.
+    pub const HALO_WIDTHS: RangeInclusive<f64> = 0.5..=8.0;
+    /// The offsets in points that the app offers.
+    pub const OFFSETS: RangeInclusive<f64> = 0.0..=20.0;
+
+    /// The set as JSON text, for a project file.
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "on": self.on,
+            "font": self.font,
+            "weight": self.weight,
+            "italic": self.italic,
+            "size": self.size,
+            "color": hex(self.color),
+            "opacity": self.opacity,
+            "halo": self.halo,
+            "halo_color": hex(self.halo_color),
+            "halo_width": self.halo_width,
+            "outside": self.outside,
+            "edges": {
+                "top": self.edges.top,
+                "bottom": self.edges.bottom,
+                "left": self.edges.left,
+                "right": self.edges.right,
+            },
+            "offset": self.offset,
+            "orientation": self.orientation.id(),
+        })
+        .to_string()
+    }
+
+    /// Reads [`EdgeLabels::to_json`]. A missing key gets its default, and
+    /// an unknown key is ignored. `None` if a value is bad.
+    pub fn from_json(text: &str) -> Option<EdgeLabels> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        let map = value.as_object()?;
+        let mut e = EdgeLabels::default();
+        let flag = |key: &str, to: &mut bool| -> Option<()> {
+            if let Some(v) = map.get(key) {
+                *to = v.as_bool()?;
+            }
+            Some(())
+        };
+        let number = |key: &str, to: &mut f64| -> Option<()> {
+            if let Some(v) = map.get(key) {
+                *to = v.as_f64().filter(|x| x.is_finite())?;
+            }
+            Some(())
+        };
+        let color = |key: &str, to: &mut Rgb| -> Option<()> {
+            if let Some(v) = map.get(key) {
+                *to = parse_color(v.as_str()?)?;
+            }
+            Some(())
+        };
+        flag("on", &mut e.on)?;
+        match map.get("font") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(v) => e.font = Some(v.as_str()?.to_string()),
+        }
+        let mut weight = e.weight as f64;
+        number("weight", &mut weight)?;
+        e.weight = weight as f32;
+        flag("italic", &mut e.italic)?;
+        number("size", &mut e.size)?;
+        color("color", &mut e.color)?;
+        number("opacity", &mut e.opacity)?;
+        flag("halo", &mut e.halo)?;
+        color("halo_color", &mut e.halo_color)?;
+        number("halo_width", &mut e.halo_width)?;
+        flag("outside", &mut e.outside)?;
+        if let Some(edges) = map.get("edges") {
+            let edges = edges.as_object()?;
+            for (key, to) in [
+                ("top", &mut e.edges.top),
+                ("bottom", &mut e.edges.bottom),
+                ("left", &mut e.edges.left),
+                ("right", &mut e.edges.right),
+            ] {
+                if let Some(v) = edges.get(key) {
+                    *to = v.as_bool()?;
+                }
+            }
+        }
+        number("offset", &mut e.offset)?;
+        if let Some(v) = map.get("orientation") {
+            e.orientation = EdgeOrientation::from_id(v.as_str()?)?;
+        }
+        let valid = e.size > 0.0
+            && e.halo_width > 0.0
+            && e.offset >= 0.0
+            && (0.0..=1.0).contains(&e.opacity)
+            && e.weight > 0.0;
+        valid.then_some(e)
+    }
+}
+
+impl Default for EdgeLabels {
+    fn default() -> Self {
+        EdgeLabels {
+            on: true,
+            font: None,
+            weight: 400.0,
+            italic: false,
+            size: 7.0,
+            color: [0x4b, 0x52, 0x57],
+            opacity: 1.0,
+            halo: false,
+            halo_color: [0xff, 0xff, 0xff],
+            halo_width: 2.0,
+            outside: false,
+            edges: Edges {
+                top: true,
+                bottom: true,
+                left: true,
+                right: true,
+            },
+            offset: 2.0,
+            orientation: EdgeOrientation::Along,
+        }
+    }
+}
+
+/// The text of a latitude or a longitude.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CoordFormat {
+    /// Degrees, minutes, and seconds, for example 45°30′ N.
+    #[default]
+    Dms,
+    /// Decimal degrees, for example 45.5° N.
+    Decimal,
+}
+
+impl CoordFormat {
+    pub const ALL: [CoordFormat; 2] = [CoordFormat::Dms, CoordFormat::Decimal];
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            CoordFormat::Dms => "dms",
+            CoordFormat::Decimal => "decimal",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<CoordFormat> {
+        CoordFormat::ALL.into_iter().find(|f| f.id() == id)
+    }
 }
 
 impl Graticule {
@@ -183,6 +401,9 @@ impl Default for Graticule {
             interval: None,
             color: [0x96, 0xa5, 0xaf],
             width: 0.5,
+            format: CoordFormat::Dms,
+            meridians: EdgeLabels::default(),
+            parallels: EdgeLabels::default(),
         }
     }
 }
@@ -462,6 +683,44 @@ pub(crate) fn read_rings(r: &mut Reader) -> Option<Vec<Vec<[f64; 2]>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_set_of_edge_labels_survives_json() {
+        let set = EdgeLabels {
+            font: Some("Noto Serif".into()),
+            weight: 600.0,
+            italic: true,
+            size: 8.5,
+            color: [10, 20, 30],
+            opacity: 0.75,
+            halo: true,
+            halo_color: [200, 210, 220],
+            halo_width: 1.5,
+            outside: true,
+            edges: Edges {
+                top: true,
+                bottom: false,
+                left: true,
+                right: false,
+            },
+            offset: 3.0,
+            orientation: EdgeOrientation::Horizontal,
+            ..EdgeLabels::default()
+        };
+        assert_eq!(EdgeLabels::from_json(&set.to_json()), Some(set));
+        assert_eq!(EdgeLabels::from_json("{}"), Some(EdgeLabels::default()));
+        let unknown = EdgeLabels::from_json(r#"{"size": 9, "future": 1}"#).unwrap();
+        assert_eq!(unknown.size, 9.0);
+        for bad in [
+            "[]",
+            r#"{"on": 1}"#,
+            r#"{"offset": -1}"#,
+            r#"{"opacity": 2}"#,
+            r#"{"edges": {"top": "yes"}}"#,
+        ] {
+            assert_eq!(EdgeLabels::from_json(bad), None, "{bad}");
+        }
+    }
 
     fn frame(map: MapId) -> FrameRecord {
         FrameRecord {
