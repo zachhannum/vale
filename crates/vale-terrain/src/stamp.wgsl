@@ -1582,10 +1582,13 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
 fn limited(old: f32, next: f32) -> f32 {
     let low = f32(group.limits & 0xffffu);
     let high = f32(group.limits >> 16u);
-    if next < old {
-        return max(next, min(old, low));
+    if old < low || old > high {
+        return old;
     }
-    return min(next, max(old, high));
+    if next < old {
+        return max(next, low);
+    }
+    return min(next, high);
 }
 
 // The change of the level of a texel from one weather stamp. Each pair of
@@ -1623,10 +1626,11 @@ fn weather(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
         let other = f32(tile_level(i32(group.face), p));
         let drop = old - other;
         let over = abs(drop) - stamp.talus;
-        if over > 0.0 {
-            // The steps are those of `Limits::pair_room`.
-            let down = max(max(old, other) - low, 0.0);
-            let up = max(high - min(old, other), 0.0);
+        // The steps are those of `Limits::pair_room`.
+        let held = min(old, other) >= low && max(old, other) <= high;
+        if over > 0.0 && held {
+            let down = max(old, other) - low;
+            let up = high - min(old, other);
             let room = floor(min(down, up) * 0.25);
             change -= sign(drop) * min(floor(weight * over * 0.125), room);
         }
@@ -1641,10 +1645,12 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     // between two passes.
     var value = f32(tile_level(i32(group.face), at));
     if group.mode == ERODE {
-        // The lowest level is 0. A texel above the floor does not go below
-        // it, and a texel at or below the floor stays.
+        // The lowest level is 0. A texel does not go below the floor, and a
+        // texel outside the limits stays.
         let drop = floor(drop_at(at) + 0.5);
-        value = max(value - drop, min(value, f32(group.limits & 0xffffu)));
+        if drop > 0.0 {
+            value = limited(value, value - drop);
+        }
     }
     if group.mode == OCEAN_RIDGE {
         let p = normalize(texel_dir(group.face, at));
