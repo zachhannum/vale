@@ -3826,18 +3826,22 @@ fn the_brush_panel_has_the_ocean_ridge_mode_and_its_sliders() {
     let mut h = harness();
     h.state_mut().globe.tool = Tool::Brush;
     h.run_steps(2);
-    const SLIDERS: [&str; 5] = ["Crest", "Segment", "Offset", "Roughness", "Valley"];
-    for name in SLIDERS {
+    const SLIDERS: [&str; 5] = ["Crest", "Spreading", "Magma", "Segment", "Offset"];
+    for name in SLIDERS.into_iter().chain(["Roughness", "Valley"]) {
         assert!(h.query_all_by_label(name).next().is_none(), "{name}");
     }
     h.get_by_label("Ocean ridge").click();
     h.run_steps(2);
     let brush = &h.state().globe.brush;
     assert_eq!(brush.mode, Mode::OceanRidge);
-    assert_eq!(
-        (brush.ridge_crest_m, brush.ridge_segment_km),
-        (-700.0, 400.0)
-    );
+    let values = [
+        brush.ridge_crest_m,
+        brush.ridge_spread_mm,
+        brush.ridge_magma,
+        brush.ridge_segment_km,
+        brush.ridge_offset_km,
+    ];
+    assert_eq!(values, [-700.0, 25.0, 0.0, 400.0, 100.0]);
     // The crest of the start is above the empty world, so the first stroke
     // makes a ridge.
     assert!(meters_to_level(brush.ridge_crest_m) > h.state().globe.map.base());
@@ -3847,9 +3851,20 @@ fn the_brush_panel_has_the_ocean_ridge_mode_and_its_sliders() {
     {
         assert!(h.query_all_by_label(name).next().is_some(), "{name}");
     }
-    for name in ["Hardness", "Strength", "Seed"] {
+    for name in ["Hardness", "Strength", "Seed", "Roughness", "Valley"] {
         assert!(h.query_all_by_label(name).next().is_none(), "{name}");
     }
+    // The line below the sliders gives the age of the crust at the edge of
+    // the brush: the radius over the half spreading rate.
+    let s = h.state();
+    let km = s
+        .globe
+        .brush
+        .radius_km(s.globe.radius(), s.doc.project.world.radius_km);
+    let age = km / 12.5;
+    assert!(age >= 10.0, "{age}");
+    let line = format!("Edge age {age:.0} Myr");
+    assert!(h.query_by_label(&line).is_some(), "{line}");
 }
 
 /// Writes an image of a ridge after warp strokes, for a person to look at.

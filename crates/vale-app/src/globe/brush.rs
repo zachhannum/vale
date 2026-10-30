@@ -33,14 +33,15 @@ pub const SCALE_KM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
 pub const SEED: std::ops::RangeInclusive<u32> = 0..=999;
 /// The limits of the crest of the ocean ridge mode, in meters.
 pub const RIDGE_CREST_M: std::ops::RangeInclusive<f64> = -6000.0..=6000.0;
+/// The limits of the full spreading rate of the ocean ridge mode, in
+/// millimeters per year.
+pub const RIDGE_SPREAD_MM: std::ops::RangeInclusive<f64> = 10.0..=150.0;
+/// The limits of the magma setting of the ocean ridge mode.
+pub const RIDGE_MAGMA: std::ops::RangeInclusive<f64> = -0.25..=0.15;
 /// The limits of the segment length of the ocean ridge mode, in kilometers.
-pub const RIDGE_SEGMENT_KM: std::ops::RangeInclusive<f64> = 50.0..=2000.0;
+pub const RIDGE_SEGMENT_KM: std::ops::RangeInclusive<f64> = 100.0..=1500.0;
 /// The limits of the offset of the ocean ridge mode, in kilometers.
 pub const RIDGE_OFFSET_KM: std::ops::RangeInclusive<f64> = 0.0..=500.0;
-/// The limits of the roughness of the ocean ridge mode, in meters.
-pub const RIDGE_ROUGHNESS_M: std::ops::RangeInclusive<f64> = 0.0..=1000.0;
-/// The limits of the valley of the ocean ridge mode, in meters.
-pub const RIDGE_VALLEY_M: std::ops::RangeInclusive<f64> = 0.0..=2000.0;
 /// The part that the erosion setting of 1 adds to the rise of an uplift
 /// stamp. With it, an uplift stroke gives a range of about the height of a
 /// raise stroke at each erosion setting.
@@ -88,10 +89,6 @@ pub struct BrushSettings {
     pub ridge_segment_km: f64,
     /// The largest shift of a segment across the line, in kilometers.
     pub ridge_offset_km: f64,
-    /// The height of the hills, in meters.
-    pub ridge_roughness_m: f64,
-    /// The depth of the valley along the crest, in meters.
-    pub ridge_valley_m: f64,
     /// The full spreading rate of the ocean ridge mode, in millimeters per
     /// year.
     pub ridge_spread_mm: f64,
@@ -129,8 +126,6 @@ impl Default for BrushSettings {
             ridge_crest_m: -700.0,
             ridge_segment_km: 400.0,
             ridge_offset_km: 100.0,
-            ridge_roughness_m: 300.0,
-            ridge_valley_m: 300.0,
             ridge_spread_mm: 25.0,
             ridge_magma: 0.0,
             floor_on: false,
@@ -208,6 +203,13 @@ impl BrushSettings {
             seed,
             limits: self.limits(),
         }
+    }
+
+    /// The age of the crust at the edge of an ocean ridge stroke, in
+    /// millions of years. `radius_km` is the brush radius on the ground.
+    pub fn ridge_edge_age(&self, radius_km: f64) -> f64 {
+        // A full rate in mm/yr is a full rate in km/Myr.
+        radius_km / (0.5 * self.ridge_spread_mm)
     }
 
     /// The brush radius as an angle on the sphere, in radians. `globe_radius`

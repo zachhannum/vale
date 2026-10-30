@@ -16,8 +16,8 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::BrushSettings;
 use crate::globe::brush::{
-    EROSION, FLOW, RIDGE_CREST_M, RIDGE_OFFSET_KM, RIDGE_ROUGHNESS_M, RIDGE_SEGMENT_KM,
-    RIDGE_VALLEY_M, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    EROSION, FLOW, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
+    SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
@@ -1357,6 +1357,8 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     size_slider(state, |fraction, text| {
         widgets::row_slider(ui, controls, "Brush size", "Size", fraction, text)
     });
+    let world_km = state.doc.project.world.radius_km;
+    let radius_km = state.globe.brush.radius_km(state.globe.radius(), world_km);
     let brush = &mut state.globe.brush;
     // The ocean ridge mode has no falloff and no strength.
     let ridge = brush.mode == Mode::OceanRidge;
@@ -1369,7 +1371,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         widgets::row_slider(ui, controls, "Brush flow", "Flow", fraction, text)
     });
     if ridge {
-        ridge_rows(ui, controls, brush);
+        ridge_rows(ui, controls, brush, radius_km);
     } else if brush.mode == Mode::Warp {
         let text = format!("{} km", world::three_significant(brush.warp_km));
         let strength = log_slider(brush.warp_km, WARP_KM, &text, |fraction, text| {
@@ -1454,12 +1456,35 @@ fn linear_slider(
     }
 }
 
-/// The sliders of the ocean ridge mode.
-fn ridge_rows(ui: &mut egui::Ui, controls: &mut Controls, brush: &mut BrushSettings) {
+/// The sliders of the ocean ridge mode, and the age of the crust at the
+/// edge of the stroke. `radius_km` is the brush radius on the ground.
+fn ridge_rows(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    brush: &mut BrushSettings,
+    radius_km: f64,
+) {
     let text = format!("{:.0} m", brush.ridge_crest_m);
     let crest = &mut brush.ridge_crest_m;
     linear_slider(crest, RIDGE_CREST_M, 50.0, &text, |fraction, text| {
         widgets::row_slider(ui, controls, "Brush crest", "Crest", fraction, text)
+    });
+    let text = format!("{:.0} mm/yr", brush.ridge_spread_mm);
+    let spread = log_slider(
+        brush.ridge_spread_mm,
+        RIDGE_SPREAD_MM,
+        &text,
+        |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush spreading", "Spreading", fraction, text)
+        },
+    );
+    if let Some(mm) = spread {
+        brush.ridge_spread_mm = mm.round();
+    }
+    let text = panels::signed_percent(brush.ridge_magma);
+    let magma = &mut brush.ridge_magma;
+    linear_slider(magma, RIDGE_MAGMA, 0.01, &text, |fraction, text| {
+        widgets::row_slider(ui, controls, "Brush magma", "Magma", fraction, text)
     });
     let text = format!("{} km", world::three_significant(brush.ridge_segment_km));
     let segment = log_slider(
@@ -1478,22 +1503,7 @@ fn ridge_rows(ui: &mut egui::Ui, controls: &mut Controls, brush: &mut BrushSetti
     linear_slider(offset, RIDGE_OFFSET_KM, 1.0, &text, |fraction, text| {
         widgets::row_slider(ui, controls, "Brush offset", "Offset", fraction, text)
     });
-    let text = format!("{:.0} m", brush.ridge_roughness_m);
-    let roughness = &mut brush.ridge_roughness_m;
-    linear_slider(
-        roughness,
-        RIDGE_ROUGHNESS_M,
-        1.0,
-        &text,
-        |fraction, text| {
-            widgets::row_slider(ui, controls, "Brush roughness", "Roughness", fraction, text)
-        },
-    );
-    let text = format!("{:.0} m", brush.ridge_valley_m);
-    let valley = &mut brush.ridge_valley_m;
-    linear_slider(valley, RIDGE_VALLEY_M, 1.0, &text, |fraction, text| {
-        widgets::row_slider(ui, controls, "Brush valley", "Valley", fraction, text)
-    });
+    raster::note(ui, &panels::edge_age_text(brush, radius_km));
 }
 
 /// The switch of a limit of the brush. While the switch is on, a slider

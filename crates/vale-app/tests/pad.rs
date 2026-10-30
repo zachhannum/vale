@@ -2220,11 +2220,35 @@ fn the_brush_panel_has_the_two_sliders_of_the_warp_mode() {
 /// The rows of the ocean ridge mode in the brush panel.
 const RIDGE_ROWS: [&str; 5] = [
     "Brush crest",
+    "Brush spreading",
+    "Brush magma",
     "Brush segment",
     "Brush offset",
-    "Brush roughness",
-    "Brush valley",
 ];
+
+/// The values of the ocean ridge sliders, in the order of `RIDGE_ROWS`.
+fn ridge_values(h: &Pad) -> [f64; 5] {
+    let b = h.state().globe.brush;
+    [
+        b.ridge_crest_m,
+        b.ridge_spread_mm,
+        b.ridge_magma,
+        b.ridge_segment_km,
+        b.ridge_offset_km,
+    ]
+}
+
+/// The line with the age of the crust at the edge of the brush.
+fn edge_age_line(h: &Pad) -> String {
+    let s = h.state();
+    let km = s
+        .globe
+        .brush
+        .radius_km(s.globe.radius(), s.doc.project.world.radius_km);
+    let age = km / (0.5 * s.globe.brush.ridge_spread_mm);
+    assert!(age >= 10.0, "{age}");
+    format!("Edge age {age:.0} Myr")
+}
 
 #[test]
 fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
@@ -2242,19 +2266,11 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
         (Tool::Brush, Mode::OceanRidge)
     );
     assert!(more_is_active(&h));
-    let brush = s.globe.brush;
-    assert_eq!(
-        (brush.ridge_crest_m, brush.ridge_segment_km),
-        (-700.0, 400.0)
-    );
-    assert_eq!(
-        (
-            brush.ridge_offset_km,
-            brush.ridge_roughness_m,
-            brush.ridge_valley_m
-        ),
-        (100.0, 300.0, 300.0)
-    );
+    assert_eq!(ridge_values(&h), [-700.0, 25.0, 0.0, 400.0, 100.0]);
+    for row in RIDGE_ROWS {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    assert!(h.query_by_label(&edge_age_line(&h)).is_some());
     // The size and the flow stay. The mode has no hardness and no strength.
     for row in ["Brush size", "Brush flow"] {
         assert!(control(&h, row).is_some(), "{row}");
@@ -2263,23 +2279,26 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
         assert!(control(&h, row).is_none(), "{row}");
     }
     // Each slider sets its value from one end of its range to the other.
-    let ends = [(-6000.0, 6000.0), (50.0, 2000.0), (0.0, 500.0)];
-    let ends = ends.into_iter().chain([(0.0, 1000.0), (0.0, 2000.0)]);
+    let ends = [
+        (-6000.0, 6000.0),
+        (10.0, 150.0),
+        (-0.25, 0.15),
+        (100.0, 1500.0),
+        (0.0, 500.0),
+    ];
     for (i, (row, (low, high))) in RIDGE_ROWS.into_iter().zip(ends).enumerate() {
-        let value = |h: &Pad| {
-            let b = h.state().globe.brush;
-            let values = [b.ridge_crest_m, b.ridge_segment_km, b.ridge_offset_km];
-            values
-                .into_iter()
-                .chain([b.ridge_roughness_m, b.ridge_valley_m])
-                .nth(i)
-        };
         let rect = control(&h, row).unwrap();
         drag(&mut h, rect.center(), rect.left_center(), None);
-        assert!((value(&h).unwrap() - low).abs() < 1e-6, "{row}");
+        assert!((ridge_values(&h)[i] - low).abs() < 1e-6, "{row}");
         drag(&mut h, rect.left_center(), rect.right_center(), None);
-        assert!((value(&h).unwrap() - high).abs() < 1e-6, "{row}");
+        assert!((ridge_values(&h)[i] - high).abs() < 1e-6, "{row}");
     }
+    // The edge age follows the spreading.
+    let rect = control(&h, "Brush spreading").unwrap();
+    drag(&mut h, rect.right_center(), rect.center(), None);
+    let spread = h.state().globe.brush.ridge_spread_mm;
+    assert!(spread > 10.0 && spread < 150.0 && spread.fract() == 0.0);
+    assert!(h.query_by_label(&edge_age_line(&h)).is_some());
     // The crest moves in steps of 50 m.
     let rect = control(&h, "Brush crest").unwrap();
     let part = rect.left_center().lerp(rect.right_center(), 0.37);
@@ -2306,23 +2325,33 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     check_controls(&h, "744 high with the More menu");
     tap(&mut h, "Ocean ridge");
     tap(&mut h, "Brush settings");
-    // Each row of the panel shows, also with the two limits on.
+    // Each row of the panel and the edge age line show.
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    let rows = ["Brush size", "Brush flow"].into_iter().chain(RIDGE_ROWS);
+    for row in rows.chain(["Brush floor", "Brush ceiling"]) {
+        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+    }
+    let line = h.get_by_label(&edge_age_line(&h)).rect();
+    assert!(panel.contains_rect(line), "{line:?} in {panel:?}");
+    check_controls(&h, "744 high with the Ocean ridge panel");
+    // With the two limits on, the panel stays on the screen, and the rows
+    // scroll to the level of the ceiling.
     tap(&mut h, "Brush floor");
     tap(&mut h, "Brush ceiling");
     let brush = h.state().globe.brush;
     assert!(brush.floor_on && brush.ceiling_on);
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
-    let levels = ["Brush floor level", "Brush ceiling level"];
-    for row in ["Brush size", "Brush flow"]
-        .into_iter()
-        .chain(RIDGE_ROWS)
-        .chain(levels)
-    {
+    let from = control(&h, "Brush offset").unwrap().center();
+    drag(&mut h, from, from - vec2(4.0, 200.0), None);
+    assert_eq!(h.state().globe.brush, brush);
+    for row in ["Brush floor level", "Brush ceiling level"] {
         let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
     }
-    check_controls(&h, "744 high with the Ocean ridge panel");
+    check_controls(&h, "744 high with the Ocean ridge limits");
 }
 
 /// Writes an image of the brush panel in the ocean ridge mode, for a person
@@ -2330,18 +2359,18 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
 #[test]
 #[ignore]
 fn screenshot_of_the_ocean_ridge_panel() {
-    let state = state();
+    let mut state = state();
+    state.add_height();
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = vale_app::headless::ui_harness(state, (1194.0, 834.0), 2.0, setup);
     h.run_steps(3);
-    tap(&mut h, "Brush settings");
     tap(&mut h, MORE);
     h.render()
         .unwrap()
         .save("../../target/app/ocean-ridge-more.png")
         .unwrap();
     tap(&mut h, "Ocean ridge");
-    tap(&mut h, "Brush floor");
+    tap(&mut h, "Brush settings");
     h.render()
         .unwrap()
         .save("../../target/app/ocean-ridge-panel.png")
