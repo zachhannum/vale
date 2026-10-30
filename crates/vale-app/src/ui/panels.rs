@@ -130,15 +130,23 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
                 let menu = egui::containers::menu::MenuButton::new(LAYERS_MENU).config(stay);
                 menu.ui(ui, |ui| {
+                    ui.label(egui::RichText::new(pad::NEW_SECTION).weak().small());
                     if ui.button(ADD_RASTER).clicked() {
                         state.raster_form = Some(RasterForm::open(state));
                         ui.close();
                     }
+                    ui.separator();
+                    ui.label(egui::RichText::new(pad::IMPORT_SECTION).weak().small());
                     let free = state.image_import.is_none();
                     if ui.add_enabled(free, egui::Button::new(ADD_IMAGE)).clicked() {
                         state.actions.push(Action::ImageLayerDialog);
                         ui.close();
                     }
+                    if ui.button(ADD_GEOJSON).clicked() {
+                        state.actions.push(Action::GeoJsonDialog);
+                        ui.close();
+                    }
+                    ui.separator();
                     layer_rows(ui, state);
                     selected_layer(ui, state);
                 });
@@ -281,6 +289,8 @@ pub const LAYERS_MENU: &str = "Layers";
 pub const ADD_RASTER: &str = "Add raster…";
 /// The button that adds an image layer from a file.
 pub const ADD_IMAGE: &str = "Add image…";
+/// The button that adds vector layers from a GeoJSON file.
+pub const ADD_GEOJSON: &str = "Add GeoJSON…";
 /// The field of the Layers menu with the name of the selected layer.
 pub const LAYER_NAME: &str = "Layer name";
 /// The slider of the Layers menu with the opacity of the selected raster

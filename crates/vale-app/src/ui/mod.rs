@@ -74,6 +74,12 @@ pub enum Action {
     /// Adds an image layer with the colors and the transparency of this
     /// PNG, TIFF, or PSD file.
     ImportImageLayer(PathBuf),
+    /// Asks for a GeoJSON file to add to the vector layers.
+    GeoJsonDialog,
+    /// Adds the features of this GeoJSON file as vector layers, one for
+    /// each kind of geometry. The coordinates are longitude and latitude
+    /// in degrees, the grid of an equirectangular image.
+    ImportGeoJson(PathBuf),
     /// Asks for a legend image for a new color ramp. The panel of this
     /// raster layer shows the result.
     ImportRampDialog(RasterId),
@@ -404,7 +410,8 @@ pub struct AppState {
     /// The import of a new image layer that runs.
     pub image_import: Option<ImageImport>,
     /// The text of the last import of an image layer, and its layer.
-    /// `None` for the layer: the import failed.
+    /// `None` for the layer: the import failed. A GeoJSON import that
+    /// fails also puts its text here.
     pub image_note: Option<(Note, Option<ImageId>)>,
     /// The tiles of the images of a project with no file.
     pub image_tiles: ImageTiles,
@@ -2907,6 +2914,28 @@ impl AppState {
                     self.pump_images(true);
                 }
             }
+            Action::ImportGeoJson(path) => {
+                let name = file_name(&path);
+                self.image_note = None;
+                match self.doc.open_geojson(&path) {
+                    Ok(ids) if !ids.is_empty() => {
+                        // The panel of the top new layer shows the result.
+                        let id = ids[ids.len() - 1];
+                        self.select(Some(LayerRef::Vector(id)));
+                        self.pad.layer = Some(LayerRef::Vector(id));
+                        self.status = format!("Imported {name}: {} layers", ids.len());
+                    }
+                    Ok(_) => {
+                        let text = format!("Cannot import {name}: no features");
+                        self.note_image(Note::new(text, true, None), None);
+                    }
+                    Err(e) => {
+                        let text = format!("Cannot import {name}: {e}");
+                        self.note_image(Note::new(text, true, None), None);
+                    }
+                }
+                self.touch();
+            }
             Action::RasterImage(path) => {
                 if let Some(form) = &mut self.raster_form {
                     form.set_image(path.clone());
@@ -2989,6 +3018,7 @@ impl AppState {
             | Action::ImportHeightmapDialog
             | Action::RasterImageDialog
             | Action::ImageLayerDialog
+            | Action::GeoJsonDialog
             | Action::ImportRampDialog(_)
             | Action::AddSymbolDialog
             | Action::PickFont(_)

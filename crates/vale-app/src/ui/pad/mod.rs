@@ -113,6 +113,19 @@ pub const NEW_RASTER: &str = "Raster…";
 /// The row of the menu of the new layers that adds an image layer from a
 /// file.
 pub const NEW_IMAGE: &str = "Image…";
+/// The row of the menu of the new layers that adds vector layers from a
+/// GeoJSON file.
+pub const NEW_GEOJSON: &str = "GeoJSON…";
+/// The row of the menu of the new layers that makes the height layer from a
+/// heightmap file. It shows only in a world with no height layer.
+pub const NEW_HEIGHTMAP: &str = "Heightmap…";
+/// The heading of the rows of the menu of the new layers that make an empty
+/// layer.
+pub const NEW_SECTION: &str = "New";
+/// The heading of the rows of the menu of the new layers that read a file.
+pub const IMPORT_SECTION: &str = "Import";
+/// The height of a heading of the menu of the new layers.
+const MENU_HEADING: f32 = 28.0;
 /// The rows of the menu of the new vector layers.
 const NEW_LAYERS: [(&str, GeometryKind); 3] = [
     ("Lines", GeometryKind::Line),
@@ -1484,7 +1497,7 @@ struct ListRow {
 /// moves with the finger to a new place in the order. A swipe to the left
 /// shows the Delete button of the row, and a long swipe deletes the layer.
 /// The list of the layers, and below it the text of the import of an image
-/// layer that runs or that failed.
+/// layer that runs or that failed, or of a GeoJSON import that failed.
 fn layers_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     layer_list(ui, state, controls);
     image_note(ui, state, None);
@@ -1707,8 +1720,9 @@ fn add_menu(
 ) {
     // A world with no height layer gets one from an import.
     let import = !state.doc.project.rasters().iter().any(is_height);
-    let rows = 2 + NEW_LAYERS.len() + usize::from(import);
-    let size = vec2(ADD_WIDTH, 10.0 + rows as f32 * PANEL_ROW + 10.0);
+    let rows = 3 + NEW_LAYERS.len() + usize::from(import);
+    let height = 10.0 + 2.0 * MENU_HEADING + rows as f32 * PANEL_ROW + 10.0;
+    let size = vec2(ADD_WIDTH, height);
     let beside = pos2(
         rects.right_panel.x - geometry::PANEL_GAP - size.x,
         rects.right_panel.y,
@@ -1717,7 +1731,9 @@ fn add_menu(
         beside
     } else {
         let left = (button.right() - size.x).max(rects.screen.left() + geometry::PANEL_GAP);
-        pos2(left, button.bottom() + PAD)
+        // A short screen moves the menu up, out of the bottom band.
+        let top = (rects.panel_bottom - size.y).min(button.bottom() + PAD);
+        pos2(left, top.max(rects.screen.top() + rects.bands.top))
     };
     let rect = Rect::from_min_size(min, size);
     state.pad.add_rect = Some(rect);
@@ -1747,6 +1763,16 @@ fn add_menu(
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             let ui = &mut ui;
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            menu_heading(ui, NEW_SECTION);
+            for (name, kind) in NEW_LAYERS {
+                if widgets::text_row(ui, controls, name, 0.0, false, true).clicked() {
+                    let id = state.doc.add_layer(kind);
+                    state.select(Some(LayerRef::Vector(id)));
+                    state.pad.layer = Some(LayerRef::Vector(id));
+                    state.pad.add = false;
+                    state.touch();
+                }
+            }
             // The arrow tells that the row opens a form.
             let raster = widgets::text_row(ui, controls, NEW_RASTER, 0.0, false, true);
             let arrow = Rect::from_center_size(
@@ -1758,23 +1784,19 @@ fn add_menu(
                 state.raster_form = Some(RasterForm::open(state));
                 state.pad.add = false;
             }
+            menu_heading(ui, IMPORT_SECTION);
             let free = state.image_import.is_none();
             if widgets::text_row(ui, controls, NEW_IMAGE, 0.0, false, free).clicked() {
                 state.actions.push(Action::ImageLayerDialog);
                 state.pad.add = false;
             }
-            for (name, kind) in NEW_LAYERS {
-                if widgets::text_row(ui, controls, name, 0.0, false, true).clicked() {
-                    let id = state.doc.add_layer(kind);
-                    state.select(Some(LayerRef::Vector(id)));
-                    state.pad.layer = Some(LayerRef::Vector(id));
-                    state.pad.add = false;
-                    state.touch();
-                }
+            if widgets::text_row(ui, controls, NEW_GEOJSON, 0.0, false, true).clicked() {
+                state.actions.push(Action::GeoJsonDialog);
+                state.pad.add = false;
             }
             if import {
                 let enabled = !state.globe.busy();
-                let row = widgets::text_row(ui, controls, IMPORT_HEIGHTMAP, 0.0, false, enabled);
+                let row = widgets::text_row(ui, controls, NEW_HEIGHTMAP, 0.0, false, enabled);
                 if row.clicked() {
                     state.actions.push(Action::ImportHeightmapDialog);
                     state.pad.add = false;
@@ -1782,6 +1804,19 @@ fn add_menu(
             }
         },
     );
+}
+
+/// The heading of a section of the menu of the new layers.
+fn menu_heading(ui: &mut egui::Ui, text: &str) {
+    let size = vec2(ui.available_width(), MENU_HEADING);
+    let layout = egui::Layout::left_to_right(egui::Align::Max);
+    ui.allocate_ui_with_layout(size, layout, |ui| {
+        ui.set_min_size(size);
+        let text = egui::RichText::new(text)
+            .font(theme::small())
+            .color(theme::MUTE);
+        ui.label(text);
+    });
 }
 
 /// The panel of a vector layer: its name, its kind, the number of its
