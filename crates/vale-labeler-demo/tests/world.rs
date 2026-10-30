@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use vale_labeler::{CandidateKind, Fonts, Labeling, place_labels};
+use kurbo::Point;
+use vale_labeler::{CandidateKind, Fonts, Labeling, PlacedLabel, glyph_outline, place_labels};
 use vale_labeler_demo::render::{RenderOptions, WATER, render};
 use vale_labeler_demo::scene::{Preset, Scene, build, fonts};
 use vello_cpu::Pixmap;
@@ -49,6 +50,59 @@ fn counts() {
     let lines = labeling.placed.iter().filter(|l| l.class == 1).count();
     assert!(points >= 100, "point labels: {points}");
     assert!(lines >= 6, "line labels: {lines}");
+}
+
+/// The edges of the outline of each glyph of `label` in page space.
+fn glyph_edges(label: &PlacedLabel) -> Vec<Vec<(Point, Point)>> {
+    let mut out = Vec::new();
+    for run in &label.glyph_runs {
+        for g in &run.glyphs {
+            let Some(path) = glyph_outline(&run.font, &run.normalized_coords, run.font_size, g.id)
+            else {
+                continue;
+            };
+            let mut polys: Vec<Vec<Point>> = Vec::new();
+            kurbo::flatten(g.transform * path, 0.02, |el| match el {
+                kurbo::PathEl::MoveTo(p) => polys.push(vec![p]),
+                kurbo::PathEl::LineTo(p) => polys.last_mut().unwrap().push(p),
+                _ => {}
+            });
+            let edges = polys
+                .iter()
+                .flat_map(|p| (0..p.len()).map(move |i| (p[i], p[(i + 1) % p.len()])))
+                .collect();
+            out.push(edges);
+        }
+    }
+    out
+}
+
+fn segments_cross(a: Point, b: Point, c: Point, d: Point) -> bool {
+    let side = |p: Point, q: Point, r: Point| (q - p).cross(r - p);
+    side(c, d, a) * side(c, d, b) < 0.0 && side(a, b, c) * side(a, b, d) < 0.0
+}
+
+#[test]
+fn no_label_has_glyphs_that_overlap() {
+    let (_, labeling) = run();
+    let mut overlapping = Vec::new();
+    for label in &labeling.placed {
+        let glyphs = glyph_edges(label);
+        // Each letter has a drawn glyph.
+        let letters = label.text.chars().filter(|c| !c.is_whitespace()).count();
+        assert_eq!(glyphs.len(), letters, "{}", label.text);
+        let crossing = (0..glyphs.len()).any(|i| {
+            (i + 1..glyphs.len()).any(|j| {
+                glyphs[i]
+                    .iter()
+                    .any(|&(a, b)| glyphs[j].iter().any(|&(c, d)| segments_cross(a, b, c, d)))
+            })
+        });
+        if crossing {
+            overlapping.push(label.text.clone());
+        }
+    }
+    assert!(overlapping.is_empty(), "{overlapping:?}");
 }
 
 #[test]

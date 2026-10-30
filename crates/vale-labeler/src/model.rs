@@ -111,7 +111,8 @@ pub struct LinePlacement {
     pub offset: f64,
     /// Distance between repeated labels; `None` gives one label per feature.
     pub repeat_distance: Option<f64>,
-    /// Largest angle between two neighbor glyphs, in radians.
+    /// The angle between two neighbor glyphs, in radians, above which a candidate costs more.
+    /// A candidate that turns more than 1.6 times this angle is not used.
     pub max_glyph_turn: f64,
     /// Smoothing window, in multiples of the font size.
     pub smoothing: f64,

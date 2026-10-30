@@ -290,9 +290,12 @@ impl Fonts {
                     if g.id == 0 {
                         out.missing_glyphs += 1;
                     }
-                    let bbox = glyph_outline(&font, &coords, font_size, g.id)
-                        .filter(|p| !p.elements().is_empty())
-                        .map(|p| p.bounding_box());
+                    let outline = glyph_outline(&font, &coords, font_size, g.id)
+                        .filter(|p| !p.elements().is_empty());
+                    let bbox = outline.as_ref().map(|p| p.bounding_box());
+                    let profile = outline
+                        .as_ref()
+                        .map_or_else(Vec::new, |p| ink_profile(p, f64::from(font_size)));
                     let (x, y) = (g.x as f64, (g.y - baseline) as f64);
                     if let Some(bb) = bbox {
                         let moved = bb + Vec2::new(x, y);
@@ -304,6 +307,7 @@ impl Fonts {
                         y,
                         advance: g.advance as f64,
                         bbox,
+                        profile,
                     });
                 }
                 out.runs.push(ShapedRun {
@@ -374,6 +378,73 @@ pub(crate) struct ShapedGlyph {
     pub advance: f64,
     /// Outline bounds in glyph-local space; `None` for an empty outline.
     pub bbox: Option<Rect>,
+    /// The left and the right edge of the ink in each band of [`PROFILE_BANDS`], in
+    /// glyph-local space. Empty for an empty outline.
+    pub profile: Vec<Option<(f64, f64)>>,
+}
+
+/// The bands of an ink profile: the top of the first band and the band height, times the
+/// font size, and the band count. The bands run from above the ascender to below the descender.
+pub(crate) const PROFILE_BANDS: (f64, f64, usize) = (-1.2, 0.1, 18);
+
+/// The y at the middle of profile band `i`, for a font size.
+pub(crate) fn band_middle(i: usize, size: f64) -> f64 {
+    (PROFILE_BANDS.0 + PROFILE_BANDS.1 * (i as f64 + 0.5)) * size
+}
+
+/// The left and the right edge of the ink of `path` in each profile band.
+fn ink_profile(path: &BezPath, size: f64) -> Vec<Option<(f64, f64)>> {
+    let (top, h, n) = (
+        PROFILE_BANDS.0 * size,
+        PROFILE_BANDS.1 * size,
+        PROFILE_BANDS.2,
+    );
+    let mut out: Vec<Option<(f64, f64)>> = vec![None; n];
+    let mut add = |a: kurbo::Point, b: kurbo::Point| {
+        let (y0, y1) = (a.y.min(b.y), a.y.max(b.y));
+        let first = (((y0 - top) / h).floor().max(0.0)) as usize;
+        let last = (((y1 - top) / h).floor().max(-1.0) + 1.0) as usize;
+        for (i, slot) in out.iter_mut().enumerate().take(last.min(n)).skip(first) {
+            let (b0, b1) = (top + h * i as f64, top + h * (i + 1) as f64);
+            let (c0, c1) = (y0.max(b0), y1.min(b1));
+            if c0 > c1 {
+                continue;
+            }
+            // The x of the segment at the ends of its part inside the band.
+            let x_at = |y: f64| {
+                if (b.y - a.y).abs() < 1e-12 {
+                    a.x
+                } else {
+                    a.x + (b.x - a.x) * (y - a.y) / (b.y - a.y)
+                }
+            };
+            let (xa, xb) = if (b.y - a.y).abs() < 1e-12 {
+                (a.x, b.x)
+            } else {
+                (x_at(c0), x_at(c1))
+            };
+            let (lo, hi) = (xa.min(xb), xa.max(xb));
+            *slot = Some(slot.map_or((lo, hi), |(l, r)| (l.min(lo), r.max(hi))));
+        }
+    };
+    let mut start = kurbo::Point::ZERO;
+    let mut last = kurbo::Point::ZERO;
+    kurbo::flatten(path, 0.02 * size, |el| match el {
+        kurbo::PathEl::MoveTo(p) => {
+            start = p;
+            last = p;
+        }
+        kurbo::PathEl::LineTo(p) => {
+            add(last, p);
+            last = p;
+        }
+        kurbo::PathEl::ClosePath => {
+            add(last, start);
+            last = start;
+        }
+        _ => {}
+    });
+    out
 }
 
 pub(crate) struct ShapedRun {

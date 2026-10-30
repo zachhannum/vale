@@ -579,7 +579,7 @@ The engine returns each unplaced label with a reason. The app lists them, so no 
 
 Manual control is part of the design and not a repair tool. You can pin a label, move it, select a different candidate, or exclude it. A pinned label becomes a fixed obstacle, and the engine places all other labels around it.
 
-The library takes its fonts through Parley and measures real glyph outlines. Collision tests use one box per glyph on curved text, so curved labels pack tightly.
+The library takes its fonts through Parley and measures real glyph outlines. Collision tests use one box per glyph on curved text, so curved labels pack tightly. A line label tries positions along the whole line, and its letters follow a parallel copy of the line, so the letter spacing stays the same in a bend. Above the curve limit, the turn between two letters adds a cost, and the hard limit is 1.6 times the curve limit. A position where two letters overlap, or where a gap between letters grows or shrinks too much, is not used.
 
 The labels use the fonts of the system. The app also ships Noto Sans, which is the default font. A label style names a font family, and the project file holds only that name. The font picker has a search field. On iPad, it is the font picker of the system. A project looks the same on two devices if both devices have its fonts. If the device has no font of that family, the labels use Noto Sans, and the panel of the layer shows a warning that names both fonts. PDF export embeds a subset of each font.
 
