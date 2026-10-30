@@ -122,7 +122,7 @@ impl Document {
             name: "Earth (sample)".to_string(),
             radius_km: 6371.0,
             units: Units::Metric,
-            seed: 0,
+            ..World::default()
         };
         let sources: [(&str, &str); 3] = [
             (

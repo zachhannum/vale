@@ -462,11 +462,14 @@ fn put_world(out: &mut Vec<u8>, world: &World) {
     put_f64(out, world.radius_km);
     put_bytes(out, world.units.id().as_bytes());
     out.extend_from_slice(&world.seed.to_le_bytes());
+    put_f64(out, world.wind_deg);
+    put_f64(out, world.rain_shadow);
 }
 
 /// An image from format version 3 ends after the radius, and its world has
 /// metric units. An image from format version 4 ends after the units. The
-/// seed of each is zero.
+/// seed of each is zero. An image from a format version before 32 ends after
+/// the seed, and its world has a west wind and no rain shadow.
 fn world(r: &mut Reader) -> Option<World> {
     Some(World {
         name: string(r)?,
@@ -476,6 +479,8 @@ fn world(r: &mut Reader) -> Option<World> {
             false => Units::from_id(&string(r)?)?,
         },
         seed: if r.0.is_empty() { 0 } else { r.u32()? },
+        wind_deg: if r.0.is_empty() { 270.0 } else { r.f64()? },
+        rain_shadow: if r.0.is_empty() { 0.0 } else { r.f64()? },
     })
 }
 
@@ -1221,16 +1226,29 @@ mod tests {
     }
 
     #[test]
-    fn a_world_image_keeps_the_seed() {
+    fn a_world_image_keeps_the_seed_the_wind_and_the_rain_shadow() {
         let before = World {
             name: "Aerth".to_string(),
             radius_km: 4321.125,
             units: Units::Imperial,
             seed: 0xDEAD_BEEF,
+            wind_deg: 90.0,
+            rain_shadow: 0.6,
         };
         let mut out = Vec::new();
         put_world(&mut out, &before);
         assert_eq!(world(&mut Reader(&out)), Some(before));
+    }
+
+    #[test]
+    fn a_world_image_of_version_31_gets_a_west_wind_and_no_rain_shadow() {
+        let mut out = Vec::new();
+        put_bytes(&mut out, b"Old");
+        put_f64(&mut out, 1234.5);
+        put_bytes(&mut out, Units::Imperial.id().as_bytes());
+        out.extend_from_slice(&7u32.to_le_bytes());
+        let old = world(&mut Reader(&out)).unwrap();
+        assert_eq!((old.seed, old.wind_deg, old.rain_shadow), (7, 270.0, 0.0));
     }
 
     #[test]
