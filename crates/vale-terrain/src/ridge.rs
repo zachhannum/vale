@@ -854,6 +854,41 @@ impl RidgePlan {
         sum
     }
 
+    /// The fracture zone along the trace of boundary `j`. `step` is the
+    /// offset of the crest at the boundary in kilometers, and `age` is the
+    /// age at the trace. The trough is deeper and wider at a larger offset,
+    /// and each transform fault has its own strength, so a few troughs are
+    /// deep and most are faint.
+    fn fracture(&self, j: i32, step: f64, transform: bool, age: f64) -> Fracture {
+        let seed = self.ridge.seed ^ SALT_FRACTURE;
+        let draw = |channel: u32| unit(hash(j as u32, channel, 0, seed));
+        let size = step / TROUGH_OFFSET_KM;
+        let strength = mix(STRENGTH[0], STRENGTH[1], draw(0));
+        let kind = if transform { 1.0 } else { OFFSET_TROUGH };
+        // The trace leaves the transform fault at this age.
+        let out = 0.5 * step / (self.ridge.spread * self.ridge.world_km);
+        let active = 1.0 + ACTIVE * (1.0 - smoothstep(out, out + ACTIVE_MYR, age));
+        let (patches, _) = noise1(age / PATCH_MYR, j as u32, 1, seed);
+        let patchy = PATCH * smoothstep(0.0, PATCH_OLD_MYR, age);
+        let keep = 1.0 - patchy * (1.0 - smoothstep(-0.5, 0.5, patches));
+        let filled = 1.0 - TROUGH_FILL * smoothstep(0.0, TROUGH_MYR, age);
+        let full = TROUGH_DEPTH * size.powf(TROUGH_POWER) * strength * kind * active;
+        let depth = full.min(TROUGH_MAX) * keep * filled;
+        let half = (TROUGH_KM * (size * strength * kind).powf(TROUGH_WIDENS))
+            .clamp(TROUGH_KM_RANGE[0], TROUGH_KM_RANGE[1]);
+        let ridge = if transform && draw(2) < TRANSVERSE_SHARE {
+            TRANSVERSE * depth
+        } else {
+            0.0
+        };
+        Fracture {
+            depth,
+            half,
+            ridge,
+            side: if draw(3) < 0.5 { -1.0 } else { 1.0 },
+        }
+    }
+
     /// The level of a texel on the ridge. `start` is its level from before
     /// the stroke, and `noise` is the noise at its place.
     pub(crate) fn level(&self, start: u16, at: RidgePoint, noise: RidgeNoise) -> u16 {
@@ -1049,7 +1084,12 @@ impl RidgePlan {
             let ridge_top = smoothstep(AVR_END, 0.5, near) * smoothstep(-AVR_GAPS, AVR_GAPS, gaps);
             let axial_ridge = AVR_HEIGHT * ridge_top * bump(from_axis / AVR_KM);
             let floor = LUMP_HEIGHT * lumps * on_floor + axial_ridge;
-            let relief = stairs - down + floor * (1.0 - fade_out);
+            // Past the walls of the axial valley, the young crust is a broad
+            // band above the depth of its age.
+            let past_walls = smoothstep(floor_half, floor_half + wall, from_axis);
+            let band_km = BAND_KM.min(BAND_RADIUS * r * km);
+            let band = BAND * valley * past_walls * bump(from_axis / band_km);
+            let relief = stairs - down + band + floor * (1.0 - fade_out);
             let axis = f.level * low * taper;
             (
                 rise,
@@ -1065,6 +1105,7 @@ impl RidgePlan {
         let turn = self.turn(&sg, across / v);
         let i = ((u - turn.0) / sg.length).floor() as i32;
         let (mut rise, mut hills, mut deep, mut above) = (0.0, 0.0, 0.0, 0.0);
+        let mut ridges = 0.0;
         let mut lower: Option<(f64, f64)> = None;
         for j in i - 1 - extra..=i + 2 + extra {
             let trace = self.trace(&sg, j, across, turn);
@@ -1081,17 +1122,16 @@ impl RidgePlan {
                 }
             }
             lower = Some((trace.u, past));
-            // A trough along the trace, from the offset of the crest. It
-            // gets shallower with the age, and a transform fault has a deeper
-            // one.
+            // A fracture zone along the trace: a trough with steep walls,
+            // and at some, a transverse ridge on one side.
             let (before, after) = (self.shift(&sg, j - 1), self.shift(&sg, j));
             let step = (after - before).abs() * km;
             let transform = self.transform(&sg, j);
-            let kind = if transform { 1.0 } else { OFFSET_TROUGH };
-            let trough = kind * (TROUGH_DEPTH * step).min(TROUGH_MAX);
-            let width = sg.blend + TROUGH_KM / km;
-            let filled = 1.0 - TROUGH_FILL * smoothstep(0.0, TROUGH_MYR, trace.age);
-            deep += trough * filled * bump(off / width);
+            let fz = self.fracture(j, step, transform, trace.age);
+            let width = 0.5 * sg.blend + fz.half / km;
+            deep += fz.depth * (1.0 - smoothstep(TROUGH_FLOOR, 1.0, (off / width).abs()));
+            let ridge_at = off - fz.side * TRANSVERSE_AT * width;
+            ridges += fz.ridge * bump(ridge_at / (TRANSVERSE_WIDTH * width));
             // A deep at each end of the crest at a transform fault. It is
             // long along the transform fault, and its middle is inside it.
             if transform {
@@ -1107,6 +1147,7 @@ impl RidgePlan {
         }
         let axis = f.level * low * taper;
         let deep = deep * axis * fade;
+        let hills = hills + ridges * axis * fade;
         // The highest blocks bend down below the Crest setting. The rift
         // mountains can go above it by `ABOVE_CREST` of the depth of the
         // axial valley, and the axial high goes above it.
@@ -1133,6 +1174,19 @@ struct Faulting {
     half_texel: f64,
     /// The 16-bit steps of one kilometer of throw.
     level: f64,
+}
+
+/// The fracture zone along the trace of a boundary.
+struct Fracture {
+    /// The depth of the trough, in kilometers.
+    depth: f64,
+    /// Half of the width of the trough past half of the blend, in
+    /// kilometers.
+    half: f64,
+    /// The height of the transverse ridge, in kilometers.
+    ridge: f64,
+    /// The side of the transverse ridge along the line: -1 or 1.
+    side: f64,
 }
 
 /// The crest segments of a stroke.
@@ -1194,6 +1248,7 @@ const SALT_MIGRATE: u32 = 0x3d4f_a1c7;
 const SALT_MAGMA: u32 = 0x9b05_688c;
 const SALT_WALL: u32 = 0x4c95_e1a3;
 const SALT_LUMP: u32 = 0x2d8e_7f19;
+const SALT_FRACTURE: u32 = 0x5f3a_c2e1;
 
 /// The largest move of a boundary, as a part of the mean length of a crest
 /// segment.
@@ -1265,7 +1320,7 @@ const KEEP_SOFT: f64 = 0.1;
 /// 2008).
 const MAGMA_MYR: f64 = 2.0;
 const MAGMA_BAND: f64 = 0.26;
-const THROW_SPACING: f64 = 1.0;
+const THROW_SPACING: f64 = 0.65;
 
 /// The change of the depth with the magma, from the least to the most, in
 /// kilometers of throw. The bands of the magma show mostly in the spacing
@@ -1292,20 +1347,53 @@ const SEGMENT_CHANGE: f64 = 0.35;
 const HOOK_PART: f64 = 0.15;
 const HOOK_ROWS: f64 = 1.0;
 
-/// The depth of the trough along a transform fault for each kilometer of
-/// offset, and its largest depth, in kilometers. A trough along an offset
-/// with no transform fault is `OFFSET_TROUGH` times as deep.
-const TROUGH_DEPTH: f64 = 0.012;
-const TROUGH_MAX: f64 = 1.2;
-const OFFSET_TROUGH: f64 = 0.6;
+/// The depth of the trough of a fracture zone, in kilometers, is
+/// `TROUGH_DEPTH` times the offset in `TROUGH_OFFSET_KM` to the power
+/// `TROUGH_POWER`, times a strength of the transform fault from
+/// `STRENGTH[0]` to `STRENGTH[1]`. It is no deeper than `TROUGH_MAX`. A
+/// trough along an offset with no transform fault is `OFFSET_TROUGH` times
+/// as deep.
+const TROUGH_DEPTH: f64 = 1.3;
+const TROUGH_OFFSET_KM: f64 = 100.0;
+const TROUGH_POWER: f64 = 1.3;
+const STRENGTH: [f64; 2] = [0.5, 1.6];
+const TROUGH_MAX: f64 = 1.5;
+const OFFSET_TROUGH: f64 = 0.8;
 
-/// Half of the width of a trough past the blend, in kilometers.
-const TROUGH_KM: f64 = 6.0;
+/// Half of the width of a trough past half of the blend, in kilometers, is
+/// `TROUGH_KM` times the offset in `TROUGH_OFFSET_KM` times the strength,
+/// to the power `TROUGH_WIDENS`, from `TROUGH_KM_RANGE[0]` to
+/// `TROUGH_KM_RANGE[1]`. The floor of a trough is `TROUGH_FLOOR` of its
+/// width.
+const TROUGH_KM: f64 = 10.0;
+const TROUGH_WIDENS: f64 = 0.8;
+const TROUGH_KM_RANGE: [f64; 2] = [2.0, 20.0];
+const TROUGH_FLOOR: f64 = 0.3;
+
+/// Along the transform fault, and for `ACTIVE_MYR` past it, the trough is
+/// up to `ACTIVE` deeper.
+const ACTIVE: f64 = 0.4;
+const ACTIVE_MYR: f64 = 3.0;
+
+/// With the age, the trough breaks into patches `PATCH_MYR` long. Over
+/// `PATCH_OLD_MYR`, the patches grow to `PATCH` of the depth.
+const PATCH_MYR: f64 = 4.0;
+const PATCH_OLD_MYR: f64 = 10.0;
+const PATCH: f64 = 0.5;
 
 /// The part of the depth of a trough that sediment fills, over this number
 /// of millions of years.
 const TROUGH_FILL: f64 = 0.4;
 const TROUGH_MYR: f64 = 20.0;
+
+/// `TRANSVERSE_SHARE` of the transform faults have a transverse ridge on
+/// one side of the trough, `TRANSVERSE` times as high as the trough is deep.
+/// Its middle is `TRANSVERSE_AT` widths of the trough from the trace, and
+/// its half width is `TRANSVERSE_WIDTH` widths of the trough.
+const TRANSVERSE_SHARE: f64 = 0.5;
+const TRANSVERSE: f64 = 0.6;
+const TRANSVERSE_AT: f64 = 1.4;
+const TRANSVERSE_WIDTH: f64 = 0.9;
 
 /// The depth of a deep at an end of a crest at a transform fault for each
 /// kilometer of offset, and its largest depth, in kilometers. Past the
@@ -1357,10 +1445,18 @@ const VALLEY_ALONG: f64 = 0.15;
 /// as a mean. Each fault lifts its footwall, and the footwall tilts back
 /// and gets lower over `MOUNT_KM` kilometers away from the axis: the rift
 /// mountains.
-const DOWN: f64 = 1.2;
+const DOWN: f64 = 0.85;
 const DOWN_KM: f64 = 35.0;
+
+/// Past the walls of the axial valley, the young crust is a band that is
+/// `BAND` times the depth of the axial valley high, and `BAND_KM` kilometers
+/// wide on each side of the axis, or `BAND_RADIUS` of the brush radius if
+/// that is less.
+const BAND: f64 = 0.25;
+const BAND_KM: f64 = 120.0;
+const BAND_RADIUS: f64 = 0.25;
 const WALL_FAULTS: i32 = 4;
-const STAIR: f64 = 0.9;
+const STAIR: f64 = 0.65;
 const MOUNT_KM: f64 = 24.0;
 
 /// A wall fault is up to `WALL_JITTER` of the space between two wall
@@ -1403,7 +1499,7 @@ const LUMP_SIZE: f64 = 0.4;
 /// `AVR_END` of the segment at each end. Its gaps come from a noise along
 /// the line with cells of `AVR_PIECE_KM` kilometers, and `AVR_GAPS` sets
 /// how much of the noise is a gap.
-const AVR_HEIGHT: f64 = 0.15;
+const AVR_HEIGHT: f64 = 0.25;
 const AVR_KM: f64 = 2.0;
 const AVR_END: f64 = 0.12;
 const AVR_PIECE_KM: f64 = 18.0;
@@ -1537,7 +1633,7 @@ const BLOCK_MEAN: f64 = 1.08;
 
 /// The highest block, in mean heights of the blocks. Ground this close
 /// below the Crest setting gets lower blocks.
-const HILL_TOP: f64 = 4.0;
+const HILL_TOP: f64 = 3.6;
 
 /// The throw of a fault grows over this number of fault spacings from the
 /// axis.
@@ -2313,6 +2409,53 @@ mod tests {
             }
         }
         assert!(count > 5, "{count}");
+    }
+
+    #[test]
+    fn a_larger_offset_leaves_a_deeper_wider_fracture_zone() {
+        let plan = shape(spec(), FINE);
+        // Past the transform fault and before the patches, so the depth
+        // depends only on the offset and the strength.
+        let mut depths = Vec::new();
+        for j in 0..60 {
+            let small = plan.fracture(j, 20.0, true, 0.0);
+            let large = plan.fracture(j, 100.0, true, 0.0);
+            assert!(large.depth > 4.0 * small.depth, "{j}");
+            assert!(large.half > 2.0 * small.half, "{j}");
+            assert!(large.depth <= TROUGH_MAX);
+            // An offset with no transform fault leaves a fainter trough.
+            assert!(plan.fracture(j, 20.0, false, 0.0).depth < small.depth);
+            depths.push(plan.fracture(j, 60.0, true, 0.0).depth);
+        }
+        // Each transform fault has its own strength, so some troughs are
+        // deep and others are faint.
+        let most = depths.iter().copied().fold(0.0, f64::max);
+        let least = depths.iter().copied().fold(f64::MAX, f64::min);
+        assert!(most > 2.0 * least, "{most} {least}");
+        // Some of the transform faults have a transverse ridge.
+        let ridges = (0..60)
+            .filter(|j| plan.fracture(*j, 100.0, true, 0.0).ridge > 0.0)
+            .count();
+        assert!(ridges > 10 && ridges < 50, "{ridges}");
+    }
+
+    #[test]
+    fn a_fracture_zone_is_deeper_near_the_transform_fault_and_patchy_when_old() {
+        let plan = shape(spec(), FINE);
+        let v = plan.ridge.spread * plan.ridge.world_km;
+        // The trace leaves a transform fault of 100 km after this age.
+        let out = 50.0 / v;
+        let mut changes = 0;
+        for j in 0..20 {
+            let at = |age: f64| plan.fracture(j, 100.0, true, age).depth;
+            assert!(at(0.5 * out) > at(out + ACTIVE_MYR), "{j}");
+            // Along an old fracture zone, the depth goes up and down.
+            let old: Vec<f64> = (0..40).map(|i| at(30.0 + f64::from(i))).collect();
+            let most = old.iter().copied().fold(0.0, f64::max);
+            let least = old.iter().copied().fold(f64::MAX, f64::min);
+            changes += usize::from(most > 1.5 * least);
+        }
+        assert!(changes > 10, "{changes}");
     }
 
     #[test]
