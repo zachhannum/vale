@@ -4,11 +4,15 @@ use std::collections::{HashMap, HashSet};
 
 use kurbo::Rect;
 use vale_labeler::{
-    Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, Obstacle, ObstacleKind,
-    Options, Placement, PointPlacement, TextStyle, place_labels,
+    Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, LineSide, Obstacle,
+    ObstacleKind, Options, Placement, PointPlacement, PointPosition, TextStyle, place_labels,
 };
 use vale_render::{Color, GlyphRun, Item};
 use vale_store::GeometryKind;
+use vale_style::expr::{Expr, Filter};
+use vale_style::{
+    LabelClass as StyleClass, LabelPlacement as StylePlacement, LabelPosition, TextCase,
+};
 
 use crate::pipeline::{LabelSummary, PageLayer, PlacedSymbol, Quality, UnplacedInfo};
 
@@ -22,11 +26,12 @@ const SCATTER_COST: f64 = 0.5;
 
 /// Places labels for the visible layers.
 ///
-/// `layers` runs from the bottom of the drawing to the top. A layer nearer the top gets a higher
-/// class priority. Labels do not overlap `obstacles` or a point symbol. A label over a scatter
-/// symbol has a cost.
+/// `layers` runs from the bottom of the drawing to the top. `classes` holds the label classes of
+/// each layer of `layers`. Each class whose filter matches a feature gives the feature a label.
+/// Labels do not overlap `obstacles` or a point symbol. A label over a scatter symbol has a cost.
 pub fn place(
     layers: &[PageLayer<'_>],
+    classes: &[Vec<StyleClass>],
     page: Rect,
     fonts: &mut Fonts,
     quality: Quality,
@@ -34,91 +39,102 @@ pub fn place(
     symbols: &[PlacedSymbol],
 ) -> (Vec<Item>, LabelSummary) {
     let mut labeled = HashSet::new();
-    let mut classes: Vec<LabelClass> = Vec::new();
+    let mut label_classes: Vec<LabelClass> = Vec::new();
     let mut class_colors: Vec<Color> = Vec::new();
+    // The color and the width of the halo of each class, if it has one.
+    let mut class_halos: Vec<Option<(Color, f64)>> = Vec::new();
     let mut features: Vec<Feature> = Vec::new();
     let mut layer_names: Vec<&str> = Vec::new();
     let mut next_id: u64 = 0;
 
-    for (position, pl) in layers.iter().enumerate() {
-        let style = &pl.entry.style;
-        let label = &style.label;
-        let Some(field) = label.field.as_deref().filter(|_| label.enabled) else {
-            continue;
-        };
+    for (pl, layer_classes) in layers.iter().zip(classes) {
         let is_line = match pl.kind {
             GeometryKind::Point => false,
             GeometryKind::Line => true,
             GeometryKind::Polygon => continue,
         };
-        let class = classes.len();
-        classes.push(LabelClass {
-            name: pl.layer.name.clone(),
-            style: TextStyle {
-                italic: label.italic,
-                letter_spacing: if is_line { 0.5 } else { 0.0 },
-                ..TextStyle::new(crate::fonts::family(label, fonts), label.size)
-            },
-            priority: position as i32,
-            margin: 1.0,
-            placement: if is_line {
-                Placement::Line(LinePlacement {
-                    repeat_distance: Some(600.0),
-                    offset: 4.0,
-                    ..Default::default()
-                })
-            } else {
-                Placement::Point(PointPlacement::default())
-            },
-        });
-        class_colors.push(label.color);
+        for c in layer_classes {
+            let Ok(text_expr) = Expr::parse(&c.text) else {
+                continue;
+            };
+            let filter = Filter::new(&c.filter);
+            let class = label_classes.len();
+            label_classes.push(LabelClass {
+                name: c.name.clone(),
+                style: TextStyle {
+                    weight: c.weight,
+                    italic: c.italic,
+                    letter_spacing: c.letter_spacing * c.size,
+                    caps: match c.case {
+                        TextCase::SmallCaps => Caps::Small,
+                        TextCase::AllSmallCaps => Caps::AllSmall,
+                        _ => Caps::Normal,
+                    },
+                    ..TextStyle::new(crate::fonts::family(c.font.as_deref(), fonts), c.size)
+                },
+                priority: c.priority,
+                margin: c.buffer,
+                placement: placement(c, pl.kind),
+                duplicate_distance: c.remove_duplicates.then_some(c.duplicate_distance),
+            });
+            class_colors.push(fade(c.color, c.opacity));
+            class_halos.push(
+                c.halo
+                    .then(|| (fade(c.halo_color, c.opacity), c.halo_width)),
+            );
 
-        for f in &pl.features {
-            let Some(feature) = pl.layer.features.get(f.index) else {
-                continue;
-            };
-            let Some(text) = feature.attributes.get(field).and_then(|v| v.label()) else {
-                continue;
-            };
-            let priority = label
-                .priority_field
-                .as_ref()
-                .and_then(|p| feature.attributes.get(p))
-                .and_then(|v| v.as_f64())
-                .filter(|v| v.is_finite())
-                .unwrap_or(0.0);
-            let extent = pl.extent(f.index);
-            let stroke_width = extent.stroke_width;
-            let symbol_radius = if extent.marker_radius > 0.0 {
-                extent.marker_radius + stroke_width
-            } else {
-                0.0
-            };
-            labeled.insert((pl.layer.id, f.index));
-            let mut push = |geometry: Geometry| {
-                features.push(Feature {
-                    id: next_id,
-                    class,
-                    text: text.clone(),
-                    priority,
-                    geometry,
-                });
-                layer_names.push(&pl.layer.name);
-                next_id += 1;
-            };
-            if is_line {
-                for line in f.lines.iter().filter(|l| l.len() >= 2) {
-                    push(Geometry::Line {
-                        path: line.clone(),
-                        stroke_width,
-                    });
+            for f in &pl.features {
+                let Some(feature) = pl.layer.features.get(f.index) else {
+                    continue;
+                };
+                let ctx = pl.context(f.index);
+                if !filter.matches(&ctx) {
+                    continue;
                 }
-            } else {
-                for p in f.points.iter().filter(|p| page.contains(**p)) {
-                    push(Geometry::Point {
-                        position: *p,
-                        symbol_radius,
+                let Some(text) = text_expr.eval(&ctx).label() else {
+                    continue;
+                };
+                let text = c.case.apply(&text);
+                let priority = c
+                    .priority_field
+                    .as_ref()
+                    .and_then(|p| feature.attributes.get(p))
+                    .and_then(|v| v.as_f64())
+                    .filter(|v| v.is_finite())
+                    .unwrap_or(0.0);
+                let extent = pl.extent(f.index);
+                let stroke_width = extent.stroke_width;
+                let symbol_radius = if extent.marker_radius > 0.0 {
+                    extent.marker_radius + stroke_width
+                } else {
+                    0.0
+                };
+                labeled.insert((pl.layer.id, f.index));
+                let mut push = |geometry: Geometry| {
+                    features.push(Feature {
+                        id: next_id,
+                        class,
+                        text: text.clone(),
+                        priority,
+                        geometry,
                     });
+                    layer_names.push(&pl.layer.name);
+                    next_id += 1;
+                };
+                if is_line {
+                    for line in f.lines.iter().filter(|l| l.len() >= 2) {
+                        push(Geometry::Line {
+                            path: line.clone(),
+                            stroke_width,
+                        });
+                    }
+                } else {
+                    for p in f.points.iter().filter(|p| page.contains(**p)) {
+                        push(Geometry::Point {
+                            position: *p,
+                            symbol_radius,
+                        });
+                    }
                 }
             }
         }
@@ -129,8 +145,8 @@ pub fn place(
         let mut order: Vec<usize> = (0..features.len()).collect();
         order.sort_by(|&a, &b| {
             let (fa, fb) = (&features[a], &features[b]);
-            let ka = (classes[fa.class].priority, fa.priority);
-            let kb = (classes[fb.class].priority, fb.priority);
+            let ka = (label_classes[fa.class].priority, fa.priority);
+            let kb = (label_classes[fb.class].priority, fb.priority);
             kb.0.cmp(&ka.0).then(kb.1.total_cmp(&ka.1)).then(a.cmp(&b))
         });
         let mut keep = vec![false; features.len()];
@@ -150,25 +166,26 @@ pub fn place(
 
     let input = LabelInput {
         bounds: page,
-        classes,
+        classes: label_classes,
         features,
         obstacles: symbol_obstacles(obstacles, symbols, &labeled, page),
         options: Options {
             seed: 24301,
             improve: quality == Quality::Final,
-            duplicate_distance: Some(300.0),
         },
     };
     let labeling = place_labels(fonts, &input);
 
     let mut items = Vec::new();
     for label in &labeling.placed {
-        items.push(Item::Stroke {
-            path: label.outlines(),
-            color: Color::rgba(255, 255, 255, 217),
-            width: 2.2,
-            round: true,
-        });
+        if let Some((color, width)) = class_halos[label.class] {
+            items.push(Item::Stroke {
+                path: label.outlines(),
+                color,
+                width,
+                round: true,
+            });
+        }
     }
     for label in &labeling.placed {
         let color = class_colors[label.class];
@@ -196,6 +213,59 @@ pub fn place(
             .collect(),
     };
     (items, summary)
+}
+
+/// `color` with its alpha times `opacity`.
+fn fade(color: Color, opacity: f64) -> Color {
+    let a = (f64::from(color.a) * opacity.clamp(0.0, 1.0)).round() as u8;
+    Color { a, ..color }
+}
+
+/// The labeler placement of a class. A placement that does not fit `kind`
+/// gives the default placement of `kind`. A point class tries the positions
+/// that are on, in their rank.
+fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
+    let p = if c.placement.fits(kind) {
+        c.placement
+    } else {
+        StylePlacement::default_for(kind).unwrap_or(StylePlacement::Around)
+    };
+    let line = |sides| {
+        Placement::Line(LinePlacement {
+            sides,
+            repeat_distance: c.repeat.then_some(c.repeat_distance),
+            offset: c.offset,
+            max_glyph_turn: c.curve_limit,
+            smoothing: c.smoothing,
+        })
+    };
+    match p {
+        StylePlacement::Around => Placement::Point(PointPlacement {
+            positions: (c.positions.iter())
+                .filter(|r| r.on)
+                .map(|r| point_position(r.position))
+                .collect(),
+            offset: c.offset,
+        }),
+        StylePlacement::AboveOrBelow => line(LinePlacement::default().sides),
+        StylePlacement::LineAbove => line(vec![LineSide::Above]),
+        StylePlacement::LineBelow => line(vec![LineSide::Below]),
+        StylePlacement::OnLine => line(vec![LineSide::Centered]),
+    }
+}
+
+/// The labeler position of a position of a class.
+pub fn point_position(p: LabelPosition) -> PointPosition {
+    match p {
+        LabelPosition::TopRight => PointPosition::TopRight,
+        LabelPosition::Right => PointPosition::Right,
+        LabelPosition::BottomRight => PointPosition::BottomRight,
+        LabelPosition::Top => PointPosition::Top,
+        LabelPosition::Bottom => PointPosition::Bottom,
+        LabelPosition::TopLeft => PointPosition::TopLeft,
+        LabelPosition::Left => PointPosition::Left,
+        LabelPosition::BottomLeft => PointPosition::BottomLeft,
+    }
 }
 
 /// The obstacles: each rectangle of `hard`, each point symbol, and the

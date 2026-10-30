@@ -4,9 +4,8 @@
 use std::sync::{Mutex, OnceLock};
 
 use vale_labeler::Fonts;
-use vale_style::LabelStyle;
 
-/// The font of a label style that names no font or a missing font.
+/// The font of a label that names no font or a missing font.
 pub const DEFAULT_FAMILY: &str = "Noto Sans";
 
 const BUNDLED: [&[u8]; 2] = [
@@ -41,17 +40,17 @@ fn register(mut fonts: Fonts) -> anyhow::Result<Fonts> {
     Ok(fonts)
 }
 
-/// The family that labels of `label` use in `fonts`.
-pub fn family<'a>(label: &'a LabelStyle, fonts: &mut Fonts) -> &'a str {
-    match label.font.as_deref() {
+/// The family that labels with `font` use in `fonts`.
+pub fn family<'a>(font: Option<&'a str>, fonts: &mut Fonts) -> &'a str {
+    match font {
         Some(font) if fonts.has_family(font) => font,
         _ => DEFAULT_FAMILY,
     }
 }
 
-/// The warning for a label style whose font is not in `families`.
-pub fn missing(label: &LabelStyle, families: &[String]) -> Option<String> {
-    let font = label.font.as_deref()?;
+/// The warning for a font that is not in `families`.
+pub fn missing(font: Option<&str>, families: &[String]) -> Option<String> {
+    let font = font?;
     if families.iter().any(|f| f == font) {
         return None;
     }
@@ -60,7 +59,7 @@ pub fn missing(label: &LabelStyle, families: &[String]) -> Option<String> {
     ))
 }
 
-/// Sets the font of `label` to `family`. The default family is no font.
-pub fn set_font(label: &mut LabelStyle, family: &str) {
-    label.font = (family != DEFAULT_FAMILY).then(|| family.to_string());
+/// Sets `font` to `family`. The default family is no font.
+pub fn set_font(font: &mut Option<String>, family: &str) {
+    *font = (family != DEFAULT_FAMILY).then(|| family.to_string());
 }

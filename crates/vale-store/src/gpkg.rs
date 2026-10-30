@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 29;
+pub const FORMAT_VERSION: u32 = 30;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -68,6 +68,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v27,
     v28,
     v29,
+    v30,
 ];
 
 /// `GPKG` in ASCII.
@@ -1080,6 +1081,26 @@ fn v29(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// The label classes of the maps. An older file has no label classes. A file
+/// with an older version number can already have the table.
+fn v30(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_map_label (
+           map_id INTEGER NOT NULL REFERENCES vale_map(id),
+           layer_id INTEGER NOT NULL,
+           classes TEXT NOT NULL,
+           PRIMARY KEY (map_id, layer_id));
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_map_label', 'vale', 'vale_map_label');
+         INSERT INTO gpkg_extensions
+           SELECT c.table_name, NULL, 'vale_project', 'Records of the Vale app', 'read-write'
+           FROM gpkg_contents c
+           WHERE c.table_name = 'vale_map_label'
+             AND NOT EXISTS (SELECT 1 FROM gpkg_extensions e
+               WHERE e.table_name = c.table_name AND e.extension_name = 'vale_project');",
+    )
+}
+
 /// The atlas. An older file gets one map with an Equal Earth projection and
 /// one page in the units of the world. A file with an older version number
 /// can already have the tables.
@@ -1555,13 +1576,15 @@ fn write_base(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
 }
 
 /// Writes the maps, the pages, and the frames. A map does not keep the
-/// hidden ID or the overrides of a layer that the project does not have.
+/// hidden ID, the overrides, or the label classes of a layer that the
+/// project does not have.
 fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     let atlas = &project.atlas;
     tx.execute_batch(
         "DELETE FROM vale_frame;
          DELETE FROM vale_map_hidden;
          DELETE FROM vale_map_style;
+         DELETE FROM vale_map_label;
          DELETE FROM vale_page;
          DELETE FROM vale_map;
          DELETE FROM vale_projection;",
@@ -1579,6 +1602,8 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
         tx.prepare("INSERT INTO vale_map_hidden (map_id, layer_id) VALUES (?1, ?2)")?;
     let mut style =
         tx.prepare("INSERT INTO vale_map_style (map_id, layer_id, overrides) VALUES (?1, ?2, ?3)")?;
+    let mut label =
+        tx.prepare("INSERT INTO vale_map_label (map_id, layer_id, classes) VALUES (?1, ?2, ?3)")?;
     for (position, m) in atlas.maps.iter().enumerate() {
         map.execute(params![m.id.0, position, m.name, m.projection])?;
         for layer in m.hidden.iter().filter(|id| project.layer(**id).is_some()) {
@@ -1587,6 +1612,10 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
         let overrides = m.overrides.iter();
         for (layer, text) in overrides.filter(|(id, _)| project.layer(**id).is_some()) {
             style.execute(params![m.id.0, layer.0, text])?;
+        }
+        let labels = m.labels.iter();
+        for (layer, text) in labels.filter(|(id, _)| project.layer(**id).is_some()) {
+            label.execute(params![m.id.0, layer.0, text])?;
         }
     }
     let mut page = tx.prepare(
@@ -2465,6 +2494,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             projection: r.get(2)?,
             hidden: BTreeSet::new(),
             overrides: BTreeMap::new(),
+            labels: BTreeMap::new(),
         });
     }
     let mut rows =
@@ -2491,6 +2521,14 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         let map = atlas.map_mut(id);
         let map = map.ok_or_else(|| corrupt(format!("style overrides of map {}", id.0)))?;
         map.overrides.insert(LayerId(r.get(1)?), r.get(2)?);
+    }
+    let mut rows = conn.prepare("SELECT map_id, layer_id, classes FROM vale_map_label")?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id = MapId(r.get(0)?);
+        let map = atlas.map_mut(id);
+        let map = map.ok_or_else(|| corrupt(format!("label classes of map {}", id.0)))?;
+        map.labels.insert(LayerId(r.get(1)?), r.get(2)?);
     }
     let mut rows = conn
         .prepare("SELECT id, name, width_mm, height_mm, units FROM vale_page ORDER BY position")?;
@@ -2983,6 +3021,7 @@ mod tests {
                 "vale_layer",
                 "vale_map",
                 "vale_map_hidden",
+                "vale_map_label",
                 "vale_map_style",
                 "vale_meta",
                 "vale_page",
@@ -3424,6 +3463,69 @@ mod tests {
 
         project.remove_layer(towns);
         assert!(!project.atlas.maps[0].overrides.contains_key(&towns));
+    }
+
+    #[test]
+    fn the_file_keeps_the_label_classes_of_each_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let before = project.clone();
+        let copy = project.atlas.add_map();
+        let classes = r#"[{"name":"Capitals"},{"name":"Towns"}]"#.to_string();
+        project.atlas.maps[0].labels.insert(towns, classes);
+        let labels = &mut project.atlas.map_mut(copy).unwrap().labels;
+        labels.insert(towns, "[]".into());
+        labels.insert(roads, r#"[{"name":"Roads"}]"#.into());
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas.maps, project.atlas.maps);
+        assert!(file.undo().unwrap().is_some());
+        assert_eq!(file.project().atlas.maps, before.atlas.maps);
+        assert!(file.redo().unwrap().is_some());
+        assert_eq!(file.project().atlas.maps, project.atlas.maps);
+    }
+
+    #[test]
+    fn the_file_does_not_keep_the_label_classes_of_a_missing_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let labels = &mut project.atlas.maps[0].labels;
+        labels.insert(towns, "[]".into());
+        labels.insert(LayerId(99), "[]".into());
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let keys: Vec<_> = loaded.atlas.maps[0].labels.keys().copied().collect();
+        assert_eq!(keys, [towns]);
+
+        project.remove_layer(towns);
+        assert!(!project.atlas.maps[0].labels.contains_key(&towns));
+    }
+
+    #[test]
+    fn a_file_of_version_29_has_no_label_classes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "DROP TABLE vale_map_label;
+             DELETE FROM gpkg_extensions WHERE table_name = 'vale_map_label';
+             DELETE FROM gpkg_contents WHERE table_name = 'vale_map_label';",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 29);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert!(loaded.atlas.maps.iter().all(|m| m.labels.is_empty()));
     }
 
     #[test]
@@ -3939,7 +4041,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 196 * 1024, "{bytes} bytes");
+        assert!(bytes < 200 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();

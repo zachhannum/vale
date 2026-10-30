@@ -12,6 +12,7 @@ use vale_store::{
     BlendMode, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, Project, Raster,
     RasterDisplay, RasterId, Rgb, StoreError, World,
 };
+use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
 
 use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
@@ -84,11 +85,11 @@ pub enum Action {
     /// Adds this SVG file to the symbols of the project, and saves.
     /// `symbol_note` shows the result.
     AddSymbol(PathBuf),
-    /// Asks for the font of the labels of this layer: the font picker of the
-    /// system on iOS, and the font dialog on other systems.
-    PickFont(LayerId),
-    /// Sets the font family of the labels of this layer.
-    SetFont(LayerId, String),
+    /// Asks for the font of these labels: the font picker of the system on
+    /// iOS, and the font dialog on other systems.
+    PickFont(FontTarget),
+    /// Sets the font family of these labels.
+    SetFont(FontTarget, String),
     /// Asks for the file of an export of the selected raster layer.
     ExportHeightmapDialog,
     /// Asks for a PNG file, and exports the selected raster layer to it.
@@ -121,6 +122,16 @@ pub enum Action {
     /// number is an index into the other versions. `None` keeps the version
     /// of this device.
     KeepVersion(PathBuf, Option<usize>),
+}
+
+/// The labels that a font is for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FontTarget {
+    /// The label style of a layer.
+    Layer(LayerId),
+    /// A label class of a layer in a map, by its place in the classes of the
+    /// layer.
+    Class(MapId, LayerId, usize),
 }
 
 /// The time between two reads of the projects folders while a download runs.
@@ -1384,6 +1395,202 @@ impl AppState {
         }
         if self.doc.set_map_style(map, layer, &style) {
             self.touch();
+        }
+    }
+
+    /// The font family of the labels of `target`. `None` inside is the
+    /// default font, and `None` outside is a target that is gone.
+    pub fn font_of(&self, target: FontTarget) -> Option<Option<String>> {
+        match target {
+            FontTarget::Layer(id) => Some(self.doc.entry(id)?.style.label.font.clone()),
+            FontTarget::Class(map, layer, i) => {
+                let classes = self.doc.label_classes(Some(map), layer);
+                Some(classes.get(i)?.font.clone())
+            }
+        }
+    }
+
+    /// Runs `edit` on class `i` of `layer` in `map`. The map stores the
+    /// classes of the layer from then on, with the default class if it had
+    /// no classes of its own. Returns true if the class changed.
+    pub fn edit_label_class(
+        &mut self,
+        map: MapId,
+        layer: LayerId,
+        i: usize,
+        edit: impl FnOnce(&mut LabelClass),
+    ) -> bool {
+        let mut classes = self.doc.label_classes(Some(map), layer);
+        let Some(class) = classes.get_mut(i) else {
+            return false;
+        };
+        let before = class.clone();
+        edit(class);
+        if *class == before || !self.doc.set_label_classes(map, layer, &classes) {
+            return false;
+        }
+        self.touch();
+        true
+    }
+
+    /// `edit_label_class` as one undo step.
+    pub fn label_class_step(
+        &mut self,
+        map: MapId,
+        layer: LayerId,
+        i: usize,
+        edit: impl FnOnce(&mut LabelClass),
+    ) {
+        self.save_edit();
+        if self.edit_label_class(map, layer, i, edit) {
+            self.save_edit();
+        }
+    }
+
+    /// Adds a label class to `map` for its first point layer, or else for
+    /// its first line layer, as one undo step. Returns its layer and its
+    /// place in the classes of the layer.
+    pub fn add_label_class(&mut self, map: MapId) -> Option<(LayerId, usize)> {
+        let layers = self.label_layers();
+        let (layer, kind) = (layers.iter().find(|(_, k)| *k == GeometryKind::Point))
+            .or_else(|| layers.first())
+            .copied()?;
+        let taken: Vec<String> = (layers.iter())
+            .flat_map(|(l, _)| self.doc.label_classes(Some(map), *l))
+            .map(|c| c.name)
+            .collect();
+        let name = (1..)
+            .map(|n| format!("Class {n}"))
+            .find(|n| !taken.contains(n))
+            .expect("a free number");
+        let priority = (self.doc.frame.entries.iter())
+            .position(|e| e.layer == layer)
+            .unwrap_or(0) as i32;
+        let mut classes = self.doc.label_classes(Some(map), layer);
+        classes.push(LabelClass::new(&name, kind, priority)?);
+        self.save_edit();
+        self.doc.set_label_classes(map, layer, &classes);
+        self.touch();
+        self.save_edit();
+        Some((layer, classes.len() - 1))
+    }
+
+    /// Deletes class `i` of `layer` in `map`, as one undo step. With no
+    /// class left, the layer has no labels in the map.
+    pub fn delete_label_class(&mut self, map: MapId, layer: LayerId, i: usize) {
+        let mut classes = self.doc.label_classes(Some(map), layer);
+        if i >= classes.len() {
+            return;
+        }
+        classes.remove(i);
+        self.save_edit();
+        if self.doc.set_label_classes(map, layer, &classes) {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
+    /// Moves class `i` of `layer` in `map` to the end of the classes of
+    /// layer `to`, as one undo step. A placement that the feature type of
+    /// `to` does not have becomes its default placement. Returns the new
+    /// place of the class.
+    pub fn move_label_class(
+        &mut self,
+        map: MapId,
+        layer: LayerId,
+        i: usize,
+        to: LayerId,
+    ) -> Option<usize> {
+        if to == layer {
+            return Some(i);
+        }
+        let kind = self.doc.layer(to)?.geometry()?;
+        let placement = vale_style::LabelPlacement::default_for(kind)?;
+        let mut from = self.doc.label_classes(Some(map), layer);
+        if i >= from.len() {
+            return None;
+        }
+        let mut class = from.remove(i);
+        if !class.placement.fits(kind) {
+            class.placement = placement;
+        }
+        let mut classes = self.doc.label_classes(Some(map), to);
+        classes.push(class);
+        self.save_edit();
+        self.doc.set_label_classes(map, layer, &from);
+        self.doc.set_label_classes(map, to, &classes);
+        self.touch();
+        self.save_edit();
+        Some(classes.len() - 1)
+    }
+
+    /// The point layers and the line layers, in the order of the Layers
+    /// panel, with their feature types.
+    pub fn label_layers(&self) -> Vec<(LayerId, GeometryKind)> {
+        (self.doc.project.layers().iter())
+            .filter_map(|l| Some((l.id, l.geometry()?)))
+            .filter(|(_, k)| matches!(k, GeometryKind::Point | GeometryKind::Line))
+            .collect()
+    }
+
+    /// The label classes of `map` in priority order, highest first, with
+    /// their layers and their places in the classes of their layers. Equal
+    /// priorities keep the order of `label_layers`, then the order of the
+    /// classes of the layer.
+    pub fn label_class_list(&self, map: MapId) -> Vec<(LayerId, usize, LabelClass)> {
+        let mut list: Vec<(LayerId, usize, LabelClass)> = (self.label_layers().into_iter())
+            .flat_map(|(layer, _)| {
+                let classes = self.doc.label_classes(Some(map), layer);
+                classes
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(i, c)| (layer, i, c))
+            })
+            .collect();
+        list.sort_by_key(|(_, _, c)| std::cmp::Reverse(c.priority));
+        list
+    }
+
+    /// Moves the class at place `from` of `label_class_list` to place `to`,
+    /// as one undo step. The priorities of the classes of the map follow the
+    /// new order. A layer whose priorities change stores its classes in the
+    /// map.
+    pub fn reorder_label_classes(&mut self, map: MapId, from: usize, to: usize) {
+        let mut list = self.label_class_list(map);
+        if from >= list.len() || to >= list.len() || from == to {
+            return;
+        }
+        let moved = list.remove(from);
+        list.insert(to, moved);
+        let count = list.len();
+        let mut layers: Vec<(LayerId, Vec<LabelClass>, bool)> = Vec::new();
+        for (k, (layer, i, class)) in list.into_iter().enumerate() {
+            let priority = (count - 1 - k) as i32;
+            let at = match layers.iter().position(|(l, _, _)| *l == layer) {
+                Some(at) => at,
+                None => {
+                    let classes = self.doc.label_classes(Some(map), layer);
+                    layers.push((layer, classes, false));
+                    layers.len() - 1
+                }
+            };
+            let (_, classes, changed) = &mut layers[at];
+            if let Some(c) = classes.get_mut(i)
+                && c.priority != priority
+            {
+                debug_assert_eq!(c.name, class.name);
+                c.priority = priority;
+                *changed = true;
+            }
+        }
+        self.save_edit();
+        let mut any = false;
+        for (layer, classes, changed) in layers {
+            any |= changed && self.doc.set_label_classes(map, layer, &classes);
+        }
+        if any {
+            self.touch();
+            self.save_edit();
         }
     }
 
@@ -2718,11 +2925,16 @@ impl AppState {
                 self.status = note.text.clone();
                 self.ramp_note = Some(note);
             }
-            Action::SetFont(id, family) => {
+            Action::SetFont(FontTarget::Layer(id), family) => {
                 if let Some(entry) = self.doc.entry_mut(id) {
-                    crate::fonts::set_font(&mut entry.style.label, &family);
+                    crate::fonts::set_font(&mut entry.style.label.font, &family);
                     self.touch();
                 }
+            }
+            Action::SetFont(FontTarget::Class(map, layer, i), family) => {
+                self.label_class_step(map, layer, i, |c| {
+                    crate::fonts::set_font(&mut c.font, &family);
+                });
             }
             Action::AddSymbol(path) => {
                 let note = match self.add_symbol(&path) {

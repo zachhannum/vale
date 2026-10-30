@@ -2,6 +2,7 @@ mod common;
 
 use clap::Parser;
 use kurbo::{Point, Rect, Shape};
+use vale_app::atlas::{FrameTarget, PT_PER_MM, new_frame};
 use vale_app::cli::{Args, apply_view};
 use vale_app::document::{Document, LayerEntry};
 use vale_app::furniture::{nice, scale_bar};
@@ -545,4 +546,195 @@ fn labels_avoid_point_symbols() {
 /// The count of the labels of the city. The labels come before the scale bar.
 fn oakton(c: &Composed) -> usize {
     texts(c).iter().filter(|t| *t == "Oakton").count()
+}
+
+/// The sample document with a frame of the first map. Only the places have
+/// labels in the map, with the class that `edit` changes. Each place has a
+/// castle symbol.
+fn places_frame(edit: impl FnOnce(&mut vale_style::LabelClass)) -> (Document, Composed) {
+    let mut doc = Document::sample();
+    let mut p = Pipeline::new();
+    let map = doc.first_map();
+    let places = layer_id(&doc, "Places");
+    common::add_symbols(&mut doc, &["castle"]);
+    doc.entry_mut(places).unwrap().style.style = Style {
+        rules: vec![Rule::new(
+            "Castle",
+            vec![Symbolizer::Symbol(PointSymbolizer::constant("castle", 6.0))],
+        )],
+    };
+    let ids: Vec<LayerId> = doc.frame.entries.iter().map(|e| e.layer).collect();
+    for id in ids.into_iter().filter(|id| *id != places) {
+        doc.set_label_classes(map, id, &[]);
+    }
+    let mut classes = doc.label_classes(Some(map), places);
+    assert_eq!(classes.len(), 1);
+    edit(&mut classes[0]);
+    assert!(doc.set_label_classes(map, places, &classes));
+    assert!(!doc.set_label_classes(map, places, &classes));
+
+    let page = doc.project.atlas.pages[0].id;
+    let atlas = &doc.project.atlas;
+    let projection = p.projection(&doc, map).unwrap();
+    let frame = new_frame(atlas.page(page).unwrap(), &atlas.maps[0], projection);
+    let id = doc.project.atlas.add_frame(page, frame).unwrap();
+    let atlas = &doc.project.atlas;
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut f = fonts().unwrap();
+    let c = p
+        .compose_frame(
+            &doc,
+            atlas.page(page).unwrap(),
+            atlas.frame(id).unwrap(),
+            target,
+            &mut f,
+            Quality::Final,
+            None,
+        )
+        .unwrap();
+    (doc, c)
+}
+
+#[test]
+fn the_right_position_alone_puts_point_labels_right_of_the_point() {
+    use vale_style::LabelPosition;
+    let (doc, c) = places_frame(|class| {
+        for rank in &mut class.positions {
+            rank.on = rank.position == LabelPosition::Right;
+        }
+        assert!(class.positions.iter().any(|r| r.on));
+    });
+    let places = layer_id(&doc, "Places");
+    let layer = doc.layer(places).unwrap();
+    let mut checked = 0;
+    for item in &c.list.items {
+        let Item::Glyphs(g) = item else {
+            continue;
+        };
+        let start = g.glyphs[0].1.translation().x;
+        let centers: Vec<f64> = (c.symbols.iter())
+            .filter(|s| s.layer == places)
+            .filter(|s| {
+                layer.features[s.feature].attributes.get("name")
+                    == Some(&Value::Text(g.text.clone()))
+            })
+            .map(|s| s.center.x)
+            .collect();
+        assert!(!centers.is_empty(), "{}", g.text);
+        assert!(centers.iter().any(|x| start > *x), "{}", g.text);
+        checked += 1;
+    }
+    assert!(checked >= 20, "{checked}");
+}
+
+#[test]
+fn a_class_filter_and_expression_choose_the_text() {
+    let (doc, c) = places_frame(|class| {
+        class.text = "upper(name)".into();
+        class.filter = "adm0name = 'Japan'".into();
+    });
+    let layer = doc.layer(layer_id(&doc, "Places")).unwrap();
+    let japan: Vec<String> = (layer.features.iter())
+        .filter(|f| f.attributes.get("adm0name") == Some(&Value::Text("Japan".into())))
+        .filter_map(|f| f.attributes.get("name")?.label())
+        .map(|n| n.to_uppercase())
+        .collect();
+    let texts = texts(&c);
+    assert!(texts.iter().any(|t| t == "TOKYO"), "{texts:?}");
+    for t in &texts {
+        assert!(japan.contains(t), "{t}");
+    }
+}
+
+#[test]
+fn a_class_without_halo_draws_no_halo() {
+    let (_, c) = places_frame(|_| {});
+    assert!(!halos(&c).is_empty());
+    let (_, c) = places_frame(|class| class.halo = false);
+    assert!(!texts(&c).is_empty());
+    assert!(halos(&c).is_empty());
+}
+
+/// The glyph runs of each label text.
+fn runs(c: &Composed) -> std::collections::HashMap<String, Vec<&vale_render::GlyphRun>> {
+    let mut out: std::collections::HashMap<String, Vec<&vale_render::GlyphRun>> =
+        Default::default();
+    for item in &c.list.items {
+        if let Item::Glyphs(g) = item {
+            out.entry(g.text.clone()).or_default().push(g);
+        }
+    }
+    out
+}
+
+/// The distance from the first glyph of a label to its last glyph.
+fn span(runs: &[&vale_render::GlyphRun]) -> f64 {
+    let xs: Vec<f64> = (runs.iter())
+        .flat_map(|g| g.glyphs.iter().map(|(_, t)| t.translation().x))
+        .collect();
+    let (lo, hi) = xs
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(a, b), x| (a.min(*x), b.max(*x)));
+    hi - lo
+}
+
+#[test]
+fn small_caps_and_letter_spacing_reach_the_labeler() {
+    use vale_style::TextCase;
+    let (_, base) = places_frame(|_| {});
+    let (_, caps) = places_frame(|c| c.case = TextCase::AllSmallCaps);
+    let (_, small) = places_frame(|c| c.case = TextCase::SmallCaps);
+    let (_, spaced) = places_frame(|c| c.letter_spacing = 0.2);
+    // Noto Sans has small capitals, so the glyphs change and the size stays.
+    let ids = |runs: &[&vale_render::GlyphRun]| -> Vec<u32> {
+        runs.iter()
+            .flat_map(|g| g.glyphs.iter().map(|(id, _)| *id))
+            .collect()
+    };
+    let base = runs(&base);
+    assert!(base.values().flatten().all(|g| g.font_size == 11.0));
+    for case in [runs(&caps), runs(&small)] {
+        let mut checked = 0;
+        for (text, r) in &case {
+            let Some(b) = base.get(text) else { continue };
+            assert_ne!(ids(r), ids(b), "{text}");
+            checked += 1;
+        }
+        assert!(checked >= 10, "{checked}");
+    }
+    // A capital stays in small caps and changes in all small caps.
+    let (caps, small) = (runs(&caps), runs(&small));
+    let first = |runs: &[&vale_render::GlyphRun]| ids(runs)[0];
+    let mut same = 0;
+    for (text, r) in &small {
+        let Some(b) = base.get(text) else { continue };
+        if text.starts_with(char::is_uppercase) && first(r) == first(b) {
+            same += 1;
+            if let Some(c) = caps.get(text) {
+                assert_ne!(first(c), first(b), "{text}");
+            }
+        }
+    }
+    assert!(same >= 10, "{same}");
+
+    let spaced = runs(&spaced);
+    let mut checked = 0;
+    for (text, r) in &spaced {
+        let Some(b) = base.get(text) else { continue };
+        if text.chars().count() < 3 || r.len() != b.len() {
+            continue;
+        }
+        assert!(span(r) > span(b) + 1.0, "{text}");
+        checked += 1;
+    }
+    assert!(checked >= 10, "{checked}");
+}
+
+#[test]
+fn the_default_positions_match_the_labeler() {
+    let ours = vale_style::LabelPosition::DEFAULT_ORDER.map(vale_app::labels::point_position);
+    assert_eq!(ours, vale_labeler::PointPosition::DEFAULT_ORDER);
 }

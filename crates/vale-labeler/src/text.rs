@@ -1,15 +1,18 @@
 //! Fonts, shaping, and glyph outlines.
 
-use crate::model::{PlacedLabel, TextStyle};
+use crate::model::{Caps, PlacedLabel, TextStyle};
 use kurbo::{BezPath, Rect, Shape, Vec2};
 use parley::fontique::{Blob, Collection, CollectionOptions, SourceCache};
+use parley::setting::Tag;
 use parley::{
-    FontContext, FontData, FontFamily, FontStyle, FontWeight, Layout, LayoutContext,
-    PositionedLayoutItem, StyleProperty,
+    FontContext, FontData, FontFamily, FontFeature, FontFeatures, FontStyle, FontWeight, Layout,
+    LayoutContext, PositionedLayoutItem, StyleProperty,
 };
 use skrifa::instance::{LocationRef, NormalizedCoord, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
+use skrifa::raw::TableProvider;
 use skrifa::{FontRef, GlyphId, MetadataProvider};
+use std::ops::Range;
 use std::sync::Arc;
 
 /// Registered fonts and the shaping context.
@@ -141,9 +144,85 @@ impl Fonts {
         }
     }
 
+    /// The faces of `family`, sorted by weight with upright before italic.
+    /// An unknown family gives an empty list.
+    pub fn faces(&mut self, family: &str) -> Vec<Face> {
+        let coll = &mut self.fcx.collection;
+        let Some(info) = coll.family_id(family).and_then(|id| coll.family(id)) else {
+            return Vec::new();
+        };
+        let mut faces: Vec<Face> = info
+            .fonts()
+            .iter()
+            .map(|f| Face {
+                weight: f.weight().value(),
+                italic: f.style() != FontStyle::Normal,
+            })
+            .collect();
+        faces.sort_by(|a, b| a.weight.total_cmp(&b.weight).then(a.italic.cmp(&b.italic)));
+        faces.dedup();
+        faces
+    }
+
     /// Shape `text` on one line.
     pub(crate) fn shape(&mut self, text: &str, style: &TextStyle) -> ShapedText {
+        self.shape_caps(text, style, false)
+    }
+
+    /// Shape `text` on one line. With `make_caps`, small capitals are always
+    /// made from capitals at a smaller size.
+    pub(crate) fn shape_caps(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        make_caps: bool,
+    ) -> ShapedText {
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let features: &[&[u8; 4]] = match style.caps {
+            Caps::Normal => return self.shape_ranges(&text, style, &[], &[]),
+            Caps::Small => &[b"smcp"],
+            Caps::AllSmall => &[b"c2sc", b"smcp"],
+        };
+        if !make_caps {
+            let shaped = self.shape_ranges(&text, style, features, &[]);
+            if shaped
+                .runs
+                .iter()
+                .all(|r| features.iter().all(|t| has_feature(&r.font, t)))
+            {
+                return shaped;
+            }
+        }
+        let all = style.caps == Caps::AllSmall;
+        let mut made = String::with_capacity(text.len());
+        let mut small: Vec<Range<usize>> = Vec::new();
+        for c in text.chars() {
+            let start = made.len();
+            if c.is_lowercase() {
+                made.extend(c.to_uppercase());
+            } else if all && c.is_uppercase() {
+                made.push(c);
+            } else {
+                made.push(c);
+                continue;
+            }
+            match small.last_mut() {
+                Some(r) if r.end == start => r.end = made.len(),
+                _ => small.push(start..made.len()),
+            }
+        }
+        self.shape_ranges(&made, style, &[], &small)
+    }
+
+    /// Shape `text` with OpenType `features`, and with the `small` byte ranges
+    /// at the small capital size.
+    fn shape_ranges(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        features: &[&[u8; 4]],
+        small: &[Range<usize>],
+    ) -> ShapedText {
         let mut out = ShapedText {
             runs: Vec::new(),
             advance: 0.0,
@@ -153,8 +232,9 @@ impl Fonts {
             ink_bounds: Rect::ZERO,
             missing_glyphs: 0,
         };
-        let mut b = self.lcx.ranged_builder(&mut self.fcx, &text, 1.0, false);
-        b.push_default(StyleProperty::FontSize(style.size as f32));
+        let size = style.size as f32;
+        let mut b = self.lcx.ranged_builder(&mut self.fcx, text, 1.0, false);
+        b.push_default(StyleProperty::FontSize(size));
         b.push_default(StyleProperty::FontFamily(FontFamily::from(
             style.family.as_str(),
         )));
@@ -165,11 +245,23 @@ impl Fonts {
             FontStyle::Normal
         }));
         b.push_default(StyleProperty::LetterSpacing(style.letter_spacing as f32));
-        let mut layout: Layout<()> = b.build(&text);
+        if !features.is_empty() {
+            let list: Vec<FontFeature> = features
+                .iter()
+                .map(|t| FontFeature::new(Tag::new(t), 1))
+                .collect();
+            b.push_default(StyleProperty::FontFeatures(FontFeatures::List(list.into())));
+        }
+        for r in small {
+            b.push(StyleProperty::FontSize(SMALL_CAP_SCALE * size), r.clone());
+        }
+        let mut layout: Layout<()> = b.build(text);
         layout.break_all_lines(None);
         out.advance = layout.width() as f64;
         let mut ink: Option<Rect> = None;
-        let mut metrics_set = false;
+        // The metrics come from the first run at the full size. If no run has
+        // the full size, they come from the first run, scaled.
+        let mut full_metrics = false;
         for line in layout.lines() {
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(gr) = item else {
@@ -177,16 +269,20 @@ impl Fonts {
                 };
                 let run = gr.run();
                 let m = run.metrics();
-                if !metrics_set {
-                    metrics_set = true;
-                    out.ascent = m.ascent as f64;
-                    out.descent = m.descent as f64;
-                    if let Some(c) = m.cap_height {
-                        out.cap_height = c as f64;
-                    }
+                let font_size = run.font_size();
+                let full = font_size == size;
+                if !full_metrics && (full || out.runs.is_empty()) {
+                    full_metrics = full;
+                    let k = if full {
+                        1.0
+                    } else {
+                        style.size / font_size as f64
+                    };
+                    out.ascent = k * m.ascent as f64;
+                    out.descent = k * m.descent as f64;
+                    out.cap_height = m.cap_height.map_or(0.7 * style.size, |c| k * c as f64);
                 }
                 let font = run.font().clone();
-                let size = run.font_size();
                 let coords: Vec<i16> = run.normalized_coords().to_vec();
                 let baseline = gr.baseline();
                 let mut glyphs = Vec::new();
@@ -194,9 +290,12 @@ impl Fonts {
                     if g.id == 0 {
                         out.missing_glyphs += 1;
                     }
-                    let bbox = glyph_outline(&font, &coords, size, g.id)
-                        .filter(|p| p.elements().len() > 0)
-                        .map(|p| p.bounding_box());
+                    let outline = glyph_outline(&font, &coords, font_size, g.id)
+                        .filter(|p| !p.elements().is_empty());
+                    let bbox = outline.as_ref().map(|p| p.bounding_box());
+                    let profile = outline
+                        .as_ref()
+                        .map_or_else(Vec::new, |p| ink_profile(p, f64::from(font_size)));
                     let (x, y) = (g.x as f64, (g.y - baseline) as f64);
                     if let Some(bb) = bbox {
                         let moved = bb + Vec2::new(x, y);
@@ -208,11 +307,12 @@ impl Fonts {
                         y,
                         advance: g.advance as f64,
                         bbox,
+                        profile,
                     });
                 }
                 out.runs.push(ShapedRun {
                     font,
-                    font_size: size,
+                    font_size,
                     normalized_coords: coords,
                     glyphs,
                 });
@@ -220,6 +320,51 @@ impl Fonts {
         }
         out.ink_bounds = ink.unwrap_or(Rect::ZERO);
         out
+    }
+}
+
+/// Size of a made small capital, as a share of the font size.
+const SMALL_CAP_SCALE: f32 = 0.7;
+
+/// Whether the GSUB table of `font` has the feature `tag`.
+fn has_feature(font: &FontData, tag: &[u8; 4]) -> bool {
+    let tag = skrifa::Tag::new(tag);
+    FontRef::from_index(font.data.as_ref(), font.index)
+        .ok()
+        .and_then(|f| f.gsub().ok())
+        .and_then(|g| g.feature_list().ok())
+        .is_some_and(|l| l.feature_records().iter().any(|r| r.feature_tag() == tag))
+}
+
+/// One face of a font family.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Face {
+    /// Font weight; 400.0 is regular.
+    pub weight: f32,
+    /// Italic or oblique.
+    pub italic: bool,
+}
+
+impl Face {
+    /// The standard style name, for example "Bold italic".
+    pub fn name(&self) -> String {
+        const NAMES: [&str; 9] = [
+            "Thin",
+            "Extra light",
+            "Light",
+            "Regular",
+            "Medium",
+            "Semibold",
+            "Bold",
+            "Extra bold",
+            "Black",
+        ];
+        let i = (self.weight / 100.0).round().clamp(1.0, 9.0) as usize - 1;
+        match (NAMES[i], self.italic) {
+            ("Regular", true) => "Italic".to_string(),
+            (n, true) => format!("{n} italic"),
+            (n, false) => n.to_string(),
+        }
     }
 }
 
@@ -233,6 +378,73 @@ pub(crate) struct ShapedGlyph {
     pub advance: f64,
     /// Outline bounds in glyph-local space; `None` for an empty outline.
     pub bbox: Option<Rect>,
+    /// The left and the right edge of the ink in each band of [`PROFILE_BANDS`], in
+    /// glyph-local space. Empty for an empty outline.
+    pub profile: Vec<Option<(f64, f64)>>,
+}
+
+/// The bands of an ink profile: the top of the first band and the band height, times the
+/// font size, and the band count. The bands run from above the ascender to below the descender.
+pub(crate) const PROFILE_BANDS: (f64, f64, usize) = (-1.2, 0.1, 18);
+
+/// The y at the middle of profile band `i`, for a font size.
+pub(crate) fn band_middle(i: usize, size: f64) -> f64 {
+    (PROFILE_BANDS.0 + PROFILE_BANDS.1 * (i as f64 + 0.5)) * size
+}
+
+/// The left and the right edge of the ink of `path` in each profile band.
+fn ink_profile(path: &BezPath, size: f64) -> Vec<Option<(f64, f64)>> {
+    let (top, h, n) = (
+        PROFILE_BANDS.0 * size,
+        PROFILE_BANDS.1 * size,
+        PROFILE_BANDS.2,
+    );
+    let mut out: Vec<Option<(f64, f64)>> = vec![None; n];
+    let mut add = |a: kurbo::Point, b: kurbo::Point| {
+        let (y0, y1) = (a.y.min(b.y), a.y.max(b.y));
+        let first = (((y0 - top) / h).floor().max(0.0)) as usize;
+        let last = (((y1 - top) / h).floor().max(-1.0) + 1.0) as usize;
+        for (i, slot) in out.iter_mut().enumerate().take(last.min(n)).skip(first) {
+            let (b0, b1) = (top + h * i as f64, top + h * (i + 1) as f64);
+            let (c0, c1) = (y0.max(b0), y1.min(b1));
+            if c0 > c1 {
+                continue;
+            }
+            // The x of the segment at the ends of its part inside the band.
+            let x_at = |y: f64| {
+                if (b.y - a.y).abs() < 1e-12 {
+                    a.x
+                } else {
+                    a.x + (b.x - a.x) * (y - a.y) / (b.y - a.y)
+                }
+            };
+            let (xa, xb) = if (b.y - a.y).abs() < 1e-12 {
+                (a.x, b.x)
+            } else {
+                (x_at(c0), x_at(c1))
+            };
+            let (lo, hi) = (xa.min(xb), xa.max(xb));
+            *slot = Some(slot.map_or((lo, hi), |(l, r)| (l.min(lo), r.max(hi))));
+        }
+    };
+    let mut start = kurbo::Point::ZERO;
+    let mut last = kurbo::Point::ZERO;
+    kurbo::flatten(path, 0.02 * size, |el| match el {
+        kurbo::PathEl::MoveTo(p) => {
+            start = p;
+            last = p;
+        }
+        kurbo::PathEl::LineTo(p) => {
+            add(last, p);
+            last = p;
+        }
+        kurbo::PathEl::ClosePath => {
+            add(last, start);
+            last = start;
+        }
+        _ => {}
+    });
+    out
 }
 
 pub(crate) struct ShapedRun {
@@ -461,5 +673,92 @@ mod tests {
         let want = sb + Vec2::new(100.0, 50.0);
         assert!((ob.x0 - want.x0).abs() < 1e-6 && (ob.y0 - want.y0).abs() < 1e-6);
         assert!((ob.x1 - want.x1).abs() < 1e-6 && (ob.y1 - want.y1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn faces_list_the_styles_of_a_family() {
+        let mut f = fonts();
+        let faces = f.faces("Noto Sans");
+        assert_eq!(
+            faces,
+            [
+                Face {
+                    weight: 400.0,
+                    italic: false
+                },
+                Face {
+                    weight: 400.0,
+                    italic: true
+                }
+            ]
+        );
+        f.register(read("NotoSans-Regular.ttf")).unwrap();
+        assert_eq!(f.faces("Noto Sans").len(), 2);
+        assert!(f.faces("No Such Family").is_empty());
+    }
+
+    #[test]
+    fn a_face_has_a_standard_name() {
+        let face = |weight, italic| Face { weight, italic }.name();
+        assert_eq!(face(400.0, false), "Regular");
+        assert_eq!(face(400.0, true), "Italic");
+        assert_eq!(face(700.0, true), "Bold italic");
+        assert_eq!(face(200.0, false), "Extra light");
+        assert_eq!(face(620.0, false), "Semibold");
+        assert_eq!(face(50.0, false), "Thin");
+        assert_eq!(face(1000.0, true), "Black italic");
+    }
+
+    fn caps(caps: Caps) -> TextStyle {
+        TextStyle { caps, ..st(20.0) }
+    }
+
+    #[test]
+    fn noto_sans_has_small_caps() {
+        let mut f = fonts();
+        let s = f.shape("a", &st(20.0));
+        assert!(has_feature(&s.runs[0].font, b"smcp"));
+        assert!(has_feature(&s.runs[0].font, b"c2sc"));
+        assert!(!has_feature(&s.runs[0].font, b"zzzz"));
+    }
+
+    #[test]
+    fn small_caps_are_narrower_than_capitals_and_wider_than_lowercase() {
+        let mut f = fonts();
+        let lower = f.measure("vale", &st(20.0)).advance;
+        let upper = f.measure("VALE", &st(20.0)).advance;
+        let small = f.measure("Vale", &caps(Caps::Small)).advance;
+        assert!(lower < small && small < upper, "{lower} {small} {upper}");
+    }
+
+    #[test]
+    fn all_small_caps_turn_capitals_small_too() {
+        let mut f = fonts();
+        for make in [false, true] {
+            let small = f.shape_caps("Vale", &caps(Caps::Small), make);
+            let all = f.shape_caps("Vale", &caps(Caps::AllSmall), make);
+            assert_eq!(all.glyph_count(), 4);
+            assert!(all.advance < small.advance);
+            let h = |s: &ShapedText, i: usize| s.glyphs().nth(i).unwrap().1.bbox.unwrap().height();
+            assert!(h(&all, 0) < 0.9 * h(&small, 0), "{make}");
+            assert!((h(&all, 0) / h(&all, 2) - 1.0).abs() < 0.02, "{make}");
+            let same = f.shape_caps("vale", &caps(Caps::AllSmall), make);
+            assert!((same.advance - all.advance).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn made_small_caps_use_a_smaller_size() {
+        let mut f = fonts();
+        let s = f.shape_caps("Vale", &caps(Caps::Small), true);
+        let sizes: Vec<f32> = s.runs.iter().map(|r| r.font_size).collect();
+        assert_eq!(sizes, [20.0, 14.0]);
+        let h: Vec<f64> = s.glyphs().map(|(_, g)| g.bbox.unwrap().height()).collect();
+        for x in &h[1..] {
+            assert!((x / h[0] - 0.7).abs() < 0.03, "{h:?}");
+        }
+        assert!((s.cap_height - 14.28).abs() < 0.05);
+        let m = f.measure("Vale", &caps(Caps::Small));
+        assert!(m.cap_height > 14.0);
     }
 }

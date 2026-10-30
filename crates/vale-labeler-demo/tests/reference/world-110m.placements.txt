@@ -2,18 +2,19 @@
 6	Majuro	TopRight	1760.3	396.5
 7	Funafuti	TopLeft	1742.8	497.5
 8	Melekeok	TopRight	1589.0	392.3
-9	Bir Lehlou	TopRight	889.7	272.7
+9	Bir Lehlou	BottomRight	889.7	289.1
 11	Tarawa	TopRight	1770.5	433.1
 12	Moroni	TopRight	1135.0	518.5
 13	Andorra	TopLeft	877.5	175.6
 14	Port-of-Spain	Right	647.0	381.3
 15	Kigali	TopLeft	1026.8	455.9
+16	Mbabane	BottomRight	1077.3	628.0
 17	Juba	TopRight	1070.1	411.0
 21	Doha	TopRight	1160.3	277.9
 23	Sri Jayawardenepura Kotte	TopRight	1373.9	397.7
 24	Baguio	TopRight	1503.2	335.8
 25	Dodoma	BottomLeft	1044.5	498.6
-27	Laayoune	TopLeft	806.0	268.1
+27	Laayoune	TopRight	872.4	268.1
 30	Djibouti	TopLeft	1081.4	367.0
 31	Putrajaya	TopRight	1429.3	423.9
 32	Kyoto	BottomRight	1526.8	236.7
@@ -25,40 +26,39 @@
 43	Manama	TopLeft	1104.7	272.3
 45	Montevideo	BottomRight	689.3	680.2
 47	Tunis	TopRight	964.4	208.3
-50	Lusaka	BottomLeft	1011.1	558.8
+50	Lusaka	TopLeft	1011.1	542.5
 51	Harare	TopRight	1073.0	558.2
 52	Dili	TopLeft	1497.5	497.8
-53	Port Vila	TopLeft	1675.2	557.4
+53	Port Vila	TopRight	1733.3	557.4
 55	Georgetown	TopRight	657.9	398.6
 56	Reykjavík	TopRight	854.8	71.9
 57	Port-au-Prince	TopLeft	508.1	320.7
 58	Kampala	TopRight	1089.6	441.0
 59	Paramaribo	BottomRight	670.6	419.5
 60	Niamey	TopRight	937.6	354.6
-61	Dushanbe	TopRight	1235.7	198.0
+61	Dushanbe	BottomRight	1235.7	214.3
 62	Asunción	BottomRight	662.3	621.6
 63	Managua	Right	516.7	371.8
 64	Freetown	Right	869.3	394.4
-65	Islamabad	BottomRight	1263.5	242.9
+65	Islamabad	TopRight	1263.5	226.6
 66	Kathmandu	BottomLeft	1254.8	279.2
 67	Bloemfontein	BottomLeft	975.5	645.3
-68	Pretoria	TopRight	1059.5	608.0
 69	Port Moresby	TopLeft	1571.1	505.3
 70	Honiara	TopLeft	1649.2	503.8
 71	Panama City	BottomLeft	472.4	400.6
 72	Rabat	TopRight	891.1	224.6
 73	Chișinău	TopRight	1048.8	152.5
-74	Maputo	BottomRight	1079.2	627.6
+74	Maputo	TopRight	1079.2	611.2
 75	Mogadishu	TopRight	1159.6	429.5
 76	Muscat	BottomRight	1200.1	305.2
 77	Colombo	TopLeft	1257.9	396.0
 78	Ulaanbaatar	TopRight	1380.1	146.3
-79	Windhoek	TopRight	1014.8	588.2
+79	Windhoek	TopLeft	946.1	588.2
 80	Abuja	TopRight	956.9	383.6
-81	Bissau	BottomLeft	801.3	380.2
+81	Bissau	Left	799.8	372.1
 82	Amman	BottomRight	1089.8	253.6
 84	Riga	TopRight	1008.4	103.1
-85	Bishkek	TopLeft	1190.6	173.6
+85	Bishkek	BottomRight	1244.9	189.9
 86	Maseru	BottomRight	1052.7	646.8
 87	Antananarivo	TopRight	1170.5	565.1
 88	Quito	TopRight	536.8	444.2
@@ -67,10 +67,10 @@
 91	Kingston	BottomRight	564.2	342.2
 92	N'Djamena	TopRight	1010.3	363.8
 94	Asmara	Top	1086.6	340.0
-97	Lilongwe	TopLeft	1032.1	534.7
+97	Lilongwe	Right	1095.6	542.9
 98	Guatemala City	TopLeft	414.5	347.3
 99	Libreville	BottomRight	977.2	455.4
-100	Suva	TopRight	1769.5	560.2
+100	Suva	BottomRight	1769.5	576.6
 101	Valparaíso	TopLeft	541.7	654.3
 102	Nouakchott	TopRight	863.5	323.5
 103	Bamako	Top	861.6	357.1
@@ -79,10 +79,10 @@
 106	Nur-Sultan	TopLeft	1148.8	129.5
 107	Vientiane	BottomRight	1421.7	340.8
 108	Brazzaville	TopLeft	939.2	469.6
-109	Conakry	TopRight	862.7	380.4
+109	Conakry	Left	803.8	388.6
 111	Ottawa	TopRight	609.3	159.9
 113	Bandar Seri Begawan	BottomRight	1530.1	427.3
-114	Sucre	BottomLeft	568.9	582.4
+114	Sucre	TopRight	609.8	566.0
 116	Bangui	TopRight	1015.9	414.5
 117	Yaoundé	BottomRight	986.1	432.4
 119	Yerevan	Bottom	1092.1	206.8
@@ -90,7 +90,9 @@
 121	Phnom Penh	BottomLeft	1365.2	382.1
 122	La Paz	TopRight	596.7	549.7
 126	Thimphu	Right	1346.4	274.0
+127	Gaborone	Top	1021.2	599.8
 128	Canberra	TopLeft	1532.2	666.1
+129	Ouagadougou	Bottom	892.5	379.7
 131	Naypyidaw	TopLeft	1320.1	314.2
 132	Nuku'alofa	TopRight	107.5	579.1
 133	Hargeisa	TopRight	1144.8	380.4
@@ -99,8 +101,9 @@
 136	Apia	TopRight	88.4	533.9
 137	Valletta	BottomLeft	937.6	229.8
 138	Malé	TopRight	1277.6	414.1
-140	Praia	TopRight	806.0	344.1
+140	Praia	TopLeft	768.0	344.1
 141	Nassau	TopRight	565.1	279.5
+142	Nicosia	Left	1021.7	226.1
 143	Wellington	TopRight	1687.1	702.3
 144	Hanoi	BottomRight	1422.7	321.2
 145	Ankara	TopRight	1067.0	190.1
@@ -118,8 +121,8 @@
 161	Kuwait City	TopRight	1158.1	254.3
 162	Santo Domingo	TopRight	617.7	322.7
 163	Accra	BottomRight	918.5	421.7
-164	Tripoli	TopRight	981.5	232.8
-165	Tel Aviv	TopLeft	1031.3	236.2
+164	Tripoli	BottomRight	981.5	249.2
+165	Tel Aviv	Left	1029.9	244.4
 166	Helsinki	TopRight	1019.5	87.0
 167	København	TopLeft	910.2	107.6
 168	Abidjan	BottomLeft	853.2	424.4
@@ -136,11 +139,11 @@
 180	Chicago	BottomRight	546.5	195.1
 181	Caracas	BottomLeft	548.2	389.2
 182	Kyiv	TopRight	1039.1	134.9
-184	Tashkent	Left	1165.2	190.5
+184	Tashkent	TopLeft	1166.7	182.4
 185	Madrid	Left	857.3	195.6
 188	Bangkok	TopLeft	1354.9	353.0
 189	Lima	TopLeft	509.0	520.8
-190	Dakar	BottomLeft	794.7	361.6
+190	Dakar	Top	816.4	343.7
 191	Johannesburg	Left	981.4	620.4
 193	Casablanca	TopLeft	836.2	228.9
 194	Seoul	TopRight	1478.6	203.7
@@ -160,7 +163,7 @@
 208	Vancouver	TopRight	428.1	141.3
 209	Toronto	TopLeft	542.8	171.3
 210	Buenos Aires	TopRight	682.5	662.3
-211	Kabul	TopRight	1230.4	221.6
+211	Kabul	BottomLeft	1188.6	238.0
 213	Melbourne	TopRight	1565.4	682.7
 214	Taipei	TopRight	1488.3	281.1
 215	Auckland	TopRight	1695.7	677.1
@@ -179,7 +182,7 @@
 228	Nairobi	Right	1107.5	458.2
 229	Jakarta	TopRight	1444.5	483.4
 230	Bogota	TopRight	564.1	413.1
-231	Cairo	TopLeft	1023.5	248.6
+231	Cairo	BottomLeft	1023.5	265.0
 232	Shanghai	TopRight	1476.9	244.4
 233	Tokyo	TopRight	1542.1	216.2
 234	Mumbai	TopLeft	1224.7	319.0
@@ -191,11 +194,12 @@
 240	Sydney	TopRight	1598.4	660.7
 241	Singapore	BottomRight	1442.3	451.1
 242	Hong Kong	TopRight	1467.5	299.8
-1000001	Mekong	LineAbove	1383.5	306.0
-1000002	Ob	LineAbove	1195.0	114.4
-1000003	Peace	LineAbove	457.6	99.8
-1000005	Paraná	LineAbove	620.5	618.9
-1000007	Lena	LineAbove	1348.6	84.6
-1000008	Chang	LineAbove	1348.6	241.4
-1000009	Nile	LineAbove	1040.7	303.8
-1000010	Amazonas	LineAbove	617.3	458.2
+1000001	Mekong	LineAbove	1382.4	304.3
+1000002	Ob	LineAbove	1191.5	110.8
+1000003	Peace	LineAbove	462.3	98.1
+1000005	Paraná	LineAbove	620.3	615.3
+1000007	Lena	LineAbove	1349.3	85.3
+1000008	Chang	LineAbove	1353.2	246.3
+1000009	Nile	LineAbove	1039.9	308.7
+1000010	Amazonas	LineBelow	622.6	475.3
+1000011	Mississippi	LineAbove	483.6	169.2

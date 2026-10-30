@@ -11,7 +11,7 @@ use vale_sphere::ProjectionSpec;
 use vale_store::{
     Field, FieldType, GeometryKind, Layer, LayerId, MapId, Project, ProjectionPreset, Units, World,
 };
-use vale_style::{Color, LayerStyle, MapStyle, Overrides, Stroke};
+use vale_style::{Color, LabelClass, LayerStyle, MapStyle, Overrides, Stroke};
 
 use crate::view::View;
 use crate::world;
@@ -313,11 +313,19 @@ impl Document {
     }
 
     /// The layers whose label font is missing, with the warning of each.
-    /// `families` are the families that the labels can use.
+    /// The fonts are the fonts of the label styles and of the label classes
+    /// of each map. `families` are the families that the labels can use.
     pub fn missing_fonts(&self, families: &[String]) -> Vec<(LayerId, String)> {
         (self.frame.entries.iter())
             .filter_map(|e| {
-                let warning = crate::fonts::missing(&e.style.label, families)?;
+                let stored = (self.project.atlas.maps.iter())
+                    .filter_map(|m| m.labels.get(&e.layer))
+                    .filter_map(|t| vale_style::classes_from_json(t).ok())
+                    .flatten()
+                    .map(|c| c.font);
+                let warning = std::iter::once(e.style.label.font.clone())
+                    .chain(stored)
+                    .find_map(|font| crate::fonts::missing(font.as_deref(), families))?;
                 Some((e.layer, warning))
             })
             .collect()
@@ -520,6 +528,51 @@ impl Document {
         let map = self.project.atlas.map(map);
         let text = map.and_then(|m| m.overrides.get(&layer));
         text.map(|t| Overrides::from_json(t)).unwrap_or_default()
+    }
+
+    /// The label classes of a layer in a map. A map with no classes for the
+    /// layer, a map whose classes do not read, and `None` give the class of
+    /// the label style of the layer. The priority of that class is the place
+    /// of the layer in the draw order.
+    pub fn label_classes(&self, map: Option<MapId>, layer: LayerId) -> Vec<LabelClass> {
+        let stored = map
+            .and_then(|m| self.project.atlas.map(m))
+            .and_then(|m| m.labels.get(&layer))
+            .and_then(|t| vale_style::classes_from_json(t).ok());
+        if let Some(classes) = stored {
+            return classes;
+        }
+        let Some(position) = self.frame.entries.iter().position(|e| e.layer == layer) else {
+            return Vec::new();
+        };
+        let (Some(l), Some(entry)) = (self.layer(layer), self.map_entry(map, layer)) else {
+            return Vec::new();
+        };
+        let Some(kind) = l.geometry() else {
+            return Vec::new();
+        };
+        LabelClass::from_style(&l.name, &entry.style.label, kind, position as i32)
+            .into_iter()
+            .collect()
+    }
+
+    /// Stores the label classes of a layer in a map. Returns false if nothing
+    /// changed.
+    pub fn set_label_classes(
+        &mut self,
+        map: MapId,
+        layer: LayerId,
+        classes: &[LabelClass],
+    ) -> bool {
+        let Some(map) = self.project.atlas.map_mut(map) else {
+            return false;
+        };
+        let text = vale_style::classes_to_json(classes);
+        if map.labels.get(&layer) == Some(&text) {
+            return false;
+        }
+        map.labels.insert(layer, text);
+        true
     }
 
     /// The layer with the style of a map. `None` is the style of the layer.

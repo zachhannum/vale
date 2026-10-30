@@ -48,9 +48,9 @@ struct ValeApp {
     /// The families that the font picker of the system gave.
     #[cfg(target_os = "ios")]
     fonts: crate::font_picker::FontQueue,
-    /// The layer whose labels get the picked font.
+    /// The labels that get the picked font.
     #[cfg(target_os = "ios")]
-    font_for: Option<vale_store::LayerId>,
+    font_for: Option<crate::ui::FontTarget>,
     #[cfg(target_os = "ios")]
     font_picker: Option<crate::font_picker::FontPicker>,
     #[cfg(target_os = "ios")]

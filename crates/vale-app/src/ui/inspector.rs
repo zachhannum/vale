@@ -82,7 +82,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         .map_or(Vec::new(), |l| l.fields.clone());
     let symbols = state.doc.symbols().clone();
     let font_warning = (state.doc.entry(info.id))
-        .and_then(|e| crate::fonts::missing(&e.style.label, &state.font_families));
+        .and_then(|e| crate::fonts::missing(e.style.label.font.as_deref(), &state.font_families));
     let mut pick_font = false;
     let Some(entry) = state.doc.entry_mut(info.id) else {
         return;
@@ -158,7 +158,9 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         state.touch();
     }
     if pick_font {
-        state.font_dialog = Some(super::font_dialog::FontDialog::new(info.id));
+        state.font_dialog = Some(super::font_dialog::FontDialog::new(
+            super::FontTarget::Layer(info.id),
+        ));
     }
     ui.add_space(6.0);
 }

@@ -14,8 +14,28 @@ use vale_render::Color;
 use vale_store::GeometryKind;
 pub use vale_store::Value;
 
+pub(crate) use functions::title_case;
 pub use functions::{FUNCTIONS, Function};
 use parser::Node;
+
+/// The words of the syntax that a plain field name cannot be.
+const KEYWORDS: [&str; 15] = [
+    "and", "or", "not", "in", "is", "null", "true", "false", "like", "between", "case", "when",
+    "then", "else", "end",
+];
+
+/// A field name as an expression writes it: plain, or in double quotes.
+pub fn field_ref(name: &str) -> String {
+    let mut chars = name.chars();
+    let plain = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && chars.all(|c| c.is_alphanumeric() || c == '_')
+        && !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(name));
+    if plain {
+        name.to_owned()
+    } else {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+}
 
 /// The attributes of one feature, by field name.
 pub trait Attributes {

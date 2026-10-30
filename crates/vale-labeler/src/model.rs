@@ -19,6 +19,20 @@ pub struct TextStyle {
     pub italic: bool,
     /// Extra space after each glyph, in page units.
     pub letter_spacing: f64,
+    /// Small capitals.
+    pub caps: Caps,
+}
+
+/// Which letters show as small capitals.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Caps {
+    /// No small capitals.
+    #[default]
+    Normal,
+    /// Lowercase letters show as small capitals.
+    Small,
+    /// All letters show as small capitals.
+    AllSmall,
 }
 
 impl TextStyle {
@@ -30,6 +44,7 @@ impl TextStyle {
             weight: 400.0,
             italic: false,
             letter_spacing: 0.0,
+            caps: Caps::Normal,
         }
     }
 }
@@ -96,7 +111,8 @@ pub struct LinePlacement {
     pub offset: f64,
     /// Distance between repeated labels; `None` gives one label per feature.
     pub repeat_distance: Option<f64>,
-    /// Largest angle between two neighbor glyphs, in radians.
+    /// The angle between two neighbor glyphs, in radians, above which a candidate costs more.
+    /// A candidate that turns more than 1.6 times this angle is not used.
     pub max_glyph_turn: f64,
     /// Smoothing window, in multiples of the font size.
     pub smoothing: f64,
@@ -131,6 +147,9 @@ pub struct LabelClass {
     /// Collision boxes grow by this on every side.
     pub margin: f64,
     pub placement: Placement,
+    /// Minimum distance between labels of this class with the same text.
+    /// `None` keeps all of them.
+    pub duplicate_distance: Option<f64>,
 }
 
 /// Page-space geometry of a feature.
@@ -176,8 +195,6 @@ pub struct Options {
     pub seed: u64,
     /// Run the seeded improvement search after the greedy pass.
     pub improve: bool,
-    /// Minimum distance between labels with the same class and text.
-    pub duplicate_distance: Option<f64>,
 }
 
 impl Default for Options {
@@ -185,7 +202,6 @@ impl Default for Options {
         Self {
             seed: 0x5EED,
             improve: true,
-            duplicate_distance: None,
         }
     }
 }

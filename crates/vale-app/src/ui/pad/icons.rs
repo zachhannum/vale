@@ -42,6 +42,8 @@ pub enum Icon {
     Magnet,
     Select,
     Measure,
+    /// The handle of a row that a drag moves.
+    Grip,
 }
 
 impl Icon {
@@ -88,6 +90,7 @@ impl Icon {
                  M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9zM3 12h18"
             }
             Icon::Grid => "M12 3v18M3 12h18",
+            Icon::Grip => "M5 8h14M5 12h14M5 16h14",
             Icon::Select => "M5 3l14 8-6 2-2 6z",
             Icon::Measure => "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l3 3M13 7l2 2",
             Icon::Magnet => {
@@ -371,6 +374,7 @@ mod tests {
             Icon::Delete,
             Icon::Select,
             Icon::Measure,
+            Icon::Grip,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

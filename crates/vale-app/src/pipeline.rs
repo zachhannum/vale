@@ -1221,8 +1221,12 @@ impl Pipeline {
             furniture::scale_bar(page, drawn.km_per_point, doc.project.world.units, fonts);
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {
+            let classes: Vec<_> = (drawn.layers.iter())
+                .map(|pl| doc.label_classes(None, pl.layer.id))
+                .collect();
             let (items, summary) = labels::place(
                 &drawn.layers,
+                &classes,
                 page,
                 fonts,
                 quality,
@@ -1394,8 +1398,18 @@ impl Pipeline {
         );
         let mut label_summary = LabelSummary::default();
         if doc.frame.labels {
-            let (items, summary) =
-                labels::place(&drawn.layers, area, fonts, quality, &[], &drawn.symbols);
+            let classes: Vec<_> = (drawn.layers.iter())
+                .map(|pl| doc.label_classes(Some(frame.map), pl.layer.id))
+                .collect();
+            let (items, summary) = labels::place(
+                &drawn.layers,
+                &classes,
+                area,
+                fonts,
+                quality,
+                &[],
+                &drawn.symbols,
+            );
             list.items.extend(items);
             label_summary = summary;
         }

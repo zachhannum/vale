@@ -304,7 +304,7 @@ fn count(v: &Value) -> Option<usize> {
     }
 }
 
-fn title_case(s: &str) -> String {
+pub(crate) fn title_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut start = true;
     for c in s.chars() {

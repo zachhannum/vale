@@ -5,7 +5,7 @@
 use eframe::egui;
 use vale_render::Symbols;
 use vale_store::{Field, FieldType, GeometryKind, LayerId};
-use vale_style::expr::{Filter, Property};
+use vale_style::expr::{Filter, Property, field_ref};
 use vale_style::{
     Color, LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, Symbolizer,
 };
@@ -261,25 +261,6 @@ fn filter_rows(
         rule.filter = Filter::new(&text);
     }
     state.pad.rules.filter = Some((id, i, typed));
-}
-
-/// The words of the filter syntax that a plain field name cannot be.
-const KEYWORDS: [&str; 15] = [
-    "and", "or", "not", "in", "is", "null", "true", "false", "like", "between", "case", "when",
-    "then", "else", "end",
-];
-
-/// A field name as the filter syntax writes it: plain, or in double quotes.
-pub fn field_name(name: &str) -> String {
-    let mut chars = name.chars();
-    let plain = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
-        && chars.all(|c| c.is_alphanumeric() || c == '_')
-        && !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(name));
-    if plain {
-        name.to_owned()
-    } else {
-        format!("\"{}\"", name.replace('"', "\"\""))
-    }
 }
 
 /// The fields of the scale range, the keypad of the field that the user
@@ -834,7 +815,7 @@ pub fn numeric_fields(fields: &[Field]) -> Vec<String> {
 /// of another expression. `None`: the property is a constant.
 pub fn property_field(property: &Property<f64>, fields: &[String]) -> Option<String> {
     let text = property.source()?.text().trim();
-    let field = fields.iter().find(|f| field_name(f) == text);
+    let field = fields.iter().find(|f| field_ref(f) == text);
     Some(field.map_or(text, |f| f.as_str()).to_owned())
 }
 
@@ -842,7 +823,7 @@ pub fn property_field(property: &Property<f64>, fields: &[String]) -> Option<Str
 /// `property`. `None`: a constant.
 pub fn with_field(property: &Property<f64>, field: Option<&str>) -> Property<f64> {
     match field {
-        Some(f) => Property::expression(&field_name(f), property.fallback),
+        Some(f) => Property::expression(&field_ref(f), property.fallback),
         None => Property::constant(property.fallback),
     }
 }
@@ -969,11 +950,11 @@ mod tests {
 
     #[test]
     fn field_names_and_scales() {
-        assert_eq!(field_name("scalerank"), "scalerank");
-        assert_eq!(field_name("name en"), "\"name en\"");
-        assert_eq!(field_name("2nd"), "\"2nd\"");
-        assert_eq!(field_name("Not"), "\"Not\"");
-        assert_eq!(field_name("a\"b"), "\"a\"\"b\"");
+        assert_eq!(field_ref("scalerank"), "scalerank");
+        assert_eq!(field_ref("name en"), "\"name en\"");
+        assert_eq!(field_ref("2nd"), "\"2nd\"");
+        assert_eq!(field_ref("Not"), "\"Not\"");
+        assert_eq!(field_ref("a\"b"), "\"a\"\"b\"");
         assert_eq!(scale_text(1_000_000.0), "1,000,000");
         assert_eq!(scale_text(500.0), "500");
         assert_eq!(parse_scale("50,000"), Some(50_000.0));

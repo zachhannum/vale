@@ -1,16 +1,15 @@
-//! The filter of a rule as a list of conditions, and the page that adds a
-//! condition with a field, an operator, and a value.
+//! The filter of a rule or of a label class as a list of conditions, and
+//! the page that adds a condition with a field, an operator, and a value.
 
 use std::collections::HashMap;
 
 use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_store::{FieldType, LayerId, Value};
-use vale_style::expr::Filter;
+use vale_style::expr::{Filter, field_ref};
 
 use super::geometry::TOUCH;
 use super::icons::Icon;
 use super::raster::heading;
-use super::rules::field_name;
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
 use super::{Page, theme};
 use crate::ui::AppState;
@@ -23,6 +22,8 @@ pub const ADD_CONDITION: &str = "Add condition";
 pub const REMOVE_CONDITION: &str = "Remove condition";
 /// The text of the rule page while the filter has no condition.
 pub const NO_CONDITION: &str = "The rule draws all features.";
+/// The text of the page of a label class while the filter has no condition.
+pub const NO_CLASS_CONDITION: &str = "The class labels all features.";
 /// The headings of the page of a new condition.
 pub const FIELD: &str = "Field";
 pub const OPERATOR: &str = "Operator";
@@ -50,7 +51,7 @@ const KEYPAD: f32 = 4.0 * PANEL_ROW;
 /// The condition that the page of a new condition makes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Draft {
-    /// The layer and the rule.
+    /// The layer, and the rule or the label class.
     at: Option<(LayerId, usize)>,
     field: Option<String>,
     /// The index in `OPERATORS`.
@@ -59,6 +60,14 @@ pub struct Draft {
 }
 
 impl Draft {
+    /// An empty draft for rule or class `at`.
+    pub fn new(at: (LayerId, usize)) -> Draft {
+        Draft {
+            at: Some(at),
+            ..Draft::default()
+        }
+    }
+
     /// The condition as the filter syntax writes it, or `None` until the
     /// draft has a field and a value.
     pub fn text(&self, kind: FieldType) -> Option<String> {
@@ -80,7 +89,7 @@ pub fn condition(field: &str, kind: FieldType, operator: usize, value: &str) -> 
         },
         FieldType::Text => format!("'{}'", value.replace('\'', "''")),
     };
-    Some(format!("{} {op} {value}", field_name(field)))
+    Some(format!("{} {op} {value}", field_ref(field)))
 }
 
 /// A number as the filter syntax writes it.
@@ -147,6 +156,13 @@ pub fn join(parts: &[String]) -> String {
     parts.join(" and ")
 }
 
+/// `filter` with `condition` joined at the end.
+pub fn with_condition(filter: &str, condition: String) -> String {
+    let mut parts = conditions(filter);
+    parts.push(condition);
+    join(&parts)
+}
+
 /// A row with the text of a condition and a button that removes it. Returns
 /// true when the user taps the button.
 fn condition_row(ui: &mut egui::Ui, controls: &mut Controls, n: usize, text: &str) -> bool {
@@ -180,10 +196,29 @@ pub fn rows(
     current: &str,
     typed: &mut String,
 ) -> Option<String> {
+    let (out, add) = list(ui, controls, current, typed, NO_CONDITION);
+    if add {
+        state.pad.rules.draft = Draft::new((id, i));
+        state.pad.page = Some(Page::Condition(i));
+    }
+    out
+}
+
+/// A filter as rows: a row for each condition, the row "Add condition", and
+/// the Expression field with the whole filter. `none` is the text while the
+/// filter has no condition. Returns the new filter text when the user
+/// changes it, and true when the user taps "Add condition".
+pub fn list(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    current: &str,
+    typed: &mut String,
+    none: &str,
+) -> (Option<String>, bool) {
     heading(ui, super::rules::FILTER);
     let mut parts = conditions(current);
     if parts.is_empty() {
-        super::raster::note(ui, NO_CONDITION);
+        super::raster::note(ui, none);
     }
     let mut out = None;
     let mut remove = None;
@@ -196,13 +231,7 @@ pub fn rows(
         parts.remove(n);
         out = Some(join(&parts));
     }
-    if widgets::open_row(ui, controls, ADD_CONDITION, "").clicked() {
-        state.pad.rules.draft = Draft {
-            at: Some((id, i)),
-            ..Draft::default()
-        };
-        state.pad.page = Some(Page::Condition(i));
-    }
+    let add = widgets::open_row(ui, controls, ADD_CONDITION, "").clicked();
 
     // The whole filter as text, for a filter that conditions cannot give.
     let valid = Filter::new(typed).error().is_none();
@@ -217,7 +246,7 @@ pub fn rows(
     if !valid {
         widgets::form_note(ui, super::rules::BAD_FILTER, 20.0);
     }
-    out
+    (out, add)
 }
 
 /// The values of a text field, most common first, at most `VALUE_CHIPS`.
@@ -243,10 +272,8 @@ fn common_values(state: &AppState, id: LayerId, field: &str) -> Vec<String> {
         .collect()
 }
 
-/// The page of a new condition of rule `i`: a chip for each field, and
-/// after the choice of a field, the operators, the value, and the button that adds the condition to the
-/// filter. A number has the keypad. A text has a chip for each common value
-/// and a field for any other value.
+/// The page of a new condition of rule `i` of layer `id`. The button adds
+/// the condition to the filter of the rule.
 pub fn condition_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -254,20 +281,44 @@ pub fn condition_body(
     id: LayerId,
     i: usize,
 ) {
-    let Some(layer) = state.doc.layer(id) else {
+    let mut draft = std::mem::take(&mut state.pad.rules.draft);
+    let made = new_condition(ui, state, controls, (id, i), &mut draft);
+    if let Some(condition) = made
+        && let Some(rule) = state
+            .doc
+            .entry_mut(id)
+            .and_then(|e| e.style.style.rules.get_mut(i))
+    {
+        let text = with_condition(rule.filter.source().map_or("", |s| s.text()), condition);
+        rule.filter = Filter::new(&text);
+        state.pad.page = Some(Page::Rule(i));
+        state.touch();
         return;
-    };
+    }
+    state.pad.rules.draft = draft;
+}
+
+/// The page of a new condition of rule or class `at`: a chip for each field
+/// of the layer, and after the choice of a field, the operators, the value,
+/// and the button that adds the condition. A number has the keypad. A text
+/// has a chip for each common value and a field for any other value.
+/// Returns the condition when the user taps the button.
+pub fn new_condition(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    controls: &mut Controls,
+    at: (LayerId, usize),
+    draft: &mut Draft,
+) -> Option<String> {
+    let id = at.0;
+    let layer = state.doc.layer(id)?;
     let fields: Vec<(String, FieldType)> = layer
         .fields
         .iter()
         .map(|f| (f.name.clone(), f.kind))
         .collect();
-    let mut draft = std::mem::take(&mut state.pad.rules.draft);
-    if draft.at != Some((id, i)) {
-        draft = Draft {
-            at: Some((id, i)),
-            ..Draft::default()
-        };
+    if draft.at != Some(at) {
+        *draft = Draft::new(at);
     }
     ui.spacing_mut().item_spacing.y = 0.0;
 
@@ -356,22 +407,11 @@ pub fn condition_body(
     }
     ui.add_space(8.0);
     let add = widgets::button_row(ui, controls, ADD_CONDITION, condition.is_some());
-    if add.clicked()
-        && let Some(condition) = condition
-        && let Some(rule) = state
-            .doc
-            .entry_mut(id)
-            .and_then(|e| e.style.style.rules.get_mut(i))
-    {
-        let mut parts = conditions(rule.filter.source().map_or("", |s| s.text()));
-        parts.push(condition);
-        rule.filter = Filter::new(&join(&parts));
+    if add.clicked() && condition.is_some() {
         widgets::close_keypad(ui.ctx());
-        state.pad.page = Some(Page::Rule(i));
-        state.touch();
-        return;
+        return condition;
     }
-    state.pad.rules.draft = draft;
+    None
 }
 
 #[cfg(test)]

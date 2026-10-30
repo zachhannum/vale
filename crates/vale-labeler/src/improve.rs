@@ -3,6 +3,7 @@
 //! move that needs occupied space removes the labels in the way.
 
 use crate::engine::{Instance, State};
+use crate::model::LabelClass;
 use std::collections::HashMap;
 
 /// SplitMix64, a small seeded generator.
@@ -32,22 +33,26 @@ impl SplitMix64 {
 }
 
 /// The duplicate rule: same class and text, different instances, and centers
-/// of the label bounds closer than `distance`.
+/// of the label bounds closer than the duplicate distance of the class.
 pub(crate) struct Dup {
-    distance: Option<f64>,
+    /// The duplicate distance of each group.
+    distance: Vec<Option<f64>>,
     /// Instances that share a (class, text) pair, by group.
     members: Vec<Vec<usize>>,
     group: Vec<usize>,
 }
 
 impl Dup {
-    pub fn new(keys: Vec<(usize, String)>, distance: Option<f64>) -> Self {
+    pub fn new(keys: Vec<(usize, String)>, classes: &[LabelClass]) -> Self {
         let mut ids: HashMap<(usize, String), usize> = HashMap::new();
         let mut members: Vec<Vec<usize>> = Vec::new();
+        let mut distance = Vec::new();
         let mut group = Vec::with_capacity(keys.len());
         for (i, k) in keys.into_iter().enumerate() {
+            let class = k.0;
             let g = *ids.entry(k).or_insert_with(|| {
                 members.push(Vec::new());
+                distance.push(classes[class].duplicate_distance);
                 members.len() - 1
             });
             members[g].push(i);
@@ -68,7 +73,9 @@ impl Dup {
         cand: usize,
         out: &mut Vec<usize>,
     ) {
-        let Some(d) = self.distance else { return };
+        let Some(d) = self.distance[self.group[inst]] else {
+            return;
+        };
         let c = instances[inst].candidates[cand].bounds.center();
         for &m in &self.members[self.group[inst]] {
             if m == inst {
@@ -140,6 +147,54 @@ fn restore(instances: &[Instance], state: &mut State, best: &[Option<usize>]) {
     }
 }
 
+/// Place each unplaced label that up to two placed labels block, if each of them can move to
+/// another free candidate. A placed label costs less than any penalty, so each such move
+/// lowers the energy.
+fn recover(instances: &[Instance], state: &mut State, order: &[usize], dup: &Dup) {
+    let mut k: Vec<usize> = Vec::new();
+    let mut blockers: Vec<(usize, usize)> = Vec::new();
+    for &i in order {
+        if instances[i].candidates.is_empty() || state.chosen[i].is_some() {
+            continue;
+        }
+        for c in 0..instances[i].candidates.len() {
+            conflicts(instances, state, dup, i, c, &mut k);
+            if k.is_empty() || k.len() > 2 {
+                continue;
+            }
+            blockers.clear();
+            for &b in &k {
+                let old = state.chosen[b].expect("conflicts are placed");
+                blockers.push((b, old));
+                state.remove(instances, b);
+            }
+            state.insert(instances, i, c);
+            let mut moved = 0;
+            for &(b, old) in &blockers {
+                for cb in 0..instances[b].candidates.len() {
+                    if cb == old {
+                        continue;
+                    }
+                    conflicts(instances, state, dup, b, cb, &mut k);
+                    if k.is_empty() {
+                        state.insert(instances, b, cb);
+                        moved += 1;
+                        break;
+                    }
+                }
+            }
+            if moved == blockers.len() {
+                break;
+            }
+            state.remove(instances, i);
+            for &(b, old) in &blockers {
+                state.remove(instances, b);
+                state.insert(instances, b, old);
+            }
+        }
+    }
+}
+
 /// Improve the greedy state in place. `order` is the priority order.
 pub(crate) fn improve(
     instances: &[Instance],
@@ -156,6 +211,7 @@ pub(crate) fn improve(
     if n < 2 {
         return;
     }
+    recover(instances, state, order, dup);
     let mut rng = SplitMix64::new(seed);
     let mut e = energy(instances, state, pen);
     let mut best_e = e;
@@ -222,6 +278,8 @@ pub(crate) fn improve(
             }
         }
     }
+
+    recover(instances, state, order, dup);
 
     // Descend: one pass to a cheaper free candidate.
     for &i in order {

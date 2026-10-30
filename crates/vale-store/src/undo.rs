@@ -480,8 +480,9 @@ fn world(r: &mut Reader) -> Option<World> {
 }
 
 /// The image of the atlas holds the maps, the pages, the custom
-/// projections, and the style overrides of the maps, and not the counters of
-/// the IDs. An image that ends after the projections has no overrides.
+/// projections, the style overrides, and the label classes of the maps, and
+/// not the counters of the IDs. An image that ends after the projections has
+/// no overrides. An image that ends after the overrides has no label classes.
 fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     put_u32(out, atlas.maps.len());
     for map in &atlas.maps {
@@ -545,6 +546,19 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
         put_u32(out, layer.0 as usize);
         put_bytes(out, text.as_bytes());
     }
+    let labels: Vec<_> = (atlas.maps.iter())
+        .flat_map(|m| {
+            m.labels
+                .iter()
+                .map(move |(layer, text)| (m.id, layer, text))
+        })
+        .collect();
+    put_u32(out, labels.len());
+    for (map, layer, text) in labels {
+        put_u32(out, map.0 as usize);
+        put_u32(out, layer.0 as usize);
+        put_bytes(out, text.as_bytes());
+    }
 }
 
 fn flag(r: &mut Reader) -> Option<bool> {
@@ -573,6 +587,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             projection,
             hidden,
             overrides: std::collections::BTreeMap::new(),
+            labels: std::collections::BTreeMap::new(),
         });
     }
     let mut pages = Vec::new();
@@ -630,6 +645,15 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             let text = string(r)?;
             let map = maps.iter_mut().find(|m| m.id == id)?;
             map.overrides.insert(layer, text);
+        }
+    }
+    if !r.0.is_empty() {
+        for _ in 0..count(r)? {
+            let id = MapId(r.u32()?);
+            let layer = LayerId(r.u32()?);
+            let text = string(r)?;
+            let map = maps.iter_mut().find(|m| m.id == id)?;
+            map.labels.insert(layer, text);
         }
     }
     r.0.is_empty().then_some((maps, pages, presets))
@@ -1097,6 +1121,9 @@ mod tests {
             .unwrap()
             .overrides
             .insert(LayerId(4), text);
+        let classes = r#"[{"name":"Towns"}]"#.to_string();
+        before.maps[0].labels.insert(LayerId(3), classes);
+        before.maps[0].labels.insert(LayerId(5), "[]".into());
         let first = before.pages[0].id;
         let second = before.add_page(Some(first), 420.0, 297.0, PageUnits::In);
         before.page_mut(second).unwrap().name = "North".into();
@@ -1161,6 +1188,19 @@ mod tests {
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
         // An image of an older build ends after the projections.
+        assert_eq!(out.split_off(out.len() - 8), [0; 8]);
+        let image = atlas(&mut Reader(&out)).unwrap();
+        assert_eq!(image.0, before.maps);
+    }
+
+    #[test]
+    fn an_atlas_image_without_label_classes_reads() {
+        let mut before = Atlas::new(Units::Metric);
+        let text = r#"{"/label/size":20.0}"#.to_string();
+        before.maps[0].overrides.insert(LayerId(3), text);
+        let mut out = Vec::new();
+        put_atlas(&mut out, &before);
+        // An image of an older build ends after the overrides.
         assert_eq!(out.split_off(out.len() - 4), [0, 0, 0, 0]);
         let image = atlas(&mut Reader(&out)).unwrap();
         assert_eq!(image.0, before.maps);

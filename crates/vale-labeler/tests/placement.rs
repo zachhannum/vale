@@ -8,6 +8,7 @@ fn invalid_features_are_reported() {
         priority: 0,
         margin: 0.0,
         placement: Placement::Point(PointPlacement::default()),
+        duplicate_distance: None,
     };
     let pt = Geometry::Point {
         position: Point::new(10.0, 10.0),
@@ -68,6 +69,7 @@ fn class(priority: i32) -> LabelClass {
         priority,
         margin: 0.0,
         placement: Placement::Point(PointPlacement::default()),
+        duplicate_distance: None,
     }
 }
 
@@ -317,6 +319,7 @@ fn line_class(priority: i32, lp: LinePlacement) -> LabelClass {
         priority,
         margin: 0.0,
         placement: Placement::Line(lp),
+        duplicate_distance: None,
     }
 }
 
@@ -670,11 +673,7 @@ fn grid40(seed: u64, improve: bool) -> LabelInput {
         }
     }
     let mut inp = input(features, vec![]);
-    inp.options = Options {
-        seed,
-        improve,
-        duplicate_distance: None,
-    };
+    inp.options = Options { seed, improve };
     inp
 }
 
@@ -806,21 +805,46 @@ fn high_priority_label_survives_every_seed() {
 #[test]
 fn duplicate_control() {
     let run = |d| {
-        let mut inp = line_input(
-            vec![line_class(0, LinePlacement::default())],
+        let mut class = line_class(0, LinePlacement::default());
+        class.duplicate_distance = d;
+        let inp = line_input(
+            vec![class],
             vec![
                 line_feature(1, 0, "Mississippi", vec![p(100.0, 200.0), p(700.0, 200.0)]),
                 line_feature(2, 0, "Mississippi", vec![p(100.0, 230.0), p(700.0, 230.0)]),
             ],
             vec![],
         );
-        inp.options.duplicate_distance = d;
         place_labels(&mut fonts(), &inp)
     };
     let out = run(None);
     assert_eq!(out.placed.len(), 2);
     let out = run(Some(1000.0));
     assert_eq!(out.placed.len(), 1);
+    assert_eq!(out.unplaced.len(), 1);
+    assert_eq!(out.unplaced[0].reason, UnplacedReason::Collision);
+}
+
+#[test]
+fn duplicate_distance_belongs_to_each_class() {
+    let mut a = line_class(0, LinePlacement::default());
+    a.duplicate_distance = Some(1000.0);
+    let b = line_class(0, LinePlacement::default());
+    let inp = line_input(
+        vec![a, b],
+        vec![
+            line_feature(1, 0, "Mississippi", vec![p(100.0, 100.0), p(700.0, 100.0)]),
+            line_feature(2, 0, "Mississippi", vec![p(100.0, 130.0), p(700.0, 130.0)]),
+            line_feature(3, 1, "Mississippi", vec![p(100.0, 300.0), p(700.0, 300.0)]),
+            line_feature(4, 1, "Mississippi", vec![p(100.0, 330.0), p(700.0, 330.0)]),
+        ],
+        vec![],
+    );
+    let out = place_labels(&mut fonts(), &inp);
+    let mut placed: Vec<u64> = out.placed.iter().map(|l| l.feature).collect();
+    placed.sort();
+    assert_eq!(placed.len(), 3);
+    assert!(placed.contains(&3) && placed.contains(&4));
     assert_eq!(out.unplaced.len(), 1);
     assert_eq!(out.unplaced[0].reason, UnplacedReason::Collision);
 }

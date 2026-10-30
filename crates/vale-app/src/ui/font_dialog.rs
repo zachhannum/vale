@@ -1,11 +1,9 @@
 //! The font dialog of the desktop: a search field and the font families of
 //! the system. On iOS, the font picker of the system takes its place.
 
-use eframe::egui;
-use vale_store::LayerId;
-
-use super::{Action, AppState};
+use super::{Action, AppState, FontTarget};
 use crate::fonts::DEFAULT_FAMILY;
+use eframe::egui;
 
 pub const TITLE: &str = "Font";
 pub const SEARCH: &str = "Search";
@@ -15,17 +13,17 @@ pub const CANCEL: &str = "Cancel";
 /// The open font dialog.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontDialog {
-    /// The layer whose labels get the font.
-    pub layer: LayerId,
+    /// The labels that get the font.
+    pub target: FontTarget,
     pub search: String,
     /// The search field has had the focus.
     focused: bool,
 }
 
 impl FontDialog {
-    pub fn new(layer: LayerId) -> FontDialog {
+    pub fn new(target: FontTarget) -> FontDialog {
         FontDialog {
-            layer,
+            target,
             search: String::new(),
             focused: false,
         }
@@ -45,10 +43,9 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) {
     let Some(mut dialog) = state.font_dialog.take() else {
         return;
     };
-    let Some(entry) = state.doc.entry(dialog.layer) else {
+    let Some(current) = state.font_of(dialog.target) else {
         return;
     };
-    let current = entry.style.label.font.clone();
     let current = current.as_deref().unwrap_or(DEFAULT_FAMILY);
     let mut picked = None;
     let mut close = false;
@@ -88,7 +85,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) {
         });
     });
     if let Some(family) = picked {
-        state.run_action(Action::SetFont(dialog.layer, family));
+        state.run_action(Action::SetFont(dialog.target, family));
     } else if !close && !modal.should_close() {
         state.font_dialog = Some(dialog);
     }
