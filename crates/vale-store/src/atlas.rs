@@ -32,6 +32,8 @@ pub struct MapRecord {
     pub hidden: BTreeSet<LayerId>,
     /// The style overrides of each layer, as the JSON text of `vale_style::Overrides`. A layer with no overrides has no entry.
     pub overrides: BTreeMap<LayerId, String>,
+    /// The label classes of each layer in the map, as JSON text. A layer with no entry uses the label style of the layer. An entry with no class means that the layer has no labels in the map.
+    pub labels: BTreeMap<LayerId, String>,
 }
 
 /// The units in which the app shows the size of a page.
@@ -226,6 +228,7 @@ impl Atlas {
                 projection: EQUAL_EARTH.to_string(),
                 hidden: BTreeSet::new(),
                 overrides: BTreeMap::new(),
+                labels: BTreeMap::new(),
             }],
             presets: Vec::new(),
             pages: vec![PageRecord {
@@ -364,6 +367,7 @@ impl Atlas {
             projection: EQUAL_EARTH.to_string(),
             hidden: BTreeSet::new(),
             overrides: BTreeMap::new(),
+            labels: BTreeMap::new(),
         })
     }
 

@@ -1339,6 +1339,7 @@ impl Project {
         for map in &mut self.atlas.maps {
             map.hidden.remove(&id);
             map.overrides.remove(&id);
+            map.labels.remove(&id);
         }
         if let Some(raster) = layer.raster() {
             self.rasters.retain(|r| r.id != raster);
