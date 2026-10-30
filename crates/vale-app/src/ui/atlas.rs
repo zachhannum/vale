@@ -114,6 +114,8 @@ pub enum ClassSegment {
 pub enum ClassColor {
     Text,
     Halo,
+    EdgeText,
+    EdgeHalo,
 }
 
 /// A row that a finger drags by its handle: a label class in the Labels
@@ -360,6 +362,12 @@ pub struct AtlasState {
     pub label_drag: Option<ClassDrag>,
     /// The position that a finger drags on the Positions page.
     pub position_drag: Option<ClassDrag>,
+    /// The frame whose Edge labels page the Frame tab shows.
+    pub edge: Option<FrameId>,
+    /// The set of edge labels that the page shows.
+    pub edge_set: EdgeSet,
+    /// The list of the faces of the font of the set is open.
+    pub edge_styles: bool,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The frame of `handles`.
@@ -398,6 +406,14 @@ impl AtlasState {
             (AtlasSelection::Frame(f), FrameTab::Layers, Some((of, layer))) if f == of => {
                 Some(layer)
             }
+            _ => None,
+        }
+    }
+
+    /// The frame whose Edge labels page the Frame tab shows.
+    pub fn open_edge(&self) -> Option<FrameId> {
+        match (self.selection, self.tab, self.edge) {
+            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
             _ => None,
         }
     }
@@ -460,6 +476,9 @@ impl Default for AtlasState {
             label_draft: Default::default(),
             label_drag: None,
             position_drag: None,
+            edge: None,
+            edge_set: EdgeSet::Meridians,
+            edge_styles: false,
             shown: None,
             handles_of: None,
             images: HashMap::new(),

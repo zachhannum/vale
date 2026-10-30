@@ -138,6 +138,8 @@ pub enum FontTarget {
     /// A label class of a layer in a map, by its place in the classes of the
     /// layer.
     Class(MapId, LayerId, usize),
+    /// A set of the edge labels of a frame.
+    Edge(vale_store::FrameId, atlas::EdgeSet),
 }
 
 /// The time between two reads of the projects folders while a download runs.
@@ -1413,6 +1415,10 @@ impl AppState {
             FontTarget::Class(map, layer, i) => {
                 let classes = self.doc.label_classes(Some(map), layer);
                 Some(classes.get(i)?.font.clone())
+            }
+            FontTarget::Edge(id, set) => {
+                let frame = self.doc.project.atlas.frame(id)?;
+                Some(set.of(&frame.graticule).font.clone())
             }
         }
     }
@@ -2963,6 +2969,11 @@ impl AppState {
             Action::SetFont(FontTarget::Class(map, layer, i), family) => {
                 self.label_class_step(map, layer, i, |c| {
                     crate::fonts::set_font(&mut c.font, &family);
+                });
+            }
+            Action::SetFont(FontTarget::Edge(id, set), family) => {
+                atlas::edit_edge_labels(self, id, set, |e| {
+                    crate::fonts::set_font(&mut e.font, &family);
                 });
             }
             Action::AddSymbol(path) => {

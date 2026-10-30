@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
-use vale_store::{Border, CoordFormat, FrameShape, Graticule, LayerId, MapId, PageUnits, RasterId};
+use vale_store::{Border, FrameShape, Graticule, LayerId, MapId, PageUnits, RasterId};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
@@ -45,7 +45,6 @@ pub const AUTO_INTERVAL: &str = "Auto interval";
 pub const INTERVAL: &str = "Interval";
 pub const GRATICULE_COLOR: &str = "Graticule color";
 pub const GRATICULE_WIDTH: &str = "Graticule width";
-pub const EDGE_LABELS: &str = "Edge labels";
 pub const LABEL_FORMAT: &str = "Label format";
 /// The choices of the label format, in the order of `CoordFormat::ALL`.
 pub const LABEL_FORMATS: [&str; 2] = ["DMS", "Decimal"];
@@ -600,6 +599,12 @@ fn selection_panel(
             };
             rect
         }
+        AtlasSelection::Frame(id) if state.atlas.open_edge().is_some() => {
+            let Some(rect) = super::edge_labels::panel(ctx, state, controls, rects, id) else {
+                return;
+            };
+            rect
+        }
         AtlasSelection::Frame(id) if open_layer(state).is_some() => {
             let Some(rect) = layer_panel(ctx, state, controls, rects, id) else {
                 return;
@@ -902,9 +907,11 @@ fn graticule_rows(
         atlas::set_graticule_width(state, id, lo + fraction * (hi - lo));
     }
 
-    let active = CoordFormat::ALL.iter().position(|f| *f == g.format);
-    if let Some(i) = widgets::choice_row(ui, controls, LABEL_FORMAT, &LABEL_FORMATS, active) {
-        atlas::set_graticule_format(state, id, CoordFormat::ALL[i]);
+    let summary = super::edge_labels::summary(g);
+    if widgets::open_row(ui, controls, super::edge_labels::EDGE_LABELS, summary).clicked() {
+        state.atlas.edge = Some(id);
+        state.atlas.edge_styles = false;
+        state.atlas.graticule_color = false;
     }
 }
 

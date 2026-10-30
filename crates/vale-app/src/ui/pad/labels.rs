@@ -428,7 +428,7 @@ fn expression_field(
 
 /// A slider row of a class for a value from `lo` to `hi`. Returns the new
 /// value when the user moves it.
-fn value_slider(
+pub(super) fn value_slider(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     (name, label): (&str, &str),
@@ -459,7 +459,7 @@ fn log_slider(
 }
 
 /// A distance in points for a slider row, for example "2.5 pt".
-fn points(value: f64) -> String {
+pub(super) fn points(value: f64) -> String {
     if value >= 100.0 {
         format!("{value:.0} pt")
     } else {
@@ -468,13 +468,13 @@ fn points(value: f64) -> String {
 }
 
 /// A percentage for a slider row, for example "5 %".
-fn percent(fraction: f64) -> String {
+pub(super) fn percent(fraction: f64) -> String {
     format!("{:.0} %", fraction * 100.0)
 }
 
 /// A color row of a class and its color picker while it is open. The picker
 /// keeps the alpha of the color. Returns the new color.
-fn color_rows(
+pub(super) fn color_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
@@ -511,7 +511,13 @@ fn face(class: &LabelClass) -> Face {
 /// The faces of the font family of a class. A family with no list of faces
 /// gives the regular face.
 fn faces(state: &mut AppState, class: &LabelClass) -> Vec<Face> {
-    let family = fonts::family(class.font.as_deref(), &mut state.fonts).to_owned();
+    faces_of(state, class.font.as_deref())
+}
+
+/// The faces of the font family of `font`. A family with no list of faces
+/// gives the regular face.
+pub(super) fn faces_of(state: &mut AppState, font: Option<&str>) -> Vec<Face> {
+    let family = fonts::family(font, &mut state.fonts).to_owned();
     let faces = state.fonts.faces(&family);
     if faces.is_empty() {
         vec![Face {
