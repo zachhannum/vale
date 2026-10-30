@@ -130,10 +130,13 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
                 let menu = egui::containers::menu::MenuButton::new(LAYERS_MENU).config(stay);
                 menu.ui(ui, |ui| {
+                    ui.label(egui::RichText::new(pad::NEW_SECTION).weak().small());
                     if ui.button(ADD_RASTER).clicked() {
                         state.raster_form = Some(RasterForm::open(state));
                         ui.close();
                     }
+                    ui.separator();
+                    ui.label(egui::RichText::new(pad::IMPORT_SECTION).weak().small());
                     let free = state.image_import.is_none();
                     if ui.add_enabled(free, egui::Button::new(ADD_IMAGE)).clicked() {
                         state.actions.push(Action::ImageLayerDialog);
@@ -143,6 +146,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         state.actions.push(Action::GeoJsonDialog);
                         ui.close();
                     }
+                    ui.separator();
                     layer_rows(ui, state);
                     selected_layer(ui, state);
                 });
