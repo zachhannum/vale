@@ -239,20 +239,14 @@ fn graticule_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
             }
             ui.end_row();
         });
-    let mut labels = g.labels;
-    if ui.checkbox(&mut labels, EDGE_LABELS).changed() {
-        atlas::set_graticule_labels(state, id, labels);
-    }
-    if g.labels {
-        ui.horizontal(|ui| {
-            ui.label(LABEL_FORMAT);
-            for (format, text) in CoordFormat::ALL.into_iter().zip(LABEL_FORMATS) {
-                if ui.selectable_label(g.format == format, text).clicked() {
-                    atlas::set_graticule_format(state, id, format);
-                }
+    ui.horizontal(|ui| {
+        ui.label(LABEL_FORMAT);
+        for (format, text) in CoordFormat::ALL.into_iter().zip(LABEL_FORMATS) {
+            if ui.selectable_label(g.format == format, text).clicked() {
+                atlas::set_graticule_format(state, id, format);
             }
-        });
-    }
+        }
+    });
 }
 
 /// The color and the width of the border of a frame.

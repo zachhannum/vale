@@ -902,15 +902,9 @@ fn graticule_rows(
         atlas::set_graticule_width(state, id, lo + fraction * (hi - lo));
     }
 
-    let mut labels = g.labels;
-    if widgets::switch_row(ui, controls, EDGE_LABELS, EDGE_LABELS, &mut labels) {
-        atlas::set_graticule_labels(state, id, labels);
-    }
-    if g.labels {
-        let active = CoordFormat::ALL.iter().position(|f| *f == g.format);
-        if let Some(i) = widgets::choice_row(ui, controls, LABEL_FORMAT, &LABEL_FORMATS, active) {
-            atlas::set_graticule_format(state, id, CoordFormat::ALL[i]);
-        }
+    let active = CoordFormat::ALL.iter().position(|f| *f == g.format);
+    if let Some(i) = widgets::choice_row(ui, controls, LABEL_FORMAT, &LABEL_FORMATS, active) {
+        atlas::set_graticule_format(state, id, CoordFormat::ALL[i]);
     }
 }
 

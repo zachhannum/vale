@@ -1396,7 +1396,7 @@ impl Pipeline {
             &mut self.scatter,
             symbol_scale,
         );
-        let edge = if step.is_some() && frame.graticule.labels {
+        let edge = if step.is_some() {
             edge_labels::edge_labels(&cache.projection, frame, target, fonts)
         } else {
             Vec::new()
@@ -1406,8 +1406,8 @@ impl Pipeline {
             let classes: Vec<_> = (drawn.layers.iter())
                 .map(|pl| doc.label_classes(Some(frame.map), pl.layer.id))
                 .collect();
-            let obstacles: Vec<Rect> = edge
-                .iter()
+            let obstacles: Vec<Rect> = (edge.iter())
+                .filter(|l| !l.outside)
                 .map(|l| edge_labels::quad_bounds(&l.quad))
                 .collect();
             let (items, summary) = labels::place(
@@ -1422,7 +1422,7 @@ impl Pipeline {
             list.items.extend(items);
             label_summary = summary;
         }
-        list.items.extend(edge.into_iter().flat_map(|l| l.items));
+        list.items.extend(edge_labels::items(&edge, false));
         list.push(Item::PopClip);
         if frame.border.on {
             let [r, g, b] = frame.border.color;
@@ -1433,6 +1433,7 @@ impl Pipeline {
                 round: false,
             });
         }
+        list.items.extend(edge_labels::items(&edge, true));
 
         Ok(Composed {
             list,

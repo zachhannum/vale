@@ -8,12 +8,12 @@ use vale_app::atlas::{
     graticule_interval, new_frame,
 };
 use vale_app::document::Document;
-use vale_app::edge_labels::{edge_labels, quads_overlap};
+use vale_app::edge_labels::{EdgeLabel, Side, edge_labels, outside_reach, quads_overlap};
 use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{PAPER, Pipeline, Quality, fonts};
 use vale_render::{FillRule, Item, render_pixmap, render_rgba};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{CoordFormat, FrameId, FrameShape, PageId, PageUnits};
+use vale_store::{CoordFormat, EdgeOrientation, FrameId, FrameShape, PageId, PageUnits};
 use vale_style::expr::{Filter, Property};
 use vale_style::{
     Color, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style,
@@ -1242,6 +1242,14 @@ fn assert_edge_labels(doc: &Document, pipeline: &mut Pipeline, id: FrameId, what
             || near(lat).is_some_and(|l| coord_text(l, interval, format, 'N', 'S') == label.text);
         assert!(named, "{what}: {} at {lon}, {lat}", label.text);
     }
+    for label in &labels {
+        let sides = label.quad.map(|q| even_odd(q, &rings));
+        assert!(
+            sides.iter().all(|inside| *inside != label.outside),
+            "{what}: {} is not on its side of the edge",
+            label.text
+        );
+    }
     for (i, a) in labels.iter().enumerate() {
         for b in &labels[i + 1..] {
             assert!(
@@ -1378,6 +1386,200 @@ fn a_polygon_frame_has_labels_on_each_edge() {
     assert!(n > 0);
 }
 
+/// Whether `p` is inside the rings, by the even-odd rule.
+fn even_odd(p: Point, rings: &[Vec<Point>]) -> bool {
+    let mut odd = false;
+    for ring in rings {
+        for (i, &a) in ring.iter().enumerate() {
+            let b = ring[(i + 1) % ring.len()];
+            if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+/// A frame of map 0 at a regional scale, with the graticule on.
+fn regional_frame(doc: &mut Document, pipeline: &mut Pipeline) -> FrameId {
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(doc, pipeline, page);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.graticule.on = true;
+    frame.scale /= 4.0;
+    id
+}
+
+fn labels_of(doc: &Document, pipeline: &mut Pipeline, id: FrameId) -> Vec<EdgeLabel> {
+    let frame = doc.project.atlas.frame(id).unwrap().clone();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let projection = pipeline.projection(doc, frame.map).unwrap();
+    edge_labels(projection, &frame, target, &mut fonts().unwrap())
+}
+
+#[test]
+fn each_set_of_edge_labels_has_its_own_switch() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let id = regional_frame(&mut doc, &mut pipeline);
+    let ends = |labels: &[EdgeLabel], letters: &[char]| {
+        labels
+            .iter()
+            .filter(|l| letters.iter().any(|c| l.text.ends_with(*c)))
+            .count()
+    };
+    let both = labels_of(&doc, &mut pipeline, id);
+    assert!(ends(&both, &['E', 'W']) > 0 && ends(&both, &['N', 'S']) > 0);
+
+    doc.project
+        .atlas
+        .frame_mut(id)
+        .unwrap()
+        .graticule
+        .meridians
+        .on = false;
+    let parallels = assert_edge_labels(&doc, &mut pipeline, id, "parallels");
+    assert!(parallels > 0);
+    let labels = labels_of(&doc, &mut pipeline, id);
+    assert_eq!(ends(&labels, &['E', 'W']), 0);
+
+    doc.project
+        .atlas
+        .frame_mut(id)
+        .unwrap()
+        .graticule
+        .parallels
+        .on = false;
+    let items = compose_frame(&doc, &mut pipeline, id);
+    assert!(!items.iter().any(|i| matches!(i, Item::Glyphs(_))));
+}
+
+#[test]
+fn outside_labels_sit_outside_the_frame() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let id = regional_frame(&mut doc, &mut pipeline);
+    let g = &mut doc.project.atlas.frame_mut(id).unwrap().graticule;
+    g.meridians.outside = true;
+    g.parallels.outside = true;
+    g.parallels.offset = 6.0;
+    let n = assert_edge_labels(&doc, &mut pipeline, id, "outside");
+    assert!(n > 0);
+    // The outside labels come after the clip of the frame and its border.
+    let items = compose_frame(&doc, &mut pipeline, id);
+    let pop = items
+        .iter()
+        .rposition(|i| matches!(i, Item::PopClip))
+        .unwrap();
+    let first_glyph = items
+        .iter()
+        .position(|i| matches!(i, Item::Glyphs(_)))
+        .unwrap();
+    assert!(first_glyph > pop);
+    let frame = doc.project.atlas.frame(id).unwrap().clone();
+    let reach = outside_reach(&frame, &mut fonts().unwrap());
+    let shape = vale_app::atlas::shape_bbox(&frame.shape);
+    let shape = kurbo::Rect::new(
+        shape.x0 * PT_PER_MM,
+        shape.y0 * PT_PER_MM,
+        shape.x1 * PT_PER_MM,
+        shape.y1 * PT_PER_MM,
+    )
+    .inflate(reach, reach);
+    for label in labels_of(&doc, &mut pipeline, id) {
+        assert!(
+            label.quad.iter().all(|q| shape.contains(*q)),
+            "{}",
+            label.text
+        );
+    }
+}
+
+#[test]
+fn horizontal_labels_are_level() {
+    for outside in [false, true] {
+        let mut doc = plain();
+        let mut pipeline = Pipeline::new();
+        let map = doc.first_map();
+        let mut spec = ProjectionSpec::new(ProjectionKind::LambertConformal, 10.0, 40.0);
+        spec.lat1 = 30.0;
+        spec.lat2 = 50.0;
+        doc.set_projection(map, spec);
+        let id = regional_frame(&mut doc, &mut pipeline);
+        let frame = doc.project.atlas.frame_mut(id).unwrap();
+        frame.center = [10.0, 45.0];
+        for set in [
+            &mut frame.graticule.meridians,
+            &mut frame.graticule.parallels,
+        ] {
+            set.orientation = EdgeOrientation::Horizontal;
+            set.outside = outside;
+        }
+        let n = assert_edge_labels(&doc, &mut pipeline, id, &format!("outside {outside}"));
+        assert!(n > 0);
+        for label in labels_of(&doc, &mut pipeline, id) {
+            let [a, b, ..] = label.quad;
+            assert!((a.y - b.y).abs() < 1e-9, "{}", label.text);
+        }
+    }
+}
+
+#[test]
+fn an_edge_switch_removes_the_labels_of_its_side() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let id = regional_frame(&mut doc, &mut pipeline);
+    let sides = |labels: &[EdgeLabel]| -> Vec<Side> { labels.iter().map(|l| l.side).collect() };
+    let all = sides(&labels_of(&doc, &mut pipeline, id));
+    for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+        assert!(all.contains(&side), "{side:?}");
+    }
+    let g = &mut doc.project.atlas.frame_mut(id).unwrap().graticule;
+    g.meridians.edges.top = false;
+    g.parallels.edges.top = false;
+    g.parallels.edges.left = false;
+    let some = sides(&labels_of(&doc, &mut pipeline, id));
+    assert!(!some.contains(&Side::Top));
+    assert!(some.contains(&Side::Bottom));
+    let labels = labels_of(&doc, &mut pipeline, id);
+    assert!(
+        !labels
+            .iter()
+            .any(|l| l.side == Side::Left && (l.text.ends_with('N') || l.text.ends_with('S')))
+    );
+}
+
+#[test]
+fn edge_labels_have_their_style_and_halo() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let id = regional_frame(&mut doc, &mut pipeline);
+    let set = &mut doc.project.atlas.frame_mut(id).unwrap().graticule.meridians;
+    set.color = [200, 10, 20];
+    set.opacity = 0.5;
+    set.size = 11.0;
+    set.halo = true;
+    set.halo_color = [1, 2, 3];
+    set.halo_width = 1.5;
+    let items = compose_frame(&doc, &mut pipeline, id);
+    let red = vale_render::Color::rgba(200, 10, 20, 128);
+    let halo = vale_render::Color::rgba(1, 2, 3, 128);
+    let glyph = items
+        .iter()
+        .position(|i| matches!(i, Item::Glyphs(g) if g.color == red && g.font_size == 11.0))
+        .expect("a meridian label in its color and size");
+    let stroke = items
+        .iter()
+        .position(
+            |i| matches!(i, Item::Stroke { color, width, .. } if *color == halo && *width == 1.5),
+        )
+        .expect("a halo");
+    assert!(stroke < glyph);
+}
+
 #[test]
 fn a_frame_with_the_labels_off_has_no_edge_labels() {
     let mut doc = plain();
@@ -1388,7 +1590,9 @@ fn a_frame_with_the_labels_off_has_no_edge_labels() {
     frame.graticule.on = true;
     frame.scale /= 4.0;
     assert!(assert_edge_labels(&doc, &mut pipeline, id, "on") > 0);
-    doc.project.atlas.frame_mut(id).unwrap().graticule.labels = false;
+    let g = &mut doc.project.atlas.frame_mut(id).unwrap().graticule;
+    g.meridians.on = false;
+    g.parallels.on = false;
     let items = compose_frame(&doc, &mut pipeline, id);
     assert!(!items.iter().any(|i| matches!(i, Item::Glyphs(_))));
 }
@@ -1425,6 +1629,20 @@ fn manual_edge_label_pictures() {
         frame.graticule.on = true;
         frame.scale /= 3.0;
         frame.center = center;
+        if name == "polar" {
+            // Shrink the frame so that the outside labels have room.
+            if let FrameShape::Rectangle(r) = &mut frame.shape {
+                *r = [r[0] + 15.0, r[1] + 15.0, r[2] - 15.0, r[3] - 15.0];
+            }
+            let g = &mut frame.graticule;
+            g.parallels.outside = true;
+            g.parallels.orientation = vale_store::EdgeOrientation::Horizontal;
+            g.meridians.outside = true;
+            g.meridians.color = [140, 30, 30];
+            g.meridians.size = 8.0;
+            g.parallels.halo = true;
+            g.parallels.edges.top = false;
+        }
         let page = doc.project.atlas.page(page).unwrap().clone();
         let mut f = fonts().unwrap();
         let list = pipeline
