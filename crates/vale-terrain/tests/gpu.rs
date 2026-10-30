@@ -2212,14 +2212,20 @@ fn gpu_warp_reads_no_level_that_it_wrote() {
     );
 }
 
-/// Asserts that no level went from above the floor to below it, and that no
-/// level at or below the floor went down. The ceiling has the same rule for
-/// the other direction.
+/// Asserts that each level outside the limits stayed, and that each other
+/// level is still inside them. Some levels must be outside the limits.
 fn assert_inside(limits: Limits, before: &[u16], after: &[u16], name: &str) {
+    let mut outside = 0;
     for (new, old) in after.iter().zip(before) {
-        assert!(*new >= (*old).min(limits.floor), "{name}: {old} {new}");
-        assert!(*new <= (*old).max(limits.ceiling), "{name}: {old} {new}");
+        if (limits.floor..=limits.ceiling).contains(old) {
+            assert!(*new >= limits.floor, "{name}: {old} {new}");
+            assert!(*new <= limits.ceiling, "{name}: {old} {new}");
+        } else {
+            assert_eq!(new, old, "{name}");
+            outside += 1;
+        }
     }
+    assert!(outside > 0, "{name}: no level is outside the limits");
 }
 
 /// Applies the stamps with the limits to the ground of `ground`, on the GPU

@@ -3063,13 +3063,20 @@ mod tests {
             ..full()
         });
         assert!(free.iter().zip(&straight).any(|(a, b)| a + 200 < *b));
-        // A floor above the ground keeps the ground of the troughs and the
-        // deeps.
-        let floor = laid(Limits {
+        // A floor above the ground keeps all the ground.
+        let above = laid(Limits {
             floor: START + 5000,
             ceiling: 65535,
         });
-        assert!(floor.iter().zip(&free).all(|(a, b)| *a == START.max(*b)));
+        assert!(above.iter().all(|l| *l == START));
+        // A floor below the ground stops the troughs and the deeps at it.
+        let low = START - 200;
+        let floor = laid(Limits {
+            floor: low,
+            ceiling: 65535,
+        });
+        assert!(free.iter().any(|l| *l < low));
+        assert!(floor.iter().zip(&free).all(|(a, b)| *a == low.max(*b)));
         let ceiling = laid(Limits {
             floor: 0,
             ceiling: 20000,

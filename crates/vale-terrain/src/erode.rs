@@ -580,9 +580,8 @@ impl Erosion {
     }
 
     /// Sets the limits of each later step and of each later call of `raise`.
-    /// A step does not move a cell from above the floor to below it, and it
-    /// does not lower a cell at or below the floor. `raise` does the same at
-    /// the ceiling.
+    /// A step and `raise` do not change a cell outside the limits, and they
+    /// do not move a cell past a limit.
     pub fn set_limits(&mut self, limits: Limits) {
         self.limits = limits;
     }
@@ -715,10 +714,10 @@ impl Erosion {
         self.cells_under(brushes, |_, row, x, weight| {
             rises.push((row * side + x, weight * strength));
         });
-        let ceiling = f64::from(self.limits.ceiling);
+        let limits = self.limits;
         for (i, rise) in rises {
             let old = f64::from(self.heights[i]);
-            let height = (old + rise).min(old.max(ceiling)).min(65535.0) as f32;
+            let height = limits.apply(old, (old + rise).min(65535.0)) as f32;
             self.heights[i] = height;
             let level = height.round() as u16;
             if level != self.levels[i] {
@@ -838,7 +837,7 @@ impl Erosion {
         };
         self.stale = false;
         let side = self.side;
-        let floor = f32::from(self.limits.floor);
+        let limits = self.limits;
         let cell = |i: u32| match place {
             Some((x0, y0, width)) => (y0 + i as usize / width) * side + x0 + i as usize % width,
             None => i as usize,
@@ -861,7 +860,8 @@ impl Erosion {
             let area = f64::from(flow.area[at as usize]) / self.min_area;
             let power = rate * f64::from(weights[i]) * area.sqrt() / length;
             let new = f64::from(below) + f64::from(height - below) / (1.0 + power);
-            self.heights[i] = (new as f32).clamp(below, height).max(height.min(floor));
+            let new = (new as f32).clamp(below, height);
+            self.heights[i] = limits.apply(f64::from(height), f64::from(new)) as f32;
         }
         if place.is_none() {
             self.flow = Some(flow);
