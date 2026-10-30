@@ -17,11 +17,11 @@ use vale_app::ui::atlas::measure::measure_lines;
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_COLOR, BORDER_WIDTH, CENTER_ON_FRAME,
-    DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF,
+    DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EDGE_LABELS, EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF,
     EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
-    INTERVAL, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON, PREVIOUS_PAGE, PROJECTION,
-    REMOVE_OVERRIDES, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, STYLE_FOR_THIS_MAP, WIDTH,
-    custom_row, page_title, readout_text,
+    INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON, PREVIOUS_PAGE,
+    PROJECTION, REMOVE_OVERRIDES, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, STYLE_FOR_THIS_MAP,
+    WIDTH, custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO,
@@ -40,8 +40,8 @@ use vale_render::Item;
 use vale_sphere::measure::{path_length, ring_area};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
-    Feature, FrameRecord, FrameShape, Geometry, GeometryKind, LayerId, MapId, PageUnits, Project,
-    ProjectFile, World,
+    CoordFormat, Feature, FrameRecord, FrameShape, Geometry, GeometryKind, LayerId, MapId,
+    PageUnits, Project, ProjectFile, World,
 };
 
 type Pad = Harness<'static, AppState>;
@@ -1587,13 +1587,32 @@ fn the_graticule_controls_work_with_a_finger() {
         assert!(width > 1.5, "{size:?}: {width}");
         assert_eq!((width * 10.0).round() / 10.0, width);
         check_controls(&h, "graticule width");
+
+        scroll_to(&mut h, LABEL_FORMATS[1]);
+        check_controls(&h, "edge labels");
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-edge-labels");
+        }
+        tap(&mut h, LABEL_FORMATS[1]);
+        assert_eq!(
+            frame(&h, 1).graticule.format,
+            CoordFormat::Decimal,
+            "{size:?}"
+        );
+        tap(&mut h, LABEL_FORMATS[0]);
+        assert_eq!(frame(&h, 1).graticule.format, CoordFormat::Dms, "{size:?}");
+        scroll_to(&mut h, EDGE_LABELS);
+        tap(&mut h, EDGE_LABELS);
+        assert!(!frame(&h, 1).graticule.labels, "{size:?}");
+        assert!(control(&h, LABEL_FORMATS[0]).is_none(), "{size:?}");
     }
 }
 
 #[test]
 fn the_graticule_settings_survive_a_close_and_an_open() {
     use vale_app::ui::atlas::{
-        set_graticule, set_graticule_color, set_graticule_interval, set_graticule_width,
+        set_graticule, set_graticule_color, set_graticule_format, set_graticule_interval,
+        set_graticule_labels, set_graticule_width,
     };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
@@ -1609,6 +1628,8 @@ fn the_graticule_settings_survive_a_close_and_an_open() {
     set_graticule_interval(st, main, Some(5.0 / 60.0));
     set_graticule_color(st, main, [10, 20, 30]);
     set_graticule_width(st, main, 1.3);
+    set_graticule_format(st, main, CoordFormat::Decimal);
+    set_graticule_labels(st, inset, false);
     set_graticule(st, inset, false);
     h.run_steps(2);
     let mut project = h.state().doc.project.clone();
@@ -1623,7 +1644,11 @@ fn the_graticule_settings_survive_a_close_and_an_open() {
     assert_eq!(g.interval, Some(5.0 / 60.0));
     assert_eq!(g.color, [10, 20, 30]);
     assert_eq!(g.width, 1.3);
-    assert!(!doc.project.atlas.frame(inset).unwrap().graticule.on);
+    assert!(g.labels);
+    assert_eq!(g.format, CoordFormat::Decimal);
+    let inset = &doc.project.atlas.frame(inset).unwrap().graticule;
+    assert!(!inset.on);
+    assert!(!inset.labels);
 }
 
 #[test]

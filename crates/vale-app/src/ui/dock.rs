@@ -5,7 +5,8 @@
 use eframe::egui;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
 use vale_store::{
-    BlendMode, Border, FrameRecord, FrameShape, Graticule, LayerId, PageUnits, RasterDisplay,
+    BlendMode, Border, CoordFormat, FrameRecord, FrameShape, Graticule, LayerId, PageUnits,
+    RasterDisplay,
 };
 
 use super::elevation::{DISPLAYS, blend_label};
@@ -15,11 +16,11 @@ use super::atlas::{self, AtlasSelection, FrameTab};
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_WIDTH,
     CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
-    DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
-    INTERVAL, LATITUDE, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, OBLIQUE, ORIENTATIONS, PAGE_NAME,
-    POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION,
-    SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
-    length_text, unit_name,
+    DELETE_PROJECTION, EDGE_LABELS, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH,
+    HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LONGITUDE, MAP_NAME, MAP_STYLE_HINT,
+    OBLIQUE, ORIENTATIONS, PAGE_NAME, POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES,
+    REMOVE_VERTEX, ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES,
+    WIDTH, custom_row, length_text, unit_name,
 };
 use super::pad::{GRATICULE, NO_LAYERS};
 use super::{AppState, inspector, style_editor};
@@ -189,7 +190,8 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     }
 }
 
-/// The interval, the color, and the width of the graticule of a frame.
+/// The interval, the color, the width, and the edge labels of the graticule
+/// of a frame.
 fn graticule_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let (id, g) = (frame.id, &frame.graticule);
     let Some((drawn, auto)) = atlas::graticule_intervals(state, id) else {
@@ -237,6 +239,20 @@ fn graticule_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) 
             }
             ui.end_row();
         });
+    let mut labels = g.labels;
+    if ui.checkbox(&mut labels, EDGE_LABELS).changed() {
+        atlas::set_graticule_labels(state, id, labels);
+    }
+    if g.labels {
+        ui.horizontal(|ui| {
+            ui.label(LABEL_FORMAT);
+            for (format, text) in CoordFormat::ALL.into_iter().zip(LABEL_FORMATS) {
+                if ui.selectable_label(g.format == format, text).clicked() {
+                    atlas::set_graticule_format(state, id, format);
+                }
+            }
+        });
+    }
 }
 
 /// The color and the width of the border of a frame.

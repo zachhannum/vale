@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
-use vale_store::{Border, FrameShape, Graticule, LayerId, MapId, PageUnits, RasterId};
+use vale_store::{Border, CoordFormat, FrameShape, Graticule, LayerId, MapId, PageUnits, RasterId};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
@@ -45,6 +45,10 @@ pub const AUTO_INTERVAL: &str = "Auto interval";
 pub const INTERVAL: &str = "Interval";
 pub const GRATICULE_COLOR: &str = "Graticule color";
 pub const GRATICULE_WIDTH: &str = "Graticule width";
+pub const EDGE_LABELS: &str = "Edge labels";
+pub const LABEL_FORMAT: &str = "Label format";
+/// The choices of the label format, in the order of `CoordFormat::ALL`.
+pub const LABEL_FORMATS: [&str; 2] = ["DMS", "Decimal"];
 pub const BORDER: &str = "Border";
 pub const BORDER_COLOR: &str = "Border color";
 pub const BORDER_WIDTH: &str = "Border width";
@@ -840,8 +844,8 @@ fn frame_tab(
     }
 }
 
-/// The rows of the graticule of a frame: the interval, the color, and the
-/// width. The interval slider shows the interval that the frame draws, and
+/// The rows of the graticule of a frame: the interval, the color, the
+/// width, and the edge labels. The interval slider shows the interval that the frame draws, and
 /// a drag on it sets the interval by hand. A tap on the color opens a color
 /// picker below it.
 fn graticule_rows(
@@ -896,6 +900,17 @@ fn graticule_rows(
     let name = GRATICULE_WIDTH;
     if widgets::row_slider(ui, controls, name, name, &mut fraction, &text) {
         atlas::set_graticule_width(state, id, lo + fraction * (hi - lo));
+    }
+
+    let mut labels = g.labels;
+    if widgets::switch_row(ui, controls, EDGE_LABELS, EDGE_LABELS, &mut labels) {
+        atlas::set_graticule_labels(state, id, labels);
+    }
+    if g.labels {
+        let active = CoordFormat::ALL.iter().position(|f| *f == g.format);
+        if let Some(i) = widgets::choice_row(ui, controls, LABEL_FORMAT, &LABEL_FORMATS, active) {
+            atlas::set_graticule_format(state, id, CoordFormat::ALL[i]);
+        }
     }
 }
 

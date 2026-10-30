@@ -1804,6 +1804,21 @@ pub fn set_graticule_color(state: &mut AppState, id: FrameId, color: Rgb) {
     });
 }
 
+/// Turns the edge labels of the graticule of a frame on or off.
+pub fn set_graticule_labels(state: &mut AppState, id: FrameId, on: bool) {
+    edit_frame(state, id, |f, _| {
+        f.graticule.labels = on;
+        true
+    });
+}
+
+pub fn set_graticule_format(state: &mut AppState, id: FrameId, format: CoordFormat) {
+    edit_frame(state, id, |f, _| {
+        f.graticule.format = format;
+        true
+    });
+}
+
 /// The graticule interval that a frame draws, and the interval from its
 /// scale, in degrees. With the graticule off, the first is the second.
 pub fn graticule_intervals(state: &mut AppState, id: FrameId) -> Option<(f64, f64)> {
