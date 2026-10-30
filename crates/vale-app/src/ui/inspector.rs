@@ -158,7 +158,9 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         state.touch();
     }
     if pick_font {
-        state.font_dialog = Some(super::font_dialog::FontDialog::new(info.id));
+        state.font_dialog = Some(super::font_dialog::FontDialog::new(
+            super::FontTarget::Layer(info.id),
+        ));
     }
     ui.add_space(6.0);
 }

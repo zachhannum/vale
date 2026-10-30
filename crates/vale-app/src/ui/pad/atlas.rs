@@ -25,7 +25,7 @@ pub const ADD: &str = "Add";
 pub const MAP_FRAME: &str = "Map frame";
 /// The rows of the Add menu that other tasks add.
 const LATER_ITEMS: [&str; 4] = ["Text", "Legend", "Scale bar", "North arrow"];
-/// The tabs of the panel of a frame. The last one comes in another task.
+/// The tabs of the panel of a frame.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
 pub const MAP_NAME: &str = "Map name";
 pub const MAP_STYLE_HINT: &str = "Changes apply to this map only.";
@@ -91,7 +91,7 @@ fn text_width(ctx: &egui::Context, text: &str) -> f32 {
 }
 
 /// The width of the panel of the selection. The tabs of a frame fit in it.
-fn panel_width(ctx: &egui::Context) -> f32 {
+pub(super) fn panel_width(ctx: &egui::Context) -> f32 {
     let text: f32 = FRAME_TABS.iter().map(|t| text_width(ctx, t)).sum();
     let tabs = text + 2.0 * TAB_PAD * FRAME_TABS.len() as f32 + 2.0 * PAD;
     geometry::RIGHT_PANEL_WIDTH.max(tabs + 2.0 * BODY_PAD)
@@ -99,7 +99,7 @@ fn panel_width(ctx: &egui::Context) -> f32 {
 
 /// The keypad of the field `name`, below the field, if it is open. The
 /// panel scrolls to show the keypad when it opens.
-fn keypad_below(ui: &mut egui::Ui, controls: &mut Controls, name: &str) {
+pub(super) fn keypad_below(ui: &mut egui::Ui, controls: &mut Controls, name: &str) {
     let id = egui::Id::new(("pad-atlas-keypad", name));
     let open = widgets::keypad_field(ui.ctx()).as_deref() == Some(name);
     let shown = ui.data_mut(|d| std::mem::replace(d.get_temp_mut_or_default::<bool>(id), open));
@@ -227,6 +227,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     graticule_color_frame(&ctx, state);
     border_color_frame(&ctx, state);
+    super::labels::color_frame(&ctx, state);
     super::rules::picker_frame(&ctx, state);
     raster_cards(&ctx, state, &mut controls, &rects);
     readout(&ctx, ui, state, &rects);
@@ -582,8 +583,15 @@ fn selection_panel(
             state.atlas.vertex = None;
         }
     };
+    let class_open = super::labels::open_class(state).is_some();
     let rect = match state.atlas.selection {
         AtlasSelection::None => return,
+        AtlasSelection::Frame(id) if class_open => {
+            let Some(rect) = super::labels::class_panel(ctx, state, controls, rects, id) else {
+                return;
+            };
+            rect
+        }
         AtlasSelection::Frame(id) if open_layer(state).is_some() => {
             let Some(rect) = layer_panel(ctx, state, controls, rects, id) else {
                 return;
@@ -605,6 +613,7 @@ fn selection_panel(
                 FrameTab::Frame => "pad-atlas-frame",
                 FrameTab::Projection => "pad-atlas-projection",
                 FrameTab::Layers => "pad-atlas-layers",
+                FrameTab::Labels => "pad-atlas-labels",
             };
             let card = Card {
                 key,
@@ -620,6 +629,7 @@ fn selection_panel(
                     FrameTab::Frame => frame_tab(ui, state, controls, id),
                     FrameTab::Projection => projection_tab(ui, state, controls, id),
                     FrameTab::Layers => layers_tab(ui, state, controls, id),
+                    FrameTab::Labels => super::labels::tab(ui, state, controls, id),
                 };
             show_card(
                 ctx, state, controls, rects, card, on_title, frame_tabs, body,
@@ -712,13 +722,14 @@ fn frame_tabs(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         (FRAME_TABS[0], true),
         (FRAME_TABS[1], true),
         (FRAME_TABS[2], true),
-        (FRAME_TABS[3], false),
+        (FRAME_TABS[3], true),
     ];
     let active = state.atlas.tab as usize;
     match tabs(ui, controls, &items, active) {
         Some(0) => state.atlas.tab = FrameTab::Frame,
         Some(1) => state.atlas.tab = FrameTab::Projection,
         Some(2) => state.atlas.tab = FrameTab::Layers,
+        Some(3) => state.atlas.tab = FrameTab::Labels,
         _ => {}
     }
     ui.add_space(6.0);

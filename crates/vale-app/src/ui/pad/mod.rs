@@ -29,6 +29,7 @@ pub mod filter;
 pub mod fonts;
 pub mod geometry;
 pub mod icons;
+pub mod labels;
 pub mod raster;
 pub mod rules;
 pub mod theme;

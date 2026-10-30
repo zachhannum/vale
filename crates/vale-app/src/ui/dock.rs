@@ -89,12 +89,14 @@ fn frame_panel(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         ui.selectable_value(tab, FrameTab::Frame, FRAME_TABS[0]);
         ui.selectable_value(tab, FrameTab::Projection, FRAME_TABS[1]);
         ui.selectable_value(tab, FrameTab::Layers, FRAME_TABS[2]);
+        ui.selectable_value(tab, FrameTab::Labels, FRAME_TABS[3]);
     });
     ui.add_space(4.0);
     match state.atlas.tab {
         FrameTab::Frame => frame_tab(ui, state, frame),
         FrameTab::Projection => projection_tab(ui, state, frame),
         FrameTab::Layers => layers_tab(ui, state, frame),
+        FrameTab::Labels => labels_tab(ui, state, frame),
     }
     ui.add_space(6.0);
 }
@@ -556,4 +558,93 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
         }
     });
     ui.add_space(6.0);
+}
+
+/// The label classes of the map of a frame, and the controls of the open
+/// class.
+fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    use super::pad::labels::{ADD_CLASS, DELETE_CLASS, HALO, ITALIC, NO_LABEL_LAYERS, PLACEMENT};
+    let map = frame.map;
+    let layers = state.label_layers();
+    if layers.is_empty() {
+        ui.weak(NO_LABEL_LAYERS);
+        return;
+    }
+    let open = state.atlas.open_class();
+    for &(layer, _) in &layers {
+        let name = state
+            .doc
+            .layer(layer)
+            .map_or_else(String::new, |l| l.name.clone());
+        for (i, class) in state.doc.label_classes(Some(map), layer).iter().enumerate() {
+            let text = format!("{} · {name}", class.name);
+            if ui
+                .selectable_label(open == Some((layer, i)), text)
+                .clicked()
+            {
+                let same = open == Some((layer, i));
+                state.atlas.label = (!same).then_some((frame.id, layer, i));
+            }
+        }
+    }
+    if ui.button(ADD_CLASS).clicked()
+        && let Some((layer, i)) = state.add_label_class(map)
+    {
+        state.atlas.label = Some((frame.id, layer, i));
+    }
+    let Some((layer, i)) = state.atlas.open_class() else {
+        return;
+    };
+    let Some(kind) = state.doc.layer(layer).and_then(|l| l.geometry()) else {
+        return;
+    };
+    let Some(mut class) = state.doc.label_classes(Some(map), layer).get(i).cloned() else {
+        state.atlas.label = None;
+        return;
+    };
+    ui.separator();
+    let before = class.clone();
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        ui.text_edit_singleline(&mut class.name);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Text");
+        ui.text_edit_singleline(&mut class.text);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Filter");
+        ui.text_edit_singleline(&mut class.filter);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Size");
+        ui.add(
+            egui::DragValue::new(&mut class.size)
+                .range(4.0..=72.0)
+                .suffix(" pt"),
+        );
+        style_editor::color_button(ui, &mut class.color);
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut class.halo, HALO);
+        ui.checkbox(&mut class.italic, ITALIC);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Priority");
+        ui.add(egui::DragValue::new(&mut class.priority));
+    });
+    egui::ComboBox::from_label(PLACEMENT)
+        .selected_text(class.placement.name())
+        .show_ui(ui, |ui| {
+            for &p in vale_style::LabelPlacement::choices(kind) {
+                ui.selectable_value(&mut class.placement, p, p.name());
+            }
+        });
+    if class != before {
+        state.edit_label_class(map, layer, i, |c| *c = class);
+    }
+    if ui.button(DELETE_CLASS).clicked() {
+        state.delete_label_class(map, layer, i);
+        state.atlas.label = None;
+    }
 }

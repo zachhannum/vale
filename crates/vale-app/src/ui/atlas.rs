@@ -77,6 +77,16 @@ pub enum FrameTab {
     Frame,
     Projection,
     Layers,
+    Labels,
+}
+
+/// A page of the panel of a label class.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ClassPage {
+    /// The layers that the class can label.
+    Layer,
+    /// The placements of the feature type of the layer.
+    Placement,
 }
 
 /// The pan and the zoom of the page on the screen.
@@ -292,6 +302,19 @@ pub struct AtlasState {
     pub layer: Option<(FrameId, LayerId)>,
     /// The page of the panel of `layer`.
     pub layer_page: Option<super::pad::Page>,
+    /// The label class whose panel the Labels tab of this frame shows: its
+    /// layer and its place in the classes of the layer.
+    pub label: Option<(FrameId, LayerId, usize)>,
+    /// The page of the panel of `label`.
+    pub label_page: Option<ClassPage>,
+    /// The color picker of the label class is open.
+    pub label_color: bool,
+    /// The color picker of the label class showed in this frame.
+    pub(crate) label_color_shown: bool,
+    /// The text of the Text field of the label class while it has the focus.
+    pub label_text: String,
+    /// The text of the Filter field of the label class while it has the focus.
+    pub label_filter: String,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The frame of `handles`.
@@ -334,6 +357,17 @@ impl AtlasState {
         }
     }
 
+    /// The label class whose panel the Labels tab of the selected frame
+    /// shows.
+    pub fn open_class(&self) -> Option<(LayerId, usize)> {
+        match (self.selection, self.tab, self.label) {
+            (AtlasSelection::Frame(f), FrameTab::Labels, Some((of, layer, i))) if f == of => {
+                Some((layer, i))
+            }
+            _ => None,
+        }
+    }
+
     /// The screen rectangle of the texture of each frame.
     pub fn texture_rects(&self) -> Vec<Rect> {
         self.images.values().map(|i| i.rect).collect()
@@ -371,6 +405,12 @@ impl Default for AtlasState {
             composes: 0,
             layer: None,
             layer_page: None,
+            label: None,
+            label_page: None,
+            label_color: false,
+            label_color_shown: false,
+            label_text: String::new(),
+            label_filter: String::new(),
             shown: None,
             handles_of: None,
             images: HashMap::new(),

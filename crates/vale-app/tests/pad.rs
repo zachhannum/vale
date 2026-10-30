@@ -26,7 +26,7 @@ use vale_app::ui::pad::{
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
-use vale_app::ui::{Action, AppState, Layout, Workspace, draw, panels};
+use vale_app::ui::{Action, AppState, FontTarget, Layout, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
 use vale_store::{Hillshade, RasterDisplay, RasterId, Units, World};
 use vale_terrain::{Mode, meters_to_level};
@@ -7088,7 +7088,9 @@ fn the_font_row_asks_for_the_font_picker() {
         check_controls(&h, &what);
         tap(&mut h, FONT);
         assert!(
-            h.state().actions.contains(&Action::PickFont(places)),
+            h.state()
+                .actions
+                .contains(&Action::PickFont(FontTarget::Layer(places))),
             "{what}"
         );
         assert_eq!(h.state().pad.page, None, "{what}");
@@ -7096,7 +7098,7 @@ fn the_font_row_asks_for_the_font_picker() {
         // The picker gives a family.
         let pick = |h: &mut Pad, family: &str| {
             h.state_mut()
-                .run_action(Action::SetFont(places, family.into()));
+                .run_action(Action::SetFont(FontTarget::Layer(places), family.into()));
             h.run_steps(3);
         };
         pick(&mut h, "Noto Sans");

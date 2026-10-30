@@ -7,7 +7,7 @@ use super::note_text;
 use super::raster::heading;
 use super::widgets::{self, Controls};
 use crate::fonts::{self, DEFAULT_FAMILY};
-use crate::ui::{Action, AppState, Note};
+use crate::ui::{Action, AppState, FontTarget, Note};
 
 pub const LABELS: &str = "Labels";
 /// The row that opens the font picker.
@@ -25,7 +25,7 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     let mut warning = warning.map(|t| Note::new(t, true, None));
     heading(ui, LABELS);
     if widgets::open_row(ui, controls, FONT, &family).clicked() {
-        state.actions.push(Action::PickFont(id));
+        state.actions.push(Action::PickFont(FontTarget::Layer(id)));
     }
     note_text(ui, None, &mut warning, None);
 }

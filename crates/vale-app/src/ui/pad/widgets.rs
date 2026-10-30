@@ -962,6 +962,46 @@ pub fn text_field(
     text: &mut String,
     valid: bool,
 ) -> Response {
+    field_in(
+        ui,
+        controls,
+        (name, label),
+        suffix,
+        text,
+        valid,
+        theme::body(),
+    )
+}
+
+/// A `text_field` for an expression, in the mono font.
+pub fn code_field(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    text: &mut String,
+    valid: bool,
+) -> Response {
+    field_in(
+        ui,
+        controls,
+        (name, label),
+        None,
+        text,
+        valid,
+        theme::mono(),
+    )
+}
+
+fn field_in(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    (name, label): (&str, &str),
+    suffix: Option<&str>,
+    text: &mut String,
+    valid: bool,
+    font: egui::FontId,
+) -> Response {
     let field = form_row(ui, label);
     let back = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
@@ -977,7 +1017,7 @@ pub fn text_field(
     let edit = egui::TextEdit::singleline(text)
         .id(ui.id().with(name))
         .frame(egui::Frame::NONE)
-        .font(theme::body())
+        .font(font)
         .text_color(color)
         .vertical_align(egui::Align::Center);
     let mut resp = ui.put(inner, edit);
