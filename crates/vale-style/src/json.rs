@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
-pub const STYLE_VERSION: u64 = 3;
+pub const STYLE_VERSION: u64 = 4;
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,6 +58,7 @@ impl LayerStyle {
             "size": l.size,
             "color": l.color.to_hex(),
             "italic": l.italic,
+            "font": l.font,
         });
         json!({ "version": STYLE_VERSION, "rules": rules, "label": label }).to_string()
     }
@@ -342,6 +343,7 @@ fn read_label(m: &Map<String, Json>) -> Result<LabelStyle, StyleError> {
         size: m.get("size").and_then(Json::as_f64).unwrap_or(11.0),
         color,
         italic: m.get("italic").and_then(Json::as_bool).unwrap_or(false),
+        font: optional_text(m, "font"),
     })
 }
 

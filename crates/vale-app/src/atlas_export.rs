@@ -78,6 +78,7 @@ impl PdfExport {
                 path.display()
             ),
         };
+        let fonts = crate::fonts::system()?;
         Ok(PdfExport {
             doc,
             path,
@@ -87,7 +88,7 @@ impl PdfExport {
             list: None,
             pending: None,
             pipeline: Pipeline::new(),
-            fonts: crate::pipeline::fonts()?,
+            fonts,
             output: Some(output),
         })
     }

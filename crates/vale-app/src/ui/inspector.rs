@@ -5,6 +5,7 @@ use eframe::egui;
 use vale_store::{Field, FieldType, GeometryKind, LayerId, Value};
 
 use super::{AppState, style_editor};
+use crate::fonts::DEFAULT_FAMILY;
 
 const MAX_UNPLACED: usize = 200;
 
@@ -80,6 +81,9 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         .layer(info.id)
         .map_or(Vec::new(), |l| l.fields.clone());
     let symbols = state.doc.symbols().clone();
+    let font_warning = (state.doc.entry(info.id))
+        .and_then(|e| crate::fonts::missing(&e.style.label, &state.font_families));
+    let mut pick_font = false;
     let Some(entry) = state.doc.entry_mut(info.id) else {
         return;
     };
@@ -138,12 +142,23 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .changed();
         });
         ui.horizontal(|ui| {
+            ui.label("Font");
+            let current = label.font.as_deref().unwrap_or(DEFAULT_FAMILY);
+            pick_font = ui.button(format!("{current}…")).clicked();
+        });
+        if let Some(warning) = font_warning {
+            ui.label(egui::RichText::new(warning).color(ui.visuals().warn_fg_color));
+        }
+        ui.horizontal(|ui| {
             changed |= ui.checkbox(&mut label.italic, "Italic").changed();
             changed |= style_editor::color_button(ui, &mut label.color);
         });
     }
     if changed {
         state.touch();
+    }
+    if pick_font {
+        state.font_dialog = Some(super::font_dialog::FontDialog::new(info.id));
     }
     ui.add_space(6.0);
 }

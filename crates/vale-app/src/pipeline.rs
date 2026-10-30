@@ -157,12 +157,9 @@ pub struct Pipeline {
     scatter: ScatterCache,
 }
 
-/// Registers both Noto Sans files.
+/// The fonts that ship with the app.
 pub fn fonts() -> anyhow::Result<Fonts> {
-    let mut fonts = Fonts::new();
-    fonts.register(include_bytes!("../../../assets/fonts/NotoSans-Regular.ttf").to_vec())?;
-    fonts.register(include_bytes!("../../../assets/fonts/NotoSans-Italic.ttf").to_vec())?;
-    Ok(fonts)
+    crate::fonts::bundled()
 }
 
 fn extend_bbox(b: &mut Option<Rect>, p: Point) {

@@ -6938,3 +6938,40 @@ fn the_layers_panel_shows_why_an_image_layer_did_not_import() {
     assert!(h.state().doc.project.images().is_empty());
     assert!(h.query_by_label_contains("notes").is_some());
 }
+
+#[test]
+fn the_font_row_asks_for_the_font_picker() {
+    use vale_app::ui::pad::fonts::FONT;
+    let font = |h: &Pad, id| h.state().doc.entry(id).unwrap().style.label.font.clone();
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let places = vector(&h, "Places");
+        tap(&mut h, "Layers");
+        tap(&mut h, "Open Places");
+        scroll_to_control(&mut h, FONT);
+        check_controls(&h, &what);
+        tap(&mut h, FONT);
+        assert!(
+            h.state().actions.contains(&Action::PickFont(places)),
+            "{what}"
+        );
+        assert_eq!(h.state().pad.page, None, "{what}");
+
+        // The picker gives a family.
+        let pick = |h: &mut Pad, family: &str| {
+            h.state_mut()
+                .run_action(Action::SetFont(places, family.into()));
+            h.run_steps(3);
+        };
+        pick(&mut h, "Noto Sans");
+        assert_eq!(font(&h, places), None, "{what}");
+        // A family that the device does not have gives a warning.
+        pick(&mut h, "Lora");
+        assert_eq!(font(&h, places).as_deref(), Some("Lora"), "{what}");
+        scroll_to_control(&mut h, FONT);
+        let warning = "Font Lora is missing. Labels use Noto Sans.";
+        assert!(h.query_by_label(warning).is_some(), "{what}");
+        screenshot::save(&mut h, &format!("pad-font-row-{}", size.0));
+    }
+}

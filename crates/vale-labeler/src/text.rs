@@ -48,6 +48,16 @@ pub struct TextMetrics {
     pub missing_glyphs: usize,
 }
 
+/// A clone shares the fonts, so it does not search the system fonts again.
+impl Clone for Fonts {
+    fn clone(&self) -> Self {
+        Self {
+            fcx: self.fcx.clone(),
+            lcx: LayoutContext::new(),
+        }
+    }
+}
+
 impl Default for Fonts {
     fn default() -> Self {
         Self::new()
@@ -96,6 +106,25 @@ impl Fonts {
         } else {
             Ok(names)
         }
+    }
+
+    /// Whether a registered font has the family `name`.
+    pub fn has_family(&mut self, name: &str) -> bool {
+        self.fcx.collection.family_id(name).is_some()
+    }
+
+    /// The names of all families, registered and system, sorted and without
+    /// duplicates.
+    pub fn families(&mut self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .fcx
+            .collection
+            .family_names()
+            .map(String::from)
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Measure `text` in `style`.
@@ -317,6 +346,17 @@ mod tests {
     fn registers_noto_sans() {
         let names = Fonts::new().register(read("NotoSans-Regular.ttf")).unwrap();
         assert_eq!(names, vec!["Noto Sans".to_string()]);
+    }
+
+    #[test]
+    fn knows_the_registered_families() {
+        let mut f = Fonts::new();
+        assert!(!f.has_family("Noto Sans"));
+        f.register(read("NotoSans-Regular.ttf")).unwrap();
+        assert!(f.has_family("Noto Sans"));
+        assert!(!f.has_family("Noto Serif"));
+        assert_eq!(f.families(), ["Noto Sans"]);
+        assert!(f.clone().has_family("Noto Sans"));
     }
 
     #[test]

@@ -157,7 +157,7 @@ fn the_json_has_a_version() {
     let json = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     let root: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(root["version"], STYLE_VERSION);
-    assert_eq!(STYLE_VERSION, 3);
+    assert_eq!(STYLE_VERSION, 4);
 }
 
 #[test]
@@ -175,6 +175,7 @@ fn json_round_trips() {
     rules.style.rules.extend(two_rules().rules);
     rules.style.rules[1].filter = Filter::new("kind = ");
     rules.label.priority_field = Some("flow".into());
+    rules.label.font = Some("Noto Serif".into());
     styles.push(rules);
     for style in styles {
         let json = style.to_json();
@@ -203,11 +204,11 @@ fn json_errors() {
         root.to_string()
     };
     let newer = edit(&|m| {
-        m.insert("version".into(), 4.into());
+        m.insert("version".into(), 5.into());
     });
     assert_eq!(
         LayerStyle::from_json(&newer),
-        Err(StyleError::Version(Some(4)))
+        Err(StyleError::Version(Some(5)))
     );
     let none = edit(&|m| {
         m.remove("version");
@@ -424,8 +425,8 @@ fn solid_json_is_unchanged() {
     assert_eq!(Stroke::solid(BLUE, 2.0).kind, StrokeKind::default());
     let json = line_with(StrokeKind::Solid).to_json();
     let expected = concat!(
-        r##"{"label":{"color":"#2864a0","enabled":false,"field":null,"italic":true,"priority_field":null,"size":11.0},"##,
-        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":3}"##,
+        r##"{"label":{"color":"#2864a0","enabled":false,"field":null,"font":null,"italic":true,"priority_field":null,"size":11.0},"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":4}"##,
     );
     assert_eq!(json, expected);
 }

@@ -310,3 +310,53 @@ fn inspector_screenshots() {
     // No dark margin: the top-left pixel is the tool bar, not the outer background.
     assert_eq!(img.get_pixel(0, 0), img.get_pixel(1300, 10));
 }
+
+#[test]
+fn the_font_dialog_searches_and_sets_the_font_of_the_labels() {
+    use vale_app::ui::font_dialog::{CANCEL, NO_MATCH, SEARCH};
+    let silkscreen = include_bytes!("data/fonts/Silkscreen-Regular.ttf");
+    let mut h = harness();
+    // Silkscreen stands for a font of the system.
+    let mut fonts = vale_app::fonts::bundled().unwrap();
+    fonts.register(silkscreen.to_vec()).unwrap();
+    h.state_mut().set_fonts(fonts);
+    let places = id_of(&h, "Places");
+    h.state_mut().selected_layer = Some(LayerRef::Vector(places));
+    h.run_steps(2);
+    assert!(h.query_by_label("Font").is_some());
+    h.get_by_label("Noto Sans…").click();
+    h.run_steps(2);
+    assert!(h.state().font_dialog.is_some());
+    h.get_by_label(SEARCH).type_text("silk");
+    h.run_steps(2);
+    screenshot::save(&mut h, "font-dialog");
+    assert!(h.query_by_label("Noto Sans").is_none());
+    h.get_by_label("Silkscreen").click();
+    h.run_steps(3);
+    let s = h.state();
+    assert!(s.font_dialog.is_none());
+    let label = &s.doc.entry(places).unwrap().style.label;
+    assert_eq!(label.font.as_deref(), Some("Silkscreen"));
+    let in_silkscreen = s.composed.as_ref().unwrap().list.items.iter().any(|i| {
+        matches!(i, vale_render::Item::Glyphs(g) if g.font.data.as_ref() == silkscreen.as_slice())
+    });
+    assert!(in_silkscreen, "no label is in Silkscreen");
+
+    // A search with no match, and Cancel.
+    h.get_by_label("Silkscreen…").click();
+    h.run_steps(2);
+    h.get_by_label(SEARCH).type_text("zzz");
+    h.run_steps(2);
+    assert!(h.query_by_label(NO_MATCH).is_some());
+    h.get_by_label(CANCEL).click();
+    h.run_steps(2);
+    assert!(h.state().font_dialog.is_none());
+
+    let entry = h.state_mut().doc.entry_mut(places).unwrap();
+    entry.style.label.font = Some("Lora".into());
+    h.run_steps(2);
+    assert!(
+        h.query_by_label("Font Lora is missing. Labels use Noto Sans.")
+            .is_some()
+    );
+}

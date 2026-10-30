@@ -25,6 +25,7 @@ pub mod atlas;
 pub mod browser;
 pub mod fields;
 pub mod filter;
+pub mod fonts;
 pub mod geometry;
 pub mod icons;
 pub mod raster;
@@ -1649,6 +1650,9 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     widgets::value_row(ui, "Type", kind);
     widgets::value_row(ui, "Features", &features);
     rules::section(ui, state, controls, id);
+    if kind != "Polygons" {
+        fonts::section(ui, state, controls, id);
+    }
     fields::list(ui, state, controls, id);
 }
 

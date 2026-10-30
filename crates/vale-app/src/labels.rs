@@ -57,7 +57,7 @@ pub fn place(
             style: TextStyle {
                 italic: label.italic,
                 letter_spacing: if is_line { 0.5 } else { 0.0 },
-                ..TextStyle::new("Noto Sans", label.size)
+                ..TextStyle::new(crate::fonts::family(label, fonts), label.size)
             },
             priority: position as i32,
             margin: 1.0,
