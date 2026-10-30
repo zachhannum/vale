@@ -3,8 +3,11 @@
 //! A step lowers each cell under the brush toward the cell that takes its
 //! water. The sea level has no effect: the water drains over the land and
 //! the sea floor to the lowest ground. The rule is stream power: the change grows with the area that
-//! drains through the cell and with the slope to the receiver. The cells are
-//! the cells of the coarse copy of the heightmap or the cells of a window.
+//! drains through the cell and with the slope of the ground. The slope is the
+//! magnitude of the gradient, so the ground erodes at one rate in each
+//! direction. A hillslope term rounds the ridges, where the drained area is
+//! small. The cells are the cells of the coarse copy of the heightmap or the
+//! cells of a window.
 
 use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
@@ -23,6 +26,30 @@ const FADE: usize = 4;
 /// The smallest number of cells between the cells of the brushes and the
 /// side of the rectangle that gives the flow of a step of `Erosion::steps`.
 const NEAR_ROOM: usize = 8;
+
+/// The hillslope coefficient over the constant of Hack's law. The rate of a
+/// cell is `sqrt(a) + HILLSLOPE * a^-0.6`, where `a` is the drained area over
+/// `RIVER_MIN_AREA`. The two terms are equal at a drained area of about
+/// `RIVER_MIN_AREA * HILLSLOPE^0.91`.
+const HILLSLOPE: f64 = 5e-4;
+
+/// The rule of a step.
+#[derive(Clone, Copy, Debug)]
+struct Rule {
+    /// Whether the slope is the magnitude of the gradient. If not, the slope
+    /// is the drop to the receiver over the length to it.
+    gradient: bool,
+    hillslope: f64,
+}
+
+impl Default for Rule {
+    fn default() -> Rule {
+        Rule {
+            gradient: true,
+            hillslope: HILLSLOPE,
+        }
+    }
+}
 
 /// One touch of the erode brush on the sphere.
 #[derive(Clone, Copy, Debug)]
@@ -427,6 +454,7 @@ pub struct Erosion {
     /// Whether `levels` changed after `flow`.
     stale: bool,
     limits: Limits,
+    rule: Rule,
 }
 
 /// The effect of the brushes of one step.
@@ -549,6 +577,7 @@ impl Erosion {
         let mut erosion = Erosion::of_window(&heights, inflow);
         erosion.heights = kept;
         erosion.limits = self.limits;
+        erosion.rule = self.rule;
         erosion
     }
 
@@ -576,6 +605,7 @@ impl Erosion {
             flow: None,
             stale: true,
             limits: Limits::default(),
+            rule: Rule::default(),
         }
     }
 
@@ -754,7 +784,10 @@ impl Erosion {
     /// that the step before it left.
     ///
     /// A cell with stream power `f` goes to the height `r + (h - r) / (1 + f)`,
-    /// where `r` is the new height of its receiver. Thus a cell does not go
+    /// where `r` is the new height of its receiver. The stream power is the
+    /// rate times the gradient over the drop to the receiver before the step.
+    /// The gradient takes the steeper of the two drops to the lower neighbors
+    /// along each axis, from the heights before the step. Thus a cell does not go
     /// below its receiver at any rate. A cell that is not above the new
     /// height of its receiver does not change. Thus a flat sea floor stays,
     /// and the floor of a pit stays until the rim comes down to it.
@@ -782,6 +815,16 @@ impl Erosion {
         let (x0, y0) = (x0.saturating_sub(room), y0.saturating_sub(room));
         let (x1, y1) = ((x1 + room).min(last), (y1 + room).min(last));
         (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+    }
+
+    /// The stream power and the hillslope term of a cell that drains `area`
+    /// steradians, at a rate of 1 and a slope of 1. The power of an area does
+    /// not depend on the size of the cells, if the slope is in levels for each
+    /// cell.
+    fn power(&self, area: f64) -> f64 {
+        let a = area / RIVER_MIN_AREA;
+        let cells = (RIVER_MIN_AREA / self.min_area).sqrt();
+        cells * (a.sqrt() + self.rule.hillslope * a.powf(-0.6))
     }
 
     /// One step. If `near` is true and the cells are those of a window, the
@@ -843,6 +886,7 @@ impl Erosion {
             Some((x0, y0, width)) => (y0 + i as usize / width) * side + x0 + i as usize % width,
             None => i as usize,
         };
+        let before = self.rule.gradient.then(|| self.heights.clone());
         // Each receiver has its new height before the cells above it.
         for &at in &flow.order {
             let i = cell(at);
@@ -856,10 +900,23 @@ impl Erosion {
             if height <= below {
                 continue;
             }
-            let diagonal = !self.neighbors(i)[..4].contains(&(to as u32));
-            let length = if diagonal { SQRT_2 } else { 1.0 };
-            let area = f64::from(flow.area[at as usize]) / self.min_area;
-            let power = rate * f64::from(weights[i]) * area.sqrt() / length;
+            let neighbors = self.neighbors(i);
+            let slope = match &before {
+                Some(before) => {
+                    let h = before[i];
+                    let drop = |k: usize| match neighbors[k] {
+                        NONE => 0.0,
+                        n => f64::from(h - before[n as usize]).max(0.0),
+                    };
+                    let (gx, gy) = (drop(0).max(drop(1)), drop(2).max(drop(3)));
+                    let drop = f64::from(h - before[to]);
+                    if drop > 0.0 { gx.hypot(gy) / drop } else { 0.0 }
+                }
+                None if neighbors[..4].contains(&(to as u32)) => 1.0,
+                None => 1.0 / SQRT_2,
+            };
+            let area = f64::from(flow.area[at as usize]);
+            let power = rate * f64::from(weights[i]) * self.power(area) * slope;
             let new = f64::from(below) + f64::from(height - below) / (1.0 + power);
             self.heights[i] = (new as f32).clamp(below, height).max(height.min(floor));
         }
@@ -919,6 +976,7 @@ mod tests {
     use crate::flow::{FLOW_SIZE, cell_at, cell_dir, sea};
     use crate::heightmap::{Heightmap, Mode, Stamp};
     use crate::math::{angle, lonlat_to_dir, normalize};
+    use std::f64::consts::TAU;
 
     const _: fn() = || {
         fn is_send<T: Send>() {}
@@ -2003,5 +2061,146 @@ mod tests {
             );
         }
         assert!(erosion.stale);
+    }
+
+    /// The rule of the step before the gradient and the hillslope term.
+    const RECEIVER_SLOPE: Rule = Rule {
+        gradient: false,
+        hillslope: 0.0,
+    };
+
+    /// The rate of one weak step on a cone, without the factor of the
+    /// drained area, in 16 sectors around the top of the cone. The first
+    /// sector is centered on the `u` axis of the face. On the cone, the
+    /// magnitude of the gradient is the same at each cell.
+    fn cone_rates(rule: Rule) -> [f64; 16] {
+        let m = 128;
+        let top = [1.0, 0.0, 0.0];
+        let heights = CoarseHeights::from_fn(m, |d| {
+            let r = angle(d, top);
+            meters_to_level(if r < 0.45 { 4000.0 - 8000.0 * r } else { OCEAN })
+        });
+        let mut erosion = Erosion::global(&heights, 8192);
+        erosion.rule = rule;
+        let brush = ErodeBrush {
+            center: top,
+            radius: 0.6,
+            hardness: 1.0,
+            flow: 1.0,
+        };
+        let rate = 1e-4;
+        let before = erosion.heights.clone();
+        erosion.step(&[brush], rate);
+        let flow = erosion.flow.as_ref().expect("a step ran");
+        let sector = TAU / 16.0;
+        let (mut sums, mut counts) = ([0.0; 16], [0.0; 16]);
+        for y in 0..m {
+            for x in 0..m {
+                let d = cell_dir(m, 0, x, y);
+                if !(0.05..0.35).contains(&angle(d, top)) {
+                    continue;
+                }
+                let i = y * m + x;
+                let power = erosion.power(f64::from(flow.area[i]));
+                let around = d[2].atan2(d[1]).rem_euclid(TAU);
+                let k = (around / sector).round() as usize % 16;
+                sums[k] += f64::from(before[i] - erosion.heights[i]) / (rate * power);
+                counts[k] += 1.0;
+            }
+        }
+        std::array::from_fn(|k| sums[k] / counts[k])
+    }
+
+    /// The mean rate of the sectors between the grid directions over the
+    /// mean rate of the sectors on the grid directions.
+    fn octagon(rates: [f64; 16]) -> f64 {
+        let between: f64 = rates.iter().skip(1).step_by(2).sum();
+        let on: f64 = rates.iter().step_by(2).sum();
+        between / on
+    }
+
+    #[test]
+    fn a_cone_erodes_at_one_rate_in_each_direction() {
+        let spread = |rates: [f64; 16]| {
+            let (low, high) = rates
+                .iter()
+                .fold((f64::MAX, 0.0f64), |(l, h), &r| (l.min(r), h.max(r)));
+            high / low
+        };
+        let rates = cone_rates(Rule::default());
+        assert!(spread(rates) < 1.03, "{rates:.1?}");
+        // The old step is slower between the 8 directions of the grid.
+        let old = cone_rates(RECEIVER_SLOPE);
+        assert!(spread(old) > 1.05, "{old:.1?}");
+        assert!(octagon(old) < 0.975 && octagon(rates) > 0.98);
+    }
+
+    /// Two ridges in a window of cells 2 texels wide, with a valley between
+    /// them, after 40 steps. The valley goes down to the sea at the lowest
+    /// `x`. It gives the mean of the curvature across each crest, and the
+    /// heights of the valley floor.
+    fn eroded_ridges(rule: Rule) -> (f64, Vec<f32>) {
+        let window = Window::centered(lonlat_to_dir(20.0, 0.4), 8192, 2, 128);
+        let mid = 64.0;
+        let heights = WindowHeights::from_fn(window, |d| {
+            let (x, y) = window.place(d).expect("a place in the window");
+            let (x, across) = (x.floor(), (y.floor() - mid).abs());
+            if !(24.0..105.0).contains(&x) || across > 20.0 {
+                return meters_to_level(OCEAN);
+            }
+            let base = 100.0 + 15.0 * (x - 24.0);
+            meters_to_level(base + 1500.0 * (1.0 - (across - 10.0).abs() / 10.0))
+        });
+        let mut erosion = Erosion::window_alone(&heights);
+        erosion.rule = rule;
+        let brushes = [34, 64, 94].map(|x| ErodeBrush {
+            center: window.cell_dir(x, 64),
+            radius: 0.006,
+            hardness: 1.0,
+            flow: 1.0,
+        });
+        for _ in 0..40 {
+            erosion.step(&brushes, 0.05);
+        }
+        let m = window.cells;
+        let h = |x: usize, y: usize| f64::from(erosion.heights[y * m + x]);
+        let (mut sharp, mut count) = (0.0, 0.0);
+        for x in 34..=94 {
+            for crest in [54, 74] {
+                sharp += 2.0 * h(x, crest) - h(x, crest - 1) - h(x, crest + 1);
+                count += 2.0;
+            }
+        }
+        let floor = (34..=94).map(|x| erosion.heights[64 * m + x]).collect();
+        (sharp / count, floor)
+    }
+
+    #[test]
+    fn the_hillslope_term_rounds_the_crests_and_keeps_the_valleys() {
+        let (sharp, sharp_floor) = eroded_ridges(Rule {
+            hillslope: 0.0,
+            ..Rule::default()
+        });
+        let (round, floor) = eroded_ridges(Rule::default());
+        assert!(round < 0.9 * sharp, "{round} {sharp}");
+        let fall = sharp_floor[sharp_floor.len() - 1] - sharp_floor[0];
+        let lowest = |floor: &[f32]| floor.iter().copied().fold(f32::MAX, f32::min);
+        assert!((lowest(&floor) - lowest(&sharp_floor)).abs() < 0.01 * fall);
+        for (a, b) in floor.iter().zip(&sharp_floor) {
+            assert!((a - b).abs() < 0.01 * fall, "{a} {b} {fall}");
+        }
+    }
+
+    #[test]
+    fn the_slope_does_not_change_the_rivers() {
+        let heights = CoarseHeights::from_fn(48, lumpy);
+        let flow = |rule: Rule| {
+            let mut erosion = Erosion::global(&heights, 8192);
+            erosion.rule = rule;
+            erosion.step(&brushes_on_all_sides(), 1.0);
+            let flow = erosion.flow.expect("a step ran");
+            (flow.receiver, flow.area)
+        };
+        assert!(flow(Rule::default()) == flow(RECEIVER_SLOPE));
     }
 }
