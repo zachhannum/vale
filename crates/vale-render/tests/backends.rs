@@ -57,6 +57,7 @@ fn tokyo() -> (GlyphRun, Rect) {
             priority: 0,
             margin: 0.0,
             placement: Placement::Point(PointPlacement::default()),
+            duplicate_distance: None,
         }],
         features: vec![Feature {
             id: 1,

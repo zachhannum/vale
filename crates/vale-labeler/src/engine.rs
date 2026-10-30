@@ -327,7 +327,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                 (f.class, f.text.clone())
             })
             .collect(),
-        input.options.duplicate_distance,
+        &input.classes,
     );
     let mut conflict_buf: Vec<usize> = Vec::new();
     for &i in &order {

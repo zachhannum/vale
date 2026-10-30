@@ -137,6 +137,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             priority: 3,
             margin: 1.0,
             placement: Placement::Point(PointPlacement::default()),
+            duplicate_distance: Some(400.0),
         },
         LabelClass {
             name: "rivers".into(),
@@ -152,6 +153,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
                 offset: 4.0,
                 ..Default::default()
             }),
+            duplicate_distance: Some(400.0),
         },
         LabelClass {
             name: "cities".into(),
@@ -159,6 +161,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             priority: 1,
             margin: 1.0,
             placement: Placement::Point(PointPlacement::default()),
+            duplicate_distance: Some(400.0),
         },
     ];
 
@@ -220,11 +223,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             classes,
             features,
             obstacles: Vec::new(),
-            options: Options {
-                seed,
-                improve,
-                duplicate_distance: Some(400.0),
-            },
+            options: Options { seed, improve },
         },
     })
 }

@@ -146,6 +146,9 @@ pub struct LabelClass {
     /// Collision boxes grow by this on every side.
     pub margin: f64,
     pub placement: Placement,
+    /// Minimum distance between labels of this class with the same text.
+    /// `None` keeps all of them.
+    pub duplicate_distance: Option<f64>,
 }
 
 /// Page-space geometry of a feature.
@@ -191,8 +194,6 @@ pub struct Options {
     pub seed: u64,
     /// Run the seeded improvement search after the greedy pass.
     pub improve: bool,
-    /// Minimum distance between labels with the same class and text.
-    pub duplicate_distance: Option<f64>,
 }
 
 impl Default for Options {
@@ -200,7 +201,6 @@ impl Default for Options {
         Self {
             seed: 0x5EED,
             improve: true,
-            duplicate_distance: None,
         }
     }
 }

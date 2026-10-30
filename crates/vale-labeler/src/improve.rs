@@ -3,6 +3,7 @@
 //! move that needs occupied space removes the labels in the way.
 
 use crate::engine::{Instance, State};
+use crate::model::LabelClass;
 use std::collections::HashMap;
 
 /// SplitMix64, a small seeded generator.
@@ -32,22 +33,26 @@ impl SplitMix64 {
 }
 
 /// The duplicate rule: same class and text, different instances, and centers
-/// of the label bounds closer than `distance`.
+/// of the label bounds closer than the duplicate distance of the class.
 pub(crate) struct Dup {
-    distance: Option<f64>,
+    /// The duplicate distance of each group.
+    distance: Vec<Option<f64>>,
     /// Instances that share a (class, text) pair, by group.
     members: Vec<Vec<usize>>,
     group: Vec<usize>,
 }
 
 impl Dup {
-    pub fn new(keys: Vec<(usize, String)>, distance: Option<f64>) -> Self {
+    pub fn new(keys: Vec<(usize, String)>, classes: &[LabelClass]) -> Self {
         let mut ids: HashMap<(usize, String), usize> = HashMap::new();
         let mut members: Vec<Vec<usize>> = Vec::new();
+        let mut distance = Vec::new();
         let mut group = Vec::with_capacity(keys.len());
         for (i, k) in keys.into_iter().enumerate() {
+            let class = k.0;
             let g = *ids.entry(k).or_insert_with(|| {
                 members.push(Vec::new());
+                distance.push(classes[class].duplicate_distance);
                 members.len() - 1
             });
             members[g].push(i);
@@ -68,7 +73,9 @@ impl Dup {
         cand: usize,
         out: &mut Vec<usize>,
     ) {
-        let Some(d) = self.distance else { return };
+        let Some(d) = self.distance[self.group[inst]] else {
+            return;
+        };
         let c = instances[inst].candidates[cand].bounds.center();
         for &m in &self.members[self.group[inst]] {
             if m == inst {
