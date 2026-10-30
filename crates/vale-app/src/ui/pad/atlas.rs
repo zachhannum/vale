@@ -669,6 +669,18 @@ fn tabs(
     items: &[(&str, bool)],
     active: usize,
 ) -> Option<usize> {
+    let named: Vec<_> = items.iter().map(|&(l, e)| (l, l, e)).collect();
+    named_tabs(ui, controls, &named, active)
+}
+
+/// `tabs` with a name for each tab that differs from its label. Each item is
+/// a name, a label, and the enabled state.
+pub(super) fn named_tabs(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    items: &[(&str, &str, bool)],
+    active: usize,
+) -> Option<usize> {
     let (row, _) = ui.allocate_exact_size(
         vec2(ui.available_width(), TOUCH + 2.0 * PAD),
         egui::Sense::hover(),
@@ -678,7 +690,7 @@ fn tabs(
     let ctx = ui.ctx().clone();
     let widths: Vec<f32> = items
         .iter()
-        .map(|(label, _)| text_width(&ctx, label) + 2.0 * TAB_PAD)
+        .map(|(_, label, _)| text_width(&ctx, label) + 2.0 * TAB_PAD)
         .collect();
     let room = row.width() - 2.0 * PAD;
     let rest = room - widths.iter().sum::<f32>();
@@ -687,11 +699,11 @@ fn tabs(
     let shrink = (room / (room - rest)).min(1.0);
     let mut left = row.left() + PAD;
     let mut chosen = None;
-    for (index, &(label, enabled)) in items.iter().enumerate() {
+    for (index, &(name, label, enabled)) in items.iter().enumerate() {
         let width = widths[index] * shrink + rest.max(0.0) / n;
         let rect = Rect::from_min_size(pos2(left, row.top() + PAD), vec2(width, TOUCH));
         left += width;
-        let resp = widgets::tap_area(ui, controls, rect, label, enabled);
+        let resp = widgets::tap_area(ui, controls, rect, name, enabled);
         let on = index == active;
         if on || resp.is_pointer_button_down_on() {
             ui.painter().rect_filled(

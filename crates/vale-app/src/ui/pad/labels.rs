@@ -6,16 +6,16 @@ use eframe::egui::{self, Align2, Rect, pos2, vec2};
 use vale_labeler::Face;
 use vale_store::{FrameId, GeometryKind, LayerId, MapId};
 use vale_style::expr::{Expr, Filter};
-use vale_style::{LabelClass, LabelPlacement, TextCase};
+use vale_style::{LabelClass, LabelPlacement, LabelPosition, TextCase};
 
-use super::atlas::{FRAME_TABS, panel_width};
+use super::atlas::{FRAME_TABS, named_tabs, panel_width};
 use super::filter;
 use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Card, CardTitle, note_text, show_card, theme};
 use crate::fonts::{self, DEFAULT_FAMILY};
-use crate::ui::atlas::{AtlasSelection, ClassColor, ClassDrag, ClassPage};
+use crate::ui::atlas::{AtlasSelection, ClassColor, ClassDrag, ClassPage, ClassSegment};
 use crate::ui::{Action, AppState, FontTarget, Note};
 
 pub const ADD_CLASS: &str = "Add class";
@@ -37,6 +37,23 @@ pub const HALO: &str = "Halo";
 pub const HALO_COLOR: &str = "Halo color";
 pub const HALO_WIDTH: &str = "Halo width";
 pub const PLACEMENT: &str = "Placement";
+/// The segments of the panel of a class: the name of each control and its
+/// label.
+pub const SEGMENTS: [(&str, &str); 3] = [
+    ("Text segment", "Text"),
+    ("Placement segment", "Placement"),
+    ("Conflicts segment", "Conflicts"),
+];
+/// The row of the positions of a point class, and the title of its page.
+pub const POSITIONS: &str = "Positions";
+pub const OFFSET: &str = "Offset";
+pub const REPEAT: &str = "Repeat";
+pub const REPEAT_INTERVAL: &str = "Repeat interval";
+pub const CURVE_LIMIT: &str = "Curve limit";
+pub const SMOOTHING: &str = "Smoothing";
+pub const BUFFER: &str = "Buffer";
+pub const REMOVE_DUPLICATES: &str = "Remove duplicates";
+pub const DUPLICATE_DISTANCE: &str = "Duplicate distance";
 pub const MOVE_UP: &str = "Move up";
 pub const MOVE_DOWN: &str = "Move down";
 /// The start of the name of the handle of a row of the class list. The
@@ -49,6 +66,18 @@ pub const SIZES: (f64, f64) = (4.0, 72.0);
 pub const SPACINGS: (f64, f64) = (-0.1, 1.0);
 /// The thinnest and the widest halo, in points.
 pub const HALO_WIDTHS: (f64, f64) = (0.5, 8.0);
+/// The smallest and the largest offset, in points.
+pub const OFFSETS: (f64, f64) = (0.0, 20.0);
+/// The shortest and the longest repeat interval, in points.
+pub const REPEAT_INTERVALS: (f64, f64) = (50.0, 2000.0);
+/// The smallest and the largest curve limit, in degrees per letter.
+pub const CURVE_LIMITS: (f64, f64) = (5.0, 60.0);
+/// The smallest and the largest smoothing, in multiples of the size.
+pub const SMOOTHINGS: (f64, f64) = (0.0, 5.0);
+/// The smallest and the largest buffer, in points.
+pub const BUFFERS: (f64, f64) = (0.0, 10.0);
+/// The smallest and the largest duplicate distance, in points.
+pub const DUPLICATE_DISTANCES: (f64, f64) = (0.0, 2000.0);
 
 /// The name of the feature type of a layer on the Layer page.
 fn kind_name(kind: GeometryKind) -> &'static str {
@@ -97,7 +126,9 @@ pub(super) fn open_class(state: &mut AppState) -> Option<(MapId, LayerId, usize)
 fn show_class(state: &mut AppState, frame: FrameId, layer: LayerId, i: usize) {
     state.atlas.label = Some((frame, layer, i));
     state.atlas.label_page = None;
+    state.atlas.label_segment = ClassSegment::Text;
     state.atlas.label_color = None;
+    state.atlas.position_drag = None;
 }
 
 /// The label classes of the map of frame `id` in priority order, and the
@@ -113,8 +144,15 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         hint(ui, NO_LABEL_LAYERS);
         return;
     }
+    // A class with the name of its layer shows the name one time.
     let list: Vec<(LayerId, usize, String, String)> = (state.label_class_list(map).into_iter())
-        .map(|(layer, i, c)| (layer, i, c.name, layer_name(state, layer)))
+        .map(|(layer, i, c)| {
+            let mut of = layer_name(state, layer);
+            if of == c.name {
+                of.clear();
+            }
+            (layer, i, c.name, of)
+        })
         .collect();
     let mut open = None;
     if list.is_empty() {
@@ -133,7 +171,8 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
 }
 
 /// The rows of the class list: the layer, the place in the classes of the
-/// layer, the name of the class, and the name of the layer. Returns the
+/// layer, the name of the class, and the name of the layer or an empty
+/// text. Returns the
 /// class that the user taps.
 fn class_rows(
     ui: &mut egui::Ui,
@@ -271,6 +310,7 @@ pub(super) fn class_panel(
             filter::ADD_CONDITION,
             &*class.name,
         ),
+        Some(ClassPage::Positions) => ("pad-atlas-positions", POSITIONS, &*class.name),
         None => ("pad-atlas-class", class.name.as_str(), FRAME_TABS[3]),
     };
     let head = CardTitle {
@@ -282,7 +322,11 @@ pub(super) fn class_panel(
         key,
         place: (rects.right_panel, panel_width(ctx)),
         head,
-        scroll: egui::scroll_area::ScrollSource::default(),
+        // The panel stays still while a finger drags a position.
+        scroll: match state.atlas.position_drag {
+            Some(_) => egui::scroll_area::ScrollSource::NONE,
+            None => egui::scroll_area::ScrollSource::default(),
+        },
     };
     let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
         if row.back {
@@ -296,7 +340,12 @@ pub(super) fn class_panel(
             state.atlas.vertex = None;
         }
     };
-    let top = |_: &mut egui::Ui, _: &mut AppState, _: &mut Controls| {};
+    let top = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        if page.is_none() {
+            segments(ui, state, controls);
+        }
+    };
+    let segment = state.atlas.label_segment;
     let body = |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let at = (id, map, layer, i);
@@ -306,12 +355,39 @@ pub(super) fn class_panel(
             Some(ClassPage::Style) => style_page(ui, state, controls, at, &class),
             Some(ClassPage::Case) => case_page(ui, state, controls, at, &class),
             Some(ClassPage::Condition) => condition_page(ui, state, controls, at, &class),
-            None => class_body(ui, state, controls, at, &class),
+            Some(ClassPage::Positions) => positions_page(ui, state, controls, at, &class),
+            None => {
+                match segment {
+                    ClassSegment::Text => text_segment(ui, state, controls, at, &class),
+                    ClassSegment::Placement => {
+                        placement_segment(ui, state, controls, at, kind, &class);
+                    }
+                    ClassSegment::Conflicts => conflicts_segment(ui, state, controls, at, &class),
+                }
+                class_buttons(ui, state, controls, at);
+            }
         }
     };
     Some(show_card(
         ctx, state, controls, rects, card, on_title, top, body,
     ))
+}
+
+/// The segments at the top of the panel of a class.
+fn segments(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let items = SEGMENTS.map(|(name, label)| (name, label, true));
+    let active = state.atlas.label_segment as usize;
+    let all = [
+        ClassSegment::Text,
+        ClassSegment::Placement,
+        ClassSegment::Conflicts,
+    ];
+    if let Some(chosen) = named_tabs(ui, controls, &items, active) {
+        state.atlas.label_segment = all[chosen];
+        state.atlas.label_color = None;
+        widgets::close_keypad(ui.ctx());
+    }
+    ui.add_space(6.0);
 }
 
 /// The place of a label class: the frame of the panel, the map, the layer,
@@ -363,6 +439,32 @@ fn value_slider(
     let mut fraction = ((value - lo) / (hi - lo)).clamp(0.0, 1.0);
     let moved = widgets::row_slider(ui, controls, name, label, &mut fraction, text);
     moved.then_some(lo + fraction * (hi - lo))
+}
+
+/// A slider row of a class for a value from `lo` to `hi`, where each step
+/// of the slider multiplies the value by the same factor. `lo` is more than
+/// zero. Returns the new value when the user moves it.
+fn log_slider(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    value: f64,
+    (lo, hi): (f64, f64),
+    text: &str,
+) -> Option<f64> {
+    let span = (hi / lo).ln();
+    let mut fraction = ((value.max(lo) / lo).ln() / span).clamp(0.0, 1.0);
+    let moved = widgets::row_slider(ui, controls, name, name, &mut fraction, text);
+    moved.then(|| lo * (fraction * span).exp())
+}
+
+/// A distance in points for a slider row, for example "2.5 pt".
+fn points(value: f64) -> String {
+    if value >= 100.0 {
+        format!("{value:.0} pt")
+    } else {
+        format!("{value:.1} pt")
+    }
 }
 
 /// A percentage for a slider row, for example "5 %".
@@ -421,7 +523,8 @@ fn faces(state: &mut AppState, class: &LabelClass) -> Vec<Face> {
     }
 }
 
-fn class_body(
+/// The Text segment of the panel of a class.
+fn text_segment(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
@@ -532,11 +635,120 @@ fn class_body(
             state.edit_label_class(map, layer, i, |c| c.halo_width = width);
         }
     }
+}
 
+/// The Placement segment of the panel of a class. A point class has its
+/// positions and its offset. A line class has its offset, its repeat, its
+/// curve limit, and its smoothing.
+fn placement_segment(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    kind: GeometryKind,
+    class: &LabelClass,
+) {
     if widgets::open_row(ui, controls, PLACEMENT, class.placement.name()).clicked() {
         state.atlas.label_page = Some(ClassPage::Placement);
     }
+    let point = kind == GeometryKind::Point;
+    if point {
+        let on = class.positions.iter().filter(|r| r.on).count();
+        let value = format!("{on} of {}", class.positions.len());
+        if widgets::open_row(ui, controls, POSITIONS, &value).clicked() {
+            state.atlas.label_page = Some(ClassPage::Positions);
+            state.atlas.position_drag = None;
+        }
+    }
+    let text = points(class.offset);
+    if let Some(offset) = value_slider(ui, controls, (OFFSET, OFFSET), class.offset, OFFSETS, &text)
+    {
+        let offset = (offset * 2.0).round() / 2.0;
+        state.edit_label_class(map, layer, i, |c| c.offset = offset);
+    }
+    if point {
+        return;
+    }
 
+    let mut repeat = class.repeat;
+    if widgets::switch_row(ui, controls, REPEAT, REPEAT, &mut repeat) {
+        state.label_class_step(map, layer, i, |c| c.repeat = repeat);
+    }
+    if class.repeat {
+        let text = points(class.repeat_distance);
+        let distance = class.repeat_distance;
+        let moved = log_slider(
+            ui,
+            controls,
+            REPEAT_INTERVAL,
+            distance,
+            REPEAT_INTERVALS,
+            &text,
+        );
+        if let Some(distance) = moved {
+            let distance = (distance / 10.0).round() * 10.0;
+            state.edit_label_class(map, layer, i, |c| c.repeat_distance = distance);
+        }
+    }
+    let degrees = class.curve_limit.to_degrees();
+    let text = format!("{degrees:.0}°");
+    let names = (CURVE_LIMIT, CURVE_LIMIT);
+    if let Some(degrees) = value_slider(ui, controls, names, degrees, CURVE_LIMITS, &text) {
+        let limit = degrees.round().to_radians();
+        state.edit_label_class(map, layer, i, |c| c.curve_limit = limit);
+    }
+    let text = format!("{:.1}×", class.smoothing);
+    let names = (SMOOTHING, SMOOTHING);
+    if let Some(smoothing) = value_slider(ui, controls, names, class.smoothing, SMOOTHINGS, &text) {
+        let smoothing = (smoothing * 10.0).round() / 10.0;
+        state.edit_label_class(map, layer, i, |c| c.smoothing = smoothing);
+    }
+}
+
+/// The Conflicts segment of the panel of a class: the buffer and the
+/// distance between labels with the same text.
+fn conflicts_segment(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    let text = points(class.buffer);
+    if let Some(buffer) = value_slider(ui, controls, (BUFFER, BUFFER), class.buffer, BUFFERS, &text)
+    {
+        let buffer = (buffer * 2.0).round() / 2.0;
+        state.edit_label_class(map, layer, i, |c| c.buffer = buffer);
+    }
+    let mut remove = class.remove_duplicates;
+    if widgets::switch_row(
+        ui,
+        controls,
+        REMOVE_DUPLICATES,
+        REMOVE_DUPLICATES,
+        &mut remove,
+    ) {
+        state.label_class_step(map, layer, i, |c| c.remove_duplicates = remove);
+    }
+    if class.remove_duplicates {
+        let text = points(class.duplicate_distance);
+        let names = (DUPLICATE_DISTANCE, DUPLICATE_DISTANCE);
+        let distance = class.duplicate_distance;
+        let moved = value_slider(ui, controls, names, distance, DUPLICATE_DISTANCES, &text);
+        if let Some(distance) = moved {
+            let distance = (distance / 10.0).round() * 10.0;
+            state.edit_label_class(map, layer, i, |c| c.duplicate_distance = distance);
+        }
+    }
+}
+
+/// The buttons at the bottom of each segment of the panel of a class.
+fn class_buttons(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+) {
     ui.add_space(6.0);
     let list = state.label_class_list(map);
     let count = list.len();
@@ -654,6 +866,185 @@ fn placement_page(
             state.atlas.label_page = None;
         }
     }
+}
+
+/// The size of a cell of the diagram of the positions.
+const CELL: f32 = 30.0;
+
+/// The column and the row of a position in the diagram of the positions.
+fn cell(p: LabelPosition) -> (f32, f32) {
+    match p {
+        LabelPosition::TopLeft => (0.0, 0.0),
+        LabelPosition::Top => (1.0, 0.0),
+        LabelPosition::TopRight => (2.0, 0.0),
+        LabelPosition::Left => (0.0, 1.0),
+        LabelPosition::Right => (2.0, 1.0),
+        LabelPosition::BottomLeft => (0.0, 2.0),
+        LabelPosition::Bottom => (1.0, 2.0),
+        LabelPosition::BottomRight => (2.0, 2.0),
+    }
+}
+
+/// The rank of each position among the positions that are on, from 1. A
+/// position that is off has no rank.
+fn ranks(positions: &[vale_style::PositionRank]) -> Vec<Option<usize>> {
+    let mut n = 0;
+    (positions.iter())
+        .map(|r| {
+            r.on.then(|| {
+                n += 1;
+                n
+            })
+        })
+        .collect()
+}
+
+/// A diagram of the positions around a point, with the rank of each
+/// position that is on.
+fn diagram(ui: &mut egui::Ui, positions: &[vale_style::PositionRank]) {
+    let size = vec2(ui.available_width(), 3.0 * CELL + 16.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let grid = Rect::from_center_size(rect.center(), vec2(3.0 * CELL, 3.0 * CELL));
+    let painter = ui.painter();
+    let at = |(x, y): (f32, f32)| {
+        let min = grid.min + vec2(x * CELL, y * CELL);
+        Rect::from_min_size(min, vec2(CELL, CELL)).shrink(2.0)
+    };
+    painter.circle_filled(at((1.0, 1.0)).center(), 4.0, theme::TEXT);
+    for (r, rank) in positions.iter().zip(ranks(positions)) {
+        let square = at(cell(r.position));
+        let (fill, text, color) = match rank {
+            Some(n) => (theme::raise(), n.to_string(), theme::TEXT),
+            None => (theme::track(), "–".to_owned(), theme::MUTE),
+        };
+        painter.rect_filled(square, 4.0, fill);
+        painter.text(
+            square.center(),
+            Align2::CENTER_CENTER,
+            text,
+            theme::small(),
+            color,
+        );
+    }
+}
+
+/// The ranked positions of a point class, best first, under a diagram of
+/// the ranks. A tap on a row turns its position on or off, and a drag on the
+/// handle of a row moves the position in the rank.
+fn positions_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    let list = &class.positions;
+    diagram(ui, list);
+    let rank = ranks(list);
+    let size = vec2(ui.available_width(), list.len() as f32 * PANEL_ROW);
+    let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let slot =
+        |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
+    let place = |k: usize| slot(area.top() + k as f32 * PANEL_ROW);
+    let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
+
+    let Some(drag) = state.atlas.position_drag.filter(|d| d.from < list.len()) else {
+        state.atlas.position_drag = None;
+        for (k, r) in list.iter().enumerate() {
+            let rect = place(k);
+            let row = (r.position, r.on, rank[k]);
+            let Some((body, handle)) = position_row(ui, Some(&mut *controls), rect, row, false)
+            else {
+                continue;
+            };
+            if body.clicked() {
+                state.label_class_step(map, layer, i, |c| {
+                    if let Some(r) = c.positions.get_mut(k) {
+                        r.on = !r.on;
+                    }
+                });
+            }
+            if handle.drag_started() || handle.dragged() {
+                let y = pointer.map_or(rect.center().y, |p| p.y);
+                state.atlas.position_drag = Some(ClassDrag {
+                    from: k,
+                    grab: y - rect.top(),
+                });
+                ui.ctx().request_repaint();
+            }
+        }
+        return;
+    };
+
+    // The lifted row follows the finger, and the other rows make room at
+    // the place where it goes.
+    let from = drag.from;
+    let y = pointer.map_or(place(from).top() + drag.grab, |p| p.y);
+    let top = (y - drag.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
+    let to = ((top - area.top()) / PANEL_ROW).round() as usize;
+    let others = list.iter().enumerate().filter(|(k, _)| *k != from);
+    for (n, (k, r)) in others.enumerate() {
+        let rect = place(if n < to { n } else { n + 1 });
+        position_row(ui, None, rect, (r.position, r.on, rank[k]), false);
+    }
+    let r = list[from];
+    position_row(ui, None, slot(top), (r.position, r.on, rank[from]), true);
+    if down {
+        ui.ctx().request_repaint();
+    } else {
+        state.atlas.position_drag = None;
+        if to != from {
+            state.label_class_step(map, layer, i, |c| {
+                if from < c.positions.len() && to < c.positions.len() {
+                    let moved = c.positions.remove(from);
+                    c.positions.insert(to, moved);
+                }
+            });
+        }
+    }
+}
+
+/// One row of the Positions page in `rect`: the rank, the name of the
+/// position, its switch, and the handle at the right. With `controls`, the
+/// row takes a tap, its handle takes a drag, and the function returns both.
+/// A `lifted` row shows above the others.
+fn position_row(
+    ui: &egui::Ui,
+    controls: Option<&mut Controls>,
+    rect: Rect,
+    (position, on, rank): (LabelPosition, bool, Option<usize>),
+    lifted: bool,
+) -> Option<(egui::Response, egui::Response)> {
+    let name = position.name();
+    let handle = Rect::from_center_size(
+        pos2(rect.right() - TOUCH / 2.0 + 8.0, rect.center().y),
+        vec2(TOUCH, TOUCH),
+    );
+    let body = Rect::from_min_max(rect.min, pos2(handle.left(), rect.bottom()));
+    let out = controls.map(|controls| {
+        let body = widgets::tap_area(ui, controls, body, name, true);
+        let grip = format!("{REORDER} {name}");
+        (body, widgets::drag_area(ui, controls, handle, &grip))
+    });
+    let highlight = rect.expand2(vec2(8.0, -widgets::HIGHLIGHT_INSET));
+    let painter = ui.painter();
+    if lifted {
+        let shadow = highlight.translate(vec2(0.0, 2.0)).expand(2.0);
+        painter.rect_filled(shadow, 7.0, egui::Color32::from_black_alpha(60));
+        painter.rect_filled(highlight, 5.0, theme::card(false).to_opaque());
+        painter.rect_filled(highlight, 5.0, theme::raise());
+    }
+    let y = rect.center().y;
+    if let Some(n) = rank {
+        let at = pos2(rect.left(), y);
+        painter.text(at, Align2::LEFT_CENTER, n, theme::mono(), theme::MUTE);
+    }
+    let at = pos2(rect.left() + 28.0, y);
+    painter.text(at, Align2::LEFT_CENTER, name, theme::body(), theme::TEXT);
+    widgets::paint_switch(ui, pos2(handle.left() - 4.0, y), on);
+    let color = if lifted { theme::TEXT } else { theme::MUTE };
+    icons::paint(painter, handle, Icon::Grip, widgets::ICON, color);
+    out
 }
 
 /// Closes the color picker of the label class when it did not show in this

@@ -564,8 +564,9 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
 /// controls of the open class.
 fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     use super::pad::labels::{
-        ADD_CLASS, CASE, DELETE_CLASS, HALO, LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS,
-        OPACITY, PLACEMENT, STYLE,
+        ADD_CLASS, BUFFER, CASE, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO,
+        LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS, OFFSET, OPACITY, PLACEMENT, POSITIONS,
+        REMOVE_DUPLICATES, REPEAT, REPEAT_INTERVAL, SMOOTHING, STYLE,
     };
     let map = frame.map;
     if state.label_layers().is_empty() {
@@ -579,16 +580,22 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             .doc
             .layer(*layer)
             .map_or_else(String::new, |l| l.name.clone());
-        let text = format!("{} · {name}", class.name);
+        let text = if name == class.name {
+            name
+        } else {
+            format!("{} · {name}", class.name)
+        };
         let on = open == Some((*layer, *i));
         if ui.selectable_label(on, text).clicked() {
             state.atlas.label = (!on).then_some((frame.id, *layer, *i));
+            state.atlas.label_segment = Default::default();
         }
     }
     if ui.button(ADD_CLASS).clicked()
         && let Some((layer, i)) = state.add_label_class(map)
     {
         state.atlas.label = Some((frame.id, layer, i));
+        state.atlas.label_segment = Default::default();
     }
     let Some((layer, i)) = state.atlas.open_class() else {
         return;
@@ -688,6 +695,85 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 ui.selectable_value(&mut class.placement, p, p.name());
             }
         });
+    if kind == vale_store::GeometryKind::Point {
+        ui.label(POSITIONS);
+        let count = class.positions.len();
+        let mut swap = None;
+        for (k, r) in class.positions.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut r.on, r.position.name());
+                if ui.add_enabled(k > 0, egui::Button::new("Up")).clicked() {
+                    swap = Some((k, k - 1));
+                }
+                if ui
+                    .add_enabled(k + 1 < count, egui::Button::new("Down"))
+                    .clicked()
+                {
+                    swap = Some((k, k + 1));
+                }
+            });
+        }
+        if let Some((a, b)) = swap {
+            class.positions.swap(a, b);
+        }
+    }
+    ui.horizontal(|ui| {
+        ui.label(OFFSET);
+        let drag = egui::DragValue::new(&mut class.offset)
+            .range(0.0..=20.0)
+            .speed(0.1)
+            .suffix(" pt");
+        ui.add(drag);
+    });
+    if kind == vale_store::GeometryKind::Line {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut class.repeat, REPEAT);
+            if class.repeat {
+                ui.label(REPEAT_INTERVAL);
+                let drag = egui::DragValue::new(&mut class.repeat_distance)
+                    .range(50.0..=2000.0)
+                    .suffix(" pt");
+                ui.add(drag);
+            }
+        });
+        let mut degrees = class.curve_limit.to_degrees();
+        ui.horizontal(|ui| {
+            ui.label(CURVE_LIMIT);
+            let drag = egui::DragValue::new(&mut degrees)
+                .range(5.0..=60.0)
+                .max_decimals(0)
+                .suffix("°");
+            if ui.add(drag).changed() {
+                class.curve_limit = degrees.to_radians();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(SMOOTHING);
+            let drag = egui::DragValue::new(&mut class.smoothing)
+                .range(0.0..=5.0)
+                .speed(0.05)
+                .suffix("×");
+            ui.add(drag);
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.label(BUFFER);
+        let drag = egui::DragValue::new(&mut class.buffer)
+            .range(0.0..=10.0)
+            .speed(0.1)
+            .suffix(" pt");
+        ui.add(drag);
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut class.remove_duplicates, REMOVE_DUPLICATES);
+        if class.remove_duplicates {
+            ui.label(DUPLICATE_DISTANCE);
+            let drag = egui::DragValue::new(&mut class.duplicate_distance)
+                .range(0.0..=2000.0)
+                .suffix(" pt");
+            ui.add(drag);
+        }
+    });
     let at = list.iter().position(|(l, j, _)| (*l, *j) == (layer, i));
     if let Some(at) = at {
         ui.horizontal(|ui| {

@@ -93,6 +93,20 @@ pub enum ClassPage {
     Case,
     /// A new condition of the filter.
     Condition,
+    /// The ranked positions of a point class.
+    Positions,
+}
+
+/// A segment of the panel of a label class.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum ClassSegment {
+    /// The text, the filter, and the font.
+    #[default]
+    Text,
+    /// Where the labels go on their features.
+    Placement,
+    /// How the labels keep apart.
+    Conflicts,
 }
 
 /// A color of a label class that the color picker edits.
@@ -102,10 +116,11 @@ pub enum ClassColor {
     Halo,
 }
 
-/// A label class that a finger drags by its handle in the Labels tab.
+/// A row that a finger drags by its handle: a label class in the Labels
+/// tab, or a position on the Positions page.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ClassDrag {
-    /// The place of the class in the list of the tab.
+    /// The place of the row in its list.
     pub from: usize,
     /// The distance from the top of the row to the finger.
     pub grab: f32,
@@ -329,6 +344,8 @@ pub struct AtlasState {
     pub label: Option<(FrameId, LayerId, usize)>,
     /// The page of the panel of `label`.
     pub label_page: Option<ClassPage>,
+    /// The segment of the panel of `label`.
+    pub label_segment: ClassSegment,
     /// The color of the label class whose color picker is open.
     pub label_color: Option<ClassColor>,
     /// The color picker of the label class showed in this frame.
@@ -341,6 +358,8 @@ pub struct AtlasState {
     pub label_draft: super::pad::filter::Draft,
     /// The label class that a finger drags in the Labels tab.
     pub label_drag: Option<ClassDrag>,
+    /// The position that a finger drags on the Positions page.
+    pub position_drag: Option<ClassDrag>,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The frame of `handles`.
@@ -433,12 +452,14 @@ impl Default for AtlasState {
             layer_page: None,
             label: None,
             label_page: None,
+            label_segment: ClassSegment::Text,
             label_color: None,
             label_color_shown: false,
             label_text: String::new(),
             label_filter: String::new(),
             label_draft: Default::default(),
             label_drag: None,
+            position_drag: None,
             shown: None,
             handles_of: None,
             images: HashMap::new(),

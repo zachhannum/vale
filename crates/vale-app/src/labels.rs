@@ -254,7 +254,8 @@ fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
     }
 }
 
-fn point_position(p: LabelPosition) -> PointPosition {
+/// The labeler position of a position of a class.
+pub fn point_position(p: LabelPosition) -> PointPosition {
     match p {
         LabelPosition::TopRight => PointPosition::TopRight,
         LabelPosition::Right => PointPosition::Right,

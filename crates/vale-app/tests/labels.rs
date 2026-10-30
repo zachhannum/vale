@@ -732,3 +732,9 @@ fn small_caps_and_letter_spacing_reach_the_labeler() {
     }
     assert!(checked >= 10, "{checked}");
 }
+
+#[test]
+fn the_default_positions_match_the_labeler() {
+    let ours = vale_style::LabelPosition::DEFAULT_ORDER.map(vale_app::labels::point_position);
+    assert_eq!(ours, vale_labeler::PointPosition::DEFAULT_ORDER);
+}

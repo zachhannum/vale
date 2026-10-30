@@ -389,9 +389,23 @@ pub fn switch_row(
         *on = !*on;
     }
     let y = rect.center().y;
-    let track = Rect::from_min_size(pos2(rect.right() - SWITCH.x, y - SWITCH.y / 2.0), SWITCH);
+    paint_switch(ui, pos2(rect.right(), y), *on);
+    let at = pos2(rect.left(), y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    changed
+}
+
+/// The width of the track of a switch.
+pub const SWITCH_WIDTH: f32 = SWITCH.x;
+
+/// The track and the thumb of a switch, with the middle of its right edge
+/// at `right`.
+pub fn paint_switch(ui: &egui::Ui, right: Pos2, on: bool) {
+    let y = right.y;
+    let track = Rect::from_min_size(pos2(right.x - SWITCH.x, y - SWITCH.y / 2.0), SWITCH);
     let reach = (SWITCH.x - SWITCH.y) / 2.0;
-    let (color, x) = match *on {
+    let (color, x) = match on {
         true => (theme::ACCENT, track.center().x + reach),
         false => (theme::raise(), track.center().x - reach),
     };
@@ -404,9 +418,6 @@ pub fn switch_row(
         Color32::from_black_alpha(70),
     );
     painter.circle_filled(pos2(x, y), THUMB / 2.0, theme::TEXT);
-    let at = pos2(rect.left(), y);
-    painter.text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
-    changed
 }
 
 /// What the user did on the title row of a panel.

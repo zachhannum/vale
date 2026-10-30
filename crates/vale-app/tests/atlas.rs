@@ -24,8 +24,10 @@ use vale_app::ui::pad::atlas::{
     custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::labels::{
-    ADD_CLASS, CASE, COLOR, DELETE_CLASS, HALO, HALO_COLOR, HALO_WIDTH, LABEL_SIZE, LAYER,
-    MOVE_DOWN, MOVE_UP, OPACITY, PLACEMENT, REORDER, STYLE, TEXT,
+    ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO,
+    HALO_COLOR, HALO_WIDTH, LABEL_SIZE, LAYER, MOVE_DOWN, MOVE_UP, OFFSET, OPACITY, PLACEMENT,
+    POSITIONS, REMOVE_DUPLICATES, REORDER, REPEAT, REPEAT_INTERVAL, SEGMENTS, SMOOTHING, STYLE,
+    TEXT,
 };
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
@@ -2779,7 +2781,7 @@ fn the_placement_choices_match_the_feature_type() {
     let map = frame(&h, 0).map;
     let names = |kind| LabelPlacement::choices(kind).iter().map(|p| p.name());
     tap(&mut h, "Places");
-    scroll_to(&mut h, PLACEMENT);
+    tap(&mut h, SEGMENTS[1].0);
     tap(&mut h, PLACEMENT);
     for name in names(GeometryKind::Point) {
         assert!(control(&h, name).is_some(), "{name}");
@@ -2794,7 +2796,8 @@ fn the_placement_choices_match_the_feature_type() {
     );
     tap(&mut h, "Back to Labels");
     tap(&mut h, "Rivers");
-    scroll_to(&mut h, PLACEMENT);
+    assert!(control(&h, PLACEMENT).is_none());
+    tap(&mut h, SEGMENTS[1].0);
     tap(&mut h, PLACEMENT);
     for name in names(GeometryKind::Line) {
         assert!(control(&h, name).is_some(), "{name}");
@@ -2807,7 +2810,6 @@ fn the_placement_choices_match_the_feature_type() {
 
     // A class that moves to a line layer gets a line placement.
     tap(&mut h, "Places");
-    scroll_up_to(&mut h, LAYER);
     tap(&mut h, LAYER);
     assert!(control(&h, "Places").is_some());
     assert!(control(&h, "Land").is_none());
@@ -2904,6 +2906,7 @@ fn each_frame_of_a_map_places_labels_with_its_classes() {
 
 #[test]
 fn the_controls_of_the_labels_tab_work_with_a_finger() {
+    use vale_app::ui::atlas::ClassSegment;
     use vale_app::ui::pad::filter::{ADD_CONDITION, VALUE};
     use vale_style::LabelPlacement;
     for size in BOARDS {
@@ -2961,12 +2964,57 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
         check_controls(&h, &format!("{what}: halo color"));
         scroll_up_to(&mut h, HALO_COLOR);
         tap(&mut h, HALO_COLOR);
-        scroll_to(&mut h, PLACEMENT);
+        scroll_to(&mut h, DELETE_CLASS);
+        check_controls(&h, &format!("{what}: bottom of the class"));
+
+        tap(&mut h, SEGMENTS[1].0);
+        scroll_up_to(&mut h, PLACEMENT);
+        check_controls(&h, &format!("{what}: placement segment"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-placement");
+        }
         tap(&mut h, PLACEMENT);
         check_controls(&h, &format!("{what}: placement page"));
         tap(&mut h, LabelPlacement::Around.name());
+        tap(&mut h, POSITIONS);
+        check_controls(&h, &format!("{what}: positions page"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-positions");
+        }
+        tap(&mut h, "Top right");
+        assert!(!classes(&h, map, "Places")[1].positions[0].on, "{what}");
+        tap(&mut h, "Back to Class 1");
+        for name in [OFFSET, MOVE_UP] {
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+        }
+        tap(&mut h, SEGMENTS[2].0);
+        scroll_up_to(&mut h, BUFFER);
+        check_controls(&h, &format!("{what}: conflicts segment"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-conflicts");
+        }
+        for name in [BUFFER, REMOVE_DUPLICATES, DUPLICATE_DISTANCE] {
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+        }
+        tap(&mut h, REMOVE_DUPLICATES);
+        assert!(!classes(&h, map, "Places")[1].remove_duplicates, "{what}");
+        assert!(control(&h, DUPLICATE_DISTANCE).is_none(), "{what}");
+        tap(&mut h, "Back to Labels");
+
+        // The placement options of a line class.
+        tap(&mut h, "Rivers");
+        assert_eq!(h.state().atlas.label_segment, ClassSegment::Text, "{what}");
+        tap(&mut h, SEGMENTS[1].0);
+        for name in [OFFSET, REPEAT, REPEAT_INTERVAL, CURVE_LIMIT, SMOOTHING] {
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+        }
+        assert!(control(&h, POSITIONS).is_none(), "{what}");
+        check_controls(&h, &format!("{what}: line placement segment"));
+        tap(&mut h, "Back to Labels");
+        tap(&mut h, "Class 1");
         scroll_to(&mut h, DELETE_CLASS);
-        check_controls(&h, &format!("{what}: bottom of the class"));
         tap(&mut h, DELETE_CLASS);
         assert_eq!(classes(&h, map, "Places").len(), 1, "{what}");
         assert!(control(&h, ADD_CLASS).is_some(), "{what}");
@@ -3285,4 +3333,344 @@ fn each_change_of_a_class_is_one_undo_step() {
             .is_empty()
     );
     assert_eq!(classes(&h, map, "Places").len(), 1);
+}
+
+#[test]
+fn the_class_page_has_text_placement_and_conflict_segments() {
+    use vale_app::ui::atlas::ClassSegment;
+    use vale_app::ui::pad::fonts::FONT;
+    let mut h = labels_pad(BOARDS[0]);
+    tap(&mut h, "Places");
+    let shows = |h: &mut Pad, name: &str| {
+        scroll_to(h, name);
+        control(h, name).is_some()
+    };
+    assert_eq!(h.state().atlas.label_segment, ClassSegment::Text);
+    for name in [TEXT, FONT, STYLE, LABEL_SIZE, CASE, OPACITY, HALO] {
+        assert!(shows(&mut h, name), "{name}");
+    }
+    for name in [PLACEMENT, OFFSET, BUFFER] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    assert!(shows(&mut h, DELETE_CLASS));
+
+    tap(&mut h, SEGMENTS[1].0);
+    assert_eq!(h.state().atlas.label_segment, ClassSegment::Placement);
+    scroll_up_to(&mut h, PLACEMENT);
+    for name in [PLACEMENT, POSITIONS, OFFSET, DELETE_CLASS] {
+        assert!(shows(&mut h, name), "{name}");
+    }
+    for name in [TEXT, BUFFER, REPEAT] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+
+    tap(&mut h, SEGMENTS[2].0);
+    scroll_up_to(&mut h, BUFFER);
+    for name in [BUFFER, REMOVE_DUPLICATES, DUPLICATE_DISTANCE, DELETE_CLASS] {
+        assert!(shows(&mut h, name), "{name}");
+    }
+    for name in [TEXT, OFFSET] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+
+    // Another class opens on the Text segment.
+    tap(&mut h, "Back to Labels");
+    tap(&mut h, "Rivers");
+    assert_eq!(h.state().atlas.label_segment, ClassSegment::Text);
+    assert!(control(&h, TEXT).is_some());
+}
+
+/// The place on the sphere of the feature of a point layer with this name.
+fn place_of(h: &Pad, layer: &str, name: &str) -> [f64; 2] {
+    use vale_store::Value;
+    let l = h.state().doc.layer(layer_id(h, layer)).unwrap();
+    let f = (l.features.iter())
+        .find(|f| f.attributes.get("name") == Some(&Value::Text(name.into())))
+        .unwrap();
+    match &f.geometry {
+        Geometry::Points(p) => p[0],
+        _ => panic!("not a point"),
+    }
+}
+
+/// A place on the sphere in the composed frame of `frame_items`.
+fn frame_point(h: &mut Pad, index: usize, lonlat: [f64; 2]) -> Point {
+    use vale_app::atlas::{FrameTarget, PT_PER_MM};
+    let f = frame(h, index);
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let s = h.state_mut();
+    let projection = s.pipeline.projection(&s.doc, f.map).unwrap();
+    let vt = frame_transform(projection, &f, target);
+    vt.to_page(projection.forward(lonlat).unwrap())
+}
+
+/// The labels of the places in frame 0: the text, the point of the place,
+/// and the origins of the glyphs.
+fn place_labels(h: &mut Pad) -> Vec<(String, Point, Vec<Point>)> {
+    let runs: Vec<_> = (label_runs(h, 0).into_iter())
+        .filter(|g| g.color == PLACES_COLOR)
+        .collect();
+    runs.into_iter()
+        .map(|g| {
+            let at = place_of(h, "Places", &g.text);
+            let point = frame_point(h, 0, at);
+            let origins = g.glyphs.iter().map(|(_, t)| *t * Point::ZERO).collect();
+            (g.text, point, origins)
+        })
+        .collect()
+}
+
+#[test]
+fn the_positions_page_ranks_and_blocks_the_point_positions() {
+    use vale_style::LabelPosition;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[1].0);
+    tap(&mut h, POSITIONS);
+    let order = |h: &Pad| -> Vec<LabelPosition> {
+        (classes(h, map, "Places")[0].positions.iter())
+            .map(|r| r.position)
+            .collect()
+    };
+    assert_eq!(order(&h), LabelPosition::DEFAULT_ORDER);
+
+    // A finger drags Right from the fifth place to the top.
+    let right = LabelPosition::Right.name();
+    let from = control(&h, &format!("{REORDER} {right}")).unwrap().center();
+    let to = control(&h, &format!("{REORDER} Top right"))
+        .unwrap()
+        .center();
+    drag_steps(&mut h, from, to - vec2(0.0, 10.0), Input::Finger, 24);
+    release(&mut h, to - vec2(0.0, 10.0), Input::Finger);
+    let mut wanted = LabelPosition::DEFAULT_ORDER.to_vec();
+    wanted.retain(|p| *p != LabelPosition::Right);
+    wanted.insert(0, LabelPosition::Right);
+    assert_eq!(order(&h), wanted);
+    let above =
+        |h: &Pad, a: &str, b: &str| control(h, a).unwrap().top() < control(h, b).unwrap().top();
+    assert!(above(&h, right, "Top right"));
+
+    // A tap blocks each position but Right.
+    for p in LabelPosition::DEFAULT_ORDER {
+        if p != LabelPosition::Right {
+            tap(&mut h, p.name());
+        }
+    }
+    let ranks = classes(&h, map, "Places")[0].positions.clone();
+    assert_eq!(ranks[0].position, LabelPosition::Right);
+    assert!(ranks[0].on);
+    assert!(ranks[1..].iter().all(|r| !r.on));
+    tap(&mut h, "Back to Places");
+
+    let labels = place_labels(&mut h);
+    assert!(!labels.is_empty());
+    let size = classes(&h, map, "Places")[0].size;
+    for (text, point, origins) in labels {
+        for o in &origins {
+            assert!(o.x > point.x, "{text}: {o:?} {point:?}");
+        }
+        let y = origins.iter().map(|o| o.y).sum::<f64>() / origins.len() as f64;
+        // The baseline is a little under the middle of the text.
+        assert!((y - point.y).abs() < size, "{text}: {y} {point:?}");
+    }
+}
+
+/// A tap at the left end or at the right end of a slider row.
+fn slider_end(h: &mut Pad, name: &str, right: bool) {
+    scroll_to(h, name);
+    let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
+    let at = if right {
+        rect.right_center() - vec2(30.0, 0.0)
+    } else {
+        rect.left_center() + vec2(4.0, 0.0)
+    };
+    tap_with(h, at, Input::Finger);
+}
+
+#[test]
+fn the_offset_moves_the_labels_away_from_the_feature() {
+    use vale_style::LabelPosition;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let places = layer_id(&h, "Places");
+    // Only Right, so that the offset is a distance along x.
+    let mut list = classes(&h, map, "Places");
+    for r in &mut list[0].positions {
+        r.on = r.position == LabelPosition::Right;
+    }
+    h.state_mut().doc.set_label_classes(map, places, &list);
+    h.state_mut().touch();
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[1].0);
+    let gaps = |h: &mut Pad| -> std::collections::HashMap<String, f64> {
+        (place_labels(h).into_iter())
+            .map(|(text, point, origins)| {
+                let left = origins.iter().map(|o| o.x).fold(f64::MAX, f64::min);
+                (text, left - point.x)
+            })
+            .collect()
+    };
+    slider_end(&mut h, OFFSET, false);
+    assert_eq!(classes(&h, map, "Places")[0].offset, 0.0);
+    let near = gaps(&mut h);
+    slider_end(&mut h, OFFSET, true);
+    assert_eq!(classes(&h, map, "Places")[0].offset, 20.0);
+    let far = gaps(&mut h);
+    let both: Vec<_> = near.keys().filter(|t| far.contains_key(*t)).collect();
+    assert!(!both.is_empty());
+    for t in both {
+        let gain = far[t] - near[t];
+        assert!(gain > 15.0 && gain < 25.0, "{t}: {gain}");
+    }
+}
+
+/// The count of the labels of the rivers in frame 0.
+fn river_labels(h: &mut Pad) -> usize {
+    let color = classes(h, frame(h, 0).map, "Rivers")[0].color;
+    let color = vale_render::Color::rgba(color.r, color.g, color.b, color.a);
+    (label_runs(h, 0).iter())
+        .filter(|g| g.color == color)
+        .count()
+}
+
+#[test]
+fn the_repeat_options_change_the_line_labels() {
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    // Only the rivers have labels, at a scale that shows the long rivers
+    // long, and a repeat may come near the label before it.
+    let id = frame(&h, 0).id;
+    let (places, river_layer) = (layer_id(&h, "Places"), layer_id(&h, "Rivers"));
+    h.state_mut().doc.set_label_classes(map, places, &[]);
+    let mut rivers = classes(&h, map, "Rivers");
+    rivers[0].remove_duplicates = false;
+    h.state_mut()
+        .doc
+        .set_label_classes(map, river_layer, &rivers);
+    let f = h.state_mut().doc.project.atlas.frame_mut(id).unwrap();
+    f.scale /= 4.0;
+    f.center = [-60.0, -5.0];
+    h.state_mut().touch();
+    h.run_steps(2);
+    tap(&mut h, "Rivers");
+    tap(&mut h, SEGMENTS[1].0);
+    assert!(classes(&h, map, "Rivers")[0].repeat);
+    slider_end(&mut h, REPEAT_INTERVAL, false);
+    assert_eq!(classes(&h, map, "Rivers")[0].repeat_distance, 50.0);
+    let repeated = river_labels(&mut h);
+    scroll_to(&mut h, REPEAT);
+    tap(&mut h, REPEAT);
+    assert!(!classes(&h, map, "Rivers")[0].repeat);
+    assert!(control(&h, REPEAT_INTERVAL).is_none());
+    let once = river_labels(&mut h);
+    assert!(once > 0 && once < repeated, "{once} {repeated}");
+
+    // The curve limit is in degrees per letter.
+    slider_end(&mut h, CURVE_LIMIT, true);
+    let limit = classes(&h, map, "Rivers")[0].curve_limit;
+    assert!((limit - 60f64.to_radians()).abs() < 1e-9, "{limit}");
+    slider_end(&mut h, SMOOTHING, false);
+    assert_eq!(classes(&h, map, "Rivers")[0].smoothing, 0.0);
+}
+
+#[test]
+fn the_conflict_options_reach_the_labeler() {
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let count = |h: &mut Pad| place_texts(h, 0).len();
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[2].0);
+    slider_end(&mut h, BUFFER, false);
+    assert_eq!(classes(&h, map, "Places")[0].buffer, 0.0);
+    let tight = count(&mut h);
+    slider_end(&mut h, BUFFER, true);
+    assert_eq!(classes(&h, map, "Places")[0].buffer, 10.0);
+    let loose = count(&mut h);
+    assert!(loose < tight, "{loose} {tight}");
+
+    // Each place has the same text.
+    tap(&mut h, SEGMENTS[0].0);
+    scroll_up_to(&mut h, TEXT);
+    type_text(&mut h, TEXT, "'Town'");
+    assert_eq!(classes(&h, map, "Places")[0].text, "'Town'");
+    tap(&mut h, SEGMENTS[2].0);
+    slider_end(&mut h, DUPLICATE_DISTANCE, true);
+    assert_eq!(classes(&h, map, "Places")[0].duplicate_distance, 2000.0);
+    let apart = count(&mut h);
+    tap(&mut h, REMOVE_DUPLICATES);
+    assert!(!classes(&h, map, "Places")[0].remove_duplicates);
+    let all = count(&mut h);
+    assert!(apart > 0 && apart < all, "{apart} {all}");
+}
+
+#[test]
+fn each_change_of_a_placement_option_is_one_undo_step() {
+    use vale_style::LabelPosition;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    let class = |h: &Pad, layer: &str| classes(h, map, layer)[0].clone();
+    tap(&mut h, FRAME_TABS[3]);
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[1].0);
+    let start = class(&h, "Places");
+
+    // One drag of the offset slider in many steps.
+    let slider = control(&h, OFFSET).unwrap();
+    let from = pos2(slider.right() - 120.0, slider.center().y);
+    drag_steps(&mut h, from, from + vec2(40.0, 0.0), Input::Finger, 6);
+    release(&mut h, from + vec2(40.0, 0.0), Input::Finger);
+    let offset = class(&h, "Places").offset;
+    assert_ne!(offset, start.offset);
+
+    tap(&mut h, POSITIONS);
+    tap(&mut h, "Top left");
+    let from = control(&h, &format!("{REORDER} Bottom")).unwrap().center();
+    let to = control(&h, &format!("{REORDER} Top right"))
+        .unwrap()
+        .center();
+    drag_steps(&mut h, from, to - vec2(0.0, 10.0), Input::Finger, 24);
+    release(&mut h, to - vec2(0.0, 10.0), Input::Finger);
+    assert_eq!(
+        class(&h, "Places").positions[0].position,
+        LabelPosition::Bottom
+    );
+    tap(&mut h, "Back to Places");
+    tap(&mut h, SEGMENTS[2].0);
+    tap(&mut h, REMOVE_DUPLICATES);
+    assert!(!class(&h, "Places").remove_duplicates);
+
+    tap(&mut h, "Undo");
+    let c = class(&h, "Places");
+    assert!(c.remove_duplicates);
+    assert_eq!(c.positions[0].position, LabelPosition::Bottom);
+    tap(&mut h, "Undo");
+    let c = class(&h, "Places");
+    assert_eq!(c.positions[0].position, LabelPosition::TopRight);
+    assert!(!c.positions[1].on);
+    tap(&mut h, "Undo");
+    let c = class(&h, "Places");
+    assert!(c.positions.iter().all(|r| r.on));
+    assert_eq!(c.offset, offset);
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h, "Places"), start);
+
+    // The repeat switch of a line class.
+    tap(&mut h, "Back to Labels");
+    tap(&mut h, "Rivers");
+    tap(&mut h, SEGMENTS[1].0);
+    scroll_to(&mut h, REPEAT);
+    tap(&mut h, REPEAT);
+    assert!(!class(&h, "Rivers").repeat);
+    tap(&mut h, "Undo");
+    assert!(class(&h, "Rivers").repeat);
 }
