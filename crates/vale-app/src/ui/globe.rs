@@ -802,6 +802,11 @@ pub(super) fn canvas_input(
     let globe = &mut state.globe;
     globe.world_km = state.doc.project.world.radius_km;
     globe.world_seed = state.doc.project.world.seed;
+    let world = &state.doc.project.world;
+    globe.world_rain = vale_terrain::Rain {
+        wind: world.wind_deg,
+        shadow: world.rain_shadow.clamp(0.0, 1.0),
+    };
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
     globe.rect = rect;

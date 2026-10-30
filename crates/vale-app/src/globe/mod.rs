@@ -13,7 +13,7 @@ use vale_store::{
     BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing,
 };
 use vale_terrain::{
-    Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, Pyramid, RidgeLine,
+    Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, Pyramid, Rain, RidgeLine,
     SEA_LEVEL, Stamp, TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap,
     reduced_face_size, smoothing_level,
 };
@@ -698,6 +698,9 @@ pub struct Globe {
     pub world_km: f64,
     /// The seed of the world. Set by the canvas each frame.
     pub world_seed: u32,
+    /// The wind and the rain shadow of the world. Set by the canvas each
+    /// frame.
+    pub world_rain: Rain,
     pub input: BrushInput,
     pub pen: Pen,
     /// The next press on the globe picks the flatten level.
@@ -819,6 +822,7 @@ impl Globe {
             brush: BrushSettings::default(),
             world_km: 6371.0,
             world_seed: 0,
+            world_rain: Rain::default(),
             input: BrushInput::default(),
             pen: Pen::default(),
             pick_level: false,
@@ -2770,6 +2774,7 @@ impl Globe {
             (erode.begun, erode.window) = (true, next);
         }
         let rate = self.brush.strength_m * ERODE_RATE * seconds;
+        self.eroder.set_rain(self.world_rain);
         self.eroder.request(brushes, rate, 0.0, self.brush.limits());
     }
 
@@ -2848,6 +2853,7 @@ impl Globe {
         });
         let rate = erosion * UPLIFT_ERODE_RATE * (cells / 16.0).sqrt() * stamps.len() as f64;
         let limits = self.brush.limits();
+        self.eroder.set_rain(self.world_rain);
         self.eroder
             .request(brushes.collect(), rate, stamps[0].strength, limits);
         uplift.asked = stamps;

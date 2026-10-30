@@ -798,7 +798,7 @@ pub fn compass_angle(center: Pos2, at: Pos2) -> Option<f32> {
 }
 
 /// The name of the compass point nearest to an angle in degrees.
-fn compass_point(degrees: f32) -> &'static str {
+pub(crate) fn compass_point(degrees: f32) -> &'static str {
     const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
     POINTS[((degrees / 45.0).round() as i32).rem_euclid(8) as usize]
 }

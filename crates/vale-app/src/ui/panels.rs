@@ -844,6 +844,34 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     if globe.brush.mode == Mode::Uplift {
         ui.add(egui::Slider::new(&mut globe.brush.erosion, EROSION).text("Erosion"));
     }
+    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift) {
+        // The wind and the rain shadow are properties of the world, so each
+        // brush gets the same rain.
+        let world = &mut state.doc.project.world;
+        let wind = egui::Slider::new(&mut world.wind_deg, 0.0..=360.0)
+            .step_by(1.0)
+            .custom_formatter(|deg, _| {
+                let point = super::pad::widgets::compass_point(deg as f32);
+                format!("{deg:.0}\u{b0} {point}")
+            })
+            .custom_parser(|text| {
+                let number: String = text
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '.')
+                    .collect();
+                number.parse().ok()
+            })
+            .text("Wind");
+        ui.add(wind);
+        let mut percent = world.rain_shadow.clamp(0.0, 1.0) * 100.0;
+        let shadow = egui::Slider::new(&mut percent, 0.0..=100.0)
+            .step_by(1.0)
+            .suffix(" %")
+            .text("Rain shadow");
+        if ui.add(shadow).changed() {
+            world.rain_shadow = percent / 100.0;
+        }
+    }
     if matches!(globe.brush.mode, Mode::Weather | Mode::Uplift) {
         let angle = egui::Slider::new(&mut globe.brush.talus_deg, TALUS_DEG)
             .logarithmic(true)

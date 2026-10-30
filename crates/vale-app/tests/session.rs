@@ -462,6 +462,7 @@ fn a_world_is_the_same_after_a_close_and_an_open() {
 
     // A change is on disk after the delay, and not before it.
     doc.project.world.name = "Aerth".to_string();
+    (doc.project.world.wind_deg, doc.project.world.rain_shadow) = (45.0, 0.6);
     doc.set_radius_km(2500.0);
     let places = doc.project.layers()[2].id;
     doc.remove_layer(places);
