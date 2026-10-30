@@ -560,31 +560,29 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-/// The label classes of the map of a frame, and the controls of the open
-/// class.
+/// The label classes of the map of a frame in priority order, and the
+/// controls of the open class.
 fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
-    use super::pad::labels::{ADD_CLASS, DELETE_CLASS, HALO, ITALIC, NO_LABEL_LAYERS, PLACEMENT};
+    use super::pad::labels::{
+        ADD_CLASS, CASE, DELETE_CLASS, HALO, LETTER_SPACING, MOVE_DOWN, MOVE_UP, NO_LABEL_LAYERS,
+        OPACITY, PLACEMENT, STYLE,
+    };
     let map = frame.map;
-    let layers = state.label_layers();
-    if layers.is_empty() {
+    if state.label_layers().is_empty() {
         ui.weak(NO_LABEL_LAYERS);
         return;
     }
     let open = state.atlas.open_class();
-    for &(layer, _) in &layers {
+    let list = state.label_class_list(map);
+    for (layer, i, class) in &list {
         let name = state
             .doc
-            .layer(layer)
+            .layer(*layer)
             .map_or_else(String::new, |l| l.name.clone());
-        for (i, class) in state.doc.label_classes(Some(map), layer).iter().enumerate() {
-            let text = format!("{} · {name}", class.name);
-            if ui
-                .selectable_label(open == Some((layer, i)), text)
-                .clicked()
-            {
-                let same = open == Some((layer, i));
-                state.atlas.label = (!same).then_some((frame.id, layer, i));
-            }
+        let text = format!("{} · {name}", class.name);
+        let on = open == Some((*layer, *i));
+        if ui.selectable_label(on, text).clicked() {
+            state.atlas.label = (!on).then_some((frame.id, *layer, *i));
         }
     }
     if ui.button(ADD_CLASS).clicked()
@@ -616,6 +614,27 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         ui.label("Filter");
         ui.text_edit_singleline(&mut class.filter);
     });
+    let family = crate::fonts::family(class.font.as_deref(), &mut state.fonts).to_owned();
+    let mut faces = state.fonts.faces(&family);
+    if faces.is_empty() {
+        faces.push(vale_labeler::Face {
+            weight: 400.0,
+            italic: false,
+        });
+    }
+    let face = vale_labeler::Face {
+        weight: class.weight,
+        italic: class.italic,
+    };
+    egui::ComboBox::from_label(STYLE)
+        .selected_text(face.name())
+        .show_ui(ui, |ui| {
+            for f in faces {
+                if ui.selectable_label(f == face, f.name()).clicked() {
+                    (class.weight, class.italic) = (f.weight, f.italic);
+                }
+            }
+        });
     ui.horizontal(|ui| {
         ui.label("Size");
         ui.add(
@@ -625,13 +644,42 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         );
         style_editor::color_button(ui, &mut class.color);
     });
+    egui::ComboBox::from_label(CASE)
+        .selected_text(class.case.name())
+        .show_ui(ui, |ui| {
+            for c in vale_style::TextCase::ALL {
+                ui.selectable_value(&mut class.case, c, c.name());
+            }
+        });
+    let mut spacing = class.letter_spacing * 100.0;
+    let mut opacity = class.opacity * 100.0;
     ui.horizontal(|ui| {
-        ui.checkbox(&mut class.halo, HALO);
-        ui.checkbox(&mut class.italic, ITALIC);
+        ui.label(LETTER_SPACING);
+        let drag = egui::DragValue::new(&mut spacing)
+            .range(-10.0..=100.0)
+            .suffix(" %");
+        if ui.add(drag).changed() {
+            class.letter_spacing = spacing / 100.0;
+        }
     });
     ui.horizontal(|ui| {
-        ui.label("Priority");
-        ui.add(egui::DragValue::new(&mut class.priority));
+        ui.label(OPACITY);
+        let slider = egui::Slider::new(&mut opacity, 0.0..=100.0).suffix(" %");
+        if ui.add(slider).changed() {
+            class.opacity = opacity / 100.0;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut class.halo, HALO);
+        if class.halo {
+            style_editor::color_button(ui, &mut class.halo_color);
+            ui.add(
+                egui::DragValue::new(&mut class.halo_width)
+                    .range(0.5..=8.0)
+                    .speed(0.1)
+                    .suffix(" pt"),
+            );
+        }
     });
     egui::ComboBox::from_label(PLACEMENT)
         .selected_text(class.placement.name())
@@ -640,8 +688,26 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 ui.selectable_value(&mut class.placement, p, p.name());
             }
         });
+    let at = list.iter().position(|(l, j, _)| (*l, *j) == (layer, i));
+    if let Some(at) = at {
+        ui.horizontal(|ui| {
+            if ui.add_enabled(at > 0, egui::Button::new(MOVE_UP)).clicked() {
+                state.reorder_label_classes(map, at, at - 1);
+            }
+            let down = at + 1 < list.len();
+            if ui.add_enabled(down, egui::Button::new(MOVE_DOWN)).clicked() {
+                state.reorder_label_classes(map, at, at + 1);
+            }
+        });
+    }
     if class != before {
-        state.edit_label_class(map, layer, i, |c| *c = class);
+        // The priority follows the list order, so a move keeps it.
+        state.edit_label_class(map, layer, i, |c| {
+            *c = vale_style::LabelClass {
+                priority: c.priority,
+                ..class
+            }
+        });
     }
     if ui.button(DELETE_CLASS).clicked() {
         state.delete_label_class(map, layer, i);

@@ -24,7 +24,8 @@ use vale_app::ui::pad::atlas::{
     custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::labels::{
-    ADD_CLASS, COLOR, DELETE_CLASS, HALO, LABEL_SIZE, LAYER, PLACEMENT, PRIORITY, TEXT,
+    ADD_CLASS, CASE, COLOR, DELETE_CLASS, HALO, HALO_COLOR, HALO_WIDTH, LABEL_SIZE, LAYER,
+    MOVE_DOWN, MOVE_UP, OPACITY, PLACEMENT, REORDER, STYLE, TEXT,
 };
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::eye_name;
@@ -2659,8 +2660,8 @@ fn classes(h: &Pad, map: MapId, layer: &str) -> Vec<vale_style::LabelClass> {
     h.state().doc.label_classes(Some(map), layer_id(h, layer))
 }
 
-/// The label runs of a frame of the open page.
-fn label_runs(h: &mut Pad, index: usize) -> Vec<vale_render::GlyphRun> {
+/// The items of a frame of the open page.
+fn frame_items(h: &mut Pad, index: usize) -> Vec<Item> {
     use vale_app::atlas::{FrameTarget, PT_PER_MM};
     use vale_app::pipeline::{Quality, fonts};
     let page = open_page(h);
@@ -2675,7 +2676,12 @@ fn label_runs(h: &mut Pad, index: usize) -> Vec<vale_render::GlyphRun> {
         .pipeline
         .compose_frame(&s.doc, &page, &f, target, &mut fonts, Quality::Final, None)
         .unwrap();
-    (composed.list.items.into_iter())
+    composed.list.items
+}
+
+/// The label runs of a frame of the open page.
+fn label_runs(h: &mut Pad, index: usize) -> Vec<vale_render::GlyphRun> {
+    (frame_items(h, index).into_iter())
         .filter_map(|i| match i {
             Item::Glyphs(g) => Some(g),
             _ => None,
@@ -2746,10 +2752,6 @@ fn the_labels_tab_makes_a_label_class() {
     tap(&mut h, HALO);
     assert!(!classes(&h, map, "Places")[1].halo);
     tap(&mut h, HALO);
-    scroll_to(&mut h, PRIORITY);
-    tap(&mut h, PRIORITY);
-    tap(&mut h, &format!("{PRIORITY} 8"));
-    tap(&mut h, &format!("{PRIORITY} Done"));
 
     let class = classes(&h, map, "Places")[1].clone();
     assert_eq!(class.text, "upper(name)");
@@ -2761,7 +2763,6 @@ fn the_labels_tab_makes_a_label_class() {
     );
     assert_ne!(class.color, PLACES_COLOR);
     assert!(class.halo);
-    assert_eq!(class.priority, 8);
     let runs = label_runs(&mut h, 0);
     let ours: Vec<_> = (runs.iter()).filter(|g| g.color == class.color).collect();
     assert!(!ours.is_empty());
@@ -2778,6 +2779,7 @@ fn the_placement_choices_match_the_feature_type() {
     let map = frame(&h, 0).map;
     let names = |kind| LabelPlacement::choices(kind).iter().map(|p| p.name());
     tap(&mut h, "Places");
+    scroll_to(&mut h, PLACEMENT);
     tap(&mut h, PLACEMENT);
     for name in names(GeometryKind::Point) {
         assert!(control(&h, name).is_some(), "{name}");
@@ -2785,13 +2787,14 @@ fn the_placement_choices_match_the_feature_type() {
     for name in names(GeometryKind::Line) {
         assert!(control(&h, name).is_none(), "{name}");
     }
-    tap(&mut h, LabelPlacement::Right.name());
+    tap(&mut h, LabelPlacement::Around.name());
     assert_eq!(
         classes(&h, map, "Places")[0].placement,
-        LabelPlacement::Right
+        LabelPlacement::Around
     );
     tap(&mut h, "Back to Labels");
     tap(&mut h, "Rivers");
+    scroll_to(&mut h, PLACEMENT);
     tap(&mut h, PLACEMENT);
     for name in names(GeometryKind::Line) {
         assert!(control(&h, name).is_some(), "{name}");
@@ -2804,6 +2807,7 @@ fn the_placement_choices_match_the_feature_type() {
 
     // A class that moves to a line layer gets a line placement.
     tap(&mut h, "Places");
+    scroll_up_to(&mut h, LAYER);
     tap(&mut h, LAYER);
     assert!(control(&h, "Places").is_some());
     assert!(control(&h, "Land").is_none());
@@ -2900,11 +2904,16 @@ fn each_frame_of_a_map_places_labels_with_its_classes() {
 
 #[test]
 fn the_controls_of_the_labels_tab_work_with_a_finger() {
+    use vale_app::ui::pad::filter::{ADD_CONDITION, VALUE};
+    use vale_style::LabelPlacement;
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = labels_pad(size);
         let map = frame(&h, 0).map;
         check_controls(&h, &format!("{what}: labels tab"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-list");
+        }
         tap(&mut h, ADD_CLASS);
         assert_eq!(classes(&h, map, "Places").len(), 2, "{what}");
         check_controls(&h, &format!("{what}: class"));
@@ -2914,27 +2923,279 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
         tap(&mut h, LAYER);
         check_controls(&h, &format!("{what}: layer page"));
         tap(&mut h, "Back to Class 1");
-        scroll_to(&mut h, PLACEMENT);
-        tap(&mut h, PLACEMENT);
-        check_controls(&h, &format!("{what}: placement page"));
-        tap(&mut h, "Below");
-        scroll_to(&mut h, PRIORITY);
-        tap(&mut h, PRIORITY);
-        scroll_to(&mut h, &format!("{PRIORITY} Done"));
-        check_controls(&h, &format!("{what}: priority keypad"));
-        tap(&mut h, &format!("{PRIORITY} 5"));
-        tap(&mut h, &format!("{PRIORITY} Done"));
+
+        scroll_to(&mut h, ADD_CONDITION);
+        tap(&mut h, ADD_CONDITION);
+        check_controls(&h, &format!("{what}: condition page"));
+        scroll_to(&mut h, "scalerank");
+        tap(&mut h, "scalerank");
+        check_controls(&h, &format!("{what}: condition operators"));
+        scroll_to(&mut h, VALUE);
+        tap(&mut h, VALUE);
+        scroll_to(&mut h, &format!("{VALUE} Done"));
+        check_controls(&h, &format!("{what}: condition keypad"));
+        tap(&mut h, &format!("{VALUE} 2"));
+        tap(&mut h, &format!("{VALUE} Done"));
+        scroll_to(&mut h, ADD_CONDITION);
+        tap(&mut h, ADD_CONDITION);
+        assert_eq!(classes(&h, map, "Places")[1].filter, "scalerank = 2");
+
+        scroll_to(&mut h, STYLE);
+        tap(&mut h, STYLE);
+        check_controls(&h, &format!("{what}: style page"));
+        tap(&mut h, "Regular");
+        scroll_to(&mut h, CASE);
+        tap(&mut h, CASE);
+        check_controls(&h, &format!("{what}: case page"));
+        tap(&mut h, "Title case");
+        scroll_up_to(&mut h, COLOR);
         scroll_to(&mut h, COLOR);
         tap(&mut h, COLOR);
         scroll_to(&mut h, &format!("{COLOR} hue"));
         check_controls(&h, &format!("{what}: color"));
+        scroll_up_to(&mut h, COLOR);
         tap(&mut h, COLOR);
+        scroll_to(&mut h, HALO_COLOR);
+        tap(&mut h, HALO_COLOR);
+        scroll_to(&mut h, &format!("{HALO_COLOR} hue"));
+        check_controls(&h, &format!("{what}: halo color"));
+        scroll_up_to(&mut h, HALO_COLOR);
+        tap(&mut h, HALO_COLOR);
+        scroll_to(&mut h, PLACEMENT);
+        tap(&mut h, PLACEMENT);
+        check_controls(&h, &format!("{what}: placement page"));
+        tap(&mut h, LabelPlacement::Around.name());
         scroll_to(&mut h, DELETE_CLASS);
         check_controls(&h, &format!("{what}: bottom of the class"));
         tap(&mut h, DELETE_CLASS);
         assert_eq!(classes(&h, map, "Places").len(), 1, "{what}");
         assert!(control(&h, ADD_CLASS).is_some(), "{what}");
     }
+}
+
+/// The halo strokes of a frame with this color and width.
+fn halo_strokes(h: &mut Pad, index: usize, of: vale_render::Color, line: f64) -> usize {
+    (frame_items(h, index).iter())
+        .filter(
+            |i| matches!(i, Item::Stroke { color, width, .. } if *color == of && *width == line),
+        )
+        .count()
+}
+
+#[test]
+fn the_style_row_lists_the_faces_of_the_family() {
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    tap(&mut h, "Places");
+    tap(&mut h, STYLE);
+    let faces = h.state_mut().fonts.faces("Noto Sans");
+    assert!(faces.len() >= 2, "{faces:?}");
+    for face in &faces {
+        assert!(control(&h, &face.name()).is_some(), "{}", face.name());
+    }
+    assert!(control(&h, "Bold").is_none());
+    tap(&mut h, "Italic");
+    let class = classes(&h, map, "Places")[0].clone();
+    assert!(class.italic);
+    assert_eq!(class.weight, 400.0);
+    assert_eq!(h.state().atlas.label_page, None);
+    const ITALIC_LEN: usize = include_bytes!("../../../assets/fonts/NotoSans-Italic.ttf").len();
+    let runs = label_runs(&mut h, 0);
+    let places: Vec<_> = runs.iter().filter(|g| g.color == PLACES_COLOR).collect();
+    assert!(!places.is_empty());
+    for g in places {
+        assert_eq!(g.font.data.as_ref().len(), ITALIC_LEN, "{}", g.text);
+    }
+}
+
+#[test]
+fn the_case_row_changes_the_text() {
+    use vale_style::TextCase;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let texts = place_texts(&mut h, 0);
+    assert!(texts.iter().any(|t| !uppercase(t)), "{texts:?}");
+    tap(&mut h, "Places");
+    scroll_to(&mut h, CASE);
+    tap(&mut h, CASE);
+    for case in TextCase::ALL {
+        assert!(control(&h, case.name()).is_some(), "{}", case.name());
+    }
+    tap(&mut h, TextCase::Upper.name());
+    assert_eq!(classes(&h, map, "Places")[0].case, TextCase::Upper);
+    let texts = place_texts(&mut h, 0);
+    assert!(
+        !texts.is_empty() && texts.iter().all(|t| uppercase(t)),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn the_halo_has_a_color_and_a_width() {
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let before = classes(&h, map, "Places")[0].clone();
+    tap(&mut h, "Places");
+    scroll_to(&mut h, HALO_COLOR);
+    tap(&mut h, HALO_COLOR);
+    let shade = format!("{HALO_COLOR} shade");
+    scroll_to(&mut h, &shade);
+    let square = control(&h, &shade).unwrap();
+    tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+    tap(&mut h, HALO_COLOR);
+    scroll_to(&mut h, HALO_WIDTH);
+    let slider = control(&h, HALO_WIDTH).unwrap();
+    tap_with(
+        &mut h,
+        slider.right_center() - vec2(90.0, 0.0),
+        Input::Finger,
+    );
+    let class = classes(&h, map, "Places")[0].clone();
+    let (old, new) = (before.halo_color, class.halo_color);
+    assert_ne!((new.r, new.g, new.b), (old.r, old.g, old.b));
+    assert_eq!(new.a, old.a);
+    assert!(class.halo_width > before.halo_width, "{}", class.halo_width);
+    let places = place_texts(&mut h, 0).len();
+    assert!(places > 0);
+    assert_eq!(
+        halo_strokes(&mut h, 0, class.halo_color, class.halo_width),
+        places
+    );
+
+    scroll_to(&mut h, HALO);
+    tap(&mut h, HALO);
+    assert!(control(&h, HALO_COLOR).is_none());
+    assert!(control(&h, HALO_WIDTH).is_none());
+    assert_eq!(
+        halo_strokes(&mut h, 0, class.halo_color, class.halo_width),
+        0
+    );
+}
+
+#[test]
+fn the_opacity_fades_the_text() {
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    tap(&mut h, "Places");
+    scroll_to(&mut h, OPACITY);
+    let slider = control(&h, OPACITY).unwrap();
+    tap_with(&mut h, slider.center(), Input::Finger);
+    let class = classes(&h, map, "Places")[0].clone();
+    assert!(
+        class.opacity > 0.2 && class.opacity < 0.8,
+        "{}",
+        class.opacity
+    );
+    let alpha = (255.0 * class.opacity).round() as u8;
+    let halo = (217.0 * class.opacity).round() as u8;
+    let runs = label_runs(&mut h, 0);
+    let rgb = |c: vale_render::Color| (c.r, c.g, c.b);
+    let places: Vec<_> = (runs.iter())
+        .filter(|g| rgb(g.color) == rgb(PLACES_COLOR))
+        .collect();
+    assert!(!places.is_empty());
+    assert!(places.iter().all(|g| g.color.a == alpha));
+    let faded = vale_render::Color::rgba(255, 255, 255, halo);
+    assert_eq!(halo_strokes(&mut h, 0, faded, 2.2), places.len());
+}
+
+#[test]
+fn the_filter_of_a_class_has_the_condition_builder() {
+    use vale_app::ui::atlas::ClassPage;
+    use vale_app::ui::pad::filter::{ADD_CONDITION, NO_CLASS_CONDITION, REMOVE_CONDITION};
+    use vale_app::ui::pad::rules::EXPRESSION;
+    use vale_store::Value;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    tap(&mut h, "Places");
+    assert!(h.query_by_label(NO_CLASS_CONDITION).is_some());
+    scroll_to(&mut h, ADD_CONDITION);
+    tap(&mut h, ADD_CONDITION);
+    assert_eq!(h.state().atlas.label_page, Some(ClassPage::Condition));
+    scroll_to(&mut h, "featurecla");
+    tap(&mut h, "featurecla");
+    scroll_to(&mut h, "Admin-1 capital");
+    tap(&mut h, "Admin-1 capital");
+    scroll_to(&mut h, ADD_CONDITION);
+    tap(&mut h, ADD_CONDITION);
+    assert_eq!(h.state().atlas.label_page, None);
+    let text = "featurecla = 'Admin-1 capital'";
+    assert_eq!(classes(&h, map, "Places")[0].filter, text);
+    assert!(control(&h, &format!("{REMOVE_CONDITION} 1")).is_some());
+
+    let layer = h.state().doc.layer(layer_id(&h, "Places")).unwrap();
+    let wanted = Value::Text("Admin-1 capital".into());
+    let names: Vec<String> = (layer.features.iter())
+        .filter(|f| f.attributes.get("featurecla") == Some(&wanted))
+        .filter_map(|f| f.attributes.get("name")?.label())
+        .collect();
+    let texts = place_texts(&mut h, 0);
+    assert!(!texts.is_empty());
+    for t in &texts {
+        assert!(names.contains(t), "{t}");
+    }
+
+    // The Expression field holds the whole filter.
+    type_text(&mut h, EXPRESSION, "scalerank < 1");
+    assert_eq!(classes(&h, map, "Places")[0].filter, "scalerank < 1");
+    let first = format!("{REMOVE_CONDITION} 1");
+    scroll_to(&mut h, &first);
+    tap(&mut h, &first);
+    assert_eq!(classes(&h, map, "Places")[0].filter, "");
+}
+
+#[test]
+fn the_class_list_is_in_priority_order_and_a_drag_reorders_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    tap(&mut h, FRAME_TABS[3]);
+    let order = |h: &Pad| -> Vec<String> {
+        (h.state().label_class_list(map).into_iter())
+            .map(|(_, _, c)| c.name)
+            .collect()
+    };
+    let above =
+        |h: &Pad, a: &str, b: &str| control(h, a).unwrap().top() < control(h, b).unwrap().top();
+    assert_eq!(order(&h), ["Places", "Rivers"]);
+    assert!(above(&h, "Places", "Rivers"));
+
+    let from = control(&h, &format!("{REORDER} Places")).unwrap().center();
+    let to = from + vec2(0.0, 60.0);
+    drag_steps(&mut h, from, to, Input::Finger, 8);
+    release(&mut h, to, Input::Finger);
+    assert_eq!(order(&h), ["Rivers", "Places"]);
+    let priority = |h: &Pad, layer: &str| classes(h, map, layer)[0].priority;
+    assert!(priority(&h, "Rivers") > priority(&h, "Places"));
+    assert!(above(&h, "Rivers", "Places"));
+
+    tap(&mut h, "Undo");
+    assert_eq!(order(&h), ["Places", "Rivers"]);
+    assert!(
+        h.state()
+            .doc
+            .project
+            .atlas
+            .map(map)
+            .unwrap()
+            .labels
+            .is_empty()
+    );
+
+    // Move up and Move down on the page of a class.
+    tap(&mut h, "Rivers");
+    scroll_to(&mut h, MOVE_UP);
+    tap(&mut h, MOVE_UP);
+    assert_eq!(order(&h), ["Rivers", "Places"]);
+    tap(&mut h, MOVE_DOWN);
+    assert_eq!(order(&h), ["Places", "Rivers"]);
+    tap(&mut h, "Undo");
+    assert_eq!(order(&h), ["Rivers", "Places"]);
 }
 
 #[test]
@@ -2984,7 +3245,7 @@ fn the_label_classes_of_each_map_survive_a_close_and_an_open() {
 
 #[test]
 fn each_change_of_a_class_is_one_undo_step() {
-    use vale_style::LabelPlacement;
+    use vale_style::TextCase;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let mut s = state();
@@ -2997,18 +3258,18 @@ fn each_change_of_a_class_is_one_undo_step() {
     tap(&mut h, ADD_CLASS);
     scroll_to(&mut h, HALO);
     tap(&mut h, HALO);
-    scroll_to(&mut h, PLACEMENT);
-    tap(&mut h, PLACEMENT);
-    tap(&mut h, LabelPlacement::Below.name());
+    scroll_up_to(&mut h, CASE);
+    tap(&mut h, CASE);
+    tap(&mut h, TextCase::Upper.name());
     let class = |h: &Pad| classes(h, map, "Places").get(1).cloned();
     let c = class(&h).unwrap();
     assert!(!c.halo);
-    assert_eq!(c.placement, LabelPlacement::Below);
+    assert_eq!(c.case, TextCase::Upper);
 
     tap(&mut h, "Undo");
     let c = class(&h).unwrap();
     assert!(!c.halo);
-    assert_eq!(c.placement, LabelPlacement::Around);
+    assert_eq!(c.case, TextCase::Normal);
     tap(&mut h, "Undo");
     assert!(class(&h).unwrap().halo);
     tap(&mut h, "Undo");

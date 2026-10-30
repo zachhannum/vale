@@ -4,13 +4,15 @@ use std::collections::{HashMap, HashSet};
 
 use kurbo::Rect;
 use vale_labeler::{
-    Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, LineSide, Obstacle,
+    Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, LineSide, Obstacle,
     ObstacleKind, Options, Placement, PointPlacement, PointPosition, TextStyle, place_labels,
 };
 use vale_render::{Color, GlyphRun, Item};
 use vale_store::GeometryKind;
 use vale_style::expr::{Expr, Filter};
-use vale_style::{LabelClass as StyleClass, LabelPlacement as StylePlacement};
+use vale_style::{
+    LabelClass as StyleClass, LabelPlacement as StylePlacement, LabelPosition, TextCase,
+};
 
 use crate::pipeline::{LabelSummary, PageLayer, PlacedSymbol, Quality, UnplacedInfo};
 
@@ -39,7 +41,8 @@ pub fn place(
     let mut labeled = HashSet::new();
     let mut label_classes: Vec<LabelClass> = Vec::new();
     let mut class_colors: Vec<Color> = Vec::new();
-    let mut class_halos: Vec<bool> = Vec::new();
+    // The color and the width of the halo of each class, if it has one.
+    let mut class_halos: Vec<Option<(Color, f64)>> = Vec::new();
     let mut features: Vec<Feature> = Vec::new();
     let mut layer_names: Vec<&str> = Vec::new();
     let mut next_id: u64 = 0;
@@ -59,16 +62,26 @@ pub fn place(
             label_classes.push(LabelClass {
                 name: c.name.clone(),
                 style: TextStyle {
+                    weight: c.weight,
                     italic: c.italic,
-                    letter_spacing: if is_line { 0.5 } else { 0.0 },
+                    letter_spacing: c.letter_spacing * c.size,
+                    caps: match c.case {
+                        TextCase::SmallCaps => Caps::Small,
+                        TextCase::AllSmallCaps => Caps::AllSmall,
+                        _ => Caps::Normal,
+                    },
                     ..TextStyle::new(crate::fonts::family(c.font.as_deref(), fonts), c.size)
                 },
                 priority: c.priority,
-                margin: 1.0,
-                placement: placement(c.placement, pl.kind),
+                margin: c.buffer,
+                placement: placement(c, pl.kind),
+                duplicate_distance: c.remove_duplicates.then_some(c.duplicate_distance),
             });
-            class_colors.push(c.color);
-            class_halos.push(c.halo);
+            class_colors.push(fade(c.color, c.opacity));
+            class_halos.push(
+                c.halo
+                    .then(|| (fade(c.halo_color, c.opacity), c.halo_width)),
+            );
 
             for f in &pl.features {
                 let Some(feature) = pl.layer.features.get(f.index) else {
@@ -81,6 +94,7 @@ pub fn place(
                 let Some(text) = text_expr.eval(&ctx).label() else {
                     continue;
                 };
+                let text = c.case.apply(&text);
                 let priority = c
                     .priority_field
                     .as_ref()
@@ -158,19 +172,20 @@ pub fn place(
         options: Options {
             seed: 24301,
             improve: quality == Quality::Final,
-            duplicate_distance: Some(300.0),
         },
     };
     let labeling = place_labels(fonts, &input);
 
     let mut items = Vec::new();
-    for label in labeling.placed.iter().filter(|l| class_halos[l.class]) {
-        items.push(Item::Stroke {
-            path: label.outlines(),
-            color: Color::rgba(255, 255, 255, 217),
-            width: 2.2,
-            round: true,
-        });
+    for label in &labeling.placed {
+        if let Some((color, width)) = class_halos[label.class] {
+            items.push(Item::Stroke {
+                path: label.outlines(),
+                color,
+                width,
+                round: true,
+            });
+        }
     }
     for label in &labeling.placed {
         let color = class_colors[label.class];
@@ -200,38 +215,55 @@ pub fn place(
     (items, summary)
 }
 
-/// The labeler placement of a label placement. A placement that does not fit `kind` gives the
-/// default placement of `kind`.
-fn placement(p: StylePlacement, kind: GeometryKind) -> Placement {
-    let p = if p.fits(kind) {
-        p
+/// `color` with its alpha times `opacity`.
+fn fade(color: Color, opacity: f64) -> Color {
+    let a = (f64::from(color.a) * opacity.clamp(0.0, 1.0)).round() as u8;
+    Color { a, ..color }
+}
+
+/// The labeler placement of a class. A placement that does not fit `kind`
+/// gives the default placement of `kind`. A point class tries the positions
+/// that are on, in their rank.
+fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
+    let p = if c.placement.fits(kind) {
+        c.placement
     } else {
         StylePlacement::default_for(kind).unwrap_or(StylePlacement::Around)
-    };
-    let point = |position| {
-        Placement::Point(PointPlacement {
-            positions: vec![position],
-            ..Default::default()
-        })
     };
     let line = |sides| {
         Placement::Line(LinePlacement {
             sides,
-            repeat_distance: Some(600.0),
-            offset: 4.0,
-            ..Default::default()
+            repeat_distance: c.repeat.then_some(c.repeat_distance),
+            offset: c.offset,
+            max_glyph_turn: c.curve_limit,
+            smoothing: c.smoothing,
         })
     };
     match p {
-        StylePlacement::Around => Placement::Point(PointPlacement::default()),
-        StylePlacement::Right => point(PointPosition::Right),
-        StylePlacement::Left => point(PointPosition::Left),
-        StylePlacement::Above => point(PointPosition::Top),
-        StylePlacement::Below => point(PointPosition::Bottom),
+        StylePlacement::Around => Placement::Point(PointPlacement {
+            positions: (c.positions.iter())
+                .filter(|r| r.on)
+                .map(|r| point_position(r.position))
+                .collect(),
+            offset: c.offset,
+        }),
         StylePlacement::AboveOrBelow => line(LinePlacement::default().sides),
         StylePlacement::LineAbove => line(vec![LineSide::Above]),
         StylePlacement::LineBelow => line(vec![LineSide::Below]),
         StylePlacement::OnLine => line(vec![LineSide::Centered]),
+    }
+}
+
+fn point_position(p: LabelPosition) -> PointPosition {
+    match p {
+        LabelPosition::TopRight => PointPosition::TopRight,
+        LabelPosition::Right => PointPosition::Right,
+        LabelPosition::BottomRight => PointPosition::BottomRight,
+        LabelPosition::Top => PointPosition::Top,
+        LabelPosition::Bottom => PointPosition::Bottom,
+        LabelPosition::TopLeft => PointPosition::TopLeft,
+        LabelPosition::Left => PointPosition::Left,
+        LabelPosition::BottomLeft => PointPosition::BottomLeft,
     }
 }
 

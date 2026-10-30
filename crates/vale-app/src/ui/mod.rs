@@ -1533,6 +1533,67 @@ impl AppState {
             .collect()
     }
 
+    /// The label classes of `map` in priority order, highest first, with
+    /// their layers and their places in the classes of their layers. Equal
+    /// priorities keep the order of `label_layers`, then the order of the
+    /// classes of the layer.
+    pub fn label_class_list(&self, map: MapId) -> Vec<(LayerId, usize, LabelClass)> {
+        let mut list: Vec<(LayerId, usize, LabelClass)> = (self.label_layers().into_iter())
+            .flat_map(|(layer, _)| {
+                let classes = self.doc.label_classes(Some(map), layer);
+                classes
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(i, c)| (layer, i, c))
+            })
+            .collect();
+        list.sort_by_key(|(_, _, c)| std::cmp::Reverse(c.priority));
+        list
+    }
+
+    /// Moves the class at place `from` of `label_class_list` to place `to`,
+    /// as one undo step. The priorities of the classes of the map follow the
+    /// new order. A layer whose priorities change stores its classes in the
+    /// map.
+    pub fn reorder_label_classes(&mut self, map: MapId, from: usize, to: usize) {
+        let mut list = self.label_class_list(map);
+        if from >= list.len() || to >= list.len() || from == to {
+            return;
+        }
+        let moved = list.remove(from);
+        list.insert(to, moved);
+        let count = list.len();
+        let mut layers: Vec<(LayerId, Vec<LabelClass>, bool)> = Vec::new();
+        for (k, (layer, i, class)) in list.into_iter().enumerate() {
+            let priority = (count - 1 - k) as i32;
+            let at = match layers.iter().position(|(l, _, _)| *l == layer) {
+                Some(at) => at,
+                None => {
+                    let classes = self.doc.label_classes(Some(map), layer);
+                    layers.push((layer, classes, false));
+                    layers.len() - 1
+                }
+            };
+            let (_, classes, changed) = &mut layers[at];
+            if let Some(c) = classes.get_mut(i)
+                && c.priority != priority
+            {
+                debug_assert_eq!(c.name, class.name);
+                c.priority = priority;
+                *changed = true;
+            }
+        }
+        self.save_edit();
+        let mut any = false;
+        for (layer, classes, changed) in layers {
+            any |= changed && self.doc.set_label_classes(map, layer, &classes);
+        }
+        if any {
+            self.touch();
+            self.save_edit();
+        }
+    }
+
     /// Removes the style overrides of a layer in a map, as one undo step.
     pub fn clear_overrides(&mut self, map: MapId, layer: LayerId) {
         self.save_edit();

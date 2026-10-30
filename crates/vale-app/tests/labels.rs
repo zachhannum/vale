@@ -10,9 +10,7 @@ use vale_app::pick::pick;
 use vale_app::pipeline::{Composed, PageFeature, PageLayer, Pipeline, Quality, Selection, fonts};
 use vale_render::Item;
 use vale_store::{Feature, Geometry, GeometryKind, LayerId, Units, Value};
-use vale_style::{
-    LabelPlacement, LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Style, Symbolizer,
-};
+use vale_style::{LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Style, Symbolizer};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 const REGULAR_LEN: usize = include_bytes!("../../../assets/fonts/NotoSans-Regular.ttf").len();
@@ -601,8 +599,14 @@ fn places_frame(edit: impl FnOnce(&mut vale_style::LabelClass)) -> (Document, Co
 }
 
 #[test]
-fn a_right_placement_puts_point_labels_right_of_the_point() {
-    let (doc, c) = places_frame(|class| class.placement = LabelPlacement::Right);
+fn the_right_position_alone_puts_point_labels_right_of_the_point() {
+    use vale_style::LabelPosition;
+    let (doc, c) = places_frame(|class| {
+        for rank in &mut class.positions {
+            rank.on = rank.position == LabelPosition::Right;
+        }
+        assert!(class.positions.iter().any(|r| r.on));
+    });
     let places = layer_id(&doc, "Places");
     let layer = doc.layer(places).unwrap();
     let mut checked = 0;
@@ -652,4 +656,79 @@ fn a_class_without_halo_draws_no_halo() {
     let (_, c) = places_frame(|class| class.halo = false);
     assert!(!texts(&c).is_empty());
     assert!(halos(&c).is_empty());
+}
+
+/// The glyph runs of each label text.
+fn runs(c: &Composed) -> std::collections::HashMap<String, Vec<&vale_render::GlyphRun>> {
+    let mut out: std::collections::HashMap<String, Vec<&vale_render::GlyphRun>> =
+        Default::default();
+    for item in &c.list.items {
+        if let Item::Glyphs(g) = item {
+            out.entry(g.text.clone()).or_default().push(g);
+        }
+    }
+    out
+}
+
+/// The distance from the first glyph of a label to its last glyph.
+fn span(runs: &[&vale_render::GlyphRun]) -> f64 {
+    let xs: Vec<f64> = (runs.iter())
+        .flat_map(|g| g.glyphs.iter().map(|(_, t)| t.translation().x))
+        .collect();
+    let (lo, hi) = xs
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(a, b), x| (a.min(*x), b.max(*x)));
+    hi - lo
+}
+
+#[test]
+fn small_caps_and_letter_spacing_reach_the_labeler() {
+    use vale_style::TextCase;
+    let (_, base) = places_frame(|_| {});
+    let (_, caps) = places_frame(|c| c.case = TextCase::AllSmallCaps);
+    let (_, small) = places_frame(|c| c.case = TextCase::SmallCaps);
+    let (_, spaced) = places_frame(|c| c.letter_spacing = 0.2);
+    // Noto Sans has small capitals, so the glyphs change and the size stays.
+    let ids = |runs: &[&vale_render::GlyphRun]| -> Vec<u32> {
+        runs.iter()
+            .flat_map(|g| g.glyphs.iter().map(|(id, _)| *id))
+            .collect()
+    };
+    let base = runs(&base);
+    assert!(base.values().flatten().all(|g| g.font_size == 11.0));
+    for case in [runs(&caps), runs(&small)] {
+        let mut checked = 0;
+        for (text, r) in &case {
+            let Some(b) = base.get(text) else { continue };
+            assert_ne!(ids(r), ids(b), "{text}");
+            checked += 1;
+        }
+        assert!(checked >= 10, "{checked}");
+    }
+    // A capital stays in small caps and changes in all small caps.
+    let (caps, small) = (runs(&caps), runs(&small));
+    let first = |runs: &[&vale_render::GlyphRun]| ids(runs)[0];
+    let mut same = 0;
+    for (text, r) in &small {
+        let Some(b) = base.get(text) else { continue };
+        if text.starts_with(char::is_uppercase) && first(r) == first(b) {
+            same += 1;
+            if let Some(c) = caps.get(text) {
+                assert_ne!(first(c), first(b), "{text}");
+            }
+        }
+    }
+    assert!(same >= 10, "{same}");
+
+    let spaced = runs(&spaced);
+    let mut checked = 0;
+    for (text, r) in &spaced {
+        let Some(b) = base.get(text) else { continue };
+        if text.chars().count() < 3 || r.len() != b.len() {
+            continue;
+        }
+        assert!(span(r) > span(b) + 1.0, "{text}");
+        checked += 1;
+    }
+    assert!(checked >= 10, "{checked}");
 }

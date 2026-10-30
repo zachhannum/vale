@@ -576,7 +576,11 @@ fn selection_panel(
     rects: &Rects,
 ) {
     let place = (rects.right_panel, panel_width(ctx));
-    let scroll = egui::scroll_area::ScrollSource::default();
+    // A drag of a label class moves the class, and not the panel.
+    let scroll = match state.atlas.label_drag {
+        Some(_) => egui::scroll_area::ScrollSource::NONE,
+        None => egui::scroll_area::ScrollSource::default(),
+    };
     let on_title = |state: &mut AppState, row: &widgets::TitleRow| {
         if row.close {
             state.atlas.selection = AtlasSelection::None;

@@ -87,6 +87,28 @@ pub enum ClassPage {
     Layer,
     /// The placements of the feature type of the layer.
     Placement,
+    /// The faces of the font family of the class.
+    Style,
+    /// The cases of the text.
+    Case,
+    /// A new condition of the filter.
+    Condition,
+}
+
+/// A color of a label class that the color picker edits.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ClassColor {
+    Text,
+    Halo,
+}
+
+/// A label class that a finger drags by its handle in the Labels tab.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ClassDrag {
+    /// The place of the class in the list of the tab.
+    pub from: usize,
+    /// The distance from the top of the row to the finger.
+    pub grab: f32,
 }
 
 /// The pan and the zoom of the page on the screen.
@@ -307,14 +329,18 @@ pub struct AtlasState {
     pub label: Option<(FrameId, LayerId, usize)>,
     /// The page of the panel of `label`.
     pub label_page: Option<ClassPage>,
-    /// The color picker of the label class is open.
-    pub label_color: bool,
+    /// The color of the label class whose color picker is open.
+    pub label_color: Option<ClassColor>,
     /// The color picker of the label class showed in this frame.
     pub(crate) label_color_shown: bool,
     /// The text of the Text field of the label class while it has the focus.
     pub label_text: String,
-    /// The text of the Filter field of the label class while it has the focus.
+    /// The text of the Expression field of the filter of the label class.
     pub label_filter: String,
+    /// The condition of the page of a new condition of the label class.
+    pub label_draft: super::pad::filter::Draft,
+    /// The label class that a finger drags in the Labels tab.
+    pub label_drag: Option<ClassDrag>,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The frame of `handles`.
@@ -407,10 +433,12 @@ impl Default for AtlasState {
             layer_page: None,
             label: None,
             label_page: None,
-            label_color: false,
+            label_color: None,
             label_color_shown: false,
             label_text: String::new(),
             label_filter: String::new(),
+            label_draft: Default::default(),
+            label_drag: None,
             shown: None,
             handles_of: None,
             images: HashMap::new(),

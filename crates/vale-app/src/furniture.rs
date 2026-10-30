@@ -58,6 +58,7 @@ pub fn scale_bar(
                 positions: vec![PointPosition::TopRight],
                 offset: 0.0,
             }),
+            duplicate_distance: None,
         }],
         features: vec![Feature {
             id: 0,
@@ -73,7 +74,6 @@ pub fn scale_bar(
         options: Options {
             seed: 1,
             improve: false,
-            duplicate_distance: None,
         },
     };
     let labeling = place_labels(fonts, &input);
