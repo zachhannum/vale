@@ -14,6 +14,7 @@ use vale_render::Color;
 use vale_store::GeometryKind;
 pub use vale_store::Value;
 
+pub(crate) use functions::title_case;
 pub use functions::{FUNCTIONS, Function};
 use parser::Node;
 

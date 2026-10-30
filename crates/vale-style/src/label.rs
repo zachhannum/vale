@@ -3,7 +3,7 @@
 use serde_json::{Map, Value as Json, json};
 use vale_store::GeometryKind;
 
-use crate::expr::field_ref;
+use crate::expr::{field_ref, title_case};
 use crate::{Color, LabelStyle, StyleError};
 
 /// The version of the label class JSON that this build writes.
@@ -106,6 +106,83 @@ impl LabelPlacement {
     }
 }
 
+/// How the case of the label text changes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TextCase {
+    Normal,
+    Upper,
+    Lower,
+    Title,
+    /// Small capitals for the lowercase letters. The labeler shapes them.
+    SmallCaps,
+    /// Small capitals for all letters. The labeler shapes them.
+    AllSmallCaps,
+}
+
+impl TextCase {
+    pub const ALL: [TextCase; 6] = [
+        TextCase::Normal,
+        TextCase::Upper,
+        TextCase::Lower,
+        TextCase::Title,
+        TextCase::SmallCaps,
+        TextCase::AllSmallCaps,
+    ];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            TextCase::Normal => "Normal",
+            TextCase::Upper => "Uppercase",
+            TextCase::Lower => "Lowercase",
+            TextCase::Title => "Title case",
+            TextCase::SmallCaps => "Small caps",
+            TextCase::AllSmallCaps => "All small caps",
+        }
+    }
+
+    /// The text in this case. The small caps cases give the text unchanged.
+    pub fn apply(self, text: &str) -> String {
+        match self {
+            TextCase::Upper => text.to_uppercase(),
+            TextCase::Lower => text.to_lowercase(),
+            TextCase::Title => title_case(text),
+            TextCase::Normal | TextCase::SmallCaps | TextCase::AllSmallCaps => text.to_owned(),
+        }
+    }
+
+    /// The JSON name.
+    fn key(self) -> &'static str {
+        match self {
+            TextCase::Normal => "normal",
+            TextCase::Upper => "upper",
+            TextCase::Lower => "lower",
+            TextCase::Title => "title",
+            TextCase::SmallCaps => "small_caps",
+            TextCase::AllSmallCaps => "all_small_caps",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<TextCase> {
+        TextCase::ALL.into_iter().find(|c| c.key() == key)
+    }
+}
+
+/// The default color of the halo.
+pub const HALO_COLOR: Color = Color::rgba(255, 255, 255, 217);
+
+/// The default width of the halo, in points.
+pub const HALO_WIDTH: f64 = 2.2;
+
+/// The default letter spacing of a feature type, as a fraction of `size`. Line labels get 0.5 pt.
+fn letter_spacing_for(kind: GeometryKind, size: f64) -> f64 {
+    if kind == GeometryKind::Line && size > 0.0 {
+        0.5 / size
+    } else {
+        0.0
+    }
+}
+
 /// One class of labels of a layer on a map.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabelClass {
@@ -120,7 +197,17 @@ pub struct LabelClass {
     pub size: f64,
     pub color: Color,
     pub italic: bool,
+    /// The font weight, from 100 to 900. 400 is regular.
+    pub weight: f32,
+    pub case: TextCase,
+    /// A fraction of `size`. 0.05 adds 5 % of the size between letters.
+    pub letter_spacing: f64,
+    /// The opacity of the text, from 0 to 1.
+    pub opacity: f64,
     pub halo: bool,
+    pub halo_color: Color,
+    /// Points.
+    pub halo_width: f64,
     /// Higher is placed first.
     pub priority: i32,
     /// A numeric attribute. Higher is placed first within the class.
@@ -148,7 +235,13 @@ impl LabelClass {
             size: style.size,
             color: style.color,
             italic: style.italic,
+            weight: 400.0,
+            case: TextCase::Normal,
+            letter_spacing: letter_spacing_for(kind, style.size),
+            opacity: 1.0,
             halo: true,
+            halo_color: HALO_COLOR,
+            halo_width: HALO_WIDTH,
             priority,
             priority_field: style.priority_field.clone(),
             placement: LabelPlacement::default_for(kind)?,
@@ -159,19 +252,26 @@ impl LabelClass {
     pub fn new(name: &str, kind: GeometryKind, priority: i32) -> Option<LabelClass> {
         let placement = LabelPlacement::default_for(kind)?;
         let line = kind == GeometryKind::Line;
+        let size = 11.0;
         Some(LabelClass {
             name: name.to_owned(),
             text: "name".to_owned(),
             filter: String::new(),
             font: None,
-            size: 11.0,
+            size,
             color: if line {
                 Color::rgb(40, 100, 160)
             } else {
                 Color::rgb(0x2b, 0x2a, 0x26)
             },
             italic: line,
+            weight: 400.0,
+            case: TextCase::Normal,
+            letter_spacing: letter_spacing_for(kind, size),
+            opacity: 1.0,
             halo: true,
+            halo_color: HALO_COLOR,
+            halo_width: HALO_WIDTH,
             priority,
             priority_field: None,
             placement,
@@ -192,7 +292,13 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "size": c.size,
                 "color": c.color.to_hex(),
                 "italic": c.italic,
+                "weight": c.weight,
+                "case": c.case.key(),
+                "letter_spacing": c.letter_spacing,
+                "opacity": c.opacity,
                 "halo": c.halo,
+                "halo_color": c.halo_color.to_hex(),
+                "halo_width": c.halo_width,
                 "priority": c.priority,
                 "priority_field": c.priority_field,
                 "placement": c.placement.key(),
@@ -244,15 +350,29 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         .and_then(Json::as_i64)
         .and_then(|p| i32::try_from(p).ok())
         .unwrap_or(0);
+    let number = |key: &str, fallback: f64| m.get(key).and_then(Json::as_f64).unwrap_or(fallback);
     Ok(LabelClass {
         name: text(m, "name").unwrap_or_default(),
         text: text(m, "text").unwrap_or_default(),
         filter: text(m, "filter").unwrap_or_default(),
         font: text(m, "font"),
-        size: m.get("size").and_then(Json::as_f64).unwrap_or(11.0),
+        size: number("size", 11.0),
         color,
         italic: m.get("italic").and_then(Json::as_bool).unwrap_or(false),
+        weight: number("weight", 400.0) as f32,
+        case: text(m, "case")
+            .as_deref()
+            .and_then(TextCase::from_key)
+            .unwrap_or(TextCase::Normal),
+        letter_spacing: number("letter_spacing", 0.0),
+        opacity: number("opacity", 1.0),
         halo: m.get("halo").and_then(Json::as_bool).unwrap_or(true),
+        halo_color: m
+            .get("halo_color")
+            .and_then(Json::as_str)
+            .and_then(Color::from_hex)
+            .unwrap_or(HALO_COLOR),
+        halo_width: number("halo_width", HALO_WIDTH),
         priority,
         priority_field: text(m, "priority_field"),
         placement,
@@ -281,7 +401,16 @@ mod tests {
         a.filter = "pop > 1000".to_owned();
         a.font = Some("Serif".to_owned());
         a.priority_field = Some("pop".to_owned());
+        a.size = 14.5;
+        a.color = Color::rgba(1, 2, 3, 128);
+        a.italic = true;
+        a.weight = 700.0;
+        a.case = TextCase::AllSmallCaps;
+        a.letter_spacing = 0.05;
+        a.opacity = 0.75;
         a.halo = false;
+        a.halo_color = Color::rgba(0, 0, 0, 100);
+        a.halo_width = 1.5;
         a.placement = LabelPlacement::Below;
         let b = LabelClass::new("Rivers", GeometryKind::Line, -1).unwrap();
         let classes = vec![a, b];
@@ -295,6 +424,12 @@ mod tests {
         assert_eq!(read[0].text, "");
         assert_eq!(read[0].font, None);
         assert!(read[0].halo);
+        assert_eq!(read[0].halo_color, HALO_COLOR);
+        assert_eq!(read[0].halo_width, 2.2);
+        assert_eq!(read[0].weight, 400.0);
+        assert_eq!(read[0].case, TextCase::Normal);
+        assert_eq!(read[0].letter_spacing, 0.0);
+        assert_eq!(read[0].opacity, 1.0);
         assert_eq!(read[0].placement, LabelPlacement::OnLine);
         assert_eq!(
             classes_from_json(r#"{"version":9,"classes":[]}"#),
@@ -312,7 +447,13 @@ mod tests {
         assert_eq!(c.size, 13.0);
         assert_eq!(c.color, Color::rgb(10, 20, 30));
         assert!(c.italic);
+        assert_eq!(c.weight, 400.0);
+        assert_eq!(c.case, TextCase::Normal);
+        assert_eq!(c.letter_spacing, 0.0);
+        assert_eq!(c.opacity, 1.0);
         assert!(c.halo);
+        assert_eq!(c.halo_color, Color::rgba(255, 255, 255, 217));
+        assert_eq!(c.halo_width, 2.2);
         assert_eq!(c.priority, 5);
         assert_eq!(c.priority_field.as_deref(), Some("pop"));
         assert_eq!(c.placement, LabelPlacement::Around);
@@ -320,6 +461,12 @@ mod tests {
         let line = LabelClass::from_style("D", &style("old name"), GeometryKind::Line, 0).unwrap();
         assert_eq!(line.text, "\"old name\"");
         assert_eq!(line.placement, LabelPlacement::AboveOrBelow);
+        assert_eq!(line.letter_spacing, 0.5 / 13.0);
+        let new = LabelClass::new("R", GeometryKind::Line, 0).unwrap();
+        assert_eq!(new.letter_spacing * new.size, 0.5);
+        assert_eq!(new.halo_width, 2.2);
+        let point = LabelClass::new("T", GeometryKind::Point, 0).unwrap();
+        assert_eq!(point.letter_spacing, 0.0);
         assert_eq!(field_ref("end"), "\"end\"");
         assert_eq!(field_ref("a\"b"), "\"a\"\"b\"");
 
@@ -339,6 +486,22 @@ mod tests {
             LabelClass::from_style("D", &style("name"), GeometryKind::Polygon, 0),
             None
         );
+    }
+
+    #[test]
+    fn each_case_changes_the_text() {
+        let text = "the river ODE";
+        assert_eq!(TextCase::Normal.apply(text), text);
+        assert_eq!(TextCase::Upper.apply(text), "THE RIVER ODE");
+        assert_eq!(TextCase::Lower.apply(text), "the river ode");
+        assert_eq!(TextCase::Title.apply(text), "The River Ode");
+        assert_eq!(TextCase::SmallCaps.apply(text), text);
+        assert_eq!(TextCase::AllSmallCaps.apply(text), text);
+        for c in TextCase::ALL {
+            assert_eq!(TextCase::from_key(c.key()), Some(c));
+        }
+        assert_eq!(TextCase::AllSmallCaps.key(), "all_small_caps");
+        assert_eq!(TextCase::Title.name(), "Title case");
     }
 
     #[test]
