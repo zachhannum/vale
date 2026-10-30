@@ -18,8 +18,8 @@ use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
-    Atlas, Border, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord, PageId,
-    PageRecord, PageUnits, ProjectionPreset, encode_rings, read_rings,
+    Atlas, Border, CoordFormat, FrameId, FrameRecord, FrameShape, Graticule, MapId, MapRecord,
+    PageId, PageRecord, PageUnits, ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry,
@@ -522,6 +522,8 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
             }
             out.extend_from_slice(&graticule.color);
             put_f64(out, graticule.width);
+            out.push(graticule.labels as u8);
+            put_bytes(out, graticule.format.id().as_bytes());
             let border = &frame.border;
             out.push(border.on as u8);
             out.extend_from_slice(&border.color);
@@ -614,6 +616,8 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                     interval: if flag(r)? { Some(r.f64()?) } else { None },
                     color: r.take::<3>()?,
                     width: r.f64()?,
+                    labels: flag(r)?,
+                    format: CoordFormat::from_id(&string(r)?)?,
                 },
                 border: Border {
                     on: flag(r)?,
@@ -1150,6 +1154,8 @@ mod tests {
             interval: Some(7.5),
             color: [0x12, 0x34, 0x56],
             width: 1.25,
+            labels: false,
+            format: CoordFormat::Decimal,
         };
         let rect = FrameShape::Rectangle([10.0, 10.0, 200.0, 150.0]);
         let ring = vec![

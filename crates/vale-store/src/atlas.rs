@@ -169,6 +169,35 @@ pub struct Graticule {
     pub color: Rgb,
     /// The line width in points.
     pub width: f64,
+    /// The labels where the lines meet the edge of the frame.
+    pub labels: bool,
+    pub format: CoordFormat,
+}
+
+/// The text of a latitude or a longitude.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CoordFormat {
+    /// Degrees, minutes, and seconds, for example 45°30′ N.
+    #[default]
+    Dms,
+    /// Decimal degrees, for example 45.5° N.
+    Decimal,
+}
+
+impl CoordFormat {
+    pub const ALL: [CoordFormat; 2] = [CoordFormat::Dms, CoordFormat::Decimal];
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            CoordFormat::Dms => "dms",
+            CoordFormat::Decimal => "decimal",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<CoordFormat> {
+        CoordFormat::ALL.into_iter().find(|f| f.id() == id)
+    }
 }
 
 impl Graticule {
@@ -183,6 +212,8 @@ impl Default for Graticule {
             interval: None,
             color: [0x96, 0xa5, 0xaf],
             width: 0.5,
+            labels: true,
+            format: CoordFormat::Dms,
         }
     }
 }
