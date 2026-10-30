@@ -152,6 +152,6 @@ mod tests {
         let items: Vec<u32> = (0..1000).collect();
         let doubled = parallel_map(&items, |n| n * 2);
         assert!(doubled.iter().enumerate().all(|(i, &n)| n == 2 * i as u32));
-        assert_eq!(parallel_map(&[] as &[u32], |n| *n), []);
+        assert_eq!(parallel_map(&[] as &[u32], |n| *n), [0u32; 0]);
     }
 }
