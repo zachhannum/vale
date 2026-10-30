@@ -12,6 +12,7 @@ use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level,
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
 use crate::math::{V3, add, cross, dot, length, normalize, scale};
+use crate::ridge::{RidgePlace, RidgePlan};
 
 /// The side of a tile, in texels.
 pub const TILE_SIZE: usize = 256;
@@ -54,6 +55,9 @@ pub enum Mode {
     /// offset. Each new level is between the lowest level and the highest
     /// level under the brush.
     Warp,
+    /// The mode of the ocean ridge brush. A stamp of this mode changes
+    /// nothing. `Heightmap::ridge` makes the change.
+    OceanRidge,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A change does not move
@@ -946,7 +950,7 @@ impl Heightmap {
 
     /// Applies one stamp. Returns the number of texels that it visited.
     pub fn stamp(&mut self, stamp: &Stamp) -> usize {
-        if stamp.mode == Mode::Erode {
+        if matches!(stamp.mode, Mode::Erode | Mode::OceanRidge) {
             return 0;
         }
         let plan = self.stamp_plan(stamp);
@@ -1048,7 +1052,7 @@ impl Heightmap {
                             Mode::Raise | Mode::Uplift => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
-                            Mode::Erode => continue,
+                            Mode::Erode | Mode::OceanRidge => continue,
                             Mode::Carve => {
                                 let Some(valley) = river(x, y, fu, fv, false) else {
                                     continue;
@@ -1255,6 +1259,49 @@ impl Heightmap {
         levels
     }
 
+    /// The level of a texel from before the stroke. With no stroke, it is the
+    /// level of the texel.
+    fn level_before(&self, face: usize, x: usize, y: usize) -> u16 {
+        let saved = self.stroke.as_ref();
+        match saved.and_then(|saved| Some((saved, saved.tiles.get(&self.tile_index(face, x, y))?)))
+        {
+            Some((_, Some(tile))) => tile[self.offset(x, y)],
+            Some((saved, None)) => saved.base,
+            None => self.texel(face, x, y),
+        }
+    }
+
+    /// Lays the ocean ridge of a plan on the ground from before the stroke.
+    /// A texel near the new part of the line gets the level of the ridge, and
+    /// a texel that the ridge does not reach gets its level from before the
+    /// stroke. Thus a second call with the same plan changes nothing. Call
+    /// this in a stroke. Returns the number of texels that changed.
+    pub fn ridge(&mut self, plan: &RidgePlan) -> usize {
+        assert_eq!(plan.face_size, self.n, "the face size of the plan");
+        let mut changed = 0;
+        for (face, rect) in plan.rects.into_iter().enumerate() {
+            let Some(rect) = rect else { continue };
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    let place = match plan.place(self.texel_dir(face, x, y)) {
+                        RidgePlace::Far => continue,
+                        RidgePlace::Off => None,
+                        RidgePlace::On(place) => Some(place),
+                    };
+                    let start = self.level_before(face, x, y);
+                    let new = place.map_or(start, |place| {
+                        plan.level(start, place, plan.noise(self.texel_dir(face, x, y)))
+                    });
+                    if new != self.texel(face, x, y) {
+                        self.set(face, x, y, new);
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
     /// The level at a direction, from the 4 texels around it on its face in
     /// the ratio of the distances to their centers. If `past` is true, the
     /// texel grid continues past the face edges, and the level of a texel
@@ -1310,7 +1357,7 @@ impl Heightmap {
 
 /// A hash of a lattice point. The shader has the same steps on 32-bit whole
 /// numbers, so it gives the same bits.
-fn hash(ix: u32, iy: u32, iz: u32, seed: u32) -> u32 {
+pub(crate) fn hash(ix: u32, iy: u32, iz: u32, seed: u32) -> u32 {
     let mut h = seed
         ^ 0x9e37_79b9
         ^ ix.wrapping_mul(0x8da6_b343)
@@ -1326,7 +1373,7 @@ fn hash(ix: u32, iy: u32, iz: u32, seed: u32) -> u32 {
 /// A noise vector at a point, with each part from -1 to 1. Each lattice
 /// point with whole coordinates has a vector from `hash`, and the noise
 /// changes smoothly between the 8 lattice points around the point.
-fn noise3(p: V3, seed: u32) -> V3 {
+pub(crate) fn noise3(p: V3, seed: u32) -> V3 {
     let cell = p.map(f64::floor);
     let [ix, iy, iz] = cell.map(|c| c as i32 as u32);
     let [tx, ty, tz] = [0, 1, 2].map(|k| {
@@ -1490,6 +1537,7 @@ mod tests {
         CoarseHeights, FlowMap, Window, WindowHeights, channel_map, window_channels,
     };
     use crate::math::{angle, dir_to_lonlat, lonlat_to_dir};
+    use crate::ridge::{Ridge, RidgeLine};
 
     fn raise(center: V3, radius: f64) -> Stamp {
         Stamp {
@@ -3431,6 +3479,75 @@ mod tests {
                 ..warp_stamp(corner, 0.2)
             });
         }
+        for face in [0, 2, 4] {
+            for m in [236, 243, 249] {
+                assert_no_seam(&map, face, m);
+            }
+        }
+    }
+
+    #[test]
+    fn an_ocean_ridge_stamp_changes_nothing() {
+        let mut map = smooth_ground(64);
+        let before = all_levels(&map);
+        map.begin_stroke();
+        let stamp = Stamp {
+            mode: Mode::OceanRidge,
+            ..raise(lonlat_to_dir(10.0, 10.0), 0.2)
+        };
+        assert_eq!(map.stamp(&stamp), 0);
+        assert!(!map.end_stroke());
+        assert!(all_levels(&map) == before);
+    }
+
+    /// Lays a ridge with no crack near the stroke between two places, each
+    /// in degrees of longitude and latitude.
+    fn lay_ridge(map: &mut Heightmap, from: (f64, f64), to: (f64, f64)) {
+        let spec = Ridge {
+            radius: 0.1,
+            crest: 50000,
+            segment: 50.0,
+            offset: 0.03,
+            spread: 12.5 / 6371.0,
+            magma: 0.0,
+            world_km: 6371.0,
+            seed: 7,
+            limits: Limits::default(),
+        };
+        let mut line = RidgeLine::new(spec, map.face_size());
+        map.begin_stroke();
+        for i in 0..=20 {
+            let k = f64::from(i) / 20.0;
+            let (lon, lat) = (from.0 + (to.0 - from.0) * k, from.1 + (to.1 - from.1) * k);
+            let before = line.len();
+            line.push(lonlat_to_dir(lon, lat), 1.0);
+            map.ridge(&line.plan(before));
+        }
+        map.end_stroke();
+    }
+
+    #[test]
+    fn a_ridge_leaves_no_seam_at_a_face_edge() {
+        let n = 256;
+        let mut map = smooth_ground(n);
+        let before = all_levels(&map);
+        // Face 0 and face 2 meet at longitude 45.
+        lay_ridge(&mut map, (37.0, -6.0), (53.0, 10.0));
+        let after = all_levels(&map);
+        for m in (118..150).step_by(4) {
+            // The texels at the edge, on each face.
+            let changed = [(m + 1) * n - 1, (2 * n + n - 1) * n + m].map(|i| after[i] != before[i]);
+            assert!(changed[0] && changed[1], "{m}");
+            assert_no_seam(&map, 0, m);
+        }
+    }
+
+    #[test]
+    fn a_ridge_leaves_no_seam_at_a_cube_corner() {
+        let n = 256;
+        let mut map = smooth_ground(n);
+        // Faces 0, 2, and 4 meet at longitude 45 and latitude 35.264.
+        lay_ridge(&mut map, (38.0, 29.0), (52.0, 41.0));
         for face in [0, 2, 4] {
             for m in [236, 243, 249] {
                 assert_no_seam(&map, face, m);

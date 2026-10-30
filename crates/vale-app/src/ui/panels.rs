@@ -11,11 +11,15 @@ use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, atlas
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    EROSION, FLOW, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    EROSION, FLOW, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
+    SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
 use crate::world::{self, three_significant};
+
+/// The name of the ocean ridge mode of the brush.
+pub const OCEAN_RIDGE: &str = "Ocean ridge";
 
 /// The button of the tool bar that opens the properties of the world.
 pub const WORLD_BUTTON: &str = "World…";
@@ -698,6 +702,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Weather, "Weather"),
             (Mode::Uplift, "Uplift"),
             (Mode::Warp, "Warp"),
+            (Mode::OceanRidge, OCEAN_RIDGE),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -708,6 +713,28 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             }
         }
     });
+}
+
+/// A part as a percent with its sign, for example "+5%". Zero has no sign.
+pub(super) fn signed_percent(part: f64) -> String {
+    let percent = (part * 100.0).round();
+    if percent == 0.0 {
+        "0%".to_string()
+    } else {
+        format!("{percent:+.0}%")
+    }
+}
+
+/// The line with the age of the crust at the edge of an ocean ridge
+/// stroke. `radius_km` is the brush radius on the ground.
+pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_km: f64) -> String {
+    let age = brush.ridge_edge_age(radius_km);
+    let age = if age >= 10.0 {
+        format!("{age:.0}")
+    } else {
+        three_significant(age)
+    };
+    format!("Edge age {age} Myr")
 }
 
 /// The name of the strength slider. In the uplift mode, the strength is the
@@ -738,9 +765,50 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .brush
             .set_radius_km(size * unit_km, globe_radius, world_km);
     }
-    ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
+    // The ocean ridge mode has no falloff and no strength.
+    let ridge = globe.brush.mode == Mode::OceanRidge;
+    if !ridge {
+        ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
+    }
     ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
-    if globe.brush.mode == Mode::Warp {
+    if ridge {
+        let brush = &mut globe.brush;
+        let crest = egui::Slider::new(&mut brush.ridge_crest_m, RIDGE_CREST_M)
+            .step_by(50.0)
+            .fixed_decimals(0)
+            .suffix(" m")
+            .text("Crest");
+        ui.add(crest);
+        let spread = egui::Slider::new(&mut brush.ridge_spread_mm, RIDGE_SPREAD_MM)
+            .logarithmic(true)
+            .step_by(1.0)
+            .fixed_decimals(0)
+            .suffix(" mm/yr")
+            .text("Spreading");
+        ui.add(spread);
+        let mut percent = brush.ridge_magma * 100.0;
+        let range = RIDGE_MAGMA.start() * 100.0..=RIDGE_MAGMA.end() * 100.0;
+        let magma = egui::Slider::new(&mut percent, range)
+            .step_by(1.0)
+            .custom_formatter(|percent, _| signed_percent(percent / 100.0))
+            .text("Magma");
+        if ui.add(magma).changed() {
+            brush.ridge_magma = percent / 100.0;
+        }
+        let segment = egui::Slider::new(&mut brush.ridge_segment_km, RIDGE_SEGMENT_KM)
+            .logarithmic(true)
+            .custom_formatter(|km, _| three_significant(km))
+            .suffix(" km")
+            .text("Segment");
+        ui.add(segment);
+        let offset = egui::Slider::new(&mut brush.ridge_offset_km, RIDGE_OFFSET_KM)
+            .fixed_decimals(0)
+            .suffix(" km")
+            .text("Offset");
+        ui.add(offset);
+        let radius_km = brush.radius_km(globe_radius, world_km);
+        ui.label(edge_age_text(brush, radius_km));
+    } else if globe.brush.mode == Mode::Warp {
         for (value, range, name) in [
             (&mut globe.brush.warp_km, WARP_KM, "Strength"),
             (&mut globe.brush.scale_km, SCALE_KM, "Scale"),

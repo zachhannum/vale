@@ -17,6 +17,7 @@ use crate::cube::{FACES, meters_to_level};
 use crate::erode::{ErodeGrid, ErodeStep};
 use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
 use crate::heightmap::{Limits, Mode, StampPlan, TILE_SIZE, TexelRect};
+use crate::ridge::{RIDGE_SEGMENTS, RidgePlan};
 use crate::tiles::{Pool, TILES_WGSL};
 
 /// The number of face passes in one batch. One group of stamps takes one pass
@@ -25,6 +26,9 @@ pub const STAMP_SLOTS: u32 = 256;
 
 /// The largest number of stamps in one group.
 pub const GROUP_STAMPS: usize = 32;
+
+/// The number of ocean ridge plans in one batch.
+pub const RIDGE_SLOTS: u32 = 8;
 
 /// A group stops before the stamp that makes its rectangle on a face larger
 /// than this number of times the largest stamp rectangle on that face. Each
@@ -134,6 +138,50 @@ struct Uniforms {
     stamps: [FaceStamp; GROUP_STAMPS],
 }
 
+/// The settings and the segments of one ocean ridge plan. The layout matches
+/// `stamp.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct RidgeUniforms {
+    radius: f32,
+    /// The mean length of a crest segment.
+    segment: f32,
+    /// The texel step at the center of a face, and the sine of the reach.
+    texel: f32,
+    sin_reach: f32,
+    crest: f32,
+    world_km: f32,
+    spread: f32,
+    offset: f32,
+    seed: u32,
+    count: u32,
+    group: i32,
+    level: f32,
+    /// The length of the line: the number of a multiple of `segment`, and
+    /// the distance from that multiple.
+    length: [f32; 2],
+    /// The other numbers of `RidgeShape`, in its order from `round`.
+    round: f32,
+    top: f32,
+    foot: f32,
+    mean: f32,
+    magma: f32,
+    spacing: f32,
+    mean_throw: f32,
+    heave: f32,
+    box_half: f32,
+    half_texel: f32,
+    turn_cell: f32,
+    blend: f32,
+    valley: f32,
+    high: f32,
+    valley_part: f32,
+    flat_floor: f32,
+    band_km: f32,
+    segment_depth: f32,
+    segments: [[f32; 16]; RIDGE_SEGMENTS],
+}
+
 fn packed(limits: Limits) -> u32 {
     u32::from(limits.floor) | u32::from(limits.ceiling) << 16
 }
@@ -221,6 +269,10 @@ pub struct GpuHeightmap {
     uniforms: wgpu::Buffer,
     slot_size: u32,
     used_slots: AtomicU32,
+    /// One slot of `ridge_slot_size` bytes for each ridge plan of a batch.
+    ridge_uniforms: wgpu::Buffer,
+    ridge_slot_size: u32,
+    used_ridge_slots: AtomicU32,
 }
 
 fn extent(rect: TexelRect) -> wgpu::Extent3d {
@@ -337,6 +389,16 @@ impl GpuHeightmap {
             mapped_at_creation: false,
         });
         let uniform_size = NonZeroU64::new(u64::from(uniform_size));
+        let ridge_size = size_of::<RidgeUniforms>() as u32;
+        let ridge_slot_size =
+            ridge_size.next_multiple_of(device.limits().min_uniform_buffer_offset_alignment);
+        let ridge_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ridge uniforms"),
+            size: u64::from(ridge_slot_size * RIDGE_SLOTS),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ridge_size = NonZeroU64::new(u64::from(ridge_size));
 
         let texture_entry = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
             binding,
@@ -367,6 +429,16 @@ impl GpuHeightmap {
                 texture_entry(4, wgpu::TextureViewDimension::D2),
                 texture_entry(5, wgpu::TextureViewDimension::D2Array),
                 texture_entry(6, wgpu::TextureViewDimension::D2),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: ridge_size,
+                    },
+                    count: None,
+                },
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -404,6 +476,14 @@ impl GpuHeightmap {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(&window_fills_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &ridge_uniforms,
+                        offset: 0,
+                        size: ridge_size,
+                    }),
                 },
             ],
         });
@@ -468,6 +548,9 @@ impl GpuHeightmap {
             uniforms,
             slot_size,
             used_slots: AtomicU32::new(0),
+            ridge_uniforms,
+            ridge_slot_size,
+            used_ridge_slots: AtomicU32::new(0),
         }
     }
 
@@ -611,6 +694,7 @@ impl GpuHeightmap {
     /// that holds stamps.
     pub fn begin_batch(&self) {
         self.used_slots.store(0, Ordering::Relaxed);
+        self.used_ridge_slots.store(0, Ordering::Relaxed);
     }
 
     /// Adds one stamp to `enc`. The plan comes from a `Heightmap` with the
@@ -648,7 +732,7 @@ impl GpuHeightmap {
             return 0;
         };
         let mode = first.stamp.mode;
-        if mode == Mode::Erode {
+        if matches!(mode, Mode::Erode | Mode::OceanRidge) {
             // These stamps change nothing, so they need no pass.
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
             return same.count();
@@ -709,7 +793,7 @@ impl GpuHeightmap {
                     Mode::Smooth => 2,
                     Mode::Flatten => 3,
                     Mode::Carve => 4,
-                    Mode::Erode => 5,
+                    Mode::Erode | Mode::OceanRidge => 5,
                     Mode::Weather => 6,
                     Mode::Warp => 7,
                     Mode::Ridge => 8,
@@ -744,9 +828,9 @@ impl GpuHeightmap {
                 &bytemuck::bytes_of(&uniforms)[..used],
             );
             if copy_last {
-                self.draw(enc, state, i, rect, offset);
+                self.draw(enc, state, i, rect, [offset, 0]);
             } else {
-                self.pass(queue, enc, state, face, rect, offset);
+                self.pass(queue, enc, state, face, rect, [offset, 0]);
             }
         }
         if copy_last {
@@ -758,8 +842,8 @@ impl GpuHeightmap {
     }
 
     /// Adds one pass to `enc` for a rectangle of one face, and the copies of
-    /// its result to the tiles. `offset` is the place of the uniforms of the
-    /// pass.
+    /// its result to the tiles. `offsets` are the places of the uniforms of
+    /// the pass and of the ridge plan.
     fn pass(
         &self,
         queue: &wgpu::Queue,
@@ -767,10 +851,10 @@ impl GpuHeightmap {
         state: &mut State,
         face: usize,
         rect: TexelRect,
-        offset: u32,
+        offsets: [u32; 2],
     ) {
         self.ensure(queue, state, face, rect);
-        self.draw(enc, state, 0, rect, offset);
+        self.draw(enc, state, 0, rect, offsets);
         self.copy(enc, state, 0, face, rect);
     }
 
@@ -783,15 +867,15 @@ impl GpuHeightmap {
     }
 
     /// Adds one pass to `enc` that draws a rectangle of one face to the
-    /// render target `target`. `offset` is the place of the uniforms of the
-    /// pass.
+    /// render target `target`. `offsets` are the places of the uniforms of
+    /// the pass and of the ridge plan.
     fn draw(
         &self,
         enc: &mut wgpu::CommandEncoder,
         state: &mut State,
         target: usize,
         rect: TexelRect,
-        offset: u32,
+        offsets: [u32; 2],
     ) {
         let size = extent(rect);
         let scratch = self.scratch(&mut state.scratch[target], rect);
@@ -812,7 +896,7 @@ impl GpuHeightmap {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[offset]);
+        pass.set_bind_group(0, &self.bind_group, &offsets);
         pass.set_bind_group(1, state.pool.bind_group(), &[]);
         pass.set_scissor_rect(0, 0, size.width, size.height);
         pass.draw(0..3, 0..1);
@@ -988,7 +1072,117 @@ impl GpuHeightmap {
                 u64::from(offset),
                 &bytemuck::bytes_of(&uniforms)[..used],
             );
-            self.pass(queue, enc, state, face, rect, offset);
+            self.pass(queue, enc, state, face, rect, [offset, 0]);
+        }
+        true
+    }
+
+    /// Adds the ocean ridge of a plan to `enc`, with one pass for each face
+    /// of the plan. The result is that of `Heightmap::ridge`. The plan comes
+    /// from a `RidgeLine` with the same face size.
+    ///
+    /// A pass reads the ground from before the stroke in the tiles. Thus
+    /// before this call, submit each encoder that holds stamps, and call
+    /// `upload` with that ground for each rectangle of the plan. A texel of
+    /// the plan that the ridge does not reach keeps that ground. A tile that
+    /// the plan can change gets memory.
+    ///
+    /// Returns `false` and adds nothing if the batch is full. A batch holds
+    /// `RIDGE_SLOTS` plans at most. Then submit `enc`, call `begin_batch`,
+    /// and add the plan to a new encoder.
+    pub fn ridge(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &RidgePlan,
+    ) -> bool {
+        assert_eq!(plan.face_size as u32, self.face_size, "the face size");
+        assert!(plan.segments.len() <= RIDGE_SEGMENTS, "the segments");
+        let passes = plan.rects.iter().flatten().count() as u32;
+        if passes == 0 {
+            return true;
+        }
+        let first_slot = self.used_slots.load(Ordering::Relaxed);
+        let ridge_slot = self.used_ridge_slots.load(Ordering::Relaxed);
+        if passes > STAMP_SLOTS - first_slot || ridge_slot == RIDGE_SLOTS {
+            return false;
+        }
+        self.used_slots
+            .store(first_slot + passes, Ordering::Relaxed);
+        self.used_ridge_slots
+            .store(ridge_slot + 1, Ordering::Relaxed);
+        let spec = &plan.ridge;
+        let shape = plan.shape();
+        let cell = shape.length;
+        let length_cell = (plan.length / cell + 0.5).floor();
+        let mut line = RidgeUniforms {
+            length: [
+                length_cell as f32,
+                (plan.length - length_cell * cell) as f32,
+            ],
+            radius: spec.radius as f32,
+            segment: cell as f32,
+            texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
+            sin_reach: (1.5 * spec.radius).sin() as f32,
+            crest: f32::from(spec.crest),
+            world_km: spec.world_km as f32,
+            spread: spec.spread as f32,
+            offset: spec.offset as f32,
+            seed: spec.seed,
+            count: plan.segments.len() as u32,
+            group: shape.group,
+            level: shape.level as f32,
+            round: shape.round as f32,
+            top: shape.top as f32,
+            foot: shape.foot as f32,
+            mean: shape.mean as f32,
+            magma: shape.magma as f32,
+            spacing: shape.spacing as f32,
+            mean_throw: shape.throw as f32,
+            heave: shape.heave as f32,
+            box_half: shape.box_half as f32,
+            half_texel: shape.half_texel as f32,
+            turn_cell: shape.turn_cell as f32,
+            blend: shape.blend as f32,
+            valley: shape.valley as f32,
+            high: shape.high as f32,
+            valley_part: shape.valley_part as f32,
+            flat_floor: shape.flat_floor as f32,
+            band_km: shape.band_km as f32,
+            segment_depth: shape.segment_depth as f32,
+            ..bytemuck::Zeroable::zeroed()
+        };
+        for (to, segment) in line.segments.iter_mut().zip(&plan.segments) {
+            *to = segment.to_f32(cell);
+        }
+        let used = size_of::<RidgeUniforms>()
+            - (RIDGE_SEGMENTS - plan.segments.len()) * size_of::<[f32; 16]>();
+        let ridge_offset = ridge_slot * self.ridge_slot_size;
+        queue.write_buffer(
+            &self.ridge_uniforms,
+            u64::from(ridge_offset),
+            &bytemuck::bytes_of(&line)[..used],
+        );
+        let state = &mut *self.state();
+        let touched = plan.rects.iter().enumerate();
+        let touched = touched.filter_map(|(face, rect)| Some((face, (*rect)?)));
+        for (slot, (face, rect)) in (first_slot..).zip(touched) {
+            let offset = slot * self.slot_size;
+            let uniforms = Uniforms {
+                face: face as u32,
+                mode: 10,
+                size: self.face_size as i32,
+                origin: [rect.x0 as i32, rect.y0 as i32],
+                limits: packed(spec.limits),
+                ..bytemuck::Zeroable::zeroed()
+            };
+            let used = size_of::<Uniforms>() - GROUP_STAMPS * size_of::<FaceStamp>();
+            queue.write_buffer(
+                &self.uniforms,
+                u64::from(offset),
+                &bytemuck::bytes_of(&uniforms)[..used],
+            );
+            self.pass(queue, enc, state, face, rect, [offset, ridge_offset]);
         }
         true
     }

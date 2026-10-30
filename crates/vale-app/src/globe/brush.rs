@@ -5,8 +5,8 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan,
-    talus_levels,
+    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, Limits, MAX_BRUSH_RADIUS, Mode, RIDGE_SPACING, Ridge, Stamp,
+    StampPlan, meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, normalize, scale};
@@ -31,6 +31,17 @@ pub const WARP_KM: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 pub const SCALE_KM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
 /// The limits of the seed slider of the warp mode.
 pub const SEED: std::ops::RangeInclusive<u32> = 0..=999;
+/// The limits of the crest of the ocean ridge mode, in meters.
+pub const RIDGE_CREST_M: std::ops::RangeInclusive<f64> = -6000.0..=6000.0;
+/// The limits of the full spreading rate of the ocean ridge mode, in
+/// millimeters per year.
+pub const RIDGE_SPREAD_MM: std::ops::RangeInclusive<f64> = 10.0..=150.0;
+/// The limits of the magma setting of the ocean ridge mode.
+pub const RIDGE_MAGMA: std::ops::RangeInclusive<f64> = -0.25..=0.15;
+/// The limits of the segment length of the ocean ridge mode, in kilometers.
+pub const RIDGE_SEGMENT_KM: std::ops::RangeInclusive<f64> = 100.0..=1500.0;
+/// The limits of the offset of the ocean ridge mode, in kilometers.
+pub const RIDGE_OFFSET_KM: std::ops::RangeInclusive<f64> = 0.0..=500.0;
 /// The part that the erosion setting of 1 adds to the rise of an uplift
 /// stamp. With it, an uplift stroke gives a range of about the height of a
 /// raise stroke at each erosion setting.
@@ -72,6 +83,18 @@ pub struct BrushSettings {
     /// The size of the features of the noise of the warp mode, in
     /// kilometers.
     pub scale_km: f64,
+    /// The elevation of the crest of the ocean ridge mode, in meters.
+    pub ridge_crest_m: f64,
+    /// The mean length of a segment of the crest, in kilometers.
+    pub ridge_segment_km: f64,
+    /// The largest shift of a segment across the line, in kilometers.
+    pub ridge_offset_km: f64,
+    /// The full spreading rate of the ocean ridge mode, in millimeters per
+    /// year.
+    pub ridge_spread_mm: f64,
+    /// The change of the magma part of the spreading of the ocean ridge
+    /// mode.
+    pub ridge_magma: f64,
     /// The brush does not move ground across the floor.
     pub floor_on: bool,
     /// The value of the floor, in the unit of the layer. For a height, it
@@ -100,6 +123,11 @@ impl Default for BrushSettings {
             erosion: 0.5,
             warp_km: 50.0,
             scale_km: 200.0,
+            ridge_crest_m: -700.0,
+            ridge_segment_km: 400.0,
+            ridge_offset_km: 100.0,
+            ridge_spread_mm: 25.0,
+            ridge_magma: 0.0,
             floor_on: false,
             floor_m: 0.0,
             ceiling_on: false,
@@ -114,7 +142,10 @@ impl Default for BrushSettings {
 /// the mode.
 pub fn needs_height(mode: Mode) -> bool {
     use Mode::*;
-    matches!(mode, Carve | Ridge | Deposit | Erode | Weather | Uplift)
+    matches!(
+        mode,
+        Carve | Ridge | Deposit | Erode | Weather | Uplift | OceanRidge
+    )
 }
 
 /// The limits of a locked radius, in radians.
@@ -156,6 +187,29 @@ impl BrushSettings {
     pub fn strength_value(&self) -> f64 {
         let (min, max) = self.value_range;
         self.strength_m * (max - min) / (ELEV_MAX - ELEV_MIN)
+    }
+
+    /// The settings of an ocean ridge stroke with this brush radius, in
+    /// radians. `world_km` is the radius of the world.
+    pub fn ridge_spec(&self, radius: f64, world_km: f64, seed: u32) -> Ridge {
+        Ridge {
+            radius,
+            crest: meters_to_level(self.ridge_crest_m),
+            segment: self.ridge_segment_km / world_km,
+            offset: self.ridge_offset_km / world_km,
+            spread: 0.5 * self.ridge_spread_mm / world_km,
+            magma: self.ridge_magma,
+            world_km,
+            seed,
+            limits: self.limits(),
+        }
+    }
+
+    /// The age of the crust at the edge of an ocean ridge stroke, in
+    /// millions of years. `radius_km` is the brush radius on the ground.
+    pub fn ridge_edge_age(&self, radius_km: f64) -> f64 {
+        // A full rate in mm/yr is a full rate in km/Myr.
+        radius_km / (0.5 * self.ridge_spread_mm)
     }
 
     /// The brush radius as an angle on the sphere, in radians. `globe_radius`
@@ -293,6 +347,7 @@ struct Tip<'a> {
 
 impl Tip<'_> {
     fn stamp(&self, center: V3, flow: f64) -> Stamp {
+        let input = flow;
         let flow = flow * self.brush.flow;
         let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
         Stamp {
@@ -308,6 +363,8 @@ impl Tip<'_> {
                 | Mode::Weather
                 | Mode::Uplift
                 | Mode::Warp => flow,
+                // The flow of a mouse gives the full height of the ridge.
+                Mode::OceanRidge => (input / FIXED_FLOW).min(1.0) * self.brush.flow,
                 // These three modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten | Mode::Deposit => flow * 0.3,
             },
@@ -346,6 +403,16 @@ pub fn set_world(
     }
 }
 
+/// The distance between the stamps of a mode, as a part of the brush radius.
+/// The stamps of the ocean ridge mode are the points of the line of the
+/// stroke.
+fn stamp_spacing(mode: Mode) -> f64 {
+    match mode {
+        Mode::OceanRidge => RIDGE_SPACING,
+        _ => STAMP_SPACING,
+    }
+}
+
 /// The place at `t` on the curve from `a` to `b` that `control` bends.
 fn curve(a: Point, control: Point, b: Point, t: f64) -> Point {
     let (wa, wc, wb) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t), t * t);
@@ -359,7 +426,7 @@ impl Stroke {
         Tip {
             brush,
             radius: self.radius,
-            spacing: (self.radius * STAMP_SPACING).max(texel * 0.5),
+            spacing: (self.radius * stamp_spacing(brush.mode)).max(texel * 0.5),
             level,
         }
     }
@@ -427,6 +494,10 @@ impl Stroke {
         if let (Some(last), Some(level)) = (self.last, self.level) {
             let tip = self.tip(brush, face_size, level);
             self.line_to(&tip, last, out);
+            // The line of a ridge ends at the last sample.
+            if brush.mode == Mode::OceanRidge && self.end.is_some() {
+                out.push(tip.stamp(last.0, last.1));
+            }
         }
     }
 }
@@ -448,7 +519,8 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Ridge
         | Mode::Deposit
         | Mode::Erode
-        | Mode::Uplift => 1,
+        | Mode::Uplift
+        | Mode::OceanRidge => 1,
     }
 }
 

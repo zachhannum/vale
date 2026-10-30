@@ -14,7 +14,8 @@ use std::collections::HashMap;
 use vale_store::{ImageId, RasterId};
 use vale_terrain::{
     ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid, GpuTiles,
-    Heightmap, MAX_BANDS, Readback, StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
+    Heightmap, MAX_BANDS, Readback, RidgePlan, StampPlan, TILES_WGSL, TexelRect, pyramid_layout,
+    tiles_layout,
 };
 
 use super::backdrop::{Backdrop, Canvas, REDUCTION};
@@ -1481,6 +1482,15 @@ pub enum Op {
     },
     /// One step of an erode stroke.
     Erode { stroke: u64, step: Arc<ErodeStep> },
+    /// The ocean ridge of the new points of a stroke. `ground` has the
+    /// texels from before the stroke for each rectangle of the plan. `time`
+    /// is the frame that read the last pen sample.
+    Ridge {
+        plan: Box<RidgePlan>,
+        ground: Vec<(u32, TexelRect, Vec<u16>)>,
+        stroke: u64,
+        time: Instant,
+    },
     /// Reads texels back for the CPU heightmap.
     Readback {
         stroke: u64,
@@ -2029,6 +2039,28 @@ impl Batch<'_> {
                 self.mark_full(&step.rects());
                 let passes = step.rects().iter().flatten().count() as u32;
                 self.count_passes(stroke, passes);
+            }
+            Op::Ridge {
+                plan,
+                ground,
+                stroke,
+                time,
+            } => {
+                // The pass reads the ground that the writes give. A write
+                // runs before the commands of the next submit, so the
+                // commands before it go first, and a submit holds one plan.
+                self.submit();
+                let queue = self.queue;
+                for (face, rect, data) in &ground {
+                    heights.upload(queue, *face, *rect, data);
+                }
+                heights.begin_batch();
+                let added = heights.ridge(queue, self.encoder(), &plan);
+                debug_assert!(added, "an empty batch takes one plan");
+                self.mark_full(&plan.rects);
+                let passes = plan.rects.iter().flatten().count() as u32;
+                self.count_passes(stroke, passes);
+                self.stamps.push((stroke, time));
             }
             Op::Readback { stroke, face, rect } => {
                 let device = self.device;

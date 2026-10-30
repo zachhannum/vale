@@ -297,7 +297,8 @@ impl ProtoApp {
                 | Mode::Erode
                 | Mode::Weather
                 | Mode::Uplift
-                | Mode::Warp => flow,
+                | Mode::Warp
+                | Mode::OceanRidge => flow,
                 // These three modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten | Mode::Deposit => flow * 0.3,
             },

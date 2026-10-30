@@ -19,6 +19,7 @@ pub mod math;
 #[cfg(feature = "gpu")]
 mod pyramid;
 mod reduce;
+mod ridge;
 mod smooth;
 mod swatch;
 #[cfg(feature = "gpu")]
@@ -37,7 +38,7 @@ pub use flow::{
     WindowHeights, channel_map, window_channels,
 };
 #[cfg(feature = "gpu")]
-pub use gpu::{GROUP_STAMPS, GpuHeightmap, Readback, STAMP_SLOTS};
+pub use gpu::{GROUP_STAMPS, GpuHeightmap, RIDGE_SLOTS, Readback, STAMP_SLOTS};
 pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, TILE_SIZE, TexelRect,
     UNDO_MEMORY_LIMIT, talus_levels,
@@ -45,6 +46,7 @@ pub use heightmap::{
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, pyramid_layout};
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
+pub use ridge::{RIDGE_SEGMENTS, RIDGE_SPACING, Ridge, RidgeLine, RidgePlan, RidgeSegment};
 pub use smooth::{
     LocalPyramid, Pyramid, level_size, max_level, next_level, pyramid_bytes, smoothing_level,
 };
