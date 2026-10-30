@@ -2995,12 +2995,14 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
         if size == BOARDS[0] {
             screenshot::save(&mut h, "pad-atlas-label-conflicts");
         }
-        for name in [BUFFER, REMOVE_DUPLICATES, DUPLICATE_DISTANCE] {
+        for name in [BUFFER, REMOVE_DUPLICATES] {
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
-        tap(&mut h, REMOVE_DUPLICATES);
-        assert!(!classes(&h, map, "Places")[1].remove_duplicates, "{what}");
         assert!(control(&h, DUPLICATE_DISTANCE).is_none(), "{what}");
+        tap(&mut h, REMOVE_DUPLICATES);
+        assert!(classes(&h, map, "Places")[1].remove_duplicates, "{what}");
+        assert!(control(&h, DUPLICATE_DISTANCE).is_some(), "{what}");
+        check_controls(&h, &format!("{what}: duplicate distance"));
         tap(&mut h, "Back to Labels");
 
         // The placement options of a line class.

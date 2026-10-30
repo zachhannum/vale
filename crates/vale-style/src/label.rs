@@ -415,6 +415,7 @@ impl LabelClass {
             halo_width: HALO_WIDTH,
             priority,
             priority_field: None,
+            remove_duplicates: false,
             ..LabelClass::placement_defaults(placement)
         })
     }
@@ -698,6 +699,8 @@ mod tests {
         assert_eq!(new.halo_width, 2.2);
         let point = LabelClass::new("T", GeometryKind::Point, 0).unwrap();
         assert_eq!(point.letter_spacing, 0.0);
+        assert!(!new.remove_duplicates);
+        assert!(!point.remove_duplicates);
         assert_eq!(point.offset, 2.0);
         assert_eq!(point.positions, PositionRank::defaults());
         assert_eq!(field_ref("end"), "\"end\"");
