@@ -2737,10 +2737,11 @@ fn the_labels_tab_makes_a_label_class() {
     h.state_mut()
         .run_action(Action::SetFont(target, "Noto Serif".into()));
     h.run_steps(2);
+    // A tap at about 14 pt, a size that fits the frame.
     let slider = control(&h, LABEL_SIZE).unwrap();
     tap_with(
         &mut h,
-        slider.right_center() - vec2(90.0, 0.0),
+        slider.right_center() - vec2(194.0, 0.0),
         Input::Finger,
     );
     scroll_to(&mut h, COLOR);
