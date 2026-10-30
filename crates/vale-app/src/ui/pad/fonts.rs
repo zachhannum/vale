@@ -21,7 +21,7 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     };
     let label = &entry.style.label;
     let family = label.font.as_deref().unwrap_or(DEFAULT_FAMILY).to_string();
-    let warning = fonts::missing(label, &state.font_families);
+    let warning = fonts::missing(label.font.as_deref(), &state.font_families);
     let mut warning = warning.map(|t| Note::new(t, true, None));
     heading(ui, LABELS);
     if widgets::open_row(ui, controls, FONT, &family).clicked() {

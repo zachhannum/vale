@@ -5,12 +5,11 @@ use std::collections::HashMap;
 
 use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_store::{FieldType, LayerId, Value};
-use vale_style::expr::Filter;
+use vale_style::expr::{Filter, field_ref};
 
 use super::geometry::TOUCH;
 use super::icons::Icon;
 use super::raster::heading;
-use super::rules::field_name;
 use super::widgets::{self, Controls, Keys, PANEL_ROW};
 use super::{Page, theme};
 use crate::ui::AppState;
@@ -80,7 +79,7 @@ pub fn condition(field: &str, kind: FieldType, operator: usize, value: &str) -> 
         },
         FieldType::Text => format!("'{}'", value.replace('\'', "''")),
     };
-    Some(format!("{} {op} {value}", field_name(field)))
+    Some(format!("{} {op} {value}", field_ref(field)))
 }
 
 /// A number as the filter syntax writes it.

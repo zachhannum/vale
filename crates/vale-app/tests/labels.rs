@@ -2,6 +2,7 @@ mod common;
 
 use clap::Parser;
 use kurbo::{Point, Rect, Shape};
+use vale_app::atlas::{FrameTarget, PT_PER_MM, new_frame};
 use vale_app::cli::{Args, apply_view};
 use vale_app::document::{Document, LayerEntry};
 use vale_app::furniture::{nice, scale_bar};
@@ -9,7 +10,9 @@ use vale_app::pick::pick;
 use vale_app::pipeline::{Composed, PageFeature, PageLayer, Pipeline, Quality, Selection, fonts};
 use vale_render::Item;
 use vale_store::{Feature, Geometry, GeometryKind, LayerId, Units, Value};
-use vale_style::{LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Style, Symbolizer};
+use vale_style::{
+    LabelPlacement, LayerStyle, PointSymbolizer, Rule, ScatterSymbolizer, Style, Symbolizer,
+};
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
 const REGULAR_LEN: usize = include_bytes!("../../../assets/fonts/NotoSans-Regular.ttf").len();
@@ -545,4 +548,108 @@ fn labels_avoid_point_symbols() {
 /// The count of the labels of the city. The labels come before the scale bar.
 fn oakton(c: &Composed) -> usize {
     texts(c).iter().filter(|t| *t == "Oakton").count()
+}
+
+/// The sample document with a frame of the first map. Only the places have
+/// labels in the map, with the class that `edit` changes. Each place has a
+/// castle symbol.
+fn places_frame(edit: impl FnOnce(&mut vale_style::LabelClass)) -> (Document, Composed) {
+    let mut doc = Document::sample();
+    let mut p = Pipeline::new();
+    let map = doc.first_map();
+    let places = layer_id(&doc, "Places");
+    common::add_symbols(&mut doc, &["castle"]);
+    doc.entry_mut(places).unwrap().style.style = Style {
+        rules: vec![Rule::new(
+            "Castle",
+            vec![Symbolizer::Symbol(PointSymbolizer::constant("castle", 6.0))],
+        )],
+    };
+    let ids: Vec<LayerId> = doc.frame.entries.iter().map(|e| e.layer).collect();
+    for id in ids.into_iter().filter(|id| *id != places) {
+        doc.set_label_classes(map, id, &[]);
+    }
+    let mut classes = doc.label_classes(Some(map), places);
+    assert_eq!(classes.len(), 1);
+    edit(&mut classes[0]);
+    assert!(doc.set_label_classes(map, places, &classes));
+    assert!(!doc.set_label_classes(map, places, &classes));
+
+    let page = doc.project.atlas.pages[0].id;
+    let atlas = &doc.project.atlas;
+    let projection = p.projection(&doc, map).unwrap();
+    let frame = new_frame(atlas.page(page).unwrap(), &atlas.maps[0], projection);
+    let id = doc.project.atlas.add_frame(page, frame).unwrap();
+    let atlas = &doc.project.atlas;
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut f = fonts().unwrap();
+    let c = p
+        .compose_frame(
+            &doc,
+            atlas.page(page).unwrap(),
+            atlas.frame(id).unwrap(),
+            target,
+            &mut f,
+            Quality::Final,
+            None,
+        )
+        .unwrap();
+    (doc, c)
+}
+
+#[test]
+fn a_right_placement_puts_point_labels_right_of_the_point() {
+    let (doc, c) = places_frame(|class| class.placement = LabelPlacement::Right);
+    let places = layer_id(&doc, "Places");
+    let layer = doc.layer(places).unwrap();
+    let mut checked = 0;
+    for item in &c.list.items {
+        let Item::Glyphs(g) = item else {
+            continue;
+        };
+        let start = g.glyphs[0].1.translation().x;
+        let centers: Vec<f64> = (c.symbols.iter())
+            .filter(|s| s.layer == places)
+            .filter(|s| {
+                layer.features[s.feature].attributes.get("name")
+                    == Some(&Value::Text(g.text.clone()))
+            })
+            .map(|s| s.center.x)
+            .collect();
+        assert!(!centers.is_empty(), "{}", g.text);
+        assert!(centers.iter().any(|x| start > *x), "{}", g.text);
+        checked += 1;
+    }
+    assert!(checked >= 20, "{checked}");
+}
+
+#[test]
+fn a_class_filter_and_expression_choose_the_text() {
+    let (doc, c) = places_frame(|class| {
+        class.text = "upper(name)".into();
+        class.filter = "adm0name = 'Japan'".into();
+    });
+    let layer = doc.layer(layer_id(&doc, "Places")).unwrap();
+    let japan: Vec<String> = (layer.features.iter())
+        .filter(|f| f.attributes.get("adm0name") == Some(&Value::Text("Japan".into())))
+        .filter_map(|f| f.attributes.get("name")?.label())
+        .map(|n| n.to_uppercase())
+        .collect();
+    let texts = texts(&c);
+    assert!(texts.iter().any(|t| t == "TOKYO"), "{texts:?}");
+    for t in &texts {
+        assert!(japan.contains(t), "{t}");
+    }
+}
+
+#[test]
+fn a_class_without_halo_draws_no_halo() {
+    let (_, c) = places_frame(|_| {});
+    assert!(!halos(&c).is_empty());
+    let (_, c) = places_frame(|class| class.halo = false);
+    assert!(!texts(&c).is_empty());
+    assert!(halos(&c).is_empty());
 }

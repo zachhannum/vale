@@ -2720,7 +2720,7 @@ impl AppState {
             }
             Action::SetFont(id, family) => {
                 if let Some(entry) = self.doc.entry_mut(id) {
-                    crate::fonts::set_font(&mut entry.style.label, &family);
+                    crate::fonts::set_font(&mut entry.style.label.font, &family);
                     self.touch();
                 }
             }
