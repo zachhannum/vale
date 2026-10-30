@@ -2,10 +2,12 @@
 
 pub mod expr;
 mod json;
+mod label;
 mod overrides;
 mod rule;
 
 pub use json::{STYLE_VERSION, StyleError, style_version};
+pub use label::{CLASSES_VERSION, LabelClass, LabelPlacement, classes_from_json, classes_to_json};
 pub use overrides::Overrides;
 pub use rule::{
     Extent, ImageSymbolizer, METERS_PER_POINT, Paint, PointSymbolizer, RasterSymbolizer, Rule,
