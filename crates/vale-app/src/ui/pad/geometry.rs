@@ -16,7 +16,10 @@ pub const TOUCH: f32 = 44.0;
 pub const ROW: f32 = TOUCH + 2.0 * PAD;
 /// The size of one cell of the tool strip.
 pub const CELL: (f32, f32) = (56.0, 52.0);
-pub const TOOLS: usize = 6;
+/// The cells of the tool strip of the globe: Brush, Draw, Move, and Measure.
+pub const TOOLS: usize = 4;
+/// The number of cells of the card of the Measure tool.
+pub const MEASURE_CELLS: usize = 3;
 /// The height of one of the two sliders at the left edge.
 pub const SLIDER: f32 = 140.0;
 /// Below this height, a slider at the left edge is too short to use.
@@ -26,8 +29,8 @@ pub const RIGHT_PANEL_WIDTH: f32 = 320.0;
 pub const MENU_WIDTH: f32 = 240.0;
 /// The width of the menu of the worlds.
 pub const WORLDS_WIDTH: f32 = 300.0;
-/// The width of the menu of the More cell.
-pub const MORE_WIDTH: f32 = 180.0;
+/// The width of the flyout of the brush modes.
+pub const MODES_WIDTH: f32 = 200.0;
 pub const SHEET_HEIGHT: f32 = 400.0;
 pub const READOUT_HEIGHT: f32 = 32.0;
 /// The width of the actions bar: four buttons and a divider.
@@ -107,6 +110,10 @@ pub struct Input {
     pub panel: bool,
     /// The distance that the sheet is pulled down from its open place.
     pub sheet_offset: f32,
+    /// The Measure tool is the tool.
+    pub measure: bool,
+    /// The number of cells of the tool strip.
+    pub tools: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -121,11 +128,16 @@ pub struct Rects {
     /// The top-left corner of the workspace menu.
     pub menu: Pos2,
     pub tools: Rect,
-    /// The number of tool cells that show. With fewer than `TOOLS`, the strip scrolls.
+    /// The number of tool cells that show. With fewer than `Input::tools`, the strip scrolls.
     pub tool_cells: usize,
     pub brush_card: BrushCard,
-    /// The card of the two sliders and the Brush button.
+    /// The card of the two sliders and the Brush button, or the card of the
+    /// Measure tool.
     pub brush: Option<Rect>,
+    /// The number of cells of the card of the Measure tool that show. With
+    /// fewer than `MEASURE_CELLS`, the card scrolls. Zero: the card is not
+    /// the card of the Measure tool.
+    pub measure_cells: usize,
     /// The top-left corner of the Brush panel.
     pub brush_panel: Pos2,
     /// The top-left corner of the Layers and Toolbox panel.
@@ -192,21 +204,27 @@ pub fn layout(input: &Input) -> Rects {
         _ => bottom - MARGIN,
     };
     let button = strip_height(1);
-    let room = limit - column_top - strip_height(TOOLS) - GAP;
+    let all = input.tools;
+    let room = limit - column_top - strip_height(all) - GAP;
     let slider = ((room - button) / 2.0).min(SLIDER);
+    // `beside`: the Brush button goes to the right of the strip.
+    let mut beside = false;
     let (tool_cells, brush_card) = if slider >= SLIDER_MIN {
-        (TOOLS, BrushCard::Full(slider))
+        (all, BrushCard::Full(slider))
     } else if room >= button {
-        (TOOLS, BrushCard::Button)
+        (all, BrushCard::Button)
     } else if sheet.is_some() && room + GAP >= 0.0 {
-        (TOOLS, BrushCard::Hidden)
+        (all, BrushCard::Hidden)
+    } else if room + GAP >= 0.0 {
+        beside = true;
+        (all, BrushCard::Button)
     } else {
         let cells = ((limit - column_top - GAP - button - 2.0 * PAD) / CELL.1).floor();
         if cells >= 1.0 {
-            (cells as usize, BrushCard::Button)
+            ((cells as usize).min(all), BrushCard::Button)
         } else {
             let cells = ((limit - column_top - 2.0 * PAD) / CELL.1).floor().max(1.0);
-            (cells as usize, BrushCard::Hidden)
+            ((cells as usize).min(all), BrushCard::Hidden)
         }
     };
     let width = CELL.0 + 2.0 * PAD;
@@ -215,14 +233,43 @@ pub fn layout(input: &Input) -> Rects {
         vec2(width, strip_height(tool_cells)),
     );
     let brush_top = tools.bottom() + GAP;
+    let mut brush_panel = pos2(tools.right() + GAP, column_top);
+    let brush_min = if beside {
+        brush_panel
+    } else {
+        pos2(left, brush_top)
+    };
     let brush = match brush_card {
         BrushCard::Full(slider) => Some(2.0 * slider + button),
         BrushCard::Button => Some(button),
         BrushCard::Hidden => None,
     }
-    .map(|height| Rect::from_min_size(pos2(left, brush_top), vec2(width, height)));
+    .map(|height| Rect::from_min_size(brush_min, vec2(width, height)));
+    if beside {
+        brush_panel.x += width + GAP;
+    }
 
-    let brush_panel = pos2(tools.right() + GAP, column_top);
+    // The card of the Measure tool goes below the tool strip. With no room
+    // there, it goes to the right of the strip.
+    let (brush, measure_cells) = match brush {
+        Some(_) if input.measure && limit - brush_top >= strip_height(MEASURE_CELLS) => {
+            let size = vec2(width, strip_height(MEASURE_CELLS));
+            (
+                Some(Rect::from_min_size(pos2(left, brush_top), size)),
+                MEASURE_CELLS,
+            )
+        }
+        Some(_) if input.measure => {
+            let cells = ((limit - column_top - 2.0 * PAD) / CELL.1).floor();
+            let cells = (cells.max(1.0) as usize).min(MEASURE_CELLS);
+            let size = vec2(width, strip_height(cells));
+            let card = Rect::from_min_size(pos2(tools.right() + GAP, column_top), size);
+            brush_panel.x = card.right() + GAP;
+            (Some(card), cells)
+        }
+        brush => (brush, 0),
+    };
+
     let right_panel = pos2(right - RIGHT_PANEL_WIDTH, column_top);
     let one_panel = class == WidthClass::Compact
         || brush_panel.x + BRUSH_PANEL_WIDTH + PANEL_GAP > right_panel.x;
@@ -240,6 +287,7 @@ pub fn layout(input: &Input) -> Rects {
         tool_cells,
         brush_card,
         brush,
+        measure_cells,
         brush_panel,
         right_panel,
         panel_bottom,
@@ -262,6 +310,8 @@ mod tests {
             view_width: 140.0,
             panel: false,
             sheet_offset: 0.0,
+            measure: false,
+            tools: TOOLS,
         }
     }
 
@@ -285,9 +335,9 @@ mod tests {
         assert_eq!(r.workspace, rect(16.0, 32.0, 230.0, 52.0));
         assert_eq!(r.view, Some(rect(527.0, 32.0, 140.0, 52.0)));
         assert_eq!(r.actions, rect(969.0, 32.0, 209.0, 52.0));
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
+        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 216.0));
         assert_eq!(r.brush_card, BrushCard::Full(140.0));
-        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 324.0, 64.0, 340.0)));
         assert_eq!(r.brush_panel, pos2(92.0, 96.0));
         assert_eq!(r.right_panel, pos2(858.0, 96.0));
         assert!(!r.one_panel);
@@ -303,7 +353,7 @@ mod tests {
         assert_eq!(r.view.unwrap().center().x, 417.0);
         assert_eq!(r.actions, rect(609.0, 32.0, 209.0, 52.0));
         assert_eq!(r.right_panel, pos2(498.0, 96.0));
-        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 324.0, 64.0, 340.0)));
         assert!(!r.one_panel);
     }
 
@@ -313,7 +363,7 @@ mod tests {
         assert_eq!(r.class, WidthClass::Compact);
         assert_eq!(r.view, None);
         assert_eq!(r.menu, pos2(16.0, 88.0));
-        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 324.0, 64.0, 340.0)));
         let readout = r.readout.unwrap();
         assert_eq!(
             (readout.left(), readout.top(), readout.bottom()),
@@ -329,34 +379,52 @@ mod tests {
         let r = layout(&input);
         assert_eq!(r.sheet, Some(rect(0.0, 434.0, 375.0, 400.0)));
         assert_eq!(r.readout, None);
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
-        assert_eq!(r.brush_card, BrushCard::Hidden);
+        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 216.0));
+        assert_eq!(r.tool_cells, TOOLS);
+        assert_eq!(r.brush_card, BrushCard::Button);
 
         input.sheet_offset = 1000.0;
         let r = layout(&input);
         let sheet = r.sheet.unwrap();
         // The title row is above the bottom band.
         assert_eq!(sheet.top(), 834.0 - 20.0 - 52.0);
-        assert_eq!(r.brush_card, BrushCard::Full(131.0));
+        assert_eq!(r.tool_cells, TOOLS);
+        assert_eq!(r.brush_card, BrushCard::Full(SLIDER));
     }
 
     #[test]
     fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
         let card = |height: f32| layout(&board(1024.0, height)).brush_card;
-        assert_eq!(card(834.0), BrushCard::Full(140.0));
-        assert_eq!(card(804.0), BrushCard::Full(140.0));
-        assert_eq!(card(768.0), BrushCard::Full(122.0));
-        assert_eq!(card(744.0), BrushCard::Full(110.0));
-        assert_eq!(card(743.0), BrushCard::Button);
-        assert_eq!(card(600.0), BrushCard::Button);
+        assert_eq!(card(1194.0), BrushCard::Full(140.0));
+        assert_eq!(card(700.0), BrushCard::Full(140.0));
+        assert_eq!(card(680.0), BrushCard::Full(130.0));
+        assert_eq!(card(640.0), BrushCard::Full(110.0));
+        assert_eq!(card(639.0), BrushCard::Button);
+        assert_eq!(card(480.0), BrushCard::Button);
+    }
+
+    #[test]
+    fn the_small_boards_have_the_full_sliders() {
+        for (width, height) in [(1133.0, 744.0), (744.0, 1133.0), (1024.0, 768.0)] {
+            let r = layout(&board(width, height));
+            assert_eq!(r.tool_cells, TOOLS, "{width}x{height}");
+            assert_eq!(r.brush_card, BrushCard::Full(SLIDER), "{width}x{height}");
+        }
     }
 
     #[test]
     fn a_very_short_window_scrolls_the_tool_strip() {
-        let r = layout(&board(1024.0, 480.0));
+        // With no room below the strip, the Brush button goes to its right.
+        let r = layout(&board(1024.0, 360.0));
+        assert_eq!((r.tool_cells, r.brush_card), (TOOLS, BrushCard::Button));
+        let card = r.brush.unwrap();
+        assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));
+        assert_eq!(r.brush_panel.x, card.right() + GAP);
+
+        let r = layout(&board(1024.0, 300.0));
         assert_eq!(r.brush_card, BrushCard::Button);
         assert!(r.tool_cells < TOOLS);
-        assert!(r.brush.unwrap().bottom() <= 480.0 - 20.0 - MARGIN);
+        assert!(r.brush.unwrap().bottom() <= 300.0 - 20.0 - MARGIN);
     }
 
     #[test]
@@ -368,5 +436,35 @@ mod tests {
         assert_eq!(r.workspace.min, pos2(46.0, 48.0));
         assert_eq!(r.actions.right(), 1148.0);
         assert_eq!(r.readout.unwrap().bottom(), 792.0);
+    }
+
+    #[test]
+    fn the_card_of_the_measure_tool_holds_its_cells() {
+        let measure = |width: f32, height: f32| {
+            let mut input = board(width, height);
+            input.measure = true;
+            layout(&input)
+        };
+        // Below the tool strip.
+        for (width, height) in [(1194.0, 834.0), (1024.0, 700.0), (375.0, 834.0)] {
+            let r = measure(width, height);
+            assert_eq!(r.measure_cells, MEASURE_CELLS, "{width}x{height}");
+            let card = r.brush.unwrap();
+            assert_eq!(card.left(), r.tools.left());
+            assert_eq!(card.top(), r.tools.bottom() + GAP);
+            assert_eq!(card.height(), strip_height(MEASURE_CELLS));
+        }
+        // At the right of the tool strip.
+        let r = measure(1024.0, 480.0);
+        assert_eq!(r.measure_cells, MEASURE_CELLS);
+        let card = r.brush.unwrap();
+        assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));
+        assert_eq!(r.brush_panel.x, card.right() + GAP);
+        // A short screen scrolls the card.
+        let r = measure(1024.0, 280.0);
+        assert_eq!(r.measure_cells, 2);
+        assert!(r.brush.unwrap().bottom() <= 280.0 - 20.0 - MARGIN);
+        // The card is not the card of the Measure tool for another tool.
+        assert_eq!(layout(&board(1194.0, 834.0)).measure_cells, 0);
     }
 }

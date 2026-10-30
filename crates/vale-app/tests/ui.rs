@@ -9,7 +9,7 @@ use vale_app::headless;
 use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
-use vale_app::ui::pad::MORE;
+use vale_app::ui::pad::BRUSH;
 use vale_app::ui::pad::atlas::{
     ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, MAP_NAME, NEXT_PAGE, PAGE_NAME,
     PREVIOUS_PAGE, SCALE,
@@ -892,7 +892,7 @@ fn a_new_world_has_no_raster_layer() {
         let controls = &h.state().pad.controls;
         controls.iter().any(|control| control.name == name)
     };
-    assert!(!cell(&h, "Raise") && !cell(&h, MORE) && !cell(&h, "Size"));
+    assert!(!cell(&h, BRUSH) && !cell(&h, "Size"));
     assert!(cell(&h, "Pan"));
     let view = h.state().globe.view;
     let before = texels(&h.state().globe.map);
@@ -922,10 +922,10 @@ fn a_new_world_has_no_raster_layer() {
     // The brush paints a raster layer that is selected and visible.
     let height = h.state_mut().add_height();
     h.run_steps(2);
-    assert!(cell(&h, "Raise") && cell(&h, MORE) && cell(&h, "Size"));
+    assert!(cell(&h, BRUSH) && cell(&h, "Size"));
     h.state_mut().set_raster_visible(height, false);
     h.run_steps(2);
-    assert!(!cell(&h, "Raise"));
+    assert!(!cell(&h, BRUSH));
     pen_stroke(&mut h);
     assert!(
         h.state()
@@ -1330,4 +1330,159 @@ fn the_desktop_form_makes_a_raster_layer_from_an_image_file() {
     }
     assert_eq!(texels.iter().min(), Some(&0));
     assert_eq!(texels.iter().max(), Some(&65535));
+}
+
+/// Command+Z, or Shift+Command+Z with `shift`.
+fn command_z(h: &mut Harness<'static, AppState>, shift: bool) {
+    let shift = if shift {
+        egui::Modifiers::SHIFT
+    } else {
+        egui::Modifiers::NONE
+    };
+    h.event(egui::Event::Key {
+        key: egui::Key::Z,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND | shift,
+    });
+    h.run_steps(2);
+}
+
+#[test]
+fn the_toolbar_and_the_keys_work_the_measure_tool() {
+    use vale_app::ui::pad::CLEAR_PATH;
+    use vale_app::ui::panels::{MEASURE_TOOL, SNAP, SNAP_OPTIONS};
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    state.select(None);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    assert_eq!(h.state().workspace, Workspace::Globe);
+    assert!(h.query_by_label(CLEAR_PATH).is_none());
+    h.get_by_label(MEASURE_TOOL).click();
+    h.run_steps(3);
+    assert!(h.state().globe.measuring());
+    for name in [SNAP, SNAP_OPTIONS, CLEAR_PATH] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    for name in ["Close path", "Remove point"] {
+        assert!(h.query_by_label(name).is_none(), "{name}");
+    }
+    // With no points, the status bar shows the place under the cursor.
+    assert!(h.query_by_label("lon –, lat –").is_some());
+
+    let center = h.state().globe.rect.center();
+    for offset in [(-50.0, -40.0), (50.0, -40.0), (0.0, 50.0)] {
+        click_at(&mut h, center + egui::vec2(offset.0, offset.1));
+    }
+    assert_eq!(h.state().measure.points.len(), 3);
+    let text = h.state().measure_readout().unwrap();
+    assert!(text.starts_with("Length "), "{text}");
+    assert!(h.query_by_label(&text).is_some(), "{text}");
+
+    // Return closes the path, Command+Z reopens it and removes a point,
+    // Shift+Command+Z puts back the point, and Escape clears the path.
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().measure.closed);
+    command_z(&mut h, false);
+    assert!(!h.state().measure.closed);
+    command_z(&mut h, false);
+    assert_eq!(h.state().measure.points.len(), 2);
+    command_z(&mut h, true);
+    assert_eq!(h.state().measure.points.len(), 3);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(h.state().measure.points.len(), 3);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().measure.is_empty());
+    command_z(&mut h, false);
+    assert_eq!(h.state().measure.points.len(), 3);
+
+    // The button of the tool bar.
+    h.get_by_label(CLEAR_PATH).click();
+    h.run_steps(3);
+    assert!(h.state().measure.is_empty());
+    assert!(h.get_by_label(CLEAR_PATH).accesskit_node().is_disabled());
+
+    // Navigate leaves the tool, and M chooses it.
+    h.get_by_label("Navigate").click();
+    h.run_steps(3);
+    assert!(!h.state().globe.measuring());
+    h.key_press(egui::Key::M);
+    h.run_steps(2);
+    assert!(h.state().globe.measuring());
+}
+
+#[test]
+fn the_toolbar_and_the_keys_work_the_measure_tool_in_the_atlas() {
+    use vale_app::ui::atlas::AtlasTool;
+    use vale_app::ui::pad::CLEAR_PATH;
+    use vale_app::ui::panels::{MEASURE_TOOL, SNAP, SNAP_OPTIONS};
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    state.workspace = Workspace::Atlas;
+    vale_app::ui::atlas::add_frame(&mut state);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    h.get_by_label(MEASURE_TOOL).click();
+    h.run_steps(3);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Measure);
+    for name in [SNAP, SNAP_OPTIONS, CLEAR_PATH] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    assert!(h.query_by_label("lon –, lat –").is_some());
+    let page = vale_app::ui::atlas::open_page(h.state()).clone();
+    let anchor = vale_app::atlas::anchor(&page.frames[0].shape);
+    let center = h.state().atlas.place.unwrap().to_screen(anchor);
+    let taps = |h: &mut Harness<'static, AppState>| {
+        for offset in [(-50.0, -40.0), (50.0, -40.0), (0.0, 50.0)] {
+            click_at(h, center + egui::vec2(offset.0, offset.1));
+        }
+    };
+    taps(&mut h);
+    assert_eq!(h.state().measure.points.len(), 3);
+    let text = h.state().measure_readout().unwrap();
+    assert!(text.starts_with("Length "), "{text}");
+    assert!(h.query_by_label(&text).is_some(), "{text}");
+
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().measure.closed);
+    command_z(&mut h, false);
+    command_z(&mut h, false);
+    assert_eq!(h.state().measure.points.len(), 2);
+    command_z(&mut h, true);
+    command_z(&mut h, true);
+    assert!(h.state().measure.closed);
+    assert_eq!(open_page_frames(&h), page.frames);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().measure.is_empty());
+
+    taps(&mut h);
+    h.get_by_label(CLEAR_PATH).click();
+    h.run_steps(3);
+    assert!(h.state().measure.is_empty());
+    assert_eq!(open_page_frames(&h), page.frames);
+
+    // V leaves the tool, and M chooses it.
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Select);
+    h.key_press(egui::Key::M);
+    h.run_steps(2);
+    assert_eq!(h.state().atlas.tool, AtlasTool::Measure);
+}
+
+fn open_page_frames(h: &Harness<'_, AppState>) -> Vec<vale_store::FrameRecord> {
+    vale_app::ui::atlas::open_page(h.state()).frames.clone()
 }

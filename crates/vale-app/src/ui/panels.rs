@@ -29,6 +29,8 @@ pub const LINE_TOOL: &str = "Line";
 pub const POLYGON_TOOL: &str = "Polygon";
 /// The button of the point tool.
 pub const POINT_TOOL: &str = "Point";
+/// The button of the Measure tool.
+pub const MEASURE_TOOL: &str = "Measure";
 /// The slider of the smoothing of the line tool.
 pub const SMOOTHING: &str = "Smoothing";
 /// The check box that turns all snapping on and off.
@@ -79,7 +81,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 // With no layer for the tool, the tool is Navigate.
                 let globe = &mut state.globe;
                 let (paintable, lineable) = (globe.paintable, globe.lineable);
-                let navigate = !globe.brushing() && !globe.editing();
+                let navigate = !globe.brushing() && !globe.editing() && !globe.measuring();
                 if ui.selectable_label(navigate, "Navigate").clicked() {
                     globe.tool = Tool::Navigate;
                 }
@@ -101,7 +103,13 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 if ui.add_enabled(able, draw).clicked() {
                     globe.tool = tool;
                 }
-                if globe.editing() {
+                if ui
+                    .selectable_label(globe.measuring(), MEASURE_TOOL)
+                    .clicked()
+                {
+                    globe.tool = Tool::Measure;
+                }
+                if globe.editing() || globe.measuring() {
                     if globe.drawing() {
                         let mut percent = globe.line.smoothing * 100.0;
                         let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
@@ -112,23 +120,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         }
                     }
                     let rasters = raster_layers(state);
-                    let snap = &mut state.globe.snap;
-                    ui.checkbox(&mut snap.on, SNAP);
-                    ui.menu_button(SNAP_OPTIONS, |ui| {
-                        ui.checkbox(&mut snap.vertices, SNAP_VERTICES);
-                        ui.checkbox(&mut snap.edges, SNAP_EDGES);
-                        for (id, name) in &rasters {
-                            let mut on = snap.stops(*id);
-                            if ui.checkbox(&mut on, snap_stops_name(name)).changed() {
-                                snap.set_stops(*id, on);
-                            }
-                        }
-                        let slider = egui::Slider::new(&mut snap.distance, snap::DISTANCE_RANGE)
-                            .step_by(1.0)
-                            .suffix(" pt")
-                            .text(SNAP_DISTANCE);
-                        ui.add(slider);
-                    });
+                    snap_controls(ui, state, &rasters);
+                }
+                if state.globe.measuring() {
+                    path_buttons(ui, state);
                 }
                 // The menu stays open while the user works on the list.
                 let stay = egui::containers::menu::MenuConfig::new()
@@ -216,6 +211,37 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
+/// The Snap check box and the menu of the snap settings. `rasters` are the
+/// raster layers whose color stops can be targets.
+fn snap_controls(ui: &mut egui::Ui, state: &mut AppState, rasters: &[(RasterId, String)]) {
+    let snap = &mut state.globe.snap;
+    ui.checkbox(&mut snap.on, SNAP);
+    ui.menu_button(SNAP_OPTIONS, |ui| {
+        ui.checkbox(&mut snap.vertices, SNAP_VERTICES);
+        ui.checkbox(&mut snap.edges, SNAP_EDGES);
+        for (id, name) in rasters {
+            let mut on = snap.stops(*id);
+            if ui.checkbox(&mut on, snap_stops_name(name)).changed() {
+                snap.set_stops(*id, on);
+            }
+        }
+        let slider = egui::Slider::new(&mut snap.distance, snap::DISTANCE_RANGE)
+            .step_by(1.0)
+            .suffix(" pt")
+            .text(SNAP_DISTANCE);
+        ui.add(slider);
+    });
+}
+
+/// The button of the Measure tool that clears the path.
+fn path_buttons(ui: &mut egui::Ui, state: &mut AppState) {
+    let path = &mut state.measure;
+    let clear = egui::Button::new(pad::CLEAR_PATH);
+    if ui.add_enabled(!path.is_empty(), clear).clicked() {
+        path.clear();
+    }
+}
+
 /// The button of the tool bar that adds a map frame to the open page.
 pub const ADD_MAP_FRAME: &str = "Add map frame";
 
@@ -237,6 +263,15 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     }
     if ui.button(ADD_MAP_FRAME).clicked() {
         atlas::add_frame(state);
+    }
+    ui.separator();
+    let measuring = state.measuring();
+    if ui.selectable_label(measuring, MEASURE_TOOL).clicked() {
+        pad::toggle_measure(state);
+    }
+    if measuring {
+        snap_controls(ui, state, &[]);
+        path_buttons(ui, state);
     }
 }
 
@@ -935,12 +970,16 @@ fn map_section(ui: &mut egui::Ui, state: &mut AppState) {
 pub fn status(ui: &mut egui::Ui, state: &mut AppState) {
     egui::Panel::bottom("status").show(ui, |ui| {
         ui.horizontal(|ui| {
-            match state.cursor_lonlat {
-                Some([lon, lat]) => ui.label(format!("lon {lon:.2}, lat {lat:.2}")),
-                None => ui.label("lon –, lat –"),
-            };
-            if let Some(value) = state.readout_value() {
-                ui.label(value);
+            if let Some(text) = state.measure_readout() {
+                ui.label(text);
+            } else {
+                match state.cursor_lonlat {
+                    Some([lon, lat]) => ui.label(format!("lon {lon:.2}, lat {lat:.2}")),
+                    None => ui.label("lon –, lat –"),
+                };
+                if let Some(value) = state.readout_value() {
+                    ui.label(value);
+                }
             }
             ui.separator();
             if let Some(c) = &state.composed

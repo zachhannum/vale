@@ -123,13 +123,9 @@ fn steps(a: f64, b: f64, n: usize) -> impl Iterator<Item = f64> {
     })
 }
 
-/// Great-circle distance in kilometers (haversine).
+/// Great-circle distance in kilometers.
 pub fn distance_km(a: LonLat, b: LonLat, radius_km: f64) -> f64 {
-    let (la, lb) = (a[1].to_radians(), b[1].to_radians());
-    let dlat = lb - la;
-    let dlon = (b[0] - a[0]).to_radians();
-    let h = (dlat / 2.0).sin().powi(2) + la.cos() * lb.cos() * (dlon / 2.0).sin().powi(2);
-    2.0 * radius_km * h.sqrt().min(1.0).asin()
+    radius_km * crate::measure::central_angle(a, b)
 }
 
 #[cfg(test)]

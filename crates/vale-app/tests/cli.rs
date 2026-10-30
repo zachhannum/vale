@@ -98,6 +98,10 @@ fn the_layout_and_the_panels_come_from_the_flags() {
     assert_eq!(args.layout, Layout::Pad);
     assert_eq!(args.panel, vec![Panel::Brush, Panel::Layers]);
     assert_eq!(args.world_form, None);
+    assert!(!args.brush_modes);
+    let args = Args::parse_from(["vale-app", "--layout", "pad", "--brush-modes"]);
+    assert!(args.brush_modes);
+    assert!(Args::try_parse_from(["vale-app", "--more-tools"]).is_err());
     let args = Args::parse_from(["vale-app", "--world-form", "new"]);
     assert_eq!(
         args.world_form,
@@ -144,5 +148,65 @@ fn atlas_exports_take_a_project_and_a_one_based_page() {
             clap::error::ErrorKind::MissingRequiredArgument
         );
         assert!(error.to_string().contains("--project"), "{error}");
+    }
+}
+
+#[test]
+fn measure_reads_an_open_path_and_a_closed_path() {
+    use vale_app::cli::parse_measure;
+
+    let open = parse_measure("0,0 40,10  -20.5,40").unwrap();
+    assert_eq!(open.positions(), [[0.0, 0.0], [40.0, 10.0], [-20.5, 40.0]]);
+    assert!(!open.closed);
+
+    let closed = parse_measure("0,0 40,10 20,40 0,0").unwrap();
+    assert_eq!(closed.positions(), [[0.0, 0.0], [40.0, 10.0], [20.0, 40.0]]);
+    assert!(closed.closed);
+
+    let flag = parse(&["--measure", "-10,5 10,5"]);
+    assert_eq!(flag.measure.as_deref(), Some("-10,5 10,5"));
+    assert_eq!(parse(&[]).measure, None);
+}
+
+#[test]
+fn measure_rejects_bad_paths() {
+    use vale_app::cli::parse_measure;
+
+    for (spec, part) in [
+        ("0,0", "two or more places"),
+        ("", "two or more places"),
+        ("0,0 0,0", "two or more places"),
+        ("0,0 10,0 0,0", "three or more places"),
+        ("0,0 10", "expected LON,LAT"),
+        ("0,0 x,1", "not a number"),
+    ] {
+        let error = format!("{:#}", parse_measure(spec).unwrap_err());
+        assert!(error.contains("--measure"), "{spec}: {error}");
+        assert!(error.contains(part), "{spec}: {error}");
+    }
+}
+
+#[test]
+fn measure_chooses_the_tool_in_the_open_workspace() {
+    use vale_app::cli::apply_measure;
+    use vale_app::globe::Tool;
+    use vale_app::ui::atlas::AtlasTool;
+    use vale_app::ui::{AppState, Workspace};
+
+    for workspace in ["globe", "atlas"] {
+        let args = parse(&["--workspace", workspace, "--measure", "0,0 40,10 20,40 0,0"]);
+        let mut state = AppState::new(Document::sample()).unwrap();
+        state.workspace = args.workspace;
+        apply_measure(&args, &mut state).unwrap();
+        assert!(state.measuring(), "{workspace}");
+        assert!(state.measure.closed);
+        assert_eq!(state.measure.points.len(), 3);
+        match state.workspace {
+            Workspace::Globe => assert_eq!(state.globe.tool, Tool::Measure),
+            Workspace::Atlas => assert_eq!(state.atlas.tool, AtlasTool::Measure),
+        }
+        // The first frame keeps the path.
+        state.sync_measure();
+        assert_eq!(state.measure.points.len(), 3, "{workspace}");
     }
 }

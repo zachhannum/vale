@@ -60,6 +60,30 @@ pub fn distance(km: f64, units: Units) -> String {
     format!("{} {symbol}", three_significant(km / unit_km))
 }
 
+/// A value of 100 or more as a grouped whole number, and a smaller value
+/// with three significant digits. Zero is "0".
+fn total(value: f64) -> String {
+    if value >= 99.95 {
+        grouped(value.round() as u64)
+    } else if value > 0.0 {
+        three_significant(value)
+    } else {
+        "0".to_string()
+    }
+}
+
+/// The length of a measured path and its unit.
+pub fn length(km: f64, units: Units) -> String {
+    let (unit_km, symbol) = unit_for(km.max(0.0), units);
+    format!("{} {symbol}", total(km / unit_km))
+}
+
+/// An area in square kilometers or square miles.
+pub fn area(km2: f64, units: Units) -> String {
+    let (unit_km, symbol) = large_unit(units);
+    format!("{} {symbol}²", total(km2 / (unit_km * unit_km)))
+}
+
 /// A whole number with a comma after each three digits.
 pub fn grouped(value: u64) -> String {
     let digits = value.to_string();
@@ -179,6 +203,19 @@ pub fn slider_radius(fraction: f64, units: Units) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_length_and_an_area_have_the_display_units() {
+        assert_eq!(length(1234.4, Units::Metric), "1,234 km");
+        assert_eq!(length(12.34, Units::Metric), "12.3 km");
+        assert_eq!(length(0.25, Units::Metric), "250 m");
+        assert_eq!(length(0.0, Units::Metric), "0 m");
+        assert_eq!(length(1609.344, Units::Imperial), "1,000 mi");
+        assert_eq!(area(56_700.0, Units::Metric), "56,700 km²");
+        assert_eq!(area(0.5, Units::Metric), "0.500 km²");
+        let square_mile = KM_PER_MILE * KM_PER_MILE;
+        assert_eq!(area(2500.0 * square_mile, Units::Imperial), "2,500 mi²");
+    }
 
     #[test]
     fn the_radius_slider_has_each_preset_at_its_place_on_the_scale() {

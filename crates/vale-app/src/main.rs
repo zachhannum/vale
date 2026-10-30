@@ -3,7 +3,9 @@ use std::process::ExitCode;
 use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
-use vale_app::cli::{Args, apply_globe, apply_import, apply_view, export_heightmap, parse_pair};
+use vale_app::cli::{
+    Args, apply_globe, apply_import, apply_measure, apply_view, export_heightmap, parse_pair,
+};
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
 use vale_app::pipeline::Pipeline;
@@ -59,7 +61,8 @@ fn run() -> anyhow::Result<u8> {
         for panel in &args.panel {
             state.pad.open(*panel);
         }
-        state.pad.more = args.more_tools;
+        state.pad.modes = args.brush_modes;
+        apply_measure(&args, &mut state)?;
         let world = &state.doc.project.world;
         state.world_form = args.world_form.map(|mode| WorldForm::open(mode, world));
         if args.worlds_menu {
@@ -163,7 +166,13 @@ fn run() -> anyhow::Result<u8> {
             let state = new_state(doc.clone(), FACE_SIZE)?;
             // The renderer can make the face size smaller, and that drops an
             // import. So the import runs after the renderer is there.
-            let import = |state: &mut AppState| apply_import(&args, state, true);
+            let import = |state: &mut AppState| {
+                apply_import(&args, state, true)?;
+                // The flyout of the brush modes closes while no layer is
+                // painted, so it opens after the import.
+                state.pad.modes |= args.brush_modes;
+                Ok(())
+            };
             let safe_area = args.safe_area()?;
             let (image, state) = headless::ui_png_safe(state, size, ratio, safe_area, import)?;
             if args.import_heightmap.is_some() || args.import_ramp.is_some() {

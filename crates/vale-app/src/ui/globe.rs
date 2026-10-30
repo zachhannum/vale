@@ -13,6 +13,7 @@ use vale_terrain::Mode;
 use crate::document::Document;
 use crate::globe::backdrop::Canvas;
 use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
+use crate::globe::math::V3;
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Nav, Painting, Tap, on_canvas};
 use crate::globe::snap::Highlight;
@@ -20,9 +21,12 @@ use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places
 use crate::globe::vector;
 use crate::globe::view::GlobeView;
 use crate::globe::{Globe, Paint, WorldView};
+use crate::measure::{DENSIFY_DEG, MOUSE, Measure, TapPress};
 use crate::pen::{PenEvent, PenPhase, QUEUE_PEN};
 use crate::scatter::{ScatterCache, ScatterFill};
 use crate::ui::pad::theme;
+use vale_sphere::LonLat;
+use vale_sphere::measure::densify_great_circle;
 use vale_style::expr::Context;
 use vale_style::{Paint as StylePaint, StrokeKind, scale_denominator};
 
@@ -107,6 +111,9 @@ fn brush_input(
             globe.pen.stats.up();
         }
         globe.input.pos = None;
+        if globe.measuring() && !globe.importing() {
+            measure_input(ui, rect, resp, globe, &queue, from_queue);
+        }
         return Painting::default();
     }
     let time = ui.input(|i| i.time);
@@ -238,6 +245,125 @@ fn brush_input(
     }
 }
 
+/// Reads the taps of the Measure tool. A tap of a pen, a click, and a tap
+/// of one finger add a point, and a drag moves the view.
+fn measure_input(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    resp: &egui::Response,
+    globe: &mut Globe,
+    queue: &[(egui::Pos2, PenEvent)],
+    from_queue: bool,
+) {
+    let mut tap = None;
+    for (pos, event) in queue {
+        let press = &mut globe.measure_press;
+        match event.phase {
+            PenPhase::Down if on_canvas(ui, rect, *pos) => press.down(QUEUE_PEN, *pos, true),
+            PenPhase::Move => press.moved(QUEUE_PEN, *pos),
+            PenPhase::Up => tap = press.up(QUEUE_PEN, *pos).or(tap),
+            PenPhase::Cancel => press.cancel(QUEUE_PEN),
+            _ => {}
+        }
+    }
+    let touching = globe.nav.touching();
+    let on = |pos| on_canvas(ui, rect, pos);
+    let press = &mut globe.measure_press;
+    tap = press_input(ui, resp, press, on, from_queue, touching).or(tap);
+    if let Some(pos) = tap {
+        globe.measure_tap(pos);
+    }
+    let down = globe.measure_press.is_down() || globe.nav.touching();
+    let down = down || ui.input(|i| i.pointer.any_down());
+    let hover = globe.pen.hover.filter(|pos| on_canvas(ui, rect, *pos));
+    globe.input.pos = resp.hover_pos().or(hover).filter(|_| !down);
+}
+
+/// Feeds the touches and the mouse of this frame to a press of the Measure
+/// tool, and returns the position of a tap. A press starts where `on` is
+/// true. With `skip_pen`, the pen queue has the touches of the pen.
+/// `touching` is true while a finger or a pen is down on the canvas.
+pub(super) fn press_input(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    press: &mut TapPress,
+    on: impl Fn(egui::Pos2) -> bool,
+    skip_pen: bool,
+    touching: bool,
+) -> Option<egui::Pos2> {
+    let mut tap = None;
+    let mut touched = false;
+    let events = ui.input(|i| i.events.clone());
+    for event in &events {
+        let egui::Event::Touch {
+            id,
+            phase,
+            pos,
+            force,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        touched = true;
+        if skip_pen && force.is_some() {
+            continue;
+        }
+        match phase {
+            egui::TouchPhase::Start if on(*pos) => press.down(id.0, *pos, force.is_some()),
+            egui::TouchPhase::Move => press.moved(id.0, *pos),
+            egui::TouchPhase::End => tap = press.up(id.0, *pos).or(tap),
+            egui::TouchPhase::Cancel => press.cancel(id.0),
+            egui::TouchPhase::Start => {}
+        }
+    }
+    // The first touch is also the egui pointer.
+    if !touched && !touching {
+        let (pos, pressed, released, shift) = ui.input(|i| {
+            let p = &i.pointer;
+            let (pressed, released) = (p.primary_pressed(), p.primary_released());
+            (p.latest_pos(), pressed, released, i.modifiers.shift)
+        });
+        match pos {
+            Some(pos) => {
+                if pressed && !shift && resp.contains_pointer() {
+                    press.down(MOUSE, pos, false);
+                }
+                press.moved(MOUSE, pos);
+                if released {
+                    tap = press.up(MOUSE, pos).or(tap);
+                }
+            }
+            None if released => press.cancel(MOUSE),
+            None => {}
+        }
+    }
+    tap
+}
+
+/// Reads the keys of the Measure tool in both workspaces. M chooses the
+/// tool. While it is the tool, Return closes the path and Escape clears the
+/// path.
+pub(super) fn measure_keys(ui: &egui::Ui, state: &mut AppState) {
+    use egui::{Key, Modifiers};
+    if ui.ctx().egui_wants_keyboard_input() {
+        return;
+    }
+    let key = |key| ui.input_mut(|i| i.consume_key(Modifiers::NONE, key));
+    if key(Key::M) && !state.measuring() {
+        super::pad::toggle_measure(state);
+    }
+    if !state.measuring() {
+        return;
+    }
+    if key(Key::Enter) {
+        state.measure.close();
+    }
+    if key(Key::Escape) {
+        state.measure.clear();
+    }
+}
+
 /// Reads the undo and redo commands. A tap of two fingers and Command+Z
 /// undo. A tap of three fingers, Shift+Command+Z, and Command+Y redo. On
 /// Windows and Linux, Ctrl is the Command key.
@@ -268,39 +394,36 @@ fn color(c: vale_style::Color) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
 }
 
-/// Draws the target that a stroke snaps to or traces.
-fn snap_highlight(
-    painter: &egui::Painter,
-    rect: egui::Rect,
+/// The parts on screen of a path of great-circle arcs. On the flat map, a
+/// path breaks where it crosses the edge of the map.
+pub fn screen_lines(
     globe: &Globe,
-    highlight: &Highlight,
-    width: f32,
-) {
-    let [r, g, b, _] = theme::ACCENT.to_array();
-    let color = egui::Color32::from_rgba_unmultiplied(r, g, b, 160);
-    let stroke = egui::Stroke::new(width, color);
-    let point = match globe.world_view {
+    rect: egui::Rect,
+    pixels_per_point: f32,
+    path: &[V3],
+) -> Vec<Vec<egui::Pos2>> {
+    match globe.world_view {
         WorldView::Globe => {
             let view = &globe.view;
             let radius = view.radius(rect);
-            let step = vector::step(radius * f64::from(painter.ctx().pixels_per_point()));
+            let step = vector::step(radius * f64::from(pixels_per_point));
             let center = rect.center();
-            for part in vector::clip_line(&view.rot, &highlight.span, step) {
-                let to_screen = |p: &vector::P2| {
-                    egui::pos2(
-                        center.x + (p[0] * radius) as f32,
-                        center.y - (p[1] * radius) as f32,
-                    )
-                };
-                painter.line(part.iter().map(to_screen).collect(), stroke);
-            }
-            highlight.point.and_then(|p| view.project(rect, p))
+            let to_screen = |p: &vector::P2| {
+                egui::pos2(
+                    center.x + (p[0] * radius) as f32,
+                    center.y - (p[1] * radius) as f32,
+                )
+            };
+            vector::clip_line(&view.rot, path, step)
+                .iter()
+                .map(|part| part.iter().map(to_screen).collect())
+                .collect()
         }
         WorldView::Flat => {
             let flat = &globe.flat;
             let mut part: Vec<egui::Pos2> = Vec::new();
             let mut parts = Vec::new();
-            for pair in highlight.span.windows(2) {
+            for pair in path.windows(2) {
                 let n = (angle(pair[0], pair[1]) / FLAT_STEP).ceil().max(1.0) as usize;
                 let start = usize::from(!part.is_empty());
                 for i in start..=n {
@@ -320,15 +443,116 @@ fn snap_highlight(
                 }
             }
             parts.push(part);
-            for part in parts.into_iter().filter(|p| p.len() > 1) {
-                painter.line(part, stroke);
-            }
-            highlight.point.and_then(|p| flat.project(rect, p))
+            parts.retain(|p| p.len() > 1);
+            parts
         }
-    };
-    if let Some(pos) = point {
+    }
+}
+
+/// Draws the target that a stroke snaps to or traces.
+fn snap_highlight(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    globe: &Globe,
+    highlight: &Highlight,
+    width: f32,
+) {
+    let [r, g, b, _] = theme::ACCENT.to_array();
+    let color = egui::Color32::from_rgba_unmultiplied(r, g, b, 160);
+    let stroke = egui::Stroke::new(width, color);
+    let ppp = painter.ctx().pixels_per_point();
+    for part in screen_lines(globe, rect, ppp, &highlight.span) {
+        painter.line(part, stroke);
+    }
+    if let Some(pos) = highlight.point.and_then(|p| globe.project(p)) {
         painter.circle_stroke(pos, 6.0, stroke);
     }
+}
+
+fn dirs(path: &[LonLat]) -> Vec<V3> {
+    path.iter().map(|p| lonlat_to_dir(p[0], p[1])).collect()
+}
+
+/// The parts on screen of each segment of the path of the Measure tool.
+pub fn measure_lines(
+    globe: &Globe,
+    rect: egui::Rect,
+    pixels_per_point: f32,
+    measure: &Measure,
+) -> Vec<Vec<Vec<egui::Pos2>>> {
+    let segment = |(a, b)| dirs(&densify_great_circle(&[a, b], DENSIFY_DEG, false));
+    let lines = |(a, b)| screen_lines(globe, rect, pixels_per_point, &segment((a, b)));
+    measure.segments().into_iter().map(lines).collect()
+}
+
+/// Draws the path of the Measure tool: the arcs, the points, the length of
+/// each segment, and a dashed line from the last point to the cursor.
+fn measure_overlay(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    globe: &Globe,
+    measure: &Measure,
+    world: &vale_store::World,
+) {
+    if measure.is_empty() {
+        return;
+    }
+    let ppp = painter.ctx().pixels_per_point();
+    let shadow = egui::Stroke::new(4.5, egui::Color32::from_black_alpha(110));
+    let line = egui::Stroke::new(2.5, theme::ACCENT);
+    let segments = measure_lines(globe, rect, ppp, measure);
+    if let (false, Some(last), Some(pos)) = (measure.closed, measure.points.last(), globe.input.pos)
+        && let Some(cursor) = globe.unproject(pos)
+    {
+        let path = densify_great_circle(&[last.pos, lonlat(cursor)], DENSIFY_DEG, false);
+        let dash = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(200));
+        for part in screen_lines(globe, rect, ppp, &dirs(&path)) {
+            painter.extend(egui::Shape::dashed_line(&part, dash, 6.0, 4.0));
+        }
+    }
+    for part in segments.iter().flatten() {
+        painter.line(part.clone(), shadow);
+    }
+    for part in segments.iter().flatten() {
+        painter.line(part.clone(), line);
+    }
+    let ends = measure.segments();
+    let lengths = measure.segment_labels(world.radius_km, world.units);
+    for ((parts, (a, b)), text) in segments.iter().zip(ends).zip(lengths) {
+        let on_screen: f32 = parts
+            .iter()
+            .flat_map(|p| p.windows(2))
+            .map(|w| w[0].distance(w[1]))
+            .sum();
+        let (a, b) = (lonlat_to_dir(a[0], a[1]), lonlat_to_dir(b[0], b[1]));
+        let Some(mid) = globe.project(slerp(a, b, 0.5)) else {
+            continue;
+        };
+        let font = egui::FontId::proportional(12.0);
+        let galley = painter.layout_no_wrap(text, font, theme::TEXT);
+        let pill = egui::Rect::from_center_size(mid, galley.size() + egui::vec2(12.0, 4.0));
+        if on_screen < pill.width() + 8.0 {
+            continue;
+        }
+        let fill = egui::Color32::from_black_alpha(190);
+        painter.rect_filled(pill, pill.height() / 2.0, fill);
+        painter.galley(pill.center() - galley.size() / 2.0, galley, theme::TEXT);
+    }
+    let dot = egui::Stroke::new(1.0, egui::Color32::from_black_alpha(160));
+    for (i, point) in measure.points.iter().enumerate() {
+        let Some(pos) = globe.project(lonlat_to_dir(point.pos[0], point.pos[1])) else {
+            continue;
+        };
+        if i == 0 {
+            painter.circle_stroke(pos, 8.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
+        }
+        painter.circle(pos, 4.0, egui::Color32::WHITE, dot);
+    }
+}
+
+fn lonlat(dir: V3) -> LonLat {
+    let (lon, lat) = dir_to_lonlat(dir);
+    [lon, lat]
 }
 
 /// Draws one vector layer over the globe. The symbols go to one mesh, which
@@ -572,7 +796,7 @@ pub(super) fn canvas_input(
     background: egui::Color32,
 ) -> Option<egui::Rect> {
     let now = Instant::now();
-    if state.globe.editing() && state.globe.line_preview().is_none() {
+    if state.globe.snapping() && state.globe.line_preview().is_none() {
         state.refresh_targets();
     }
     let globe = &mut state.globe;
@@ -596,6 +820,8 @@ pub(super) fn canvas_input(
     }
     state.poll_line();
     state.poll_point();
+    state.poll_measure();
+    measure_keys(ui, state);
     match history_input(ui, &mut state.globe.nav) {
         Some(true) => state.redo(),
         Some(false) => state.undo(),
@@ -708,6 +934,13 @@ pub(super) fn paint_canvas(
         let ring = egui::Stroke::new(2.0, theme::ACCENT);
         painter.circle_stroke(pos, 9.0, ring);
     }
+    measure_overlay(
+        &painter,
+        rect,
+        globe,
+        &state.measure,
+        &state.doc.project.world,
+    );
     if let Some(line) = globe.line_preview() {
         let mut line = line.to_vec();
         // The stroke of the polygon tool closes.

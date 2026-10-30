@@ -9,6 +9,7 @@ use vale_store::{GeometryKind, ImageId, Layer, LayerId, LayerKind, RasterId};
 use vale_terrain::Mode;
 
 pub use super::LayerRef;
+use super::atlas::AtlasTool;
 use super::point_form;
 use super::raster_form::{self, RasterForm};
 use super::world_form::{self, WorldForm};
@@ -33,33 +34,42 @@ pub mod rules;
 pub mod theme;
 pub mod widgets;
 
-use geometry::{BrushCard, CELL, Input, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
+use geometry::{BrushCard, CELL, Input, MEASURE_CELLS, PAD, ROW, Rects, TOOLS, TOUCH, WidthClass};
 use icons::Icon;
 use widgets::{BODY_PAD, Controls, PANEL_ROW};
 
-/// The control of the tool strip that opens the menu of the other modes.
-pub const MORE: &str = "More";
-/// The cell of the line tool. It takes the place of More while a line
-/// layer is selected.
+/// The cell of the tool strip that chooses the brush. It shows the mode of
+/// the brush, and it opens the flyout of the modes.
+pub const BRUSH: &str = "Brush";
+/// The cell of the tool strip that draws on the selected vector layer. It
+/// has this name while no visible vector layer is selected.
+pub const DRAW: &str = "Draw";
+/// The draw cell while a line layer is selected.
 pub const LINE: &str = "Line";
-/// The cell of the polygon tool. It takes the place of More while a
-/// polygon layer is selected.
+/// The draw cell while a polygon layer is selected.
 pub const POLYGON: &str = "Polygon";
-/// The cell of the point tool. It takes the place of More while a point
-/// layer is selected.
+/// The draw cell while a point layer is selected.
 pub const POINT: &str = "Point";
 /// The slider of the smoothing of the line tool and the polygon tool.
 pub const SMOOTHING: &str = "Smoothing";
 /// The button of the brush card that turns all snapping on and off.
 pub const SNAP: &str = "Snap";
+/// The cell of the tool strip that chooses the Measure tool.
+pub const MEASURE: &str = "Measure";
+/// The cell of the card of the Measure tool that clears the path.
+pub const CLEAR_PATH: &str = "Clear path";
 /// The switch of the sheet that turns all snapping on and off.
 pub const SNAPPING: &str = "Snapping";
 pub const SNAP_VERTICES: &str = "Snap to vertices";
 pub const SNAP_EDGES: &str = "Snap to edges";
 /// The slider of the snap distance, in points.
 pub const SNAP_DISTANCE: &str = "Snap distance";
-/// The modes of the menu of the More cell.
-const MORE_MODES: [(&str, Icon, Mode); 7] = [
+/// The modes of the flyout of the brush cell.
+pub const BRUSH_MODES: [(&str, Icon, Mode); 11] = [
+    ("Raise", Icon::Raise, Mode::Raise),
+    ("Lower", Icon::Lower, Mode::Lower),
+    ("Smooth", Icon::Smooth, Mode::Smooth),
+    ("Flatten", Icon::Flatten, Mode::Flatten),
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -220,8 +230,11 @@ pub struct PadState {
     pub worlds: Option<Vec<WorldFile>>,
     /// The menu of the worlds in the last frame.
     pub worlds_rect: Option<Rect>,
-    /// The menu of the More cell is open.
-    pub more: bool,
+    /// The flyout of the brush modes is open.
+    pub modes: bool,
+    /// A hold on the brush cell opened the flyout, so the end of the press
+    /// is not a tap.
+    brush_held: bool,
     /// The distance that the sheet is pulled down from its open place.
     pub sheet_offset: f32,
     /// The controls of the last frame.
@@ -232,10 +245,12 @@ pub struct PadState {
     pub panels: Vec<(Panel, Rect)>,
     /// The workspace menu of the last frame.
     pub menu_rect: Option<Rect>,
-    /// The menu of the More cell in the last frame.
-    pub more_rect: Option<Rect>,
-    /// The More cell of this frame.
-    more_cell: Option<Rect>,
+    /// The flyout of the brush modes in the last frame.
+    pub modes_rect: Option<Rect>,
+    /// The brush cell of this frame.
+    brush_cell: Option<Rect>,
+    /// The label and the icon of the brush cell in the last frame.
+    pub brush_face: Option<(&'static str, Icon)>,
     /// The height of the contents of each panel, by the key of the panel.
     heights: HashMap<&'static str, f32>,
     /// The Style section of the panel of a raster layer.
@@ -319,6 +334,16 @@ pub fn readout_text(lonlat: Option<LonLat>, value: Option<&str>) -> String {
     }
 }
 
+/// The text of the readout: the place and the value, or the result of the
+/// Measure tool.
+pub fn readout_line(state: &AppState) -> String {
+    if let Some(text) = state.measure_readout() {
+        return text;
+    }
+    let value = state.readout_value();
+    readout_text(state.cursor_lonlat, value.as_deref())
+}
+
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
@@ -350,6 +375,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
             + if flat { 3.0 * TOUCH + 9.0 + PAD } else { 0.0 },
         panel: state.pad.brush || state.pad.right.is_some(),
         sheet_offset: state.pad.sheet_offset,
+        measure: state.globe.measuring(),
+        tools: TOOLS,
     };
     let mut rects = geometry::layout(&input);
     if rects.one_panel && state.pad.brush && state.pad.right.is_some() {
@@ -366,7 +393,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         state.globe.pick_level = false;
     }
     if !state.globe.paintable {
-        state.pad.more = false;
+        state.pad.modes = false;
     }
 
     top_row(&ctx, state, &mut controls, &rects);
@@ -374,6 +401,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     brush_card(&ctx, state, &mut controls, &rects);
     // A button above can open or close a panel. The panels use the new state.
     input.panel = state.pad.brush || state.pad.right.is_some();
+    input.measure = state.globe.measuring();
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
     for panel in [Panel::Brush, Panel::Layers, Panel::Toolbox] {
@@ -410,9 +438,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         state.pad.menu = false;
     }
-    state.pad.more_rect = None;
-    if state.pad.more {
-        more_menu(&ctx, state, &mut controls, &rects);
+    state.pad.modes_rect = None;
+    if state.pad.modes {
+        modes_flyout(&ctx, state, &mut controls, &rects);
     }
     state.pad.add_rect = None;
     match state.pad.add_button {
@@ -591,6 +619,29 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     );
 }
 
+/// Chooses the Measure tool, or goes back from it to Move on the globe and
+/// to Select in the Atlas.
+pub fn toggle_measure(state: &mut AppState) {
+    let measuring = state.measuring();
+    match state.workspace {
+        Workspace::Globe => {
+            state.globe.tool = if measuring {
+                Tool::Navigate
+            } else {
+                Tool::Measure
+            };
+        }
+        Workspace::Atlas => {
+            state.atlas.tool = if measuring {
+                AtlasTool::Select
+            } else {
+                AtlasTool::Measure
+            };
+        }
+    }
+    state.pad.modes = false;
+}
+
 /// The child of a card, inside the padding of the card.
 fn padded(ui: &mut egui::Ui) -> egui::Ui {
     let rect = ui.max_rect().shrink(PAD);
@@ -612,21 +663,8 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         |ui| {
             let mut ui = padded(ui);
             let mut cells = |ui: &mut egui::Ui| {
+                brush_cell(ui, state, controls);
                 let globe = &mut state.globe;
-                // With no raster layer to paint, the tool is Move.
-                let paint = globe.paintable;
-                for (name, icon, mode) in [
-                    ("Raise", Icon::Raise, Mode::Raise),
-                    ("Lower", Icon::Lower, Mode::Lower),
-                    ("Smooth", Icon::Smooth, Mode::Smooth),
-                    ("Flatten", Icon::Flatten, Mode::Flatten),
-                ] {
-                    let active = globe.brushing() && globe.brush.mode == mode;
-                    if widgets::tool_cell(ui, controls, name, name, icon, active, paint).clicked() {
-                        globe.tool = Tool::Brush;
-                        globe.brush.mode = mode;
-                    }
-                }
                 let draw = if globe.lineable {
                     Some((LINE, Icon::Line, Tool::Line))
                 } else if globe.fillable {
@@ -636,23 +674,29 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 } else {
                     None
                 };
-                if let Some((name, icon, tool)) = draw {
-                    let active = globe.editing();
-                    let cell = widgets::tool_cell(ui, controls, name, name, icon, active, true);
-                    if cell.clicked() {
-                        globe.tool = tool;
-                    }
-                    state.pad.more = false;
-                    state.pad.more_cell = None;
-                } else {
-                    more_cell(ui, state, controls, paint);
+                let (name, icon) = draw.map_or((DRAW, Icon::Line), |(name, icon, _)| (name, icon));
+                let active = globe.editing();
+                let enabled = draw.is_some();
+                let cell = widgets::tool_cell(ui, controls, name, name, icon, active, enabled);
+                if let Some((_, _, tool)) = draw
+                    && cell.clicked()
+                {
+                    globe.tool = tool;
+                    state.pad.modes = false;
                 }
                 let globe = &mut state.globe;
-                let active = !globe.brushing() && !globe.editing();
+                let active = !globe.brushing() && !globe.editing() && !globe.measuring();
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()
                 {
                     globe.tool = Tool::Navigate;
+                }
+                let active = globe.measuring();
+                let name = MEASURE;
+                if widgets::tool_cell(ui, controls, name, name, Icon::Measure, active, true)
+                    .clicked()
+                {
+                    globe.tool = Tool::Measure;
                 }
             };
             if rects.tool_cells < TOOLS {
@@ -666,19 +710,63 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     );
 }
 
-/// The More cell. It shows the mode of the menu that the brush has.
-fn more_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, paint: bool) {
-    let globe = &state.globe;
-    let chosen = MORE_MODES
+/// The brush cell. It shows the mode of the brush. A tap chooses the brush,
+/// and a tap while the brush is the tool or a hold opens the flyout of the
+/// modes.
+fn brush_cell(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let globe = &mut state.globe;
+    // With no raster layer to paint, the tool is Move.
+    let paint = globe.paintable;
+    let (label, icon) = BRUSH_MODES
         .into_iter()
-        .find(|(_, _, mode)| globe.brushing() && globe.brush.mode == *mode);
-    let (label, icon) = chosen.map_or((MORE, Icon::More), |(name, icon, _)| (name, icon));
-    let active = chosen.is_some();
-    let more = widgets::tool_cell(ui, controls, MORE, label, icon, active, paint);
-    if more.clicked() {
-        state.pad.more = !state.pad.more;
+        .find(|(_, _, mode)| globe.brush.mode == *mode)
+        .map_or(("Raise", Icon::Raise), |(name, icon, _)| (name, icon));
+    let active = globe.brushing();
+    let cell = widgets::tool_cell(ui, controls, BRUSH, label, icon, active, paint);
+    state.pad.brush_cell = Some(cell.rect);
+    state.pad.brush_face = Some((label, icon));
+    paint_flyout_mark(ui, cell.rect, active, paint);
+    if cell.clicked() && !state.pad.brush_held {
+        if active {
+            state.pad.modes = !state.pad.modes;
+        } else {
+            globe.tool = Tool::Brush;
+            state.pad.modes = false;
+        }
     }
-    state.pad.more_cell = Some(more.rect);
+    if !cell.is_pointer_button_down_on() {
+        state.pad.brush_held = false;
+        return;
+    }
+    if state.pad.brush_held {
+        return;
+    }
+    let press = ui.input(|i| {
+        let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
+        let pos = i.pointer.interact_pos()?;
+        Some((i.time - start, origin.distance(pos)))
+    });
+    match press {
+        Some((held, moved)) if moved <= HOLD_SLOP && held >= HOLD_TIME => {
+            state.pad.brush_held = true;
+            state.pad.modes = true;
+            ui.ctx().request_repaint();
+        }
+        Some((held, moved)) if moved <= HOLD_SLOP => {
+            let wait = std::time::Duration::from_secs_f64(HOLD_TIME - held);
+            ui.ctx().request_repaint_after(wait);
+        }
+        _ => {}
+    }
+}
+
+/// The small triangle at the bottom-right corner of a cell with a flyout.
+fn paint_flyout_mark(ui: &egui::Ui, cell: Rect, active: bool, enabled: bool) {
+    let color = widgets::fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
+    let corner = cell.right_bottom() - vec2(6.0, 6.0);
+    let points = vec![corner, corner - vec2(6.0, 0.0), corner - vec2(0.0, 6.0)];
+    let shape = egui::Shape::convex_polygon(points, color, egui::Stroke::NONE);
+    ui.painter().add(shape);
 }
 
 /// Shows a value as a slider with a logarithmic scale.
@@ -738,6 +826,10 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     let Some(rect) = rects.brush else {
         return;
     };
+    if rects.measure_cells > 0 {
+        measure_card(ctx, state, controls, rects);
+        return;
+    }
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
@@ -804,7 +896,75 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
     );
 }
 
-fn show_panel(
+/// The card of the Measure tool in the place of the brush card.
+pub(super) fn measure_card(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    let Some(rect) = rects.brush.filter(|_| rects.measure_cells > 0) else {
+        return;
+    };
+    widgets::card(
+        ctx,
+        state.globe.backdrop(),
+        "pad-brush-card",
+        rect,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| {
+            let mut ui = padded(ui);
+            let mut cells = |ui: &mut egui::Ui| measure_cells(ui, state, controls, rects);
+            if rects.measure_cells < MEASURE_CELLS {
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(&mut ui, cells);
+            } else {
+                cells(&mut ui);
+            }
+        },
+    );
+}
+
+/// The cells of the card of the Measure tool: the snap switch, the Clear
+/// path cell, and the Brush button, which opens the snapping settings.
+fn measure_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let snap = &mut state.globe.snap.on;
+    if widgets::tool_cell(ui, controls, SNAP, SNAP, Icon::Magnet, *snap, true).clicked() {
+        *snap = !*snap;
+    }
+    let path = &mut state.measure;
+    let filled = !path.is_empty();
+    if widgets::tool_cell(
+        ui,
+        controls,
+        CLEAR_PATH,
+        "Clear",
+        Icon::Close,
+        false,
+        filled,
+    )
+    .clicked()
+    {
+        path.clear();
+    }
+    let open = state.pad.brush;
+    let button = widgets::tool_cell(
+        ui,
+        controls,
+        "Brush settings",
+        "Brush",
+        Icon::Brush,
+        open,
+        true,
+    );
+    if button.clicked() {
+        state.pad.toggle(Panel::Brush, rects.one_panel);
+    }
+}
+
+pub(super) fn show_panel(
     ctx: &egui::Context,
     state: &mut AppState,
     controls: &mut Controls,
@@ -864,6 +1024,7 @@ fn show_panel(
     }
     let name = name.as_deref().unwrap_or_default();
     let (key, title, back) = match (panel, layer) {
+        (Panel::Brush, _) if state.measuring() => (panel.key(), MEASURE, None),
         (Panel::Brush, _) if state.globe.lineable => (panel.key(), LINE, None),
         (Panel::Brush, _) if state.globe.fillable => (panel.key(), POLYGON, None),
         (Panel::Brush, _) if state.globe.pointable => (panel.key(), POINT, None),
@@ -1139,8 +1300,9 @@ fn sheet_drag(ui: &egui::Ui, pad: &mut PadState, bar: &egui::Response, travel: f
 
 fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let line = state.globe.lineable || state.globe.fillable;
-    if line || state.globe.pointable {
+    let measuring = state.measuring();
+    let line = !measuring && (state.globe.lineable || state.globe.fillable);
+    if line || measuring || state.globe.pointable {
         if line {
             percent_slider(
                 &mut state.globe.line.smoothing,
@@ -1151,7 +1313,11 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
                 },
             );
         }
-        let rasters = panels::raster_layers(state);
+        // The Measure tool in a map frame does not snap to color stops.
+        let rasters = match state.workspace {
+            Workspace::Atlas => Vec::new(),
+            Workspace::Globe => panels::raster_layers(state),
+        };
         let snap = &mut state.globe.snap;
         widgets::switch_row(ui, controls, SNAPPING, SNAPPING, &mut snap.on);
         widgets::switch_row(
@@ -1857,8 +2023,7 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     let Some(band) = rects.readout else {
         return;
     };
-    let value = state.readout_value();
-    let text = readout_text(state.cursor_lonlat, value.as_deref());
+    let text = readout_line(state);
     let galley = ui
         .painter()
         .layout_no_wrap(text, theme::mono(), theme::MUTE);
@@ -2298,22 +2463,25 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     state.pad.worlds = open.then_some(list);
 }
 
-/// The menu of the More cell: the brush modes that have no cell in the tool
-/// strip. It opens at the right of the cell.
-fn more_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let Some(cell) = state.pad.more_cell else {
-        state.pad.more = false;
+/// The flyout of the brush modes. It opens at the right of the brush cell.
+fn modes_flyout(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let Some(cell) = state.pad.brush_cell else {
+        state.pad.modes = false;
         return;
     };
-    let rows = MORE_MODES.len() as f32;
-    let size = vec2(geometry::MORE_WIDTH, 10.0 + rows * PANEL_ROW + 10.0);
+    let rows = BRUSH_MODES.len() as f32;
+    let room = rects.panel_bottom - rects.tools.top();
+    let size = vec2(
+        geometry::MODES_WIDTH,
+        (10.0 + rows * PANEL_ROW + 10.0).min(room),
+    );
     let top = cell
         .top()
         .min(rects.panel_bottom - size.y)
         .max(rects.tools.top());
     let min = pos2(rects.tools.right() + geometry::GAP, top);
     let rect = Rect::from_min_size(min, size);
-    state.pad.more_rect = Some(rect);
+    state.pad.modes_rect = Some(rect);
     let pressed = ctx.input(|i| {
         i.pointer
             .any_pressed()
@@ -2321,42 +2489,51 @@ fn more_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             .flatten()
     });
     if pressed.is_some_and(|pos| !rect.contains(pos) && !cell.contains(pos)) {
-        state.pad.more = false;
+        state.pad.modes = false;
     }
     let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
         None,
-        "pad-more",
+        "pad-modes",
         rect,
         Order::Foreground,
         radius,
         |ui| {
-            // The menu covers the Brush panel, so its fill is opaque.
+            // The flyout covers the Brush panel, so its fill is opaque.
             ui.painter()
                 .rect_filled(rect, radius, theme::card(false).to_opaque());
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-            let ui = &mut ui;
+            ui.set_clip_rect(inner);
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            let globe = &mut state.globe;
-            for (name, _, mode) in MORE_MODES {
-                let enabled = globe.is_height() || !needs_height(mode);
-                let row = widgets::text_row(ui, controls, name, 0.0, false, enabled);
-                if globe.brushing() && globe.brush.mode == mode {
-                    let tick = Rect::from_center_size(
-                        pos2(row.rect.right() - 14.0, row.rect.center().y),
-                        vec2(18.0, 18.0),
-                    );
-                    icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
-                }
-                if row.clicked() {
-                    globe.tool = Tool::Brush;
-                    globe.brush.mode = mode;
-                    state.pad.more = false;
-                }
-            }
+            egui::ScrollArea::vertical()
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(&mut ui, |ui| {
+                    let globe = &mut state.globe;
+                    for (name, icon, mode) in BRUSH_MODES {
+                        let enabled = globe.is_height() || !needs_height(mode);
+                        let row = widgets::text_row(ui, controls, name, 32.0, false, enabled);
+                        let at = pos2(row.rect.left() + 11.0, row.rect.center().y);
+                        let icon_rect =
+                            Rect::from_center_size(at, vec2(widgets::ICON, widgets::ICON));
+                        let color = widgets::fade(theme::TEXT, enabled);
+                        icons::paint(ui.painter(), icon_rect, icon, widgets::ICON, color);
+                        if globe.brush.mode == mode {
+                            let tick = Rect::from_center_size(
+                                pos2(row.rect.right() - 14.0, row.rect.center().y),
+                                vec2(18.0, 18.0),
+                            );
+                            icons::paint(ui.painter(), tick, Icon::Tick, 18.0, theme::ACCENT);
+                        }
+                        if row.clicked() {
+                            globe.tool = Tool::Brush;
+                            globe.brush.mode = mode;
+                            state.pad.modes = false;
+                        }
+                    }
+                });
         },
     );
 }

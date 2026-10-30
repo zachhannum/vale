@@ -79,7 +79,7 @@ pub const CANCEL_EXPORT: &str = "Cancel export";
 /// The width of the actions card: three buttons and a divider.
 const ACTIONS_WIDTH: f32 = 3.0 * TOUCH + 3.0 * PAD + 9.0 + 2.0 * PAD;
 const ADD_WIDTH: f32 = 220.0;
-const TOOL_CELLS: usize = 2;
+const TOOL_CELLS: usize = 3;
 /// The height of the keypad of a field.
 const KEYPAD: f32 = 4.0 * PANEL_ROW;
 /// The smallest space at each side of the text of a tab.
@@ -169,19 +169,29 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         WidthClass::Compact => widgets::menu_button_width(ui, WORKSPACES[1]),
     };
     let page_width = 2.0 * TOUCH + page_text_width(ui, state) + 2.0 * PAD;
+    // While the Measure tool is the tool, the Brush panel of its snapping
+    // settings is the panel, and the panel of the selection does not show.
+    let measuring = state.measuring();
     let input = Input {
         screen,
         bands: geometry::Bands::new(screen, ctx.content_rect()),
         workspace_width,
         view_width: page_width,
-        panel: state.atlas.selection != AtlasSelection::None,
+        panel: if measuring {
+            state.pad.brush
+        } else {
+            state.atlas.selection != AtlasSelection::None
+        },
         sheet_offset: state.pad.sheet_offset,
+        measure: measuring,
+        tools: TOOL_CELLS,
     };
     let mut rects = geometry::layout(&input);
     rects.actions.min.x = rects.actions.max.x - ACTIONS_WIDTH;
     rects.right_panel.x += geometry::RIGHT_PANEL_WIDTH - panel_width(&ctx);
-    rects.tools.max.y = rects.tools.min.y + TOOL_CELLS as f32 * geometry::CELL.1 + 2.0 * PAD;
-    rects.brush = None;
+    if !measuring {
+        rects.brush = None;
+    }
     state.pad.sheet_offset = input.sheet_offset.clamp(0.0, rects.sheet_travel);
     // The compact layout has no room in the top row, so the page card is at
     // the right of the tool strip.
@@ -207,7 +217,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     top_row(&ctx, state, &mut controls, &rects, page_card);
     tool_strip(&ctx, state, &mut controls, &rects);
-    if state.atlas.selection != AtlasSelection::None {
+    if measuring {
+        super::measure_card(&ctx, state, &mut controls, &rects);
+        if state.pad.brush {
+            super::show_panel(&ctx, state, &mut controls, &rects, super::Panel::Brush);
+        }
+    } else if state.atlas.selection != AtlasSelection::None {
         selection_panel(&ctx, state, &mut controls, &rects);
     }
     graticule_color_frame(&ctx, state);
@@ -400,14 +415,24 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         radius,
         |ui| {
             let mut ui = super::padded(ui);
-            for (name, icon, tool) in [
-                (SELECT, Icon::Select, AtlasTool::Select),
-                (MOVE, Icon::Move, AtlasTool::Move),
-            ] {
-                let active = state.atlas.tool == tool;
-                if widgets::tool_cell(&mut ui, controls, name, name, icon, active, true).clicked() {
-                    state.atlas.tool = tool;
+            let mut cells = |ui: &mut egui::Ui| {
+                for (name, icon, tool) in [
+                    (SELECT, Icon::Select, AtlasTool::Select),
+                    (MOVE, Icon::Move, AtlasTool::Move),
+                    (super::MEASURE, Icon::Measure, AtlasTool::Measure),
+                ] {
+                    let active = state.atlas.tool == tool;
+                    if widgets::tool_cell(ui, controls, name, name, icon, active, true).clicked() {
+                        state.atlas.tool = tool;
+                    }
                 }
+            };
+            if rects.tool_cells < TOOL_CELLS {
+                egui::ScrollArea::vertical()
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(&mut ui, cells);
+            } else {
+                cells(&mut ui);
             }
         },
     );
@@ -417,9 +442,12 @@ fn readout(ctx: &egui::Context, ui: &egui::Ui, state: &AppState, rects: &Rects) 
     let Some(band) = rects.readout else {
         return;
     };
+    let text = state
+        .measure_readout()
+        .unwrap_or_else(|| readout_text(state));
     let galley = ui
         .painter()
-        .layout_no_wrap(readout_text(state), theme::mono(), theme::MUTE);
+        .layout_no_wrap(text, theme::mono(), theme::MUTE);
     let mark = state.save_mark(std::time::Instant::now());
     let lead = if mark.is_some() {
         super::SAVE_MARK + 8.0

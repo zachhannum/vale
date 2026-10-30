@@ -19,10 +19,12 @@ use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
 use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
+use crate::globe::math::lonlat_to_dir;
 use crate::globe::polygon;
 use crate::globe::snap::{LayerTargets, Targets};
 use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
+use crate::measure::{self, Measure};
 use crate::pipeline::{Composed, Pipeline, Selection};
 use crate::projects::{self, Location, Locations};
 use crate::raster_style;
@@ -404,6 +406,11 @@ pub struct AppState {
     pub world_form: Option<world_form::WorldForm>,
     /// The open form of a point that the point tool placed.
     pub point_form: Option<point_form::PointForm>,
+    /// The path of the Measure tool, in both workspaces.
+    pub measure: Measure,
+    /// The workspace and the open page of the last frame, which clear the
+    /// path when they change.
+    measure_of: (Workspace, vale_store::PageId),
     /// The open form of a new raster layer.
     pub raster_form: Option<raster_form::RasterForm>,
     /// The read of the image of the form of a new raster layer.
@@ -498,6 +505,8 @@ impl AppState {
             share: None,
             world_form: None,
             point_form: None,
+            measure: Measure::default(),
+            measure_of: (Workspace::default(), vale_store::PageId(0)),
             raster_form: None,
             raster_probe: None,
             form_face_size: None,
@@ -1478,7 +1487,12 @@ impl AppState {
         Ok(())
     }
 
+    /// While the Measure tool is the tool, undo and redo act on its path
+    /// only.
     pub fn can_undo(&self) -> bool {
+        if self.measuring() {
+            return self.measure.can_undo();
+        }
         match &self.session {
             Some(session) if self.file_log() => !self.globe.busy() && session.can_undo(),
             _ => self.globe.can_undo(),
@@ -1486,6 +1500,9 @@ impl AppState {
     }
 
     pub fn can_redo(&self) -> bool {
+        if self.measuring() {
+            return self.measure.can_redo();
+        }
         match &self.session {
             Some(session) if self.file_log() => !self.globe.busy() && session.can_redo(),
             _ => self.globe.can_redo(),
@@ -1503,6 +1520,14 @@ impl AppState {
     }
 
     fn step(&mut self, redo: bool) {
+        if self.measuring() {
+            if redo {
+                self.measure.redo();
+            } else {
+                self.measure.undo();
+            }
+            return;
+        }
         self.commit_point_form();
         let able = if redo {
             self.can_redo()
@@ -1820,6 +1845,7 @@ impl AppState {
 
     /// Takes away the state of the UI that belongs to the last world.
     fn start_world(&mut self) {
+        self.measure.reset();
         self.doc.frame.view = None;
         self.saved_edits = self.edits();
         self.history += 1;
@@ -2097,6 +2123,57 @@ impl AppState {
         let targets = (!targets.is_empty()).then(|| Arc::new(Targets::new(targets, Vec::new())));
         self.globe.set_targets(targets);
         self.targets_key = Some(key);
+    }
+
+    /// True if the tool of the open workspace is the Measure tool.
+    pub fn measuring(&self) -> bool {
+        match self.workspace {
+            Workspace::Globe => self.globe.measuring(),
+            Workspace::Atlas => self.atlas.tool == atlas::AtlasTool::Measure,
+        }
+    }
+
+    /// Clears the path of the Measure tool after a tool change away from
+    /// it, a workspace switch, and a page change.
+    pub fn sync_measure(&mut self) {
+        let of = (self.workspace, self.atlas.page);
+        if !self.measuring() || self.measure_of != of {
+            self.measure.reset();
+        }
+        self.measure_of = of;
+    }
+
+    /// Chooses the Measure tool in the open workspace, with `path` as its
+    /// path.
+    pub fn start_measure(&mut self, path: Measure) {
+        match self.workspace {
+            Workspace::Globe => self.globe.tool = crate::globe::Tool::Measure,
+            Workspace::Atlas => self.atlas.tool = atlas::AtlasTool::Measure,
+        }
+        self.measure = path;
+        self.measure_of = (self.workspace, self.atlas.page);
+    }
+
+    /// Adds the last tap of the Measure tool to the path, or closes the
+    /// path.
+    pub fn poll_measure(&mut self) {
+        let Some((at, dir)) = self.globe.take_measure_tap() else {
+            return;
+        };
+        let globe = &self.globe;
+        let project = |p: LonLat| globe.project(lonlat_to_dir(p[0], p[1]));
+        let reach = measure::close_reach(globe.snap.distance);
+        let point = globe.measure_point(dir);
+        self.measure.tap(at, Some(point), project, reach);
+    }
+
+    /// The text of the readout of the Measure tool. With no points, or
+    /// with another tool, the readout shows the place under the cursor.
+    pub fn measure_readout(&self) -> Option<String> {
+        let world = &self.doc.project.world;
+        self.measuring()
+            .then(|| self.measure.readout(world.radius_km, world.units))
+            .flatten()
     }
 
     /// Puts the last stroke of the line tool or the polygon tool in the
@@ -2739,6 +2816,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     browser::dialogs(ui, state);
     state.sync_globe();
+    state.sync_measure();
     state.check_point_form();
     if state.layout == Layout::Pad {
         match state.workspace {
