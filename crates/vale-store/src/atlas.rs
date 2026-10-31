@@ -70,6 +70,8 @@ pub struct PageRecord {
     pub width_mm: f64,
     pub height_mm: f64,
     pub units: PageUnits,
+    /// The color of the paper.
+    pub paper: Rgb,
     /// From the bottom frame to the top frame.
     pub frames: Vec<FrameRecord>,
     /// From the bottom item to the top item.
@@ -136,6 +138,8 @@ pub struct FrameRecord {
     pub rotation: f64,
     pub graticule: Graticule,
     pub neatline: Neatline,
+    pub border: Border,
+    pub grid: ReferenceGrid,
 }
 
 /// The line along the edge of the shape of a map frame.
@@ -158,6 +162,151 @@ impl Default for Neatline {
             on: true,
             color: [0x2b, 0x2b, 0x2b],
             width: 1.0,
+        }
+    }
+}
+
+/// A band around a map frame, at a distance outside the bounding box of its
+/// shape.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Border {
+    pub on: bool,
+    pub style: BorderStyle,
+    pub color: Rgb,
+    /// The second color of a graduated band.
+    pub color2: Rgb,
+    /// The width of the band in millimeters.
+    pub width_mm: f64,
+    /// The distance in millimeters from the bounding box to the band.
+    pub distance_mm: f64,
+}
+
+/// How a border band is colored.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BorderStyle {
+    /// One color.
+    #[default]
+    Solid,
+    /// Two colors, which change at each graticule line.
+    Graduated,
+}
+
+impl BorderStyle {
+    pub const ALL: [BorderStyle; 2] = [BorderStyle::Solid, BorderStyle::Graduated];
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            BorderStyle::Solid => "solid",
+            BorderStyle::Graduated => "graduated",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<BorderStyle> {
+        BorderStyle::ALL.into_iter().find(|s| s.id() == id)
+    }
+}
+
+impl Border {
+    /// The band widths in millimeters that the app offers.
+    pub const WIDTHS: RangeInclusive<f64> = 0.25..=10.0;
+    /// The distances in millimeters that the app offers.
+    pub const DISTANCES: RangeInclusive<f64> = 0.0..=30.0;
+
+    /// The border as JSON text, for a project file.
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "on": self.on,
+            "style": self.style.id(),
+            "color": hex(self.color),
+            "color2": hex(self.color2),
+            "width": self.width_mm,
+            "distance": self.distance_mm,
+        })
+        .to_string()
+    }
+
+    /// Reads [`Border::to_json`]. A missing key gets its default. `None` if
+    /// a value is bad.
+    pub fn from_json(text: &str) -> Option<Border> {
+        let map = json_object(text)?;
+        let mut b = Border::default();
+        read_flag(&map, "on", &mut b.on)?;
+        if let Some(v) = map.get("style") {
+            b.style = BorderStyle::from_id(v.as_str()?)?;
+        }
+        read_color(&map, "color", &mut b.color)?;
+        read_color(&map, "color2", &mut b.color2)?;
+        read_number(&map, "width", &mut b.width_mm)?;
+        read_number(&map, "distance", &mut b.distance_mm)?;
+        (b.width_mm > 0.0 && b.distance_mm >= 0.0).then_some(b)
+    }
+}
+
+impl Default for Border {
+    fn default() -> Self {
+        Border {
+            on: false,
+            style: BorderStyle::Solid,
+            color: [0xc9, 0xaa, 0xa0],
+            color2: [0xff, 0xff, 0xff],
+            width_mm: 2.0,
+            distance_mm: 8.0,
+        }
+    }
+}
+
+/// Columns with the letters A, B, C and rows with the numbers 1, 2, 3 over
+/// the bounding box of a map frame. The labels sit in the border band.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferenceGrid {
+    pub on: bool,
+    pub columns: u32,
+    pub rows: u32,
+    pub text: FurnitureText,
+}
+
+impl ReferenceGrid {
+    /// The numbers of columns and rows that the app offers.
+    pub const COUNTS: RangeInclusive<u32> = 1..=26;
+
+    /// The grid as JSON text, for a project file.
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "on": self.on,
+            "columns": self.columns,
+            "rows": self.rows,
+            "text": self.text.value(),
+        })
+        .to_string()
+    }
+
+    /// Reads [`ReferenceGrid::to_json`]. A missing key gets its default.
+    /// `None` if a value is bad.
+    pub fn from_json(text: &str) -> Option<ReferenceGrid> {
+        let map = json_object(text)?;
+        let mut g = ReferenceGrid::default();
+        read_flag(&map, "on", &mut g.on)?;
+        for (key, to) in [("columns", &mut g.columns), ("rows", &mut g.rows)] {
+            if let Some(v) = map.get(key) {
+                *to = u32::try_from(v.as_u64()?).ok()?;
+            }
+        }
+        g.text = g.text.read_key(&map, "text")?;
+        (g.columns > 0 && g.rows > 0).then_some(g)
+    }
+}
+
+impl Default for ReferenceGrid {
+    fn default() -> Self {
+        ReferenceGrid {
+            on: false,
+            columns: 6,
+            rows: 4,
+            text: FurnitureText {
+                color: [0x2b, 0x2b, 0x2b],
+                ..FurnitureText::sized(5.0)
+            },
         }
     }
 }
@@ -986,6 +1135,7 @@ impl Atlas {
                 width_mm,
                 height_mm,
                 units,
+                paper: [0xff, 0xff, 0xff],
                 frames: Vec::new(),
                 furniture: Vec::new(),
             }],
@@ -1015,6 +1165,7 @@ impl Atlas {
             width_mm,
             height_mm,
             units,
+            paper: [0xff, 0xff, 0xff],
             frames: Vec::new(),
             furniture: Vec::new(),
         };
@@ -1318,6 +1469,8 @@ mod tests {
             rotation: 15.0,
             graticule: Graticule::default(),
             neatline: Neatline::default(),
+            border: Border::default(),
+            grid: ReferenceGrid::default(),
         }
     }
 
