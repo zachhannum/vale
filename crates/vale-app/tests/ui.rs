@@ -124,6 +124,46 @@ fn the_desktop_edge_label_controls_edit_one_set() {
 }
 
 #[test]
+fn the_desktop_frame_panel_sets_the_neatline_the_border_and_the_grid() {
+    let mut h = harness();
+    h.run_steps(3);
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame);
+    h.run_steps(3);
+    assert!(h.get_all_by_label("Neatline color").next().is_some());
+    assert!(h.get_all_by_label("Neatline width").next().is_some());
+    h.get_by_label("Border").click();
+    h.run_steps(2);
+    h.get_by_label("Graduated").click();
+    h.run_steps(2);
+    assert!(h.get_all_by_label("Second color").next().is_some());
+    assert!(h.get_all_by_label("Border distance").next().is_some());
+    h.get_by_label("Reference grid").click();
+    h.run_steps(2);
+    assert!(h.get_all_by_label("Columns").next().is_some());
+    let f = h.state().doc.project.atlas.frame(frame).unwrap();
+    assert!(f.border.on && f.grid.on);
+    assert_eq!(f.border.style, vale_store::BorderStyle::Graduated);
+    if std::env::var_os("VALE_SCREENSHOTS").is_some() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/app");
+        std::fs::create_dir_all(dir).unwrap();
+        h.render()
+            .unwrap()
+            .save(format!("{dir}/test-desktop-frame-border.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn the_desktop_page_panel_has_the_paper_color() {
+    let mut h = harness();
+    h.run_steps(3);
+    h.state_mut().atlas.selection = AtlasSelection::Page;
+    h.run_steps(3);
+    assert!(h.get_all_by_label("Paper color").next().is_some());
+}
+
+#[test]
 fn the_desktop_scale_bar_controls_edit_the_bar_and_its_numbers() {
     use vale_app::ui::atlas::{ItemKind, add_item};
     use vale_store::Furniture;

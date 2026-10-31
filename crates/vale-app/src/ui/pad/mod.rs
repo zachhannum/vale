@@ -32,6 +32,7 @@ pub mod filter;
 pub mod fonts;
 pub mod furniture;
 pub mod geometry;
+pub mod grid_labels;
 pub mod icons;
 pub mod labels;
 pub mod raster;
