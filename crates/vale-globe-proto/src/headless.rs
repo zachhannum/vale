@@ -117,6 +117,7 @@ pub fn bench(face_size: usize) -> String {
                 talus: 0.0,
                 scale: 0.0,
                 seed: 0,
+                motion: [0.0; 3],
                 limits: Limits::default(),
             });
         }

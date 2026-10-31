@@ -298,6 +298,7 @@ impl ProtoApp {
                 | Mode::Weather
                 | Mode::Uplift
                 | Mode::Warp
+                | Mode::Push
                 | Mode::OceanRidge
                 | Mode::Range => flow,
                 // These three modes move toward a target, so each stamp does less.
@@ -309,6 +310,7 @@ impl ProtoApp {
             talus: 0.0,
             scale: 0.0,
             seed: 0,
+            motion: [0.0; 3],
             limits: Limits::default(),
         };
         let start = Instant::now();

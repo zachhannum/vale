@@ -2051,9 +2051,23 @@ fn the_brush_panel_has_the_warp_mode_and_its_two_sliders() {
 }
 
 #[test]
+fn the_brush_panel_has_the_push_mode_with_no_strength() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Strength").next().is_some());
+    h.get_by_label("Push").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Push);
+    assert!(h.query_all_by_label("Strength").next().is_none());
+    assert!(h.query_all_by_label("Flow").next().is_some());
+    assert!(h.query_all_by_label("Floor").next().is_some());
+}
+
+#[test]
 fn the_brush_panel_has_the_floor_and_the_ceiling() {
     use egui::accesskit::Role;
-    for mode in ["Raise", "Erode", "Warp"] {
+    for mode in ["Raise", "Erode", "Warp", "Push"] {
         let mut h = harness();
         h.state_mut().globe.tool = Tool::Brush;
         h.run_steps(2);
@@ -3424,6 +3438,52 @@ fn two_equal_warp_strokes_with_the_same_seed_give_equal_results() {
     assert!(all_levels(&h) == before);
     let other = uplift_stroke(&mut h);
     assert!(other != before && other != first);
+}
+
+/// The middle of the ground above the lowest level of `base`, as a
+/// direction.
+fn ground_middle(h: &Harness<'static, AppState>, levels: &[u16], base: &[u16]) -> V3 {
+    let map = &h.state().globe.map;
+    let n = map.face_size();
+    let low = *base.iter().min().unwrap();
+    let mut sum = [0.0; 3];
+    for (i, &level) in levels.iter().enumerate() {
+        let w = f64::from(level.saturating_sub(low));
+        sum = add(
+            sum,
+            scale_v(map.texel_dir(i / (n * n), i % n, i / n % n), w),
+        );
+    }
+    normalize(sum)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_push_stroke_moves_the_ground_with_the_pen_and_one_undo_puts_it_back() {
+    let _gpu = one_gpu_test();
+    let mut h = uplift_harness();
+    h.state_mut().globe.brush.mode = Mode::Raise;
+    uplift_stroke(&mut h);
+    h.state_mut().globe.brush.mode = Mode::Push;
+    h.run_steps(2);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    let pushed = (uplift_stroke(&mut h), canvas_image(&mut h));
+    assert!(pushed.0 != before.0);
+    assert!(pushed.1.as_raw() != before.1.as_raw());
+    // The stroke moves the ground, and it adds no height.
+    let (lo, hi) = (before.0.iter().min(), before.0.iter().max());
+    assert!(pushed.0.iter().min() >= lo && pushed.0.iter().max() <= hi);
+    // The stroke goes east, and the ground goes east with it.
+    let (old, new) = (
+        ground_middle(&h, &before.0, &before.0),
+        ground_middle(&h, &pushed.0, &before.0),
+    );
+    assert!(new[1] > old[1] + 0.002, "{old:?} {new:?}");
+
+    assert!(h.state_mut().globe.undo());
+    assert!(all_levels(&h) == before.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before.1.as_raw(), "the render");
 }
 
 #[test]

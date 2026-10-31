@@ -2259,6 +2259,7 @@ mod tests {
             talus: 0.0,
             scale: 0.1,
             seed: 1,
+            motion: [0.0; 3],
             limits: Limits::default(),
         };
         map.begin_stroke();

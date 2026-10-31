@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, OnceLock, mpsc};
 
-use vale_terrain::math::{V3, add, angle, cross, dot, lonlat_to_dir, normalize, scale};
+use vale_terrain::math::{V3, add, angle, arc_motion, cross, dot, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
     ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FIELD_WGSL, FlowMap,
     GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, LINE_SEGMENTS, LINE_SPACING,
@@ -245,6 +245,7 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         talus: 0.0,
         scale: 0.1,
         seed: 1,
+        motion: [0.0; 3],
         limits: Limits::default(),
     }
 }
@@ -2041,6 +2042,93 @@ fn gpu_warp_matches_cpu_for_a_stroke() {
         worst = worst.max(difference);
     }
     eprintln!("warp stroke, largest difference: {worst}");
+}
+
+/// A push stamp with a motion of a quarter of the radius. The motion goes
+/// east, or along +Y at a pole.
+fn push(center: V3, radius: f64, hardness: f64) -> Stamp {
+    let axis = if center[2].abs() < 0.9 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    Stamp {
+        motion: scale(normalize(cross(axis, center)), 0.25 * radius),
+        ..stamp(center, radius, hardness, Mode::Push)
+    }
+}
+
+/// A stroke of push stamps a quarter of the radius apart, along a parallel
+/// across a face edge.
+fn push_stroke(lat: f64, radius: f64, hardness: f64) -> Vec<Stamp> {
+    let step = (0.25 * radius).to_degrees() / lat.to_radians().cos();
+    let at = |i: u32| lonlat_to_dir(33.0 + step * f64::from(i), lat);
+    let count = (24.0 / step).ceil() as u32;
+    (0..count)
+        .map(|i| Stamp {
+            motion: if i == 0 {
+                [0.0; 3]
+            } else {
+                arc_motion(at(i - 1), at(i))
+            },
+            ..push(at(i), radius, hardness)
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_push_matches_cpu_for_one_stamp() {
+    let mut worst = 0;
+    for (place, lon, lat) in WARP_PLACES {
+        for (n, radius) in [(1024, 0.01), (256, 0.06), (256, 0.3)] {
+            for hardness in [0.0, 0.5, 0.95] {
+                let mut cpu = smooth_ground(n);
+                let before = levels(&cpu);
+                let stamp = push(lonlat_to_dir(lon, lat), radius, hardness);
+                let difference = run(&mut cpu, &[stamp]).difference;
+                assert!(levels(&cpu) != before, "{place}, radius {radius}");
+                assert!(
+                    difference <= WARP_TOLERANCE,
+                    "push at the {place}, radius {radius}, hardness {hardness}: \
+                     the difference is {difference}"
+                );
+                worst = worst.max(difference);
+            }
+        }
+    }
+    eprintln!("one push stamp, largest difference: {worst}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_push_matches_cpu_for_a_stroke() {
+    let mut worst = 0;
+    for (lat, radius, hardness) in [(4.0, 0.07, 0.5), (35.0, 0.12, 0.0), (20.0, 0.05, 0.95)] {
+        let mut cpu = smooth_ground(256);
+        let before = levels(&cpu);
+        let difference = run(&mut cpu, &push_stroke(lat, radius, hardness)).difference;
+        assert!(changes(&before, &levels(&cpu)) > 300, "latitude {lat}");
+        assert!(
+            difference <= WARP_STROKE_TOLERANCE,
+            "push stroke at latitude {lat}: the difference is {difference}"
+        );
+        worst = worst.max(difference);
+    }
+    eprintln!("push stroke, largest difference: {worst}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_push_leaves_flat_ground_flat() {
+    let mut cpu = Heightmap::new(256, 30000);
+    let mut stamps = push_stroke(35.0, 0.12, 0.5);
+    for (_, lon, lat) in WARP_PLACES {
+        stamps.push(push(lonlat_to_dir(lon, lat), 0.3, 0.5));
+    }
+    let result = run(&mut cpu, &stamps);
+    assert_eq!(result.difference, 0);
+    assert!(levels(&cpu).iter().all(|&l| l == 30000));
 }
 
 /// On a large face, the place of a texel needs most of the digits of a

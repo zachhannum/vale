@@ -18,11 +18,11 @@ use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
 use vale_app::ui::pad::raster;
 use vale_app::ui::pad::widgets::SLIDER_INSET;
 use vale_app::ui::pad::{
-    ADD_LAYER, BRUSH, BRUSH_MODES, CLEAR_PATH, DRAW, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP,
-    LAYER_NAME, LINE, LayerRef, MEASURE, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER,
-    OPACITY, POLYGON, Page, Panel, RECENTER, RESET, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
-    SNAP_VERTICES, SNAPPING, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text,
-    readout_line, readout_text, theme,
+    ADD_LAYER, CLEAR_PATH, DRAW, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
+    LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
+    POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
+    SNAP_VERTICES, SNAPPING, TERRAIN, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
+    brush_size_text, readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -184,26 +184,46 @@ fn quick_tap(h: &mut Pad, name: &str) {
     h.run_steps(3);
 }
 
-/// Opens the flyout of the brush modes with taps on the brush cell.
-fn open_modes(h: &mut Pad) {
-    if !h.state().pad.modes {
-        if !h.state().globe.brushing() {
-            quick_tap(h, BRUSH);
-        }
-        quick_tap(h, BRUSH);
-    }
-    assert!(h.state().pad.modes);
+/// The group of the brush mode with this name.
+fn group_of(name: &str) -> ModeGroup {
+    let has = |group: &ModeGroup| group.modes().iter().any(|(mode, ..)| *mode == name);
+    ModeGroup::ALL.into_iter().find(has).unwrap()
 }
 
-/// Chooses a brush mode in the flyout of the brush modes.
+/// The names of all brush modes.
+fn all_modes() -> impl Iterator<Item = &'static str> {
+    ModeGroup::ALL
+        .into_iter()
+        .flat_map(|group| group.modes().iter().map(|(name, ..)| *name))
+}
+
+/// Opens the flyout of a group with taps on its cell.
+fn open_group(h: &mut Pad, group: ModeGroup) {
+    if h.state().pad.modes != Some(group) {
+        let globe = &h.state().globe;
+        if !globe.brushing() || ModeGroup::of(globe.brush.mode) != group {
+            quick_tap(h, group.name());
+        }
+        quick_tap(h, group.name());
+    }
+    assert_eq!(h.state().pad.modes, Some(group));
+}
+
+/// Opens the flyout of the group of the brush mode.
+fn open_modes(h: &mut Pad) {
+    let group = ModeGroup::of(h.state().globe.brush.mode);
+    open_group(h, group);
+}
+
+/// Chooses a brush mode in the flyout of its group.
 fn choose_mode(h: &mut Pad, name: &str) {
-    open_modes(h);
+    open_group(h, group_of(name));
     tap(h, name);
 }
 
-/// The place of the draw cell: the second cell of the tool strip.
+/// The place of the draw cell: the third cell of the tool strip.
 fn draw_cell(h: &Pad) -> Rect {
-    control(h, BRUSH).unwrap().translate(vec2(0.0, 52.0))
+    control(h, SCULPT).unwrap().translate(vec2(0.0, 2.0 * 52.0))
 }
 
 /// The rectangles of all cards on the screen.
@@ -286,7 +306,7 @@ fn check_controls(h: &Pad, what: &str) {
                     .any(|k| k.name() == name);
                 let menu =
                     ["World", "Globe", "Flat", GRATICULE, "Atlas", WORLDS_ROW].contains(&name);
-                let modes = in_modes && BRUSH_MODES.iter().any(|(mode, ..)| *mode == name);
+                let modes = in_modes && all_modes().any(|mode| mode == name);
                 let rows = [
                     NEW_RASTER,
                     NEW_IMAGE,
@@ -346,15 +366,18 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             tap(&mut h, name);
             check_controls(&h, &format!("{size:?} after {name}"));
         }
-        open_modes(&mut h);
-        let modes = h.state().pad.modes_rect.unwrap();
-        for (name, ..) in BRUSH_MODES {
-            let row = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
-            assert!(modes.contains_rect(row), "{size:?}: {name}");
+        for group in ModeGroup::ALL {
+            open_group(&mut h, group);
+            let modes = h.state().pad.modes_rect.unwrap();
+            for (name, ..) in group.modes() {
+                let row = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
+                assert!(modes.contains_rect(row), "{size:?}: {name}");
+            }
+            let what = format!("{size:?} with the {} modes", group.name());
+            check_controls(&h, &what);
+            quick_tap(&mut h, group.name());
+            assert_eq!(h.state().pad.modes, None, "{size:?}");
         }
-        check_controls(&h, &format!("{size:?} with the brush modes"));
-        quick_tap(&mut h, BRUSH);
-        assert!(!h.state().pad.modes, "{size:?}");
         if control(&h, "Workspace").is_some() {
             tap(&mut h, "Workspace");
             assert!(h.state().pad.menu);
@@ -429,7 +452,7 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         let mut h = empty_pad(size);
         h.state_mut().form_face_size = Some(64);
         // With no raster layer, the brush cells are off and the tool is Move.
-        for name in [BRUSH, DRAW] {
+        for name in [SCULPT, TERRAIN, DRAW] {
             assert!(control(&h, name).is_none(), "{what}: {name}");
         }
         assert!(control(&h, "Pan").is_some(), "{what}");
@@ -539,13 +562,13 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
 #[test]
 fn the_brush_cells_are_on_for_a_selected_raster_layer_only() {
     let mut h = pad(BOARDS[0]);
-    let cells = [BRUSH, "Size", "Flow"];
+    let cells = [SCULPT, TERRAIN, "Size", "Flow"];
     let on = |h: &Pad| cells.map(|name| control(h, name).is_some());
-    assert_eq!(on(&h), [true; 3]);
+    assert_eq!(on(&h), [true; 4]);
     assert_eq!(h.state().globe.tool, Tool::Brush);
     h.state_mut().select(None);
     h.run_steps(2);
-    assert_eq!(on(&h), [false; 3]);
+    assert_eq!(on(&h), [false; 4]);
     // The cells stay in their places, and the Move cell is the tool.
     let tools = h.state().pad.rects.unwrap().tools;
     assert!(tools.contains_rect(control(&h, "Pan").unwrap()));
@@ -553,7 +576,7 @@ fn the_brush_cells_are_on_for_a_selected_raster_layer_only() {
     let height = h.state().doc.project.rasters()[0].id;
     h.state_mut().select(Some(LayerRef::Raster(height)));
     h.run_steps(2);
-    assert_eq!(on(&h), [true; 3]);
+    assert_eq!(on(&h), [true; 4]);
     assert!(h.state().globe.brushing());
 
     // A raster layer of another unit has no mode that needs heights.
@@ -569,10 +592,18 @@ fn the_brush_cells_are_on_for_a_selected_raster_layer_only() {
     h.run_steps(2);
     assert_eq!(h.state().globe.brush.mode, Mode::Raise);
     assert!(!h.state().globe.is_height());
+    // The Terrain cell is off, and the Sculpt cell stays on.
+    assert!(control(&h, TERRAIN).is_none());
+    assert!(disabled(&h, TERRAIN));
+    assert!(!disabled(&h, SCULPT));
+    let terrain = control(&h, SCULPT).unwrap().translate(vec2(0.0, 52.0));
+    finger_tap(&mut h, terrain.center());
+    assert_eq!(h.state().pad.modes, None);
+    assert_eq!(h.state().globe.brush.mode, Mode::Raise);
     open_modes(&mut h);
-    for name in ["Carve", "Ridge", "Deposit", "Erode", "Weather", "Uplift"] {
-        assert!(control(&h, name).is_none(), "{name}");
-        assert!(disabled(&h, name), "{name}");
+    assert_eq!(h.state().pad.modes, Some(ModeGroup::Sculpt));
+    for (name, ..) in ModeGroup::Sculpt.modes() {
+        assert!(control(&h, name).is_some(), "{name}");
     }
     tap(&mut h, "Warp");
     assert_eq!(h.state().globe.brush.mode, Mode::Warp);
@@ -1854,52 +1885,74 @@ fn strip(h: &Pad) -> Vec<String> {
 }
 
 #[test]
-fn the_tool_strip_has_four_cells_on_each_screen() {
+fn the_tool_strip_has_five_cells_on_each_screen() {
     for (size, safe) in measure_screens() {
         let what = format!("{size:?}");
         let mut h = safe_pad(size, safe);
         let rects = h.state().pad.rects.unwrap();
-        assert_eq!(rects.tool_cells, TOOLS, "{what}");
-        assert_eq!(rects.tools.height(), 4.0 * 52.0 + 8.0, "{what}");
+        // The landscape iPhone is too short for five cells, so the strip
+        // scrolls.
+        let full = size.1 > 400.0;
+        if full {
+            assert_eq!(rects.tool_cells, TOOLS, "{what}");
+            assert_eq!(rects.tools.height(), 5.0 * 52.0 + 8.0, "{what}");
+        } else {
+            assert_eq!(rects.tool_cells, 3, "{what}");
+        }
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         assert!(screen.contains_rect(rects.tools), "{what}");
+        // The cells that are on show in this order.
+        let shows = |h: &Pad, cells: &[&str]| {
+            let strip = strip(h);
+            if full {
+                assert_eq!(strip, cells, "{what}");
+            } else {
+                assert!(
+                    cells.windows(strip.len()).any(|w| w == strip),
+                    "{what}: {strip:?}"
+                );
+            }
+        };
         // With a raster layer, the Draw cell is off.
-        assert_eq!(strip(&h), [BRUSH, "Pan", MEASURE], "{what}");
+        shows(&h, &[SCULPT, TERRAIN, "Pan", MEASURE]);
         assert!(disabled(&h, DRAW), "{what}");
         check_controls(&h, &what);
         check_safe(&h, size, safe, &what);
-        // With a vector layer, the brush cell is off.
+        // With a vector layer, the brush cells are off.
         let rivers = vector(&h, "Rivers");
         h.state_mut().select(Some(LayerRef::Vector(rivers)));
         h.run_steps(2);
-        assert_eq!(strip(&h), [LINE, "Pan", MEASURE], "{what}");
-        assert!(disabled(&h, BRUSH), "{what}");
+        shows(&h, &[LINE, "Pan", MEASURE]);
+        assert!(disabled(&h, SCULPT) && disabled(&h, TERRAIN), "{what}");
         check_controls(&h, &format!("{what} with a line layer"));
         check_safe(&h, size, safe, &what);
         for card in cards(&h) {
             assert!(screen.contains_rect(card), "{what}: {card:?}");
         }
+        scroll_strip_to(&mut h, MEASURE);
+        assert!(strip(&h).contains(&MEASURE.to_string()), "{what}");
     }
 }
 
 #[test]
 fn the_small_ipads_show_the_full_sliders_with_a_raster_layer() {
-    for size in [
-        (1133.0, 744.0),
-        (744.0, 1133.0),
-        (1024.0, 768.0),
-        (768.0, 1024.0),
+    // The smallest iPad in landscape has a little less room for the sliders.
+    for (size, slider) in [
+        ((1133.0, 744.0), 136.0),
+        ((744.0, 1133.0), 140.0),
+        ((1024.0, 768.0), 140.0),
+        ((768.0, 1024.0), 140.0),
     ] {
         let what = format!("{size:?}");
         let h = pad(size);
         let rects = h.state().pad.rects.unwrap();
-        assert_eq!(rects.brush_card, BrushCard::Full(140.0), "{what}");
+        assert_eq!(rects.brush_card, BrushCard::Full(slider), "{what}");
         let card = rects.brush.unwrap();
         for name in ["Size", "Flow", "Brush settings"] {
             let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
             assert!(card.contains_rect(rect), "{what}: {name}");
         }
-        assert_eq!(control(&h, "Size").unwrap().height(), 140.0, "{what}");
+        assert_eq!(control(&h, "Size").unwrap().height(), slider, "{what}");
         check_controls(&h, &what);
     }
 }
@@ -1910,16 +1963,89 @@ fn a_tap_on_the_brush_cell_chooses_the_brush_in_its_mode() {
     h.state_mut().globe.brush.mode = Mode::Erode;
     tap(&mut h, "Pan");
     assert_eq!(h.state().globe.tool, Tool::Navigate);
-    assert_eq!(toggled(&h, BRUSH), Some(false));
-    assert_eq!(h.state().pad.brush_face.unwrap().0, "Erode");
-    quick_tap(&mut h, BRUSH);
+    assert_eq!(toggled(&h, TERRAIN), Some(false));
+    assert_eq!(face(&h, ModeGroup::Terrain), "Erode");
+    assert_eq!(face(&h, ModeGroup::Sculpt), "Raise");
+    quick_tap(&mut h, TERRAIN);
     let s = h.state();
     assert_eq!(
         (s.globe.tool, s.globe.brush.mode),
         (Tool::Brush, Mode::Erode)
     );
-    assert!(!s.pad.modes);
-    assert_eq!(toggled(&h, BRUSH), Some(true));
+    assert_eq!(s.pad.modes, None);
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    assert_eq!(toggled(&h, SCULPT), Some(false));
+}
+
+/// The label of the cell of a group.
+fn face(h: &Pad, group: ModeGroup) -> &'static str {
+    let i = ModeGroup::ALL.iter().position(|g| *g == group).unwrap();
+    h.state().pad.brush_faces[i].unwrap().0
+}
+
+#[test]
+fn each_brush_cell_remembers_the_last_mode_of_its_group() {
+    let mut h = pad(BOARDS[0]);
+    choose_mode(&mut h, "Push");
+    choose_mode(&mut h, "Erode");
+    assert_eq!(face(&h, ModeGroup::Sculpt), "Push");
+    assert_eq!(face(&h, ModeGroup::Terrain), "Erode");
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    assert_eq!(toggled(&h, SCULPT), Some(false));
+    quick_tap(&mut h, SCULPT);
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Push)
+    );
+    assert_eq!(s.pad.modes, None);
+    assert_eq!(toggled(&h, SCULPT), Some(true));
+    assert_eq!(toggled(&h, TERRAIN), Some(false));
+    quick_tap(&mut h, TERRAIN);
+    assert_eq!(h.state().globe.brush.mode, Mode::Erode);
+    assert_eq!(face(&h, ModeGroup::Sculpt), "Push");
+    // After the Move tool, each cell keeps its mode.
+    tap(&mut h, "Pan");
+    quick_tap(&mut h, SCULPT);
+    assert_eq!(h.state().globe.brush.mode, Mode::Push);
+}
+
+#[test]
+fn each_flyout_lists_the_modes_of_its_group_and_fits_on_each_screen() {
+    for (size, safe) in measure_screens() {
+        let mut h = safe_pad(size, safe);
+        let screen = Rect::from_min_size(Pos2::ZERO, size.into());
+        for group in ModeGroup::ALL {
+            let what = format!("{size:?} {}", group.name());
+            open_group(&mut h, group);
+            let flyout = h.state().pad.modes_rect.unwrap();
+            assert!(screen.contains_rect(flyout), "{what}: {flyout:?}");
+            let cell = control(&h, group.name()).unwrap();
+            let tools = h.state().pad.rects.unwrap().tools;
+            assert_eq!(flyout.left(), tools.right() + 12.0, "{what}");
+            assert!(flyout.top() <= cell.top(), "{what}");
+            for name in all_modes() {
+                let mine = group.modes().iter().any(|(mode, ..)| *mode == name);
+                assert!(mine || control(&h, name).is_none(), "{what}: {name}");
+            }
+            check_controls(&h, &what);
+            check_safe(&h, size, safe, &what);
+            // A flyout that is shorter than its rows scrolls to each row.
+            for (name, ..) in group.modes() {
+                for _ in 0..4 {
+                    if control(&h, name).is_some() {
+                        break;
+                    }
+                    let from = flyout.center();
+                    drag(&mut h, from, from - vec2(0.0, 0.4 * flyout.height()), None);
+                }
+                let row = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
+                assert!(flyout.contains_rect(row), "{what}: {name}");
+            }
+            quick_tap(&mut h, group.name());
+            assert_eq!(h.state().pad.modes, None, "{what}");
+        }
+    }
 }
 
 /// Holds a finger on a control until the flyout of the brush modes opens,
@@ -1929,7 +2055,7 @@ fn hold_cell(h: &mut Pad, name: &str) {
     touch(h, egui::TouchPhase::Start, pos, None);
     for _ in 0..200 {
         h.step();
-        if h.state().pad.modes {
+        if h.state().pad.modes.is_some() {
             break;
         }
     }
@@ -1943,41 +2069,51 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
     let tools = h.state().pad.rects.unwrap().tools;
     tap(&mut h, "Pan");
     // A hold opens the flyout, and the end of the hold is not a tap.
-    hold_cell(&mut h, BRUSH);
-    assert!(h.state().pad.modes);
-    assert_eq!(h.state().globe.tool, Tool::Navigate);
-    let flyout = h.state().pad.modes_rect.unwrap();
-    let cell = control(&h, BRUSH).unwrap();
-    assert_eq!(flyout.left_top(), pos2(tools.right() + 12.0, cell.top()));
-    for (name, ..) in BRUSH_MODES {
-        assert!(flyout.contains_rect(control(&h, name).unwrap()), "{name}");
-    }
-    assert_eq!(strip(&h), [BRUSH, "Pan", MEASURE]);
-    check_controls(&h, "the flyout");
+    for group in ModeGroup::ALL {
+        let name = group.name();
+        hold_cell(&mut h, name);
+        assert_eq!(h.state().pad.modes, Some(group), "{name}");
+        assert_eq!(h.state().globe.tool, Tool::Navigate, "{name}");
+        let flyout = h.state().pad.modes_rect.unwrap();
+        let cell = control(&h, name).unwrap();
+        assert_eq!(flyout.left_top(), pos2(tools.right() + 12.0, cell.top()));
+        for (mode, ..) in group.modes() {
+            let row = control(&h, mode).unwrap();
+            assert!(flyout.contains_rect(row), "{mode}");
+        }
+        assert_eq!(strip(&h), [SCULPT, TERRAIN, "Pan", MEASURE]);
+        check_controls(&h, &format!("the flyout of {name}"));
 
-    // A press outside closes the flyout and changes nothing.
-    let outside = flyout.right_bottom() + vec2(40.0, 40.0);
-    finger_tap(&mut h, outside);
-    let s = h.state();
-    assert!(!s.pad.modes && s.pad.modes_rect.is_none());
-    assert!(control(&h, "Weather").is_none());
-    assert_eq!(s.globe.tool, Tool::Navigate);
+        // A press outside closes the flyout and changes nothing.
+        let outside = flyout.right_bottom() + vec2(40.0, 40.0);
+        finger_tap(&mut h, outside);
+        let s = h.state();
+        assert!(s.pad.modes.is_none() && s.pad.modes_rect.is_none());
+        assert!(control(&h, "Weather").is_none());
+        assert_eq!(s.globe.tool, Tool::Navigate);
+    }
 
     // The first tap chooses the brush, the second tap opens the flyout,
     // and a third tap closes it.
-    quick_tap(&mut h, BRUSH);
-    assert!(h.state().globe.brushing() && !h.state().pad.modes);
-    quick_tap(&mut h, BRUSH);
-    assert!(h.state().pad.modes);
-    quick_tap(&mut h, BRUSH);
-    assert!(!h.state().pad.modes);
+    quick_tap(&mut h, SCULPT);
+    assert!(h.state().globe.brushing() && h.state().pad.modes.is_none());
+    quick_tap(&mut h, SCULPT);
+    assert_eq!(h.state().pad.modes, Some(ModeGroup::Sculpt));
+    quick_tap(&mut h, SCULPT);
+    assert_eq!(h.state().pad.modes, None);
+
+    // A tap on the other cell chooses its mode and closes the flyout.
+    quick_tap(&mut h, SCULPT);
+    quick_tap(&mut h, TERRAIN);
+    assert_eq!(h.state().globe.brush.mode, Mode::Carve);
+    assert_eq!(h.state().pad.modes, None);
 
     // A hold while the brush is the tool opens the flyout too.
-    hold_cell(&mut h, BRUSH);
-    assert!(h.state().pad.modes);
+    hold_cell(&mut h, TERRAIN);
+    assert_eq!(h.state().pad.modes, Some(ModeGroup::Terrain));
     // A tap on another control closes it.
     tap(&mut h, "Layers");
-    assert!(!h.state().pad.modes && h.state().pad.is_open(Panel::Layers));
+    assert!(h.state().pad.modes.is_none() && h.state().pad.is_open(Panel::Layers));
 
     // The flyout is in front of the Brush panel.
     tap(&mut h, "Brush settings");
@@ -1989,15 +2125,21 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
 #[test]
 fn a_mode_of_the_flyout_sets_the_mode_and_the_face_of_the_cell() {
     let mut h = pad(BOARDS[0]);
-    for (name, icon, mode) in BRUSH_MODES {
-        // A row of the flyout also chooses the brush.
-        tap(&mut h, "Pan");
-        choose_mode(&mut h, name);
-        let s = h.state();
-        assert_eq!((s.globe.tool, s.globe.brush.mode), (Tool::Brush, mode));
-        assert!(!s.pad.modes && s.pad.modes_rect.is_none(), "{name}");
-        assert_eq!(s.pad.brush_face, Some((name, icon)), "{name}");
-        assert_eq!(toggled(&h, BRUSH), Some(true), "{name}");
+    for group in ModeGroup::ALL {
+        for &(name, icon, mode) in group.modes() {
+            // A row of the flyout also chooses the brush.
+            tap(&mut h, "Pan");
+            choose_mode(&mut h, name);
+            let s = h.state();
+            assert_eq!((s.globe.tool, s.globe.brush.mode), (Tool::Brush, mode));
+            assert!(
+                s.pad.modes.is_none() && s.pad.modes_rect.is_none(),
+                "{name}"
+            );
+            let i = ModeGroup::ALL.iter().position(|g| *g == group).unwrap();
+            assert_eq!(s.pad.brush_faces[i], Some((name, icon)), "{name}");
+            assert_eq!(toggled(&h, group.name()), Some(true), "{name}");
+        }
     }
 
     // The Brush panel has the angle in the Weather mode only.
@@ -2009,6 +2151,19 @@ fn a_mode_of_the_flyout_sets_the_mode_and_the_face_of_the_cell() {
     let rect = control(&h, "Brush angle").unwrap();
     drag(&mut h, rect.center(), rect.right_center(), None);
     assert!((h.state().globe.brush.talus_deg - 20.0).abs() < 1e-9);
+}
+
+#[test]
+fn the_brush_panel_of_the_push_mode_has_no_strength() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush strength").is_some());
+    choose_mode(&mut h, "Push");
+    assert_eq!(h.state().globe.brush.mode, Mode::Push);
+    assert!(control(&h, "Brush strength").is_none());
+    assert!(control(&h, "Brush flow").is_some());
+    assert!(control(&h, "Brush hardness").is_some());
+    check_controls(&h, "the Push mode");
 }
 
 #[test]
@@ -2050,7 +2205,7 @@ fn the_brush_panel_has_the_two_sliders_of_the_uplift_mode() {
         (s.globe.tool, s.globe.brush.mode),
         (Tool::Brush, Mode::Uplift)
     );
-    assert_eq!(toggled(&h, BRUSH), Some(true));
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
     // The strength slider sets the rate of the uplift.
     let rect = control(&h, "Brush strength").unwrap();
     drag(&mut h, rect.center(), rect.right_center(), None);
@@ -2108,7 +2263,13 @@ fn switch_is_on(h: &Pad, name: &str) -> bool {
 fn the_brush_panel_has_the_floor_and_the_ceiling() {
     const SWITCHES: [&str; 2] = ["Brush floor", "Brush ceiling"];
     const LEVELS: [&str; 2] = ["Brush floor level", "Brush ceiling level"];
-    for mode in [None, Some("Erode"), Some("Uplift"), Some("Warp")] {
+    for mode in [
+        None,
+        Some("Erode"),
+        Some("Uplift"),
+        Some("Warp"),
+        Some("Push"),
+    ] {
         // The portrait iPad has the height for all the rows of each mode.
         let mut h = pad(BOARDS[1]);
         tap(&mut h, "Brush settings");
@@ -2223,7 +2384,7 @@ fn the_brush_panel_has_the_two_sliders_of_the_warp_mode() {
         (s.globe.tool, s.globe.brush.mode),
         (Tool::Brush, Mode::Warp)
     );
-    assert_eq!(toggled(&h, BRUSH), Some(true));
+    assert_eq!(toggled(&h, SCULPT), Some(true));
     assert_eq!(
         (s.globe.brush.warp_km, s.globe.brush.scale_km),
         (50.0, 200.0)
@@ -2344,7 +2505,7 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
 #[test]
 fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     let mut h = pad((1133.0, 744.0));
-    open_modes(&mut h);
+    open_group(&mut h, ModeGroup::Terrain);
     let menu = h.state().pad.modes_rect.unwrap();
     let screen = h.state().pad.rects.unwrap().screen;
     assert!(screen.contains_rect(menu), "{menu:?}");
@@ -2389,10 +2550,10 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
 fn the_tool_strip_has_the_range_mode() {
     use vale_app::ui::pad::icons::Icon;
     let range = (panels::RANGE, Icon::Range, Mode::Range);
-    assert_eq!(BRUSH_MODES.last(), Some(&range));
+    assert_eq!(ModeGroup::Terrain.modes().last(), Some(&range));
     for size in [BOARDS[0], (1133.0, 744.0)] {
         let mut h = pad(size);
-        open_modes(&mut h);
+        open_group(&mut h, ModeGroup::Terrain);
         let flyout = h.state().pad.modes_rect.unwrap();
         // The flyout scrolls to its last row.
         let from = flyout.center();
@@ -2405,8 +2566,8 @@ fn the_tool_strip_has_the_range_mode() {
             (s.globe.tool, s.globe.brush.mode),
             (Tool::Brush, Mode::Range)
         );
-        assert_eq!(s.pad.brush_face, Some(("Range", Icon::Range)));
-        assert_eq!(toggled(&h, BRUSH), Some(true));
+        assert_eq!(s.pad.brush_faces[1], Some(("Range", Icon::Range)));
+        assert_eq!(toggled(&h, TERRAIN), Some(true));
         check_controls(&h, &format!("{size:?} with the Range mode"));
     }
 }
@@ -2466,7 +2627,7 @@ fn the_brush_panel_has_the_sliders_of_the_range_mode() {
 fn the_range_mode_fits_on_the_smallest_ipad() {
     let mut h = pad((1133.0, 744.0));
     let screen = h.state().pad.rects.unwrap().screen;
-    open_modes(&mut h);
+    open_group(&mut h, ModeGroup::Terrain);
     let menu = h.state().pad.modes_rect.unwrap();
     let from = menu.center();
     drag(&mut h, from, from - vec2(0.0, 0.4 * menu.height()), None);
@@ -2506,7 +2667,7 @@ fn screenshot_of_the_ocean_ridge_panel() {
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = vale_app::headless::ui_harness(state, (1194.0, 834.0), 2.0, setup);
     h.run_steps(3);
-    open_modes(&mut h);
+    open_group(&mut h, ModeGroup::Terrain);
     h.render()
         .unwrap()
         .save("../../target/app/ocean-ridge-more.png")
@@ -3230,19 +3391,23 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(lefts, [1082.0, 1130.0]);
     assert_eq!(
         r.tools,
-        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 216.0))
+        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 268.0))
     );
     assert_eq!(
-        control(&h, BRUSH).unwrap(),
+        control(&h, SCULPT).unwrap(),
         Rect::from_min_size(pos2(20.0, 100.0), vec2(56.0, 52.0))
     );
     assert_eq!(
+        control(&h, TERRAIN).unwrap(),
+        Rect::from_min_size(pos2(20.0, 152.0), vec2(56.0, 52.0))
+    );
+    assert_eq!(
         r.brush.unwrap(),
-        Rect::from_min_size(pos2(16.0, 324.0), vec2(64.0, 340.0))
+        Rect::from_min_size(pos2(16.0, 376.0), vec2(64.0, 340.0))
     );
     assert_eq!(
         control(&h, "Brush settings").unwrap().min,
-        pos2(20.0, 608.0)
+        pos2(20.0, 660.0)
     );
 
     tap(&mut h, "Layers");
@@ -3399,12 +3564,12 @@ fn the_layout_follows_the_turn_of_the_ipad() {
 #[test]
 fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
     // The sliders fit with less height.
-    let h = pad((1024.0, 680.0));
+    let h = pad((1024.0, 732.0));
     assert_eq!(
         h.state().pad.rects.unwrap().brush_card,
         BrushCard::Full(130.0)
     );
-    check_controls(&h, "680 high");
+    check_controls(&h, "732 high");
 
     let mut h = pad((1024.0, 600.0));
     assert_eq!(h.state().pad.rects.unwrap().brush_card, BrushCard::Button);
@@ -3564,7 +3729,7 @@ fn the_screenshots_show_the_boards() {
         }
         state.pad.menu = menu;
         if name == "more" {
-            state.pad.modes = true;
+            state.pad.modes = Some(ModeGroup::Terrain);
             state.globe.tool = Tool::Brush;
             state.globe.brush.mode = Mode::Weather;
         }
@@ -5163,7 +5328,7 @@ fn the_draw_cell_is_the_line_cell_for_a_line_layer() {
     h.state_mut().select(Some(LayerRef::Vector(rivers)));
     h.run_steps(2);
     assert_eq!(control(&h, LINE), Some(draw));
-    for name in [BRUSH, "Size", "Flow"] {
+    for name in [SCULPT, TERRAIN, "Size", "Flow"] {
         assert!(control(&h, name).is_none(), "{name}");
     }
     assert!(control(&h, SMOOTHING).is_some());
@@ -7603,7 +7768,14 @@ fn the_measure_cell_of_the_tool_strip_opens_the_tool_with_any_layer_on_each_scre
             assert!(h.state().globe.measuring(), "{what}");
             assert_eq!(toggled(&h, MEASURE), Some(true), "{what}");
             // No other cell of the tool strip is active.
-            for name in ["Pan", BRUSH, LINE, POLYGON, vale_app::ui::pad::POINT] {
+            for name in [
+                "Pan",
+                SCULPT,
+                TERRAIN,
+                LINE,
+                POLYGON,
+                vale_app::ui::pad::POINT,
+            ] {
                 assert_ne!(toggled(&h, name), Some(true), "{what}: {name}");
             }
             // A disabled cell is not in the list of the controls, so the
@@ -7696,8 +7868,8 @@ fn the_cells_of_the_measure_card_act_on_the_path() {
         h.state_mut().select(Some(LayerRef::Raster(height)));
         finger_tap(&mut h, center);
         assert!(!h.state().measure.is_empty(), "{what}");
-        scroll_strip_to(&mut h, BRUSH);
-        quick_tap(&mut h, BRUSH);
+        scroll_strip_to(&mut h, SCULPT);
+        quick_tap(&mut h, SCULPT);
         assert!(!h.state().globe.measuring(), "{what}");
         assert!(h.state().measure.is_empty(), "{what}");
     }
