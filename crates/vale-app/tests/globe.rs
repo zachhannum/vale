@@ -3627,6 +3627,234 @@ fn one_undo_puts_back_the_ground_from_before_an_ocean_ridge_stroke() {
     assert!(image.as_raw() == ridge.1.as_raw(), "the render");
 }
 
+/// A harness in the range mode on the empty world, with this seed and this
+/// erosion.
+fn range_harness(seed: u32, erosion: f64) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    let state = h.state_mut();
+    state.doc.project.world.seed = seed;
+    let brush = &mut state.globe.brush;
+    brush.mode = Mode::Range;
+    brush.erosion = erosion;
+    h.run_steps(2);
+    h
+}
+
+/// Paints the stroke of `ridge_samples` with the pen API, one sample in each
+/// frame. `each` runs after each frame of the stroke.
+fn pen_line(h: &mut Harness<'static, AppState>, mut each: impl FnMut(&Harness<'static, AppState>)) {
+    h.state_mut().globe.pen_down();
+    for sample in ridge_samples() {
+        let globe = &mut h.state_mut().globe;
+        globe.pen_sample(sample, std::time::Instant::now());
+        h.step();
+        each(h);
+    }
+    h.state_mut().globe.pen_up();
+    h.step();
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_range_stroke_gives_the_levels_of_the_cpu_range() {
+    use vale_app::globe::brush::Stroke;
+    use vale_terrain::{Heightmap, RangeLine};
+    let _gpu = one_gpu_test();
+    let mut h = range_harness(7, 0.0);
+    let before = all_levels(&h);
+    pen_line(&mut h, |_| {});
+    settle(&mut h);
+    let app = all_levels(&h);
+
+    // The same line on the CPU.
+    let globe = &h.state().globe;
+    let (brush, n) = (globe.brush, globe.map.face_size());
+    let mut stamps = Vec::new();
+    let mut stroke = Stroke::default();
+    for sample in ridge_samples() {
+        stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+    }
+    stroke.finish(&brush, n, &mut stamps);
+    let spec = brush.range_spec(0.1, globe.world_km, globe.world_seed);
+    assert_eq!(spec.seed, 7);
+    let mut line = RangeLine::new(spec, n);
+    for stamp in &stamps {
+        // The flow of a mouse gives the full height.
+        assert_eq!(stamp.flow, 1.0);
+        line.push(stamp.center, stamp.flow);
+    }
+    assert!(line.len() > 20, "{}", line.len());
+    let mut cpu = Heightmap::new(n, globe.map.base());
+    cpu.begin_stroke();
+    let mut from = 0;
+    while from < line.len() {
+        let plan = line.plan(from);
+        cpu.range(&plan);
+        from = plan.end;
+    }
+    cpu.end_stroke();
+
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let cpu: Vec<u16> = texels
+        .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
+        .collect();
+    let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
+    assert!(changed > 2000, "{changed}");
+    // The belt is on two faces.
+    let on_face = |face: usize| cpu[face * n * n..][..n * n] != before[face * n * n..][..n * n];
+    assert!((0..6).filter(|face| on_face(*face)).count() >= 2);
+    let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
+    assert!(worst.unwrap() <= 2, "{worst:?}");
+    // The top is near the height of the brush above the ground.
+    let base = globe.map.base();
+    let height = meters_to_level(brush.strength_m) - meters_to_level(0.0);
+    let top = *app.iter().max().unwrap();
+    assert!(top > base + height / 2 && top <= base + height, "{top}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn painting_does_not_wait_for_the_erode_steps_of_a_range() {
+    const N: usize = 2048;
+    let _gpu = one_gpu_test();
+    // The steps of a large heightmap take more than one frame.
+    let mut h = island_harness(N, 0.35, 1.0);
+    let state = h.state_mut();
+    state.doc.project.world.seed = 7;
+    let globe = &mut state.globe;
+    globe.set_rivers_sync(false);
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Range;
+    globe.brush.erosion = 1.0;
+    h.step();
+    settle_rivers(&mut h);
+    let before = all_levels(&h);
+    // The frames in which a step was in work from start to end, and the
+    // GPU still got new plans of the line.
+    let (mut busy, mut painted) = (0, 0);
+    let mut last = (false, 0);
+    pen_line(&mut h, |h| {
+        let globe = &h.state().globe;
+        let pending = globe.erode_pending();
+        let plans = globe.stats.last().unwrap().stamps.count;
+        if last.0 && pending {
+            busy += 1;
+            if plans > last.1 {
+                painted += 1;
+            }
+        }
+        last = (pending, plans);
+    });
+    assert!(busy > 0 && painted > 0, "{busy} {painted}");
+    // The stroke ends after its last step.
+    let mut frames = 0;
+    while h.state().globe.busy() {
+        h.step();
+        frames += 1;
+        assert!(frames < 4000, "the stroke did not end");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let globe = &h.state().globe;
+    assert!(!globe.erode_pending());
+    assert!(globe.can_undo());
+    assert!(all_levels(&h) != before);
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 1);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn one_undo_puts_back_the_ground_from_before_a_range_stroke() {
+    let _gpu = one_gpu_test();
+    let raised = uplift_stroke(&mut range_harness(7, 0.0));
+    let mut h = range_harness(7, 0.5);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    let range = (uplift_stroke(&mut h), canvas_image(&mut h));
+    assert!(range.0 != before.0);
+    assert!(range.1.as_raw() != before.1.as_raw());
+    // The plans and the erode steps are one stroke, and the steps lower the
+    // range.
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 1);
+    let sum = |levels: &[u16]| levels.iter().map(|&l| u64::from(l)).sum::<u64>();
+    assert!(sum(&range.0) < sum(&raised));
+
+    assert!(h.state_mut().globe.undo());
+    assert!(all_levels(&h) == before.0);
+    assert!(!h.state().globe.can_undo());
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before.1.as_raw(), "the render");
+
+    assert!(h.state_mut().globe.redo());
+    assert!(all_levels(&h) == range.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == range.1.as_raw(), "the render");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn two_equal_range_strokes_with_the_same_seed_give_equal_results() {
+    let _gpu = one_gpu_test();
+    let mut h = range_harness(7, 0.5);
+    assert_eq!(h.state().globe.world_seed, 7);
+    let before = all_levels(&h);
+    let first = uplift_stroke(&mut h);
+    assert!(first != before);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // A second harness starts from the same ground.
+    drop(h);
+    let mut h = range_harness(7, 0.5);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // Another seed gives another result.
+    drop(h);
+    let mut h = range_harness(8, 0.5);
+    assert!(all_levels(&h) == before);
+    let other = uplift_stroke(&mut h);
+    assert!(other != before && other != first);
+}
+
+#[test]
+fn the_brush_panel_has_the_range_mode_and_its_sliders() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    for name in ["Height", "Spacing", "Seed", "Erosion"] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    h.get_by_label("Range").click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::Range);
+    assert_eq!(brush.range_spacing_km, 30.0);
+    for name in [
+        "Radius",
+        "Flow",
+        "Height",
+        "Spacing",
+        "Seed",
+        "Erosion",
+        "Wind",
+        "Rain shadow",
+        "Floor",
+        "Ceiling",
+    ] {
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+    for name in ["Hardness", "Strength", "Angle", "Crest", "Scale"] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    // The sliders set the spacing and the seed of the world.
+    set_slider(&mut h, "Spacing", 120.0);
+    set_slider(&mut h, "Seed", 42.0);
+    let s = h.state();
+    assert_eq!(s.globe.brush.range_spacing_km, 120.0);
+    assert_eq!(s.doc.project.world.seed, 42);
+}
+
 /// A harness with an ocean ridge on the empty world, for the screenshots.
 /// The stroke is 8,000 km long with a bend, and the brush radius is 1,000
 /// km. `edit` changes the default brush.
@@ -3757,13 +3985,13 @@ fn cpu_ridge_pictures(
     window: [f64; 4],
     edit: impl Fn(&mut vale_app::globe::brush::BrushSettings),
 ) {
-    use vale_terrain::{Bands, Heightmap, RIDGE_SPACING, RidgeLine};
+    use vale_terrain::{Bands, Heightmap, LINE_SPACING, RidgeLine};
     let world_km = 6371.0;
     let mut brush = vale_app::globe::brush::BrushSettings::default();
     edit(&mut brush);
     let spec = brush.ridge_spec(radius_km / world_km, world_km, seed);
     let mut line = RidgeLine::new(spec, n);
-    let steps = (72f64.to_radians() / (RIDGE_SPACING * spec.radius)).ceil() as u32;
+    let steps = (72f64.to_radians() / (LINE_SPACING * spec.radius)).ceil() as u32;
     for i in 0..=steps {
         let (lon, lat) = ridge_shot_place(f64::from(i) / f64::from(steps));
         line.push(lonlat_to_dir(lon, lat), 1.0);

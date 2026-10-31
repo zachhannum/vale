@@ -11,8 +11,10 @@ use crate::bands::{Bands, SEA_LEVEL};
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
+use crate::line::{LinePlace, LinePlan, LinePoint};
 use crate::math::{V3, add, cross, dot, length, normalize, scale};
-use crate::ridge::{RidgePlace, RidgePlan};
+use crate::range::RangePlan;
+use crate::ridge::RidgePlan;
 
 /// The side of a tile, in texels.
 pub const TILE_SIZE: usize = 256;
@@ -58,6 +60,9 @@ pub enum Mode {
     /// The mode of the ocean ridge brush. A stamp of this mode changes
     /// nothing. `Heightmap::ridge` makes the change.
     OceanRidge,
+    /// The mode of the range brush. A stamp of this mode changes nothing.
+    /// `Heightmap::range` makes the change.
+    Range,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -958,7 +963,7 @@ impl Heightmap {
 
     /// Applies one stamp. Returns the number of texels that it visited.
     pub fn stamp(&mut self, stamp: &Stamp) -> usize {
-        if matches!(stamp.mode, Mode::Erode | Mode::OceanRidge) {
+        if matches!(stamp.mode, Mode::Erode | Mode::OceanRidge | Mode::Range) {
             return 0;
         }
         let plan = self.stamp_plan(stamp);
@@ -1060,7 +1065,7 @@ impl Heightmap {
                             Mode::Raise | Mode::Uplift => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
-                            Mode::Erode | Mode::OceanRidge => continue,
+                            Mode::Erode | Mode::OceanRidge | Mode::Range => continue,
                             Mode::Carve => {
                                 let Some(valley) = river(x, y, fu, fv, false) else {
                                     continue;
@@ -1289,21 +1294,38 @@ impl Heightmap {
     /// stroke. Thus a second call with the same plan changes nothing. Call
     /// this in a stroke. Returns the number of texels that changed.
     pub fn ridge(&mut self, plan: &RidgePlan) -> usize {
-        assert_eq!(plan.face_size, self.n, "the face size of the plan");
+        self.lay(&plan.line, |start, at, p| {
+            plan.level(start, at, plan.noise(p))
+        })
+    }
+
+    /// Lays the mountain range of a plan on the ground from before the
+    /// stroke, as `ridge` lays an ocean ridge. Returns the number of texels
+    /// that changed.
+    pub fn range(&mut self, plan: &RangePlan) -> usize {
+        self.lay(&plan.line, |start, at, _| plan.level(start, at))
+    }
+
+    /// Lays a line brush on the ground from before the stroke. A texel near
+    /// the new part of the line gets `level` of its level from before the
+    /// stroke, its place on the line, and its direction. A texel that the
+    /// brush does not reach gets its level from before the stroke. Returns
+    /// the number of texels that changed.
+    fn lay(&mut self, line: &LinePlan, level: impl Fn(u16, LinePoint, V3) -> u16) -> usize {
+        assert_eq!(line.face_size, self.n, "the face size of the plan");
         let mut changed = 0;
-        for (face, rect) in plan.rects.into_iter().enumerate() {
+        for (face, rect) in line.rects.into_iter().enumerate() {
             let Some(rect) = rect else { continue };
             for y in rect.y0..rect.y1 {
                 for x in rect.x0..rect.x1 {
-                    let place = match plan.place(self.texel_dir(face, x, y)) {
-                        RidgePlace::Far => continue,
-                        RidgePlace::Off => None,
-                        RidgePlace::On(place) => Some(place),
+                    let p = self.texel_dir(face, x, y);
+                    let place = match line.place(p) {
+                        LinePlace::Far => continue,
+                        LinePlace::Off => None,
+                        LinePlace::On(place) => Some(place),
                     };
                     let start = self.level_before(face, x, y);
-                    let new = place.map_or(start, |place| {
-                        plan.level(start, place, plan.noise(self.texel_dir(face, x, y)))
-                    });
+                    let new = place.map_or(start, |place| level(start, place, p));
                     if new != self.texel(face, x, y) {
                         self.set(face, x, y, new);
                         changed += 1;
@@ -1549,6 +1571,7 @@ mod tests {
         CoarseHeights, FlowMap, Window, WindowHeights, channel_map, window_channels,
     };
     use crate::math::{angle, dir_to_lonlat, lonlat_to_dir};
+    use crate::range::{RangeLine, RangeSpec};
     use crate::ridge::{Ridge, RidgeLine};
 
     fn raise(center: V3, radius: f64) -> Stamp {
@@ -3565,6 +3588,98 @@ mod tests {
                 assert_no_seam(&map, face, m);
             }
         }
+    }
+
+    #[test]
+    fn a_range_stamp_changes_nothing() {
+        let mut map = smooth_ground(64);
+        let before = all_levels(&map);
+        map.begin_stroke();
+        let stamp = Stamp {
+            mode: Mode::Range,
+            ..raise(lonlat_to_dir(10.0, 10.0), 0.2)
+        };
+        assert_eq!(map.stamp(&stamp), 0);
+        assert!(!map.end_stroke());
+        assert!(all_levels(&map) == before);
+    }
+
+    /// The line of a range between two places, each in degrees of
+    /// longitude and latitude.
+    fn range_line(n: usize, from: (f64, f64), to: (f64, f64)) -> RangeLine {
+        let spec = RangeSpec {
+            radius: 0.1,
+            height: 20000.0,
+            spacing: 0.04,
+            seed: 7,
+            limits: Limits::default(),
+        };
+        let mut line = RangeLine::new(spec, n);
+        for i in 0..=20 {
+            let k = f64::from(i) / 20.0;
+            let (lon, lat) = (from.0 + (to.0 - from.0) * k, from.1 + (to.1 - from.1) * k);
+            line.push(lonlat_to_dir(lon, lat), 1.0);
+        }
+        line
+    }
+
+    /// Lays a range near the stroke between two places, one plan for each
+    /// point.
+    fn lay_range(map: &mut Heightmap, from: (f64, f64), to: (f64, f64)) {
+        let spec = range_line(map.face_size(), from, to).spec();
+        let mut line = RangeLine::new(spec, map.face_size());
+        map.begin_stroke();
+        for i in 0..=20 {
+            let k = f64::from(i) / 20.0;
+            let (lon, lat) = (from.0 + (to.0 - from.0) * k, from.1 + (to.1 - from.1) * k);
+            let before = line.len();
+            line.push(lonlat_to_dir(lon, lat), 1.0);
+            map.range(&line.plan(before));
+        }
+        map.end_stroke();
+    }
+
+    #[test]
+    fn a_range_leaves_no_seam_at_a_face_edge() {
+        let n = 256;
+        let mut map = smooth_ground(n);
+        let before = all_levels(&map);
+        // Face 0 and face 2 meet at longitude 45.
+        lay_range(&mut map, (37.0, -6.0), (53.0, 10.0));
+        let after = all_levels(&map);
+        for m in (118..150).step_by(4) {
+            // The texels at the edge, on each face.
+            let changed = [(m + 1) * n - 1, (2 * n + n - 1) * n + m].map(|i| after[i] != before[i]);
+            assert!(changed[0] && changed[1], "{m}");
+            assert_no_seam(&map, 0, m);
+        }
+    }
+
+    #[test]
+    fn a_range_leaves_no_seam_at_a_cube_corner() {
+        let n = 256;
+        let mut map = smooth_ground(n);
+        // Faces 0, 2, and 4 meet at longitude 45 and latitude 35.264.
+        lay_range(&mut map, (38.0, 29.0), (52.0, 41.0));
+        for face in [0, 2, 4] {
+            for m in [236, 243, 249] {
+                assert_no_seam(&map, face, m);
+            }
+        }
+    }
+
+    #[test]
+    fn a_range_plan_twice_changes_nothing() {
+        let n = 128;
+        let mut map = smooth_ground(n);
+        let line = range_line(n, (-10.0, 0.0), (10.0, 5.0));
+        map.begin_stroke();
+        let plan = line.plan(0);
+        assert!(map.range(&plan) > 100);
+        let once = all_levels(&map);
+        assert_eq!(map.range(&plan), 0);
+        assert!(all_levels(&map) == once);
+        map.end_stroke();
     }
 
     /// Smooth ground with a different bump on each texel, so each mode moves

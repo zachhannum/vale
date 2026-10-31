@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use vale_store::{ImageId, RasterId};
 use vale_terrain::{
     ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid, GpuTiles,
-    Heightmap, MAX_BANDS, Readback, RidgePlan, StampPlan, TILES_WGSL, TexelRect, pyramid_layout,
-    tiles_layout,
+    Heightmap, MAX_BANDS, RangePlan, Readback, RidgePlan, StampPlan, TILES_WGSL, TexelRect,
+    pyramid_layout, tiles_layout,
 };
 
 use super::backdrop::{Backdrop, Canvas, REDUCTION};
@@ -1464,6 +1464,22 @@ impl Resources {
 /// The most meshes of projections on the GPU.
 const MESHES: usize = 8;
 
+/// The plan of a line of an ocean ridge stroke or of a range stroke.
+pub enum LineOp {
+    Ridge(Box<RidgePlan>),
+    Range(Box<RangePlan>),
+}
+
+impl LineOp {
+    /// The rectangles of the plan, one for each face.
+    pub fn rects(&self) -> &[Option<TexelRect>; FACES] {
+        match self {
+            LineOp::Ridge(plan) => &plan.rects,
+            LineOp::Range(plan) => &plan.rects,
+        }
+    }
+}
+
 /// One change of the GPU heightmap. The changes run in the order of the queue.
 pub enum Op {
     /// Sets all texels to one level.
@@ -1482,11 +1498,11 @@ pub enum Op {
     },
     /// One step of an erode stroke.
     Erode { stroke: u64, step: Arc<ErodeStep> },
-    /// The ocean ridge of the new points of a stroke. `ground` has the
-    /// texels from before the stroke for each rectangle of the plan. `time`
-    /// is the frame that read the last pen sample.
-    Ridge {
-        plan: Box<RidgePlan>,
+    /// The ocean ridge or the range of the new points of a stroke. `ground`
+    /// has the texels from before the stroke for each rectangle of the plan.
+    /// `time` is the frame that read the last pen sample.
+    Line {
+        plan: LineOp,
         ground: Vec<(u32, TexelRect, Vec<u16>)>,
         stroke: u64,
         time: Instant,
@@ -2040,7 +2056,7 @@ impl Batch<'_> {
                 let passes = step.rects().iter().flatten().count() as u32;
                 self.count_passes(stroke, passes);
             }
-            Op::Ridge {
+            Op::Line {
                 plan,
                 ground,
                 stroke,
@@ -2055,10 +2071,14 @@ impl Batch<'_> {
                     heights.upload(queue, *face, *rect, data);
                 }
                 heights.begin_batch();
-                let added = heights.ridge(queue, self.encoder(), &plan);
+                let added = match &plan {
+                    LineOp::Ridge(plan) => heights.ridge(queue, self.encoder(), plan),
+                    LineOp::Range(plan) => heights.range(queue, self.encoder(), plan),
+                };
                 debug_assert!(added, "an empty batch takes one plan");
-                self.mark_full(&plan.rects);
-                let passes = plan.rects.iter().flatten().count() as u32;
+                let rects = plan.rects();
+                self.mark_full(rects);
+                let passes = rects.iter().flatten().count() as u32;
                 self.count_passes(stroke, passes);
                 self.stamps.push((stroke, time));
             }
