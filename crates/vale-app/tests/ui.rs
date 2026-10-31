@@ -124,6 +124,45 @@ fn the_desktop_edge_label_controls_edit_one_set() {
 }
 
 #[test]
+fn the_desktop_scale_bar_controls_edit_the_bar_and_its_numbers() {
+    use vale_app::ui::atlas::{ItemKind, add_item};
+    use vale_store::Furniture;
+    let mut h = harness();
+    h.run_steps(3);
+    let id = add_item(h.state_mut(), ItemKind::ScaleBar).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Numbers").click();
+    h.run_steps(2);
+    h.get_by_label("Show zero").click();
+    h.run_steps(2);
+    h.get_by_label("Halo").click();
+    h.run_steps(2);
+    let bar = |h: &Harness<'static, AppState>| match &h
+        .state()
+        .doc
+        .project
+        .atlas
+        .furniture(id)
+        .unwrap()
+        .item
+    {
+        Furniture::ScaleBar(b) => b.clone(),
+        _ => panic!("not a scale bar"),
+    };
+    let b = bar(&h);
+    assert!(!b.zero_label);
+    assert!(b.number_style.halo && !b.unit_style.halo);
+    if std::env::var_os("VALE_SCREENSHOTS").is_some() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/app");
+        std::fs::create_dir_all(dir).unwrap();
+        h.render()
+            .unwrap()
+            .save(format!("{dir}/test-desktop-scale-bar.png"))
+            .unwrap();
+    }
+}
+
+#[test]
 fn land_checkbox_hides_layer() {
     let mut h = harness();
     h.run_steps(3);

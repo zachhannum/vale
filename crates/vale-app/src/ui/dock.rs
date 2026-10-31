@@ -968,9 +968,11 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
     if let Furniture::ScaleBar(bar) = &rec.item {
         let kinds = &vale_store::ScaleBarKind::ALL;
         let style = vale_store::ScaleBarKind::label;
-        if let Some(k) = combo(ui, "atlas-bar-kind", item::STYLE, kinds, style, bar.kind) {
-            atlas::edit_bar(state, id, true, |b| b.kind = k);
-        }
+        egui::Grid::new("atlas-bar-kind-grid").show(ui, |ui| {
+            if let Some(k) = combo(ui, "atlas-bar-kind", item::STYLE, kinds, style, bar.kind) {
+                atlas::edit_bar(state, id, true, |b| b.kind = k);
+            }
+        });
     }
     if !matches!(rec.item, Furniture::Text(_)) {
         let names = atlas::frame_names(state);
@@ -1577,7 +1579,7 @@ fn bar_sections(
                     "atlas-bar-mark-place",
                     item::POSITION,
                     places,
-                    ScalePosition::label,
+                    item::position_name,
                     bar.mark_position,
                 ) {
                     edit(state, true, &|b| b.mark_position = p);
@@ -1623,7 +1625,7 @@ fn bar_sections(
                     "atlas-bar-number-place",
                     item::POSITION,
                     places,
-                    ScalePosition::label,
+                    item::position_name,
                     bar.number_position,
                 ) {
                     edit(state, true, &|b| b.number_position = p);

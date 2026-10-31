@@ -658,6 +658,12 @@ fn parse_value(text: &str) -> Option<f64> {
     (v.is_finite() && v > 0.0).then_some(v)
 }
 
+/// The name of a position of the marks or the numbers.
+pub fn position_name(p: ScalePosition) -> &'static str {
+    let i = ScalePosition::ALL.iter().position(|q| *q == p).unwrap_or(0);
+    POSITIONS[i]
+}
+
 /// The position choice row of the marks or the numbers.
 fn position_row(
     ui: &mut egui::Ui,
