@@ -9,7 +9,7 @@ use vale_terrain::{
     Ridge, Stamp, StampPlan, meters_to_level, talus_levels,
 };
 
-use super::math::{V3, add, angle, normalize, scale};
+use super::math::{V3, add, angle, arc_motion, normalize, scale};
 
 /// The distance between stamps, as a part of the brush radius.
 pub const STAMP_SPACING: f64 = 0.12;
@@ -354,6 +354,8 @@ pub struct Stroke {
     /// The brush radius of the last sample, in radians.
     radius: f64,
     level: Option<u16>,
+    /// The center of the last stamp of the line.
+    last_center: Option<V3>,
 }
 
 /// The values that each stamp of one sample gets.
@@ -365,7 +367,8 @@ struct Tip<'a> {
 }
 
 impl Tip<'_> {
-    fn stamp(&self, center: V3, flow: f64) -> Stamp {
+    /// A stamp at `center`. `motion` is the move from the stamp before it.
+    fn stamp(&self, center: V3, flow: f64, motion: V3) -> Stamp {
         let input = flow;
         let flow = flow * self.brush.flow;
         let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
@@ -381,7 +384,8 @@ impl Tip<'_> {
                 | Mode::Erode
                 | Mode::Weather
                 | Mode::Uplift
-                | Mode::Warp => flow,
+                | Mode::Warp
+                | Mode::Push => flow,
                 // The flow of a mouse gives the full height of the ridge.
                 Mode::OceanRidge | Mode::Range => (input / FIXED_FLOW).min(1.0) * self.brush.flow,
                 // These three modes move toward a target, so each stamp does less.
@@ -399,6 +403,7 @@ impl Tip<'_> {
             talus: 0.0,
             scale: 0.0,
             seed: 0,
+            motion,
             limits: self.brush.limits(),
         }
     }
@@ -440,6 +445,13 @@ fn curve(a: Point, control: Point, b: Point, t: f64) -> Point {
 }
 
 impl Stroke {
+    /// Adds a stamp at `center` to `out`.
+    fn put(&mut self, tip: &Tip, center: V3, flow: f64, out: &mut Vec<Stamp>) {
+        let last = self.last_center.replace(center);
+        let motion = last.map_or([0.0; 3], |last| arc_motion(last, center));
+        out.push(tip.stamp(center, flow, motion));
+    }
+
     fn tip<'a>(&self, brush: &'a BrushSettings, face_size: usize, level: u16) -> Tip<'a> {
         let texel = FRAC_PI_2 / face_size as f64;
         Tip {
@@ -460,7 +472,12 @@ impl Stroke {
         while len - at >= self.carry {
             at += self.carry;
             let t = at / len;
-            out.push(tip.stamp(slerp(from.0, to.0, t), from.1 + (to.1 - from.1) * t));
+            self.put(
+                tip,
+                slerp(from.0, to.0, t),
+                from.1 + (to.1 - from.1) * t,
+                out,
+            );
             self.carry = tip.spacing;
         }
         self.carry -= len - at;
@@ -478,7 +495,7 @@ impl Stroke {
     ) {
         let Some(dir) = sample.dir else {
             self.finish(brush, face_size, out);
-            (self.last, self.end) = (None, None);
+            (self.last, self.end, self.last_center) = (None, None, None);
             return;
         };
         let level = match (self.level, brush.flatten_level) {
@@ -500,7 +517,7 @@ impl Stroke {
                 }
             }
             _ => {
-                out.push(tip.stamp(dir, sample.flow));
+                self.put(&tip, dir, sample.flow, out);
                 self.carry = tip.spacing;
                 self.end = Some(point);
             }
@@ -516,7 +533,7 @@ impl Stroke {
             // The line of a ridge or a range ends at the last sample.
             let line = matches!(brush.mode, Mode::OceanRidge | Mode::Range);
             if line && self.end.is_some() {
-                out.push(tip.stamp(last.0, last.1));
+                self.put(&tip, last.0, last.1, out);
             }
         }
     }
@@ -531,7 +548,7 @@ pub fn plan_texels(plan: &StampPlan) -> u64 {
 /// The cost of a stamp, where `GROUP_STAMPS` is the cost of one pass.
 fn stamp_cost(plan: &StampPlan) -> usize {
     match plan.stamp.mode {
-        Mode::Smooth | Mode::Weather | Mode::Warp => GROUP_STAMPS,
+        Mode::Smooth | Mode::Weather | Mode::Warp | Mode::Push => GROUP_STAMPS,
         Mode::Raise
         | Mode::Lower
         | Mode::Flatten
@@ -595,7 +612,7 @@ mod tests {
     use vale_terrain::{Heightmap, meters_to_level};
 
     use super::*;
-    use crate::globe::math::lonlat_to_dir;
+    use crate::globe::math::{length, lonlat_to_dir};
 
     fn sample(lon: f64, radius: f64) -> Sample {
         Sample {
@@ -633,6 +650,41 @@ mod tests {
     }
 
     #[test]
+    fn each_stamp_has_the_motion_from_the_stamp_before_it() {
+        let brush = BrushSettings {
+            mode: Mode::Push,
+            ..BrushSettings::default()
+        };
+        let mut stroke = Stroke::default();
+        let mut out = Vec::new();
+        let arc = 0.1_f64.to_degrees();
+        stroke.add_sample(&brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
+        stroke.add_sample(&brush, 1024, sample(arc, 0.1), |_| 7, &mut out);
+        stroke.finish(&brush, 1024, &mut out);
+        assert!(out.len() > 5);
+        assert_eq!(out[0].motion, [0.0; 3]);
+        for pair in out.windows(2) {
+            let motion = pair[1].motion;
+            assert!((length(motion) - angle(pair[0].center, pair[1].center)).abs() < 1e-12);
+            // The stroke goes east along the equator.
+            assert!(motion[1] > 0.0 && motion[2].abs() < 1e-12, "{motion:?}");
+            assert_eq!(pair[1].flow, 1.0);
+        }
+
+        // A sample off the globe breaks the line, so the next stamp has no
+        // motion.
+        let count = out.len();
+        let off = Sample {
+            dir: None,
+            ..sample(0.0, 0.1)
+        };
+        stroke.add_sample(&brush, 1024, off, |_| 7, &mut out);
+        stroke.add_sample(&brush, 1024, sample(2.0 * arc, 0.1), |_| 7, &mut out);
+        assert_eq!(out.len(), count + 1);
+        assert_eq!(out[count].motion, [0.0; 3]);
+    }
+
+    #[test]
     fn the_stamp_has_the_limits_of_the_brush_in_levels() {
         let stamp_of = |brush: &BrushSettings| {
             let mut out = Vec::new();
@@ -667,6 +719,7 @@ mod tests {
             Mode::Weather,
             Mode::Uplift,
             Mode::Warp,
+            Mode::Push,
         ] {
             brush.mode = mode;
             assert_eq!(stamp_of(&brush).limits, Limits { floor, ceiling });
@@ -895,6 +948,7 @@ mod tests {
             talus: 0.0,
             scale: 0.0,
             seed: 0,
+            motion: [0.0; 3],
             limits: Limits::default(),
         })
     }
