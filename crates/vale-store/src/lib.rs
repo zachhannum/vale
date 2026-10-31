@@ -6,6 +6,7 @@ use std::ops::RangeInclusive;
 pub use uuid::Uuid;
 
 mod atlas;
+mod fill;
 mod gpkg;
 mod image_tile;
 mod scale_bar;
@@ -18,6 +19,7 @@ pub use atlas::{
     LegendItem, MapId, MapRecord, NorthArrowItem, PageId, PageRecord, PageUnits, ProjectionPreset,
     TextAlign, TextCase, TextItem, title_case,
 };
+pub use fill::{FillKind, FillPattern};
 pub use gpkg::{
     FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,
     TileKey, summary,

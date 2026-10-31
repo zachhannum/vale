@@ -5,7 +5,8 @@ use kurbo::{Affine, BezPath, Point, Rect, Shape};
 use vale_labeler::Fonts;
 use vale_render::{DisplayList, FillRule, Item, Rgba};
 use vale_store::{
-    ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TickFrequency, UnitPosition,
+    FillKind, FillPattern, ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit,
+    TickFrequency, UnitPosition,
 };
 
 use crate::atlas::PT_PER_MM;
@@ -123,6 +124,85 @@ fn segments(bar: &ScaleBarItem, divisions: u32) -> Vec<(f64, f64)> {
         } else {
             out.push((k, k + 1.0));
         }
+    }
+    out
+}
+
+/// The segments of the lines of a hatch at `angle` degrees, `spacing`
+/// apart, inside `rect`. The lines of every rectangle come from the same
+/// origin, so the hatch of two cells side by side is one pattern.
+pub fn hatch_lines(rect: Rect, angle: f64, spacing: f64) -> Vec<(Point, Point)> {
+    let mut out = Vec::new();
+    if !(spacing > 0.0 && rect.area() > 0.0) {
+        return out;
+    }
+    // The direction of the lines, counterclockwise on the page, where y
+    // goes down, and the normal of the lines.
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let d = kurbo::Vec2::new(cos, -sin);
+    let n = kurbo::Vec2::new(sin, cos);
+    let corners = [
+        Point::new(rect.x0, rect.y0),
+        Point::new(rect.x1, rect.y0),
+        Point::new(rect.x0, rect.y1),
+        Point::new(rect.x1, rect.y1),
+    ];
+    let along = corners.map(|c| n.dot(c.to_vec2()));
+    let lo = along.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = along.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let first = (lo / spacing).ceil() as i64;
+    let last = (hi / spacing).floor() as i64;
+    for k in first..=last {
+        let p = (n * (k as f64 * spacing)).to_point();
+        // The part of the line inside the rectangle.
+        let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+        let mut inside = true;
+        for (p, d, a, b) in [(p.x, d.x, rect.x0, rect.x1), (p.y, d.y, rect.y0, rect.y1)] {
+            if d.abs() < 1e-12 {
+                inside &= (a..=b).contains(&p);
+            } else {
+                let (u, v) = ((a - p) / d, (b - p) / d);
+                t0 = t0.max(u.min(v));
+                t1 = t1.min(u.max(v));
+            }
+        }
+        if inside && t1 - t0 > 1e-9 {
+            out.push((p + d * t0, p + d * t1));
+        }
+    }
+    out
+}
+
+/// The items of a fill of `rect` in target points, with `unit` target
+/// points to a page point: the solid color, or the background and the
+/// lines of a hatch.
+pub fn fill_items(rect: Rect, f: &FillPattern, unit: f64) -> Vec<Item> {
+    let solid = |color: [u8; 3]| Item::Fill {
+        path: rect.to_path(0.1),
+        color: rgb(color),
+        rule: FillRule::NonZero,
+    };
+    let angles: &[f64] = match f.kind {
+        FillKind::None => return Vec::new(),
+        FillKind::Solid => return vec![solid(f.color)],
+        FillKind::Hatch => &[f.angle],
+        FillKind::CrossHatch => &[f.angle, f.angle + 90.0],
+    };
+    let mut out: Vec<Item> = f.background.map(solid).into_iter().collect();
+    let mut path = BezPath::new();
+    for &angle in angles {
+        for (a, b) in hatch_lines(rect, angle, f.spacing * PT_PER_MM * unit) {
+            path.move_to(a);
+            path.line_to(b);
+        }
+    }
+    if !path.is_empty() {
+        out.push(Item::Stroke {
+            path,
+            color: rgb(f.color),
+            width: f.line_width * unit,
+            round: false,
+        });
     }
     out
 }
@@ -306,43 +386,39 @@ fn layout(
         // The bar.
         let segs = segments(bar, divisions);
         let seg = |(a, c): (f64, f64), y0: f64, y1: f64| Rect::new(x(a), y0, x(c), y1);
-        let fill = |rect: Rect, color: [u8; 3]| Item::Fill {
-            path: rect.to_path(0.1),
-            color: rgb(color),
-            rule: FillRule::NonZero,
-        };
+        let mut fill = |rect: Rect, f: &FillPattern| out.fills.extend(fill_items(rect, f, unit));
         let whole = Rect::new(start, top, end, bottom);
         let fills = |i: usize| {
             if i.is_multiple_of(2) {
-                bar.fill1
+                &bar.fill1
             } else {
-                bar.fill2
+                &bar.fill2
             }
         };
         match bar.kind {
             ScaleBarKind::Alternating => {
                 for (i, s) in segs.iter().enumerate() {
-                    out.fills.push(fill(seg(*s, top, bottom), fills(i)));
+                    fill(seg(*s, top, bottom), fills(i));
                     outline.extend(seg(*s, top, bottom).path_elements(0.1));
                 }
             }
             ScaleBarKind::DoubleAlternating => {
                 for (i, s) in segs.iter().enumerate() {
-                    out.fills.push(fill(seg(*s, top, mid), fills(i)));
-                    out.fills.push(fill(seg(*s, mid, bottom), fills(i + 1)));
+                    fill(seg(*s, top, mid), fills(i));
+                    fill(seg(*s, mid, bottom), fills(i + 1));
                     outline.extend(seg(*s, top, bottom).path_elements(0.1));
                 }
                 outline.move_to((start, mid));
                 outline.line_to((end, mid));
             }
             ScaleBarKind::Hollow => {
-                out.fills.push(fill(whole, bar.fill2));
+                fill(whole, &bar.fill2);
                 for s in &segs {
                     outline.extend(seg(*s, top, bottom).path_elements(0.1));
                 }
             }
             ScaleBarKind::SingleDivision => {
-                out.fills.push(fill(whole, bar.fill1));
+                fill(whole, &bar.fill1);
                 outline.extend(whole.path_elements(0.1));
             }
             ScaleBarKind::SteppedLine => {
@@ -705,6 +781,103 @@ mod tests {
     }
 
     const RECT: Rect = Rect::new(10.0, 20.0, 210.0, 60.0);
+
+    fn hatch(kind: FillKind) -> FillPattern {
+        FillPattern {
+            kind,
+            spacing: 1.0,
+            ..FillPattern::default()
+        }
+    }
+
+    #[test]
+    fn hatch_lines_stay_inside_their_cell() {
+        let cell = Rect::new(3.0, 5.0, 43.0, 25.0);
+        for angle in [0.0, 30.0, 45.0, 90.0, 135.0, 180.0] {
+            let lines = hatch_lines(cell, angle, 2.0);
+            assert!(!lines.is_empty(), "{angle}");
+            let inside = cell.inflate(1e-9, 1e-9);
+            for (a, b) in &lines {
+                assert!(
+                    inside.contains(*a) && inside.contains(*b),
+                    "{angle}: {a:?} {b:?}"
+                );
+            }
+            // The total length is about the area over the spacing.
+            let length: f64 = lines.iter().map(|(a, b)| (*b - *a).hypot()).sum();
+            let want = cell.area() / 2.0;
+            assert!(
+                (length - want).abs() < 0.1 * want,
+                "{angle}: {length} {want}"
+            );
+        }
+        // Horizontal lines on a 20 high cell, 2 apart: y = 6, 8, ..., 24.
+        assert_eq!(hatch_lines(cell, 0.0, 2.0).len(), 10);
+    }
+
+    #[test]
+    fn the_hatch_of_two_cells_is_one_pattern() {
+        let (a, b) = (
+            Rect::new(0.0, 0.0, 10.0, 4.0),
+            Rect::new(10.0, 0.0, 20.0, 4.0),
+        );
+        let left = hatch_lines(a, 45.0, 1.5);
+        let right = hatch_lines(b, 45.0, 1.5);
+        // Each line that leaves the left cell at its right edge goes on in
+        // the right cell.
+        let ends: Vec<Point> = (left.iter())
+            .flat_map(|(p, q)| [*p, *q])
+            .filter(|p| (p.x - 10.0).abs() < 1e-9)
+            .collect();
+        assert!(!ends.is_empty());
+        for e in ends {
+            let goes_on = (right.iter())
+                .flat_map(|(p, q)| [*p, *q])
+                .any(|p| (p - e).hypot() < 1e-9);
+            assert!(goes_on, "{e:?}");
+        }
+    }
+
+    #[test]
+    fn each_fill_kind_draws_its_items() {
+        let cell = Rect::new(0.0, 0.0, 30.0, 10.0);
+        let angles = |items: &[Item]| -> Vec<f64> {
+            let mut out: Vec<f64> = (items.iter())
+                .filter_map(|i| match i {
+                    Item::Stroke { path, .. } => Some(path.segments()),
+                    _ => None,
+                })
+                .flatten()
+                .map(|s| {
+                    use kurbo::ParamCurve;
+                    let d = s.end() - s.start();
+                    (-d.y).atan2(d.x).to_degrees().rem_euclid(180.0).round()
+                })
+                .collect();
+            out.sort_by(f64::total_cmp);
+            out.dedup();
+            out
+        };
+        let fills = |items: &[Item]| {
+            items
+                .iter()
+                .filter(|i| matches!(i, Item::Fill { .. }))
+                .count()
+        };
+        assert!(fill_items(cell, &hatch(FillKind::None), 1.0).is_empty());
+        let solid = fill_items(cell, &hatch(FillKind::Solid), 1.0);
+        assert_eq!((fills(&solid), solid.len()), (1, 1));
+        let one = fill_items(cell, &hatch(FillKind::Hatch), 1.0);
+        assert_eq!((fills(&one), angles(&one)), (0, vec![45.0]));
+        let cross = FillPattern {
+            background: Some([255, 255, 0]),
+            ..hatch(FillKind::CrossHatch)
+        };
+        let cross = fill_items(cell, &cross, 1.0);
+        assert_eq!((fills(&cross), angles(&cross)), (1, vec![45.0, 135.0]));
+        // The background is under the lines.
+        assert!(matches!(cross[0], Item::Fill { .. }));
+    }
 
     #[test]
     fn nice_division_values_are_1_2_2_5_and_5() {

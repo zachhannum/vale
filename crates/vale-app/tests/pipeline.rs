@@ -2005,6 +2005,24 @@ fn manual_scale_bar_pictures() {
         ..ScaleBarItem::default()
     };
     bars.push((centered, 3.5));
+    let hatched = |kind, background| vale_store::FillPattern {
+        kind,
+        background,
+        ..vale_store::FillPattern::default()
+    };
+    let hatch = ScaleBarItem {
+        subdivisions: 4,
+        fill1: hatched(vale_store::FillKind::Hatch, None),
+        ..ScaleBarItem::default()
+    };
+    bars.push((hatch, 3.5));
+    let cross = ScaleBarItem {
+        kind: ScaleBarKind::DoubleAlternating,
+        bar_height: 3.0,
+        fill1: hatched(vale_store::FillKind::CrossHatch, Some([0xf2, 0xe6, 0xc8])),
+        ..ScaleBarItem::default()
+    };
+    bars.push((cross, 3.5));
     let mut list = vale_render::DisplayList::new(w, h * bars.len() as f64);
     list.items.push(Item::Fill {
         path: kurbo::Rect::new(0.0, 0.0, w, h * bars.len() as f64).to_path(0.1),

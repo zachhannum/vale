@@ -1526,13 +1526,17 @@ fn bar_sections(
                     ScaleBarKind::SteppedLine | ScaleBarKind::Line => &[],
                 };
                 for &(label, first) in fills {
-                    let c = if first { bar.fill1 } else { bar.fill2 };
+                    let c = if first {
+                        bar.fill1.color
+                    } else {
+                        bar.fill2.color
+                    };
                     if let Some(c) = color(ui, label, c) {
                         edit(state, false, &|b| {
                             if first {
-                                b.fill1 = c;
+                                b.fill1.color = c;
                             } else {
-                                b.fill2 = c;
+                                b.fill2.color = c;
                             }
                         });
                     }

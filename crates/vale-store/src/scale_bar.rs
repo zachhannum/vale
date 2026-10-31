@@ -6,7 +6,7 @@ use crate::atlas::{
     FrameId, FurnitureText, JsonMap, json_object, read_color, read_flag, read_number, read_string,
 };
 use crate::gpkg::hex;
-use crate::{Rgb, Units};
+use crate::{FillPattern, Rgb, Units};
 
 /// An enum of choices with a name in a project file and a UI name.
 macro_rules! choices {
@@ -201,8 +201,8 @@ pub struct ScaleBarItem {
     pub fit: ScaleFit,
     pub bar_height: f64,
     /// The fill of the first division, and of every second one after it.
-    pub fill1: Rgb,
-    pub fill2: Rgb,
+    pub fill1: FillPattern,
+    pub fill2: FillPattern,
     /// The color of the outline, the lines, and the marks.
     pub outline: Rgb,
     pub line_width: f64,
@@ -272,8 +272,8 @@ impl ScaleBarItem {
         put("second_division_value", self.second_division_value.into());
         put("fit", self.fit.id().into());
         put("bar_height", self.bar_height.into());
-        put("fill1", hex(self.fill1).into());
-        put("fill2", hex(self.fill2).into());
+        put("fill1", self.fill1.value());
+        put("fill2", self.fill2.value());
         put("outline", hex(self.outline).into());
         put("line_width", self.line_width.into());
         put("mark_frequency", self.mark_frequency.id().into());
@@ -354,8 +354,12 @@ impl ScaleBarItem {
         )?;
         choice(&map, "fit", &mut b.fit, ScaleFit::from_id)?;
         read_number(&map, "bar_height", &mut b.bar_height)?;
-        read_color(&map, "fill1", &mut b.fill1)?;
-        read_color(&map, "fill2", &mut b.fill2)?;
+        if let Some(v) = map.get("fill1") {
+            b.fill1 = FillPattern::read(v)?;
+        }
+        if let Some(v) = map.get("fill2") {
+            b.fill2 = FillPattern::read(v)?;
+        }
         read_color(&map, "outline", &mut b.outline)?;
         read_number(&map, "line_width", &mut b.line_width)?;
         choice(
@@ -440,8 +444,8 @@ impl Default for ScaleBarItem {
             second_division_value: None,
             fit: ScaleFit::AdjustDivisionValue,
             bar_height: 1.5,
-            fill1: ink,
-            fill2: [0xff, 0xff, 0xff],
+            fill1: FillPattern::solid(ink),
+            fill2: FillPattern::solid([0xff, 0xff, 0xff]),
             outline: ink,
             line_width: 0.5,
             mark_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
@@ -468,6 +472,7 @@ impl Default for ScaleBarItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FillKind;
     use crate::atlas::TextCase;
 
     fn full() -> ScaleBarItem {
@@ -483,8 +488,15 @@ mod tests {
             second_division_value: Some(60.0),
             fit: ScaleFit::AdjustDivisions,
             bar_height: 2.5,
-            fill1: [1, 2, 3],
-            fill2: [4, 5, 6],
+            fill1: FillPattern {
+                kind: FillKind::Hatch,
+                color: [1, 2, 3],
+                background: Some([11, 12, 13]),
+                angle: 30.0,
+                spacing: 1.2,
+                line_width: 0.25,
+            },
+            fill2: FillPattern::solid([4, 5, 6]),
             outline: [7, 8, 9],
             line_width: 0.8,
             mark_frequency: TickFrequency::EndsAndZero,
@@ -549,6 +561,11 @@ mod tests {
         assert_eq!(bar.number_style, style);
         assert_eq!(bar.unit_style, style);
         assert_eq!(bar.kind, ScaleBarKind::Alternating);
+        // A fill that is a color is a solid fill.
+        let old = r#"{"fill1": "102030", "fill2": "ffffff"}"#;
+        let bar = ScaleBarItem::from_json(old).unwrap();
+        assert_eq!(bar.fill1, FillPattern::solid([0x10, 0x20, 0x30]));
+        assert_eq!(bar.fill2, ScaleBarItem::default().fill2);
         for bad in [
             r#"{"divisions": 0}"#,
             r#"{"divisions": 21}"#,
@@ -558,6 +575,7 @@ mod tests {
             r#"{"bar_height": 0}"#,
             r#"{"number_style": {"size": 0}}"#,
             r#"{"decimals": 7}"#,
+            r#"{"fill1": {"kind": "dots"}}"#,
         ] {
             assert_eq!(ScaleBarItem::from_json(bad), None, "{bad}");
         }

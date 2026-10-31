@@ -945,16 +945,16 @@ fn bar_rows(
     };
     for &(name, which) in fills {
         let color = if which == ClassColor::Fill1 {
-            bar.fill1
+            bar.fill1.color
         } else {
-            bar.fill2
+            bar.fill2.color
         };
         if let Some(c) = rgb_rows(ui, state, controls, name, which, color) {
             atlas::edit_bar(state, id, false, |b| {
                 if which == ClassColor::Fill1 {
-                    b.fill1 = c;
+                    b.fill1.color = c;
                 } else {
-                    b.fill2 = c;
+                    b.fill2.color = c;
                 }
             });
         }
