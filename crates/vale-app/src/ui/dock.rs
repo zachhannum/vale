@@ -17,12 +17,12 @@ use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
     CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS,
-    GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE,
-    LONGITUDE, MAP_NAME, MAP_STYLE_HINT, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, OBLIQUE,
-    ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID,
-    REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION, SAVE_PROJECTION, SCALE, SECOND_COLOR,
-    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, WIDTH, custom_row,
-    length_text, unit_name,
+    GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR, GRID_OPACITY, GRID_SPACING, HEIGHT, INTERVAL,
+    LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE_HINT,
+    NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR,
+    POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION,
+    SAVE_PROJECTION, SCALE, SECOND_COLOR, SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH,
+    UNIT_NAMES, WIDTH, custom_row, length_text, unit_name,
 };
 use super::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
@@ -818,6 +818,35 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
         ui.end_row();
         if let Some(c) = color(ui, PAPER_COLOR, page.paper) {
             atlas::set_paper(state, c);
+        }
+
+        let grid = state.doc.project.atlas.grid.clone();
+        if let Some(on) = check(ui, LAYOUT_GRID, grid.on) {
+            atlas::edit_grid(state, |g| g.on = on);
+        }
+        if grid.on {
+            ui.label(GRID_SPACING);
+            ui.horizontal(|ui| {
+                let typed = field(ui, GRID_SPACING, &length_text(grid.spacing_mm, units));
+                let mm = typed.and_then(|t| atlas::parse_length(&t, units));
+                if let Some(mm) = mm.filter(|mm| vale_store::LayoutGrid::SPACINGS.contains(mm)) {
+                    atlas::edit_grid(state, |g| g.spacing_mm = mm);
+                }
+                ui.label(unit_name(units));
+            });
+            ui.end_row();
+            if let Some(c) = color(ui, GRID_COLOR, grid.color) {
+                atlas::edit_grid(state, |g| g.color = c);
+            }
+            ui.label(GRID_OPACITY);
+            let mut opacity = grid.opacity * 100.0;
+            let slider = egui::Slider::new(&mut opacity, 0.0..=100.0).suffix(" %");
+            let resp = ui.add(slider);
+            named(&resp, egui::WidgetType::Slider, GRID_OPACITY);
+            if resp.changed() {
+                atlas::edit_grid(state, |g| g.opacity = opacity / 100.0);
+            }
+            ui.end_row();
         }
     });
     ui.add_space(4.0);

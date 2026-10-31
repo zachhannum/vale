@@ -4,7 +4,7 @@ use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{GeometryKind, RasterId, World};
 
-use super::pad::atlas::{NEXT_PAGE, PREVIOUS_PAGE, page_title};
+use super::pad::atlas::{NEXT_PAGE, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title};
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, atlas, elevation, pad};
@@ -287,6 +287,10 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
             }
         }
     });
+    let snap = ui.selectable_label(state.atlas.snap, SNAP_TO_LAYOUT);
+    if snap.clicked() {
+        state.atlas.snap = !state.atlas.snap;
+    }
     ui.separator();
     let measuring = state.measuring();
     if ui.selectable_label(measuring, MEASURE_TOOL).clicked() {

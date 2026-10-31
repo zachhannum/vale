@@ -25,6 +25,7 @@ use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
 use crate::globe::{FrameDraw, FramePlace};
+use crate::page_snap;
 use crate::pipeline::Quality;
 use crate::view::ViewTransform;
 
@@ -45,6 +46,8 @@ fn paper(page: &PageRecord) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
+/// The color of the snap guides.
+const GUIDE: Color32 = Color32::from_rgb(240, 70, 160);
 /// The smallest and the largest side of a page, in millimeters.
 const PAGE_SIDE: (f64, f64) = (10.0, 2000.0);
 /// The smallest and the largest zoom of the page, relative to the page
@@ -355,6 +358,8 @@ pub enum ClassColor {
     Background(bool),
     /// The paper of a page.
     Paper,
+    /// The lines of the layout grid.
+    LayoutGrid,
     /// The first or the second color of the border of a frame.
     Border(bool),
     /// The stroke of the border of a frame.
@@ -522,8 +527,9 @@ enum Drag {
     /// A handle of a frame, with the distance from the pointer to the handle
     /// in millimeters.
     Handle(FrameId, Handle, Vec2),
-    /// The whole frame.
-    Body(FrameId),
+    /// The whole frame, with the distance from the pointer to the top-left
+    /// corner of its box in millimeters.
+    Body(FrameId, Vec2),
     /// The map in the frame.
     Pan(FrameId),
     /// The page on the screen.
@@ -582,6 +588,15 @@ pub struct AtlasState {
     pub view: PageView,
     /// The page of `view`.
     view_of: Option<PageId>,
+    /// Frames snap to the layout of the page.
+    pub snap: bool,
+    /// The guides of the snaps of the drag, in page millimeters.
+    pub guides: Vec<page_snap::Guide>,
+    /// Shift or a second finger locks the angle of the edges of a vertex.
+    lock: bool,
+    /// A second finger joined the drag of a vertex. The fingers do not pinch
+    /// until all of them are up.
+    held: bool,
     /// The page that fits the screen, and the canvas, in the last frame.
     fit: Option<(PagePlace, Rect)>,
     /// The handles of the selected frame in the last frame, with their
@@ -769,6 +784,10 @@ impl Default for AtlasState {
             masks: HashMap::new(),
             mask_count: 0,
             meshes: Vec::new(),
+            snap: true,
+            guides: Vec::new(),
+            lock: false,
+            held: false,
             drag: None,
             drag_last: Pos2::ZERO,
             pinch: None,
@@ -1414,7 +1433,9 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     painter.rect_filled(place.rect, 0.0, paper(open_page(state)));
     frames(ui, state, place, area);
     items(ui, state, place, area);
+    layout_grid(ui, state, place, area);
     selection(ui, state, place);
+    guides(ui, state, place, area);
     measure::overlay(ui, state, place, area);
 }
 
@@ -1429,8 +1450,28 @@ fn gesture(ui: &egui::Ui, state: &AppState) -> bool {
 
 fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: PagePlace) {
     let page = open_page(state).clone();
-    let (any_down, now, alt) = ui.input(|i| (i.pointer.any_down(), i.time, i.modifiers.alt));
-    let fingers = ui.input(|i| i.multi_touch());
+    let (any_down, now, alt, shift) = ui.input(|i| {
+        let m = i.modifiers;
+        (i.pointer.any_down(), i.time, m.alt, m.shift)
+    });
+    let mut fingers = ui.input(|i| i.multi_touch());
+    let touches = fingers.is_some();
+    // A second finger on the canvas during the drag of a vertex locks the
+    // angle of its edges, and it does not pinch.
+    let vertex_drag = matches!(
+        state.atlas.drag,
+        Some(Drag::Handle(_, Handle::Vertex(_), _))
+    );
+    if vertex_drag && fingers.is_some() && !state.atlas.fingers {
+        state.atlas.held = true;
+    }
+    state.atlas.lock = shift || (vertex_drag && state.atlas.held && fingers.is_some());
+    if state.atlas.held {
+        if !any_down && fingers.is_none() {
+            state.atlas.held = false;
+        }
+        fingers = None;
+    }
     if fingers.is_some() {
         state.atlas.fingers = true;
     } else {
@@ -1477,9 +1518,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
 
     // The wheel and a pinch of the trackpad zoom the map of the selected
     // frame, or the page, about the pointer.
-    if fingers.is_none()
-        && let Some(pos) = resp.hover_pos()
-    {
+    if !touches && let Some(pos) = resp.hover_pos() {
         let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
         let factor = (f64::from(scroll) * 0.002).exp() * f64::from(pinch);
         let at = place.to_mm(pos);
@@ -1523,6 +1562,9 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         && !state.atlas.fingers
         && let Some(drag) = state.atlas.drag
         && let Some(pos) = resp.interact_pointer_pos()
+        // The release of the first finger can come after the second finger
+        // is up, so a step with no move keeps the last position.
+        && pos != state.atlas.drag_last
     {
         let d = pos - std::mem::replace(&mut state.atlas.drag_last, pos);
         if drag == Drag::Page {
@@ -1532,8 +1574,9 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
             drag_to(state, drag, place, pos, d);
         }
     }
-    if resp.drag_stopped() || !any_down {
+    if resp.drag_stopped() || !any_down || state.atlas.drag.is_none() {
         state.atlas.drag = None;
+        state.atlas.guides.clear();
     }
 
     // A second quick tap on a vertex removes it. A second quick tap off the
@@ -1669,12 +1712,36 @@ fn start_drag(
                         state.atlas.vertex = None;
                     }
                     state.atlas.selection = AtlasSelection::Frame(id);
-                    Drag::Body(id)
+                    let corner = page.frames.iter().find(|f| f.id == id);
+                    let corner = corner.map_or(at, |f| math::shape_bbox(&f.shape).origin());
+                    Drag::Body(id, corner - at)
                 }
                 None => Drag::Page,
             }
         }
     }
+}
+
+/// The snap targets of the open page for a drag of a frame. `None` if
+/// snapping is off.
+fn snap_targets(state: &AppState, moving: FrameId) -> Option<page_snap::Targets> {
+    if !state.atlas.snap {
+        return None;
+    }
+    let grid = &state.doc.project.atlas.grid;
+    let spacing = grid.on.then_some(grid.spacing_mm);
+    Some(page_snap::targets(open_page(state), moving, None, spacing))
+}
+
+/// The vertices before and after a vertex in its ring.
+fn neighbors(shape: &FrameShape, (r, i): Vertex) -> Vec<Point> {
+    let rings = shape.rings();
+    let Some(ring) = rings.get(r).filter(|ring| ring.len() > 1 && i < ring.len()) else {
+        return Vec::new();
+    };
+    let n = ring.len();
+    let at = |k: usize| Point::new(ring[k][0], ring[k][1]);
+    vec![at((i + n - 1) % n), at((i + 1) % n)]
 }
 
 /// The angle of a point about a center, in degrees clockwise on the page.
@@ -1687,19 +1754,58 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
     match drag {
         Drag::Handle(id, handle, grab) => {
             let to = at + grab;
+            let targets = snap_targets(state, id);
+            let reach = state.globe.snap.distance / place.pts_per_mm;
+            let lock = state.atlas.lock;
+            let mut guides = Vec::new();
             edit_frame(state, id, |f, _| match handle {
-                Handle::Resize(i) => math::resize(&mut f.shape, i, to),
-                Handle::Vertex(v) => math::move_vertex(&mut f.shape, v, to),
+                Handle::Resize(i) => {
+                    let mut raw = f.shape.clone();
+                    math::resize(&mut raw, i, to);
+                    let Some(t) = &targets else {
+                        return math::resize(&mut f.shape, i, to);
+                    };
+                    let b = math::shape_bbox(&raw);
+                    let (r, g) = page_snap::snap_rect(b, page_snap::Moving::Handle(i), t, reach);
+                    guides = g;
+                    let snapped = FrameShape::Rectangle([r.x0, r.y0, r.x1, r.y1]);
+                    let corner = math::handles(&snapped)[i].1;
+                    math::resize(&mut f.shape, i, corner)
+                }
+                Handle::Vertex(v) => {
+                    let near = neighbors(&f.shape, v);
+                    let (to, g) = match (&targets, lock && !near.is_empty()) {
+                        (t, true) => page_snap::lock_angle(to, &near, t.as_ref(), reach),
+                        (Some(t), false) => page_snap::snap_point(to, t, reach),
+                        (None, false) => (to, Vec::new()),
+                    };
+                    guides = g;
+                    math::move_vertex(&mut f.shape, v, to)
+                }
                 Handle::Edge(_) => false,
             });
+            state.atlas.guides = guides;
         }
-        Drag::Body(id) => {
-            if d != Vec2::ZERO {
-                edit_frame(state, id, |f, _| {
-                    math::move_shape(&mut f.shape, d);
-                    true
-                });
-            }
+        Drag::Body(id, grab) => {
+            let targets = snap_targets(state, id);
+            let reach = state.globe.snap.distance / place.pts_per_mm;
+            let mut guides = Vec::new();
+            edit_frame(state, id, |f, _| {
+                let b = math::shape_bbox(&f.shape);
+                let raw = b.with_origin(at + grab);
+                let r = match &targets {
+                    Some(t) => {
+                        let (r, g) = page_snap::snap_rect(raw, page_snap::Moving::Body, t, reach);
+                        guides = g;
+                        r
+                    }
+                    None => raw,
+                };
+                let d = r.origin() - b.origin();
+                math::move_shape(&mut f.shape, d);
+                d != Vec2::ZERO
+            });
+            state.atlas.guides = guides;
         }
         Drag::Pan(id) => {
             if d != Vec2::ZERO {
@@ -2441,6 +2547,52 @@ fn paint_image(painter: &egui::Painter, image: &FrameImage, vt: &ViewTransform, 
 
 /// Paints the outline of the selected page or frame and the handles of the
 /// selected frame.
+/// The lines of the layout grid on the page. A grid that is denser than 4
+/// points on the screen does not show.
+fn layout_grid(ui: &egui::Ui, state: &AppState, place: PagePlace, area: Rect) {
+    let grid = &state.doc.project.atlas.grid;
+    let step = grid.spacing_mm * place.pts_per_mm;
+    if !grid.on || step < 4.0 {
+        return;
+    }
+    let painter = ui.painter_at(area.intersect(place.rect));
+    let [r, g, b] = grid.color;
+    let alpha = (grid.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let stroke = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(r, g, b, alpha));
+    let page = open_page(state);
+    let (w, h) = (page.width_mm, page.height_mm);
+    let mut x = grid.spacing_mm;
+    while x < w {
+        let a = place.to_screen(Point::new(x, 0.0));
+        let b = place.to_screen(Point::new(x, h));
+        painter.line_segment([a, b], stroke);
+        x += grid.spacing_mm;
+    }
+    let mut y = grid.spacing_mm;
+    while y < h {
+        let a = place.to_screen(Point::new(0.0, y));
+        let b = place.to_screen(Point::new(w, y));
+        painter.line_segment([a, b], stroke);
+        y += grid.spacing_mm;
+    }
+}
+
+/// The guide lines of the snaps that hold.
+fn guides(ui: &egui::Ui, state: &AppState, place: PagePlace, area: Rect) {
+    let painter = ui.painter_at(area);
+    let stroke = egui::Stroke::new(1.0, GUIDE);
+    for guide in &state.atlas.guides {
+        match *guide {
+            page_snap::Guide::Line(a, b) => {
+                painter.line_segment([place.to_screen(a), place.to_screen(b)], stroke);
+            }
+            page_snap::Guide::Point(p) => {
+                painter.circle_stroke(place.to_screen(p), 11.0, egui::Stroke::new(2.0, GUIDE));
+            }
+        }
+    }
+}
+
 fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
     state.atlas.handles.clear();
     state.atlas.handles_of = Some(state.atlas.selection);
@@ -2938,6 +3090,11 @@ pub fn set_neatline_width(state: &mut AppState, id: FrameId, width: f64) {
 /// Sets the paper color of the open page.
 pub fn set_paper(state: &mut AppState, color: Rgb) {
     edit_page(state, |p| p.paper = color);
+}
+
+/// Changes the layout grid of the pages.
+pub fn edit_grid(state: &mut AppState, change: impl FnOnce(&mut vale_store::LayoutGrid)) {
+    change(&mut state.doc.project.atlas.grid);
 }
 
 /// Changes the border of a frame.
