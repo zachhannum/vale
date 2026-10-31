@@ -2385,6 +2385,117 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     check_controls(&h, "744 high with the Ocean ridge limits");
 }
 
+#[test]
+fn the_tool_strip_has_the_range_mode() {
+    use vale_app::ui::pad::icons::Icon;
+    let range = (panels::RANGE, Icon::Range, Mode::Range);
+    assert_eq!(BRUSH_MODES.last(), Some(&range));
+    for size in [BOARDS[0], (1133.0, 744.0)] {
+        let mut h = pad(size);
+        open_modes(&mut h);
+        let flyout = h.state().pad.modes_rect.unwrap();
+        // The flyout scrolls to its last row.
+        let from = flyout.center();
+        drag(&mut h, from, from - vec2(0.0, 0.4 * flyout.height()), None);
+        let row = control(&h, "Range").unwrap();
+        assert!(flyout.contains_rect(row), "{size:?}: {row:?}");
+        tap(&mut h, "Range");
+        let s = h.state();
+        assert_eq!(
+            (s.globe.tool, s.globe.brush.mode),
+            (Tool::Brush, Mode::Range)
+        );
+        assert_eq!(s.pad.brush_face, Some(("Range", Icon::Range)));
+        assert_eq!(toggled(&h, BRUSH), Some(true));
+        check_controls(&h, &format!("{size:?} with the Range mode"));
+    }
+}
+
+/// The rows of the range mode in the brush panel.
+const RANGE_ROWS: [&str; 6] = [
+    "Brush strength",
+    "Brush spacing",
+    "Brush seed",
+    "Brush erosion",
+    "Brush wind",
+    "Brush rain shadow",
+];
+
+#[test]
+fn the_brush_panel_has_the_sliders_of_the_range_mode() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    for row in ["Brush spacing", "Brush seed", "Brush erosion"] {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    choose_mode(&mut h, "Range");
+    assert_eq!(h.state().globe.brush.mode, Mode::Range);
+    for row in ["Brush size", "Brush flow"].into_iter().chain(RANGE_ROWS) {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    for row in [
+        "Brush hardness",
+        "Brush angle",
+        "Brush crest",
+        "Brush scale",
+    ] {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    // The spacing goes from one end of its range to the other.
+    assert_eq!(h.state().globe.brush.range_spacing_km, 30.0);
+    let rect = control(&h, "Brush spacing").unwrap();
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    assert!((h.state().globe.brush.range_spacing_km - 5.0).abs() < 1e-9);
+    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    assert!((h.state().globe.brush.range_spacing_km - 300.0).abs() < 1e-6);
+    // The seed slider sets the seed of the world, as in the Warp mode.
+    let rect = control(&h, "Brush seed").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert_eq!(h.state().doc.project.world.seed, 999);
+    assert_eq!(h.state().globe.world_seed, 999);
+    // The erosion is the erosion of the Uplift mode.
+    let rect = control(&h, "Brush erosion").unwrap();
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    assert_eq!(h.state().globe.brush.erosion, 0.0);
+    choose_mode(&mut h, "Uplift");
+    assert_eq!(h.state().globe.brush.erosion, 0.0);
+    check_controls(&h, "the Range mode");
+}
+
+#[test]
+fn the_range_mode_fits_on_the_smallest_ipad() {
+    let mut h = pad((1133.0, 744.0));
+    let screen = h.state().pad.rects.unwrap().screen;
+    open_modes(&mut h);
+    let menu = h.state().pad.modes_rect.unwrap();
+    let from = menu.center();
+    drag(&mut h, from, from - vec2(0.0, 0.4 * menu.height()), None);
+    tap(&mut h, "Range");
+    tap(&mut h, "Brush settings");
+    // Each row of the panel shows, and the rows below the first ones scroll
+    // up. A scroll changes no value.
+    let brush = h.state().globe.brush;
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    let rows = ["Brush size", "Brush flow"].into_iter().chain(RANGE_ROWS);
+    for row in rows.chain(["Brush floor", "Brush ceiling"]) {
+        for _ in 0..4 {
+            if control(&h, row).is_some_and(|rect| panel.contains_rect(rect)) {
+                break;
+            }
+            let from = control(&h, "Brush flow")
+                .or_else(|| control(&h, "Brush rain shadow"))
+                .unwrap()
+                .center();
+            drag(&mut h, from, from - vec2(4.0, 120.0), None);
+        }
+        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+        check_controls(&h, &format!("744 high with the Range panel at {row}"));
+    }
+    assert_eq!(h.state().globe.brush, brush);
+}
+
 /// Writes an image of the brush panel in the ocean ridge mode, for a person
 /// to look at.
 #[test]

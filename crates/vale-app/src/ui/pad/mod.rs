@@ -16,8 +16,8 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::BrushSettings;
 use crate::globe::brush::{
-    EROSION, FLOW, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
-    SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    EROSION, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
@@ -71,7 +71,7 @@ pub const SNAP_EDGES: &str = "Snap to edges";
 /// The slider of the snap distance, in points.
 pub const SNAP_DISTANCE: &str = "Snap distance";
 /// The modes of the flyout of the brush cell.
-pub const BRUSH_MODES: [(&str, Icon, Mode); 12] = [
+pub const BRUSH_MODES: [(&str, Icon, Mode); 13] = [
     ("Raise", Icon::Raise, Mode::Raise),
     ("Lower", Icon::Lower, Mode::Lower),
     ("Smooth", Icon::Smooth, Mode::Smooth),
@@ -84,6 +84,7 @@ pub const BRUSH_MODES: [(&str, Icon, Mode); 12] = [
     ("Uplift", Icon::Uplift, Mode::Uplift),
     ("Warp", Icon::Warp, Mode::Warp),
     (panels::OCEAN_RIDGE, Icon::OceanRidge, Mode::OceanRidge),
+    (panels::RANGE, Icon::Range, Mode::Range),
 ];
 
 /// The name of the row that opens the properties of the world.
@@ -1377,9 +1378,10 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     let world_km = state.doc.project.world.radius_km;
     let radius_km = state.globe.brush.radius_km(state.globe.radius(), world_km);
     let brush = &mut state.globe.brush;
-    // The ocean ridge mode has no falloff and no strength.
+    // The ocean ridge mode has no falloff and no strength, and the range
+    // mode has no falloff.
     let ridge = brush.mode == Mode::OceanRidge;
-    if !ridge {
+    if !matches!(brush.mode, Mode::OceanRidge | Mode::Range) {
         percent_slider(&mut brush.hardness, 0.0..=1.0, |fraction, text| {
             widgets::row_slider(ui, controls, "Brush hardness", "Hardness", fraction, text)
         });
@@ -1404,13 +1406,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         if let Some(km) = scale {
             brush.scale_km = km;
         }
-        let seed = &mut state.doc.project.world.seed;
-        let high = f64::from(*SEED.end());
-        let mut fraction = (f64::from(*seed) / high).min(1.0);
-        let text = seed.to_string();
-        if widgets::row_slider(ui, controls, "Brush seed", "Seed", &mut fraction, &text) {
-            *seed = (fraction * high).round() as u32;
-        }
+        seed_row(ui, controls, &mut state.doc.project.world.seed);
     } else {
         let (min, max) = brush.value_range;
         let text = world::value_text(brush.strength_value(), max - min, &unit);
@@ -1422,12 +1418,27 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             brush.strength_m = meters;
         }
     }
-    if brush.mode == Mode::Uplift {
+    if brush.mode == Mode::Range {
+        let text = format!("{} km", world::three_significant(brush.range_spacing_km));
+        let spacing = log_slider(
+            brush.range_spacing_km,
+            RANGE_SPACING_KM,
+            &text,
+            |fraction, text| {
+                widgets::row_slider(ui, controls, "Brush spacing", "Spacing", fraction, text)
+            },
+        );
+        if let Some(km) = spacing {
+            brush.range_spacing_km = km;
+        }
+        seed_row(ui, controls, &mut state.doc.project.world.seed);
+    }
+    if matches!(brush.mode, Mode::Uplift | Mode::Range) {
         percent_slider(&mut brush.erosion, EROSION, |fraction, text| {
             widgets::row_slider(ui, controls, "Brush erosion", "Erosion", fraction, text)
         });
     }
-    if matches!(brush.mode, Mode::Erode | Mode::Uplift) {
+    if matches!(brush.mode, Mode::Erode | Mode::Uplift | Mode::Range) {
         let world = &mut state.doc.project.world;
         let mut degrees = world.wind_deg as f32;
         if widgets::compass_row(ui, controls, "Brush wind", "Wind", &mut degrees) {
@@ -1473,6 +1484,17 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
 /// The number of steps of the slider of a limit of the brush. A height has
 /// steps of 50 meters.
 const LIMIT_STEPS: f64 = 240.0;
+
+/// The seed row of the warp mode and of the range mode. The seed is a
+/// property of the world, so each brush gets the same pattern.
+fn seed_row(ui: &mut egui::Ui, controls: &mut Controls, seed: &mut u32) {
+    let high = f64::from(*SEED.end());
+    let mut fraction = (f64::from(*seed) / high).min(1.0);
+    let text = seed.to_string();
+    if widgets::row_slider(ui, controls, "Brush seed", "Seed", &mut fraction, &text) {
+        *seed = (fraction * high).round() as u32;
+    }
+}
 
 /// Shows a value as a slider with a linear scale. The value is a multiple
 /// of `step`.
