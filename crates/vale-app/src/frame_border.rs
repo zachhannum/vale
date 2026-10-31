@@ -1,4 +1,5 @@
-//! The border band around a map frame and the labels of its reference grid.
+//! The border band around a map frame, its stroke, and the labels of its
+//! reference grid.
 
 use kurbo::{Affine, Point, Rect, Shape};
 use vale_labeler::Fonts;
@@ -22,15 +23,17 @@ pub fn band_rects(frame: &FrameRecord, target: FrameTarget) -> (Rect, Rect) {
     (inner, inner.inflate(w, w))
 }
 
-/// How far the band and the grid labels reach out of the bounding box of
-/// the shape, in page points. 0 when both are off.
+/// How far the band, its stroke, and the grid labels reach out of the
+/// bounding box of the shape, in page points. 0 when the border is off.
 pub fn reach(frame: &FrameRecord) -> f64 {
-    let (b, g) = (&frame.border, &frame.grid);
-    if !b.on && !g.on {
+    let b = &frame.border;
+    if !b.on {
         return 0.0;
     }
     let band = (b.distance_mm + b.width_mm) * PT_PER_MM;
-    if g.on { band + g.text.size } else { band }
+    let stroke = if b.stroke { b.stroke_width / 2.0 } else { 0.0 };
+    let labels = if b.grid { b.grid_text.size } else { 0.0 };
+    band + stroke.max(labels)
 }
 
 /// The name of column `i`, from 0: A to Z, then AA, AB.
@@ -46,32 +49,34 @@ pub fn column_name(i: u32) -> String {
     String::from_utf8(name).unwrap_or_default()
 }
 
-/// The band and the grid labels of a frame, in target points. The band
-/// comes first.
+/// The band, its stroke, and the grid labels of a frame, in target points.
 pub fn items(
     projection: &Projection,
     frame: &FrameRecord,
     target: FrameTarget,
     fonts: &mut Fonts,
 ) -> Vec<Item> {
+    let b = &frame.border;
+    if !b.on {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     let (inner, outer) = band_rects(frame, target);
-    let b = &frame.border;
-    if b.on {
-        match b.style {
-            BorderStyle::Solid => {
-                let mut path = outer.to_path(0.1);
-                path.extend(inner.to_path(0.1));
-                out.push(Item::Fill {
-                    path,
-                    color: rgb(b.color),
-                    rule: FillRule::EvenOdd,
-                });
-            }
-            BorderStyle::Graduated => {
-                for (rect, first) in graduated(projection, frame, target, inner, outer) {
+    let mut edges = outer.to_path(0.1);
+    edges.extend(inner.to_path(0.1));
+    let lines = Lines::new(projection, frame, target, outer);
+    match b.style {
+        BorderStyle::Solid => out.push(Item::Fill {
+            path: edges.clone(),
+            color: rgb(b.color),
+            rule: FillRule::EvenOdd,
+        }),
+        BorderStyle::Graduated => {
+            for side in sides(inner, outer) {
+                for piece in lines.pieces(&side, None) {
+                    let first = piece.cell.is_none_or(|[x, y]| (x + y).rem_euclid(2) == 0);
                     out.push(Item::Fill {
-                        path: rect.to_path(0.1),
+                        path: piece.rect.to_path(0.1),
                         color: rgb(if first { b.color } else { b.color2 }),
                         rule: FillRule::NonZero,
                     });
@@ -79,63 +84,120 @@ pub fn items(
             }
         }
     }
-    if frame.grid.on {
-        out.extend(grid_labels(frame, target, inner, outer, fonts).into_items());
+    let unit = target.pts_per_mm / PT_PER_MM;
+    if b.stroke {
+        out.push(Item::Stroke {
+            path: edges,
+            color: rgb(b.stroke_color),
+            width: b.stroke_width * unit,
+            round: false,
+        });
+    }
+    if b.grid {
+        out.extend(grid_labels(frame, &lines, inner, outer, unit, fonts).into_items());
     }
     out
 }
 
-/// The pieces of a graduated band, each with `true` for the first color.
-/// The top and the bottom side hold the corners.
-fn graduated(
-    projection: &Projection,
-    frame: &FrameRecord,
-    target: FrameTarget,
-    inner: Rect,
-    outer: Rect,
-) -> Vec<(Rect, bool)> {
-    let interval = interval_at_scale(projection, frame);
-    let vt = frame_transform(projection, frame, target);
-    let window = graticule_window(projection, &vt, outer, frame.center[0], interval);
-    let lines: Vec<Vec<Point>> = (graticule_in(interval, window).iter())
-        .flat_map(|line| projection.project_line(line))
-        .map(|part| part.iter().map(|p| vt.to_page(*p)).collect())
-        .collect();
-    // The cells of the graticule alternate in a checkerboard, so the color
-    // changes at each line, a meridian or a parallel.
-    let parity = |p: Point| {
-        let [lon, lat] = projection.inverse(vt.from_page(p))?;
-        let lon = frame.center[0] + vale_sphere::wrap180(lon - frame.center[0]);
-        let cell = (lon / interval).floor() + (lat / interval).floor();
-        Some(cell.rem_euclid(2.0) < 0.5)
+/// One side of the band. The top and the bottom side hold the corners.
+struct Side {
+    /// True for the top and the bottom side.
+    horizontal: bool,
+    /// The extent along the side.
+    lo: f64,
+    hi: f64,
+    /// The extent across the side.
+    a: f64,
+    b: f64,
+}
+
+fn sides(inner: Rect, outer: Rect) -> [Side; 4] {
+    let side = |horizontal, lo, hi, a, b| Side {
+        horizontal,
+        lo,
+        hi,
+        a,
+        b,
     };
-    let sides = [
-        (true, outer.x0, outer.x1, outer.y0, inner.y0),
-        (true, outer.x0, outer.x1, inner.y1, outer.y1),
-        (false, inner.y0, inner.y1, outer.x0, inner.x0),
-        (false, inner.y0, inner.y1, inner.x1, outer.x1),
-    ];
-    let mut out = Vec::new();
-    for (horizontal, lo, hi, a, b) in sides {
-        let c = (a + b) / 2.0;
-        let point = |s: f64| {
-            if horizontal {
-                Point::new(s, c)
-            } else {
-                Point::new(c, s)
+    [
+        side(true, outer.x0, outer.x1, outer.y0, inner.y0),
+        side(true, outer.x0, outer.x1, inner.y1, outer.y1),
+        side(false, inner.y0, inner.y1, outer.x0, inner.x0),
+        side(false, inner.y0, inner.y1, inner.x1, outer.x1),
+    ]
+}
+
+/// A part of a side between two graticule lines.
+struct Piece {
+    rect: Rect,
+    /// The middle of the piece along the middle of the band.
+    at: Point,
+    /// The graticule cell at `at`: the index of the interval of the
+    /// longitude and of the latitude. `None` off the sphere.
+    cell: Option<[i64; 2]>,
+}
+
+/// The graticule lines of a frame in target points, over the band.
+struct Lines<'a> {
+    projection: &'a Projection,
+    vt: crate::view::ViewTransform,
+    center_lon: f64,
+    interval: f64,
+    /// Each line, with true for a meridian.
+    lines: Vec<(bool, Vec<Point>)>,
+}
+
+impl<'a> Lines<'a> {
+    fn new(
+        projection: &'a Projection,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        outer: Rect,
+    ) -> Lines<'a> {
+        let interval = interval_at_scale(projection, frame);
+        let vt = frame_transform(projection, frame, target);
+        let window = graticule_window(projection, &vt, outer, frame.center[0], interval);
+        let mut lines = Vec::new();
+        for line in graticule_in(interval, window) {
+            let meridian = line.len() >= 2 && line[0][0] == line[1][0];
+            for part in projection.project_line(&line) {
+                lines.push((meridian, part.iter().map(|p| vt.to_page(*p)).collect()));
             }
-        };
-        let mut cuts = vec![lo, hi];
-        for line in &lines {
+        }
+        Lines {
+            projection,
+            vt,
+            center_lon: frame.center[0],
+            interval,
+            lines,
+        }
+    }
+
+    /// The cell of the graticule at `p`.
+    fn cell(&self, p: Point) -> Option<[i64; 2]> {
+        let [lon, lat] = self.projection.inverse(self.vt.from_page(p))?;
+        let lon = self.center_lon + vale_sphere::wrap180(lon - self.center_lon);
+        let index = |v: f64| (v / self.interval).floor() as i64;
+        Some([index(lon), index(lat)])
+    }
+
+    /// The pieces of a side between the lines where they meet the middle
+    /// of the band. `meridians` keeps only the meridians or only the
+    /// parallels.
+    fn pieces(&self, side: &Side, meridians: Option<bool>) -> Vec<Piece> {
+        let c = (side.a + side.b) / 2.0;
+        let mut cuts = vec![side.lo, side.hi];
+        let lines = (self.lines.iter()).filter(|(m, _)| meridians.is_none_or(|want| *m == want));
+        for (_, line) in lines {
             for seg in line.windows(2) {
-                let (p, q) = if horizontal {
+                let (p, q) = if side.horizontal {
                     ((seg[0].x, seg[0].y), (seg[1].x, seg[1].y))
                 } else {
                     ((seg[0].y, seg[0].x), (seg[1].y, seg[1].x))
                 };
                 if (p.1 > c) != (q.1 > c) {
                     let s = p.0 + (c - p.1) / (q.1 - p.1) * (q.0 - p.0);
-                    if s > lo && s < hi {
+                    if s > side.lo && s < side.hi {
                         cuts.push(s);
                     }
                 }
@@ -143,58 +205,73 @@ fn graduated(
         }
         cuts.sort_by(f64::total_cmp);
         cuts.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
-        let mut first = true;
-        for (i, s) in cuts.windows(2).enumerate() {
-            first = match parity(point((s[0] + s[1]) / 2.0)) {
-                Some(f) => f,
-                None if i == 0 => true,
-                None => !first,
-            };
-            let rect = if horizontal {
-                Rect::new(s[0], a, s[1], b)
+        let mut out: Vec<Piece> = Vec::new();
+        for s in cuts.windows(2) {
+            let mid = (s[0] + s[1]) / 2.0;
+            let (rect, at) = if side.horizontal {
+                (Rect::new(s[0], side.a, s[1], side.b), Point::new(mid, c))
             } else {
-                Rect::new(a, s[0], b, s[1])
+                (Rect::new(side.a, s[0], side.b, s[1]), Point::new(c, mid))
             };
-            out.push((rect, first));
+            // Off the sphere, the color changes at each line.
+            let cell = self.cell(at).or_else(|| {
+                let [x, y] = out.last()?.cell?;
+                Some([x + 1, y])
+            });
+            out.push(Piece { rect, at, cell });
         }
+        out
     }
-    out
 }
 
-/// The column labels at the top and the bottom, and the row labels at the
-/// left and the right, each at the middle of the band.
+/// A letter at the middle of each interval of the meridians on the top and
+/// the bottom side, and a number at the middle of each interval of the
+/// parallels on the left and the right side. The letters go from the west,
+/// and the numbers go from the north. A piece too short for its label has
+/// no label.
 fn grid_labels(
     frame: &FrameRecord,
-    target: FrameTarget,
+    lines: &Lines,
     inner: Rect,
     outer: Rect,
+    unit: f64,
     fonts: &mut Fonts,
 ) -> Painted {
-    let g = &frame.grid;
-    let area = frame_area(frame, target);
-    let ink = TextInk::new(&g.text, target.pts_per_mm / PT_PER_MM, fonts);
-    let mut out = Painted::default();
-    let mut put = |text: &str, at: Point, out: &mut Painted| {
-        let m = fonts.measure(&ink.case.apply(text), &ink.style);
-        let baseline = at.y + (m.ascent - m.descent.abs()) / 2.0;
-        let to = Affine::translate((at.x - m.advance / 2.0, baseline));
-        ink.line(text, to, fonts, out);
+    let ink = TextInk::new(&frame.border.grid_text, unit, fonts);
+    let [top, bottom, left, right] = sides(inner, outer);
+    let on_sphere = |side: &Side, meridians: bool| {
+        let pieces = lines.pieces(side, Some(meridians));
+        pieces
+            .into_iter()
+            .filter(|p| p.cell.is_some() && lines.cell(p.at).is_some())
     };
-    let (top, bottom) = ((outer.y0 + inner.y0) / 2.0, (inner.y1 + outer.y1) / 2.0);
-    let (left, right) = ((outer.x0 + inner.x0) / 2.0, (inner.x1 + outer.x1) / 2.0);
-    let column = area.width() / f64::from(g.columns);
-    for i in 0..g.columns {
-        let x = area.x0 + column * (f64::from(i) + 0.5);
-        let name = column_name(i);
-        put(&name, Point::new(x, top), &mut out);
-        put(&name, Point::new(x, bottom), &mut out);
+    let columns: Vec<Piece> = on_sphere(&top, true)
+        .chain(on_sphere(&bottom, true))
+        .collect();
+    let rows: Vec<Piece> = on_sphere(&left, false)
+        .chain(on_sphere(&right, false))
+        .collect();
+    let west = columns.iter().filter_map(|p| p.cell).map(|[x, _]| x).min();
+    let north = rows.iter().filter_map(|p| p.cell).map(|[_, y]| y).max();
+    let mut out = Painted::default();
+    let mut put = |text: &str, piece: &Piece, along: f64| {
+        let m = fonts.measure(&ink.case.apply(text), &ink.style);
+        if m.advance > along {
+            return;
+        }
+        let baseline = piece.at.y + (m.ascent - m.descent.abs()) / 2.0;
+        let to = Affine::translate((piece.at.x - m.advance / 2.0, baseline));
+        ink.line(text, to, fonts, &mut out);
+    };
+    for p in &columns {
+        if let (Some([x, _]), Some(west)) = (p.cell, west) {
+            put(&column_name((x - west) as u32), p, p.rect.width());
+        }
     }
-    let row = area.height() / f64::from(g.rows);
-    for i in 0..g.rows {
-        let y = area.y0 + row * (f64::from(i) + 0.5);
-        let name = (i + 1).to_string();
-        put(&name, Point::new(left, y), &mut out);
-        put(&name, Point::new(right, y), &mut out);
+    for p in &rows {
+        if let (Some([_, y]), Some(north)) = (p.cell, north) {
+            put(&(north - y + 1).to_string(), p, p.rect.height());
+        }
     }
     out
 }

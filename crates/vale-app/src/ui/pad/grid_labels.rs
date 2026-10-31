@@ -69,7 +69,8 @@ pub fn panel(
 }
 
 fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: FrameId) {
-    let Some(style) = (state.doc.project.atlas.frame(id)).map(|f| f.grid.text.clone()) else {
+    let Some(style) = (state.doc.project.atlas.frame(id)).map(|f| f.border.grid_text.clone())
+    else {
         return;
     };
     match state.atlas.grid_page {

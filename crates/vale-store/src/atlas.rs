@@ -139,7 +139,6 @@ pub struct FrameRecord {
     pub graticule: Graticule,
     pub neatline: Neatline,
     pub border: Border,
-    pub grid: ReferenceGrid,
 }
 
 /// The line along the edge of the shape of a map frame.
@@ -179,6 +178,16 @@ pub struct Border {
     pub width_mm: f64,
     /// The distance in millimeters from the bounding box to the band.
     pub distance_mm: f64,
+    /// A line on the inner and the outer edge of the band.
+    pub stroke: bool,
+    pub stroke_color: Rgb,
+    /// The stroke width in points.
+    pub stroke_width: f64,
+    /// The reference grid: a letter in the band for each interval of the
+    /// meridians, and a number for each interval of the parallels.
+    pub grid: bool,
+    /// The text of the labels of the reference grid.
+    pub grid_text: FurnitureText,
 }
 
 /// How a border band is colored.
@@ -212,6 +221,8 @@ impl Border {
     pub const WIDTHS: RangeInclusive<f64> = 0.25..=10.0;
     /// The distances in millimeters that the app offers.
     pub const DISTANCES: RangeInclusive<f64> = 0.0..=30.0;
+    /// The stroke widths in points that the app offers.
+    pub const STROKE_WIDTHS: RangeInclusive<f64> = 0.25..=4.0;
 
     /// The border as JSON text, for a project file.
     pub fn to_json(&self) -> String {
@@ -222,6 +233,11 @@ impl Border {
             "color2": hex(self.color2),
             "width": self.width_mm,
             "distance": self.distance_mm,
+            "stroke": self.stroke,
+            "stroke_color": hex(self.stroke_color),
+            "stroke_width": self.stroke_width,
+            "grid": self.grid,
+            "grid_text": self.grid_text.value(),
         })
         .to_string()
     }
@@ -239,7 +255,12 @@ impl Border {
         read_color(&map, "color2", &mut b.color2)?;
         read_number(&map, "width", &mut b.width_mm)?;
         read_number(&map, "distance", &mut b.distance_mm)?;
-        (b.width_mm > 0.0 && b.distance_mm >= 0.0).then_some(b)
+        read_flag(&map, "stroke", &mut b.stroke)?;
+        read_color(&map, "stroke_color", &mut b.stroke_color)?;
+        read_number(&map, "stroke_width", &mut b.stroke_width)?;
+        read_flag(&map, "grid", &mut b.grid)?;
+        b.grid_text = b.grid_text.read_key(&map, "grid_text")?;
+        (b.width_mm > 0.0 && b.distance_mm >= 0.0 && b.stroke_width > 0.0).then_some(b)
     }
 }
 
@@ -252,58 +273,11 @@ impl Default for Border {
             color2: [0xff, 0xff, 0xff],
             width_mm: 2.0,
             distance_mm: 8.0,
-        }
-    }
-}
-
-/// Columns with the letters A, B, C and rows with the numbers 1, 2, 3 over
-/// the bounding box of a map frame. The labels sit in the border band.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ReferenceGrid {
-    pub on: bool,
-    pub columns: u32,
-    pub rows: u32,
-    pub text: FurnitureText,
-}
-
-impl ReferenceGrid {
-    /// The numbers of columns and rows that the app offers.
-    pub const COUNTS: RangeInclusive<u32> = 1..=26;
-
-    /// The grid as JSON text, for a project file.
-    pub fn to_json(&self) -> String {
-        serde_json::json!({
-            "on": self.on,
-            "columns": self.columns,
-            "rows": self.rows,
-            "text": self.text.value(),
-        })
-        .to_string()
-    }
-
-    /// Reads [`ReferenceGrid::to_json`]. A missing key gets its default.
-    /// `None` if a value is bad.
-    pub fn from_json(text: &str) -> Option<ReferenceGrid> {
-        let map = json_object(text)?;
-        let mut g = ReferenceGrid::default();
-        read_flag(&map, "on", &mut g.on)?;
-        for (key, to) in [("columns", &mut g.columns), ("rows", &mut g.rows)] {
-            if let Some(v) = map.get(key) {
-                *to = u32::try_from(v.as_u64()?).ok()?;
-            }
-        }
-        g.text = g.text.read_key(&map, "text")?;
-        (g.columns > 0 && g.rows > 0).then_some(g)
-    }
-}
-
-impl Default for ReferenceGrid {
-    fn default() -> Self {
-        ReferenceGrid {
-            on: false,
-            columns: 6,
-            rows: 4,
-            text: FurnitureText {
+            stroke: false,
+            stroke_color: [0x2b, 0x2b, 0x2b],
+            stroke_width: 0.5,
+            grid: false,
+            grid_text: FurnitureText {
                 color: [0x2b, 0x2b, 0x2b],
                 ..FurnitureText::sized(5.0)
             },
@@ -1470,7 +1444,6 @@ mod tests {
             graticule: Graticule::default(),
             neatline: Neatline::default(),
             border: Border::default(),
-            grid: ReferenceGrid::default(),
         }
     }
 

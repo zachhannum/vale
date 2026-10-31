@@ -6,7 +6,7 @@ use eframe::egui;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
 use vale_store::{
     BlendMode, Border, BorderStyle, CoordFormat, EdgeLabels, EdgeOrientation, FrameRecord,
-    FrameShape, Graticule, LayerId, Neatline, PageUnits, RasterDisplay, ReferenceGrid,
+    FrameShape, Graticule, LayerId, Neatline, PageUnits, RasterDisplay,
 };
 
 use super::elevation::{DISPLAYS, blend_label};
@@ -15,13 +15,14 @@ use super::pad::raster::{BLEND, SHOW_AS};
 use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
-    BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME,
-    COLUMNS, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS,
+    BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
+    CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS,
     GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE,
     LONGITUDE, MAP_NAME, MAP_STYLE_HINT, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, OBLIQUE,
     ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID,
-    REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION, ROWS, SAVE_PROJECTION, SCALE, SECOND_COLOR,
-    SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row, length_text, unit_name,
+    REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION, SAVE_PROJECTION, SCALE, SECOND_COLOR,
+    SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, WIDTH, custom_row,
+    length_text, unit_name,
 };
 use super::pad::edge_labels::EDGE_LABELS;
 use super::pad::grid_labels::GRID_LABELS;
@@ -199,13 +200,6 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     }
     if frame.border.on {
         border_rows(ui, state, frame);
-    }
-    let mut grid = frame.grid.on;
-    if ui.checkbox(&mut grid, REFERENCE_GRID).changed() {
-        atlas::set_grid(state, frame.id, grid);
-    }
-    if frame.grid.on {
-        grid_rows(ui, state, frame);
     }
     ui.add_space(4.0);
     if ui.button(DELETE_FRAME).clicked() {
@@ -441,8 +435,8 @@ fn neatline_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         });
 }
 
-/// The style, the colors, the width, and the distance of the border of a
-/// frame.
+/// The style, the colors, the width, the distance, the stroke, and the
+/// reference grid of the border of a frame.
 fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let (id, b) = (frame.id, &frame.border);
     egui::Grid::new("atlas-border")
@@ -472,35 +466,38 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             if let Some(v) = number(ui, BORDER_DISTANCE, b.distance_mm, distances, " mm") {
                 atlas::set_border_distance(state, id, v);
             }
-        });
-}
-
-/// The columns, the rows, and the text of the reference grid of a frame.
-fn grid_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
-    let (id, g) = (frame.id, &frame.grid);
-    egui::Grid::new("atlas-grid").num_columns(2).show(ui, |ui| {
-        let counts = ReferenceGrid::COUNTS;
-        for (name, value, rows) in [(COLUMNS, g.columns, false), (ROWS, g.rows, true)] {
-            ui.label(name);
-            let mut v = value;
-            let drag = ui.add(egui::DragValue::new(&mut v).range(counts.clone()));
-            named(&drag, egui::WidgetType::DragValue, name);
-            if drag.changed() {
-                if rows {
-                    atlas::set_grid_rows(state, id, v);
-                } else {
-                    atlas::set_grid_columns(state, id, v);
+            if let Some(on) = check(ui, BORDER_STROKE, b.stroke) {
+                atlas::set_border_stroke(state, id, on);
+            }
+            if b.stroke {
+                if let Some(c) = color(ui, STROKE_COLOR, b.stroke_color) {
+                    atlas::set_border_stroke_color(state, id, c);
+                }
+                let widths = Border::STROKE_WIDTHS;
+                if let Some(v) = number(ui, STROKE_WIDTH, b.stroke_width, widths, " pt") {
+                    atlas::set_border_stroke_width(state, id, v);
                 }
             }
-            ui.end_row();
-        }
-    });
-    ui.label(GRID_LABELS);
-    let edit = |state: &mut AppState, step: bool, f: &dyn Fn(&mut vale_store::FurnitureText)| {
-        atlas::edit_grid_text(state, id, step, f);
-    };
-    let target = super::FontTarget::Grid(id);
-    style_grid(ui, state, ("atlas-grid-text", id.0), target, &g.text, &edit);
+            if let Some(on) = check(ui, REFERENCE_GRID, b.grid) {
+                atlas::set_border_grid(state, id, on);
+            }
+        });
+    if b.grid {
+        ui.label(GRID_LABELS);
+        let edit =
+            |state: &mut AppState, step: bool, f: &dyn Fn(&mut vale_store::FurnitureText)| {
+                atlas::edit_grid_text(state, id, step, f);
+            };
+        let target = super::FontTarget::Grid(id);
+        style_grid(
+            ui,
+            state,
+            ("atlas-grid-text", id.0),
+            target,
+            &b.grid_text,
+            &edit,
+        );
+    }
 }
 
 /// A switch for each layer, which turns the layer on or off in the

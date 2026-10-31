@@ -10,7 +10,7 @@ use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
     Border, BorderStyle, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
     FurnitureId, FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, Neatline,
-    NorthArrowItem, PageId, PageRecord, PageUnits, ReferenceGrid, Rgb, ScaleBarItem, TextItem,
+    NorthArrowItem, PageId, PageRecord, PageUnits, Rgb, ScaleBarItem, TextItem,
 };
 
 use std::sync::Arc;
@@ -357,6 +357,8 @@ pub enum ClassColor {
     Paper,
     /// The first or the second color of the border of a frame.
     Border(bool),
+    /// The stroke of the border of a frame.
+    BorderStroke,
     /// The text of the reference grid of a frame.
     GridText,
     /// The halo of the reference grid of a frame.
@@ -1931,7 +1933,6 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             &frame.graticule,
             neatline_key(&frame.neatline),
             &frame.border,
-            &frame.grid,
             page.paper,
             ppp.to_bits(),
             state.selection,
@@ -2989,17 +2990,9 @@ pub fn set_border_distance(state: &mut AppState, id: FrameId, distance: f64) {
     }
 }
 
-/// Changes the reference grid of a frame.
-pub fn edit_grid(state: &mut AppState, id: FrameId, change: impl FnOnce(&mut ReferenceGrid)) {
-    edit_frame(state, id, |f, _| {
-        let before = f.grid.clone();
-        change(&mut f.grid);
-        f.grid != before
-    });
-}
-
-pub fn set_grid(state: &mut AppState, id: FrameId, on: bool) {
-    edit_grid(state, id, |g| g.on = on);
+/// Turns the reference grid of the border of a frame on or off.
+pub fn set_border_grid(state: &mut AppState, id: FrameId, on: bool) {
+    edit_border(state, id, |b| b.grid = on);
 }
 
 /// Changes the text style of the reference grid of a frame. With `step`,
@@ -3013,20 +3006,26 @@ pub fn edit_grid_text(
     if step {
         state.save_edit();
     }
-    edit_grid(state, id, |g| edit(&mut g.text));
+    edit_border(state, id, |b| edit(&mut b.grid_text));
     if step {
         state.save_edit();
     }
 }
 
-/// Sets the number of columns of the reference grid of a frame.
-pub fn set_grid_columns(state: &mut AppState, id: FrameId, columns: u32) {
-    let (lo, hi) = (*ReferenceGrid::COUNTS.start(), *ReferenceGrid::COUNTS.end());
-    edit_grid(state, id, |g| g.columns = columns.clamp(lo, hi));
+/// Turns the stroke of the border of a frame on or off.
+pub fn set_border_stroke(state: &mut AppState, id: FrameId, on: bool) {
+    edit_border(state, id, |b| b.stroke = on);
 }
 
-/// Sets the number of rows of the reference grid of a frame.
-pub fn set_grid_rows(state: &mut AppState, id: FrameId, rows: u32) {
-    let (lo, hi) = (*ReferenceGrid::COUNTS.start(), *ReferenceGrid::COUNTS.end());
-    edit_grid(state, id, |g| g.rows = rows.clamp(lo, hi));
+pub fn set_border_stroke_color(state: &mut AppState, id: FrameId, color: Rgb) {
+    edit_border(state, id, |b| b.stroke_color = color);
+}
+
+/// Sets the stroke width of the border of a frame, in points, rounded to
+/// 0.25.
+pub fn set_border_stroke_width(state: &mut AppState, id: FrameId, width: f64) {
+    if width.is_finite() {
+        let width = stepped(width, Border::STROKE_WIDTHS, 0.25);
+        edit_border(state, id, |b| b.stroke_width = width);
+    }
 }

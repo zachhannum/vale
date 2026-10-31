@@ -20,7 +20,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use crate::atlas::{
     Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
     FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, Neatline, PageId, PageRecord,
-    PageUnits, ProjectionPreset, ReferenceGrid, encode_rings, read_rings,
+    PageUnits, ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry,
@@ -491,7 +491,7 @@ fn world(r: &mut Reader) -> Option<World> {
 /// ends after the projections has no overrides. An image that ends after the
 /// overrides has no label classes. An image that ends after the label
 /// classes has no furniture. An image that ends after the furniture has white
-/// paper, and frames with no border and no reference grid.
+/// paper, and frames with no border.
 fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     put_u32(out, atlas.maps.len());
     for map in &atlas.maps {
@@ -601,7 +601,6 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     for frame in frames {
         put_u32(out, frame.id.0 as usize);
         put_bytes(out, frame.border.to_json().as_bytes());
-        put_bytes(out, frame.grid.to_json().as_bytes());
     }
 }
 
@@ -668,7 +667,6 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                     width: r.f64()?,
                 },
                 border: Border::default(),
-                grid: ReferenceGrid::default(),
             });
         }
         pages.push(PageRecord {
@@ -732,10 +730,9 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
         for _ in 0..count(r)? {
             let id = FrameId(r.u32()?);
             let border = Border::from_json(&string(r)?)?;
-            let grid = ReferenceGrid::from_json(&string(r)?)?;
             let mut frames = pages.iter_mut().flat_map(|p| &mut p.frames);
             let frame = frames.find(|f| f.id == id)?;
-            (frame.border, frame.grid) = (border, grid);
+            frame.border = border;
         }
     }
     r.0.is_empty().then_some((maps, pages, presets))
@@ -1233,12 +1230,9 @@ mod tests {
                 on: !graticule.on,
                 style: crate::atlas::BorderStyle::Graduated,
                 width_mm: 3.5,
+                stroke: true,
+                grid: true,
                 ..Border::default()
-            },
-            grid: ReferenceGrid {
-                on: !graticule.on,
-                columns: 9,
-                ..ReferenceGrid::default()
             },
             graticule,
         };
@@ -1364,15 +1358,14 @@ mod tests {
             graticule: Graticule::default(),
             neatline: Neatline::default(),
             border: Border::default(),
-            grid: ReferenceGrid::default(),
         };
         let id = before.add_frame(page, frame).unwrap();
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
         // An image of an older build ends after the furniture.
         let frame = before.frame(id).unwrap();
-        let (border, grid) = (frame.border.to_json(), frame.grid.to_json());
-        let tail = 4 + 7 + 4 + 4 + (4 + border.len()) + (4 + grid.len());
+        let border = frame.border.to_json();
+        let tail = 4 + 7 + 4 + 4 + (4 + border.len());
         out.truncate(out.len() - tail);
         let image = atlas(&mut Reader(&out)).unwrap();
         assert_eq!(image.1, before.pages);

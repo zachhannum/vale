@@ -138,11 +138,14 @@ fn the_desktop_frame_panel_sets_the_neatline_the_border_and_the_grid() {
     h.run_steps(2);
     assert!(h.get_all_by_label("Second color").next().is_some());
     assert!(h.get_all_by_label("Border distance").next().is_some());
+    h.get_by_label("Border stroke").click();
+    h.run_steps(2);
+    assert!(h.get_all_by_label("Stroke width").next().is_some());
     h.get_by_label("Reference grid").click();
     h.run_steps(2);
-    assert!(h.get_all_by_label("Columns").next().is_some());
+    assert!(h.get_all_by_label("Grid labels").next().is_some());
     let f = h.state().doc.project.atlas.frame(frame).unwrap();
-    assert!(f.border.on && f.grid.on);
+    assert!(f.border.on && f.border.stroke && f.border.grid);
     assert_eq!(f.border.style, vale_store::BorderStyle::Graduated);
     if std::env::var_os("VALE_SCREENSHOTS").is_some() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/app");

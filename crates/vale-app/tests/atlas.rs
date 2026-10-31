@@ -18,13 +18,14 @@ use vale_app::ui::atlas::measure::measure_lines;
 use vale_app::ui::atlas::{self as atlas, BarPage, BarPick, ItemKind, ItemPage, TextPart};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STYLES, BORDER_WIDTH,
-    CENTER_ON_FRAME, COLUMNS, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF,
+    ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
+    BORDER_WIDTH, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF,
     EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH,
     HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH,
     NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID,
-    REMOVE_OVERRIDES, REMOVE_VERTEX, ROWS, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE,
-    STYLE_FOR_THIS_MAP, WIDTH, custom_row, page_title, readout_text,
+    REMOVE_OVERRIDES, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE, STROKE_COLOR,
+    STROKE_WIDTH as BORDER_STROKE_WIDTH, STYLE_FOR_THIS_MAP, WIDTH, custom_row, page_title,
+    readout_text,
 };
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
@@ -1864,20 +1865,37 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         assert_eq!((b.distance_mm * 2.0).round() / 2.0, b.distance_mm);
         check_controls(&h, "border");
 
+        scroll_to(&mut h, BORDER_STROKE);
+        assert!(control(&h, BORDER_STROKE_WIDTH).is_none(), "{size:?}");
+        tap(&mut h, BORDER_STROKE);
+        assert!(frame(&h, 1).border.stroke, "{size:?}");
+        scroll_to(&mut h, BORDER_STROKE_WIDTH);
+        let slider = control(&h, BORDER_STROKE_WIDTH).unwrap();
+        tap_with(
+            &mut h,
+            slider.right_center() - vec2(30.0, 0.0),
+            Input::Finger,
+        );
+        let width = frame(&h, 1).border.stroke_width;
+        assert!(width > 2.0, "{size:?}: {width}");
+        assert_eq!((width * 4.0).round() / 4.0, width);
+        scroll_to(&mut h, STROKE_COLOR);
+        tap(&mut h, STROKE_COLOR);
+        let shade = format!("{STROKE_COLOR} shade");
+        scroll_to(&mut h, &shade);
+        let before = frame(&h, 1).border.stroke_color;
+        let square = control(&h, &shade).unwrap();
+        tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+        assert_ne!(frame(&h, 1).border.stroke_color, before, "{size:?}");
+        check_controls(&h, "border stroke");
+        scroll_up_to(&mut h, STROKE_COLOR);
+        tap(&mut h, STROKE_COLOR);
+
+        // The reference grid is a part of the border.
         scroll_to(&mut h, REFERENCE_GRID);
+        assert!(control(&h, GRID_LABELS).is_none(), "{size:?}");
         tap(&mut h, REFERENCE_GRID);
-        assert!(frame(&h, 1).grid.on, "{size:?}");
-        for name in [COLUMNS, ROWS] {
-            scroll_to(&mut h, name);
-            let slider = control(&h, name).unwrap();
-            tap_with(
-                &mut h,
-                slider.right_center() - vec2(30.0, 0.0),
-                Input::Finger,
-            );
-        }
-        let g = &frame(&h, 1).grid;
-        assert!(g.columns > 15 && g.rows > 15, "{size:?}: {g:?}");
+        assert!(frame(&h, 1).border.grid, "{size:?}");
         check_controls(&h, "reference grid");
         if size == BOARDS[0] {
             screenshot::save(&mut h, "pad-atlas-frame-border");
@@ -1892,16 +1910,22 @@ fn the_border_and_grid_controls_work_with_a_finger() {
             slider.right_center() - vec2(30.0, 0.0),
             Input::Finger,
         );
-        assert!(frame(&h, 1).grid.text.size > 20.0, "{size:?}");
+        assert!(frame(&h, 1).border.grid_text.size > 20.0, "{size:?}");
         check_controls(&h, "grid labels");
+
+        // With the border off, the reference grid has no row.
+        tap(&mut h, &format!("Back to {}", FRAME_TABS[0]));
+        scroll_up_to(&mut h, BORDER);
+        tap(&mut h, BORDER);
+        assert!(control(&h, REFERENCE_GRID).is_none(), "{size:?}");
     }
 }
 
 #[test]
 fn the_paper_the_border_and_the_grid_survive_a_close_and_an_open() {
     use vale_app::ui::atlas::{
-        edit_grid_text, set_border, set_border_distance, set_border_style, set_grid,
-        set_grid_columns, set_paper,
+        edit_grid_text, set_border, set_border_distance, set_border_grid, set_border_stroke,
+        set_border_style, set_paper,
     };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
@@ -1917,8 +1941,8 @@ fn the_paper_the_border_and_the_grid_survive_a_close_and_an_open() {
     set_border(st, id, true);
     set_border_style(st, id, vale_store::BorderStyle::Graduated);
     set_border_distance(st, id, 12.3);
-    set_grid(st, id, true);
-    set_grid_columns(st, id, 9);
+    set_border_stroke(st, id, true);
+    set_border_grid(st, id, true);
     edit_grid_text(st, id, true, |t| t.italic = true);
     h.run_steps(2);
     let mut project = h.state().doc.project.clone();
@@ -1932,7 +1956,7 @@ fn the_paper_the_border_and_the_grid_survive_a_close_and_an_open() {
     let f = doc.project.atlas.frame(id).unwrap();
     assert!(f.border.on && f.border.style == vale_store::BorderStyle::Graduated);
     assert_eq!(f.border.distance_mm, 12.5);
-    assert!(f.grid.on && f.grid.columns == 9 && f.grid.text.italic);
+    assert!(f.border.stroke && f.border.grid && f.border.grid_text.italic);
 }
 
 #[test]

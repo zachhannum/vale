@@ -23,7 +23,7 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 use crate::atlas::{
     self, Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
     FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, Neatline, PageId, PageRecord,
-    PageUnits, ProjectionPreset, ReferenceGrid,
+    PageUnits, ProjectionPreset,
 };
 use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
@@ -1088,13 +1088,12 @@ fn v33(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
-/// The paper color of a page, and the border and the reference grid of a
-/// frame. An older page is white, and an older frame has both off.
+/// The paper color of a page and the border of a frame. An older page is
+/// white, and an older frame has no border.
 fn v34(tx: &Transaction) -> rusqlite::Result<()> {
     for (table, column, kind) in [
         ("vale_page", "paper", "TEXT NOT NULL DEFAULT 'FFFFFF'"),
         ("vale_frame", "frame_border", "TEXT NOT NULL DEFAULT '{}'"),
-        ("vale_frame", "reference_grid", "TEXT NOT NULL DEFAULT '{}'"),
     ] {
         let sql = format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1");
         let count: i64 = tx.query_row(&sql, [column], |r| r.get(0))?;
@@ -1726,9 +1725,9 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
         "INSERT INTO vale_frame (id, page_id, position, map_id, shape, rings, center_lon,
            center_lat, scale, rotation, graticule, graticule_interval, graticule_color,
            graticule_width, border, border_color, border_width, graticule_format,
-           meridian_labels, parallel_labels, frame_border, reference_grid)
+           meridian_labels, parallel_labels, frame_border)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-           ?18, ?19, ?20, ?21, ?22)",
+           ?18, ?19, ?20, ?21)",
     )?;
     let mut furniture = tx.prepare(
         "INSERT INTO vale_furniture (id, page_id, position, kind, x0, y0, x1, y1, frame_id,
@@ -1769,7 +1768,6 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.graticule.meridians.to_json(),
                 f.graticule.parallels.to_json(),
                 f.border.to_json(),
-                f.grid.to_json(),
             ])?;
         }
         for (position, f) in p.furniture.iter().enumerate() {
@@ -2712,7 +2710,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         "SELECT id, page_id, map_id, shape, rings, center_lon, center_lat, scale, rotation,
            graticule, graticule_interval, graticule_color, graticule_width,
            border, border_color, border_width, graticule_format, meridian_labels,
-           parallel_labels, frame_border, reference_grid
+           parallel_labels, frame_border
          FROM vale_frame ORDER BY page_id, position",
     )?;
     let mut rows = rows.query([])?;
@@ -2753,7 +2751,6 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             width: border_width,
         };
         let border: String = r.get(19)?;
-        let grid: String = r.get(20)?;
         let frame = FrameRecord {
             id: FrameId(id),
             map,
@@ -2764,7 +2761,6 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             graticule,
             neatline,
             border: Border::from_json(&border).ok_or_else(bad)?,
-            grid: ReferenceGrid::from_json(&grid).ok_or_else(bad)?,
         };
         if atlas.map(map).is_none() {
             return Err(bad());
@@ -3441,7 +3437,6 @@ mod tests {
             graticule: Graticule::default(),
             neatline: Neatline::default(),
             border: Border::default(),
-            grid: ReferenceGrid::default(),
         };
         atlas.add_frame(first, frame.clone()).unwrap();
         let ring = vec![
@@ -3499,12 +3494,11 @@ mod tests {
                 color2: [6, 5, 4],
                 width_mm: 2.5,
                 distance_mm: 4.0,
-            },
-            grid: ReferenceGrid {
-                on: true,
-                columns: 8,
-                rows: 5,
-                text: atlas::FurnitureText {
+                stroke: true,
+                stroke_color: [3, 2, 1],
+                stroke_width: 1.5,
+                grid: true,
+                grid_text: atlas::FurnitureText {
                     italic: true,
                     ..atlas::FurnitureText::sized(7.0)
                 },
@@ -3534,7 +3528,6 @@ mod tests {
             graticule: Graticule::default(),
             neatline: Neatline::default(),
             border: Border::default(),
-            grid: ReferenceGrid::default(),
         };
         let frame = atlas.add_frame(page, frame).unwrap();
         let title = TextItem {
@@ -3822,8 +3815,8 @@ mod tests {
             "frame_border = 'none'",
             r#"frame_border = '{"width": 0}'"#,
             r#"frame_border = '{"style": "dotted"}'"#,
-            r#"reference_grid = '{"columns": 0}'"#,
-            r#"reference_grid = '{"text": {"size": 0}}'"#,
+            r#"frame_border = '{"stroke_width": 0}'"#,
+            r#"frame_border = '{"grid_text": {"size": 0}}'"#,
         ] {
             let dir = tempfile::tempdir().unwrap();
             let mut project = Project::new(World::default());
@@ -4023,8 +4016,7 @@ mod tests {
         let conn = Connection::open(path(&dir)).unwrap();
         conn.execute_batch(
             "ALTER TABLE vale_page DROP COLUMN paper;
-             ALTER TABLE vale_frame DROP COLUMN frame_border;
-             ALTER TABLE vale_frame DROP COLUMN reference_grid;",
+             ALTER TABLE vale_frame DROP COLUMN frame_border;",
         )
         .unwrap();
         drop(conn);
@@ -4036,7 +4028,6 @@ mod tests {
             assert_eq!(page.paper, [0xff, 0xff, 0xff]);
             for frame in &page.frames {
                 assert_eq!(frame.border, Border::default());
-                assert_eq!(frame.grid, ReferenceGrid::default());
             }
         }
     }

@@ -835,46 +835,120 @@ fn a_graduated_border_changes_color_at_each_graticule_line() {
     assert!(pieces(&doc, &mut pipeline).len() > coarse.len());
 }
 
+/// The text and the first glyph position of each glyph run.
+fn runs(items: &[Item]) -> Vec<(String, Point)> {
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(run) => Some((run.text.clone(), run.glyphs[0].1.translation().to_point())),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn the_reference_grid_labels_sit_in_the_band_and_can_be_off() {
+fn the_reference_grid_labels_each_graticule_interval_in_the_band() {
     let (mut doc, mut pipeline, id) = bordered();
     let frame = doc.project.atlas.frame_mut(id).unwrap();
     frame.border.on = true;
-    frame.grid.on = true;
-    frame.grid.columns = 4;
-    frame.grid.rows = 3;
+    frame.border.grid = true;
+    frame.graticule.interval = Some(30.0);
+    // The map fills the band.
+    frame.scale /= 3.0;
     let list = page_list(&doc, &mut pipeline);
-    let mut labels = texts(&list.items);
-    labels.sort();
-    let want = [
-        "1", "1", "2", "2", "3", "3", "A", "A", "B", "B", "C", "C", "D", "D",
-    ];
-    assert_eq!(labels, want);
+    assert!(list.items.iter().all(|i| !matches!(i, Item::Image { .. })));
+    assert!(is_pdf(&list));
+    let runs = runs(&list.items);
     let pt = |mm: f64| mm * PT_PER_MM;
     let outer = kurbo::Rect::new(pt(30.0), pt(30.0), pt(210.0), pt(170.0));
     let inner = kurbo::Rect::new(pt(32.0), pt(32.0), pt(208.0), pt(168.0));
-    for item in &list.items {
-        let Item::Glyphs(run) = item else { continue };
-        let at = run.glyphs[0].1.translation().to_point();
+    for (text, at) in &runs {
         assert!(
-            outer.contains(at) && !inner.contains(at),
-            "{} at {at:?}",
-            run.text
+            outer.contains(*at) && !inner.contains(*at),
+            "{text} at {at:?}"
         );
     }
-    // Column B is the second quarter of the box.
-    let b = (list.items.iter())
-        .find_map(|i| match i {
-            Item::Glyphs(run) if run.text == "B" => Some(run.glyphs[0].1.translation().x),
-            _ => None,
+
+    let projection = pipeline.projection(&doc, doc.first_map()).unwrap();
+    let frame = doc.project.atlas.frame(id).unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let vt = frame_transform(projection, frame, target);
+    // The letters on the top go from the west, one for each interval of
+    // the meridians, and the bottom has the same letters.
+    let side = |top: bool| {
+        let mut letters: Vec<(f64, String)> = (runs.iter())
+            .filter(|(t, at)| t.chars().all(|c| c.is_ascii_uppercase()) && (at.y < inner.y0) == top)
+            .map(|(t, at)| (at.x, t.clone()))
+            .collect();
+        letters.sort_by(|a, b| a.0.total_cmp(&b.0));
+        letters
+    };
+    let top = side(true);
+    assert!(top.len() >= 3, "{top:?}");
+    let names: Vec<&str> = top.iter().map(|(_, t)| t.as_str()).collect();
+    assert_eq!(names[..3], ["A", "B", "C"]);
+    let bottom: Vec<String> = side(false).into_iter().map(|(_, t)| t).collect();
+    assert_eq!(bottom, names);
+    let middle_y = (outer.y0 + inner.y0) / 2.0;
+    let cells: Vec<i64> = (top.iter())
+        .map(|(x, _)| {
+            // Just right of the start of the letter.
+            let at = vt.from_page(Point::new(*x + 1.0, middle_y));
+            let [lon, _] = projection.inverse(at).unwrap();
+            (lon / 30.0).floor() as i64
         })
-        .unwrap();
-    assert!(b > pt(80.0) && b < pt(120.0), "{b}");
-    assert!(list.items.iter().all(|i| !matches!(i, Item::Image { .. })));
+        .collect();
+    for w in cells.windows(2) {
+        assert_eq!(w[1], w[0] + 1, "one letter for each interval: {cells:?}");
+    }
+    // The numbers on the left go from the north, one for each interval of
+    // the parallels.
+    let mut left: Vec<(f64, String)> = (runs.iter())
+        .filter(|(t, at)| t.chars().all(|c| c.is_ascii_digit()) && at.x < inner.x0)
+        .map(|(t, at)| (at.y, t.clone()))
+        .collect();
+    left.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let numbers: Vec<&str> = left.iter().map(|(_, t)| t.as_str()).collect();
+    assert!(numbers.len() >= 3, "{numbers:?}");
+    assert_eq!(numbers[..3], ["1", "2", "3"]);
+
+    // A finer graticule gives more labels.
+    doc.project.atlas.frame_mut(id).unwrap().graticule.interval = Some(10.0);
+    let finer = texts(&page_list(&doc, &mut pipeline).items).len();
+    assert!(finer > runs.len(), "{finer} {}", runs.len());
+
+    doc.project.atlas.frame_mut(id).unwrap().border.grid = false;
+    assert!(texts(&page_list(&doc, &mut pipeline).items).is_empty());
+}
+
+#[test]
+fn the_border_stroke_draws_both_edges_of_the_band() {
+    let (mut doc, mut pipeline, id) = bordered();
+    let black = [1, 2, 3];
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.border.on = true;
+    frame.border.stroke = true;
+    frame.border.stroke_color = black;
+    frame.border.stroke_width = 1.5;
+    let list = page_list(&doc, &mut pipeline);
+    let strokes = neatline_items(&list, black, 1.5);
+    assert_eq!(strokes.len(), 1);
+    let Item::Stroke { path, .. } = strokes[0] else {
+        unreachable!()
+    };
+    let rings = (path.elements().iter())
+        .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_)))
+        .count();
+    assert_eq!(rings, 2, "the outer and the inner edge");
+    let b = path.bounding_box();
+    let pt = |mm: f64| mm * PT_PER_MM;
+    assert!((b.x0 - pt(30.0)).abs() < 1e-6 && (b.x1 - pt(210.0)).abs() < 1e-6);
     assert!(is_pdf(&list));
 
-    doc.project.atlas.frame_mut(id).unwrap().grid.on = false;
-    assert!(texts(&page_list(&doc, &mut pipeline).items).is_empty());
+    doc.project.atlas.frame_mut(id).unwrap().border.stroke = false;
+    assert!(neatline_items(&page_list(&doc, &mut pipeline), black, 1.5).is_empty());
 }
 
 /// A document with one line layer. Each line has a `kind` and its coordinates.

@@ -1428,7 +1428,16 @@ impl AppState {
                 let rec = self.doc.project.atlas.furniture(id)?;
                 Some(part.of(&rec.item)?.font.clone())
             }
-            FontTarget::Grid(id) => Some(self.doc.project.atlas.frame(id)?.grid.text.font.clone()),
+            FontTarget::Grid(id) => Some(
+                self.doc
+                    .project
+                    .atlas
+                    .frame(id)?
+                    .border
+                    .grid_text
+                    .font
+                    .clone(),
+            ),
         }
     }
 
@@ -2991,8 +3000,8 @@ impl AppState {
                 });
             }
             Action::SetFont(FontTarget::Grid(id), family) => {
-                atlas::edit_grid(self, id, |g| {
-                    crate::fonts::set_font(&mut g.text.font, &family);
+                atlas::edit_grid_text(self, id, true, |t| {
+                    crate::fonts::set_font(&mut t.font, &family);
                 });
             }
             Action::AddSymbol(path) => {

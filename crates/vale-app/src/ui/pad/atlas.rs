@@ -6,7 +6,6 @@ use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
 use vale_store::{
     Border, BorderStyle, FrameShape, Graticule, LayerId, MapId, Neatline, PageUnits, RasterId,
-    ReferenceGrid,
 };
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
@@ -63,9 +62,10 @@ pub const BORDER_COLOR: &str = "Border color";
 pub const SECOND_COLOR: &str = "Second color";
 pub const BORDER_WIDTH: &str = "Border width";
 pub const BORDER_DISTANCE: &str = "Border distance";
+pub const BORDER_STROKE: &str = "Border stroke";
+pub const STROKE_COLOR: &str = "Stroke color";
+pub const STROKE_WIDTH: &str = "Stroke width";
 pub const REFERENCE_GRID: &str = "Reference grid";
-pub const COLUMNS: &str = "Columns";
-pub const ROWS: &str = "Rows";
 pub const PAPER_COLOR: &str = "Paper color";
 pub const CENTER_ON_FRAME: &str = "Center on frame";
 pub const PROJECTION: &str = "Map projection";
@@ -881,13 +881,6 @@ fn frame_tab(
     if frame.border.on {
         border_rows(ui, state, controls, &frame);
     }
-    let mut grid = frame.grid.on;
-    if widgets::switch_row(ui, controls, REFERENCE_GRID, REFERENCE_GRID, &mut grid) {
-        atlas::set_grid(state, id, grid);
-    }
-    if frame.grid.on {
-        grid_rows(ui, state, controls, &frame);
-    }
 
     ui.add_space(6.0);
     let delete = widgets::button_row_in(ui, controls, DELETE_FRAME, true, theme::WARN);
@@ -1005,7 +998,7 @@ fn neatline_rows(
 }
 
 /// The rows of the border of a frame: the style, the colors, the width,
-/// and the distance.
+/// the distance, the stroke, and the reference grid.
 fn border_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1046,30 +1039,37 @@ fn border_rows(
     if let Some(d) = value_slider(ui, controls, names, b.distance_mm, distances, &text) {
         atlas::set_border_distance(state, id, d);
     }
-}
 
-/// The rows of the reference grid of a frame: the number of columns, the
-/// number of rows, and the row of the Grid labels page.
-fn grid_rows(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    frame: &vale_store::FrameRecord,
-) {
-    let (id, g) = (frame.id, &frame.grid);
-    let counts = ReferenceGrid::COUNTS;
-    if let Some(n) = super::furniture::count_slider(ui, controls, COLUMNS, g.columns, counts) {
-        atlas::set_grid_columns(state, id, n);
+    let mut stroke = b.stroke;
+    if widgets::switch_row(ui, controls, BORDER_STROKE, BORDER_STROKE, &mut stroke) {
+        atlas::set_border_stroke(state, id, stroke);
     }
-    let counts = ReferenceGrid::COUNTS;
-    if let Some(n) = super::furniture::count_slider(ui, controls, ROWS, g.rows, counts) {
-        atlas::set_grid_rows(state, id, n);
+    if b.stroke {
+        let which = ClassColor::BorderStroke;
+        if let Some(c) =
+            text_style::rgb_rows(ui, state, controls, STROKE_COLOR, which, b.stroke_color)
+        {
+            atlas::set_border_stroke_color(state, id, c);
+        }
+        let text = format!("{} pt", b.stroke_width);
+        let names = (STROKE_WIDTH, STROKE_WIDTH);
+        let widths = range(Border::STROKE_WIDTHS);
+        if let Some(w) = value_slider(ui, controls, names, b.stroke_width, widths, &text) {
+            atlas::set_border_stroke_width(state, id, w);
+        }
     }
-    let summary = super::grid_labels::summary(&g.text);
-    if widgets::open_row(ui, controls, super::grid_labels::GRID_LABELS, &summary).clicked() {
-        state.atlas.grid = Some(id);
-        state.atlas.grid_page = None;
-        state.atlas.label_color = None;
+
+    let mut grid = b.grid;
+    if widgets::switch_row(ui, controls, REFERENCE_GRID, REFERENCE_GRID, &mut grid) {
+        atlas::set_border_grid(state, id, grid);
+    }
+    if b.grid {
+        let summary = super::grid_labels::summary(&b.grid_text);
+        if widgets::open_row(ui, controls, super::grid_labels::GRID_LABELS, &summary).clicked() {
+            state.atlas.grid = Some(id);
+            state.atlas.grid_page = None;
+            state.atlas.label_color = None;
+        }
     }
 }
 
