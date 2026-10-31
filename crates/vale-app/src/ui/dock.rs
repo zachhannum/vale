@@ -5,8 +5,8 @@
 use eframe::egui;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
 use vale_store::{
-    BlendMode, Border, CoordFormat, EdgeLabels, EdgeOrientation, FrameRecord, FrameShape,
-    Graticule, LayerId, PageUnits, RasterDisplay,
+    BlendMode, Border, BorderStyle, CoordFormat, EdgeLabels, EdgeOrientation, FrameRecord,
+    FrameShape, Graticule, LayerId, Neatline, PageUnits, RasterDisplay, ReferenceGrid,
 };
 
 use super::elevation::{DISPLAYS, blend_label};
@@ -14,15 +14,17 @@ use super::pad::raster::{BLEND, SHOW_AS};
 
 use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
 use super::pad::atlas::{
-    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_WIDTH,
-    CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
-    DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
-    INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, OBLIQUE,
-    ORIENTATIONS, PAGE_NAME, POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX,
-    ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
-    length_text, unit_name,
+    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
+    BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME,
+    COLUMNS, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS,
+    GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE,
+    LONGITUDE, MAP_NAME, MAP_STYLE_HINT, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, OBLIQUE,
+    ORIENTATIONS, PAGE_NAME, PAPER_COLOR, POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID,
+    REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION, ROWS, SAVE_PROJECTION, SCALE, SECOND_COLOR,
+    SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row, length_text, unit_name,
 };
 use super::pad::edge_labels::EDGE_LABELS;
+use super::pad::grid_labels::GRID_LABELS;
 use super::pad::{GRATICULE, NO_LAYERS};
 use super::{AppState, inspector, style_editor};
 use crate::atlas::{self as math, PAGE_PRESETS};
@@ -184,12 +186,26 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     if frame.graticule.on {
         graticule_rows(ui, state, frame);
     }
+    let mut neatline = frame.neatline.on;
+    if ui.checkbox(&mut neatline, NEATLINE).changed() {
+        atlas::set_neatline(state, frame.id, neatline);
+    }
+    if frame.neatline.on {
+        neatline_rows(ui, state, frame);
+    }
     let mut border = frame.border.on;
     if ui.checkbox(&mut border, BORDER).changed() {
         atlas::set_border(state, frame.id, border);
     }
     if frame.border.on {
         border_rows(ui, state, frame);
+    }
+    let mut grid = frame.grid.on;
+    if ui.checkbox(&mut grid, REFERENCE_GRID).changed() {
+        atlas::set_grid(state, frame.id, grid);
+    }
+    if frame.grid.on {
+        grid_rows(ui, state, frame);
     }
     ui.add_space(4.0);
     if ui.button(DELETE_FRAME).clicked() {
@@ -395,34 +411,96 @@ fn edge_label_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord)
     }
 }
 
-/// The color and the width of the border of a frame.
+/// The color and the width of the neatline of a frame.
+fn neatline_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let (id, b) = (frame.id, &frame.neatline);
+    egui::Grid::new("atlas-neatline")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label(NEATLINE_COLOR);
+            let mut color = b.color;
+            let button = ui.color_edit_button_srgb(&mut color);
+            named(&button, egui::WidgetType::ColorButton, NEATLINE_COLOR);
+            if button.changed() {
+                atlas::set_neatline_color(state, id, color);
+            }
+            ui.end_row();
+            ui.label(NEATLINE_WIDTH);
+            let mut width = b.width;
+            let drag = egui::DragValue::new(&mut width)
+                .range(Neatline::WIDTHS)
+                .speed(0.05)
+                .fixed_decimals(2)
+                .suffix(" pt");
+            let drag = ui.add(drag);
+            named(&drag, egui::WidgetType::DragValue, NEATLINE_WIDTH);
+            if drag.changed() {
+                atlas::set_neatline_width(state, id, width);
+            }
+            ui.end_row();
+        });
+}
+
+/// The style, the colors, the width, and the distance of the border of a
+/// frame.
 fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let (id, b) = (frame.id, &frame.border);
     egui::Grid::new("atlas-border")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.label(BORDER_COLOR);
-            let mut color = b.color;
-            let button = ui.color_edit_button_srgb(&mut color);
-            named(&button, egui::WidgetType::ColorButton, BORDER_COLOR);
-            if button.changed() {
-                atlas::set_border_color(state, id, color);
-            }
+            ui.label(BORDER_STYLE);
+            ui.horizontal(|ui| {
+                for (style, name) in BorderStyle::ALL.into_iter().zip(BORDER_STYLES) {
+                    if ui.selectable_label(b.style == style, name).clicked() {
+                        atlas::set_border_style(state, id, style);
+                    }
+                }
+            });
             ui.end_row();
-            ui.label(BORDER_WIDTH);
-            let mut width = b.width;
-            let drag = egui::DragValue::new(&mut width)
-                .range(Border::WIDTHS)
-                .speed(0.05)
-                .fixed_decimals(2)
-                .suffix(" pt");
-            let drag = ui.add(drag);
-            named(&drag, egui::WidgetType::DragValue, BORDER_WIDTH);
-            if drag.changed() {
-                atlas::set_border_width(state, id, width);
+            if let Some(c) = color(ui, BORDER_COLOR, b.color) {
+                atlas::set_border_color(state, id, false, c);
             }
-            ui.end_row();
+            if b.style == BorderStyle::Graduated
+                && let Some(c) = color(ui, SECOND_COLOR, b.color2)
+            {
+                atlas::set_border_color(state, id, true, c);
+            }
+            if let Some(v) = number(ui, BORDER_WIDTH, b.width_mm, Border::WIDTHS, " mm") {
+                atlas::set_border_width(state, id, v);
+            }
+            let distances = Border::DISTANCES;
+            if let Some(v) = number(ui, BORDER_DISTANCE, b.distance_mm, distances, " mm") {
+                atlas::set_border_distance(state, id, v);
+            }
         });
+}
+
+/// The columns, the rows, and the text of the reference grid of a frame.
+fn grid_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let (id, g) = (frame.id, &frame.grid);
+    egui::Grid::new("atlas-grid").num_columns(2).show(ui, |ui| {
+        let counts = ReferenceGrid::COUNTS;
+        for (name, value, rows) in [(COLUMNS, g.columns, false), (ROWS, g.rows, true)] {
+            ui.label(name);
+            let mut v = value;
+            let drag = ui.add(egui::DragValue::new(&mut v).range(counts.clone()));
+            named(&drag, egui::WidgetType::DragValue, name);
+            if drag.changed() {
+                if rows {
+                    atlas::set_grid_rows(state, id, v);
+                } else {
+                    atlas::set_grid_columns(state, id, v);
+                }
+            }
+            ui.end_row();
+        }
+    });
+    ui.label(GRID_LABELS);
+    let edit = |state: &mut AppState, step: bool, f: &dyn Fn(&mut vale_store::FurnitureText)| {
+        atlas::edit_grid_text(state, id, step, f);
+    };
+    let target = super::FontTarget::Grid(id);
+    style_grid(ui, state, ("atlas-grid-text", id.0), target, &g.text, &edit);
 }
 
 /// A switch for each layer, which turns the layer on or off in the
@@ -702,6 +780,9 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
         ui.end_row();
+        if let Some(c) = color(ui, PAPER_COLOR, page.paper) {
+            atlas::set_paper(state, c);
+        }
     });
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -1209,93 +1290,106 @@ fn text_grid(
     part: super::atlas::TextPart,
     style: &vale_store::FurnitureText,
 ) {
-    use super::pad::furniture as item;
-    use vale_store::{FurnitureText, TextCase};
-    let edit = |state: &mut AppState, step: bool, f: &dyn Fn(&mut FurnitureText)| {
+    let edit = |state: &mut AppState, step: bool, f: &dyn Fn(&mut vale_store::FurnitureText)| {
         atlas::edit_text(state, id, part, step, f);
     };
-    egui::Grid::new(("atlas-item-text", part))
-        .num_columns(2)
-        .show(ui, |ui| {
-            ui.label(item::FONT);
-            let family = style
-                .font
-                .as_deref()
-                .unwrap_or(crate::fonts::DEFAULT_FAMILY);
-            let button = ui.button(format!("{family}…"));
-            named(&button, egui::WidgetType::Button, item::FONT);
-            if button.clicked() {
-                let target = super::FontTarget::Item(id, part);
-                state.actions.push(super::Action::PickFont(target));
-            }
-            ui.end_row();
-            let family = crate::fonts::family(style.font.as_deref(), &mut state.fonts).to_owned();
-            let mut faces = state.fonts.faces(&family);
-            if faces.is_empty() {
-                faces.push(vale_labeler::Face {
-                    weight: 400.0,
-                    italic: false,
-                });
-            }
-            let face = vale_labeler::Face {
-                weight: style.weight,
-                italic: style.italic,
-            };
-            ui.label(item::STYLE);
-            egui::ComboBox::from_id_salt(("atlas-item-face", part))
-                .selected_text(face.name())
-                .show_ui(ui, |ui| {
-                    for f in faces {
-                        let on = f.weight == style.weight && f.italic == style.italic;
-                        if ui.selectable_label(on, f.name()).clicked() {
-                            edit(state, true, &|s| {
-                                s.weight = f.weight;
-                                s.italic = f.italic;
-                            });
-                        }
+    let target = super::FontTarget::Item(id, part);
+    style_grid(ui, state, ("atlas-item-text", part), target, style, &edit);
+}
+
+/// A change of a text style. With `step`, the change is one undo step.
+type TextChange<'a> = dyn Fn(&mut AppState, bool, &dyn Fn(&mut vale_store::FurnitureText)) + 'a;
+
+/// The text settings of a text style, in a grid with the id `salt`.
+fn style_grid(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    salt: impl std::hash::Hash + std::fmt::Debug + Copy,
+    target: super::FontTarget,
+    style: &vale_store::FurnitureText,
+    edit: &TextChange,
+) {
+    use super::pad::furniture as item;
+    use vale_store::{FurnitureText, TextCase};
+    egui::Grid::new(salt).num_columns(2).show(ui, |ui| {
+        ui.label(item::FONT);
+        let family = style
+            .font
+            .as_deref()
+            .unwrap_or(crate::fonts::DEFAULT_FAMILY);
+        let button = ui.button(format!("{family}…"));
+        named(&button, egui::WidgetType::Button, item::FONT);
+        if button.clicked() {
+            state.actions.push(super::Action::PickFont(target));
+        }
+        ui.end_row();
+        let family = crate::fonts::family(style.font.as_deref(), &mut state.fonts).to_owned();
+        let mut faces = state.fonts.faces(&family);
+        if faces.is_empty() {
+            faces.push(vale_labeler::Face {
+                weight: 400.0,
+                italic: false,
+            });
+        }
+        let face = vale_labeler::Face {
+            weight: style.weight,
+            italic: style.italic,
+        };
+        ui.label(item::STYLE);
+        egui::ComboBox::from_id_salt(("face", salt))
+            .selected_text(face.name())
+            .show_ui(ui, |ui| {
+                for f in faces {
+                    let on = f.weight == style.weight && f.italic == style.italic;
+                    if ui.selectable_label(on, f.name()).clicked() {
+                        edit(state, true, &|s| {
+                            s.weight = f.weight;
+                            s.italic = f.italic;
+                        });
                     }
-                });
-            ui.end_row();
-            if let Some(v) = number(ui, item::SIZE, style.size, FurnitureText::SIZES, " pt") {
-                edit(state, false, &|s| s.size = v);
-            }
-            let cases = &TextCase::ALL;
-            if let Some(c) = combo(
-                ui,
-                ("atlas-item-case", part),
-                item::CASE,
-                cases,
-                TextCase::name,
-                style.case,
-            ) {
-                edit(state, true, &|s| s.case = c);
-            }
-            let spacing = style.letter_spacing * 100.0;
-            let range = FurnitureText::LETTER_SPACINGS;
-            let range = range.start() * 100.0..=range.end() * 100.0;
-            if let Some(v) = number(ui, item::LETTER_SPACING, spacing, range, " %") {
-                edit(state, false, &|s| s.letter_spacing = v / 100.0);
-            }
-            if let Some(c) = color(ui, item::COLOR, style.color) {
-                edit(state, false, &|s| s.color = c);
-            }
-            let opacity = style.opacity * 100.0;
-            if let Some(v) = number(ui, item::OPACITY, opacity, 0.0..=100.0, " %") {
-                edit(state, false, &|s| s.opacity = v / 100.0);
-            }
-            if let Some(on) = check(ui, item::HALO, style.halo) {
-                edit(state, true, &|s| s.halo = on);
-            }
-            if style.halo {
-                if let Some(c) = color(ui, item::HALO_COLOR, style.halo_color) {
-                    edit(state, false, &|s| s.halo_color = c);
                 }
-                let range = FurnitureText::HALO_WIDTHS;
-                if let Some(v) = number(ui, item::HALO_WIDTH, style.halo_width, range, " pt") {
-                    edit(state, false, &|s| s.halo_width = v);
-                }
+            });
+        ui.end_row();
+        if let Some(v) = number(ui, item::SIZE, style.size, FurnitureText::SIZES, " pt") {
+            edit(state, false, &|s| s.size = v);
+        }
+        let cases = &TextCase::ALL;
+        if let Some(c) = combo(
+            ui,
+            ("case", salt),
+            item::CASE,
+            cases,
+            TextCase::name,
+            style.case,
+        ) {
+            edit(state, true, &|s| s.case = c);
+        }
+        let spacing = style.letter_spacing * 100.0;
+        let range = FurnitureText::LETTER_SPACINGS;
+        let range = range.start() * 100.0..=range.end() * 100.0;
+        if let Some(v) = number(ui, item::LETTER_SPACING, spacing, range, " %") {
+            edit(state, false, &|s| s.letter_spacing = v / 100.0);
+        }
+        if let Some(c) = color(ui, item::COLOR, style.color) {
+            edit(state, false, &|s| s.color = c);
+        }
+        let opacity = style.opacity * 100.0;
+        if let Some(v) = number(ui, item::OPACITY, opacity, 0.0..=100.0, " %") {
+            edit(state, false, &|s| s.opacity = v / 100.0);
+        }
+        if let Some(on) = check(ui, item::HALO, style.halo) {
+            edit(state, true, &|s| s.halo = on);
+        }
+        if style.halo {
+            if let Some(c) = color(ui, item::HALO_COLOR, style.halo_color) {
+                edit(state, false, &|s| s.halo_color = c);
             }
-        });
+            let range = FurnitureText::HALO_WIDTHS;
+            if let Some(v) = number(ui, item::HALO_WIDTH, style.halo_width, range, " pt") {
+                edit(state, false, &|s| s.halo_width = v);
+            }
+        }
+    });
 }
 
 /// The rows of a fill of a scale bar in a grid: the kind, the color, and

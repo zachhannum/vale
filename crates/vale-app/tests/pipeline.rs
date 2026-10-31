@@ -626,7 +626,7 @@ fn a_new_projection_changes_each_frame() {
     assert_eq!(pipeline.cache_count(), 2);
 }
 
-fn border_items(list: &vale_render::DisplayList, color: [u8; 3], width: f64) -> Vec<&Item> {
+fn neatline_items(list: &vale_render::DisplayList, color: [u8; 3], width: f64) -> Vec<&Item> {
     let color = vale_render::Color::rgb(color[0], color[1], color[2]);
     (list.items.iter())
         .filter(
@@ -636,7 +636,7 @@ fn border_items(list: &vale_render::DisplayList, color: [u8; 3], width: f64) -> 
 }
 
 #[test]
-fn the_border_follows_each_ring_of_the_shape_and_stays_vector() {
+fn the_neatline_follows_each_ring_of_the_shape_and_stays_vector() {
     let mut doc = plain();
     let mut pipeline = Pipeline::new();
     let page = doc.project.atlas.pages[0].id;
@@ -653,8 +653,8 @@ fn the_border_follows_each_ring_of_the_shape_and_stays_vector() {
         ],
         vec![[40.0, 40.0], [80.0, 40.0], [80.0, 80.0], [40.0, 80.0]],
     ]);
-    frame.border.color = [200, 10, 20];
-    frame.border.width = 3.0;
+    frame.neatline.color = [200, 10, 20];
+    frame.neatline.width = 3.0;
     let render = |doc: &Document, pipeline: &mut Pipeline| {
         let page = doc.project.atlas.page(page).unwrap();
         let mut f = fonts().unwrap();
@@ -663,9 +663,9 @@ fn the_border_follows_each_ring_of_the_shape_and_stays_vector() {
             .unwrap()
     };
     let list = render(&doc, &mut pipeline);
-    let borders = border_items(&list, [200, 10, 20], 3.0);
-    assert_eq!(borders.len(), 1);
-    let Item::Stroke { path, .. } = borders[0] else {
+    let neatlines = neatline_items(&list, [200, 10, 20], 3.0);
+    assert_eq!(neatlines.len(), 1);
+    let Item::Stroke { path, .. } = neatlines[0] else {
         unreachable!()
     };
     let rings = path
@@ -681,7 +681,7 @@ fn the_border_follows_each_ring_of_the_shape_and_stays_vector() {
             .starts_with(b"%PDF-")
     );
 
-    // The border is on the edge of the notch.
+    // The neatline is on the edge of the notch.
     let pixmap = render_pixmap(&list, 1.0).unwrap();
     let w = usize::from(pixmap.width());
     let data = pixmap.data_as_u8_slice();
@@ -689,9 +689,192 @@ fn the_border_follows_each_ring_of_the_shape_and_stays_vector() {
     let i = (y * w + x) * 4;
     assert_eq!(&data[i..i + 3], &[200, 10, 20]);
 
-    doc.project.atlas.frame_mut(id).unwrap().border.on = false;
+    doc.project.atlas.frame_mut(id).unwrap().neatline.on = false;
     let list = render(&doc, &mut pipeline);
-    assert!(border_items(&list, [200, 10, 20], 3.0).is_empty());
+    assert!(neatline_items(&list, [200, 10, 20], 3.0).is_empty());
+}
+
+/// The page as a list, with one rectangle frame from 40, 40 to 200, 160 mm.
+/// The frame has no graticule and no neatline.
+fn bordered() -> (Document, Pipeline, FrameId) {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.shape = FrameShape::Rectangle([40.0, 40.0, 200.0, 160.0]);
+    frame.graticule.on = false;
+    frame.neatline.on = false;
+    (doc, pipeline, id)
+}
+
+fn page_list(doc: &Document, pipeline: &mut Pipeline) -> vale_render::DisplayList {
+    let page = &doc.project.atlas.pages[0];
+    let mut f = fonts().unwrap();
+    pipeline
+        .compose_page(doc, page, &mut f, Quality::Final)
+        .unwrap()
+}
+
+fn fills_of(list: &vale_render::DisplayList, color: [u8; 3]) -> Vec<kurbo::Rect> {
+    let color = vale_render::Color::rgb(color[0], color[1], color[2]);
+    (list.items.iter())
+        .filter_map(|i| match i {
+            Item::Fill { path, color: c, .. } if *c == color => Some(path.bounding_box()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn pixel(list: &vale_render::DisplayList, at_mm: (f64, f64)) -> [u8; 3] {
+    let pixmap = render_pixmap(list, 1.0).unwrap();
+    let w = usize::from(pixmap.width());
+    let (x, y) = (
+        (at_mm.0 * PT_PER_MM) as usize,
+        (at_mm.1 * PT_PER_MM) as usize,
+    );
+    let i = (y * w + x) * 4;
+    let d = pixmap.data_as_u8_slice();
+    [d[i], d[i + 1], d[i + 2]]
+}
+
+fn is_pdf(list: &vale_render::DisplayList) -> bool {
+    vale_render::render_pdf(list).unwrap().starts_with(b"%PDF-")
+}
+
+#[test]
+fn a_page_draws_its_paper_color() {
+    let (mut doc, mut pipeline, _) = bordered();
+    doc.project.atlas.pages[0].paper = [0xf3, 0xef, 0xdf];
+    let list = page_list(&doc, &mut pipeline);
+    assert_eq!(fills_of(&list, [0xf3, 0xef, 0xdf]).len(), 1);
+    assert!(matches!(list.items[0], Item::Fill { .. }));
+    assert_eq!(pixel(&list, (5.0, 5.0)), [0xf3, 0xef, 0xdf]);
+    assert!(is_pdf(&list));
+}
+
+#[test]
+fn the_border_is_at_its_distance_outside_the_box_and_can_be_off() {
+    let (mut doc, mut pipeline, id) = bordered();
+    let red = [200, 10, 20];
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.border.on = true;
+    frame.border.color = red;
+    frame.border.width_mm = 2.0;
+    frame.border.distance_mm = 8.0;
+    let list = page_list(&doc, &mut pipeline);
+    let band = fills_of(&list, red);
+    assert_eq!(band.len(), 1);
+    let pt = |mm: f64| mm * PT_PER_MM;
+    let outer = kurbo::Rect::new(pt(30.0), pt(30.0), pt(210.0), pt(170.0));
+    let b = band[0];
+    for (a, e) in [
+        (b.x0, outer.x0),
+        (b.y0, outer.y0),
+        (b.x1, outer.x1),
+        (b.y1, outer.y1),
+    ] {
+        assert!((a - e).abs() < 1e-6, "{b:?}");
+    }
+    // The band, and paper between the band and the shape.
+    assert_eq!(pixel(&list, (31.0, 100.0)), red);
+    assert_eq!(pixel(&list, (35.0, 100.0)), [255, 255, 255]);
+    assert_eq!(pixel(&list, (100.0, 169.0)), red);
+    assert!(list.items.iter().all(|i| !matches!(i, Item::Image { .. })));
+    assert!(is_pdf(&list));
+
+    doc.project.atlas.frame_mut(id).unwrap().border.on = false;
+    assert!(fills_of(&page_list(&doc, &mut pipeline), red).is_empty());
+}
+
+#[test]
+fn a_graduated_border_changes_color_at_each_graticule_line() {
+    let (mut doc, mut pipeline, id) = bordered();
+    let (a, b) = ([200, 10, 20], [10, 20, 200]);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.border.on = true;
+    frame.border.style = vale_store::BorderStyle::Graduated;
+    frame.border.color = a;
+    frame.border.color2 = b;
+    frame.graticule.interval = Some(30.0);
+    // The map fills the band.
+    frame.scale /= 3.0;
+    let pieces = |doc: &Document, pipeline: &mut Pipeline| {
+        let list = page_list(doc, pipeline);
+        assert!(is_pdf(&list));
+        let mut top: Vec<(f64, bool)> = (fills_of(&list, a).iter().map(|r| (r, true)))
+            .chain(fills_of(&list, b).iter().map(|r| (r, false)))
+            .filter(|(r, _)| r.y0 < 31.0 * PT_PER_MM)
+            .map(|(r, first)| (r.x0, first))
+            .collect();
+        top.sort_by(|p, q| p.0.total_cmp(&q.0));
+        top
+    };
+    let coarse = pieces(&doc, &mut pipeline);
+    assert!(coarse.len() >= 2, "{coarse:?}");
+    for w in coarse.windows(2) {
+        assert_ne!(w[0].1, w[1].1, "the colors alternate: {coarse:?}");
+    }
+    // Each change is where a meridian meets the middle of the top band.
+    let (projection, frame) = (
+        pipeline.projection(&doc, doc.first_map()).unwrap(),
+        doc.project.atlas.frame(id).unwrap(),
+    );
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let vt = frame_transform(projection, frame, target);
+    for (x, _) in &coarse[1..] {
+        let q = vt.from_page(Point::new(*x, 31.0 * PT_PER_MM));
+        let [lon, lat] = projection.inverse(q).unwrap();
+        let near = |v: f64| (v / 30.0 - (v / 30.0).round()).abs() < 1e-3;
+        assert!(near(lon) || near(lat), "{lon} {lat}");
+    }
+    doc.project.atlas.frame_mut(id).unwrap().graticule.interval = Some(10.0);
+    assert!(pieces(&doc, &mut pipeline).len() > coarse.len());
+}
+
+#[test]
+fn the_reference_grid_labels_sit_in_the_band_and_can_be_off() {
+    let (mut doc, mut pipeline, id) = bordered();
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.border.on = true;
+    frame.grid.on = true;
+    frame.grid.columns = 4;
+    frame.grid.rows = 3;
+    let list = page_list(&doc, &mut pipeline);
+    let mut labels = texts(&list.items);
+    labels.sort();
+    let want = [
+        "1", "1", "2", "2", "3", "3", "A", "A", "B", "B", "C", "C", "D", "D",
+    ];
+    assert_eq!(labels, want);
+    let pt = |mm: f64| mm * PT_PER_MM;
+    let outer = kurbo::Rect::new(pt(30.0), pt(30.0), pt(210.0), pt(170.0));
+    let inner = kurbo::Rect::new(pt(32.0), pt(32.0), pt(208.0), pt(168.0));
+    for item in &list.items {
+        let Item::Glyphs(run) = item else { continue };
+        let at = run.glyphs[0].1.translation().to_point();
+        assert!(
+            outer.contains(at) && !inner.contains(at),
+            "{} at {at:?}",
+            run.text
+        );
+    }
+    // Column B is the second quarter of the box.
+    let b = (list.items.iter())
+        .find_map(|i| match i {
+            Item::Glyphs(run) if run.text == "B" => Some(run.glyphs[0].1.translation().x),
+            _ => None,
+        })
+        .unwrap();
+    assert!(b > pt(80.0) && b < pt(120.0), "{b}");
+    assert!(list.items.iter().all(|i| !matches!(i, Item::Image { .. })));
+    assert!(is_pdf(&list));
+
+    doc.project.atlas.frame_mut(id).unwrap().grid.on = false;
+    assert!(texts(&page_list(&doc, &mut pipeline).items).is_empty());
 }
 
 /// A document with one line layer. Each line has a `kind` and its coordinates.
@@ -1474,7 +1657,7 @@ fn outside_labels_sit_outside_the_frame() {
     g.parallels.offset = 6.0;
     let n = assert_edge_labels(&doc, &mut pipeline, id, "outside");
     assert!(n > 0);
-    // The outside labels come after the clip of the frame and its border.
+    // The outside labels come after the clip of the frame and its neatline.
     let items = compose_frame(&doc, &mut pipeline, id);
     let pop = items
         .iter()

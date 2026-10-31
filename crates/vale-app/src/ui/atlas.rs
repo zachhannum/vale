@@ -8,9 +8,9 @@ use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
-    Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture, FurnitureId,
-    FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, NorthArrowItem, PageId,
-    PageRecord, PageUnits, Rgb, ScaleBarItem, TextItem,
+    Border, BorderStyle, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
+    FurnitureId, FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, Neatline,
+    NorthArrowItem, PageId, PageRecord, PageUnits, ReferenceGrid, Rgb, ScaleBarItem, TextItem,
 };
 
 use std::sync::Arc;
@@ -39,7 +39,11 @@ const HANDLE_RADIUS: f32 = 6.0;
 const WHEEL_REST: f64 = 0.25;
 /// Two taps less than this time apart are a double tap, in seconds.
 const DOUBLE_TAP: f64 = 0.4;
-const PAPER: Color32 = Color32::WHITE;
+/// The color of the paper of a page.
+fn paper(page: &PageRecord) -> Color32 {
+    let [r, g, b] = page.paper;
+    Color32::from_rgb(r, g, b)
+}
 const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
 /// The smallest and the largest side of a page, in millimeters.
 const PAGE_SIDE: (f64, f64) = (10.0, 2000.0);
@@ -237,6 +241,13 @@ impl BarPick {
     }
 }
 
+/// A page under the Grid labels page.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GridPage {
+    Faces,
+    Cases,
+}
+
 /// A page of the panel of an item of furniture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ItemPage {
@@ -342,6 +353,14 @@ pub enum ClassColor {
     /// The background of the hatch of the first or the second fill of a
     /// scale bar.
     Background(bool),
+    /// The paper of a page.
+    Paper,
+    /// The first or the second color of the border of a frame.
+    Border(bool),
+    /// The text of the reference grid of a frame.
+    GridText,
+    /// The halo of the reference grid of a frame.
+    GridHalo,
 }
 
 /// A row that a finger drags by its handle: a label class in the Labels
@@ -543,10 +562,10 @@ pub struct AtlasState {
     pub graticule_color: bool,
     /// The color picker of the graticule showed in this frame.
     pub(crate) graticule_shown: bool,
-    /// The color picker of the border is open.
-    pub border_color: bool,
-    /// The color picker of the border showed in this frame.
-    pub(crate) border_shown: bool,
+    /// The color picker of the neatline is open.
+    pub neatline_color: bool,
+    /// The color picker of the neatline showed in this frame.
+    pub(crate) neatline_shown: bool,
     /// The text of the name field of the custom projections.
     pub preset_name: String,
     /// The Add menu is open.
@@ -599,6 +618,11 @@ pub struct AtlasState {
     pub edge_set: EdgeSet,
     /// The list of the faces of the font of the set is open.
     pub edge_styles: bool,
+    /// The frame whose Grid labels page the Frame tab shows.
+    pub grid: Option<FrameId>,
+    /// The page of the faces or of the cases of the grid labels, in place of
+    /// the Grid labels page.
+    pub grid_page: Option<GridPage>,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The page of the panel of the selected item of furniture.
@@ -650,6 +674,14 @@ impl AtlasState {
         }
     }
 
+    /// The frame whose Grid labels page the Frame tab shows.
+    pub fn open_grid(&self) -> Option<FrameId> {
+        match (self.selection, self.tab, self.grid) {
+            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
+            _ => None,
+        }
+    }
+
     /// The frame whose Edge labels page the Frame tab shows.
     pub fn open_edge(&self) -> Option<FrameId> {
         match (self.selection, self.tab, self.edge) {
@@ -692,8 +724,8 @@ impl Default for AtlasState {
             kinds: false,
             graticule_color: false,
             graticule_shown: false,
-            border_color: false,
-            border_shown: false,
+            neatline_color: false,
+            neatline_shown: false,
             preset_name: String::new(),
             add: false,
             add_rect: None,
@@ -719,6 +751,8 @@ impl Default for AtlasState {
             edge: None,
             edge_set: EdgeSet::Meridians,
             edge_styles: false,
+            grid: None,
+            grid_page: None,
             shown: None,
             item_page: None,
             bar_previews: HashMap::new(),
@@ -1372,7 +1406,7 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
         color: Color32::from_black_alpha(90),
     };
     painter.add(shadow.as_shape(place.rect, 0.0));
-    painter.rect_filled(place.rect, 0.0, PAPER);
+    painter.rect_filled(place.rect, 0.0, paper(open_page(state)));
     frames(ui, state, place, area);
     items(ui, state, place, area);
     selection(ui, state, place);
@@ -1895,22 +1929,27 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             state.map_generation,
             frame.map,
             &frame.graticule,
-            border_key(&frame.border),
+            neatline_key(&frame.neatline),
+            &frame.border,
+            &frame.grid,
+            page.paper,
             ppp.to_bits(),
             state.selection,
             layered,
         ));
         // Only the part of the frame on the canvas has a texture.
-        // The border reaches out of the shape by half its width, and a sharp
+        // The neatline reaches out of the shape by half its width, and a sharp
         // corner reaches further.
         // The edge labels outside the shape reach further.
-        let border = if frame.border.on {
-            frame.border.width
+        let neatline = if frame.neatline.on {
+            frame.neatline.width
         } else {
             0.0
         };
         let labels = crate::edge_labels::outside_reach(frame, &mut state.fonts);
-        let reach = (border.max(labels) * f64::from(place.pts_per_mm) / PT_PER_MM) as f32;
+        let band = crate::frame_border::reach(frame);
+        let reach = neatline.max(labels).max(band);
+        let reach = (reach * f64::from(place.pts_per_mm) / PT_PER_MM) as f32;
         let shown = snap(
             place
                 .rect_to_screen(math::shape_bbox(&frame.shape))
@@ -2003,7 +2042,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         });
     }
     let canvas = Canvas {
-        background: PAPER,
+        background: paper(&page),
         pixels_per_point: ppp,
     };
     let mut callbacks: HashMap<u32, _> = if draws.is_empty() {
@@ -2181,7 +2220,7 @@ fn scene_of(area: Rect, page: Rect, items: &[(Arc<Thumb>, Rect)], canvas: Canvas
     for y in from[1]..to[1] {
         for x in from[0]..to[0] {
             let at = (y * w + x) * 4;
-            rgba[at..at + 4].copy_from_slice(&PAPER.to_array());
+            rgba[at..at + 4].copy_from_slice(&canvas.background.to_array());
         }
     }
     for (thumb, rect) in items {
@@ -2442,8 +2481,8 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
                 if let Some(&first) = points.first() {
                     points.push(first);
                 }
-                if frame.border.on {
-                    // The border shows between the dashes.
+                if frame.neatline.on {
+                    // The neatline shows between the dashes.
                     painter.extend(egui::Shape::dashed_line(&points, stroke, 6.0, 5.0));
                 } else {
                     painter.add(egui::Shape::line(points, stroke));
@@ -2538,8 +2577,8 @@ pub fn set_rotation(state: &mut AppState, id: FrameId, degrees: f64) {
     });
 }
 
-/// The parts of a border as a hash key.
-fn border_key(b: &Border) -> (bool, Rgb, u64) {
+/// The parts of a neatline as a hash key.
+fn neatline_key(b: &Neatline) -> (bool, Rgb, u64) {
     (b.on, b.color, b.width.to_bits())
 }
 
@@ -2802,12 +2841,16 @@ pub fn parse_length(text: &str, units: PageUnits) -> Option<f64> {
         .filter(|mm| (PAGE_SIDE.0..=PAGE_SIDE.1).contains(mm))
 }
 
-/// Adds a page after the open page, with its size and units, and opens it
-/// with the page selected.
+/// Adds a page after the open page, with its size, units, and paper, and
+/// opens it with the page selected.
 pub fn add_page(state: &mut AppState) {
     let page = open_page(state);
     let (id, w, h, units) = (page.id, page.width_mm, page.height_mm, page.units);
+    let paper = page.paper;
     let new = state.doc.project.atlas.add_page(Some(id), w, h, units);
+    if let Some(page) = state.doc.project.atlas.page_mut(new) {
+        page.paper = paper;
+    }
     state.atlas.page = new;
     state.atlas.selection = AtlasSelection::Page;
 }
@@ -2859,31 +2902,131 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-/// Turns the border of a frame on or off.
-pub fn set_border(state: &mut AppState, id: FrameId, on: bool) {
+/// Turns the neatline of a frame on or off.
+pub fn set_neatline(state: &mut AppState, id: FrameId, on: bool) {
     edit_frame(state, id, |f, _| {
-        f.border.on = on;
+        f.neatline.on = on;
         true
     });
 }
 
-pub fn set_border_color(state: &mut AppState, id: FrameId, color: Rgb) {
+pub fn set_neatline_color(state: &mut AppState, id: FrameId, color: Rgb) {
     edit_frame(state, id, |f, _| {
-        f.border.color = color;
+        f.neatline.color = color;
         true
     });
 }
 
-/// Sets the border width of a frame, in points, rounded to 0.25.
-pub fn set_border_width(state: &mut AppState, id: FrameId, width: f64) {
+/// Sets the neatline width of a frame, in points, rounded to 0.25.
+pub fn set_neatline_width(state: &mut AppState, id: FrameId, width: f64) {
     if !width.is_finite() {
         return;
     }
-    let range = Border::WIDTHS;
+    let range = Neatline::WIDTHS;
     let width = ((width.clamp(*range.start(), *range.end()) * 4.0).round() / 4.0)
         .clamp(*range.start(), *range.end());
     edit_frame(state, id, |f, _| {
-        f.border.width = width;
+        f.neatline.width = width;
         true
     });
+}
+
+/// Sets the paper color of the open page.
+pub fn set_paper(state: &mut AppState, color: Rgb) {
+    edit_page(state, |p| p.paper = color);
+}
+
+/// Changes the border of a frame.
+pub fn edit_border(state: &mut AppState, id: FrameId, change: impl FnOnce(&mut Border)) {
+    edit_frame(state, id, |f, _| {
+        let before = f.border.clone();
+        change(&mut f.border);
+        f.border != before
+    });
+}
+
+pub fn set_border(state: &mut AppState, id: FrameId, on: bool) {
+    edit_border(state, id, |b| b.on = on);
+}
+
+pub fn set_border_style(state: &mut AppState, id: FrameId, style: BorderStyle) {
+    edit_border(state, id, |b| b.style = style);
+}
+
+/// Sets the first color of the border of a frame, or the second color of a
+/// graduated border.
+pub fn set_border_color(state: &mut AppState, id: FrameId, second: bool, color: Rgb) {
+    edit_border(state, id, |b| {
+        if second {
+            b.color2 = color;
+        } else {
+            b.color = color;
+        }
+    });
+}
+
+/// `v` in `range`, rounded to `step`.
+fn stepped(v: f64, range: std::ops::RangeInclusive<f64>, step: f64) -> f64 {
+    let (lo, hi) = (*range.start(), *range.end());
+    ((v.clamp(lo, hi) / step).round() * step).clamp(lo, hi)
+}
+
+/// Sets the band width of the border of a frame, in millimeters, rounded
+/// to 0.25.
+pub fn set_border_width(state: &mut AppState, id: FrameId, width: f64) {
+    if width.is_finite() {
+        let width = stepped(width, Border::WIDTHS, 0.25);
+        edit_border(state, id, |b| b.width_mm = width);
+    }
+}
+
+/// Sets the distance of the border of a frame from its box, in
+/// millimeters, rounded to 0.5.
+pub fn set_border_distance(state: &mut AppState, id: FrameId, distance: f64) {
+    if distance.is_finite() {
+        let distance = stepped(distance, Border::DISTANCES, 0.5);
+        edit_border(state, id, |b| b.distance_mm = distance);
+    }
+}
+
+/// Changes the reference grid of a frame.
+pub fn edit_grid(state: &mut AppState, id: FrameId, change: impl FnOnce(&mut ReferenceGrid)) {
+    edit_frame(state, id, |f, _| {
+        let before = f.grid.clone();
+        change(&mut f.grid);
+        f.grid != before
+    });
+}
+
+pub fn set_grid(state: &mut AppState, id: FrameId, on: bool) {
+    edit_grid(state, id, |g| g.on = on);
+}
+
+/// Changes the text style of the reference grid of a frame. With `step`,
+/// the change is one undo step.
+pub fn edit_grid_text(
+    state: &mut AppState,
+    id: FrameId,
+    step: bool,
+    edit: impl FnOnce(&mut FurnitureText),
+) {
+    if step {
+        state.save_edit();
+    }
+    edit_grid(state, id, |g| edit(&mut g.text));
+    if step {
+        state.save_edit();
+    }
+}
+
+/// Sets the number of columns of the reference grid of a frame.
+pub fn set_grid_columns(state: &mut AppState, id: FrameId, columns: u32) {
+    let (lo, hi) = (*ReferenceGrid::COUNTS.start(), *ReferenceGrid::COUNTS.end());
+    edit_grid(state, id, |g| g.columns = columns.clamp(lo, hi));
+}
+
+/// Sets the number of rows of the reference grid of a frame.
+pub fn set_grid_rows(state: &mut AppState, id: FrameId, rows: u32) {
+    let (lo, hi) = (*ReferenceGrid::COUNTS.start(), *ReferenceGrid::COUNTS.end());
+    edit_grid(state, id, |g| g.rows = rows.clamp(lo, hi));
 }

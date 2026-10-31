@@ -11,6 +11,7 @@ pub mod files;
 #[cfg(target_os = "ios")]
 pub mod font_picker;
 pub mod fonts;
+pub mod frame_border;
 pub mod furniture;
 pub mod globe;
 pub mod headless;

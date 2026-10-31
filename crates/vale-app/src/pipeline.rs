@@ -19,7 +19,7 @@ use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
 use crate::scatter::{self, ScatterCache, ScatterFill};
 use crate::view::{View, ViewTransform};
-use crate::{edge_labels, furniture, labels, pick};
+use crate::{edge_labels, frame_border, furniture, labels, pick};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Quality {
@@ -691,8 +691,14 @@ fn push_stroke(list: &mut DisplayList, path: BezPath, stroke: &Stroke, round: bo
 
 const SELECTION: vale_render::Color = vale_render::Color::rgb(230, 70, 30);
 
-/// The color of the paper of a page.
+/// An opaque fill, for a mask.
 pub const PAPER: vale_render::Color = vale_render::Color::rgb(255, 255, 255);
+
+/// The color of the paper of a page.
+pub fn paper_color(page: &PageRecord) -> vale_render::Color {
+    let [r, g, b] = page.paper;
+    vale_render::Color::rgb(r, g, b)
+}
 
 /// The graticule interval of a window view, in degrees. The lines are at
 /// least 80 points apart. `None` when the graticule is off.
@@ -1424,15 +1430,17 @@ impl Pipeline {
         }
         list.items.extend(edge_labels::items(&edge, false));
         list.push(Item::PopClip);
-        if frame.border.on {
-            let [r, g, b] = frame.border.color;
+        if frame.neatline.on {
+            let [r, g, b] = frame.neatline.color;
             list.push(Item::Stroke {
                 path: shape_path(&frame.shape.rings(), target),
                 color: vale_render::Color::rgb(r, g, b),
-                width: frame.border.width,
+                width: frame.neatline.width,
                 round: false,
             });
         }
+        let border = frame_border::items(&cache.projection, frame, target, fonts);
+        list.items.extend(border);
         list.items.extend(edge_labels::items(&edge, true));
 
         Ok(Composed {
@@ -1462,7 +1470,7 @@ impl Pipeline {
         let mut list = DisplayList::new(size.x, size.y);
         list.push(Item::Fill {
             path: Rect::new(0.0, 0.0, size.x, size.y).to_path(0.1),
-            color: PAPER,
+            color: paper_color(page),
             rule: FillRule::NonZero,
         });
         for frame in &page.frames {

@@ -18,12 +18,13 @@ use vale_app::ui::atlas::measure::measure_lines;
 use vale_app::ui::atlas::{self as atlas, BarPage, BarPick, ItemKind, ItemPage, TextPart};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
-    ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_COLOR, BORDER_WIDTH, CENTER_ON_FRAME,
-    DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF, EXPORT_PAGE_PDF,
-    EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
-    INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, NEXT_PAGE, OBLIQUE, POLYGON, PREVIOUS_PAGE,
-    PROJECTION, REMOVE_OVERRIDES, REMOVE_VERTEX, SAVE_PROJECTION, SCALE, SIZE, STYLE_FOR_THIS_MAP,
-    WIDTH, custom_row, page_title, readout_text,
+    ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STYLES, BORDER_WIDTH,
+    CENTER_ON_FRAME, COLUMNS, DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, EXPORT_ATLAS_PDF,
+    EXPORT_PAGE_PDF, EXPORT_PAGE_PNG, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH,
+    HEIGHT, INTERVAL, LABEL_FORMATS, MAP_FRAME, MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH,
+    NEXT_PAGE, OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID,
+    REMOVE_OVERRIDES, REMOVE_VERTEX, ROWS, SAVE_PROJECTION, SCALE, SECOND_COLOR, SIZE,
+    STYLE_FOR_THIS_MAP, WIDTH, custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
@@ -1075,6 +1076,7 @@ fn the_panel_of_the_page_adds_a_page_and_deletes_the_open_page() {
     let mut h = inset_pad(BOARDS[0]);
     let at = screen(&h, Point::new(4.0, 50.0));
     tap_with(&mut h, at, Input::Finger);
+    scroll_to(&mut h, ADD_PAGE);
     assert!(control(&h, DELETE_PAGE).is_none());
     tap(&mut h, ADD_PAGE);
     let atlas = &h.state().doc.project.atlas;
@@ -1083,6 +1085,7 @@ fn the_panel_of_the_page_adds_a_page_and_deletes_the_open_page() {
     assert!(atlas.pages[1].frames.is_empty());
     assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
     assert_eq!(readout_text(h.state()), "297 × 210 mm · 2 / 2");
+    scroll_to(&mut h, DELETE_PAGE);
     tap(&mut h, DELETE_PAGE);
     let atlas = &h.state().doc.project.atlas;
     assert_eq!(atlas.pages.len(), 1);
@@ -1697,7 +1700,7 @@ fn the_graticule_settings_survive_a_close_and_an_open() {
 }
 
 #[test]
-fn two_frames_of_one_map_have_their_own_border() {
+fn two_frames_of_one_map_have_their_own_neatline() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).id);
     h.state_mut()
@@ -1708,69 +1711,69 @@ fn two_frames_of_one_map_have_their_own_border() {
         .unwrap()
         .map = main;
     h.run_steps(2);
-    let first = frame(&h, 0).border;
-    let shade = format!("{BORDER_COLOR} shade");
-    scroll_to(&mut h, BORDER_COLOR);
-    tap(&mut h, BORDER_COLOR);
+    let first = frame(&h, 0).neatline;
+    let shade = format!("{NEATLINE_COLOR} shade");
+    scroll_to(&mut h, NEATLINE_COLOR);
+    tap(&mut h, NEATLINE_COLOR);
     scroll_to(&mut h, &shade);
     let square = control(&h, &shade).unwrap();
     tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
-    let color = frame(&h, 1).border.color;
+    let color = frame(&h, 1).neatline.color;
     assert_ne!(color, first.color);
-    assert_eq!(frame(&h, 0).border, first);
+    assert_eq!(frame(&h, 0).neatline, first);
     assert!(strokes(&mut h, 0, first.color, first.width) > 0);
     assert_eq!(strokes(&mut h, 0, color, first.width), 0);
     assert!(strokes(&mut h, 1, color, first.width) > 0);
 
-    scroll_up_to(&mut h, BORDER);
-    tap(&mut h, BORDER);
-    assert!(!frame(&h, 1).border.on);
-    assert_eq!(frame(&h, 0).border, first);
+    scroll_up_to(&mut h, NEATLINE);
+    tap(&mut h, NEATLINE);
+    assert!(!frame(&h, 1).neatline.on);
+    assert_eq!(frame(&h, 0).neatline, first);
     assert_eq!(strokes(&mut h, 1, color, first.width), 0);
     assert!(strokes(&mut h, 0, first.color, first.width) > 0);
 }
 
 #[test]
-fn the_border_controls_work_with_a_finger() {
-    let hue = format!("{BORDER_COLOR} hue");
-    let shade = format!("{BORDER_COLOR} shade");
+fn the_neatline_controls_work_with_a_finger() {
+    let hue = format!("{NEATLINE_COLOR} hue");
+    let shade = format!("{NEATLINE_COLOR} shade");
     for size in BOARDS {
         let mut h = inset_pad(size);
-        scroll_to(&mut h, BORDER);
-        assert!(frame(&h, 1).border.on, "{size:?}");
-        check_controls(&h, "border");
-        tap(&mut h, BORDER);
-        assert!(!frame(&h, 1).border.on, "{size:?}");
-        assert!(control(&h, BORDER_WIDTH).is_none(), "{size:?}");
-        tap(&mut h, BORDER);
-        assert!(frame(&h, 1).border.on, "{size:?}");
+        scroll_to(&mut h, NEATLINE);
+        assert!(frame(&h, 1).neatline.on, "{size:?}");
+        check_controls(&h, "neatline");
+        tap(&mut h, NEATLINE);
+        assert!(!frame(&h, 1).neatline.on, "{size:?}");
+        assert!(control(&h, NEATLINE_WIDTH).is_none(), "{size:?}");
+        tap(&mut h, NEATLINE);
+        assert!(frame(&h, 1).neatline.on, "{size:?}");
 
-        scroll_to(&mut h, BORDER_COLOR);
-        tap(&mut h, BORDER_COLOR);
+        scroll_to(&mut h, NEATLINE_COLOR);
+        tap(&mut h, NEATLINE_COLOR);
         scroll_to(&mut h, &hue);
-        check_controls(&h, "border color");
-        let before = frame(&h, 1).border.color;
+        check_controls(&h, "neatline color");
+        let before = frame(&h, 1).neatline.color;
         let square = control(&h, &shade).unwrap();
         tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
-        assert_ne!(frame(&h, 1).border.color, before, "{size:?}");
+        assert_ne!(frame(&h, 1).neatline.color, before, "{size:?}");
 
-        scroll_to(&mut h, BORDER_WIDTH);
-        let slider = control(&h, BORDER_WIDTH).unwrap();
+        scroll_to(&mut h, NEATLINE_WIDTH);
+        let slider = control(&h, NEATLINE_WIDTH).unwrap();
         tap_with(
             &mut h,
             slider.right_center() - vec2(70.0, 0.0),
             Input::Finger,
         );
-        let width = frame(&h, 1).border.width;
+        let width = frame(&h, 1).neatline.width;
         assert!(width > 3.0, "{size:?}: {width}");
         assert_eq!((width * 4.0).round() / 4.0, width);
-        check_controls(&h, "border width");
+        check_controls(&h, "neatline width");
     }
 }
 
 #[test]
-fn the_border_survives_a_close_and_an_open() {
-    use vale_app::ui::atlas::{set_border, set_border_color, set_border_width};
+fn the_neatline_survives_a_close_and_an_open() {
+    use vale_app::ui::atlas::{set_neatline, set_neatline_color, set_neatline_width};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let mut doc = Document::sample();
@@ -1782,9 +1785,9 @@ fn the_border_survives_a_close_and_an_open() {
     add_frame(&mut h);
     let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
     let st = h.state_mut();
-    set_border_color(st, main, [10, 20, 30]);
-    set_border_width(st, main, 2.3);
-    set_border(st, inset, false);
+    set_neatline_color(st, main, [10, 20, 30]);
+    set_neatline_width(st, main, 2.3);
+    set_neatline(st, inset, false);
     h.run_steps(2);
     let mut project = h.state().doc.project.clone();
     session.flush(&mut project, &mut []).unwrap();
@@ -1793,11 +1796,143 @@ fn the_border_survives_a_close_and_an_open() {
     let mut doc = Document::sample();
     let _session = Session::open(&path, &mut doc).unwrap();
     assert_eq!(doc.project.atlas, project.atlas);
-    let b = &doc.project.atlas.frame(main).unwrap().border;
+    let b = &doc.project.atlas.frame(main).unwrap().neatline;
     assert!(b.on);
     assert_eq!(b.color, [10, 20, 30]);
     assert_eq!(b.width, 2.25);
-    assert!(!doc.project.atlas.frame(inset).unwrap().border.on);
+    assert!(!doc.project.atlas.frame(inset).unwrap().neatline.on);
+}
+
+#[test]
+fn the_panel_of_the_page_sets_the_paper_color_with_a_finger() {
+    let shade = format!("{PAPER_COLOR} shade");
+    for size in BOARDS {
+        let mut h = pad_with(state(), size);
+        let page = h.state().atlas.place.unwrap().rect;
+        tap_with(&mut h, page.center(), Input::Finger);
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
+        scroll_to(&mut h, PAPER_COLOR);
+        tap(&mut h, PAPER_COLOR);
+        scroll_to(&mut h, &shade);
+        check_controls(&h, "paper color");
+        let square = control(&h, &shade).unwrap();
+        tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+        assert_ne!(open_page(&h).paper, [255, 255, 255], "{size:?}");
+    }
+}
+
+#[test]
+fn the_border_and_grid_controls_work_with_a_finger() {
+    use vale_app::ui::pad::grid_labels::{GRID_LABELS, SIZE as GRID_SIZE};
+    use vale_store::BorderStyle;
+    for size in BOARDS {
+        let mut h = inset_pad(size);
+        scroll_to(&mut h, BORDER);
+        assert!(!frame(&h, 1).border.on, "{size:?}");
+        assert!(control(&h, BORDER_WIDTH).is_none(), "{size:?}");
+        tap(&mut h, BORDER);
+        assert!(frame(&h, 1).border.on, "{size:?}");
+
+        scroll_to(&mut h, BORDER_STYLES[1]);
+        assert!(control(&h, SECOND_COLOR).is_none(), "{size:?}");
+        tap(&mut h, BORDER_STYLES[1]);
+        assert_eq!(frame(&h, 1).border.style, BorderStyle::Graduated);
+        scroll_to(&mut h, SECOND_COLOR);
+        tap(&mut h, SECOND_COLOR);
+        let shade = format!("{SECOND_COLOR} shade");
+        scroll_to(&mut h, &shade);
+        check_controls(&h, "second color");
+        let before = frame(&h, 1).border.color2;
+        let square = control(&h, &shade).unwrap();
+        tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+        assert_ne!(frame(&h, 1).border.color2, before, "{size:?}");
+        scroll_up_to(&mut h, SECOND_COLOR);
+        tap(&mut h, SECOND_COLOR);
+
+        for name in [BORDER_WIDTH, BORDER_DISTANCE] {
+            scroll_to(&mut h, name);
+            let slider = control(&h, name).unwrap();
+            tap_with(
+                &mut h,
+                slider.right_center() - vec2(30.0, 0.0),
+                Input::Finger,
+            );
+        }
+        let b = &frame(&h, 1).border;
+        assert!(b.width_mm > 5.0 && b.distance_mm > 15.0, "{size:?}: {b:?}");
+        assert_eq!((b.width_mm * 4.0).round() / 4.0, b.width_mm);
+        assert_eq!((b.distance_mm * 2.0).round() / 2.0, b.distance_mm);
+        check_controls(&h, "border");
+
+        scroll_to(&mut h, REFERENCE_GRID);
+        tap(&mut h, REFERENCE_GRID);
+        assert!(frame(&h, 1).grid.on, "{size:?}");
+        for name in [COLUMNS, ROWS] {
+            scroll_to(&mut h, name);
+            let slider = control(&h, name).unwrap();
+            tap_with(
+                &mut h,
+                slider.right_center() - vec2(30.0, 0.0),
+                Input::Finger,
+            );
+        }
+        let g = &frame(&h, 1).grid;
+        assert!(g.columns > 15 && g.rows > 15, "{size:?}: {g:?}");
+        check_controls(&h, "reference grid");
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-frame-border");
+        }
+
+        scroll_to(&mut h, GRID_LABELS);
+        tap(&mut h, GRID_LABELS);
+        assert_eq!(h.state().atlas.grid, Some(frame(&h, 1).id));
+        let slider = control(&h, GRID_SIZE).unwrap();
+        tap_with(
+            &mut h,
+            slider.right_center() - vec2(30.0, 0.0),
+            Input::Finger,
+        );
+        assert!(frame(&h, 1).grid.text.size > 20.0, "{size:?}");
+        check_controls(&h, "grid labels");
+    }
+}
+
+#[test]
+fn the_paper_the_border_and_the_grid_survive_a_close_and_an_open() {
+    use vale_app::ui::atlas::{
+        edit_grid_text, set_border, set_border_distance, set_border_style, set_grid,
+        set_grid_columns, set_paper,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut doc = Document::sample();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mut s = state();
+    s.doc = doc;
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let id = frame(&h, 0).id;
+    let st = h.state_mut();
+    set_paper(st, [0xf3, 0xef, 0xdf]);
+    set_border(st, id, true);
+    set_border_style(st, id, vale_store::BorderStyle::Graduated);
+    set_border_distance(st, id, 12.3);
+    set_grid(st, id, true);
+    set_grid_columns(st, id, 9);
+    edit_grid_text(st, id, true, |t| t.italic = true);
+    h.run_steps(2);
+    let mut project = h.state().doc.project.clone();
+    session.flush(&mut project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::sample();
+    let _session = Session::open(&path, &mut doc).unwrap();
+    assert_eq!(doc.project.atlas, project.atlas);
+    assert_eq!(doc.project.atlas.pages[0].paper, [0xf3, 0xef, 0xdf]);
+    let f = doc.project.atlas.frame(id).unwrap();
+    assert!(f.border.on && f.border.style == vale_store::BorderStyle::Graduated);
+    assert_eq!(f.border.distance_mm, 12.5);
+    assert!(f.grid.on && f.grid.columns == 9 && f.grid.text.italic);
 }
 
 #[test]
@@ -1805,10 +1940,10 @@ fn the_screen_draws_the_line_widths_of_the_page_at_each_zoom() {
     let mut h = inset_pad(BOARDS[0]);
     let id = frame(&h, 0).id;
     let frame = h.state_mut().doc.project.atlas.frame_mut(id).unwrap();
-    frame.border.width = 2.5;
+    frame.neatline.width = 2.5;
     frame.graticule.on = true;
     frame.graticule.width = 0.7;
-    let (border, graticule) = (frame.border.clone(), frame.graticule.clone());
+    let (neatline, graticule) = (frame.neatline.clone(), frame.graticule.clone());
     let mut ground = None;
     for zoom in [1.0, 3.0, 0.5] {
         h.state_mut().atlas.view.zoom = zoom;
@@ -1830,7 +1965,7 @@ fn the_screen_draws_the_line_widths_of_the_page_at_each_zoom() {
                 |i| matches!(i, Item::Stroke { color, width, .. } if *color == c && *width == w),
             )
         };
-        assert!(wide(border.color, border.width), "border at {zoom}");
+        assert!(wide(neatline.color, neatline.width), "neatline at {zoom}");
         assert!(
             wide(graticule.color, graticule.width),
             "graticule at {zoom}"
@@ -1854,14 +1989,14 @@ fn the_texture_of_a_frame_is_on_whole_pixels() {
 }
 
 #[test]
-fn the_texture_of_a_frame_holds_the_whole_border() {
+fn the_texture_of_a_frame_holds_the_whole_neatline() {
     let mut h = inset_pad(BOARDS[0]);
     let id = frame(&h, 1).id;
     let width = 8.0;
     let set = |h: &mut Pad, on: bool| {
         let frame = h.state_mut().doc.project.atlas.frame_mut(id).unwrap();
-        frame.border.width = width;
-        frame.border.on = on;
+        frame.neatline.width = width;
+        frame.neatline.on = on;
     };
     set(&mut h, true);
     h.run_steps(3);
@@ -1871,7 +2006,7 @@ fn the_texture_of_a_frame_holds_the_whole_border() {
         let r = h.state().atlas.texture_rect(id).unwrap();
         bbox.min.x - r.min.x
     };
-    // Half the width of the border is outside the shape.
+    // Half the width of the neatline is outside the shape.
     assert!(reach(&h) >= width as f32 / 2.0, "{}", reach(&h));
     set(&mut h, false);
     h.run_steps(3);
