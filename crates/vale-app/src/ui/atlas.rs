@@ -8,9 +8,9 @@ use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
-    CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture, FurnitureId,
-    FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, Neatline,
-    NorthArrowItem, PageId, PageRecord, PageUnits, Rgb, ScaleBarItem, TextItem,
+    Border, BorderStyle, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
+    FurnitureId, FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, Neatline,
+    NorthArrowItem, PageId, PageRecord, PageUnits, ReferenceGrid, Rgb, ScaleBarItem, TextItem,
 };
 
 use std::sync::Arc;
@@ -241,6 +241,13 @@ impl BarPick {
     }
 }
 
+/// A page under the Grid labels page.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GridPage {
+    Faces,
+    Cases,
+}
+
 /// A page of the panel of an item of furniture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ItemPage {
@@ -346,6 +353,14 @@ pub enum ClassColor {
     /// The background of the hatch of the first or the second fill of a
     /// scale bar.
     Background(bool),
+    /// The paper of a page.
+    Paper,
+    /// The first or the second color of the border of a frame.
+    Border(bool),
+    /// The text of the reference grid of a frame.
+    GridText,
+    /// The halo of the reference grid of a frame.
+    GridHalo,
 }
 
 /// A row that a finger drags by its handle: a label class in the Labels
@@ -603,6 +618,11 @@ pub struct AtlasState {
     pub edge_set: EdgeSet,
     /// The list of the faces of the font of the set is open.
     pub edge_styles: bool,
+    /// The frame whose Grid labels page the Frame tab shows.
+    pub grid: Option<FrameId>,
+    /// The page of the faces or of the cases of the grid labels, in place of
+    /// the Grid labels page.
+    pub grid_page: Option<GridPage>,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The page of the panel of the selected item of furniture.
@@ -650,6 +670,14 @@ impl AtlasState {
             (AtlasSelection::Frame(f), FrameTab::Layers, Some((of, layer))) if f == of => {
                 Some(layer)
             }
+            _ => None,
+        }
+    }
+
+    /// The frame whose Grid labels page the Frame tab shows.
+    pub fn open_grid(&self) -> Option<FrameId> {
+        match (self.selection, self.tab, self.grid) {
+            (AtlasSelection::Frame(f), FrameTab::Frame, Some(of)) if f == of => Some(f),
             _ => None,
         }
     }
@@ -723,6 +751,8 @@ impl Default for AtlasState {
             edge: None,
             edge_set: EdgeSet::Meridians,
             edge_styles: false,
+            grid: None,
+            grid_page: None,
             shown: None,
             item_page: None,
             bar_previews: HashMap::new(),
@@ -2811,12 +2841,16 @@ pub fn parse_length(text: &str, units: PageUnits) -> Option<f64> {
         .filter(|mm| (PAGE_SIDE.0..=PAGE_SIDE.1).contains(mm))
 }
 
-/// Adds a page after the open page, with its size and units, and opens it
-/// with the page selected.
+/// Adds a page after the open page, with its size, units, and paper, and
+/// opens it with the page selected.
 pub fn add_page(state: &mut AppState) {
     let page = open_page(state);
     let (id, w, h, units) = (page.id, page.width_mm, page.height_mm, page.units);
+    let paper = page.paper;
     let new = state.doc.project.atlas.add_page(Some(id), w, h, units);
+    if let Some(page) = state.doc.project.atlas.page_mut(new) {
+        page.paper = paper;
+    }
     state.atlas.page = new;
     state.atlas.selection = AtlasSelection::Page;
 }
@@ -2895,4 +2929,104 @@ pub fn set_neatline_width(state: &mut AppState, id: FrameId, width: f64) {
         f.neatline.width = width;
         true
     });
+}
+
+/// Sets the paper color of the open page.
+pub fn set_paper(state: &mut AppState, color: Rgb) {
+    edit_page(state, |p| p.paper = color);
+}
+
+/// Changes the border of a frame.
+pub fn edit_border(state: &mut AppState, id: FrameId, change: impl FnOnce(&mut Border)) {
+    edit_frame(state, id, |f, _| {
+        let before = f.border.clone();
+        change(&mut f.border);
+        f.border != before
+    });
+}
+
+pub fn set_border(state: &mut AppState, id: FrameId, on: bool) {
+    edit_border(state, id, |b| b.on = on);
+}
+
+pub fn set_border_style(state: &mut AppState, id: FrameId, style: BorderStyle) {
+    edit_border(state, id, |b| b.style = style);
+}
+
+/// Sets the first color of the border of a frame, or the second color of a
+/// graduated border.
+pub fn set_border_color(state: &mut AppState, id: FrameId, second: bool, color: Rgb) {
+    edit_border(state, id, |b| {
+        if second {
+            b.color2 = color;
+        } else {
+            b.color = color;
+        }
+    });
+}
+
+/// `v` in `range`, rounded to `step`.
+fn stepped(v: f64, range: std::ops::RangeInclusive<f64>, step: f64) -> f64 {
+    let (lo, hi) = (*range.start(), *range.end());
+    ((v.clamp(lo, hi) / step).round() * step).clamp(lo, hi)
+}
+
+/// Sets the band width of the border of a frame, in millimeters, rounded
+/// to 0.25.
+pub fn set_border_width(state: &mut AppState, id: FrameId, width: f64) {
+    if width.is_finite() {
+        let width = stepped(width, Border::WIDTHS, 0.25);
+        edit_border(state, id, |b| b.width_mm = width);
+    }
+}
+
+/// Sets the distance of the border of a frame from its box, in
+/// millimeters, rounded to 0.5.
+pub fn set_border_distance(state: &mut AppState, id: FrameId, distance: f64) {
+    if distance.is_finite() {
+        let distance = stepped(distance, Border::DISTANCES, 0.5);
+        edit_border(state, id, |b| b.distance_mm = distance);
+    }
+}
+
+/// Changes the reference grid of a frame.
+pub fn edit_grid(state: &mut AppState, id: FrameId, change: impl FnOnce(&mut ReferenceGrid)) {
+    edit_frame(state, id, |f, _| {
+        let before = f.grid.clone();
+        change(&mut f.grid);
+        f.grid != before
+    });
+}
+
+pub fn set_grid(state: &mut AppState, id: FrameId, on: bool) {
+    edit_grid(state, id, |g| g.on = on);
+}
+
+/// Changes the text style of the reference grid of a frame. With `step`,
+/// the change is one undo step.
+pub fn edit_grid_text(
+    state: &mut AppState,
+    id: FrameId,
+    step: bool,
+    edit: impl FnOnce(&mut FurnitureText),
+) {
+    if step {
+        state.save_edit();
+    }
+    edit_grid(state, id, |g| edit(&mut g.text));
+    if step {
+        state.save_edit();
+    }
+}
+
+/// Sets the number of columns of the reference grid of a frame.
+pub fn set_grid_columns(state: &mut AppState, id: FrameId, columns: u32) {
+    let (lo, hi) = (*ReferenceGrid::COUNTS.start(), *ReferenceGrid::COUNTS.end());
+    edit_grid(state, id, |g| g.columns = columns.clamp(lo, hi));
+}
+
+/// Sets the number of rows of the reference grid of a frame.
+pub fn set_grid_rows(state: &mut AppState, id: FrameId, rows: u32) {
+    let (lo, hi) = (*ReferenceGrid::COUNTS.start(), *ReferenceGrid::COUNTS.end());
+    edit_grid(state, id, |g| g.rows = rows.clamp(lo, hi));
 }

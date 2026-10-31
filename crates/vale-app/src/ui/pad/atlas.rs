@@ -4,15 +4,20 @@
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
-use vale_store::{FrameShape, Graticule, LayerId, MapId, Neatline, PageUnits, RasterId};
+use vale_store::{
+    Border, BorderStyle, FrameShape, Graticule, LayerId, MapId, Neatline, PageUnits, RasterId,
+    ReferenceGrid,
+};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
+use super::labels::value_slider;
+use super::text_style;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW};
 use super::{Card, CardTitle, GRATICULE, WORKSPACES, WORLDS, WORLDS_LEAD, WORLDS_ROW};
 use super::{NO_LAYERS, layer_icon, rule, save_mark, show_card, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
-use crate::ui::atlas::{self, AtlasSelection, AtlasTool, FrameTab};
+use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor, FrameTab};
 use crate::ui::{Action, AppState, ExportFormat, Workspace};
 
 pub const SELECT: &str = "Select";
@@ -50,6 +55,18 @@ pub const LABEL_FORMATS: [&str; 2] = ["DMS", "Decimal"];
 pub const NEATLINE: &str = "Neatline";
 pub const NEATLINE_COLOR: &str = "Neatline color";
 pub const NEATLINE_WIDTH: &str = "Neatline width";
+pub const BORDER: &str = "Border";
+pub const BORDER_STYLE: &str = "Border style";
+/// The choices of the border style, in the order of `BorderStyle::ALL`.
+pub const BORDER_STYLES: [&str; 2] = ["Solid", "Graduated"];
+pub const BORDER_COLOR: &str = "Border color";
+pub const SECOND_COLOR: &str = "Second color";
+pub const BORDER_WIDTH: &str = "Border width";
+pub const BORDER_DISTANCE: &str = "Border distance";
+pub const REFERENCE_GRID: &str = "Reference grid";
+pub const COLUMNS: &str = "Columns";
+pub const ROWS: &str = "Rows";
+pub const PAPER_COLOR: &str = "Paper color";
 pub const CENTER_ON_FRAME: &str = "Center on frame";
 pub const PROJECTION: &str = "Map projection";
 pub const CENTER_LONGITUDE: &str = "Center longitude";
@@ -609,6 +626,12 @@ fn selection_panel(
             };
             rect
         }
+        AtlasSelection::Frame(id) if state.atlas.open_grid().is_some() => {
+            let Some(rect) = super::grid_labels::panel(ctx, state, controls, rects, id) else {
+                return;
+            };
+            rect
+        }
         AtlasSelection::Frame(id) if state.atlas.open_edge().is_some() => {
             let Some(rect) = super::edge_labels::panel(ctx, state, controls, rects, id) else {
                 return;
@@ -851,6 +874,20 @@ fn frame_tab(
     if frame.neatline.on {
         neatline_rows(ui, state, controls, &frame);
     }
+    let mut border = frame.border.on;
+    if widgets::switch_row(ui, controls, BORDER, BORDER, &mut border) {
+        atlas::set_border(state, id, border);
+    }
+    if frame.border.on {
+        border_rows(ui, state, controls, &frame);
+    }
+    let mut grid = frame.grid.on;
+    if widgets::switch_row(ui, controls, REFERENCE_GRID, REFERENCE_GRID, &mut grid) {
+        atlas::set_grid(state, id, grid);
+    }
+    if frame.grid.on {
+        grid_rows(ui, state, controls, &frame);
+    }
 
     ui.add_space(6.0);
     let delete = widgets::button_row_in(ui, controls, DELETE_FRAME, true, theme::WARN);
@@ -964,6 +1001,75 @@ fn neatline_rows(
         &text,
     ) {
         atlas::set_neatline_width(state, id, lo + fraction * (hi - lo));
+    }
+}
+
+/// The rows of the border of a frame: the style, the colors, the width,
+/// and the distance.
+fn border_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    frame: &vale_store::FrameRecord,
+) {
+    let (id, b) = (frame.id, &frame.border);
+    let active = BorderStyle::ALL.iter().position(|s| *s == b.style);
+    if let Some(i) = widgets::choice_row(ui, controls, BORDER_STYLE, &BORDER_STYLES, active) {
+        atlas::set_border_style(state, id, BorderStyle::ALL[i]);
+    }
+    let first = ClassColor::Border(false);
+    if let Some(c) = text_style::rgb_rows(ui, state, controls, BORDER_COLOR, first, b.color) {
+        atlas::set_border_color(state, id, false, c);
+    }
+    if b.style == BorderStyle::Graduated {
+        let second = ClassColor::Border(true);
+        if let Some(c) = text_style::rgb_rows(ui, state, controls, SECOND_COLOR, second, b.color2) {
+            atlas::set_border_color(state, id, true, c);
+        }
+    }
+    let range = |r: std::ops::RangeInclusive<f64>| (*r.start(), *r.end());
+    let text = format!("{} mm", b.width_mm);
+    let names = (BORDER_WIDTH, BORDER_WIDTH);
+    if let Some(w) = value_slider(
+        ui,
+        controls,
+        names,
+        b.width_mm,
+        range(Border::WIDTHS),
+        &text,
+    ) {
+        atlas::set_border_width(state, id, w);
+    }
+    let text = format!("{} mm", b.distance_mm);
+    let names = (BORDER_DISTANCE, BORDER_DISTANCE);
+    let distances = range(Border::DISTANCES);
+    if let Some(d) = value_slider(ui, controls, names, b.distance_mm, distances, &text) {
+        atlas::set_border_distance(state, id, d);
+    }
+}
+
+/// The rows of the reference grid of a frame: the number of columns, the
+/// number of rows, and the row of the Grid labels page.
+fn grid_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    frame: &vale_store::FrameRecord,
+) {
+    let (id, g) = (frame.id, &frame.grid);
+    let counts = ReferenceGrid::COUNTS;
+    if let Some(n) = super::furniture::count_slider(ui, controls, COLUMNS, g.columns, counts) {
+        atlas::set_grid_columns(state, id, n);
+    }
+    let counts = ReferenceGrid::COUNTS;
+    if let Some(n) = super::furniture::count_slider(ui, controls, ROWS, g.rows, counts) {
+        atlas::set_grid_rows(state, id, n);
+    }
+    let summary = super::grid_labels::summary(&g.text);
+    if widgets::open_row(ui, controls, super::grid_labels::GRID_LABELS, &summary).clicked() {
+        state.atlas.grid = Some(id);
+        state.atlas.grid_page = None;
+        state.atlas.label_color = None;
     }
 }
 
@@ -1581,6 +1687,11 @@ fn page_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if let Some(chosen) = widgets::choice_row(ui, controls, "Units", &UNIT_NAMES, active) {
         let units = PageUnits::ALL[chosen];
         atlas::edit_page(state, |p| p.units = units);
+    }
+    let paper = atlas::open_page(state).paper;
+    let which = ClassColor::Paper;
+    if let Some(c) = text_style::rgb_rows(ui, state, controls, PAPER_COLOR, which, paper) {
+        atlas::set_paper(state, c);
     }
 
     ui.add_space(6.0);

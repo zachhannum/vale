@@ -640,7 +640,7 @@ fn mm_slider(
 }
 
 /// A slider for a whole number.
-fn count_slider(
+pub(super) fn count_slider(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     name: &str,
