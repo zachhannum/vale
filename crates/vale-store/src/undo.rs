@@ -19,8 +19,8 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
     Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
-    FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, Neatline, PageId, PageRecord,
-    PageUnits, ProjectionPreset, encode_rings, read_rings,
+    FurnitureId, FurnitureRecord, Graticule, LayoutGrid, MapId, MapRecord, Neatline, PageId,
+    PageRecord, PageUnits, ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry,
@@ -243,8 +243,9 @@ pub(crate) fn swap_records(
             }
             ATLAS => {
                 let image = payload.is_some().then(|| atlas(&mut r)).flatten();
-                let (maps, pages, presets) = image.ok_or_else(bad)?;
-                (next.atlas.maps, next.atlas.pages, next.atlas.presets) = (maps, pages, presets);
+                let (maps, pages, presets, grid) = image.ok_or_else(bad)?;
+                let atlas = &mut next.atlas;
+                (atlas.maps, atlas.pages, atlas.presets, atlas.grid) = (maps, pages, presets, grid);
             }
             _ => return Err(bad()),
         }
@@ -491,7 +492,8 @@ fn world(r: &mut Reader) -> Option<World> {
 /// ends after the projections has no overrides. An image that ends after the
 /// overrides has no label classes. An image that ends after the label
 /// classes has no furniture. An image that ends after the furniture has white
-/// paper, and frames with no border.
+/// paper, and frames with no border. An image that ends after the borders
+/// has the default layout grid.
 fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     put_u32(out, atlas.maps.len());
     for map in &atlas.maps {
@@ -602,6 +604,7 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
         put_u32(out, frame.id.0 as usize);
         put_bytes(out, frame.border.to_json().as_bytes());
     }
+    put_bytes(out, atlas.grid.to_json().as_bytes());
 }
 
 fn flag(r: &mut Reader) -> Option<bool> {
@@ -612,7 +615,12 @@ fn flag(r: &mut Reader) -> Option<bool> {
     }
 }
 
-type AtlasImage = (Vec<MapRecord>, Vec<PageRecord>, Vec<ProjectionPreset>);
+type AtlasImage = (
+    Vec<MapRecord>,
+    Vec<PageRecord>,
+    Vec<ProjectionPreset>,
+    LayoutGrid,
+);
 
 fn atlas(r: &mut Reader) -> Option<AtlasImage> {
     let mut maps = Vec::new();
@@ -735,7 +743,11 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             frame.border = border;
         }
     }
-    r.0.is_empty().then_some((maps, pages, presets))
+    let mut grid = LayoutGrid::default();
+    if !r.0.is_empty() {
+        grid = LayoutGrid::from_json(&string(r)?)?;
+    }
+    r.0.is_empty().then_some((maps, pages, presets, grid))
 }
 
 /// The raster images of the log get one color for each band, as the
@@ -1286,6 +1298,12 @@ mod tests {
         }
 
         before.save_preset("Home", "+proj=laea +lon_0=10 +lat_0=50");
+        before.grid = LayoutGrid {
+            on: true,
+            spacing_mm: 12.5,
+            color: [0x10, 0x20, 0x30],
+            opacity: 0.5,
+        };
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
         let image = atlas(&mut Reader(&out)).unwrap();
@@ -1294,7 +1312,8 @@ mod tests {
             (
                 before.maps.clone(),
                 before.pages.clone(),
-                before.presets.clone()
+                before.presets.clone(),
+                before.grid.clone(),
             )
         );
         out.pop();
@@ -1306,8 +1325,8 @@ mod tests {
         let before = Atlas::new(Units::Metric);
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
-        // The paper of one page and no frames.
-        out.truncate(out.len() - 15);
+        // The paper of one page, no frames, and the layout grid.
+        out.truncate(out.len() - 15 - 4 - before.grid.to_json().len());
         // An image of an older build ends after the projections.
         assert_eq!(out.split_off(out.len() - 12), [0; 12]);
         let image = atlas(&mut Reader(&out)).unwrap();
@@ -1321,8 +1340,8 @@ mod tests {
         before.maps[0].overrides.insert(LayerId(3), text);
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
-        // The paper of one page and no frames.
-        out.truncate(out.len() - 15);
+        // The paper of one page, no frames, and the layout grid.
+        out.truncate(out.len() - 15 - 4 - before.grid.to_json().len());
         // An image of an older build ends after the overrides.
         assert_eq!(out.split_off(out.len() - 8), [0; 8]);
         let image = atlas(&mut Reader(&out)).unwrap();
@@ -1335,6 +1354,7 @@ mod tests {
         before.maps[0].labels.insert(LayerId(3), "[]".into());
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
+        out.truncate(out.len() - 4 - before.grid.to_json().len());
         // An image of an older build ends after the label classes. The rest
         // is the furniture count, one page with white paper, and no frames.
         let tail = out.split_off(out.len() - 19);
@@ -1365,7 +1385,8 @@ mod tests {
         // An image of an older build ends after the furniture.
         let frame = before.frame(id).unwrap();
         let border = frame.border.to_json();
-        let tail = 4 + 7 + 4 + 4 + (4 + border.len());
+        let grid = before.grid.to_json();
+        let tail = 4 + 7 + 4 + 4 + (4 + border.len()) + (4 + grid.len());
         out.truncate(out.len() - tail);
         let image = atlas(&mut Reader(&out)).unwrap();
         assert_eq!(image.1, before.pages);

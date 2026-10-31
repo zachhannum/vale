@@ -165,6 +165,57 @@ impl Default for Neatline {
     }
 }
 
+/// A grid of lines on the pages that frames snap to. The grid shows only
+/// on the screen, and an export leaves it out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutGrid {
+    pub on: bool,
+    /// The distance between two lines.
+    pub spacing_mm: f64,
+    pub color: Rgb,
+    /// From 0 to 1.
+    pub opacity: f64,
+}
+
+impl LayoutGrid {
+    /// The spacings in millimeters that the app offers.
+    pub const SPACINGS: RangeInclusive<f64> = 1.0..=100.0;
+
+    /// The grid as JSON text, for a project file.
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "on": self.on,
+            "spacing": self.spacing_mm,
+            "color": hex(self.color),
+            "opacity": self.opacity,
+        })
+        .to_string()
+    }
+
+    /// Reads [`LayoutGrid::to_json`]. A missing key gets its default. `None`
+    /// if a value is bad.
+    pub fn from_json(text: &str) -> Option<LayoutGrid> {
+        let map = json_object(text)?;
+        let mut g = LayoutGrid::default();
+        read_flag(&map, "on", &mut g.on)?;
+        read_number(&map, "spacing", &mut g.spacing_mm)?;
+        read_color(&map, "color", &mut g.color)?;
+        read_number(&map, "opacity", &mut g.opacity)?;
+        (g.spacing_mm > 0.0 && (0.0..=1.0).contains(&g.opacity)).then_some(g)
+    }
+}
+
+impl Default for LayoutGrid {
+    fn default() -> Self {
+        LayoutGrid {
+            on: false,
+            spacing_mm: 10.0,
+            color: [0x3d, 0x8b, 0xfd],
+            opacity: 0.35,
+        }
+    }
+}
+
 /// A band around a map frame, at a distance outside the bounding box of its
 /// shape.
 #[derive(Clone, Debug, PartialEq)]
@@ -1123,6 +1174,8 @@ pub struct Atlas {
     pub presets: Vec<ProjectionPreset>,
     /// In atlas order.
     pub pages: Vec<PageRecord>,
+    /// The layout grid of all pages.
+    pub grid: LayoutGrid,
     pub(crate) next_map_id: u32,
     pub(crate) next_page_id: u32,
     pub(crate) next_frame_id: u32,
@@ -1161,6 +1214,7 @@ impl Atlas {
                 frames: Vec::new(),
                 furniture: Vec::new(),
             }],
+            grid: LayoutGrid::default(),
             next_map_id: 1,
             next_page_id: 1,
             next_frame_id: 0,
