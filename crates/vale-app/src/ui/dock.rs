@@ -52,7 +52,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                         page_panel(ui, state);
                         ui.separator();
                     }
-                    AtlasSelection::Item(_) | AtlasSelection::None => {}
+                    AtlasSelection::Item(id) => {
+                        if let Some(rec) = state.doc.project.atlas.furniture(id).cloned() {
+                            item_panel(ui, state, &rec);
+                            ui.separator();
+                        }
+                    }
+                    AtlasSelection::None => {}
                 }
                 inspector::contents(ui, state);
             });
@@ -949,4 +955,232 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         state.delete_label_class(map, layer, i);
         state.atlas.label = None;
     }
+}
+
+/// The panel of an item of furniture.
+fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::FurnitureRecord) {
+    use super::pad::furniture as item;
+    use vale_store::Furniture;
+    let id = rec.id;
+    let kind = atlas::ItemKind::of(&rec.item);
+    ui.heading(kind.name());
+    if !matches!(rec.item, Furniture::Text(_)) {
+        let names = atlas::frame_names(state);
+        let chosen = names.iter().find(|(f, _)| Some(*f) == rec.item.frame());
+        let shown = chosen.map_or(item::NO_FRAME, |(_, n)| n.as_str());
+        ui.horizontal(|ui| {
+            ui.label(item::MAP_FRAME);
+            egui::ComboBox::from_id_salt("atlas-item-frame")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (frame, name) in &names {
+                        let on = rec.item.frame() == Some(*frame);
+                        if ui.selectable_label(on, name).clicked() {
+                            atlas::set_item_frame(state, id, Some(*frame));
+                        }
+                    }
+                });
+        });
+    }
+    match &rec.item {
+        Furniture::Text(t) => {
+            let mut text = t.text.clone();
+            let edit = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3));
+            named(&edit, egui::WidgetType::TextEdit, item::ITEM_TEXT);
+            if edit.changed() {
+                atlas::edit_item(state, id, |r| match &mut r.item {
+                    Furniture::Text(t) => {
+                        t.text = text;
+                        true
+                    }
+                    _ => false,
+                });
+            }
+            item_style_rows(ui, state, id, &t.style, true);
+            ui.horizontal(|ui| {
+                ui.label(item::ALIGNMENT);
+                let aligns = [
+                    vale_store::TextAlign::Left,
+                    vale_store::TextAlign::Center,
+                    vale_store::TextAlign::Right,
+                ];
+                for (align, name) in aligns.into_iter().zip(item::ALIGNMENTS) {
+                    if ui.selectable_label(t.align == align, name).clicked() {
+                        atlas::edit_item(state, id, |r| match &mut r.item {
+                            Furniture::Text(t) => {
+                                t.align = align;
+                                true
+                            }
+                            _ => false,
+                        });
+                    }
+                }
+            });
+        }
+        Furniture::Legend(l) => {
+            ui.horizontal(|ui| {
+                ui.label(item::TITLE);
+                let mut title = l.title.clone();
+                let edit = ui.text_edit_singleline(&mut title);
+                named(&edit, egui::WidgetType::TextEdit, item::TITLE);
+                if edit.changed() {
+                    atlas::edit_item(state, id, |r| match &mut r.item {
+                        Furniture::Legend(l) => {
+                            l.title = title;
+                            true
+                        }
+                        _ => false,
+                    });
+                }
+            });
+            item_style_rows(ui, state, id, &l.style, false);
+            ui.label(item::ENTRIES);
+            for row in atlas::legend_rows(state, l) {
+                let key = (row.layer, row.rule.clone());
+                let name = l.entries.get(&key).and_then(|e| e.name.clone());
+                ui.horizontal(|ui| {
+                    let mut shown = !row.hidden;
+                    if ui.checkbox(&mut shown, "").changed() {
+                        atlas::edit_entry(state, id, key.clone(), |e| e.hidden = !shown);
+                    }
+                    let mut text = name.clone().unwrap_or_default();
+                    let edit = egui::TextEdit::singleline(&mut text).hint_text(&row.label);
+                    if ui.add(edit).changed() {
+                        let typed = text.trim().to_string();
+                        let name = (!typed.is_empty()).then_some(typed);
+                        atlas::edit_entry(state, id, key, |e| e.name = name);
+                    }
+                });
+            }
+            let reset = ui.add_enabled(
+                !l.entries.is_empty(),
+                egui::Button::new(item::RESET_ENTRIES),
+            );
+            if reset.clicked() {
+                atlas::edit_item(state, id, |r| match &mut r.item {
+                    Furniture::Legend(l) => {
+                        l.entries.clear();
+                        true
+                    }
+                    _ => false,
+                });
+            }
+        }
+        Furniture::ScaleBar(s) => {
+            item_style_rows(ui, state, id, &s.style, false);
+            let text = atlas::item_scale_text(state, s.frame);
+            ui.label(format!(
+                "{}: {}",
+                item::SCALE,
+                text.as_deref().unwrap_or("—")
+            ));
+            ui.weak(item::SCALE_HINT);
+        }
+        Furniture::NorthArrow(n) => {
+            ui.horizontal(|ui| {
+                ui.label(item::COLOR);
+                let mut color = n.color;
+                let button = ui.color_edit_button_srgb(&mut color);
+                named(&button, egui::WidgetType::ColorButton, item::COLOR);
+                if button.changed() {
+                    atlas::set_item_color(state, id, color);
+                }
+            });
+            let mut hide = n.hide_if_varies;
+            if ui.checkbox(&mut hide, item::HIDE_VARIES).changed() {
+                atlas::edit_item(state, id, |r| match &mut r.item {
+                    Furniture::NorthArrow(n) => {
+                        n.hide_if_varies = hide;
+                        true
+                    }
+                    _ => false,
+                });
+            }
+            let v = atlas::item_variation(state, n.frame);
+            let text = v.map_or_else(|| "—".to_string(), |v| format!("{v:.1}°"));
+            ui.label(format!("{}: {text}", item::NORTH_VARIES));
+        }
+    }
+    ui.add_space(6.0);
+    if ui.button(item::delete_name(kind)).clicked() {
+        atlas::delete_item(state);
+    }
+    ui.add_space(6.0);
+}
+
+/// The font, the style, the size, and the color of the text of an item.
+fn item_style_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    id: vale_store::FurnitureId,
+    style: &vale_store::FurnitureText,
+    font: bool,
+) {
+    use super::pad::furniture as item;
+    egui::Grid::new("atlas-item-style")
+        .num_columns(2)
+        .show(ui, |ui| {
+            if font {
+                ui.label(item::FONT);
+                let family = style
+                    .font
+                    .as_deref()
+                    .unwrap_or(crate::fonts::DEFAULT_FAMILY);
+                let button = ui.button(format!("{family}…"));
+                named(&button, egui::WidgetType::Button, item::FONT);
+                if button.clicked() {
+                    let target = super::FontTarget::Item(id);
+                    state.actions.push(super::Action::PickFont(target));
+                }
+                ui.end_row();
+                let family =
+                    crate::fonts::family(style.font.as_deref(), &mut state.fonts).to_owned();
+                let mut faces = state.fonts.faces(&family);
+                if faces.is_empty() {
+                    faces.push(vale_labeler::Face {
+                        weight: 400.0,
+                        italic: false,
+                    });
+                }
+                let face = vale_labeler::Face {
+                    weight: style.weight,
+                    italic: style.italic,
+                };
+                ui.label(item::STYLE);
+                egui::ComboBox::from_id_salt("atlas-item-face")
+                    .selected_text(face.name())
+                    .show_ui(ui, |ui| {
+                        for f in faces {
+                            let on = f.weight == style.weight && f.italic == style.italic;
+                            if ui.selectable_label(on, f.name()).clicked() {
+                                atlas::edit_style(state, id, |s| {
+                                    s.weight = f.weight;
+                                    s.italic = f.italic;
+                                });
+                            }
+                        }
+                    });
+                ui.end_row();
+            }
+            ui.label(item::SIZE);
+            let mut size = style.size;
+            let drag = egui::DragValue::new(&mut size)
+                .range(vale_store::FurnitureText::SIZES)
+                .speed(0.25)
+                .suffix(" pt");
+            let drag = ui.add(drag);
+            named(&drag, egui::WidgetType::DragValue, item::SIZE);
+            if drag.changed() {
+                atlas::edit_style(state, id, |s| s.size = size);
+            }
+            ui.end_row();
+            ui.label(item::COLOR);
+            let mut color = style.color;
+            let button = ui.color_edit_button_srgb(&mut color);
+            named(&button, egui::WidgetType::ColorButton, item::COLOR);
+            if button.changed() {
+                atlas::set_item_color(state, id, color);
+            }
+            ui.end_row();
+        });
 }

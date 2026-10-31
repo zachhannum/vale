@@ -14,7 +14,7 @@ use vale_app::ui::pad::atlas::{
     ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, MAP_NAME, NEXT_PAGE, PAGE_NAME,
     PREVIOUS_PAGE, SCALE,
 };
-use vale_app::ui::panels::ADD_MAP_FRAME;
+use vale_app::ui::panels::{ADD_MAP_FRAME, ADD_MENU};
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{
@@ -1098,6 +1098,8 @@ fn a_projection_preset_changes_the_projection() {
 fn add_map_frame_adds_a_frame_to_the_open_page() {
     let mut h = harness();
     h.run_steps(3);
+    h.get_by_label(ADD_MENU).click();
+    h.run_steps(2);
     h.get_by_label(ADD_MAP_FRAME).click();
     h.run_steps(3);
     let s = h.state();
