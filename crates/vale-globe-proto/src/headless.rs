@@ -118,6 +118,8 @@ pub fn bench(face_size: usize) -> String {
                 scale: 0.0,
                 seed: 0,
                 motion: [0.0; 3],
+                ridged: false,
+                relief: 0.0,
                 limits: Limits::default(),
             });
         }

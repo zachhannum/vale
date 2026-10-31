@@ -16,7 +16,9 @@ use crate::bands::SEA_LEVEL;
 use crate::cube::{FACES, meters_to_level};
 use crate::erode::{ErodeGrid, ErodeStep};
 use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
-use crate::heightmap::{Limits, Mode, StampPlan, TILE_SIZE, TexelRect};
+use crate::heightmap::{
+    Limits, Mode, NOISE_RELIEF_M, StampPlan, TILE_SIZE, TexelRect, noise_octaves,
+};
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
@@ -75,8 +77,16 @@ struct FaceStamp {
     talus: f32,
     scale: f32,
     seed: u32,
-    /// The motion of the push mode, and the padding of a `vec3`.
+    /// The motion of the push mode.
     motion: [f32; 3],
+    /// 1 for the ridged variant of the noise mode, and 0 if not.
+    ridged: u32,
+    /// The relief setting of the noise mode, and the levels above the sea
+    /// where the noise has its full effect.
+    relief: f32,
+    relief_span: f32,
+    /// The number of octaves of the noise mode.
+    octaves: u32,
     pad: u32,
 }
 
@@ -107,6 +117,11 @@ impl FaceStamp {
             scale: stamp.scale as f32,
             seed: stamp.seed,
             motion: stamp.motion.map(|m| m as f32),
+            ridged: u32::from(stamp.ridged),
+            relief: stamp.relief.clamp(0.0, 1.0) as f32,
+            relief_span: f32::from(meters_to_level(SEA_LEVEL + NOISE_RELIEF_M))
+                - f32::from(meters_to_level(SEA_LEVEL)),
+            octaves: noise_octaves(stamp.scale, size as usize),
             pad: 0,
         }
     }
@@ -817,6 +832,7 @@ impl GpuHeightmap {
                     Mode::Ridge => 8,
                     Mode::Deposit => 9,
                     Mode::Push => 12,
+                    Mode::Noise => 13,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,

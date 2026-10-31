@@ -31,6 +31,8 @@ fn paint(map: &mut Heightmap, lon: f64, lat: f64, radius: f64) {
         scale: 0.0,
         seed: 0,
         motion: [0.0; 3],
+        ridged: false,
+        relief: 0.0,
         limits: Limits::default(),
     });
     assert!(map.end_stroke());
@@ -267,6 +269,8 @@ fn a_stroke_that_did_not_end_is_not_in_the_file() {
         scale: 0.0,
         seed: 0,
         motion: [0.0; 3],
+        ridged: false,
+        relief: 0.0,
         limits: Limits::default(),
     });
     assert!(texels(&map) != first);

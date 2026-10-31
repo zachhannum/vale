@@ -180,6 +180,8 @@ fn paint(map: &mut Heightmap) {
         scale: 0.0,
         seed: 0,
         motion: [0.0; 3],
+        ridged: false,
+        relief: 0.0,
         limits: Limits::default(),
     });
     assert!(map.end_stroke());
