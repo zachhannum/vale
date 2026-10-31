@@ -4262,6 +4262,36 @@ fn the_fill_page_sets_a_hatch_with_a_finger() {
 }
 
 #[test]
+fn the_divisions_page_sets_doubling_divisions_with_a_finger() {
+    use vale_store::DivisionSpacing;
+    for (size, prefix) in [(BOARDS[0], "pad"), ((393.0, 852.0), "phone")] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.gpkg");
+        let mut s = state();
+        s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+        let mut h = pad_with(s, size);
+        add_frame(&mut h);
+        add_item(&mut h, ItemKind::ScaleBar);
+        h.state_mut().save_waiting().unwrap();
+        tap_row(&mut h, BarPage::Divisions.name());
+        tap_row(&mut h, DivisionSpacing::Doubling.label());
+        assert_eq!(bar(&h, 0).spacing, DivisionSpacing::Doubling, "{what}");
+        check_page(&mut h, &what, &format!("{prefix}-atlas-bar-doubling"));
+        // The last of 4 divisions ends at 8 division values.
+        let id = item(&h, 0).id;
+        let row = atlas::bar_rows(h.state_mut(), id).remove(0);
+        let (text, x) = row.numbers.last().unwrap().clone();
+        let last: f64 = text.replace(',', "").parse().unwrap();
+        assert_eq!(last, 8.0 * row.value, "{what}");
+        assert!((x - row.end).abs() < 1e-6, "{what}: {row:?}");
+        assert_eq!(row.divisions, 4);
+        tap(&mut h, "Undo");
+        assert_eq!(bar(&h, 0).spacing, DivisionSpacing::Equal, "{what}");
+    }
+}
+
+#[test]
 fn each_change_of_a_scale_bar_is_one_undo_step() {
     use vale_store::ScaleBarKind;
     let dir = tempfile::tempdir().unwrap();

@@ -1507,6 +1507,18 @@ fn bar_sections(
                     }
                     ui.end_row();
                 }
+                let all = &vale_store::DivisionSpacing::ALL;
+                let label = vale_store::DivisionSpacing::label;
+                if let Some(v) = combo(
+                    ui,
+                    "atlas-bar-spacing",
+                    item::SPACING,
+                    all,
+                    label,
+                    bar.spacing,
+                ) {
+                    edit(state, true, &|b| b.spacing = v);
+                }
                 if let Some(on) = check(ui, item::BEFORE_ZERO, bar.before_zero) {
                     edit(state, true, &|b| b.before_zero = on);
                 }

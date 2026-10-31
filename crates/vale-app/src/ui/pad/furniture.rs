@@ -4,9 +4,9 @@
 use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_labeler::Face;
 use vale_store::{
-    FillKind, FillPattern, Furniture, FurnitureId, FurnitureRecord, FurnitureText, LayerId,
-    ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TextAlign, TickFrequency,
-    UnitLabelStyle, UnitPosition,
+    DivisionSpacing, FillKind, FillPattern, Furniture, FurnitureId, FurnitureRecord, FurnitureText,
+    LayerId, ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TextAlign,
+    TickFrequency, UnitLabelStyle, UnitPosition,
 };
 
 use super::atlas::{keypad_below, panel_width};
@@ -864,6 +864,12 @@ fn divisions_page(
     );
     if let Some(n) = n {
         atlas::edit_bar(state, id, false, |b| b.divisions = n);
+    }
+    let all = DivisionSpacing::ALL;
+    let labels = all.map(DivisionSpacing::label);
+    let active = all.iter().position(|s| *s == bar.spacing);
+    if let Some(i) = widgets::choice_row(ui, controls, SPACING, &labels, active) {
+        atlas::edit_bar(state, id, true, |b| b.spacing = all[i]);
     }
     let n = count_slider(
         ui,
