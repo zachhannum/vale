@@ -50,6 +50,8 @@ pub fn column_name(i: u32) -> String {
 }
 
 /// The band, its stroke, and the grid labels of a frame, in target points.
+/// The stroke of a graduated band also goes across the band at each change
+/// of color.
 pub fn items(
     projection: &Projection,
     frame: &FrameRecord,
@@ -73,7 +75,19 @@ pub fn items(
         }),
         BorderStyle::Graduated => {
             for side in sides(inner, outer) {
-                for piece in lines.pieces(&side, None) {
+                let pieces = lines.pieces(&side, None);
+                // A line across the band where two pieces meet.
+                for piece in &pieces[..pieces.len().saturating_sub(1)] {
+                    let r = piece.rect;
+                    let (from, to) = if side.horizontal {
+                        ((r.x1, r.y0), (r.x1, r.y1))
+                    } else {
+                        ((r.x0, r.y1), (r.x1, r.y1))
+                    };
+                    edges.move_to(from);
+                    edges.line_to(to);
+                }
+                for piece in pieces {
                     let first = piece.cell.is_none_or(|[x, y]| (x + y).rem_euclid(2) == 0);
                     out.push(Item::Fill {
                         path: piece.rect.to_path(0.1),

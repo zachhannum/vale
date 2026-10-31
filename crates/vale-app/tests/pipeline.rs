@@ -924,7 +924,7 @@ fn the_reference_grid_labels_each_graticule_interval_in_the_band() {
 }
 
 #[test]
-fn the_border_stroke_draws_both_edges_of_the_band() {
+fn the_border_stroke_draws_the_edges_and_the_divisions_of_the_band() {
     let (mut doc, mut pipeline, id) = bordered();
     let black = [1, 2, 3];
     let frame = doc.project.atlas.frame_mut(id).unwrap();
@@ -946,6 +946,28 @@ fn the_border_stroke_draws_both_edges_of_the_band() {
     let pt = |mm: f64| mm * PT_PER_MM;
     assert!((b.x0 - pt(30.0)).abs() < 1e-6 && (b.x1 - pt(210.0)).abs() < 1e-6);
     assert!(is_pdf(&list));
+
+    // A graduated band has a line across it at each division.
+    let (a, c) = ([200, 10, 20], [10, 20, 200]);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.border.style = vale_store::BorderStyle::Graduated;
+    (frame.border.color, frame.border.color2) = (a, c);
+    frame.graticule.interval = Some(30.0);
+    frame.scale /= 3.0;
+    let list = page_list(&doc, &mut pipeline);
+    let pieces = fills_of(&list, a).len() + fills_of(&list, c).len();
+    let Item::Stroke { path, .. } = neatline_items(&list, black, 1.5)[0] else {
+        unreachable!()
+    };
+    let parts = (path.elements().iter())
+        .filter(|e| matches!(e, kurbo::PathEl::MoveTo(_)))
+        .count();
+    assert!(pieces > 4, "{pieces}");
+    assert_eq!(
+        parts,
+        2 + (pieces - 4),
+        "two edges and one line per division"
+    );
 
     doc.project.atlas.frame_mut(id).unwrap().border.stroke = false;
     assert!(neatline_items(&page_list(&doc, &mut pipeline), black, 1.5).is_empty());
