@@ -5,7 +5,7 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, Limits, MAX_BRUSH_RADIUS, Mode, RIDGE_SPACING, Ridge, Stamp,
+    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS, Mode, Ridge, Stamp,
     StampPlan, meters_to_level, talus_levels,
 };
 
@@ -408,7 +408,7 @@ pub fn set_world(
 /// stroke.
 fn stamp_spacing(mode: Mode) -> f64 {
     match mode {
-        Mode::OceanRidge => RIDGE_SPACING,
+        Mode::OceanRidge => LINE_SPACING,
         _ => STAMP_SPACING,
     }
 }

@@ -11,8 +11,9 @@ use crate::bands::{Bands, SEA_LEVEL};
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
+use crate::line::{LinePlace, LinePlan, LinePoint};
 use crate::math::{V3, add, cross, dot, length, normalize, scale};
-use crate::ridge::{RidgePlace, RidgePlan};
+use crate::ridge::RidgePlan;
 
 /// The side of a tile, in texels.
 pub const TILE_SIZE: usize = 256;
@@ -1289,21 +1290,31 @@ impl Heightmap {
     /// stroke. Thus a second call with the same plan changes nothing. Call
     /// this in a stroke. Returns the number of texels that changed.
     pub fn ridge(&mut self, plan: &RidgePlan) -> usize {
-        assert_eq!(plan.face_size, self.n, "the face size of the plan");
+        self.lay(&plan.line, |start, at, p| {
+            plan.level(start, at, plan.noise(p))
+        })
+    }
+
+    /// Lays a line brush on the ground from before the stroke. A texel near
+    /// the new part of the line gets `level` of its level from before the
+    /// stroke, its place on the line, and its direction. A texel that the
+    /// brush does not reach gets its level from before the stroke. Returns
+    /// the number of texels that changed.
+    fn lay(&mut self, line: &LinePlan, level: impl Fn(u16, LinePoint, V3) -> u16) -> usize {
+        assert_eq!(line.face_size, self.n, "the face size of the plan");
         let mut changed = 0;
-        for (face, rect) in plan.rects.into_iter().enumerate() {
+        for (face, rect) in line.rects.into_iter().enumerate() {
             let Some(rect) = rect else { continue };
             for y in rect.y0..rect.y1 {
                 for x in rect.x0..rect.x1 {
-                    let place = match plan.place(self.texel_dir(face, x, y)) {
-                        RidgePlace::Far => continue,
-                        RidgePlace::Off => None,
-                        RidgePlace::On(place) => Some(place),
+                    let p = self.texel_dir(face, x, y);
+                    let place = match line.place(p) {
+                        LinePlace::Far => continue,
+                        LinePlace::Off => None,
+                        LinePlace::On(place) => Some(place),
                     };
                     let start = self.level_before(face, x, y);
-                    let new = place.map_or(start, |place| {
-                        plan.level(start, place, plan.noise(self.texel_dir(face, x, y)))
-                    });
+                    let new = place.map_or(start, |place| level(start, place, p));
                     if new != self.texel(face, x, y) {
                         self.set(face, x, y, new);
                         changed += 1;

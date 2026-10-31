@@ -15,6 +15,7 @@ mod flow;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod heightmap;
+mod line;
 pub mod math;
 #[cfg(feature = "gpu")]
 mod pyramid;
@@ -44,11 +45,12 @@ pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, TILE_SIZE, TexelRect,
     UNDO_MEMORY_LIMIT, talus_levels,
 };
+pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, pyramid_layout};
 pub use rain::Rain;
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
-pub use ridge::{RIDGE_SEGMENTS, RIDGE_SPACING, Ridge, RidgeLine, RidgePlan, RidgeSegment};
+pub use ridge::{Ridge, RidgeLine, RidgePlan};
 pub use smooth::{
     LocalPyramid, Pyramid, level_size, max_level, next_level, pyramid_bytes, smoothing_level,
 };

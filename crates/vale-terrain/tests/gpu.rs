@@ -5,10 +5,10 @@ use std::sync::{Arc, OnceLock, mpsc};
 use vale_terrain::math::{V3, add, angle, cross, dot, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
     ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FIELD_WGSL, FlowMap,
-    GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, Limits, Mode, OuterFlow, Pyramid,
-    RIDGE_SEGMENTS, RIDGE_SLOTS, RIDGE_SPACING, Readback, Ridge, RidgeLine, RidgePlan, STAMP_SLOTS,
-    Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights,
-    channel_map, pyramid_layout, tiles_layout, window_channels,
+    GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, LINE_SEGMENTS, LINE_SPACING,
+    Limits, Mode, OuterFlow, Pyramid, RIDGE_SLOTS, Readback, Ridge, RidgeLine, RidgePlan,
+    STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window,
+    WindowHeights, channel_map, pyramid_layout, tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -2903,7 +2903,7 @@ fn ridge_spec(radius: f64) -> Ridge {
 /// latitude, with a flow for each one. The points are as far apart as the
 /// points of the app.
 fn ridge_points(spec: Ridge, n: usize, places: &[(f64, f64)]) -> Vec<(V3, f64)> {
-    let spacing = RIDGE_SPACING * RidgeLine::new(spec, n).spec().radius;
+    let spacing = LINE_SPACING * RidgeLine::new(spec, n).spec().radius;
     let mut dirs = vec![lonlat_to_dir(places[0].0, places[0].1)];
     for w in places.windows(2) {
         let (a, b) = (lonlat_to_dir(w[0].0, w[0].1), lonlat_to_dir(w[1].0, w[1].1));
@@ -2984,7 +2984,7 @@ fn ridge_run(
     assert!(
         plans
             .iter()
-            .all(|plan| plan.segments.len() <= RIDGE_SEGMENTS)
+            .all(|plan| plan.segments.len() <= LINE_SEGMENTS)
     );
     let mut cpu = Heightmap::new(n, start.base());
     for (face, rect) in start.allocated_rects() {

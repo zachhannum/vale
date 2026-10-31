@@ -3757,13 +3757,13 @@ fn cpu_ridge_pictures(
     window: [f64; 4],
     edit: impl Fn(&mut vale_app::globe::brush::BrushSettings),
 ) {
-    use vale_terrain::{Bands, Heightmap, RIDGE_SPACING, RidgeLine};
+    use vale_terrain::{Bands, Heightmap, LINE_SPACING, RidgeLine};
     let world_km = 6371.0;
     let mut brush = vale_app::globe::brush::BrushSettings::default();
     edit(&mut brush);
     let spec = brush.ridge_spec(radius_km / world_km, world_km, seed);
     let mut line = RidgeLine::new(spec, n);
-    let steps = (72f64.to_radians() / (RIDGE_SPACING * spec.radius)).ceil() as u32;
+    let steps = (72f64.to_radians() / (LINE_SPACING * spec.radius)).ceil() as u32;
     for i in 0..=steps {
         let (lon, lat) = ridge_shot_place(f64::from(i) / f64::from(steps));
         line.push(lonlat_to_dir(lon, lat), 1.0);

@@ -17,7 +17,8 @@ use crate::cube::{FACES, meters_to_level};
 use crate::erode::{ErodeGrid, ErodeStep};
 use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
 use crate::heightmap::{Limits, Mode, StampPlan, TILE_SIZE, TexelRect};
-use crate::ridge::{RIDGE_SEGMENTS, RidgePlan};
+use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
+use crate::ridge::RidgePlan;
 use crate::tiles::{Pool, TILES_WGSL};
 
 /// The number of face passes in one batch. One group of stamps takes one pass
@@ -179,7 +180,7 @@ struct RidgeUniforms {
     flat_floor: f32,
     band_km: f32,
     segment_depth: f32,
-    segments: [[f32; 16]; RIDGE_SEGMENTS],
+    segments: [[f32; 16]; LINE_SEGMENTS],
 }
 
 fn packed(limits: Limits) -> u32 {
@@ -1096,26 +1097,11 @@ impl GpuHeightmap {
         enc: &mut wgpu::CommandEncoder,
         plan: &RidgePlan,
     ) -> bool {
-        assert_eq!(plan.face_size as u32, self.face_size, "the face size");
-        assert!(plan.segments.len() <= RIDGE_SEGMENTS, "the segments");
-        let passes = plan.rects.iter().flatten().count() as u32;
-        if passes == 0 {
-            return true;
-        }
-        let first_slot = self.used_slots.load(Ordering::Relaxed);
-        let ridge_slot = self.used_ridge_slots.load(Ordering::Relaxed);
-        if passes > STAMP_SLOTS - first_slot || ridge_slot == RIDGE_SLOTS {
-            return false;
-        }
-        self.used_slots
-            .store(first_slot + passes, Ordering::Relaxed);
-        self.used_ridge_slots
-            .store(ridge_slot + 1, Ordering::Relaxed);
         let spec = &plan.ridge;
         let shape = plan.shape();
         let cell = shape.length;
         let length_cell = (plan.length / cell + 0.5).floor();
-        let mut line = RidgeUniforms {
+        let header = RidgeUniforms {
             length: [
                 length_cell as f32,
                 (plan.length - length_cell * cell) as f32,
@@ -1123,13 +1109,12 @@ impl GpuHeightmap {
             radius: spec.radius as f32,
             segment: cell as f32,
             texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
-            sin_reach: (1.5 * spec.radius).sin() as f32,
+            sin_reach: (REACH * spec.radius).sin() as f32,
             crest: f32::from(spec.crest),
             world_km: spec.world_km as f32,
             spread: spec.spread as f32,
             offset: spec.offset as f32,
             seed: spec.seed,
-            count: plan.segments.len() as u32,
             group: shape.group,
             level: shape.level as f32,
             round: shape.round as f32,
@@ -1152,11 +1137,48 @@ impl GpuHeightmap {
             segment_depth: shape.segment_depth as f32,
             ..bytemuck::Zeroable::zeroed()
         };
+        self.line_pass(queue, enc, &plan.line, cell, 10, spec.limits, header)
+    }
+
+    /// Adds the passes of a line brush plan to `enc`, as `ridge`. `header`
+    /// holds the settings of the brush. The pass sets the segments and their
+    /// count, with `cell` as the cell of `LineSegment::to_f32`. `mode` is the
+    /// mode of the shader.
+    #[allow(clippy::too_many_arguments)]
+    fn line_pass(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &LinePlan,
+        cell: f64,
+        mode: u32,
+        limits: Limits,
+        header: RidgeUniforms,
+    ) -> bool {
+        assert_eq!(plan.face_size as u32, self.face_size, "the face size");
+        assert!(plan.segments.len() <= LINE_SEGMENTS, "the segments");
+        let passes = plan.rects.iter().flatten().count() as u32;
+        if passes == 0 {
+            return true;
+        }
+        let first_slot = self.used_slots.load(Ordering::Relaxed);
+        let ridge_slot = self.used_ridge_slots.load(Ordering::Relaxed);
+        if passes > STAMP_SLOTS - first_slot || ridge_slot == RIDGE_SLOTS {
+            return false;
+        }
+        self.used_slots
+            .store(first_slot + passes, Ordering::Relaxed);
+        self.used_ridge_slots
+            .store(ridge_slot + 1, Ordering::Relaxed);
+        let mut line = RidgeUniforms {
+            count: plan.segments.len() as u32,
+            ..header
+        };
         for (to, segment) in line.segments.iter_mut().zip(&plan.segments) {
             *to = segment.to_f32(cell);
         }
         let used = size_of::<RidgeUniforms>()
-            - (RIDGE_SEGMENTS - plan.segments.len()) * size_of::<[f32; 16]>();
+            - (LINE_SEGMENTS - plan.segments.len()) * size_of::<[f32; 16]>();
         let ridge_offset = ridge_slot * self.ridge_slot_size;
         queue.write_buffer(
             &self.ridge_uniforms,
@@ -1170,10 +1192,10 @@ impl GpuHeightmap {
             let offset = slot * self.slot_size;
             let uniforms = Uniforms {
                 face: face as u32,
-                mode: 10,
+                mode,
                 size: self.face_size as i32,
                 origin: [rect.x0 as i32, rect.y0 as i32],
-                limits: packed(spec.limits),
+                limits: packed(limits),
                 ..bytemuck::Zeroable::zeroed()
             };
             let used = size_of::<Uniforms>() - GROUP_STAMPS * size_of::<FaceStamp>();
