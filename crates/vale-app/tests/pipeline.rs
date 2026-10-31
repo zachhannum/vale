@@ -2,18 +2,22 @@ mod common;
 
 use std::path::Path;
 
-use kurbo::Point;
+use kurbo::{Point, Shape};
 use vale_app::atlas::{
     FrameTarget, PT_PER_MM, auto_graticule_interval, coord_text, frame_transform,
     graticule_interval, new_frame,
 };
 use vale_app::document::Document;
 use vale_app::edge_labels::{EdgeLabel, Side, edge_labels, outside_reach, quads_overlap};
+use vale_app::furniture::{self, Purpose};
 use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{PAPER, Pipeline, Quality, fonts};
 use vale_render::{FillRule, Item, render_pixmap, render_rgba};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{CoordFormat, EdgeOrientation, FrameId, FrameShape, PageId, PageUnits};
+use vale_store::{
+    CoordFormat, EdgeOrientation, FrameId, FrameShape, Furniture, FurnitureId, LegendEntry,
+    LegendItem, NorthArrowItem, PageId, PageUnits, ScaleBarItem, TextItem,
+};
 use vale_style::expr::{Filter, Property};
 use vale_style::{
     Color, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style,
@@ -1658,4 +1662,349 @@ fn manual_edge_label_pictures() {
             .save(path)
             .unwrap();
     }
+}
+
+/// A document with one layer for each GeoJSON geometry, named by its name.
+fn furniture_doc(layers: &[(&str, &str)]) -> (Document, Vec<vale_store::LayerId>) {
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let mut ids = Vec::new();
+    for (name, g) in layers {
+        let text = format!(
+            r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{g}}}]}}"#
+        );
+        let imported = vale_import::geojson::read_str(name, &text).unwrap();
+        ids.extend(doc.add_imported(imported, None));
+    }
+    (doc, ids)
+}
+
+const POLYGON: &str = r#"{"type":"Polygon","coordinates":[[[0,0],[40,0],[40,40],[0,40],[0,0]]]}"#;
+const LINE: &str = r#"{"type":"LineString","coordinates":[[-40,-40],[-10,-10]]}"#;
+const POINT: &str = r#"{"type":"Point","coordinates":[20,-20]}"#;
+
+/// A frame of map 0 on page 0.
+fn first_frame(doc: &mut Document, pipeline: &mut Pipeline) -> FrameId {
+    let page = doc.project.atlas.pages[0].id;
+    frame_on(doc, pipeline, page)
+}
+
+/// Adds an item of furniture to page 0.
+fn add_item(doc: &mut Document, rect: [f64; 4], item: Furniture) -> FurnitureId {
+    let page = doc.project.atlas.pages[0].id;
+    doc.project.atlas.add_furniture(page, rect, item).unwrap()
+}
+
+/// The items of one item of furniture in page points.
+fn furniture_items(
+    doc: &Document,
+    pipeline: &mut Pipeline,
+    id: FurnitureId,
+    purpose: Purpose,
+) -> Vec<Item> {
+    let rec = doc.project.atlas.furniture(id).unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut f = fonts().unwrap();
+    furniture::items(pipeline, doc, rec, target, &mut f, purpose)
+}
+
+fn texts(items: &[Item]) -> Vec<String> {
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(run) => Some(run.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_legend_lists_the_visible_rules_with_their_symbols() {
+    let (mut doc, ids) = furniture_doc(&[
+        ("Land", POLYGON),
+        ("Rivers", LINE),
+        ("Roads", LINE),
+        ("Towns", POINT),
+    ]);
+    let [land, rivers, roads, towns] = ids[..] else {
+        panic!("{ids:?}")
+    };
+    let (green, tan, blue) = (
+        Color::rgb(20, 160, 40),
+        Color::rgb(210, 180, 120),
+        Color::rgb(10, 20, 220),
+    );
+    let fill = |name: &str, color: Color| {
+        Rule::new(
+            name,
+            vec![Symbolizer::Fill {
+                color: Property::constant(color),
+            }],
+        )
+    };
+    let mut swamp = fill("Swamp", Color::rgb(90, 90, 40));
+    swamp.max_scale = Some(1000.0);
+    doc.entry_mut(land).unwrap().style.style = Style {
+        rules: vec![fill("Forest", green), fill("Desert", tan), swamp],
+    };
+    doc.entry_mut(rivers).unwrap().style.style = Style {
+        rules: vec![Rule::new(
+            "Default",
+            vec![Symbolizer::Stroke(StrokeSymbolizer::constant(
+                Stroke::solid(blue, 2.0),
+            ))],
+        )],
+    };
+    let mut pipeline = Pipeline::new();
+    let frame = first_frame(&mut doc, &mut pipeline);
+    let map = doc.first_map();
+    assert!(doc.set_shown(map, towns, false));
+    let mut legend = LegendItem {
+        frame: Some(frame),
+        title: "Legend".to_string(),
+        ..LegendItem::default()
+    };
+    let rename = LegendEntry {
+        name: Some("Big rivers".to_string()),
+        hidden: false,
+    };
+    legend
+        .entries
+        .insert((rivers, "Default".to_string()), rename);
+    let hide = LegendEntry {
+        name: None,
+        hidden: true,
+    };
+    legend.entries.insert((roads, "Default".to_string()), hide);
+    let id = add_item(
+        &mut doc,
+        [20.0, 20.0, 120.0, 120.0],
+        Furniture::Legend(legend.clone()),
+    );
+
+    // The rows are from the top layer down, with the hidden rows, and with
+    // no row for a layer that the map does not show or a rule out of scale.
+    let record = doc.project.atlas.frame(frame).unwrap().clone();
+    let projection = pipeline.projection(&doc, map).unwrap();
+    let rows = furniture::legend_rows(&doc, projection, &record, &legend);
+    let rows: Vec<_> = (rows.iter())
+        .map(|r| (r.label.as_str(), r.rule.as_str(), r.hidden))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("Roads", "Default", true),
+            ("Big rivers", "Default", false),
+            ("Forest", "Forest", false),
+            ("Desert", "Desert", false),
+        ]
+    );
+
+    let items = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
+    assert_eq!(texts(&items), ["Legend", "Big rivers", "Forest", "Desert"]);
+    let has = |want: Color, fill: bool| {
+        items.iter().any(|i| match i {
+            Item::Fill { color, .. } => fill && *color == want,
+            Item::Stroke { color, .. } => !fill && *color == want,
+            _ => false,
+        })
+    };
+    assert!(has(green, true) && has(tan, true) && has(blue, false));
+}
+
+/// The value of a scale bar label in kilometers, for example "1,000 km".
+fn label_km(text: &str) -> f64 {
+    let (value, unit) = text.split_once(' ').unwrap();
+    let value: f64 = value.replace(',', "").parse().unwrap();
+    match unit {
+        "km" => value,
+        "m" => value / 1000.0,
+        _ => panic!("{text}"),
+    }
+}
+
+#[test]
+fn the_scale_bar_is_true_for_any_radius() {
+    for radius in [1737.4, 6371.0, 100_000.0] {
+        let (mut doc, _) = furniture_doc(&[]);
+        doc.project.world.radius_km = radius;
+        let map = doc.first_map();
+        doc.set_projection(
+            map,
+            ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, 0.0),
+        );
+        let mut pipeline = Pipeline::new();
+        let frame = first_frame(&mut doc, &mut pipeline);
+        let record = doc.project.atlas.frame_mut(frame).unwrap();
+        record.center = [0.0, 0.0];
+        record.scale = 5e6;
+        let bar = ScaleBarItem {
+            frame: Some(frame),
+            ..ScaleBarItem::default()
+        };
+        let id = add_item(
+            &mut doc,
+            [20.0, 150.0, 90.0, 170.0],
+            Furniture::ScaleBar(bar),
+        );
+
+        // On the equator of an equirectangular map, 1 mm at 1:5,000,000 is
+        // 5 km on the ground, at each radius.
+        let record = doc.project.atlas.frame(frame).unwrap().clone();
+        let projection = pipeline.projection(&doc, map).unwrap();
+        let km_per_mm = furniture::scale_at_center(projection, &record, radius).unwrap();
+        assert!((km_per_mm - 5.0).abs() < 1e-3, "{radius}: {km_per_mm}");
+        assert_eq!(
+            furniture::scale_text(km_per_mm, doc.project.world.units),
+            "1 cm = 50.0 km"
+        );
+
+        let items = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
+        let length_mm = (items.iter())
+            .find_map(|i| match i {
+                Item::Stroke { path, .. } => Some(path.bounding_box().width() / PT_PER_MM),
+                _ => None,
+            })
+            .unwrap();
+        let text = texts(&items).pop().unwrap();
+        let km = label_km(&text);
+        assert!((length_mm * km_per_mm - km).abs() < 1e-6 * km, "{text}");
+        assert!(length_mm <= 70.0, "{length_mm}");
+
+        // A larger scale denominator has more ground in each millimeter.
+        doc.project.atlas.frame_mut(frame).unwrap().scale = 1e7;
+        let record = doc.project.atlas.frame(frame).unwrap().clone();
+        let projection = pipeline.projection(&doc, map).unwrap();
+        let doubled = furniture::scale_at_center(projection, &record, radius).unwrap();
+        assert!((doubled - 10.0).abs() < 1e-3, "{doubled}");
+    }
+}
+
+#[test]
+fn the_north_arrow_follows_the_rotation() {
+    let (mut doc, _) = furniture_doc(&[]);
+    let mut pipeline = Pipeline::new();
+    let map = doc.first_map();
+    let frame = first_frame(&mut doc, &mut pipeline);
+    let north = |doc: &Document, pipeline: &mut Pipeline| {
+        let record = doc.project.atlas.frame(frame).unwrap().clone();
+        let projection = pipeline.projection(doc, map).unwrap();
+        furniture::north(projection, &record).unwrap()
+    };
+    // A small frame near the center of the map.
+    let record = doc.project.atlas.frame_mut(frame).unwrap();
+    record.scale = 1e6;
+    record.center = [10.0, 20.0];
+    let (straight, variation) = north(&doc, &mut pipeline);
+    assert!(variation < 1.0, "{variation}");
+    doc.project.atlas.frame_mut(frame).unwrap().rotation = 30.0;
+    let (turned, _) = north(&doc, &mut pipeline);
+    assert!(
+        (turned - straight - 30.0).abs() < 1e-6,
+        "{straight} {turned}"
+    );
+
+    // A frame of the whole world has a different north at its edges, so
+    // the arrow is not in the export, and the screen shows a dashed box.
+    let arrow = NorthArrowItem {
+        frame: Some(frame),
+        hide_if_varies: true,
+        ..NorthArrowItem::default()
+    };
+    let id = add_item(
+        &mut doc,
+        [20.0, 20.0, 50.0, 50.0],
+        Furniture::NorthArrow(arrow),
+    );
+    let shown = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
+    assert_eq!(texts(&shown), ["N"]);
+    let mut page = doc.project.atlas.pages[0].clone();
+    page.frames.clear();
+    let projection = pipeline.projection(&doc, map).unwrap();
+    let whole = new_frame(&page, &doc.project.atlas.maps[0], projection);
+    let record = doc.project.atlas.frame_mut(frame).unwrap();
+    record.scale = whole.scale;
+    record.center = [60.0, 30.0];
+    record.rotation = 0.0;
+    let (_, variation) = north(&doc, &mut pipeline);
+    assert!(variation > furniture::MAX_VARIATION, "{variation}");
+    assert!(furniture_items(&doc, &mut pipeline, id, Purpose::Export).is_empty());
+    let screen = furniture_items(&doc, &mut pipeline, id, Purpose::Screen);
+    assert!(matches!(screen[..], [Item::Stroke { .. }]));
+}
+
+#[test]
+fn furniture_stays_vector_and_text_in_pdf() {
+    let (mut doc, _) = furniture_doc(&[("Land", POLYGON), ("Rivers", LINE), ("Towns", POINT)]);
+    let mut pipeline = Pipeline::new();
+    let frame = first_frame(&mut doc, &mut pipeline);
+    let text = TextItem {
+        text: "A world".to_string(),
+        ..TextItem::default()
+    };
+    let legend = LegendItem {
+        frame: Some(frame),
+        title: "Legend".to_string(),
+        ..LegendItem::default()
+    };
+    let bar = ScaleBarItem {
+        frame: Some(frame),
+        ..ScaleBarItem::default()
+    };
+    let arrow = NorthArrowItem {
+        frame: Some(frame),
+        ..NorthArrowItem::default()
+    };
+    let ids = [
+        add_item(&mut doc, [20.0, 20.0, 120.0, 40.0], Furniture::Text(text)),
+        add_item(
+            &mut doc,
+            [20.0, 50.0, 120.0, 120.0],
+            Furniture::Legend(legend),
+        ),
+        add_item(
+            &mut doc,
+            [20.0, 150.0, 90.0, 170.0],
+            Furniture::ScaleBar(bar),
+        ),
+        add_item(
+            &mut doc,
+            [200.0, 20.0, 230.0, 50.0],
+            Furniture::NorthArrow(arrow),
+        ),
+    ];
+    let mut all = Vec::new();
+    for id in ids {
+        let items = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
+        assert!(!texts(&items).is_empty(), "{id:?}");
+        all.extend(items);
+    }
+    assert!(
+        (all.iter())
+            .all(|i| matches!(i, Item::Fill { .. } | Item::Stroke { .. } | Item::Glyphs(_))),
+        "{:?}",
+        all.iter().map(describe).collect::<Vec<_>>()
+    );
+
+    // The page draws the furniture over the frames.
+    let page = doc.project.atlas.pages[0].clone();
+    let mut f = fonts().unwrap();
+    let list = pipeline
+        .compose_page(&doc, &page, &mut f, Quality::Final)
+        .unwrap();
+    let tail = &list.items[list.items.len() - all.len()..];
+    assert_eq!(
+        tail.iter().map(describe).collect::<Vec<_>>(),
+        all.iter().map(describe).collect::<Vec<_>>()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("page.pdf");
+    vale_app::atlas_export::export_pdf(&doc, vec![page], &path).unwrap();
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    assert!(pdf.contains("/BaseFont"));
+    assert!(!pdf.contains("/Subtype/Image"));
 }

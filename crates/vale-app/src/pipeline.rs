@@ -1445,8 +1445,8 @@ impl Pipeline {
         })
     }
 
-    /// A whole page in points: the paper, then each frame from the bottom
-    /// frame to the top frame.
+    /// A whole page in points: the paper, each frame from the bottom frame to
+    /// the top frame, and then the furniture.
     pub fn compose_page(
         &mut self,
         doc: &Document,
@@ -1468,6 +1468,10 @@ impl Pipeline {
         for frame in &page.frames {
             let composed = self.compose_frame(doc, page, frame, target, fonts, quality, None)?;
             list.items.extend(composed.list.items);
+        }
+        for rec in &page.furniture {
+            let items = furniture::items(self, doc, rec, target, fonts, furniture::Purpose::Export);
+            list.items.extend(items);
         }
         Ok(list)
     }
