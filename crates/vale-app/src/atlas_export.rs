@@ -17,9 +17,9 @@ use crate::document::Document;
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::{Captured, Mask};
 use crate::globe::{FrameDraw, FramePlace};
-use crate::headless;
 use crate::pipeline::{PAPER, Pipeline, Quality};
 use crate::raster_style;
+use crate::{furniture, headless};
 
 /// The pixels in one point of an exported raster layer: 300 pixels per inch.
 pub const RASTER_PIXEL_RATIO: f64 = 300.0 / 72.0;
@@ -333,6 +333,22 @@ impl PdfExport {
                 ));
             }
 
+            let target = FrameTarget {
+                origin: Point::ZERO,
+                pts_per_mm: PT_PER_MM,
+            };
+            for rec in &page.furniture {
+                let purpose = furniture::Purpose::Export;
+                let items = furniture::items(
+                    &mut self.pipeline,
+                    &self.doc,
+                    rec,
+                    target,
+                    &mut self.fonts,
+                    purpose,
+                );
+                self.list.as_mut().unwrap().items.extend(items);
+            }
             let list = self.list.take().unwrap();
             if matches!(self.output, Some(Output::Png)) {
                 let bytes = vale_render::render_png(&list, RASTER_PIXEL_RATIO)?;

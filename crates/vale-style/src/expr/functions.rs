@@ -1,6 +1,6 @@
 //! The functions of the expression language.
 
-use vale_store::Value;
+use vale_store::{Value, title_case};
 
 /// A function that an expression can call.
 pub struct Function {
@@ -302,25 +302,6 @@ fn count(v: &Value) -> Option<usize> {
         Value::Number(n) if n.is_finite() => Some(n.max(0.0).min(usize::MAX as f64) as usize),
         _ => None,
     }
-}
-
-pub(crate) fn title_case(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut start = true;
-    for c in s.chars() {
-        if c.is_alphanumeric() {
-            if start {
-                out.extend(c.to_uppercase());
-            } else {
-                out.extend(c.to_lowercase());
-            }
-            start = false;
-        } else {
-            out.push(c);
-            start = true;
-        }
-    }
-    out
 }
 
 fn substr(a: &[Value]) -> Value {

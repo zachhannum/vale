@@ -14,7 +14,7 @@ use vale_app::ui::pad::atlas::{
     ADD_PAGE, CENTER_ON_FRAME, DELETE_FRAME, FRAME_TABS, MAP_NAME, NEXT_PAGE, PAGE_NAME,
     PREVIOUS_PAGE, SCALE,
 };
-use vale_app::ui::panels::ADD_MAP_FRAME;
+use vale_app::ui::panels::{ADD_MAP_FRAME, ADD_MENU};
 use vale_app::ui::panels::{DELETE_LAYER, LAYER_NAME, LAYERS_MENU, OPACITY, WORLD_BUTTON};
 use vale_app::ui::world_form::{CREATE, FormMode, NEW_WORLD, WorldForm};
 use vale_app::ui::{
@@ -119,6 +119,45 @@ fn the_desktop_edge_label_controls_edit_one_set() {
         h.render()
             .unwrap()
             .save(format!("{dir}/test-desktop-edge-labels.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn the_desktop_scale_bar_controls_edit_the_bar_and_its_numbers() {
+    use vale_app::ui::atlas::{ItemKind, add_item};
+    use vale_store::Furniture;
+    let mut h = harness();
+    h.run_steps(3);
+    let id = add_item(h.state_mut(), ItemKind::ScaleBar).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Numbers").click();
+    h.run_steps(2);
+    h.get_by_label("Show zero").click();
+    h.run_steps(2);
+    h.get_by_label("Halo").click();
+    h.run_steps(2);
+    let bar = |h: &Harness<'static, AppState>| match &h
+        .state()
+        .doc
+        .project
+        .atlas
+        .furniture(id)
+        .unwrap()
+        .item
+    {
+        Furniture::ScaleBar(b) => b.clone(),
+        _ => panic!("not a scale bar"),
+    };
+    let b = bar(&h);
+    assert!(!b.zero_label);
+    assert!(b.number_style.halo && !b.unit_style.halo);
+    if std::env::var_os("VALE_SCREENSHOTS").is_some() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/app");
+        std::fs::create_dir_all(dir).unwrap();
+        h.render()
+            .unwrap()
+            .save(format!("{dir}/test-desktop-scale-bar.png"))
             .unwrap();
     }
 }
@@ -1098,6 +1137,8 @@ fn a_projection_preset_changes_the_projection() {
 fn add_map_frame_adds_a_frame_to_the_open_page() {
     let mut h = harness();
     h.run_steps(3);
+    h.get_by_label(ADD_MENU).click();
+    h.run_steps(2);
     h.get_by_label(ADD_MAP_FRAME).click();
     h.run_steps(3);
     let s = h.state();

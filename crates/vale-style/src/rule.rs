@@ -293,7 +293,7 @@ impl Symbolizer {
     }
 
     /// The paint from the fallbacks.
-    fn fallback(&self) -> Option<Paint> {
+    pub fn fallback(&self) -> Option<Paint> {
         Some(match self {
             Symbolizer::Fill { color } => Paint::Fill(color.fallback),
             Symbolizer::Stroke(s) => Paint::Stroke(s.fallback()),

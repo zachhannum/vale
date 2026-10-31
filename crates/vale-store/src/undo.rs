@@ -18,8 +18,9 @@ use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
-    Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Graticule, MapId,
-    MapRecord, PageId, PageRecord, PageUnits, ProjectionPreset, encode_rings, read_rings,
+    Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
+    FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, PageId, PageRecord, PageUnits,
+    ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
     Reader, StoreError, TileKey, V13Stop, corrupt, decode_geometry, encode_geometry,
@@ -485,9 +486,11 @@ fn world(r: &mut Reader) -> Option<World> {
 }
 
 /// The image of the atlas holds the maps, the pages, the custom
-/// projections, the style overrides, and the label classes of the maps, and
-/// not the counters of the IDs. An image that ends after the projections has
-/// no overrides. An image that ends after the overrides has no label classes.
+/// projections, the style overrides and the label classes of the maps, and
+/// the furniture of the pages, and not the counters of the IDs. An image that
+/// ends after the projections has no overrides. An image that ends after the
+/// overrides has no label classes. An image that ends after the label
+/// classes has no furniture.
 fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     put_u32(out, atlas.maps.len());
     for map in &atlas.maps {
@@ -567,6 +570,26 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
         put_u32(out, layer.0 as usize);
         put_bytes(out, text.as_bytes());
     }
+    let furniture: Vec<_> = (atlas.pages.iter())
+        .flat_map(|p| p.furniture.iter().map(move |f| (p.id, f)))
+        .collect();
+    put_u32(out, furniture.len());
+    for (page, f) in furniture {
+        put_u32(out, page.0 as usize);
+        put_u32(out, f.id.0 as usize);
+        for x in f.rect {
+            put_f64(out, x);
+        }
+        put_bytes(out, f.item.kind_id().as_bytes());
+        match f.item.frame() {
+            Some(frame) => {
+                out.push(1);
+                put_u32(out, frame.0 as usize);
+            }
+            None => out.push(0),
+        }
+        put_bytes(out, f.item.to_json().as_bytes());
+    }
 }
 
 fn flag(r: &mut Reader) -> Option<bool> {
@@ -640,6 +663,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             height_mm,
             units,
             frames,
+            furniture: Vec::new(),
         });
     }
     let mut presets = Vec::new();
@@ -665,6 +689,22 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             let text = string(r)?;
             let map = maps.iter_mut().find(|m| m.id == id)?;
             map.labels.insert(layer, text);
+        }
+    }
+    if !r.0.is_empty() {
+        for _ in 0..count(r)? {
+            let page = PageId(r.u32()?);
+            let id = FurnitureId(r.u32()?);
+            let rect = [r.f64()?, r.f64()?, r.f64()?, r.f64()?];
+            let kind = string(r)?;
+            let frame = if flag(r)? {
+                Some(FrameId(r.u32()?))
+            } else {
+                None
+            };
+            let item = Furniture::from_json(&kind, &string(r)?, frame)?;
+            let page = pages.iter_mut().find(|p| p.id == page)?;
+            page.furniture.push(FurnitureRecord { id, rect, item });
         }
     }
     r.0.is_empty().then_some((maps, pages, presets))
@@ -1118,7 +1158,9 @@ fn layer(r: &mut Reader) -> Option<(usize, Layer)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::atlas::EdgeOrientation;
+    use crate::atlas::{
+        EdgeOrientation, LegendEntry, LegendItem, NorthArrowItem, ScaleBarItem, TextItem,
+    };
 
     #[test]
     fn an_atlas_image_keeps_the_frames() {
@@ -1185,6 +1227,27 @@ mod tests {
             .unwrap();
         before.add_frame(second, frame(polygon, manual)).unwrap();
 
+        let linked = before.pages[1].frames[1].id;
+        let legend = LegendItem {
+            frame: Some(linked),
+            entries: [((LayerId(3), "Large".to_string()), LegendEntry::default())].into(),
+            ..LegendItem::default()
+        };
+        let items = [
+            Furniture::Text(TextItem::default()),
+            Furniture::Legend(legend),
+            Furniture::ScaleBar(ScaleBarItem::default()),
+            Furniture::NorthArrow(NorthArrowItem {
+                frame: Some(linked),
+                ..NorthArrowItem::default()
+            }),
+        ];
+        for (i, item) in items.into_iter().enumerate() {
+            let rect = [i as f64, 2.0, 30.5, 40.0];
+            let page = if i == 0 { first } else { second };
+            before.add_furniture(page, rect, item).unwrap();
+        }
+
         before.save_preset("Home", "+proj=laea +lon_0=10 +lat_0=50");
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
@@ -1207,7 +1270,7 @@ mod tests {
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
         // An image of an older build ends after the projections.
-        assert_eq!(out.split_off(out.len() - 8), [0; 8]);
+        assert_eq!(out.split_off(out.len() - 12), [0; 12]);
         let image = atlas(&mut Reader(&out)).unwrap();
         assert_eq!(image.0, before.maps);
     }
@@ -1220,9 +1283,21 @@ mod tests {
         let mut out = Vec::new();
         put_atlas(&mut out, &before);
         // An image of an older build ends after the overrides.
-        assert_eq!(out.split_off(out.len() - 4), [0, 0, 0, 0]);
+        assert_eq!(out.split_off(out.len() - 8), [0; 8]);
         let image = atlas(&mut Reader(&out)).unwrap();
         assert_eq!(image.0, before.maps);
+    }
+
+    #[test]
+    fn an_atlas_image_without_furniture_reads() {
+        let mut before = Atlas::new(Units::Metric);
+        before.maps[0].labels.insert(LayerId(3), "[]".into());
+        let mut out = Vec::new();
+        put_atlas(&mut out, &before);
+        // An image of an older build ends after the label classes.
+        assert_eq!(out.split_off(out.len() - 4), [0, 0, 0, 0]);
+        let image = atlas(&mut Reader(&out)).unwrap();
+        assert_eq!((image.0, image.1), (before.maps, before.pages));
     }
 
     #[test]

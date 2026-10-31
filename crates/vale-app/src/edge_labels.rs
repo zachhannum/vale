@@ -1,15 +1,13 @@
 //! The graticule labels at the edge of a map frame.
 
-use kurbo::{Affine, BezPath, Point, Rect, Vec2};
-use vale_labeler::{
-    Feature, Fonts, Geometry, LabelClass, LabelInput, Options, Placement, PointPlacement,
-    PointPosition, TextStyle, place_labels,
-};
-use vale_render::{Color, GlyphRun, Item};
+use kurbo::{Affine, Point, Rect, Vec2};
+use vale_labeler::{Fonts, TextStyle};
+use vale_render::{Color, Item};
 use vale_sphere::{Projection, graticule_in};
 use vale_store::{CoordFormat, EdgeLabels, EdgeOrientation, FrameRecord};
 
 use crate::atlas::{FrameTarget, PT_PER_MM, coord_text, frame_transform, graticule_interval};
+use crate::furniture;
 use crate::pipeline::{frame_area, graticule_window};
 
 /// The distance from the line to the baseline of a label along its line, in
@@ -170,11 +168,13 @@ pub fn edge_labels(
             continue;
         }
         let to = Affine::translate(origin.to_vec2()) * Affine::rotate(u.y.atan2(u.x));
-        let Some((outlines, glyphs)) = glyph_items(&text, width, &style, to, set, fonts) else {
+        let text_color = color(set.color, set.opacity);
+        let Some(line) = furniture::glyph_line(&text, &style, text_color, to, true, fonts) else {
             continue;
         };
+        let glyphs = line.glyphs;
         let halo = set.halo.then(|| Item::Stroke {
-            path: outlines,
+            path: line.outlines,
             color: color(set.halo_color, set.opacity),
             width: set.halo_width * unit,
             round: true,
@@ -397,69 +397,4 @@ pub fn quads_overlap(a: &[Point; 4], b: &[Point; 4]) -> bool {
         let (b0, b1) = span(b);
         a0 < b1 && b0 < a1
     })
-}
-
-/// The outlines and the glyphs of `text` with the baseline start at the
-/// origin of `to`.
-fn glyph_items(
-    text: &str,
-    width: f64,
-    style: &TextStyle,
-    to: Affine,
-    set: &EdgeLabels,
-    fonts: &mut Fonts,
-) -> Option<(BezPath, Vec<Item>)> {
-    let room = 4.0 * style.size + width;
-    let input = LabelInput {
-        bounds: Rect::new(-room, -room, room, room),
-        classes: vec![LabelClass {
-            name: "graticule".to_string(),
-            style: style.clone(),
-            priority: 0,
-            margin: 0.0,
-            placement: Placement::Point(PointPlacement {
-                positions: vec![PointPosition::TopRight],
-                offset: 0.0,
-            }),
-            duplicate_distance: None,
-        }],
-        features: vec![Feature {
-            id: 0,
-            class: 0,
-            text: text.to_string(),
-            priority: 0.0,
-            geometry: Geometry::Point {
-                position: Point::ZERO,
-                symbol_radius: 0.0,
-            },
-        }],
-        obstacles: vec![],
-        options: Options {
-            seed: 1,
-            improve: false,
-        },
-    };
-    let labeling = place_labels(fonts, &input);
-    let label = labeling.placed.first()?;
-    let start = (label.glyph_runs.iter())
-        .flat_map(|r| r.glyphs.first())
-        .map(|g| g.transform.translation())
-        .next()?;
-    let to = to * Affine::translate(-start);
-    let text_color = color(set.color, set.opacity);
-    let glyphs = (label.glyph_runs.iter())
-        .map(|run| {
-            Item::Glyphs(GlyphRun {
-                font: run.font.clone(),
-                font_size: run.font_size,
-                normalized_coords: run.normalized_coords.clone(),
-                glyphs: (run.glyphs.iter())
-                    .map(|g| (g.id, to * g.transform))
-                    .collect(),
-                text: label.text.clone(),
-                color: text_color,
-            })
-        })
-        .collect();
-    Some((to * label.outlines(), glyphs))
 }

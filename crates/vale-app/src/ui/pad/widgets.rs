@@ -984,6 +984,34 @@ pub fn text_field(
     )
 }
 
+/// A field for more than one line of text, as wide as the row and `lines`
+/// lines high.
+pub fn text_area(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    text: &mut String,
+    lines: usize,
+) -> Response {
+    let line = ui.fonts_mut(|f| f.row_height(&theme::body()));
+    let height = (lines as f32 * line + 2.0 * 12.0).max(PANEL_ROW);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let field = rect.shrink2(vec2(0.0, HIGHLIGHT_INSET));
+    ui.painter()
+        .rect_filled(field, theme::CONTROL_RADIUS, theme::raise());
+    let inner = field.shrink2(vec2(12.0, 10.0));
+    let edit = egui::TextEdit::multiline(text)
+        .id(ui.id().with(name))
+        .frame(egui::Frame::NONE)
+        .font(theme::body())
+        .text_color(theme::TEXT)
+        .desired_rows(lines)
+        .desired_width(inner.width());
+    let resp = ui.put(inner, edit);
+    push(ui, controls, field, name);
+    resp
+}
+
 /// A `text_field` for an expression, in the mono font.
 pub fn code_field(
     ui: &mut egui::Ui,

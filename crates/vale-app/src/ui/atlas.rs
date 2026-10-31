@@ -8,8 +8,9 @@ use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
-    Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Graticule, LayerId, MapId,
-    PageId, PageRecord, PageUnits, Rgb,
+    Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture, FurnitureId,
+    FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, NorthArrowItem, PageId,
+    PageRecord, PageUnits, Rgb, ScaleBarItem, TextItem,
 };
 
 use std::sync::Arc;
@@ -55,6 +56,217 @@ pub enum AtlasSelection {
     None,
     Page,
     Frame(FrameId),
+    /// An item of furniture.
+    Item(FurnitureId),
+}
+
+/// The kind of a new item of furniture.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    Text,
+    Legend,
+    ScaleBar,
+    NorthArrow,
+}
+
+impl ItemKind {
+    pub const ALL: [ItemKind; 4] = [
+        ItemKind::Text,
+        ItemKind::Legend,
+        ItemKind::ScaleBar,
+        ItemKind::NorthArrow,
+    ];
+
+    pub fn of(item: &Furniture) -> ItemKind {
+        match item {
+            Furniture::Text(_) => ItemKind::Text,
+            Furniture::Legend(_) => ItemKind::Legend,
+            Furniture::ScaleBar(_) => ItemKind::ScaleBar,
+            Furniture::NorthArrow(_) => ItemKind::NorthArrow,
+        }
+    }
+
+    /// The name of the kind in the Add menu and in the title of its panel.
+    pub fn name(self) -> &'static str {
+        match self {
+            ItemKind::Text => "Text",
+            ItemKind::Legend => "Legend",
+            ItemKind::ScaleBar => "Scale bar",
+            ItemKind::NorthArrow => "North arrow",
+        }
+    }
+
+    /// The width and the height of a new item, in millimeters.
+    fn size(self) -> (f64, f64) {
+        match self {
+            ItemKind::Text => (80.0, 15.0),
+            ItemKind::Legend => (50.0, 40.0),
+            ItemKind::ScaleBar => (60.0, 12.0),
+            ItemKind::NorthArrow => (12.0, 18.0),
+        }
+    }
+}
+
+/// A part of an item of furniture with its own text style.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TextPart {
+    /// The text of a text item.
+    Text,
+    /// The title of a legend.
+    Title,
+    /// The entries of a legend.
+    Entries,
+    /// The numbers of a scale bar.
+    Numbers,
+    /// The unit labels of a scale bar.
+    Units,
+    /// The letter N of a north arrow.
+    Letter,
+}
+
+impl TextPart {
+    /// The style of the part in an item, if the item has the part.
+    pub fn of(self, item: &Furniture) -> Option<&FurnitureText> {
+        match (self, item) {
+            (TextPart::Text, Furniture::Text(i)) => Some(&i.style),
+            (TextPart::Title, Furniture::Legend(i)) => Some(&i.title_style),
+            (TextPart::Entries, Furniture::Legend(i)) => Some(&i.entry_style),
+            (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&i.number_style),
+            (TextPart::Units, Furniture::ScaleBar(i)) => Some(&i.unit_style),
+            (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&i.letter_style),
+            _ => None,
+        }
+    }
+
+    pub fn of_mut(self, item: &mut Furniture) -> Option<&mut FurnitureText> {
+        match (self, item) {
+            (TextPart::Text, Furniture::Text(i)) => Some(&mut i.style),
+            (TextPart::Title, Furniture::Legend(i)) => Some(&mut i.title_style),
+            (TextPart::Entries, Furniture::Legend(i)) => Some(&mut i.entry_style),
+            (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&mut i.number_style),
+            (TextPart::Units, Furniture::ScaleBar(i)) => Some(&mut i.unit_style),
+            (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&mut i.letter_style),
+            _ => None,
+        }
+    }
+
+    /// The page of the panel that holds the Text section of the part.
+    /// `None`: the top of the panel.
+    pub fn page(self) -> Option<ItemPage> {
+        match self {
+            TextPart::Text | TextPart::Letter => None,
+            TextPart::Title | TextPart::Entries => Some(ItemPage::Text(self)),
+            TextPart::Numbers => Some(ItemPage::Bar(BarPage::Numbers)),
+            TextPart::Units => Some(ItemPage::Bar(BarPage::Units)),
+        }
+    }
+}
+
+/// A page of the panel of a scale bar.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BarPage {
+    /// The gallery of the kinds of scale bar.
+    Style,
+    Units,
+    Divisions,
+    Bar,
+    Marks,
+    Numbers,
+}
+
+impl BarPage {
+    pub const ALL: [BarPage; 6] = [
+        BarPage::Style,
+        BarPage::Units,
+        BarPage::Divisions,
+        BarPage::Bar,
+        BarPage::Marks,
+        BarPage::Numbers,
+    ];
+
+    /// The row that opens the page, and the title of the page.
+    pub fn name(self) -> &'static str {
+        match self {
+            BarPage::Style => "Style",
+            BarPage::Units => "Units",
+            BarPage::Divisions => "Divisions",
+            BarPage::Bar => "Bar",
+            BarPage::Marks => "Marks",
+            BarPage::Numbers => "Numbers",
+        }
+    }
+}
+
+/// A list of choices of a scale bar, on its own page.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BarPick {
+    Unit,
+    SecondUnit,
+    UnitLabel,
+    UnitPosition,
+    Fit,
+    MarkFrequency,
+    NumberFrequency,
+    Decimals,
+}
+
+impl BarPick {
+    /// The row that opens the page, and the title of the page.
+    pub fn name(self) -> &'static str {
+        match self {
+            BarPick::Unit => "Unit",
+            BarPick::SecondUnit => "Second unit",
+            BarPick::UnitLabel => "Unit label",
+            BarPick::UnitPosition => "Label position",
+            BarPick::Fit => "Fit",
+            BarPick::MarkFrequency | BarPick::NumberFrequency => "Frequency",
+            BarPick::Decimals => "Decimals",
+        }
+    }
+
+    /// The page that holds the row of the choice.
+    pub fn parent(self) -> BarPage {
+        match self {
+            BarPick::Unit | BarPick::SecondUnit | BarPick::UnitLabel | BarPick::UnitPosition => {
+                BarPage::Units
+            }
+            BarPick::Fit => BarPage::Divisions,
+            BarPick::MarkFrequency => BarPage::Marks,
+            BarPick::NumberFrequency | BarPick::Decimals => BarPage::Numbers,
+        }
+    }
+}
+
+/// A page of the panel of an item of furniture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ItemPage {
+    /// The frames of the page, to link the item to.
+    Frame,
+    /// The faces of the font of a text part.
+    Face(TextPart),
+    /// The cases of a text part.
+    Case(TextPart),
+    /// The text of a part of a legend: the title or the entries.
+    Text(TextPart),
+    /// The name of an entry of a legend, by its key.
+    Entry(LayerId, String),
+    Bar(BarPage),
+    Pick(BarPick),
+    /// The first fill of a scale bar (`false`) or the second fill (`true`).
+    Fill(bool),
+}
+
+impl ItemPage {
+    /// The page that the Back button goes to. `None`: the top of the panel.
+    pub fn parent(&self) -> Option<ItemPage> {
+        match self {
+            ItemPage::Frame | ItemPage::Text(_) | ItemPage::Bar(_) => None,
+            ItemPage::Face(part) | ItemPage::Case(part) => part.page(),
+            ItemPage::Entry(..) => Some(ItemPage::Text(TextPart::Entries)),
+            ItemPage::Pick(pick) => Some(ItemPage::Bar(pick.parent())),
+            ItemPage::Fill(_) => Some(ItemPage::Bar(BarPage::Bar)),
+        }
+    }
 }
 
 /// The tool of a pen, a finger, and the mouse on the page.
@@ -116,6 +328,20 @@ pub enum ClassColor {
     Halo,
     EdgeText,
     EdgeHalo,
+    /// The text of a part of an item of furniture.
+    ItemText(TextPart),
+    /// The halo of a part of an item of furniture.
+    ItemHalo(TextPart),
+    /// The first fill of a scale bar.
+    Fill1,
+    Fill2,
+    /// The outline of a scale bar.
+    Outline,
+    /// The arrow of a north arrow.
+    Arrow,
+    /// The background of the hatch of the first or the second fill of a
+    /// scale bar.
+    Background(bool),
 }
 
 /// A row that a finger drags by its handle: a label class in the Labels
@@ -284,6 +510,11 @@ enum Drag {
     /// The map in the frame turns about the anchor. The angle of the pointer
     /// in the last frame, in degrees.
     Rotate(FrameId, f64),
+    /// A handle of an item of furniture, with the distance from the pointer
+    /// to the handle in millimeters.
+    ItemHandle(FurnitureId, usize, Vec2),
+    /// The whole item.
+    Item(FurnitureId),
     /// Nothing.
     Idle,
 }
@@ -370,9 +601,18 @@ pub struct AtlasState {
     pub edge_styles: bool,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
-    /// The frame of `handles`.
-    handles_of: Option<FrameId>,
+    /// The page of the panel of the selected item of furniture.
+    pub item_page: Option<ItemPage>,
+    /// The thumbnails of the kinds of scale bar in the style gallery: the
+    /// key of what each shows, and its texture.
+    bar_previews: HashMap<vale_store::ScaleBarKind, (u64, egui::TextureHandle)>,
+    /// The text of the name field of the entry page of a legend.
+    pub entry_name: String,
+    /// The selection of `handles`.
+    handles_of: Option<AtlasSelection>,
     images: HashMap<FrameId, FrameImage>,
+    /// The textures of the items of furniture.
+    item_images: HashMap<FurnitureId, ItemImage>,
     /// The water of the frames that draw raster layers.
     unders: HashMap<FrameId, FrameImage>,
     /// The shape of each frame as a mask for its raster layers: the key of
@@ -480,8 +720,12 @@ impl Default for AtlasState {
             edge_set: EdgeSet::Meridians,
             edge_styles: false,
             shown: None,
+            item_page: None,
+            bar_previews: HashMap::new(),
+            entry_name: String::new(),
             handles_of: None,
             images: HashMap::new(),
+            item_images: HashMap::new(),
             unders: HashMap::new(),
             masks: HashMap::new(),
             mask_count: 0,
@@ -521,6 +765,38 @@ impl AtlasState {
             _ => None,
         }
     }
+
+    /// The selected item of furniture.
+    pub fn item(&self) -> Option<FurnitureId> {
+        match self.selection {
+            AtlasSelection::Item(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// True if the item has a texture.
+    /// The number of thumbnails of the style gallery of a scale bar.
+    pub fn bar_preview_count(&self) -> usize {
+        self.bar_previews.len()
+    }
+
+    pub fn has_item_image(&self, id: FurnitureId) -> bool {
+        self.item_images.contains_key(&id)
+    }
+
+    /// The screen rectangle of the texture of an item.
+    pub fn item_rect(&self, id: FurnitureId) -> Option<Rect> {
+        self.item_images.get(&id).map(|i| i.rect)
+    }
+}
+
+/// The texture of an item of furniture.
+struct ItemImage {
+    texture: egui::TextureHandle,
+    /// The key of what the item shows.
+    content: u64,
+    /// The texture on the screen at the last paint.
+    rect: Rect,
 }
 
 /// Makes the open page, the selection, and the selected vertex valid for
@@ -539,6 +815,15 @@ pub fn sync(state: &mut AppState) {
     if a.frame().is_some() && frame.is_none() {
         a.selection = AtlasSelection::None;
     }
+    let item = a
+        .item()
+        .is_some_and(|id| page.furniture.iter().any(|f| f.id == id));
+    if a.item().is_some() && !item {
+        a.selection = AtlasSelection::None;
+    }
+    if a.item().is_none() {
+        a.item_page = None;
+    }
     let vertex_ok = |(r, i): Vertex| match frame.map(|f| &f.shape) {
         Some(FrameShape::Polygon(rings)) => rings.get(r).is_some_and(|ring| i < ring.len()),
         _ => false,
@@ -547,6 +832,8 @@ pub fn sync(state: &mut AppState) {
         a.vertex = None;
     }
     a.images.retain(|id, _| atlas.frame(*id).is_some());
+    a.item_images
+        .retain(|id, _| page.furniture.iter().any(|f| f.id == *id));
 }
 
 /// The place of the open page in the atlas order, from 0, and the number
@@ -571,7 +858,7 @@ pub fn go_to_page(state: &mut AppState, step: isize) {
     let next = index as isize + step;
     if (0..count as isize).contains(&next) {
         state.atlas.page = state.doc.project.atlas.pages[next as usize].id;
-        if state.atlas.frame().is_some() {
+        if state.atlas.frame().is_some() || state.atlas.item().is_some() {
             state.atlas.selection = AtlasSelection::None;
         }
         state.atlas.vertex = None;
@@ -630,6 +917,318 @@ pub fn edit_frame(
     true
 }
 
+/// Adds an item of furniture to the open page, inside the margin of the
+/// page, and selects it. A legend, a scale bar, and a north arrow link to
+/// the largest frame of the page.
+pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
+    let page = open_page(state);
+    let frame = largest_frame(page);
+    let m = math::MARGIN_MM;
+    let (w, h) = kind.size();
+    let (w, h) = (
+        w.min(page.width_mm - 2.0 * m).max(math::MIN_SIZE_MM),
+        h.min(page.height_mm - 2.0 * m).max(math::MIN_SIZE_MM),
+    );
+    let (left, top) = (m, m);
+    let (right, bottom) = (page.width_mm - m - w, page.height_mm - m - h);
+    let (x, y, item) = match kind {
+        ItemKind::Text => (left, top, Furniture::Text(TextItem::default())),
+        ItemKind::Legend => {
+            let item = LegendItem {
+                frame,
+                ..LegendItem::default()
+            };
+            (right, top, Furniture::Legend(item))
+        }
+        ItemKind::ScaleBar => {
+            let item = ScaleBarItem {
+                frame,
+                unit: vale_store::ScaleUnit::for_units(state.doc.project.world.units),
+                ..ScaleBarItem::default()
+            };
+            (left, bottom, Furniture::ScaleBar(item))
+        }
+        ItemKind::NorthArrow => {
+            let item = NorthArrowItem {
+                frame,
+                ..NorthArrowItem::default()
+            };
+            (right, bottom, Furniture::NorthArrow(item))
+        }
+    };
+    let page = page.id;
+    let rect = [x, y, x + w, y + h];
+    let id = state.doc.project.atlas.add_furniture(page, rect, item)?;
+    state.atlas.selection = AtlasSelection::Item(id);
+    state.atlas.vertex = None;
+    state.atlas.item_page = None;
+    Some(id)
+}
+
+/// The frame of a page with the largest area.
+pub fn largest_frame(page: &PageRecord) -> Option<FrameId> {
+    let area = |f: &FrameRecord| -> f64 {
+        let rings = f.shape.rings();
+        let ring_area = |ring: &Vec<[f64; 2]>| {
+            let n = ring.len();
+            let twice: f64 = (0..n)
+                .map(|i| {
+                    let (a, b) = (ring[i], ring[(i + 1) % n]);
+                    a[0] * b[1] - b[0] * a[1]
+                })
+                .sum();
+            twice.abs() / 2.0
+        };
+        let mut rings = rings.iter();
+        let outer = rings.next().map_or(0.0, ring_area);
+        outer - rings.map(ring_area).sum::<f64>()
+    };
+    let largest = page.frames.iter().map(|f| (f.id, area(f)));
+    let largest = largest.max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)));
+    largest.map(|(id, _)| id)
+}
+
+/// Changes an item of furniture. The item changes only if `edit` returns
+/// true.
+pub fn edit_item(
+    state: &mut AppState,
+    id: FurnitureId,
+    edit: impl FnOnce(&mut FurnitureRecord) -> bool,
+) -> bool {
+    let Some(mut rec) = state.doc.project.atlas.furniture(id).cloned() else {
+        return false;
+    };
+    if !edit(&mut rec) || state.doc.project.atlas.furniture(id) == Some(&rec) {
+        return false;
+    }
+    if let Some(slot) = state.doc.project.atlas.furniture_mut(id) {
+        *slot = rec;
+    }
+    true
+}
+
+/// `edit_item` as one undo step.
+pub fn item_step(
+    state: &mut AppState,
+    id: FurnitureId,
+    edit: impl FnOnce(&mut FurnitureRecord) -> bool,
+) {
+    state.save_edit();
+    if edit_item(state, id, edit) {
+        state.save_edit();
+    }
+}
+
+/// Changes the text style of a part of an item of furniture. With `step`,
+/// the change is one undo step.
+pub fn edit_text(
+    state: &mut AppState,
+    id: FurnitureId,
+    part: TextPart,
+    step: bool,
+    edit: impl FnOnce(&mut FurnitureText),
+) {
+    let edit = |rec: &mut FurnitureRecord| match part.of_mut(&mut rec.item) {
+        Some(style) => {
+            edit(style);
+            true
+        }
+        None => false,
+    };
+    if step {
+        item_step(state, id, edit);
+    } else {
+        edit_item(state, id, edit);
+    }
+}
+
+/// Changes the first fill or the second fill of a scale bar. With `step`,
+/// the change is one undo step.
+pub fn edit_fill(
+    state: &mut AppState,
+    id: FurnitureId,
+    second: bool,
+    step: bool,
+    edit: impl FnOnce(&mut vale_store::FillPattern),
+) {
+    edit_bar(state, id, step, |b| {
+        edit(if second { &mut b.fill2 } else { &mut b.fill1 });
+    });
+}
+
+/// Changes a scale bar. With `step`, the change is one undo step.
+pub fn edit_bar(
+    state: &mut AppState,
+    id: FurnitureId,
+    step: bool,
+    edit: impl FnOnce(&mut ScaleBarItem),
+) {
+    let edit = |rec: &mut FurnitureRecord| match &mut rec.item {
+        Furniture::ScaleBar(bar) => {
+            edit(bar);
+            true
+        }
+        _ => false,
+    };
+    if step {
+        item_step(state, id, edit);
+    } else {
+        edit_item(state, id, edit);
+    }
+}
+
+/// The units of a scale bar as the page draws them, with the division
+/// values that the bar picks. Nothing for a bar with no frame.
+pub fn bar_rows(state: &mut AppState, id: FurnitureId) -> Vec<crate::scale_bar::BarRow> {
+    let atlas = &state.doc.project.atlas;
+    let Some(rec) = atlas.furniture(id).cloned() else {
+        return Vec::new();
+    };
+    let Furniture::ScaleBar(bar) = &rec.item else {
+        return Vec::new();
+    };
+    let Some(frame) = bar.frame.and_then(|f| atlas.frame(f)).cloned() else {
+        return Vec::new();
+    };
+    let radius = state.doc.project.world.radius_km;
+    let Ok(p) = state.pipeline.projection(&state.doc, frame.map) else {
+        return Vec::new();
+    };
+    let Some(km_per_mm) = crate::furniture::scale_at_center(p, &frame, radius) else {
+        return Vec::new();
+    };
+    let mm = crate::furniture::rect_of(&rec);
+    let rect = kurbo::Rect::new(0.0, 0.0, mm.width() * PT_PER_MM, mm.height() * PT_PER_MM);
+    let km_per_point = km_per_mm / PT_PER_MM;
+    crate::scale_bar::draw(bar, rect, 1.0, km_per_point, &mut state.fonts).rows
+}
+
+/// The size of a thumbnail of the style gallery of a scale bar, in
+/// millimeters.
+pub const PREVIEW_MM: (f64, f64) = (60.0, 12.0);
+
+/// The thumbnail of a scale bar in the style `kind`, `width` points wide
+/// on the screen. The texture renders again when the bar changes.
+pub fn bar_preview(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    bar: &ScaleBarItem,
+    kind: vale_store::ScaleBarKind,
+    width: f32,
+) -> Option<egui::TextureId> {
+    let ppp = ctx.pixels_per_point();
+    let scale = f64::from(ppp * width) / (PREVIEW_MM.0 * PT_PER_MM);
+    let shown = ScaleBarItem {
+        frame: None,
+        ..bar.clone()
+    };
+    let key = hash_of((&shown, kind, scale.to_bits()));
+    if let Some((k, texture)) = state.atlas.bar_previews.get(&kind)
+        && *k == key
+    {
+        return Some(texture.id());
+    }
+    let (w, h) = PREVIEW_MM;
+    let img = crate::scale_bar::preview_rgba(&shown, kind, w, h, scale, &mut state.fonts).ok()?;
+    let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
+    let options = egui::TextureOptions::LINEAR;
+    let texture = match state.atlas.bar_previews.remove(&kind) {
+        Some((_, mut old)) => {
+            old.set(image, options);
+            old
+        }
+        None => ctx.load_texture(format!("bar-preview-{}", kind.id()), image, options),
+    };
+    let id = texture.id();
+    state.atlas.bar_previews.insert(kind, (key, texture));
+    Some(id)
+}
+
+/// Links an item of furniture to a frame.
+pub fn set_item_frame(state: &mut AppState, id: FurnitureId, frame: Option<FrameId>) {
+    edit_item(state, id, |rec| {
+        rec.item.set_frame(frame);
+        true
+    });
+}
+
+/// Changes an entry of a legend. An entry with no change goes away.
+pub fn edit_entry(
+    state: &mut AppState,
+    id: FurnitureId,
+    key: (LayerId, String),
+    edit: impl FnOnce(&mut vale_store::LegendEntry),
+) {
+    edit_item(state, id, |rec| {
+        let Furniture::Legend(legend) = &mut rec.item else {
+            return false;
+        };
+        let mut entry = legend.entries.get(&key).cloned().unwrap_or_default();
+        edit(&mut entry);
+        if entry == vale_store::LegendEntry::default() {
+            legend.entries.remove(&key);
+        } else {
+            legend.entries.insert(key, entry);
+        }
+        true
+    });
+}
+
+/// The rows of a legend, or nothing for a legend with no frame.
+pub fn legend_rows(state: &mut AppState, legend: &LegendItem) -> Vec<crate::furniture::LegendRow> {
+    let atlas = &state.doc.project.atlas;
+    let Some(frame) = legend.frame.and_then(|f| atlas.frame(f)).cloned() else {
+        return Vec::new();
+    };
+    match state.pipeline.projection(&state.doc, frame.map) {
+        Ok(p) => crate::furniture::legend_rows(&state.doc, p, &frame, legend),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Deletes the selected item of furniture and clears the selection.
+pub fn delete_item(state: &mut AppState) {
+    let Some(id) = state.atlas.item() else {
+        return;
+    };
+    state.doc.project.atlas.remove_furniture(id);
+    state.atlas.selection = AtlasSelection::None;
+    state.atlas.item_page = None;
+    state.atlas.item_images.remove(&id);
+}
+
+/// The frames of the open page and their names: the name of the map, with
+/// a number if more than one frame shows the map.
+pub fn frame_names(state: &AppState) -> Vec<(FrameId, String)> {
+    let atlas = &state.doc.project.atlas;
+    let page = open_page(state);
+    let name = |f: &FrameRecord| {
+        atlas
+            .map(f.map)
+            .map_or_else(String::new, |m| m.name.clone())
+    };
+    let mut out = Vec::new();
+    for (i, f) in page.frames.iter().enumerate() {
+        let same = |g: &&FrameRecord| g.map == f.map;
+        let count = page.frames.iter().filter(same).count();
+        let text = if count > 1 {
+            let n = page.frames[..=i].iter().filter(same).count();
+            format!("{} {n}", name(f))
+        } else {
+            name(f)
+        };
+        out.push((f.id, text));
+    }
+    out
+}
+
+/// The top item of furniture of a page that holds a point in millimeters.
+fn item_at(page: &PageRecord, p: Point) -> Option<FurnitureId> {
+    let mut items = page.furniture.iter().rev();
+    let found = items.find(|f| crate::furniture::rect_of(f).contains(p));
+    found.map(|f| f.id)
+}
+
 /// The top frame of a page that holds a point in millimeters.
 fn frame_at(page: &PageRecord, p: Point) -> Option<FrameId> {
     let mut frames = page.frames.iter().rev();
@@ -639,10 +1238,24 @@ fn frame_at(page: &PageRecord, p: Point) -> Option<FrameId> {
 /// The handle of the selected frame whose touch area holds a screen
 /// position. The nearest handle wins.
 fn handle_at(state: &AppState, pos: Pos2) -> Option<(Handle, Pos2)> {
-    if state.atlas.handles_of.is_none() || state.atlas.handles_of != state.atlas.frame() {
+    if state.atlas.handles_of != Some(state.atlas.selection) {
         return None;
     }
-    let near = state.atlas.handles.iter().filter(|(_, r)| r.contains(pos));
+    // Inside a small item, the touch areas of the handles cover the body.
+    // There a handle takes only a touch near its circle, so the body moves.
+    let body = state.atlas.item().and_then(|id| {
+        let rec = state.doc.project.atlas.furniture(id)?;
+        Some(
+            state
+                .atlas
+                .place?
+                .rect_to_screen(crate::furniture::rect_of(rec)),
+        )
+    });
+    let inside = body.is_some_and(|r| r.contains(pos));
+    let near = state.atlas.handles.iter().filter(|(_, r)| {
+        r.contains(pos) && (!inside || r.center().distance(pos) <= 2.0 * HANDLE_RADIUS)
+    });
     let best = near.min_by(|(_, a), (_, b)| {
         let (da, db) = (a.center().distance(pos), b.center().distance(pos));
         da.total_cmp(&db)
@@ -761,6 +1374,7 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     painter.add(shadow.as_shape(place.rect, 0.0));
     painter.rect_filled(place.rect, 0.0, PAPER);
     frames(ui, state, place, area);
+    items(ui, state, place, area);
     selection(ui, state, place);
     measure::overlay(ui, state, place, area);
 }
@@ -915,16 +1529,25 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
             remove_vertex(state, v);
         } else if state.atlas.frame().is_some() {
             delete_frame(state);
+        } else if state.atlas.item().is_some() {
+            delete_item(state);
         }
     }
 }
 
-/// Deletes the selected frame and clears the selection.
+/// Deletes the selected frame and clears the selection. The items of
+/// furniture of the frame link to the largest frame that stays on the page.
 pub fn delete_frame(state: &mut AppState) {
     let Some(id) = state.atlas.frame() else {
         return;
     };
-    state.doc.project.atlas.remove_frame(id);
+    let atlas = &mut state.doc.project.atlas;
+    let page = atlas.page_of_frame(id);
+    atlas.remove_frame(id);
+    if let Some(page) = page {
+        let to = atlas.page(page).and_then(largest_frame);
+        atlas.relink_furniture(page, id, to);
+    }
     state.doc.project.atlas.prune_maps();
     state.atlas.selection = AtlasSelection::None;
     state.atlas.vertex = None;
@@ -967,6 +1590,18 @@ fn start_drag(
         },
         AtlasTool::Measure => Drag::Page,
         AtlasTool::Select => {
+            if let (Some(id), Some((handle, center))) = (state.atlas.item(), handle_at(state, pos))
+            {
+                return match handle {
+                    Handle::Resize(i) => Drag::ItemHandle(id, i, place.to_mm(center) - at),
+                    _ => Drag::Idle,
+                };
+            }
+            if let Some(id) = item_at(page, at) {
+                state.atlas.selection = AtlasSelection::Item(id);
+                state.atlas.vertex = None;
+                return Drag::Item(id);
+            }
             if let (Some(id), Some((handle, center))) = (state.atlas.frame(), handle_at(state, pos))
             {
                 let grab = place.to_mm(center) - at;
@@ -1047,6 +1682,28 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
             edit_frame(state, id, |f, p| math::rotate(f, p, anchor, degrees));
             state.atlas.drag = Some(Drag::Rotate(id, now));
         }
+        Drag::ItemHandle(id, i, grab) => {
+            edit_item(state, id, |rec| {
+                let mut shape = FrameShape::Rectangle(rec.rect);
+                let done = math::resize(&mut shape, i, at + grab);
+                if let FrameShape::Rectangle(r) = shape {
+                    rec.rect = r;
+                }
+                done
+            });
+        }
+        Drag::Item(id) => {
+            if d != Vec2::ZERO {
+                edit_item(state, id, |rec| {
+                    let mut shape = FrameShape::Rectangle(rec.rect);
+                    math::move_shape(&mut shape, d);
+                    if let FrameShape::Rectangle(r) = shape {
+                        rec.rect = r;
+                    }
+                    true
+                });
+            }
+        }
         Drag::Page | Drag::Idle => {}
     }
 }
@@ -1065,6 +1722,10 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2) {
     let at = place.to_mm(pos);
     state.atlas.vertex = None;
     state.atlas.sizes = false;
+    if let Some(id) = item_at(page, at) {
+        state.atlas.selection = AtlasSelection::Item(id);
+        return;
+    }
     let picked = match frame_at(page, at) {
         Some(id) => {
             state.atlas.selection = AtlasSelection::Frame(id);
@@ -1395,6 +2056,83 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     }
 }
 
+/// The largest side of the texture of an item of furniture, in pixels.
+const ITEM_PIXELS: f64 = 4096.0;
+
+/// Draws the items of furniture of the open page over the frames. While a
+/// gesture moves the page, an item shows its last texture.
+fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
+    let page = open_page(state).clone();
+    let ctx = ui.ctx().clone();
+    let ppp = ctx.pixels_per_point();
+    let moving = gesture(ui, state);
+    let painter = ui.painter_at(area);
+    let zoom = place.pts_per_mm / PT_PER_MM;
+    for rec in &page.furniture {
+        let mm = crate::furniture::rect_of(rec);
+        let outer = mm.inflate(
+            crate::furniture::RENDER_MARGIN_MM,
+            crate::furniture::RENDER_MARGIN_MM,
+        );
+        let side = outer.width().max(outer.height()) * PT_PER_MM;
+        let scale = (f64::from(ppp) * zoom).min(ITEM_PIXELS / side.max(1.0));
+        let atlas = &state.doc.project.atlas;
+        let frame = rec.item.frame().and_then(|f| atlas.frame(f));
+        let map = frame.and_then(|f| atlas.map(f.map));
+        let content = hash_of((
+            &rec.item,
+            mm.width().to_bits(),
+            mm.height().to_bits(),
+            frame,
+            map,
+            state.map_generation,
+            scale.to_bits(),
+        ));
+        let old = state.atlas.item_images.get(&rec.id).map(|i| i.content);
+        if old != Some(content) && !(moving && old.is_some()) {
+            let rendered = crate::furniture::render(
+                &mut state.pipeline,
+                &state.doc,
+                rec,
+                &mut state.fonts,
+                scale,
+                crate::furniture::Purpose::Screen,
+            );
+            let (img, _) = match rendered {
+                Ok(r) => r,
+                Err(e) => {
+                    state.status = format!("{e:#}");
+                    continue;
+                }
+            };
+            let image =
+                egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
+            let options = egui::TextureOptions::LINEAR;
+            let texture = match state.atlas.item_images.remove(&rec.id) {
+                Some(mut old) => {
+                    old.texture.set(image, options);
+                    old.texture
+                }
+                None => ctx.load_texture(format!("item-{}", rec.id.0), image, options),
+            };
+            let rect = Rect::NOTHING;
+            state.atlas.item_images.insert(
+                rec.id,
+                ItemImage {
+                    texture,
+                    content,
+                    rect,
+                },
+            );
+        }
+        if let Some(image) = state.atlas.item_images.get_mut(&rec.id) {
+            image.rect = place.rect_to_screen(outer);
+            let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+            painter.image(image.texture.id(), image.rect, uv, Color32::WHITE);
+        }
+    }
+}
+
 /// Draws the canvas of the atlas at the reduced size of the blurred
 /// backdrop: the background, the page, and the textures of the frames. The
 /// raster layers of a frame are not in it.
@@ -1662,7 +2400,7 @@ fn paint_image(painter: &egui::Painter, image: &FrameImage, vt: &ViewTransform, 
 /// selected frame.
 fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
     state.atlas.handles.clear();
-    state.atlas.handles_of = state.atlas.frame();
+    state.atlas.handles_of = Some(state.atlas.selection);
     // The Measure tool does not edit the frames, so the selection does not
     // show.
     if state.atlas.tool == AtlasTool::Measure {
@@ -1675,6 +2413,22 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
         AtlasSelection::Page => {
             let rect = place.rect.shrink(1.0);
             painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
+        }
+        AtlasSelection::Item(id) => {
+            let Some(rec) = state.doc.project.atlas.furniture(id) else {
+                return;
+            };
+            let rect = place.rect_to_screen(crate::furniture::rect_of(rec));
+            painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
+            let dark = egui::Stroke::new(1.5, Color32::from_rgb(11, 31, 26));
+            let shape = FrameShape::Rectangle(rec.rect);
+            for (handle, p) in math::handles(&shape) {
+                let center = place.to_screen(p);
+                painter.circle(center, HANDLE_RADIUS, ACCENT, dark);
+                let size = vec2(HANDLE_TARGET, HANDLE_TARGET);
+                let touch = Rect::from_center_size(center, size);
+                state.atlas.handles.push((handle, touch));
+            }
         }
         AtlasSelection::Frame(id) => {
             let Some(frame) = state.doc.project.atlas.frame(id) else {

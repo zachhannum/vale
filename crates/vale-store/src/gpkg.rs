@@ -21,8 +21,9 @@ use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
 
 use crate::atlas::{
-    self, Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Graticule,
-    MapId, MapRecord, PageId, PageRecord, PageUnits, ProjectionPreset,
+    self, Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
+    FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, PageId, PageRecord, PageUnits,
+    ProjectionPreset,
 };
 use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
@@ -34,7 +35,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 32;
+pub const FORMAT_VERSION: u32 = 33;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -71,6 +72,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v30,
     v31,
     v32,
+    v33,
 ];
 
 /// `GPKG` in ASCII.
@@ -1056,6 +1058,35 @@ fn v31(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
+/// The furniture of the pages. An older file has none. A file with an older
+/// version number can already have the table.
+fn v33(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_furniture (
+           id INTEGER PRIMARY KEY,
+           page_id INTEGER NOT NULL REFERENCES vale_page(id),
+           position INTEGER NOT NULL,
+           kind TEXT NOT NULL
+             CHECK (kind IN ('text', 'legend', 'scale_bar', 'north_arrow')),
+           x0 REAL NOT NULL,
+           y0 REAL NOT NULL,
+           x1 REAL NOT NULL,
+           y1 REAL NOT NULL,
+           frame_id INTEGER,
+           props TEXT NOT NULL,
+           UNIQUE (page_id, position));
+         INSERT OR IGNORE INTO vale_meta (key, value) VALUES ('next_furniture_id', '0');
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_furniture', 'vale', 'vale_furniture');
+         INSERT INTO gpkg_extensions
+           SELECT c.table_name, NULL, 'vale_project', 'Records of the Vale app', 'read-write'
+           FROM gpkg_contents c
+           WHERE c.table_name = 'vale_furniture'
+             AND NOT EXISTS (SELECT 1 FROM gpkg_extensions e
+               WHERE e.table_name = c.table_name AND e.extension_name = 'vale_project');",
+    )
+}
+
 /// The point symbols that the user adds. An older file has none.
 fn v27(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(
@@ -1624,13 +1655,15 @@ fn write_base(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Writes the maps, the pages, and the frames. A map does not keep the
-/// hidden ID, the overrides, or the label classes of a layer that the
-/// project does not have.
+/// Writes the maps, the pages, the frames, and the furniture. A map does not
+/// keep the hidden ID, the overrides, or the label classes of a layer that
+/// the project does not have. An item of furniture keeps its frame only if
+/// the frame is on its page.
 fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     let atlas = &project.atlas;
     tx.execute_batch(
-        "DELETE FROM vale_frame;
+        "DELETE FROM vale_furniture;
+         DELETE FROM vale_frame;
          DELETE FROM vale_map_hidden;
          DELETE FROM vale_map_style;
          DELETE FROM vale_map_label;
@@ -1679,6 +1712,11 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
            ?18, ?19, ?20)",
     )?;
+    let mut furniture = tx.prepare(
+        "INSERT INTO vale_furniture (id, page_id, position, kind, x0, y0, x1, y1, frame_id,
+           props)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
     for (position, p) in atlas.pages.iter().enumerate() {
         let units = p.units.id();
         page.execute(params![
@@ -1713,12 +1751,30 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.graticule.parallels.to_json(),
             ])?;
         }
+        for (position, f) in p.furniture.iter().enumerate() {
+            let frame = f.item.frame();
+            let frame = frame.filter(|id| p.frames.iter().any(|g| g.id == *id));
+            let [x0, y0, x1, y1] = f.rect;
+            furniture.execute(params![
+                f.id.0,
+                p.id.0,
+                position,
+                f.item.kind_id(),
+                x0,
+                y0,
+                x1,
+                y1,
+                frame.map(|id| id.0),
+                f.item.to_json(),
+            ])?;
+        }
     }
     let mut meta = tx.prepare("INSERT OR REPLACE INTO vale_meta (key, value) VALUES (?1, ?2)")?;
     for (key, n) in [
         ("next_map_id", atlas.next_map_id),
         ("next_page_id", atlas.next_page_id),
         ("next_frame_id", atlas.next_frame_id),
+        ("next_furniture_id", atlas.next_furniture_id),
     ] {
         meta.execute(params![key, n.to_string()])?;
     }
@@ -2557,6 +2613,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         next_map_id: counter(conn, "next_map_id")?,
         next_page_id: counter(conn, "next_page_id")?,
         next_frame_id: counter(conn, "next_frame_id")?,
+        next_furniture_id: counter(conn, "next_furniture_id")?,
     };
     let mut rows = conn.prepare("SELECT id, name, projection FROM vale_map ORDER BY position")?;
     let mut rows = rows.query([])?;
@@ -2616,6 +2673,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             units: PageUnits::from_id(&units)
                 .ok_or_else(|| corrupt(format!("page units {units:?}")))?,
             frames: Vec::new(),
+            furniture: Vec::new(),
         });
     }
     if atlas.maps.is_empty() {
@@ -2685,6 +2743,32 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         }
         let page = atlas.page_mut(PageId(r.get(1)?)).ok_or_else(bad)?;
         page.frames.push(frame);
+    }
+    let mut rows = conn.prepare(
+        "SELECT id, page_id, kind, x0, y0, x1, y1, frame_id, props
+         FROM vale_furniture ORDER BY page_id, position",
+    )?;
+    let mut rows = rows.query([])?;
+    while let Some(r) = rows.next()? {
+        let id: u32 = r.get(0)?;
+        let bad = || corrupt(format!("furniture {id}"));
+        let page = atlas.page_mut(PageId(r.get(1)?)).ok_or_else(bad)?;
+        let kind: String = r.get(2)?;
+        let rect: [f64; 4] = [r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?];
+        if !rect.iter().all(|x| x.is_finite()) {
+            return Err(bad());
+        }
+        let frame: Option<u32> = r.get(7)?;
+        let frame = frame
+            .map(FrameId)
+            .filter(|id| page.frames.iter().any(|f| f.id == *id));
+        let props: String = r.get(8)?;
+        let item = Furniture::from_json(&kind, &props, frame).ok_or_else(bad)?;
+        page.furniture.push(FurnitureRecord {
+            id: FurnitureId(id),
+            rect,
+            item,
+        });
     }
     Ok(atlas)
 }
@@ -3099,6 +3183,7 @@ mod tests {
             [
                 "vale_field",
                 "vale_frame",
+                "vale_furniture",
                 "vale_image",
                 "vale_image_tile",
                 "vale_layer",
@@ -3382,6 +3467,124 @@ mod tests {
         atlas.add_frame(second, polygon).unwrap();
     }
 
+    /// Puts a frame and one item of each kind of furniture on the first page.
+    /// The legend, the scale bar, and the north arrow link to the frame.
+    fn furniture_edit(project: &mut Project) -> FrameId {
+        use crate::atlas::{
+            LegendEntry, LegendItem, NorthArrowItem, ScaleBarItem, TextAlign, TextItem,
+        };
+        let towns = project.layers()[0].id;
+        let atlas = &mut project.atlas;
+        let page = atlas.pages[0].id;
+        let frame = FrameRecord {
+            id: FrameId(0),
+            map: MapId(0),
+            shape: FrameShape::Rectangle([10.0, 10.0, 200.0, 150.0]),
+            center: [0.0, 0.0],
+            scale: 50_000_000.0,
+            rotation: 0.0,
+            graticule: Graticule::default(),
+            border: Border::default(),
+        };
+        let frame = atlas.add_frame(page, frame).unwrap();
+        let title = TextItem {
+            text: "The North".into(),
+            align: TextAlign::Center,
+            ..TextItem::default()
+        };
+        let mut legend = LegendItem {
+            frame: Some(frame),
+            title: "Key".into(),
+            ..LegendItem::default()
+        };
+        let renamed = LegendEntry {
+            name: Some("Big towns".into()),
+            hidden: false,
+        };
+        legend.entries.insert((towns, "Large".into()), renamed);
+        let hidden = LegendEntry {
+            name: None,
+            hidden: true,
+        };
+        legend.entries.insert((towns, String::new()), hidden);
+        let bar = ScaleBarItem {
+            frame: Some(frame),
+            kind: crate::ScaleBarKind::Line,
+            second_unit: Some(crate::ScaleUnit::Miles),
+            ..ScaleBarItem::default()
+        };
+        let arrow = NorthArrowItem {
+            frame: Some(frame),
+            hide_if_varies: false,
+            color: [0xc0, 0x10, 0x10],
+            ..NorthArrowItem::default()
+        };
+        for (rect, item) in [
+            ([20.0, 5.0, 180.0, 15.0], Furniture::Text(title)),
+            ([210.0, 20.0, 280.0, 90.0], Furniture::Legend(legend)),
+            ([210.0, 100.0, 280.0, 110.0], Furniture::ScaleBar(bar)),
+            ([260.0, 120.0, 280.0, 145.5], Furniture::NorthArrow(arrow)),
+        ] {
+            atlas.add_furniture(page, rect, item).unwrap();
+        }
+        frame
+    }
+
+    #[test]
+    fn the_furniture_and_its_frame_survive_a_close_and_an_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let frame = furniture_edit(&mut project);
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.atlas, project.atlas);
+        let furniture = &loaded.atlas.pages[0].furniture;
+        let kinds: Vec<_> = furniture.iter().map(|f| f.item.kind_id()).collect();
+        assert_eq!(kinds, ["text", "legend", "scale_bar", "north_arrow"]);
+        let frames: Vec<_> = furniture.iter().map(|f| f.item.frame()).collect();
+        assert_eq!(frames, [None, Some(frame), Some(frame), Some(frame)]);
+        let Furniture::Legend(legend) = &furniture[1].item else {
+            panic!("not a legend");
+        };
+        assert_eq!(legend.entries.len(), 2);
+
+        // An item that is added after the open gets an ID that was never used.
+        let mut next = loaded.clone();
+        let page = next.atlas.pages[0].id;
+        let item = furniture[0].item.clone();
+        let id = next.atlas.add_furniture(page, [0.0; 4], item).unwrap();
+        assert!(furniture.iter().all(|f| f.id != id));
+    }
+
+    #[test]
+    fn a_link_to_a_deleted_frame_loads_as_no_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let frame = furniture_edit(&mut project);
+        project.atlas.remove_frame(frame).unwrap();
+        file.save(&project).unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let furniture = &loaded.atlas.pages[0].furniture;
+        assert_eq!(furniture.len(), 4);
+        assert!(furniture.iter().all(|f| f.item.frame().is_none()));
+
+        // A row with the ID of a frame that the file does not have.
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute("UPDATE vale_furniture SET frame_id = 99", [])
+            .unwrap();
+        drop(conn);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let furniture = &loaded.atlas.pages[0].furniture;
+        assert!(furniture.iter().all(|f| f.item.frame().is_none()));
+    }
+
     #[test]
     fn the_file_keeps_the_atlas_and_undo_puts_it_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -3390,6 +3593,7 @@ mod tests {
         let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
         let before = project.clone();
         atlas_edit(&mut project);
+        furniture_edit(&mut project);
         file.save(&project).unwrap();
         drop(file);
 
@@ -3730,6 +3934,28 @@ mod tests {
             (loaded.world.wind_deg, loaded.world.rain_shadow),
             (270.0, 0.0)
         );
+    }
+
+    #[test]
+    fn a_file_of_version_32_has_no_furniture() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::new(World::default());
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "DROP TABLE vale_furniture;
+             DELETE FROM vale_meta WHERE key = 'next_furniture_id';
+             DELETE FROM gpkg_extensions WHERE table_name = 'vale_furniture';
+             DELETE FROM gpkg_contents WHERE table_name = 'vale_furniture';",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 32);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert!(loaded.atlas.pages.iter().all(|p| p.furniture.is_empty()));
+        assert_eq!(loaded.atlas, Atlas::new(Units::Metric));
     }
 
     #[test]
@@ -4266,7 +4492,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 200 * 1024, "{bytes} bytes");
+        assert!(bytes < 212 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();

@@ -254,8 +254,10 @@ fn path_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The button of the tool bar that adds a map frame to the open page.
-pub const ADD_MAP_FRAME: &str = "Add map frame";
+/// The row of the Add menu that adds a map frame to the open page.
+pub const ADD_MAP_FRAME: &str = "Map frame";
+/// The menu of the tool bar that adds a frame or an item of furniture.
+pub const ADD_MENU: &str = "Add";
 
 /// The page buttons of the tool bar in the Atlas workspace: the page before,
 /// the name of the open page, the page after, and a new map frame.
@@ -273,9 +275,16 @@ fn atlas_buttons(ui: &mut egui::Ui, state: &mut AppState) {
     if next.clicked() {
         atlas::go_to_page(state, 1);
     }
-    if ui.button(ADD_MAP_FRAME).clicked() {
-        atlas::add_frame(state);
-    }
+    ui.menu_button(ADD_MENU, |ui| {
+        if ui.button(ADD_MAP_FRAME).clicked() {
+            atlas::add_frame(state);
+        }
+        for kind in atlas::ItemKind::ALL {
+            if ui.button(kind.name()).clicked() {
+                atlas::add_item(state, kind);
+            }
+        }
+    });
     ui.separator();
     let measuring = state.measuring();
     if ui.selectable_label(measuring, MEASURE_TOOL).clicked() {

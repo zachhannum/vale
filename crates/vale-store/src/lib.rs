@@ -6,20 +6,29 @@ use std::ops::RangeInclusive;
 pub use uuid::Uuid;
 
 mod atlas;
+mod fill;
 mod gpkg;
 mod image_tile;
+mod scale_bar;
 mod tile;
 mod undo;
 
 pub use atlas::{
     Atlas, Border, CoordFormat, EdgeLabels, EdgeOrientation, Edges, FrameId, FrameRecord,
-    FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord, PageUnits, ProjectionPreset,
+    FrameShape, Furniture, FurnitureId, FurnitureRecord, FurnitureText, Graticule, LegendEntry,
+    LegendItem, MapId, MapRecord, NorthArrowItem, PageId, PageRecord, PageUnits, ProjectionPreset,
+    TextAlign, TextCase, TextItem, title_case,
 };
+pub use fill::{FillKind, FillPattern};
 pub use gpkg::{
     FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,
     TileKey, summary,
 };
 pub use image_tile::{IMAGE_TILE_SIZE, decode_tile, encode_tile, image_levels, level_size};
+pub use scale_bar::{
+    DivisionSpacing, ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TickFrequency,
+    UnitLabelStyle, UnitPosition,
+};
 pub use tile::TILE_SIZE;
 pub use undo::UNDO_LIMIT;
 

@@ -189,7 +189,7 @@ The job `testflight` in `.github/workflows/ios.yml` does the work, with `scripts
 - Vector layers in the flat view of the globe workspace and in the picture of the globe on the start screen.
 - Pattern fills, texture fills, hatch fills, and edge effects. In the style editor, only the size and the rotation of a point symbol can come from a field.
 - Polygon labels, label fallbacks, leader lines, and manual label changes.
-- The overview of the pages, page templates, map furniture on a page, and SVG export.
+- The overview of the pages, page templates, and SVG export.
 - Projection suggestions and Tissot circles.
 - Editing tools other than the line tool, the polygon tool, and the point tool, including the attribute table.
 - The GPU Vello backend. The prototype draws on the CPU with `vello_cpu`.

@@ -155,13 +155,14 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Map | Name, projection preset and center, the layers that are off in the map, style overrides, label classes |
 | Page | Name, page size in millimeters, units of the page size, paper color, page border, page template, furniture |
 | Map frame | Page, map, shape on the page, center, scale, rotation, fill, border, graticule |
+| Furniture | Page, kind (text, legend, scale bar, or north arrow), rectangle on the page, link to a map frame of the page, and the properties of the kind as JSON. A legend keeps a changed name or a hidden flag for each entry, keyed by layer and rule. |
 | Override | One manual change, keyed by map frame, feature ID, and label class |
 | Page template | Page size, margins, positions of the furniture |
 | Atlas | Ordered list of pages |
 
 The order of the layer records is the draw order. The first layer is at the bottom.
 
-The shape of a map frame is a list of rings in millimeters from the top-left corner of the page. The first ring is the outer ring, and the other rings are holes. The frames of a page are in draw order. The scale of a frame is a ratio 1:N on the standard lines of the projection. The projection uses the radius of the world, so the ratio is true for any radius. The rotation is in degrees clockwise.
+The shape of a map frame is a list of rings in millimeters from the top-left corner of the page. The first ring is the outer ring, and the other rings are holes. The frames and the furniture of a page are in draw order. The scale of a frame is a ratio 1:N on the standard lines of the projection. The projection uses the radius of the world, so the ratio is true for any radius. The rotation is in degrees clockwise.
 
 QGIS opens the feature tables directly and ignores the extra tables. The extra tables have the prefix `vale_`. Each one has a row in `gpkg_contents` with the data type `vale`, and QGIS lists only the data types that it knows. That gives interchange with no export step. The topography polygons are feature tables, so QGIS reads them too. A raster layer is not a standard table, and the app exports it as an equirectangular GeoTIFF. The image is four times the face size wide and two times the face size tall. The samples are the 16-bit levels. The file gives the offset and the scale that turn a level into a value in the unit of the layer. The CRS is the sphere of the world, the same as in the feature tables.
 
@@ -211,7 +212,7 @@ A world is a sphere with one radius, and all stored geometry is longitude and la
 
 A new world starts from a form with a name, a radius, and display units. The form has the radius presets Earth (6,371 km), Mars (3,389.5 km), and the Moon (1,737.4 km), and it takes a free value from 100 km to 100,000 km. The world properties show the same fields, and a change there applies at once. A change of the radius does not change the longitude and the latitude of a feature.
 
-The display units are kilometers or miles. They apply to a distance on the ground: the brush size, the scale bar, and the radius. A distance below one kilometer shows in meters, and a distance below one mile shows in feet. The project file holds the radius in kilometers for each choice. A value of a raster layer shows in the unit of that layer.
+The display units are kilometers or miles. They apply to a distance on the ground: the brush size, the unit of a new scale bar, and the radius. A distance below one kilometer shows in meters, and a distance below one mile shows in feet. The project file holds the radius in kilometers for each choice. A value of a raster layer shows in the unit of that layer.
 
 A projection in the app is a PROJ string plus a name. A custom projection is a preset that you edit and save, so the app needs no projection math of its own.
 
@@ -236,7 +237,7 @@ The editor shows distortion while you edit. It draws Tissot circles (equal circl
 
 The sphere crate generates graticule lines on the sphere and sends them through the same pipeline as features. The graticule belongs to the map frame. The frame turns it on or off, and it holds its interval, its color, and its width. The interval follows the scale of the frame, or you set it by hand. The labels sit where each line meets the frame edge. The frame sets their format: degrees, minutes, and seconds, or decimal degrees. The meridians and the parallels each have a set of labels, and each set has its own switch, text, and placement. The text is the font, the style, the size, the color, the opacity, and the halo. The placement is inside or outside the edge, the offset from the edge, the orientation, and the sides that have labels. A label lies along its line or is level on the page, and it reads from left to right. An edge of a polygon frame is on the side that it faces. A label that overlaps another label, or is not on its side of the edge, does not show, so the labels at a corner do not overlap. The map labels keep clear of the edge labels inside the frame. The globe and the flat view show a graticule as a view option, and that graticule is not in an export.
 
-A scale bar is correct only where the projection keeps scale. The app measures the scale bar at the frame center and states that in the bar's properties.
+A scale bar is correct only where the projection keeps scale. The app measures the scale bar at the frame center.
 
 ## Import
 
@@ -595,11 +596,13 @@ A map shows the layers of the world in one projection. It has a name, a projecti
 
 The app has two workspaces, World and Atlas. In the World workspace you draw and edit the features, and its attribute table edits their attributes. The Atlas workspace holds the maps, the pages, and the map frames. You edit a map in a frame, at the scale of the page, so that the labels and the styles show as they export.
 
-A page is one page of the atlas. It has a page size, its map frames, and its furniture (the items around the maps). The page size has presets and a free value, with units. A page has a paper color and a page border. The page border is a rectangle at a set distance from the edge of the page, and a map frame can cross it. Version 1 has a title, a legend, a scale bar, and a north arrow.
+A page is one page of the atlas. It has a page size, its map frames, and its furniture (the items around the maps). The page size has presets and a free value, with units. A page has a paper color and a page border. The page border is a rectangle at a set distance from the edge of the page, and a map frame can cross it. Version 1 has text boxes, legends, scale bars, and north arrows. A page can have any number of each.
 
 A map frame is an area on a page that shows one map. Its shape is a rectangle or a polygon. A polygon can have notches and holes, for example a cut-out for an inset. The frame holds its shape on the page, and the center, the scale, and the rotation of the map in the shape. The map draws only inside the shape, and the border follows the shape. The extent of the frame comes from the shape and the view. A frame also holds its fill, its border, and its graticule. The fill is a color behind the map, and with the fill off, the paper shows through. One map can be in no frame, or in many frames on one or many pages. Thus an inset or an island chain is many frames on one page. A locator map is a map in a small frame, for example in the orthographic projection with a fill for the region of the main map.
 
-Each scale bar, north arrow, and legend links to one frame of its page. A new item links to the largest frame.
+Each scale bar, north arrow, and legend links to one frame of its page. A new item links to the largest frame. When a frame is deleted, its items link to the largest frame that stays.
+
+A scale bar has one of six styles: alternating, double alternating, hollow, single division, stepped line, or line. It shows one or two units. The second unit is on the other side of the line and has the same zero. The bar sets its divisions, equal or doubling, the subdivisions of the first division, a division before zero, the division value, the fills, the marks, the numbers, and the unit label. The fill of a division is solid, hatch, cross-hatch, or none. The division value can follow the width of the box. Each text part of an item of furniture, for example the title of a legend or the numbers of a scale bar, has the text settings of a label class.
 
 The screen shows what the export holds. A frame on the screen has the line widths, the sizes of the symbols, and the sizes of the text of the printed page at the zoom of the view, so a 1 pt line is 1 pt on paper and grows and shrinks with the page. The Atlas workspace shows one page, and each panel opens from the selection. With no selection, no panel shows. A tap on a frame opens the panel of the frame. A tap on the page outside the frames opens the panel of the page, with the page size, the paper color, the page border, and the template. A tap on an item of furniture opens the panel of the item. The page controls in the top row go to the previous page and the next page. A tap on the name of the page opens the overview of all pages, where you open, reorder, add, and delete pages. The Add button in the top row adds a map frame, text, a legend, a scale bar, or a north arrow to the page.
 
@@ -778,7 +781,7 @@ The prototype leaves out the following.
 - The rows "From file…" and "From tool" in the menu of the new layers.
 - Pattern fills, texture fills, hatch fills, and edge effects, and style properties from expressions in the style editor other than the size and the rotation of a point symbol.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
-- The overview of the pages, page templates, map furniture on a page, SVG export, and tiled raster export.
+- The overview of the pages, page templates, SVG export, and tiled raster export.
 - Projection suggestions and Tissot circles.
 - All editing tools other than the freehand line tool, the freehand polygon tool, and point placement: the attribute table and vertex editing.
 - The GPU Vello backend. The prototype draws with `vello_cpu`.

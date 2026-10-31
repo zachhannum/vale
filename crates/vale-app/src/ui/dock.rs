@@ -52,6 +52,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                         page_panel(ui, state);
                         ui.separator();
                     }
+                    AtlasSelection::Item(id) => {
+                        if let Some(rec) = state.doc.project.atlas.furniture(id).cloned() {
+                            item_panel(ui, state, &rec);
+                            ui.separator();
+                        }
+                    }
                     AtlasSelection::None => {}
                 }
                 inspector::contents(ui, state);
@@ -949,4 +955,777 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         state.delete_label_class(map, layer, i);
         state.atlas.label = None;
     }
+}
+
+/// The panel of an item of furniture.
+fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::FurnitureRecord) {
+    use super::atlas::TextPart;
+    use super::pad::furniture as item;
+    use vale_store::Furniture;
+    let id = rec.id;
+    let kind = atlas::ItemKind::of(&rec.item);
+    ui.heading(kind.name());
+    if let Furniture::ScaleBar(bar) = &rec.item {
+        let kinds = &vale_store::ScaleBarKind::ALL;
+        let style = vale_store::ScaleBarKind::label;
+        egui::Grid::new("atlas-bar-kind-grid").show(ui, |ui| {
+            if let Some(k) = combo(ui, "atlas-bar-kind", item::STYLE, kinds, style, bar.kind) {
+                atlas::edit_bar(state, id, true, |b| b.kind = k);
+            }
+        });
+    }
+    if !matches!(rec.item, Furniture::Text(_)) {
+        let names = atlas::frame_names(state);
+        let chosen = names.iter().find(|(f, _)| Some(*f) == rec.item.frame());
+        let shown = chosen.map_or(item::NO_FRAME, |(_, n)| n.as_str());
+        ui.horizontal(|ui| {
+            ui.label(item::MAP_FRAME);
+            egui::ComboBox::from_id_salt("atlas-item-frame")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (frame, name) in &names {
+                        let on = rec.item.frame() == Some(*frame);
+                        if ui.selectable_label(on, name).clicked() {
+                            atlas::set_item_frame(state, id, Some(*frame));
+                        }
+                    }
+                });
+        });
+    }
+    match &rec.item {
+        Furniture::Text(t) => {
+            let mut text = t.text.clone();
+            let edit = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3));
+            named(&edit, egui::WidgetType::TextEdit, item::ITEM_TEXT);
+            if edit.changed() {
+                atlas::edit_item(state, id, |r| match &mut r.item {
+                    Furniture::Text(t) => {
+                        t.text = text;
+                        true
+                    }
+                    _ => false,
+                });
+            }
+            text_grid(ui, state, id, TextPart::Text, &t.style);
+            ui.horizontal(|ui| {
+                ui.label(item::ALIGNMENT);
+                let aligns = [
+                    vale_store::TextAlign::Left,
+                    vale_store::TextAlign::Center,
+                    vale_store::TextAlign::Right,
+                ];
+                for (align, name) in aligns.into_iter().zip(item::ALIGNMENTS) {
+                    if ui.selectable_label(t.align == align, name).clicked() {
+                        atlas::item_step(state, id, |r| match &mut r.item {
+                            Furniture::Text(t) => {
+                                t.align = align;
+                                true
+                            }
+                            _ => false,
+                        });
+                    }
+                }
+            });
+        }
+        Furniture::Legend(l) => {
+            egui::CollapsingHeader::new(item::TITLE)
+                .default_open(true)
+                .show(ui, |ui| {
+                    let mut title = l.title.clone();
+                    let edit = ui.text_edit_singleline(&mut title);
+                    named(&edit, egui::WidgetType::TextEdit, item::TITLE);
+                    if edit.changed() {
+                        atlas::edit_item(state, id, |r| match &mut r.item {
+                            Furniture::Legend(l) => {
+                                l.title = title;
+                                true
+                            }
+                            _ => false,
+                        });
+                    }
+                    text_grid(ui, state, id, TextPart::Title, &l.title_style);
+                });
+            egui::CollapsingHeader::new(item::ENTRIES)
+                .default_open(true)
+                .show(ui, |ui| {
+                    legend_entries(ui, state, id, l);
+                    text_grid(ui, state, id, TextPart::Entries, &l.entry_style);
+                });
+        }
+        Furniture::ScaleBar(bar) => bar_sections(ui, state, id, bar),
+        Furniture::NorthArrow(n) => {
+            ui.horizontal(|ui| {
+                ui.label(item::ARROW_COLOR);
+                let mut color = n.color;
+                let button = ui.color_edit_button_srgb(&mut color);
+                named(&button, egui::WidgetType::ColorButton, item::ARROW_COLOR);
+                if button.changed() {
+                    atlas::edit_item(state, id, |r| match &mut r.item {
+                        Furniture::NorthArrow(n) => {
+                            n.color = color;
+                            true
+                        }
+                        _ => false,
+                    });
+                }
+            });
+            let mut hide = n.hide_if_varies;
+            if ui.checkbox(&mut hide, item::HIDE_VARIES).changed() {
+                atlas::item_step(state, id, |r| match &mut r.item {
+                    Furniture::NorthArrow(n) => {
+                        n.hide_if_varies = hide;
+                        true
+                    }
+                    _ => false,
+                });
+            }
+            egui::CollapsingHeader::new(item::LETTER)
+                .default_open(true)
+                .show(ui, |ui| {
+                    text_grid(ui, state, id, TextPart::Letter, &n.letter_style);
+                });
+        }
+    }
+    ui.add_space(6.0);
+    if ui.button(item::delete_name(kind)).clicked() {
+        atlas::delete_item(state);
+    }
+    ui.add_space(6.0);
+}
+
+/// The entries of a legend: a switch and a name for each, and the reset
+/// button.
+fn legend_entries(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    id: vale_store::FurnitureId,
+    l: &vale_store::LegendItem,
+) {
+    use super::pad::furniture as item;
+    use vale_store::Furniture;
+    for row in atlas::legend_rows(state, l) {
+        let key = (row.layer, row.rule.clone());
+        let name = l.entries.get(&key).and_then(|e| e.name.clone());
+        ui.horizontal(|ui| {
+            let mut shown = !row.hidden;
+            if ui.checkbox(&mut shown, "").changed() {
+                atlas::edit_entry(state, id, key.clone(), |e| e.hidden = !shown);
+            }
+            let mut text = name.clone().unwrap_or_default();
+            let edit = egui::TextEdit::singleline(&mut text).hint_text(&row.label);
+            if ui.add(edit).changed() {
+                let typed = text.trim().to_string();
+                let name = (!typed.is_empty()).then_some(typed);
+                atlas::edit_entry(state, id, key, |e| e.name = name);
+            }
+        });
+    }
+    let reset = ui.add_enabled(
+        !l.entries.is_empty(),
+        egui::Button::new(item::RESET_ENTRIES),
+    );
+    if reset.clicked() {
+        atlas::item_step(state, id, |r| match &mut r.item {
+            Furniture::Legend(l) => {
+                l.entries.clear();
+                true
+            }
+            _ => false,
+        });
+    }
+}
+
+/// A combo box row of a grid. Returns the choice that the user made.
+fn combo<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    label: &str,
+    all: &[T],
+    name: fn(T) -> &'static str,
+    current: T,
+) -> Option<T> {
+    let mut chosen = None;
+    ui.label(label);
+    let resp = egui::ComboBox::from_id_salt(id)
+        .selected_text(name(current))
+        .show_ui(ui, |ui| {
+            for c in all {
+                if ui.selectable_label(*c == current, name(*c)).clicked() && *c != current {
+                    chosen = Some(*c);
+                }
+            }
+        });
+    named(&resp.response, egui::WidgetType::ComboBox, label);
+    ui.end_row();
+    chosen
+}
+
+/// A number row of a grid. Returns the new value while the user drags it.
+fn number(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: f64,
+    range: std::ops::RangeInclusive<f64>,
+    suffix: &str,
+) -> Option<f64> {
+    ui.label(label);
+    let mut v = value;
+    let speed = (range.end() - range.start()) / 200.0;
+    let drag = egui::DragValue::new(&mut v)
+        .range(range)
+        .speed(speed)
+        .max_decimals(2)
+        .suffix(suffix);
+    let resp = ui.add(drag);
+    named(&resp, egui::WidgetType::DragValue, label);
+    ui.end_row();
+    resp.changed().then_some(v)
+}
+
+/// A color row of a grid. Returns the new color.
+fn color(ui: &mut egui::Ui, label: &str, color: vale_store::Rgb) -> Option<vale_store::Rgb> {
+    ui.label(label);
+    let mut c = color;
+    let button = ui.color_edit_button_srgb(&mut c);
+    named(&button, egui::WidgetType::ColorButton, label);
+    ui.end_row();
+    button.changed().then_some(c)
+}
+
+/// A switch row of a grid. Returns the new value.
+fn check(ui: &mut egui::Ui, label: &str, on: bool) -> Option<bool> {
+    let mut v = on;
+    ui.label("");
+    let changed = ui.checkbox(&mut v, label).changed();
+    ui.end_row();
+    changed.then_some(v)
+}
+
+/// The text settings of a text part of an item.
+fn text_grid(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    id: vale_store::FurnitureId,
+    part: super::atlas::TextPart,
+    style: &vale_store::FurnitureText,
+) {
+    use super::pad::furniture as item;
+    use vale_store::{FurnitureText, TextCase};
+    let edit = |state: &mut AppState, step: bool, f: &dyn Fn(&mut FurnitureText)| {
+        atlas::edit_text(state, id, part, step, f);
+    };
+    egui::Grid::new(("atlas-item-text", part))
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label(item::FONT);
+            let family = style
+                .font
+                .as_deref()
+                .unwrap_or(crate::fonts::DEFAULT_FAMILY);
+            let button = ui.button(format!("{family}…"));
+            named(&button, egui::WidgetType::Button, item::FONT);
+            if button.clicked() {
+                let target = super::FontTarget::Item(id, part);
+                state.actions.push(super::Action::PickFont(target));
+            }
+            ui.end_row();
+            let family = crate::fonts::family(style.font.as_deref(), &mut state.fonts).to_owned();
+            let mut faces = state.fonts.faces(&family);
+            if faces.is_empty() {
+                faces.push(vale_labeler::Face {
+                    weight: 400.0,
+                    italic: false,
+                });
+            }
+            let face = vale_labeler::Face {
+                weight: style.weight,
+                italic: style.italic,
+            };
+            ui.label(item::STYLE);
+            egui::ComboBox::from_id_salt(("atlas-item-face", part))
+                .selected_text(face.name())
+                .show_ui(ui, |ui| {
+                    for f in faces {
+                        let on = f.weight == style.weight && f.italic == style.italic;
+                        if ui.selectable_label(on, f.name()).clicked() {
+                            edit(state, true, &|s| {
+                                s.weight = f.weight;
+                                s.italic = f.italic;
+                            });
+                        }
+                    }
+                });
+            ui.end_row();
+            if let Some(v) = number(ui, item::SIZE, style.size, FurnitureText::SIZES, " pt") {
+                edit(state, false, &|s| s.size = v);
+            }
+            let cases = &TextCase::ALL;
+            if let Some(c) = combo(
+                ui,
+                ("atlas-item-case", part),
+                item::CASE,
+                cases,
+                TextCase::name,
+                style.case,
+            ) {
+                edit(state, true, &|s| s.case = c);
+            }
+            let spacing = style.letter_spacing * 100.0;
+            let range = FurnitureText::LETTER_SPACINGS;
+            let range = range.start() * 100.0..=range.end() * 100.0;
+            if let Some(v) = number(ui, item::LETTER_SPACING, spacing, range, " %") {
+                edit(state, false, &|s| s.letter_spacing = v / 100.0);
+            }
+            if let Some(c) = color(ui, item::COLOR, style.color) {
+                edit(state, false, &|s| s.color = c);
+            }
+            let opacity = style.opacity * 100.0;
+            if let Some(v) = number(ui, item::OPACITY, opacity, 0.0..=100.0, " %") {
+                edit(state, false, &|s| s.opacity = v / 100.0);
+            }
+            if let Some(on) = check(ui, item::HALO, style.halo) {
+                edit(state, true, &|s| s.halo = on);
+            }
+            if style.halo {
+                if let Some(c) = color(ui, item::HALO_COLOR, style.halo_color) {
+                    edit(state, false, &|s| s.halo_color = c);
+                }
+                let range = FurnitureText::HALO_WIDTHS;
+                if let Some(v) = number(ui, item::HALO_WIDTH, style.halo_width, range, " pt") {
+                    edit(state, false, &|s| s.halo_width = v);
+                }
+            }
+        });
+}
+
+/// The rows of a fill of a scale bar in a grid: the kind, the color, and
+/// for a hatch the background, the angle, the spacing, and the line width.
+fn fill_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    id: vale_store::FurnitureId,
+    label: &str,
+    second: bool,
+    fill: &vale_store::FillPattern,
+    outline: vale_store::Rgb,
+) {
+    use super::pad::furniture as item;
+    use vale_store::{FillKind, FillPattern};
+    let edit = |state: &mut AppState, step: bool, f: &dyn Fn(&mut FillPattern)| {
+        atlas::edit_fill(state, id, second, step, f);
+    };
+    let kinds = &FillKind::ALL;
+    if let Some(k) = combo(
+        ui,
+        ("atlas-bar-fill", second),
+        label,
+        kinds,
+        FillKind::label,
+        fill.kind,
+    ) {
+        edit(state, true, &|f| item::set_kind(f, k, outline));
+    }
+    if fill.kind == FillKind::None {
+        return;
+    }
+    let name = if fill.kind.hatched() {
+        item::LINE_COLOR
+    } else {
+        item::COLOR
+    };
+    if let Some(c) = color(ui, name, fill.color) {
+        edit(state, false, &|f| f.color = c);
+    }
+    if !fill.kind.hatched() {
+        return;
+    }
+    if let Some(on) = check(ui, item::BACKGROUND, fill.background.is_some()) {
+        let back = on.then_some([0xff, 0xff, 0xff]);
+        edit(state, true, &|f| f.background = back);
+    }
+    if let Some(back) = fill.background
+        && let Some(c) = color(ui, item::BACKGROUND_COLOR, back)
+    {
+        edit(state, false, &|f| f.background = Some(c));
+    }
+    if let Some(v) = number(ui, item::ANGLE, fill.angle, FillPattern::ANGLES, "°") {
+        edit(state, false, &|f| f.angle = v);
+    }
+    if let Some(v) = number(
+        ui,
+        item::SPACING,
+        fill.spacing,
+        FillPattern::SPACINGS,
+        " mm",
+    ) {
+        edit(state, false, &|f| f.spacing = v);
+    }
+    let widths = FillPattern::LINE_WIDTHS;
+    if let Some(v) = number(ui, item::LINE_WIDTH, fill.line_width, widths, " pt") {
+        edit(state, false, &|f| f.line_width = v);
+    }
+}
+
+/// The sections of a scale bar: the units, the divisions, the bar, the
+/// marks, and the numbers.
+fn bar_sections(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    id: vale_store::FurnitureId,
+    bar: &vale_store::ScaleBarItem,
+) {
+    use super::atlas::{BarPage, BarPick, TextPart};
+    use super::pad::furniture as item;
+    use vale_store::{
+        ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TickFrequency,
+        UnitLabelStyle, UnitPosition,
+    };
+    let edit = |state: &mut AppState, step: bool, f: &dyn Fn(&mut ScaleBarItem)| {
+        atlas::edit_bar(state, id, step, f);
+    };
+    let section =
+        |page: BarPage| egui::CollapsingHeader::new(page.name()).id_salt(("atlas-bar", page));
+    section(BarPage::Units).show(ui, |ui| {
+        egui::Grid::new("atlas-bar-units")
+            .num_columns(2)
+            .show(ui, |ui| {
+                let units = &ScaleUnit::ALL;
+                if let Some(u) = combo(
+                    ui,
+                    "atlas-bar-unit",
+                    BarPick::Unit.name(),
+                    units,
+                    ScaleUnit::label,
+                    bar.unit,
+                ) {
+                    edit(state, true, &|b| {
+                        b.unit = u;
+                        if b.second_unit == Some(u) {
+                            b.second_unit = None;
+                        }
+                    });
+                }
+                ui.label(BarPick::SecondUnit.name());
+                let shown = bar.second_unit.map_or(item::NONE, ScaleUnit::label);
+                egui::ComboBox::from_id_salt("atlas-bar-second")
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        let mut all = vec![None];
+                        all.extend(units.iter().filter(|u| **u != bar.unit).map(|u| Some(*u)));
+                        for u in all {
+                            let name = u.map_or(item::NONE, ScaleUnit::label);
+                            if ui.selectable_label(u == bar.second_unit, name).clicked() {
+                                edit(state, true, &|b| {
+                                    b.second_unit = u;
+                                    b.second_division_value = None;
+                                });
+                            }
+                        }
+                    });
+                ui.end_row();
+                let styles = &UnitLabelStyle::ALL;
+                let name = BarPick::UnitLabel.name();
+                if let Some(s) = combo(
+                    ui,
+                    "atlas-bar-label",
+                    name,
+                    styles,
+                    UnitLabelStyle::label,
+                    bar.unit_label_style,
+                ) {
+                    edit(state, true, &|b| b.unit_label_style = s);
+                }
+                if bar.unit_label_style == UnitLabelStyle::Custom {
+                    let mut fields = vec![(item::CUSTOM_LABEL, bar.unit_label.clone(), false)];
+                    if bar.second_unit.is_some() {
+                        fields.push((item::SECOND_LABEL, bar.second_unit_label.clone(), true));
+                    }
+                    for (label, mut text, second) in fields {
+                        ui.label(label);
+                        let resp = ui.text_edit_singleline(&mut text);
+                        named(&resp, egui::WidgetType::TextEdit, label);
+                        if resp.changed() {
+                            edit(state, false, &|b| {
+                                if second {
+                                    b.second_unit_label = text.clone();
+                                } else {
+                                    b.unit_label = text.clone();
+                                }
+                            });
+                        }
+                        ui.end_row();
+                    }
+                }
+                let places = &UnitPosition::ALL;
+                let name = BarPick::UnitPosition.name();
+                if let Some(p) = combo(
+                    ui,
+                    "atlas-bar-unit-place",
+                    name,
+                    places,
+                    UnitPosition::label,
+                    bar.unit_position,
+                ) {
+                    edit(state, true, &|b| b.unit_position = p);
+                }
+                if let Some(v) = number(ui, item::GAP, bar.unit_gap, ScaleBarItem::GAPS, " mm") {
+                    edit(state, false, &|b| b.unit_gap = v);
+                }
+            });
+        text_grid(ui, state, id, TextPart::Units, &bar.unit_style);
+    });
+    section(BarPage::Divisions).show(ui, |ui| {
+        egui::Grid::new("atlas-bar-divisions")
+            .num_columns(2)
+            .show(ui, |ui| {
+                for (label, value, range, sub) in [
+                    (
+                        item::DIVISIONS,
+                        bar.divisions,
+                        ScaleBarItem::DIVISIONS,
+                        false,
+                    ),
+                    (
+                        item::SUBDIVISIONS,
+                        bar.subdivisions,
+                        ScaleBarItem::SUBDIVISIONS,
+                        true,
+                    ),
+                ] {
+                    ui.label(label);
+                    let mut v = value;
+                    let resp = ui.add(egui::DragValue::new(&mut v).range(range).speed(0.1));
+                    named(&resp, egui::WidgetType::DragValue, label);
+                    if resp.changed() {
+                        edit(state, false, &|b| {
+                            if sub {
+                                b.subdivisions = v;
+                            } else {
+                                b.divisions = v;
+                            }
+                        });
+                    }
+                    ui.end_row();
+                }
+                let all = &vale_store::DivisionSpacing::ALL;
+                let label = vale_store::DivisionSpacing::label;
+                if let Some(v) = combo(
+                    ui,
+                    "atlas-bar-spacing",
+                    item::SPACING,
+                    all,
+                    label,
+                    bar.spacing,
+                ) {
+                    edit(state, true, &|b| b.spacing = v);
+                }
+                if let Some(on) = check(ui, item::BEFORE_ZERO, bar.before_zero) {
+                    edit(state, true, &|b| b.before_zero = on);
+                }
+                let fits = &ScaleFit::ALL;
+                if let Some(f) = combo(
+                    ui,
+                    "atlas-bar-fit",
+                    BarPick::Fit.name(),
+                    fits,
+                    ScaleFit::label,
+                    bar.fit,
+                ) {
+                    edit(state, true, &|b| b.fit = f);
+                }
+                if bar.fit == ScaleFit::AdjustDivisionValue {
+                    return;
+                }
+                let auto = bar.division_value.is_none();
+                if let Some(on) = check(ui, item::AUTO_VALUE, auto) {
+                    let drawn = atlas::bar_rows(state, id);
+                    let value = |i: usize| drawn.get(i).map(|r| r.value);
+                    let (first, second) = (value(0).unwrap_or(1.0), value(1));
+                    edit(state, true, &|b| {
+                        b.division_value = (!on).then_some(first);
+                        b.second_division_value = if on { None } else { b.second_unit.and(second) };
+                    });
+                }
+                if auto {
+                    return;
+                }
+                let rows = [
+                    (
+                        Some(bar.unit),
+                        bar.division_value,
+                        item::DIVISION_VALUE,
+                        false,
+                    ),
+                    (
+                        bar.second_unit,
+                        bar.second_division_value,
+                        item::SECOND_VALUE,
+                        true,
+                    ),
+                ];
+                for (unit, value, label, second) in rows {
+                    let Some(unit) = unit else {
+                        continue;
+                    };
+                    let suffix = format!(" {}", unit.abbreviation());
+                    let shown = value.unwrap_or(1.0);
+                    if let Some(v) = number(ui, label, shown, 1e-6..=1e9, &suffix) {
+                        edit(state, false, &|b| {
+                            if second {
+                                b.second_division_value = Some(v);
+                            } else {
+                                b.division_value = Some(v);
+                            }
+                        });
+                    }
+                }
+            });
+    });
+    section(BarPage::Bar).show(ui, |ui| {
+        egui::Grid::new("atlas-bar-bar")
+            .num_columns(2)
+            .show(ui, |ui| {
+                let kind = bar.kind;
+                if kind != ScaleBarKind::Line
+                    && let Some(v) = number(
+                        ui,
+                        item::BAR_HEIGHT,
+                        bar.bar_height,
+                        ScaleBarItem::BAR_HEIGHTS,
+                        " mm",
+                    )
+                {
+                    edit(state, false, &|b| b.bar_height = v);
+                }
+                let fills: &[(&str, bool)] = match kind {
+                    ScaleBarKind::Alternating | ScaleBarKind::DoubleAlternating => {
+                        &[(item::FILL_1, true), (item::FILL_2, false)]
+                    }
+                    ScaleBarKind::SingleDivision => &[(item::FILL, true)],
+                    ScaleBarKind::Hollow => &[(item::FILL, false)],
+                    ScaleBarKind::SteppedLine | ScaleBarKind::Line => &[],
+                };
+                for &(label, first) in fills {
+                    let fill = if first { &bar.fill1 } else { &bar.fill2 };
+                    fill_rows(ui, state, id, label, !first, fill, bar.outline);
+                }
+                let line = matches!(kind, ScaleBarKind::SteppedLine | ScaleBarKind::Line);
+                let label = if line {
+                    item::LINE_COLOR
+                } else {
+                    item::OUTLINE
+                };
+                if let Some(c) = color(ui, label, bar.outline) {
+                    edit(state, false, &|b| b.outline = c);
+                }
+                if let Some(v) = number(
+                    ui,
+                    item::LINE_WIDTH,
+                    bar.line_width,
+                    ScaleBarItem::LINE_WIDTHS,
+                    " pt",
+                ) {
+                    edit(state, false, &|b| b.line_width = v);
+                }
+            });
+    });
+    let freqs = &TickFrequency::ALL;
+    let places = &ScalePosition::ALL;
+    section(BarPage::Marks).show(ui, |ui| {
+        egui::Grid::new("atlas-bar-marks")
+            .num_columns(2)
+            .show(ui, |ui| {
+                let name = BarPick::MarkFrequency.name();
+                if let Some(f) = combo(
+                    ui,
+                    "atlas-bar-mark-freq",
+                    name,
+                    freqs,
+                    TickFrequency::label,
+                    bar.mark_frequency,
+                ) {
+                    edit(state, true, &|b| b.mark_frequency = f);
+                }
+                if let Some(p) = combo(
+                    ui,
+                    "atlas-bar-mark-place",
+                    item::POSITION,
+                    places,
+                    item::position_name,
+                    bar.mark_position,
+                ) {
+                    edit(state, true, &|b| b.mark_position = p);
+                }
+                let range = ScaleBarItem::MARK_HEIGHTS;
+                if let Some(v) = number(
+                    ui,
+                    item::DIVISION_HEIGHT,
+                    bar.division_mark_height,
+                    range.clone(),
+                    " mm",
+                ) {
+                    edit(state, false, &|b| b.division_mark_height = v);
+                }
+                if let Some(v) = number(
+                    ui,
+                    item::SUBDIVISION_HEIGHT,
+                    bar.subdivision_mark_height,
+                    range,
+                    " mm",
+                ) {
+                    edit(state, false, &|b| b.subdivision_mark_height = v);
+                }
+            });
+    });
+    section(BarPage::Numbers).show(ui, |ui| {
+        egui::Grid::new("atlas-bar-numbers")
+            .num_columns(2)
+            .show(ui, |ui| {
+                let name = BarPick::NumberFrequency.name();
+                if let Some(f) = combo(
+                    ui,
+                    "atlas-bar-number-freq",
+                    name,
+                    freqs,
+                    TickFrequency::label,
+                    bar.number_frequency,
+                ) {
+                    edit(state, true, &|b| b.number_frequency = f);
+                }
+                if let Some(p) = combo(
+                    ui,
+                    "atlas-bar-number-place",
+                    item::POSITION,
+                    places,
+                    item::position_name,
+                    bar.number_position,
+                ) {
+                    edit(state, true, &|b| b.number_position = p);
+                }
+                if let Some(v) = number(ui, item::GAP, bar.number_gap, ScaleBarItem::GAPS, " mm") {
+                    edit(state, false, &|b| b.number_gap = v);
+                }
+                ui.label(BarPick::Decimals.name());
+                let text =
+                    |d: Option<u32>| d.map_or(item::AUTO_DECIMALS.to_string(), |d| d.to_string());
+                egui::ComboBox::from_id_salt("atlas-bar-decimals")
+                    .selected_text(text(bar.decimals))
+                    .show_ui(ui, |ui| {
+                        let all = std::iter::once(None).chain(ScaleBarItem::DECIMALS.map(Some));
+                        for d in all {
+                            if ui.selectable_label(d == bar.decimals, text(d)).clicked() {
+                                edit(state, true, &|b| b.decimals = d);
+                            }
+                        }
+                    });
+                ui.end_row();
+                if let Some(on) = check(ui, item::THOUSANDS, bar.thousands) {
+                    edit(state, true, &|b| b.thousands = on);
+                }
+                if let Some(on) = check(ui, item::SHOW_ZERO, bar.zero_label) {
+                    edit(state, true, &|b| b.zero_label = on);
+                }
+            });
+        text_grid(ui, state, id, TextPart::Numbers, &bar.number_style);
+    });
 }

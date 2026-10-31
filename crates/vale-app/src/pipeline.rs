@@ -1445,8 +1445,8 @@ impl Pipeline {
         })
     }
 
-    /// A whole page in points: the paper, then each frame from the bottom
-    /// frame to the top frame.
+    /// A whole page in points: the paper, each frame from the bottom frame to
+    /// the top frame, and then the furniture.
     pub fn compose_page(
         &mut self,
         doc: &Document,
@@ -1469,8 +1469,123 @@ impl Pipeline {
             let composed = self.compose_frame(doc, page, frame, target, fonts, quality, None)?;
             list.items.extend(composed.list.items);
         }
+        for rec in &page.furniture {
+            let items = furniture::items(self, doc, rec, target, fonts, furniture::Purpose::Export);
+            list.items.extend(items);
+        }
         Ok(list)
     }
+}
+
+/// The scale denominator that the rules of the layers of a frame see: the
+/// scale at the center of the frame.
+pub(crate) fn frame_rule_scale(projection: &Projection, frame: &FrameRecord) -> f64 {
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let vt = atlas::frame_transform(projection, frame, target);
+    let p = projection.inverse(vt.view.center).unwrap_or(frame.center);
+    let local = projection.local_scale(p).unwrap_or(1.0);
+    scale_denominator(1.0 / (vt.view.scale * local))
+}
+
+/// The items of a legend swatch of a rule in `rect`, in target points: a
+/// rectangle for a polygon layer, a zigzag for a line layer, and a point at
+/// the middle for a point layer. An expression draws its fallback. A brush
+/// stroke draws as a solid stroke, and a scatter fill draws one symbol.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn swatch(
+    doc: &Document,
+    entry: &LayerEntry,
+    layer: &Layer,
+    kind: GeometryKind,
+    rule: &vale_style::Rule,
+    rect: Rect,
+    unit: f64,
+    projection: &Projection,
+) -> Vec<Item> {
+    let c = rect.center();
+    let ring = vec![
+        Point::new(rect.x0, rect.y0),
+        Point::new(rect.x1, rect.y0),
+        Point::new(rect.x1, rect.y1),
+        Point::new(rect.x0, rect.y1),
+        Point::new(rect.x0, rect.y0),
+    ];
+    let zigzag = (0..=3)
+        .map(|i| {
+            let y = if i % 2 == 0 { rect.y1 } else { rect.y0 };
+            Point::new(rect.x0 + rect.width() * f64::from(i) / 3.0, y)
+        })
+        .collect();
+    let feature = PageFeature {
+        index: usize::MAX,
+        points: vec![c],
+        lines: match kind {
+            GeometryKind::Polygon => vec![ring.clone()],
+            GeometryKind::Line => vec![zigzag],
+            GeometryKind::Point => vec![],
+        },
+        rings: vec![ring],
+        bbox: rect,
+    };
+    let pl = PageLayer {
+        entry: Cow::Borrowed(entry),
+        layer,
+        kind,
+        features: vec![feature],
+        scale: 0.0,
+    };
+    let vt = ViewTransform::new(
+        View {
+            center: Point::ZERO,
+            scale: 1.0,
+            rotation: 0.0,
+        },
+        rect.width(),
+        rect.height(),
+    );
+    let mut scatter = ScatterCache::default();
+    let mut sd = SymbolDraw {
+        symbols: doc.symbols(),
+        scatter: &mut scatter,
+        projection,
+        vt: &vt,
+        area: rect,
+        scale: 0.0,
+        unit,
+        radius: 1.0,
+        view: None,
+        layer_count: 0,
+        placed: Vec::new(),
+    };
+    let mut list = DisplayList::new(rect.x1, rect.y1);
+    for (k, symbolizer) in rule.symbolizers.iter().enumerate() {
+        let paint = match symbolizer.fallback() {
+            Some(Paint::Stroke(s)) if s.kind == StrokeKind::Brush => Paint::Stroke(Stroke {
+                kind: StrokeKind::Solid,
+                ..s
+            }),
+            Some(Paint::Scatter {
+                symbol, size, tint, ..
+            }) if kind == GeometryKind::Polygon => {
+                let size = (size * unit).min(rect.height());
+                let a = symbol_affine(c, size, 0.0);
+                sd.push(&mut list, &symbol, vec![(0, a, None)], layer.id, tint);
+                continue;
+            }
+            Some(paint) => paint,
+            None => continue,
+        };
+        let batch = Batch {
+            order: (0, k),
+            paint,
+            features: vec![0],
+        };
+        draw_batch(&mut list, &pl, &batch, &mut sd);
+    }
+    list.items
 }
 
 /// The box of the shape of a frame, in target points.

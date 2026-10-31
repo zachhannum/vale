@@ -2,18 +2,24 @@ mod common;
 
 use std::path::Path;
 
-use kurbo::Point;
+use kurbo::{Point, Shape};
 use vale_app::atlas::{
     FrameTarget, PT_PER_MM, auto_graticule_interval, coord_text, frame_transform,
     graticule_interval, new_frame,
 };
 use vale_app::document::Document;
 use vale_app::edge_labels::{EdgeLabel, Side, edge_labels, outside_reach, quads_overlap};
+use vale_app::furniture::{self, Purpose};
 use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{PAPER, Pipeline, Quality, fonts};
+use vale_app::scale_bar;
 use vale_render::{FillRule, Item, render_pixmap, render_rgba};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{CoordFormat, EdgeOrientation, FrameId, FrameShape, PageId, PageUnits};
+use vale_store::{
+    CoordFormat, EdgeOrientation, FrameId, FrameShape, Furniture, FurnitureId, FurnitureText,
+    LegendEntry, LegendItem, NorthArrowItem, PageId, PageUnits, ScaleBarItem, ScaleBarKind,
+    ScaleFit, ScalePosition, ScaleUnit, TextCase, TextItem, TickFrequency,
+};
 use vale_style::expr::{Filter, Property};
 use vale_style::{
     Color, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style,
@@ -1658,4 +1664,553 @@ fn manual_edge_label_pictures() {
             .save(path)
             .unwrap();
     }
+}
+
+/// A document with one layer for each GeoJSON geometry, named by its name.
+fn furniture_doc(layers: &[(&str, &str)]) -> (Document, Vec<vale_store::LayerId>) {
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let mut ids = Vec::new();
+    for (name, g) in layers {
+        let text = format!(
+            r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{g}}}]}}"#
+        );
+        let imported = vale_import::geojson::read_str(name, &text).unwrap();
+        ids.extend(doc.add_imported(imported, None));
+    }
+    (doc, ids)
+}
+
+const POLYGON: &str = r#"{"type":"Polygon","coordinates":[[[0,0],[40,0],[40,40],[0,40],[0,0]]]}"#;
+const LINE: &str = r#"{"type":"LineString","coordinates":[[-40,-40],[-10,-10]]}"#;
+const POINT: &str = r#"{"type":"Point","coordinates":[20,-20]}"#;
+
+/// A frame of map 0 on page 0.
+fn first_frame(doc: &mut Document, pipeline: &mut Pipeline) -> FrameId {
+    let page = doc.project.atlas.pages[0].id;
+    frame_on(doc, pipeline, page)
+}
+
+/// Adds an item of furniture to page 0.
+fn add_item(doc: &mut Document, rect: [f64; 4], item: Furniture) -> FurnitureId {
+    let page = doc.project.atlas.pages[0].id;
+    doc.project.atlas.add_furniture(page, rect, item).unwrap()
+}
+
+/// The items of one item of furniture in page points.
+fn furniture_items(
+    doc: &Document,
+    pipeline: &mut Pipeline,
+    id: FurnitureId,
+    purpose: Purpose,
+) -> Vec<Item> {
+    let rec = doc.project.atlas.furniture(id).unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let mut f = fonts().unwrap();
+    furniture::items(pipeline, doc, rec, target, &mut f, purpose)
+}
+
+fn texts(items: &[Item]) -> Vec<String> {
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(run) => Some(run.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_legend_lists_the_visible_rules_with_their_symbols() {
+    let (mut doc, ids) = furniture_doc(&[
+        ("Land", POLYGON),
+        ("Rivers", LINE),
+        ("Roads", LINE),
+        ("Towns", POINT),
+    ]);
+    let [land, rivers, roads, towns] = ids[..] else {
+        panic!("{ids:?}")
+    };
+    let (green, tan, blue) = (
+        Color::rgb(20, 160, 40),
+        Color::rgb(210, 180, 120),
+        Color::rgb(10, 20, 220),
+    );
+    let fill = |name: &str, color: Color| {
+        Rule::new(
+            name,
+            vec![Symbolizer::Fill {
+                color: Property::constant(color),
+            }],
+        )
+    };
+    let mut swamp = fill("Swamp", Color::rgb(90, 90, 40));
+    swamp.max_scale = Some(1000.0);
+    doc.entry_mut(land).unwrap().style.style = Style {
+        rules: vec![fill("Forest", green), fill("Desert", tan), swamp],
+    };
+    doc.entry_mut(rivers).unwrap().style.style = Style {
+        rules: vec![Rule::new(
+            "Default",
+            vec![Symbolizer::Stroke(StrokeSymbolizer::constant(
+                Stroke::solid(blue, 2.0),
+            ))],
+        )],
+    };
+    let mut pipeline = Pipeline::new();
+    let frame = first_frame(&mut doc, &mut pipeline);
+    let map = doc.first_map();
+    assert!(doc.set_shown(map, towns, false));
+    let mut legend = LegendItem {
+        frame: Some(frame),
+        title: "Legend".to_string(),
+        title_style: FurnitureText {
+            case: TextCase::Upper,
+            ..FurnitureText::sized(14.0)
+        },
+        ..LegendItem::default()
+    };
+    let rename = LegendEntry {
+        name: Some("Big rivers".to_string()),
+        hidden: false,
+    };
+    legend
+        .entries
+        .insert((rivers, "Default".to_string()), rename);
+    let hide = LegendEntry {
+        name: None,
+        hidden: true,
+    };
+    legend.entries.insert((roads, "Default".to_string()), hide);
+    let id = add_item(
+        &mut doc,
+        [20.0, 20.0, 120.0, 120.0],
+        Furniture::Legend(legend.clone()),
+    );
+
+    // The rows are from the top layer down, with the hidden rows, and with
+    // no row for a layer that the map does not show or a rule out of scale.
+    let record = doc.project.atlas.frame(frame).unwrap().clone();
+    let projection = pipeline.projection(&doc, map).unwrap();
+    let rows = furniture::legend_rows(&doc, projection, &record, &legend);
+    let rows: Vec<_> = (rows.iter())
+        .map(|r| (r.label.as_str(), r.rule.as_str(), r.hidden))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("Roads", "Default", true),
+            ("Big rivers", "Default", false),
+            ("Forest", "Forest", false),
+            ("Desert", "Desert", false),
+        ]
+    );
+
+    // The title has the style of the title, and the entries the style of
+    // the entries.
+    let items = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
+    assert_eq!(texts(&items), ["LEGEND", "Big rivers", "Forest", "Desert"]);
+    let sizes: Vec<f32> = (items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(run) => Some(run.font_size),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sizes, [14.0, 10.0, 10.0, 10.0]);
+    let has = |want: Color, fill: bool| {
+        items.iter().any(|i| match i {
+            Item::Fill { color, .. } => fill && *color == want,
+            Item::Stroke { color, .. } => !fill && *color == want,
+            _ => false,
+        })
+    };
+    assert!(has(green, true) && has(tan, true) && has(blue, false));
+}
+
+#[test]
+fn the_scale_bar_is_true_for_any_radius() {
+    for radius in [1737.4, 6371.0, 100_000.0] {
+        let (mut doc, _) = furniture_doc(&[]);
+        doc.project.world.radius_km = radius;
+        let map = doc.first_map();
+        doc.set_projection(
+            map,
+            ProjectionSpec::new(ProjectionKind::Equirectangular, 0.0, 0.0),
+        );
+        let mut pipeline = Pipeline::new();
+        let frame = first_frame(&mut doc, &mut pipeline);
+        let record = doc.project.atlas.frame_mut(frame).unwrap();
+        record.center = [0.0, 0.0];
+        record.scale = 5e6;
+        let bar = ScaleBarItem {
+            frame: Some(frame),
+            second_unit: Some(ScaleUnit::Miles),
+            ..ScaleBarItem::default()
+        };
+        let rect = [20.0, 150.0, 90.0, 170.0];
+        let id = add_item(&mut doc, rect, Furniture::ScaleBar(bar.clone()));
+
+        // On the equator of an equirectangular map, 1 mm at 1:5,000,000 is
+        // 5 km on the ground, at each radius.
+        let record = doc.project.atlas.frame(frame).unwrap().clone();
+        let projection = pipeline.projection(&doc, map).unwrap();
+        let km_per_mm = furniture::scale_at_center(projection, &record, radius).unwrap();
+        assert!((km_per_mm - 5.0).abs() < 1e-3, "{radius}: {km_per_mm}");
+
+        // The kilometers and the miles are both true, and the item draws the
+        // same bar.
+        let mut f = fonts().unwrap();
+        let [x0, y0, x1, y1] = rect.map(|v| v * PT_PER_MM);
+        let points = kurbo::Rect::new(x0, y0, x1, y1);
+        let drawing = scale_bar::draw(&bar, points, 1.0, km_per_mm / PT_PER_MM, &mut f);
+        let [km, miles] = &drawing.rows[..] else {
+            panic!("{:?}", drawing.rows)
+        };
+        assert_eq!(
+            (km.unit, miles.unit),
+            (ScaleUnit::Kilometers, ScaleUnit::Miles)
+        );
+        for row in [km, miles] {
+            let ground = (row.end - row.zero) / PT_PER_MM * km_per_mm;
+            let want = f64::from(row.divisions) * row.value * row.unit.km();
+            assert!((ground - want).abs() < 1e-6 * want, "{radius} {row:?}");
+            let last = &row.numbers.last().unwrap().0;
+            let value: f64 = last.replace(',', "").parse().unwrap();
+            assert_eq!(value, f64::from(row.divisions) * row.value);
+        }
+        assert!(
+            drawing.bounds.x1 <= rect[2] * PT_PER_MM,
+            "{:?}",
+            drawing.bounds
+        );
+        let items = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
+        assert_eq!(texts(&items), texts(&drawing.items));
+        let outline = |items: &[Item]| {
+            (items.iter())
+                .find_map(|i| match i {
+                    Item::Stroke { path, .. } => Some(path.bounding_box()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(outline(&items), outline(&drawing.items));
+
+        // A larger scale denominator has more ground in each millimeter.
+        doc.project.atlas.frame_mut(frame).unwrap().scale = 1e7;
+        let record = doc.project.atlas.frame(frame).unwrap().clone();
+        let projection = pipeline.projection(&doc, map).unwrap();
+        let doubled = furniture::scale_at_center(projection, &record, radius).unwrap();
+        assert!((doubled - 10.0).abs() < 1e-3, "{doubled}");
+    }
+}
+
+/// The scale bar of the atlas mockup: a line with miles above and
+/// kilometers below, at 1:3,500,000.
+fn mockup_bar() -> ScaleBarItem {
+    let upper = FurnitureText {
+        case: TextCase::Upper,
+        ..FurnitureText::sized(7.0)
+    };
+    ScaleBarItem {
+        kind: ScaleBarKind::Line,
+        unit: ScaleUnit::Miles,
+        second_unit: Some(ScaleUnit::Kilometers),
+        fit: ScaleFit::AdjustDivisions,
+        division_value: Some(30.0),
+        second_division_value: Some(60.0),
+        subdivisions: 2,
+        mark_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
+        number_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
+        division_mark_height: 1.5,
+        subdivision_mark_height: 1.5,
+        unit_style: upper,
+        ..ScaleBarItem::default()
+    }
+}
+
+#[test]
+fn the_scale_bar_of_the_mockup_has_its_numbers() {
+    let mut f = fonts().unwrap();
+    // 1:3,500,000 is 3.5 km to a millimeter.
+    let km_per_point = 3.5 / PT_PER_MM;
+    let rect = kurbo::Rect::new(0.0, 0.0, 100.0 * PT_PER_MM, 15.0 * PT_PER_MM);
+    let drawing = scale_bar::draw(&mockup_bar(), rect, 1.0, km_per_point, &mut f);
+    let numbers = |row: &scale_bar::BarRow| {
+        let n = row.numbers.iter().map(|n| n.0.as_str());
+        n.collect::<Vec<_>>().join(" ")
+    };
+    let [miles, km] = &drawing.rows[..] else {
+        panic!("{:?}", drawing.rows)
+    };
+    assert_eq!(numbers(miles), "0 15 30 60 90 120 150");
+    assert_eq!(numbers(km), "0 30 60 120 180 240");
+    let all = texts(&drawing.items);
+    assert!(all.contains(&"MILES".to_string()) && all.contains(&"KILOMETERS".to_string()));
+    // Each unit label is after the numbers of its unit.
+    let x = |text: &str| {
+        (drawing.items.iter())
+            .find_map(|i| match i {
+                Item::Glyphs(run) if run.text == text => Some(run.glyphs[0].1.translation()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert!(x("MILES").x > miles.numbers.last().unwrap().1);
+    assert!(x("KILOMETERS").x > km.numbers.last().unwrap().1);
+    assert!(x("MILES").y < x("KILOMETERS").y);
+}
+
+/// Saves each kind of scale bar and the bar of the mockup to
+/// `target/app/scalebars.png` for a person to look at.
+#[test]
+#[ignore = "manual"]
+fn manual_scale_bar_pictures() {
+    if std::env::var_os("VALE_SCREENSHOTS").is_none() {
+        return;
+    }
+    let mut f = fonts().unwrap();
+    let (w, h) = (110.0 * PT_PER_MM, 16.0 * PT_PER_MM);
+    let mut bars: Vec<(ScaleBarItem, f64)> = Vec::new();
+    for kind in ScaleBarKind::ALL {
+        let bar = ScaleBarItem {
+            kind,
+            subdivisions: 4,
+            ..ScaleBarItem::default()
+        };
+        bars.push((bar, 3.5));
+    }
+    bars.push((mockup_bar(), 3.5));
+    let double = ScaleBarItem {
+        second_unit: Some(ScaleUnit::Miles),
+        before_zero: true,
+        subdivisions: 2,
+        number_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
+        unit_label_style: vale_store::UnitLabelStyle::Abbreviation,
+        ..ScaleBarItem::default()
+    };
+    bars.push((double, 3.5));
+    let centered = ScaleBarItem {
+        kind: ScaleBarKind::Hollow,
+        bar_height: 3.0,
+        number_position: ScalePosition::Center,
+        mark_frequency: TickFrequency::None,
+        unit_position: vale_store::UnitPosition::BelowCenter,
+        number_style: FurnitureText {
+            halo: true,
+            ..FurnitureText::sized(6.0)
+        },
+        ..ScaleBarItem::default()
+    };
+    bars.push((centered, 3.5));
+    let hatched = |kind, background| vale_store::FillPattern {
+        kind,
+        background,
+        ..vale_store::FillPattern::default()
+    };
+    let hatch = ScaleBarItem {
+        subdivisions: 4,
+        fill1: hatched(vale_store::FillKind::Hatch, None),
+        ..ScaleBarItem::default()
+    };
+    bars.push((hatch, 3.5));
+    let cross = ScaleBarItem {
+        kind: ScaleBarKind::DoubleAlternating,
+        bar_height: 3.0,
+        fill1: hatched(vale_store::FillKind::CrossHatch, Some([0xf2, 0xe6, 0xc8])),
+        ..ScaleBarItem::default()
+    };
+    bars.push((cross, 3.5));
+    let doubling = ScaleBarItem {
+        spacing: vale_store::DivisionSpacing::Doubling,
+        divisions: 5,
+        subdivisions: 2,
+        before_zero: true,
+        ..ScaleBarItem::default()
+    };
+    bars.push((doubling, 3.5));
+    let mut list = vale_render::DisplayList::new(w, h * bars.len() as f64);
+    list.items.push(Item::Fill {
+        path: kurbo::Rect::new(0.0, 0.0, w, h * bars.len() as f64).to_path(0.1),
+        color: Color::rgb(255, 255, 255),
+        rule: FillRule::NonZero,
+    });
+    for (k, (bar, km_per_mm)) in bars.iter().enumerate() {
+        let rect = kurbo::Rect::new(0.0, k as f64 * h, w, (k + 1) as f64 * h);
+        let drawing = scale_bar::draw(bar, rect, 1.0, km_per_mm / PT_PER_MM, &mut f);
+        list.items.extend(drawing.items);
+    }
+    let px = render_rgba(&list, 4.0).unwrap();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/app/scalebars.png");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    image::RgbaImage::from_raw(px.width as u32, px.height as u32, px.data)
+        .unwrap()
+        .save(path)
+        .unwrap();
+}
+
+#[test]
+fn the_north_arrow_follows_the_rotation() {
+    let (mut doc, _) = furniture_doc(&[]);
+    let mut pipeline = Pipeline::new();
+    let map = doc.first_map();
+    let frame = first_frame(&mut doc, &mut pipeline);
+    let north = |doc: &Document, pipeline: &mut Pipeline| {
+        let record = doc.project.atlas.frame(frame).unwrap().clone();
+        let projection = pipeline.projection(doc, map).unwrap();
+        furniture::north(projection, &record).unwrap()
+    };
+    // A small frame near the center of the map.
+    let record = doc.project.atlas.frame_mut(frame).unwrap();
+    record.scale = 1e6;
+    record.center = [10.0, 20.0];
+    let (straight, variation) = north(&doc, &mut pipeline);
+    assert!(variation < 1.0, "{variation}");
+    doc.project.atlas.frame_mut(frame).unwrap().rotation = 30.0;
+    let (turned, _) = north(&doc, &mut pipeline);
+    assert!(
+        (turned - straight - 30.0).abs() < 1e-6,
+        "{straight} {turned}"
+    );
+
+    // A frame of the whole world has a different north at its edges, so
+    // the arrow is not in the export, and the screen shows a dashed box.
+    let arrow = NorthArrowItem {
+        frame: Some(frame),
+        hide_if_varies: true,
+        ..NorthArrowItem::default()
+    };
+    let id = add_item(
+        &mut doc,
+        [20.0, 20.0, 50.0, 50.0],
+        Furniture::NorthArrow(arrow),
+    );
+    let shown = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
+    assert_eq!(texts(&shown), ["N"]);
+    let mut page = doc.project.atlas.pages[0].clone();
+    page.frames.clear();
+    let projection = pipeline.projection(&doc, map).unwrap();
+    let whole = new_frame(&page, &doc.project.atlas.maps[0], projection);
+    let record = doc.project.atlas.frame_mut(frame).unwrap();
+    record.scale = whole.scale;
+    record.center = [0.0, 0.0];
+    record.rotation = 0.0;
+    let (_, variation) = north(&doc, &mut pipeline);
+    assert!(variation > furniture::MAX_VARIATION, "{variation}");
+    let record = doc.project.atlas.frame_mut(frame).unwrap();
+    record.center = [60.0, 30.0];
+    let (_, variation) = north(&doc, &mut pipeline);
+    assert!(variation > furniture::MAX_VARIATION, "{variation}");
+    assert!(furniture_items(&doc, &mut pipeline, id, Purpose::Export).is_empty());
+    let screen = furniture_items(&doc, &mut pipeline, id, Purpose::Screen);
+    assert!(matches!(screen[..], [Item::Stroke { .. }]));
+}
+
+#[test]
+fn furniture_stays_vector_and_text_in_pdf() {
+    let (mut doc, _) = furniture_doc(&[("Land", POLYGON), ("Rivers", LINE), ("Towns", POINT)]);
+    let mut pipeline = Pipeline::new();
+    let frame = first_frame(&mut doc, &mut pipeline);
+    let text = TextItem {
+        text: "A world".to_string(),
+        ..TextItem::default()
+    };
+    let legend = LegendItem {
+        frame: Some(frame),
+        title: "Legend".to_string(),
+        ..LegendItem::default()
+    };
+    let bar = ScaleBarItem {
+        frame: Some(frame),
+        ..ScaleBarItem::default()
+    };
+    // The frame shows the whole world, where north varies.
+    let arrow = NorthArrowItem {
+        frame: Some(frame),
+        hide_if_varies: false,
+        ..NorthArrowItem::default()
+    };
+    let ids = [
+        add_item(&mut doc, [20.0, 20.0, 120.0, 40.0], Furniture::Text(text)),
+        add_item(
+            &mut doc,
+            [20.0, 50.0, 120.0, 120.0],
+            Furniture::Legend(legend),
+        ),
+        add_item(
+            &mut doc,
+            [20.0, 150.0, 90.0, 170.0],
+            Furniture::ScaleBar(bar),
+        ),
+        add_item(
+            &mut doc,
+            [200.0, 20.0, 230.0, 50.0],
+            Furniture::NorthArrow(arrow),
+        ),
+    ];
+    let mut all = Vec::new();
+    for id in ids {
+        let items = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
+        assert!(!texts(&items).is_empty(), "{id:?}");
+        all.extend(items);
+    }
+    assert!(
+        (all.iter())
+            .all(|i| matches!(i, Item::Fill { .. } | Item::Stroke { .. } | Item::Glyphs(_))),
+        "{:?}",
+        all.iter().map(describe).collect::<Vec<_>>()
+    );
+
+    // The page draws the furniture over the frames.
+    let page = doc.project.atlas.pages[0].clone();
+    let mut f = fonts().unwrap();
+    let list = pipeline
+        .compose_page(&doc, &page, &mut f, Quality::Final)
+        .unwrap();
+    let tail = &list.items[list.items.len() - all.len()..];
+    assert_eq!(
+        tail.iter().map(describe).collect::<Vec<_>>(),
+        all.iter().map(describe).collect::<Vec<_>>()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("page.pdf");
+    vale_app::atlas_export::export_pdf(&doc, vec![page], &path).unwrap();
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    assert!(pdf.contains("/BaseFont"));
+    assert!(!pdf.contains("/Subtype/Image"));
+}
+
+#[test]
+fn an_item_of_furniture_renders_to_an_image() {
+    let (mut doc, _) = furniture_doc(&[]);
+    let text = TextItem {
+        text: "A world".to_string(),
+        ..TextItem::default()
+    };
+    let id = add_item(&mut doc, [20.0, 20.0, 120.0, 40.0], Furniture::Text(text));
+    let rec = doc.project.atlas.furniture(id).unwrap().clone();
+    let mut f = fonts().unwrap();
+    let mut pipeline = Pipeline::new();
+    let (image, rect) =
+        furniture::render(&mut pipeline, &doc, &rec, &mut f, 2.0, Purpose::Screen).unwrap();
+    let m = furniture::RENDER_MARGIN_MM;
+    assert_eq!(
+        rect,
+        kurbo::Rect::new(20.0 - m, 20.0 - m, 120.0 + m, 40.0 + m)
+    );
+    let width = (rect.width() * PT_PER_MM * 2.0).round() as usize;
+    assert!(image.width.abs_diff(width) <= 1, "{} {width}", image.width);
+    assert!(image.data.chunks(4).any(|px| px[3] > 0));
+
+    // An arrow with no frame draws only on the screen.
+    let arrow = add_item(
+        &mut doc,
+        [20.0, 50.0, 50.0, 80.0],
+        Furniture::NorthArrow(NorthArrowItem::default()),
+    );
+    assert!(furniture_items(&doc, &mut pipeline, arrow, Purpose::Export).is_empty());
+    assert!(!furniture_items(&doc, &mut pipeline, arrow, Purpose::Screen).is_empty());
 }
