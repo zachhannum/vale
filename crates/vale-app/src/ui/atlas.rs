@@ -625,6 +625,8 @@ pub struct AtlasState {
     /// The page of the faces or of the cases of the grid labels, in place of
     /// the Grid labels page.
     pub grid_page: Option<GridPage>,
+    /// The panel shows the distance of each side of the border.
+    pub border_sides: bool,
     /// The panel of this selection and tab showed in the last frame.
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The page of the panel of the selected item of furniture.
@@ -755,6 +757,7 @@ impl Default for AtlasState {
             edge_styles: false,
             grid: None,
             grid_page: None,
+            border_sides: false,
             shown: None,
             item_page: None,
             bar_previews: HashMap::new(),
@@ -2987,11 +2990,31 @@ pub fn set_border_width(state: &mut AppState, id: FrameId, width: f64) {
 }
 
 /// Sets the distance of the border of a frame from its box, in
-/// millimeters, rounded to 0.5.
-pub fn set_border_distance(state: &mut AppState, id: FrameId, distance: f64) {
+/// millimeters, rounded to 0.5: of one side, in the order top, right,
+/// bottom, left, or of all sides for `None`.
+pub fn set_border_distance(state: &mut AppState, id: FrameId, side: Option<usize>, distance: f64) {
     if distance.is_finite() {
         let distance = stepped(distance, Border::DISTANCES, 0.5);
-        edit_border(state, id, |b| b.distance_mm = distance);
+        edit_border(state, id, |b| match side {
+            Some(i) => b.distances_mm[i % 4] = distance,
+            None => b.distances_mm = [distance; 4],
+        });
+    }
+}
+
+/// Whether the panel shows the distance of each side of the border of a
+/// frame: the user asked for it, or the sides differ.
+pub fn border_by_side(state: &AppState, b: &Border) -> bool {
+    let d = b.distances_mm;
+    state.atlas.border_sides || d.iter().any(|x| *x != d[0])
+}
+
+/// Shows or hides the distance of each side of the border of a frame. To
+/// hide them, all sides take the distance of the top.
+pub fn set_border_by_side(state: &mut AppState, id: FrameId, on: bool) {
+    state.atlas.border_sides = on;
+    if !on {
+        edit_border(state, id, |b| b.distances_mm = [b.distances_mm[0]; 4]);
     }
 }
 

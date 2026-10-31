@@ -62,6 +62,14 @@ pub const BORDER_COLOR: &str = "Border color";
 pub const SECOND_COLOR: &str = "Second color";
 pub const BORDER_WIDTH: &str = "Border width";
 pub const BORDER_DISTANCE: &str = "Border distance";
+pub const DISTANCE_BY_SIDE: &str = "Distance by side";
+/// The distance of each side of the border: top, right, bottom, left.
+pub const SIDE_DISTANCES: [&str; 4] = [
+    "Top distance",
+    "Right distance",
+    "Bottom distance",
+    "Left distance",
+];
 pub const BORDER_STROKE: &str = "Border stroke";
 pub const STROKE_COLOR: &str = "Stroke color";
 pub const STROKE_WIDTH: &str = "Stroke width";
@@ -1045,11 +1053,33 @@ fn border_rows(
     ) {
         atlas::set_border_width(state, id, w);
     }
-    let text = format!("{} mm", b.distance_mm);
-    let names = (BORDER_DISTANCE, BORDER_DISTANCE);
     let distances = range(Border::DISTANCES);
-    if let Some(d) = value_slider(ui, controls, names, b.distance_mm, distances, &text) {
-        atlas::set_border_distance(state, id, d);
+    let mut by_side = atlas::border_by_side(state, b);
+    if !by_side {
+        let d = b.distances_mm[0];
+        let text = format!("{d} mm");
+        let names = (BORDER_DISTANCE, BORDER_DISTANCE);
+        if let Some(d) = value_slider(ui, controls, names, d, distances, &text) {
+            atlas::set_border_distance(state, id, None, d);
+        }
+    }
+    if widgets::switch_row(
+        ui,
+        controls,
+        DISTANCE_BY_SIDE,
+        DISTANCE_BY_SIDE,
+        &mut by_side,
+    ) {
+        atlas::set_border_by_side(state, id, by_side);
+    }
+    if atlas::border_by_side(state, b) {
+        for (i, name) in SIDE_DISTANCES.into_iter().enumerate() {
+            let d = b.distances_mm[i];
+            let text = format!("{d} mm");
+            if let Some(d) = value_slider(ui, controls, (name, name), d, distances, &text) {
+                atlas::set_border_distance(state, id, Some(i), d);
+            }
+        }
     }
 
     let mut stroke = b.stroke;

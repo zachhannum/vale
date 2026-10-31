@@ -222,7 +222,7 @@ pub fn outside_reach(frame: &FrameRecord, fonts: &mut Fonts) -> f64 {
 }
 
 /// The rings of the shape of a frame, in target points.
-fn target_rings(frame: &FrameRecord, target: FrameTarget) -> Vec<Vec<Point>> {
+pub(crate) fn target_rings(frame: &FrameRecord, target: FrameTarget) -> Vec<Vec<Point>> {
     (frame.shape.rings().iter())
         .map(|r| {
             let points = r.iter().map(|&[x, y]| target.to_target(Point::new(x, y)));
@@ -344,7 +344,7 @@ fn intersect(a: Point, d: Vec2, c: Point, e: Vec2) -> Option<(f64, f64)> {
 }
 
 /// The even-odd rule over all rings.
-fn inside(p: Point, rings: &[Vec<Point>]) -> bool {
+pub(crate) fn inside(p: Point, rings: &[Vec<Point>]) -> bool {
     let mut odd = false;
     for ring in rings {
         for (i, &a) in ring.iter().enumerate() {

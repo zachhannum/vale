@@ -761,7 +761,7 @@ fn the_border_is_at_its_distance_outside_the_box_and_can_be_off() {
     frame.border.on = true;
     frame.border.color = red;
     frame.border.width_mm = 2.0;
-    frame.border.distance_mm = 8.0;
+    frame.border.distances_mm = [8.0; 4];
     let list = page_list(&doc, &mut pipeline);
     let band = fills_of(&list, red);
     assert_eq!(band.len(), 1);
@@ -921,6 +921,57 @@ fn the_reference_grid_labels_each_graticule_interval_in_the_band() {
 
     doc.project.atlas.frame_mut(id).unwrap().border.grid = false;
     assert!(texts(&page_list(&doc, &mut pipeline).items).is_empty());
+}
+
+#[test]
+fn a_part_of_the_shape_crosses_the_band_and_covers_it() {
+    let (mut doc, mut pipeline, id) = bordered();
+    let red = [200, 10, 20];
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    // A body from y 60 down, with a part that goes up to y 40 from x 80 to
+    // 120.
+    frame.shape = FrameShape::Polygon(vec![vec![
+        [40.0, 60.0],
+        [80.0, 60.0],
+        [80.0, 40.0],
+        [120.0, 40.0],
+        [120.0, 60.0],
+        [200.0, 60.0],
+        [200.0, 160.0],
+        [40.0, 160.0],
+    ]]);
+    frame.scale /= 3.0;
+    frame.graticule.interval = Some(10.0);
+    frame.border.on = true;
+    frame.border.color = red;
+    frame.border.stroke = true;
+    frame.border.grid = true;
+    // The band runs from y 52 to 54, under the part on the top.
+    frame.border.distances_mm = [-14.0, 8.0, 8.0, 8.0];
+    let list = page_list(&doc, &mut pipeline);
+    assert_eq!(pixel(&list, (60.0, 53.0)), red);
+    assert_eq!(pixel(&list, (160.0, 53.0)), red);
+    assert_ne!(
+        pixel(&list, (100.0, 53.0)),
+        red,
+        "the shape covers the band"
+    );
+    assert_eq!(
+        pixel(&list, (28.0, 100.0)),
+        [255, 255, 255],
+        "outside the band"
+    );
+    assert_eq!(pixel(&list, (31.0, 100.0)), red);
+
+    let pt = |mm: f64| mm * PT_PER_MM;
+    let runs = runs(&list.items);
+    let top: Vec<&(String, Point)> = runs.iter().filter(|(_, at)| at.y < pt(55.0)).collect();
+    assert!(!top.is_empty());
+    for (text, at) in &top {
+        let covered = at.x > pt(78.0) && at.x < pt(120.0);
+        assert!(!covered, "{text} at {at:?} is under the shape");
+    }
+    assert!(is_pdf(&list));
 }
 
 #[test]

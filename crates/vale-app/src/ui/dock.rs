@@ -24,6 +24,7 @@ use super::pad::atlas::{
     SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, WIDTH, custom_row,
     length_text, unit_name,
 };
+use super::pad::atlas::{DISTANCE_BY_SIDE, SIDE_DISTANCES};
 use super::pad::edge_labels::EDGE_LABELS;
 use super::pad::grid_labels::GRID_LABELS;
 use super::pad::{GRATICULE, NO_LAYERS};
@@ -463,9 +464,23 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             if let Some(v) = number(ui, BORDER_WIDTH, b.width_mm, Border::WIDTHS, " mm") {
                 atlas::set_border_width(state, id, v);
             }
-            let distances = Border::DISTANCES;
-            if let Some(v) = number(ui, BORDER_DISTANCE, b.distance_mm, distances, " mm") {
-                atlas::set_border_distance(state, id, v);
+            let by_side = atlas::border_by_side(state, b);
+            if !by_side {
+                let d = b.distances_mm[0];
+                if let Some(v) = number(ui, BORDER_DISTANCE, d, Border::DISTANCES, " mm") {
+                    atlas::set_border_distance(state, id, None, v);
+                }
+            }
+            if let Some(on) = check(ui, DISTANCE_BY_SIDE, by_side) {
+                atlas::set_border_by_side(state, id, on);
+            }
+            if by_side {
+                for (i, name) in SIDE_DISTANCES.into_iter().enumerate() {
+                    let d = b.distances_mm[i];
+                    if let Some(v) = number(ui, name, d, Border::DISTANCES, " mm") {
+                        atlas::set_border_distance(state, id, Some(i), v);
+                    }
+                }
             }
             if let Some(on) = check(ui, BORDER_STROKE, b.stroke) {
                 atlas::set_border_stroke(state, id, on);

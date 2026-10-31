@@ -1,24 +1,33 @@
 //! The border band around a map frame, its stroke, and the labels of its
 //! reference grid.
 
-use kurbo::{Affine, Point, Rect, Shape};
+use kurbo::{Affine, BezPath, Point, Rect, Shape, Vec2};
 use vale_labeler::Fonts;
 use vale_render::{FillRule, Item};
 use vale_sphere::{Projection, graticule_in};
 use vale_store::{BorderStyle, FrameRecord};
 
 use crate::atlas::{FrameTarget, PT_PER_MM, frame_transform, interval_at_scale};
+use crate::edge_labels::{inside, target_rings};
 use crate::furniture::{Painted, TextInk, rgb};
 use crate::pipeline::{frame_area, graticule_window};
 
 /// The inner and the outer edge of the band, in target points. The inner
-/// edge is the bounding box of the shape, grown by the distance.
+/// edge is the bounding box of the shape, moved out by the distance of each
+/// side. A side that moves past the opposite side stops at the middle.
 pub fn band_rects(frame: &FrameRecord, target: FrameTarget) -> (Rect, Rect) {
     let b = &frame.border;
-    let inner = frame_area(frame, target).inflate(
-        b.distance_mm * target.pts_per_mm,
-        b.distance_mm * target.pts_per_mm,
-    );
+    let area = frame_area(frame, target);
+    let [top, right, bottom, left] = b.distances_mm.map(|d| d * target.pts_per_mm);
+    let (mut x0, mut x1) = (area.x0 - left, area.x1 + right);
+    let (mut y0, mut y1) = (area.y0 - top, area.y1 + bottom);
+    if x0 > x1 {
+        (x0, x1) = ((x0 + x1) / 2.0, (x0 + x1) / 2.0);
+    }
+    if y0 > y1 {
+        (y0, y1) = ((y0 + y1) / 2.0, (y0 + y1) / 2.0);
+    }
+    let inner = Rect::new(x0, y0, x1, y1);
     let w = b.width_mm * target.pts_per_mm;
     (inner, inner.inflate(w, w))
 }
@@ -30,7 +39,8 @@ pub fn reach(frame: &FrameRecord) -> f64 {
     if !b.on {
         return 0.0;
     }
-    let band = (b.distance_mm + b.width_mm) * PT_PER_MM;
+    let distance = b.distances_mm.into_iter().fold(f64::NEG_INFINITY, f64::max);
+    let band = ((distance + b.width_mm) * PT_PER_MM).max(0.0);
     let stroke = if b.stroke { b.stroke_width / 2.0 } else { 0.0 };
     let labels = if b.grid { b.grid_text.size } else { 0.0 };
     band + stroke.max(labels)
@@ -62,8 +72,18 @@ pub fn items(
     if !b.on {
         return Vec::new();
     }
-    let mut out = Vec::new();
     let (inner, outer) = band_rects(frame, target);
+    // The shape covers the band where it crosses it.
+    let rings = target_rings(frame, target);
+    let mut clip = outer
+        .inflate(1.0, 1.0)
+        .union(frame_area(frame, target))
+        .to_path(0.1);
+    clip.extend(shape_path(&rings));
+    let mut out = vec![Item::PushClip {
+        path: clip,
+        rule: FillRule::EvenOdd,
+    }];
     let mut edges = outer.to_path(0.1);
     edges.extend(inner.to_path(0.1));
     let lines = Lines::new(projection, frame, target, outer);
@@ -107,10 +127,25 @@ pub fn items(
             round: false,
         });
     }
+    out.push(Item::PopClip);
     if b.grid {
-        out.extend(grid_labels(frame, &lines, inner, outer, unit, fonts).into_items());
+        let labels = grid_labels(frame, &lines, inner, outer, unit, &rings, fonts);
+        out.extend(labels.into_items());
     }
     out
+}
+
+/// A closed path through rings of target points.
+fn shape_path(rings: &[Vec<Point>]) -> BezPath {
+    let mut path = BezPath::new();
+    for ring in rings.iter().filter(|r| !r.is_empty()) {
+        path.move_to(ring[0]);
+        for p in &ring[1..] {
+            path.line_to(*p);
+        }
+        path.close_path();
+    }
+    path
 }
 
 /// One side of the band. The top and the bottom side hold the corners.
@@ -242,13 +277,14 @@ impl<'a> Lines<'a> {
 /// the bottom side, and a number at the middle of each interval of the
 /// parallels on the left and the right side. The letters go from the west,
 /// and the numbers go from the north. A piece too short for its label has
-/// no label.
+/// no label, and neither has a label that the shape covers.
 fn grid_labels(
     frame: &FrameRecord,
     lines: &Lines,
     inner: Rect,
     outer: Rect,
     unit: f64,
+    rings: &[Vec<Point>],
     fonts: &mut Fonts,
 ) -> Painted {
     let ink = TextInk::new(&frame.border.grid_text, unit, fonts);
@@ -271,6 +307,13 @@ fn grid_labels(
     let mut put = |text: &str, piece: &Piece, along: f64| {
         let m = fonts.measure(&ink.case.apply(text), &ink.style);
         if m.advance > along {
+            return;
+        }
+        // A label that the shape covers is not drawn.
+        let half = Vec2::new(m.advance / 2.0, m.ascent / 2.0);
+        let corners = [-1.0, 1.0]
+            .map(|sx| [-1.0, 1.0].map(|sy| piece.at + Vec2::new(sx * half.x, sy * half.y)));
+        if inside(piece.at, rings) || corners.iter().flatten().any(|c| inside(*c, rings)) {
             return;
         }
         let baseline = piece.at.y + (m.ascent - m.descent.abs()) / 2.0;

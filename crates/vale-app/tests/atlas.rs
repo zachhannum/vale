@@ -27,6 +27,7 @@ use vale_app::ui::pad::atlas::{
     STROKE_WIDTH as BORDER_STROKE_WIDTH, STYLE_FOR_THIS_MAP, WIDTH, custom_row, page_title,
     readout_text,
 };
+use vale_app::ui::pad::atlas::{DISTANCE_BY_SIDE, SIDE_DISTANCES};
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
     ORIENTATIONS, PLACES, SETS, SHOW_LABELS, SIDES, SIZE as EDGE_SIZE, STYLE as EDGE_STYLE,
@@ -1860,10 +1861,38 @@ fn the_border_and_grid_controls_work_with_a_finger() {
             );
         }
         let b = &frame(&h, 1).border;
-        assert!(b.width_mm > 5.0 && b.distance_mm > 15.0, "{size:?}: {b:?}");
+        let d = b.distances_mm[0];
+        assert!(b.width_mm > 5.0 && d > 15.0, "{size:?}: {b:?}");
+        assert_eq!(b.distances_mm, [d; 4], "{size:?}");
         assert_eq!((b.width_mm * 4.0).round() / 4.0, b.width_mm);
-        assert_eq!((b.distance_mm * 2.0).round() / 2.0, b.distance_mm);
+        assert_eq!((d * 2.0).round() / 2.0, d);
         check_controls(&h, "border");
+
+        // One side can go inside the box.
+        scroll_to(&mut h, DISTANCE_BY_SIDE);
+        assert!(control(&h, SIDE_DISTANCES[0]).is_none(), "{size:?}");
+        tap(&mut h, DISTANCE_BY_SIDE);
+        assert!(control(&h, BORDER_DISTANCE).is_none(), "{size:?}");
+        scroll_to(&mut h, SIDE_DISTANCES[0]);
+        let slider = control(&h, SIDE_DISTANCES[0]).unwrap();
+        tap_with(
+            &mut h,
+            slider.left_center() + vec2(30.0, 0.0),
+            Input::Finger,
+        );
+        let b = &frame(&h, 1).border;
+        assert!(b.distances_mm[0] < -50.0, "{size:?}: {b:?}");
+        assert_eq!(b.distances_mm[1..], [d; 3], "{size:?}");
+        for name in &SIDE_DISTANCES[1..] {
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{size:?}: {name}");
+        }
+        check_controls(&h, "distance by side");
+        // Off, all sides take the top distance.
+        scroll_up_to(&mut h, DISTANCE_BY_SIDE);
+        tap(&mut h, DISTANCE_BY_SIDE);
+        let b = &frame(&h, 1).border;
+        assert_eq!(b.distances_mm, [b.distances_mm[0]; 4], "{size:?}");
 
         scroll_to(&mut h, BORDER_STROKE);
         assert!(control(&h, BORDER_STROKE_WIDTH).is_none(), "{size:?}");
@@ -1951,7 +1980,8 @@ fn the_paper_the_border_and_the_grid_survive_a_close_and_an_open() {
     set_paper(st, [0xf3, 0xef, 0xdf]);
     set_border(st, id, true);
     set_border_style(st, id, vale_store::BorderStyle::Graduated);
-    set_border_distance(st, id, 12.3);
+    set_border_distance(st, id, None, 4.0);
+    set_border_distance(st, id, Some(0), -12.3);
     set_border_stroke(st, id, true);
     set_border_grid(st, id, true);
     edit_grid_text(st, id, true, |t| t.italic = true);
@@ -1966,7 +1996,7 @@ fn the_paper_the_border_and_the_grid_survive_a_close_and_an_open() {
     assert_eq!(doc.project.atlas.pages[0].paper, [0xf3, 0xef, 0xdf]);
     let f = doc.project.atlas.frame(id).unwrap();
     assert!(f.border.on && f.border.style == vale_store::BorderStyle::Graduated);
-    assert_eq!(f.border.distance_mm, 12.5);
+    assert_eq!(f.border.distances_mm, [-12.5, 4.0, 4.0, 4.0]);
     assert!(f.border.stroke && f.border.grid && f.border.grid_text.italic);
 }
 

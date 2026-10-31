@@ -176,8 +176,10 @@ pub struct Border {
     pub color2: Rgb,
     /// The width of the band in millimeters.
     pub width_mm: f64,
-    /// The distance in millimeters from the bounding box to the band.
-    pub distance_mm: f64,
+    /// The distance in millimeters from the bounding box to the band, at
+    /// the top, the right, the bottom, and the left. A negative distance
+    /// puts that side inside the box, and the shape covers the band there.
+    pub distances_mm: [f64; 4],
     /// A line on the inner and the outer edge of the band.
     pub stroke: bool,
     pub stroke_color: Rgb,
@@ -220,7 +222,7 @@ impl Border {
     /// The band widths in millimeters that the app offers.
     pub const WIDTHS: RangeInclusive<f64> = 0.25..=10.0;
     /// The distances in millimeters that the app offers.
-    pub const DISTANCES: RangeInclusive<f64> = 0.0..=30.0;
+    pub const DISTANCES: RangeInclusive<f64> = -100.0..=30.0;
     /// The stroke widths in points that the app offers.
     pub const STROKE_WIDTHS: RangeInclusive<f64> = 0.25..=4.0;
 
@@ -232,7 +234,7 @@ impl Border {
             "color": hex(self.color),
             "color2": hex(self.color2),
             "width": self.width_mm,
-            "distance": self.distance_mm,
+            "distances": self.distances_mm,
             "stroke": self.stroke,
             "stroke_color": hex(self.stroke_color),
             "stroke_width": self.stroke_width,
@@ -254,13 +256,18 @@ impl Border {
         read_color(&map, "color", &mut b.color)?;
         read_color(&map, "color2", &mut b.color2)?;
         read_number(&map, "width", &mut b.width_mm)?;
-        read_number(&map, "distance", &mut b.distance_mm)?;
+        if let Some(v) = map.get("distances") {
+            let list = v.as_array().filter(|l| l.len() == 4)?;
+            for (to, v) in b.distances_mm.iter_mut().zip(list) {
+                *to = v.as_f64().filter(|x| x.is_finite())?;
+            }
+        }
         read_flag(&map, "stroke", &mut b.stroke)?;
         read_color(&map, "stroke_color", &mut b.stroke_color)?;
         read_number(&map, "stroke_width", &mut b.stroke_width)?;
         read_flag(&map, "grid", &mut b.grid)?;
         b.grid_text = b.grid_text.read_key(&map, "grid_text")?;
-        (b.width_mm > 0.0 && b.distance_mm >= 0.0 && b.stroke_width > 0.0).then_some(b)
+        (b.width_mm > 0.0 && b.stroke_width > 0.0).then_some(b)
     }
 }
 
@@ -272,7 +279,7 @@ impl Default for Border {
             color: [0xc9, 0xaa, 0xa0],
             color2: [0xff, 0xff, 0xff],
             width_mm: 2.0,
-            distance_mm: 8.0,
+            distances_mm: [8.0; 4],
             stroke: false,
             stroke_color: [0x2b, 0x2b, 0x2b],
             stroke_width: 0.5,
