@@ -5,8 +5,8 @@
 use eframe::egui;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
 use vale_store::{
-    BlendMode, Border, CoordFormat, EdgeLabels, EdgeOrientation, FrameRecord, FrameShape,
-    Graticule, LayerId, PageUnits, RasterDisplay,
+    BlendMode, CoordFormat, EdgeLabels, EdgeOrientation, FrameRecord, FrameShape, Graticule,
+    LayerId, Neatline, PageUnits, RasterDisplay,
 };
 
 use super::elevation::{DISPLAYS, blend_label};
@@ -14,12 +14,12 @@ use super::pad::raster::{BLEND, SHOW_AS};
 
 use super::atlas::{self, AtlasSelection, EdgeSet, FrameTab};
 use super::pad::atlas::{
-    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_WIDTH,
-    CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME, DELETE_FRAME, DELETE_PAGE,
-    DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT,
-    INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LONGITUDE, MAP_NAME, MAP_STYLE_HINT, OBLIQUE,
-    ORIENTATIONS, PAGE_NAME, POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX,
-    ROTATION, SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
+    ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, CENTER_LATITUDE, CENTER_LONGITUDE, CENTER_ON_FRAME,
+    DELETE_FRAME, DELETE_PAGE, DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR,
+    GRATICULE_WIDTH, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LONGITUDE, MAP_NAME,
+    MAP_STYLE_HINT, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, OBLIQUE, ORIENTATIONS, PAGE_NAME,
+    POLYGON, PROJECTION_NAME, RECTANGLE, REMOVE_OVERRIDES, REMOVE_VERTEX, ROTATION,
+    SAVE_PROJECTION, SCALE, SECOND_PARALLEL, SHAPE, SIZE, UNIT_NAMES, WIDTH, custom_row,
     length_text, unit_name,
 };
 use super::pad::edge_labels::EDGE_LABELS;
@@ -184,12 +184,12 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     if frame.graticule.on {
         graticule_rows(ui, state, frame);
     }
-    let mut border = frame.border.on;
-    if ui.checkbox(&mut border, BORDER).changed() {
-        atlas::set_border(state, frame.id, border);
+    let mut neatline = frame.neatline.on;
+    if ui.checkbox(&mut neatline, NEATLINE).changed() {
+        atlas::set_neatline(state, frame.id, neatline);
     }
-    if frame.border.on {
-        border_rows(ui, state, frame);
+    if frame.neatline.on {
+        neatline_rows(ui, state, frame);
     }
     ui.add_space(4.0);
     if ui.button(DELETE_FRAME).clicked() {
@@ -395,31 +395,31 @@ fn edge_label_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord)
     }
 }
 
-/// The color and the width of the border of a frame.
-fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
-    let (id, b) = (frame.id, &frame.border);
-    egui::Grid::new("atlas-border")
+/// The color and the width of the neatline of a frame.
+fn neatline_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let (id, b) = (frame.id, &frame.neatline);
+    egui::Grid::new("atlas-neatline")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.label(BORDER_COLOR);
+            ui.label(NEATLINE_COLOR);
             let mut color = b.color;
             let button = ui.color_edit_button_srgb(&mut color);
-            named(&button, egui::WidgetType::ColorButton, BORDER_COLOR);
+            named(&button, egui::WidgetType::ColorButton, NEATLINE_COLOR);
             if button.changed() {
-                atlas::set_border_color(state, id, color);
+                atlas::set_neatline_color(state, id, color);
             }
             ui.end_row();
-            ui.label(BORDER_WIDTH);
+            ui.label(NEATLINE_WIDTH);
             let mut width = b.width;
             let drag = egui::DragValue::new(&mut width)
-                .range(Border::WIDTHS)
+                .range(Neatline::WIDTHS)
                 .speed(0.05)
                 .fixed_decimals(2)
                 .suffix(" pt");
             let drag = ui.add(drag);
-            named(&drag, egui::WidgetType::DragValue, BORDER_WIDTH);
+            named(&drag, egui::WidgetType::DragValue, NEATLINE_WIDTH);
             if drag.changed() {
-                atlas::set_border_width(state, id, width);
+                atlas::set_neatline_width(state, id, width);
             }
             ui.end_row();
         });

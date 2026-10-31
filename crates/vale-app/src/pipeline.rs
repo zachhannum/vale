@@ -1424,12 +1424,12 @@ impl Pipeline {
         }
         list.items.extend(edge_labels::items(&edge, false));
         list.push(Item::PopClip);
-        if frame.border.on {
-            let [r, g, b] = frame.border.color;
+        if frame.neatline.on {
+            let [r, g, b] = frame.neatline.color;
             list.push(Item::Stroke {
                 path: shape_path(&frame.shape.rings(), target),
                 color: vale_render::Color::rgb(r, g, b),
-                width: frame.border.width,
+                width: frame.neatline.width,
                 round: false,
             });
         }

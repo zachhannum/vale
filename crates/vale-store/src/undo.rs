@@ -18,8 +18,8 @@ use flate2::write::DeflateEncoder;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use crate::atlas::{
-    Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
-    FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, PageId, PageRecord, PageUnits,
+    Atlas, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture, FurnitureId,
+    FurnitureRecord, Graticule, MapId, MapRecord, Neatline, PageId, PageRecord, PageUnits,
     ProjectionPreset, encode_rings, read_rings,
 };
 use crate::gpkg::{
@@ -533,10 +533,10 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
             put_bytes(out, graticule.format.id().as_bytes());
             put_bytes(out, graticule.meridians.to_json().as_bytes());
             put_bytes(out, graticule.parallels.to_json().as_bytes());
-            let border = &frame.border;
-            out.push(border.on as u8);
-            out.extend_from_slice(&border.color);
-            put_f64(out, border.width);
+            let neatline = &frame.neatline;
+            out.push(neatline.on as u8);
+            out.extend_from_slice(&neatline.color);
+            put_f64(out, neatline.width);
         }
     }
     put_u32(out, atlas.presets.len());
@@ -649,7 +649,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                     meridians: EdgeLabels::from_json(&string(r)?)?,
                     parallels: EdgeLabels::from_json(&string(r)?)?,
                 },
-                border: Border {
+                neatline: Neatline {
                     on: flag(r)?,
                     color: r.take::<3>()?,
                     width: r.f64()?,
@@ -1188,10 +1188,10 @@ mod tests {
             center: [-12.5, 33.25],
             scale: 25_000_000.0,
             rotation: 271.5,
-            border: if graticule.on {
-                Border::default()
+            neatline: if graticule.on {
+                Neatline::default()
             } else {
-                Border {
+                Neatline {
                     on: false,
                     color: [0xaa, 0x10, 0x20],
                     width: 3.5,
