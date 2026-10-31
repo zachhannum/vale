@@ -6,7 +6,7 @@ use std::sync::{Arc, mpsc};
 use std::f64::consts::FRAC_PI_2;
 
 use vale_terrain::{
-    CoarseHeights, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, Limits, OuterFlow,
+    CoarseHeights, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, Limits, OuterFlow, Rain,
     WINDOW_CELLS, Window, WindowHeights,
 };
 
@@ -163,8 +163,9 @@ enum Job {
     Begin(u64, Ground),
     /// The stroke goes on with this ground.
     Move(u64, Ground),
-    /// The brushes, the rate, the uplift, and the limits of one step.
-    Step(u64, Vec<ErodeBrush>, f64, f64, Limits),
+    /// The brushes, the rate, the uplift, the limits, and the rain of one
+    /// step.
+    Step(u64, Vec<ErodeBrush>, f64, f64, Limits, Rain),
 }
 
 struct Done(u64, ErodeStep);
@@ -183,6 +184,8 @@ pub struct Eroder {
     stroke: u64,
     /// The number of steps of the stroke that did not arrive yet.
     waiting: usize,
+    /// The rain of each later request.
+    rain: Rain,
 }
 
 /// The number of steps that lower the cells after an uplift.
@@ -190,15 +193,18 @@ const UPLIFT_STEPS: usize = 4;
 
 /// Without an uplift, lowers the cells under the brushes one time. With an
 /// uplift, raises those cells by `uplift` levels at full effect and then
-/// lowers them `UPLIFT_STEPS` times. The cells and the step keep `limits`.
+/// lowers them `UPLIFT_STEPS` times. The cells and the step keep `limits`,
+/// and the step has `rain`.
 fn step(
     erosion: &mut Erosion,
     brushes: &[ErodeBrush],
     rate: f64,
     uplift: f64,
     limits: Limits,
+    rain: Rain,
 ) -> ErodeStep {
     erosion.set_limits(limits);
+    erosion.set_rain(rain);
     if uplift.is_nan() || uplift <= 0.0 {
         return erosion.step(brushes, rate);
     }
@@ -218,11 +224,11 @@ fn work(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>) {
                     ground.move_work(work);
                 }
             }
-            Job::Step(stroke, brushes, rate, uplift, limits) => {
+            Job::Step(stroke, brushes, rate, uplift, limits, rain) => {
                 let Some((_, work)) = work.as_mut().filter(|(id, _)| *id == stroke) else {
                     continue;
                 };
-                let step = step(&mut work.erosion, &brushes, rate, uplift, limits);
+                let step = step(&mut work.erosion, &brushes, rate, uplift, limits, rain);
                 if done.send(Done(stroke, step)).is_err() {
                     return;
                 }
@@ -242,11 +248,17 @@ impl Eroder {
             results,
             stroke: 0,
             waiting: 0,
+            rain: Rain::default(),
         }
     }
 
     pub fn set_sync(&mut self, sync: bool) {
         self.sync = sync;
+    }
+
+    /// Sets the rain of each later request.
+    pub fn set_rain(&mut self, rain: Rain) {
+        self.rain = rain;
     }
 
     fn send(&mut self, job: Job) {
@@ -296,15 +308,17 @@ impl Eroder {
     /// Asks for one step of the stroke. The step starts from the heights
     /// that the step before it left. Before the step, each brush raises its
     /// cells by `uplift` levels at full effect. The uplift and the step do
-    /// not move a cell across a limit.
+    /// not move a cell across a limit. The step has the rain of the last
+    /// `set_rain`.
     pub fn request(&mut self, brushes: Vec<ErodeBrush>, rate: f64, uplift: f64, limits: Limits) {
         self.waiting += 1;
+        let rain = self.rain;
         match &mut self.work {
             Some(work) => {
-                let step = step(&mut work.erosion, &brushes, rate, uplift, limits);
+                let step = step(&mut work.erosion, &brushes, rate, uplift, limits, rain);
                 let _ = self.done.send(Done(self.stroke, step));
             }
-            None => self.send(Job::Step(self.stroke, brushes, rate, uplift, limits)),
+            None => self.send(Job::Step(self.stroke, brushes, rate, uplift, limits, rain)),
         }
     }
 
@@ -712,6 +726,47 @@ mod tests {
             assert_eq!(wait(&mut eroder).limits(), Limits::default());
             eroder.request(brush(true), 1.0, 0.0, limits);
             assert_eq!(wait(&mut eroder).limits(), limits);
+        }
+    }
+
+    /// A range from north to south across longitude 20, with sea at each
+    /// side.
+    fn range() -> Heightmap {
+        let mut map = Heightmap::new(N, meters_to_level(-100.0));
+        let middle = (N as f64 * (0.5 + 0.5 * 20f64.to_radians().tan())) as usize;
+        for y in N / 4..3 * N / 4 {
+            for x in 0..N {
+                let across = (x as f64 - middle as f64).abs();
+                if across < 120.0 {
+                    let ribs = 100.0 * ((y as f64 * 0.2).sin() + 1.0);
+                    let meters = 100.0 + 2400.0 * (1.0 - across / 120.0) + ribs;
+                    map.set(0, x, y, meters_to_level(meters));
+                }
+            }
+        }
+        map
+    }
+
+    #[test]
+    fn each_step_has_the_rain_of_the_eroder() {
+        let map = range();
+        let west = Rain {
+            wind: 270.0,
+            shadow: 1.0,
+        };
+        for sync in [true, false] {
+            let mut eroder = Eroder::new(sync);
+            eroder.begin(global(&map));
+            eroder.request(brush(true), 1.0, 0.0, Limits::default());
+            let even = wait(&mut eroder);
+            assert!(!even.is_empty());
+            // A new stroke from the same ground has the new rain.
+            eroder.set_rain(west);
+            eroder.begin(global(&map));
+            eroder.request(brush(true), 1.0, 0.0, Limits::default());
+            let shadow = wait(&mut eroder);
+            assert!(!shadow.is_empty());
+            assert!(even.drops() != shadow.drops());
         }
     }
 }

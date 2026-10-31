@@ -29,7 +29,7 @@ use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER,
 use vale_app::ui::{Action, AppState, FontTarget, Layout, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
 use vale_store::{GeometryKind, Hillshade, LayerKind, RasterDisplay, RasterId, Units, World};
-use vale_terrain::{Mode, meters_to_level};
+use vale_terrain::{Mode, Rain, meters_to_level};
 
 type Pad = Harness<'static, AppState>;
 
@@ -2064,6 +2064,40 @@ fn the_brush_panel_has_the_two_sliders_of_the_uplift_mode() {
     check_controls(&h, "the Uplift mode");
 }
 
+#[test]
+fn the_brush_panel_has_the_wind_and_the_rain_shadow_of_the_erode_and_uplift_modes() {
+    const ROWS: [&str; 2] = ["Brush wind", "Brush rain shadow"];
+    for mode in [None, Some("Erode"), Some("Uplift"), Some("Warp")] {
+        let mut h = pad(BOARDS[0]);
+        tap(&mut h, "Brush settings");
+        if let Some(mode) = mode {
+            choose_mode(&mut h, mode);
+        }
+        let shown = matches!(mode, Some("Erode" | "Uplift"));
+        for name in ROWS {
+            assert_eq!(control(&h, name).is_some(), shown, "{mode:?} {name}");
+        }
+        if !shown {
+            continue;
+        }
+        // The rows set the wind and the rain shadow of the world.
+        let world = &h.state().doc.project.world;
+        assert_eq!((world.wind_deg, world.rain_shadow), (270.0, 0.0));
+        let r = control(&h, ROWS[0]).unwrap();
+        finger_tap(&mut h, pos2(r.right() - 4.0, r.center().y));
+        let r = control(&h, ROWS[1]).unwrap();
+        drag(&mut h, r.center(), r.right_center(), None);
+        let world = &h.state().doc.project.world;
+        assert_eq!((world.wind_deg, world.rain_shadow), (90.0, 1.0), "{mode:?}");
+        let rain = Rain {
+            wind: 90.0,
+            shadow: 1.0,
+        };
+        assert_eq!(h.state().globe.world_rain, rain, "{mode:?}");
+        check_controls(&h, "the wind and the rain shadow");
+    }
+}
+
 /// Whether the switch with this name is on.
 fn switch_is_on(h: &Pad, name: &str) -> bool {
     let switch = h.get_by_label(name);
@@ -2075,7 +2109,8 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
     const SWITCHES: [&str; 2] = ["Brush floor", "Brush ceiling"];
     const LEVELS: [&str; 2] = ["Brush floor level", "Brush ceiling level"];
     for mode in [None, Some("Erode"), Some("Uplift"), Some("Warp")] {
-        let mut h = pad(BOARDS[0]);
+        // The portrait iPad has the height for all the rows of each mode.
+        let mut h = pad(BOARDS[1]);
         tap(&mut h, "Brush settings");
         if let Some(mode) = mode {
             choose_mode(&mut h, mode);
@@ -2153,12 +2188,20 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
             let names = SWITCHES.iter().chain(&LEVELS);
             names.filter(|name| control(h, name).is_some()).count()
         };
-        if h.state().pad.rects.unwrap().sheet.is_some() {
-            // The sheet is too short for the rows. A finger that moves up
-            // on a slider scrolls the rows and does not move the slider.
+        let sheet = h.state().pad.rects.unwrap().sheet.is_some();
+        if sheet {
             assert_eq!(shown(&h), 0, "{size:?}");
+        }
+        // The card is too short for the rows. A finger that moves up on a
+        // slider scrolls the rows and does not move the slider.
+        const SLIDERS: [&str; 3] = ["Brush angle", "Brush rain shadow", "Brush erosion"];
+        for _ in 0..3 {
+            if shown(&h) == 4 {
+                break;
+            }
             let brush = h.state().globe.brush;
-            let from = control(&h, "Brush angle").unwrap().center();
+            let slider = SLIDERS.iter().find_map(|name| control(&h, name));
+            let from = slider.unwrap().center();
             drag(&mut h, from, from - vec2(4.0, 260.0), None);
             assert_eq!(h.state().globe.brush, brush, "{size:?}");
             check_controls(&h, &format!("{size:?} after the scroll"));
@@ -3497,7 +3540,7 @@ fn the_menu_of_the_worlds_opens_another_world() {
             name: "Pebble".to_string(),
             radius_km: 200.0,
             units: Units::Metric,
-            seed: 0,
+            ..World::default()
         };
         state.run_action(Action::NewWorld(world));
         assert!(!state.has_raster());
@@ -3578,7 +3621,7 @@ fn the_world_form_makes_a_new_world_with_a_small_radius() {
             name: "Pebble".to_string(),
             radius_km: 200.0,
             units: Units::Metric,
-            seed: 0,
+            ..World::default()
         };
         let actions = std::mem::take(&mut h.state_mut().actions);
         assert_eq!(actions, [Action::NewWorld(world.clone())]);

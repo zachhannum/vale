@@ -140,7 +140,7 @@ impl WorldForm {
             name: (!name.is_empty()).then(|| name.to_string())?,
             radius_km: self.radius_km()?,
             units: self.units,
-            seed: 0,
+            ..World::default()
         })
     }
 

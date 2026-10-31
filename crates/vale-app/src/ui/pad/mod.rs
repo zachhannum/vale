@@ -1425,6 +1425,23 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             widgets::row_slider(ui, controls, "Brush erosion", "Erosion", fraction, text)
         });
     }
+    if matches!(brush.mode, Mode::Erode | Mode::Uplift) {
+        let world = &mut state.doc.project.world;
+        let mut degrees = world.wind_deg as f32;
+        if widgets::compass_row(ui, controls, "Brush wind", "Wind", &mut degrees) {
+            world.wind_deg = f64::from(degrees.round());
+        }
+        let mut shadow = world.rain_shadow.clamp(0.0, 1.0);
+        percent_slider(&mut shadow, 0.0..=1.0, |fraction, text| {
+            let name = "Brush rain shadow";
+            widgets::row_slider(ui, controls, name, "Rain shadow", fraction, text)
+        });
+        // The steps are whole percents.
+        let shadow = (shadow * 100.0).round() / 100.0;
+        if shadow != world.rain_shadow.clamp(0.0, 1.0) {
+            world.rain_shadow = shadow;
+        }
+    }
     if matches!(brush.mode, Mode::Weather | Mode::Uplift) {
         let text = format!("{}°", world::three_significant(brush.talus_deg));
         let angle = log_slider(brush.talus_deg, TALUS_DEG, &text, |fraction, text| {

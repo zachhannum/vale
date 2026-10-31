@@ -748,6 +748,12 @@ pub struct World {
     pub units: Units,
     /// The seed of the noise of the world.
     pub seed: u32,
+    /// The compass direction that the wind comes from, in degrees. 0 is
+    /// north, and 270 is west.
+    pub wind_deg: f64,
+    /// How much rain the relief stops on the side away from the wind, from 0
+    /// to 1.
+    pub rain_shadow: f64,
 }
 
 impl Default for World {
@@ -757,6 +763,8 @@ impl Default for World {
             radius_km: 6371.0,
             units: Units::Metric,
             seed: 0,
+            wind_deg: 270.0,
+            rain_shadow: 0.0,
         }
     }
 }

@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 31;
+pub const FORMAT_VERSION: u32 = 32;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -70,6 +70,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v29,
     v30,
     v31,
+    v32,
 ];
 
 /// `GPKG` in ASCII.
@@ -631,6 +632,27 @@ fn meta(conn: &Connection, key: &str) -> Result<String, StoreError> {
 /// Adds the seed of the world.
 fn v5(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch("ALTER TABLE vale_world ADD COLUMN seed INTEGER NOT NULL DEFAULT 0")
+}
+
+/// Adds the wind and the rain shadow of the world. A file with an older
+/// version number can already have the columns. A test build gave version
+/// 31 to this step, so a file of version 31 can have the wind and no edge
+/// labels. The step runs `v31` for that file.
+fn v32(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_frame') WHERE name = 'meridian_labels'";
+    if tx.query_row(sql, [], |r| r.get::<_, i64>(0))? == 0 {
+        v31(tx)?;
+    }
+    for (column, default) in [("wind", 270), ("rain_shadow", 0)] {
+        let sql = "SELECT count(*) FROM pragma_table_info('vale_world') WHERE name = ?1";
+        let count: i64 = tx.query_row(sql, [column], |r| r.get(0))?;
+        if count == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE vale_world ADD COLUMN {column} REAL NOT NULL DEFAULT {default}"
+            ))?;
+        }
+    }
+    Ok(())
 }
 
 /// Runs each step from version `from` to `FORMAT_VERSION` in one transaction.
@@ -1752,8 +1774,16 @@ fn world_wkt(world: &World) -> String {
 
 fn write_world(tx: &Transaction, world: &World) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO vale_world (id, name, radius_km, units, seed) VALUES (1, ?1, ?2, ?3, ?4)",
-        params![world.name, world.radius_km, world.units.id(), world.seed],
+        "INSERT INTO vale_world (id, name, radius_km, units, seed, wind, rain_shadow)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            world.name,
+            world.radius_km,
+            world.units.id(),
+            world.seed,
+            world.wind_deg,
+            world.rain_shadow
+        ],
     )?;
     tx.execute(
         "INSERT INTO gpkg_spatial_ref_sys VALUES (?1, ?2, 'NONE', ?2, ?3, NULL)",
@@ -2392,11 +2422,20 @@ fn load_images(conn: &Connection) -> Result<Vec<Image>, StoreError> {
 
 fn load(conn: &Connection) -> Result<Project, StoreError> {
     use rusqlite::OptionalExtension;
-    let (name, radius_km, units, seed) = conn
+    let (name, radius_km, units, seed, wind_deg, rain_shadow) = conn
         .query_row(
-            "SELECT name, radius_km, units, seed FROM vale_world",
+            "SELECT name, radius_km, units, seed, wind, rain_shadow FROM vale_world",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, String>(2)?, r.get(3)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| corrupt("no world record"))?;
@@ -2406,6 +2445,8 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         radius_km,
         units,
         seed,
+        wind_deg,
+        rain_shadow,
     };
     let next_id = meta(conn, "next_layer_id")?;
     let next_id = next_id
@@ -2862,6 +2903,8 @@ mod tests {
             radius_km: 4321.125,
             units: Units::Imperial,
             seed: 0xDEAD_BEEF,
+            wind_deg: 112.5,
+            rain_shadow: 0.25,
         });
         p.add_layer(
             "Places".into(),
@@ -3610,6 +3653,83 @@ mod tests {
 
         project.remove_layer(towns);
         assert!(!project.atlas.maps[0].labels.contains_key(&towns));
+    }
+
+    #[test]
+    fn the_file_keeps_the_wind_and_the_rain_shadow() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::new(World {
+            wind_deg: 90.0,
+            rain_shadow: 0.6,
+            ..World::default()
+        });
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(
+            (loaded.world.wind_deg, loaded.world.rain_shadow),
+            (90.0, 0.6)
+        );
+    }
+
+    #[test]
+    fn a_file_of_version_31_with_the_wind_and_no_edge_labels_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World {
+            wind_deg: 90.0,
+            rain_shadow: 0.6,
+            ..World::default()
+        });
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        atlas_edit(&mut project);
+        file.save(&project).unwrap();
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE vale_frame DROP COLUMN graticule_format;
+             ALTER TABLE vale_frame DROP COLUMN meridian_labels;
+             ALTER TABLE vale_frame DROP COLUMN parallel_labels;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 31);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(
+            (loaded.world.wind_deg, loaded.world.rain_shadow),
+            (90.0, 0.6)
+        );
+        for frame in loaded.atlas.pages.iter().flat_map(|p| &p.frames) {
+            assert_eq!(frame.graticule.format, CoordFormat::Dms);
+        }
+        assert!(!file.can_undo());
+    }
+
+    #[test]
+    fn a_file_of_version_31_gets_a_west_wind_and_no_rain_shadow() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::new(World {
+            wind_deg: 90.0,
+            rain_shadow: 0.6,
+            ..World::default()
+        });
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE vale_world DROP COLUMN wind;
+             ALTER TABLE vale_world DROP COLUMN rain_shadow;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 31);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(
+            (loaded.world.wind_deg, loaded.world.rain_shadow),
+            (270.0, 0.0)
+        );
     }
 
     #[test]
@@ -5879,6 +5999,21 @@ mod tests {
         let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
         project.world.radius_km = 200.0;
         project.world.units = Units::Metric;
+        file.save(&project).unwrap();
+        assert!(file.undo().unwrap().is_some());
+        assert!(file.project() == &first);
+        assert!(file.redo().unwrap().is_some());
+        assert!(file.project() == &project);
+    }
+
+    #[test]
+    fn an_undo_puts_back_the_wind_and_the_rain_shadow() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = sample();
+        let mut project = first.clone();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        project.world.wind_deg = 45.0;
+        project.world.rain_shadow = 0.8;
         file.save(&project).unwrap();
         assert!(file.undo().unwrap().is_some());
         assert!(file.project() == &first);

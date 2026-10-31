@@ -29,8 +29,8 @@ use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
 use vale_style::{Color, Stroke};
 use vale_terrain::{
-    Bands, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, StopLine, WindowHeights, channel_map,
-    level_to_meters, meters_to_level, window_channels,
+    Bands, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, Rain, StopLine, WindowHeights,
+    channel_map, level_to_meters, meters_to_level, window_channels,
 };
 
 /// The sample world with its vector layers hidden, so that each place of the
@@ -2964,6 +2964,54 @@ fn the_brush_panel_has_the_uplift_mode_and_its_two_sliders() {
     assert!(h.query_all_by_label("Strength").next().is_none());
     assert!(h.query_all_by_label("Erosion").next().is_some());
     assert_eq!(h.state().globe.brush.erosion, 0.5);
+}
+
+/// Sets the slider with this label to `value`, as a screen reader does.
+fn set_slider(h: &mut Harness<'static, AppState>, label: &str, value: f64) {
+    use egui::accesskit::{Action, ActionData, ActionRequest, Role};
+    let node = h.get_by_role_and_label(Role::Slider, label);
+    let (target_node, target_tree) = node.accesskit_node().locate();
+    h.event(egui::Event::AccessKitActionRequest(ActionRequest {
+        action: Action::SetValue,
+        target_node,
+        target_tree,
+        data: Some(ActionData::NumericValue(value)),
+    }));
+    h.run_steps(2);
+}
+
+#[test]
+fn the_brush_panel_has_the_wind_and_the_rain_shadow_of_the_erode_and_uplift_modes() {
+    for mode in ["Raise", "Erode", "Uplift", "Warp"] {
+        let mut h = harness();
+        h.state_mut().globe.tool = Tool::Brush;
+        h.run_steps(2);
+        h.get_by_label(mode).click();
+        h.run_steps(2);
+        let shown = matches!(mode, "Erode" | "Uplift");
+        for label in ["Wind", "Rain shadow"] {
+            let found = h.query_all_by_label(label).next().is_some();
+            assert_eq!(found, shown, "{mode} {label}");
+        }
+        if !shown {
+            continue;
+        }
+        // The sliders set the wind and the rain shadow of the world.
+        let rain = Rain {
+            wind: 270.0,
+            shadow: 0.0,
+        };
+        assert_eq!(h.state().globe.world_rain, rain, "{mode}");
+        set_slider(&mut h, "Wind", 45.0);
+        set_slider(&mut h, "Rain shadow", 60.0);
+        let world = &h.state().doc.project.world;
+        assert_eq!((world.wind_deg, world.rain_shadow), (45.0, 0.6), "{mode}");
+        let rain = Rain {
+            wind: 45.0,
+            shadow: 0.6,
+        };
+        assert_eq!(h.state().globe.world_rain, rain, "{mode}");
+    }
 }
 
 /// A harness with the empty world in a far view, and the uplift brush.
