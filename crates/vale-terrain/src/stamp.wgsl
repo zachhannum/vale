@@ -25,6 +25,8 @@ struct Stamp {
     // and the seed of that noise.
     scale: f32,
     seed: u32,
+    // The motion of the push mode, as in `Stamp::motion`.
+    motion: vec3<f32>,
 }
 
 // The same number as `GROUP_STAMPS` in `gpu.rs`.
@@ -76,6 +78,7 @@ const DEPOSIT = 9u;
 // A pass of this mode has no stamps. It lays the ocean ridge of `ridge`, as
 // `Heightmap::ridge` does.
 const OCEAN_RIDGE = 10u;
+const PUSH = 11u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -636,6 +639,23 @@ fn warp_level(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
     let t = v - p * dot(v, p);
     let source = p + t * (len / max(length(t), 1.0));
     return floor(level_between(source) + 0.5);
+}
+
+// The level of a texel after one push stamp. The texel takes the level of
+// the ground behind it along the motion. The steps are those of
+// `push_offset` and `Heightmap::level_between`.
+fn push_level(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
+    let brush = brush_at(stamp, at);
+    let margin = WARP_MARGIN * 2.0 * PI_4 / f32(group.size);
+    let len = min(length(stamp.motion) * brush.x, stamp.radius - brush.y - margin);
+    let p = normalize(texel_dir(group.face, at));
+    // The part of the motion along the ground.
+    let t = stamp.motion - p * dot(stamp.motion, p);
+    let full = length(t);
+    if len <= 0.0 || full == 0.0 {
+        return old;
+    }
+    return floor(level_between(p - t * (len / full)) + 0.5);
 }
 
 // A number from 0 to 1 from the low 24 bits of a hash.
@@ -1691,6 +1711,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         }
         if group.mode == WARP {
             value = limited(value, warp_level(stamp, at, value));
+            continue;
+        }
+        if group.mode == PUSH {
+            value = limited(value, push_level(stamp, at, value));
             continue;
         }
         // With no effect, each mode keeps the level.

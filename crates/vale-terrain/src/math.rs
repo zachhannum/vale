@@ -36,6 +36,19 @@ pub fn angle(a: V3, b: V3) -> f64 {
     length(cross(a, b)).atan2(dot(a, b))
 }
 
+/// The direction of the short arc from `a` to `b` at `b`, square to `b`.
+/// Its length is the angle of the arc, in radians.
+pub fn arc_motion(a: V3, b: V3) -> V3 {
+    let d = add(b, scale(a, -1.0));
+    let t = add(d, scale(b, -dot(d, b)));
+    let l = length(t);
+    if l > 0.0 {
+        scale(t, angle(a, b) / l)
+    } else {
+        [0.0; 3]
+    }
+}
+
 /// Longitude and latitude in degrees to a unit vector. The north pole is +Z.
 pub fn lonlat_to_dir(lon: f64, lat: f64) -> V3 {
     let (lon, lat) = (lon.to_radians(), lat.to_radians());
@@ -58,5 +71,17 @@ mod tests {
     fn lonlat_round_trip() {
         let (lon, lat) = dir_to_lonlat(lonlat_to_dir(33.0, -71.0));
         assert!((lon - 33.0).abs() < 1e-9 && (lat + 71.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_arc_motion_points_along_the_arc() {
+        let (a, b) = (lonlat_to_dir(10.0, 0.0), lonlat_to_dir(12.0, 0.0));
+        let m = arc_motion(a, b);
+        assert!(dot(m, b).abs() < 1e-12);
+        assert!((length(m) - 2f64.to_radians()).abs() < 1e-12);
+        // East at longitude 12.
+        let east = [-12f64.to_radians().sin(), 12f64.to_radians().cos(), 0.0];
+        assert!((dot(normalize(m), east) - 1.0).abs() < 1e-12);
+        assert_eq!(arc_motion(b, b), [0.0; 3]);
     }
 }
