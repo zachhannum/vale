@@ -43,8 +43,8 @@ pub use flow::{
 #[cfg(feature = "gpu")]
 pub use gpu::{GROUP_STAMPS, GpuHeightmap, RIDGE_SLOTS, Readback, STAMP_SLOTS};
 pub use heightmap::{
-    Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, StampPlan, TILE_SIZE, TexelRect,
-    UNDO_MEMORY_LIMIT, talus_levels,
+    Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, NOISE_OCTAVES, NOISE_RELIEF_M, Stamp, StampPlan,
+    TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT, talus_levels,
 };
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
 #[cfg(feature = "gpu")]

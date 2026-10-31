@@ -299,6 +299,7 @@ impl ProtoApp {
                 | Mode::Uplift
                 | Mode::Warp
                 | Mode::Push
+                | Mode::Noise
                 | Mode::OceanRidge
                 | Mode::Range => flow,
                 // These three modes move toward a target, so each stamp does less.
@@ -311,6 +312,9 @@ impl ProtoApp {
             scale: 0.0,
             seed: 0,
             motion: [0.0; 3],
+            ridged: false,
+            relief: 0.0,
+            invert: false,
             limits: Limits::default(),
         };
         let start = Instant::now();

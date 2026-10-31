@@ -74,13 +74,14 @@ pub const SCULPT: &str = "Sculpt";
 /// paint a height layer only.
 pub const TERRAIN: &str = "Terrain";
 /// The modes of the Sculpt cell.
-pub const SCULPT_MODES: [(&str, Icon, Mode); 6] = [
+pub const SCULPT_MODES: [(&str, Icon, Mode); 7] = [
     ("Raise", Icon::Raise, Mode::Raise),
     ("Lower", Icon::Lower, Mode::Lower),
     ("Smooth", Icon::Smooth, Mode::Smooth),
     ("Flatten", Icon::Flatten, Mode::Flatten),
     ("Warp", Icon::Warp, Mode::Warp),
     ("Push", Icon::Push, Mode::Push),
+    ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
 pub const TERRAIN_MODES: [(&str, Icon, Mode); 8] = [
@@ -1452,6 +1453,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     });
     let world_km = state.doc.project.world.radius_km;
     let radius_km = state.globe.brush.radius_km(state.globe.radius(), world_km);
+    let height = state.globe.is_height();
     let brush = &mut state.globe.brush;
     // The ocean ridge mode has no falloff and no strength, and the range
     // mode has no falloff.
@@ -1494,6 +1496,28 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         if let Some(meters) = strength {
             brush.strength_m = meters;
         }
+    }
+    if brush.mode == Mode::Noise {
+        let text = format!("{} km", world::three_significant(brush.scale_km));
+        let scale = log_slider(brush.scale_km, SCALE_KM, &text, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush scale", "Scale", fraction, text)
+        });
+        if let Some(km) = scale {
+            brush.scale_km = km;
+        }
+        let ridged = &mut brush.noise_ridged;
+        widgets::switch_row(ui, controls, "Brush ridged", "Ridged", ridged);
+        if brush.noise_ridged {
+            let inverted = &mut brush.noise_inverted;
+            widgets::switch_row(ui, controls, "Brush invert", "Invert", inverted);
+        }
+        // The relief follows the height above sea level.
+        if height {
+            percent_slider(&mut brush.noise_relief, 0.0..=1.0, |fraction, text| {
+                widgets::row_slider(ui, controls, "Brush relief", "Relief", fraction, text)
+            });
+        }
+        seed_row(ui, controls, &mut state.doc.project.world.seed);
     }
     if brush.mode == Mode::Range {
         let text = format!("{} km", world::three_significant(brush.range_spacing_km));
@@ -1562,7 +1586,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
 /// steps of 50 meters.
 const LIMIT_STEPS: f64 = 240.0;
 
-/// The seed row of the warp mode and of the range mode. The seed is a
+/// The seed row of the warp mode, the noise mode, and the range mode. The seed is a
 /// property of the world, so each brush gets the same pattern.
 fn seed_row(ui: &mut egui::Ui, controls: &mut Controls, seed: &mut u32) {
     let high = f64::from(*SEED.end());

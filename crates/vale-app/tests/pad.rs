@@ -2167,6 +2167,43 @@ fn the_brush_panel_of_the_push_mode_has_no_strength() {
 }
 
 #[test]
+fn the_brush_panel_of_the_noise_mode_has_its_settings() {
+    // The portrait iPad has the height for all the rows of the mode.
+    let mut h = pad(BOARDS[1]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush ridged").is_none());
+    choose_mode(&mut h, "Noise");
+    assert_eq!(
+        (h.state().globe.tool, h.state().globe.brush.mode),
+        (Tool::Brush, Mode::Noise)
+    );
+    assert_eq!(toggled(&h, SCULPT), Some(true));
+    assert!(control(&h, "Brush strength").is_some());
+    check_controls(&h, "the Noise mode");
+    screenshot::save(&mut h, "pad-noise");
+    let rect = control(&h, "Brush scale").unwrap();
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    assert!((h.state().globe.brush.scale_km - 5.0).abs() < 1e-9);
+    // The Invert switch shows with the ridged noise only.
+    assert!(!switch_is_on(&h, "Brush ridged"));
+    assert!(control(&h, "Brush invert").is_none());
+    tap(&mut h, "Brush ridged");
+    assert!(h.state().globe.brush.noise_ridged);
+    assert!(switch_is_on(&h, "Brush ridged"));
+    tap(&mut h, "Brush invert");
+    assert!(h.state().globe.brush.noise_inverted);
+    assert!(switch_is_on(&h, "Brush invert"));
+    check_controls(&h, "the inverted ridged noise");
+    assert_eq!(h.state().globe.brush.noise_relief, 0.5);
+    let rect = control(&h, "Brush relief").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert_eq!(h.state().globe.brush.noise_relief, 1.0);
+    let rect = control(&h, "Brush seed").unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert_eq!(h.state().doc.project.world.seed, 999);
+}
+
+#[test]
 fn the_draw_cell_is_off_with_no_vector_layer_and_follows_the_kind() {
     use vale_store::GeometryKind;
     let mut h = pad(BOARDS[0]);

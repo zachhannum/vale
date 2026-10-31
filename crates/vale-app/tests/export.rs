@@ -30,6 +30,9 @@ fn paint(map: &mut Heightmap, lon: f64, lat: f64, radius: f64) {
         scale: 0.0,
         seed: 0,
         motion: [0.0; 3],
+        ridged: false,
+        relief: 0.0,
+        invert: false,
         limits: Limits::default(),
     });
     assert!(map.end_stroke());

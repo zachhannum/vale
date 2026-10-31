@@ -2260,6 +2260,9 @@ mod tests {
             scale: 0.1,
             seed: 1,
             motion: [0.0; 3],
+            ridged: false,
+            relief: 0.0,
+            invert: false,
             limits: Limits::default(),
         };
         map.begin_stroke();

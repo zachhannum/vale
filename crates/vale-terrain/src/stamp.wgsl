@@ -21,12 +21,21 @@ struct Stamp {
     // The steepest slope that the weather mode leaves, in levels for each
     // texel step. It is a multiple of 1/16.
     talus: f32,
-    // The size of the features of the noise of the warp mode as an angle,
-    // and the seed of that noise.
+    // The size of the features of the noise of the warp mode, or of the
+    // largest features of the noise mode, as an angle, and the seed of that
+    // noise.
     scale: f32,
     seed: u32,
     // The motion of the push mode, as in `Stamp::motion`.
     motion: vec3<f32>,
+    // 0 for the soft noise of the noise mode, 1 for the ridged noise, and 2
+    // for the inverted ridged noise.
+    ridged: u32,
+    // The relief setting of the noise mode, and the levels above the sea
+    // where the noise has its full effect.
+    relief: f32,
+    relief_span: f32,
+    octaves: u32,
 }
 
 // The same number as `GROUP_STAMPS` in `gpu.rs`.
@@ -81,6 +90,7 @@ const OCEAN_RIDGE = 10u;
 // The mode of a range pass.
 const RANGE = 11u;
 const PUSH = 12u;
+const NOISE = 13u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -665,6 +675,30 @@ fn push_level(stamp: Stamp, at: vec2<i32>, old: f32) -> f32 {
         return old;
     }
     return floor(level_between(p - t * (len / full)) + 0.5);
+}
+
+// The fractal noise of a noise stamp at a unit direction. The steps are
+// those of `fractal` in `heightmap.rs`.
+fn fractal(p: vec3<f32>, stamp: Stamp) -> f32 {
+    var sum = 0.0;
+    var total = 0.0;
+    var size = stamp.scale;
+    var weight = 1.0;
+    for (var octave = 0u; octave < stamp.octaves; octave++) {
+        let seed = stamp.seed ^ ((octave + 1u) * 0x6d2b79f5u);
+        var v = noise3(p / size, seed).x;
+        if stamp.ridged != 0u {
+            v = 1.0 - 2.0 * abs(v);
+        }
+        sum += weight * v;
+        total += weight;
+        size *= 0.5;
+        weight *= 0.5;
+    }
+    if stamp.ridged == 2u {
+        return -sum / total;
+    }
+    return sum / total;
 }
 
 // A number from 0 to 1 from the low 24 bits of a hash.
@@ -1854,6 +1888,12 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                 if old >= f32(group.sea) {
                     change = max(fill - old, 0.0) * min(amount, 1.0);
                 }
+            }
+            case NOISE {
+                let p = normalize(texel_dir(group.face, at));
+                let height = clamp((old - f32(group.sea)) / stamp.relief_span, 0.0, 1.0);
+                let gain = 1.0 - stamp.relief + stamp.relief * height;
+                change = amount * stamp.strength * fractal(p, stamp) * gain;
             }
             default {
                 change = (stamp.level - old) * min(amount, 1.0);

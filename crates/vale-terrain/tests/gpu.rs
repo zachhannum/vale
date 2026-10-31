@@ -246,6 +246,9 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         scale: 0.1,
         seed: 1,
         motion: [0.0; 3],
+        ridged: false,
+        relief: 0.0,
+        invert: false,
         limits: Limits::default(),
     }
 }
@@ -2129,6 +2132,86 @@ fn gpu_push_leaves_flat_ground_flat() {
     let result = run(&mut cpu, &stamps);
     assert_eq!(result.difference, 0);
     assert!(levels(&cpu).iter().all(|&l| l == 30000));
+}
+
+/// The largest difference for a stroke of noise stamps. In the part of the
+/// brush with full effect, the stamps of a stroke give a texel the same
+/// change. If that change is near a half level, the GPU can round it the
+/// other way at each of those stamps.
+const NOISE_STROKE_TOLERANCE: u16 = 8;
+
+/// A noise stamp with features up to the brush radius in size.
+fn noise(center: V3, radius: f64, hardness: f64, ridged: bool, relief: f64) -> Stamp {
+    Stamp {
+        strength: 4000.0,
+        scale: radius,
+        seed: 11,
+        ridged,
+        relief,
+        ..stamp(center, radius, hardness, Mode::Noise)
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_noise_matches_cpu_for_one_stamp() {
+    let mut worst = 0;
+    for (place, lon, lat) in WARP_PLACES {
+        for (n, radius) in [(1024, 0.01), (256, 0.06), (256, 0.3)] {
+            for (hardness, ridged, invert, relief) in [
+                (0.0, false, false, 0.0),
+                (0.5, true, false, 0.5),
+                (0.5, true, true, 0.0),
+                (0.95, false, false, 0.8),
+            ] {
+                let mut cpu = smooth_ground(n);
+                let before = levels(&cpu);
+                let stamp = Stamp {
+                    invert,
+                    ..noise(lonlat_to_dir(lon, lat), radius, hardness, ridged, relief)
+                };
+                let difference = run(&mut cpu, &[stamp]).difference;
+                assert!(levels(&cpu) != before, "{place}, radius {radius}");
+                assert!(
+                    difference <= TOLERANCE,
+                    "noise at the {place}, radius {radius}, ridged {ridged}, invert {invert}: \
+                     the difference is {difference}"
+                );
+                worst = worst.max(difference);
+            }
+        }
+    }
+    eprintln!("one noise stamp, largest difference: {worst}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_noise_matches_cpu_for_a_stroke() {
+    let mut worst = 0;
+    for (lat, radius, ridged) in [
+        (4.0f64, 0.07f64, false),
+        (35.0, 0.12, true),
+        (20.0, 0.05, false),
+    ] {
+        let step = (0.12 * radius).to_degrees() / f64::to_radians(lat).cos();
+        let count = (24.0 / step).ceil() as u32;
+        let stamps: Vec<_> = (0..count)
+            .map(|i| {
+                let center = lonlat_to_dir(33.0 + step * f64::from(i), lat);
+                noise(center, radius, 0.5, ridged, 0.5)
+            })
+            .collect();
+        let mut cpu = smooth_ground(256);
+        let before = levels(&cpu);
+        let difference = run(&mut cpu, &stamps).difference;
+        assert!(changes(&before, &levels(&cpu)) > 300, "latitude {lat}");
+        assert!(
+            difference <= NOISE_STROKE_TOLERANCE,
+            "noise stroke at latitude {lat}: the difference is {difference}"
+        );
+        worst = worst.max(difference);
+    }
+    eprintln!("noise stroke, largest difference: {worst}");
 }
 
 /// On a large face, the place of a texel needs most of the digits of a

@@ -68,6 +68,10 @@ pub enum Mode {
     /// the brush. Each new level is between the lowest level and the highest
     /// level under the brush.
     Push,
+    /// Adds fractal noise of the direction of each texel, times the effect
+    /// of the brush and the strength. `Stamp::ridged` and `Stamp::relief`
+    /// set its shape.
+    Noise,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -134,23 +138,40 @@ pub struct Stamp {
     pub mode: Mode,
     /// The target of the flatten mode.
     pub level: u16,
-    /// The largest change of the raise and lower modes, in 16-bit steps. In
-    /// the warp mode, the largest offset as an angle, in radians.
+    /// The largest change of the raise, lower, and noise modes, in 16-bit
+    /// steps. In the warp mode, the largest offset as an angle, in radians.
     pub strength: f64,
     /// The steepest slope that the weather mode leaves, in 16-bit steps for
     /// each texel step. `talus_levels` gives it for an angle.
     pub talus: f64,
-    /// The size of the features of the noise of the warp mode as an angle, in
-    /// radians.
+    /// The size of the features of the noise of the warp mode, or of the
+    /// largest features of the noise mode, as an angle in radians.
     pub scale: f64,
-    /// The seed of the noise of the warp mode.
+    /// The seed of the noise of the warp mode and the noise mode.
     pub seed: u32,
     /// The move of the pen to this stamp from the stamp before it, in the
     /// push mode. It is square to the center, and its length is the angle in
     /// radians.
     pub motion: V3,
+    /// Whether the noise mode folds each octave of its noise at zero, which
+    /// gives sharp crests.
+    pub ridged: bool,
+    /// Whether the noise mode turns its ridged noise upside down, which gives
+    /// sharp valleys. The soft noise does not change.
+    pub invert: bool,
+    /// How much the noise of the noise mode grows with the height of the
+    /// ground above sea level, from 0 to 1. At 1, the noise is zero at sea
+    /// level and full at `NOISE_RELIEF_M` above it.
+    pub relief: f64,
     pub limits: Limits,
 }
+
+/// The height above sea level, in meters, where the noise mode has its full
+/// effect at each relief setting.
+pub const NOISE_RELIEF_M: f64 = 2000.0;
+
+/// The most octaves of the noise mode.
+pub const NOISE_OCTAVES: u32 = 8;
 
 /// The offset of the warp mode and of the push mode is zero at this number of
 /// texel steps from the brush edge. Each texel that a warp stamp or a push
@@ -950,11 +971,15 @@ impl Heightmap {
         // 1/16 is exact there. No slope is more than 65535.
         let talus = ((stamp.talus * 16.0).round() / 16.0).clamp(0.0, 65536.0);
         let step = FRAC_PI_2 / self.n as f64;
-        let (strength, scale) = if stamp.mode == Mode::Warp {
+        let (strength, scale) = if matches!(stamp.mode, Mode::Warp | Mode::Noise) {
             // The noise changes too fast for the texels below 2 texel steps.
             // The shader gets the same 32-bit feature size.
-            let scale = stamp.scale.max(2.0 * step) as f32;
-            (stamp.strength.clamp(0.0, radius), f64::from(scale))
+            let scale = f64::from(stamp.scale.max(2.0 * step) as f32);
+            let strength = match stamp.mode {
+                Mode::Warp => stamp.strength.clamp(0.0, radius),
+                _ => stamp.strength,
+            };
+            (strength, scale)
         } else {
             (stamp.strength, stamp.scale)
         };
@@ -1011,6 +1036,8 @@ impl Heightmap {
         let sea = f64::from(meters_to_level(SEA_LEVEL));
         let channel_size = channels.as_ref().map_or(0.0, |c| c.size() as f64);
         let n = self.n as f64;
+        let octaves = noise_octaves(stamp.scale, self.n);
+        let relief_span = f64::from(meters_to_level(SEA_LEVEL + NOISE_RELIEF_M)) - sea;
         // The valley depth at a texel, or its ridge height with `ridge`. The
         // window comes first. With no channel map, no river is near, so the
         // valley has no depth and the ridge has its full height.
@@ -1076,6 +1103,14 @@ impl Heightmap {
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
                             Mode::Erode | Mode::OceanRidge | Mode::Range => continue,
+                            Mode::Noise => {
+                                let p = face_dir(face, fu, fv);
+                                let value = fractal(p, stamp, octaves);
+                                let height = ((old - sea) / relief_span).clamp(0.0, 1.0);
+                                let relief = stamp.relief.clamp(0.0, 1.0);
+                                let gain = 1.0 - relief + relief * height;
+                                old + amount * stamp.strength * value * gain
+                            }
                             Mode::Carve => {
                                 let Some(valley) = river(x, y, fu, fv, false) else {
                                     continue;
@@ -1445,6 +1480,38 @@ pub(crate) fn noise3(p: V3, seed: u32) -> V3 {
     between(along_y(0), along_y(1), tz)
 }
 
+/// The number of octaves of the noise mode on a face with `n` texels along
+/// one side. The smallest octave has features of 2 texel steps or more.
+pub(crate) fn noise_octaves(scale: f64, n: usize) -> u32 {
+    let step = FRAC_PI_2 / n as f64;
+    let count = (scale / (2.0 * step)).log2().floor() as i64 + 1;
+    count.clamp(1, i64::from(NOISE_OCTAVES)) as u32
+}
+
+/// The fractal noise of a noise stamp at a unit direction, from -1 to 1. It
+/// is a sum of `octaves` noises. Each octave has features of half the size
+/// and half the weight of the one before it. In the ridged variant, each
+/// octave is folded at zero, so its value is high where the noise is near
+/// zero. The inverted ridged noise is the ridged noise times -1.
+pub(crate) fn fractal(p: V3, stamp: &Stamp, octaves: u32) -> f64 {
+    let (mut sum, mut total) = (0.0, 0.0);
+    let (mut size, mut weight) = (stamp.scale, 1.0);
+    for octave in 0..octaves {
+        let seed = stamp.seed ^ octave.wrapping_add(1).wrapping_mul(0x6d2b_79f5);
+        let v = noise3(p.map(|c| c / size), seed)[0];
+        let v = if stamp.ridged { 1.0 - 2.0 * v.abs() } else { v };
+        sum += weight * v;
+        total += weight;
+        size *= 0.5;
+        weight *= 0.5;
+    }
+    if stamp.ridged && stamp.invert {
+        -sum / total
+    } else {
+        sum / total
+    }
+}
+
 /// The offset of a warp stamp at a unit direction, on a face with `n` texels
 /// along one side. The offset is square to the direction. Its length is the
 /// angle in radians, and it is no more than the strength times the effect of
@@ -1626,6 +1693,9 @@ mod tests {
             scale: 0.1,
             seed: 1,
             motion: [0.0; 3],
+            ridged: false,
+            relief: 0.0,
+            invert: false,
             limits: Limits::default(),
         }
     }
@@ -2794,6 +2864,7 @@ mod tests {
             Mode::Uplift,
             Mode::Warp,
             Mode::Push,
+            Mode::Noise,
         ];
         for mode in modes {
             let mut map = Heightmap::with_tile_size(64, 16, 20_000);
@@ -3839,6 +3910,205 @@ mod tests {
         assert!(all_levels(&map) == before);
     }
 
+    /// A noise stamp of 8000 levels with a scale of 0.1.
+    fn noise_stamp(center: V3, radius: f64) -> Stamp {
+        Stamp {
+            mode: Mode::Noise,
+            hardness: 0.5,
+            strength: 8000.0,
+            seed: 7,
+            ..raise(center, radius)
+        }
+    }
+
+    /// Ground at a level of `meters` above sea level.
+    fn ground_at(n: usize, meters: f64) -> Heightmap {
+        Heightmap::new(n, meters_to_level(SEA_LEVEL + meters))
+    }
+
+    #[test]
+    fn a_noise_stamp_adds_the_noise_times_the_weight_and_the_strength() {
+        let n = 256;
+        for (place, center) in warp_places() {
+            for ridged in [false, true] {
+                let mut map = ground_at(n, 1000.0);
+                let old = f64::from(map.get(0, 0, 0));
+                let stamp = Stamp {
+                    ridged,
+                    ..noise_stamp(center, 0.2)
+                };
+                let plan = map.stamp_plan(&stamp);
+                let octaves = noise_octaves(plan.stamp.scale, n);
+                assert_eq!(octaves, 4);
+                map.stamp(&stamp);
+                let mut changed = 0;
+                for (face, x, y) in plan_texels(&plan) {
+                    let falloff = Falloff::new(face, &plan.stamp);
+                    let amount = falloff.amount(map.flat[x], map.flat[y]).unwrap_or(0.0);
+                    let p = map.texel_dir(face, x, y);
+                    let value = fractal(p, &plan.stamp, octaves);
+                    assert!((-1.0..=1.0).contains(&value));
+                    let expected = (old + amount * 8000.0 * value).round();
+                    let level = f64::from(map.get(face, x as i64, y as i64));
+                    assert_eq!(level, expected, "{place}: {face} {x} {y}");
+                    changed += usize::from(level != old);
+                }
+                assert!(changed > 1000, "{place}: {changed}");
+            }
+        }
+    }
+
+    #[test]
+    fn noise_leaves_no_seam_at_a_face_edge() {
+        let n = 256;
+        // Face 0 and face 2 meet at longitude 45.
+        let mut map = smooth_ground(n);
+        stroke(&mut map, noise_stamp(lonlat_to_dir(45.0, 2.0), 0.2));
+        for m in (110..150).step_by(4) {
+            assert_no_seam(&map, 0, m);
+        }
+        // Faces 0, 2, and 4 meet at this corner.
+        let mut map = smooth_ground(n);
+        stroke(&mut map, noise_stamp(lonlat_to_dir(45.0, 35.264), 0.2));
+        for face in [0, 2, 4] {
+            for m in [236, 243, 249] {
+                assert_no_seam(&map, face, m);
+            }
+        }
+    }
+
+    /// The mean change of the noise of `stamp` between places on all parts
+    /// of the sphere and places `apart` radians to the east of them, in a
+    /// band of latitudes.
+    fn noise_change(stamp: &Stamp, octaves: u32, lat: (f64, f64), apart: f64) -> f64 {
+        let count = 4000;
+        let places = (0..count).map(|i| {
+            let t = f64::from(i) / f64::from(count);
+            (0.37 * f64::from(i), lat.0 + (lat.1 - lat.0) * t)
+        });
+        let sum: f64 = places
+            .map(|(lon, lat)| {
+                let p = lonlat_to_dir(lon, lat);
+                let q = lonlat_to_dir(lon + apart.to_degrees() / lat.to_radians().cos(), lat);
+                (fractal(p, stamp, octaves) - fractal(q, stamp, octaves)).abs()
+            })
+            .sum();
+        sum / f64::from(count)
+    }
+
+    #[test]
+    fn a_noise_feature_has_the_same_size_at_each_place() {
+        let stamp = noise_stamp(lonlat_to_dir(0.0, 0.0), 0.2);
+        for octaves in [1, 4] {
+            let at = |lat| noise_change(&stamp, octaves, lat, 0.02);
+            let (equator, middle, pole) = (at((-20.0, 20.0)), at((30.0, 50.0)), at((65.0, 85.0)));
+            for other in [middle, pole] {
+                assert!((other / equator - 1.0).abs() < 0.15, "{equator} {other}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_scale_sets_the_size_of_the_largest_noise_feature() {
+        let stamp = noise_stamp(lonlat_to_dir(0.0, 0.0), 0.2);
+        let wide = Stamp {
+            scale: 0.2,
+            ..stamp
+        };
+        let band = (-60.0, 60.0);
+        // Features twice as large change as much over twice the distance.
+        let narrow = noise_change(&stamp, 1, band, 0.02);
+        let large = noise_change(&wide, 1, band, 0.04);
+        assert!((large / narrow - 1.0).abs() < 0.15, "{narrow} {large}");
+        assert!(noise_change(&wide, 1, band, 0.02) < 0.7 * narrow);
+        // A smaller octave is at least 2 texel steps, and an octave is at most
+        // the scale.
+        let step = FRAC_PI_2 / 1024.0;
+        assert_eq!(noise_octaves(4.0 * step, 1024), 2);
+        assert_eq!(noise_octaves(4.0 * step - 1e-9, 1024), 1);
+        assert_eq!(noise_octaves(step, 1024), 1);
+        assert_eq!(noise_octaves(1.0, 1024), NOISE_OCTAVES);
+    }
+
+    #[test]
+    fn the_ridged_noise_folds_the_soft_noise_at_zero() {
+        let stamp = noise_stamp(lonlat_to_dir(0.0, 0.0), 0.2);
+        let ridged = Stamp {
+            ridged: true,
+            ..stamp
+        };
+        let mut crest = 0.0f64;
+        for i in 0..2000 {
+            let p = lonlat_to_dir(0.37 * f64::from(i), 0.08 * f64::from(i) - 80.0);
+            let soft = fractal(p, &stamp, 1);
+            assert!((fractal(p, &ridged, 1) - (1.0 - 2.0 * soft.abs())).abs() < 1e-12);
+            crest = crest.max(fractal(p, &ridged, 3));
+            // The inverted ridged noise is upside down, and the inverted soft
+            // noise does not change.
+            let inverted = Stamp {
+                invert: true,
+                ..ridged
+            };
+            assert_eq!(fractal(p, &inverted, 3), -fractal(p, &ridged, 3));
+            let soft = Stamp {
+                invert: true,
+                ..stamp
+            };
+            assert_eq!(fractal(p, &soft, 3), fractal(p, &stamp, 3));
+        }
+        assert!(crest > 0.9, "{crest}");
+    }
+
+    #[test]
+    fn the_relief_setting_keeps_low_ground_calm() {
+        let n = 128;
+        let center = lonlat_to_dir(10.0, 5.0);
+        // The largest change of a stamp on ground at a height.
+        let change = |meters: f64, relief: f64| {
+            let mut map = ground_at(n, meters);
+            let before = all_levels(&map);
+            map.stamp(&Stamp {
+                relief,
+                ..noise_stamp(center, 0.2)
+            });
+            let after = all_levels(&map);
+            let pairs = before.iter().zip(&after);
+            pairs.map(|(a, b)| a.abs_diff(*b)).max().unwrap()
+        };
+        let full = change(NOISE_RELIEF_M, 0.0);
+        assert!(full > 3000, "{full}");
+        // With no relief setting, the height does not matter.
+        assert_eq!(change(0.0, 0.0), full);
+        assert_eq!(change(-3000.0, 0.0), full);
+        // With the full setting, the noise grows with the height above sea
+        // level.
+        assert_eq!(change(NOISE_RELIEF_M, 1.0), full);
+        assert_eq!(change(0.0, 1.0), 0);
+        assert_eq!(change(-3000.0, 1.0), 0);
+        let half = change(0.5 * NOISE_RELIEF_M, 1.0);
+        assert!(half.abs_diff(full / 2) < full / 20, "{half} {full}");
+        let some = change(0.0, 0.25);
+        assert!(some.abs_diff(3 * full / 4) < full / 20, "{some} {full}");
+    }
+
+    #[test]
+    fn the_seed_sets_the_noise() {
+        let noised = |seed: u32| {
+            let mut map = smooth_ground(128);
+            map.begin_stroke();
+            for lon in [0.0, 3.0, 6.0] {
+                map.stamp(&Stamp {
+                    seed,
+                    ..noise_stamp(lonlat_to_dir(lon, 5.0), 0.15)
+                });
+            }
+            map.end_stroke();
+            all_levels(&map)
+        };
+        assert!(noised(3) == noised(3));
+        assert!(noised(3) != noised(4));
+    }
+
     #[test]
     fn an_ocean_ridge_stamp_changes_nothing() {
         let mut map = smooth_ground(64);
@@ -4072,6 +4342,7 @@ mod tests {
             Mode::Weather,
             Mode::Warp,
             Mode::Push,
+            Mode::Noise,
         ];
         for mode in modes {
             // The flatten mode goes down to level 0.
@@ -4112,6 +4383,7 @@ mod tests {
             Mode::Weather,
             Mode::Warp,
             Mode::Push,
+            Mode::Noise,
         ];
         for mode in modes {
             // The flatten mode goes up to the highest level.
@@ -4158,6 +4430,7 @@ mod tests {
             Mode::Weather,
             Mode::Warp,
             Mode::Push,
+            Mode::Noise,
         ];
         for mode in modes {
             let band = |level: u16| Limits {
