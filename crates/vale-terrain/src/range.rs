@@ -159,6 +159,12 @@ impl RangeLine {
         self.line.length()
     }
 
+    /// The distance along the line before which a new point does not
+    /// change the levels, in radians.
+    pub fn settled(&self) -> f64 {
+        (self.length() - TAPER * self.spec.radius).max(0.0)
+    }
+
     /// The plan for the points from `from` on, as `StrokeLine::plan`.
     pub fn plan(&self, from: usize) -> RangePlan {
         self.wrap(self.line.plan(from))
