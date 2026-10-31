@@ -8,9 +8,9 @@ use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
 use kurbo::{Point, Vec2};
 use vale_sphere::{Projection, ProjectionKind, ProjectionSpec};
 use vale_store::{
-    Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture, FurnitureId,
-    FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, NorthArrowItem, PageId,
-    PageRecord, PageUnits, Rgb, ScaleBarItem, TextItem,
+    CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture, FurnitureId,
+    FurnitureRecord, FurnitureText, Graticule, LayerId, LegendItem, MapId, Neatline,
+    NorthArrowItem, PageId, PageRecord, PageUnits, Rgb, ScaleBarItem, TextItem,
 };
 
 use std::sync::Arc;
@@ -543,10 +543,10 @@ pub struct AtlasState {
     pub graticule_color: bool,
     /// The color picker of the graticule showed in this frame.
     pub(crate) graticule_shown: bool,
-    /// The color picker of the border is open.
-    pub border_color: bool,
-    /// The color picker of the border showed in this frame.
-    pub(crate) border_shown: bool,
+    /// The color picker of the neatline is open.
+    pub neatline_color: bool,
+    /// The color picker of the neatline showed in this frame.
+    pub(crate) neatline_shown: bool,
     /// The text of the name field of the custom projections.
     pub preset_name: String,
     /// The Add menu is open.
@@ -692,8 +692,8 @@ impl Default for AtlasState {
             kinds: false,
             graticule_color: false,
             graticule_shown: false,
-            border_color: false,
-            border_shown: false,
+            neatline_color: false,
+            neatline_shown: false,
             preset_name: String::new(),
             add: false,
             add_rect: None,
@@ -1895,22 +1895,22 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             state.map_generation,
             frame.map,
             &frame.graticule,
-            border_key(&frame.border),
+            neatline_key(&frame.neatline),
             ppp.to_bits(),
             state.selection,
             layered,
         ));
         // Only the part of the frame on the canvas has a texture.
-        // The border reaches out of the shape by half its width, and a sharp
+        // The neatline reaches out of the shape by half its width, and a sharp
         // corner reaches further.
         // The edge labels outside the shape reach further.
-        let border = if frame.border.on {
-            frame.border.width
+        let neatline = if frame.neatline.on {
+            frame.neatline.width
         } else {
             0.0
         };
         let labels = crate::edge_labels::outside_reach(frame, &mut state.fonts);
-        let reach = (border.max(labels) * f64::from(place.pts_per_mm) / PT_PER_MM) as f32;
+        let reach = (neatline.max(labels) * f64::from(place.pts_per_mm) / PT_PER_MM) as f32;
         let shown = snap(
             place
                 .rect_to_screen(math::shape_bbox(&frame.shape))
@@ -2442,8 +2442,8 @@ fn selection(ui: &egui::Ui, state: &mut AppState, place: PagePlace) {
                 if let Some(&first) = points.first() {
                     points.push(first);
                 }
-                if frame.border.on {
-                    // The border shows between the dashes.
+                if frame.neatline.on {
+                    // The neatline shows between the dashes.
                     painter.extend(egui::Shape::dashed_line(&points, stroke, 6.0, 5.0));
                 } else {
                     painter.add(egui::Shape::line(points, stroke));
@@ -2538,8 +2538,8 @@ pub fn set_rotation(state: &mut AppState, id: FrameId, degrees: f64) {
     });
 }
 
-/// The parts of a border as a hash key.
-fn border_key(b: &Border) -> (bool, Rgb, u64) {
+/// The parts of a neatline as a hash key.
+fn neatline_key(b: &Neatline) -> (bool, Rgb, u64) {
     (b.on, b.color, b.width.to_bits())
 }
 
@@ -2859,31 +2859,31 @@ pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-/// Turns the border of a frame on or off.
-pub fn set_border(state: &mut AppState, id: FrameId, on: bool) {
+/// Turns the neatline of a frame on or off.
+pub fn set_neatline(state: &mut AppState, id: FrameId, on: bool) {
     edit_frame(state, id, |f, _| {
-        f.border.on = on;
+        f.neatline.on = on;
         true
     });
 }
 
-pub fn set_border_color(state: &mut AppState, id: FrameId, color: Rgb) {
+pub fn set_neatline_color(state: &mut AppState, id: FrameId, color: Rgb) {
     edit_frame(state, id, |f, _| {
-        f.border.color = color;
+        f.neatline.color = color;
         true
     });
 }
 
-/// Sets the border width of a frame, in points, rounded to 0.25.
-pub fn set_border_width(state: &mut AppState, id: FrameId, width: f64) {
+/// Sets the neatline width of a frame, in points, rounded to 0.25.
+pub fn set_neatline_width(state: &mut AppState, id: FrameId, width: f64) {
     if !width.is_finite() {
         return;
     }
-    let range = Border::WIDTHS;
+    let range = Neatline::WIDTHS;
     let width = ((width.clamp(*range.start(), *range.end()) * 4.0).round() / 4.0)
         .clamp(*range.start(), *range.end());
     edit_frame(state, id, |f, _| {
-        f.border.width = width;
+        f.neatline.width = width;
         true
     });
 }

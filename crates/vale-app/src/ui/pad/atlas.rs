@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
-use vale_store::{Border, FrameShape, Graticule, LayerId, MapId, PageUnits, RasterId};
+use vale_store::{FrameShape, Graticule, LayerId, MapId, Neatline, PageUnits, RasterId};
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
 use super::icons::Icon;
@@ -47,9 +47,9 @@ pub const GRATICULE_WIDTH: &str = "Graticule width";
 pub const LABEL_FORMAT: &str = "Label format";
 /// The choices of the label format, in the order of `CoordFormat::ALL`.
 pub const LABEL_FORMATS: [&str; 2] = ["DMS", "Decimal"];
-pub const BORDER: &str = "Border";
-pub const BORDER_COLOR: &str = "Border color";
-pub const BORDER_WIDTH: &str = "Border width";
+pub const NEATLINE: &str = "Neatline";
+pub const NEATLINE_COLOR: &str = "Neatline color";
+pub const NEATLINE_WIDTH: &str = "Neatline width";
 pub const CENTER_ON_FRAME: &str = "Center on frame";
 pub const PROJECTION: &str = "Map projection";
 pub const CENTER_LONGITUDE: &str = "Center longitude";
@@ -230,7 +230,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         selection_panel(&ctx, state, &mut controls, &rects);
     }
     graticule_color_frame(&ctx, state);
-    border_color_frame(&ctx, state);
+    neatline_color_frame(&ctx, state);
     super::labels::color_frame(&ctx, state);
     super::rules::picker_frame(&ctx, state);
     raster_cards(&ctx, state, &mut controls, &rects);
@@ -844,12 +844,12 @@ fn frame_tab(
     if frame.graticule.on {
         graticule_rows(ui, state, controls, &frame);
     }
-    let mut border = frame.border.on;
-    if widgets::switch_row(ui, controls, BORDER, BORDER, &mut border) {
-        atlas::set_border(state, id, border);
+    let mut neatline = frame.neatline.on;
+    if widgets::switch_row(ui, controls, NEATLINE, NEATLINE, &mut neatline) {
+        atlas::set_neatline(state, id, neatline);
     }
-    if frame.border.on {
-        border_rows(ui, state, controls, &frame);
+    if frame.neatline.on {
+        neatline_rows(ui, state, controls, &frame);
     }
 
     ui.add_space(6.0);
@@ -925,53 +925,53 @@ fn graticule_rows(
     }
 }
 
-/// The rows of the border of a frame: the color and the width. A tap on the
+/// The rows of the neatline of a frame: the color and the width. A tap on the
 /// color opens a color picker below it.
-fn border_rows(
+fn neatline_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
     frame: &vale_store::FrameRecord,
 ) {
     let id = frame.id;
-    let b = &frame.border;
-    let open = state.atlas.border_color;
-    let row = widgets::color_row(ui, controls, BORDER_COLOR, b.color, open);
+    let b = &frame.neatline;
+    let open = state.atlas.neatline_color;
+    let row = widgets::color_row(ui, controls, NEATLINE_COLOR, b.color, open);
     if row.clicked() {
-        state.atlas.border_color = !open;
+        state.atlas.neatline_color = !open;
         if open {
             widgets::close_keypad(ui.ctx());
         }
     }
-    if state.atlas.border_color {
+    if state.atlas.neatline_color {
         ui.add_space(4.0);
         let mut color = b.color;
-        if widgets::color_picker(ui, controls, BORDER_COLOR, &mut color) {
-            atlas::set_border_color(state, id, color);
+        if widgets::color_picker(ui, controls, NEATLINE_COLOR, &mut color) {
+            atlas::set_neatline_color(state, id, color);
         }
-        state.atlas.border_shown = true;
+        state.atlas.neatline_shown = true;
     }
 
-    let (lo, hi) = (*Border::WIDTHS.start(), *Border::WIDTHS.end());
+    let (lo, hi) = (*Neatline::WIDTHS.start(), *Neatline::WIDTHS.end());
     let mut fraction = (b.width - lo) / (hi - lo);
     let text = format!("{} pt", (b.width * 4.0).round() / 4.0);
     if widgets::row_slider(
         ui,
         controls,
-        BORDER_WIDTH,
-        BORDER_WIDTH,
+        NEATLINE_WIDTH,
+        NEATLINE_WIDTH,
         &mut fraction,
         &text,
     ) {
-        atlas::set_border_width(state, id, lo + fraction * (hi - lo));
+        atlas::set_neatline_width(state, id, lo + fraction * (hi - lo));
     }
 }
 
-/// Closes the color picker of the border when it did not show in this
+/// Closes the color picker of the neatline when it did not show in this
 /// frame, with the keypad of its field.
-fn border_color_frame(ctx: &egui::Context, state: &mut AppState) {
-    let shown = std::mem::take(&mut state.atlas.border_shown);
-    if !shown && std::mem::take(&mut state.atlas.border_color) {
+fn neatline_color_frame(ctx: &egui::Context, state: &mut AppState) {
+    let shown = std::mem::take(&mut state.atlas.neatline_shown);
+    if !shown && std::mem::take(&mut state.atlas.neatline_color) {
         widgets::close_keypad(ctx);
     }
 }

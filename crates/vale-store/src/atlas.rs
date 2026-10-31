@@ -135,26 +135,26 @@ pub struct FrameRecord {
     /// Degrees clockwise.
     pub rotation: f64,
     pub graticule: Graticule,
-    pub border: Border,
+    pub neatline: Neatline,
 }
 
 /// The line along the edge of the shape of a map frame.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Border {
+pub struct Neatline {
     pub on: bool,
     pub color: Rgb,
     /// The line width in points.
     pub width: f64,
 }
 
-impl Border {
+impl Neatline {
     /// The line widths in points that the app offers.
     pub const WIDTHS: RangeInclusive<f64> = 0.25..=6.0;
 }
 
-impl Default for Border {
+impl Default for Neatline {
     fn default() -> Self {
-        Border {
+        Neatline {
             on: true,
             color: [0x2b, 0x2b, 0x2b],
             width: 1.0,
@@ -1317,7 +1317,7 @@ mod tests {
             scale: 50_000_000.0,
             rotation: 15.0,
             graticule: Graticule::default(),
-            border: Border::default(),
+            neatline: Neatline::default(),
         }
     }
 

@@ -21,8 +21,8 @@ use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_from_iter};
 
 use crate::atlas::{
-    self, Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
-    FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, PageId, PageRecord, PageUnits,
+    self, Atlas, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture, FurnitureId,
+    FurnitureRecord, Graticule, MapId, MapRecord, Neatline, PageId, PageRecord, PageUnits,
     ProjectionPreset,
 };
 use crate::image_tile::image_levels;
@@ -1007,7 +1007,7 @@ fn v25(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
-/// The border of a frame. The frames of an older file have no border. The
+/// The neatline of a frame. The frames of an older file have no neatline. The
 /// undo images of the atlas have the old form, so the step removes them, and
 /// the steps that hold nothing else.
 fn v26(tx: &Transaction) -> rusqlite::Result<()> {
@@ -1743,9 +1743,9 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.graticule.interval,
                 hex(f.graticule.color),
                 f.graticule.width,
-                f.border.on,
-                hex(f.border.color),
-                f.border.width,
+                f.neatline.on,
+                hex(f.neatline.color),
+                f.neatline.width,
                 f.graticule.format.id(),
                 f.graticule.meridians.to_json(),
                 f.graticule.parallels.to_json(),
@@ -2723,7 +2723,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         if !positive(border_width) {
             return Err(bad());
         }
-        let border = Border {
+        let neatline = Neatline {
             on: r.get(13)?,
             color: parse_color(&border_color).ok_or_else(bad)?,
             width: border_width,
@@ -2736,7 +2736,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             scale: r.get(7)?,
             rotation: r.get(8)?,
             graticule,
-            border,
+            neatline,
         };
         if atlas.map(map).is_none() {
             return Err(bad());
@@ -3410,7 +3410,7 @@ mod tests {
             scale: 90_000_000.0,
             rotation: 45.0,
             graticule: Graticule::default(),
-            border: Border::default(),
+            neatline: Neatline::default(),
         };
         atlas.add_frame(first, frame.clone()).unwrap();
         let ring = vec![
@@ -3456,7 +3456,7 @@ mod tests {
                     ..EdgeLabels::default()
                 },
             },
-            border: Border {
+            neatline: Neatline {
                 on: false,
                 color: [0xaa, 0x10, 0x20],
                 width: 3.5,
@@ -3484,7 +3484,7 @@ mod tests {
             scale: 50_000_000.0,
             rotation: 0.0,
             graticule: Graticule::default(),
-            border: Border::default(),
+            neatline: Neatline::default(),
         };
         let frame = atlas.add_frame(page, frame).unwrap();
         let title = TextItem {
@@ -3729,10 +3729,10 @@ mod tests {
         assert_eq!(frames.len(), 3);
         for frame in frames {
             assert_eq!(
-                frame.border,
-                Border {
+                frame.neatline,
+                Neatline {
                     on: false,
-                    ..Border::default()
+                    ..Neatline::default()
                 }
             );
         }
