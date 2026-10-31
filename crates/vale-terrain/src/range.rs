@@ -170,6 +170,12 @@ impl RangeLine {
         self.wrap(self.line.plan_between(u))
     }
 
+    /// As `StrokeLine::margin`.
+    #[doc(hidden)]
+    pub fn margin(&self, p: V3) -> f64 {
+        self.line.margin(p)
+    }
+
     /// The brushes of the erode steps of the distances `u` along the line:
     /// one at each point from one brush radius before `u` to its end.
     pub fn brushes(&self, u: Range<f64>) -> Vec<ErodeBrush> {
@@ -194,12 +200,27 @@ impl RangeLine {
 
 impl RangePlan {
     /// The length of a piece of a ridge, in radians.
-    fn piece(&self) -> f64 {
+    pub(crate) fn piece(&self) -> f64 {
         PIECE * self.range.spacing
     }
 
+    /// The seed of the hashes of the pieces.
+    pub(crate) fn seed(&self) -> u32 {
+        self.range.seed ^ SALT_RANGE
+    }
+
+    /// The shift of a crest across the line for each radian along it.
+    pub(crate) fn tilt(&self) -> f64 {
+        let side = if self.hash(0, 0, SIDE) & 1 == 0 {
+            1.0
+        } else {
+            -1.0
+        };
+        side * ECHELON * self.range.spacing / self.piece()
+    }
+
     fn hash(&self, k: i32, j: i32, channel: u32) -> u32 {
-        hash(k as u32, j as u32, channel, self.range.seed ^ SALT_RANGE)
+        hash(k as u32, j as u32, channel, self.seed())
     }
 
     /// The distance from the line as a part of the width of the range at
@@ -233,12 +254,7 @@ impl RangePlan {
         let (b0, b1) = (self.start(k, j), self.start(k, j + 1));
         let o = OVERLAP * piece;
         let along = smoothstep(b0 - o, b0 + o, u) * (1.0 - smoothstep(b1 - o, b1 + o, u));
-        let side = if self.hash(0, 0, SIDE) & 1 == 0 {
-            1.0
-        } else {
-            -1.0
-        };
-        let tilt = side * ECHELON * spacing / piece;
+        let tilt = self.tilt();
         let shift = SHIFT * (2.0 * unit(self.hash(k, j, SHIFT_CHANNEL)) - 1.0);
         let center = spacing * (f64::from(k) + shift) + tilt * (u - 0.5 * (b0 + b1));
         (center, along)
@@ -861,7 +877,7 @@ mod tests {
             crossings += seed_crossings;
             low += seed_low;
         }
-        assert!(along >= 0.5, "{along}");
+        assert!(along >= 0.75, "{along}");
         assert!(
             crossings > 0 && low * 10 >= crossings * 7,
             "{low} of {crossings}"

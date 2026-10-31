@@ -76,6 +76,8 @@ const DEPOSIT = 9u;
 // A pass of this mode has no stamps. It lays the ocean ridge of `ridge`, as
 // `Heightmap::ridge` does.
 const OCEAN_RIDGE = 10u;
+// The mode of a range pass.
+const RANGE = 11u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -158,6 +160,13 @@ struct RidgeLine {
     flat_floor: f32,
     band_km: f32,
     segment_depth: f32,
+    // The numbers of a range pass: the height, the ridge spacing, the piece
+    // length, and the tilt of a crest. A range pass has the piece length as
+    // `segment`.
+    range_height: f32,
+    range_spacing: f32,
+    range_piece: f32,
+    range_tilt: f32,
     segments: array<RidgeSegment, RIDGE_SEGMENTS>,
 }
 
@@ -1577,6 +1586,75 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     return clamp(old + floor(change + 0.5), 0.0, 65535.0);
 }
 
+// The numbers of `range.rs`.
+const RANGE_BREAK_JITTER = 0.2;
+const RANGE_OVERLAP = 0.15;
+const RANGE_SHIFT = 0.15;
+const RANGE_HALF = 0.6;
+const RANGE_CORE_FLAT = 0.15;
+const RANGE_CORE = 0.55;
+const RANGE_CORE_SHARE = 0.55;
+const RANGE_BASE = 0.2;
+const RANGE_BREAK = 0u;
+const RANGE_SHIFT_CHANNEL = 1u;
+const RANGE_HEIGHT = 2u;
+const RANGE_PHASE = 4u;
+
+// The hash of piece `j` of ridge `k`. The seed has the salt of the range.
+fn range_hash(k: i32, j: i32, c: u32) -> u32 {
+    return hash(vec3<u32>(bitcast<u32>(k), bitcast<u32>(j), c), ridge.seed);
+}
+
+// `RangePlan::start`, from the start of cell `cell`.
+fn range_start(k: i32, j: i32, cell: i32, phase: f32) -> f32 {
+    let jitter = RANGE_BREAK_JITTER * (2.0 * unit(range_hash(k, j, RANGE_BREAK)) - 1.0);
+    return (f32(j - cell) + phase + jitter) * ridge.range_piece;
+}
+
+// `RangePlan::ridge_part`. The distance along the line is `rest` from the
+// start of cell `cell`.
+fn range_part(cell: i32, rest: f32, across: f32) -> f32 {
+    let spacing = ridge.range_spacing;
+    let piece = ridge.range_piece;
+    let o = RANGE_OVERLAP * piece;
+    let half = RANGE_HALF * spacing;
+    let k0 = i32(round(across / spacing));
+    var part = 0.0;
+    for (var k = k0 - 2; k <= k0 + 2; k++) {
+        let phase = unit(range_hash(k, 0, RANGE_PHASE));
+        let j0 = cell + i32(floor(rest / piece - phase));
+        for (var j = j0 - 1; j <= j0 + 1; j++) {
+            let b0 = range_start(k, j, cell, phase);
+            let b1 = range_start(k, j + 1, cell, phase);
+            let along = smooth_between(b0 - o, b0 + o, rest)
+                * (1.0 - smooth_between(b1 - o, b1 + o, rest));
+            let shift = RANGE_SHIFT * (2.0 * unit(range_hash(k, j, RANGE_SHIFT_CHANNEL)) - 1.0);
+            let center = spacing * (f32(k) + shift) + ridge.range_tilt * (rest - 0.5 * (b0 + b1));
+            let height = 0.75 + 0.25 * unit(range_hash(k, j, RANGE_HEIGHT));
+            part = max(part, height * along * bump(abs(across - center) / half));
+        }
+    }
+    return part;
+}
+
+// The level of a texel on the range. `old` is its level from before the
+// stroke. The steps are those of `RangePlan::level`, without the limits.
+fn range_level(at: RidgePoint, old: f32) -> f32 {
+    let r = ridge.radius;
+    let taper = smooth_between(0.0, TAPER * r, at.end);
+    let d = sqrt(at.across * at.across + at.past2) / (r * (TAPER_WIDTH + (1.0 - TAPER_WIDTH) * taper));
+    let core = 1.0 - smooth_between(RANGE_CORE_FLAT, RANGE_CORE, d);
+    let foot = 1.0 - smooth_between(0.0, 1.0, d);
+    let envelope = RANGE_CORE_SHARE * core + (1.0 - RANGE_CORE_SHARE) * foot;
+    if envelope <= 0.0 {
+        return old;
+    }
+    let part = range_part(i32(at.cell), at.rest, at.across);
+    let ridges = RANGE_BASE + (1.0 - RANGE_BASE) * part;
+    let change = ridge.range_height * at.flow * taper * envelope * ridges;
+    return clamp(old + floor(change + 0.5), 0.0, 65535.0);
+}
+
 // The level of a texel after a change from `old` to `next`. The steps are
 // those of `Limits::apply`.
 fn limited(old: f32, next: f32) -> f32 {
@@ -1657,6 +1735,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         let point = ridge_place(p);
         if point.on {
             value = limited(value, ridge_level(point, ridge_noise(p), value));
+        }
+        return vec4<u32>(u32(value), 0u, 0u, 0u);
+    }
+    if group.mode == RANGE {
+        let point = ridge_place(normalize(texel_dir(group.face, at)));
+        if point.on {
+            value = limited(value, range_level(point, value));
         }
         return vec4<u32>(u32(value), 0u, 0u, 0u);
     }
