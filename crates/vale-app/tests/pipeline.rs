@@ -1927,8 +1927,12 @@ fn the_north_arrow_follows_the_rotation() {
     let whole = new_frame(&page, &doc.project.atlas.maps[0], projection);
     let record = doc.project.atlas.frame_mut(frame).unwrap();
     record.scale = whole.scale;
-    record.center = [60.0, 30.0];
+    record.center = [0.0, 0.0];
     record.rotation = 0.0;
+    let (_, variation) = north(&doc, &mut pipeline);
+    assert!(variation > furniture::MAX_VARIATION, "{variation}");
+    let record = doc.project.atlas.frame_mut(frame).unwrap();
+    record.center = [60.0, 30.0];
     let (_, variation) = north(&doc, &mut pipeline);
     assert!(variation > furniture::MAX_VARIATION, "{variation}");
     assert!(furniture_items(&doc, &mut pipeline, id, Purpose::Export).is_empty());
@@ -1954,8 +1958,10 @@ fn furniture_stays_vector_and_text_in_pdf() {
         frame: Some(frame),
         ..ScaleBarItem::default()
     };
+    // The frame shows the whole world, where north varies.
     let arrow = NorthArrowItem {
         frame: Some(frame),
+        hide_if_varies: false,
         ..NorthArrowItem::default()
     };
     let ids = [

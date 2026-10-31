@@ -495,7 +495,7 @@ fn north_at(projection: &Projection, vt: &crate::view::ViewTransform, p: LonLat)
 pub fn north(projection: &Projection, frame: &FrameRecord) -> Option<(f64, f64)> {
     const NEAR_POLE: f64 = 90.0 - 0.01;
     // An odd number, so the grid has the middle of each edge.
-    const SAMPLES: usize = 5;
+    const SAMPLES: usize = 17;
     if frame.center[1].abs() > NEAR_POLE {
         return Some((0.0, 180.0));
     }
