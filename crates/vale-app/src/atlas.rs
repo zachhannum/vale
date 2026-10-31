@@ -6,7 +6,8 @@
 use kurbo::{Point, Rect, Vec2};
 use vale_sphere::{Projection, auto_interval};
 use vale_store::{
-    Border, CoordFormat, FrameId, FrameRecord, FrameShape, Graticule, MapRecord, PageRecord,
+    Border, CoordFormat, FrameId, FrameRecord, FrameShape, Graticule, MapRecord, Neatline,
+    PageRecord,
 };
 
 use crate::view::{View, ViewTransform};
@@ -548,6 +549,7 @@ pub fn new_frame(page: &PageRecord, map: &MapRecord, projection: &Projection) ->
         scale: fit_scale(projection.bounds(), rect.width(), rect.height()),
         rotation: 0.0,
         graticule: Graticule::default(),
+        neatline: Neatline::default(),
         border: Border::default(),
     }
 }
@@ -571,15 +573,20 @@ pub fn auto_graticule_interval(projection: &Projection, frame: &FrameRecord) -> 
 /// graticule is off. A set interval is never less than the interval that
 /// puts the lines 1.5 mm apart.
 pub fn graticule_interval(projection: &Projection, frame: &FrameRecord) -> Option<f64> {
-    let g = &frame.graticule;
-    if !g.on {
-        return None;
-    }
+    frame
+        .graticule
+        .on
+        .then(|| interval_at_scale(projection, frame))
+}
+
+/// The graticule interval that a frame draws when its graticule is on, in
+/// degrees.
+pub fn interval_at_scale(projection: &Projection, frame: &FrameRecord) -> f64 {
     let deg_per_mm = degrees_per_mm(projection, frame);
-    Some(match g.interval {
+    match frame.graticule.interval {
         Some(i) => i.max(auto_interval(1.5 * deg_per_mm)),
         None => auto_interval(25.0 * deg_per_mm),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -608,6 +615,7 @@ mod tests {
                 on: false,
                 ..Graticule::default()
             },
+            neatline: Neatline::default(),
             border: Border::default(),
         }
     }
@@ -618,6 +626,7 @@ mod tests {
             name: String::new(),
             width_mm: 297.0,
             height_mm: 210.0,
+            paper: [0xff, 0xff, 0xff],
             units: PageUnits::Mm,
             frames: (0..frames).map(|_| frame(1e7)).collect(),
             furniture: Vec::new(),

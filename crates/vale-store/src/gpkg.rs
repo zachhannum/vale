@@ -22,8 +22,8 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 
 use crate::atlas::{
     self, Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
-    FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, PageId, PageRecord, PageUnits,
-    ProjectionPreset,
+    FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, Neatline, PageId, PageRecord,
+    PageUnits, ProjectionPreset,
 };
 use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 33;
+pub const FORMAT_VERSION: u32 = 34;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -73,6 +73,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v31,
     v32,
     v33,
+    v34,
 ];
 
 /// `GPKG` in ASCII.
@@ -1007,7 +1008,7 @@ fn v25(tx: &Transaction) -> rusqlite::Result<()> {
     )
 }
 
-/// The border of a frame. The frames of an older file have no border. The
+/// The neatline of a frame. The frames of an older file have no neatline. The
 /// undo images of the atlas have the old form, so the step removes them, and
 /// the steps that hold nothing else.
 fn v26(tx: &Transaction) -> rusqlite::Result<()> {
@@ -1085,6 +1086,22 @@ fn v33(tx: &Transaction) -> rusqlite::Result<()> {
              AND NOT EXISTS (SELECT 1 FROM gpkg_extensions e
                WHERE e.table_name = c.table_name AND e.extension_name = 'vale_project');",
     )
+}
+
+/// The paper color of a page and the border of a frame. An older page is
+/// white, and an older frame has no border.
+fn v34(tx: &Transaction) -> rusqlite::Result<()> {
+    for (table, column, kind) in [
+        ("vale_page", "paper", "TEXT NOT NULL DEFAULT 'FFFFFF'"),
+        ("vale_frame", "frame_border", "TEXT NOT NULL DEFAULT '{}'"),
+    ] {
+        let sql = format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name = ?1");
+        let count: i64 = tx.query_row(&sql, [column], |r| r.get(0))?;
+        if count == 0 {
+            tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// The point symbols that the user adds. An older file has none.
@@ -1701,16 +1718,16 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
         }
     }
     let mut page = tx.prepare(
-        "INSERT INTO vale_page (id, position, name, width_mm, height_mm, units)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO vale_page (id, position, name, width_mm, height_mm, units, paper)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
     let mut frame = tx.prepare(
         "INSERT INTO vale_frame (id, page_id, position, map_id, shape, rings, center_lon,
            center_lat, scale, rotation, graticule, graticule_interval, graticule_color,
            graticule_width, border, border_color, border_width, graticule_format,
-           meridian_labels, parallel_labels)
+           meridian_labels, parallel_labels, frame_border)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-           ?18, ?19, ?20)",
+           ?18, ?19, ?20, ?21)",
     )?;
     let mut furniture = tx.prepare(
         "INSERT INTO vale_furniture (id, page_id, position, kind, x0, y0, x1, y1, frame_id,
@@ -1725,7 +1742,8 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
             p.name,
             p.width_mm,
             p.height_mm,
-            units
+            units,
+            hex(p.paper)
         ])?;
         for (position, f) in p.frames.iter().enumerate() {
             frame.execute(params![
@@ -1743,12 +1761,13 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.graticule.interval,
                 hex(f.graticule.color),
                 f.graticule.width,
-                f.border.on,
-                hex(f.border.color),
-                f.border.width,
+                f.neatline.on,
+                hex(f.neatline.color),
+                f.neatline.width,
                 f.graticule.format.id(),
                 f.graticule.meridians.to_json(),
                 f.graticule.parallels.to_json(),
+                f.border.to_json(),
             ])?;
         }
         for (position, f) in p.furniture.iter().enumerate() {
@@ -2660,11 +2679,13 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         let map = map.ok_or_else(|| corrupt(format!("label classes of map {}", id.0)))?;
         map.labels.insert(LayerId(r.get(1)?), r.get(2)?);
     }
-    let mut rows = conn
-        .prepare("SELECT id, name, width_mm, height_mm, units FROM vale_page ORDER BY position")?;
+    let mut rows = conn.prepare(
+        "SELECT id, name, width_mm, height_mm, units, paper FROM vale_page ORDER BY position",
+    )?;
     let mut rows = rows.query([])?;
     while let Some(r) = rows.next()? {
         let units: String = r.get(4)?;
+        let paper: String = r.get(5)?;
         atlas.pages.push(PageRecord {
             id: PageId(r.get(0)?),
             name: r.get(1)?,
@@ -2672,6 +2693,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             height_mm: r.get(3)?,
             units: PageUnits::from_id(&units)
                 .ok_or_else(|| corrupt(format!("page units {units:?}")))?,
+            paper: parse_color(&paper).ok_or_else(|| corrupt(format!("paper {paper:?}")))?,
             frames: Vec::new(),
             furniture: Vec::new(),
         });
@@ -2688,7 +2710,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         "SELECT id, page_id, map_id, shape, rings, center_lon, center_lat, scale, rotation,
            graticule, graticule_interval, graticule_color, graticule_width,
            border, border_color, border_width, graticule_format, meridian_labels,
-           parallel_labels
+           parallel_labels, frame_border
          FROM vale_frame ORDER BY page_id, position",
     )?;
     let mut rows = rows.query([])?;
@@ -2723,11 +2745,12 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         if !positive(border_width) {
             return Err(bad());
         }
-        let border = Border {
+        let neatline = Neatline {
             on: r.get(13)?,
             color: parse_color(&border_color).ok_or_else(bad)?,
             width: border_width,
         };
+        let border: String = r.get(19)?;
         let frame = FrameRecord {
             id: FrameId(id),
             map,
@@ -2736,7 +2759,8 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             scale: r.get(7)?,
             rotation: r.get(8)?,
             graticule,
-            border,
+            neatline,
+            border: Border::from_json(&border).ok_or_else(bad)?,
         };
         if atlas.map(map).is_none() {
             return Err(bad());
@@ -3401,6 +3425,7 @@ mod tests {
         atlas.add_map();
         let first = atlas.pages[0].id;
         let second = atlas.add_page(Some(first), 420.0, 297.0, PageUnits::In);
+        atlas.page_mut(second).unwrap().paper = [0xf3, 0xef, 0xdf];
         atlas.page_mut(second).unwrap().name = "North".into();
         let frame = FrameRecord {
             id: FrameId(0),
@@ -3410,6 +3435,7 @@ mod tests {
             scale: 90_000_000.0,
             rotation: 45.0,
             graticule: Graticule::default(),
+            neatline: Neatline::default(),
             border: Border::default(),
         };
         atlas.add_frame(first, frame.clone()).unwrap();
@@ -3456,10 +3482,28 @@ mod tests {
                     ..EdgeLabels::default()
                 },
             },
-            border: Border {
+            neatline: Neatline {
                 on: false,
                 color: [0xaa, 0x10, 0x20],
                 width: 3.5,
+            },
+            border: Border {
+                on: true,
+                style: atlas::BorderStyle::Graduated,
+                color: [9, 8, 7],
+                color2: [6, 5, 4],
+                width_mm: 2.5,
+                distances_mm: [-12.5, 4.0, 4.0, 4.0],
+                gap_mm: 2.5,
+                stroke: true,
+                stroke_color: [3, 2, 1],
+                stroke_width: 1.5,
+                grid: true,
+                grid_text: atlas::FurnitureText {
+                    italic: true,
+                    ..atlas::FurnitureText::sized(7.0)
+                },
+                grid_columns: atlas::GridColumns::Numbers,
             },
             ..frame
         };
@@ -3484,6 +3528,7 @@ mod tests {
             scale: 50_000_000.0,
             rotation: 0.0,
             graticule: Graticule::default(),
+            neatline: Neatline::default(),
             border: Border::default(),
         };
         let frame = atlas.add_frame(page, frame).unwrap();
@@ -3729,10 +3774,10 @@ mod tests {
         assert_eq!(frames.len(), 3);
         for frame in frames {
             assert_eq!(
-                frame.border,
-                Border {
+                frame.neatline,
+                Neatline {
                     on: false,
-                    ..Border::default()
+                    ..Neatline::default()
                 }
             );
         }
@@ -3769,6 +3814,14 @@ mod tests {
             r#"meridian_labels = '{"size": 0}'"#,
             r#"parallel_labels = '{"orientation": "up"}'"#,
             r#"parallel_labels = '{"color": "blue"}'"#,
+            "frame_border = 'none'",
+            r#"frame_border = '{"width": 0}'"#,
+            r#"frame_border = '{"style": "dotted"}'"#,
+            r#"frame_border = '{"stroke_width": 0}'"#,
+            r#"frame_border = '{"distances": [1, 2, 3]}'"#,
+            r#"frame_border = '{"gap": -1}'"#,
+            r#"frame_border = '{"grid_columns": "roman"}'"#,
+            r#"frame_border = '{"grid_text": {"size": 0}}'"#,
         ] {
             let dir = tempfile::tempdir().unwrap();
             let mut project = Project::new(World::default());
@@ -3956,6 +4009,32 @@ mod tests {
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
         assert!(loaded.atlas.pages.iter().all(|p| p.furniture.is_empty()));
         assert_eq!(loaded.atlas, Atlas::new(Units::Metric));
+    }
+
+    #[test]
+    fn a_file_of_version_33_has_white_paper_and_no_frame_border() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        atlas_edit(&mut project);
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE vale_page DROP COLUMN paper;
+             ALTER TABLE vale_frame DROP COLUMN frame_border;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 33);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        for page in &loaded.atlas.pages {
+            assert_eq!(page.paper, [0xff, 0xff, 0xff]);
+            for frame in &page.frames {
+                assert_eq!(frame.border, Border::default());
+            }
+        }
     }
 
     #[test]

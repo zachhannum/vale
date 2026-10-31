@@ -70,6 +70,8 @@ pub struct PageRecord {
     pub width_mm: f64,
     pub height_mm: f64,
     pub units: PageUnits,
+    /// The color of the paper.
+    pub paper: Rgb,
     /// From the bottom frame to the top frame.
     pub frames: Vec<FrameRecord>,
     /// From the bottom item to the top item.
@@ -135,29 +137,198 @@ pub struct FrameRecord {
     /// Degrees clockwise.
     pub rotation: f64,
     pub graticule: Graticule,
+    pub neatline: Neatline,
     pub border: Border,
 }
 
 /// The line along the edge of the shape of a map frame.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Border {
+pub struct Neatline {
     pub on: bool,
     pub color: Rgb,
     /// The line width in points.
     pub width: f64,
 }
 
-impl Border {
+impl Neatline {
     /// The line widths in points that the app offers.
     pub const WIDTHS: RangeInclusive<f64> = 0.25..=6.0;
+}
+
+impl Default for Neatline {
+    fn default() -> Self {
+        Neatline {
+            on: true,
+            color: [0x2b, 0x2b, 0x2b],
+            width: 1.0,
+        }
+    }
+}
+
+/// A band around a map frame, at a distance outside the bounding box of its
+/// shape.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Border {
+    pub on: bool,
+    pub style: BorderStyle,
+    pub color: Rgb,
+    /// The second color of a graduated band.
+    pub color2: Rgb,
+    /// The width of the band in millimeters.
+    pub width_mm: f64,
+    /// The distance in millimeters from the bounding box to the band, at
+    /// the top, the right, the bottom, and the left. A negative distance
+    /// puts that side inside the box, and the shape covers the band there.
+    pub distances_mm: [f64; 4],
+    /// Where a part of the shape crosses the band, the space in millimeters
+    /// between the shape and the band.
+    pub gap_mm: f64,
+    /// A line on the inner and the outer edge of the band.
+    pub stroke: bool,
+    pub stroke_color: Rgb,
+    /// The stroke width in points.
+    pub stroke_width: f64,
+    /// The reference grid: a letter in the band for each interval of the
+    /// meridians, and a number for each interval of the parallels.
+    pub grid: bool,
+    /// The text of the labels of the reference grid.
+    pub grid_text: FurnitureText,
+    /// The labels of the columns. The rows have the other kind.
+    pub grid_columns: GridColumns,
+}
+
+/// The labels of the columns of a reference grid.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GridColumns {
+    /// A, B, C for the columns, and 1, 2, 3 for the rows.
+    #[default]
+    Letters,
+    /// 1, 2, 3 for the columns, and A, B, C for the rows.
+    Numbers,
+}
+
+impl GridColumns {
+    pub const ALL: [GridColumns; 2] = [GridColumns::Letters, GridColumns::Numbers];
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            GridColumns::Letters => "letters",
+            GridColumns::Numbers => "numbers",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<GridColumns> {
+        GridColumns::ALL.into_iter().find(|c| c.id() == id)
+    }
+}
+
+/// How a border band is colored.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BorderStyle {
+    /// One color.
+    #[default]
+    Solid,
+    /// Two colors, which change at each graticule line.
+    Graduated,
+}
+
+impl BorderStyle {
+    pub const ALL: [BorderStyle; 2] = [BorderStyle::Solid, BorderStyle::Graduated];
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            BorderStyle::Solid => "solid",
+            BorderStyle::Graduated => "graduated",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<BorderStyle> {
+        BorderStyle::ALL.into_iter().find(|s| s.id() == id)
+    }
+}
+
+impl Border {
+    /// The band widths in millimeters that the app offers.
+    pub const WIDTHS: RangeInclusive<f64> = 0.25..=10.0;
+    /// The distances in millimeters that the app offers.
+    pub const DISTANCES: RangeInclusive<f64> = -100.0..=30.0;
+    /// The gaps in millimeters that the app offers.
+    pub const GAPS: RangeInclusive<f64> = 0.0..=10.0;
+    /// The stroke widths in points that the app offers.
+    pub const STROKE_WIDTHS: RangeInclusive<f64> = 0.25..=4.0;
+
+    /// The border as JSON text, for a project file.
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "on": self.on,
+            "style": self.style.id(),
+            "color": hex(self.color),
+            "color2": hex(self.color2),
+            "width": self.width_mm,
+            "distances": self.distances_mm,
+            "gap": self.gap_mm,
+            "grid_columns": self.grid_columns.id(),
+            "stroke": self.stroke,
+            "stroke_color": hex(self.stroke_color),
+            "stroke_width": self.stroke_width,
+            "grid": self.grid,
+            "grid_text": self.grid_text.value(),
+        })
+        .to_string()
+    }
+
+    /// Reads [`Border::to_json`]. A missing key gets its default. `None` if
+    /// a value is bad.
+    pub fn from_json(text: &str) -> Option<Border> {
+        let map = json_object(text)?;
+        let mut b = Border::default();
+        read_flag(&map, "on", &mut b.on)?;
+        if let Some(v) = map.get("style") {
+            b.style = BorderStyle::from_id(v.as_str()?)?;
+        }
+        read_color(&map, "color", &mut b.color)?;
+        read_color(&map, "color2", &mut b.color2)?;
+        read_number(&map, "width", &mut b.width_mm)?;
+        if let Some(v) = map.get("distances") {
+            let list = v.as_array().filter(|l| l.len() == 4)?;
+            for (to, v) in b.distances_mm.iter_mut().zip(list) {
+                *to = v.as_f64().filter(|x| x.is_finite())?;
+            }
+        }
+        read_number(&map, "gap", &mut b.gap_mm)?;
+        if let Some(v) = map.get("grid_columns") {
+            b.grid_columns = GridColumns::from_id(v.as_str()?)?;
+        }
+        read_flag(&map, "stroke", &mut b.stroke)?;
+        read_color(&map, "stroke_color", &mut b.stroke_color)?;
+        read_number(&map, "stroke_width", &mut b.stroke_width)?;
+        read_flag(&map, "grid", &mut b.grid)?;
+        b.grid_text = b.grid_text.read_key(&map, "grid_text")?;
+        (b.width_mm > 0.0 && b.stroke_width > 0.0 && b.gap_mm >= 0.0).then_some(b)
+    }
 }
 
 impl Default for Border {
     fn default() -> Self {
         Border {
-            on: true,
-            color: [0x2b, 0x2b, 0x2b],
-            width: 1.0,
+            on: false,
+            style: BorderStyle::Solid,
+            color: [0xc9, 0xaa, 0xa0],
+            color2: [0xff, 0xff, 0xff],
+            width_mm: 2.0,
+            distances_mm: [8.0; 4],
+            gap_mm: 1.0,
+            stroke: false,
+            stroke_color: [0x2b, 0x2b, 0x2b],
+            stroke_width: 0.5,
+            grid: false,
+            grid_text: FurnitureText {
+                color: [0x2b, 0x2b, 0x2b],
+                ..FurnitureText::sized(5.0)
+            },
+            grid_columns: GridColumns::Letters,
         }
     }
 }
@@ -986,6 +1157,7 @@ impl Atlas {
                 width_mm,
                 height_mm,
                 units,
+                paper: [0xff, 0xff, 0xff],
                 frames: Vec::new(),
                 furniture: Vec::new(),
             }],
@@ -1015,6 +1187,7 @@ impl Atlas {
             width_mm,
             height_mm,
             units,
+            paper: [0xff, 0xff, 0xff],
             frames: Vec::new(),
             furniture: Vec::new(),
         };
@@ -1317,6 +1490,7 @@ mod tests {
             scale: 50_000_000.0,
             rotation: 15.0,
             graticule: Graticule::default(),
+            neatline: Neatline::default(),
             border: Border::default(),
         }
     }

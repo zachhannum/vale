@@ -142,6 +142,8 @@ pub enum FontTarget {
     Edge(vale_store::FrameId, atlas::EdgeSet),
     /// A text part of an item of furniture.
     Item(vale_store::FurnitureId, atlas::TextPart),
+    /// The labels of the reference grid of a frame.
+    Grid(vale_store::FrameId),
 }
 
 /// The time between two reads of the projects folders while a download runs.
@@ -1426,6 +1428,16 @@ impl AppState {
                 let rec = self.doc.project.atlas.furniture(id)?;
                 Some(part.of(&rec.item)?.font.clone())
             }
+            FontTarget::Grid(id) => Some(
+                self.doc
+                    .project
+                    .atlas
+                    .frame(id)?
+                    .border
+                    .grid_text
+                    .font
+                    .clone(),
+            ),
         }
     }
 
@@ -2985,6 +2997,11 @@ impl AppState {
             Action::SetFont(FontTarget::Item(id, part), family) => {
                 atlas::edit_text(self, id, part, true, |s| {
                     crate::fonts::set_font(&mut s.font, &family);
+                });
+            }
+            Action::SetFont(FontTarget::Grid(id), family) => {
+                atlas::edit_grid_text(self, id, true, |t| {
+                    crate::fonts::set_font(&mut t.font, &family);
                 });
             }
             Action::AddSymbol(path) => {
