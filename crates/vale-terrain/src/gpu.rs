@@ -75,6 +75,9 @@ struct FaceStamp {
     talus: f32,
     scale: f32,
     seed: u32,
+    /// The motion of the push mode, and the padding of a `vec3`.
+    motion: [f32; 3],
+    pad: u32,
 }
 
 impl FaceStamp {
@@ -103,6 +106,8 @@ impl FaceStamp {
             talus: stamp.talus as f32,
             scale: stamp.scale as f32,
             seed: stamp.seed,
+            motion: stamp.motion.map(|m| m as f32),
+            pad: 0,
         }
     }
 }
@@ -728,7 +733,8 @@ impl GpuHeightmap {
     /// is the same as that of `stamp` for each one in order.
     ///
     /// The stamps of a group have one mode and the same limits. A smooth
-    /// stamp, a weather stamp, or a warp stamp is a group of one.
+    /// stamp, a weather stamp, a warp stamp, or a push stamp is a group of
+    /// one.
     /// A group has `GROUP_STAMPS` stamps at most, and it stops before a stamp
     /// that is far from the others.
     ///
@@ -749,11 +755,11 @@ impl GpuHeightmap {
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
             return same.count();
         }
-        // A smooth stamp, a weather stamp, or a warp stamp reads the results
-        // of the stamp before it on other texels. The other modes read one
-        // texel.
+        // A smooth stamp, a weather stamp, a warp stamp, or a push stamp
+        // reads the results of the stamp before it on other texels. The other
+        // modes read one texel.
         let most = match mode {
-            Mode::Smooth | Mode::Weather | Mode::Warp => 1,
+            Mode::Smooth | Mode::Weather | Mode::Warp | Mode::Push => 1,
             _ => GROUP_STAMPS,
         };
         // The values of each slot go to the GPU at the submit, so each pass
@@ -786,10 +792,10 @@ impl GpuHeightmap {
         let touched = cover.rects.iter().enumerate();
         let touched = touched.filter_map(|(face, rect)| Some((face, (*rect)?)));
         let touched: Vec<_> = touched.collect();
-        // A warp pass reads the levels from before the stamp on each face.
-        // Thus all passes come before the first copy, and each tile has its
-        // memory before the first pass.
-        let copy_last = mode == Mode::Warp;
+        // A warp pass or a push pass reads the levels from before the stamp
+        // on each face. Thus all passes come before the first copy, and each
+        // tile has its memory before the first pass.
+        let copy_last = matches!(mode, Mode::Warp | Mode::Push);
         if copy_last {
             for &(face, rect) in &touched {
                 self.ensure(queue, state, face, rect);
@@ -810,6 +816,7 @@ impl GpuHeightmap {
                     Mode::Warp => 7,
                     Mode::Ridge => 8,
                     Mode::Deposit => 9,
+                    Mode::Push => 12,
                 },
                 reach: first.reach as i32,
                 size: self.face_size as i32,

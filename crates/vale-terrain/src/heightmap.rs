@@ -63,6 +63,11 @@ pub enum Mode {
     /// The mode of the range brush. A stamp of this mode changes nothing.
     /// `Heightmap::range` makes the change.
     Range,
+    /// Moves the ground in the direction of `Stamp::motion`. Each texel takes
+    /// the level of the ground behind it, at the motion times the effect of
+    /// the brush. Each new level is between the lowest level and the highest
+    /// level under the brush.
+    Push,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -140,11 +145,16 @@ pub struct Stamp {
     pub scale: f64,
     /// The seed of the noise of the warp mode.
     pub seed: u32,
+    /// The move of the pen to this stamp from the stamp before it, in the
+    /// push mode. It is square to the center, and its length is the angle in
+    /// radians.
+    pub motion: V3,
     pub limits: Limits,
 }
 
-/// The offset of the warp mode is zero at this number of texel steps from
-/// the brush edge. Each texel that a warp stamp reads is then in the brush.
+/// The offset of the warp mode and of the push mode is zero at this number of
+/// texel steps from the brush edge. Each texel that a warp stamp or a push
+/// stamp reads is then in the brush.
 const WARP_MARGIN: f64 = 3.0;
 
 /// The slope of an angle on a world, in 16-bit steps for each texel step.
@@ -967,8 +977,8 @@ impl Heightmap {
             return 0;
         }
         let plan = self.stamp_plan(stamp);
-        if stamp.mode == Mode::Warp {
-            return self.warp_stamp(&plan);
+        if matches!(stamp.mode, Mode::Warp | Mode::Push) {
+            return self.offset_stamp(&plan);
         }
         let mut visited = 0;
         for (face, rect) in plan.rects.into_iter().enumerate() {
@@ -1092,7 +1102,9 @@ impl Heightmap {
                                 old + (level - old).max(0.0) * amount.min(1.0)
                             }
                             Mode::Weather => unreachable!("`stamp` sends it to `weather_face`"),
-                            Mode::Warp => unreachable!("`stamp` sends it to `warp_stamp`"),
+                            Mode::Warp | Mode::Push => {
+                                unreachable!("`stamp` sends it to `offset_stamp`")
+                            }
                             Mode::Smooth => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -1237,13 +1249,13 @@ impl Heightmap {
         w * h
     }
 
-    /// Applies one warp stamp. Each face reads the levels from before the
-    /// stamp. Returns the number of texels that it visited.
-    fn warp_stamp(&mut self, plan: &StampPlan) -> usize {
+    /// Applies one warp stamp or push stamp. Each face reads the levels from
+    /// before the stamp. Returns the number of texels that it visited.
+    fn offset_stamp(&mut self, plan: &StampPlan) -> usize {
         let faces = plan.rects.iter().enumerate();
         let faces = faces.filter_map(|(face, rect)| Some((face, (*rect)?)));
         let new: Vec<_> = faces
-            .map(|(face, rect)| (face, rect, self.warp_face(face, rect, &plan.stamp)))
+            .map(|(face, rect)| (face, rect, self.offset_face(face, rect, &plan.stamp)))
             .collect();
         let mut visited = 0;
         for (face, rect, levels) in new {
@@ -1256,14 +1268,17 @@ impl Heightmap {
         visited
     }
 
-    /// The levels of a rectangle of one face after one warp stamp, row by
-    /// row.
-    fn warp_face(&self, face: usize, rect: TexelRect, stamp: &Stamp) -> Vec<u16> {
+    /// The levels of a rectangle of one face after one warp stamp or push
+    /// stamp, row by row.
+    fn offset_face(&self, face: usize, rect: TexelRect, stamp: &Stamp) -> Vec<u16> {
         let mut levels = Vec::with_capacity((rect.x1 - rect.x0) * (rect.y1 - rect.y0));
         for y in rect.y0..rect.y1 {
             for x in rect.x0..rect.x1 {
                 let p = self.texel_dir(face, x, y);
-                let offset = warp_offset(stamp, self.n, p);
+                let offset = match stamp.mode {
+                    Mode::Push => push_offset(stamp, self.n, p),
+                    _ => warp_offset(stamp, self.n, p),
+                };
                 let old = self.texel(face, x, y);
                 levels.push(if offset == [0.0; 3] {
                     old
@@ -1454,6 +1469,30 @@ fn warp_offset(stamp: &Stamp, n: usize, p: V3) -> V3 {
     scale(t, len / length(t).max(1.0))
 }
 
+/// The offset of a push stamp at a unit direction, on a face with `n` texels
+/// along one side. The offset is square to the direction and points back
+/// along the motion. Its length is the angle in radians: the length of the
+/// motion times the effect of the brush. The offset is zero outside the
+/// brush and near the brush edge, so the offset place is in the brush.
+fn push_offset(stamp: &Stamp, n: usize, p: V3) -> V3 {
+    let cos_angle = dot(stamp.center, p);
+    if cos_angle <= stamp.radius.cos() {
+        return [0.0; 3];
+    }
+    let angle = cos_angle.min(1.0).acos();
+    let hard = stamp.hardness.clamp(0.0, 0.999);
+    let amount = falloff(angle / stamp.radius, hard) * stamp.flow;
+    // The part of the motion along the ground at `p`.
+    let t = add(stamp.motion, scale(p, -dot(stamp.motion, p)));
+    let full = length(t);
+    let margin = WARP_MARGIN * FRAC_PI_2 / n as f64;
+    let len = (length(stamp.motion) * amount).min(stamp.radius - angle - margin);
+    if len <= 0.0 || full == 0.0 {
+        return [0.0; 3];
+    }
+    scale(t, -len / full)
+}
+
 /// The texel index for an equal-angle coordinate, on a face with `n` texels
 /// along one side.
 fn texel_index(n: usize, s: f64) -> usize {
@@ -1570,7 +1609,7 @@ mod tests {
     use crate::flow::{
         CoarseHeights, FlowMap, Window, WindowHeights, channel_map, window_channels,
     };
-    use crate::math::{angle, dir_to_lonlat, lonlat_to_dir};
+    use crate::math::{angle, arc_motion, dir_to_lonlat, lonlat_to_dir};
     use crate::range::{RangeLine, RangeSpec};
     use crate::ridge::{Ridge, RidgeLine};
 
@@ -1586,6 +1625,7 @@ mod tests {
             talus: 0.0,
             scale: 0.1,
             seed: 1,
+            motion: [0.0; 3],
             limits: Limits::default(),
         }
     }
@@ -2753,6 +2793,7 @@ mod tests {
             Mode::Weather,
             Mode::Uplift,
             Mode::Warp,
+            Mode::Push,
         ];
         for mode in modes {
             let mut map = Heightmap::with_tile_size(64, 16, 20_000);
@@ -2762,6 +2803,7 @@ mod tests {
             let stamp = Stamp {
                 mode,
                 level: 30_000,
+                motion: arc_motion(lonlat_to_dir(40.0, 34.0), center),
                 ..raise(center, 0.25)
             };
             assert!(stroke(&mut map, stamp), "{mode:?}");
@@ -3452,7 +3494,7 @@ mod tests {
             let Some(rect) = rect else { continue };
             let mut new = Vec::new();
             map.read_rect(face, rect, &mut new);
-            assert!(new == old.warp_face(face, rect, &plan.stamp), "{face}");
+            assert!(new == old.offset_face(face, rect, &plan.stamp), "{face}");
             faces += 1;
         }
         assert_eq!(faces, 3);
@@ -3519,6 +3561,282 @@ mod tests {
                 assert_no_seam(&map, face, m);
             }
         }
+    }
+
+    /// A push stamp at `center` with a motion of a quarter of the radius. The
+    /// motion goes east, or along +Y at a pole.
+    fn push_stamp(center: V3, radius: f64) -> Stamp {
+        let axis = if center[2].abs() < 0.9 {
+            [0.0, 0.0, 1.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        Stamp {
+            mode: Mode::Push,
+            hardness: 0.5,
+            motion: scale(normalize(cross(axis, center)), 0.25 * radius),
+            ..raise(center, radius)
+        }
+    }
+
+    /// The stamps of a push stroke from `from` to `to`, a quarter of the
+    /// radius apart. The first stamp has no motion.
+    fn push_stroke(map: &mut Heightmap, from: V3, to: V3, stamp: Stamp) {
+        let parts = (angle(from, to) / (0.25 * stamp.radius)).ceil() as usize;
+        let at = |i: usize| {
+            let t = i as f64 / parts as f64;
+            normalize(add(scale(from, 1.0 - t), scale(to, t)))
+        };
+        map.begin_stroke();
+        for i in 0..=parts {
+            let motion = if i == 0 {
+                [0.0; 3]
+            } else {
+                arc_motion(at(i - 1), at(i))
+            };
+            map.stamp(&Stamp {
+                center: at(i),
+                motion,
+                ..stamp
+            });
+        }
+        map.end_stroke();
+    }
+
+    /// Ground at level 20000 with a round hill at a place.
+    fn hill_ground(n: usize, top: V3) -> Heightmap {
+        ground(n, |_, _, _, d| {
+            let k = angle(d, top) / 0.04;
+            (20000.0 + 20000.0 * (-k * k).exp()).round() as u16
+        })
+    }
+
+    /// The middle of the part of the ground above level 20000, as longitude
+    /// and latitude.
+    fn hill_middle(map: &Heightmap) -> (f64, f64) {
+        let n = map.face_size();
+        let mut sum = [0.0; 3];
+        for (i, level) in all_levels(map).into_iter().enumerate() {
+            let (face, x, y) = (i / (n * n), i % n, i / n % n);
+            let w = f64::from(level.saturating_sub(20000));
+            sum = add(sum, scale(map.texel_dir(face, x, y), w));
+        }
+        dir_to_lonlat(normalize(sum))
+    }
+
+    #[test]
+    fn a_pushed_level_is_the_ground_behind_it() {
+        let n = 256;
+        let step = FRAC_PI_2 / n as f64;
+        for (place, center) in warp_places() {
+            let mut map = smooth_ground(n);
+            let stamp = push_stamp(center, 0.2);
+            let plan = map.stamp_plan(&stamp);
+            map.stamp(&stamp);
+            let mut moved = 0;
+            for (face, x, y) in plan_texels(&plan) {
+                let p = map.texel_dir(face, x, y);
+                let offset = push_offset(&plan.stamp, n, p);
+                // The offset points back along the motion.
+                assert!(dot(offset, stamp.motion) <= 0.0, "{place}");
+                let expected = smooth_level(normalize(add(p, offset)));
+                let level = f64::from(map.get(face, x as i64, y as i64));
+                assert!(
+                    (level - expected).abs() < 2.0,
+                    "{place}: {level} at {face} {x} {y}, and not {expected}"
+                );
+                moved += usize::from(length(offset) > 2.0 * step);
+            }
+            assert!(moved > 1000, "{place}: {moved}");
+        }
+    }
+
+    #[test]
+    fn the_push_offset_follows_the_motion_and_the_flow() {
+        let n = 256;
+        let center = lonlat_to_dir(10.0, 5.0);
+        let stamp = push_stamp(center, 0.2);
+        let len = length(stamp.motion);
+        // The hardness is 0.5, so a texel near the center gets the full
+        // effect.
+        let near = lonlat_to_dir(11.0, 5.0);
+        let at = |stamp: &Stamp| length(push_offset(stamp, n, near));
+        assert!((at(&stamp) - len).abs() < 1e-3 * len);
+        let half = Stamp { flow: 0.5, ..stamp };
+        assert!((at(&half) - 0.5 * len).abs() < 1e-3 * len);
+        let twice = Stamp {
+            motion: scale(stamp.motion, 2.0),
+            ..stamp
+        };
+        assert!((at(&twice) - 2.0 * len).abs() < 2e-3 * len);
+        let still = Stamp {
+            motion: [0.0; 3],
+            ..stamp
+        };
+        assert_eq!(at(&still), 0.0);
+    }
+
+    #[test]
+    fn a_push_stroke_moves_a_hill_with_the_pen() {
+        let n = 256;
+        let middle = |from: f64, to: f64, flow: f64| {
+            let mut map = hill_ground(n, lonlat_to_dir(10.0, 5.0));
+            let stamp = Stamp {
+                flow,
+                ..push_stamp(lonlat_to_dir(0.0, 5.0), 0.15)
+            };
+            push_stroke(
+                &mut map,
+                lonlat_to_dir(from, 5.0),
+                lonlat_to_dir(to, 5.0),
+                stamp,
+            );
+            hill_middle(&map)
+        };
+        let (east, lat) = middle(6.0, 16.0, 1.0);
+        assert!(east > 14.0, "{east}");
+        assert!((lat - 5.0).abs() < 0.3, "{lat}");
+        // Less flow moves the hill less.
+        let (slow, _) = middle(6.0, 16.0, 0.3);
+        assert!(slow > 10.5 && slow < east - 1.0, "{slow}");
+        // A stroke to the west moves the hill west.
+        let (west, _) = middle(14.0, 4.0, 1.0);
+        assert!(west < 6.0, "{west}");
+    }
+
+    #[test]
+    fn the_push_offset_is_zero_at_the_brush_edge() {
+        let n = 256;
+        let margin = WARP_MARGIN * FRAC_PI_2 / n as f64;
+        for (place, center) in warp_places() {
+            let mut map = smooth_ground(n);
+            let before = all_levels(&map);
+            // The motion is more than the limit near the brush edge.
+            let stamp = Stamp {
+                motion: scale(push_stamp(center, 0.2).motion, 4.0),
+                hardness: 0.95,
+                ..push_stamp(center, 0.2)
+            };
+            let plan = map.stamp_plan(&stamp);
+            map.stamp(&stamp);
+            let after = all_levels(&map);
+            let mut near_edge = 0;
+            for (face, x, y) in plan_texels(&plan) {
+                let p = map.texel_dir(face, x, y);
+                let limit = (0.2 - angle(p, center) - margin).max(0.0);
+                let offset = length(push_offset(&plan.stamp, n, p));
+                assert!(offset <= limit + 1e-9, "{place}: {offset} {limit}");
+                near_edge += usize::from(limit < 0.02 && offset > 0.0);
+                if limit == 0.0 {
+                    let i = (face * n + y) * n + x;
+                    assert_eq!(after[i], before[i], "{place}: {face} {x} {y}");
+                }
+            }
+            assert!(near_edge > 100, "{place}: {near_edge}");
+            assert!(after != before, "{place}");
+        }
+    }
+
+    #[test]
+    fn push_leaves_flat_ground_flat() {
+        let mut map = Heightmap::new(256, 30000);
+        map.begin_stroke();
+        for (_, center) in warp_places() {
+            for radius in [0.06, 0.3] {
+                assert!(map.stamp(&push_stamp(center, radius)) > 0);
+            }
+        }
+        assert!(!map.end_stroke());
+        assert_eq!(map.allocated_tiles(), 0);
+        assert!(!map.has_changes());
+    }
+
+    #[test]
+    fn a_pushed_level_is_between_the_levels_under_the_brush() {
+        let n = 128;
+        for (place, center) in warp_places() {
+            let mut map = rough_ground(n);
+            let before = all_levels(&map);
+            let stamp = push_stamp(center, 0.2);
+            let plan = map.stamp_plan(&stamp);
+            let mut under = vec![false; before.len()];
+            for (face, x, y) in plan_texels(&plan) {
+                let falloff = Falloff::new(face, &plan.stamp);
+                let amount = falloff.amount(map.flat[x], map.flat[y]);
+                under[(face * n + y) * n + x] = amount.is_some();
+            }
+            let old = || before.iter().zip(&under).filter(|(_, under)| **under);
+            let lo = old().map(|(level, _)| *level).min();
+            let hi = old().map(|(level, _)| *level).max();
+            map.stamp(&stamp);
+            let after = all_levels(&map);
+            for (i, &level) in after.iter().enumerate() {
+                if under[i] {
+                    assert!(lo <= Some(level) && Some(level) <= hi, "{place}");
+                } else {
+                    assert_eq!(level, before[i], "{place}");
+                }
+            }
+            assert!(after != before, "{place}");
+        }
+    }
+
+    #[test]
+    fn push_leaves_no_seam_at_a_face_edge() {
+        let n = 256;
+        let mut map = smooth_ground(n);
+        let before = all_levels(&map);
+        // Face 0 and face 2 meet at longitude 45.
+        let stamp = push_stamp(lonlat_to_dir(0.0, 2.0), 0.15);
+        push_stroke(
+            &mut map,
+            lonlat_to_dir(38.0, 2.0),
+            lonlat_to_dir(52.0, 2.0),
+            stamp,
+        );
+        let after = all_levels(&map);
+        for m in (118..150).step_by(4) {
+            // The texels at the edge, on each face.
+            let changed = [(m + 1) * n - 1, (2 * n + n - 1) * n + m].map(|i| after[i] != before[i]);
+            assert!(changed[0] && changed[1], "{m}");
+            assert_no_seam(&map, 0, m);
+        }
+    }
+
+    #[test]
+    fn push_leaves_no_seam_at_a_cube_corner() {
+        let n = 256;
+        let mut map = smooth_ground(n);
+        // Faces 0, 2, and 4 meet at this corner.
+        let stamp = push_stamp(lonlat_to_dir(0.0, 0.0), 0.2);
+        push_stroke(
+            &mut map,
+            lonlat_to_dir(38.0, 30.0),
+            lonlat_to_dir(52.0, 40.0),
+            stamp,
+        );
+        for face in [0, 2, 4] {
+            for m in [236, 243, 249] {
+                assert_no_seam(&map, face, m);
+            }
+        }
+    }
+
+    #[test]
+    fn one_undo_step_puts_back_a_push_stroke() {
+        let n = 128;
+        let mut map = hill_ground(n, lonlat_to_dir(10.0, 5.0));
+        let before = all_levels(&map);
+        let stamp = push_stamp(lonlat_to_dir(0.0, 5.0), 0.15);
+        push_stroke(
+            &mut map,
+            lonlat_to_dir(6.0, 5.0),
+            lonlat_to_dir(16.0, 5.0),
+            stamp,
+        );
+        assert!(all_levels(&map) != before);
+        assert!(map.undo());
+        assert!(all_levels(&map) == before);
     }
 
     #[test]
@@ -3705,6 +4023,7 @@ mod tests {
         let stamp = match mode {
             Mode::Weather => weather(center, 0.25, 20.0),
             Mode::Warp => warp_stamp(center, 0.25),
+            Mode::Push => push_stamp(center, 0.25),
             _ => raise(center, 0.25),
         };
         let stamp = Stamp {
@@ -3752,6 +4071,7 @@ mod tests {
             Mode::Flatten,
             Mode::Weather,
             Mode::Warp,
+            Mode::Push,
         ];
         for mode in modes {
             // The flatten mode goes down to level 0.
@@ -3791,6 +4111,7 @@ mod tests {
             Mode::Flatten,
             Mode::Weather,
             Mode::Warp,
+            Mode::Push,
         ];
         for mode in modes {
             // The flatten mode goes up to the highest level.
@@ -3836,6 +4157,7 @@ mod tests {
             Mode::Flatten,
             Mode::Weather,
             Mode::Warp,
+            Mode::Push,
         ];
         for mode in modes {
             let band = |level: u16| Limits {
