@@ -200,6 +200,13 @@ impl StrokeLine {
         self.points.last().map_or(0.0, |point| point.u)
     }
 
+    /// The direction and the flow of each point with a distance along the
+    /// line in `u`.
+    pub(crate) fn points_in(&self, u: std::ops::RangeInclusive<f64>) -> Vec<(V3, f64)> {
+        let points = self.points.iter().filter(|point| u.contains(&point.u));
+        points.map(|point| (point.dir, point.flow)).collect()
+    }
+
     fn normal(&self, j: usize) -> V3 {
         normalize(cross(self.points[j].dir, self.points[j + 1].dir))
     }

@@ -20,6 +20,7 @@ pub mod math;
 #[cfg(feature = "gpu")]
 mod pyramid;
 mod rain;
+mod range;
 mod reduce;
 mod ridge;
 mod smooth;
@@ -49,6 +50,7 @@ pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, pyramid_layout};
 pub use rain::Rain;
+pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, erode_range};
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{Ridge, RidgeLine, RidgePlan};
 pub use smooth::{

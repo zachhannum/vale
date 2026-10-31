@@ -1233,7 +1233,7 @@ const HILL_LOW: f64 = 1.0;
 
 /// The width of the rise at an end of the line, as a part of its full
 /// width.
-const TAPER_WIDTH: f64 = 0.2;
+pub(crate) const TAPER_WIDTH: f64 = 0.2;
 
 /// The top of the rise is round over about this number of texels.
 const CREST_ROUND: f64 = 2.0;

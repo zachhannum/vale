@@ -364,7 +364,7 @@ impl Tip<'_> {
                 | Mode::Uplift
                 | Mode::Warp => flow,
                 // The flow of a mouse gives the full height of the ridge.
-                Mode::OceanRidge => (input / FIXED_FLOW).min(1.0) * self.brush.flow,
+                Mode::OceanRidge | Mode::Range => (input / FIXED_FLOW).min(1.0) * self.brush.flow,
                 // These three modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten | Mode::Deposit => flow * 0.3,
             },
@@ -520,7 +520,8 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Deposit
         | Mode::Erode
         | Mode::Uplift
-        | Mode::OceanRidge => 1,
+        | Mode::OceanRidge
+        | Mode::Range => 1,
     }
 }
 
