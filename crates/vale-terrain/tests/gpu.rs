@@ -248,6 +248,7 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         motion: [0.0; 3],
         ridged: false,
         relief: 0.0,
+        invert: false,
         limits: Limits::default(),
     }
 }
@@ -2157,17 +2158,23 @@ fn gpu_noise_matches_cpu_for_one_stamp() {
     let mut worst = 0;
     for (place, lon, lat) in WARP_PLACES {
         for (n, radius) in [(1024, 0.01), (256, 0.06), (256, 0.3)] {
-            for (hardness, ridged, relief) in
-                [(0.0, false, 0.0), (0.5, true, 0.5), (0.95, false, 0.8)]
-            {
+            for (hardness, ridged, invert, relief) in [
+                (0.0, false, false, 0.0),
+                (0.5, true, false, 0.5),
+                (0.5, true, true, 0.0),
+                (0.95, false, false, 0.8),
+            ] {
                 let mut cpu = smooth_ground(n);
                 let before = levels(&cpu);
-                let stamp = noise(lonlat_to_dir(lon, lat), radius, hardness, ridged, relief);
+                let stamp = Stamp {
+                    invert,
+                    ..noise(lonlat_to_dir(lon, lat), radius, hardness, ridged, relief)
+                };
                 let difference = run(&mut cpu, &[stamp]).difference;
                 assert!(levels(&cpu) != before, "{place}, radius {radius}");
                 assert!(
                     difference <= TOLERANCE,
-                    "noise at the {place}, radius {radius}, ridged {ridged}: \
+                    "noise at the {place}, radius {radius}, ridged {ridged}, invert {invert}: \
                      the difference is {difference}"
                 );
                 worst = worst.max(difference);

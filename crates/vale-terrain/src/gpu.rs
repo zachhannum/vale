@@ -79,7 +79,8 @@ struct FaceStamp {
     seed: u32,
     /// The motion of the push mode.
     motion: [f32; 3],
-    /// 1 for the ridged variant of the noise mode, and 0 if not.
+    /// 0 for the soft noise of the noise mode, 1 for the ridged noise, and 2
+    /// for the inverted ridged noise.
     ridged: u32,
     /// The relief setting of the noise mode, and the levels above the sea
     /// where the noise has its full effect.
@@ -117,7 +118,7 @@ impl FaceStamp {
             scale: stamp.scale as f32,
             seed: stamp.seed,
             motion: stamp.motion.map(|m| m as f32),
-            ridged: u32::from(stamp.ridged),
+            ridged: u32::from(stamp.ridged) * (1 + u32::from(stamp.invert)),
             relief: stamp.relief.clamp(0.0, 1.0) as f32,
             relief_span: f32::from(meters_to_level(SEA_LEVEL + NOISE_RELIEF_M))
                 - f32::from(meters_to_level(SEA_LEVEL)),

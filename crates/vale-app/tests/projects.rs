@@ -182,6 +182,7 @@ fn paint(map: &mut Heightmap) {
         motion: [0.0; 3],
         ridged: false,
         relief: 0.0,
+        invert: false,
         limits: Limits::default(),
     });
     assert!(map.end_stroke());

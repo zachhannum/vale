@@ -1506,6 +1506,10 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         }
         let ridged = &mut brush.noise_ridged;
         widgets::switch_row(ui, controls, "Brush ridged", "Ridged", ridged);
+        if brush.noise_ridged {
+            let inverted = &mut brush.noise_inverted;
+            widgets::switch_row(ui, controls, "Brush invert", "Invert", inverted);
+        }
         // The relief follows the height above sea level.
         if height {
             percent_slider(&mut brush.noise_relief, 0.0..=1.0, |fraction, text| {

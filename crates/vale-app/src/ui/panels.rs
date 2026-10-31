@@ -865,6 +865,9 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .text("Scale");
         ui.add(scale);
         ui.checkbox(&mut globe.brush.noise_ridged, "Ridged");
+        if globe.brush.noise_ridged {
+            ui.checkbox(&mut globe.brush.noise_inverted, "Invert");
+        }
         // The relief follows the height above sea level.
         if globe.is_height() {
             let mut percent = globe.brush.noise_relief.clamp(0.0, 1.0) * 100.0;

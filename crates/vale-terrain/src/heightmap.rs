@@ -156,6 +156,9 @@ pub struct Stamp {
     /// Whether the noise mode folds each octave of its noise at zero, which
     /// gives sharp crests.
     pub ridged: bool,
+    /// Whether the noise mode turns its ridged noise upside down, which gives
+    /// sharp valleys. The soft noise does not change.
+    pub invert: bool,
     /// How much the noise of the noise mode grows with the height of the
     /// ground above sea level, from 0 to 1. At 1, the noise is zero at sea
     /// level and full at `NOISE_RELIEF_M` above it.
@@ -1489,7 +1492,7 @@ pub(crate) fn noise_octaves(scale: f64, n: usize) -> u32 {
 /// is a sum of `octaves` noises. Each octave has features of half the size
 /// and half the weight of the one before it. In the ridged variant, each
 /// octave is folded at zero, so its value is high where the noise is near
-/// zero.
+/// zero. The inverted ridged noise is the ridged noise times -1.
 pub(crate) fn fractal(p: V3, stamp: &Stamp, octaves: u32) -> f64 {
     let (mut sum, mut total) = (0.0, 0.0);
     let (mut size, mut weight) = (stamp.scale, 1.0);
@@ -1502,7 +1505,11 @@ pub(crate) fn fractal(p: V3, stamp: &Stamp, octaves: u32) -> f64 {
         size *= 0.5;
         weight *= 0.5;
     }
-    sum / total
+    if stamp.ridged && stamp.invert {
+        -sum / total
+    } else {
+        sum / total
+    }
 }
 
 /// The offset of a warp stamp at a unit direction, on a face with `n` texels
@@ -1688,6 +1695,7 @@ mod tests {
             motion: [0.0; 3],
             ridged: false,
             relief: 0.0,
+            invert: false,
             limits: Limits::default(),
         }
     }
@@ -4035,6 +4043,18 @@ mod tests {
             let soft = fractal(p, &stamp, 1);
             assert!((fractal(p, &ridged, 1) - (1.0 - 2.0 * soft.abs())).abs() < 1e-12);
             crest = crest.max(fractal(p, &ridged, 3));
+            // The inverted ridged noise is upside down, and the inverted soft
+            // noise does not change.
+            let inverted = Stamp {
+                invert: true,
+                ..ridged
+            };
+            assert_eq!(fractal(p, &inverted, 3), -fractal(p, &ridged, 3));
+            let soft = Stamp {
+                invert: true,
+                ..stamp
+            };
+            assert_eq!(fractal(p, &soft, 3), fractal(p, &stamp, 3));
         }
         assert!(crest > 0.9, "{crest}");
     }

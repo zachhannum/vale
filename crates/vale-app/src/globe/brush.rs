@@ -87,6 +87,8 @@ pub struct BrushSettings {
     pub scale_km: f64,
     /// The noise mode uses the ridged variant of its noise.
     pub noise_ridged: bool,
+    /// The noise mode turns its ridged noise upside down.
+    pub noise_inverted: bool,
     /// How much the noise of the noise mode grows with the height above sea
     /// level, from 0 to 1.
     pub noise_relief: f64,
@@ -134,6 +136,7 @@ impl Default for BrushSettings {
             warp_km: 50.0,
             scale_km: 200.0,
             noise_ridged: false,
+            noise_inverted: false,
             noise_relief: 0.5,
             ridge_crest_m: -700.0,
             ridge_segment_km: 400.0,
@@ -413,6 +416,7 @@ impl Tip<'_> {
             seed: 0,
             motion,
             ridged: self.brush.noise_ridged,
+            invert: self.brush.noise_inverted,
             relief: self.brush.noise_relief,
             limits: self.brush.limits(),
         }
@@ -935,6 +939,7 @@ mod tests {
             mode: Mode::Noise,
             scale_km: 250.0,
             noise_ridged: true,
+            noise_inverted: true,
             noise_relief: 0.75,
             ..BrushSettings::default()
         };
@@ -951,7 +956,7 @@ mod tests {
         };
         let stamp = first(&brush);
         assert_eq!(stamp.mode, Mode::Noise);
-        assert!(stamp.ridged);
+        assert!(stamp.ridged && stamp.invert);
         assert_eq!(stamp.relief, 0.75);
         assert!((stamp.scale - 0.25).abs() < 1e-12);
         assert_eq!(stamp.seed, 9);
@@ -995,6 +1000,7 @@ mod tests {
             motion: [0.0; 3],
             ridged: false,
             relief: 0.0,
+            invert: false,
             limits: Limits::default(),
         })
     }

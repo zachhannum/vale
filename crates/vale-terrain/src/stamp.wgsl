@@ -28,7 +28,8 @@ struct Stamp {
     seed: u32,
     // The motion of the push mode, as in `Stamp::motion`.
     motion: vec3<f32>,
-    // 1 for the ridged variant of the noise mode.
+    // 0 for the soft noise of the noise mode, 1 for the ridged noise, and 2
+    // for the inverted ridged noise.
     ridged: u32,
     // The relief setting of the noise mode, and the levels above the sea
     // where the noise has its full effect.
@@ -693,6 +694,9 @@ fn fractal(p: vec3<f32>, stamp: Stamp) -> f32 {
         total += weight;
         size *= 0.5;
         weight *= 0.5;
+    }
+    if stamp.ridged == 2u {
+        return -sum / total;
     }
     return sum / total;
 }

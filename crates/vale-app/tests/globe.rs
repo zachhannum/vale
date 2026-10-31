@@ -2077,9 +2077,14 @@ fn the_brush_panel_has_the_noise_mode_and_its_settings() {
         assert!(h.query_all_by_label(label).next().is_some(), "{label}");
     }
     assert!(!h.state().globe.brush.noise_ridged);
+    // The Invert switch shows with the ridged noise only.
+    assert!(h.query_all_by_label("Invert").next().is_none());
     h.get_by_label("Ridged").click();
     h.run_steps(2);
     assert!(h.state().globe.brush.noise_ridged);
+    h.get_by_label("Invert").click();
+    h.run_steps(2);
+    assert!(h.state().globe.brush.noise_inverted);
 }
 
 #[test]
