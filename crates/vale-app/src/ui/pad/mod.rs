@@ -71,7 +71,7 @@ pub const SNAP_EDGES: &str = "Snap to edges";
 /// The slider of the snap distance, in points.
 pub const SNAP_DISTANCE: &str = "Snap distance";
 /// The modes of the flyout of the brush cell.
-pub const BRUSH_MODES: [(&str, Icon, Mode); 12] = [
+pub const BRUSH_MODES: [(&str, Icon, Mode); 13] = [
     ("Raise", Icon::Raise, Mode::Raise),
     ("Lower", Icon::Lower, Mode::Lower),
     ("Smooth", Icon::Smooth, Mode::Smooth),
@@ -83,6 +83,7 @@ pub const BRUSH_MODES: [(&str, Icon, Mode); 12] = [
     ("Weather", Icon::Weather, Mode::Weather),
     ("Uplift", Icon::Uplift, Mode::Uplift),
     ("Warp", Icon::Warp, Mode::Warp),
+    ("Push", Icon::Push, Mode::Push),
     (panels::OCEAN_RIDGE, Icon::OceanRidge, Mode::OceanRidge),
 ];
 
@@ -1411,6 +1412,8 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         if widgets::row_slider(ui, controls, "Brush seed", "Seed", &mut fraction, &text) {
             *seed = (fraction * high).round() as u32;
         }
+    } else if brush.mode == Mode::Push {
+        // The motion of the pen and the flow set the distance.
     } else {
         let (min, max) = brush.value_range;
         let text = world::value_text(brush.strength_value(), max - min, &unit);

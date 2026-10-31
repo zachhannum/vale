@@ -179,6 +179,7 @@ fn paint(map: &mut Heightmap) {
         talus: 0.0,
         scale: 0.0,
         seed: 0,
+        motion: [0.0; 3],
         limits: Limits::default(),
     });
     assert!(map.end_stroke());
