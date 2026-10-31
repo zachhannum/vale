@@ -574,15 +574,20 @@ pub fn auto_graticule_interval(projection: &Projection, frame: &FrameRecord) -> 
 /// graticule is off. A set interval is never less than the interval that
 /// puts the lines 1.5 mm apart.
 pub fn graticule_interval(projection: &Projection, frame: &FrameRecord) -> Option<f64> {
-    let g = &frame.graticule;
-    if !g.on {
-        return None;
-    }
+    frame
+        .graticule
+        .on
+        .then(|| interval_at_scale(projection, frame))
+}
+
+/// The graticule interval that a frame draws when its graticule is on, in
+/// degrees.
+pub fn interval_at_scale(projection: &Projection, frame: &FrameRecord) -> f64 {
     let deg_per_mm = degrees_per_mm(projection, frame);
-    Some(match g.interval {
+    match frame.graticule.interval {
         Some(i) => i.max(auto_interval(1.5 * deg_per_mm)),
         None => auto_interval(25.0 * deg_per_mm),
-    })
+    }
 }
 
 #[cfg(test)]
