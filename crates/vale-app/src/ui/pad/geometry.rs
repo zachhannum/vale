@@ -16,8 +16,9 @@ pub const TOUCH: f32 = 44.0;
 pub const ROW: f32 = TOUCH + 2.0 * PAD;
 /// The size of one cell of the tool strip.
 pub const CELL: (f32, f32) = (56.0, 52.0);
-/// The cells of the tool strip of the globe: Brush, Draw, Move, and Measure.
-pub const TOOLS: usize = 4;
+/// The cells of the tool strip of the globe: Sculpt, Terrain, Draw, Move, and
+/// Measure.
+pub const TOOLS: usize = 5;
 /// The number of cells of the card of the Measure tool.
 pub const MEASURE_CELLS: usize = 3;
 /// The height of one of the two sliders at the left edge.
@@ -335,9 +336,9 @@ mod tests {
         assert_eq!(r.workspace, rect(16.0, 32.0, 230.0, 52.0));
         assert_eq!(r.view, Some(rect(527.0, 32.0, 140.0, 52.0)));
         assert_eq!(r.actions, rect(969.0, 32.0, 209.0, 52.0));
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 216.0));
+        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 268.0));
         assert_eq!(r.brush_card, BrushCard::Full(140.0));
-        assert_eq!(r.brush, Some(rect(16.0, 324.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 376.0, 64.0, 340.0)));
         assert_eq!(r.brush_panel, pos2(92.0, 96.0));
         assert_eq!(r.right_panel, pos2(858.0, 96.0));
         assert!(!r.one_panel);
@@ -353,7 +354,7 @@ mod tests {
         assert_eq!(r.view.unwrap().center().x, 417.0);
         assert_eq!(r.actions, rect(609.0, 32.0, 209.0, 52.0));
         assert_eq!(r.right_panel, pos2(498.0, 96.0));
-        assert_eq!(r.brush, Some(rect(16.0, 324.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 376.0, 64.0, 340.0)));
         assert!(!r.one_panel);
     }
 
@@ -363,7 +364,7 @@ mod tests {
         assert_eq!(r.class, WidthClass::Compact);
         assert_eq!(r.view, None);
         assert_eq!(r.menu, pos2(16.0, 88.0));
-        assert_eq!(r.brush, Some(rect(16.0, 324.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 376.0, 64.0, 340.0)));
         let readout = r.readout.unwrap();
         assert_eq!(
             (readout.left(), readout.top(), readout.bottom()),
@@ -379,9 +380,10 @@ mod tests {
         let r = layout(&input);
         assert_eq!(r.sheet, Some(rect(0.0, 434.0, 375.0, 400.0)));
         assert_eq!(r.readout, None);
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 216.0));
+        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 268.0));
         assert_eq!(r.tool_cells, TOOLS);
-        assert_eq!(r.brush_card, BrushCard::Button);
+        // The open sheet leaves no room for the Brush button below the strip.
+        assert_eq!(r.brush_card, BrushCard::Hidden);
 
         input.sheet_offset = 1000.0;
         let r = layout(&input);
@@ -396,26 +398,31 @@ mod tests {
     fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
         let card = |height: f32| layout(&board(1024.0, height)).brush_card;
         assert_eq!(card(1194.0), BrushCard::Full(140.0));
-        assert_eq!(card(700.0), BrushCard::Full(140.0));
-        assert_eq!(card(680.0), BrushCard::Full(130.0));
-        assert_eq!(card(640.0), BrushCard::Full(110.0));
-        assert_eq!(card(639.0), BrushCard::Button);
+        assert_eq!(card(752.0), BrushCard::Full(140.0));
+        assert_eq!(card(732.0), BrushCard::Full(130.0));
+        assert_eq!(card(692.0), BrushCard::Full(110.0));
+        assert_eq!(card(691.0), BrushCard::Button);
         assert_eq!(card(480.0), BrushCard::Button);
     }
 
     #[test]
     fn the_small_boards_have_the_full_sliders() {
-        for (width, height) in [(1133.0, 744.0), (744.0, 1133.0), (1024.0, 768.0)] {
+        let boards = [
+            (1133.0, 744.0, 136.0),
+            (744.0, 1133.0, SLIDER),
+            (1024.0, 768.0, SLIDER),
+        ];
+        for (width, height, slider) in boards {
             let r = layout(&board(width, height));
             assert_eq!(r.tool_cells, TOOLS, "{width}x{height}");
-            assert_eq!(r.brush_card, BrushCard::Full(SLIDER), "{width}x{height}");
+            assert_eq!(r.brush_card, BrushCard::Full(slider), "{width}x{height}");
         }
     }
 
     #[test]
     fn a_very_short_window_scrolls_the_tool_strip() {
         // With no room below the strip, the Brush button goes to its right.
-        let r = layout(&board(1024.0, 360.0));
+        let r = layout(&board(1024.0, 412.0));
         assert_eq!((r.tool_cells, r.brush_card), (TOOLS, BrushCard::Button));
         let card = r.brush.unwrap();
         assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));
