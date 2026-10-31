@@ -711,6 +711,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Weather, "Weather"),
             (Mode::Uplift, "Uplift"),
             (Mode::Warp, "Warp"),
+            (Mode::Push, "Push"),
             (Mode::OceanRidge, OCEAN_RIDGE),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
@@ -833,6 +834,8 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         // noise field.
         let seed = &mut state.doc.project.world.seed;
         ui.add(egui::Slider::new(seed, SEED).text("Seed"));
+    } else if globe.brush.mode == Mode::Push {
+        // The motion of the pen and the flow set the distance.
     } else {
         // The slider shows the strength as a value of the layer.
         let (min, max) = globe.brush.value_range;

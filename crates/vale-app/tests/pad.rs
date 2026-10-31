@@ -2012,6 +2012,19 @@ fn a_mode_of_the_flyout_sets_the_mode_and_the_face_of_the_cell() {
 }
 
 #[test]
+fn the_brush_panel_of_the_push_mode_has_no_strength() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush strength").is_some());
+    choose_mode(&mut h, "Push");
+    assert_eq!(h.state().globe.brush.mode, Mode::Push);
+    assert!(control(&h, "Brush strength").is_none());
+    assert!(control(&h, "Brush flow").is_some());
+    assert!(control(&h, "Brush hardness").is_some());
+    check_controls(&h, "the Push mode");
+}
+
+#[test]
 fn the_draw_cell_is_off_with_no_vector_layer_and_follows_the_kind() {
     use vale_store::GeometryKind;
     let mut h = pad(BOARDS[0]);
@@ -2108,7 +2121,13 @@ fn switch_is_on(h: &Pad, name: &str) -> bool {
 fn the_brush_panel_has_the_floor_and_the_ceiling() {
     const SWITCHES: [&str; 2] = ["Brush floor", "Brush ceiling"];
     const LEVELS: [&str; 2] = ["Brush floor level", "Brush ceiling level"];
-    for mode in [None, Some("Erode"), Some("Uplift"), Some("Warp")] {
+    for mode in [
+        None,
+        Some("Erode"),
+        Some("Uplift"),
+        Some("Warp"),
+        Some("Push"),
+    ] {
         // The portrait iPad has the height for all the rows of each mode.
         let mut h = pad(BOARDS[1]);
         tap(&mut h, "Brush settings");
