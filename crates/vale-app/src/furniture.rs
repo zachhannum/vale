@@ -470,12 +470,6 @@ pub fn scale_at_center(
     (km.is_finite() && km > 0.0).then_some(km)
 }
 
-/// The ground distance of one centimeter on the page, for example
-/// "1 cm = 25.0 km".
-pub fn scale_text(km_per_mm: f64, units: Units) -> String {
-    format!("1 cm = {}", world::distance(10.0 * km_per_mm, units))
-}
-
 /// The direction of north at a place, in degrees clockwise from the top of
 /// the page.
 fn north_at(projection: &Projection, vt: &crate::view::ViewTransform, p: LonLat) -> Option<f64> {

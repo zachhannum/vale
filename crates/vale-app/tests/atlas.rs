@@ -15,7 +15,7 @@ use vale_app::furniture::rect_of;
 use vale_app::projects::Locations;
 use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::measure::measure_lines;
-use vale_app::ui::atlas::{self as atlas, ItemKind, ItemPage};
+use vale_app::ui::atlas::{self as atlas, BarPage, BarPick, ItemKind, ItemPage, TextPart};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_COLOR, BORDER_WIDTH, CENTER_ON_FRAME,
@@ -30,8 +30,8 @@ use vale_app::ui::pad::edge_labels::{
     ORIENTATIONS, PLACES, SETS, SHOW_LABELS, SIDES, SIZE as EDGE_SIZE, STYLE as EDGE_STYLE,
 };
 use vale_app::ui::pad::furniture::{
-    ALIGNMENTS, COLOR as ITEM_COLOR, ENTRY_NAME, ITEM_TEXT, MAP_FRAME as ITEM_MAP_FRAME,
-    RESET_ENTRIES, STYLE as ITEM_STYLE, delete_name, entry_names,
+    self as item, ALIGNMENTS, COLOR as ITEM_COLOR, ENTRIES, ENTRY_NAME, ITEM_TEXT,
+    MAP_FRAME as ITEM_MAP_FRAME, RESET_ENTRIES, STYLE as ITEM_STYLE, delete_name, entry_names,
 };
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO,
@@ -3822,11 +3822,14 @@ fn a_tap_opens_the_panel_of_an_item_and_its_controls_work_with_a_finger() {
     };
     assert_eq!(text.align, TextAlign::Center);
     tap(&mut h, ITEM_COLOR);
-    assert!(h.state().atlas.item_color);
+    assert!(h.state().atlas.label_color.is_some());
     check_controls(&h, "color picker");
     tap(&mut h, ITEM_COLOR);
     tap(&mut h, ITEM_STYLE);
-    assert_eq!(h.state().atlas.item_page, Some(ItemPage::Style));
+    assert_eq!(
+        h.state().atlas.item_page,
+        Some(ItemPage::Face(TextPart::Text))
+    );
     check_controls(&h, "style page");
     tap(&mut h, "Back to Text");
     assert_eq!(h.state().atlas.item_page, None);
@@ -3902,9 +3905,12 @@ fn the_link_changes_from_the_panel() {
     assert_eq!(item(&h, 0).item.frame(), Some(inset));
 
     // The scale follows the scale of the linked frame.
-    let text = |h: &mut Pad| atlas::item_scale_text(h.state_mut(), Some(inset)).unwrap();
+    let text = |h: &mut Pad| {
+        let rows = atlas::bar_rows(h.state_mut(), id);
+        rows[0].numbers.clone()
+    };
     let before = text(&mut h);
-    assert!(before.starts_with("1 cm = "), "{before}");
+    assert!(before.len() >= 2, "{before:?}");
     let content = h.state().atlas.item_rect(id);
     assert!(content.is_some());
     let scale = frame(&h, 1).scale;
@@ -3967,6 +3973,11 @@ fn the_legend_panel_renames_and_hides_its_entries() {
     let key = (rows[0].layer, rows[0].rule.clone());
 
     // The eye hides the entry, and a second tap shows it again.
+    tap(&mut h, ENTRIES);
+    assert_eq!(
+        h.state().atlas.item_page,
+        Some(ItemPage::Text(TextPart::Entries))
+    );
     scroll_to(&mut h, &eye_name(&names[0], true));
     check_controls(&h, "legend panel");
     tap(&mut h, &eye_name(&names[0], true));
@@ -3995,13 +4006,363 @@ fn the_legend_panel_renames_and_hides_its_entries() {
     h.run_steps(2);
     assert!(!legend(&h).entries.contains_key(&key));
     type_text(&mut h, ENTRY_NAME, "Roads");
-    tap(&mut h, "Back to Legend");
+    tap(&mut h, "Back to Entries");
     assert_eq!(h.state().atlas.selection, AtlasSelection::Item(id));
+    assert_eq!(
+        h.state().atlas.item_page,
+        Some(ItemPage::Text(TextPart::Entries))
+    );
 
     // Reset entries takes away each change.
     scroll_to(&mut h, RESET_ENTRIES);
     tap(&mut h, RESET_ENTRIES);
     assert!(legend(&h).entries.is_empty());
+}
+
+fn bar(h: &Pad, index: usize) -> vale_store::ScaleBarItem {
+    match item(h, index).item {
+        Furniture::ScaleBar(b) => b,
+        other => panic!("not a scale bar: {other:?}"),
+    }
+}
+
+/// Scrolls to a control and taps it.
+fn tap_row(h: &mut Pad, name: &str) {
+    scroll_to(h, name);
+    if control(h, name).is_none() {
+        scroll_up_to(h, name);
+    }
+    tap(h, name);
+}
+
+/// The text of the labels in the panel of the selection. A panel of
+/// controls has none.
+fn panel_labels(h: &Pad) -> Vec<String> {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT;
+    let card = h.state().atlas.panel_rect.unwrap();
+    h.query_all_by_role(Role::Label)
+        .filter(|n| card.intersects(n.rect()))
+        .map(|n| format!("{:?} {:?}", n.accesskit_node().label(), n.value()))
+        .collect()
+}
+
+/// Checks the controls and the labels of a page of a panel, and saves its
+/// picture if `picture` is not empty.
+fn check_page(h: &mut Pad, what: &str, picture: &str) {
+    check_controls(h, what);
+    assert_eq!(panel_labels(h), Vec::<String>::new(), "{what}");
+    if !picture.is_empty() {
+        screenshot::save(h, picture);
+    }
+}
+
+#[test]
+fn every_page_of_the_scale_bar_panel_works_with_a_finger() {
+    use vale_store::{ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TickFrequency};
+    // A large iPad and a phone.
+    for (size, prefix) in [(BOARDS[0], "pad"), ((393.0, 852.0), "phone")] {
+        let what = format!("{size:?}");
+        let name = |page: &str| format!("{prefix}-atlas-{page}");
+        let mut h = pad_with(state(), size);
+        add_frame(&mut h);
+        add_item(&mut h, ItemKind::ScaleBar);
+        check_page(&mut h, &what, &name("scale-bar"));
+        assert!(
+            h.query_by_label("Measured at the center of the frame.")
+                .is_none()
+        );
+        let back = |h: &mut Pad| tap(h, "Back to Scale bar");
+
+        // The style gallery sets the kind and goes back.
+        tap_row(&mut h, BarPage::Style.name());
+        assert_eq!(
+            h.state().atlas.item_page,
+            Some(ItemPage::Bar(BarPage::Style))
+        );
+        check_page(&mut h, &what, &name("bar-style"));
+        assert_eq!(h.state().atlas.bar_preview_count(), ScaleBarKind::ALL.len());
+        tap_row(&mut h, ScaleBarKind::DoubleAlternating.label());
+        assert_eq!(bar(&h, 0).kind, ScaleBarKind::DoubleAlternating);
+        assert_eq!(h.state().atlas.item_page, None);
+
+        // The Units page: a second unit and a custom unit label.
+        tap_row(&mut h, BarPage::Units.name());
+        check_page(&mut h, &what, &name("bar-units"));
+        tap_row(&mut h, BarPick::SecondUnit.name());
+        check_page(&mut h, &what, &name("bar-pick"));
+        tap_row(&mut h, ScaleUnit::Miles.label());
+        assert_eq!(bar(&h, 0).second_unit, Some(ScaleUnit::Miles));
+        assert_eq!(
+            h.state().atlas.item_page,
+            Some(ItemPage::Bar(BarPage::Units))
+        );
+        tap_row(&mut h, BarPick::UnitLabel.name());
+        tap_row(&mut h, "Custom");
+        scroll_to(&mut h, item::CUSTOM_LABEL);
+        check_page(&mut h, &what, &name("bar-custom"));
+        type_text(&mut h, item::CUSTOM_LABEL, "Leagues");
+        assert_eq!(bar(&h, 0).unit_label, "Leagues");
+        type_text(&mut h, item::SECOND_LABEL, "Versts");
+        assert_eq!(bar(&h, 0).second_unit_label, "Versts");
+        back(&mut h);
+
+        // The Divisions page.
+        tap_row(&mut h, BarPage::Divisions.name());
+        check_page(&mut h, &what, &name("bar-divisions"));
+        slider_end(&mut h, item::DIVISIONS, true);
+        slider_end(&mut h, item::SUBDIVISIONS, true);
+        let b = bar(&h, 0);
+        assert_eq!((b.divisions, b.subdivisions), (20, 10));
+        tap_row(&mut h, item::BEFORE_ZERO);
+        assert!(bar(&h, 0).before_zero);
+        assert!(control(&h, item::AUTO_VALUE).is_none());
+        tap_row(&mut h, BarPick::Fit.name());
+        tap_row(&mut h, ScaleFit::AdjustWidth.label());
+        assert_eq!(bar(&h, 0).fit, ScaleFit::AdjustWidth);
+        // Off, the automatic value gives the values that the bar draws.
+        tap_row(&mut h, item::AUTO_VALUE);
+        let b = bar(&h, 0);
+        let id = item(&h, 0).id;
+        let drawn = atlas::bar_rows(h.state_mut(), id);
+        assert_eq!(b.division_value, Some(drawn[0].value));
+        assert_eq!(b.second_division_value, Some(drawn[1].value));
+        scroll_to(&mut h, item::SECOND_VALUE);
+        check_page(&mut h, &what, &name("bar-values"));
+        back(&mut h);
+
+        // The Bar page: a fill color.
+        tap_row(&mut h, BarPage::Bar.name());
+        check_page(&mut h, &what, &name("bar-bar"));
+        let before = bar(&h, 0).fill1;
+        tap_row(&mut h, item::FILL_1);
+        let shade = format!("{} shade", item::FILL_1);
+        scroll_to(&mut h, &shade);
+        check_controls(&h, &format!("{what}: fill picker"));
+        let square = control(&h, &shade).unwrap();
+        tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
+        assert_ne!(bar(&h, 0).fill1, before);
+        assert_eq!(bar(&h, 0).fill2, vale_store::ScaleBarItem::default().fill2);
+        back(&mut h);
+
+        // The Marks page.
+        tap_row(&mut h, BarPage::Marks.name());
+        check_page(&mut h, &what, &name("bar-marks"));
+        tap_row(&mut h, BarPick::MarkFrequency.name());
+        tap_row(&mut h, TickFrequency::Ends.label());
+        assert_eq!(bar(&h, 0).mark_frequency, TickFrequency::Ends);
+        tap(&mut h, item::POSITIONS[1]);
+        assert_eq!(bar(&h, 0).mark_position, ScalePosition::Below);
+        back(&mut h);
+
+        // The Numbers page.
+        tap_row(&mut h, BarPage::Numbers.name());
+        check_page(&mut h, &what, &name("bar-numbers"));
+        tap(&mut h, item::POSITIONS[2]);
+        assert_eq!(bar(&h, 0).number_position, ScalePosition::Center);
+        tap_row(&mut h, BarPick::Decimals.name());
+        tap_row(&mut h, "2");
+        assert_eq!(bar(&h, 0).decimals, Some(2));
+        tap_row(&mut h, item::THOUSANDS);
+        tap_row(&mut h, item::SHOW_ZERO);
+        let b = bar(&h, 0);
+        assert!(!b.thousands && !b.zero_label);
+        scroll_to(&mut h, item::HALO);
+        check_page(&mut h, &what, &name("bar-number-text"));
+        back(&mut h);
+
+        // A line has no fills and no bar height.
+        tap_row(&mut h, BarPage::Style.name());
+        tap_row(&mut h, ScaleBarKind::Line.label());
+        tap_row(&mut h, BarPage::Bar.name());
+        for name in [item::FILL_1, item::FILL_2, item::FILL, item::BAR_HEIGHT] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+        assert!(control(&h, item::LINE_COLOR).is_some());
+        back(&mut h);
+        tap_row(&mut h, item::delete_name(ItemKind::ScaleBar));
+        assert!(open_page(&h).furniture.is_empty());
+    }
+}
+
+#[test]
+fn each_change_of_a_scale_bar_is_one_undo_step() {
+    use vale_store::ScaleBarKind;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::ScaleBar);
+    h.state_mut().save_waiting().unwrap();
+    tap(&mut h, BarPage::Divisions.name());
+    tap(&mut h, item::BEFORE_ZERO);
+    tap(&mut h, "Back to Scale bar");
+    tap(&mut h, BarPage::Style.name());
+    tap(&mut h, ScaleBarKind::Hollow.label());
+    tap(&mut h, BarPage::Numbers.name());
+    scroll_to(&mut h, item::HALO);
+    tap(&mut h, item::HALO);
+    let b = bar(&h, 0);
+    assert!(b.before_zero && b.number_style.halo);
+    assert_eq!(b.kind, ScaleBarKind::Hollow);
+
+    tap(&mut h, "Undo");
+    assert!(!bar(&h, 0).number_style.halo);
+    assert_eq!(bar(&h, 0).kind, ScaleBarKind::Hollow);
+    tap(&mut h, "Undo");
+    assert_eq!(bar(&h, 0).kind, ScaleBarKind::Alternating);
+    assert!(bar(&h, 0).before_zero);
+    tap(&mut h, "Undo");
+    assert!(!bar(&h, 0).before_zero);
+}
+
+#[test]
+fn a_new_scale_bar_takes_the_units_of_the_world() {
+    use vale_store::{ScaleUnit, Units};
+    for (units, unit) in [
+        (Units::Metric, ScaleUnit::Kilometers),
+        (Units::Imperial, ScaleUnit::Miles),
+    ] {
+        let mut s = state();
+        s.doc.project.world.units = units;
+        let mut h = pad_with(s, BOARDS[0]);
+        add_frame(&mut h);
+        add_item(&mut h, ItemKind::ScaleBar);
+        assert_eq!(bar(&h, 0).unit, unit, "{units:?}");
+    }
+}
+
+/// Sets the case of the Text section on the page, with a tap on the Case
+/// row and a tap on the case. The page comes back.
+fn set_case(h: &mut Pad, case: vale_store::TextCase, part: TextPart) {
+    let page = h.state().atlas.item_page.clone();
+    tap_row(h, item::CASE);
+    assert_eq!(h.state().atlas.item_page, Some(ItemPage::Case(part)));
+    check_controls(h, "case page");
+    tap_row(h, case.name());
+    assert_eq!(h.state().atlas.item_page, page);
+}
+
+/// A family of the device that is not the default family.
+fn font_family(h: &Pad) -> String {
+    let families = &h.state().font_families;
+    let other = families
+        .iter()
+        .find(|f| *f != vale_app::fonts::DEFAULT_FAMILY);
+    other.cloned().unwrap_or_else(|| "Noto Serif".into())
+}
+
+/// A tap on the Font row asks for the font picker of `part`, and the picker
+/// sets the family of `font_family`.
+fn picks_font(h: &mut Pad, part: TextPart) {
+    use vale_app::ui::FontTarget;
+    h.state_mut().actions.clear();
+    tap_row(h, item::FONT);
+    let id = h.state().atlas.item().unwrap();
+    let target = FontTarget::Item(id, part);
+    assert!(
+        h.state().actions.contains(&Action::PickFont(target)),
+        "{part:?}"
+    );
+    h.state_mut().actions.clear();
+    let family = font_family(h);
+    h.state_mut().run_action(Action::SetFont(target, family));
+    h.run_steps(2);
+}
+
+#[test]
+fn each_text_part_edits_its_own_style() {
+    use vale_store::{FurnitureText, TextCase};
+    let mut h = pad();
+    add_frame(&mut h);
+    let style = |h: &Pad, index: usize, part: TextPart| -> FurnitureText {
+        part.of(&item(h, index).item).unwrap().clone()
+    };
+    let serif = Some(font_family(&h));
+
+    // A text item.
+    add_item(&mut h, ItemKind::Text);
+    check_page(&mut h, "text panel", "pad-atlas-text-item");
+    set_case(&mut h, TextCase::Upper, TextPart::Text);
+    tap_row(&mut h, item::HALO);
+    scroll_to(&mut h, item::HALO_WIDTH);
+    check_page(&mut h, "text halo", "pad-atlas-text-halo");
+    picks_font(&mut h, TextPart::Text);
+    let s = style(&h, 0, TextPart::Text);
+    assert_eq!(
+        (s.case, s.halo, s.font),
+        (TextCase::Upper, true, serif.clone())
+    );
+
+    // A legend: the title and the entries.
+    add_item(&mut h, ItemKind::Legend);
+    check_page(&mut h, "legend panel", "pad-atlas-legend");
+    tap(&mut h, item::TITLE);
+    assert_eq!(
+        h.state().atlas.item_page,
+        Some(ItemPage::Text(TextPart::Title))
+    );
+    check_page(&mut h, "title page", "pad-atlas-legend-title");
+    type_text(&mut h, item::TITLE, "Key");
+    set_case(&mut h, TextCase::Upper, TextPart::Title);
+    tap_row(&mut h, item::HALO);
+    picks_font(&mut h, TextPart::Title);
+    tap(&mut h, "Back to Legend");
+    tap(&mut h, item::ENTRIES);
+    set_case(&mut h, TextCase::Lower, TextPart::Entries);
+    picks_font(&mut h, TextPart::Entries);
+    let Furniture::Legend(l) = item(&h, 1).item else {
+        panic!("not a legend");
+    };
+    assert_eq!(l.title, "Key");
+    assert_eq!(
+        (l.title_style.case, l.title_style.halo),
+        (TextCase::Upper, true)
+    );
+    assert_eq!(
+        (l.entry_style.case, l.entry_style.halo),
+        (TextCase::Lower, false)
+    );
+    assert_eq!(
+        (l.title_style.font, l.entry_style.font),
+        (serif.clone(), serif.clone())
+    );
+
+    // A scale bar: the numbers and the units.
+    add_item(&mut h, ItemKind::ScaleBar);
+    tap(&mut h, BarPage::Numbers.name());
+    set_case(&mut h, TextCase::Upper, TextPart::Numbers);
+    tap_row(&mut h, item::HALO);
+    picks_font(&mut h, TextPart::Numbers);
+    tap(&mut h, "Back to Scale bar");
+    tap(&mut h, BarPage::Units.name());
+    set_case(&mut h, TextCase::Title, TextPart::Units);
+    let b = bar(&h, 2);
+    assert_eq!(
+        (b.number_style.case, b.number_style.halo),
+        (TextCase::Upper, true)
+    );
+    assert_eq!(
+        (b.unit_style.case, b.unit_style.halo),
+        (TextCase::Title, false)
+    );
+    assert_eq!(
+        (b.number_style.font, b.unit_style.font),
+        (serif.clone(), None)
+    );
+
+    // A north arrow: the letter.
+    add_item(&mut h, ItemKind::NorthArrow);
+    check_page(&mut h, "north arrow panel", "pad-atlas-north-arrow");
+    set_case(&mut h, TextCase::Lower, TextPart::Letter);
+    tap_row(&mut h, item::HALO);
+    picks_font(&mut h, TextPart::Letter);
+    let s = style(&h, 3, TextPart::Letter);
+    assert_eq!((s.case, s.halo, s.font), (TextCase::Lower, true, serif));
+    // The other items keep their styles.
+    assert_eq!(style(&h, 0, TextPart::Text).case, TextCase::Upper);
 }
 
 #[test]

@@ -1859,10 +1859,6 @@ fn the_scale_bar_is_true_for_any_radius() {
         let projection = pipeline.projection(&doc, map).unwrap();
         let km_per_mm = furniture::scale_at_center(projection, &record, radius).unwrap();
         assert!((km_per_mm - 5.0).abs() < 1e-3, "{radius}: {km_per_mm}");
-        assert_eq!(
-            furniture::scale_text(km_per_mm, doc.project.world.units),
-            "1 cm = 50.0 km"
-        );
 
         // The kilometers and the miles are both true, and the item draws the
         // same bar.

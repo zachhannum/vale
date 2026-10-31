@@ -215,7 +215,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         widgets::close_keypad(&ctx);
         state.atlas.shown = shown;
         state.atlas.item_page = None;
-        state.atlas.item_color = false;
+        state.atlas.label_color = None;
         state.pad.sheet_offset = 0.0;
     }
 
@@ -231,7 +231,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     graticule_color_frame(&ctx, state);
     border_color_frame(&ctx, state);
-    super::furniture::color_frame(&ctx, state);
     super::labels::color_frame(&ctx, state);
     super::rules::picker_frame(&ctx, state);
     raster_cards(&ctx, state, &mut controls, &rects);

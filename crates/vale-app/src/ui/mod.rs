@@ -140,8 +140,8 @@ pub enum FontTarget {
     Class(MapId, LayerId, usize),
     /// A set of the edge labels of a frame.
     Edge(vale_store::FrameId, atlas::EdgeSet),
-    /// An item of furniture with text.
-    Item(vale_store::FurnitureId),
+    /// A text part of an item of furniture.
+    Item(vale_store::FurnitureId, atlas::TextPart),
 }
 
 /// The time between two reads of the projects folders while a download runs.
@@ -1422,9 +1422,9 @@ impl AppState {
                 let frame = self.doc.project.atlas.frame(id)?;
                 Some(set.of(&frame.graticule).font.clone())
             }
-            FontTarget::Item(id) => {
+            FontTarget::Item(id, part) => {
                 let rec = self.doc.project.atlas.furniture(id)?;
-                Some(atlas::item_style(&rec.item)?.font.clone())
+                Some(part.of(&rec.item)?.font.clone())
             }
         }
     }
@@ -2982,8 +2982,10 @@ impl AppState {
                     crate::fonts::set_font(&mut e.font, &family);
                 });
             }
-            Action::SetFont(FontTarget::Item(id), family) => {
-                atlas::edit_style(self, id, |s| crate::fonts::set_font(&mut s.font, &family));
+            Action::SetFont(FontTarget::Item(id, part), family) => {
+                atlas::edit_text(self, id, part, true, |s| {
+                    crate::fonts::set_font(&mut s.font, &family);
+                });
             }
             Action::AddSymbol(path) => {
                 let note = match self.add_symbol(&path) {

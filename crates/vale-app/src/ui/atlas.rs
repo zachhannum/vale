@@ -107,15 +107,163 @@ impl ItemKind {
     }
 }
 
+/// A part of an item of furniture with its own text style.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TextPart {
+    /// The text of a text item.
+    Text,
+    /// The title of a legend.
+    Title,
+    /// The entries of a legend.
+    Entries,
+    /// The numbers of a scale bar.
+    Numbers,
+    /// The unit labels of a scale bar.
+    Units,
+    /// The letter N of a north arrow.
+    Letter,
+}
+
+impl TextPart {
+    /// The style of the part in an item, if the item has the part.
+    pub fn of(self, item: &Furniture) -> Option<&FurnitureText> {
+        match (self, item) {
+            (TextPart::Text, Furniture::Text(i)) => Some(&i.style),
+            (TextPart::Title, Furniture::Legend(i)) => Some(&i.title_style),
+            (TextPart::Entries, Furniture::Legend(i)) => Some(&i.entry_style),
+            (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&i.number_style),
+            (TextPart::Units, Furniture::ScaleBar(i)) => Some(&i.unit_style),
+            (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&i.letter_style),
+            _ => None,
+        }
+    }
+
+    pub fn of_mut(self, item: &mut Furniture) -> Option<&mut FurnitureText> {
+        match (self, item) {
+            (TextPart::Text, Furniture::Text(i)) => Some(&mut i.style),
+            (TextPart::Title, Furniture::Legend(i)) => Some(&mut i.title_style),
+            (TextPart::Entries, Furniture::Legend(i)) => Some(&mut i.entry_style),
+            (TextPart::Numbers, Furniture::ScaleBar(i)) => Some(&mut i.number_style),
+            (TextPart::Units, Furniture::ScaleBar(i)) => Some(&mut i.unit_style),
+            (TextPart::Letter, Furniture::NorthArrow(i)) => Some(&mut i.letter_style),
+            _ => None,
+        }
+    }
+
+    /// The page of the panel that holds the Text section of the part.
+    /// `None`: the top of the panel.
+    pub fn page(self) -> Option<ItemPage> {
+        match self {
+            TextPart::Text | TextPart::Letter => None,
+            TextPart::Title | TextPart::Entries => Some(ItemPage::Text(self)),
+            TextPart::Numbers => Some(ItemPage::Bar(BarPage::Numbers)),
+            TextPart::Units => Some(ItemPage::Bar(BarPage::Units)),
+        }
+    }
+}
+
+/// A page of the panel of a scale bar.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BarPage {
+    /// The gallery of the kinds of scale bar.
+    Style,
+    Units,
+    Divisions,
+    Bar,
+    Marks,
+    Numbers,
+}
+
+impl BarPage {
+    pub const ALL: [BarPage; 6] = [
+        BarPage::Style,
+        BarPage::Units,
+        BarPage::Divisions,
+        BarPage::Bar,
+        BarPage::Marks,
+        BarPage::Numbers,
+    ];
+
+    /// The row that opens the page, and the title of the page.
+    pub fn name(self) -> &'static str {
+        match self {
+            BarPage::Style => "Style",
+            BarPage::Units => "Units",
+            BarPage::Divisions => "Divisions",
+            BarPage::Bar => "Bar",
+            BarPage::Marks => "Marks",
+            BarPage::Numbers => "Numbers",
+        }
+    }
+}
+
+/// A list of choices of a scale bar, on its own page.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BarPick {
+    Unit,
+    SecondUnit,
+    UnitLabel,
+    UnitPosition,
+    Fit,
+    MarkFrequency,
+    NumberFrequency,
+    Decimals,
+}
+
+impl BarPick {
+    /// The row that opens the page, and the title of the page.
+    pub fn name(self) -> &'static str {
+        match self {
+            BarPick::Unit => "Unit",
+            BarPick::SecondUnit => "Second unit",
+            BarPick::UnitLabel => "Unit label",
+            BarPick::UnitPosition => "Label position",
+            BarPick::Fit => "Fit",
+            BarPick::MarkFrequency | BarPick::NumberFrequency => "Frequency",
+            BarPick::Decimals => "Decimals",
+        }
+    }
+
+    /// The page that holds the row of the choice.
+    pub fn parent(self) -> BarPage {
+        match self {
+            BarPick::Unit | BarPick::SecondUnit | BarPick::UnitLabel | BarPick::UnitPosition => {
+                BarPage::Units
+            }
+            BarPick::Fit => BarPage::Divisions,
+            BarPick::MarkFrequency => BarPage::Marks,
+            BarPick::NumberFrequency | BarPick::Decimals => BarPage::Numbers,
+        }
+    }
+}
+
 /// A page of the panel of an item of furniture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ItemPage {
     /// The frames of the page, to link the item to.
     Frame,
-    /// The faces of the font of the item.
-    Style,
+    /// The faces of the font of a text part.
+    Face(TextPart),
+    /// The cases of a text part.
+    Case(TextPart),
+    /// The text of a part of a legend: the title or the entries.
+    Text(TextPart),
     /// The name of an entry of a legend, by its key.
     Entry(LayerId, String),
+    Bar(BarPage),
+    Pick(BarPick),
+}
+
+impl ItemPage {
+    /// The page that the Back button goes to. `None`: the top of the panel.
+    pub fn parent(&self) -> Option<ItemPage> {
+        match self {
+            ItemPage::Frame | ItemPage::Text(_) | ItemPage::Bar(_) => None,
+            ItemPage::Face(part) | ItemPage::Case(part) => part.page(),
+            ItemPage::Entry(..) => Some(ItemPage::Text(TextPart::Entries)),
+            ItemPage::Pick(pick) => Some(ItemPage::Bar(pick.parent())),
+        }
+    }
 }
 
 /// The tool of a pen, a finger, and the mouse on the page.
@@ -177,6 +325,17 @@ pub enum ClassColor {
     Halo,
     EdgeText,
     EdgeHalo,
+    /// The text of a part of an item of furniture.
+    ItemText(TextPart),
+    /// The halo of a part of an item of furniture.
+    ItemHalo(TextPart),
+    /// The first fill of a scale bar.
+    Fill1,
+    Fill2,
+    /// The outline of a scale bar.
+    Outline,
+    /// The arrow of a north arrow.
+    Arrow,
 }
 
 /// A row that a finger drags by its handle: a label class in the Labels
@@ -438,10 +597,9 @@ pub struct AtlasState {
     pub(crate) shown: Option<(AtlasSelection, FrameTab)>,
     /// The page of the panel of the selected item of furniture.
     pub item_page: Option<ItemPage>,
-    /// The color picker of the selected item is open.
-    pub item_color: bool,
-    /// The color picker of the item showed in this frame.
-    pub(crate) item_color_shown: bool,
+    /// The thumbnails of the kinds of scale bar in the style gallery: the
+    /// key of what each shows, and its texture.
+    bar_previews: HashMap<vale_store::ScaleBarKind, (u64, egui::TextureHandle)>,
     /// The text of the name field of the entry page of a legend.
     pub entry_name: String,
     /// The selection of `handles`.
@@ -557,8 +715,7 @@ impl Default for AtlasState {
             edge_styles: false,
             shown: None,
             item_page: None,
-            item_color: false,
-            item_color_shown: false,
+            bar_previews: HashMap::new(),
             entry_name: String::new(),
             handles_of: None,
             images: HashMap::new(),
@@ -612,6 +769,11 @@ impl AtlasState {
     }
 
     /// True if the item has a texture.
+    /// The number of thumbnails of the style gallery of a scale bar.
+    pub fn bar_preview_count(&self) -> usize {
+        self.bar_previews.len()
+    }
+
     pub fn has_item_image(&self, id: FurnitureId) -> bool {
         self.item_images.contains_key(&id)
     }
@@ -775,6 +937,7 @@ pub fn add_item(state: &mut AppState, kind: ItemKind) -> Option<FurnitureId> {
         ItemKind::ScaleBar => {
             let item = ScaleBarItem {
                 frame,
+                unit: vale_store::ScaleUnit::for_units(state.doc.project.world.units),
                 ..ScaleBarItem::default()
             };
             (left, bottom, Furniture::ScaleBar(item))
@@ -838,60 +1001,133 @@ pub fn edit_item(
     true
 }
 
-/// The text style of an item of furniture. A north arrow has none.
-pub fn item_style(item: &Furniture) -> Option<&FurnitureText> {
-    match item {
-        Furniture::Text(i) => Some(&i.style),
-        Furniture::Legend(i) => Some(&i.entry_style),
-        Furniture::ScaleBar(i) => Some(&i.number_style),
-        Furniture::NorthArrow(_) => None,
+/// `edit_item` as one undo step.
+pub fn item_step(
+    state: &mut AppState,
+    id: FurnitureId,
+    edit: impl FnOnce(&mut FurnitureRecord) -> bool,
+) {
+    state.save_edit();
+    if edit_item(state, id, edit) {
+        state.save_edit();
     }
 }
 
-/// Changes the text style of an item of furniture.
-pub fn edit_style(state: &mut AppState, id: FurnitureId, edit: impl FnOnce(&mut FurnitureText)) {
-    edit_item(state, id, |rec| {
-        let style = match &mut rec.item {
-            Furniture::Text(i) => &mut i.style,
-            Furniture::Legend(i) => &mut i.entry_style,
-            Furniture::ScaleBar(i) => &mut i.number_style,
-            Furniture::NorthArrow(_) => return false,
-        };
-        edit(style);
-        true
-    });
+/// Changes the text style of a part of an item of furniture. With `step`,
+/// the change is one undo step.
+pub fn edit_text(
+    state: &mut AppState,
+    id: FurnitureId,
+    part: TextPart,
+    step: bool,
+    edit: impl FnOnce(&mut FurnitureText),
+) {
+    let edit = |rec: &mut FurnitureRecord| match part.of_mut(&mut rec.item) {
+        Some(style) => {
+            edit(style);
+            true
+        }
+        None => false,
+    };
+    if step {
+        item_step(state, id, edit);
+    } else {
+        edit_item(state, id, edit);
+    }
+}
+
+/// Changes a scale bar. With `step`, the change is one undo step.
+pub fn edit_bar(
+    state: &mut AppState,
+    id: FurnitureId,
+    step: bool,
+    edit: impl FnOnce(&mut ScaleBarItem),
+) {
+    let edit = |rec: &mut FurnitureRecord| match &mut rec.item {
+        Furniture::ScaleBar(bar) => {
+            edit(bar);
+            true
+        }
+        _ => false,
+    };
+    if step {
+        item_step(state, id, edit);
+    } else {
+        edit_item(state, id, edit);
+    }
+}
+
+/// The units of a scale bar as the page draws them, with the division
+/// values that the bar picks. Nothing for a bar with no frame.
+pub fn bar_rows(state: &mut AppState, id: FurnitureId) -> Vec<crate::scale_bar::BarRow> {
+    let atlas = &state.doc.project.atlas;
+    let Some(rec) = atlas.furniture(id).cloned() else {
+        return Vec::new();
+    };
+    let Furniture::ScaleBar(bar) = &rec.item else {
+        return Vec::new();
+    };
+    let Some(frame) = bar.frame.and_then(|f| atlas.frame(f)).cloned() else {
+        return Vec::new();
+    };
+    let radius = state.doc.project.world.radius_km;
+    let Ok(p) = state.pipeline.projection(&state.doc, frame.map) else {
+        return Vec::new();
+    };
+    let Some(km_per_mm) = crate::furniture::scale_at_center(p, &frame, radius) else {
+        return Vec::new();
+    };
+    let mm = crate::furniture::rect_of(&rec);
+    let rect = kurbo::Rect::new(0.0, 0.0, mm.width() * PT_PER_MM, mm.height() * PT_PER_MM);
+    let km_per_point = km_per_mm / PT_PER_MM;
+    crate::scale_bar::draw(bar, rect, 1.0, km_per_point, &mut state.fonts).rows
+}
+
+/// The size of a thumbnail of the style gallery of a scale bar, in
+/// millimeters.
+pub const PREVIEW_MM: (f64, f64) = (60.0, 12.0);
+
+/// The thumbnail of a scale bar in the style `kind`, `width` points wide
+/// on the screen. The texture renders again when the bar changes.
+pub fn bar_preview(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    bar: &ScaleBarItem,
+    kind: vale_store::ScaleBarKind,
+    width: f32,
+) -> Option<egui::TextureId> {
+    let ppp = ctx.pixels_per_point();
+    let scale = f64::from(ppp * width) / (PREVIEW_MM.0 * PT_PER_MM);
+    let shown = ScaleBarItem {
+        frame: None,
+        ..bar.clone()
+    };
+    let key = hash_of((&shown, kind, scale.to_bits()));
+    if let Some((k, texture)) = state.atlas.bar_previews.get(&kind)
+        && *k == key
+    {
+        return Some(texture.id());
+    }
+    let (w, h) = PREVIEW_MM;
+    let img = crate::scale_bar::preview_rgba(&shown, kind, w, h, scale, &mut state.fonts).ok()?;
+    let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
+    let options = egui::TextureOptions::LINEAR;
+    let texture = match state.atlas.bar_previews.remove(&kind) {
+        Some((_, mut old)) => {
+            old.set(image, options);
+            old
+        }
+        None => ctx.load_texture(format!("bar-preview-{}", kind.id()), image, options),
+    };
+    let id = texture.id();
+    state.atlas.bar_previews.insert(kind, (key, texture));
+    Some(id)
 }
 
 /// Links an item of furniture to a frame.
 pub fn set_item_frame(state: &mut AppState, id: FurnitureId, frame: Option<FrameId>) {
     edit_item(state, id, |rec| {
         rec.item.set_frame(frame);
-        true
-    });
-}
-
-/// The color of an item of furniture: its text, or its arrow.
-pub fn item_color(item: &Furniture) -> Rgb {
-    match item {
-        Furniture::NorthArrow(i) => i.color,
-        other => item_style(other).map_or([0, 0, 0], |s| s.color),
-    }
-}
-
-pub fn set_item_color(state: &mut AppState, id: FurnitureId, color: Rgb) {
-    edit_item(state, id, |rec| {
-        match &mut rec.item {
-            Furniture::Text(i) => i.style.color = color,
-            Furniture::Legend(i) => {
-                i.title_style.color = color;
-                i.entry_style.color = color;
-            }
-            Furniture::ScaleBar(i) => {
-                i.number_style.color = color;
-                i.unit_style.color = color;
-            }
-            Furniture::NorthArrow(i) => i.color = color,
-        }
         true
     });
 }
@@ -928,23 +1164,6 @@ pub fn legend_rows(state: &mut AppState, legend: &LegendItem) -> Vec<crate::furn
         Ok(p) => crate::furniture::legend_rows(&state.doc, p, &frame, legend),
         Err(_) => Vec::new(),
     }
-}
-
-/// The scale of the frame of an item as text, for example "1 cm = 25 km".
-pub fn item_scale_text(state: &mut AppState, frame: Option<FrameId>) -> Option<String> {
-    let frame = state.doc.project.atlas.frame(frame?)?.clone();
-    let p = state.pipeline.projection(&state.doc, frame.map).ok()?;
-    let world = &state.doc.project.world;
-    let km = crate::furniture::scale_at_center(p, &frame, world.radius_km)?;
-    Some(crate::furniture::scale_text(km, world.units))
-}
-
-/// The largest change of the direction of north in the frame of an item,
-/// in degrees.
-pub fn item_variation(state: &mut AppState, frame: Option<FrameId>) -> Option<f64> {
-    let frame = state.doc.project.atlas.frame(frame?)?.clone();
-    let p = state.pipeline.projection(&state.doc, frame.map).ok()?;
-    crate::furniture::north(p, &frame).map(|(_, v)| v)
 }
 
 /// Deletes the selected item of furniture and clears the selection.
