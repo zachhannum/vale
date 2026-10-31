@@ -2946,8 +2946,13 @@ pub fn edit_border(state: &mut AppState, id: FrameId, change: impl FnOnce(&mut B
     });
 }
 
+/// Turns the border of a frame on or off. The reference grid turns off
+/// with the border, because its labels sit in the band.
 pub fn set_border(state: &mut AppState, id: FrameId, on: bool) {
-    edit_border(state, id, |b| b.on = on);
+    edit_border(state, id, |b| {
+        b.on = on;
+        b.grid &= on;
+    });
 }
 
 pub fn set_border_style(state: &mut AppState, id: FrameId, style: BorderStyle) {
@@ -2990,9 +2995,13 @@ pub fn set_border_distance(state: &mut AppState, id: FrameId, distance: f64) {
     }
 }
 
-/// Turns the reference grid of the border of a frame on or off.
+/// Turns the reference grid of a frame on or off. The border turns on with
+/// the grid, because the labels sit in the band.
 pub fn set_border_grid(state: &mut AppState, id: FrameId, on: bool) {
-    edit_border(state, id, |b| b.grid = on);
+    edit_border(state, id, |b| {
+        b.grid = on;
+        b.on |= on;
+    });
 }
 
 /// Changes the text style of the reference grid of a frame. With `step`,

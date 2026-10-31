@@ -201,6 +201,7 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     if frame.border.on {
         border_rows(ui, state, frame);
     }
+    grid_rows(ui, state, frame);
     ui.add_space(4.0);
     if ui.button(DELETE_FRAME).clicked() {
         atlas::delete_frame(state);
@@ -435,8 +436,8 @@ fn neatline_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         });
 }
 
-/// The style, the colors, the width, the distance, the stroke, and the
-/// reference grid of the border of a frame.
+/// The style, the colors, the width, the distance, and the stroke of the
+/// border of a frame.
 fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let (id, b) = (frame.id, &frame.border);
     egui::Grid::new("atlas-border")
@@ -478,10 +479,16 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                     atlas::set_border_stroke_width(state, id, v);
                 }
             }
-            if let Some(on) = check(ui, REFERENCE_GRID, b.grid) {
-                atlas::set_border_grid(state, id, on);
-            }
         });
+}
+
+/// The switch and the text of the reference grid of a frame.
+fn grid_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let (id, b) = (frame.id, &frame.border);
+    let mut grid = b.grid;
+    if ui.checkbox(&mut grid, REFERENCE_GRID).changed() {
+        atlas::set_border_grid(state, id, grid);
+    }
     if b.grid {
         ui.label(GRID_LABELS);
         let edit =

@@ -1891,7 +1891,6 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         scroll_up_to(&mut h, STROKE_COLOR);
         tap(&mut h, STROKE_COLOR);
 
-        // The reference grid is a part of the border.
         scroll_to(&mut h, REFERENCE_GRID);
         assert!(control(&h, GRID_LABELS).is_none(), "{size:?}");
         tap(&mut h, REFERENCE_GRID);
@@ -1913,11 +1912,23 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         assert!(frame(&h, 1).border.grid_text.size > 20.0, "{size:?}");
         check_controls(&h, "grid labels");
 
-        // With the border off, the reference grid has no row.
+        // The grid turns off with the border, and the border turns on with
+        // the grid.
         tap(&mut h, &format!("Back to {}", FRAME_TABS[0]));
         scroll_up_to(&mut h, BORDER);
         tap(&mut h, BORDER);
-        assert!(control(&h, REFERENCE_GRID).is_none(), "{size:?}");
+        let b = &frame(&h, 1).border;
+        assert!(!b.on && !b.grid, "{size:?}");
+        scroll_to(&mut h, REFERENCE_GRID);
+        tap(&mut h, REFERENCE_GRID);
+        let b = &frame(&h, 1).border;
+        assert!(b.on && b.grid, "{size:?}");
+        // The border works without the grid.
+        scroll_to(&mut h, REFERENCE_GRID);
+        tap(&mut h, REFERENCE_GRID);
+        let b = &frame(&h, 1).border;
+        assert!(b.on && !b.grid, "{size:?}");
+        check_controls(&h, "border without grid");
     }
 }
 

@@ -881,6 +881,18 @@ fn frame_tab(
     if frame.border.on {
         border_rows(ui, state, controls, &frame);
     }
+    let mut grid = frame.border.grid;
+    if widgets::switch_row(ui, controls, REFERENCE_GRID, REFERENCE_GRID, &mut grid) {
+        atlas::set_border_grid(state, id, grid);
+    }
+    if frame.border.grid {
+        let summary = super::grid_labels::summary(&frame.border.grid_text);
+        if widgets::open_row(ui, controls, super::grid_labels::GRID_LABELS, &summary).clicked() {
+            state.atlas.grid = Some(id);
+            state.atlas.grid_page = None;
+            state.atlas.label_color = None;
+        }
+    }
 
     ui.add_space(6.0);
     let delete = widgets::button_row_in(ui, controls, DELETE_FRAME, true, theme::WARN);
@@ -998,7 +1010,7 @@ fn neatline_rows(
 }
 
 /// The rows of the border of a frame: the style, the colors, the width,
-/// the distance, the stroke, and the reference grid.
+/// the distance, and the stroke.
 fn border_rows(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1056,19 +1068,6 @@ fn border_rows(
         let widths = range(Border::STROKE_WIDTHS);
         if let Some(w) = value_slider(ui, controls, names, b.stroke_width, widths, &text) {
             atlas::set_border_stroke_width(state, id, w);
-        }
-    }
-
-    let mut grid = b.grid;
-    if widgets::switch_row(ui, controls, REFERENCE_GRID, REFERENCE_GRID, &mut grid) {
-        atlas::set_border_grid(state, id, grid);
-    }
-    if b.grid {
-        let summary = super::grid_labels::summary(&b.grid_text);
-        if widgets::open_row(ui, controls, super::grid_labels::GRID_LABELS, &summary).clicked() {
-            state.atlas.grid = Some(id);
-            state.atlas.grid_page = None;
-            state.atlas.label_color = None;
         }
     }
 }
