@@ -635,8 +635,14 @@ fn v5(tx: &Transaction) -> rusqlite::Result<()> {
 }
 
 /// Adds the wind and the rain shadow of the world. A file with an older
-/// version number can already have the columns.
+/// version number can already have the columns. A test build gave version
+/// 31 to this step, so a file of version 31 can have the wind and no edge
+/// labels. The step runs `v31` for that file.
 fn v32(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_frame') WHERE name = 'meridian_labels'";
+    if tx.query_row(sql, [], |r| r.get::<_, i64>(0))? == 0 {
+        v31(tx)?;
+    }
     for (column, default) in [("wind", 270), ("rain_shadow", 0)] {
         let sql = "SELECT count(*) FROM pragma_table_info('vale_world') WHERE name = ?1";
         let count: i64 = tx.query_row(sql, [column], |r| r.get(0))?;
@@ -3663,6 +3669,41 @@ mod tests {
             (loaded.world.wind_deg, loaded.world.rain_shadow),
             (90.0, 0.6)
         );
+    }
+
+    #[test]
+    fn a_file_of_version_31_with_the_wind_and_no_edge_labels_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World {
+            wind_deg: 90.0,
+            rain_shadow: 0.6,
+            ..World::default()
+        });
+        project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        atlas_edit(&mut project);
+        file.save(&project).unwrap();
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE vale_frame DROP COLUMN graticule_format;
+             ALTER TABLE vale_frame DROP COLUMN meridian_labels;
+             ALTER TABLE vale_frame DROP COLUMN parallel_labels;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 31);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(
+            (loaded.world.wind_deg, loaded.world.rain_shadow),
+            (90.0, 0.6)
+        );
+        for frame in loaded.atlas.pages.iter().flat_map(|p| &p.frames) {
+            assert_eq!(frame.graticule.format, CoordFormat::Dms);
+        }
+        assert!(!file.can_undo());
     }
 
     #[test]
