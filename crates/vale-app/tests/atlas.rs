@@ -27,7 +27,7 @@ use vale_app::ui::pad::atlas::{
     STROKE_WIDTH as BORDER_STROKE_WIDTH, STYLE_FOR_THIS_MAP, WIDTH, custom_row, page_title,
     readout_text,
 };
-use vale_app::ui::pad::atlas::{DISTANCE_BY_SIDE, SIDE_DISTANCES};
+use vale_app::ui::pad::atlas::{BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, SIDE_DISTANCES};
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
     ORIENTATIONS, PLACES, SETS, SHOW_LABELS, SIDES, SIZE as EDGE_SIZE, STYLE as EDGE_STYLE,
@@ -1894,6 +1894,17 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         let b = &frame(&h, 1).border;
         assert_eq!(b.distances_mm, [b.distances_mm[0]; 4], "{size:?}");
 
+        scroll_to(&mut h, BORDER_GAP);
+        let slider = control(&h, BORDER_GAP).unwrap();
+        tap_with(
+            &mut h,
+            slider.right_center() - vec2(30.0, 0.0),
+            Input::Finger,
+        );
+        let gap = frame(&h, 1).border.gap_mm;
+        assert!(gap > 5.0, "{size:?}: {gap}");
+        assert_eq!((gap * 4.0).round() / 4.0, gap);
+
         scroll_to(&mut h, BORDER_STROKE);
         assert!(control(&h, BORDER_STROKE_WIDTH).is_none(), "{size:?}");
         tap(&mut h, BORDER_STROKE);
@@ -1924,6 +1935,10 @@ fn the_border_and_grid_controls_work_with_a_finger() {
         assert!(control(&h, GRID_LABELS).is_none(), "{size:?}");
         tap(&mut h, REFERENCE_GRID);
         assert!(frame(&h, 1).border.grid, "{size:?}");
+        scroll_to(&mut h, GRID_COLUMN_NAMES[1]);
+        tap(&mut h, GRID_COLUMN_NAMES[1]);
+        let columns = frame(&h, 1).border.grid_columns;
+        assert_eq!(columns, vale_store::GridColumns::Numbers, "{size:?}");
         check_controls(&h, "reference grid");
         if size == BOARDS[0] {
             screenshot::save(&mut h, "pad-atlas-frame-border");
@@ -1984,6 +1999,8 @@ fn the_paper_the_border_and_the_grid_survive_a_close_and_an_open() {
     set_border_distance(st, id, Some(0), -12.3);
     set_border_stroke(st, id, true);
     set_border_grid(st, id, true);
+    vale_app::ui::atlas::set_border_gap(st, id, 2.6);
+    vale_app::ui::atlas::set_grid_columns(st, id, vale_store::GridColumns::Numbers);
     edit_grid_text(st, id, true, |t| t.italic = true);
     h.run_steps(2);
     let mut project = h.state().doc.project.clone();
@@ -1998,6 +2015,8 @@ fn the_paper_the_border_and_the_grid_survive_a_close_and_an_open() {
     assert!(f.border.on && f.border.style == vale_store::BorderStyle::Graduated);
     assert_eq!(f.border.distances_mm, [-12.5, 4.0, 4.0, 4.0]);
     assert!(f.border.stroke && f.border.grid && f.border.grid_text.italic);
+    assert_eq!(f.border.gap_mm, 2.5);
+    assert_eq!(f.border.grid_columns, vale_store::GridColumns::Numbers);
 }
 
 #[test]

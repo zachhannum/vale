@@ -3494,6 +3494,7 @@ mod tests {
                 color2: [6, 5, 4],
                 width_mm: 2.5,
                 distances_mm: [-12.5, 4.0, 4.0, 4.0],
+                gap_mm: 2.5,
                 stroke: true,
                 stroke_color: [3, 2, 1],
                 stroke_width: 1.5,
@@ -3502,6 +3503,7 @@ mod tests {
                     italic: true,
                     ..atlas::FurnitureText::sized(7.0)
                 },
+                grid_columns: atlas::GridColumns::Numbers,
             },
             ..frame
         };
@@ -3817,6 +3819,8 @@ mod tests {
             r#"frame_border = '{"style": "dotted"}'"#,
             r#"frame_border = '{"stroke_width": 0}'"#,
             r#"frame_border = '{"distances": [1, 2, 3]}'"#,
+            r#"frame_border = '{"gap": -1}'"#,
+            r#"frame_border = '{"grid_columns": "roman"}'"#,
             r#"frame_border = '{"grid_text": {"size": 0}}'"#,
         ] {
             let dir = tempfile::tempdir().unwrap();

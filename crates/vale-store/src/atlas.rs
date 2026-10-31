@@ -180,6 +180,9 @@ pub struct Border {
     /// the top, the right, the bottom, and the left. A negative distance
     /// puts that side inside the box, and the shape covers the band there.
     pub distances_mm: [f64; 4],
+    /// Where a part of the shape crosses the band, the space in millimeters
+    /// between the shape and the band.
+    pub gap_mm: f64,
     /// A line on the inner and the outer edge of the band.
     pub stroke: bool,
     pub stroke_color: Rgb,
@@ -190,6 +193,34 @@ pub struct Border {
     pub grid: bool,
     /// The text of the labels of the reference grid.
     pub grid_text: FurnitureText,
+    /// The labels of the columns. The rows have the other kind.
+    pub grid_columns: GridColumns,
+}
+
+/// The labels of the columns of a reference grid.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GridColumns {
+    /// A, B, C for the columns, and 1, 2, 3 for the rows.
+    #[default]
+    Letters,
+    /// 1, 2, 3 for the columns, and A, B, C for the rows.
+    Numbers,
+}
+
+impl GridColumns {
+    pub const ALL: [GridColumns; 2] = [GridColumns::Letters, GridColumns::Numbers];
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            GridColumns::Letters => "letters",
+            GridColumns::Numbers => "numbers",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<GridColumns> {
+        GridColumns::ALL.into_iter().find(|c| c.id() == id)
+    }
 }
 
 /// How a border band is colored.
@@ -223,6 +254,8 @@ impl Border {
     pub const WIDTHS: RangeInclusive<f64> = 0.25..=10.0;
     /// The distances in millimeters that the app offers.
     pub const DISTANCES: RangeInclusive<f64> = -100.0..=30.0;
+    /// The gaps in millimeters that the app offers.
+    pub const GAPS: RangeInclusive<f64> = 0.0..=10.0;
     /// The stroke widths in points that the app offers.
     pub const STROKE_WIDTHS: RangeInclusive<f64> = 0.25..=4.0;
 
@@ -235,6 +268,8 @@ impl Border {
             "color2": hex(self.color2),
             "width": self.width_mm,
             "distances": self.distances_mm,
+            "gap": self.gap_mm,
+            "grid_columns": self.grid_columns.id(),
             "stroke": self.stroke,
             "stroke_color": hex(self.stroke_color),
             "stroke_width": self.stroke_width,
@@ -262,12 +297,16 @@ impl Border {
                 *to = v.as_f64().filter(|x| x.is_finite())?;
             }
         }
+        read_number(&map, "gap", &mut b.gap_mm)?;
+        if let Some(v) = map.get("grid_columns") {
+            b.grid_columns = GridColumns::from_id(v.as_str()?)?;
+        }
         read_flag(&map, "stroke", &mut b.stroke)?;
         read_color(&map, "stroke_color", &mut b.stroke_color)?;
         read_number(&map, "stroke_width", &mut b.stroke_width)?;
         read_flag(&map, "grid", &mut b.grid)?;
         b.grid_text = b.grid_text.read_key(&map, "grid_text")?;
-        (b.width_mm > 0.0 && b.stroke_width > 0.0).then_some(b)
+        (b.width_mm > 0.0 && b.stroke_width > 0.0 && b.gap_mm >= 0.0).then_some(b)
     }
 }
 
@@ -280,6 +319,7 @@ impl Default for Border {
             color2: [0xff, 0xff, 0xff],
             width_mm: 2.0,
             distances_mm: [8.0; 4],
+            gap_mm: 1.0,
             stroke: false,
             stroke_color: [0x2b, 0x2b, 0x2b],
             stroke_width: 0.5,
@@ -288,6 +328,7 @@ impl Default for Border {
                 color: [0x2b, 0x2b, 0x2b],
                 ..FurnitureText::sized(5.0)
             },
+            grid_columns: GridColumns::Letters,
         }
     }
 }

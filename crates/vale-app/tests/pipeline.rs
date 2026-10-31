@@ -975,6 +975,107 @@ fn a_part_of_the_shape_crosses_the_band_and_covers_it() {
 }
 
 #[test]
+fn the_band_keeps_a_gap_around_the_shape_where_it_crosses() {
+    let (mut doc, mut pipeline, id) = bordered();
+    let red = [200, 10, 20];
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.shape = FrameShape::Polygon(vec![vec![
+        [40.0, 60.0],
+        [80.0, 60.0],
+        [80.0, 40.0],
+        [120.0, 40.0],
+        [120.0, 60.0],
+        [200.0, 60.0],
+        [200.0, 160.0],
+        [40.0, 160.0],
+    ]]);
+    frame.neatline.on = false;
+    frame.border.on = true;
+    frame.border.color = red;
+    frame.border.distances_mm = [-14.0, 8.0, 8.0, 8.0];
+    frame.border.gap_mm = 2.0;
+    let list = page_list(&doc, &mut pipeline);
+    assert_eq!(pixel(&list, (77.0, 53.0)), red);
+    assert_eq!(pixel(&list, (79.0, 53.0)), [255, 255, 255], "the gap");
+    assert_eq!(pixel(&list, (121.0, 53.0)), [255, 255, 255], "the gap");
+    assert_eq!(pixel(&list, (123.0, 53.0)), red);
+
+    doc.project.atlas.frame_mut(id).unwrap().border.gap_mm = 0.0;
+    let list = page_list(&doc, &mut pipeline);
+    assert_eq!(pixel(&list, (79.0, 53.0)), red);
+}
+
+#[test]
+fn the_grid_labels_stay_beside_the_map_and_count_from_the_whole_shape() {
+    let (mut doc, mut pipeline, id) = bordered();
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.scale /= 3.0;
+    frame.graticule.interval = Some(10.0);
+    frame.border.on = true;
+    frame.border.grid = true;
+    // A wide band reaches far past the corners of the box.
+    frame.border.distances_mm = [20.0; 4];
+    let list = page_list(&doc, &mut pipeline);
+    let pt = |mm: f64| mm * PT_PER_MM;
+    let placed = runs(&list.items);
+    let (top, left): (Vec<_>, Vec<_>) = (
+        placed.iter().filter(|(_, at)| at.y < pt(30.0)).collect(),
+        placed.iter().filter(|(_, at)| at.x < pt(30.0)).collect(),
+    );
+    assert!(top.len() > 3 && left.len() > 3);
+    for (text, at) in &top {
+        assert!(at.x > pt(39.0) && at.x < pt(201.0), "{text} at {at:?}");
+    }
+    for (text, at) in &left {
+        assert!(at.y > pt(39.0) && at.y < pt(161.0), "{text} at {at:?}");
+    }
+
+    // The count starts at the westmost and the northmost cell of the shape.
+    let projection = pipeline.projection(&doc, doc.first_map()).unwrap();
+    let frame = doc.project.atlas.frame(id).unwrap();
+    let target = FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: PT_PER_MM,
+    };
+    let vt = frame_transform(projection, frame, target);
+    let cell = |mm: (f64, f64)| {
+        let [lon, lat] = projection
+            .inverse(vt.from_page(Point::new(pt(mm.0), pt(mm.1))))
+            .unwrap();
+        ((lon / 10.0).floor() as i64, (lat / 10.0).floor() as i64)
+    };
+    let corners = [(40.0, 40.0), (200.0, 40.0), (40.0, 160.0), (200.0, 160.0)].map(cell);
+    let west = corners.iter().map(|c| c.0).min().unwrap();
+    let north = corners.iter().map(|c| c.1).max().unwrap();
+    let west_label = (top.iter()).min_by(|a, b| a.1.x.total_cmp(&b.1.x)).unwrap();
+    let first_column = cell((west_label.1.x / PT_PER_MM + 1.0, west_label.1.y / PT_PER_MM)).0;
+    let want = vale_app::frame_border::column_name((first_column - west) as u32);
+    assert_eq!(west_label.0, want);
+    let north_label = (left.iter())
+        .min_by(|a, b| a.1.y.total_cmp(&b.1.y))
+        .unwrap();
+    let first_row = cell((
+        north_label.1.x / PT_PER_MM,
+        north_label.1.y / PT_PER_MM - 0.5,
+    ))
+    .1;
+    assert_eq!(north_label.0, (north - first_row + 1).to_string());
+
+    // Numbered columns give lettered rows.
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.border.grid_columns = vale_store::GridColumns::Numbers;
+    let runs = runs(&page_list(&doc, &mut pipeline).items);
+    for (text, at) in &runs {
+        if at.y < pt(30.0) {
+            assert!(text.chars().all(|c| c.is_ascii_digit()), "{text}");
+        }
+        if at.x < pt(30.0) {
+            assert!(text.chars().all(|c| c.is_ascii_uppercase()), "{text}");
+        }
+    }
+}
+
+#[test]
 fn the_border_stroke_draws_the_edges_and_the_divisions_of_the_band() {
     let (mut doc, mut pipeline, id) = bordered();
     let black = [1, 2, 3];

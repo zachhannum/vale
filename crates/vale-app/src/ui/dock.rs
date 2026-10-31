@@ -24,7 +24,9 @@ use super::pad::atlas::{
     SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, UNIT_NAMES, WIDTH, custom_row,
     length_text, unit_name,
 };
-use super::pad::atlas::{DISTANCE_BY_SIDE, SIDE_DISTANCES};
+use super::pad::atlas::{
+    BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
+};
 use super::pad::edge_labels::EDGE_LABELS;
 use super::pad::grid_labels::GRID_LABELS;
 use super::pad::{GRATICULE, NO_LAYERS};
@@ -482,6 +484,9 @@ fn border_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                     }
                 }
             }
+            if let Some(v) = number(ui, BORDER_GAP, b.gap_mm, Border::GAPS, " mm") {
+                atlas::set_border_gap(state, id, v);
+            }
             if let Some(on) = check(ui, BORDER_STROKE, b.stroke) {
                 atlas::set_border_stroke(state, id, on);
             }
@@ -505,6 +510,18 @@ fn grid_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         atlas::set_border_grid(state, id, grid);
     }
     if b.grid {
+        ui.horizontal(|ui| {
+            ui.label(GRID_COLUMNS);
+            let all = vale_store::GridColumns::ALL;
+            for (columns, name) in all.into_iter().zip(GRID_COLUMN_NAMES) {
+                if ui
+                    .selectable_label(b.grid_columns == columns, name)
+                    .clicked()
+                {
+                    atlas::set_grid_columns(state, id, columns);
+                }
+            }
+        });
         ui.label(GRID_LABELS);
         let edit =
             |state: &mut AppState, step: bool, f: &dyn Fn(&mut vale_store::FurnitureText)| {

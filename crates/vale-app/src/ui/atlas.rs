@@ -3002,6 +3002,20 @@ pub fn set_border_distance(state: &mut AppState, id: FrameId, side: Option<usize
     }
 }
 
+/// Sets the gap of the border of a frame around the shape, in
+/// millimeters, rounded to 0.25.
+pub fn set_border_gap(state: &mut AppState, id: FrameId, gap: f64) {
+    if gap.is_finite() {
+        let gap = stepped(gap, Border::GAPS, 0.25);
+        edit_border(state, id, |b| b.gap_mm = gap);
+    }
+}
+
+/// Sets the labels of the columns of the reference grid of a frame.
+pub fn set_grid_columns(state: &mut AppState, id: FrameId, columns: vale_store::GridColumns) {
+    edit_border(state, id, |b| b.grid_columns = columns);
+}
+
 /// Whether the panel shows the distance of each side of the border of a
 /// frame: the user asked for it, or the sides differ.
 pub fn border_by_side(state: &AppState, b: &Border) -> bool {

@@ -5,7 +5,8 @@
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
 use vale_store::{
-    Border, BorderStyle, FrameShape, Graticule, LayerId, MapId, Neatline, PageUnits, RasterId,
+    Border, BorderStyle, FrameShape, Graticule, GridColumns, LayerId, MapId, Neatline, PageUnits,
+    RasterId,
 };
 
 use super::geometry::{self, GAP, Input, MARGIN, PAD, ROW, Rects, TOUCH, WidthClass};
@@ -63,6 +64,11 @@ pub const SECOND_COLOR: &str = "Second color";
 pub const BORDER_WIDTH: &str = "Border width";
 pub const BORDER_DISTANCE: &str = "Border distance";
 pub const DISTANCE_BY_SIDE: &str = "Distance by side";
+pub const BORDER_GAP: &str = "Border gap";
+pub const GRID_COLUMNS: &str = "Columns";
+/// The choices of the labels of the columns, in the order of
+/// `GridColumns::ALL`.
+pub const GRID_COLUMN_NAMES: [&str; 2] = ["Letters", "Numbers"];
 /// The distance of each side of the border: top, right, bottom, left.
 pub const SIDE_DISTANCES: [&str; 4] = [
     "Top distance",
@@ -894,6 +900,13 @@ fn frame_tab(
         atlas::set_border_grid(state, id, grid);
     }
     if frame.border.grid {
+        let active = GridColumns::ALL
+            .iter()
+            .position(|c| *c == frame.border.grid_columns);
+        if let Some(i) = widgets::choice_row(ui, controls, GRID_COLUMNS, &GRID_COLUMN_NAMES, active)
+        {
+            atlas::set_grid_columns(state, id, GridColumns::ALL[i]);
+        }
         let summary = super::grid_labels::summary(&frame.border.grid_text);
         if widgets::open_row(ui, controls, super::grid_labels::GRID_LABELS, &summary).clicked() {
             state.atlas.grid = Some(id);
@@ -1080,6 +1093,12 @@ fn border_rows(
                 atlas::set_border_distance(state, id, Some(i), d);
             }
         }
+    }
+
+    let text = format!("{} mm", b.gap_mm);
+    let names = (BORDER_GAP, BORDER_GAP);
+    if let Some(g) = value_slider(ui, controls, names, b.gap_mm, range(Border::GAPS), &text) {
+        atlas::set_border_gap(state, id, g);
     }
 
     let mut stroke = b.stroke;

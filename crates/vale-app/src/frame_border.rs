@@ -5,7 +5,7 @@ use kurbo::{Affine, BezPath, Point, Rect, Shape, Vec2};
 use vale_labeler::Fonts;
 use vale_render::{FillRule, Item};
 use vale_sphere::{Projection, graticule_in};
-use vale_store::{BorderStyle, FrameRecord};
+use vale_store::{BorderStyle, FrameRecord, GridColumns};
 
 use crate::atlas::{FrameTarget, PT_PER_MM, frame_transform, interval_at_scale};
 use crate::edge_labels::{inside, target_rings};
@@ -73,12 +73,11 @@ pub fn items(
         return Vec::new();
     }
     let (inner, outer) = band_rects(frame, target);
-    // The shape covers the band where it crosses it.
-    let rings = target_rings(frame, target);
-    let mut clip = outer
-        .inflate(1.0, 1.0)
-        .union(frame_area(frame, target))
-        .to_path(0.1);
+    // The shape covers the band where it crosses it, with a gap.
+    let shape = target_rings(frame, target);
+    let rings = grown(&shape, b.gap_mm * target.pts_per_mm);
+    let reach = rings.iter().flatten().fold(outer, |r, p| r.union_pt(*p));
+    let mut clip = reach.inflate(1.0, 1.0).to_path(0.1);
     clip.extend(shape_path(&rings));
     let mut out = vec![Item::PushClip {
         path: clip,
@@ -129,10 +128,99 @@ pub fn items(
     }
     out.push(Item::PopClip);
     if b.grid {
-        let labels = grid_labels(frame, &lines, inner, outer, unit, &rings, fonts);
+        let area = frame_area(frame, target);
+        let labels = grid_labels(
+            frame,
+            &lines,
+            (inner, outer, area),
+            unit,
+            (&shape, &rings),
+            fonts,
+        );
         out.extend(labels.into_items());
     }
     out
+}
+
+/// The rings of a shape, grown by `d` target points: the outer ring moves
+/// out, and each hole moves in.
+fn grown(rings: &[Vec<Point>], d: f64) -> Vec<Vec<Point>> {
+    if d <= 0.0 {
+        return rings.to_vec();
+    }
+    let area = |ring: &[Point]| {
+        let n = ring.len();
+        (0..n)
+            .map(|i| ring[i].to_vec2().cross(ring[(i + 1) % n].to_vec2()))
+            .sum::<f64>()
+            .abs()
+    };
+    (rings.iter().enumerate())
+        .map(|(i, ring)| {
+            let (a, b) = (offset_ring(ring, d), offset_ring(ring, -d));
+            let a_larger = area(&a) > area(&b);
+            if a_larger == (i == 0) { a } else { b }
+        })
+        .collect()
+}
+
+/// `ring` with each edge moved by `d` along its normal, with mitered
+/// corners. A miter is at most 4 times `d` long.
+fn offset_ring(ring: &[Point], d: f64) -> Vec<Point> {
+    let mut pts: Vec<Point> = Vec::new();
+    for p in ring {
+        if pts.last().is_none_or(|q| q.distance(*p) > 1e-9) {
+            pts.push(*p);
+        }
+    }
+    while pts.len() > 1 && pts[0].distance(pts[pts.len() - 1]) <= 1e-9 {
+        pts.pop();
+    }
+    let n = pts.len();
+    if n < 3 {
+        return pts;
+    }
+    let normal = |v: Vec2| Vec2::new(v.y, -v.x) / v.hypot();
+    (0..n)
+        .map(|i| {
+            let (prev, p, next) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
+            let (n1, n2) = (normal(p - prev), normal(next - p));
+            let bisector = n1 + n2;
+            let len2 = bisector.hypot2();
+            if len2 < 1e-9 {
+                return p + n1 * d;
+            }
+            let miter = bisector * (2.0 / len2);
+            let miter = if miter.hypot() > 4.0 {
+                miter * (4.0 / miter.hypot())
+            } else {
+                miter
+            };
+            p + miter * d
+        })
+        .collect()
+}
+
+/// The westmost cell and the northmost cell of the graticule in the shape.
+fn origin(lines: &Lines, shape: &[Vec<Point>], area: Rect) -> Option<(i64, i64)> {
+    const N: usize = 48;
+    let mut points: Vec<Point> = shape.iter().flatten().copied().collect();
+    for i in 0..=N {
+        for j in 0..=N {
+            let t = |k: usize| k as f64 / N as f64;
+            let p = Point::new(
+                area.x0 + area.width() * t(i),
+                area.y0 + area.height() * t(j),
+            );
+            if inside(p, shape) {
+                points.push(p);
+            }
+        }
+    }
+    let cells: Vec<[i64; 2]> = points.iter().filter_map(|p| lines.cell(*p)).collect();
+    let west = cells.iter().map(|[x, _]| *x).min()?;
+    let north = cells.iter().map(|[_, y]| *y).max()?;
+    Some((west, north))
 }
 
 /// A closed path through rings of target points.
@@ -273,61 +361,99 @@ impl<'a> Lines<'a> {
     }
 }
 
-/// A letter at the middle of each interval of the meridians on the top and
-/// the bottom side, and a number at the middle of each interval of the
-/// parallels on the left and the right side. The letters go from the west,
-/// and the numbers go from the north. A piece too short for its label has
-/// no label, and neither has a label that the shape covers.
+/// A label at the middle of each interval of the meridians on the top and
+/// the bottom side, and of the parallels on the left and the right side.
+/// The columns go from the west, and the rows go from the north, both from
+/// the first cell of the shape. Only the part of an interval beside the box
+/// of the shape has a label. A part too short for its label has no label,
+/// and neither has a label that the grown shape covers.
 fn grid_labels(
     frame: &FrameRecord,
     lines: &Lines,
-    inner: Rect,
-    outer: Rect,
+    (inner, outer, area): (Rect, Rect, Rect),
     unit: f64,
-    rings: &[Vec<Point>],
+    (shape, grown): (&[Vec<Point>], &[Vec<Point>]),
     fonts: &mut Fonts,
 ) -> Painted {
-    let ink = TextInk::new(&frame.border.grid_text, unit, fonts);
-    let [top, bottom, left, right] = sides(inner, outer);
-    let on_sphere = |side: &Side, meridians: bool| {
-        let pieces = lines.pieces(side, Some(meridians));
-        pieces
-            .into_iter()
-            .filter(|p| p.cell.is_some() && lines.cell(p.at).is_some())
-    };
-    let columns: Vec<Piece> = on_sphere(&top, true)
-        .chain(on_sphere(&bottom, true))
-        .collect();
-    let rows: Vec<Piece> = on_sphere(&left, false)
-        .chain(on_sphere(&right, false))
-        .collect();
-    let west = columns.iter().filter_map(|p| p.cell).map(|[x, _]| x).min();
-    let north = rows.iter().filter_map(|p| p.cell).map(|[_, y]| y).max();
+    let b = &frame.border;
     let mut out = Painted::default();
+    let Some((west, north)) = origin(lines, shape, area) else {
+        return out;
+    };
+    let ink = TextInk::new(&b.grid_text, unit, fonts);
+    let [top, bottom, left, right] = sides(inner, outer);
+    // The pieces of a side, cut to the box of the shape.
+    let beside = |side: &Side, meridians: bool| -> Vec<(Piece, f64)> {
+        let (lo, hi) = if side.horizontal {
+            (area.x0, area.x1)
+        } else {
+            (area.y0, area.y1)
+        };
+        let mut out = Vec::new();
+        for p in lines.pieces(side, Some(meridians)) {
+            let (r, at) = (p.rect, p.at);
+            let (a, z) = if side.horizontal {
+                (r.x0, r.x1)
+            } else {
+                (r.y0, r.y1)
+            };
+            let (a, z) = (a.max(lo), z.min(hi));
+            if a >= z {
+                continue;
+            }
+            let mid = (a + z) / 2.0;
+            let at = if side.horizontal {
+                Point::new(mid, at.y)
+            } else {
+                Point::new(at.x, mid)
+            };
+            if let Some(cell) = lines.cell(at) {
+                let piece = Piece {
+                    rect: r,
+                    at,
+                    cell: Some(cell),
+                };
+                out.push((piece, z - a));
+            }
+        }
+        out
+    };
+    let name = |i: i64, letters: bool| {
+        let i = i.max(0) as u32;
+        if letters {
+            column_name(i)
+        } else {
+            (i + 1).to_string()
+        }
+    };
+    let letters = b.grid_columns == GridColumns::Letters;
     let mut put = |text: &str, piece: &Piece, along: f64| {
         let m = fonts.measure(&ink.case.apply(text), &ink.style);
         if m.advance > along {
             return;
         }
-        // A label that the shape covers is not drawn.
         let half = Vec2::new(m.advance / 2.0, m.ascent / 2.0);
         let corners = [-1.0, 1.0]
             .map(|sx| [-1.0, 1.0].map(|sy| piece.at + Vec2::new(sx * half.x, sy * half.y)));
-        if inside(piece.at, rings) || corners.iter().flatten().any(|c| inside(*c, rings)) {
+        if inside(piece.at, grown) || corners.iter().flatten().any(|c| inside(*c, grown)) {
             return;
         }
         let baseline = piece.at.y + (m.ascent - m.descent.abs()) / 2.0;
         let to = Affine::translate((piece.at.x - m.advance / 2.0, baseline));
         ink.line(text, to, fonts, &mut out);
     };
-    for p in &columns {
-        if let (Some([x, _]), Some(west)) = (p.cell, west) {
-            put(&column_name((x - west) as u32), p, p.rect.width());
+    for side in [&top, &bottom] {
+        for (p, along) in beside(side, true) {
+            if let Some([x, _]) = p.cell {
+                put(&name(x - west, letters), &p, along);
+            }
         }
     }
-    for p in &rows {
-        if let (Some([_, y]), Some(north)) = (p.cell, north) {
-            put(&(north - y + 1).to_string(), p, p.rect.height());
+    for side in [&left, &right] {
+        for (p, along) in beside(side, false) {
+            if let Some([_, y]) = p.cell {
+                put(&name(north - y, !letters), &p, along);
+            }
         }
     }
     out
