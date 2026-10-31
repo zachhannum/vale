@@ -640,6 +640,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             height_mm,
             units,
             frames,
+            furniture: Vec::new(),
         });
     }
     let mut presets = Vec::new();

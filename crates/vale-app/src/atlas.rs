@@ -620,6 +620,7 @@ mod tests {
             height_mm: 210.0,
             units: PageUnits::Mm,
             frames: (0..frames).map(|_| frame(1e7)).collect(),
+            furniture: Vec::new(),
         }
     }
 

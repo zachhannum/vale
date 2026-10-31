@@ -13,7 +13,9 @@ mod undo;
 
 pub use atlas::{
     Atlas, Border, CoordFormat, EdgeLabels, EdgeOrientation, Edges, FrameId, FrameRecord,
-    FrameShape, Graticule, MapId, MapRecord, PageId, PageRecord, PageUnits, ProjectionPreset,
+    FrameShape, Furniture, FurnitureId, FurnitureRecord, FurnitureText, Graticule, LegendEntry,
+    LegendItem, MapId, MapRecord, NorthArrowItem, PageId, PageRecord, PageUnits, ProjectionPreset,
+    ScaleBarItem, TextAlign, TextItem,
 };
 pub use gpkg::{
     FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,

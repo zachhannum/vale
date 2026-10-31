@@ -2557,6 +2557,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         next_map_id: counter(conn, "next_map_id")?,
         next_page_id: counter(conn, "next_page_id")?,
         next_frame_id: counter(conn, "next_frame_id")?,
+        next_furniture_id: 0,
     };
     let mut rows = conn.prepare("SELECT id, name, projection FROM vale_map ORDER BY position")?;
     let mut rows = rows.query([])?;
@@ -2616,6 +2617,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             units: PageUnits::from_id(&units)
                 .ok_or_else(|| corrupt(format!("page units {units:?}")))?,
             frames: Vec::new(),
+            furniture: Vec::new(),
         });
     }
     if atlas.maps.is_empty() {
