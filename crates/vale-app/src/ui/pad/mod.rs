@@ -36,6 +36,7 @@ pub mod icons;
 pub mod labels;
 pub mod raster;
 pub mod rules;
+pub mod text_style;
 pub mod theme;
 pub mod widgets;
 

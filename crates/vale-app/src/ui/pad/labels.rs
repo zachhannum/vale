@@ -4,19 +4,20 @@
 
 use eframe::egui::{self, Align2, Rect, pos2, vec2};
 use vale_labeler::Face;
-use vale_store::{FrameId, GeometryKind, LayerId, MapId};
+use vale_store::{FrameId, FurnitureText, GeometryKind, LayerId, MapId};
 use vale_style::expr::{Expr, Filter};
-use vale_style::{LabelClass, LabelPlacement, LabelPosition, TextCase};
+use vale_style::{LabelClass, LabelPlacement, LabelPosition};
 
 use super::atlas::{FRAME_TABS, named_tabs, panel_width};
 use super::filter;
 use super::geometry::{Rects, TOUCH};
 use super::icons::{self, Icon};
+use super::text_style::{self, TextEdit, TextEvent, TextSpec};
 use super::widgets::{self, Controls, PANEL_ROW};
-use super::{Card, CardTitle, note_text, show_card, theme};
-use crate::fonts::{self, DEFAULT_FAMILY};
+use super::{Card, CardTitle, show_card, theme};
+use crate::fonts;
 use crate::ui::atlas::{AtlasSelection, ClassColor, ClassDrag, ClassPage, ClassSegment};
-use crate::ui::{Action, AppState, FontTarget, Note};
+use crate::ui::{Action, AppState, FontTarget};
 
 pub const ADD_CLASS: &str = "Add class";
 pub const DELETE_CLASS: &str = "Delete class";
@@ -508,12 +509,6 @@ fn face(class: &LabelClass) -> Face {
     }
 }
 
-/// The faces of the font family of a class. A family with no list of faces
-/// gives the regular face.
-fn faces(state: &mut AppState, class: &LabelClass) -> Vec<Face> {
-    faces_of(state, class.font.as_deref())
-}
-
 /// The faces of the font family of `font`. A family with no list of faces
 /// gives the regular face.
 pub(super) fn faces_of(state: &mut AppState, font: Option<&str>) -> Vec<Face> {
@@ -580,67 +575,69 @@ fn text_segment(
     }
     ui.add_space(6.0);
 
-    let family = class.font.as_deref().unwrap_or(DEFAULT_FAMILY);
-    if widgets::open_row(ui, controls, super::fonts::FONT, family).clicked() {
-        let target = FontTarget::Class(map, layer, i);
-        state.actions.push(Action::PickFont(target));
-    }
-    let warning = fonts::missing(class.font.as_deref(), &state.font_families);
-    let mut warning = warning.map(|t| Note::new(t, true, None));
-    note_text(ui, None, &mut warning, None);
-    if widgets::open_row(ui, controls, STYLE, &face(class).name()).clicked() {
-        state.atlas.label_page = Some(ClassPage::Style);
-    }
-
-    let text = format!("{} pt", (class.size * 10.0).round() / 10.0);
-    if let Some(size) = value_slider(ui, controls, (LABEL_SIZE, "Size"), class.size, SIZES, &text) {
-        state.edit_label_class(map, layer, i, |c| c.size = size.round());
-    }
-    if widgets::open_row(ui, controls, CASE, class.case.name()).clicked() {
-        state.atlas.label_page = Some(ClassPage::Case);
-    }
-    let names = (LETTER_SPACING, LETTER_SPACING);
-    let text = percent(class.letter_spacing);
-    let spacing = value_slider(ui, controls, names, class.letter_spacing, SPACINGS, &text);
-    if let Some(spacing) = spacing {
-        let spacing = (spacing * 100.0).round() / 100.0;
-        state.edit_label_class(map, layer, i, |c| c.letter_spacing = spacing);
-    }
-
-    if let Some(color) = color_rows(ui, state, controls, (COLOR, ClassColor::Text), class.color) {
-        state.edit_label_class(map, layer, i, |c| c.color = color);
-    }
-    let text = percent(class.opacity);
-    let opacity = value_slider(
-        ui,
-        controls,
-        (OPACITY, OPACITY),
-        class.opacity,
-        (0.0, 1.0),
-        &text,
-    );
-    if let Some(opacity) = opacity {
-        let opacity = (opacity * 100.0).round() / 100.0;
-        state.edit_label_class(map, layer, i, |c| c.opacity = opacity);
-    }
-
-    let mut halo = class.halo;
-    if widgets::switch_row(ui, controls, HALO, HALO, &mut halo) {
-        state.label_class_step(map, layer, i, |c| c.halo = halo);
-    }
-    if class.halo {
-        let which = (HALO_COLOR, ClassColor::Halo);
-        if let Some(color) = color_rows(ui, state, controls, which, class.halo_color) {
-            state.edit_label_class(map, layer, i, |c| c.halo_color = color);
+    let spec = TextSpec {
+        size_name: LABEL_SIZE,
+        size_step: 1.0,
+        sizes: SIZES,
+        spacings: SPACINGS,
+        halo_widths: HALO_WIDTHS,
+        colors: (ClassColor::Text, ClassColor::Halo),
+    };
+    let style = text_style(class);
+    match text_style::section(ui, state, controls, &style, spec) {
+        Some(TextEvent::PickFont) => {
+            let target = FontTarget::Class(map, layer, i);
+            state.actions.push(Action::PickFont(target));
         }
-        let names = (HALO_WIDTH, HALO_WIDTH);
-        let text = format!("{:.1} pt", class.halo_width);
-        let width = value_slider(ui, controls, names, class.halo_width, HALO_WIDTHS, &text);
-        if let Some(width) = width {
-            let width = (width * 10.0).round() / 10.0;
-            state.edit_label_class(map, layer, i, |c| c.halo_width = width);
+        Some(TextEvent::OpenFaces) => state.atlas.label_page = Some(ClassPage::Style),
+        Some(TextEvent::OpenCases) => state.atlas.label_page = Some(ClassPage::Case),
+        Some(TextEvent::Edit(edit)) => {
+            let apply = |c: &mut LabelClass| apply_text(&edit, c);
+            if edit.step() {
+                state.label_class_step(map, layer, i, apply);
+            } else {
+                state.edit_label_class(map, layer, i, apply);
+            }
         }
+        None => {}
     }
+}
+
+/// The text settings of a class as a text style.
+fn text_style(class: &LabelClass) -> FurnitureText {
+    let rgb = |c: vale_style::Color| [c.r, c.g, c.b];
+    FurnitureText {
+        font: class.font.clone(),
+        weight: class.weight,
+        italic: class.italic,
+        size: class.size,
+        color: rgb(class.color),
+        case: class.case,
+        letter_spacing: class.letter_spacing,
+        opacity: class.opacity,
+        halo: class.halo,
+        halo_color: rgb(class.halo_color),
+        halo_width: class.halo_width,
+    }
+}
+
+/// Applies a change of the Text section to a class. A color keeps the
+/// alpha of the class.
+fn apply_text(edit: &TextEdit, c: &mut LabelClass) {
+    let mut style = text_style(c);
+    edit.apply(&mut style);
+    let with = |[r, g, b]: [u8; 3], old: vale_style::Color| vale_style::Color { r, g, b, a: old.a };
+    c.font = style.font;
+    c.weight = style.weight;
+    c.italic = style.italic;
+    c.size = style.size;
+    c.color = with(style.color, c.color);
+    c.case = style.case;
+    c.letter_spacing = style.letter_spacing;
+    c.opacity = style.opacity;
+    c.halo = style.halo;
+    c.halo_color = with(style.halo_color, c.halo_color);
+    c.halo_width = style.halo_width;
 }
 
 /// The Placement segment of the panel of a class. A point class has its
@@ -783,17 +780,13 @@ fn style_page(
     (_, map, layer, i): ClassAt,
     class: &LabelClass,
 ) {
-    let current = face(class);
-    for f in faces(state, class) {
-        let name = f.name();
-        let on = f.weight == current.weight && f.italic == current.italic;
-        if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() {
-            state.label_class_step(map, layer, i, |c| {
-                c.weight = f.weight;
-                c.italic = f.italic;
-            });
-            state.atlas.label_page = None;
-        }
+    if let Some(f) = text_style::face_rows(ui, state, controls, class.font.as_deref(), face(class))
+    {
+        state.label_class_step(map, layer, i, |c| {
+            c.weight = f.weight;
+            c.italic = f.italic;
+        });
+        state.atlas.label_page = None;
     }
 }
 
@@ -805,12 +798,9 @@ fn case_page(
     (_, map, layer, i): ClassAt,
     class: &LabelClass,
 ) {
-    for case in TextCase::ALL {
-        let name = case.name();
-        if widgets::option_row(ui, controls, name, name, &[], case == class.case).clicked() {
-            state.label_class_step(map, layer, i, |c| c.case = case);
-            state.atlas.label_page = None;
-        }
+    if let Some(case) = text_style::case_rows(ui, controls, class.case) {
+        state.label_class_step(map, layer, i, |c| c.case = case);
+        state.atlas.label_page = None;
     }
 }
 
