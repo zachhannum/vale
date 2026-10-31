@@ -16,6 +16,7 @@ pub enum Icon {
     Uplift,
     Warp,
     OceanRidge,
+    Range,
     More,
     Move,
     Undo,
@@ -63,6 +64,7 @@ impl Icon {
             Icon::Uplift => "M3 20l6-8 4 5 3-4 5 7M12 9v-6M9 6l3-3 3 3",
             Icon::Warp => "M3 7h18M3 16c2-5 4 5 6 0s4-5 6 0s4 5 6 0",
             Icon::OceanRidge => "M3 9h6v6h6v-6h6M9 4v16M15 4v16",
+            Icon::Range => "M2 19l5-8 3 4 4-9 4 6 4 7M6 7l3-2M13 5l3-2",
             Icon::More => "",
             Icon::Move => {
                 "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3\
@@ -351,6 +353,7 @@ mod tests {
             Icon::Uplift,
             Icon::Warp,
             Icon::OceanRidge,
+            Icon::Range,
             Icon::More,
             Icon::Move,
             Icon::Undo,

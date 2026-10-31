@@ -11,8 +11,8 @@ use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, atlas
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    EROSION, FLOW, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
-    SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    EROSION, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
@@ -20,6 +20,8 @@ use crate::world::{self, three_significant};
 
 /// The name of the ocean ridge mode of the brush.
 pub const OCEAN_RIDGE: &str = "Ocean ridge";
+/// The name of the range mode of the brush.
+pub const RANGE: &str = "Range";
 
 /// The button of the tool bar that opens the properties of the world.
 pub const WORLD_BUTTON: &str = "World…";
@@ -712,6 +714,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Uplift, "Uplift"),
             (Mode::Warp, "Warp"),
             (Mode::OceanRidge, OCEAN_RIDGE),
+            (Mode::Range, RANGE),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -747,10 +750,11 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
 }
 
 /// The name of the strength slider. In the uplift mode, the strength is the
-/// rate of the uplift.
+/// rate of the uplift, and in the range mode the height of the range.
 pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
+        Mode::Range => "Height",
         _ => "Strength",
     }
 }
@@ -774,9 +778,10 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .brush
             .set_radius_km(size * unit_km, globe_radius, world_km);
     }
-    // The ocean ridge mode has no falloff and no strength.
+    // The ocean ridge mode has no falloff and no strength, and the range
+    // mode has no falloff.
     let ridge = globe.brush.mode == Mode::OceanRidge;
-    if !ridge {
+    if !matches!(globe.brush.mode, Mode::OceanRidge | Mode::Range) {
         ui.add(egui::Slider::new(&mut globe.brush.hardness, 0.0..=1.0).text("Hardness"));
     }
     ui.add(egui::Slider::new(&mut globe.brush.flow, FLOW).text("Flow"));
@@ -829,10 +834,7 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
                 .text(name);
             ui.add(slider);
         }
-        // The seed is a property of the world, so each brush gets the same
-        // noise field.
-        let seed = &mut state.doc.project.world.seed;
-        ui.add(egui::Slider::new(seed, SEED).text("Seed"));
+        seed_slider(ui, state);
     } else {
         // The slider shows the strength as a value of the layer.
         let (min, max) = globe.brush.value_range;
@@ -850,10 +852,21 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .text(strength_name(globe.brush.mode));
         ui.add(strength);
     }
-    if globe.brush.mode == Mode::Uplift {
+    let globe = &mut state.globe;
+    if globe.brush.mode == Mode::Range {
+        let spacing = egui::Slider::new(&mut globe.brush.range_spacing_km, RANGE_SPACING_KM)
+            .logarithmic(true)
+            .custom_formatter(|km, _| three_significant(km))
+            .suffix(" km")
+            .text("Spacing");
+        ui.add(spacing);
+        seed_slider(ui, state);
+    }
+    let globe = &mut state.globe;
+    if matches!(globe.brush.mode, Mode::Uplift | Mode::Range) {
         ui.add(egui::Slider::new(&mut globe.brush.erosion, EROSION).text("Erosion"));
     }
-    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift) {
+    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift | Mode::Range) {
         // The wind and the rain shadow are properties of the world, so each
         // brush gets the same rain.
         let world = &mut state.doc.project.world;
@@ -889,6 +902,13 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .text("Angle");
         ui.add(angle);
     }
+}
+
+/// The seed slider of the warp mode and of the range mode. The seed is a
+/// property of the world, so each brush gets the same pattern.
+fn seed_slider(ui: &mut egui::Ui, state: &mut AppState) {
+    let seed = &mut state.doc.project.world.seed;
+    ui.add(egui::Slider::new(seed, SEED).text("Seed"));
 }
 
 /// A field for a value of the layer that the brush paints, in the unit of

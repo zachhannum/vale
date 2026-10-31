@@ -88,6 +88,25 @@ impl ErodeStep {
         self.rects.iter().all(Option::is_none)
     }
 
+    /// Adds the drops of `other` to the drops of this step. The sum of two
+    /// drops stops at the largest level. Returns `false` and changes nothing
+    /// if the two steps have different cells.
+    pub fn merge(&mut self, other: &ErodeStep) -> bool {
+        if self.grid != other.grid {
+            return false;
+        }
+        for (drop, add) in self.drops.iter_mut().zip(&other.drops) {
+            *drop = drop.saturating_add(*add);
+        }
+        for (rect, add) in self.rects.iter_mut().zip(other.rects) {
+            *rect = match (*rect, add) {
+                (Some(a), Some(b)) => Some(a.union(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        true
+    }
+
     /// The drop of a cell. `x` and `y` can be one cell past the end of the
     /// grid. Past a face edge of the global grid, the cell is the nearest
     /// cell of the face that is there. A cell past the side of a window has
@@ -867,6 +886,32 @@ impl Erosion {
             let level = height.round() as u16;
             if level != self.levels[i] {
                 self.levels[i] = level;
+                self.stale = true;
+            }
+        }
+    }
+
+    /// Sets each cell under the brushes one time. `level` gives the new
+    /// level of a cell from its direction and its level. With `None`, the
+    /// cell does not change. The next step has no drop for a cell that only
+    /// went up.
+    pub fn lift(&mut self, brushes: &[ErodeBrush], level: impl Fn(V3, u16) -> Option<u16>) {
+        let side = self.side;
+        let mut cells = Vec::new();
+        self.cells_under(brushes, |_, row, x, _| cells.push((row, x)));
+        cells.sort_unstable();
+        cells.dedup();
+        let first = self.faces().start;
+        for (row, x) in cells {
+            let face = first + row / side;
+            let dir = face_dir(face, self.flat_u[x], self.flat_v[row % side]);
+            let i = row * side + x;
+            let Some(new) = level(dir, self.levels[i]) else {
+                continue;
+            };
+            self.heights[i] = f32::from(new);
+            if new != self.levels[i] {
+                self.levels[i] = new;
                 self.stale = true;
             }
         }
@@ -1668,6 +1713,88 @@ mod tests {
         };
         // Two equal runs give equal levels.
         assert!(run() == run());
+    }
+
+    #[test]
+    fn lift_sets_the_cells_under_the_brushes_once() {
+        let m = 64;
+        let floor = meters_to_level(OCEAN);
+        let flat = CoarseHeights::from_fn(m, |_| floor);
+        let center = lonlat_to_dir(10.0, 5.0);
+        let brush = ErodeBrush {
+            center,
+            radius: 0.2,
+            hardness: 0.5,
+            flow: 0.5,
+        };
+        let mut erosion = Erosion::global(&flat, 1024);
+        let calls = std::cell::RefCell::new(Vec::new());
+        // Two brushes on the same cells visit each cell one time. Cells
+        // north of the center do not change.
+        erosion.lift(&[brush, brush], |dir, level| {
+            calls.borrow_mut().push(dir);
+            assert_eq!(level, floor);
+            (dir[2] < center[2]).then_some(floor + 1000)
+        });
+        let calls = calls.into_inner();
+        let mut lifted = 0;
+        for (i, &level) in erosion.levels.iter().enumerate() {
+            let dir = cell_dir(m, i / (m * m), i % m, i / m % m);
+            let under = angle(dir, center) < 0.2;
+            let count = calls.iter().filter(|&&d| angle(d, dir) < 1e-9).count();
+            assert_eq!(count, usize::from(under), "cell {i}");
+            if under && dir[2] < center[2] {
+                assert_eq!(level, floor + 1000, "cell {i}");
+                lifted += 1;
+            } else {
+                assert_eq!(level, floor, "cell {i}");
+            }
+        }
+        assert!(lifted > 50, "{lifted}");
+        // The lift is not a drop of the next step.
+        let step = erosion.step(&[brush], 4.0);
+        assert!(
+            step.drops()
+                .iter()
+                .zip(&erosion.levels)
+                .all(|(&drop, &level)| { drop == 0 || level + drop == floor + 1000 })
+        );
+    }
+
+    #[test]
+    fn merge_adds_the_drops_of_two_steps() {
+        let (m, n) = (8, 64);
+        let small = TexelRect {
+            x0: 70,
+            y0: 2,
+            x1: 80,
+            y1: 9,
+        };
+        let mut a = step_of(m, n, |i, _| (i % 7) as u16);
+        a.rects[1] = None;
+        a.rects[2] = None;
+        let mut b = step_of(m, n, |i, _| if i == 3 { u16::MAX } else { (i % 5) as u16 });
+        b.rects[0] = Some(small);
+        b.rects[1] = Some(small);
+        b.rects[2] = None;
+        let mut sum = step_of(m, n, |i, _| (i % 7) as u16);
+        sum.rects = a.rects;
+        assert!(sum.merge(&b));
+        for (i, &drop) in sum.drops().iter().enumerate() {
+            let expected = a.drops()[i].saturating_add(b.drops()[i]);
+            assert_eq!(drop, expected, "cell {i}");
+        }
+        for (face, rect) in sum.rects().into_iter().enumerate() {
+            let joined = match (a.rects()[face], b.rects()[face]) {
+                (Some(x), Some(y)) => Some(x.union(y)),
+                (x, y) => x.or(y),
+            };
+            assert_eq!(rect, joined, "face {face}");
+        }
+        // Steps of other cells do not merge.
+        let other = step_of(2 * m, n, |_, _| 1);
+        assert!(!sum.merge(&other));
+        assert_eq!(sum.drops()[3], u16::MAX);
     }
 
     #[test]

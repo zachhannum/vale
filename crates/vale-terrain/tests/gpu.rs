@@ -5,10 +5,11 @@ use std::sync::{Arc, OnceLock, mpsc};
 use vale_terrain::math::{V3, add, angle, cross, dot, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
     ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FIELD_WGSL, FlowMap,
-    GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, Limits, Mode, OuterFlow, Pyramid,
-    RIDGE_SEGMENTS, RIDGE_SLOTS, RIDGE_SPACING, Readback, Ridge, RidgeLine, RidgePlan, STAMP_SLOTS,
-    Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights,
-    channel_map, pyramid_layout, tiles_layout, window_channels,
+    GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, LINE_SEGMENTS, LINE_SPACING,
+    Limits, LinePlan, Mode, OuterFlow, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec,
+    Readback, Ridge, RidgeLine, RidgePlan, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TILES_WGSL,
+    TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, pyramid_layout, tiles_layout,
+    window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -2899,11 +2900,99 @@ fn ridge_spec(radius: f64) -> Ridge {
     }
 }
 
+/// The settings of a brush of the stroke line: an ocean ridge or a range.
+trait LineSpec: Copy {
+    type Line;
+    type Plan: std::ops::Deref<Target = LinePlan>;
+    fn line(self, n: usize) -> Self::Line;
+    /// The brush radius of a line, inside its limits.
+    fn radius(line: &Self::Line) -> f64;
+    fn push(line: &mut Self::Line, dir: V3, flow: f64);
+    fn len(line: &Self::Line) -> usize;
+    fn plan(line: &Self::Line, from: usize) -> Self::Plan;
+    fn margin(line: &Self::Line, p: V3) -> f64;
+    fn lay(map: &mut Heightmap, plan: &Self::Plan);
+    fn pass(
+        map: &GpuHeightmap,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &Self::Plan,
+    ) -> bool;
+}
+
+impl LineSpec for Ridge {
+    type Line = RidgeLine;
+    type Plan = RidgePlan;
+    fn line(self, n: usize) -> RidgeLine {
+        RidgeLine::new(self, n)
+    }
+    fn radius(line: &RidgeLine) -> f64 {
+        line.spec().radius
+    }
+    fn push(line: &mut RidgeLine, dir: V3, flow: f64) {
+        line.push(dir, flow);
+    }
+    fn len(line: &RidgeLine) -> usize {
+        line.len()
+    }
+    fn plan(line: &RidgeLine, from: usize) -> RidgePlan {
+        line.plan(from)
+    }
+    fn margin(line: &RidgeLine, p: V3) -> f64 {
+        line.margin(p)
+    }
+    fn lay(map: &mut Heightmap, plan: &RidgePlan) {
+        map.ridge(plan);
+    }
+    fn pass(
+        map: &GpuHeightmap,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &RidgePlan,
+    ) -> bool {
+        map.ridge(queue, enc, plan)
+    }
+}
+
+impl LineSpec for RangeSpec {
+    type Line = RangeLine;
+    type Plan = RangePlan;
+    fn line(self, n: usize) -> RangeLine {
+        RangeLine::new(self, n)
+    }
+    fn radius(line: &RangeLine) -> f64 {
+        line.spec().radius
+    }
+    fn push(line: &mut RangeLine, dir: V3, flow: f64) {
+        line.push(dir, flow);
+    }
+    fn len(line: &RangeLine) -> usize {
+        line.len()
+    }
+    fn plan(line: &RangeLine, from: usize) -> RangePlan {
+        line.plan(from)
+    }
+    fn margin(line: &RangeLine, p: V3) -> f64 {
+        line.margin(p)
+    }
+    fn lay(map: &mut Heightmap, plan: &RangePlan) {
+        map.range(plan);
+    }
+    fn pass(
+        map: &GpuHeightmap,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &RangePlan,
+    ) -> bool {
+        map.range(queue, enc, plan)
+    }
+}
+
 /// The points of a stroke through places, each in degrees of longitude and
 /// latitude, with a flow for each one. The points are as far apart as the
 /// points of the app.
-fn ridge_points(spec: Ridge, n: usize, places: &[(f64, f64)]) -> Vec<(V3, f64)> {
-    let spacing = RIDGE_SPACING * RidgeLine::new(spec, n).spec().radius;
+fn ridge_points<S: LineSpec>(spec: S, n: usize, places: &[(f64, f64)]) -> Vec<(V3, f64)> {
+    let spacing = LINE_SPACING * S::radius(&spec.line(n));
     let mut dirs = vec![lonlat_to_dir(places[0].0, places[0].1)];
     for w in places.windows(2) {
         let (a, b) = (lonlat_to_dir(w[0].0, w[0].1), lonlat_to_dir(w[1].0, w[1].1));
@@ -2921,19 +3010,19 @@ fn ridge_points(spec: Ridge, n: usize, places: &[(f64, f64)]) -> Vec<(V3, f64)> 
         .collect()
 }
 
-fn ridge_line(spec: Ridge, n: usize, places: &[(f64, f64)]) -> RidgeLine {
-    let mut line = RidgeLine::new(spec, n);
+fn ridge_line<S: LineSpec>(spec: S, n: usize, places: &[(f64, f64)]) -> S::Line {
+    let mut line = spec.line(n);
     for (dir, flow) in ridge_points(spec, n, places) {
-        line.push(dir, flow);
+        S::push(&mut line, dir, flow);
     }
     line
 }
 
 impl Gpu {
-    /// Adds the ridge of a plan to the GPU heightmap, as the app does: the
-    /// ground from before the stroke goes to each rectangle of the plan,
-    /// then the pass runs. `start` holds that ground.
-    fn ridge(&self, map: &GpuHeightmap, start: &Heightmap, plan: &RidgePlan) {
+    /// Adds the ridge or the range of a plan to the GPU heightmap, as the
+    /// app does: the ground from before the stroke goes to each rectangle
+    /// of the plan, then the pass runs. `start` holds that ground.
+    fn ridge<S: LineSpec>(&self, map: &GpuHeightmap, start: &Heightmap, plan: &S::Plan) {
         for (face, rect) in plan.rects.iter().enumerate() {
             let Some(rect) = *rect else { continue };
             let mut data = Vec::new();
@@ -2941,7 +3030,7 @@ impl Gpu {
             map.upload(&self.queue, face as u32, rect, &data);
         }
         let mut enc = self.encoder();
-        assert!(map.ridge(&self.queue, &mut enc, plan));
+        assert!(S::pass(map, &self.queue, &mut enc, plan));
         self.submit(enc);
         map.begin_batch();
     }
@@ -2967,9 +3056,9 @@ struct RidgeRun {
 /// line in place of them. With `skip_ties`, a texel with two parts of the
 /// line at the same distance, to within 0.05 of a texel step, is not in the
 /// difference. The CPU and the GPU can give such a texel to different parts.
-fn ridge_run(
+fn ridge_run<S: LineSpec>(
     start: &Heightmap,
-    spec: Ridge,
+    spec: S,
     places: &[(f64, f64)],
     in_steps: bool,
     skip_ties: bool,
@@ -2977,14 +3066,14 @@ fn ridge_run(
     let gpu = gpu();
     let n = start.face_size();
     let line = ridge_line(spec, n, places);
-    let mut plans = vec![line.plan(0)];
-    while plans[plans.len() - 1].end < line.len() {
-        plans.push(line.plan(plans[plans.len() - 1].end));
+    let mut plans = vec![S::plan(&line, 0)];
+    while plans[plans.len() - 1].end < S::len(&line) {
+        plans.push(S::plan(&line, plans[plans.len() - 1].end));
     }
     assert!(
         plans
             .iter()
-            .all(|plan| plan.segments.len() <= RIDGE_SEGMENTS)
+            .all(|plan| plan.segments.len() <= LINE_SEGMENTS)
     );
     let mut cpu = Heightmap::new(n, start.base());
     for (face, rect) in start.allocated_rects() {
@@ -2994,22 +3083,22 @@ fn ridge_run(
     }
     cpu.begin_stroke();
     for plan in &plans {
-        cpu.ridge(plan);
+        S::lay(&mut cpu, plan);
     }
     cpu.end_stroke();
 
     let map = gpu.copy_of(start);
     if in_steps {
-        let mut grown = RidgeLine::new(spec, n);
+        let mut grown = spec.line(n);
         for (dir, flow) in ridge_points(spec, n, places) {
-            let from = grown.len();
-            grown.push(dir, flow);
-            gpu.ridge(&map, start, &grown.plan(from));
+            let from = S::len(&grown);
+            S::push(&mut grown, dir, flow);
+            gpu.ridge::<S>(&map, start, &S::plan(&grown, from));
         }
-        assert_eq!(grown.len(), line.len());
+        assert_eq!(S::len(&grown), S::len(&line));
     } else {
         for plan in &plans {
-            gpu.ridge(&map, start, plan);
+            gpu.ridge::<S>(&map, start, plan);
         }
     }
     let faces = gpu.read_all(&map);
@@ -3031,7 +3120,7 @@ fn ridge_run(
             if a == b {
                 continue;
             }
-            if skip_ties && line.margin(cpu.texel_dir(face, i % n, i / n)) < 0.05 * step {
+            if skip_ties && S::margin(&line, cpu.texel_dir(face, i % n, i / n)) < 0.05 * step {
                 run.skipped += 1;
                 continue;
             }
@@ -3195,6 +3284,91 @@ fn gpu_ridge_in_steps_matches_one_plan_on_the_cpu() {
     let start = smooth_ground(256);
     let run = ridge_run(&start, ridge_spec(0.1), &RIDGE_BEND, true, false);
     assert_ridge("S-bend in steps", &run, &[0, 2]);
+}
+
+fn range_spec(radius: f64) -> RangeSpec {
+    RangeSpec {
+        radius,
+        height: 20000.0,
+        spacing: 0.3 * radius,
+        seed: 7,
+        limits: Limits::default(),
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_range_matches_cpu_for_a_straight_stroke() {
+    let start = smooth_ground(256);
+    for radius in [0.05, 0.1, 0.2] {
+        let places = [(-12.0, 5.0), (-12.0 + 250.0 * radius, -3.0)];
+        let run = ridge_run(&start, range_spec(radius), &places, false, false);
+        assert_ridge(&format!("range, straight, radius {radius}"), &run, &[0]);
+        assert_eq!(run.skipped, 0);
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_range_matches_cpu_across_a_face_edge() {
+    let start = smooth_ground(256);
+    let run = ridge_run(&start, range_spec(0.1), &RIDGE_BEND, false, false);
+    assert_ridge("range, S-bend across a face edge", &run, &[0, 2]);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_range_matches_cpu_at_a_cube_corner() {
+    let start = smooth_ground(256);
+    // Faces 0, 2, and 4 meet at longitude 45 and latitude 35.264.
+    let places = [(36.0, 28.0), (45.0, 35.264), (50.0, 44.0)];
+    let run = ridge_run(&start, range_spec(0.1), &places, false, false);
+    assert_ridge("range, cube corner", &run, &[0, 2, 4]);
+}
+
+/// The distance along a long line is large, so the place of a texel needs
+/// most of the digits of a 32-bit number.
+#[test]
+#[ignore = "gpu"]
+fn gpu_range_matches_cpu_on_a_large_face() {
+    let start = smooth_ground(2048);
+    let places = [
+        (-40.0, -20.0),
+        (-10.0, 12.0),
+        (20.0, -10.0),
+        (44.0, 24.0),
+        (60.0, 20.0),
+    ];
+    let run = ridge_run(&start, range_spec(0.03), &places, false, false);
+    assert_ridge("range, large face", &run, &[0, 2]);
+    assert!(run.plans > 3, "{}", run.plans);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_range_with_limits_matches_cpu() {
+    let start = Heightmap::new(256, 30000);
+    let limits = Limits {
+        floor: 29800,
+        ceiling: 40000,
+    };
+    let spec = RangeSpec {
+        limits,
+        ..range_spec(0.1)
+    };
+    let run = ridge_run(&start, spec, &RIDGE_BEND, false, false);
+    assert_ridge("range, floor and ceiling", &run, &[0, 2]);
+    let levels = run.levels.iter().flatten();
+    let (low, high) = levels.fold((u16::MAX, 0), |(low, high), l| (low.min(*l), high.max(*l)));
+    assert_eq!((low, high), (30000, 40000));
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_range_in_steps_matches_one_plan_on_the_cpu() {
+    let start = smooth_ground(256);
+    let run = ridge_run(&start, range_spec(0.1), &RIDGE_BEND, true, false);
+    assert_ridge("range, S-bend in steps", &run, &[0, 2]);
 }
 
 #[test]
