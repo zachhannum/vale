@@ -6,7 +6,8 @@
 use kurbo::{Point, Rect, Vec2};
 use vale_sphere::{Projection, auto_interval};
 use vale_store::{
-    CoordFormat, FrameId, FrameRecord, FrameShape, Graticule, MapRecord, Neatline, PageRecord,
+    Border, CoordFormat, FrameId, FrameRecord, FrameShape, Graticule, MapRecord, Neatline,
+    PageRecord, ReferenceGrid,
 };
 
 use crate::view::{View, ViewTransform};
@@ -549,6 +550,8 @@ pub fn new_frame(page: &PageRecord, map: &MapRecord, projection: &Projection) ->
         rotation: 0.0,
         graticule: Graticule::default(),
         neatline: Neatline::default(),
+        border: Border::default(),
+        grid: ReferenceGrid::default(),
     }
 }
 
@@ -609,6 +612,8 @@ mod tests {
                 ..Graticule::default()
             },
             neatline: Neatline::default(),
+            border: Border::default(),
+            grid: ReferenceGrid::default(),
         }
     }
 
@@ -618,6 +623,7 @@ mod tests {
             name: String::new(),
             width_mm: 297.0,
             height_mm: 210.0,
+            paper: [0xff, 0xff, 0xff],
             units: PageUnits::Mm,
             frames: (0..frames).map(|_| frame(1e7)).collect(),
             furniture: Vec::new(),
