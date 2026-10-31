@@ -3509,12 +3509,15 @@ mod tests {
         legend.entries.insert((towns, String::new()), hidden);
         let bar = ScaleBarItem {
             frame: Some(frame),
+            kind: crate::ScaleBarKind::Line,
+            second_unit: Some(crate::ScaleUnit::Miles),
             ..ScaleBarItem::default()
         };
         let arrow = NorthArrowItem {
             frame: Some(frame),
             hide_if_varies: false,
             color: [0xc0, 0x10, 0x10],
+            ..NorthArrowItem::default()
         };
         for (rect, item) in [
             ([20.0, 5.0, 180.0, 15.0], Furniture::Text(title)),

@@ -842,8 +842,8 @@ pub fn edit_item(
 pub fn item_style(item: &Furniture) -> Option<&FurnitureText> {
     match item {
         Furniture::Text(i) => Some(&i.style),
-        Furniture::Legend(i) => Some(&i.style),
-        Furniture::ScaleBar(i) => Some(&i.style),
+        Furniture::Legend(i) => Some(&i.entry_style),
+        Furniture::ScaleBar(i) => Some(&i.number_style),
         Furniture::NorthArrow(_) => None,
     }
 }
@@ -853,8 +853,8 @@ pub fn edit_style(state: &mut AppState, id: FurnitureId, edit: impl FnOnce(&mut 
     edit_item(state, id, |rec| {
         let style = match &mut rec.item {
             Furniture::Text(i) => &mut i.style,
-            Furniture::Legend(i) => &mut i.style,
-            Furniture::ScaleBar(i) => &mut i.style,
+            Furniture::Legend(i) => &mut i.entry_style,
+            Furniture::ScaleBar(i) => &mut i.number_style,
             Furniture::NorthArrow(_) => return false,
         };
         edit(style);
@@ -882,8 +882,14 @@ pub fn set_item_color(state: &mut AppState, id: FurnitureId, color: Rgb) {
     edit_item(state, id, |rec| {
         match &mut rec.item {
             Furniture::Text(i) => i.style.color = color,
-            Furniture::Legend(i) => i.style.color = color,
-            Furniture::ScaleBar(i) => i.style.color = color,
+            Furniture::Legend(i) => {
+                i.title_style.color = color;
+                i.entry_style.color = color;
+            }
+            Furniture::ScaleBar(i) => {
+                i.number_style.color = color;
+                i.unit_style.color = color;
+            }
             Furniture::NorthArrow(i) => i.color = color,
         }
         true

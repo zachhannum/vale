@@ -2,14 +2,14 @@
 
 use kurbo::{Affine, BezPath, Point, Rect, Shape, Vec2};
 use vale_labeler::{
-    Feature, Fonts, Geometry, LabelClass, LabelInput, Options, Placement, PointPlacement,
+    Caps, Feature, Fonts, Geometry, LabelClass, LabelInput, Options, Placement, PointPlacement,
     PointPosition, TextStyle, place_labels,
 };
 use vale_render::{Color, DisplayList, FillRule, GlyphRun, Item, Rgba};
 use vale_sphere::{LonLat, Projection, distance_km};
 use vale_store::{
     FrameRecord, Furniture, FurnitureRecord, FurnitureText, LayerId, LegendItem, NorthArrowItem,
-    ScaleBarItem, TextAlign, TextItem, Units,
+    TextAlign, TextCase, TextItem, Units,
 };
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM, frame_transform};
@@ -26,7 +26,7 @@ pub enum Purpose {
 }
 
 /// The space between the box of an item and its content, in points.
-const PAD: f64 = 3.0;
+pub(crate) const PAD: f64 = 3.0;
 /// The largest change of the direction of north in a frame, in degrees,
 /// for an arrow that hides when north varies.
 pub const MAX_VARIATION: f64 = 10.0;
@@ -214,20 +214,90 @@ pub(crate) fn glyph_line(
     Some(GlyphLine { glyphs, outlines })
 }
 
-/// The text style of furniture, with the size in target points.
+/// The labeler style of a furniture style, with the size in target points.
 pub(crate) fn text_style(style: &FurnitureText, unit: f64, fonts: &mut Fonts) -> TextStyle {
+    let size = style.size * unit;
     TextStyle {
         weight: style.weight,
         italic: style.italic,
-        ..TextStyle::new(
-            crate::fonts::family(style.font.as_deref(), fonts),
-            style.size * unit,
-        )
+        letter_spacing: style.letter_spacing * size,
+        caps: match style.case {
+            TextCase::SmallCaps => Caps::Small,
+            TextCase::AllSmallCaps => Caps::AllSmall,
+            _ => Caps::Normal,
+        },
+        ..TextStyle::new(crate::fonts::family(style.font.as_deref(), fonts), size)
     }
 }
 
-fn rgb([r, g, b]: [u8; 3]) -> Color {
+pub(crate) fn rgb([r, g, b]: [u8; 3]) -> Color {
     Color::rgb(r, g, b)
+}
+
+/// `color` with the alpha `opacity`.
+fn faded([r, g, b]: [u8; 3], opacity: f64) -> Color {
+    Color::rgba(r, g, b, (255.0 * opacity.clamp(0.0, 1.0)).round() as u8)
+}
+
+/// A furniture style in a target: the labeler style, the colors, the halo,
+/// and the case. The halo and the case are the same as those of a label.
+pub(crate) struct TextInk {
+    pub style: TextStyle,
+    pub color: Color,
+    /// The color and the width of the halo, in target points.
+    pub halo: Option<(Color, f64)>,
+    pub case: TextCase,
+}
+
+/// The halos and the glyphs of some text. The halos go under all glyphs.
+#[derive(Default)]
+pub(crate) struct Painted {
+    pub halos: Vec<Item>,
+    pub glyphs: Vec<Item>,
+}
+
+impl Painted {
+    pub fn into_items(self) -> impl Iterator<Item = Item> {
+        self.halos.into_iter().chain(self.glyphs)
+    }
+}
+
+impl TextInk {
+    pub fn new(style: &FurnitureText, unit: f64, fonts: &mut Fonts) -> TextInk {
+        TextInk {
+            style: text_style(style, unit, fonts),
+            color: faded(style.color, style.opacity),
+            halo: (style.halo).then(|| {
+                let color = faded(style.halo_color, style.opacity);
+                (color, style.halo_width * unit)
+            }),
+            case: style.case,
+        }
+    }
+
+    /// The width of `text` in its case.
+    pub fn advance(&self, text: &str, fonts: &mut Fonts) -> f64 {
+        fonts.measure(&self.case.apply(text), &self.style).advance
+    }
+
+    /// One line of `text` in its case with the baseline start at the origin
+    /// of `to`.
+    pub fn line(&self, text: &str, to: Affine, fonts: &mut Fonts, out: &mut Painted) {
+        let text = self.case.apply(text);
+        let outlines = self.halo.is_some();
+        let Some(line) = glyph_line(&text, &self.style, self.color, to, outlines, fonts) else {
+            return;
+        };
+        if let Some((color, width)) = self.halo {
+            out.halos.push(Item::Stroke {
+                path: line.outlines,
+                color,
+                width,
+                round: true,
+            });
+        }
+        out.glyphs.extend(line.glyphs);
+    }
 }
 
 /// The lines of `text`: one paragraph for each line break, with the words
@@ -256,32 +326,28 @@ pub fn wrap(text: &str, style: &TextStyle, width: f64, fonts: &mut Fonts) -> Vec
 /// The glyphs of a text item in `rect`, in target points. A line that does
 /// not fit above the bottom of `rect` is left out.
 fn text_items(item: &TextItem, rect: Rect, unit: f64, fonts: &mut Fonts) -> Vec<Item> {
-    let style = text_style(&item.style, unit, fonts);
-    let color = rgb(item.style.color);
-    let metrics = fonts.measure("Hg", &style);
+    let ink = TextInk::new(&item.style, unit, fonts);
+    let style = &ink.style;
+    let metrics = fonts.measure("Hg", style);
     let (ascent, descent) = (metrics.ascent, metrics.descent.abs());
     let step = LINE_HEIGHT * style.size;
-    let mut out = Vec::new();
-    for (k, line) in wrap(&item.text, &style, rect.width(), fonts)
-        .iter()
-        .enumerate()
-    {
+    let mut out = Painted::default();
+    let text = item.style.case.apply(&item.text);
+    for (k, line) in wrap(&text, style, rect.width(), fonts).iter().enumerate() {
         let baseline = rect.y0 + ascent + k as f64 * step;
         if baseline + descent > rect.y1 + 1e-9 {
             break;
         }
-        let advance = fonts.measure(line, &style).advance;
+        let advance = fonts.measure(line, style).advance;
         let x = match item.align {
             TextAlign::Left => rect.x0,
             TextAlign::Center => rect.x0 + (rect.width() - advance) / 2.0,
             TextAlign::Right => rect.x1 - advance,
         };
-        let to = Affine::translate((x, baseline));
-        if let Some(glyphs) = glyph_line(line, &style, color, to, false, fonts) {
-            out.extend(glyphs.glyphs);
-        }
+        // The text is in its case already, and a case is the same twice.
+        ink.line(line, Affine::translate((x, baseline)), fonts, &mut out);
     }
-    out
+    out.into_items().collect()
 }
 
 /// The box of an item in page millimeters.
@@ -327,7 +393,7 @@ pub fn items(
         Furniture::ScaleBar(item) => match scale_at_center(projection, frame, world.radius_km) {
             Some(km_per_mm) => {
                 let km_per_point = km_per_mm / target.pts_per_mm;
-                scale_bar_items(item, rect, unit, km_per_point, world.units, fonts)
+                crate::scale_bar::draw(item, rect, unit, km_per_point, fonts).items
             }
             None => placeholder(),
         },
@@ -410,68 +476,6 @@ pub fn scale_text(km_per_mm: f64, units: Units) -> String {
     format!("1 cm = {}", world::distance(10.0 * km_per_mm, units))
 }
 
-/// A nice value as text: a whole number with groups of three digits, or a
-/// decimal number with no extra zeros.
-fn value_text(value: f64) -> String {
-    if value >= 1.0 {
-        world::grouped(value.round() as u64)
-    } else {
-        let decimals = (-value.log10().floor()).max(0.0) as usize;
-        format!("{value:.decimals$}")
-    }
-}
-
-/// The text and the length in target points of the longest nice scale bar
-/// that fits in `room` target points.
-fn bar_length(room: f64, km_per_point: f64, units: Units) -> Option<(String, f64)> {
-    let most = room * km_per_point;
-    if !(most.is_finite() && most > 0.0) {
-        return None;
-    }
-    let (unit_km, symbol) = world::unit_for(most, units);
-    let value = nice(most / unit_km);
-    let length = value * unit_km / km_per_point;
-    Some((format!("{} {symbol}", value_text(value)), length))
-}
-
-fn scale_bar_items(
-    item: &ScaleBarItem,
-    rect: Rect,
-    unit: f64,
-    km_per_point: f64,
-    units: Units,
-    fonts: &mut Fonts,
-) -> Vec<Item> {
-    let pad = PAD * unit;
-    let Some((text, length)) = bar_length(rect.width() - 2.0 * pad, km_per_point, units) else {
-        return Vec::new();
-    };
-    let style = text_style(&item.style, unit, fonts);
-    let color = rgb(item.style.color);
-    let width = unit;
-    let tick = 0.4 * style.size;
-    let (x0, y) = (rect.x0 + pad, rect.y1 - pad - width / 2.0);
-    let x1 = x0 + length;
-    let mut path = BezPath::new();
-    path.move_to((x0, y - tick));
-    path.line_to((x0, y));
-    path.line_to((x1, y));
-    path.line_to((x1, y - tick));
-    let mut out = vec![Item::Stroke {
-        path,
-        color,
-        width,
-        round: false,
-    }];
-    let advance = fonts.measure(&text, &style).advance;
-    let baseline = y - tick - 0.3 * style.size;
-    let to = Affine::translate(((x0 + x1 - advance) / 2.0, baseline));
-    if let Some(line) = glyph_line(&text, &style, color, to, false, fonts) {
-        out.extend(line.glyphs);
-    }
-    out
-}
-
 /// The direction of north at a place, in degrees clockwise from the top of
 /// the page.
 fn north_at(projection: &Projection, vt: &crate::view::ViewTransform, p: LonLat) -> Option<f64> {
@@ -544,8 +548,8 @@ fn north_items(
     }
     let color = rgb(item.color);
     let to = Affine::translate(rect.center().to_vec2()) * Affine::rotate(angle.to_radians());
-    let style = TextStyle::new(crate::fonts::DEFAULT_FAMILY, 0.3 * side);
-    let metrics = fonts.measure("N", &style);
+    let ink = TextInk::new(&item.letter_style, unit, fonts);
+    let metrics = fonts.measure(&ink.case.apply("N"), &ink.style);
     let cap = if metrics.cap_height > 0.0 {
         metrics.cap_height
     } else {
@@ -583,9 +587,9 @@ fn north_items(
         },
     ];
     let at = to * Affine::translate((-metrics.advance / 2.0, top + cap));
-    if let Some(line) = glyph_line("N", &style, color, at, false, fonts) {
-        out.extend(line.glyphs);
-    }
+    let mut letter = Painted::default();
+    ink.line("N", at, fonts, &mut letter);
+    out.extend(letter.into_items());
     out
 }
 
@@ -663,26 +667,33 @@ fn legend_items(
     fonts: &mut Fonts,
 ) -> Vec<Item> {
     let pad = PAD * unit;
-    let style = text_style(&legend.style, unit, fonts);
-    let color = rgb(legend.style.color);
-    let metrics = fonts.measure("Hg", &style);
-    let (ascent, descent) = (metrics.ascent, metrics.descent.abs());
-    let step = LINE_HEIGHT * style.size;
     let (x, bottom) = (rect.x0 + pad, rect.y1 - pad + 1e-9);
     let mut y = rect.y0 + pad;
     let mut out = Vec::new();
-    let baseline = |y: f64| y + (step - ascent - descent) / 2.0 + ascent;
+    let mut text = Painted::default();
+    // The height of a line of `ink` and the baseline in a line at `y`.
+    let line = |ink: &TextInk, fonts: &mut Fonts| {
+        let metrics = fonts.measure("Hg", &ink.style);
+        let (ascent, descent) = (metrics.ascent, metrics.descent.abs());
+        let step = LINE_HEIGHT * ink.style.size;
+        (step, move |y: f64| {
+            y + (step - ascent - descent) / 2.0 + ascent
+        })
+    };
     if !legend.title.is_empty() {
+        let ink = TextInk::new(&legend.title_style, unit, fonts);
+        let (step, baseline) = line(&ink, fonts);
         if y + step > bottom {
             return out;
         }
         let to = Affine::translate((x, baseline(y)));
-        if let Some(line) = glyph_line(&legend.title, &style, color, to, false, fonts) {
-            out.extend(line.glyphs);
-        }
-        y += step + 0.25 * style.size;
+        ink.line(&legend.title, to, fonts, &mut text);
+        y += step + 0.25 * ink.style.size;
     }
-    let (width, height) = (1.8 * style.size, 0.9 * style.size);
+    let ink = TextInk::new(&legend.entry_style, unit, fonts);
+    let (step, baseline) = line(&ink, fonts);
+    let size = ink.style.size;
+    let (width, height) = (1.8 * size, 0.9 * size);
     for row in legend_rows(doc, projection, frame, legend) {
         if row.hidden {
             continue;
@@ -705,12 +716,11 @@ fn legend_items(
         out.extend(pipeline::swatch(
             doc, &entry, layer, kind, rule, swatch, unit, projection,
         ));
-        let to = Affine::translate((x + width + 0.5 * style.size, baseline(y)));
-        if let Some(line) = glyph_line(&row.label, &style, color, to, false, fonts) {
-            out.extend(line.glyphs);
-        }
+        let to = Affine::translate((x + width + 0.5 * size, baseline(y)));
+        ink.line(&row.label, to, fonts, &mut text);
         y += step;
     }
+    out.extend(text.into_items());
     out
 }
 

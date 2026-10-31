@@ -3,7 +3,7 @@
 use serde_json::{Map, Value as Json, json};
 use vale_store::GeometryKind;
 
-use crate::expr::{field_ref, title_case};
+use crate::expr::field_ref;
 use crate::{Color, LabelStyle, StyleError};
 
 /// The version of the label class JSON that this build writes.
@@ -197,67 +197,7 @@ pub const BUFFER: f64 = 1.0;
 /// The default distance between two labels with the same text, in points.
 pub const DUPLICATE_DISTANCE: f64 = 300.0;
 
-/// How the case of the label text changes.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum TextCase {
-    Normal,
-    Upper,
-    Lower,
-    Title,
-    /// Small capitals for the lowercase letters. The labeler shapes them.
-    SmallCaps,
-    /// Small capitals for all letters. The labeler shapes them.
-    AllSmallCaps,
-}
-
-impl TextCase {
-    pub const ALL: [TextCase; 6] = [
-        TextCase::Normal,
-        TextCase::Upper,
-        TextCase::Lower,
-        TextCase::Title,
-        TextCase::SmallCaps,
-        TextCase::AllSmallCaps,
-    ];
-
-    /// The UI text.
-    pub fn name(self) -> &'static str {
-        match self {
-            TextCase::Normal => "Normal",
-            TextCase::Upper => "Uppercase",
-            TextCase::Lower => "Lowercase",
-            TextCase::Title => "Title case",
-            TextCase::SmallCaps => "Small caps",
-            TextCase::AllSmallCaps => "All small caps",
-        }
-    }
-
-    /// The text in this case. The small caps cases give the text unchanged.
-    pub fn apply(self, text: &str) -> String {
-        match self {
-            TextCase::Upper => text.to_uppercase(),
-            TextCase::Lower => text.to_lowercase(),
-            TextCase::Title => title_case(text),
-            TextCase::Normal | TextCase::SmallCaps | TextCase::AllSmallCaps => text.to_owned(),
-        }
-    }
-
-    /// The JSON name.
-    fn key(self) -> &'static str {
-        match self {
-            TextCase::Normal => "normal",
-            TextCase::Upper => "upper",
-            TextCase::Lower => "lower",
-            TextCase::Title => "title",
-            TextCase::SmallCaps => "small_caps",
-            TextCase::AllSmallCaps => "all_small_caps",
-        }
-    }
-
-    fn from_key(key: &str) -> Option<TextCase> {
-        TextCase::ALL.into_iter().find(|c| c.key() == key)
-    }
-}
+pub use vale_store::TextCase;
 
 /// The default color of the halo.
 pub const HALO_COLOR: Color = Color::rgba(255, 255, 255, 217);
@@ -435,7 +375,7 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "color": c.color.to_hex(),
                 "italic": c.italic,
                 "weight": c.weight,
-                "case": c.case.key(),
+                "case": c.case.id(),
                 "letter_spacing": c.letter_spacing,
                 "opacity": c.opacity,
                 "halo": c.halo,
@@ -542,7 +482,7 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         weight: number("weight", 400.0) as f32,
         case: text(m, "case")
             .as_deref()
-            .and_then(TextCase::from_key)
+            .and_then(TextCase::from_id)
             .unwrap_or(TextCase::Normal),
         letter_spacing: number("letter_spacing", 0.0),
         opacity: number("opacity", 1.0),
@@ -734,9 +674,9 @@ mod tests {
         assert_eq!(TextCase::SmallCaps.apply(text), text);
         assert_eq!(TextCase::AllSmallCaps.apply(text), text);
         for c in TextCase::ALL {
-            assert_eq!(TextCase::from_key(c.key()), Some(c));
+            assert_eq!(TextCase::from_id(c.id()), Some(c));
         }
-        assert_eq!(TextCase::AllSmallCaps.key(), "all_small_caps");
+        assert_eq!(TextCase::AllSmallCaps.id(), "all_small_caps");
         assert_eq!(TextCase::Title.name(), "Title case");
     }
 

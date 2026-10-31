@@ -12,11 +12,13 @@ use vale_app::edge_labels::{EdgeLabel, Side, edge_labels, outside_reach, quads_o
 use vale_app::furniture::{self, Purpose};
 use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{PAPER, Pipeline, Quality, fonts};
+use vale_app::scale_bar;
 use vale_render::{FillRule, Item, render_pixmap, render_rgba};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
-    CoordFormat, EdgeOrientation, FrameId, FrameShape, Furniture, FurnitureId, LegendEntry,
-    LegendItem, NorthArrowItem, PageId, PageUnits, ScaleBarItem, TextItem,
+    CoordFormat, EdgeOrientation, FrameId, FrameShape, Furniture, FurnitureId, FurnitureText,
+    LegendEntry, LegendItem, NorthArrowItem, PageId, PageUnits, ScaleBarItem, ScaleBarKind,
+    ScaleFit, ScalePosition, ScaleUnit, TextCase, TextItem, TickFrequency,
 };
 use vale_style::expr::{Filter, Property};
 use vale_style::{
@@ -1765,6 +1767,10 @@ fn the_legend_lists_the_visible_rules_with_their_symbols() {
     let mut legend = LegendItem {
         frame: Some(frame),
         title: "Legend".to_string(),
+        title_style: FurnitureText {
+            case: TextCase::Upper,
+            ..FurnitureText::sized(14.0)
+        },
         ..LegendItem::default()
     };
     let rename = LegendEntry {
@@ -1803,8 +1809,17 @@ fn the_legend_lists_the_visible_rules_with_their_symbols() {
         ]
     );
 
+    // The title has the style of the title, and the entries the style of
+    // the entries.
     let items = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
-    assert_eq!(texts(&items), ["Legend", "Big rivers", "Forest", "Desert"]);
+    assert_eq!(texts(&items), ["LEGEND", "Big rivers", "Forest", "Desert"]);
+    let sizes: Vec<f32> = (items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(run) => Some(run.font_size),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sizes, [14.0, 10.0, 10.0, 10.0]);
     let has = |want: Color, fill: bool| {
         items.iter().any(|i| match i {
             Item::Fill { color, .. } => fill && *color == want,
@@ -1813,17 +1828,6 @@ fn the_legend_lists_the_visible_rules_with_their_symbols() {
         })
     };
     assert!(has(green, true) && has(tan, true) && has(blue, false));
-}
-
-/// The value of a scale bar label in kilometers, for example "1,000 km".
-fn label_km(text: &str) -> f64 {
-    let (value, unit) = text.split_once(' ').unwrap();
-    let value: f64 = value.replace(',', "").parse().unwrap();
-    match unit {
-        "km" => value,
-        "m" => value / 1000.0,
-        _ => panic!("{text}"),
-    }
 }
 
 #[test]
@@ -1843,13 +1847,11 @@ fn the_scale_bar_is_true_for_any_radius() {
         record.scale = 5e6;
         let bar = ScaleBarItem {
             frame: Some(frame),
+            second_unit: Some(ScaleUnit::Miles),
             ..ScaleBarItem::default()
         };
-        let id = add_item(
-            &mut doc,
-            [20.0, 150.0, 90.0, 170.0],
-            Furniture::ScaleBar(bar),
-        );
+        let rect = [20.0, 150.0, 90.0, 170.0];
+        let id = add_item(&mut doc, rect, Furniture::ScaleBar(bar.clone()));
 
         // On the equator of an equirectangular map, 1 mm at 1:5,000,000 is
         // 5 km on the ground, at each radius.
@@ -1862,17 +1864,43 @@ fn the_scale_bar_is_true_for_any_radius() {
             "1 cm = 50.0 km"
         );
 
+        // The kilometers and the miles are both true, and the item draws the
+        // same bar.
+        let mut f = fonts().unwrap();
+        let [x0, y0, x1, y1] = rect.map(|v| v * PT_PER_MM);
+        let points = kurbo::Rect::new(x0, y0, x1, y1);
+        let drawing = scale_bar::draw(&bar, points, 1.0, km_per_mm / PT_PER_MM, &mut f);
+        let [km, miles] = &drawing.rows[..] else {
+            panic!("{:?}", drawing.rows)
+        };
+        assert_eq!(
+            (km.unit, miles.unit),
+            (ScaleUnit::Kilometers, ScaleUnit::Miles)
+        );
+        for row in [km, miles] {
+            let ground = (row.end - row.zero) / PT_PER_MM * km_per_mm;
+            let want = f64::from(row.divisions) * row.value * row.unit.km();
+            assert!((ground - want).abs() < 1e-6 * want, "{radius} {row:?}");
+            let last = &row.numbers.last().unwrap().0;
+            let value: f64 = last.replace(',', "").parse().unwrap();
+            assert_eq!(value, f64::from(row.divisions) * row.value);
+        }
+        assert!(
+            drawing.bounds.x1 <= rect[2] * PT_PER_MM,
+            "{:?}",
+            drawing.bounds
+        );
         let items = furniture_items(&doc, &mut pipeline, id, Purpose::Export);
-        let length_mm = (items.iter())
-            .find_map(|i| match i {
-                Item::Stroke { path, .. } => Some(path.bounding_box().width() / PT_PER_MM),
-                _ => None,
-            })
-            .unwrap();
-        let text = texts(&items).pop().unwrap();
-        let km = label_km(&text);
-        assert!((length_mm * km_per_mm - km).abs() < 1e-6 * km, "{text}");
-        assert!(length_mm <= 70.0, "{length_mm}");
+        assert_eq!(texts(&items), texts(&drawing.items));
+        let outline = |items: &[Item]| {
+            (items.iter())
+                .find_map(|i| match i {
+                    Item::Stroke { path, .. } => Some(path.bounding_box()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(outline(&items), outline(&drawing.items));
 
         // A larger scale denominator has more ground in each millimeter.
         doc.project.atlas.frame_mut(frame).unwrap().scale = 1e7;
@@ -1881,6 +1909,124 @@ fn the_scale_bar_is_true_for_any_radius() {
         let doubled = furniture::scale_at_center(projection, &record, radius).unwrap();
         assert!((doubled - 10.0).abs() < 1e-3, "{doubled}");
     }
+}
+
+/// The scale bar of the atlas mockup: a line with miles above and
+/// kilometers below, at 1:3,500,000.
+fn mockup_bar() -> ScaleBarItem {
+    let upper = FurnitureText {
+        case: TextCase::Upper,
+        ..FurnitureText::sized(7.0)
+    };
+    ScaleBarItem {
+        kind: ScaleBarKind::Line,
+        unit: ScaleUnit::Miles,
+        second_unit: Some(ScaleUnit::Kilometers),
+        fit: ScaleFit::AdjustDivisions,
+        division_value: Some(30.0),
+        second_division_value: Some(60.0),
+        subdivisions: 2,
+        mark_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
+        number_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
+        division_mark_height: 1.5,
+        subdivision_mark_height: 1.5,
+        unit_style: upper,
+        ..ScaleBarItem::default()
+    }
+}
+
+#[test]
+fn the_scale_bar_of_the_mockup_has_its_numbers() {
+    let mut f = fonts().unwrap();
+    // 1:3,500,000 is 3.5 km to a millimeter.
+    let km_per_point = 3.5 / PT_PER_MM;
+    let rect = kurbo::Rect::new(0.0, 0.0, 100.0 * PT_PER_MM, 15.0 * PT_PER_MM);
+    let drawing = scale_bar::draw(&mockup_bar(), rect, 1.0, km_per_point, &mut f);
+    let numbers = |row: &scale_bar::BarRow| {
+        let n = row.numbers.iter().map(|n| n.0.as_str());
+        n.collect::<Vec<_>>().join(" ")
+    };
+    let [miles, km] = &drawing.rows[..] else {
+        panic!("{:?}", drawing.rows)
+    };
+    assert_eq!(numbers(miles), "0 15 30 60 90 120 150");
+    assert_eq!(numbers(km), "0 30 60 120 180 240");
+    let all = texts(&drawing.items);
+    assert!(all.contains(&"MILES".to_string()) && all.contains(&"KILOMETERS".to_string()));
+    // Each unit label is after the numbers of its unit.
+    let x = |text: &str| {
+        (drawing.items.iter())
+            .find_map(|i| match i {
+                Item::Glyphs(run) if run.text == text => Some(run.glyphs[0].1.translation()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert!(x("MILES").x > miles.numbers.last().unwrap().1);
+    assert!(x("KILOMETERS").x > km.numbers.last().unwrap().1);
+    assert!(x("MILES").y < x("KILOMETERS").y);
+}
+
+/// Saves each kind of scale bar and the bar of the mockup to
+/// `target/app/scalebars.png` for a person to look at.
+#[test]
+#[ignore = "manual"]
+fn manual_scale_bar_pictures() {
+    if std::env::var_os("VALE_SCREENSHOTS").is_none() {
+        return;
+    }
+    let mut f = fonts().unwrap();
+    let (w, h) = (110.0 * PT_PER_MM, 16.0 * PT_PER_MM);
+    let mut bars: Vec<(ScaleBarItem, f64)> = Vec::new();
+    for kind in ScaleBarKind::ALL {
+        let bar = ScaleBarItem {
+            kind,
+            subdivisions: 4,
+            ..ScaleBarItem::default()
+        };
+        bars.push((bar, 3.5));
+    }
+    bars.push((mockup_bar(), 3.5));
+    let double = ScaleBarItem {
+        second_unit: Some(ScaleUnit::Miles),
+        before_zero: true,
+        subdivisions: 2,
+        number_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
+        unit_label_style: vale_store::UnitLabelStyle::Abbreviation,
+        ..ScaleBarItem::default()
+    };
+    bars.push((double, 3.5));
+    let centered = ScaleBarItem {
+        kind: ScaleBarKind::Hollow,
+        bar_height: 3.0,
+        number_position: ScalePosition::Center,
+        mark_frequency: TickFrequency::None,
+        unit_position: vale_store::UnitPosition::BelowCenter,
+        number_style: FurnitureText {
+            halo: true,
+            ..FurnitureText::sized(6.0)
+        },
+        ..ScaleBarItem::default()
+    };
+    bars.push((centered, 3.5));
+    let mut list = vale_render::DisplayList::new(w, h * bars.len() as f64);
+    list.items.push(Item::Fill {
+        path: kurbo::Rect::new(0.0, 0.0, w, h * bars.len() as f64).to_path(0.1),
+        color: Color::rgb(255, 255, 255),
+        rule: FillRule::NonZero,
+    });
+    for (k, (bar, km_per_mm)) in bars.iter().enumerate() {
+        let rect = kurbo::Rect::new(0.0, k as f64 * h, w, (k + 1) as f64 * h);
+        let drawing = scale_bar::draw(bar, rect, 1.0, km_per_mm / PT_PER_MM, &mut f);
+        list.items.extend(drawing.items);
+    }
+    let px = render_rgba(&list, 4.0).unwrap();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/app/scalebars.png");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    image::RgbaImage::from_raw(px.width as u32, px.height as u32, px.data)
+        .unwrap()
+        .save(path)
+        .unwrap();
 }
 
 #[test]

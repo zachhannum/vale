@@ -1033,7 +1033,7 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
                     });
                 }
             });
-            item_style_rows(ui, state, id, &l.style, false);
+            item_style_rows(ui, state, id, &l.entry_style, false);
             ui.label(item::ENTRIES);
             for row in atlas::legend_rows(state, l) {
                 let key = (row.layer, row.rule.clone());
@@ -1067,7 +1067,7 @@ fn item_panel(ui: &mut egui::Ui, state: &mut AppState, rec: &vale_store::Furnitu
             }
         }
         Furniture::ScaleBar(s) => {
-            item_style_rows(ui, state, id, &s.style, false);
+            item_style_rows(ui, state, id, &s.number_style, false);
             let text = atlas::item_scale_text(state, s.frame);
             ui.label(format!(
                 "{}: {}",

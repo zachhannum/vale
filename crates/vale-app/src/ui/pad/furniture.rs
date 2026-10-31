@@ -163,7 +163,7 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rec: &
                     _ => false,
                 });
             }
-            style_rows(ui, state, controls, id, &item.style, false);
+            style_rows(ui, state, controls, id, &item.entry_style, false);
             heading(ui, ENTRIES);
             entry_rows(ui, state, controls, rec);
             ui.add_space(6.0);
@@ -180,7 +180,7 @@ fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rec: &
         }
         Furniture::ScaleBar(item) => {
             frame_row(ui, state, controls, rec);
-            style_rows(ui, state, controls, id, &item.style, false);
+            style_rows(ui, state, controls, id, &item.number_style, false);
             let text = atlas::item_scale_text(state, item.frame);
             widgets::value_row(ui, SCALE, text.as_deref().unwrap_or("—"));
             hint(ui, SCALE_HINT);

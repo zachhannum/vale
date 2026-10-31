@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::RangeInclusive;
 
 use crate::gpkg::{Reader, hex, parse_color};
+pub use crate::scale_bar::ScaleBarItem;
 use crate::{LayerId, LonLat, Rgb, Units};
 
 /// The ID of a map.
@@ -433,7 +434,8 @@ pub enum Furniture {
     NorthArrow(NorthArrowItem),
 }
 
-/// The text style of an item of furniture.
+/// The text style of a part of an item of furniture. It has the text
+/// settings of a label class.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FurnitureText {
     /// The font family. `None`: the default family of the app.
@@ -443,6 +445,99 @@ pub struct FurnitureText {
     /// The text size in points.
     pub size: f64,
     pub color: Rgb,
+    pub case: TextCase,
+    /// A fraction of `size`. 0.05 adds 5 % of the size between letters.
+    pub letter_spacing: f64,
+    /// 0 to 1, for the text and its halo.
+    pub opacity: f64,
+    pub halo: bool,
+    pub halo_color: Rgb,
+    /// The halo width in points.
+    pub halo_width: f64,
+}
+
+/// How the case of a text changes.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextCase {
+    #[default]
+    Normal,
+    Upper,
+    Lower,
+    Title,
+    /// Small capitals for the lowercase letters. The labeler shapes them.
+    SmallCaps,
+    /// Small capitals for all letters. The labeler shapes them.
+    AllSmallCaps,
+}
+
+impl TextCase {
+    pub const ALL: [TextCase; 6] = [
+        TextCase::Normal,
+        TextCase::Upper,
+        TextCase::Lower,
+        TextCase::Title,
+        TextCase::SmallCaps,
+        TextCase::AllSmallCaps,
+    ];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            TextCase::Normal => "Normal",
+            TextCase::Upper => "Uppercase",
+            TextCase::Lower => "Lowercase",
+            TextCase::Title => "Title case",
+            TextCase::SmallCaps => "Small caps",
+            TextCase::AllSmallCaps => "All small caps",
+        }
+    }
+
+    /// The text in this case. The small caps cases give the text unchanged.
+    pub fn apply(self, text: &str) -> String {
+        match self {
+            TextCase::Upper => text.to_uppercase(),
+            TextCase::Lower => text.to_lowercase(),
+            TextCase::Title => title_case(text),
+            TextCase::Normal | TextCase::SmallCaps | TextCase::AllSmallCaps => text.to_owned(),
+        }
+    }
+
+    /// The name in a project file.
+    pub fn id(self) -> &'static str {
+        match self {
+            TextCase::Normal => "normal",
+            TextCase::Upper => "upper",
+            TextCase::Lower => "lower",
+            TextCase::Title => "title",
+            TextCase::SmallCaps => "small_caps",
+            TextCase::AllSmallCaps => "all_small_caps",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<TextCase> {
+        TextCase::ALL.into_iter().find(|c| c.id() == id)
+    }
+}
+
+/// `s` with the first letter of each word in uppercase and the other
+/// letters in lowercase.
+pub fn title_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut start = true;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            if start {
+                out.extend(c.to_uppercase());
+            } else {
+                out.extend(c.to_lowercase());
+            }
+            start = false;
+        } else {
+            out.push(c);
+            start = true;
+        }
+    }
+    out
 }
 
 /// The horizontal alignment of text in its rectangle.
@@ -468,7 +563,8 @@ pub struct LegendItem {
     /// `None`: the legend has no frame.
     pub frame: Option<FrameId>,
     pub title: String,
-    pub style: FurnitureText,
+    pub title_style: FurnitureText,
+    pub entry_style: FurnitureText,
     /// The changes to the entries, keyed by layer and rule name. An entry
     /// with no change has no key.
     pub entries: BTreeMap<(LayerId, String), LegendEntry>,
@@ -482,14 +578,6 @@ pub struct LegendEntry {
     pub hidden: bool,
 }
 
-/// A scale bar of the scale of a frame.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ScaleBarItem {
-    /// `None`: the scale bar has no frame.
-    pub frame: Option<FrameId>,
-    pub style: FurnitureText,
-}
-
 /// A north arrow that points to the north of a frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NorthArrowItem {
@@ -499,6 +587,8 @@ pub struct NorthArrowItem {
     /// across the frame.
     pub hide_if_varies: bool,
     pub color: Rgb,
+    /// The style of the letter N.
+    pub letter_style: FurnitureText,
 }
 
 impl Furniture {
@@ -558,38 +648,38 @@ impl Furniture {
     }
 }
 
-type JsonMap = serde_json::Map<String, serde_json::Value>;
+pub(crate) type JsonMap = serde_json::Map<String, serde_json::Value>;
 
 /// The JSON object of `text`.
-fn json_object(text: &str) -> Option<JsonMap> {
+pub(crate) fn json_object(text: &str) -> Option<JsonMap> {
     match serde_json::from_str(text).ok()? {
         serde_json::Value::Object(map) => Some(map),
         _ => None,
     }
 }
 
-fn read_flag(map: &JsonMap, key: &str, to: &mut bool) -> Option<()> {
+pub(crate) fn read_flag(map: &JsonMap, key: &str, to: &mut bool) -> Option<()> {
     if let Some(v) = map.get(key) {
         *to = v.as_bool()?;
     }
     Some(())
 }
 
-fn read_number(map: &JsonMap, key: &str, to: &mut f64) -> Option<()> {
+pub(crate) fn read_number(map: &JsonMap, key: &str, to: &mut f64) -> Option<()> {
     if let Some(v) = map.get(key) {
         *to = v.as_f64().filter(|x| x.is_finite())?;
     }
     Some(())
 }
 
-fn read_color(map: &JsonMap, key: &str, to: &mut Rgb) -> Option<()> {
+pub(crate) fn read_color(map: &JsonMap, key: &str, to: &mut Rgb) -> Option<()> {
     if let Some(v) = map.get(key) {
         *to = parse_color(v.as_str()?)?;
     }
     Some(())
 }
 
-fn read_string(map: &JsonMap, key: &str, to: &mut String) -> Option<()> {
+pub(crate) fn read_string(map: &JsonMap, key: &str, to: &mut String) -> Option<()> {
     if let Some(v) = map.get(key) {
         *to = v.as_str()?.to_string();
     }
@@ -599,18 +689,46 @@ fn read_string(map: &JsonMap, key: &str, to: &mut String) -> Option<()> {
 impl FurnitureText {
     /// The text sizes in points that the app offers.
     pub const SIZES: RangeInclusive<f64> = 4.0..=72.0;
+    /// The letter spacings, as a fraction of the size, that the app offers.
+    pub const LETTER_SPACINGS: RangeInclusive<f64> = 0.0..=1.0;
+    /// The halo widths in points that the app offers.
+    pub const HALO_WIDTHS: RangeInclusive<f64> = 0.5..=8.0;
+
+    /// The default style with the size `size`.
+    pub fn sized(size: f64) -> FurnitureText {
+        FurnitureText {
+            size,
+            ..FurnitureText::default()
+        }
+    }
 
     /// Puts the keys of the style into `map`.
-    fn put(&self, map: &mut JsonMap) {
+    pub(crate) fn put(&self, map: &mut JsonMap) {
         map.insert("font".into(), serde_json::json!(self.font));
         map.insert("weight".into(), serde_json::json!(self.weight));
-        map.insert("italic".into(), serde_json::json!(self.italic));
+        map.insert("italic".into(), self.italic.into());
         map.insert("size".into(), serde_json::json!(self.size));
-        map.insert("color".into(), serde_json::json!(hex(self.color)));
+        map.insert("color".into(), hex(self.color).into());
+        map.insert("case".into(), self.case.id().into());
+        map.insert(
+            "letter_spacing".into(),
+            serde_json::json!(self.letter_spacing),
+        );
+        map.insert("opacity".into(), serde_json::json!(self.opacity));
+        map.insert("halo".into(), self.halo.into());
+        map.insert("halo_color".into(), hex(self.halo_color).into());
+        map.insert("halo_width".into(), serde_json::json!(self.halo_width));
+    }
+
+    /// The style as a JSON object.
+    pub(crate) fn value(&self) -> serde_json::Value {
+        let mut map = JsonMap::new();
+        self.put(&mut map);
+        serde_json::Value::Object(map)
     }
 
     /// Reads the keys of the style from `map` over `self`.
-    fn read(mut self, map: &JsonMap) -> Option<FurnitureText> {
+    pub(crate) fn read(mut self, map: &JsonMap) -> Option<FurnitureText> {
         match map.get("font") {
             None | Some(serde_json::Value::Null) => {}
             Some(v) => self.font = Some(v.as_str()?.to_string()),
@@ -621,7 +739,28 @@ impl FurnitureText {
         read_flag(map, "italic", &mut self.italic)?;
         read_number(map, "size", &mut self.size)?;
         read_color(map, "color", &mut self.color)?;
-        (self.size > 0.0 && self.weight > 0.0).then_some(self)
+        if let Some(v) = map.get("case") {
+            self.case = TextCase::from_id(v.as_str()?)?;
+        }
+        read_number(map, "letter_spacing", &mut self.letter_spacing)?;
+        read_number(map, "opacity", &mut self.opacity)?;
+        read_flag(map, "halo", &mut self.halo)?;
+        read_color(map, "halo_color", &mut self.halo_color)?;
+        read_number(map, "halo_width", &mut self.halo_width)?;
+        let valid = self.size > 0.0
+            && self.weight > 0.0
+            && self.halo_width > 0.0
+            && (0.0..=1.0).contains(&self.opacity);
+        valid.then_some(self)
+    }
+
+    /// Reads the object under `key` of `map` over `self`. A missing key
+    /// keeps `self`.
+    pub(crate) fn read_key(self, map: &JsonMap, key: &str) -> Option<FurnitureText> {
+        match map.get(key) {
+            None => Some(self),
+            Some(v) => self.read(v.as_object()?),
+        }
     }
 }
 
@@ -633,6 +772,12 @@ impl Default for FurnitureText {
             italic: false,
             size: 10.0,
             color: [0x2b, 0x2b, 0x2b],
+            case: TextCase::Normal,
+            letter_spacing: 0.0,
+            opacity: 1.0,
+            halo: false,
+            halo_color: [0xff, 0xff, 0xff],
+            halo_width: 1.5,
         }
     }
 }
@@ -682,10 +827,7 @@ impl Default for TextItem {
     fn default() -> Self {
         TextItem {
             text: "Text".to_string(),
-            style: FurnitureText {
-                size: 18.0,
-                ..FurnitureText::default()
-            },
+            style: FurnitureText::sized(18.0),
             align: TextAlign::Left,
         }
     }
@@ -698,7 +840,8 @@ impl LegendItem {
     pub fn to_json(&self) -> String {
         let mut map = JsonMap::new();
         map.insert("title".into(), self.title.clone().into());
-        self.style.put(&mut map);
+        map.insert("title_style".into(), self.title_style.value());
+        map.insert("entry_style".into(), self.entry_style.value());
         let entries = self.entries.iter().map(|((layer, rule), e)| {
             serde_json::json!({
                 "layer": layer.0,
@@ -712,12 +855,15 @@ impl LegendItem {
     }
 
     /// Reads [`LegendItem::to_json`]. A missing key gets its default, and
-    /// an unknown key is ignored. `None` if a value is bad.
+    /// an unknown key is ignored. `None` if a value is bad. The keys of a
+    /// text style at the top of the object apply to the title and the
+    /// entries.
     pub fn from_json(text: &str) -> Option<LegendItem> {
         let map = json_object(text)?;
         let mut item = LegendItem::default();
         read_string(&map, "title", &mut item.title)?;
-        item.style = item.style.read(&map)?;
+        item.title_style = (item.title_style.read(&map)?).read_key(&map, "title_style")?;
+        item.entry_style = (item.entry_style.read(&map)?).read_key(&map, "entry_style")?;
         if let Some(entries) = map.get("entries") {
             for entry in entries.as_array()? {
                 let entry = entry.as_object()?;
@@ -742,26 +888,13 @@ impl Default for LegendItem {
         LegendItem {
             frame: None,
             title: "Legend".to_string(),
-            style: FurnitureText::default(),
+            title_style: FurnitureText {
+                weight: 700.0,
+                ..FurnitureText::sized(11.0)
+            },
+            entry_style: FurnitureText::default(),
             entries: BTreeMap::new(),
         }
-    }
-}
-
-impl ScaleBarItem {
-    /// The item with no frame as JSON text, for a project file.
-    pub fn to_json(&self) -> String {
-        let mut map = JsonMap::new();
-        self.style.put(&mut map);
-        serde_json::Value::Object(map).to_string()
-    }
-
-    /// Reads [`ScaleBarItem::to_json`]. A missing key gets its default, and
-    /// an unknown key is ignored. `None` if a value is bad.
-    pub fn from_json(text: &str) -> Option<ScaleBarItem> {
-        let map = json_object(text)?;
-        let style = FurnitureText::default().read(&map)?;
-        Some(ScaleBarItem { frame: None, style })
     }
 }
 
@@ -771,6 +904,7 @@ impl NorthArrowItem {
         serde_json::json!({
             "hide_if_varies": self.hide_if_varies,
             "color": hex(self.color),
+            "letter_style": self.letter_style.value(),
         })
         .to_string()
     }
@@ -782,6 +916,7 @@ impl NorthArrowItem {
         let mut item = NorthArrowItem::default();
         read_flag(&map, "hide_if_varies", &mut item.hide_if_varies)?;
         read_color(&map, "color", &mut item.color)?;
+        item.letter_style = item.letter_style.read_key(&map, "letter_style")?;
         Some(item)
     }
 }
@@ -792,6 +927,10 @@ impl Default for NorthArrowItem {
             frame: None,
             hide_if_varies: true,
             color: [0x2b, 0x2b, 0x2b],
+            letter_style: FurnitureText {
+                weight: 600.0,
+                ..FurnitureText::sized(9.0)
+            },
         }
     }
 }
@@ -1344,6 +1483,12 @@ mod tests {
             italic: true,
             size: 14.5,
             color: [10, 20, 30],
+            case: TextCase::SmallCaps,
+            letter_spacing: 0.08,
+            opacity: 0.6,
+            halo: true,
+            halo_color: [250, 240, 230],
+            halo_width: 2.5,
         }
     }
 
@@ -1379,19 +1524,26 @@ mod tests {
         let legend = LegendItem {
             frame,
             title: "Key".into(),
-            style: styled(),
+            title_style: styled(),
+            entry_style: FurnitureText {
+                case: TextCase::Title,
+                ..FurnitureText::sized(7.0)
+            },
             entries,
         };
         round_trip(Furniture::Legend(legend), frame);
         let bar = ScaleBarItem {
             frame,
-            style: styled(),
+            unit_style: styled(),
+            second_unit: Some(crate::ScaleUnit::Feet),
+            ..ScaleBarItem::default()
         };
         round_trip(Furniture::ScaleBar(bar), frame);
         let arrow = NorthArrowItem {
             frame,
             hide_if_varies: false,
             color: [200, 0, 0],
+            letter_style: styled(),
         };
         round_trip(Furniture::NorthArrow(arrow), frame);
         assert_eq!(Furniture::from_json("compass", "{}", None), None);
@@ -1409,13 +1561,29 @@ mod tests {
         let arrow = NorthArrowItem::from_json("{}").unwrap();
         assert_eq!(arrow, NorthArrowItem::default());
         assert!(arrow.hide_if_varies);
-        let size = ScaleBarItem::from_json(r#"{"size": 6}"#).unwrap();
+        // The text keys of an older legend are the style of its title and
+        // its entries.
+        let old = r##"{"title": "Key", "size": 6, "weight": 400, "color": "102030"}"##;
+        let legend = LegendItem::from_json(old).unwrap();
+        let style = FurnitureText {
+            color: [0x10, 0x20, 0x30],
+            ..FurnitureText::sized(6.0)
+        };
+        assert_eq!(legend.title_style, style);
+        assert_eq!(legend.entry_style, style);
+        let text = TextItem::from_json(r#"{"size": 9}"#).unwrap();
+        assert_eq!(text.style, FurnitureText::sized(9.0));
+        for bad in [
+            r#"{"case": "shout"}"#,
+            r#"{"opacity": 1.5}"#,
+            r#"{"halo_width": 0}"#,
+            r#"{"halo": "yes"}"#,
+        ] {
+            assert_eq!(TextItem::from_json(bad), None, "{bad}");
+        }
         assert_eq!(
-            size.style,
-            FurnitureText {
-                size: 6.0,
-                ..FurnitureText::default()
-            }
+            NorthArrowItem::from_json(r#"{"letter_style": {"size": -1}}"#),
+            None
         );
         let entry = r#"{"entries": [{"layer": 3, "rule": "A"}]}"#;
         let legend = LegendItem::from_json(entry).unwrap();
@@ -1433,6 +1601,18 @@ mod tests {
         ] {
             let none = TextItem::from_json(bad).is_none() || LegendItem::from_json(bad).is_none();
             assert!(none, "{bad}");
+        }
+    }
+
+    #[test]
+    fn each_case_changes_the_text() {
+        let text = "the RIVER ode";
+        assert_eq!(TextCase::Upper.apply(text), "THE RIVER ODE");
+        assert_eq!(TextCase::Lower.apply(text), "the river ode");
+        assert_eq!(TextCase::Title.apply(text), "The River Ode");
+        assert_eq!(TextCase::SmallCaps.apply(text), text);
+        for c in TextCase::ALL {
+            assert_eq!(TextCase::from_id(c.id()), Some(c));
         }
     }
 
