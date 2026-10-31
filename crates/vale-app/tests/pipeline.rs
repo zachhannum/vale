@@ -2008,3 +2008,35 @@ fn furniture_stays_vector_and_text_in_pdf() {
     assert!(pdf.contains("/BaseFont"));
     assert!(!pdf.contains("/Subtype/Image"));
 }
+
+#[test]
+fn an_item_of_furniture_renders_to_an_image() {
+    let (mut doc, _) = furniture_doc(&[]);
+    let text = TextItem {
+        text: "A world".to_string(),
+        ..TextItem::default()
+    };
+    let id = add_item(&mut doc, [20.0, 20.0, 120.0, 40.0], Furniture::Text(text));
+    let rec = doc.project.atlas.furniture(id).unwrap().clone();
+    let mut f = fonts().unwrap();
+    let mut pipeline = Pipeline::new();
+    let (image, rect) =
+        furniture::render(&mut pipeline, &doc, &rec, &mut f, 2.0, Purpose::Screen).unwrap();
+    let m = furniture::RENDER_MARGIN_MM;
+    assert_eq!(
+        rect,
+        kurbo::Rect::new(20.0 - m, 20.0 - m, 120.0 + m, 40.0 + m)
+    );
+    let width = (rect.width() * PT_PER_MM * 2.0).round() as usize;
+    assert!(image.width.abs_diff(width) <= 1, "{} {width}", image.width);
+    assert!(image.data.chunks(4).any(|px| px[3] > 0));
+
+    // An arrow with no frame draws only on the screen.
+    let arrow = add_item(
+        &mut doc,
+        [20.0, 50.0, 50.0, 80.0],
+        Furniture::NorthArrow(NorthArrowItem::default()),
+    );
+    assert!(furniture_items(&doc, &mut pipeline, arrow, Purpose::Export).is_empty());
+    assert!(!furniture_items(&doc, &mut pipeline, arrow, Purpose::Screen).is_empty());
+}
