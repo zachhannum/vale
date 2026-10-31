@@ -5,8 +5,8 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS, Mode, Ridge, Stamp,
-    StampPlan, meters_to_level, talus_levels,
+    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS, Mode, RangeSpec,
+    Ridge, Stamp, StampPlan, meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, normalize, scale};
@@ -42,6 +42,8 @@ pub const RIDGE_MAGMA: std::ops::RangeInclusive<f64> = -0.25..=0.15;
 pub const RIDGE_SEGMENT_KM: std::ops::RangeInclusive<f64> = 100.0..=1500.0;
 /// The limits of the offset of the ocean ridge mode, in kilometers.
 pub const RIDGE_OFFSET_KM: std::ops::RangeInclusive<f64> = 0.0..=500.0;
+/// The limits of the ridge spacing of the range mode, in kilometers.
+pub const RANGE_SPACING_KM: std::ops::RangeInclusive<f64> = 5.0..=300.0;
 /// The part that the erosion setting of 1 adds to the rise of an uplift
 /// stamp. With it, an uplift stroke gives a range of about the height of a
 /// raise stroke at each erosion setting.
@@ -95,6 +97,9 @@ pub struct BrushSettings {
     /// The change of the magma part of the spreading of the ocean ridge
     /// mode.
     pub ridge_magma: f64,
+    /// The mean distance between two ridges of the range mode, in
+    /// kilometers.
+    pub range_spacing_km: f64,
     /// The brush does not move ground across the floor.
     pub floor_on: bool,
     /// The value of the floor, in the unit of the layer. For a height, it
@@ -128,6 +133,7 @@ impl Default for BrushSettings {
             ridge_offset_km: 100.0,
             ridge_spread_mm: 25.0,
             ridge_magma: 0.0,
+            range_spacing_km: 30.0,
             floor_on: false,
             floor_m: 0.0,
             ceiling_on: false,
@@ -144,7 +150,7 @@ pub fn needs_height(mode: Mode) -> bool {
     use Mode::*;
     matches!(
         mode,
-        Carve | Ridge | Deposit | Erode | Weather | Uplift | OceanRidge
+        Carve | Ridge | Deposit | Erode | Weather | Uplift | OceanRidge | Range
     )
 }
 
@@ -200,6 +206,19 @@ impl BrushSettings {
             spread: 0.5 * self.ridge_spread_mm / world_km,
             magma: self.ridge_magma,
             world_km,
+            seed,
+            limits: self.limits(),
+        }
+    }
+
+    /// The settings of a range stroke with this brush radius, in radians.
+    /// `world_km` is the radius of the world.
+    pub fn range_spec(&self, radius: f64, world_km: f64, seed: u32) -> RangeSpec {
+        let height = meters_to_level(self.strength_m) - meters_to_level(0.0);
+        RangeSpec {
+            radius,
+            height: f64::from(height),
+            spacing: self.range_spacing_km / world_km,
             seed,
             limits: self.limits(),
         }
@@ -404,11 +423,11 @@ pub fn set_world(
 }
 
 /// The distance between the stamps of a mode, as a part of the brush radius.
-/// The stamps of the ocean ridge mode are the points of the line of the
-/// stroke.
+/// The stamps of the ocean ridge mode and of the range mode are the points
+/// of the line of the stroke.
 fn stamp_spacing(mode: Mode) -> f64 {
     match mode {
-        Mode::OceanRidge => LINE_SPACING,
+        Mode::OceanRidge | Mode::Range => LINE_SPACING,
         _ => STAMP_SPACING,
     }
 }
@@ -494,8 +513,9 @@ impl Stroke {
         if let (Some(last), Some(level)) = (self.last, self.level) {
             let tip = self.tip(brush, face_size, level);
             self.line_to(&tip, last, out);
-            // The line of a ridge ends at the last sample.
-            if brush.mode == Mode::OceanRidge && self.end.is_some() {
+            // The line of a ridge or a range ends at the last sample.
+            let line = matches!(brush.mode, Mode::OceanRidge | Mode::Range);
+            if line && self.end.is_some() {
                 out.push(tip.stamp(last.0, last.1));
             }
         }
@@ -694,6 +714,45 @@ mod tests {
         // of the flow.
         assert!((out[1].flow - 0.12).abs() < 1e-6, "{}", out[1].flow);
         assert!((out[2].flow - 0.24).abs() < 1e-6, "{}", out[2].flow);
+    }
+
+    #[test]
+    fn the_flow_of_a_range_stamp_follows_the_pressure() {
+        let brush = BrushSettings {
+            mode: Mode::Range,
+            flow: 0.8,
+            ..BrushSettings::default()
+        };
+        let flows = |pressure: [f64; 2]| {
+            let mut stroke = Stroke::default();
+            let mut out = Vec::new();
+            let arc = 0.03_f64.to_degrees();
+            for (lon, flow) in [(0.0, pressure[0]), (arc, pressure[1])] {
+                let at = Sample {
+                    flow,
+                    ..sample(lon, 0.1)
+                };
+                stroke.add_sample(&brush, 1024, at, |_| 0, &mut out);
+            }
+            stroke.finish(&brush, 1024, &mut out);
+            out
+        };
+        // The flow of a mouse gives the full height.
+        let mouse = flows([FIXED_FLOW; 2]);
+        assert!(mouse.iter().all(|s| (s.flow - 0.8).abs() < 1e-9));
+        // A light pen gives a lower range, and a firm pen the full height.
+        let pen = flows([0.1, 0.4]);
+        assert!((pen[0].flow - 0.8 * 0.2).abs() < 1e-9, "{}", pen[0].flow);
+        assert!(pen.windows(2).all(|w| w[1].flow > w[0].flow));
+        let last = pen.last().unwrap();
+        assert!((last.flow - 0.8 * 0.8).abs() < 1e-9, "{}", last.flow);
+        assert!(flows([1.0; 2]).iter().all(|s| (s.flow - 0.8).abs() < 1e-9));
+        // The stamps are the points of the line, and the last one is at the
+        // last sample.
+        let step = angle(pen[0].center, pen[1].center);
+        assert!((step - 0.1 * LINE_SPACING).abs() < 1e-9, "{step}");
+        let end = lonlat_to_dir(0.03_f64.to_degrees(), 0.0);
+        assert!(angle(last.center, end) < 1e-9);
     }
 
     #[test]

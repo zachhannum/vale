@@ -13,9 +13,9 @@ use vale_store::{
     BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing,
 };
 use vale_terrain::{
-    Bands, ChannelMap, ChannelWindow, ErodeBrush, FACES, Heightmap, Mode, Pyramid, Rain, RidgeLine,
-    SEA_LEVEL, Stamp, TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap,
-    reduced_face_size, smoothing_level,
+    Bands, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES, Heightmap, Mode, Pyramid, Rain,
+    RangeLine, RidgeLine, SEA_LEVEL, Stamp, TexelRect, Window, WindowHeights, max_level,
+    meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -46,12 +46,12 @@ pub mod zoom_test;
 use crate::pen::Pen;
 use backdrop::Canvas;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, set_world};
-use erode::{Eroder, Ground, brush_window, erode_window, near_side};
+use erode::{Eroder, Ground, Lift, brush_window, erode_window, near_side, range_window};
 use export::ExportResult;
 use flat::FlatView;
 use gpu::{
     Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, ImageKey, Job as GpuJob,
-    LayerKey, Link, MapKey, Mask, Op, Pass, TargetId, Uniforms, Uploads,
+    LayerKey, LineOp, Link, MapKey, Mask, Op, Pass, TargetId, Uniforms, Uploads,
 };
 use import::{ImportResult, Job, Source, Step};
 use line::LineSettings;
@@ -227,20 +227,96 @@ struct Uplifting {
     window: Option<Window>,
 }
 
-/// The line of an ocean ridge stroke. The stamps of the stroke are the
-/// points of the line, and they do not go to the GPU.
+/// The line of an ocean ridge stroke or of a range stroke.
+enum BrushLine {
+    Ridge(RidgeLine),
+    Range(RangeLine),
+}
+
+impl BrushLine {
+    fn len(&self) -> usize {
+        match self {
+            BrushLine::Ridge(line) => line.len(),
+            BrushLine::Range(line) => line.len(),
+        }
+    }
+
+    /// The plan for the points from `from` on, and the number of points
+    /// that the plans cover after it.
+    fn plan(&self, from: usize) -> (LineOp, usize) {
+        match self {
+            BrushLine::Ridge(line) => {
+                let plan = line.plan(from);
+                let end = plan.end;
+                (LineOp::Ridge(Box::new(plan)), end)
+            }
+            BrushLine::Range(line) => {
+                let plan = line.plan(from);
+                let end = plan.end;
+                (LineOp::Range(Box::new(plan)), end)
+            }
+        }
+    }
+}
+
+/// The line of an ocean ridge stroke or of a range stroke. The stamps of
+/// the stroke are the points of the line, and they do not go to the GPU.
 struct Ridging {
-    line: RidgeLine,
+    line: BrushLine,
     /// The number of points of the line that the plans cover.
     sent: usize,
+    /// `Some`: the stroke is a range stroke with erosion.
+    range: Option<Ranging>,
 }
 
 impl Ridging {
     fn extend(&mut self, stamps: &[Stamp]) {
         for stamp in stamps {
-            self.line.push(stamp.center, stamp.flow);
+            match &mut self.line {
+                BrushLine::Ridge(line) => line.push(stamp.center, stamp.flow),
+                BrushLine::Range(line) => line.push(stamp.center, stamp.flow),
+            }
         }
     }
+}
+
+/// The line of an ocean ridge stroke or of a range stroke with a brush of
+/// this radius, in radians, on a world of `km` kilometers with a heightmap
+/// of face size `n`. Other modes have no line.
+fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> Option<Ridging> {
+    let (line, range) = match brush.mode {
+        Mode::OceanRidge => {
+            let spec = brush.ridge_spec(radius, km, seed);
+            (BrushLine::Ridge(RidgeLine::new(spec, n)), None)
+        }
+        Mode::Range => {
+            let spec = brush.range_spec(radius, km, seed);
+            let range = (brush.erosion > 0.0).then(Ranging::default);
+            (BrushLine::Range(RangeLine::new(spec, n)), range)
+        }
+        _ => return None,
+    };
+    Some(Ridging {
+        line,
+        sent: 0,
+        range,
+    })
+}
+
+/// The erosion of a range stroke. The worker computes the steps while the
+/// pen paints, and the steps go to the GPU after the last plan of the
+/// line, because a plan puts back the ground from before the stroke.
+#[derive(Default)]
+struct Ranging {
+    /// The distance along the line that the requests cover, in radians.
+    lifted: f64,
+    /// The steps that arrived. A step on the cells of the step before it
+    /// adds its drops to that step.
+    held: Vec<Arc<ErodeStep>>,
+    /// The window of the cells of the stroke, after its first request.
+    window: Option<Window>,
+    /// The held steps went to the GPU.
+    done: bool,
 }
 
 /// The stroke that the GPU works on.
@@ -255,7 +331,7 @@ struct Active {
     erode: Option<Eroding>,
     /// `Some`: the stroke is an uplift stroke with erosion.
     uplift: Option<Uplifting>,
-    /// `Some`: the stroke is an ocean ridge stroke.
+    /// `Some`: the stroke is an ocean ridge stroke or a range stroke.
     ridge: Option<Ridging>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
@@ -2514,6 +2590,7 @@ impl Globe {
         self.erode(now);
         self.uplift(now);
         self.ridge(now);
+        self.range();
         self.send_stamps(now);
         let busy = self.busy() || self.loading();
         zooming || in_flight || busy || self.rivers.pending() || self.export.is_some()
@@ -2638,12 +2715,11 @@ impl Globe {
                 }
                 Input::Sample(sample, time) => {
                     if let Some(active) = self.stroke.as_mut().filter(|a| !a.ended) {
-                        // The first sample gives the radius of the ridge.
-                        if active.sampled.is_none() && self.brush.mode == Mode::OceanRidge {
-                            let (km, seed) = (self.world_km, self.world_seed);
-                            let spec = self.brush.ridge_spec(sample.radius, km, seed);
-                            let line = RidgeLine::new(spec, self.map.face_size());
-                            active.ridge = Some(Ridging { line, sent: 0 });
+                        // The first sample gives the radius of the line.
+                        if active.sampled.is_none() {
+                            let (km, seed, n) =
+                                (self.world_km, self.world_seed, self.map.face_size());
+                            active.ridge = line_of(&self.brush, km, seed, n, sample.radius);
                         }
                         active.sampled = Some(time);
                         if let Some(erode) = &mut active.erode {
@@ -2775,7 +2851,8 @@ impl Globe {
         }
         let rate = self.brush.strength_m * ERODE_RATE * seconds;
         self.eroder.set_rain(self.world_rain);
-        self.eroder.request(brushes, rate, 0.0, self.brush.limits());
+        self.eroder
+            .request(brushes, rate, Lift::None, self.brush.limits());
     }
 
     /// Sends the erode step of an uplift stroke that arrived to the GPU, and
@@ -2854,14 +2931,14 @@ impl Globe {
         let rate = erosion * UPLIFT_ERODE_RATE * (cells / 16.0).sqrt() * stamps.len() as f64;
         let limits = self.brush.limits();
         self.eroder.set_rain(self.world_rain);
-        self.eroder
-            .request(brushes.collect(), rate, stamps[0].strength, limits);
+        let lift = Lift::Raise(stamps[0].strength);
+        self.eroder.request(brushes.collect(), rate, lift, limits);
         uplift.asked = stamps;
     }
 
-    /// Sends the ocean ridge of the new points of the line to the GPU. Each
-    /// plan goes with the ground from before the stroke, which the
-    /// heightmap holds until the texels of the stroke come back.
+    /// Sends the ocean ridge or the range of the new points of the line to
+    /// the GPU. Each plan goes with the ground from before the stroke, which
+    /// the heightmap holds until the texels of the stroke come back.
     fn ridge(&mut self, now: Instant) {
         let tag = self.tag();
         let Some(active) = &mut self.stroke else {
@@ -2872,10 +2949,10 @@ impl Globe {
         };
         let time = active.sampled.unwrap_or(now);
         while ridge.sent < ridge.line.len() {
-            let plan = ridge.line.plan(ridge.sent);
-            ridge.sent = plan.end;
+            let (plan, end) = ridge.line.plan(ridge.sent);
+            ridge.sent = end;
             let mut ground = Vec::new();
-            for (face, rect) in plan.rects.iter().enumerate() {
+            for (face, rect) in plan.rects().iter().enumerate() {
                 let Some(rect) = *rect else { continue };
                 active.touched[face] = Some(union(active.touched[face], rect));
                 let mut data = Vec::new();
@@ -2887,14 +2964,90 @@ impl Globe {
             }
             let texels = ground.iter().map(|(_, _, data)| data.len() as u64).sum();
             self.stats.stamps(active.id, 1, texels);
-            let (plan, stroke) = (Box::new(plan), active.id);
-            let op = Op::Ridge {
+            let stroke = active.id;
+            let op = Op::Line {
                 plan,
                 ground,
                 stroke,
                 time,
             };
             self.link.push(tag, op);
+        }
+    }
+
+    /// Holds the erode step of a range stroke that arrived. Then asks for
+    /// the steps of the part of the line that new points no longer change.
+    /// After the last plan and the last step, sends the held steps to the
+    /// GPU. One request is in work at a time.
+    fn range(&mut self) {
+        let tag = self.tag();
+        let Some(active) = &mut self.stroke else {
+            return;
+        };
+        let Some(Ridging {
+            line: BrushLine::Range(line),
+            sent,
+            range: Some(range),
+        }) = &mut active.ridge
+        else {
+            return;
+        };
+        if range.done {
+            return;
+        }
+        if let Some(step) = self.eroder.poll().filter(|step| !step.is_empty()) {
+            for (touched, rect) in active.touched.iter_mut().zip(step.rects()) {
+                if let Some(rect) = rect {
+                    *touched = Some(union(*touched, rect));
+                }
+            }
+            let last = range.held.last_mut().and_then(Arc::get_mut);
+            if !last.is_some_and(|last| last.merge(&step)) {
+                range.held.push(step);
+            }
+        }
+        if self.eroder.pending() {
+            return;
+        }
+        let all = active.ended && *sent == line.len();
+        let settled = if all { line.length() } else { line.settled() };
+        let spec = line.spec();
+        if settled - range.lifted >= spec.radius || (all && settled > range.lifted) {
+            let u = range.lifted..settled;
+            let brushes = line.brushes(u.clone());
+            let Some(center) = brushes.get(brushes.len() / 2).map(|b| b.center) else {
+                range.lifted = settled;
+                return;
+            };
+            let face_size = self.map.face_size();
+            match range.window {
+                None => {
+                    let window = range_window(center, &spec, face_size);
+                    let heights = WindowHeights::new(&self.map, window);
+                    self.eroder.begin(Ground::Alone(heights));
+                    range.window = Some(window);
+                }
+                Some(window) if near_side(&window, center, spec.radius) => {
+                    let next = range_window(center, &spec, face_size);
+                    if next != window {
+                        let heights = WindowHeights::new(&self.map, next);
+                        self.eroder.move_to(Ground::Alone(heights));
+                        range.window = Some(next);
+                    }
+                }
+                Some(_) => {}
+            }
+            self.eroder.set_rain(self.world_rain);
+            let erosion = self.brush.erosion.clamp(0.0, 1.0);
+            let lift = Lift::Range(Arc::new(line.clone()), u);
+            self.eroder.request(Vec::new(), erosion, lift, spec.limits);
+            range.lifted = settled;
+        } else if all {
+            for step in range.held.drain(..) {
+                let stroke = active.id;
+                self.link.push(tag, Op::Erode { stroke, step });
+            }
+            range.done = true;
         }
     }
 
@@ -2938,8 +3091,10 @@ impl Globe {
         {
             return;
         }
+        // The readback of a range stroke follows its held steps, so one undo
+        // step has the whole stroke.
         if let Some(ridge) = &active.ridge
-            && ridge.sent < ridge.line.len()
+            && (ridge.sent < ridge.line.len() || ridge.range.as_ref().is_some_and(|r| !r.done))
         {
             return;
         }
