@@ -488,12 +488,14 @@ fn north_at(projection: &Projection, vt: &crate::view::ViewTransform, p: LonLat)
 }
 
 /// The direction of north at the center of a frame, in degrees clockwise
-/// from the top of the page, and the largest difference from it at the
-/// corners and at the middle of the edges of the box of the frame. A place
-/// near a pole has a difference of 180°. `None` if the center is not on the
-/// globe.
+/// from the top of the page, and the largest difference from it in the
+/// frame. The difference comes from a grid of points over the box of the
+/// frame, with the corners and the middle of the edges, and a place near a
+/// pole has a difference of 180°. `None` if the center is not on the globe.
 pub fn north(projection: &Projection, frame: &FrameRecord) -> Option<(f64, f64)> {
     const NEAR_POLE: f64 = 90.0 - 0.01;
+    // An odd number, so the grid has the middle of each edge.
+    const SAMPLES: usize = 5;
     if frame.center[1].abs() > NEAR_POLE {
         return Some((0.0, 180.0));
     }
@@ -502,11 +504,13 @@ pub fn north(projection: &Projection, frame: &FrameRecord) -> Option<(f64, f64)>
     let b = atlas::shape_bbox(&frame.shape);
     let c = b.center();
     let mut variation: f64 = 0.0;
-    for x in [b.x0, c.x, b.x1] {
-        for y in [b.y0, c.y, b.y1] {
+    let t = |k: usize| k as f64 / (SAMPLES - 1) as f64;
+    for i in 0..SAMPLES {
+        for j in 0..SAMPLES {
+            let p = Point::new(b.x0 + b.width() * t(i), b.y0 + b.height() * t(j));
             // A point a bit inside the box, so a point on the edge of a
             // rectangle is inside the shape.
-            let p = c + (Point::new(x, y) - c) * 0.99;
+            let p = c + (p - c) * 0.99;
             if p == c || !atlas::contains(&frame.shape, p) {
                 continue;
             }
