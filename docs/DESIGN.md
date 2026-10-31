@@ -155,13 +155,14 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Map | Name, projection preset and center, the layers that are off in the map, style overrides, label classes |
 | Page | Name, page size in millimeters, units of the page size, paper color, page border, page template, furniture |
 | Map frame | Page, map, shape on the page, center, scale, rotation, fill, border, graticule |
+| Furniture | Page, kind (text, legend, scale bar, or north arrow), rectangle on the page, link to a map frame of the page, and the properties of the kind as JSON. A legend keeps a changed name or a hidden flag for each entry, keyed by layer and rule. |
 | Override | One manual change, keyed by map frame, feature ID, and label class |
 | Page template | Page size, margins, positions of the furniture |
 | Atlas | Ordered list of pages |
 
 The order of the layer records is the draw order. The first layer is at the bottom.
 
-The shape of a map frame is a list of rings in millimeters from the top-left corner of the page. The first ring is the outer ring, and the other rings are holes. The frames of a page are in draw order. The scale of a frame is a ratio 1:N on the standard lines of the projection. The projection uses the radius of the world, so the ratio is true for any radius. The rotation is in degrees clockwise.
+The shape of a map frame is a list of rings in millimeters from the top-left corner of the page. The first ring is the outer ring, and the other rings are holes. The frames and the furniture of a page are in draw order. The scale of a frame is a ratio 1:N on the standard lines of the projection. The projection uses the radius of the world, so the ratio is true for any radius. The rotation is in degrees clockwise.
 
 QGIS opens the feature tables directly and ignores the extra tables. The extra tables have the prefix `vale_`. Each one has a row in `gpkg_contents` with the data type `vale`, and QGIS lists only the data types that it knows. That gives interchange with no export step. The topography polygons are feature tables, so QGIS reads them too. A raster layer is not a standard table, and the app exports it as an equirectangular GeoTIFF. The image is four times the face size wide and two times the face size tall. The samples are the 16-bit levels. The file gives the offset and the scale that turn a level into a value in the unit of the layer. The CRS is the sphere of the world, the same as in the feature tables.
 
