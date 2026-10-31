@@ -39,7 +39,11 @@ const HANDLE_RADIUS: f32 = 6.0;
 const WHEEL_REST: f64 = 0.25;
 /// Two taps less than this time apart are a double tap, in seconds.
 const DOUBLE_TAP: f64 = 0.4;
-const PAPER: Color32 = Color32::WHITE;
+/// The color of the paper of a page.
+fn paper(page: &PageRecord) -> Color32 {
+    let [r, g, b] = page.paper;
+    Color32::from_rgb(r, g, b)
+}
 const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
 /// The smallest and the largest side of a page, in millimeters.
 const PAGE_SIDE: (f64, f64) = (10.0, 2000.0);
@@ -1372,7 +1376,7 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
         color: Color32::from_black_alpha(90),
     };
     painter.add(shadow.as_shape(place.rect, 0.0));
-    painter.rect_filled(place.rect, 0.0, PAPER);
+    painter.rect_filled(place.rect, 0.0, paper(open_page(state)));
     frames(ui, state, place, area);
     items(ui, state, place, area);
     selection(ui, state, place);
@@ -1896,6 +1900,9 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             frame.map,
             &frame.graticule,
             neatline_key(&frame.neatline),
+            &frame.border,
+            &frame.grid,
+            page.paper,
             ppp.to_bits(),
             state.selection,
             layered,
@@ -1910,7 +1917,9 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             0.0
         };
         let labels = crate::edge_labels::outside_reach(frame, &mut state.fonts);
-        let reach = (neatline.max(labels) * f64::from(place.pts_per_mm) / PT_PER_MM) as f32;
+        let band = crate::frame_border::reach(frame);
+        let reach = neatline.max(labels).max(band);
+        let reach = (reach * f64::from(place.pts_per_mm) / PT_PER_MM) as f32;
         let shown = snap(
             place
                 .rect_to_screen(math::shape_bbox(&frame.shape))
@@ -2003,7 +2012,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         });
     }
     let canvas = Canvas {
-        background: PAPER,
+        background: paper(&page),
         pixels_per_point: ppp,
     };
     let mut callbacks: HashMap<u32, _> = if draws.is_empty() {
@@ -2181,7 +2190,7 @@ fn scene_of(area: Rect, page: Rect, items: &[(Arc<Thumb>, Rect)], canvas: Canvas
     for y in from[1]..to[1] {
         for x in from[0]..to[0] {
             let at = (y * w + x) * 4;
-            rgba[at..at + 4].copy_from_slice(&PAPER.to_array());
+            rgba[at..at + 4].copy_from_slice(&canvas.background.to_array());
         }
     }
     for (thumb, rect) in items {

@@ -17,7 +17,7 @@ use crate::document::Document;
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::{Captured, Mask};
 use crate::globe::{FrameDraw, FramePlace};
-use crate::pipeline::{PAPER, Pipeline, Quality};
+use crate::pipeline::{Pipeline, Quality, paper_color};
 use crate::raster_style;
 use crate::{furniture, headless};
 
@@ -114,7 +114,7 @@ impl PdfExport {
         let mut list = DisplayList::new(size.x, size.y);
         list.push(Item::Fill {
             path: Rect::new(0.0, 0.0, size.x, size.y).to_path(0.1),
-            color: PAPER,
+            color: paper_color(page),
             rule: FillRule::NonZero,
         });
         list
