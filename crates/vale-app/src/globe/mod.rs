@@ -2747,6 +2747,10 @@ impl Globe {
                                     self.world_km,
                                     self.world_seed,
                                 );
+                                // The relief of the noise mode needs heights.
+                                if !self.height {
+                                    stamp.relief = 0.0;
+                                }
                                 self.backlog.push(map.stamp_plan(stamp), time);
                             }
                             if let Some(uplift) = &mut active.uplift {
@@ -2775,6 +2779,9 @@ impl Globe {
                                 self.world_km,
                                 self.world_seed,
                             );
+                            if !self.height {
+                                stamp.relief = 0.0;
+                            }
                             let time = active.sampled.unwrap_or_else(Instant::now);
                             self.backlog.push(map.stamp_plan(stamp), time);
                         }

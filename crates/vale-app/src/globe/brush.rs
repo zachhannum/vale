@@ -82,9 +82,14 @@ pub struct BrushSettings {
     /// The largest distance that one pass of the warp mode moves the ground,
     /// in kilometers.
     pub warp_km: f64,
-    /// The size of the features of the noise of the warp mode, in
-    /// kilometers.
+    /// The size of the features of the noise of the warp mode, or of the
+    /// largest features of the noise mode, in kilometers.
     pub scale_km: f64,
+    /// The noise mode uses the ridged variant of its noise.
+    pub noise_ridged: bool,
+    /// How much the noise of the noise mode grows with the height above sea
+    /// level, from 0 to 1.
+    pub noise_relief: f64,
     /// The elevation of the crest of the ocean ridge mode, in meters.
     pub ridge_crest_m: f64,
     /// The mean length of a segment of the crest, in kilometers.
@@ -128,6 +133,8 @@ impl Default for BrushSettings {
             erosion: 0.5,
             warp_km: 50.0,
             scale_km: 200.0,
+            noise_ridged: false,
+            noise_relief: 0.5,
             ridge_crest_m: -700.0,
             ridge_segment_km: 400.0,
             ridge_offset_km: 100.0,
@@ -385,7 +392,8 @@ impl Tip<'_> {
                 | Mode::Weather
                 | Mode::Uplift
                 | Mode::Warp
-                | Mode::Push => flow,
+                | Mode::Push
+                | Mode::Noise => flow,
                 // The flow of a mouse gives the full height of the ridge.
                 Mode::OceanRidge | Mode::Range => (input / FIXED_FLOW).min(1.0) * self.brush.flow,
                 // These three modes move toward a target, so each stamp does less.
@@ -404,13 +412,16 @@ impl Tip<'_> {
             scale: 0.0,
             seed: 0,
             motion,
+            ridged: self.brush.noise_ridged,
+            relief: self.brush.noise_relief,
             limits: self.brush.limits(),
         }
     }
 }
 
-/// Sets the parts of a stamp that follow the world: the slope limit, and
-/// in the warp mode the offset and the size of the noise as angles.
+/// Sets the parts of a stamp that follow the world: the slope limit, the
+/// size of the noise as an angle, and in the warp mode the offset as an
+/// angle.
 /// `world_km` is the radius of the world.
 pub fn set_world(
     stamp: &mut Stamp,
@@ -558,7 +569,8 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Erode
         | Mode::Uplift
         | Mode::OceanRidge
-        | Mode::Range => 1,
+        | Mode::Range
+        | Mode::Noise => 1,
     }
 }
 
@@ -720,6 +732,7 @@ mod tests {
             Mode::Uplift,
             Mode::Warp,
             Mode::Push,
+            Mode::Noise,
         ] {
             brush.mode = mode;
             assert_eq!(stamp_of(&brush).limits, Limits { floor, ceiling });
@@ -914,6 +927,37 @@ mod tests {
 
     fn plan(map: &Heightmap, radius: f64) -> StampPlan {
         plan_of(map, radius, Mode::Raise)
+    }
+
+    #[test]
+    fn a_noise_stamp_has_the_settings_of_the_noise_mode() {
+        let brush = BrushSettings {
+            mode: Mode::Noise,
+            scale_km: 250.0,
+            noise_ridged: true,
+            noise_relief: 0.75,
+            ..BrushSettings::default()
+        };
+        let raise = BrushSettings {
+            mode: Mode::Raise,
+            ..brush
+        };
+        let first = |brush: &BrushSettings| {
+            let mut out = Vec::new();
+            Stroke::default().add_sample(brush, 256, sample(0.0, 0.1), |_| 7, &mut out);
+            let mut stamp = out[0];
+            set_world(&mut stamp, brush, 256, 1000.0, 9);
+            stamp
+        };
+        let stamp = first(&brush);
+        assert_eq!(stamp.mode, Mode::Noise);
+        assert!(stamp.ridged);
+        assert_eq!(stamp.relief, 0.75);
+        assert!((stamp.scale - 0.25).abs() < 1e-12);
+        assert_eq!(stamp.seed, 9);
+        // The strength and the flow are those of the raise mode.
+        let raised = first(&raise);
+        assert_eq!((stamp.strength, stamp.flow), (raised.strength, raised.flow));
     }
 
     #[test]

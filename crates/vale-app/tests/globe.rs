@@ -2065,6 +2065,24 @@ fn the_brush_panel_has_the_push_mode_with_no_strength() {
 }
 
 #[test]
+fn the_brush_panel_has_the_noise_mode_and_its_settings() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Ridged").next().is_none());
+    h.get_by_label("Noise").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.brush.mode, Mode::Noise);
+    for label in ["Strength", "Scale", "Relief", "Seed"] {
+        assert!(h.query_all_by_label(label).next().is_some(), "{label}");
+    }
+    assert!(!h.state().globe.brush.noise_ridged);
+    h.get_by_label("Ridged").click();
+    h.run_steps(2);
+    assert!(h.state().globe.brush.noise_ridged);
+}
+
+#[test]
 fn the_brush_panel_has_the_floor_and_the_ceiling() {
     use egui::accesskit::Role;
     for mode in ["Raise", "Erode", "Warp", "Push"] {

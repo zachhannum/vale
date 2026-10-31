@@ -83,6 +83,7 @@ fn mode_name(mode: Mode) -> &'static str {
         Mode::OceanRidge => "ocean ridge",
         Mode::Range => "range",
         Mode::Push => "push",
+        Mode::Noise => "noise",
     }
 }
 

@@ -714,6 +714,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Uplift, "Uplift"),
             (Mode::Warp, "Warp"),
             (Mode::Push, "Push"),
+            (Mode::Noise, "Noise"),
             (Mode::OceanRidge, OCEAN_RIDGE),
             (Mode::Range, RANGE),
         ] {
@@ -856,6 +857,28 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add(strength);
     }
     let globe = &mut state.globe;
+    if globe.brush.mode == Mode::Noise {
+        let scale = egui::Slider::new(&mut globe.brush.scale_km, SCALE_KM)
+            .logarithmic(true)
+            .custom_formatter(|km, _| three_significant(km))
+            .suffix(" km")
+            .text("Scale");
+        ui.add(scale);
+        ui.checkbox(&mut globe.brush.noise_ridged, "Ridged");
+        // The relief follows the height above sea level.
+        if globe.is_height() {
+            let mut percent = globe.brush.noise_relief.clamp(0.0, 1.0) * 100.0;
+            let relief = egui::Slider::new(&mut percent, 0.0..=100.0)
+                .step_by(1.0)
+                .suffix(" %")
+                .text("Relief");
+            if ui.add(relief).changed() {
+                globe.brush.noise_relief = percent / 100.0;
+            }
+        }
+        seed_slider(ui, state);
+    }
+    let globe = &mut state.globe;
     if globe.brush.mode == Mode::Range {
         let spacing = egui::Slider::new(&mut globe.brush.range_spacing_km, RANGE_SPACING_KM)
             .logarithmic(true)
@@ -907,7 +930,7 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The seed slider of the warp mode and of the range mode. The seed is a
+/// The seed slider of the warp mode, the noise mode, and the range mode. The seed is a
 /// property of the world, so each brush gets the same pattern.
 fn seed_slider(ui: &mut egui::Ui, state: &mut AppState) {
     let seed = &mut state.doc.project.world.seed;
