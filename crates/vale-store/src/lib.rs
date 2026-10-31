@@ -26,8 +26,8 @@ pub use gpkg::{
 };
 pub use image_tile::{IMAGE_TILE_SIZE, decode_tile, encode_tile, image_levels, level_size};
 pub use scale_bar::{
-    ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TickFrequency, UnitLabelStyle,
-    UnitPosition,
+    DivisionSpacing, ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TickFrequency,
+    UnitLabelStyle, UnitPosition,
 };
 pub use tile::TILE_SIZE;
 pub use undo::UNDO_LIMIT;

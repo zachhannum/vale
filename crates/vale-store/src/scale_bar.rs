@@ -79,6 +79,33 @@ choices! {
 }
 
 choices! {
+    /// The lengths of the divisions of a scale bar right of zero.
+    DivisionSpacing {
+        /// Each division has the division value.
+        #[default]
+        Equal = "equal", "Equal";
+        /// The first division has the division value, and each next
+        /// division ends at twice the end of the one before it.
+        Doubling = "doubling", "Doubling";
+    }
+}
+
+impl DivisionSpacing {
+    /// The place on the bar `at` divisions from zero, in division values.
+    /// A place between two division ends is between their places. Left of
+    /// zero and in the first division, the place is `at`.
+    pub fn place(self, at: f64) -> f64 {
+        match self {
+            DivisionSpacing::Doubling if at > 1.0 => {
+                let k = at.floor();
+                2f64.powf(k - 1.0) * (1.0 + at - k)
+            }
+            _ => at,
+        }
+    }
+}
+
+choices! {
     /// What a scale bar keeps when the scale of its frame changes or its box
     /// changes size.
     ScaleFit {
@@ -193,6 +220,7 @@ pub struct ScaleBarItem {
     /// One more division left of zero, with the subdivisions instead of the
     /// first division right of zero.
     pub before_zero: bool,
+    pub spacing: DivisionSpacing,
     /// The length of a division in the unit. `None`: the bar picks it.
     /// [`ScaleFit::AdjustDivisionValue`] always picks it.
     pub division_value: Option<f64>,
@@ -268,6 +296,7 @@ impl ScaleBarItem {
         put("divisions", self.divisions.into());
         put("subdivisions", self.subdivisions.into());
         put("before_zero", self.before_zero.into());
+        put("spacing", self.spacing.id().into());
         put("division_value", self.division_value.into());
         put("second_division_value", self.second_division_value.into());
         put("fit", self.fit.id().into());
@@ -344,6 +373,7 @@ impl ScaleBarItem {
         count(&map, "divisions", &mut b.divisions)?;
         count(&map, "subdivisions", &mut b.subdivisions)?;
         read_flag(&map, "before_zero", &mut b.before_zero)?;
+        choice(&map, "spacing", &mut b.spacing, DivisionSpacing::from_id)?;
         let positive = |v: &serde_json::Value| v.as_f64().filter(|x| x.is_finite() && *x > 0.0);
         optional(&map, "division_value", &mut b.division_value, positive)?;
         optional(
@@ -440,6 +470,7 @@ impl Default for ScaleBarItem {
             divisions: 4,
             subdivisions: 0,
             before_zero: false,
+            spacing: DivisionSpacing::Equal,
             division_value: None,
             second_division_value: None,
             fit: ScaleFit::AdjustDivisionValue,
@@ -484,6 +515,7 @@ mod tests {
             divisions: 5,
             subdivisions: 2,
             before_zero: true,
+            spacing: DivisionSpacing::Doubling,
             division_value: Some(30.0),
             second_division_value: Some(60.0),
             fit: ScaleFit::AdjustDivisions,
@@ -561,6 +593,7 @@ mod tests {
         assert_eq!(bar.number_style, style);
         assert_eq!(bar.unit_style, style);
         assert_eq!(bar.kind, ScaleBarKind::Alternating);
+        assert_eq!(bar.spacing, DivisionSpacing::Equal);
         // A fill that is a color is a solid fill.
         let old = r#"{"fill1": "102030", "fill2": "ffffff"}"#;
         let bar = ScaleBarItem::from_json(old).unwrap();
@@ -576,6 +609,7 @@ mod tests {
             r#"{"number_style": {"size": 0}}"#,
             r#"{"decimals": 7}"#,
             r#"{"fill1": {"kind": "dots"}}"#,
+            r#"{"spacing": "halving"}"#,
         ] {
             assert_eq!(ScaleBarItem::from_json(bad), None, "{bad}");
         }
@@ -592,6 +626,11 @@ mod tests {
             "Double alternating"
         );
         assert_eq!(TickFrequency::ALL.len(), 7);
+        assert_eq!(DivisionSpacing::Doubling.label(), "Doubling");
+        let places = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, -1.0];
+        let doubling = places.map(|at| DivisionSpacing::Doubling.place(at));
+        assert_eq!(doubling, [0.0, 0.5, 1.0, 1.5, 2.0, 4.0, 8.0, 16.0, -1.0]);
+        assert_eq!(DivisionSpacing::Equal.place(5.0), 5.0);
         assert_eq!(UnitPosition::ALL.len(), 8);
         assert_eq!(ScaleUnit::NauticalMiles.km(), 1.852);
         assert_eq!(ScaleUnit::for_units(Units::Imperial), ScaleUnit::Miles);

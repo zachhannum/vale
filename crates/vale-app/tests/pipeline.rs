@@ -2023,6 +2023,14 @@ fn manual_scale_bar_pictures() {
         ..ScaleBarItem::default()
     };
     bars.push((cross, 3.5));
+    let doubling = ScaleBarItem {
+        spacing: vale_store::DivisionSpacing::Doubling,
+        divisions: 5,
+        subdivisions: 2,
+        before_zero: true,
+        ..ScaleBarItem::default()
+    };
+    bars.push((doubling, 3.5));
     let mut list = vale_render::DisplayList::new(w, h * bars.len() as f64);
     list.items.push(Item::Fill {
         path: kurbo::Rect::new(0.0, 0.0, w, h * bars.len() as f64).to_path(0.1),

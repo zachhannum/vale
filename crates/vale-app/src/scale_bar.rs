@@ -245,17 +245,19 @@ fn fit(
     km_per_point: f64,
 ) -> Option<(f64, u32)> {
     let per_unit = unit.km() / km_per_point;
-    let b = u32::from(bar.before_zero);
-    let auto = || nice_division(room / f64::from(bar.divisions + b) / per_unit);
+    // The length of the bar in division values.
+    let length = |n: u32| bar.spacing.place(f64::from(n)) + f64::from(u8::from(bar.before_zero));
+    let auto = || nice_division(room / length(bar.divisions) / per_unit);
     let given = given.filter(|v| v.is_finite() && *v > 0.0);
     match bar.fit {
         ScaleFit::AdjustDivisionValue => Some((auto()?, bar.divisions)),
         ScaleFit::AdjustWidth => Some((given.or_else(auto)?, bar.divisions)),
         ScaleFit::AdjustDivisions => {
             let value = given.or_else(auto)?;
-            let n = (room / (value * per_unit) + 1e-9).floor() - f64::from(b);
-            let (lo, hi) = ScaleBarItem::DIVISIONS.into_inner();
-            Some((value, n.clamp(f64::from(lo), f64::from(hi)) as u32))
+            let fits = |n: &u32| length(*n) * value * per_unit <= room * (1.0 + 1e-9);
+            let mut all = ScaleBarItem::DIVISIONS.rev();
+            let n = all.find(fits).unwrap_or(*ScaleBarItem::DIVISIONS.start());
+            Some((value, n))
         }
     }
 }
@@ -370,7 +372,7 @@ fn layout(
     for (r, ((u, _, second), &(value, divisions))) in units(bar).into_iter().zip(fitted).enumerate()
     {
         let division = value * u.km() / km_per_point;
-        let x = |at: f64| at * division;
+        let x = |at: f64| bar.spacing.place(at) * division;
         let (start, end) = (x(-b), x(f64::from(divisions)));
         out.bars = (out.bars.0.min(start), out.bars.1.max(end));
         // The direction away from the other unit, and the bar of this unit.
@@ -500,7 +502,9 @@ fn layout(
         let shown: Vec<Tick> = (ticks(bar, divisions, bar.number_frequency).into_iter())
             .filter(|t| bar.zero_label || t.at.abs() > 1e-9)
             .collect();
-        let values: Vec<f64> = shown.iter().map(|t| t.at.abs() * value).collect();
+        let values: Vec<f64> = (shown.iter())
+            .map(|t| bar.spacing.place(t.at).abs() * value)
+            .collect();
         let texts = number_texts(&values, bar.decimals, bar.thousands);
         let space = 0.3 * inks.number.style.size;
         let mut order: Vec<usize> = (0..shown.len()).collect();
@@ -746,7 +750,7 @@ pub fn preview_rgba(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vale_store::{FurnitureText, TextCase};
+    use vale_store::{DivisionSpacing, FurnitureText, TextCase};
 
     fn fonts() -> Fonts {
         crate::pipeline::fonts().unwrap()
@@ -926,6 +930,96 @@ mod tests {
             let next = nice_division(row.value * 1.01 * 5.0 / 2.0).unwrap();
             assert!(4.0 * next / 1.3 > RECT.width() - (row.end - row.start));
         }
+    }
+
+    /// A box wide enough for every number of a doubling bar.
+    const WIDE: Rect = Rect::new(0.0, 0.0, 1200.0, 40.0);
+
+    fn numbers_of(row: &BarRow) -> Vec<String> {
+        row.numbers.iter().map(|n| n.0.clone()).collect()
+    }
+
+    #[test]
+    fn doubling_divisions_end_at_twice_the_end_before() {
+        let mut f = fonts();
+        let bar = ScaleBarItem {
+            spacing: DivisionSpacing::Doubling,
+            divisions: 5,
+            ..ScaleBarItem::default()
+        };
+        let kpp = 1.3;
+        let d = draw(&bar, WIDE, 1.0, kpp, &mut f);
+        let row = &d.rows[0];
+        let v = row.value;
+        assert!(is_nice(v), "{v}");
+        let want: Vec<String> = [0.0, 1.0, 2.0, 4.0, 8.0, 16.0]
+            .iter()
+            .map(|k| format!("{}", k * v))
+            .collect();
+        assert_eq!(numbers_of(row), want);
+        // Each number is at its distance from zero.
+        for (text, x) in &row.numbers {
+            let value: f64 = text.parse().unwrap();
+            assert!(((x - row.zero) * kpp - value).abs() < 1e-6, "{text} {x}");
+        }
+        assert!(((row.end - row.zero) * kpp - 16.0 * v).abs() < 1e-9);
+        assert!(d.bounds.x0 >= WIDE.x0 && d.bounds.x1 <= WIDE.x1);
+        // The next nice value does not fit.
+        let next = nice_division(v * 1.01 * 5.0 / 2.0).unwrap();
+        let bigger = ScaleBarItem {
+            fit: ScaleFit::AdjustWidth,
+            division_value: Some(next),
+            ..bar.clone()
+        };
+        let d = draw(&bigger, WIDE, 1.0, kpp, &mut f);
+        assert!(d.bounds.x1 > WIDE.x1, "{:?}", d.bounds);
+        // With a fixed value, the most divisions that fit.
+        let fixed = ScaleBarItem {
+            fit: ScaleFit::AdjustDivisions,
+            division_value: Some(v / 2.0),
+            ..bar
+        };
+        let d = draw(&fixed, WIDE, 1.0, kpp, &mut f);
+        assert_eq!(d.rows[0].divisions, 6);
+    }
+
+    #[test]
+    fn a_doubling_bar_has_the_division_before_zero_and_the_subdivisions() {
+        let mut f = fonts();
+        let bar = ScaleBarItem {
+            spacing: DivisionSpacing::Doubling,
+            fit: ScaleFit::AdjustWidth,
+            division_value: Some(10.0),
+            divisions: 4,
+            subdivisions: 2,
+            before_zero: true,
+            number_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
+            ..ScaleBarItem::default()
+        };
+        let d = draw(&bar, WIDE, 1.0, 0.2, &mut f);
+        let row = &d.rows[0];
+        assert_eq!(numbers_of(row), ["10", "5", "0", "10", "20", "40", "80"]);
+        assert!(((row.zero - row.start) * 0.2 - 10.0).abs() < 1e-9);
+        assert!(((row.end - row.zero) * 0.2 - 80.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn both_units_of_a_doubling_double_scale_are_true() {
+        let mut f = fonts();
+        let bar = ScaleBarItem {
+            spacing: DivisionSpacing::Doubling,
+            second_unit: Some(ScaleUnit::Miles),
+            ..ScaleBarItem::default()
+        };
+        let kpp = 0.8;
+        let d = draw(&bar, WIDE, 1.0, kpp, &mut f);
+        assert_eq!(d.rows.len(), 2);
+        for row in &d.rows {
+            let ground = (row.end - row.zero) * kpp;
+            let want = 8.0 * row.value * row.unit.km();
+            assert!((ground - want).abs() < 1e-6 * want, "{row:?}");
+        }
+        assert_ne!(d.rows[0].value, d.rows[1].value);
     }
 
     #[test]
