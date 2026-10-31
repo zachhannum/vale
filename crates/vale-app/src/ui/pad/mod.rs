@@ -30,6 +30,7 @@ pub mod edge_labels;
 pub mod fields;
 pub mod filter;
 pub mod fonts;
+pub mod furniture;
 pub mod geometry;
 pub mod icons;
 pub mod labels;

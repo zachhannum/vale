@@ -11,9 +11,11 @@ use egui_kittest::kittest::Queryable;
 use kurbo::Point;
 use vale_app::atlas::{Handle, anchor, frame_transform, shape_bbox};
 use vale_app::document::Document;
+use vale_app::furniture::rect_of;
 use vale_app::projects::Locations;
 use vale_app::session::{Session, new_project_path};
 use vale_app::ui::atlas::measure::measure_lines;
+use vale_app::ui::atlas::{self as atlas, ItemKind, ItemPage};
 use vale_app::ui::atlas::{AtlasSelection, AtlasTool, FrameTab};
 use vale_app::ui::pad::atlas::{
     ADD, ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_COLOR, BORDER_WIDTH, CENTER_ON_FRAME,
@@ -26,6 +28,10 @@ use vale_app::ui::pad::atlas::{
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
     ORIENTATIONS, PLACES, SETS, SHOW_LABELS, SIDES, SIZE as EDGE_SIZE, STYLE as EDGE_STYLE,
+};
+use vale_app::ui::pad::furniture::{
+    ALIGNMENTS, COLOR as ITEM_COLOR, ENTRY_NAME, ITEM_TEXT, MAP_FRAME as ITEM_MAP_FRAME,
+    RESET_ENTRIES, STYLE as ITEM_STYLE, delete_name, entry_names,
 };
 use vale_app::ui::pad::labels::{
     ADD_CLASS, BUFFER, CASE, COLOR, CURVE_LIMIT, DELETE_CLASS, DUPLICATE_DISTANCE, HALO,
@@ -44,8 +50,8 @@ use vale_render::Item;
 use vale_sphere::measure::{path_length, ring_area};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
-    CoordFormat, EdgeOrientation, Feature, FrameRecord, FrameShape, Geometry, GeometryKind,
-    LayerId, MapId, PageUnits, Project, ProjectFile, World,
+    CoordFormat, EdgeOrientation, Feature, FrameRecord, FrameShape, Furniture, FurnitureRecord,
+    Geometry, GeometryKind, LayerId, MapId, PageUnits, Project, ProjectFile, TextAlign, World,
 };
 
 type Pad = Harness<'static, AppState>;
@@ -505,10 +511,6 @@ fn the_add_button_adds_a_frame_that_shows_the_map_of_the_project() {
     let mut h = pad();
     tap(&mut h, ADD);
     assert!(h.state().atlas.add_rect.is_some());
-    // The other items come in other tasks.
-    for name in ["Text", "Legend", "Scale bar", "North arrow"] {
-        assert!(control(&h, name).is_none(), "{name}");
-    }
     check_controls(&h, "add menu");
     tap(&mut h, MAP_FRAME);
     assert_eq!(h.state().atlas.add_rect, None);
@@ -3744,4 +3746,295 @@ fn each_change_of_a_placement_option_is_one_undo_step() {
     assert!(!class(&h, "Rivers").repeat);
     tap(&mut h, "Undo");
     assert!(class(&h, "Rivers").repeat);
+}
+
+fn item(h: &Pad, index: usize) -> FurnitureRecord {
+    open_page(h).furniture[index].clone()
+}
+
+/// The middle of an item of furniture on the screen.
+fn item_middle(h: &Pad, index: usize) -> Pos2 {
+    screen(h, rect_of(&item(h, index)).center())
+}
+
+fn add_item(h: &mut Pad, kind: ItemKind) {
+    tap(h, ADD);
+    tap(h, kind.name());
+}
+
+#[test]
+fn the_add_button_adds_each_item_of_furniture() {
+    let mut h = pad();
+    add_frame(&mut h);
+    let main = frame(&h, 0).id;
+    for (n, kind) in ItemKind::ALL.into_iter().enumerate() {
+        add_item(&mut h, kind);
+        assert_eq!(h.state().atlas.add_rect, None, "{kind:?}");
+        let page = open_page(&h);
+        assert_eq!(page.furniture.len(), n + 1, "{kind:?}");
+        let rec = item(&h, n);
+        assert_eq!(ItemKind::of(&rec.item), kind);
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Item(rec.id));
+        // Each item is inside the margin of the page.
+        let r = rect_of(&rec);
+        assert!(r.x0 >= 10.0 && r.y0 >= 10.0, "{kind:?}: {r:?}");
+        assert!(r.x1 <= page.width_mm - 10.0 + 1e-9, "{kind:?}: {r:?}");
+        assert!(r.y1 <= page.height_mm - 10.0 + 1e-9, "{kind:?}: {r:?}");
+        if kind != ItemKind::Text {
+            assert_eq!(rec.item.frame(), Some(main), "{kind:?}");
+        }
+        assert!(h.state().atlas.has_item_image(rec.id), "{kind:?}");
+        // The panel of the item opens.
+        assert!(h.state().atlas.panel_rect.is_some(), "{kind:?}");
+        scroll_to(&mut h, delete_name(kind));
+        assert!(control(&h, delete_name(kind)).is_some(), "{kind:?}");
+        check_controls(&h, kind.name());
+    }
+    // A delete takes the item away.
+    tap(&mut h, delete_name(ItemKind::NorthArrow));
+    assert_eq!(open_page(&h).furniture.len(), 3);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+}
+
+#[test]
+fn a_tap_opens_the_panel_of_an_item_and_its_controls_work_with_a_finger() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::Text);
+    let id = item(&h, 0).id;
+    // A tap on the frame selects the frame, and a tap on the item, which
+    // is over the frame, selects the item.
+    let frame_id = frame(&h, 0).id;
+    let at = middle(&h, 0);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(frame_id));
+    let at = item_middle(&h, 0);
+    tap_with(&mut h, at, Input::Finger);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Item(id));
+    check_controls(&h, "text panel");
+    tap(&mut h, ALIGNMENTS[1]);
+    let Furniture::Text(text) = &item(&h, 0).item else {
+        panic!("not text");
+    };
+    assert_eq!(text.align, TextAlign::Center);
+    tap(&mut h, ITEM_COLOR);
+    assert!(h.state().atlas.item_color);
+    check_controls(&h, "color picker");
+    tap(&mut h, ITEM_COLOR);
+    tap(&mut h, ITEM_STYLE);
+    assert_eq!(h.state().atlas.item_page, Some(ItemPage::Style));
+    check_controls(&h, "style page");
+    tap(&mut h, "Back to Text");
+    assert_eq!(h.state().atlas.item_page, None);
+    type_text(&mut h, ITEM_TEXT, "Vesperan");
+    let Furniture::Text(text) = &item(&h, 0).item else {
+        panic!("not text");
+    };
+    assert_eq!(text.text, "Vesperan");
+    h.state_mut().save_waiting().unwrap();
+
+    // A drag of a finger moves the item, and a drag of a handle resizes
+    // it. Each drag is one undo step.
+    let ppm = f64::from(h.state().atlas.place.unwrap().pts_per_mm as f32);
+    let before = rect_of(&item(&h, 0));
+    let from = item_middle(&h, 0);
+    drag(&mut h, from, from + vec2(40.0, 30.0), Input::Finger);
+    let moved = rect_of(&item(&h, 0));
+    assert!((moved.x0 - before.x0 - 40.0 / ppm).abs() < 0.1, "{moved:?}");
+    assert!((moved.y0 - before.y0 - 30.0 / ppm).abs() < 0.1, "{moved:?}");
+    assert!((moved.width() - before.width()).abs() < 1e-9);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Item(id));
+    h.state_mut().save_waiting().unwrap();
+    check_controls(&h, "handles");
+    let corner = handle(&h, Handle::Resize(4));
+    drag(&mut h, corner, corner + vec2(20.0, 10.0), Input::Finger);
+    let resized = rect_of(&item(&h, 0));
+    assert_eq!((resized.x0, resized.y0), (moved.x0, moved.y0));
+    assert!((resized.width() - moved.width() - 20.0 / ppm).abs() < 0.1);
+    assert!((resized.height() - moved.height() - 10.0 / ppm).abs() < 0.1);
+    h.state_mut().save_waiting().unwrap();
+    // The frame stays.
+    assert_eq!(shape_bbox(&frame(&h, 0).shape).x0, 10.0);
+
+    tap(&mut h, "Undo");
+    assert_eq!(rect_of(&item(&h, 0)), moved);
+    tap(&mut h, "Undo");
+    assert_eq!(rect_of(&item(&h, 0)), before);
+}
+
+#[test]
+fn a_new_item_links_to_the_largest_frame() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
+    add_item(&mut h, ItemKind::Legend);
+    assert_eq!(item(&h, 0).item.frame(), Some(main));
+    // With the inset larger than the main frame, a new item links to the
+    // inset.
+    let s = h.state_mut();
+    let f = s.doc.project.atlas.frame_mut(main).unwrap();
+    f.shape = FrameShape::Rectangle([10.0, 10.0, 30.0, 30.0]);
+    h.run_steps(2);
+    add_item(&mut h, ItemKind::ScaleBar);
+    assert_eq!(item(&h, 1).item.frame(), Some(inset));
+    // Text has no frame.
+    add_item(&mut h, ItemKind::Text);
+    assert_eq!(item(&h, 2).item.frame(), None);
+}
+
+#[test]
+fn the_link_changes_from_the_panel() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
+    add_item(&mut h, ItemKind::ScaleBar);
+    let id = item(&h, 0).id;
+    assert_eq!(item(&h, 0).item.frame(), Some(main));
+    tap(&mut h, ITEM_MAP_FRAME);
+    assert_eq!(h.state().atlas.item_page, Some(ItemPage::Frame));
+    check_controls(&h, "frame page");
+    let names = atlas::frame_names(h.state());
+    assert_eq!(names, [(main, "Map".into()), (inset, "Map 2".into())]);
+    tap(&mut h, "Map 2");
+    assert_eq!(h.state().atlas.item_page, None);
+    assert_eq!(item(&h, 0).item.frame(), Some(inset));
+
+    // The scale follows the scale of the linked frame.
+    let text = |h: &mut Pad| atlas::item_scale_text(h.state_mut(), Some(inset)).unwrap();
+    let before = text(&mut h);
+    assert!(before.starts_with("1 cm = "), "{before}");
+    let content = h.state().atlas.item_rect(id);
+    assert!(content.is_some());
+    let scale = frame(&h, 1).scale;
+    atlas::set_scale(h.state_mut(), inset, scale * 2.0);
+    h.run_steps(2);
+    let after = text(&mut h);
+    assert_ne!(before, after);
+    // A change of the main frame does not change it.
+    let scale = frame(&h, 0).scale;
+    atlas::set_scale(h.state_mut(), main, scale * 3.0);
+    assert_eq!(text(&mut h), after);
+}
+
+#[test]
+fn deleting_a_frame_relinks_its_items() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (main, inset) = (frame(&h, 0).id, frame(&h, 1).id);
+    add_item(&mut h, ItemKind::Legend);
+    add_item(&mut h, ItemKind::NorthArrow);
+    let arrow = item(&h, 1).id;
+    atlas::set_item_frame(h.state_mut(), arrow, Some(inset));
+    add_item(&mut h, ItemKind::Text);
+
+    h.state_mut().atlas.selection = AtlasSelection::Frame(main);
+    h.run_steps(2);
+    scroll_to(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_FRAME);
+    assert_eq!(open_page(&h).frames.len(), 1);
+    assert_eq!(item(&h, 0).item.frame(), Some(inset));
+    assert_eq!(item(&h, 1).item.frame(), Some(inset));
+    assert_eq!(item(&h, 2).item.frame(), None);
+
+    h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
+    h.run_steps(2);
+    scroll_to(&mut h, DELETE_FRAME);
+    tap(&mut h, DELETE_FRAME);
+    assert_eq!(item(&h, 0).item.frame(), None);
+    assert_eq!(item(&h, 1).item.frame(), None);
+    assert_eq!(open_page(&h).furniture.len(), 3);
+}
+
+#[test]
+fn the_legend_panel_renames_and_hides_its_entries() {
+    let mut h = pad();
+    add_frame(&mut h);
+    add_item(&mut h, ItemKind::Legend);
+    let id = item(&h, 0).id;
+    let legend = |h: &Pad| match &item(h, 0).item {
+        Furniture::Legend(l) => l.clone(),
+        _ => panic!("not a legend"),
+    };
+    let legend_rows = |h: &mut Pad| {
+        let l = legend(h);
+        atlas::legend_rows(h.state_mut(), &l)
+    };
+    let rows = legend_rows(&mut h);
+    assert!(rows.len() >= 2, "{rows:?}");
+    let labels: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
+    let names = entry_names(&labels);
+    let key = (rows[0].layer, rows[0].rule.clone());
+
+    // The eye hides the entry, and a second tap shows it again.
+    scroll_to(&mut h, &eye_name(&names[0], true));
+    check_controls(&h, "legend panel");
+    tap(&mut h, &eye_name(&names[0], true));
+    assert!(legend(&h).entries[&key].hidden);
+    let rows = legend_rows(&mut h);
+    assert!(rows[0].hidden);
+    tap(&mut h, &eye_name(&names[0], false));
+    assert!(!legend(&h).entries.contains_key(&key));
+
+    // A tap on the name opens its page, where a new name replaces it.
+    tap(&mut h, &names[0]);
+    assert_eq!(
+        h.state().atlas.item_page,
+        Some(ItemPage::Entry(key.0, key.1.clone()))
+    );
+    check_controls(&h, "entry page");
+    type_text(&mut h, ENTRY_NAME, "Roads");
+    assert_eq!(legend(&h).entries[&key].name.as_deref(), Some("Roads"));
+    let rows = legend_rows(&mut h);
+    assert_eq!(rows[0].label, "Roads");
+    // An empty name clears the name.
+    tap(&mut h, ENTRY_NAME);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert!(!legend(&h).entries.contains_key(&key));
+    type_text(&mut h, ENTRY_NAME, "Roads");
+    tap(&mut h, "Back to Legend");
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Item(id));
+
+    // Reset entries takes away each change.
+    scroll_to(&mut h, RESET_ENTRIES);
+    tap(&mut h, RESET_ENTRIES);
+    assert!(legend(&h).entries.is_empty());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn manual_the_pad_atlas_renders_furniture() {
+    let _gpu = one_gpu_test();
+    let prepare = |s: &mut AppState| {
+        atlas::add_frame(s);
+        atlas::add_frame(s);
+        atlas::add_item(s, ItemKind::Text);
+        atlas::add_item(s, ItemKind::ScaleBar);
+        atlas::add_item(s, ItemKind::NorthArrow);
+        atlas::add_item(s, ItemKind::Legend);
+        Ok(())
+    };
+    std::fs::create_dir_all("../../target/app").unwrap();
+    let (img, _) = vale_app::headless::ui_png_with(state(), (1194.0, 834.0), 1.0, prepare)
+        .unwrap_or_else(|e| panic!("{e}"));
+    img.save("../../target/app/pad-atlas-furniture.png")
+        .unwrap();
+    // The panel of a text item, and the sheet of a north arrow on a phone.
+    for (kind, size, name) in [
+        (ItemKind::Text, (834.0, 1194.0), "text"),
+        (ItemKind::NorthArrow, (393.0, 852.0), "phone"),
+    ] {
+        let prepare = |s: &mut AppState| {
+            atlas::add_frame(s);
+            atlas::add_item(s, kind);
+            Ok(())
+        };
+        let (img, _) = vale_app::headless::ui_png_with(state(), size, 1.0, prepare)
+            .unwrap_or_else(|e| panic!("{e}"));
+        img.save(format!("../../target/app/pad-atlas-{name}.png"))
+            .unwrap();
+    }
 }

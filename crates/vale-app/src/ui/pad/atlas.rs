@@ -24,7 +24,6 @@ pub const ADD: &str = "Add";
 /// The row of the Add menu that adds a map frame.
 pub const MAP_FRAME: &str = "Map frame";
 /// The rows of the Add menu that other tasks add.
-const LATER_ITEMS: [&str; 4] = ["Text", "Legend", "Scale bar", "North arrow"];
 /// The tabs of the panel of a frame.
 pub const FRAME_TABS: [&str; 4] = ["Frame", "Projection", "Layers", "Labels"];
 pub const MAP_NAME: &str = "Map name";
@@ -215,6 +214,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     if state.atlas.shown != shown {
         widgets::close_keypad(&ctx);
         state.atlas.shown = shown;
+        state.atlas.item_page = None;
+        state.atlas.item_color = false;
         state.pad.sheet_offset = 0.0;
     }
 
@@ -230,6 +231,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     graticule_color_frame(&ctx, state);
     border_color_frame(&ctx, state);
+    super::furniture::color_frame(&ctx, state);
     super::labels::color_frame(&ctx, state);
     super::rules::picker_frame(&ctx, state);
     raster_cards(&ctx, state, &mut controls, &rects);
@@ -516,7 +518,7 @@ fn menu_card(ctx: &egui::Context, id: &str, rect: Rect, contents: impl FnOnce(&m
 }
 
 fn add_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let rows = 1 + LATER_ITEMS.len();
+    let rows = 1 + atlas::ItemKind::ALL.len();
     let size = vec2(ADD_WIDTH, 10.0 + rows as f32 * PANEL_ROW + 10.0);
     let left = (rects.actions.right() - size.x).max(rects.screen.left() + geometry::PANEL_GAP);
     let rect = Rect::from_min_size(pos2(left, rects.actions.bottom() + PAD), size);
@@ -529,8 +531,11 @@ fn add_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
             atlas::add_frame(state);
             state.atlas.add = false;
         }
-        for name in LATER_ITEMS {
-            widgets::text_row(ui, controls, name, 0.0, false, false);
+        for kind in atlas::ItemKind::ALL {
+            if widgets::text_row(ui, controls, kind.name(), 0.0, false, true).clicked() {
+                atlas::add_item(state, kind);
+                state.atlas.add = false;
+            }
         }
     });
 }
@@ -593,6 +598,12 @@ fn selection_panel(
     let class_open = super::labels::open_class(state).is_some();
     let rect = match state.atlas.selection {
         AtlasSelection::None => return,
+        AtlasSelection::Item(id) => {
+            let Some(rect) = super::furniture::panel(ctx, state, controls, rects, id) else {
+                return;
+            };
+            rect
+        }
         AtlasSelection::Frame(id) if class_open => {
             let Some(rect) = super::labels::class_panel(ctx, state, controls, rects, id) else {
                 return;

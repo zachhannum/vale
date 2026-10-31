@@ -52,7 +52,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
                         page_panel(ui, state);
                         ui.separator();
                     }
-                    AtlasSelection::None => {}
+                    AtlasSelection::Item(_) | AtlasSelection::None => {}
                 }
                 inspector::contents(ui, state);
             });
