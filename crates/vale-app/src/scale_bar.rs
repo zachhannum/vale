@@ -54,12 +54,14 @@ pub struct Drawing {
     pub bounds: Rect,
 }
 
-/// The rank of a place on the bar. A number of a lower rank gives way to a
-/// number of a higher rank.
+/// The rank of a place on the bar, from the highest. A number of a lower
+/// rank gives way to a number of a higher rank.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
-    End,
+    RightEnd,
     Zero,
+    /// The left end of a bar with a division before zero.
+    LeftEnd,
     Division,
     Sub,
 }
@@ -76,10 +78,12 @@ fn ticks(bar: &ScaleBarItem, divisions: u32, freq: TickFrequency) -> Vec<Tick> {
     let (b, n) = (i32::from(bar.before_zero), divisions as i32);
     let boundary = |k: i32| Tick {
         at: f64::from(k),
-        rank: if k == -b || k == n {
-            Rank::End
+        rank: if k == n {
+            Rank::RightEnd
         } else if k == 0 {
             Rank::Zero
+        } else if k == -b {
+            Rank::LeftEnd
         } else {
             Rank::Division
         },
@@ -1001,6 +1005,40 @@ mod tests {
         assert_eq!(numbers_of(row), ["10", "5", "0", "10", "20", "40", "80"]);
         assert!(((row.zero - row.start) * 0.2 - 10.0).abs() < 1e-9);
         assert!(((row.end - row.zero) * 0.2 - 80.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_zero_and_the_ends_keep_their_numbers_in_a_narrow_box() {
+        let mut f = fonts();
+        let bar = ScaleBarItem {
+            spacing: DivisionSpacing::Doubling,
+            divisions: 5,
+            subdivisions: 2,
+            before_zero: true,
+            number_frequency: TickFrequency::DivisionsAndFirstSubdivisions,
+            ..ScaleBarItem::default()
+        };
+        let narrow = Rect::new(0.0, 0.0, 160.0, 40.0);
+        let d = draw(&bar, narrow, 1.0, 1.0, &mut f);
+        let row = &d.rows[0];
+        let v = row.value;
+        let shown = numbers_of(row);
+        assert!(shown.contains(&"0".to_string()), "{shown:?}");
+        // The left end is so near zero that it gives way to zero.
+        assert_eq!(shown.first().map(String::as_str), Some("0"), "{shown:?}");
+        assert_eq!(shown.last(), Some(&format!("{}", 16.0 * v)), "{shown:?}");
+        // Some inner numbers give way, and no two numbers overlap.
+        assert!(shown.len() < 9, "{shown:?}");
+        let ink = TextInk::new(&bar.number_style, 1.0, &mut f);
+        let boxes: Vec<(f64, f64)> = (row.numbers.iter())
+            .map(|(text, x)| {
+                let w = ink.advance(text, &mut f);
+                (x - w / 2.0, x + w / 2.0)
+            })
+            .collect();
+        for pair in boxes.windows(2) {
+            assert!(pair[0].1 <= pair[1].0, "{shown:?} {boxes:?}");
+        }
     }
 
     #[test]
