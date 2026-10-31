@@ -596,11 +596,11 @@ A map shows the layers of the world in one projection. It has a name, a projecti
 
 The app has two workspaces, World and Atlas. In the World workspace you draw and edit the features, and its attribute table edits their attributes. The Atlas workspace holds the maps, the pages, and the map frames. You edit a map in a frame, at the scale of the page, so that the labels and the styles show as they export.
 
-A page is one page of the atlas. It has a page size, its map frames, and its furniture (the items around the maps). The page size has presets and a free value, with units. A page has a paper color and a page border. The page border is a rectangle at a set distance from the edge of the page, and a map frame can cross it. Version 1 has a title, a legend, a scale bar, and a north arrow.
+A page is one page of the atlas. It has a page size, its map frames, and its furniture (the items around the maps). The page size has presets and a free value, with units. A page has a paper color and a page border. The page border is a rectangle at a set distance from the edge of the page, and a map frame can cross it. Version 1 has text boxes, legends, scale bars, and north arrows. A page can have any number of each.
 
 A map frame is an area on a page that shows one map. Its shape is a rectangle or a polygon. A polygon can have notches and holes, for example a cut-out for an inset. The frame holds its shape on the page, and the center, the scale, and the rotation of the map in the shape. The map draws only inside the shape, and the border follows the shape. The extent of the frame comes from the shape and the view. A frame also holds its fill, its border, and its graticule. The fill is a color behind the map, and with the fill off, the paper shows through. One map can be in no frame, or in many frames on one or many pages. Thus an inset or an island chain is many frames on one page. A locator map is a map in a small frame, for example in the orthographic projection with a fill for the region of the main map.
 
-Each scale bar, north arrow, and legend links to one frame of its page. A new item links to the largest frame.
+Each scale bar, north arrow, and legend links to one frame of its page. A new item links to the largest frame. When a frame is deleted, its items link to the largest frame that stays.
 
 The screen shows what the export holds. A frame on the screen has the line widths, the sizes of the symbols, and the sizes of the text of the printed page at the zoom of the view, so a 1 pt line is 1 pt on paper and grows and shrinks with the page. The Atlas workspace shows one page, and each panel opens from the selection. With no selection, no panel shows. A tap on a frame opens the panel of the frame. A tap on the page outside the frames opens the panel of the page, with the page size, the paper color, the page border, and the template. A tap on an item of furniture opens the panel of the item. The page controls in the top row go to the previous page and the next page. A tap on the name of the page opens the overview of all pages, where you open, reorder, add, and delete pages. The Add button in the top row adds a map frame, text, a legend, a scale bar, or a north arrow to the page.
 
@@ -779,7 +779,7 @@ The prototype leaves out the following.
 - The rows "From file…" and "From tool" in the menu of the new layers.
 - Pattern fills, texture fills, hatch fills, and edge effects, and style properties from expressions in the style editor other than the size and the rotation of a point symbol.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
-- The overview of the pages, page templates, map furniture on a page, SVG export, and tiled raster export.
+- The overview of the pages, page templates, SVG export, and tiled raster export.
 - Projection suggestions and Tissot circles.
 - All editing tools other than the freehand line tool, the freehand polygon tool, and point placement: the attribute table and vertex editing.
 - The GPU Vello backend. The prototype draws with `vello_cpu`.
