@@ -483,7 +483,7 @@ pub struct LegendEntry {
 }
 
 /// A scale bar of the scale of a frame.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScaleBarItem {
     /// `None`: the scale bar has no frame.
     pub frame: Option<FrameId>,
@@ -762,15 +762,6 @@ impl ScaleBarItem {
         let map = json_object(text)?;
         let style = FurnitureText::default().read(&map)?;
         Some(ScaleBarItem { frame: None, style })
-    }
-}
-
-impl Default for ScaleBarItem {
-    fn default() -> Self {
-        ScaleBarItem {
-            frame: None,
-            style: FurnitureText::default(),
-        }
     }
 }
 

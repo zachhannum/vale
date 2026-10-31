@@ -3590,6 +3590,7 @@ mod tests {
         let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
         let before = project.clone();
         atlas_edit(&mut project);
+        furniture_edit(&mut project);
         file.save(&project).unwrap();
         drop(file);
 
