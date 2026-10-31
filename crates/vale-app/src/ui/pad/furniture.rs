@@ -4,8 +4,9 @@
 use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_labeler::Face;
 use vale_store::{
-    Furniture, FurnitureId, FurnitureRecord, FurnitureText, LayerId, ScaleBarItem, ScaleBarKind,
-    ScaleFit, ScalePosition, ScaleUnit, TextAlign, TickFrequency, UnitLabelStyle, UnitPosition,
+    FillKind, FillPattern, Furniture, FurnitureId, FurnitureRecord, FurnitureText, LayerId,
+    ScaleBarItem, ScaleBarKind, ScaleFit, ScalePosition, ScaleUnit, TextAlign, TickFrequency,
+    UnitLabelStyle, UnitPosition,
 };
 
 use super::atlas::{keypad_below, panel_width};
@@ -67,6 +68,10 @@ pub const FILL_2: &str = "Fill 2";
 pub const OUTLINE: &str = "Outline";
 pub const LINE_COLOR: &str = "Line color";
 pub const LINE_WIDTH: &str = "Line width";
+pub const BACKGROUND: &str = "Background";
+pub const BACKGROUND_COLOR: &str = "Background color";
+pub const ANGLE: &str = "Angle";
+pub const SPACING: &str = "Spacing";
 pub const POSITION: &str = "Position";
 /// The choices of the position of the marks and the numbers, in the order
 /// of `ScalePosition::ALL`.
@@ -114,6 +119,7 @@ fn page_key(page: &ItemPage) -> &'static str {
             BarPage::Numbers => "pad-atlas-bar-numbers",
         },
         ItemPage::Pick(_) => "pad-atlas-bar-pick",
+        ItemPage::Fill(_) => "pad-atlas-bar-fill",
     }
 }
 
@@ -129,6 +135,8 @@ fn page_title(page: Option<&ItemPage>, kind: ItemKind) -> &'static str {
         Some(ItemPage::Entry(..)) => ENTRY,
         Some(ItemPage::Bar(p)) => p.name(),
         Some(ItemPage::Pick(p)) => p.name(),
+        Some(ItemPage::Fill(false)) => FILL_1,
+        Some(ItemPage::Fill(true)) => FILL_2,
     }
 }
 
@@ -155,7 +163,11 @@ pub fn panel(
         None => (key_of(kind), kind.name(), None),
         Some(p) => {
             let back = page_title(p.parent().as_ref(), kind);
-            (page_key(p), page_title(Some(p), kind), Some(back))
+            let title = match (&rec.item, p) {
+                (Furniture::ScaleBar(bar), ItemPage::Fill(_)) if fills(bar.kind).len() == 1 => FILL,
+                _ => page_title(Some(p), kind),
+            };
+            (page_key(p), title, Some(back))
         }
     };
     let card = Card {
@@ -198,6 +210,11 @@ pub fn panel(
             Some(ItemPage::Pick(p)) => {
                 if let Furniture::ScaleBar(bar) = &rec.item {
                     pick_page(ui, state, controls, rec.id, bar, p);
+                }
+            }
+            Some(ItemPage::Fill(second)) => {
+                if let Furniture::ScaleBar(bar) = &rec.item {
+                    fill_page(ui, state, controls, rec.id, bar, second);
                 }
             }
         }
@@ -935,28 +952,11 @@ fn bar_rows(
             atlas::edit_bar(state, id, false, |b| b.bar_height = v);
         }
     }
-    let fills: &[(&str, ClassColor)] = match kind {
-        ScaleBarKind::Alternating | ScaleBarKind::DoubleAlternating => {
-            &[(FILL_1, ClassColor::Fill1), (FILL_2, ClassColor::Fill2)]
-        }
-        ScaleBarKind::SingleDivision => &[(FILL, ClassColor::Fill1)],
-        ScaleBarKind::Hollow => &[(FILL, ClassColor::Fill2)],
-        ScaleBarKind::SteppedLine | ScaleBarKind::Line => &[],
-    };
-    for &(name, which) in fills {
-        let color = if which == ClassColor::Fill1 {
-            bar.fill1.color
-        } else {
-            bar.fill2.color
-        };
-        if let Some(c) = rgb_rows(ui, state, controls, name, which, color) {
-            atlas::edit_bar(state, id, false, |b| {
-                if which == ClassColor::Fill1 {
-                    b.fill1.color = c;
-                } else {
-                    b.fill2.color = c;
-                }
-            });
+    for &(name, second) in fills(kind) {
+        let fill = if second { &bar.fill2 } else { &bar.fill1 };
+        let value = fit(ui, name, fill.kind.label());
+        if widgets::open_row(ui, controls, name, &value).clicked() {
+            go(ui, state, Some(ItemPage::Fill(second)));
         }
     }
     let line = matches!(kind, ScaleBarKind::SteppedLine | ScaleBarKind::Line);
@@ -973,6 +973,99 @@ fn bar_rows(
     if let Some(v) = value_slider(ui, controls, names, bar.line_width, range, &text) {
         let v = (v * 10.0).round() / 10.0;
         atlas::edit_bar(state, id, false, |b| b.line_width = v);
+    }
+}
+
+/// The fills that a kind of scale bar draws: the name of the row, and
+/// whether it is the second fill.
+fn fills(kind: ScaleBarKind) -> &'static [(&'static str, bool)] {
+    match kind {
+        ScaleBarKind::Alternating | ScaleBarKind::DoubleAlternating => {
+            &[(FILL_1, false), (FILL_2, true)]
+        }
+        ScaleBarKind::SingleDivision => &[(FILL, false)],
+        ScaleBarKind::Hollow => &[(FILL, true)],
+        ScaleBarKind::SteppedLine | ScaleBarKind::Line => &[],
+    }
+}
+
+/// Sets the kind of a fill. A solid fill that becomes a hatch keeps its
+/// color as the background, and its lines take the color of the outline.
+pub fn set_kind(f: &mut FillPattern, kind: FillKind, outline: vale_store::Rgb) {
+    if f.kind == FillKind::Solid && kind.hatched() {
+        f.background = Some(f.color);
+        f.color = outline;
+    }
+    f.kind = kind;
+}
+
+/// The page of a fill of a scale bar: the kind, the color, and for a hatch
+/// the background, the angle, the spacing, and the line width.
+fn fill_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: FurnitureId,
+    bar: &ScaleBarItem,
+    second: bool,
+) {
+    let fill = if second { &bar.fill2 } else { &bar.fill1 };
+    for kind in FillKind::ALL {
+        let name = kind.label();
+        if widgets::option_row(ui, controls, name, name, &[], fill.kind == kind).clicked() {
+            let outline = bar.outline;
+            atlas::edit_fill(state, id, second, true, |f| set_kind(f, kind, outline));
+        }
+    }
+    if fill.kind == FillKind::None {
+        return;
+    }
+    ui.add_space(6.0);
+    let which = if second {
+        ClassColor::Fill2
+    } else {
+        ClassColor::Fill1
+    };
+    let name = if fill.kind.hatched() {
+        LINE_COLOR
+    } else {
+        COLOR
+    };
+    if let Some(c) = rgb_rows(ui, state, controls, name, which, fill.color) {
+        atlas::edit_fill(state, id, second, false, |f| f.color = c);
+    }
+    if !fill.kind.hatched() {
+        return;
+    }
+    let mut on = fill.background.is_some();
+    if widgets::switch_row(ui, controls, BACKGROUND, BACKGROUND, &mut on) {
+        let color = on.then_some([0xff, 0xff, 0xff]);
+        atlas::edit_fill(state, id, second, true, |f| f.background = color);
+    }
+    if let Some(back) = fill.background {
+        let which = ClassColor::Background(second);
+        if let Some(c) = rgb_rows(ui, state, controls, BACKGROUND_COLOR, which, back) {
+            atlas::edit_fill(state, id, second, false, |f| f.background = Some(c));
+        }
+    }
+    let range = |r: std::ops::RangeInclusive<f64>| (*r.start(), *r.end());
+    let text = format!("{:.0}°", fill.angle);
+    let names = (ANGLE, ANGLE);
+    let angles = range(FillPattern::ANGLES);
+    if let Some(v) = value_slider(ui, controls, names, fill.angle, angles, &text) {
+        let v = (v / 5.0).round() * 5.0;
+        atlas::edit_fill(state, id, second, false, |f| f.angle = v);
+    }
+    if let Some(v) = mm_slider(ui, controls, SPACING, fill.spacing, FillPattern::SPACINGS) {
+        let v = v.max(*FillPattern::SPACINGS.start());
+        atlas::edit_fill(state, id, second, false, |f| f.spacing = v);
+    }
+    let text = super::labels::points(fill.line_width);
+    let names = (LINE_WIDTH, LINE_WIDTH);
+    let widths = range(FillPattern::LINE_WIDTHS);
+    if let Some(v) = value_slider(ui, controls, names, fill.line_width, widths, &text) {
+        let v = ((v * 20.0).round() / 20.0).max(widths.0);
+        atlas::edit_fill(state, id, second, false, |f| f.line_width = v);
     }
 }
 

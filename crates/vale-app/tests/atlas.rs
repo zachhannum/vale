@@ -4136,13 +4136,16 @@ fn every_page_of_the_scale_bar_panel_works_with_a_finger() {
         check_page(&mut h, &what, &name("bar-bar"));
         let before = bar(&h, 0).fill1;
         tap_row(&mut h, item::FILL_1);
-        let shade = format!("{} shade", item::FILL_1);
+        assert_eq!(h.state().atlas.item_page, Some(ItemPage::Fill(false)));
+        tap_row(&mut h, item::COLOR);
+        let shade = format!("{} shade", item::COLOR);
         scroll_to(&mut h, &shade);
         check_controls(&h, &format!("{what}: fill picker"));
         let square = control(&h, &shade).unwrap();
         tap_with(&mut h, square.right_top() + vec2(-4.0, 4.0), Input::Finger);
-        assert_ne!(bar(&h, 0).fill1, before);
+        assert_ne!(bar(&h, 0).fill1.color, before.color);
         assert_eq!(bar(&h, 0).fill2, vale_store::ScaleBarItem::default().fill2);
+        tap(&mut h, "Back to Bar");
         back(&mut h);
 
         // The Marks page.
@@ -4182,6 +4185,79 @@ fn every_page_of_the_scale_bar_panel_works_with_a_finger() {
         back(&mut h);
         tap_row(&mut h, item::delete_name(ItemKind::ScaleBar));
         assert!(open_page(&h).furniture.is_empty());
+    }
+}
+
+#[test]
+fn the_fill_page_sets_a_hatch_with_a_finger() {
+    use vale_store::{FillKind, FillPattern};
+    for (size, prefix) in [(BOARDS[0], "pad"), ((393.0, 852.0), "phone")] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.gpkg");
+        let mut s = state();
+        s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+        let mut h = pad_with(s, size);
+        add_frame(&mut h);
+        add_item(&mut h, ItemKind::ScaleBar);
+        h.state_mut().save_waiting().unwrap();
+        tap_row(&mut h, BarPage::Bar.name());
+        tap_row(&mut h, item::FILL_2);
+        assert_eq!(h.state().atlas.item_page, Some(ItemPage::Fill(true)));
+        check_page(&mut h, &what, "");
+        // A solid fill has no hatch rows.
+        for name in [item::BACKGROUND, item::ANGLE, item::SPACING] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+        // The solid color becomes the background, and the lines take the
+        // color of the outline.
+        tap_row(&mut h, FillKind::CrossHatch.label());
+        let b = bar(&h, 0);
+        assert_eq!(b.fill2.kind, FillKind::CrossHatch);
+        assert_eq!(b.fill2.background, Some([0xff, 0xff, 0xff]));
+        assert_eq!(b.fill2.color, b.outline);
+        tap_row(&mut h, item::BACKGROUND);
+        assert_eq!(bar(&h, 0).fill2.background, None);
+        assert_eq!(bar(&h, 0).fill1, vale_store::ScaleBarItem::default().fill1);
+        assert!(control(&h, item::LINE_COLOR).is_some(), "{what}");
+        scroll_to(&mut h, item::LINE_WIDTH);
+        check_page(&mut h, &what, &format!("{prefix}-atlas-bar-fill"));
+        slider_end(&mut h, item::ANGLE, true);
+        slider_end(&mut h, item::SPACING, true);
+        slider_end(&mut h, item::LINE_WIDTH, false);
+        let fill = bar(&h, 0).fill2;
+        assert_eq!(fill.angle, *FillPattern::ANGLES.end());
+        assert_eq!(fill.spacing, *FillPattern::SPACINGS.end());
+        assert_eq!(fill.line_width, *FillPattern::LINE_WIDTHS.start());
+        h.state_mut().save_waiting().unwrap();
+
+        // Each tap is one undo step.
+        tap_row(&mut h, FillKind::None.label());
+        assert_eq!(bar(&h, 0).fill2.kind, FillKind::None);
+        assert!(control(&h, item::LINE_COLOR).is_none(), "{what}");
+        tap(&mut h, "Undo");
+        assert_eq!(bar(&h, 0).fill2.kind, FillKind::CrossHatch);
+        assert_eq!(bar(&h, 0).fill2.angle, *FillPattern::ANGLES.end());
+        tap(&mut h, "Undo");
+        assert_eq!(bar(&h, 0).fill2.spacing, FillPattern::default().spacing);
+        tap(&mut h, "Undo");
+        assert_eq!(bar(&h, 0).fill2.background, Some([0xff, 0xff, 0xff]));
+        tap(&mut h, "Undo");
+        assert_eq!(bar(&h, 0).fill2.kind, FillKind::Solid);
+        if prefix == "pad" {
+            // A large hatched bar, for a person to look at.
+            let id = item(&h, 0).id;
+            let atlas = &mut h.state_mut().doc.project.atlas;
+            let rec = atlas.furniture_mut(id).unwrap();
+            rec.rect = [20.0, 150.0, 200.0, 190.0];
+            if let Furniture::ScaleBar(b) = &mut rec.item {
+                b.bar_height = 8.0;
+                b.fill1.kind = FillKind::Hatch;
+                item::set_kind(&mut b.fill2, FillKind::CrossHatch, b.outline);
+            }
+            h.run_steps(3);
+            screenshot::save(&mut h, "pad-atlas-hatched-bar");
+        }
     }
 }
 

@@ -252,6 +252,8 @@ pub enum ItemPage {
     Entry(LayerId, String),
     Bar(BarPage),
     Pick(BarPick),
+    /// The first fill of a scale bar (`false`) or the second fill (`true`).
+    Fill(bool),
 }
 
 impl ItemPage {
@@ -262,6 +264,7 @@ impl ItemPage {
             ItemPage::Face(part) | ItemPage::Case(part) => part.page(),
             ItemPage::Entry(..) => Some(ItemPage::Text(TextPart::Entries)),
             ItemPage::Pick(pick) => Some(ItemPage::Bar(pick.parent())),
+            ItemPage::Fill(_) => Some(ItemPage::Bar(BarPage::Bar)),
         }
     }
 }
@@ -336,6 +339,9 @@ pub enum ClassColor {
     Outline,
     /// The arrow of a north arrow.
     Arrow,
+    /// The background of the hatch of the first or the second fill of a
+    /// scale bar.
+    Background(bool),
 }
 
 /// A row that a finger drags by its handle: a label class in the Labels
@@ -1034,6 +1040,20 @@ pub fn edit_text(
     } else {
         edit_item(state, id, edit);
     }
+}
+
+/// Changes the first fill or the second fill of a scale bar. With `step`,
+/// the change is one undo step.
+pub fn edit_fill(
+    state: &mut AppState,
+    id: FurnitureId,
+    second: bool,
+    step: bool,
+    edit: impl FnOnce(&mut vale_store::FillPattern),
+) {
+    edit_bar(state, id, step, |b| {
+        edit(if second { &mut b.fill2 } else { &mut b.fill1 });
+    });
 }
 
 /// Changes a scale bar. With `step`, the change is one undo step.

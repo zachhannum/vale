@@ -1298,6 +1298,74 @@ fn text_grid(
         });
 }
 
+/// The rows of a fill of a scale bar in a grid: the kind, the color, and
+/// for a hatch the background, the angle, the spacing, and the line width.
+fn fill_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    id: vale_store::FurnitureId,
+    label: &str,
+    second: bool,
+    fill: &vale_store::FillPattern,
+    outline: vale_store::Rgb,
+) {
+    use super::pad::furniture as item;
+    use vale_store::{FillKind, FillPattern};
+    let edit = |state: &mut AppState, step: bool, f: &dyn Fn(&mut FillPattern)| {
+        atlas::edit_fill(state, id, second, step, f);
+    };
+    let kinds = &FillKind::ALL;
+    if let Some(k) = combo(
+        ui,
+        ("atlas-bar-fill", second),
+        label,
+        kinds,
+        FillKind::label,
+        fill.kind,
+    ) {
+        edit(state, true, &|f| item::set_kind(f, k, outline));
+    }
+    if fill.kind == FillKind::None {
+        return;
+    }
+    let name = if fill.kind.hatched() {
+        item::LINE_COLOR
+    } else {
+        item::COLOR
+    };
+    if let Some(c) = color(ui, name, fill.color) {
+        edit(state, false, &|f| f.color = c);
+    }
+    if !fill.kind.hatched() {
+        return;
+    }
+    if let Some(on) = check(ui, item::BACKGROUND, fill.background.is_some()) {
+        let back = on.then_some([0xff, 0xff, 0xff]);
+        edit(state, true, &|f| f.background = back);
+    }
+    if let Some(back) = fill.background
+        && let Some(c) = color(ui, item::BACKGROUND_COLOR, back)
+    {
+        edit(state, false, &|f| f.background = Some(c));
+    }
+    if let Some(v) = number(ui, item::ANGLE, fill.angle, FillPattern::ANGLES, "°") {
+        edit(state, false, &|f| f.angle = v);
+    }
+    if let Some(v) = number(
+        ui,
+        item::SPACING,
+        fill.spacing,
+        FillPattern::SPACINGS,
+        " mm",
+    ) {
+        edit(state, false, &|f| f.spacing = v);
+    }
+    let widths = FillPattern::LINE_WIDTHS;
+    if let Some(v) = number(ui, item::LINE_WIDTH, fill.line_width, widths, " pt") {
+        edit(state, false, &|f| f.line_width = v);
+    }
+}
+
 /// The sections of a scale bar: the units, the divisions, the bar, the
 /// marks, and the numbers.
 fn bar_sections(
@@ -1526,20 +1594,8 @@ fn bar_sections(
                     ScaleBarKind::SteppedLine | ScaleBarKind::Line => &[],
                 };
                 for &(label, first) in fills {
-                    let c = if first {
-                        bar.fill1.color
-                    } else {
-                        bar.fill2.color
-                    };
-                    if let Some(c) = color(ui, label, c) {
-                        edit(state, false, &|b| {
-                            if first {
-                                b.fill1.color = c;
-                            } else {
-                                b.fill2.color = c;
-                            }
-                        });
-                    }
+                    let fill = if first { &bar.fill1 } else { &bar.fill2 };
+                    fill_rows(ui, state, id, label, !first, fill, bar.outline);
                 }
                 let line = matches!(kind, ScaleBarKind::SteppedLine | ScaleBarKind::Line);
                 let label = if line {
