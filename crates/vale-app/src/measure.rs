@@ -17,7 +17,7 @@ pub const CLOSE_REACH: f32 = 22.0;
 pub const DENSIFY_DEG: f64 = 1.0;
 
 /// The largest move of a tap, in points. A larger move is a drag.
-const TAP_SLOP: f32 = 10.0;
+pub const TAP_SLOP: f32 = 10.0;
 
 /// The ID of the mouse in a `TapPress`.
 pub const MOUSE: u64 = u64::MAX - 1;

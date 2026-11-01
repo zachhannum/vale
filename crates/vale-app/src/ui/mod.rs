@@ -47,6 +47,7 @@ pub mod pad;
 pub mod panels;
 pub mod point_form;
 pub mod raster_form;
+pub mod select;
 pub mod style_editor;
 pub mod world_form;
 
@@ -472,6 +473,13 @@ pub struct AppState {
     pub world_form: Option<world_form::WorldForm>,
     /// The open form of a point that the point tool placed.
     pub point_form: Option<point_form::PointForm>,
+    /// The features that the Select tool selected, in the order of the
+    /// selection.
+    pub feature_selection: Vec<crate::globe::select::FeatureRef>,
+    /// The drag of the Select tool.
+    pub select_drag: Option<select::SelectDrag>,
+    /// The fields of the one selected feature.
+    pub selection_form: Option<select::SelectionForm>,
     /// The path of the Measure tool, in both workspaces.
     pub measure: Measure,
     /// The workspace and the open page of the last frame, which clear the
@@ -573,6 +581,9 @@ impl AppState {
             share: None,
             world_form: None,
             point_form: None,
+            feature_selection: Vec::new(),
+            select_drag: None,
+            selection_form: None,
             measure: Measure::default(),
             measure_of: (Workspace::default(), vale_store::PageId(0)),
             raster_form: None,
@@ -1830,6 +1841,7 @@ impl AppState {
             return;
         }
         self.commit_point_form();
+        self.commit_selection_form();
         let able = if redo {
             self.can_redo()
         } else {
@@ -2152,6 +2164,8 @@ impl AppState {
         self.saved_edits = self.edits();
         self.history += 1;
         self.selection = None;
+        self.feature_selection.clear();
+        self.selection_form = None;
         self.select(None);
         self.raster_form = None;
         self.import_note = None;
@@ -3316,6 +3330,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::desktop(ui.ctx(), state);
     raster_form::desktop(ui.ctx(), state);
     point_form::desktop(ui.ctx(), state);
+    if state.workspace == Workspace::Globe {
+        select::desktop(ui.ctx(), state);
+    }
     font_dialog::show(ui.ctx(), state);
     state.frames += 1;
 }

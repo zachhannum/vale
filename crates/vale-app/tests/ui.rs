@@ -1645,3 +1645,29 @@ fn the_toolbar_and_the_keys_work_the_measure_tool_in_the_atlas() {
 fn open_page_frames(h: &Harness<'_, AppState>) -> Vec<vale_store::FrameRecord> {
     vale_app::ui::atlas::open_page(h.state()).frames.clone()
 }
+
+#[test]
+fn the_desktop_select_tool_deletes_the_selection_with_the_delete_key() {
+    use vale_app::globe::select::FeatureRef;
+    let mut h = globe_harness();
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    assert_eq!(h.state().globe.tool, vale_app::globe::Tool::Select);
+    let layers = h.state().doc.project.layers();
+    let places = layers.iter().find(|l| l.name == "Places").unwrap();
+    let (id, count) = (places.id, places.features.len());
+    let uuid = places.features[0].uuid();
+    h.state_mut()
+        .select(Some(vale_app::ui::pad::LayerRef::Vector(id)));
+    h.state_mut().feature_selection = vec![FeatureRef { layer: id, uuid }];
+    h.run_steps(2);
+    assert!(h.state().selection_form.is_some());
+    assert!(h.query_by_label(vale_app::ui::select::DELETE).is_some());
+    h.key_press(egui::Key::Delete);
+    h.run_steps(2);
+    let places = h.state().doc.project.layer(id).unwrap();
+    assert_eq!(places.features.len(), count - 1);
+    assert!(places.features.iter().all(|f| f.uuid() != uuid));
+    assert!(h.state().feature_selection.is_empty());
+    assert!(h.query_by_label(vale_app::ui::select::DELETE).is_none());
+}

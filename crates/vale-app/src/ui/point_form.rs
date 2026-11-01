@@ -1,7 +1,7 @@
 //! The attribute form of a point that the point tool placed.
 
 use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
-use vale_store::{Feature, FieldType, Geometry, GeometryKind, LayerId, Uuid, Value};
+use vale_store::{Feature, Field, FieldType, Geometry, GeometryKind, LayerId, Uuid, Value};
 
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects};
 use super::pad::theme;
@@ -27,9 +27,18 @@ pub struct FormField {
 }
 
 impl FormField {
+    /// A field of the form with this text.
+    pub(super) fn new(field: &Field, text: String) -> FormField {
+        FormField {
+            name: field.name.clone(),
+            kind: field.kind,
+            text,
+        }
+    }
+
     /// The value of the text. An empty text, and a text that is not a value
     /// of the type of the field, give `Null`.
-    fn value(&self) -> Value {
+    pub(super) fn value(&self) -> Value {
         let text = self.text.trim();
         if text.is_empty() {
             return Value::Null;
@@ -38,7 +47,7 @@ impl FormField {
     }
 
     /// True if the text is a value of the type of the field.
-    fn valid(&self) -> bool {
+    pub(super) fn valid(&self) -> bool {
         let text = self.text.trim();
         text.is_empty() || self.kind.parse(text).is_some()
     }
