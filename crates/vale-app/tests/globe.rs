@@ -4152,6 +4152,11 @@ fn the_brush_panel_has_the_range_mode_and_its_sliders() {
 fn basin_harness(seed: u32) -> Harness<'static, AppState> {
     let mut h = uplift_harness();
     let state = h.state_mut();
+    // The sea is outside a basin, so the basin tests are on land. The fill
+    // is not an undo step of the tests.
+    state.globe.map.fill(meters_to_level(300.0));
+    state.globe.map.set_undo_steps(false);
+    state.globe.map.set_undo_steps(true);
     state.doc.project.world.seed = seed;
     state.globe.brush.mode = Mode::Basin;
     h.run_steps(2);
