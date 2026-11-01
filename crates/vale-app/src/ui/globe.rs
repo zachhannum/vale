@@ -1010,6 +1010,13 @@ pub(super) fn paint_canvas(
             }
         }
     }
+    // The band of a basin stroke shows until the basin arrives.
+    if let Some((line, width)) = globe.basin_preview().filter(|(line, _)| line.len() > 1) {
+        let band = egui::Stroke::new(width, egui::Color32::from_white_alpha(40));
+        painter.line(line.clone(), band);
+        let center = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(200));
+        painter.line(line, center);
+    }
     // The stroke of the layer, or a plain white one.
     let entries = state.doc.frame.entries.iter();
     let style = entries

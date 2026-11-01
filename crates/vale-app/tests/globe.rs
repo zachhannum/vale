@@ -4147,6 +4147,157 @@ fn the_brush_panel_has_the_range_mode_and_its_sliders() {
     assert_eq!(s.doc.project.world.seed, 42);
 }
 
+/// A harness in the basin mode on the empty world, with this seed.
+fn basin_harness(seed: u32) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    let state = h.state_mut();
+    state.doc.project.world.seed = seed;
+    state.globe.brush.mode = Mode::Basin;
+    h.run_steps(2);
+    h
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_basin_stroke_gives_the_levels_of_the_cpu_basin() {
+    use vale_app::globe::brush::Stroke;
+    use vale_terrain::BasinLine;
+    let _gpu = one_gpu_test();
+    let mut h = basin_harness(7);
+    let ground = h.state().globe.map.snapshot();
+    let before = all_levels(&h);
+    pen_line(&mut h, |h| {
+        // The heightmap waits for the end of the stroke, and the band of
+        // the basin shows.
+        assert!(all_levels(h) == before);
+        assert!(h.state().globe.basin_preview().is_some());
+    });
+    settle(&mut h);
+    assert!(h.state().globe.basin_preview().is_none());
+    let app = all_levels(&h);
+
+    // The same line on the CPU.
+    let globe = &h.state().globe;
+    let (brush, n, km) = (globe.brush, globe.map.face_size(), globe.world_km);
+    let mut stamps = Vec::new();
+    let mut stroke = Stroke::default();
+    for sample in ridge_samples() {
+        stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+    }
+    stroke.finish(&brush, n, &mut stamps);
+    let channel = brush.channel_shape(km);
+    let spec = brush.basin_spec(0.1, km, globe.world_seed, globe.world_rain, channel);
+    assert_eq!(spec.seed, 7);
+    let mut line = BasinLine::new(spec, n);
+    for stamp in &stamps {
+        line.push(stamp.center);
+    }
+    assert!(line.len() > 20, "{}", line.len());
+    let mut cpu = ground.snapshot();
+    cpu.basin(&vale_terrain::basin(&ground, &line));
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let cpu: Vec<u16> = texels
+        .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
+        .collect();
+    let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
+    assert!(changed > 2000, "{changed}");
+    assert!(app == cpu);
+    assert_eq!(globe.stats.last().unwrap().id, 1);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn painting_does_not_wait_for_the_basin() {
+    let _gpu = one_gpu_test();
+    let mut h = basin_harness(7);
+    h.state_mut().globe.set_rivers_sync(false);
+    let before = all_levels(&h);
+    pen_line(&mut h, |_| {});
+    // The frames that run while the worker makes the basin.
+    let mut waited = 0;
+    let mut frames = 0;
+    while h.state().globe.busy() {
+        if h.state().globe.basin_pending() {
+            waited += 1;
+        }
+        h.step();
+        frames += 1;
+        assert!(frames < 4000, "the stroke did not end");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(waited > 0, "{waited}");
+    let globe = &h.state().globe;
+    assert!(!globe.basin_pending());
+    assert!(globe.can_undo());
+    assert!(all_levels(&h) != before);
+    assert_eq!(globe.stats.last().unwrap().id, 1);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn one_undo_puts_back_the_ground_from_before_a_basin_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = basin_harness(7);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    let basin = (uplift_stroke(&mut h), canvas_image(&mut h));
+    assert!(basin.0 != before.0);
+    assert!(basin.1.as_raw() != before.1.as_raw());
+    assert_eq!(h.state().globe.stats.last().unwrap().id, 1);
+
+    assert!(h.state_mut().globe.undo());
+    assert!(all_levels(&h) == before.0);
+    assert!(!h.state().globe.can_undo());
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before.1.as_raw(), "the render");
+
+    assert!(h.state_mut().globe.redo());
+    assert!(all_levels(&h) == basin.0);
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == basin.1.as_raw(), "the render");
+}
+
+#[test]
+fn the_brush_panel_has_the_basin_mode_and_its_sliders() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Density").next().is_none());
+    h.get_by_label("Basin").click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::Basin);
+    assert_eq!(brush.basin_density_km, 40.0);
+    for name in [
+        "Radius",
+        "Height",
+        "Density",
+        "Seed",
+        "Channel width",
+        "Wind",
+        "Rain shadow",
+        "Floor",
+        "Ceiling",
+    ] {
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+    for name in [
+        "Hardness",
+        "Flow",
+        "Erosion",
+        "Spacing",
+        "Floodplain",
+        "Strength",
+    ] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    // The sliders set the density and the seed of the world.
+    set_slider(&mut h, "Density", 120.0);
+    set_slider(&mut h, "Seed", 42.0);
+    let s = h.state();
+    assert_eq!(s.globe.brush.basin_density_km, 120.0);
+    assert_eq!(s.doc.project.world.seed, 42);
+}
+
 /// A harness with an ocean ridge on the empty world, for the screenshots.
 /// The stroke is 8,000 km long with a bend, and the brush radius is 1,000
 /// km. `edit` changes the default brush.

@@ -13,12 +13,13 @@ use vale_store::{
     BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing,
 };
 use vale_terrain::{
-    Bands, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES, Heightmap, Mode, Pyramid, Rain,
-    RangeLine, RidgeLine, SEA_LEVEL, Stamp, TexelRect, Window, WindowHeights, max_level,
-    meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
+    Bands, BasinLine, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES, Heightmap, Mode,
+    Pyramid, Rain, RangeLine, RidgeLine, SEA_LEVEL, Stamp, TexelRect, Window, WindowHeights,
+    max_level, meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
+pub mod basin;
 pub mod brush;
 pub mod edges;
 pub mod erode;
@@ -47,6 +48,7 @@ pub mod zoom_test;
 
 use crate::pen::Pen;
 use backdrop::Canvas;
+use basin::Basiner;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, set_world};
 use erode::{Eroder, Ground, Lift, brush_window, erode_window, near_side, range_window};
 use export::ExportResult;
@@ -323,6 +325,24 @@ struct Ranging {
     done: bool,
 }
 
+/// The line of a basin stroke. After the pen goes up, the worker makes
+/// the basin, and its texels go to the GPU.
+struct Basining {
+    line: BasinLine,
+    /// The line went to the worker.
+    asked: bool,
+    /// The texels of the basin went to the GPU.
+    done: bool,
+}
+
+impl Basining {
+    fn extend(&mut self, stamps: &[Stamp]) {
+        for stamp in stamps {
+            self.line.push(stamp.center);
+        }
+    }
+}
+
 /// The stroke that the GPU works on.
 struct Active {
     id: u64,
@@ -337,6 +357,8 @@ struct Active {
     uplift: Option<Uplifting>,
     /// `Some`: the stroke is an ocean ridge stroke or a range stroke.
     ridge: Option<Ridging>,
+    /// `Some`: the stroke is a basin stroke.
+    basin: Option<Basining>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
     /// The number of rectangles that the GPU has not given back. `None`: the
@@ -812,6 +834,7 @@ pub struct Globe {
     zoom_test: Option<ZoomTest>,
     rivers: Rivers,
     eroder: Eroder,
+    basiner: Basiner,
     /// The newest channel map that went to the GPU.
     channels: Option<Arc<ChannelMap>>,
     /// The window of small rivers that the view asks for.
@@ -859,6 +882,7 @@ impl Globe {
         let mut globe = Globe {
             rivers: Rivers::new(&map, false),
             eroder: Eroder::new(false),
+            basiner: Basiner::new(false),
             channels: None,
             chosen: None,
             window: None,
@@ -1590,6 +1614,7 @@ impl Globe {
         self.map.set_undo_steps(self.memory_undo);
         self.rivers = Rivers::new(&self.map, self.rivers.sync());
         self.eroder.cancel();
+        self.basiner.cancel();
         self.channels = None;
         self.channels_sent = false;
         self.chosen = None;
@@ -1949,6 +1974,19 @@ impl Globe {
         self.line_stroke.as_ref().map(|s| s.screen.as_slice())
     }
 
+    /// The line of a basin stroke until its basin goes to the GPU, in
+    /// screen points, and the width of the basin in points.
+    pub fn basin_preview(&self) -> Option<(Vec<Pos2>, f32)> {
+        let basin = self.stroke.as_ref()?.basin.as_ref()?;
+        if basin.done {
+            return None;
+        }
+        let points = basin.line.points().into_iter();
+        let line: Vec<Pos2> = points.filter_map(|dir| self.project(dir)).collect();
+        let width = 2.0 * basin.line.spec().radius * self.radius();
+        Some((line, width as f32))
+    }
+
     /// The last stroke of the line or polygon tool that ended.
     pub fn take_line(&mut self) -> Option<LineStroke> {
         self.line_done.take()
@@ -2143,6 +2181,12 @@ impl Globe {
             rivers.rivers.set_sync(sync);
         }
         self.eroder.set_sync(sync);
+        self.basiner.set_sync(sync);
+    }
+
+    /// True until the basin of the last basin stroke arrives.
+    pub fn basin_pending(&self) -> bool {
+        self.basiner.pending()
     }
 
     /// True until each step that the erode stroke asked for arrives.
@@ -2616,6 +2660,7 @@ impl Globe {
         self.uplift(now);
         self.ridge(now);
         self.range();
+        self.basin();
         self.send_stamps(now);
         let busy = self.busy() || self.loading();
         zooming || in_flight || busy || self.rivers.pending() || self.export.is_some()
@@ -2734,6 +2779,7 @@ impl Globe {
                         erode,
                         uplift,
                         ridge: None,
+                        basin: None,
                         ended: false,
                         reading: None,
                     });
@@ -2745,6 +2791,18 @@ impl Globe {
                             let (km, seed, n) =
                                 (self.world_km, self.world_seed, self.map.face_size());
                             active.ridge = line_of(&self.brush, km, seed, n, sample.radius);
+                            if self.brush.mode == Mode::Basin {
+                                let rain = self.world_rain;
+                                let channel = self.brush.channel_shape(km);
+                                let spec =
+                                    self.brush
+                                        .basin_spec(sample.radius, km, seed, rain, channel);
+                                active.basin = Some(Basining {
+                                    line: BasinLine::new(spec, n),
+                                    asked: false,
+                                    done: false,
+                                });
+                            }
                         }
                         active.sampled = Some(time);
                         if let Some(erode) = &mut active.erode {
@@ -2762,6 +2820,10 @@ impl Globe {
                             );
                             if let Some(ridge) = &mut active.ridge {
                                 ridge.extend(&stamps);
+                                stamps.clear();
+                            }
+                            if let Some(basin) = &mut active.basin {
+                                basin.extend(&stamps);
                                 stamps.clear();
                             }
                             for stamp in &mut stamps {
@@ -2794,6 +2856,10 @@ impl Globe {
                             .finish(&self.brush, map.face_size(), &mut stamps);
                         if let Some(ridge) = &mut active.ridge {
                             ridge.extend(&stamps);
+                            stamps.clear();
+                        }
+                        if let Some(basin) = &mut active.basin {
+                            basin.extend(&stamps);
                             stamps.clear();
                         }
                         for stamp in &mut stamps {
@@ -3089,6 +3155,39 @@ impl Globe {
         }
     }
 
+    /// After the pen of a basin stroke goes up, sends the line to the
+    /// worker. When the basin arrives, sends its texels to the GPU.
+    fn basin(&mut self) {
+        let tag = self.tag();
+        let Some(active) = &mut self.stroke else {
+            return;
+        };
+        let Some(basin) = active.basin.as_mut().filter(|b| active.ended && !b.done) else {
+            return;
+        };
+        if !basin.asked {
+            if basin.line.len() < 2 {
+                basin.done = true;
+                return;
+            }
+            // The heightmap holds the ground from before the stroke.
+            self.basiner
+                .request(self.map.snapshot(), basin.line.clone());
+            basin.asked = true;
+        }
+        let Some(cut) = self.basiner.poll() else {
+            return;
+        };
+        let texels = cut.rects.iter().map(|(_, _, data)| data.len() as u64).sum();
+        self.stats.stamps(active.id, 1, texels);
+        for (face, rect, data) in cut.rects {
+            active.touched[face] = Some(union(active.touched[face], rect));
+            let face = face as u32;
+            self.link.push(tag, Op::Upload { face, rect, data });
+        }
+        basin.done = true;
+    }
+
     /// Sends the stamps of this frame to the GPU. After the last stamp of a
     /// stroke and the last step of an erode stroke or of an uplift stroke, asks for the texels that
     /// the stroke changed.
@@ -3134,6 +3233,10 @@ impl Globe {
         if let Some(ridge) = &active.ridge
             && (ridge.sent < ridge.line.len() || ridge.range.as_ref().is_some_and(|r| !r.done))
         {
+            return;
+        }
+        // The readback of a basin stroke follows its texels.
+        if active.basin.as_ref().is_some_and(|b| !b.done) {
             return;
         }
         let rects = active.touched.iter().enumerate();
