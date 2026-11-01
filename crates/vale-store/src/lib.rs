@@ -1342,6 +1342,17 @@ impl Project {
         true
     }
 
+    /// Removes the features with these UUIDs from a vector layer, and gives
+    /// the number that it removed.
+    pub fn remove_features(&mut self, id: LayerId, uuids: &[Uuid]) -> usize {
+        let Some(layer) = self.layer_mut(id) else {
+            return 0;
+        };
+        let before = layer.features.len();
+        layer.features.retain(|f| !uuids.contains(&f.uuid));
+        before - layer.features.len()
+    }
+
     fn layer_mut(&mut self, id: LayerId) -> Option<&mut Layer> {
         self.layers.iter_mut().find(|l| l.id == id)
     }
@@ -1448,6 +1459,13 @@ mod tests {
         // The value turns into a value of the type of the field.
         assert_eq!(f.attributes["mid"], Value::Text("2".into()));
         assert!(!f.attributes.contains_key("beta"));
+
+        let first = p.layer(a).unwrap().features[0].uuid();
+        assert_eq!(p.remove_features(a, &[uuid, first, Uuid::new_v4()]), 2);
+        assert_eq!(p.remove_features(LayerId(99), &[uuid]), 0);
+        let layer = p.layer(a).unwrap();
+        assert_eq!(layer.features.len(), 1);
+        assert_ne!(layer.features[0].uuid(), uuid);
     }
 
     fn text(s: &str) -> Value {
