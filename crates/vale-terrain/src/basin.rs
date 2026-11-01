@@ -22,6 +22,7 @@ use std::f64::consts::{FRAC_PI_2, SQRT_2};
 use crate::channel::{
     ChannelCurve, ChannelCut, ChannelLines, ChannelShape, METERS_PER_LEVEL, channel_size,
 };
+use crate::cube::meters_to_level;
 use crate::erode::Erosion;
 use crate::flow::{
     CoarseHeights, Grid, NONE, OUT, WINDOW_CELLS, Window, WindowHeights, level_curves,
@@ -129,6 +130,10 @@ const CARVE: f64 = 3.0;
 /// The part of the difference to the mean of its neighbors that a cell
 /// moves by hillslope creep.
 const CREEP: f64 = 0.2;
+
+/// A cut of the ground gets less within this height above sea level, in
+/// meters.
+const COAST_M: f64 = 10.0;
 
 const SALT_BASIN: u32 = 0x5b2e_93c7;
 
@@ -310,7 +315,10 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let count = side * side;
     let cell = FRAC_PI_2 * window.cell as f64 / n as f64;
     let outline = OutlineGrid::new(&line.outline, &window);
-    let Some(river) = outline.clip(&line.line, &window) else {
+    // The sea is outside the basin.
+    let sea = f64::from(meters_to_level(0.0));
+    let land = |p: V3| f64::from(map.sample(p)) >= sea;
+    let Some(river) = outline.clip(&line.line, &window, land) else {
         return BasinCut::default();
     };
     let chain = chain_cells(&river, &window);
@@ -325,7 +333,16 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     // The distance of each cell to the outline. It is less than zero outside
     // the outline. A cell of the area is inside the outline with all its
     // texels, so its whole cell changes.
-    let edge: Vec<f64> = outline.distances().iter().map(|&e| e * cell).collect();
+    let sea_cells: Vec<usize> = (0..count)
+        .filter(|&i| f64::from(old.levels[i]) < sea)
+        .collect();
+    let to_sea = river_distances(&window, &sea_cells, &vec![true; count], cell);
+    let edge: Vec<f64> = outline
+        .distances()
+        .iter()
+        .zip(&to_sea)
+        .map(|(&e, &d)| (e * cell).min(d - 0.5 * cell))
+        .collect();
     let mut inside: Vec<bool> = edge.iter().map(|&e| e >= HALF_DIAGONAL * cell).collect();
     let mut on_chain = vec![false; count];
     for &c in &chain {
@@ -515,7 +532,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         .iter()
         .map(|&c| {
             low = low.min(lowest(&old_levels, &window, c));
-            low
+            low.max(sea)
         })
         .collect();
     let (first, last) = (floor[0], floor[floor.len() - 1]);
@@ -615,6 +632,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         old: old_levels,
         levels: levels.clone(),
         lifts,
+        sea,
     };
     let mut rough = ROUGH * spec.height;
     let levels = grid.levels.clone();
@@ -695,7 +713,21 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         .collect();
     let texel_size = FRAC_PI_2 / n as f64;
     let edge_width = EDGE * radius;
+    // A cut of the ground gets less near sea level, so it does not reach
+    // the sea.
+    let band = COAST_M / METERS_PER_LEVEL;
+    let ease = |old: f64, new: f64| {
+        let above = new - sea;
+        if new >= old || above >= band {
+            new
+        } else {
+            old.min(sea + band * ((above - band) / band).exp())
+        }
+    };
     let texel = |p: V3, old: f64| -> Option<f64> {
+        if old < sea {
+            return None;
+        }
         let (u, v) = grid.window.place(p)?;
         let inside_window = |c: f64| c >= 0.0 && c < fine_side as f64;
         if !inside_window(u) || !inside_window(v) {
@@ -731,7 +763,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             }
         }
         // The change goes to zero at the outline.
-        Some(old + (new - old) * smoothstep(e / edge_width))
+        Some(ease(old, old + (new - old) * smoothstep(e / edge_width)))
     };
 
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -928,6 +960,8 @@ struct Level {
     /// The height of the level of the main river above its bed at each
     /// distance along the main river.
     lifts: Vec<(f64, f64)>,
+    /// The level of the sea.
+    sea: f64,
 }
 
 /// The flow on the cells of a grid. A receiver can be a cell outside the
@@ -1016,7 +1050,7 @@ impl Level {
                 .map(|&j| old[j as usize]);
             low = low.min(around.fold(old[c], f64::min));
             let lift = profile_at(&self.lifts, along[c]);
-            levels[c] = profile_at(&profile, along[c]).min(low + lift);
+            levels[c] = profile_at(&profile, along[c]).min(low.max(self.sea) + lift);
         }
         for k in (0..chain.len().saturating_sub(1)).rev() {
             levels[chain[k]] = levels[chain[k]].max(levels[chain[k + 1]] + RIVER_STEP);
@@ -1032,6 +1066,7 @@ impl Level {
             old,
             levels,
             lifts: self.lifts.clone(),
+            sea: self.sea,
         }
     }
 
@@ -1394,13 +1429,20 @@ impl OutlineGrid {
             .collect()
     }
 
-    /// The part of a main river inside the outline, from its first point
-    /// inside. The line ends where it leaves the outline.
-    fn clip(&self, line: &StrokeLine, window: &Window) -> Option<StrokeLine> {
+    /// The part of a main river inside the outline and on `land`, from its
+    /// first point there. The line ends where it leaves the outline or
+    /// reaches the sea.
+    fn clip(
+        &self,
+        line: &StrokeLine,
+        window: &Window,
+        land: impl Fn(V3) -> bool,
+    ) -> Option<StrokeLine> {
         let contains = |p: V3| {
-            window
+            let inside = window
                 .place(p)
-                .is_some_and(|(u, v)| self.contains(u, v) && window_border(self.side, u, v) > 0.0)
+                .is_some_and(|(u, v)| self.contains(u, v) && window_border(self.side, u, v) > 0.0);
+            inside && land(p)
         };
         let mut river = StrokeLine::new(line.radius(), line.face_size());
         let mut last = None;
@@ -1799,6 +1841,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Low land from 2 m to 38 m, with the sea east of longitude 12, at
+    /// -200 m.
+    fn coast() -> Heightmap {
+        let mut map = Heightmap::new(N, level(10.0));
+        for face in 0..crate::cube::FACES {
+            for y in 0..N {
+                for x in 0..N {
+                    let p = map.texel_dir(face, x, y);
+                    let (lon, _) = dir_to_lonlat(p);
+                    let m = if lon > 12.0 && lon < 60.0 {
+                        -200.0
+                    } else {
+                        20.0 + 18.0 * fractal(p, 0.05, 3).clamp(-1.0, 1.0)
+                    };
+                    map.set(face, x, y, level(m));
+                }
+            }
+        }
+        map
+    }
+
+    #[test]
+    fn the_sea_in_the_outline_does_not_change_and_the_land_stays_above_it() {
+        let map = coast();
+        let sea = level(0.0);
+        let line = line(spec(2.0, 7), -20.0, 20.0, 2.0);
+        let cut = basin(&map, &line);
+        let (mut lower, mut at_sea, mut land) = (0, 0, 0);
+        for (face, rect, data) in &cut.rects {
+            let width = rect.x1 - rect.x0;
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    let new = data[(y - rect.y0) * width + x - rect.x0];
+                    let old = map.get(*face, x as i64, y as i64);
+                    if old < sea {
+                        assert_eq!(new, old, "face {face}, texel {x}, {y}");
+                        continue;
+                    }
+                    assert!(new >= sea, "face {face}, texel {x}, {y}");
+                    land += 1;
+                    lower += usize::from(new < old);
+                    at_sea += usize::from(new <= sea + 1);
+                }
+            }
+        }
+        // The basin erodes the land, but the lowlands do not go flat at sea
+        // level.
+        assert!(lower > land / 100, "{lower} of {land} texels are lower");
+        assert!(
+            at_sea < land / 100,
+            "{at_sea} of {land} texels are at sea level"
+        );
+        // The main river ends at the coast.
+        let net = cut.net.unwrap();
+        let side = net.window.cells;
+        let &outlet = net.chain.last().unwrap();
+        let (lon, _) = dir_to_lonlat(net.window.cell_dir(outlet % side, outlet / side));
+        assert!((lon - 12.0).abs() < 1.0, "the outlet is at {lon}");
     }
 
     #[test]
