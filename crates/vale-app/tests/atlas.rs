@@ -640,6 +640,35 @@ fn the_vertices_of_a_polygon_frame_move_add_and_go_away() {
 }
 
 #[test]
+fn the_neatline_and_the_border_stay_in_place_while_the_map_moves() {
+    let mut h = inset_pad(BOARDS[0]);
+    let id = frame(&h, 0).id;
+    let f = h.state_mut().doc.project.atlas.frame_mut(id).unwrap();
+    f.neatline.on = true;
+    f.border.on = true;
+    h.run_steps(4);
+    tap(&mut h, "Move");
+    let at = middle(&h, 0) - vec2(60.0, 0.0);
+    tap_with(&mut h, at, Input::Finger);
+    h.run_steps(4);
+    let (map, decor) = h.state().atlas.painted_rects(id);
+    let (map, decor) = (map.unwrap(), decor.unwrap());
+
+    // During the drag, the map moves with the finger, and the decorations
+    // stay.
+    let from = middle(&h, 0) - vec2(60.0, 20.0);
+    let to = from + vec2(50.0, 30.0);
+    drag_steps(&mut h, from, to, Input::Finger, 6);
+    let (moved, held) = h.state().atlas.painted_rects(id);
+    let d = moved.unwrap().min - map.min;
+    assert!((d - vec2(50.0, 30.0)).length() < 1.0, "{d:?}");
+    assert_eq!(held, Some(decor));
+    release(&mut h, to, Input::Finger);
+    h.run_steps(8);
+    assert_eq!(h.state().atlas.painted_rects(id).1, Some(decor));
+}
+
+#[test]
 fn pan_zoom_and_rotate_in_a_frame_set_its_center_scale_and_rotation() {
     let mut h = inset_pad(BOARDS[0]);
     tap(&mut h, "Move");

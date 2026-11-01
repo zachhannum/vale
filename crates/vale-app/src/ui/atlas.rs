@@ -27,7 +27,7 @@ use crate::globe::nav::Nav;
 use crate::globe::{FrameDraw, FramePlace};
 use crate::page_snap;
 use crate::pipeline::Quality;
-use crate::view::ViewTransform;
+use crate::view::{View, ViewTransform};
 
 pub mod measure;
 
@@ -658,6 +658,12 @@ pub struct AtlasState {
     item_images: HashMap<FurnitureId, ItemImage>,
     /// The water of the frames that draw raster layers.
     unders: HashMap<FrameId, FrameImage>,
+    /// The edge labels, the neatline, and the border of the frames. They
+    /// stay in place while a gesture moves the map.
+    decors: HashMap<FrameId, FrameImage>,
+    /// The screen rectangles of the map and of the decorations of each frame
+    /// in the last frame.
+    painted: HashMap<FrameId, (Option<Rect>, Option<Rect>)>,
     /// The shape of each frame as a mask for its raster layers: the key of
     /// what it shows, and the mask.
     masks: HashMap<FrameId, (u64, Arc<Mask>)>,
@@ -729,6 +735,12 @@ impl AtlasState {
     pub fn texture_rect(&self, id: FrameId) -> Option<Rect> {
         self.images.get(&id).map(|i| i.rect)
     }
+
+    /// The screen rectangles of the map and of the decorations of frame
+    /// `id` in the last frame.
+    pub fn painted_rects(&self, id: FrameId) -> (Option<Rect>, Option<Rect>) {
+        self.painted.get(&id).copied().unwrap_or_default()
+    }
 }
 
 impl Default for AtlasState {
@@ -781,6 +793,8 @@ impl Default for AtlasState {
             images: HashMap::new(),
             item_images: HashMap::new(),
             unders: HashMap::new(),
+            decors: HashMap::new(),
+            painted: HashMap::new(),
             masks: HashMap::new(),
             mask_count: 0,
             meshes: Vec::new(),
@@ -890,6 +904,7 @@ pub fn sync(state: &mut AppState) {
         a.vertex = None;
     }
     a.images.retain(|id, _| atlas.frame(*id).is_some());
+    a.decors.retain(|id, _| atlas.frame(*id).is_some());
     a.item_images
         .retain(|id, _| page.furniture.iter().any(|f| f.id == *id));
 }
@@ -1634,6 +1649,7 @@ pub fn delete_frame(state: &mut AppState) {
     state.atlas.selection = AtlasSelection::None;
     state.atlas.vertex = None;
     state.atlas.images.remove(&id);
+    state.atlas.decors.remove(&id);
 }
 
 /// Removes the selected vertex of the selected frame.
@@ -1939,7 +1955,12 @@ fn map_images(state: &AppState, map: MapId) -> Vec<vale_store::ImageId> {
 struct Placed {
     id: FrameId,
     vt: ViewTransform,
+    /// The view of the decorations of the frame.
+    fixed: ViewTransform,
     shown: Rect,
+    /// The part of `shown` in the box of the shape. The map does not move
+    /// out of it.
+    inside: Rect,
     /// The frame draws raster layers on the GPU.
     layered: bool,
 }
@@ -2158,10 +2179,15 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                 });
             }
         }
+        let inside = place
+            .rect_to_screen(math::shape_bbox(&frame.shape))
+            .intersect(shown);
         placed.push(Placed {
             id: frame.id,
             vt,
+            fixed: fixed_view(vt, target),
             shown,
+            inside,
             layered,
         });
     }
@@ -2179,10 +2205,17 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let mut items = Vec::new();
         for p in &placed {
             let by = p.layered.then(|| state.atlas.unders.get(&p.id)).flatten();
-            let images = [by, state.atlas.images.get(&p.id)];
-            for image in images.into_iter().flatten() {
+            let images = [
+                (by, p.vt),
+                (state.atlas.images.get(&p.id), p.vt),
+                (state.atlas.decors.get(&p.id), p.fixed),
+            ];
+            for (image, vt) in images {
+                let Some(image) = image else {
+                    continue;
+                };
                 let corners = [image.rect.min, image.rect.max].map(|c| {
-                    let q = p.vt.to_page(
+                    let q = vt.to_page(
                         image
                             .vt
                             .from_page(Point::new(f64::from(c.x), f64::from(c.y))),
@@ -2203,19 +2236,35 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             area, callback,
         ));
     }
+    state.atlas.painted.clear();
     for p in placed {
         let by = p.layered.then(|| state.atlas.unders.get(&p.id)).flatten();
         if let Some(image) = by {
-            paint_image(&painter, image, &p.vt, p.shown);
+            paint_image(&painter, image, &p.vt, p.inside);
         }
         if let Some(callback) = callbacks.remove(&p.id.0) {
             painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
                 area, callback,
             ));
         }
-        if let Some(image) = state.atlas.images.get(&p.id) {
-            paint_image(&painter, image, &p.vt, p.shown);
-        }
+        let map = (state.atlas.images.get(&p.id))
+            .map(|image| paint_image(&painter, image, &p.vt, p.inside));
+        let decor = (state.atlas.decors.get(&p.id))
+            .map(|image| paint_image(&painter, image, &p.fixed, p.shown));
+        state.atlas.painted.insert(p.id, (map, decor));
+    }
+}
+
+/// A view that follows the page and the shape of a frame, but not the
+/// center, the scale, or the rotation of its map.
+fn fixed_view(vt: ViewTransform, target: FrameTarget) -> ViewTransform {
+    ViewTransform {
+        view: View {
+            center: Point::ZERO,
+            scale: target.pts_per_mm,
+            rotation: 0.0,
+        },
+        ..vt
     }
 }
 
@@ -2468,12 +2517,17 @@ fn compose(
     } else {
         state.atlas.unders.remove(&frame.id);
     }
+    let mut map = composed.list.clone();
+    let decor = vale_render::DisplayList {
+        items: map.items.split_off(composed.decor),
+        ..map.clone()
+    };
     let images = &mut state.atlas.images;
     if let Err(e) = upload(
         ctx,
         images,
         frame.id,
-        &composed.list,
+        &map,
         scale,
         (shown, vt),
         keys,
@@ -2481,6 +2535,31 @@ fn compose(
     ) {
         state.status = e;
         return;
+    }
+    let clips = |item: &vale_render::Item| {
+        matches!(
+            item,
+            vale_render::Item::PushClip { .. } | vale_render::Item::PopClip
+        )
+    };
+    if decor.items.iter().all(clips) {
+        state.atlas.decors.remove(&frame.id);
+    } else {
+        let fixed = fixed_view(vt, place.target());
+        let images = &mut state.atlas.decors;
+        if let Err(e) = upload(
+            ctx,
+            images,
+            frame.id,
+            &decor,
+            scale,
+            (shown, fixed),
+            keys,
+            settled,
+        ) {
+            state.status = e;
+            return;
+        }
     }
     if primary {
         state.composed = Some(composed);
@@ -2525,9 +2604,14 @@ fn upload(
     Ok(())
 }
 
-/// Paints the texture of a frame. While a gesture moves the map, the
-/// texture moves with the view.
-fn paint_image(painter: &egui::Painter, image: &FrameImage, vt: &ViewTransform, clip: Rect) {
+/// Paints the texture of a frame, and returns its screen rectangle. While a
+/// gesture moves the map, the texture moves with the view.
+fn paint_image(
+    painter: &egui::Painter,
+    image: &FrameImage,
+    vt: &ViewTransform,
+    clip: Rect,
+) -> Rect {
     let moved = |p: Pos2| {
         let q = Point::new(f64::from(p.x), f64::from(p.y));
         let q = vt.to_page(image.vt.from_page(q));
@@ -2556,7 +2640,9 @@ fn paint_image(painter: &egui::Painter, image: &FrameImage, vt: &ViewTransform, 
     }
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);
+    let rect = mesh.calc_bounds();
     painter.with_clip_rect(clip).add(mesh);
+    rect
 }
 
 /// Paints the outline of the selected page or frame and the handles of the

@@ -118,6 +118,10 @@ pub struct Composed {
     /// Ground distance of one point at the middle of the view.
     pub km_per_point: f64,
     pub graticule_step: Option<f64>,
+    /// The index of the first item of the decorations of a map frame: the
+    /// edge labels, the neatline, and the border. They do not move with the
+    /// map.
+    pub decor: usize,
 }
 
 /// The geometry of one feature in projected meters.
@@ -1243,6 +1247,7 @@ impl Pipeline {
             label_summary = summary;
         }
         list.items.extend(bar_items);
+        let decor = list.items.len();
 
         Ok(Composed {
             list,
@@ -1251,6 +1256,7 @@ impl Pipeline {
             labels: label_summary,
             km_per_point: drawn.km_per_point,
             graticule_step: step,
+            decor,
         })
     }
 
@@ -1428,6 +1434,12 @@ impl Pipeline {
             list.items.extend(items);
             label_summary = summary;
         }
+        list.push(Item::PopClip);
+        let decor = list.items.len();
+        list.push(Item::PushClip {
+            path: shape_path(&frame.shape.rings(), target),
+            rule: FillRule::EvenOdd,
+        });
         list.items.extend(edge_labels::items(&edge, false));
         list.push(Item::PopClip);
         if frame.neatline.on {
@@ -1450,6 +1462,7 @@ impl Pipeline {
             labels: label_summary,
             km_per_point: drawn.km_per_point,
             graticule_step: step,
+            decor,
         })
     }
 
