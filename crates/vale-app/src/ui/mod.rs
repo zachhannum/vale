@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -354,16 +355,25 @@ fn add_loaded(globe: &mut Globe, raster: &Raster, map: Heightmap) -> bool {
     }
 }
 
-/// The whole heightmap of a raster layer that comes from the project file
-/// in parts, for the brush.
+/// The read of the whole heightmap of a raster layer from the project file
+/// on another thread, for the brush.
 struct Loader {
     id: RasterId,
-    map: Heightmap,
-    /// The count of the tiles that the loader asked the file for.
-    next: usize,
+    done: mpsc::Receiver<Result<Option<Heightmap>, StoreError>>,
+    /// Tells the thread to stop.
+    stop: Arc<AtomicBool>,
 }
 
-/// The time that the loader reads tiles in one frame.
+impl Drop for Loader {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The time between two looks at a thread that reads a layer.
+const LOAD_POLL: Duration = Duration::from_millis(30);
+
+/// The time that a loop of the UI thread reads tiles in one frame.
 const LOAD_TIME: Duration = Duration::from_millis(6);
 
 pub struct AppState {
@@ -773,53 +783,68 @@ impl AppState {
         }
     }
 
-    /// Reads tiles of the raster layer that waits for the brush from the
-    /// project file.
+    /// Reads the whole heightmap of the raster layer that waits for the
+    /// brush from the project file. Without `all`, a thread reads it, and
+    /// a later call gives it to the globe.
     fn load_layer(&mut self, all: bool) {
         let Some((id, face_size)) = self.globe.load_request() else {
             self.loader = None;
             return;
         };
         let session = self.session.as_ref().expect("checked above");
-        let project = &self.doc.project;
-        let record = project
-            .raster(id)
-            .filter(|r| r.face_size as usize == face_size);
-        let loader = self.loader.take().filter(|loader| loader.id == id);
-        let loader = match (loader, record) {
-            (Some(loader), _) => Ok(loader),
-            (None, Some(record)) => Session::empty_map(record).map(|map| {
-                let name = project
-                    .raster_layer(id)
-                    .map_or("", |layer| layer.name.as_str());
-                self.status = format!("Loading {name}…");
-                Loader { id, map, next: 0 }
-            }),
-            (None, None) => Err(StoreError::Corrupt("the raster has no record".to_string())),
-        };
-        let start = Instant::now();
-        let per_side = face_size.div_ceil(vale_store::TILE_SIZE);
-        let total = vale_terrain::FACES * per_side * per_side;
-        let loaded = loader.and_then(|mut loader| {
-            while loader.next < total && (all || start.elapsed() < LOAD_TIME) {
-                let (face, at) = (
-                    loader.next / (per_side * per_side),
-                    loader.next % (per_side * per_side),
-                );
-                let (row, column) = (at / per_side, at % per_side);
-                if let Some(pixels) = session.load_tile(id, face, column, row)? {
-                    loader.map.load_tile(face, column, row, &pixels);
+        let loaded = match self.loader.take().filter(|loader| loader.id == id) {
+            Some(loader) => {
+                let done = if all {
+                    loader
+                        .done
+                        .recv()
+                        .map_err(|_| mpsc::TryRecvError::Disconnected)
+                } else {
+                    loader.done.try_recv()
+                };
+                match done {
+                    Ok(loaded) => loaded,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        self.loader = Some(loader);
+                        return;
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => Err(StoreError::Corrupt(
+                        "the read of the layer stopped".to_string(),
+                    )),
                 }
-                loader.next += 1;
             }
-            Ok(loader)
-        });
+            None => {
+                let project = &self.doc.project;
+                let record = project
+                    .raster(id)
+                    .filter(|r| r.face_size as usize == face_size);
+                match record {
+                    None => Err(StoreError::Corrupt("the raster has no record".to_string())),
+                    Some(record) if all => session.load_map(record).map(Some),
+                    Some(record) => {
+                        let name = project
+                            .raster_layer(id)
+                            .map_or("", |layer| layer.name.as_str());
+                        self.status = format!("Loading {name}…");
+                        let (send, done) = mpsc::sync_channel(1);
+                        let stop = Arc::new(AtomicBool::new(false));
+                        let (database, record) = (session.database().to_path_buf(), record.clone());
+                        let flag = Arc::clone(&stop);
+                        std::thread::spawn(move || {
+                            let _ = send.send(Session::read_map(&database, &record, &flag));
+                        });
+                        self.loader = Some(Loader { id, done, stop });
+                        return;
+                    }
+                }
+            }
+        };
         match loaded {
-            Ok(loader) if loader.next < total => self.loader = Some(loader),
-            Ok(loader) => {
-                self.globe.give_full(id, loader.map);
+            Ok(Some(map)) => {
+                self.globe.give_full(id, map);
                 self.status.clear();
             }
+            Ok(None) => {}
             Err(e) => {
                 self.status = format!("Could not load layer: {e}");
                 self.globe.cancel_activation();
@@ -3101,6 +3126,9 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.ctx().request_repaint();
     }
     state.pump_layers(state.headless);
+    if state.loading_layer() {
+        ui.ctx().request_repaint_after(LOAD_POLL);
+    }
     state.poll_image_import(false);
     if state.image_import.is_some() {
         ui.ctx().request_repaint();

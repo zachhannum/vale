@@ -193,6 +193,85 @@ pub struct Thumbnail {
     pub rgba: Vec<u8>,
 }
 
+/// Reads the tiles of a raster in key order: each tile, or the tiles of one
+/// row of tiles of one face.
+fn read_tiles(
+    conn: &Connection,
+    raster: &Raster,
+    row_of: Option<(usize, usize)>,
+    tile: &mut dyn FnMut(TileKey, Vec<u16>),
+) -> Result<(), StoreError> {
+    let per_side = (raster.face_size as usize).div_ceil(TILE_SIZE) as u32;
+    let mut rows = conn.prepare(
+        "SELECT level, face, tile_column, tile_row, data FROM vale_raster_tile
+         WHERE raster_id = ?1 AND (?2 IS NULL OR (level = 0 AND face = ?2 AND tile_row = ?3))
+         ORDER BY level, face, tile_row, tile_column",
+    )?;
+    let (face, row_at) = row_of.map_or((None, None), |(f, r)| (Some(f as i64), Some(r as i64)));
+    let mut rows = rows.query(params![raster.id.0, face, row_at])?;
+    let mut batch: Vec<(TileKey, Vec<u8>)> = Vec::new();
+    loop {
+        let row = rows.next()?;
+        if let Some(r) = row {
+            let key: (i64, i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+            let inside = |n: i64, end: u32| (0..i64::from(end)).contains(&n);
+            let (level, face, column, tile_row) = key;
+            if level != 0
+                || !inside(face, 6)
+                || !inside(column, per_side)
+                || !inside(tile_row, per_side)
+            {
+                return Err(corrupt(format!("raster tile key {key:?}")));
+            }
+            let key = TileKey {
+                level: 0,
+                face: face as u8,
+                column: column as u32,
+                row: tile_row as u32,
+            };
+            batch.push((key, r.get(4)?));
+        }
+        if batch.len() == TILE_BATCH || row.is_none() {
+            let pixels = tile::parallel_map(&batch, |(_, blob)| tile::decode(blob));
+            for ((key, _), pixels) in batch.drain(..).zip(pixels) {
+                let pixels =
+                    pixels.ok_or_else(|| corrupt(format!("the pixels of raster tile {key:?}")))?;
+                tile(key, pixels);
+            }
+        }
+        if row.is_none() {
+            return Ok(());
+        }
+    }
+}
+
+/// A read-only connection to a project file. A thread reads the tiles of a
+/// raster with it while the app writes the file with its `ProjectFile`.
+/// Each read is short, so a write waits for one read at most.
+pub struct TileReader {
+    conn: Connection,
+}
+
+impl TileReader {
+    pub fn open(path: &Path) -> Result<TileReader, StoreError> {
+        Ok(TileReader {
+            conn: open_for_read(path)?,
+        })
+    }
+
+    /// Reads the tiles of one row of tiles of one face of a raster, in key
+    /// order. `tile` gets `TILE_SIZE` by `TILE_SIZE` pixels, row by row.
+    pub fn load_row(
+        &self,
+        raster: &Raster,
+        face: usize,
+        row: usize,
+        mut tile: impl FnMut(TileKey, Vec<u16>),
+    ) -> Result<(), StoreError> {
+        read_tiles(&self.conn, raster, Some((face, row)), &mut tile)
+    }
+}
+
 /// The records of a project file that a list of projects shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Summary {
@@ -499,46 +578,7 @@ impl ProjectFile {
         raster: &Raster,
         mut tile: impl FnMut(TileKey, Vec<u16>),
     ) -> Result<(), StoreError> {
-        let per_side = (raster.face_size as usize).div_ceil(TILE_SIZE) as u32;
-        let mut rows = self.conn.prepare(
-            "SELECT level, face, tile_column, tile_row, data FROM vale_raster_tile
-             WHERE raster_id = ?1 ORDER BY level, face, tile_row, tile_column",
-        )?;
-        let mut rows = rows.query([raster.id.0])?;
-        let mut batch: Vec<(TileKey, Vec<u8>)> = Vec::new();
-        loop {
-            let row = rows.next()?;
-            if let Some(r) = row {
-                let key: (i64, i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
-                let inside = |n: i64, end: u32| (0..i64::from(end)).contains(&n);
-                let (level, face, column, tile_row) = key;
-                if level != 0
-                    || !inside(face, 6)
-                    || !inside(column, per_side)
-                    || !inside(tile_row, per_side)
-                {
-                    return Err(corrupt(format!("raster tile key {key:?}")));
-                }
-                let key = TileKey {
-                    level: 0,
-                    face: face as u8,
-                    column: column as u32,
-                    row: tile_row as u32,
-                };
-                batch.push((key, r.get(4)?));
-            }
-            if batch.len() == TILE_BATCH || row.is_none() {
-                let pixels = tile::parallel_map(&batch, |(_, blob)| tile::decode(blob));
-                for ((key, _), pixels) in batch.drain(..).zip(pixels) {
-                    let pixels = pixels
-                        .ok_or_else(|| corrupt(format!("the pixels of raster tile {key:?}")))?;
-                    tile(key, pixels);
-                }
-            }
-            if row.is_none() {
-                return Ok(());
-            }
-        }
+        read_tiles(&self.conn, raster, None, &mut tile)
     }
 
     /// Writes tiles of an image as `(level, column, row, png)`, in one

@@ -3,11 +3,12 @@
 //! log of the file.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use vale_store::{
     ImageId, Project, ProjectFile, Raster, RasterId, Restored, SaveStats, StoreError, TileChanges,
-    TileKey,
+    TileKey, TileReader,
 };
 use vale_terrain::{Bands, FACES, Heightmap, Stop, StopLine, reduced_face_size};
 
@@ -219,6 +220,12 @@ impl Session {
         &self.path
     }
 
+    /// The path of the database: the working copy, or else the project
+    /// file.
+    pub fn database(&self) -> &Path {
+        self.work.as_ref().map_or(&self.path, |work| work.path())
+    }
+
     /// Closes the project file. The project file does not get the changes
     /// that the working copy holds.
     pub fn discard(mut self) {
@@ -383,6 +390,30 @@ impl Session {
             );
         })?;
         Ok(map)
+    }
+
+    /// Reads the whole heightmap of a raster layer from a database with a
+    /// connection of its own, one row of tiles at a time, so that another
+    /// thread can call it. `None`: `stop` became true.
+    pub fn read_map(
+        database: &Path,
+        raster: &Raster,
+        stop: &AtomicBool,
+    ) -> Result<Option<Heightmap>, StoreError> {
+        let reader = TileReader::open(database)?;
+        let mut map = Session::empty_map(raster)?;
+        let per_side = (raster.face_size as usize).div_ceil(vale_store::TILE_SIZE);
+        for face in 0..FACES {
+            for row in 0..per_side {
+                if stop.load(Ordering::Relaxed) {
+                    return Ok(None);
+                }
+                reader.load_row(raster, face, row, |key, pixels| {
+                    map.load_tile(face, key.column as usize, row, &pixels);
+                })?;
+            }
+        }
+        Ok(Some(map))
     }
 
     /// Call this in each frame. It saves a change that is older than
