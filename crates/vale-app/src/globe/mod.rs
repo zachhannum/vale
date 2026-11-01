@@ -34,6 +34,7 @@ pub mod nav;
 pub mod polygon;
 pub mod preview;
 pub mod rivers;
+pub mod select;
 pub mod snap;
 pub mod stats;
 pub mod stops;
@@ -144,6 +145,8 @@ pub enum Tool {
     Point,
     /// Measures a path on the world. It works with any layer selected.
     Measure,
+    /// Selects, moves, and deletes features of any visible vector layer.
+    Select,
 }
 
 /// The way that the world workspace shows the world.
@@ -771,6 +774,8 @@ pub struct Globe {
     point_done: Option<PlacedPoint>,
     /// The press of the Measure tool that can be a tap.
     pub measure_press: crate::measure::TapPress,
+    /// The press of the Select tool.
+    pub select_press: select::SelectPress,
     /// The last tap of the Measure tool: its screen position and the place
     /// under it.
     measure_tap: Option<(Pos2, V3)>,
@@ -886,6 +891,7 @@ impl Globe {
             point_press: None,
             point_done: None,
             measure_press: Default::default(),
+            select_press: Default::default(),
             measure_tap: None,
             channels_sent: false,
             test_wanted: None,
@@ -1695,6 +1701,11 @@ impl Globe {
     /// True if the Measure tool is the tool.
     pub fn measuring(&self) -> bool {
         self.tool == Tool::Measure
+    }
+
+    /// True if the Select tool is the tool.
+    pub fn selecting(&self) -> bool {
+        self.tool == Tool::Select
     }
 
     /// True if the tool snaps, so the snap targets are needed.
