@@ -11,8 +11,9 @@ use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, atlas
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    EROSION, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M,
+    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M,
+    TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
@@ -892,6 +893,22 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         seed_slider(ui, state);
     }
     let globe = &mut state.globe;
+    if matches!(globe.brush.mode, Mode::Carve | Mode::Erode) {
+        let channel = egui::Slider::new(&mut globe.brush.channel_km, CHANNEL_KM)
+            .logarithmic(true)
+            .custom_formatter(|km, _| three_significant(km))
+            .suffix(" km")
+            .text("Channel width");
+        ui.add(channel).on_hover_text(CHANNEL_HELP);
+    }
+    if globe.brush.mode == Mode::Carve {
+        let floodplain = egui::Slider::new(&mut globe.brush.floodplain_km, FLOODPLAIN_WIDTH_KM)
+            .step_by(1.0)
+            .fixed_decimals(0)
+            .suffix(" km")
+            .text("Floodplain");
+        ui.add(floodplain);
+    }
     if matches!(globe.brush.mode, Mode::Uplift | Mode::Range) {
         ui.add(egui::Slider::new(&mut globe.brush.erosion, EROSION).text("Erosion"));
     }
