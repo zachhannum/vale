@@ -285,16 +285,22 @@ impl StrokeLine {
     }
 
     /// The distance of a direction past the plane through the last point,
-    /// square to the last segment, and its distance from the great circle of
-    /// the last segment, in radians. The first value is less than zero before
-    /// the plane.
+    /// and its distance from the great circle through the last point, in
+    /// radians. The circle and the plane follow the direction of the last
+    /// half brush radius of the line, so a small bend at the end does not
+    /// turn them. The first value is less than zero before the plane.
     pub(crate) fn past_end(&self, p: V3) -> (f64, f64) {
-        let count = self.points.len();
-        if count < 2 {
+        let Some(end) = self.points.last() else {
+            return (f64::MIN, 0.0);
+        };
+        let back = end.u - 0.5 * self.radius;
+        let from = self.points.iter().rev().find(|point| point.u <= back);
+        let from = from.unwrap_or(&self.points[0]);
+        if self.points.len() < 2 || angle(from.dir, end.dir) < 1e-12 {
             return (f64::MIN, 0.0);
         }
-        let n = self.normal(count - 2);
-        let tangent = normalize(cross(n, self.points[count - 1].dir));
+        let n = normalize(cross(from.dir, end.dir));
+        let tangent = normalize(cross(n, end.dir));
         let past = dot(p, tangent).clamp(-1.0, 1.0).asin();
         (past, dot(p, n).clamp(-1.0, 1.0).asin().abs())
     }

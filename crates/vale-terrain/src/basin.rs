@@ -18,7 +18,9 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
-use crate::channel::{ChannelCut, ChannelLines, ChannelShape, METERS_PER_LEVEL, channel_size};
+use crate::channel::{
+    ChannelCurve, ChannelCut, ChannelLines, ChannelShape, METERS_PER_LEVEL, channel_size,
+};
 use crate::erode::Erosion;
 use crate::flow::{
     CoarseHeights, Grid, NONE, OUT, WINDOW_CELLS, Window, WindowHeights, level_curves,
@@ -398,7 +400,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let gap = |p: V3| {
         let (past, side) = line.line.past_end(p);
         let mouth = MOUTH * radius;
-        1.0 - (1.0 - smoothstep(side / mouth)) * smoothstep(past / (2.0 * cell))
+        1.0 - (1.0 - smoothstep(side / mouth)) * smoothstep(past / (0.25 * mouth).max(2.0 * cell))
     };
     let fade = |d: f64| smoothstep((radius - d) / (FADE * radius));
     // The inner basin is inside the divide, out of the mouth. Its water goes
@@ -492,16 +494,49 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let fine_cell = FRAC_PI_2 * grid.window.cell as f64 / n as f64;
     let fine_solid = mean_solid * (fine_cell / cell).powi(2);
     let mut curve_area: Vec<f32> = fine.area.iter().map(|&a| (a * fine_solid) as f32).collect();
+    // The main river follows the drawn line, not the cells. Its level and
+    // its water come from the cells of the main river at the same place
+    // along the line.
+    let profile = grid.profile();
+    let water: Vec<(f64, f64)> = profile
+        .iter()
+        .zip(&grid.chain)
+        .map(|(&(u, _), &c)| (u, (fine.area[c] * fine_solid).max(2.0 * min_area)))
+        .collect();
     for &c in &grid.chain {
-        curve_area[c] = curve_area[c].max((2.0 * min_area) as f32);
+        curve_area[c] = 0.0;
     }
-    let curves = level_curves(
+    let mut curves = level_curves(
         &grid.window,
         &fine.receiver,
         &curve_area,
         min_area,
         &grid.levels,
     );
+    let points = line.points();
+    let mut drawn = vec![(points[0], 0.0)];
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let steps = (angle(a, b) / fine_cell).ceil().max(1.0) as usize;
+        let start = drawn.last().map_or(0.0, |d| d.1);
+        for k in 1..=steps {
+            let t = k as f64 / steps as f64;
+            let p = normalize(add(a, scale(add(b, scale(a, -1.0)), t)));
+            drawn.push((p, start + angle(a, b) * t));
+        }
+    }
+    for pair in drawn.windows(2) {
+        let ((a, ua), (b, ub)) = (pair[0], pair[1]);
+        let um = 0.5 * (ua + ub);
+        let at = |u: f64| [profile_at(&profile, u), profile_at(&water, u)];
+        let [[la, wa], [lm, wm], [lb, wb]] = [at(ua), at(um), at(ub)];
+        curves.push(ChannelCurve {
+            points: [a, normalize(add(a, b)), b],
+            levels: [la, lm, lb],
+            areas: [wa, wm, wb],
+            plains: [0.0; 3],
+        });
+    }
     let lines = ChannelLines::window(curves, grid.window, spec.world_km);
     let cut = ChannelCut {
         shape: spec.channel,
@@ -770,6 +805,8 @@ struct GridFlow {
     receiver: Vec<u32>,
     /// The cells of the area, each receiver before its donors.
     stack: Vec<usize>,
+    /// The level of each cell after the flood fills the pits.
+    filled: Vec<f64>,
     /// The water of each cell, in cells of even rain.
     area: Vec<f64>,
 }
@@ -944,6 +981,7 @@ impl Level {
         GridFlow {
             receiver,
             stack,
+            filled,
             area,
         }
     }
@@ -987,7 +1025,9 @@ impl Level {
                     self.window.cell_dir(r % side, r / side),
                 ) / cell;
                 let f = ERODE * flow.area[i].powf(AREA_EXPONENT) / run;
-                let from = self.levels[i];
+                // A pit fills to one step of rough ground below its rim, so
+                // a hollow stays shallow.
+                let from = self.levels[i].max(flow.filled[i] - rough);
                 let drop = ((from - self.levels[r]) * f / (1.0 + f)).clamp(0.0, CARVE * rough);
                 self.levels[i] = from - drop;
             }
@@ -1450,16 +1490,32 @@ mod tests {
                 }
             }
         }
-        let line = line_of(n, spec(2.0, var("SEED", 7.0) as u32), from, to, 2.0);
+        // With `MEANDER`, the line has bends of that many degrees, about 3
+        // degrees apart, on a larger wave.
+        let meander = var("MEANDER", 0.0);
+        let mut line = BasinLine::new(spec(2.0, var("SEED", 7.0) as u32), n);
+        for k in 0..=2000 {
+            let lon = from + (to - from) * f64::from(k) / 2000.0;
+            let lat =
+                2.0 * (lon.to_radians() * 12.0).sin() + meander * (lon.to_radians() * 120.0).sin();
+            line.push(lonlat_to_dir(lon, lat));
+        }
         let after = if var("BEFORE", 0.0) > 0.0 {
             map.snapshot()
         } else {
             apply(&map, &basin(&map, &line))
         };
-        let step = 90.0 / n as f64;
-        let (w, h) = (((to - from + 20.0) / step) as usize, (24.0 / step) as usize);
+        // `VIEW` and `SPAN` set the first longitude and the width of the
+        // picture, in degrees.
+        let step = 90.0 / n as f64 / var("ZOOM", 1.0);
+        let (west, span) = (var("VIEW", from - 10.0), var("SPAN", to - from + 20.0));
+        let tall = 24.0 * span / (to - from + 20.0);
+        let (w, h) = ((span / step) as usize, (tall / step) as usize);
         let at = |x: usize, y: usize| {
-            let (lon, lat) = (from - 10.0 + x as f64 * step, 12.0 - y as f64 * step);
+            let (lon, lat) = (
+                west + x as f64 * step,
+                var("LAT", 0.0) + 0.5 * tall - y as f64 * step,
+            );
             f64::from(after.sample(lonlat_to_dir(lon, lat))) * METERS_PER_LEVEL
         };
         let texel_m = step.to_radians() * 6_371_000.0;

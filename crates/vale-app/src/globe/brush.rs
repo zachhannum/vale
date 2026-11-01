@@ -495,12 +495,18 @@ pub fn set_world(
     }
 }
 
+/// The distance between the points of the line of a basin stroke, as a part
+/// of the brush radius.
+const BASIN_SPACING: f64 = 0.02;
+
 /// The distance between the stamps of a mode, as a part of the brush radius.
 /// The stamps of the ocean ridge mode, the range mode, and the basin mode
 /// are the points of the line of the stroke.
 fn stamp_spacing(mode: Mode) -> f64 {
     match mode {
-        Mode::OceanRidge | Mode::Range | Mode::Basin => LINE_SPACING,
+        Mode::OceanRidge | Mode::Range => LINE_SPACING,
+        // The main river of a basin keeps the small bends of the stroke.
+        Mode::Basin => BASIN_SPACING,
         _ => STAMP_SPACING,
     }
 }
