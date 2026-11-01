@@ -332,3 +332,94 @@ fn a_band_color_of_a_map_shows_in_the_frames_of_that_map_only() {
     let record = h.state().doc.project.raster(height).unwrap();
     assert_eq!(record.display, RasterDisplay::Grey);
 }
+
+/// The red values of a row of pixels of the screen.
+fn row(h: &mut App, from: Pos2, count: u32) -> Vec<u8> {
+    h.remove_cursor();
+    h.run_steps(2);
+    let image = h.render().unwrap();
+    (0..count)
+        .map(|i| image.get_pixel(from.x as u32 + i, from.y as u32)[0])
+        .collect()
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_frame_zoomed_on_an_unselected_layer_draws_full_texels() {
+    use vale_terrain::math::lonlat_to_dir;
+    let _gpu = one_gpu_test();
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.workspace = Workspace::Atlas;
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    state.globe.set_face_size(8192);
+    let height = state.add_height();
+    state.set_raster_display(height, RasterDisplay::Grey);
+    state.set_raster_smoothing(height, false);
+    state.set_raster_hillshade(height, false);
+    // The brush paints another layer, which the frame does not show.
+    let other = state.add_height();
+    let map = vale_app::ui::atlas::open_page(&state).frames[0].map;
+    let layer = state.doc.project.raster_layer(other).unwrap().id;
+    assert!(state.doc.set_shown(map, layer, false));
+    assert_eq!(state.globe.raster(), Some(other));
+
+    // Stripes of two texels around the middle of the frame, which the copy
+    // with a quarter of the face makes one grey.
+    let center = [10.0, 20.0];
+    let (face, a, b) = vale_terrain::face_of(lonlat_to_dir(center[0], center[1]));
+    let texel = |s: f64| ((vale_terrain::warp(s) + 1.0) / 2.0 * 8192.0) as usize;
+    let (cx, cy) = (texel(a), texel(b));
+    let map = state
+        .globe
+        .raster_map_mut(height)
+        .expect("in the main memory");
+    for y in cy - 600..cy + 600 {
+        for x in cx - 600..cx + 600 {
+            let level = if (x / 2) % 2 == 0 { 50000 } else { 15000 };
+            map.set(face, x, y, level);
+        }
+    }
+    let id = vale_app::ui::atlas::open_page(&state).frames[0].id;
+    let frame = state.doc.project.atlas.frame_mut(id).unwrap();
+    frame.center = center;
+    // One texel is about 3 millimeters on the page.
+    frame.scale = 4.0e5;
+    state.touch();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(4);
+    let frame = open_frame(&h);
+    let start = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(-30.0, 17.0);
+    // The pixels of the high stripes and of the low stripes. A line of the
+    // graticule is neither.
+    let stripes = |values: &[u8]| {
+        let high = values.iter().filter(|r| **r > 150).count();
+        let low = values.iter().filter(|r| **r < 100).count();
+        (high, low)
+    };
+
+    // With no memory for the detail maps, the frame draws the copy.
+    h.state_mut().globe.set_detail_budget(Some(0));
+    h.run_steps(4);
+    assert_eq!(h.state().globe.frame_detail_level(id.0, height), None);
+    let flat = row(&mut h, start, 60);
+    assert_eq!(stripes(&flat), (0, 0), "{flat:?}");
+
+    h.state_mut().globe.set_detail_budget(None);
+    for _ in 0..100 {
+        h.run_steps(1);
+        let globe = &h.state().globe;
+        if globe.frame_detail_level(id.0, height).is_some() && globe.frame_details_ready(id.0) {
+            break;
+        }
+    }
+    let globe = &h.state().globe;
+    assert_eq!(globe.frame_detail_level(id.0, height), Some(0));
+    assert!(globe.frame_details_ready(id.0));
+    let sharp = row(&mut h, start, 60);
+    let (high, low) = stripes(&sharp);
+    assert!(high >= 10 && low >= 10, "{sharp:?}");
+}
