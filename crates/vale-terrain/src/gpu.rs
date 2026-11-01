@@ -875,7 +875,10 @@ impl GpuHeightmap {
             return 0;
         };
         let mode = first.stamp.mode;
-        if matches!(mode, Mode::Erode | Mode::OceanRidge | Mode::Range) {
+        if matches!(
+            mode,
+            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin
+        ) {
             // These stamps change nothing, so they need no pass.
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
             return same.count();
@@ -939,7 +942,7 @@ impl GpuHeightmap {
                     Mode::Smooth => 2,
                     Mode::Flatten => 3,
                     Mode::Carve => 4,
-                    Mode::Erode | Mode::OceanRidge | Mode::Range => 5,
+                    Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => 5,
                     Mode::Weather => 6,
                     Mode::Warp => 7,
                     Mode::Ridge => 8,

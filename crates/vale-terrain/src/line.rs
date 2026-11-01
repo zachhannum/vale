@@ -191,6 +191,16 @@ impl StrokeLine {
         self.points.len()
     }
 
+    /// The brush radius as an angle, in radians.
+    pub(crate) fn radius(&self) -> f64 {
+        self.radius
+    }
+
+    /// The number of texels along one side of a face.
+    pub(crate) fn face_size(&self) -> usize {
+        self.face_size
+    }
+
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
@@ -252,6 +262,57 @@ impl StrokeLine {
         } else {
             dot(p, n).clamp(-1.0, 1.0).asin().abs()
         }
+    }
+
+    /// The direction of each point.
+    pub(crate) fn points(&self) -> impl Iterator<Item = V3> + '_ {
+        self.points.iter().map(|point| point.dir)
+    }
+
+    /// The distance from a direction to the line, and the distance along the
+    /// line of the nearest place, in radians. The line has a round end at
+    /// each end.
+    pub(crate) fn nearest(&self, p: V3) -> (f64, f64) {
+        let Some(last) = self.points.last() else {
+            return (f64::INFINITY, 0.0);
+        };
+        if self.points.len() == 1 {
+            return (angle(p, last.dir), 0.0);
+        }
+        let mut best = (f64::INFINITY, 0);
+        for j in 0..self.points.len() - 1 {
+            let d = self.distance(j, p);
+            if d < best.0 {
+                best = (d, j);
+            }
+        }
+        let j = best.1;
+        let (a, b) = (self.points[j], self.points[j + 1]);
+        let along = dot(p, normalize(cross(self.normal(j), a.dir)))
+            .clamp(-1.0, 1.0)
+            .asin();
+        (best.0, a.u + along.clamp(0.0, b.u - a.u))
+    }
+
+    /// The distance of a direction past the plane through the last point,
+    /// and its distance from the great circle through the last point, in
+    /// radians. The circle and the plane follow the direction of the last
+    /// half brush radius of the line, so a small bend at the end does not
+    /// turn them. The first value is less than zero before the plane.
+    pub(crate) fn past_end(&self, p: V3) -> (f64, f64) {
+        let Some(end) = self.points.last() else {
+            return (f64::MIN, 0.0);
+        };
+        let back = end.u - 0.5 * self.radius;
+        let from = self.points.iter().rev().find(|point| point.u <= back);
+        let from = from.unwrap_or(&self.points[0]);
+        if self.points.len() < 2 || angle(from.dir, end.dir) < 1e-12 {
+            return (f64::MIN, 0.0);
+        }
+        let n = normalize(cross(from.dir, end.dir));
+        let tangent = normalize(cross(n, end.dir));
+        let past = dot(p, tangent).clamp(-1.0, 1.0).asin();
+        (past, dot(p, n).clamp(-1.0, 1.0).asin().abs())
     }
 
     /// The plan for the points from `from` on. `from` is the number of

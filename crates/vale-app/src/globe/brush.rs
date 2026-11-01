@@ -5,9 +5,9 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape, ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM,
-    FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS, Mode, RangeSpec, Ridge,
-    Stamp, StampPlan, meters_to_level, talus_levels,
+    BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape, ELEV_MAX,
+    ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS,
+    Mode, Rain, RangeSpec, Ridge, Stamp, StampPlan, meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -45,6 +45,8 @@ pub const RIDGE_SEGMENT_KM: std::ops::RangeInclusive<f64> = 100.0..=1500.0;
 pub const RIDGE_OFFSET_KM: std::ops::RangeInclusive<f64> = 0.0..=500.0;
 /// The limits of the ridge spacing of the range mode, in kilometers.
 pub const RANGE_SPACING_KM: std::ops::RangeInclusive<f64> = 5.0..=300.0;
+/// The limits of the density of the basin mode, in kilometers.
+pub const BASIN_DENSITY: std::ops::RangeInclusive<f64> = BASIN_DENSITY_KM.0..=BASIN_DENSITY_KM.1;
 /// The limits of the channel width setting, in kilometers.
 pub const CHANNEL_KM: std::ops::RangeInclusive<f64> = CHANNEL_WIDTHS_KM.0..=CHANNEL_WIDTHS_KM.1;
 /// The limits of the floodplain setting, in kilometers.
@@ -114,6 +116,9 @@ pub struct BrushSettings {
     /// The mean distance between two ridges of the range mode, in
     /// kilometers.
     pub range_spacing_km: f64,
+    /// The mean distance between two tributaries of the basin mode, in
+    /// kilometers.
+    pub basin_density_km: f64,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -156,6 +161,7 @@ impl Default for BrushSettings {
             ridge_spread_mm: 25.0,
             ridge_magma: 0.0,
             range_spacing_km: 30.0,
+            basin_density_km: 40.0,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -174,7 +180,7 @@ pub fn needs_height(mode: Mode) -> bool {
     use Mode::*;
     matches!(
         mode,
-        Carve | Ridge | Deposit | Erode | Weather | Uplift | OceanRidge | Range
+        Carve | Ridge | Deposit | Erode | Weather | Uplift | OceanRidge | Range | Basin
     )
 }
 
@@ -250,6 +256,27 @@ impl BrushSettings {
             height: f64::from(height),
             spacing: self.range_spacing_km / world_km,
             seed,
+            limits: self.limits(),
+        }
+    }
+
+    /// The settings of a basin. `world_km` is the radius of the world. The
+    /// height is the strength.
+    pub fn basin_spec(
+        &self,
+        world_km: f64,
+        seed: u32,
+        rain: Rain,
+        channel: ChannelShape,
+    ) -> BasinSpec {
+        let height = meters_to_level(self.strength_m) - meters_to_level(0.0);
+        BasinSpec {
+            height: f64::from(height),
+            density: self.basin_density_km / world_km,
+            seed,
+            rain,
+            channel,
+            world_km,
             limits: self.limits(),
         }
     }
@@ -418,7 +445,9 @@ impl Tip<'_> {
                 | Mode::Push
                 | Mode::Noise => flow,
                 // The flow of a mouse gives the full height of the ridge.
-                Mode::OceanRidge | Mode::Range => (input / FIXED_FLOW).min(1.0) * self.brush.flow,
+                Mode::OceanRidge | Mode::Range | Mode::Basin => {
+                    (input / FIXED_FLOW).min(1.0) * self.brush.flow
+                }
                 // These three modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten | Mode::Deposit => flow * 0.3,
             },
@@ -464,9 +493,14 @@ pub fn set_world(
     }
 }
 
+/// The distance between the points of the line of a basin stroke, in
+/// texels. The outline and the main river keep the small bends of the
+/// stroke, and the brush radius has no effect.
+pub const BASIN_SPACING_TEXELS: f64 = 1.5;
+
 /// The distance between the stamps of a mode, as a part of the brush radius.
-/// The stamps of the ocean ridge mode and of the range mode are the points
-/// of the line of the stroke.
+/// The stamps of the ocean ridge mode and the range mode are the points of
+/// the line of the stroke.
 fn stamp_spacing(mode: Mode) -> f64 {
     match mode {
         Mode::OceanRidge | Mode::Range => LINE_SPACING,
@@ -491,10 +525,14 @@ impl Stroke {
 
     fn tip<'a>(&self, brush: &'a BrushSettings, face_size: usize, level: u16) -> Tip<'a> {
         let texel = FRAC_PI_2 / face_size as f64;
+        let spacing = match brush.mode {
+            Mode::Basin => texel * BASIN_SPACING_TEXELS,
+            mode => (self.radius * stamp_spacing(mode)).max(texel * 0.5),
+        };
         Tip {
             brush,
             radius: self.radius,
-            spacing: (self.radius * stamp_spacing(brush.mode)).max(texel * 0.5),
+            spacing,
             level,
         }
     }
@@ -567,8 +605,8 @@ impl Stroke {
         if let (Some(last), Some(level)) = (self.last, self.level) {
             let tip = self.tip(brush, face_size, level);
             self.line_to(&tip, last, out);
-            // The line of a ridge or a range ends at the last sample.
-            let line = matches!(brush.mode, Mode::OceanRidge | Mode::Range);
+            // The line of a ridge, a range, or a basin ends at the last sample.
+            let line = matches!(brush.mode, Mode::OceanRidge | Mode::Range | Mode::Basin);
             if line && self.end.is_some() {
                 self.put(&tip, last.0, last.1, out);
             }
@@ -596,6 +634,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Uplift
         | Mode::OceanRidge
         | Mode::Range
+        | Mode::Basin
         | Mode::Noise => 1,
     }
 }
@@ -806,6 +845,60 @@ mod tests {
         // of the flow.
         assert!((out[1].flow - 0.12).abs() < 1e-6, "{}", out[1].flow);
         assert!((out[2].flow - 0.24).abs() < 1e-6, "{}", out[2].flow);
+    }
+
+    #[test]
+    fn the_points_of_a_basin_stroke_are_a_few_texels_apart_at_each_radius() {
+        let brush = BrushSettings {
+            mode: Mode::Basin,
+            ..BrushSettings::default()
+        };
+        let texel = FRAC_PI_2 / 1024.0;
+        let arc = 0.1_f64.to_degrees();
+        for radius in [0.01, 0.1, 0.5] {
+            let mut stroke = Stroke::default();
+            let mut out = Vec::new();
+            for lon in [0.0, arc * 0.5, arc] {
+                stroke.add_sample(&brush, 1024, sample(lon, radius), |_| 0, &mut out);
+            }
+            stroke.finish(&brush, 1024, &mut out);
+            let steps = (0.1 / (texel * BASIN_SPACING_TEXELS)) as usize;
+            assert!(
+                out.len().abs_diff(steps + 2) <= 1,
+                "{radius}: {}",
+                out.len()
+            );
+            let gap = angle(out[0].center, out[1].center);
+            assert!((gap / texel - BASIN_SPACING_TEXELS).abs() < 1e-6, "{gap}");
+        }
+    }
+
+    #[test]
+    fn the_basin_spec_follows_the_settings() {
+        let brush = BrushSettings {
+            mode: Mode::Basin,
+            strength_m: 2000.0,
+            basin_density_km: 80.0,
+            floor_on: true,
+            floor_m: 100.0,
+            ..BrushSettings::default()
+        };
+        let rain = Rain {
+            wind: 270.0,
+            shadow: 0.5,
+        };
+        let channel = brush.channel_shape(6371.0);
+        let spec = brush.basin_spec(6371.0, 9, rain, channel);
+        let height = meters_to_level(2000.0) - meters_to_level(0.0);
+        assert_eq!(spec.height, f64::from(height));
+        assert!((spec.density - 80.0 / 6371.0).abs() < 1e-12);
+        assert_eq!(spec.seed, 9);
+        assert_eq!(spec.rain, rain);
+        assert_eq!(spec.channel, channel);
+        assert_eq!(spec.world_km, 6371.0);
+        assert_eq!(spec.limits, brush.limits());
+        assert_eq!(BrushSettings::default().basin_density_km, 40.0);
+        assert!(needs_height(Mode::Basin));
     }
 
     #[test]

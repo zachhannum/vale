@@ -8,6 +8,7 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 use std::sync::Arc;
 
 use crate::bands::{Bands, SEA_LEVEL};
+use crate::basin::BasinCut;
 use crate::channel::{ChannelCut, ChannelShape};
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::erode::ErodeStep;
@@ -77,6 +78,9 @@ pub enum Mode {
     /// of the brush and the strength. `Stamp::ridged` and `Stamp::relief`
     /// set its shape.
     Noise,
+    /// The mode of the basin brush. A stamp of this mode changes nothing.
+    /// `Heightmap::basin` makes the change.
+    Basin,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1011,7 +1015,10 @@ impl Heightmap {
 
     /// Applies one stamp. Returns the number of texels that it visited.
     pub fn stamp(&mut self, stamp: &Stamp) -> usize {
-        if matches!(stamp.mode, Mode::Erode | Mode::OceanRidge | Mode::Range) {
+        if matches!(
+            stamp.mode,
+            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin
+        ) {
             return 0;
         }
         let plan = self.stamp_plan(stamp);
@@ -1138,7 +1145,7 @@ impl Heightmap {
                             Mode::Raise | Mode::Uplift => old + amount * stamp.strength,
                             Mode::Lower => old - amount * stamp.strength,
                             Mode::Flatten => old + (f64::from(stamp.level) - old) * amount.min(1.0),
-                            Mode::Erode | Mode::OceanRidge | Mode::Range => continue,
+                            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => continue,
                             Mode::Noise => {
                                 let p = face_dir(face, fu, fv);
                                 let value = fractal(p, stamp, octaves);
@@ -1390,6 +1397,18 @@ impl Heightmap {
     /// that changed.
     pub fn range(&mut self, plan: &RangePlan) -> usize {
         self.lay(&plan.line, |start, at, _| plan.level(start, at))
+    }
+
+    /// Writes the texels of a basin. Returns the number of texels that it
+    /// wrote.
+    pub fn basin(&mut self, cut: &BasinCut) -> usize {
+        let mut count = 0;
+        for (face, rect, data) in &cut.rects {
+            self.store_rect(*face, *rect, data);
+            self.mark_dirty(*face, *rect);
+            count += data.len();
+        }
+        count
     }
 
     /// Lays a line brush on the ground from before the stroke. A texel near
