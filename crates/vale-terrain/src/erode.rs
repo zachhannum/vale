@@ -706,6 +706,11 @@ impl Erosion {
         }
     }
 
+    /// The rain of each cell of a window, in row order.
+    pub(crate) fn cell_rain(&self) -> Vec<f32> {
+        self.rain_of(0, 0, self.side, self.side)
+    }
+
     /// The rain of the cells of a rectangle of each square, in the order of
     /// the squares, the rows, and the cells. The rectangle has its first
     /// cell at `x0` and `y0`, and `width` by `height` cells. The rain is

@@ -254,6 +254,45 @@ impl StrokeLine {
         }
     }
 
+    /// The direction of each point.
+    pub(crate) fn points(&self) -> impl Iterator<Item = V3> + '_ {
+        self.points.iter().map(|point| point.dir)
+    }
+
+    /// The distance from a direction to the line, the distance along the
+    /// line of the nearest place, and the distance past the end of the line,
+    /// in radians. The distance past the end is to the plane through the last
+    /// point, square to the line, and it is less than zero before that plane.
+    /// It is not less than minus the brush radius, which it is at all places
+    /// nearer to another segment than to the last one.
+    pub(crate) fn nearest(&self, p: V3) -> (f64, f64, f64) {
+        let Some(last) = self.points.last() else {
+            return (f64::INFINITY, 0.0, 0.0);
+        };
+        if self.points.len() == 1 {
+            return (angle(p, last.dir), 0.0, -self.radius);
+        }
+        let mut best = (f64::INFINITY, 0.0, 0);
+        for j in 0..self.points.len() - 1 {
+            let d = self.distance(j, p);
+            if d < best.0 {
+                best = (d, 0.0, j);
+            }
+        }
+        let j = best.2;
+        let (a, b) = (self.points[j], self.points[j + 1]);
+        let n = self.normal(j);
+        let along = dot(p, normalize(cross(n, a.dir))).clamp(-1.0, 1.0).asin();
+        let u = a.u + along.clamp(0.0, b.u - a.u);
+        let past = if j + 2 == self.points.len() {
+            let past = dot(p, normalize(cross(n, b.dir))).clamp(-1.0, 1.0).asin();
+            past.max(-self.radius)
+        } else {
+            -self.radius
+        };
+        (best.0, u, past)
+    }
+
     /// The plan for the points from `from` on. `from` is the number of
     /// points that the plans before this one covered: zero, or the `end` of
     /// the last plan. The segment before the new points is in the plan,

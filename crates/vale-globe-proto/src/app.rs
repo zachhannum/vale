@@ -301,7 +301,8 @@ impl ProtoApp {
                 | Mode::Push
                 | Mode::Noise
                 | Mode::OceanRidge
-                | Mode::Range => flow,
+                | Mode::Range
+                | Mode::Basin => flow,
                 // These three modes move toward a target, so each stamp does less.
                 Mode::Smooth | Mode::Flatten | Mode::Deposit => flow * 0.3,
             },

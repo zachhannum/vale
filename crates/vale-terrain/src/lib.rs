@@ -8,6 +8,7 @@
 //! and the coarser levels as a shader.
 
 mod bands;
+mod basin;
 mod channel;
 mod cube;
 mod equirect;
@@ -31,6 +32,7 @@ mod swatch;
 mod tiles;
 
 pub use bands::{Band, Bands, MAX_BANDS, MIN_BAND, Part, Rgb, SEA_LEVEL, Stop, StopLine};
+pub use basin::{BASIN_DENSITY_KM, BasinCut, BasinLine, BasinSpec, basin};
 pub use channel::{
     CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, CURVE_FLOATS, ChannelBuffers, ChannelCurve, ChannelCut,
     ChannelLines, ChannelPlace, ChannelShape, FLOODPLAIN_KM, FLOODPLAINS_KM, PLAIN_AREAS_KM2,
