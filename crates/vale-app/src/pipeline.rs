@@ -118,6 +118,10 @@ pub struct Composed {
     /// Ground distance of one point at the middle of the view.
     pub km_per_point: f64,
     pub graticule_step: Option<f64>,
+    /// The index of the first item of the decorations of a map frame: the
+    /// edge labels, the neatline, and the border. They do not move with the
+    /// map.
+    pub decor: usize,
 }
 
 /// The geometry of one feature in projected meters.
@@ -1243,6 +1247,7 @@ impl Pipeline {
             label_summary = summary;
         }
         list.items.extend(bar_items);
+        let decor = list.items.len();
 
         Ok(Composed {
             list,
@@ -1251,6 +1256,7 @@ impl Pipeline {
             labels: label_summary,
             km_per_point: drawn.km_per_point,
             graticule_step: step,
+            decor,
         })
     }
 
@@ -1316,6 +1322,50 @@ impl Pipeline {
             rule: FillRule::NonZero,
         });
         list.push(Item::PopClip);
+        Ok(list)
+    }
+
+    /// The map of a frame in all of `part`, with no clip to its shape, no
+    /// labels, and no decorations. It fills the shape while a gesture moves
+    /// the map, until the next compose.
+    pub fn compose_frame_spill(
+        &mut self,
+        doc: &Document,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        part: Rect,
+    ) -> anyhow::Result<DisplayList> {
+        let ids = drawn_layers(doc, Some(frame.map));
+        let cache = self.ensure(doc, frame.map, &ids)?;
+        let vt = atlas::frame_transform(&cache.projection, frame, target);
+        let step = atlas::graticule_interval(&cache.projection, frame);
+        cache.ensure_graticule(step, &vt, part, frame.center[0]);
+        let cache = &self.caches[0];
+        let [r, g, b] = frame.graticule.color;
+        let stroke = Stroke::solid(vale_render::Color::rgb(r, g, b), frame.graticule.width);
+        let graticule = step
+            .and_then(|s| cache.graticule_lines(s))
+            .map(|lines| (lines, stroke));
+        let symbol_scale = SymbolScale {
+            nominal: frame.scale,
+            unit: target.pts_per_mm / PT_PER_MM,
+        };
+        let mut list = DisplayList::new(part.x1, part.y1);
+        draw_map(
+            &mut list,
+            doc,
+            Some(frame.map),
+            cache,
+            &vt,
+            part,
+            false,
+            true,
+            &ids,
+            graticule,
+            None,
+            &mut self.scatter,
+            symbol_scale,
+        );
         Ok(list)
     }
 
@@ -1428,6 +1478,12 @@ impl Pipeline {
             list.items.extend(items);
             label_summary = summary;
         }
+        list.push(Item::PopClip);
+        let decor = list.items.len();
+        list.push(Item::PushClip {
+            path: shape_path(&frame.shape.rings(), target),
+            rule: FillRule::EvenOdd,
+        });
         list.items.extend(edge_labels::items(&edge, false));
         list.push(Item::PopClip);
         if frame.neatline.on {
@@ -1450,6 +1506,7 @@ impl Pipeline {
             labels: label_summary,
             km_per_point: drawn.km_per_point,
             graticule_step: step,
+            decor,
         })
     }
 

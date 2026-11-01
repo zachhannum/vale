@@ -27,7 +27,7 @@ use crate::globe::nav::Nav;
 use crate::globe::{FrameDraw, FramePlace};
 use crate::page_snap;
 use crate::pipeline::Quality;
-use crate::view::ViewTransform;
+use crate::view::{View, ViewTransform};
 
 pub mod measure;
 
@@ -658,6 +658,15 @@ pub struct AtlasState {
     item_images: HashMap<FurnitureId, ItemImage>,
     /// The water of the frames that draw raster layers.
     unders: HashMap<FrameId, FrameImage>,
+    /// The edge labels, the neatline, and the border of the frames. They
+    /// stay in place while a gesture moves the map.
+    decors: HashMap<FrameId, FrameImage>,
+    /// The map of the frames in a margin around their shapes, at a lower
+    /// resolution. It fills the shape while a gesture moves the map.
+    spills: HashMap<FrameId, FrameImage>,
+    /// The screen rectangles of the map, the spill, and the decorations of
+    /// each frame in the last frame.
+    painted: HashMap<FrameId, [Option<Rect>; 3]>,
     /// The shape of each frame as a mask for its raster layers: the key of
     /// what it shows, and the mask.
     masks: HashMap<FrameId, (u64, Arc<Mask>)>,
@@ -729,6 +738,12 @@ impl AtlasState {
     pub fn texture_rect(&self, id: FrameId) -> Option<Rect> {
         self.images.get(&id).map(|i| i.rect)
     }
+
+    /// The screen rectangles of the map, the spill, and the decorations of
+    /// frame `id` in the last frame.
+    pub fn painted_rects(&self, id: FrameId) -> [Option<Rect>; 3] {
+        self.painted.get(&id).copied().unwrap_or_default()
+    }
 }
 
 impl Default for AtlasState {
@@ -781,6 +796,9 @@ impl Default for AtlasState {
             images: HashMap::new(),
             item_images: HashMap::new(),
             unders: HashMap::new(),
+            decors: HashMap::new(),
+            spills: HashMap::new(),
+            painted: HashMap::new(),
             masks: HashMap::new(),
             mask_count: 0,
             meshes: Vec::new(),
@@ -890,6 +908,8 @@ pub fn sync(state: &mut AppState) {
         a.vertex = None;
     }
     a.images.retain(|id, _| atlas.frame(*id).is_some());
+    a.decors.retain(|id, _| atlas.frame(*id).is_some());
+    a.spills.retain(|id, _| atlas.frame(*id).is_some());
     a.item_images
         .retain(|id, _| page.furniture.iter().any(|f| f.id == *id));
 }
@@ -1634,6 +1654,8 @@ pub fn delete_frame(state: &mut AppState) {
     state.atlas.selection = AtlasSelection::None;
     state.atlas.vertex = None;
     state.atlas.images.remove(&id);
+    state.atlas.decors.remove(&id);
+    state.atlas.spills.remove(&id);
 }
 
 /// Removes the selected vertex of the selected frame.
@@ -1939,7 +1961,12 @@ fn map_images(state: &AppState, map: MapId) -> Vec<vale_store::ImageId> {
 struct Placed {
     id: FrameId,
     vt: ViewTransform,
+    /// The view of the decorations of the frame.
+    fixed: ViewTransform,
     shown: Rect,
+    /// The triangles of the shape on the screen. The map does not move out
+    /// of them.
+    inside: Vec<[Pos2; 3]>,
     /// The frame draws raster layers on the GPU.
     layered: bool,
 }
@@ -2041,6 +2068,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let radius = state.doc.project.world.radius_km * 1000.0;
     let mut placed: Vec<Placed> = Vec::new();
     let mut draws: Vec<FrameDraw> = Vec::new();
+    let mut spilled = false;
     for frame in &page.frames {
         let Some(map) = state.doc.project.atlas.map(frame.map) else {
             continue;
@@ -2122,6 +2150,17 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                 (primary, layered),
             );
         }
+        // One spill each frame, after its frame settles.
+        let spill = state.atlas.spills.get(&frame.id);
+        if fresh
+            && !moving
+            && !spilled
+            && spill.is_none_or(|s| s.content != content || s.place != place_key)
+        {
+            compose_spill(&ctx, state, frame, place, area, vt, (content, place_key));
+            spilled = true;
+            ctx.request_repaint();
+        }
         if layered {
             let spec = state.doc.projection(frame.map);
             let rect = pixel_rect(shown, ppp);
@@ -2158,10 +2197,13 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                 });
             }
         }
+        let inside = shape_triangles(frame, place);
         placed.push(Placed {
             id: frame.id,
             vt,
+            fixed: fixed_view(vt, target),
             shown,
+            inside,
             layered,
         });
     }
@@ -2179,10 +2221,17 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let mut items = Vec::new();
         for p in &placed {
             let by = p.layered.then(|| state.atlas.unders.get(&p.id)).flatten();
-            let images = [by, state.atlas.images.get(&p.id)];
-            for image in images.into_iter().flatten() {
+            let images = [
+                (by, p.vt),
+                (state.atlas.images.get(&p.id), p.vt),
+                (state.atlas.decors.get(&p.id), p.fixed),
+            ];
+            for (image, vt) in images {
+                let Some(image) = image else {
+                    continue;
+                };
                 let corners = [image.rect.min, image.rect.max].map(|c| {
-                    let q = p.vt.to_page(
+                    let q = vt.to_page(
                         image
                             .vt
                             .from_page(Point::new(f64::from(c.x), f64::from(c.y))),
@@ -2203,19 +2252,39 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             area, callback,
         ));
     }
+    state.atlas.painted.clear();
     for p in placed {
+        let moved = (state.atlas.images.get(&p.id)).is_some_and(|image| image.vt != p.vt);
+        let spill = (state.atlas.spills.get(&p.id))
+            .filter(|_| moved)
+            .map(|image| paint_image(&painter, image, &p.vt, (&p.inside, p.shown)));
         let by = p.layered.then(|| state.atlas.unders.get(&p.id)).flatten();
         if let Some(image) = by {
-            paint_image(&painter, image, &p.vt, p.shown);
+            paint_image(&painter, image, &p.vt, (&p.inside, p.shown));
         }
         if let Some(callback) = callbacks.remove(&p.id.0) {
             painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
                 area, callback,
             ));
         }
-        if let Some(image) = state.atlas.images.get(&p.id) {
-            paint_image(&painter, image, &p.vt, p.shown);
-        }
+        let map = (state.atlas.images.get(&p.id))
+            .map(|image| paint_image(&painter, image, &p.vt, (&p.inside, p.shown)));
+        let decor = (state.atlas.decors.get(&p.id))
+            .map(|image| paint_image(&painter, image, &p.fixed, (&[], p.shown)));
+        state.atlas.painted.insert(p.id, [map, spill, decor]);
+    }
+}
+
+/// A view that follows the page and the shape of a frame, but not the
+/// center, the scale, or the rotation of its map.
+fn fixed_view(vt: ViewTransform, target: FrameTarget) -> ViewTransform {
+    ViewTransform {
+        view: View {
+            center: Point::ZERO,
+            scale: target.pts_per_mm,
+            rotation: 0.0,
+        },
+        ..vt
     }
 }
 
@@ -2372,6 +2441,81 @@ fn scene_of(area: Rect, page: Rect, items: &[(Arc<Thumb>, Rect)], canvas: Canvas
     }
 }
 
+/// The resolution of a spill, as a part of the resolution of the screen.
+const SPILL_RESOLUTION: f32 = 0.5;
+
+/// Composes the spill of a frame: the map in the part of the shape on the
+/// canvas and a margin of half its larger side.
+fn compose_spill(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    frame: &FrameRecord,
+    place: PagePlace,
+    area: Rect,
+    vt: ViewTransform,
+    (content, place_key): (u64, u64),
+) {
+    let ppp = ctx.pixels_per_point() * SPILL_RESOLUTION;
+    let zoom = place.pts_per_mm / PT_PER_MM;
+    let inner = place
+        .rect_to_screen(math::shape_bbox(&frame.shape))
+        .intersect(area);
+    if !inner.is_positive() {
+        return;
+    }
+    let margin = 0.5 * inner.width().max(inner.height());
+    let mut shown = inner.expand(margin);
+    let most = 8192.0 / ppp;
+    shown.max = shown.min + shown.size().min(vec2(most, most));
+    let scale = f64::from(ppp) * zoom;
+    let origin = place.rect.min - shown.min;
+    let target = FrameTarget {
+        origin: Point::new(f64::from(origin.x) / zoom, f64::from(origin.y) / zoom),
+        pts_per_mm: PT_PER_MM,
+    };
+    let part = kurbo::Rect::new(
+        0.0,
+        0.0,
+        f64::from(shown.width()) / zoom,
+        f64::from(shown.height()) / zoom,
+    );
+    let list = state
+        .pipeline
+        .compose_frame_spill(&state.doc, frame, target, part);
+    let img = list
+        .map_err(|e| format!("{e:#}"))
+        .and_then(|list| vale_render::render_rgba(&list, scale).map_err(|e| format!("{e}")));
+    let img = match img {
+        Ok(img) => img,
+        Err(e) => {
+            state.status = e;
+            return;
+        }
+    };
+    let image = egui::ColorImage::from_rgba_premultiplied([img.width, img.height], &img.data);
+    let options = egui::TextureOptions::LINEAR;
+    let texture = match state.atlas.spills.remove(&frame.id) {
+        Some(mut old) => {
+            old.texture.set(image, options);
+            old.texture
+        }
+        None => ctx.load_texture(format!("spill-{}", frame.id.0), image, options),
+    };
+    let size = vec2(img.width as f32, img.height as f32) / ppp;
+    state.atlas.spills.insert(
+        frame.id,
+        FrameImage {
+            texture,
+            thumb: Arc::new(Thumb::new(&img)),
+            content,
+            place: place_key,
+            vt,
+            rect: Rect::from_min_size(shown.min, size),
+            settled: true,
+        },
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compose(
     ctx: &egui::Context,
@@ -2468,12 +2612,17 @@ fn compose(
     } else {
         state.atlas.unders.remove(&frame.id);
     }
+    let mut map = composed.list.clone();
+    let decor = vale_render::DisplayList {
+        items: map.items.split_off(composed.decor),
+        ..map.clone()
+    };
     let images = &mut state.atlas.images;
     if let Err(e) = upload(
         ctx,
         images,
         frame.id,
-        &composed.list,
+        &map,
         scale,
         (shown, vt),
         keys,
@@ -2481,6 +2630,31 @@ fn compose(
     ) {
         state.status = e;
         return;
+    }
+    let clips = |item: &vale_render::Item| {
+        matches!(
+            item,
+            vale_render::Item::PushClip { .. } | vale_render::Item::PopClip
+        )
+    };
+    if decor.items.iter().all(clips) {
+        state.atlas.decors.remove(&frame.id);
+    } else {
+        let fixed = fixed_view(vt, place.target());
+        let images = &mut state.atlas.decors;
+        if let Err(e) = upload(
+            ctx,
+            images,
+            frame.id,
+            &decor,
+            scale,
+            (shown, fixed),
+            keys,
+            settled,
+        ) {
+            state.status = e;
+            return;
+        }
     }
     if primary {
         state.composed = Some(composed);
@@ -2525,38 +2699,113 @@ fn upload(
     Ok(())
 }
 
-/// Paints the texture of a frame. While a gesture moves the map, the
-/// texture moves with the view.
-fn paint_image(painter: &egui::Painter, image: &FrameImage, vt: &ViewTransform, clip: Rect) {
+/// Paints the texture of a frame, and returns the screen rectangle of the
+/// painted part. While a gesture moves the map, the texture moves with the
+/// view, and it shows only inside the triangles of `inside`. With no
+/// triangles, the whole texture shows.
+fn paint_image(
+    painter: &egui::Painter,
+    image: &FrameImage,
+    vt: &ViewTransform,
+    (inside, clip): (&[[Pos2; 3]], Rect),
+) -> Rect {
     let moved = |p: Pos2| {
         let q = Point::new(f64::from(p.x), f64::from(p.y));
         let q = vt.to_page(image.vt.from_page(q));
         pos2(q.x as f32, q.y as f32)
     };
+    let back = |p: Pos2| {
+        let q = Point::new(f64::from(p.x), f64::from(p.y));
+        let q = image.vt.to_page(vt.from_page(q));
+        pos2(q.x as f32, q.y as f32)
+    };
     let r = image.rect;
-    let mut mesh = egui::Mesh::with_texture(image.texture.id());
-    let corners = [
+    let uv = |p: Pos2| {
+        let q = back(p) - r.min;
+        pos2(q.x / r.width(), q.y / r.height())
+    };
+    let quad = [
         r.left_top(),
         r.right_top(),
         r.right_bottom(),
         r.left_bottom(),
-    ];
-    let uvs = [
-        pos2(0.0, 0.0),
-        pos2(1.0, 0.0),
-        pos2(1.0, 1.0),
-        pos2(0.0, 1.0),
-    ];
-    for (corner, uv) in corners.into_iter().zip(uvs) {
-        mesh.vertices.push(egui::epaint::Vertex {
-            pos: moved(corner),
-            uv,
-            color: Color32::WHITE,
-        });
+    ]
+    .map(moved);
+    let mut mesh = egui::Mesh::with_texture(image.texture.id());
+    let mut fan = |points: &[Pos2]| {
+        let base = mesh.vertices.len() as u32;
+        for &pos in points {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos,
+                uv: uv(pos),
+                color: Color32::WHITE,
+            });
+        }
+        for i in 2..points.len() as u32 {
+            mesh.add_triangle(base, base + i - 1, base + i);
+        }
+    };
+    // At rest, the whole texture shows, with the smooth edge of the shape.
+    if inside.is_empty() || image.vt == *vt {
+        fan(&quad);
+    } else {
+        for triangle in inside {
+            fan(&clip_convex(triangle, &quad));
+        }
     }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
+    let rect = mesh.calc_bounds();
     painter.with_clip_rect(clip).add(mesh);
+    rect
+}
+
+/// The part of the convex polygon `poly` inside the convex polygon `by`.
+fn clip_convex(poly: &[Pos2], by: &[Pos2]) -> Vec<Pos2> {
+    let cross = |a: Pos2, b: Pos2, p: Pos2| (b - a).x * (p - a).y - (b - a).y * (p - a).x;
+    let n = by.len();
+    let turn = (0..n)
+        .map(|i| cross(by[i], by[(i + 1) % n], by[(i + 2) % n]))
+        .sum::<f32>();
+    let mut out = poly.to_vec();
+    for i in 0..n {
+        let (a, b) = (by[i], by[(i + 1) % n]);
+        let side = |p: Pos2| cross(a, b, p) * turn.signum();
+        let input = std::mem::take(&mut out);
+        for (k, &p) in input.iter().enumerate() {
+            let q = input[(k + 1) % input.len()];
+            let (sp, sq) = (side(p), side(q));
+            if sp >= 0.0 {
+                out.push(p);
+            }
+            if (sp >= 0.0) != (sq >= 0.0) {
+                out.push(p + (q - p) * (sp / (sp - sq)));
+            }
+        }
+    }
+    out
+}
+
+/// The triangles of the shape of a frame on the screen.
+fn shape_triangles(frame: &FrameRecord, place: PagePlace) -> Vec<[Pos2; 3]> {
+    let mut points: Vec<[f64; 2]> = Vec::new();
+    let mut starts = Vec::new();
+    for (i, ring) in frame.shape.rings().iter().enumerate() {
+        if i > 0 {
+            starts.push(points.len() as u32);
+        }
+        points.extend(ring.iter().map(|&[x, y]| {
+            let p = place.to_screen(Point::new(x, y));
+            [f64::from(p.x), f64::from(p.y)]
+        }));
+    }
+    let mut indices: Vec<u32> = Vec::new();
+    earcut::Earcut::new().earcut(points.iter().copied(), &starts, &mut indices);
+    let at = |i: u32| {
+        let [x, y] = points[i as usize];
+        pos2(x as f32, y as f32)
+    };
+    (indices.as_chunks::<3>().0.iter())
+        .map(|t| t.map(at))
+        .collect()
 }
 
 /// Paints the outline of the selected page or frame and the handles of the
