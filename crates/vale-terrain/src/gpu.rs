@@ -89,7 +89,8 @@ struct FaceStamp {
     relief_span: f32,
     /// The number of octaves of the noise mode.
     octaves: u32,
-    pad: u32,
+    /// The largest drop of the noise mode.
+    lower: f32,
 }
 
 impl FaceStamp {
@@ -124,7 +125,7 @@ impl FaceStamp {
             relief_span: f32::from(meters_to_level(SEA_LEVEL + NOISE_RELIEF_M))
                 - f32::from(meters_to_level(SEA_LEVEL)),
             octaves: noise_octaves(stamp.scale, size as usize),
-            pad: 0,
+            lower: stamp.lower as f32,
         }
     }
 }

@@ -17,9 +17,9 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::BrushSettings;
 use crate::globe::brush::{
-    BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M,
-    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M,
-    TALUS_DEG, WARP_KM, needs_height,
+    BASIN_DENSITY, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_M, RANGE_SPACING_KM,
+    RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED,
+    STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
@@ -905,6 +905,20 @@ fn log_slider(
     slider(&mut fraction, text).then(|| low * (fraction * span).exp())
 }
 
+/// Shows a value from 0 as a slider that grows with the square of the
+/// fraction, so the small values get more of the track. Returns the new
+/// value when the slider moves.
+fn square_slider(
+    value: f64,
+    range: std::ops::RangeInclusive<f64>,
+    text: &str,
+    slider: impl FnOnce(&mut f64, &str) -> bool,
+) -> Option<f64> {
+    let high = *range.end();
+    let mut fraction = (value / high).clamp(0.0, 1.0).sqrt();
+    slider(&mut fraction, text).then_some(high * fraction * fraction)
+}
+
 /// The size of the brush on the ground, in the display units of the world.
 pub fn brush_size_text(state: &AppState) -> String {
     let world = &state.doc.project.world;
@@ -1548,6 +1562,22 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         seed_row(ui, controls, &mut state.doc.project.world.seed);
     } else if brush.mode == Mode::Push {
         // The motion of the pen and the flow set the distance.
+    } else if brush.mode == Mode::Noise {
+        let span = brush.value_range.1 - brush.value_range.0;
+        let text = world::value_text(brush.meters_value(brush.noise_raise_m), span, &unit);
+        let raise = square_slider(brush.noise_raise_m, NOISE_M, &text, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush raise", "Raise", fraction, text)
+        });
+        if let Some(meters) = raise {
+            brush.noise_raise_m = meters;
+        }
+        let text = world::value_text(brush.meters_value(brush.noise_lower_m), span, &unit);
+        let lower = square_slider(brush.noise_lower_m, NOISE_M, &text, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush lower", "Lower", fraction, text)
+        });
+        if let Some(meters) = lower {
+            brush.noise_lower_m = meters;
+        }
     } else {
         let (min, max) = brush.value_range;
         let text = world::value_text(brush.strength_value(), max - min, &unit);

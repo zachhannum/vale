@@ -2181,7 +2181,8 @@ fn the_brush_panel_of_the_noise_mode_has_its_settings() {
         (Tool::Brush, Mode::Noise)
     );
     assert_eq!(toggled(&h, SCULPT), Some(true));
-    assert!(control(&h, "Brush strength").is_some());
+    // The Raise and Lower sliders take the place of the Strength slider.
+    assert!(control(&h, "Brush strength").is_none());
     check_controls(&h, "the Noise mode");
     screenshot::save(&mut h, "pad-noise");
     let rect = control(&h, "Brush scale").unwrap();
@@ -2201,6 +2202,16 @@ fn the_brush_panel_of_the_noise_mode_has_its_settings() {
     let rect = control(&h, "Brush relief").unwrap();
     drag(&mut h, rect.center(), rect.right_center(), None);
     assert_eq!(h.state().globe.brush.noise_relief, 1.0);
+    // Each of the two sliders goes to 0 apart from the other.
+    let rect = control(&h, "Brush lower").unwrap();
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    let brush = &h.state().globe.brush;
+    assert_eq!((brush.noise_raise_m, brush.noise_lower_m), (1500.0, 0.0));
+    let rect = control(&h, "Brush raise").unwrap();
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    assert_eq!(h.state().globe.brush.noise_raise_m, 0.0);
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert_eq!(h.state().globe.brush.noise_raise_m, 6000.0);
     let rect = control(&h, "Brush seed").unwrap();
     drag(&mut h, rect.center(), rect.right_center(), None);
     assert_eq!(h.state().doc.project.world.seed, 999);
