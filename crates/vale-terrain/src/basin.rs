@@ -13,16 +13,18 @@
 //! concave profiles come from the erosion. A wall on the rim of the area is
 //! the divide. Last, the rivers are cut into the texels as thin channels.
 
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
-use crate::channel::{ChannelCurve, ChannelCut, ChannelShape, METERS_PER_LEVEL, channel_size};
+use crate::channel::{ChannelCut, ChannelLines, ChannelShape, METERS_PER_LEVEL, channel_size};
 use crate::erode::Erosion;
 use crate::flow::{
     CoarseHeights, Grid, NONE, OUT, WINDOW_CELLS, Window, WindowHeights, level_curves,
 };
 use crate::heightmap::{Heightmap, Limits, MAX_BRUSH_RADIUS, TexelRect, brush_rect, noise3};
 use crate::line::{LINE_SPACING, StrokeLine};
-use crate::math::{V3, add, angle, dot, normalize, scale};
+use crate::math::{V3, add, angle, normalize, scale};
 use crate::rain::Rain;
 
 /// The smallest and the largest Density setting, in kilometers.
@@ -72,19 +74,42 @@ const CLOSER: f64 = 0.25;
 /// The smallest drop from a cell to its receiver, in 16-bit steps.
 const STEP: f64 = 2.0;
 
-/// The half-width of the valley of a tributary, in tributary distances.
-const VALLEY: f64 = 1.0;
+/// The relief of the basin fades out over this part of the brush radius at
+/// the side of the area.
+const FADE: f64 = 0.4;
 
-/// The width of a valley grows with the water of its stream to this power.
-const VALLEY_GROWTH: f64 = 0.3;
+/// The part of the relief that rises evenly from the main river to the
+/// side, so the divide is high enough near the outlet too.
+const ACROSS: f64 = 0.25;
 
-/// A stream with this part of the water of a tributary or more makes a
-/// valley.
-const SMALL_STREAMS: f64 = 0.25;
+/// The cells next to the main river are this part of the height above it.
+const BANK: f64 = 0.02;
 
-/// The ground goes down to the old ground over this part of the brush radius
-/// at the side of the area.
-const EDGE: f64 = 0.25;
+/// The half-width of the mouth, as a part of the brush radius.
+const MOUTH: f64 = 0.3;
+
+/// The change goes to zero over this part of the brush radius at the side
+/// of the area.
+const EDGE: f64 = 0.1;
+
+/// The height of the rough ground of the first finer level, as a part of
+/// the height of the basin, and the part that each next level keeps.
+const ROUGH: f64 = 0.03;
+const ROUGH_FALLOFF: f64 = 0.55;
+
+/// The finest level has this number of cells along one side or fewer.
+const FINE_CELLS: usize = 1024;
+
+/// The number of erosion steps of each finer level, the erodibility, and the
+/// largest cut of all the steps of a level, as a part of the rough ground of
+/// the level.
+const FINE_STEPS: usize = 4;
+const ERODE: f64 = 1.0;
+const CARVE: f64 = 3.0;
+
+/// The part of the difference to the mean of its neighbors that a cell
+/// moves by hillslope creep.
+const CREEP: f64 = 0.2;
 
 const SALT_BASIN: u32 = 0x5b2e_93c7;
 
@@ -179,6 +204,8 @@ pub(crate) struct BasinNet {
     pub(crate) window: Window,
     /// The cells of the area.
     pub(crate) inside: Vec<bool>,
+    /// The cells of the inner basin, whose water goes to the main river.
+    pub(crate) inner: Vec<bool>,
     /// The level of each cell of the area.
     pub(crate) levels: Vec<f64>,
     pub(crate) receiver: Vec<u32>,
@@ -188,8 +215,6 @@ pub(crate) struct BasinNet {
     pub(crate) chain: Vec<usize>,
     /// The smallest water of a tributary, in steradians of even rain.
     pub(crate) min_area: f64,
-    /// The end of the mouth, past the side of the area.
-    pub(crate) mouth: V3,
 }
 
 /// The receivers of the cells of the area, and the cells in an order where
@@ -307,7 +332,6 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         on_chain[j] || (inside[j] && !rim[j] && places[j].0 < places[i].0 - CLOSER * cell)
     };
     let length_to = |i: usize, r: usize| angle(dirs[i], dirs[r]) / cell;
-    let outlet = *chain.last().expect("the chain has cells");
 
     // Braun and Willett (2013): an implicit step of the stream-power law
     // with uplift, in the order of the stack. With an uplift of 1 and an
@@ -351,118 +375,132 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         };
     }
 
-    // The levels. The outlet is at the old ground plus the depth of the
-    // channel there, so the bed of the channel meets the old ground.
-    let area_sr: Vec<f64> = area.iter().map(|a| a * mean_solid).collect();
-    let depth = DEPTH_M / METERS_PER_LEVEL;
-    let base = f64::from(old.levels[outlet]) + depth * channel_size(area_sr[outlet]);
+    // The relief of the basin rises from the outlet to the divides, and it
+    // fades out over the outer part of the radius. It goes onto the old
+    // ground.
+    // Past the outlet, the relief opens in a gap along the main river, the
+    // mouth of the basin.
+    let gap = |p: V3| {
+        let (past, side) = line.line.past_end(p);
+        let mouth = MOUTH * radius;
+        1.0 - (1.0 - smoothstep(side / mouth)) * smoothstep(past / (2.0 * cell))
+    };
+    let fade = |d: f64| smoothstep((radius - d) / (FADE * radius));
+    // The inner basin is inside the divide, out of the mouth. Its water goes
+    // to the main river. The water of the rest of the area leaves the area.
+    let divide = (1.0 - FADE) * radius;
+    let in_basin = |p: V3, d: f64| {
+        let (past, side) = line.line.past_end(p);
+        d < divide && !(past > 0.0 && side < MOUTH * radius)
+    };
     let top = (0..count)
         .filter(|&i| inside[i] && !rim[i])
         .map(|i| h[i])
         .fold(f64::MIN_POSITIVE, f64::max);
+    let old_levels: Vec<f64> = old.levels.iter().map(|&l| f64::from(l)).collect();
+    // The basin rises by the depth of the channel at the outlet, so the bed
+    // of the channel meets the old ground at the mouth.
+    let depth = DEPTH_M / METERS_PER_LEVEL;
+    let outlet = *chain.last().expect("the chain has cells");
+    let lift = depth * channel_size(area[outlet] * mean_solid);
     let mut levels: Vec<f64> = (0..count)
         .map(|i| {
-            if inside[i] {
-                base + h[i] / top * spec.height
+            let across = if on_chain[i] {
+                0.0
             } else {
-                f64::from(old.levels[i])
-            }
+                places[i].0 / radius
+            };
+            let shape = (1.0 - ACROSS) * (h[i] / top).max(0.0) + ACROSS * across;
+            let rise = (lift + spec.height * shape) * fade(places[i].0) * gap(dirs[i]);
+            old_levels[i] + if inside[i] { rise } else { 0.0 }
         })
         .collect();
-    // Each cell is above its receiver, and each cell next to the main river
-    // is above the river cells next to it. Thus the main river stays on the
-    // line.
+    let inner: Vec<bool> = (0..count)
+        .map(|i| on_chain[i] || (inside[i] && in_basin(dirs[i], places[i].0)))
+        .collect();
+    // In the inner basin, each cell is above its receiver, and each cell next
+    // to the main river is above the river cells next to it. Thus the main
+    // river stays on the line.
     let floor = |levels: &mut Vec<f64>| {
-        for &i in &flow.stack {
+        for &i in flow.stack.iter().filter(|&&i| inner[i]) {
             if let r @ 0..OUT = flow.receiver[i] {
                 levels[i] = levels[i].max(levels[r as usize] + STEP);
             }
         }
     };
     floor(&mut levels);
-    for i in (0..count).filter(|&i| inside[i] && !on_chain[i] && !rim[i]) {
+    let bank = STEP + BANK * spec.height;
+    for i in (0..count).filter(|&i| inner[i] && !on_chain[i]) {
         let near = window.neighbors(i);
         let river = near
             .iter()
             .filter(|&&j| j != NONE && on_chain[j as usize])
-            .map(|&j| levels[j as usize] + STEP)
+            .map(|&j| levels[j as usize] + bank)
             .fold(f64::MIN, f64::max);
         levels[i] = levels[i].max(river);
     }
     floor(&mut levels);
-    // The channels: the tributaries and the whole main river.
     let min_area = TRIBUTARY_AREA * (density / cell) * (radius / cell) * mean_solid;
-    let mut curve_area: Vec<f32> = area_sr.iter().map(|&a| a as f32).collect();
-    for &c in &chain {
-        curve_area[c] = curve_area[c].max((min_area / SMALL_STREAMS) as f32);
+
+    // Finer levels add rough ground at their scale and erode it.
+    let inner_net = inner.clone();
+    let mut grid = Level {
+        window,
+        inside: inside.clone(),
+        chain: chain.clone(),
+        distance: places.iter().map(|p| p.0).collect(),
+        along: places.iter().map(|p| p.1).collect(),
+        rain: rain.iter().map(|&r| f64::from(r)).collect(),
+        old: old_levels,
+        levels: levels.clone(),
+    };
+    let mut rough = ROUGH * spec.height;
+    let levels = grid.levels.clone();
+    while grid.window.cell > 1 && 2 * grid.window.cells <= FINE_CELLS {
+        let rough_at = |p: V3, size: f64| {
+            rough * fractal(p, size, seed) * fade(line.line.nearest(p).0) * gap(p)
+        };
+        grid = grid.finer(map, &line.line, radius, rough_at);
+        grid.erode(rough);
+        rough *= ROUGH_FALLOFF;
     }
-    // Each cell of the main river drains more than each tributary that joins
-    // the main river below it, so the curve of the main river does not bend
-    // toward a tributary.
-    let mut largest = vec![0.0f32; count];
-    for i in (0..count).filter(|&i| inside[i] && !on_chain[i]) {
-        if let r @ 0..OUT = flow.receiver[i] {
-            largest[r as usize] = largest[r as usize].max(curve_area[i]);
-        }
+
+    // The channels of the main river and the tributaries, on the finest
+    // level.
+    let fine = grid.flow();
+    let fine_cell = FRAC_PI_2 * grid.window.cell as f64 / n as f64;
+    let fine_solid = mean_solid * (fine_cell / cell).powi(2);
+    let mut curve_area: Vec<f32> = fine.area.iter().map(|&a| (a * fine_solid) as f32).collect();
+    for &c in &grid.chain {
+        curve_area[c] = curve_area[c].max((2.0 * min_area) as f32);
     }
-    for pair in chain.windows(2) {
-        curve_area[pair[0]] = curve_area[pair[0]].max(1.001 * largest[pair[1]]);
-    }
-    // The streams that shape the valleys. The smallest ones make no
-    // channel.
-    let valley_area = min_area * SMALL_STREAMS;
-    let mut curves = level_curves(&window, &flow.receiver, &curve_area, valley_area, &levels);
-    // The mouth: the main river goes on past the outlet to the side of the
-    // area, and down to the old ground there. It is the only gap in the
-    // divide.
-    let points = line.points();
-    let (end, before) = (points[points.len() - 1], points[points.len() - 2]);
-    let ahead = normalize(add(end, scale(before, -1.0)));
-    let past = |k: f64| normalize(add(end, scale(ahead, k * radius)));
-    let mouth = past(1.0 + EDGE);
-    let water = f64::from(curve_area[outlet]);
-    let outlet_level = levels[outlet];
-    let mouth_level =
-        (f64::from(map.sample(mouth)) + depth * channel_size(water)).min(outlet_level - STEP);
-    curves.push(ChannelCurve {
-        points: [end, past(0.5), mouth],
-        levels: [
-            outlet_level,
-            0.5 * (outlet_level + mouth_level),
-            mouth_level,
-        ],
-        areas: [water; 3],
-        plains: [0.0; 3],
-    });
+    let curves = level_curves(
+        &grid.window,
+        &fine.receiver,
+        &curve_area,
+        min_area,
+        &grid.levels,
+    );
+    let lines = ChannelLines::window(curves, grid.window, spec.world_km);
     let cut = ChannelCut {
         shape: spec.channel,
         depth,
         texel: FRAC_PI_2 / n as f64,
     };
-    // The half-width of the valley of a stream, in radians.
-    let valley = |area: f64| {
-        let width = VALLEY * density * (area / min_area).max(0.0).powf(VALLEY_GROWTH);
-        width.clamp(cell, radius)
-    };
-    // The part of the full depth of a valley, from 0 at the smallest stream
-    // to 1 at two times the water of a tributary.
-    let depth_part = |area: f64| {
-        let octaves = (area / valley_area).max(1.0).log2() / (2.0 / SMALL_STREAMS).log2();
-        smoothstep(octaves)
-    };
-    let reach = |curve: &ChannelCurve| {
-        let area = curve.areas.iter().fold(0.0, |a: f64, &b| a.max(b));
-        valley(area) / cell + 2.0
-    };
-    let bins = CurveBins::new(&curves, &window, reach);
 
-    // The ridges between the valleys: the levels of the cells, smoothed over
-    // the tributary distance.
-    let ridges = smooth_inside(&levels, &inside, side, (VALLEY * density / cell) as usize);
-
-    // How far each cell is outside the area, in radians.
-    let edge: Vec<f64> = places.iter().map(|&p| outside(p)).collect();
-    let blend = |field: &[f64], u: f64, v: f64| {
+    // The texels take the change of the finest level, and rough ground below
+    // its cell size.
+    let fine_side = grid.window.cells;
+    let change: Vec<f64> = (0..fine_side * fine_side)
+        .map(|i| {
+            if grid.inside[i] {
+                grid.levels[i] - grid.old[i]
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let blend = |field: &[f64], side: usize, u: f64, v: f64| {
         let last = side as i64 - 1;
         let (x, y) = (u - 0.5, v - 0.5);
         let (x0, y0) = (x.floor(), y.floor());
@@ -476,63 +514,42 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         let bottom = at(0, 1) * (1.0 - tx) + at(1, 1) * tx;
         top * (1.0 - ty) + bottom * ty
     };
-    let band = EDGE * radius;
-
-    // Each curve with the cosine of the largest angle from its middle point
-    // to a place that it shapes.
-    let bounds: Vec<f64> = curves
-        .iter()
-        .map(|curve| {
-            let [a, b, c] = curve.points;
-            let length = angle(b, a).max(angle(b, c));
-            (length + reach(curve) * cell).min(FRAC_PI_2).cos()
-        })
-        .collect();
+    let texel_size = FRAC_PI_2 / n as f64;
+    let edge = EDGE * radius;
     let texel = |p: V3, old: f64| -> Option<f64> {
-        let (u, v) = window.place(p)?;
-        let inside_window = |c: f64| c >= 0.0 && c < side as f64;
+        let (u, v) = grid.window.place(p)?;
+        let inside_window = |c: f64| c >= 0.0 && c < fine_side as f64;
         if !inside_window(u) || !inside_window(v) {
             return None;
         }
-        let near = blend(&edge, u, v);
-        let out = if near.abs() < 2.0 * cell {
-            outside(line.line.nearest(p))
+        let near = blend(&grid.distance, fine_side, u, v);
+        let d = if (near - radius).abs() < 2.0 * fine_cell {
+            line.line.nearest(p).0
         } else {
             near
         };
-        if out > 0.0 {
+        if d > radius {
             return None;
         }
-        // Each stream gives a valley that rises from its floor to the
-        // ridges, and the lowest valley wins. Where two valleys meet, they
-        // make a ridge.
-        let ridge = blend(&ridges, u, v);
-        let (mut ground, mut channel) = (ridge, f64::INFINITY);
-        for k in bins.near(u, v) {
-            let curve = &curves[k];
-            if dot(p, curve.points[1]) < bounds[k] {
-                continue;
-            }
-            let (distance, [floor, area, _]) = curve.nearest(p);
-            // A small stream cuts less, so its valley fades out at its head.
-            let top = ridge.max(floor);
-            let shallow = top - (top - floor) * depth_part(area);
-            let t = (distance / valley(area)).min(1.0);
-            let rise = 1.0 - (1.0 - t) * (1.0 - t);
-            ground = ground.min(shallow + (top - shallow) * rise);
-            if area >= min_area {
+        let mut new = old + blend(&change, fine_side, u, v);
+        if fine_cell > 1.5 * texel_size {
+            // The detail fades out at the main river.
+            let calm = smoothstep(d / (3.0 * fine_cell));
+            new += 0.5 * rough * fractal(p, fine_cell, seed) * fade(d) * gap(p) * calm;
+        }
+        if let Some(bin) = lines.window_bin(u, v) {
+            let surface = new;
+            for curve in lines.near(bin) {
                 let at = cut.place(curve, p);
                 let weight = cut.channel_weight(&at);
                 if weight > 0.0 {
-                    let bed = shallow - depth * at.size;
-                    channel = channel.min(shallow + weight * (bed - shallow));
+                    let bed = at.level - depth * at.size;
+                    new = new.min(surface + weight * (bed - surface));
                 }
             }
         }
-        // The ground goes down to the old ground at the side.
-        let side_part = smoothstep((out + band) / band);
-        let new = ground.min(channel);
-        Some(new + (old - new) * side_part)
+        // The change goes to zero at the side of the area.
+        Some(old + (new - old) * smoothstep((radius - d) / edge))
     };
 
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -559,17 +576,21 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         });
         rects.push((face, rect, data));
     }
+    let mut net_area: Vec<f32> = area.iter().map(|&a| (a * mean_solid) as f32).collect();
+    for &c in &chain {
+        net_area[c] = net_area[c].max(min_area as f32);
+    }
     BasinCut {
         rects,
         net: Some(BasinNet {
             window,
             inside,
+            inner: inner_net,
             levels,
             receiver: flow.receiver,
-            area: curve_area,
+            area: net_area,
             chain,
             min_area,
-            mouth,
         }),
     }
 }
@@ -693,105 +714,320 @@ fn smoothstep(t: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// A field smoothed over the cells of the area, with 3 passes of a box of
-/// `reach` cells on each side. A cell outside the area takes the smoothed
-/// field of the area near it, and a cell far from the area keeps its value.
-fn smooth_inside(field: &[f64], inside: &[bool], side: usize, reach: usize) -> Vec<f64> {
-    let mut sum: Vec<f64> = (0..field.len())
-        .map(|i| if inside[i] { field[i] } else { 0.0 })
-        .collect();
-    let mut weight: Vec<f64> = inside.iter().map(|&i| f64::from(u8::from(i))).collect();
-    for _ in 0..3 {
-        for values in [&mut sum, &mut weight] {
-            box_pass(values, side, reach, true);
-            box_pass(values, side, reach, false);
-        }
-    }
-    (0..field.len())
-        .map(|i| {
-            if weight[i] > 1e-6 {
-                sum[i] / weight[i]
-            } else {
-                field[i]
-            }
+/// A fractal noise of a direction, from about -1 to 1, with features of
+/// `size` radians and two smaller octaves.
+fn fractal(p: V3, size: f64, seed: u32) -> f64 {
+    (0..3)
+        .map(|k| {
+            let scale_k = f64::from(1u32 << k);
+            let salt = seed.wrapping_add(0x9e37 * (k + 7));
+            noise3(scale(p, scale_k / size), salt)[0] / scale_k
         })
-        .collect()
+        .sum::<f64>()
+        / 1.75
 }
 
-/// One pass of a box filter along the rows or along the columns.
-fn box_pass(values: &mut [f64], side: usize, reach: usize, rows: bool) {
-    let at = |line: usize, k: usize| {
-        if rows {
-            line * side + k
-        } else {
-            k * side + line
+/// The cells of one level of a basin.
+struct Level {
+    window: Window,
+    inside: Vec<bool>,
+    /// The cells of the main river, from the source to the outlet.
+    chain: Vec<usize>,
+    /// The distance of each cell to the line, and the distance along the line
+    /// of the nearest place, in radians.
+    distance: Vec<f64>,
+    along: Vec<f64>,
+    rain: Vec<f64>,
+    /// The level of each cell before the stroke.
+    old: Vec<f64>,
+    levels: Vec<f64>,
+}
+
+/// The flow on the cells of a grid. A receiver can be a cell outside the
+/// area.
+struct GridFlow {
+    receiver: Vec<u32>,
+    /// The cells of the area, each receiver before its donors.
+    stack: Vec<usize>,
+    /// The level of each cell after the flood fills the pits.
+    filled: Vec<f64>,
+    /// The water of each cell, in cells of even rain.
+    area: Vec<f64>,
+}
+
+impl Level {
+    /// The grid with cells of half the size. It takes the change of this
+    /// grid, and `rough` gives the rough ground of a direction and a size.
+    fn finer(
+        &self,
+        map: &Heightmap,
+        line: &StrokeLine,
+        radius: f64,
+        rough: impl Fn(V3, f64) -> f64,
+    ) -> Level {
+        let window = Window {
+            cell: self.window.cell / 2,
+            cells: 2 * self.window.cells,
+            ..self.window
+        };
+        let (side, coarse) = (window.cells, self.window.cells);
+        let up = |field: &[f64]| -> Vec<f64> {
+            (0..side * side)
+                .map(|i| {
+                    let (u, v) = (
+                        ((i % side) as f64 + 0.5) / 2.0,
+                        ((i / side) as f64 + 0.5) / 2.0,
+                    );
+                    let last = coarse as i64 - 1;
+                    let (x, y) = (u - 0.5, v - 0.5);
+                    let (x0, y0) = (x.floor(), y.floor());
+                    let (tx, ty) = (x - x0, y - y0);
+                    let at = |dx: i64, dy: i64| {
+                        let cx = (x0 as i64 + dx).clamp(0, last) as usize;
+                        let cy = (y0 as i64 + dy).clamp(0, last) as usize;
+                        field[cy * coarse + cx]
+                    };
+                    let top = at(0, 0) * (1.0 - tx) + at(1, 0) * tx;
+                    let bottom = at(0, 1) * (1.0 - tx) + at(1, 1) * tx;
+                    top * (1.0 - ty) + bottom * ty
+                })
+                .collect()
+        };
+        let change: Vec<f64> = (0..coarse * coarse)
+            .map(|i| {
+                if self.inside[i] {
+                    self.levels[i] - self.old[i]
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let cell = FRAC_PI_2 * window.cell as f64 / window.face_size as f64;
+        let distance = up(&self.distance);
+        let along = up(&self.along);
+        let chain = chain_cells(line, &window);
+        let mut inside: Vec<bool> = distance
+            .iter()
+            .map(|&d| d + HALF_DIAGONAL * cell <= radius)
+            .collect();
+        for &c in &chain {
+            inside[c] = true;
         }
-    };
-    let mut copy = vec![0.0; side + 1];
-    for line in 0..side {
-        // The running sum of the line.
-        for k in 0..side {
-            copy[k + 1] = copy[k] + values[at(line, k)];
+        let old: Vec<f64> = WindowHeights::new(map, window)
+            .levels
+            .iter()
+            .map(|&l| f64::from(l))
+            .collect();
+        let change = up(&change);
+        let levels = (0..side * side)
+            .map(|i| {
+                if inside[i] {
+                    let p = window.cell_dir(i % side, i / side);
+                    old[i] + change[i] + rough(p, 2.0 * cell)
+                } else {
+                    old[i]
+                }
+            })
+            .collect();
+        // The main river keeps the profile of the coarser level.
+        let profile = self.profile();
+        let mut levels: Vec<f64> = levels;
+        for &c in &chain {
+            levels[c] = profile_at(&profile, along[c]);
         }
-        let count = (2 * reach + 1) as f64;
-        for k in 0..side {
-            let (a, b) = (k.saturating_sub(reach), (k + reach + 1).min(side));
-            values[at(line, k)] = (copy[b] - copy[a]) / count;
+        Level {
+            window,
+            inside,
+            chain,
+            distance,
+            along,
+            rain: up(&self.rain),
+            old,
+            levels,
         }
     }
-}
 
-/// The curves near each square of 4 by 4 cells of a window.
-struct CurveBins {
-    side: usize,
-    bins: Vec<Vec<usize>>,
-}
-
-impl CurveBins {
-    /// `reach` gives the largest distance from a curve to a place that it
-    /// shapes, in cells.
-    fn new(
-        curves: &[ChannelCurve],
-        window: &Window,
-        reach: impl Fn(&ChannelCurve) -> f64,
-    ) -> CurveBins {
-        let side = window.cells.div_ceil(BIN_CELLS);
-        let mut bins = vec![Vec::new(); side * side];
-        for (k, curve) in curves.iter().enumerate() {
-            let places: Vec<(f64, f64)> = curve
-                .points
-                .iter()
-                .filter_map(|&p| window.place(p))
-                .collect();
-            if places.len() < 3 {
-                continue;
+    /// The flow of the water. The main river has fixed receivers, and the
+    /// water of the other cells goes to the main river or out of the area,
+    /// after a flood fills the pits.
+    fn flow(&self) -> GridFlow {
+        let side = self.window.cells;
+        let count = side * side;
+        let mut receiver = vec![NONE; count];
+        let mut done = vec![false; count];
+        let mut queued = vec![false; count];
+        let mut filled = self.levels.clone();
+        let mut heap = BinaryHeap::new();
+        let mut pushes = 0u32;
+        let mut stack: Vec<usize> = self.chain.iter().rev().copied().collect();
+        for (k, &c) in self.chain.iter().enumerate() {
+            receiver[c] = self.chain.get(k + 1).map_or(OUT, |&next| next as u32);
+        }
+        // The cells outside the area next to it, and the main river, are
+        // where the flood starts.
+        for i in 0..count {
+            let edge = !self.inside[i]
+                && self
+                    .window
+                    .neighbors(i)
+                    .iter()
+                    .any(|&j| j != NONE && self.inside[j as usize]);
+            if edge || receiver[i] != NONE {
+                done[i] = true;
+                queued[i] = true;
+                heap.push(Low(self.levels[i], pushes, i));
+                pushes += 1;
             }
-            let reach = reach(curve);
-            let range = |pick: fn(&(f64, f64)) -> f64| {
-                let low = places.iter().map(pick).fold(f64::MAX, f64::min) - reach;
-                let high = places.iter().map(pick).fold(f64::MIN, f64::max) + reach;
-                let bin =
-                    |c: f64| (c / BIN_CELLS as f64).floor().clamp(0.0, side as f64 - 1.0) as usize;
-                bin(low)..=bin(high)
-            };
-            for y in range(|p| p.1) {
-                for x in range(|p| p.0) {
-                    bins[y * side + x].push(k);
+        }
+        while let Some(Low(level, _, i)) = heap.pop() {
+            if !done[i] {
+                let mut best = (f64::MIN, NONE);
+                for (k, &j) in self.window.neighbors(i).iter().enumerate() {
+                    if j == NONE || !done[j as usize] {
+                        continue;
+                    }
+                    let run = if k < 4 { 1.0 } else { SQRT_2 };
+                    // The scatter turns a stream a little to one side, so
+                    // the streams do not follow the grid.
+                    let slope = (level - filled[j as usize]) / run;
+                    let score = slope * (0.7 + 0.6 * self.window.scatter(i, k))
+                        + 1e-9 * self.window.scatter(i, k);
+                    if score > best.0 {
+                        best = (score, j);
+                    }
+                }
+                receiver[i] = best.1;
+                done[i] = true;
+                stack.push(i);
+            }
+            for &j in &self.window.neighbors(i) {
+                if j != NONE && self.inside[j as usize] && !queued[j as usize] {
+                    let j = j as usize;
+                    queued[j] = true;
+                    filled[j] = self.levels[j].max(level);
+                    heap.push(Low(filled[j], pushes, j));
+                    pushes += 1;
                 }
             }
         }
-        CurveBins { side, bins }
+        let mut area = vec![0.0; count];
+        let solid = |i: usize| self.window.solid_angle(i);
+        let mean = solid(side / 2 * side + side / 2);
+        for &i in &stack {
+            area[i] = solid(i) / mean * self.rain[i];
+        }
+        for &i in stack.iter().rev() {
+            let r = receiver[i];
+            if r < OUT && self.inside[r as usize] {
+                area[r as usize] += area[i];
+            }
+        }
+        GridFlow {
+            receiver,
+            stack,
+            filled,
+            area,
+        }
     }
 
-    /// The curves near a place of the window in cells.
-    fn near(&self, u: f64, v: f64) -> impl Iterator<Item = usize> + '_ {
-        let bin = |c: f64| ((c / BIN_CELLS as f64) as usize).min(self.side - 1);
-        self.bins[bin(v) * self.side + bin(u)].iter().copied()
+    /// The level of the main river at each distance along the line, in the
+    /// order of the line.
+    fn profile(&self) -> Vec<(f64, f64)> {
+        let mut furthest = f64::MIN;
+        self.chain
+            .iter()
+            .map(|&c| {
+                furthest = furthest.max(self.along[c]);
+                (furthest, self.levels[c])
+            })
+            .collect()
+    }
+
+    /// Erodes the cells with a few implicit steps of the stream-power law.
+    /// The steps cut a cell by `rough` times `CARVE` at most, so the level
+    /// adds valleys at its own scale. The main river keeps its levels.
+    fn erode(&mut self, rough: f64) {
+        let side = self.window.cells;
+        let cell = FRAC_PI_2 * self.window.cell as f64 / self.window.face_size as f64;
+        let mut on_chain = vec![false; side * side];
+        for &c in &self.chain {
+            on_chain[c] = true;
+        }
+        for _ in 0..FINE_STEPS {
+            let flow = self.flow();
+            for &i in &flow.stack {
+                if on_chain[i] {
+                    continue;
+                }
+                let r = flow.receiver[i];
+                if r >= OUT {
+                    continue;
+                }
+                let r = r as usize;
+                let run = angle(
+                    self.window.cell_dir(i % side, i / side),
+                    self.window.cell_dir(r % side, r / side),
+                ) / cell;
+                let f = ERODE * flow.area[i].powf(AREA_EXPONENT) / run;
+                let from = flow.filled[i];
+                let drop = ((from - self.levels[r]) * f / (1.0 + f)).clamp(0.0, CARVE * rough);
+                self.levels[i] = from - drop;
+            }
+            // The main river goes down at each step.
+            for k in (0..self.chain.len().saturating_sub(1)).rev() {
+                let (c, next) = (self.chain[k], self.chain[k + 1]);
+                self.levels[c] = self.levels[c].max(self.levels[next] + STEP);
+            }
+        }
+        // A little hillslope creep rounds the crests.
+        let old = self.levels.clone();
+        for i in (0..side * side).filter(|&i| self.inside[i] && !on_chain[i]) {
+            let near = self.window.neighbors(i);
+            let (sum, count) = near
+                .iter()
+                .filter(|&&j| j != NONE)
+                .fold((0.0, 0.0), |(s, c), &j| (s + old[j as usize], c + 1.0));
+            self.levels[i] += CREEP * (sum / count - old[i]);
+        }
     }
 }
 
-/// The number of cells along one side of a bin of `CurveBins`.
-const BIN_CELLS: usize = 4;
+/// The level of a profile of the main river at a distance along the line.
+fn profile_at(profile: &[(f64, f64)], u: f64) -> f64 {
+    match profile.partition_point(|point| point.0 < u) {
+        0 => profile[0].1,
+        k if k == profile.len() => profile[k - 1].1,
+        k => {
+            let (a, b) = (profile[k - 1], profile[k]);
+            let t = if b.0 > a.0 {
+                (u - a.0) / (b.0 - a.0)
+            } else {
+                1.0
+            };
+            a.1 + (b.1 - a.1) * t
+        }
+    }
+}
+
+/// A cell in the heap of a flood: a level, the number of cells that went
+/// in before it, and the cell. The heap gives the lowest level first, and of
+/// two cells at one level, the cell that went in first.
+#[derive(PartialEq)]
+struct Low(f64, u32, usize);
+
+impl Eq for Low {}
+
+impl Ord for Low {
+    fn cmp(&self, other: &Low) -> Ordering {
+        other.0.total_cmp(&self.0).then(other.1.cmp(&self.1))
+    }
+}
+
+impl PartialOrd for Low {
+    fn partial_cmp(&self, other: &Low) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// The rectangle of each face that the area of a line can touch.
 fn basin_rects(line: &StrokeLine, radius: f64, n: usize) -> Vec<(usize, TexelRect)> {
@@ -925,11 +1161,20 @@ mod tests {
         let outlet = *net.chain.last().unwrap();
         // On the cells of the basin, each cell drains to the outlet, and the
         // levels go down at each step.
-        for i in (0..net.inside.len()).filter(|&i| net.inside[i]) {
+        let side = net.window.cells;
+        for i in (0..net.inside.len()).filter(|&i| net.inner[i]) {
             let mut at = i;
             while net.receiver[at] != OUT {
                 let to = net.receiver[at] as usize;
                 assert!(net.inside[to], "cell {at} drains out of the basin");
+                if !net.inner[to] {
+                    // The water leaves the inner basin only at the mouth.
+                    let p = net.window.cell_dir(to % side, to / side);
+                    let (past, aside) = line.line.past_end(p);
+                    assert!(past > 0.0 && aside < MOUTH * line.spec.radius, "cell {at}");
+                    at = outlet;
+                    break;
+                }
                 assert!(net.levels[to] < net.levels[at], "cell {at} drains up");
                 at = to;
             }
@@ -940,13 +1185,17 @@ mod tests {
         let after = apply(&map, &cut);
         let receiver = flow_after(&after, &net);
         let side = net.window.cells;
-        // The divide is the crest at the inner side of the band where the
-        // ground goes down to the old ground.
+        // The divide is the crest at the inner side of the part where the
+        // relief fades out.
         let cell = cell_angle(&net.window);
-        let divide = EDGE * line.spec.radius + 2.0 * cell;
+        let divide = FADE * line.spec.radius + 2.0 * cell;
+        let mouth = MOUTH * line.spec.radius;
         let within = |i: usize| {
-            let (d, _) = line.line.nearest(net.window.cell_dir(i % side, i / side));
-            d - line.spec.radius < -divide
+            let p = net.window.cell_dir(i % side, i / side);
+            let (d, _) = line.line.nearest(p);
+            let (past, aside) = line.line.past_end(p);
+            let in_mouth = past > -2.0 * cell && aside < mouth + 2.0 * cell;
+            d - line.spec.radius < -divide && !in_mouth
         };
         let inner = (0..net.inside.len()).filter(|&i| net.inside[i] && within(i));
         for i in inner {
@@ -956,13 +1205,16 @@ mod tests {
                 last = at;
                 at = receiver[at] as usize;
             }
-            // The mouth is the band at the end of the line.
-            let dir = |i: usize| net.window.cell_dir(i % side, i / side);
-            let from_outlet = angle(dir(last), net.mouth);
+            // The mouth is the gap in the divide past the outlet.
+            let (past, aside) = line
+                .line
+                .past_end(net.window.cell_dir(last % side, last / side));
             assert!(
-                from_outlet <= divide,
-                "the water of cell {i} leaves the basin {} cells from the mouth",
-                from_outlet / cell
+                past > -cell && aside <= MOUTH * line.spec.radius + 2.0 * cell,
+                "the water of cell {i} leaves the basin {} cells before the outlet and {} cells \
+                 beside the line",
+                -past / cell,
+                aside / cell
             );
         }
         if n > N {
@@ -984,14 +1236,12 @@ mod tests {
             let outlet = *net.chain.last().unwrap();
             let mut at = net.chain[0];
             let mut steps = 0;
-            let end = *line.points().last().unwrap();
-            let mouth = EDGE * line.spec.radius + cell;
             loop {
                 // The river is within one cell of the line if the center of
                 // its cell is within one and a half cells. The check ends at
-                // the band of the mouth.
+                // the outlet.
                 let p = net.window.cell_dir(at % side, at / side);
-                if at == outlet || angle(p, end) < mouth {
+                if at == outlet || touch(side, at, outlet) || line.line.past_end(p).0 > -cell {
                     break;
                 }
                 let (d, _) = line.line.nearest(p);

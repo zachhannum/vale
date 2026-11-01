@@ -284,6 +284,21 @@ impl StrokeLine {
         (best.0, a.u + along.clamp(0.0, b.u - a.u))
     }
 
+    /// The distance of a direction past the plane through the last point,
+    /// square to the last segment, and its distance from the great circle of
+    /// the last segment, in radians. The first value is less than zero before
+    /// the plane.
+    pub(crate) fn past_end(&self, p: V3) -> (f64, f64) {
+        let count = self.points.len();
+        if count < 2 {
+            return (f64::MIN, 0.0);
+        }
+        let n = self.normal(count - 2);
+        let tangent = normalize(cross(n, self.points[count - 1].dir));
+        let past = dot(p, tangent).clamp(-1.0, 1.0).asin();
+        (past, dot(p, n).clamp(-1.0, 1.0).asin().abs())
+    }
+
     /// The plan for the points from `from` on. `from` is the number of
     /// points that the plans before this one covered: zero, or the `end` of
     /// the last plan. The segment before the new points is in the plan,
