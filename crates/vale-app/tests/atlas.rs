@@ -28,6 +28,9 @@ use vale_app::ui::pad::atlas::{
     readout_text,
 };
 use vale_app::ui::pad::atlas::{BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, SIDE_DISTANCES};
+use vale_app::ui::pad::atlas::{
+    GRID_OPACITY, GRID_SPACING, LAYOUT_GRID, SHOW_GRID, SNAP_TO_LAYOUT,
+};
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
     ORIENTATIONS, PLACES, SETS, SHOW_LABELS, SIDES, SIZE as EDGE_SIZE, STYLE as EDGE_STYLE,
@@ -505,6 +508,7 @@ fn a_tap_opens_the_panel_of_a_frame_or_of_the_page() {
     tap_with(&mut h, at, Input::Finger);
     assert_eq!(h.state().atlas.selection, AtlasSelection::Page);
     assert!(h.state().atlas.panel_rect.is_some());
+    scroll_to(&mut h, ADD_PAGE);
     assert!(control(&h, ADD_PAGE).is_some());
     assert!(control(&h, SCALE).is_none());
 }
@@ -531,6 +535,7 @@ fn the_add_button_adds_a_frame_that_shows_the_map_of_the_project() {
 #[test]
 fn a_frame_moves_and_resizes_with_a_finger_a_pen_and_a_mouse() {
     let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().atlas.snap = false;
     let ppm = h.state().atlas.place.unwrap().pts_per_mm as f32;
     for input in INPUTS {
         let before = shape_bbox(&frame(&h, 1).shape);
@@ -580,6 +585,7 @@ fn ring_len(h: &Pad, ring: usize) -> usize {
 #[test]
 fn the_vertices_of_a_polygon_frame_move_add_and_go_away() {
     let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().atlas.snap = false;
     tap(&mut h, POLYGON);
     assert_eq!(ring_len(&h, 0), 4);
     let ppm = h.state().atlas.place.unwrap().pts_per_mm;
@@ -1171,6 +1177,7 @@ fn pages_and_frames_survive_a_close_and_an_open() {
     tap(&mut h, ADD_HOLE);
     let at = screen(&h, Point::new(4.0, 50.0));
     tap_with(&mut h, at, Input::Finger);
+    scroll_to(&mut h, ADD_PAGE);
     tap(&mut h, ADD_PAGE);
     let mut project = h.state().doc.project.clone();
     session.flush(&mut project, &mut []).unwrap();
@@ -4723,4 +4730,304 @@ fn manual_the_pad_atlas_renders_furniture() {
         img.save(format!("../../target/app/pad-atlas-{name}.png"))
             .unwrap();
     }
+}
+
+/// The page center, the page size, and the points per millimeter.
+fn page_metrics(h: &Pad) -> (Point, f64, f64, f64) {
+    let page = open_page(h);
+    let (w, hh) = (page.width_mm, page.height_mm);
+    let ppm = h.state().atlas.place.unwrap().pts_per_mm;
+    (Point::new(w / 2.0, hh / 2.0), w, hh, ppm)
+}
+
+#[test]
+fn a_moved_frame_snaps_to_the_page_center_and_shows_a_guide() {
+    let mut h = inset_pad(BOARDS[0]);
+    for input in INPUTS {
+        let (center, _, _, ppm) = page_metrics(&h);
+        let before = shape_bbox(&frame(&h, 1).shape);
+        // The left edge goes to 3 points right of the page center.
+        let d = (center.x - before.x0) * ppm + 3.0;
+        let from = middle(&h, 1);
+        let to = from + vec2(d as f32, -20.0);
+        drag_steps(&mut h, from, to, input, 6);
+        assert!(!h.state().atlas.guides.is_empty(), "{input:?}");
+        release(&mut h, to, input);
+        assert!(h.state().atlas.guides.is_empty(), "{input:?}");
+        let after = shape_bbox(&frame(&h, 1).shape);
+        assert!((after.x0 - center.x).abs() < 1e-9, "{input:?}: {after:?}");
+        // Put the frame back for the next input.
+        h.state_mut().undo();
+        h.run_steps(2);
+    }
+}
+
+#[test]
+fn a_moved_frame_snaps_to_the_edges_and_the_center_lines_of_another_frame() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (_, _, _, ppm) = page_metrics(&h);
+    let main = shape_bbox(&frame(&h, 0).shape);
+    let inset = shape_bbox(&frame(&h, 1).shape);
+    // The top edge of the inset goes 2 points below the middle of the main
+    // frame, and the right edge 3 points past the right edge of the main
+    // frame.
+    let dy = (main.center().y - inset.y0) * ppm + 2.0;
+    let from = middle(&h, 1);
+    drag(&mut h, from, from + vec2(3.0, dy as f32), Input::Finger);
+    let after = shape_bbox(&frame(&h, 1).shape);
+    assert!((after.y0 - main.center().y).abs() < 1e-9, "{after:?}");
+    assert!((after.x1 - main.x1).abs() < 1e-9, "{after:?}");
+}
+
+#[test]
+fn a_resized_frame_snaps_the_edge_of_its_handle() {
+    let mut h = inset_pad(BOARDS[0]);
+    let (center, _, _, ppm) = page_metrics(&h);
+    let inset = shape_bbox(&frame(&h, 1).shape);
+    let left = handle(&h, Handle::Resize(7));
+    let d = (center.x - inset.x0) * ppm - 4.0;
+    drag(&mut h, left, left + vec2(d as f32, 0.0), Input::Pen);
+    let after = shape_bbox(&frame(&h, 1).shape);
+    assert!((after.x0 - center.x).abs() < 1e-9, "{after:?}");
+    assert_eq!(
+        (after.y0, after.x1, after.y1),
+        (inset.y0, inset.x1, inset.y1)
+    );
+}
+
+fn ring(h: &Pad, index: usize) -> Vec<[f64; 2]> {
+    match &frame(h, index).shape {
+        FrameShape::Polygon(rings) => rings[0].clone(),
+        FrameShape::Rectangle(_) => panic!("not a polygon"),
+    }
+}
+
+#[test]
+fn a_vertex_snaps_to_a_vertex_of_another_frame_and_to_the_page_center() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    let (center, _, _, _) = page_metrics(&h);
+    let main = shape_bbox(&frame(&h, 0).shape);
+    // The top-right corner of the main frame.
+    let from = handle(&h, Handle::Vertex((0, 0)));
+    let to = screen(&h, Point::new(main.x1, main.y0)) + vec2(-4.0, 5.0);
+    drag_steps(&mut h, from, to, Input::Finger, 6);
+    assert!(!h.state().atlas.guides.is_empty());
+    screenshot::save(&mut h, "pad-atlas-snap-vertex");
+    let mut phone = pad_with(state(), (393.0, 852.0));
+    add_frame(&mut phone);
+    screenshot::save(&mut phone, "phone-atlas-frame-card");
+    release(&mut h, to, Input::Finger);
+    assert_eq!(ring(&h, 1)[0], [main.x1, main.y0]);
+
+    let from = handle(&h, Handle::Vertex((0, 0)));
+    let to = screen(&h, center) + vec2(6.0, -5.0);
+    drag(&mut h, from, to, Input::Mouse);
+    let [x, y] = ring(&h, 1)[0];
+    assert!((x - center.x).abs() < 1e-9 && (y - center.y).abs() < 1e-9);
+}
+
+#[test]
+fn shift_locks_the_edge_of_a_vertex_to_horizontal() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    h.state_mut().atlas.snap = false;
+    let start = ring(&h, 1);
+    let from = handle(&h, Handle::Vertex((0, 0)));
+    h.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    drag(&mut h, from, from + vec2(-60.0, 7.0), Input::Mouse);
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    // The edge to the next vertex is horizontal.
+    let after = ring(&h, 1);
+    assert_eq!(after[0][1], start[1][1]);
+    assert!(after[0][0] < start[0][0] - 5.0);
+
+    // With no Shift, the same drag does not lock.
+    let from = handle(&h, Handle::Vertex((0, 0)));
+    drag(&mut h, from, from + vec2(0.0, 7.0), Input::Mouse);
+    assert!(ring(&h, 1)[0][1] > start[1][1] + 1.0);
+}
+
+#[test]
+fn a_second_finger_locks_the_edge_of_a_vertex_to_vertical() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    h.state_mut().atlas.snap = false;
+    let start = ring(&h, 1);
+    let view = h.state().atlas.view;
+    let from = handle(&h, Handle::Vertex((0, 0)));
+    let other = middle(&h, 0) - vec2(200.0, 0.0);
+    touch(&mut h, 1, egui::TouchPhase::Start, from, None);
+    h.step();
+    for i in 1..=3 {
+        let at = from + vec2(-2.0, -10.0) * i as f32;
+        touch(&mut h, 1, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    // The second finger holds on the canvas while the first finger drags.
+    // The pinch does not start, and the fingers are no tap that undoes.
+    touch(&mut h, 2, egui::TouchPhase::Start, other, None);
+    h.step();
+    let end = from + vec2(-5.0, -60.0);
+    for i in 1..=4 {
+        let at = (from + vec2(-6.0, -30.0)).lerp(end, i as f32 / 4.0);
+        touch(&mut h, 1, egui::TouchPhase::Move, at, None);
+        h.step();
+    }
+    touch(&mut h, 1, egui::TouchPhase::End, end, None);
+    h.step();
+    touch(&mut h, 2, egui::TouchPhase::End, other, None);
+    h.run_steps(4);
+    // The edge to the vertex before is vertical, the page did not move, and
+    // nothing was undone.
+    let after = ring(&h, 1);
+    assert_eq!(after[0][0], start[3][0]);
+    assert!(after[0][1] < start[0][1] - 5.0);
+    assert_eq!(h.state().atlas.view, view);
+}
+
+/// Zooms the page about the inset frame, so the inset stays on the screen.
+fn zoom_on_inset(h: &mut Pad, zoom: f64) {
+    h.state_mut().atlas.view = vale_app::ui::atlas::PageView {
+        zoom,
+        offset: egui::Vec2::ZERO,
+    };
+    h.run_steps(2);
+    let screen_middle = h.state().pad.rects.unwrap().screen.center();
+    let off = screen_middle - middle(h, 1);
+    h.state_mut().atlas.view.offset += off;
+    h.run_steps(2);
+}
+
+#[test]
+fn the_snap_distance_is_the_same_on_the_screen_at_each_zoom() {
+    for zoom in [1.0, 3.0] {
+        for (pts, snaps) in [(10.0, true), (14.0, false)] {
+            let mut h = inset_pad(BOARDS[0]);
+            zoom_on_inset(&mut h, zoom);
+            let main = shape_bbox(&frame(&h, 0).shape);
+            // The right edge of the inset is on the right edge of the main
+            // frame. A drag to the left moves it off.
+            let from = middle(&h, 1);
+            drag(&mut h, from, from - vec2(pts, 0.0), Input::Finger);
+            let after = shape_bbox(&frame(&h, 1).shape);
+            let on = (after.x1 - main.x1).abs() < 1e-9;
+            assert_eq!(on, snaps, "zoom {zoom}, {pts} pt: {after:?}");
+        }
+    }
+}
+
+#[test]
+fn the_snap_switch_turns_snapping_off_with_a_finger() {
+    let mut h = inset_pad(BOARDS[0]);
+    check_controls(&h, "snap switch");
+    assert!(h.state().atlas.snap);
+    tap(&mut h, SNAP_TO_LAYOUT);
+    assert!(!h.state().atlas.snap);
+    let main = shape_bbox(&frame(&h, 0).shape);
+    let from = middle(&h, 1);
+    drag_steps(&mut h, from, from - vec2(20.0, 0.0), Input::Finger, 6);
+    assert!(h.state().atlas.guides.is_empty());
+    release(&mut h, from - vec2(20.0, 0.0), Input::Finger);
+    let after = shape_bbox(&frame(&h, 1).shape);
+    assert!(after.x1 < main.x1 - 1.0, "{after:?}");
+    tap(&mut h, SNAP_TO_LAYOUT);
+    assert!(h.state().atlas.snap);
+
+    // The switch shows only while the Select tool edits a frame.
+    tap(&mut h, "Move");
+    assert!(control(&h, SNAP_TO_LAYOUT).is_none());
+    tap(&mut h, "Select");
+    assert!(control(&h, SNAP_TO_LAYOUT).is_some());
+    h.state_mut().atlas.selection = AtlasSelection::Page;
+    h.run_steps(2);
+    assert!(control(&h, SNAP_TO_LAYOUT).is_none());
+}
+
+#[test]
+fn frames_snap_to_the_layout_grid_of_the_page_panel() {
+    let mut h = inset_pad(BOARDS[0]);
+    let id = frame(&h, 1).id;
+    h.state_mut().atlas.selection = AtlasSelection::Page;
+    h.run_steps(2);
+    scroll_to(&mut h, LAYOUT_GRID);
+    assert!(control(&h, GRID_SPACING).is_none());
+    tap(&mut h, LAYOUT_GRID);
+    scroll_to(&mut h, GRID_OPACITY);
+    assert!(h.state().doc.project.atlas.grid.on);
+    for name in [GRID_SPACING, GRID_OPACITY] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    check_controls(&h, "page panel with the grid");
+    h.state_mut().doc.project.atlas.grid.spacing_mm = 7.0;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(id);
+    h.run_steps(2);
+
+    // The left edge of the inset goes 2 points past a grid line that is far
+    // from the other targets.
+    let (_, _, _, ppm) = page_metrics(&h);
+    let inset = shape_bbox(&frame(&h, 1).shape);
+    let line = (inset.x0 / 7.0).floor() * 7.0 - 14.0;
+    let d = (line - inset.x0) * ppm + 2.0;
+    let from = middle(&h, 1);
+    let to = from + vec2(d as f32, -60.0);
+    drag_steps(&mut h, from, to, Input::Finger, 6);
+    screenshot::save(&mut h, "pad-atlas-layout-grid");
+    release(&mut h, to, Input::Finger);
+    let after = shape_bbox(&frame(&h, 1).shape);
+    assert!((after.x0 - line).abs() < 1e-9, "{line}: {after:?}");
+
+    // With the grid off, the grid lines are no targets.
+    h.state_mut().doc.project.atlas.grid.on = false;
+    h.run_steps(2);
+    let from = middle(&h, 1);
+    drag(&mut h, from, from + vec2(-20.0, 0.0), Input::Finger);
+    let moved = shape_bbox(&frame(&h, 1).shape);
+    let want = line - 20.0 / ppm;
+    assert!((moved.x0 - want).abs() < 0.1, "{want}: {moved:?}");
+}
+
+#[test]
+fn the_grid_button_of_the_top_row_shows_the_layout_grid() {
+    for size in BOARDS.into_iter().chain([(393.0, 852.0)]) {
+        let mut h = pad_with(state(), size);
+        check_controls(&h, "top row");
+        // The buttons of the top row do not overlap.
+        let controls = h.state().pad.controls.clone();
+        let top: Vec<_> = controls.iter().filter(|c| c.rect.top() < 90.0).collect();
+        for (i, a) in top.iter().enumerate() {
+            for b in &top[i + 1..] {
+                let overlap = a.rect.intersect(b.rect);
+                assert!(
+                    overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                    "{size:?}: {} and {}",
+                    a.name,
+                    b.name
+                );
+            }
+        }
+        tap(&mut h, SHOW_GRID);
+        assert!(h.state().doc.project.atlas.grid.on, "{size:?}");
+        tap(&mut h, SHOW_GRID);
+        assert!(!h.state().doc.project.atlas.grid.on, "{size:?}");
+    }
+}
+
+#[test]
+fn a_vertex_lines_up_with_another_vertex_of_its_frame() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    // A drag of the middle of the top edge adds a vertex below the edge.
+    let edge = handle(&h, Handle::Edge((0, 0)));
+    drag(&mut h, edge, edge + vec2(0.0, 37.0), Input::Finger);
+    let [_, y] = ring(&h, 1)[1];
+    // The first vertex goes to 3 points below the new vertex, far from
+    // the other targets.
+    let from = handle(&h, Handle::Vertex((0, 0)));
+    let to = from + vec2(-30.0, 40.0);
+    drag_steps(&mut h, from, to, Input::Finger, 6);
+    assert!(!h.state().atlas.guides.is_empty());
+    screenshot::save(&mut h, "pad-atlas-vertex-alignment");
+    release(&mut h, to, Input::Finger);
+    assert_eq!(ring(&h, 1)[0][1], y);
 }

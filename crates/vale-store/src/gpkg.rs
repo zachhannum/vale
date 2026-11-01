@@ -22,8 +22,8 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Transaction, params, params_fro
 
 use crate::atlas::{
     self, Atlas, Border, CoordFormat, EdgeLabels, FrameId, FrameRecord, FrameShape, Furniture,
-    FurnitureId, FurnitureRecord, Graticule, MapId, MapRecord, Neatline, PageId, PageRecord,
-    PageUnits, ProjectionPreset,
+    FurnitureId, FurnitureRecord, Graticule, LayoutGrid, MapId, MapRecord, Neatline, PageId,
+    PageRecord, PageUnits, ProjectionPreset,
 };
 use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
@@ -624,12 +624,16 @@ fn format_version(conn: &Connection) -> Result<u32, StoreError> {
 }
 
 fn meta(conn: &Connection, key: &str) -> Result<String, StoreError> {
+    optional_meta(conn, key)?.ok_or_else(|| corrupt(format!("no {key} record")))
+}
+
+fn optional_meta(conn: &Connection, key: &str) -> Result<Option<String>, StoreError> {
     use rusqlite::OptionalExtension;
-    conn.query_row("SELECT value FROM vale_meta WHERE key = ?1", [key], |r| {
-        r.get(0)
-    })
-    .optional()?
-    .ok_or_else(|| corrupt(format!("no {key} record")))
+    Ok(conn
+        .query_row("SELECT value FROM vale_meta WHERE key = ?1", [key], |r| {
+            r.get(0)
+        })
+        .optional()?)
 }
 
 /// Adds the seed of the world.
@@ -1797,6 +1801,7 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
     ] {
         meta.execute(params![key, n.to_string()])?;
     }
+    meta.execute(params!["layout_grid", atlas.grid.to_json()])?;
     Ok(())
 }
 
@@ -2633,7 +2638,12 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         next_page_id: counter(conn, "next_page_id")?,
         next_frame_id: counter(conn, "next_frame_id")?,
         next_furniture_id: counter(conn, "next_furniture_id")?,
+        grid: LayoutGrid::default(),
     };
+    if let Some(text) = optional_meta(conn, "layout_grid")? {
+        atlas.grid =
+            LayoutGrid::from_json(&text).ok_or_else(|| corrupt(format!("layout grid {text:?}")))?;
+    }
     let mut rows = conn.prepare("SELECT id, name, projection FROM vale_map ORDER BY position")?;
     let mut rows = rows.query([])?;
     while let Some(r) = rows.next()? {
@@ -3427,6 +3437,8 @@ mod tests {
         let second = atlas.add_page(Some(first), 420.0, 297.0, PageUnits::In);
         atlas.page_mut(second).unwrap().paper = [0xf3, 0xef, 0xdf];
         atlas.page_mut(second).unwrap().name = "North".into();
+        atlas.grid.on = true;
+        atlas.grid.spacing_mm = 7.5;
         let frame = FrameRecord {
             id: FrameId(0),
             map: MapId(0),
