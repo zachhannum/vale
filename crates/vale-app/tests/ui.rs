@@ -1657,6 +1657,8 @@ fn the_desktop_select_tool_deletes_the_selection_with_the_delete_key() {
     let places = layers.iter().find(|l| l.name == "Places").unwrap();
     let (id, count) = (places.id, places.features.len());
     let uuid = places.features[0].uuid();
+    h.state_mut()
+        .select(Some(vale_app::ui::pad::LayerRef::Vector(id)));
     h.state_mut().feature_selection = vec![FeatureRef { layer: id, uuid }];
     h.run_steps(2);
     assert!(h.state().selection_form.is_some());

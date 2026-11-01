@@ -422,11 +422,11 @@ The math is in `vale-sphere`, and the area and length expressions use the same f
 
 ### Select
 
-The Select tool selects features of the visible vector layers, on the globe and in the flat view. A tap of a finger, of the pen, or of the mouse selects one feature, and a tap on empty ground clears the selection. A drag of the pen or of the mouse selects the features in a box. A drag of one finger turns the globe, and two fingers pan and zoom, as in the other tools.
+The Select tool selects features of the selected vector layer, on the globe and in the flat view. A hidden layer has no selection, and a change of the layer clears the selection. A tap of a finger, of the pen, or of the mouse selects one feature, and a tap on empty ground clears the selection. A drag of the pen or of the mouse selects the features in a box. A drag of one finger turns the globe, and two fingers pan and zoom, as in the other tools.
 
-A tap hits a point or a line within its reach on the screen: 22 points for a finger, 12 points for the pen, and 8 points for the mouse. A finger thus has a target of 44 points. The nearest point or line wins. If no point or line is in reach, the top polygon under the tap wins. A feature on the far side of the globe is not hit.
+A tap hits a point or a line within its reach on the screen: 22 points for a finger, 12 points for the pen, and 8 points for the mouse. A finger thus has a target of 44 points. The nearest point or line wins. If no point or line is in reach, the polygon under the tap wins. A feature on the far side of the globe is not hit.
 
-A box selects a feature if a vertex of the feature is in the box, if an edge crosses the box, or if the polygon holds the box. The selection can hold features of more than one layer. The selection shows in the accent color: a ring around each point, and a wide line on each line and each outline. In the flat view, the selection shows, but the vector layers do not show yet.
+A box selects a feature if a vertex of the feature is in the box, if an edge crosses the box, or if the polygon holds the box. The selection shows in the accent color: a ring around each point, and a wide line on each line and each outline. In the flat view, the selection shows, but the vector layers do not show yet.
 
 A pen drag or a mouse drag that starts on a point of the selection moves that point. The move is one undo step when the pen or the mouse comes up. The tool moves points only. Lines and polygons change in vertex editing.
 

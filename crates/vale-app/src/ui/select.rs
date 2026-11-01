@@ -1,7 +1,7 @@
 //! The Select tool of the world workspace: the selection of features, the
 //! move of a point, the delete, and the card that edits the attributes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use eframe::egui::{self, Order, Pos2, Rect, pos2, vec2};
 use vale_store::{Geometry, Layer, LayerId, Uuid};
@@ -49,12 +49,15 @@ pub fn title(count: usize) -> String {
 }
 
 impl AppState {
-    /// The vector layers that the Select tool can select in, top first.
+    /// The layer that the Select tool selects in: the selected vector
+    /// layer, if it is visible.
+    fn select_layer(&self) -> Option<&Layer> {
+        let id = self.selected_vector()?;
+        self.doc.layer(id).filter(|l| l.visible)
+    }
+
     fn select_layers(&self) -> Vec<&Layer> {
-        let layers = self.doc.project.layers().iter().rev();
-        layers
-            .filter(|l| l.visible && l.geometry().is_some())
-            .collect()
+        self.select_layer().into_iter().collect()
     }
 
     /// Reads the taps and the drags of the Select tool.
@@ -129,21 +132,19 @@ impl AppState {
         }
     }
 
-    /// Keeps only the selected features that still exist.
+    /// Keeps only the selected features that still exist in the layer of
+    /// the Select tool.
     fn prune_feature_selection(&mut self) {
         if self.feature_selection.is_empty() {
             return;
         }
-        let mut live: HashMap<LayerId, HashSet<Uuid>> = HashMap::new();
-        let doc = &self.doc;
-        self.feature_selection.retain(|f| {
-            let uuids = live.entry(f.layer).or_insert_with(|| {
-                let layer = doc.layer(f.layer);
-                let features = layer.into_iter().flat_map(|l| &l.features);
-                features.map(|feature| feature.uuid()).collect()
-            });
-            uuids.contains(&f.uuid)
-        });
+        let live: HashSet<(LayerId, Uuid)> = self
+            .select_layer()
+            .into_iter()
+            .flat_map(|l| l.features.iter().map(|f| (l.id, f.uuid())))
+            .collect();
+        self.feature_selection
+            .retain(|f| live.contains(&(f.layer, f.uuid)));
     }
 
     /// Moves one vertex of a point feature. The move is one undo step.
@@ -168,31 +169,18 @@ impl AppState {
         }
     }
 
-    /// Deletes the selected features of all layers in one undo step.
+    /// Deletes the selected features in one undo step.
     pub fn delete_selection(&mut self) {
-        if self.feature_selection.is_empty() {
+        let Some(id) = self.feature_selection.first().map(|f| f.layer) else {
             return;
-        }
+        };
         self.commit_selection_form();
         self.selection_form = None;
         self.commit_point_form();
         self.save_edit();
         let selection = std::mem::take(&mut self.feature_selection);
-        let mut by_layer: Vec<(LayerId, Vec<Uuid>)> = Vec::new();
-        for f in selection {
-            match by_layer.iter_mut().find(|(id, _)| *id == f.layer) {
-                Some((_, uuids)) => uuids.push(f.uuid),
-                None => by_layer.push((f.layer, vec![f.uuid])),
-            }
-        }
-        let mut last = None;
-        for (id, uuids) in by_layer {
-            if self.doc.project.remove_features(id, &uuids) > 0 {
-                self.pipeline.forget(id);
-                last = Some(id);
-            }
-        }
-        if let Some(id) = last {
+        let uuids: Vec<Uuid> = selection.iter().map(|f| f.uuid).collect();
+        if self.doc.project.remove_features(id, &uuids) > 0 {
             self.end_vector_edit(id);
         }
     }

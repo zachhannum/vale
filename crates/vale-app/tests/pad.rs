@@ -8188,17 +8188,19 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
     }
 }
 
-/// The point, the line, and the polygon of `select_pad`.
+/// The features of `select_pad`.
 struct Picks {
     point: FeatureRef,
+    /// A second point in the point layer, above and left of `point`.
+    second: FeatureRef,
     line: FeatureRef,
     polygon: FeatureRef,
 }
 
-/// A world with a project file, one new layer of each geometry kind with
-/// one feature each, and the Select tool. The other vector layers are
-/// hidden. The point is at the middle of the canvas, the line is above it,
-/// and the polygon is below it.
+/// A world with a project file, one new layer of each geometry kind, and
+/// the Select tool in the point layer. The other vector layers are hidden.
+/// The point is at the middle of the canvas, the line is above it, and the
+/// polygon is below it.
 fn select_pad(view: WorldView, dir: &std::path::Path) -> (Pad, Picks) {
     use vale_store::{Feature, Geometry};
     let mut h = saved_pad(BOARDS[0], dir);
@@ -8207,23 +8209,35 @@ fn select_pad(view: WorldView, dir: &std::path::Path) -> (Pad, Picks) {
     for id in shown {
         state.doc.project.set_layer_visible(id, false);
     }
-    let mut add = |kind, geometry| {
-        let id = state.doc.add_layer(kind);
+    let mut add = |id: Option<vale_store::LayerId>, kind, geometry| {
+        let id = id.unwrap_or_else(|| state.doc.add_layer(kind));
         let feature = Feature::new(geometry, Default::default());
         let uuid = feature.uuid();
         assert!(state.doc.project.add_feature(id, feature));
         FeatureRef { layer: id, uuid }
     };
-    let point = add(GeometryKind::Point, Geometry::Points(vec![[0.0, 0.0]]));
+    let point = add(
+        None,
+        GeometryKind::Point,
+        Geometry::Points(vec![[0.0, 0.0]]),
+    );
+    let second = add(
+        Some(point.layer),
+        GeometryKind::Point,
+        Geometry::Points(vec![[-2.0, 2.0]]),
+    );
     let line = add(
+        None,
         GeometryKind::Line,
         Geometry::Lines(vec![vec![[-8.0, 10.0], [8.0, 10.0]]]),
     );
     let square = vec![[-10.0, -25.0], [10.0, -25.0], [10.0, -12.0], [-10.0, -12.0]];
     let polygon = add(
+        None,
         GeometryKind::Polygon,
         Geometry::Polygons(vec![vec![square]]),
     );
+    state.select(Some(LayerRef::Vector(point.layer)));
     state.globe.world_view = view;
     state.save_waiting().unwrap();
     h.run_steps(2);
@@ -8235,6 +8249,7 @@ fn select_pad(view: WorldView, dir: &std::path::Path) -> (Pad, Picks) {
     h.run_steps(2);
     let picks = Picks {
         point,
+        second,
         line,
         polygon,
     };
@@ -8255,6 +8270,11 @@ fn finger_tap_at(h: &mut Pad, pos: Pos2) {
     h.run_steps(3);
 }
 
+fn select_layer(h: &mut Pad, id: vale_store::LayerId) {
+    h.state_mut().select(Some(LayerRef::Vector(id)));
+    h.run_steps(2);
+}
+
 fn selection(h: &Pad) -> Vec<FeatureRef> {
     h.state().feature_selection.clone()
 }
@@ -8271,9 +8291,16 @@ fn a_finger_tap_selects_a_small_point_a_line_and_a_polygon_in_each_view() {
         assert_eq!(selection(&h), [], "{view:?}");
         finger_tap_at(&mut h, off);
         assert_eq!(selection(&h), [picks.point], "{view:?}");
-        let line = screen_at(&h, 2.0, 10.0) + vec2(0.0, 10.0);
+        // A tap selects in the selected layer only.
+        let line = screen_at(&h, 2.0, 10.0) - vec2(0.0, 10.0);
+        finger_tap_at(&mut h, line);
+        assert_eq!(selection(&h), [], "{view:?}");
+        select_layer(&mut h, picks.line.layer);
         finger_tap_at(&mut h, line);
         assert_eq!(selection(&h), [picks.line], "{view:?}");
+        // Another layer clears the selection.
+        select_layer(&mut h, picks.polygon.layer);
+        assert_eq!(selection(&h), [], "{view:?}");
         let inside = screen_at(&h, -2.0, -18.0);
         finger_tap_at(&mut h, inside);
         assert_eq!(selection(&h), [picks.polygon], "{view:?}");
@@ -8289,16 +8316,22 @@ fn a_pen_drag_makes_a_box_and_a_finger_drag_moves_the_view() {
     for view in WORLD_VIEWS {
         let dir = tempfile::tempdir().unwrap();
         let (mut h, picks) = select_pad(view, dir.path());
-        // The box crosses the line between its vertices and holds the point.
+        // The box holds the two points and crosses the line between its
+        // vertices.
         let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
         drag(&mut h, from, to, Some(0.5));
         let mut found = selection(&h);
-        found.sort_by_key(|f| f.layer);
-        assert_eq!(found, [picks.point, picks.line], "{view:?}");
+        found.sort_by_key(|f| f.uuid);
+        let mut points = [picks.point, picks.second];
+        points.sort_by_key(|f| f.uuid);
+        assert_eq!(found, points, "{view:?}");
+        select_layer(&mut h, picks.line.layer);
+        drag(&mut h, from, to, Some(0.5));
+        assert_eq!(selection(&h), [picks.line], "{view:?}");
         let before = screen_at(&h, 0.0, 0.0);
         drag(&mut h, from, from + vec2(80.0, 0.0), None);
         assert_ne!(screen_at(&h, 0.0, 0.0), before, "{view:?}");
-        assert_eq!(selection(&h).len(), 2, "{view:?}");
+        assert_eq!(selection(&h), [picks.line], "{view:?}");
     }
 }
 
@@ -8315,7 +8348,7 @@ fn a_pen_drag_on_a_selected_point_moves_it_in_one_undo_step() {
     drag(&mut h, point, to, Some(0.5));
     assert_eq!(saves(&h), saved + 1);
     let features = line_features(&h, picks.point.layer);
-    assert_eq!(features.len(), 1);
+    assert_eq!(features.len(), 2);
     assert_eq!(features[0].uuid(), picks.point.uuid);
     let Geometry::Points(points) = &features[0].geometry else {
         panic!("not a point");
@@ -8332,7 +8365,7 @@ fn a_pen_drag_on_a_selected_point_moves_it_in_one_undo_step() {
 }
 
 #[test]
-fn the_delete_button_deletes_the_selection_of_two_layers_in_one_undo_step() {
+fn the_delete_button_deletes_the_selection_in_one_undo_step() {
     let dir = tempfile::tempdir().unwrap();
     let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
     let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
@@ -8342,14 +8375,12 @@ fn the_delete_button_deletes_the_selection_of_two_layers_in_one_undo_step() {
     tap(&mut h, select::DELETE);
     assert_eq!(saves(&h), saved + 1);
     assert!(line_features(&h, picks.point.layer).is_empty());
-    assert!(line_features(&h, picks.line.layer).is_empty());
-    assert_eq!(line_features(&h, picks.polygon.layer).len(), 1);
+    assert_eq!(line_features(&h, picks.line.layer).len(), 1);
     assert_eq!(selection(&h), []);
     assert!(control(&h, select::DELETE).is_none());
     h.state_mut().undo();
     h.run_steps(2);
-    assert_eq!(line_features(&h, picks.point.layer).len(), 1);
-    assert_eq!(line_features(&h, picks.line.layer).len(), 1);
+    assert_eq!(line_features(&h, picks.point.layer).len(), 2);
 }
 
 #[test]
