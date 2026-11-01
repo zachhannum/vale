@@ -8,10 +8,12 @@
 
 use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
+use crate::channel::{ChannelCut, ChannelLines, ChannelShape};
 use crate::cube::{FACES, face_dir, face_of, unwarp, warp};
 use crate::flow::{
     CoarseHeights, CubeGrid, Drain, FlowMap, Grid, NONE, OUT, RIVER_MIN_AREA, RIVER_MIN_CELLS,
-    STEPS, Window, WindowHeights, cell_past_edge, drain, index_corners, index_dir, solid_angles,
+    STEPS, Window, WindowHeights, cell_past_edge, drain, drop_curves, index_corners, index_dir,
+    solid_angles,
 };
 use crate::heightmap::{Limits, MAX_BRUSH_RADIUS, TexelRect, brush_rect, falloff};
 use crate::math::{V3, dot};
@@ -59,6 +61,13 @@ pub struct ErodeStep {
     drops: Vec<u16>,
     rects: [Option<TexelRect>; FACES],
     limits: Limits,
+    /// With `lines`, the drops of the cells away from the rivers. A river
+    /// cell has the mean drop of the cells next to it that are not rivers.
+    hill: Vec<u16>,
+    /// The channels of the rivers of a step on the global grid. The level of
+    /// a curve is its drop.
+    lines: Option<ChannelLines>,
+    channel: ChannelShape,
 }
 
 impl ErodeStep {
@@ -83,6 +92,27 @@ impl ErodeStep {
         self.rects
     }
 
+    /// The drops that the texels blend. With `lines`, a river cell has the
+    /// drop of the ground beside it, and the channel of the river gives the
+    /// drop of the texels near the river.
+    pub fn hill(&self) -> &[u16] {
+        if self.lines.is_some() {
+            &self.hill
+        } else {
+            &self.drops
+        }
+    }
+
+    /// The channels of the rivers. Only a step on the global grid has them.
+    pub fn lines(&self) -> Option<&ChannelLines> {
+        self.lines.as_ref()
+    }
+
+    /// The width of the channels.
+    pub fn channel(&self) -> ChannelShape {
+        self.channel
+    }
+
     /// Whether no cell goes down.
     pub fn is_empty(&self) -> bool {
         self.rects.iter().all(Option::is_none)
@@ -90,9 +120,9 @@ impl ErodeStep {
 
     /// Adds the drops of `other` to the drops of this step. The sum of two
     /// drops stops at the largest level. Returns `false` and changes nothing
-    /// if the two steps have different cells.
+    /// if the two steps have different cells or if a step has channels.
     pub fn merge(&mut self, other: &ErodeStep) -> bool {
-        if self.grid != other.grid {
+        if self.grid != other.grid || self.lines.is_some() || other.lines.is_some() {
             return false;
         }
         for (drop, add) in self.drops.iter_mut().zip(&other.drops) {
@@ -120,7 +150,7 @@ impl ErodeStep {
                 } else {
                     cell_past_edge(size, face, x, y)
                 };
-                self.drops[(face * size + y) * size + x]
+                self.hill()[(face * size + y) * size + x]
             }
             ErodeGrid::Window(window) => {
                 let cells = window.cells as i64;
@@ -161,8 +191,29 @@ impl ErodeStep {
     /// to their centers. If a cell is wider, the drop is a smooth blend of
     /// the 9 cells around the texel, with the weights of a quadratic
     /// B-spline. That blend has no edge at a cell and no corner between two
-    /// cells, so a channel one cell wide has no row of dots.
+    /// cells, so a channel one cell wide has no row of dots. With `lines`,
+    /// the drop is the larger of that blend and the drop of the channels.
     pub(crate) fn drop_at(&self, n: usize, face: usize, x: usize, y: usize) -> f64 {
+        let blend = self.blend_at(n, face, x, y);
+        let Some(lines) = &self.lines else {
+            return blend;
+        };
+        let flat = |x: usize| unwarp((x as f64 + 0.5) / n as f64 * 2.0 - 1.0);
+        let p = face_dir(face, flat(x), flat(y));
+        let cut = ChannelCut {
+            shape: self.channel,
+            depth: 0.0,
+            texel: FRAC_PI_2 / n as f64,
+        };
+        let channel = match lines.texel_bin(face, x, y, n) {
+            Some(bin) => lines.channel_drop(bin, p, &cut),
+            None => 0.0,
+        };
+        blend.max(channel)
+    }
+
+    /// The blend of the drops of the cells around a texel.
+    fn blend_at(&self, n: usize, face: usize, x: usize, y: usize) -> f64 {
         let Some((u, v)) = self.place(n, face, x, y) else {
             return 0.0;
         };
@@ -471,6 +522,8 @@ pub struct Erosion {
     /// Whether `levels` changed after `flow`.
     stale: bool,
     limits: Limits,
+    /// The width of the channels of a step on the global grid.
+    channel: ChannelShape,
     rain: Rain,
     /// The rain of each cell, from the heights of the first step after a
     /// change of `rain`. It is empty when each cell gets the same rain.
@@ -625,6 +678,7 @@ impl Erosion {
             flow: None,
             stale: true,
             limits: Limits::default(),
+            channel: ChannelShape::default(),
             rain: Rain::default(),
             rain_cells: Vec::new(),
         }
@@ -635,6 +689,12 @@ impl Erosion {
     /// do not move a cell past a limit.
     pub fn set_limits(&mut self, limits: Limits) {
         self.limits = limits;
+    }
+
+    /// Sets the width of the channels of each later step on the global
+    /// grid.
+    pub fn set_channel(&mut self, channel: ChannelShape) {
+        self.channel = channel;
     }
 
     /// Sets the rain of each later step.
@@ -947,8 +1007,44 @@ impl Erosion {
     /// below its receiver at any rate. A cell that is not above the new
     /// height of its receiver does not change. Thus a flat sea floor stays,
     /// and the floor of a pit stays until the rim comes down to it.
+    ///
+    /// On the global grid, a river cell goes down in a channel at the full
+    /// resolution of the heightmap, and the ground beside the channel goes
+    /// down as the cells beside the river do.
     pub fn step(&mut self, brushes: &[ErodeBrush], rate: f64) -> ErodeStep {
-        self.step_on(brushes, rate, false)
+        let mut step = self.step_on(brushes, rate, false);
+        self.add_channels(&mut step);
+        step
+    }
+
+    /// Gives a step on the global grid the channels of its rivers, from the
+    /// flow of the last step.
+    fn add_channels(&self, step: &mut ErodeStep) {
+        let (Cells::Global(grid), Some(flow)) = (&self.cells, &self.flow) else {
+            return;
+        };
+        if step.is_empty() {
+            return;
+        }
+        let river = |i: usize| f64::from(flow.area[i]) >= self.min_area;
+        step.hill = (0..step.drops.len())
+            .map(|i| {
+                if !river(i) {
+                    return step.drops[i];
+                }
+                let beside = grid.neighbors(i).into_iter().map(|j| j as usize);
+                let (sum, count) = beside
+                    .filter(|&j| !river(j))
+                    .fold((0u32, 0u32), |(sum, count), j| {
+                        (sum + u32::from(step.drops[j]), count + 1)
+                    });
+                (sum + count / 2).checked_div(count).unwrap_or(0) as u16
+            })
+            .collect();
+        step.channel = self.channel;
+        let curves = drop_curves(grid.m, flow, self.min_area, &step.drops);
+        // The curves have no floodplain, so the world size has no effect.
+        step.lines = Some(ChannelLines::faces(curves, grid.m, 6371.0));
     }
 
     /// The rectangle of window cells around the cells of `spans`: the first
@@ -984,6 +1080,9 @@ impl Erosion {
             drops: vec![0; self.heights.len()],
             rects: [None; FACES],
             limits: self.limits,
+            hill: Vec::new(),
+            lines: None,
+            channel: self.channel,
         };
         if rate.is_nan() || rate <= 0.0 {
             return step;
@@ -1107,6 +1206,7 @@ impl Erosion {
                 };
             }
         }
+        self.add_channels(&mut sum);
         sum
     }
 }
@@ -1462,6 +1562,9 @@ mod tests {
             drops: drops.collect(),
             rects: [Some(all); FACES],
             limits: Limits::default(),
+            hill: Vec::new(),
+            lines: None,
+            channel: ChannelShape::default(),
         }
     }
 
@@ -1628,6 +1731,86 @@ mod tests {
         assert!(end <= largest / width + largest / 2.0 + 1.0, "{end}");
         // At a corner, the difference is one cell step at most.
         assert!(corner <= largest + 1.0, "{corner}");
+    }
+
+    /// A wide valley along the equator with gentle sides, from face 2 to
+    /// face 0.
+    fn gentle_valley(d: V3) -> u16 {
+        let (lon, lat) = crate::math::dir_to_lonlat(d);
+        let across = (lat - 0.4).abs();
+        meters_to_level(if lon > 10.0 && lon < 80.0 && across < 10.0 {
+            100.0 + 20.0 * (lon - 10.0) + 40.0 * across
+        } else {
+            OCEAN
+        })
+    }
+
+    #[test]
+    fn a_global_step_lowers_a_channel_much_more_than_the_slopes() {
+        let n = 2048;
+        let mut map = Heightmap::new(n, meters_to_level(OCEAN));
+        for face in [0, 2] {
+            let levels: Vec<u16> = (0..n * n)
+                .map(|i| gentle_valley(map.texel_dir(face, i % n, i / n)))
+                .collect();
+            map.store_face(face, &levels);
+        }
+        let heights = CoarseHeights::new(&map);
+        let m = heights.m;
+        let mut erosion = Erosion::global(&heights, n);
+        let center = lonlat_to_dir(40.0, 0.4);
+        let brushes = [ErodeBrush {
+            center,
+            radius: 0.1,
+            hardness: 0.8,
+            flow: 1.0,
+        }];
+        let step = erosion.step(&brushes, 2.0);
+        let lines = step.lines().expect("a global step has channels");
+        assert!(lines.has_curves());
+        let before = texels(&map);
+        map.erode(&step);
+        let after = texels(&map);
+        let flow = erosion.flow.as_ref().expect("the step keeps its flow");
+        let cut = ChannelCut {
+            shape: step.channel(),
+            depth: 0.0,
+            texel: FRAC_PI_2 / n as f64,
+        };
+        let (mut slopes, mut channels) = (Vec::new(), Vec::new());
+        for y in 0..n {
+            for x in 0..n {
+                let p = map.texel_dir(0, x, y);
+                if angle(p, center) > 0.08 {
+                    continue;
+                }
+                let at = y * n + x;
+                let drop = f64::from(before[at] - after[at]);
+                let bin = lines.texel_bin(0, x, y, n).unwrap();
+                let weight = lines
+                    .near(bin)
+                    .map(|curve| cut.channel_weight(&cut.place(curve, p)))
+                    .fold(0.0, f64::max);
+                let cell = (y * m / n) * m + x * m / n;
+                if weight >= 1.0 {
+                    channels.push(drop);
+                } else if weight <= 0.0 && f64::from(flow.area[cell]) < RIVER_MIN_AREA {
+                    slopes.push(drop);
+                }
+            }
+        }
+        let mean = |drops: &[f64]| drops.iter().sum::<f64>() / drops.len() as f64;
+        let (slope, channel) = (mean(&slopes), mean(&channels));
+        assert!(
+            channels.len() > 50 && slopes.len() > 1000,
+            "{} {}",
+            channels.len(),
+            slopes.len()
+        );
+        assert!(
+            channel > 20.0 && slope < 0.25 * channel,
+            "{slope} {channel}"
+        );
     }
 
     #[test]
@@ -2262,6 +2445,7 @@ mod tests {
             motion: [0.0; 3],
             ridged: false,
             relief: 0.0,
+            channel: crate::channel::ChannelShape::default(),
             invert: false,
             limits: Limits::default(),
         };

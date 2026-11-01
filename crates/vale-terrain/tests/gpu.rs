@@ -4,12 +4,12 @@ use std::sync::{Arc, OnceLock, mpsc};
 
 use vale_terrain::math::{V3, add, angle, arc_motion, cross, dot, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
-    ChannelMap, ChannelWindow, CoarseHeights, ErodeBrush, Erosion, FACES, FIELD_WGSL, FlowMap,
-    GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, LINE_SEGMENTS, LINE_SPACING,
-    Limits, LinePlan, Mode, OuterFlow, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec,
-    Readback, Ridge, RidgeLine, RidgePlan, STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TILES_WGSL,
-    TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, pyramid_layout, tiles_layout,
-    window_channels,
+    CHANNEL_WIDTHS_KM, ChannelMap, ChannelShape, ChannelWindow, CoarseHeights, ErodeBrush, Erosion,
+    FACES, FIELD_WGSL, FLOODPLAINS_KM, FlowMap, GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles,
+    Heightmap, LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan, Mode, OuterFlow, Pyramid,
+    RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge, RidgeLine, RidgePlan,
+    STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window,
+    WindowHeights, channel_map, pyramid_layout, tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -248,6 +248,7 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         motion: [0.0; 3],
         ridged: false,
         relief: 0.0,
+        channel: vale_terrain::ChannelShape::default(),
         invert: false,
         limits: Limits::default(),
     }
@@ -566,6 +567,19 @@ fn smooth_leaves_no_seam_at_a_cube_corner() {
 /// and the channel map of its rivers.
 fn river_land(n: usize) -> Heightmap {
     static CHANNELS: OnceLock<Arc<ChannelMap>> = OnceLock::new();
+    let mut map = river_ground(n);
+    assert_eq!(n, 256, "the channel map is for one size");
+    let channels = CHANNELS.get_or_init(|| {
+        let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
+        assert!(channels.has_rivers());
+        Arc::new(channels)
+    });
+    map.set_channels(Some(channels.clone()));
+    map
+}
+
+/// The ground of `river_land` with no channel map.
+fn river_ground(n: usize) -> Heightmap {
     let low = lonlat_to_dir(160.0, -20.0);
     let mut map = Heightmap::new(n, 0);
     for face in 0..FACES {
@@ -581,14 +595,243 @@ fn river_land(n: usize) -> Heightmap {
         }
         map.store_rect(face, full(n), &data);
     }
-    assert_eq!(n, 256, "the channel map is for one size");
-    let channels = CHANNELS.get_or_init(|| {
-        let channels = channel_map(&CoarseHeights::new(&map));
-        assert!(channels.has_rivers());
-        Arc::new(channels)
-    });
-    map.set_channels(Some(channels.clone()));
     map
+}
+
+/// The ground of `river_land` on faces of 1024 texels, with flow cells of 2
+/// texels. The channel lines are those of a world with a radius of
+/// `world_km`.
+fn coarse_river_land(world_km: f64) -> Heightmap {
+    let mut map = river_ground(1024);
+    let channels = channel_map(&CoarseHeights::new(&map), world_km);
+    assert!(channels.lines().has_curves());
+    map.set_channels(Some(Arc::new(channels)));
+    map
+}
+
+/// The world of the wide channels of the tests, in kilometers.
+const SMALL_WORLD_KM: f64 = 1000.0;
+
+/// The largest settings on `SMALL_WORLD_KM`.
+fn wide_channels() -> ChannelShape {
+    ChannelShape::new(CHANNEL_WIDTHS_KM.1, FLOODPLAINS_KM.1, SMALL_WORLD_KM)
+}
+
+fn carve_with(center: V3, radius: f64, channel: ChannelShape) -> Stamp {
+    Stamp {
+        channel,
+        ..stamp(center, radius, 0.5, Mode::Carve)
+    }
+}
+
+/// The flow cells are 2 texels wide, so the channels are thinner than a
+/// cell. Each test runs with the default settings and with wide channels.
+#[test]
+#[ignore = "gpu"]
+fn gpu_carve_on_coarse_cells_matches_cpu() {
+    let shapes = [
+        ("default", ChannelShape::default(), 6371.0),
+        ("wide", wide_channels(), SMALL_WORLD_KM),
+    ];
+    let places = [
+        ("face center", lonlat_to_dir(1.3, 0.7)),
+        ("face edge", lonlat_to_dir(45.0, 0.0)),
+        ("cube corner", lonlat_to_dir(45.0, 35.264)),
+    ];
+    let mut worst = (0, 0);
+    for (name, shape, world_km) in shapes {
+        for (place, center) in places {
+            let mut cpu = coarse_river_land(world_km);
+            let before = levels(&cpu);
+            let difference = run(&mut cpu, &[carve_with(center, 0.1, shape)]).difference;
+            let changed = changes(&before, &levels(&cpu));
+            assert!(
+                changed > 0,
+                "{name} at the {place}: no river is in the brush"
+            );
+            assert!(
+                difference <= TOLERANCE,
+                "{name} at the {place}: {difference}"
+            );
+            worst.0 = worst.0.max(difference);
+        }
+        let mut cpu = coarse_river_land(world_km);
+        let stamps: Vec<Stamp> = stroke((31.0, 2.0), (59.0, 5.0), 120, 0.05, Mode::Carve)
+            .into_iter()
+            .map(|stamp| Stamp {
+                channel: shape,
+                ..stamp
+            })
+            .collect();
+        let before = levels(&cpu);
+        let difference = run_groups(&mut cpu, &stamps).difference;
+        let changed = changes(&before, &levels(&cpu));
+        assert!(changed > 100, "{name} stroke: {changed} texels changed");
+        assert!(
+            difference <= ADD_STROKE_TOLERANCE,
+            "{name} stroke: {difference}"
+        );
+        worst.1 = worst.1.max(difference);
+    }
+    eprintln!("carve on coarse cells, largest difference: {worst:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_carve_with_a_floodplain_matches_cpu() {
+    let land = coarse_river_land(SMALL_WORLD_KM);
+    let lines = land.channels().unwrap().lines();
+    // The stamps are on rivers with a floodplain.
+    let mut plains: Vec<_> = lines
+        .curves()
+        .iter()
+        .filter(|c| c.plains[1] > 0.5)
+        .collect();
+    assert!(plains.len() > 10, "{}", plains.len());
+    plains.sort_by(|a, b| b.areas[1].total_cmp(&a.areas[1]));
+    let centers: Vec<V3> = plains
+        .iter()
+        .step_by(plains.len() / 4)
+        .map(|c| c.points[1])
+        .collect();
+    let before = levels(&land);
+    let mut changed = Vec::new();
+    for floodplain in [0.0, FLOODPLAINS_KM.1] {
+        let shape = ChannelShape::new(CHANNEL_WIDTHS_KM.1, floodplain, SMALL_WORLD_KM);
+        let mut cpu = land.snapshot();
+        let stamps: Vec<Stamp> = centers
+            .iter()
+            .map(|&c| carve_with(c, 0.05, shape))
+            .collect();
+        let difference = run(&mut cpu, &stamps).difference;
+        assert!(
+            difference <= ADD_STROKE_TOLERANCE,
+            "{floodplain}: {difference}"
+        );
+        changed.push(changes(&before, &levels(&cpu)));
+    }
+    assert!(changed[1] > 2 * changed[0] && changed[0] > 0, "{changed:?}");
+}
+
+/// A valley along the equator that goes down to the west, from face 2 to
+/// face 0. The faces meet at longitude 45.
+fn equator_valley(d: V3) -> u16 {
+    let (lon, lat) = vale_terrain::math::dir_to_lonlat(d);
+    let across = (lat - 0.4).abs();
+    vale_terrain::meters_to_level(if lon > 10.0 && lon < 80.0 && across < 3.0 {
+        100.0 + 20.0 * (lon - 10.0) + 300.0 * across
+    } else {
+        -1000.0
+    })
+}
+
+/// `equator_valley` on faces 0 and 2, with all other ground deep below the
+/// sea.
+fn valley_faces(n: usize, level: impl Fn(V3) -> u16) -> Heightmap {
+    let mut map = Heightmap::new(n, vale_terrain::meters_to_level(-1000.0));
+    for face in [0, 2] {
+        let data: Vec<u16> = (0..n * n)
+            .map(|i| level(map.texel_dir(face, i % n, i / n)))
+            .collect();
+        map.store_rect(face, full(n), &data);
+    }
+    map
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_channel_leaves_no_seam_at_a_face_edge() {
+    let n = 1024;
+    let texel = std::f64::consts::FRAC_PI_2 / n as f64;
+    let mut cpu = valley_faces(n, equator_valley);
+    let channels = channel_map(&CoarseHeights::new(&cpu), 6371.0);
+    let edge = lonlat_to_dir(45.0, 0.4);
+    let nearest = channels.lines().curves().iter().map(|c| c.nearest(edge));
+    let (_, [_, area, _]) = nearest.min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+    let shape = ChannelShape {
+        width: 6.0 * texel,
+        reference: area,
+        floodplain: 0.0,
+    };
+    cpu.set_channels(Some(Arc::new(channels)));
+    let stamps: Vec<Stamp> = (0..=20)
+        .map(|step| Stamp {
+            strength: 2000.0,
+            flow: 1.0,
+            hardness: 1.0,
+            ..carve_with(
+                lonlat_to_dir(40.0 + 0.5 * f64::from(step), 0.4),
+                0.05,
+                shape,
+            )
+        })
+        .collect();
+    let Run {
+        faces, difference, ..
+    } = run(&mut cpu, &stamps);
+    assert!(difference <= ADD_STROKE_TOLERANCE, "{difference}");
+    let mut map = Heightmap::new(n, cpu.base());
+    for (face, levels) in faces.iter().enumerate() {
+        map.store_rect(face, full(n), levels);
+    }
+    // The bed and the middle of the bed at each place along the river. The
+    // bed of the river is far below the beds of the streams.
+    let profile = |lon: f64| {
+        let lats = (0..400).map(|i| -1.6 + 0.01 * f64::from(i));
+        let levels: Vec<(f64, u16)> = lats
+            .map(|lat| (lat, map.sample(lonlat_to_dir(lon, lat))))
+            .collect();
+        let bed = levels.iter().map(|&(_, level)| level).min().unwrap();
+        let in_bed = levels.iter().filter(|&&(_, level)| level <= bed + 200);
+        let (sum, count) = in_bed.fold((0.0, 0.0), |(sum, count), &(lat, _)| {
+            (sum + lat, count + 1.0)
+        });
+        (f64::from(bed), sum / count)
+    };
+    let mut last = profile(43.0);
+    for i in 1..=200 {
+        let lon = 43.0 + 0.02 * f64::from(i);
+        let next = profile(lon);
+        assert!((next.0 - last.0).abs() <= 25.0, "{lon}: {last:?} {next:?}");
+        assert!((next.1 - last.1).abs() <= 0.05, "{lon}: {last:?} {next:?}");
+        last = next;
+    }
+}
+
+/// A wide valley along the equator with gentle sides.
+fn gentle_valley(d: V3) -> u16 {
+    let (lon, lat) = vale_terrain::math::dir_to_lonlat(d);
+    let across = (lat - 0.4).abs();
+    vale_terrain::meters_to_level(if lon > 10.0 && lon < 80.0 && across < 10.0 {
+        100.0 + 20.0 * (lon - 10.0) + 40.0 * across
+    } else {
+        -1000.0
+    })
+}
+
+/// The flow cells are 4 texels wide, and the channels are 3 texels wide.
+#[test]
+#[ignore = "gpu"]
+fn gpu_erode_channels_match_cpu_on_a_large_face() {
+    let n = 2048;
+    let mut cpu = valley_faces(n, gentle_valley);
+    let coarse = CoarseHeights::new(&cpu);
+    assert_eq!(4 * coarse.size(), n);
+    let mut erosion = Erosion::global(&coarse, n);
+    let texel = std::f64::consts::FRAC_PI_2 / n as f64;
+    erosion.set_channel(ChannelShape {
+        width: 3.0 * texel,
+        reference: 0.01,
+        floodplain: 0.0,
+    });
+    let brushes = [erode_brush(40.0, 0.4, 0.1), erode_brush(47.0, 1.0, 0.1)];
+    let mut probe = Erosion::global(&coarse, n);
+    let step = probe.step(&brushes, 1.0);
+    assert!(step.lines().is_some_and(|lines| lines.has_curves()));
+    let (difference, changed) = erode_run(&mut cpu, &mut erosion, &brushes, 3);
+    eprintln!("erode channels on a large face, largest difference: {difference}, {changed:?}");
+    assert!(changed[0] > 1000 && changed[2] > 1000, "{changed:?}");
+    assert!(difference <= TOLERANCE, "{difference}");
 }
 
 /// The number of levels that are not the same.
@@ -743,9 +986,9 @@ fn window_land() -> Heightmap {
         let window = Window::centered(lonlat_to_dir(40.0, 3.0), n, 1, WINDOW_CELLS);
         assert_eq!(window.face, 0);
         assert!(window.x0 + WINDOW_CELLS as i64 > n as i64 + 150);
-        let window = window_channels(&WindowHeights::new(&land, window), &flow);
+        let window = window_channels(&WindowHeights::new(&land, window), &flow, 6371.0);
         assert!(window.has_rivers());
-        (faces, Arc::new(flow.channels()), Arc::new(window))
+        (faces, Arc::new(flow.channels(6371.0)), Arc::new(window))
     });
     map.store_rect(0, full(n), &faces[0]);
     map.store_rect(2, full(n), &faces[1]);

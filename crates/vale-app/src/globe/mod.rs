@@ -2203,6 +2203,7 @@ impl Globe {
         if !self.height {
             return;
         }
+        self.rivers.set_world_km(self.world_km);
         self.rivers.request();
         if let Some(window) = self.chosen {
             self.rivers.request_window(&self.map, window);
@@ -2306,7 +2307,10 @@ impl Globe {
         if window != self.chosen {
             self.chosen = window;
             match window {
-                Some(window) => self.rivers.request_window(&self.map, window),
+                Some(window) => {
+                    self.rivers.set_world_km(self.world_km);
+                    self.rivers.request_window(&self.map, window);
+                }
                 None => {
                     self.rivers.drop_window();
                     // The window on the GPU stays until the next one
@@ -2864,6 +2868,8 @@ impl Globe {
         let rate = self.brush.strength_m * ERODE_RATE * seconds;
         self.eroder.set_rain(self.world_rain);
         self.eroder
+            .set_channel(self.brush.channel_shape(self.world_km));
+        self.eroder
             .request(brushes, rate, Lift::None, self.brush.limits());
     }
 
@@ -2943,6 +2949,8 @@ impl Globe {
         let rate = erosion * UPLIFT_ERODE_RATE * (cells / 16.0).sqrt() * stamps.len() as f64;
         let limits = self.brush.limits();
         self.eroder.set_rain(self.world_rain);
+        self.eroder
+            .set_channel(self.brush.channel_shape(self.world_km));
         let lift = Lift::Raise(stamps[0].strength);
         self.eroder.request(brushes.collect(), rate, lift, limits);
         uplift.asked = stamps;
@@ -3050,6 +3058,8 @@ impl Globe {
                 Some(_) => {}
             }
             self.eroder.set_rain(self.world_rain);
+            self.eroder
+                .set_channel(self.brush.channel_shape(self.world_km));
             let erosion = self.brush.erosion.clamp(0.0, 1.0);
             let lift = Lift::Range(Arc::new(line.clone()), u);
             self.eroder.request(Vec::new(), erosion, lift, spec.limits);

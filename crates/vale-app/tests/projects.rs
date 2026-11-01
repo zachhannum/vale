@@ -182,6 +182,7 @@ fn paint(map: &mut Heightmap) {
         motion: [0.0; 3],
         ridged: false,
         relief: 0.0,
+        channel: vale_terrain::ChannelShape::default(),
         invert: false,
         limits: Limits::default(),
     });

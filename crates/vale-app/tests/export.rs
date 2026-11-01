@@ -32,6 +32,7 @@ fn paint(map: &mut Heightmap, lon: f64, lat: f64, radius: f64) {
         motion: [0.0; 3],
         ridged: false,
         relief: 0.0,
+        channel: vale_terrain::ChannelShape::default(),
         invert: false,
         limits: Limits::default(),
     });

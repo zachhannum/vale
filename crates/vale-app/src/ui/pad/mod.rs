@@ -16,8 +16,9 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::BrushSettings;
 use crate::globe::brush::{
-    EROSION, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA,
+    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG,
+    WARP_KM, needs_height,
 };
 use crate::globe::snap;
 use crate::globe::{Tool, WorldView};
@@ -1570,6 +1571,30 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             brush.range_spacing_km = km;
         }
         seed_row(ui, controls, &mut state.doc.project.world.seed);
+    }
+    if matches!(brush.mode, Mode::Carve | Mode::Erode) {
+        let text = format!("{} km", world::three_significant(brush.channel_km));
+        let width = log_slider(brush.channel_km, CHANNEL_KM, &text, |fraction, text| {
+            let name = "Brush channel width";
+            widgets::row_slider(ui, controls, name, "Channel width", fraction, text)
+        });
+        if let Some(km) = width {
+            brush.channel_km = km;
+        }
+    }
+    if brush.mode == Mode::Carve {
+        let text = format!("{:.0} km", brush.floodplain_km);
+        let plain = &mut brush.floodplain_km;
+        linear_slider(plain, FLOODPLAIN_WIDTH_KM, 1.0, &text, |fraction, text| {
+            widgets::row_slider(
+                ui,
+                controls,
+                "Brush floodplain",
+                "Floodplain",
+                fraction,
+                text,
+            )
+        });
     }
     if matches!(brush.mode, Mode::Uplift | Mode::Range) {
         percent_slider(&mut brush.erosion, EROSION, |fraction, text| {

@@ -8,6 +8,7 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 use std::sync::Arc;
 
 use crate::bands::{Bands, SEA_LEVEL};
+use crate::channel::{ChannelCut, ChannelShape};
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
@@ -31,8 +32,12 @@ pub enum Mode {
     Lower,
     Smooth,
     Flatten,
-    /// Lowers the ground along the rivers of the channel map. Land does not
-    /// go below sea level.
+    /// Cuts a channel along each river of the channel lines, with the width
+    /// and the floodplain of `Stamp::channel`. The bed of a channel is
+    /// `Stamp::strength` below the floodplain level for the largest rivers,
+    /// and a quarter of that for the smallest. The ground beside a large
+    /// river on a low slope goes down to the floodplain level. The mode only
+    /// lowers the ground, and land does not go below sea level.
     Carve,
     /// Raises the land by an amount that grows with the distance from the
     /// nearest river of the channel map, up to `RIDGE_REACH`. The ground on a
@@ -163,6 +168,8 @@ pub struct Stamp {
     /// ground above sea level, from 0 to 1. At 1, the noise is zero at sea
     /// level and full at `NOISE_RELIEF_M` above it.
     pub relief: f64,
+    /// The width and the floodplain of the channels of the carve mode.
+    pub channel: ChannelShape,
     pub limits: Limits,
 }
 
@@ -1042,12 +1049,40 @@ impl Heightmap {
         let sea = f64::from(meters_to_level(SEA_LEVEL));
         let channel_size = channels.as_ref().map_or(0.0, |c| c.size() as f64);
         let n = self.n as f64;
+        let cut = ChannelCut {
+            shape: stamp.channel,
+            depth: stamp.strength,
+            texel: FRAC_PI_2 / n,
+        };
+        // The level of a texel after the cut of the channels. The window
+        // comes first. With no channel map, no river is near.
+        let carve = |x: usize, y: usize, fu: f64, fv: f64, old: f64, rate: f64| {
+            let p = face_dir(face, fu, fv);
+            let in_window = window.as_ref().and_then(|channels| {
+                let window = channels.window();
+                let (u, v) = if window.face == face {
+                    window.channel_of_texel(x as i64, y as i64)
+                } else {
+                    window.channel_of_dir(p)?
+                };
+                if !window.covers(u, v) {
+                    return None;
+                }
+                let lines = channels.lines();
+                let bin = lines.window_bin(0.5 * (u + 0.5), 0.5 * (v + 0.5))?;
+                Some(lines.lowered(bin, p, old, rate, &cut))
+            });
+            in_window.or_else(|| {
+                let lines = channels.as_ref()?.lines();
+                let bin = lines.texel_bin(face, x, y, self.n)?;
+                Some(lines.lowered(bin, p, old, rate, &cut))
+            })
+        };
         let octaves = noise_octaves(stamp.scale, self.n);
         let relief_span = f64::from(meters_to_level(SEA_LEVEL + NOISE_RELIEF_M)) - sea;
-        // The valley depth at a texel, or its ridge height with `ridge`. The
-        // window comes first. With no channel map, no river is near, so the
-        // valley has no depth and the ridge has its full height.
-        let river = |x: usize, y: usize, fu: f64, fv: f64, ridge: bool| {
+        // The ridge height at a texel. The window comes first. With no
+        // channel map, no river is near, so the ridge has its full height.
+        let ridge = |x: usize, y: usize, fu: f64, fv: f64| {
             // The place of the texel in the window. On the face of the
             // window, the place is exact.
             let in_window = window.as_ref().and_then(|channels| {
@@ -1057,19 +1092,14 @@ impl Heightmap {
                 } else {
                     window.channel_of_dir(face_dir(face, fu, fv))?
                 };
-                if ridge {
-                    channels.ridge(u, v)
-                } else {
-                    channels.valley(u, v)
-                }
+                channels.ridge(u, v)
             });
             in_window.or_else(|| {
                 // The place of the texel in the channel map.
                 let at = |x: usize| (x as f64 + 0.5) * channel_size / n - 0.5;
                 match &channels {
-                    Some(channels) if ridge => Some(channels.ridge(face, at(x), at(y))),
-                    Some(channels) => Some(channels.valley(face, at(x), at(y))),
-                    None => ridge.then_some(1.0),
+                    Some(channels) => Some(channels.ridge(face, at(x), at(y))),
+                    None => Some(1.0),
                 }
             })
         };
@@ -1118,17 +1148,17 @@ impl Heightmap {
                                 old + amount * stamp.strength * value * gain
                             }
                             Mode::Carve => {
-                                let Some(valley) = river(x, y, fu, fv, false) else {
+                                let rate = amount * stamp.strength;
+                                let Some(new) = carve(x, y, fu, fv, old, rate) else {
                                     continue;
                                 };
-                                let depth = amount * stamp.strength * valley;
-                                (old - depth).round().max(old.min(sea))
+                                new.round().max(old.min(sea))
                             }
                             Mode::Ridge => {
                                 if old <= sea {
                                     continue;
                                 }
-                                let Some(ridge) = river(x, y, fu, fv, true) else {
+                                let Some(ridge) = ridge(x, y, fu, fv) else {
                                     continue;
                                 };
                                 old + amount * stamp.strength * ridge
@@ -1679,8 +1709,11 @@ fn save_tile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::{ChannelLines, channel_size};
+    use crate::flow::tests::equator_valley;
     use crate::flow::{
-        CoarseHeights, FlowMap, Window, WindowHeights, channel_map, window_channels,
+        CoarseHeights, FlowMap, NONE, OUT, Window, WindowHeights, channel_map, drain, sea,
+        window_channels,
     };
     use crate::math::{angle, arc_motion, dir_to_lonlat, lonlat_to_dir};
     use crate::range::{RangeLine, RangeSpec};
@@ -1701,6 +1734,7 @@ mod tests {
             motion: [0.0; 3],
             ridged: false,
             relief: 0.0,
+            channel: ChannelShape::default(),
             invert: false,
             limits: Limits::default(),
         }
@@ -2296,7 +2330,16 @@ mod tests {
     /// valley goes west to the sea at longitude -30. The map has the channel
     /// map of its rivers.
     fn valley() -> Heightmap {
-        let n = 256;
+        let mut map = valley_land(256);
+        let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
+        assert!(channels.has_rivers());
+        map.set_channels(Some(Arc::new(channels)));
+        map
+    }
+
+    /// The land of `valley` with `n` texels along one side of a face, and
+    /// with no channel map.
+    fn valley_land(n: usize) -> Heightmap {
         let mut map = Heightmap::new(n, meters_to_level(-1000.0));
         let data: Vec<u16> = (0..n * n)
             .map(|i| {
@@ -2310,9 +2353,6 @@ mod tests {
             })
             .collect();
         map.store_rect(0, face_rect(n), &data);
-        let channels = channel_map(&CoarseHeights::new(&map));
-        assert!(channels.has_rivers());
-        map.set_channels(Some(Arc::new(channels)));
         map
     }
 
@@ -2369,9 +2409,13 @@ mod tests {
         let mut map = valley();
         let sea = meters_to_level(SEA_LEVEL);
         let before = face_levels(&map);
-        // The river is about 1300 steps above the sea at this place.
+        // The river is about 1300 steps above the sea at this place. The
+        // bed of the smallest channel is a quarter of the strength deep.
         for _ in 0..5 {
-            map.stamp(&carve(-28.0, RIVER_LAT, 0.05));
+            map.stamp(&Stamp {
+                strength: 8000.0,
+                ..carve(-28.0, RIVER_LAT, 0.05)
+            });
         }
         let after = face_levels(&map);
         for (new, old) in after.iter().zip(&before) {
@@ -2408,39 +2452,358 @@ mod tests {
     fn valley_with_window(cells: usize) -> Heightmap {
         let mut map = valley();
         let flow = FlowMap::new(&CoarseHeights::from_fn(64, |d| map.sample(d)));
-        map.set_channels(Some(Arc::new(flow.channels())));
+        map.set_channels(Some(Arc::new(flow.channels(6371.0))));
         let window = Window::centered(lonlat_to_dir(0.0, RIVER_LAT), 256, 1, cells);
-        let channels = window_channels(&WindowHeights::new(&map, window), &flow);
+        let channels = window_channels(&WindowHeights::new(&map, window), &flow, 6371.0);
         assert!(channels.has_rivers());
         map.set_window(Some(Arc::new(channels)));
         map
     }
 
-    /// The number of texels across the river at longitude 0 that a carve
-    /// stroke along the river lowers by more than half of the largest change.
-    fn valley_width(map: &mut Heightmap) -> usize {
-        let before = face_levels(map);
-        for step in -2..=2 {
-            map.stamp(&carve(f64::from(step), RIVER_LAT, 0.1));
+    /// The distance from a direction to the nearest curve of `lines` that
+    /// drains `min_area` or more, and the level and the area of that curve
+    /// there.
+    fn nearest_curve(lines: &ChannelLines, p: V3, min_area: f64) -> (f64, f64, f64) {
+        let large = lines.curves().iter().filter(|c| c.areas[1] >= min_area);
+        let (d, [level, area, _]) = large
+            .map(|curve| curve.nearest(p))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .expect("the lines have curves");
+        (d, level, area)
+    }
+
+    /// Half of the largest drained area of the curves near `p`. The curves
+    /// that drain this area or more are the main river there.
+    fn main_river(lines: &ChannelLines, p: V3) -> f64 {
+        let near = lines.curves().iter().filter(|c| c.nearest(p).0 < 0.01);
+        0.5 * near.map(|c| c.areas[1]).fold(0.0, f64::max)
+    }
+
+    /// A carve stroke along the river of `valley`, from `from` to `to`
+    /// degrees of longitude.
+    fn carve_along(map: &mut Heightmap, from: f64, to: f64, shape: ChannelShape, strength: f64) {
+        let steps = ((to - from) / 0.5).round() as i32;
+        for step in 0..=steps {
+            map.stamp(&Stamp {
+                channel: shape,
+                strength,
+                ..carve(from + 0.5 * f64::from(step), RIVER_LAT, 0.05)
+            });
         }
+    }
+
+    /// A shape with no floodplain whose channel is `width` radians wide at
+    /// the area of the river at `p`.
+    fn shape_at(lines: &ChannelLines, p: V3, width: f64) -> ChannelShape {
+        ChannelShape {
+            width,
+            reference: nearest_curve(lines, p, main_river(lines, p)).2,
+            floodplain: 0.0,
+        }
+    }
+
+    /// The width of the bed of the channel across the river at longitude 0,
+    /// in radians, and the drained area there. The bed is the ground below
+    /// the floodplain level by more than half of the depth of the channel.
+    /// `lines` are the lines that cut the channel there.
+    fn bed_width(
+        map: &Heightmap,
+        before: &[u16],
+        lines: &ChannelLines,
+        strength: f64,
+    ) -> (f64, f64) {
+        let n = map.face_size();
         let after = face_levels(map);
-        let column = place(map, 0.0, RIVER_LAT) % 256;
-        let lowered: Vec<u16> = (0..256)
-            .map(|y| before[y * 256 + column] - after[y * 256 + column])
-            .collect();
-        let most = *lowered.iter().max().unwrap();
-        assert!(most > 500, "{most}");
-        lowered.iter().filter(|&&change| change > most / 2).count()
+        let column = place(map, 0.0, RIVER_LAT) % n;
+        let main = main_river(lines, lonlat_to_dir(0.0, RIVER_LAT));
+        let near = |y: usize| nearest_curve(lines, map.texel_dir(0, column, y), main);
+        let middle = place(map, 0.0, RIVER_LAT) / n;
+        let middle = (middle - 20..middle + 20)
+            .min_by(|&a, &b| near(a).0.total_cmp(&near(b).0))
+            .unwrap();
+        let in_bed = |y: usize| {
+            let (_, level, area) = near(y);
+            let at = y * n + column;
+            let half = level - 0.5 * strength * channel_size(area);
+            after[at] < before[at] && f64::from(after[at]) <= half
+        };
+        let up = (middle..n).take_while(|&y| in_bed(y)).count();
+        let down = (0..middle).rev().take_while(|&y| in_bed(y)).count();
+        assert!(up + down > 2, "{up} {down}");
+        ((up + down) as f64 * FRAC_PI_2 / n as f64, near(middle).2)
     }
 
     #[test]
-    fn carve_in_a_window_cuts_a_narrow_valley() {
-        let mut map = valley_with_window(96);
-        let narrow = valley_width(&mut map);
-        let mut map = valley_with_window(96);
-        map.set_window(None);
-        let wide = valley_width(&mut map);
-        assert!(narrow >= 1 && 3 * narrow <= wide, "{narrow} {wide}");
+    fn the_channel_has_one_width_in_km_at_each_cell_size() {
+        let strength = 3000.0;
+        let width = 0.012;
+        let mut results = Vec::new();
+        // A global map with cells of 2 texels.
+        let mut map = valley_land(1024);
+        let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
+        let river = lonlat_to_dir(0.0, RIVER_LAT);
+        let shape = shape_at(channels.lines(), river, width);
+        map.set_channels(Some(Arc::new(channels)));
+        let before = face_levels(&map);
+        carve_along(&mut map, -3.0, 3.0, shape, strength);
+        let lines = map.channels().unwrap().lines().clone();
+        results.push((bed_width(&map, &before, &lines, strength), 1024));
+
+        // A global map with cells of 16 texels, and a window with cells of
+        // one texel.
+        let mut map = valley_land(2048);
+        let flow = FlowMap::new(&CoarseHeights::from_fn(128, |d| map.sample(d)));
+        map.set_channels(Some(Arc::new(flow.channels(6371.0))));
+        let before = face_levels(&map);
+        carve_along(&mut map, -3.0, 3.0, shape, strength);
+        let lines = map.channels().unwrap().lines().clone();
+        results.push((bed_width(&map, &before, &lines, strength), 2048));
+        map.store_rect(0, face_rect(2048), &before);
+        let window = Window::centered(river, 2048, 1, 512);
+        let channels = window_channels(&WindowHeights::new(&map, window), &flow, 6371.0);
+        let lines = channels.lines().clone();
+        map.set_window(Some(Arc::new(channels)));
+        carve_along(&mut map, -3.0, 3.0, shape, strength);
+        results.push((bed_width(&map, &before, &lines, strength), 2048));
+
+        for &((measured, area), n) in &results {
+            // The bed reaches half a texel past its edge, on each side.
+            let texel = FRAC_PI_2 / n as f64;
+            let expected = shape.width_at(area) + texel;
+            assert!((measured - expected).abs() <= texel, "{results:?}");
+            let first = results[0].0.1;
+            assert!(area / first > 0.7 && area / first < 1.4, "{results:?}");
+        }
+    }
+
+    #[test]
+    fn the_cut_width_follows_the_channel_width_setting() {
+        let strength = 3000.0;
+        let mut widths = Vec::new();
+        for width in [0.006, 0.012, 0.024] {
+            let mut map = valley_land(1024);
+            let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
+            let shape = shape_at(channels.lines(), lonlat_to_dir(0.0, RIVER_LAT), width);
+            map.set_channels(Some(Arc::new(channels)));
+            let before = face_levels(&map);
+            carve_along(&mut map, -3.0, 3.0, shape, strength);
+            let lines = map.channels().unwrap().lines().clone();
+            let (measured, area) = bed_width(&map, &before, &lines, strength);
+            widths.push((measured, shape.width_at(area)));
+        }
+        let texel = FRAC_PI_2 / 1024.0;
+        for &(measured, expected) in &widths {
+            assert!((measured - expected - texel).abs() <= texel, "{widths:?}");
+        }
+        assert!(widths[2].0 > 3.0 * widths[0].0, "{widths:?}");
+    }
+
+    #[test]
+    fn carve_with_a_floodplain_flattens_the_ground_beside_a_large_river() {
+        let n = 1024;
+        let texel = FRAC_PI_2 / n as f64;
+        let land = valley_land(n);
+        let channels = Arc::new(channel_map(&CoarseHeights::new(&land), 6371.0));
+        let river = lonlat_to_dir(0.0, RIVER_LAT);
+        let plain = channels.lines().curves().iter().map(|c| c.nearest(river));
+        let (_, [_, _, part]) = plain.min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+        assert!(part > 0.9, "{part}");
+        let floodplain = 30.0 * texel;
+        let result = |floodplain: f64| {
+            let mut map = land.snapshot();
+            map.set_channels(Some(channels.clone()));
+            let shape = ChannelShape {
+                floodplain,
+                ..shape_at(channels.lines(), river, 4.0 * texel)
+            };
+            carve_along(&mut map, -3.0, 3.0, shape, 2000.0);
+            (face_levels(&map), shape)
+        };
+        let before = face_levels(&land);
+        let (flat, shape) = result(floodplain);
+        let (none, _) = result(0.0);
+        let main = main_river(channels.lines(), river);
+        let cut = ChannelCut {
+            shape,
+            depth: 2000.0,
+            texel,
+        };
+        let (mut plain, mut beyond) = (0, 0);
+        let places = (0..n * n).filter(|at| {
+            let p = land.texel_dir(0, at % n, at / n);
+            angle(p, river) < 2f64.to_radians() && dir_to_lonlat(p).0.abs() < 1.0
+        });
+        for at in places {
+            let (column, y) = (at % n, at / n);
+            let p = land.texel_dir(0, column, y);
+            let (d, level, area) = nearest_curve(channels.lines(), p, main);
+            // The texels that the cut of a stream reaches.
+            let streams = channels
+                .lines()
+                .curves()
+                .iter()
+                .filter(|c| c.areas[1] < main);
+            let stream = streams.into_iter().any(|c| cut.past_edge(c, p) <= texel);
+            if stream {
+                continue;
+            }
+            let h = 0.5 * shape.width_at(area);
+            if d > h + 2.0 * texel && d < h + 0.5 * floodplain - texel {
+                // The ground of the floodplain is at its level, and the
+                // ground with no floodplain stays.
+                assert!(before[at] > flat[at], "{column} {y}");
+                assert!(
+                    (f64::from(flat[at]) - level).abs() <= 2.0,
+                    "{column} {y} {}",
+                    flat[at]
+                );
+                assert_eq!(none[at], before[at], "{column} {y}");
+                plain += 1;
+            } else if d > h + 0.5 * floodplain + texel {
+                assert_eq!(flat[at], before[at], "{column} {y}");
+                beyond += 1;
+            }
+        }
+        assert!(plain > 200 && beyond > 100, "{plain} {beyond}");
+    }
+
+    #[test]
+    fn carve_on_the_coarse_copy_leaves_the_ground_past_the_floodplain() {
+        let n = 2048;
+        let mut map = valley_land(n);
+        let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
+        map.set_channels(Some(Arc::new(channels)));
+        let before = face_levels(&map);
+        let shape = ChannelShape::default();
+        carve_along(&mut map, -10.0, 10.0, shape, 1000.0);
+        let after = face_levels(&map);
+        let lines = map.channels().unwrap().lines().clone();
+        let texel = FRAC_PI_2 / n as f64;
+        let cut = ChannelCut {
+            shape,
+            depth: 1000.0,
+            texel,
+        };
+        let (mut changed, mut kept) = (0, 0);
+        for (at, (new, old)) in after.iter().zip(&before).enumerate() {
+            let (x, y) = (at % n, at / n);
+            let p = map.texel_dir(0, x, y);
+            let in_brush =
+                (-10..=10).any(|lon| angle(p, lonlat_to_dir(f64::from(lon), RIVER_LAT)) < 0.04);
+            if new == old {
+                kept += usize::from(in_brush && *old > meters_to_level(SEA_LEVEL));
+                continue;
+            }
+            changed += 1;
+            let bin = lines.texel_bin(0, x, y, n).unwrap();
+            let past = lines
+                .near(bin)
+                .map(|curve| cut.past_edge(curve, p))
+                .fold(f64::INFINITY, f64::min);
+            assert!(past <= texel * 1.001, "{x} {y}: {past} {texel}");
+        }
+        assert!(changed > 500 && kept > changed, "{changed} {kept}");
+    }
+
+    #[test]
+    fn after_a_carve_the_flow_follows_the_channels() {
+        let n = 1024;
+        let texel = FRAC_PI_2 / n as f64;
+        let mut map = valley_land(n);
+        let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
+        let river = lonlat_to_dir(0.0, RIVER_LAT);
+        let shape = shape_at(channels.lines(), river, 4.0 * texel);
+        map.set_channels(Some(Arc::new(channels)));
+        carve_along(&mut map, -8.0, 8.0, shape, 2000.0);
+        let lines = map.channels().unwrap().lines().clone();
+        let cut = ChannelCut {
+            shape,
+            depth: 2000.0,
+            texel,
+        };
+        let window = Window::centered(river, n, 1, 256);
+        let heights = WindowHeights::new(&map, window);
+        let flow = drain(&window, &heights.levels, &[], sea());
+        let main = main_river(&lines, river);
+        let (mut starts, mut steps) = (0, 0);
+        for i in 0..window.cells * window.cells {
+            let (cx, cy) = (i % window.cells, i / window.cells);
+            let p = window.cell_dir(cx, cy);
+            let (d, _, area) = nearest_curve(&lines, p, main);
+            if d > 0.25 * shape.width_at(area) {
+                continue;
+            }
+            if dir_to_lonlat(p).0.abs() > 6.0 {
+                continue;
+            }
+            starts += 1;
+            let mut at = i;
+            loop {
+                let p = window.cell_dir(at % window.cells, at / window.cells);
+                if dir_to_lonlat(p).0 < -6.0 || heights.levels[at] < sea() {
+                    break;
+                }
+                let past = lines
+                    .curves()
+                    .iter()
+                    .map(|c| cut.past_edge(c, p))
+                    .fold(f64::INFINITY, f64::min);
+                assert!(past <= texel, "{starts} {steps}: {past} {texel}");
+                let to = flow.receiver[at];
+                if to == OUT || to == NONE {
+                    break;
+                }
+                at = to as usize;
+                steps += 1;
+            }
+        }
+        assert!(starts > 50 && steps > 2000, "{starts} {steps}");
+    }
+
+    #[test]
+    fn a_channel_across_a_face_edge_has_no_seam() {
+        let n = 1024;
+        let texel = FRAC_PI_2 / n as f64;
+        let mut map = Heightmap::new(n, meters_to_level(-1000.0));
+        for face in [0, 2] {
+            let data: Vec<u16> = (0..n * n)
+                .map(|i| equator_valley(map.texel_dir(face, i % n, i / n)))
+                .collect();
+            map.store_rect(face, face_rect(n), &data);
+        }
+        let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
+        let edge = lonlat_to_dir(45.0, 0.4);
+        let shape = shape_at(channels.lines(), edge, 6.0 * texel);
+        map.set_channels(Some(Arc::new(channels)));
+        for step in 0..=20 {
+            map.stamp(&Stamp {
+                channel: shape,
+                strength: 2000.0,
+                ..carve(40.0 + 0.5 * f64::from(step), 0.4, 0.05)
+            });
+        }
+        // The bed and the middle of the cut at each place along the river.
+        // The bed of the river is far below the beds of the streams.
+        let profile = |lon: f64| {
+            let lats = (0..400).map(|i| -1.6 + 0.01 * f64::from(i));
+            let levels: Vec<(f64, u16)> = lats
+                .map(|lat| (lat, map.sample(lonlat_to_dir(lon, lat))))
+                .collect();
+            let bed = levels.iter().map(|&(_, level)| level).min().unwrap();
+            let in_bed = levels.iter().filter(|&&(_, level)| level <= bed + 200);
+            let (sum, count) = in_bed.fold((0.0, 0.0), |(sum, count), &(lat, _)| {
+                (sum + lat, count + 1.0)
+            });
+            (f64::from(bed), sum / count)
+        };
+        let mut last = profile(43.0);
+        for i in 1..=200 {
+            let lon = 43.0 + 0.02 * f64::from(i);
+            let next = profile(lon);
+            assert!((next.0 - last.0).abs() <= 25.0, "{lon}: {last:?} {next:?}");
+            assert!((next.1 - last.1).abs() <= 0.05, "{lon}: {last:?} {next:?}");
+            last = next;
+        }
     }
 
     #[test]
@@ -2616,7 +2979,7 @@ mod tests {
             })
             .collect();
         map.store_rect(0, face_rect(n), &data);
-        let channels = channel_map(&CoarseHeights::new(&map));
+        let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
         map.set_channels(Some(Arc::new(channels)));
         map
     }

@@ -68,6 +68,16 @@ struct Group {
     // The texels of the drop texture that hold the drops of an erode pass:
     // x0, y0, x1, y1. The drop of each other cell is 0.
     drop_rect: vec4<i32>,
+    // The number of bins along one side of a face of the channel lines, of
+    // the window lines, and of the lines of an erode step. 0 is no lines.
+    lines_side: u32,
+    window_bins: u32,
+    erode_side: u32,
+    // The angle of one texel step, in radians.
+    texel: f32,
+    // The width of a channel at its reference area, that area, and the width
+    // of a floodplain, as in `ChannelShape`.
+    channel: vec4<f32>,
     stamps: array<Stamp, GROUP_STAMPS>,
 }
 
@@ -112,6 +122,26 @@ const WARP_MARGIN = 3.0;
 @group(0) @binding(5) var fills: texture_2d_array<u32>;
 // The same levels on the cells of the window.
 @group(0) @binding(6) var window_fills: texture_2d<u32>;
+
+// The curve of one river node, as in `ChannelLines::to_gpu`.
+struct Curve {
+    p0: vec4<f32>,
+    p1: vec4<f32>,
+    p2: vec4<f32>,
+    levels: vec4<f32>,
+    areas: vec4<f32>,
+    plains: vec4<f32>,
+}
+
+// The curves and the bin index of the channel lines, of the window lines,
+// and of the lines of an erode step. An index holds the number of bin starts,
+// then the starts, and then the curve of each item.
+@group(0) @binding(8) var<storage, read> curves: array<Curve>;
+@group(0) @binding(9) var<storage, read> curve_index: array<u32>;
+@group(0) @binding(10) var<storage, read> window_curves: array<Curve>;
+@group(0) @binding(11) var<storage, read> window_index: array<u32>;
+@group(0) @binding(12) var<storage, read> erode_curves: array<Curve>;
+@group(0) @binding(13) var<storage, read> erode_index: array<u32>;
 
 // One piece of the line of an ocean ridge. The numbers are those of
 // `RidgeSegment::to_f32`.
@@ -285,11 +315,9 @@ fn atan_unit(t: f32) -> f32 {
     return 4.0 * atan_series(quarter);
 }
 
-// The pair of a channel texel that the mode of the group reads. The ridge
-// mode reads the nearest river. The carve mode reads the river with the
-// deepest valley.
+// The pair of a channel texel that the ridge mode reads: the nearest river.
 fn pair_of(texel: vec4<u32>) -> vec2<f32> {
-    return vec2<f32>(select(texel.ba, texel.rg, group.mode == RIDGE));
+    return vec2<f32>(texel.rg);
 }
 
 // The distance from a texel to the river of its pair, in channel texels, and
@@ -494,6 +522,178 @@ fn drop_at(at: vec2<i32>) -> f32 {
         for (var i = 0; i < 3; i++) {
             drop += wx[i] * wy[j] * cell_drop(p + vec2<i32>(i - 1, j - 1));
         }
+    }
+    return drop;
+}
+
+// The same numbers as in `channel.rs` and `flow.rs`.
+const RIVER_MIN_AREA = 5.0e-4;
+const RIVER_OCTAVES = 12.0;
+const WINDOW_BIN_CELLS = 4.0;
+
+const LINES = 0u;
+const WINDOW_LINES = 1u;
+const ERODE_LINES = 2u;
+
+fn index_of(source: u32, i: u32) -> u32 {
+    switch source {
+        case LINES {
+            return curve_index[i];
+        }
+        case WINDOW_LINES {
+            return window_index[i];
+        }
+        default {
+            return erode_index[i];
+        }
+    }
+}
+
+fn curve_of(source: u32, k: u32) -> Curve {
+    switch source {
+        case LINES {
+            return curves[k];
+        }
+        case WINDOW_LINES {
+            return window_curves[k];
+        }
+        default {
+            return erode_curves[k];
+        }
+    }
+}
+
+// The distance from `p` to one straight piece from `a` to `b`, and the
+// place along it from 0 to 1.
+fn to_piece(p: vec3<f32>, a: vec3<f32>, b: vec3<f32>) -> vec2<f32> {
+    let e = b - a;
+    let pa = p - a;
+    let ee = dot(e, e);
+    var t = 0.0;
+    if ee > 0.0 {
+        t = clamp(dot(pa, e) / ee, 0.0, 1.0);
+    }
+    return vec2<f32>(length(pa - e * t), t);
+}
+
+// The place beside a curve: the distance, the level, the area, and the plain
+// part. The steps are those of `ChannelCurve::nearest`.
+fn nearest(c: Curve, p: vec3<f32>) -> vec4<f32> {
+    let first = to_piece(p, c.p0.xyz, c.p1.xyz);
+    let second = to_piece(p, c.p1.xyz, c.p2.xyz);
+    if second.x < first.x {
+        let t = second.y;
+        return vec4<f32>(
+            second.x,
+            c.levels.y + (c.levels.z - c.levels.y) * t,
+            c.areas.y + (c.areas.z - c.areas.y) * t,
+            c.plains.y + (c.plains.z - c.plains.y) * t,
+        );
+    }
+    let t = first.y;
+    return vec4<f32>(
+        first.x,
+        c.levels.x + (c.levels.y - c.levels.x) * t,
+        c.areas.x + (c.areas.y - c.areas.x) * t,
+        c.plains.x + (c.plains.y - c.plains.x) * t,
+    );
+}
+
+// The steps of `channel_size` in `channel.rs`.
+fn channel_size(area: f32) -> f32 {
+    let octaves = log2(max(area, 1e-30) / RIVER_MIN_AREA) / RIVER_OCTAVES;
+    return 0.25 + 0.75 * clamp(octaves, 0.0, 1.0);
+}
+
+// The half-width of the bed of a channel, as in `ChannelCut::half_width`.
+fn half_width(area: f32) -> f32 {
+    let width = group.channel.x * sqrt(max(area, 0.0) / group.channel.y);
+    return max(0.5 * width, 0.5 * group.texel);
+}
+
+fn toward(old: f32, goal: f32, most: f32) -> f32 {
+    if old > goal {
+        return old - min(old - goal, max(most, 0.0));
+    }
+    return old;
+}
+
+// The level of a texel at `old` after the cut of the curves of one bin. The
+// steps are those of `ChannelLines::lowered`.
+fn lowered(source: u32, bin: u32, p: vec3<f32>, old: f32, rate: f32, depth: f32) -> f32 {
+    let count = index_of(source, 0u);
+    let first = index_of(source, 1u + bin);
+    let last = index_of(source, 2u + bin);
+    var low = old;
+    var plain_distance = 1e30;
+    var plain = vec2<f32>(0.0);
+    var has_plain = false;
+    for (var i = first; i < last; i++) {
+        let q = nearest(curve_of(source, index_of(source, 1u + count + i)), p);
+        let size = channel_size(q.z);
+        let half = half_width(q.z);
+        let edge = half + 0.5 * q.w * group.channel.z;
+        let weight = 1.0 - clamp((q.x - half) / group.texel, 0.0, 1.0);
+        let goal = q.y - depth * size * weight;
+        low = min(low, toward(old, goal, rate * size * weight));
+        var plain_weight = 0.0;
+        if edge > half {
+            plain_weight = clamp((edge + group.texel - q.x) / group.texel, 0.0, 1.0);
+        }
+        if q.x < plain_distance && plain_weight > 0.0 {
+            plain_distance = q.x;
+            plain = vec2<f32>(q.y, rate * size * plain_weight);
+            has_plain = true;
+        }
+    }
+    if has_plain {
+        low = min(low, toward(old, plain.x, plain.y));
+    }
+    return low;
+}
+
+// The set and the bin of the channel lines at a texel. The window comes
+// first. The third number is 0 if no lines are there. The steps are those
+// of the carve mode in `Heightmap::stamp_face`.
+fn lines_at(at: vec2<i32>) -> vec3<u32> {
+    let place = window_channel_at(at);
+    if place.z > 0.0 {
+        if group.window_bins == 0u {
+            return vec3<u32>(0u);
+        }
+        let bin = vec2<u32>(0.5 * (place.xy + 0.5) / WINDOW_BIN_CELLS);
+        return vec3<u32>(WINDOW_LINES, bin.y * group.window_bins + bin.x, 1u);
+    }
+    let side = group.lines_side;
+    if side == 0u {
+        return vec3<u32>(0u);
+    }
+    let n = u32(group.size);
+    let texel = vec2<u32>(at);
+    let bin = (group.face * side + texel.y * side / n) * side + texel.x * side / n;
+    return vec3<u32>(LINES, bin, 1u);
+}
+
+// The drop of an erode step from the channels at a texel. The steps are those
+// of `ChannelLines::channel_drop`.
+fn channel_drop(at: vec2<i32>) -> f32 {
+    let side = group.erode_side;
+    if side == 0u {
+        return 0.0;
+    }
+    let n = u32(group.size);
+    let texel = vec2<u32>(at);
+    let bin = (group.face * side + texel.y * side / n) * side + texel.x * side / n;
+    let p = normalize(texel_dir(group.face, at));
+    let count = index_of(ERODE_LINES, 0u);
+    let first = index_of(ERODE_LINES, 1u + bin);
+    let last = index_of(ERODE_LINES, 2u + bin);
+    var drop = 0.0;
+    for (var i = first; i < last; i++) {
+        let q = nearest(curve_of(ERODE_LINES, index_of(ERODE_LINES, 1u + count + i)), p);
+        let half = half_width(q.z);
+        let rise = clamp((q.x - half) / group.texel, 0.0, 1.0);
+        drop = max(drop, (1.0 - rise) * q.y);
     }
     return drop;
 }
@@ -1779,7 +1979,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     if group.mode == ERODE {
         // The lowest level is 0. A texel does not go below the floor, and a
         // texel outside the limits stays.
-        let drop = floor(drop_at(at) + 0.5);
+        let drop = floor(max(drop_at(at), channel_drop(at)) + 0.5);
         if drop > 0.0 {
             value = limited(value, value - drop);
         }
@@ -1802,7 +2002,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     // The distance to the river and its size. The window comes first. With
     // no river near, the size is 0.
     var river = vec2<f32>(0.0);
-    if group.mode == CARVE || group.mode == RIDGE {
+    var lines = vec3<u32>(0u);
+    var p = vec3<f32>(0.0);
+    if group.mode == CARVE {
+        lines = lines_at(at);
+        p = normalize(texel_dir(group.face, at));
+    }
+    if group.mode == RIDGE {
         let in_window = window_river_at(at);
         if in_window.z > 0.0 {
             river = in_window.xy;
@@ -1866,13 +2072,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                 change = (sum - 9.0 * old) / 9.0 * min(amount, 1.0);
             }
             case CARVE {
-                // A large river has a wide and deep valley. With no river
-                // near, the size is 0 and the level stays.
-                if river.y > 0.0 {
-                    let size = river.y / 255.0;
-                    let k = clamp(river.x / (1.5 + 4.5 * size), 0.0, 1.0);
-                    let profile = 1.0 - k * k * (3.0 - 2.0 * k);
-                    change = -amount * stamp.strength * profile * (0.25 + 0.75 * size);
+                // With no channel near, the level stays.
+                if lines.z > 0u {
+                    let rate = amount * stamp.strength;
+                    change = lowered(lines.x, lines.y, p, old, rate, stamp.strength) - old;
                 }
             }
             case RIDGE {

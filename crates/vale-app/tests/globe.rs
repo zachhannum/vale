@@ -29,8 +29,8 @@ use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
 use vale_style::{Color, Stroke};
 use vale_terrain::{
-    Bands, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, Rain, StopLine, WindowHeights,
-    channel_map, level_to_meters, meters_to_level, window_channels,
+    Bands, ChannelCut, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, Rain, StopLine,
+    WindowHeights, channel_map, level_to_meters, meters_to_level, window_channels,
 };
 
 /// The sample world with its vector layers hidden, so that each place of the
@@ -1776,7 +1776,7 @@ fn carve_cuts_a_valley_along_a_river_and_stays_above_the_sea() {
     };
     let before = levels(map);
     // The rivers of the app are the rivers of the whole heightmap.
-    let channels = channel_map(&CoarseHeights::new(map));
+    let channels = channel_map(&CoarseHeights::new(map), 6371.0);
     assert!(channels.bytes() == h.state().globe.channels().unwrap().bytes());
 
     mouse_stroke(&mut h);
@@ -1857,7 +1857,7 @@ fn ridge_raises_the_land_between_the_rivers_and_leaves_the_sea() {
             .collect()
     };
     let before = levels(map);
-    let channels = channel_map(&CoarseHeights::new(map));
+    let channels = channel_map(&CoarseHeights::new(map), 6371.0);
     assert!(channels.bytes() == h.state().globe.channels().unwrap().bytes());
 
     mouse_stroke(&mut h);
@@ -1923,7 +1923,7 @@ fn deposit_raises_low_ground_to_the_fill_level_and_leaves_the_sea() {
             .collect()
     };
     let before = levels(map);
-    let channels = channel_map(&CoarseHeights::new(map));
+    let channels = channel_map(&CoarseHeights::new(map), 6371.0);
     assert!(channels.fills() == h.state().globe.channels().unwrap().fills());
 
     mouse_stroke(&mut h);
@@ -1975,9 +1975,9 @@ fn ridge_in_a_near_view_reads_the_window() {
     let w = h.state().globe.window().unwrap().window();
     assert_eq!(w.cell, 1);
     let flow = FlowMap::new(&CoarseHeights::new(map));
-    let window = window_channels(&WindowHeights::new(map, w), &flow);
+    let window = window_channels(&WindowHeights::new(map, w), &flow, 6371.0);
     assert!(window.bytes() == h.state().globe.window().unwrap().bytes());
-    let channels = flow.channels();
+    let channels = flow.channels(6371.0);
     let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / N as f64 - 0.5;
 
     mouse_stroke(&mut h);
@@ -2018,6 +2018,38 @@ fn the_brush_panel_has_the_erode_mode() {
     h.get_by_label("Erode").click();
     h.run_steps(2);
     assert_eq!(h.state().globe.brush.mode, Mode::Erode);
+}
+
+#[test]
+fn the_brush_panel_has_the_channel_width_and_the_floodplain_of_the_carve_mode() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    let shown =
+        |h: &Harness<'static, AppState>, label| h.query_all_by_label(label).next().is_some();
+    for (mode, rows) in [
+        ("Raise", [false, false]),
+        ("Carve", [true, true]),
+        ("Erode", [true, false]),
+        ("Uplift", [false, false]),
+    ] {
+        h.get_by_label(mode).click();
+        h.run_steps(2);
+        let rows_shown = [shown(&h, "Channel width"), shown(&h, "Floodplain")];
+        assert_eq!(rows_shown, rows, "{mode}");
+    }
+    h.get_by_label("Carve").click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!((brush.channel_km, brush.floodplain_km), (0.6, 10.0));
+    set_slider(&mut h, "Channel width", 2.0);
+    set_slider(&mut h, "Floodplain", 25.0);
+    let brush = &h.state().globe.brush;
+    assert_eq!((brush.channel_km, brush.floodplain_km), (2.0, 25.0));
+    // The stamps of the stroke get the channels in radians.
+    let shape = brush.channel_shape(1000.0);
+    assert!((shape.width - 0.002).abs() < 1e-12, "{shape:?}");
+    assert!((shape.floodplain - 0.025).abs() < 1e-12, "{shape:?}");
 }
 
 #[test]
@@ -2431,9 +2463,70 @@ fn a_far_view_draws_the_global_rivers() {
     assert_eq!(river_pixels(&h, &img), count);
 }
 
+/// The cut of the channels of the brush on the map of `h`, with a depth of 0.
+fn channel_cut(h: &Harness<'static, AppState>) -> ChannelCut {
+    let globe = &h.state().globe;
+    ChannelCut {
+        shape: globe.brush.channel_shape(6371.0),
+        depth: 0.0,
+        texel: std::f64::consts::FRAC_PI_2 / globe.map.face_size() as f64,
+    }
+}
+
+/// The channel lines of the app at one time: the lines of the window and
+/// its place, and the lines of the whole map.
+struct Rivers {
+    window: Option<(vale_terrain::Window, vale_terrain::ChannelLines)>,
+    global: Option<vale_terrain::ChannelLines>,
+}
+
+impl Rivers {
+    fn of(h: &Harness<'static, AppState>) -> Rivers {
+        let globe = &h.state().globe;
+        Rivers {
+            window: globe.window().map(|w| (w.window(), w.lines().clone())),
+            global: globe.channels().map(|c| c.lines().clone()),
+        }
+    }
+
+    /// How far a texel is past the outer edge of the floodplain of the
+    /// nearest channel, in texels. The channels of the window come first, as
+    /// in the Carve mode. `None`: no channel is near.
+    fn past_floodplain(
+        &self,
+        map: &vale_terrain::Heightmap,
+        cut: &ChannelCut,
+        (face, x, y): (usize, usize, usize),
+    ) -> Option<f64> {
+        let p = map.texel_dir(face, x, y);
+        let past = |curves: &mut dyn Iterator<Item = &vale_terrain::ChannelCurve>| {
+            curves
+                .map(|curve| cut.past_edge(curve, p) / cut.texel)
+                .reduce(f64::min)
+        };
+        let in_window = self.window.as_ref().and_then(|(window, lines)| {
+            let (u, v) = if window.face == face {
+                window.channel_of_texel(x as i64, y as i64)
+            } else {
+                window.channel_of_dir(p)?
+            };
+            if !window.covers(u, v) {
+                return None;
+            }
+            let bin = lines.window_bin(0.5 * (u + 0.5), 0.5 * (v + 0.5))?;
+            Some(past(&mut lines.near(bin)))
+        });
+        in_window.unwrap_or_else(|| {
+            let lines = self.global.as_ref()?;
+            let bin = lines.texel_bin(face, x, y, map.face_size())?;
+            past(&mut lines.near(bin))
+        })
+    }
+}
+
 #[test]
 #[ignore = "gpu"]
-fn carve_in_a_near_view_cuts_a_narrow_valley() {
+fn carve_in_a_near_view_changes_only_the_ground_near_the_rivers() {
     const N: usize = 2048;
     let _gpu = one_gpu_test();
     let mut h = island_harness(N, 0.2, 14.0);
@@ -2457,38 +2550,87 @@ fn carve_in_a_near_view_cuts_a_narrow_valley() {
     assert_eq!(w.cell, 1);
     // The window of the app has the rivers of the heightmap.
     let flow = FlowMap::new(&CoarseHeights::new(map));
-    let window = window_channels(&WindowHeights::new(map, w), &flow);
+    let window = window_channels(&WindowHeights::new(map, w), &flow, 6371.0);
     assert!(window.bytes() == h.state().globe.window().unwrap().bytes());
-    // A channel texel of the map is this number of channel texels of the
-    // window. A valley has the same width in channel texels in both.
-    let channels = h.state().globe.channels().unwrap().size();
-    let ratio = (2 * N) as f64 / (channels * w.cell) as f64;
-    assert!(ratio >= 4.0, "{ratio}");
+    // The rivers of the cut. A stroke changes the rivers.
+    let rivers = Rivers::of(&h);
 
     mouse_stroke(&mut h);
     settle(&mut h);
-    let after = levels(&h.state().globe.map);
-    let (mut cut, mut widest) = (0, 0.0f64);
+    let map = &h.state().globe.map;
+    let after = levels(map);
+    let cut = channel_cut(&h);
+    let mut changed = 0;
     for (i, (x, y)) in texels().enumerate() {
         let (old, new) = (before[i], after[i]);
         if new == old {
             continue;
         }
         assert!(new < old, "{new} over {old}");
-        let (u, v) = w.channel_of_texel(x as i64, y as i64);
-        let (distance, _) = window.lookup(u, v).expect("the window covers the stroke");
-        // The texel is in the valley of a river.
-        assert!(
-            window.valley(u, v).unwrap() > 0.0,
-            "{distance} from a river"
-        );
-        widest = widest.max(distance);
-        cut += 1;
+        // The cut changes nothing past one texel beyond the floodplain. The
+        // GPU texel centers can differ a little from the CPU ones.
+        let past = rivers.past_floodplain(map, &cut, (0, x, y));
+        let past = past.expect("a channel is near");
+        assert!(past <= 1.1, "{past} texels past the floodplain at {x} {y}");
+        changed += 1;
     }
-    assert!(cut > 100, "{cut}");
-    // The widest valley of the channel map is 6 of its channel texels wide
-    // on each side.
-    assert!(widest * 4.0 <= 6.0 * ratio, "{widest}");
+    assert!(changed > 100, "{changed}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn carve_in_a_far_view_changes_only_the_ground_near_the_rivers() {
+    const N: usize = 1024;
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(N, 0.35, 1.0);
+    let globe = &mut h.state_mut().globe;
+    // A far view has no window, so the brush cuts along the rivers of the
+    // coarse copy.
+    assert!(globe.window().is_none());
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Carve;
+    globe.brush.size_points = 80.0;
+    globe.brush.strength_m = 3000.0;
+    h.run_steps(2);
+    let before = all_levels(&h);
+    let rivers = Rivers::of(&h);
+
+    let c = mouse_stroke(&mut h);
+    settle(&mut h);
+    let after = all_levels(&h);
+    let cut = channel_cut(&h);
+    let (a, b) = (
+        place(&h, c - Vec2::new(40.0, 0.0)),
+        place(&h, c + Vec2::new(40.0, 0.0)),
+    );
+    let radius = h.state().globe.brush.radius(h.state().globe.radius());
+    let map = &h.state().globe.map;
+    let (mut changed, mut bed, mut kept) = (0, 0, 0);
+    for (i, (&old, &new)) in before.iter().zip(&after).enumerate() {
+        let (face, x, y) = (i / (N * N), i % N, i / N % N);
+        if new == old {
+            // The land under the middle of the brush and past the floodplains
+            // stays.
+            let d = map.texel_dir(face, x, y);
+            let under = (0..=8).any(|k| angle(d, slerp(a, b, f64::from(k) / 8.0)) < 0.5 * radius);
+            if under && old > meters_to_level(0.0) {
+                let past = rivers.past_floodplain(map, &cut, (face, x, y));
+                kept += usize::from(past.is_none_or(|past| past > 2.0));
+            }
+            continue;
+        }
+        let past = rivers.past_floodplain(map, &cut, (face, x, y));
+        assert!(new < old, "{new} over {old}");
+        let past = past.expect("a channel is near");
+        assert!(
+            past <= 1.1,
+            "{past} texels past the floodplain at {face} {x} {y}"
+        );
+        changed += 1;
+        bed += usize::from(new + 100 < old);
+    }
+    assert!(changed > 100 && bed > 20, "{changed} {bed}");
+    assert!(kept > 1000, "{kept}");
 }
 
 /// A harness with the island in the middle of a far view, and the erode
@@ -2613,6 +2755,72 @@ fn erode_in_a_far_view_lowers_the_land_and_the_sea_floor() {
     // Some land is left.
     let land = |levels: &[u16]| levels.iter().filter(|&&level| level > sea + 200).count();
     assert!(land(&after) * 10 > land(&before) * 9);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn erode_in_a_far_view_cuts_thin_channels() {
+    const N: usize = 1024;
+    let _gpu = one_gpu_test();
+    let mut h = island_harness(N, 0.35, 1.0);
+    let globe = &mut h.state_mut().globe;
+    assert!(globe.window().is_none());
+    globe.tool = Tool::Brush;
+    globe.brush.mode = Mode::Erode;
+    globe.brush.size_points = 80.0;
+    h.run_steps(2);
+    let before = all_levels(&h);
+    // The rivers before the stroke. The Erode mode cuts no floodplain.
+    let lines = h.state().globe.channels().unwrap().lines().clone();
+    let mut cut = channel_cut(&h);
+    cut.shape.floodplain = 0.0;
+
+    let c = mouse_stroke(&mut h);
+    settle(&mut h);
+    let after = all_levels(&h);
+    let (a, b) = (
+        place(&h, c - Vec2::new(40.0, 0.0)),
+        place(&h, c + Vec2::new(40.0, 0.0)),
+    );
+    let radius = h.state().globe.brush.radius(h.state().globe.radius());
+    let map = &h.state().globe.map;
+    let (mut channels, mut slopes) = (Vec::new(), Vec::new());
+    for (i, (&old, &new)) in before.iter().zip(&after).enumerate() {
+        let (face, x, y) = (i / (N * N), i % N, i / N % N);
+        let d = map.texel_dir(face, x, y);
+        let under = (0..=8).any(|k| angle(d, slerp(a, b, f64::from(k) / 8.0)) < 0.5 * radius);
+        if !under || old <= meters_to_level(0.0) {
+            continue;
+        }
+        let drop = f64::from(old.saturating_sub(new));
+        let near = lines.texel_bin(face, x, y, N).map(|bin| {
+            lines
+                .near(bin)
+                .map(|curve| cut.place(curve, d))
+                .collect::<Vec<_>>()
+        });
+        let near = near.unwrap_or_default();
+        if near.iter().any(|at| cut.channel_weight(at) >= 1.0) {
+            channels.push(drop);
+        } else if near
+            .iter()
+            .all(|at| at.distance - at.half > 2.0 * cut.texel)
+        {
+            slopes.push(drop);
+        }
+    }
+    let (channel, slope) = (mean(&channels), mean(&slopes));
+    assert!(
+        channels.len() > 20 && slopes.len() > 500,
+        "{} {}",
+        channels.len(),
+        slopes.len()
+    );
+    // A slope far from the rivers goes down much less than a channel.
+    assert!(
+        channel > 20.0 && slope < 0.25 * channel,
+        "{slope} {channel}"
+    );
 }
 
 /// Paints an erode stroke from the land of the island to the sea.

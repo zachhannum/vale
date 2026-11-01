@@ -2695,6 +2695,48 @@ fn the_range_mode_fits_on_the_smallest_ipad() {
     assert_eq!(h.state().globe.brush, brush);
 }
 
+#[test]
+fn the_brush_panel_has_the_channel_rows_of_the_carve_and_erode_modes() {
+    let (width, plain) = ("Brush channel width", "Brush floodplain");
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    for (mode, rows) in [
+        ("Lower", [false, false]),
+        ("Carve", [true, true]),
+        ("Erode", [true, false]),
+        ("Range", [false, false]),
+        ("Noise", [false, false]),
+        ("Push", [false, false]),
+    ] {
+        choose_mode(&mut h, mode);
+        let shown = [control(&h, width).is_some(), control(&h, plain).is_some()];
+        assert_eq!(shown, rows, "{mode}");
+    }
+    choose_mode(&mut h, "Carve");
+    assert_eq!(h.state().globe.brush.mode, Mode::Carve);
+    check_controls(&h, "the Carve mode");
+    // The channel width goes from one end of its logarithmic range to the
+    // other.
+    let brush = h.state().globe.brush;
+    assert_eq!((brush.channel_km, brush.floodplain_km), (0.6, 10.0));
+    let rect = control(&h, width).unwrap();
+    drag(&mut h, rect.center(), rect.left_center(), None);
+    assert!((h.state().globe.brush.channel_km - 0.05).abs() < 1e-9);
+    drag(&mut h, rect.left_center(), rect.right_center(), None);
+    assert!((h.state().globe.brush.channel_km - 10.0).abs() < 1e-6);
+    // The floodplain has steps of 1 km.
+    let rect = control(&h, plain).unwrap();
+    drag(&mut h, rect.center(), rect.right_center(), None);
+    assert_eq!(h.state().globe.brush.floodplain_km, 100.0);
+    drag(&mut h, rect.right_center(), rect.center(), None);
+    let km = h.state().globe.brush.floodplain_km;
+    assert!(km < 100.0 && km == km.round(), "{km}");
+    // The Erode mode has the same channel width.
+    choose_mode(&mut h, "Erode");
+    assert!((h.state().globe.brush.channel_km - 10.0).abs() < 1e-6);
+    check_controls(&h, "the Erode mode");
+}
+
 /// Writes an image of the brush panel in the ocean ridge mode, for a person
 /// to look at.
 #[test]
