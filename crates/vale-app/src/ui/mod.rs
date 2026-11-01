@@ -18,6 +18,7 @@ use vale_terrain::{Bands, Heightmap, Mode};
 use crate::atlas_export::{ExportStep, PdfExport, RASTER_PIXEL_RATIO};
 use crate::document::Document;
 use crate::files::{Availability, ExportEvent, Files, PlainFiles, SystemEvents};
+use crate::globe::fit;
 use crate::globe::import::{ImportResult, ProbeJob, Source, file_name};
 use crate::globe::line::{self, LineEdit};
 use crate::globe::math::lonlat_to_dir;
@@ -683,6 +684,9 @@ impl AppState {
         let point = kind(GeometryKind::Point);
         globe.draw_layer = line.or(polygon).or(point).map(|d| d.0);
         globe.lineable = line.is_some();
+        let fit = |raster: &&Raster| is_height(raster) && globe.holds(raster.id);
+        let fit_layer = project.rasters().iter().find(fit).map(|raster| raster.id);
+        globe.fit_layer = fit_layer;
         globe.fillable = polygon.is_some();
         globe.pointable = point.is_some();
         // A tool that edits a vector layer stays such a tool in a layer of
@@ -2426,12 +2430,27 @@ impl AppState {
         let Some(layer) = self.doc.project.layer(id) else {
             return;
         };
-        let smoothing = self.globe.line.smoothing;
+        let settings = self.globe.line;
+        let smoothing = settings.smoothing;
         let edit = match layer.geometry() {
             Some(GeometryKind::Polygon) => {
                 polygon::commit(&stroke.runs, stroke.scale, smoothing).map(LineEdit::New)
             }
-            _ => line::commit(&layer.features, &stroke.runs, stroke.scale, smoothing),
+            _ => {
+                let globe = &self.globe;
+                let map = globe
+                    .fit_layer
+                    .and_then(|id| globe.raster_map(id).or_else(|| globe.display_map(id)));
+                let radius_m = self.doc.project.world.radius_km * 1000.0;
+                let runs = match map {
+                    Some(map) => {
+                        let (features, scale) = (&layer.features, stroke.scale);
+                        fit::fit_runs(map, features, &stroke.runs, scale, &settings, radius_m)
+                    }
+                    None => stroke.runs.clone(),
+                };
+                line::commit(&layer.features, &runs, stroke.scale, smoothing)
+            }
         };
         let project = &mut self.doc.project;
         let done = match edit {
