@@ -1325,6 +1325,50 @@ impl Pipeline {
         Ok(list)
     }
 
+    /// The map of a frame in all of `part`, with no clip to its shape, no
+    /// labels, and no decorations. It fills the shape while a gesture moves
+    /// the map, until the next compose.
+    pub fn compose_frame_spill(
+        &mut self,
+        doc: &Document,
+        frame: &FrameRecord,
+        target: FrameTarget,
+        part: Rect,
+    ) -> anyhow::Result<DisplayList> {
+        let ids = drawn_layers(doc, Some(frame.map));
+        let cache = self.ensure(doc, frame.map, &ids)?;
+        let vt = atlas::frame_transform(&cache.projection, frame, target);
+        let step = atlas::graticule_interval(&cache.projection, frame);
+        cache.ensure_graticule(step, &vt, part, frame.center[0]);
+        let cache = &self.caches[0];
+        let [r, g, b] = frame.graticule.color;
+        let stroke = Stroke::solid(vale_render::Color::rgb(r, g, b), frame.graticule.width);
+        let graticule = step
+            .and_then(|s| cache.graticule_lines(s))
+            .map(|lines| (lines, stroke));
+        let symbol_scale = SymbolScale {
+            nominal: frame.scale,
+            unit: target.pts_per_mm / PT_PER_MM,
+        };
+        let mut list = DisplayList::new(part.x1, part.y1);
+        draw_map(
+            &mut list,
+            doc,
+            Some(frame.map),
+            cache,
+            &vt,
+            part,
+            false,
+            true,
+            &ids,
+            graticule,
+            None,
+            &mut self.scatter,
+            symbol_scale,
+        );
+        Ok(list)
+    }
+
     /// A list that fills the shape of a map frame. A mask for the raster
     /// layers of the frame comes from it. The list is `size` points big.
     pub fn frame_mask(frame: &FrameRecord, target: FrameTarget, size: (f64, f64)) -> DisplayList {

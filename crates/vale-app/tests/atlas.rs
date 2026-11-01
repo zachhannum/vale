@@ -640,7 +640,7 @@ fn the_vertices_of_a_polygon_frame_move_add_and_go_away() {
 }
 
 #[test]
-fn the_neatline_and_the_border_stay_in_place_while_the_map_moves() {
+fn the_neatline_the_border_and_the_crop_stay_in_place_while_the_map_moves() {
     let mut h = inset_pad(BOARDS[0]);
     let id = frame(&h, 0).id;
     let f = h.state_mut().doc.project.atlas.frame_mut(id).unwrap();
@@ -651,21 +651,31 @@ fn the_neatline_and_the_border_stay_in_place_while_the_map_moves() {
     let at = middle(&h, 0) - vec2(60.0, 0.0);
     tap_with(&mut h, at, Input::Finger);
     h.run_steps(4);
-    let (map, decor) = h.state().atlas.painted_rects(id);
-    let (map, decor) = (map.unwrap(), decor.unwrap());
+    let [_, spill, decor] = h.state().atlas.painted_rects(id);
+    // At rest, the spill does not show.
+    assert_eq!(spill, None);
+    let decor = decor.unwrap();
+    let place = h.state().atlas.place.unwrap();
+    let shape = place.rect_to_screen(shape_bbox(&frame(&h, 0).shape));
 
-    // During the drag, the map moves with the finger, and the decorations
-    // stay.
+    // During the drag, the map moves with the finger inside the shape, the
+    // spill fills the rest of the shape, and the decorations stay.
     let from = middle(&h, 0) - vec2(60.0, 20.0);
     let to = from + vec2(50.0, 30.0);
     drag_steps(&mut h, from, to, Input::Finger, 6);
-    let (moved, held) = h.state().atlas.painted_rects(id);
-    let d = moved.unwrap().min - map.min;
-    assert!((d - vec2(50.0, 30.0)).length() < 1.0, "{d:?}");
+    let [map, spill, held] = h.state().atlas.painted_rects(id);
+    let (map, spill) = (map.unwrap(), spill.unwrap());
+    let near = |a: Pos2, b: Pos2| a.distance(b) < 1.0;
+    assert!(shape.expand(0.5).contains_rect(map), "{map:?} {shape:?}");
+    assert!(near(map.max, shape.max), "{map:?} {shape:?}");
+    let texture = h.state().atlas.texture_rect(id).unwrap();
+    let start = (texture.min + vec2(50.0, 30.0)).max(shape.min);
+    assert!(near(map.min, start), "{map:?} {start:?}");
+    assert!(near(spill.min, shape.min) && near(spill.max, shape.max));
     assert_eq!(held, Some(decor));
     release(&mut h, to, Input::Finger);
     h.run_steps(8);
-    assert_eq!(h.state().atlas.painted_rects(id).1, Some(decor));
+    assert_eq!(h.state().atlas.painted_rects(id)[2], Some(decor));
 }
 
 #[test]
