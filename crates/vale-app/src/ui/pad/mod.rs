@@ -1436,17 +1436,6 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
                 },
             );
         }
-        if !measuring && state.globe.lineable {
-            let terrain = state.globe.fit_layer.is_some();
-            let line = &mut state.globe.line;
-            let (name, label) = (TERRAIN_FIT_SWITCH, TERRAIN_FIT);
-            widgets::switch_row_enabled(ui, controls, name, label, &mut line.fit, terrain);
-            let on = terrain && line.fit;
-            percent_slider(&mut line.terrain, 0.0..=1.0, |fraction, text| {
-                let name = TERRAIN_BALANCE;
-                widgets::row_slider_enabled(ui, controls, name, "Balance", fraction, text, on)
-            });
-        }
         // The Measure tool in a map frame does not snap to color stops.
         let rasters = match state.workspace {
             Workspace::Atlas => Vec::new(),
@@ -1481,6 +1470,17 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             &text,
         ) {
             snap.distance = (low + fraction * (high - low)).round();
+        }
+        if !measuring && state.globe.lineable {
+            let terrain = state.globe.fit_layer.is_some();
+            let line = &mut state.globe.line;
+            let (name, label) = (TERRAIN_FIT_SWITCH, TERRAIN_FIT);
+            widgets::switch_row_enabled(ui, controls, name, label, &mut line.fit, terrain);
+            let on = terrain && line.fit;
+            percent_slider(&mut line.terrain, 0.0..=1.0, |fraction, text| {
+                let name = TERRAIN_BALANCE;
+                widgets::row_slider_enabled(ui, controls, name, "Balance", fraction, text, on)
+            });
         }
         return;
     }

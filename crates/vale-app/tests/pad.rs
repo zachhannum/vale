@@ -5503,16 +5503,32 @@ fn the_terrain_fit_controls_are_touch_size_in_each_layout() {
         tap(&mut h, "Brush settings");
         // The balance slider is disabled while the fit is off.
         assert!(disabled(&h, TERRAIN_BALANCE), "{what}");
+        scroll_brush_to(&mut h, TERRAIN_FIT_SWITCH);
         tap(&mut h, TERRAIN_FIT_SWITCH);
         assert!(h.state().globe.line.fit, "{what}");
         assert!(!disabled(&h, TERRAIN_BALANCE), "{what}");
         for name in [TERRAIN_FIT_SWITCH, TERRAIN_BALANCE] {
+            scroll_brush_to(&mut h, name);
             let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
             assert!(touch(rect), "{what}: {name} is {rect:?}");
         }
         check_controls(&h, &format!("{what} with the brush panel"));
         check_safe(&h, size, safe, &what);
         screenshot::save(&mut h, &format!("pad-terrain-fit-{}", size.0));
+    }
+}
+
+/// Scrolls the Brush panel until a control is inside it, with a drag up on
+/// the margin at the left of the rows.
+fn scroll_brush_to(h: &mut Pad, name: &str) {
+    for _ in 0..8 {
+        let card = panel(h, Panel::Brush).unwrap();
+        let inside = |rect: Rect| card.contains_rect(rect);
+        if control(h, name).is_some_and(inside) {
+            return;
+        }
+        let from = pos2(card.left() + 6.0, card.bottom() - 40.0);
+        drag(h, from, from - vec2(0.0, 120.0), None);
     }
 }
 
