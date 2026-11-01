@@ -3277,19 +3277,69 @@ fn the_shader_field_matches_the_cpu_field() {
         }
     }
     let values = shader_field(gpu, &tiles, &pyramid, &points);
-    let field = Pyramid::new(&cpu);
+    assert_fields_match(&points, &values, &Pyramid::new(&cpu));
+}
+
+/// Checks that the shader field at each point is within 1e-3 of the range of
+/// the map from the CPU field.
+fn assert_fields_match(points: &[[f32; 4]], values: &[f32], field: &Pyramid) {
     let all: Vec<u16> = (0..FACES).flat_map(|f| field.face(0, f).to_vec()).collect();
     let (low, high) = (all.iter().min().unwrap(), all.iter().max().unwrap());
     let range = f64::from(high - low) / 65535.0;
     for (point, value) in points.iter().zip(values) {
         let d = [point[0], point[1], point[2]].map(f64::from);
         let expected = field.field(d, f64::from(point[3]));
-        let difference = (f64::from(value) - expected).abs();
+        let difference = (f64::from(*value) - expected).abs();
         assert!(
             difference <= 1e-3 * range,
             "{point:?}: the shader gives {value}, the CPU gives {expected}"
         );
     }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_shader_field_reads_level_1_from_two_level_tiles() {
+    let gpu = gpu();
+    let n = 64;
+    let cpu = hills(n);
+    let field = Pyramid::new(&cpu);
+    let tiles = GpuTiles::with_levels(&gpu.device, n as u32, 16, cpu.base(), 2);
+    assert_eq!(tiles.levels(), 2);
+    for level in 0..2 {
+        let m = n >> level;
+        for face in 0..FACES {
+            let data = field.face(level, face);
+            tiles.upload_level(&gpu.queue, level, face as u32, full(m), data);
+        }
+    }
+    // A pyramid of zeros, so a read of level 1 from the pyramid shows.
+    let pyramid = GpuPyramid::new(&gpu.device, n as u32);
+    let mut enc = gpu.encoder();
+    pyramid.clear(&mut enc, 0);
+    gpu.submit(enc);
+    let mut points = Vec::new();
+    for d in test_directions() {
+        for lod in [0.0, 0.3, 0.5, 1.0] {
+            points.push([d[0] as f32, d[1] as f32, d[2] as f32, lod]);
+        }
+    }
+    let values = shader_field(gpu, &tiles, &pyramid, &points);
+    assert_fields_match(&points, &values, &field);
+
+    // A release of a tile of level 1 keeps the same tile of level 0.
+    let before = tiles.allocated_tiles();
+    tiles.release_tile(&gpu.queue, 1, 0, 0, 0);
+    assert_eq!(tiles.allocated_tiles(), before - 1);
+    let read = gpu.read_with(|enc, face| tiles.read_rect(&gpu.device, enc, face, full(n)));
+    assert_eq!(read[0], field.face(0, 0));
+    let last = TexelRect {
+        x0: 16,
+        y0: 16,
+        x1: 32,
+        y1: 32,
+    };
+    assert_eq!(tiles.tile_rect(1, 1, 1), last);
 }
 
 /// The largest difference between a GPU level and a CPU level after an ocean

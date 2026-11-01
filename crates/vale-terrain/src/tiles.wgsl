@@ -5,10 +5,15 @@ struct Tiles {
     base: u32,
     // The number of texels along one side of a tile.
     tile: u32,
+    // The number of levels of the pyramid in the tiles. Level `k` has
+    // `max(1, n >> k)` texels along one side of a face.
+    levels: u32,
+    pad: u32,
 }
 
 @group(1) @binding(0) var<uniform> tiles: Tiles;
-// One texel for each tile, and one layer for each face. 0 is a tile that has
+// One texel for each tile, and one layer for each face of each level, level
+// by level. Each layer has the size of level 0. 0 is a tile that has
 // no memory. For the other tiles, the number minus 1 holds the place of the
 // tile in the pool. From the low byte to the high byte, the place is the
 // column and the row in a layer, the layer, and the chunk.
@@ -25,8 +30,14 @@ struct Tiles {
 
 // The level of a texel of a face. The texel is on the face.
 fn tile_level(face: i32, at: vec2<i32>) -> u32 {
+    return tile_level_of(face, at, 0u);
+}
+
+// The level of a texel of a face at pyramid level `k`. The texel is on the
+// face of that level, and `k` is below `tiles.levels`.
+fn tile_level_of(face: i32, at: vec2<i32>, k: u32) -> u32 {
     let side = i32(tiles.tile);
-    let entry = textureLoad(tile_table, at / side, face, 0).r;
+    let entry = textureLoad(tile_table, at / side, i32(k) * 6 + face, 0).r;
     if entry == 0u {
         return tiles.base;
     }

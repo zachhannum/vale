@@ -427,7 +427,7 @@ impl GpuHeightmap {
 
     /// The same as `new`, with `tile` by `tile` texels in a tile.
     pub fn with_tile_size(device: &wgpu::Device, face_size: u32, tile: usize) -> GpuHeightmap {
-        let pool = Pool::new(device, face_size as usize, tile, 0);
+        let pool = Pool::new(device, face_size as usize, tile, 0, 1);
         let tiles_layout = pool.layout().clone();
         // A new texture holds zeros, and a river size of 0 is no river.
         let channel_size = ChannelMap::size_for(face_size as usize) as u32;
@@ -829,7 +829,7 @@ impl GpuHeightmap {
     /// tile that gets the base level in each texel loses its memory.
     pub fn upload(&self, queue: &wgpu::Queue, face: u32, rect: TexelRect, data: &[u16]) {
         let pool = &mut self.state().pool;
-        pool.upload(&self.device, queue, face as usize, rect, data);
+        pool.upload(&self.device, queue, 0, face as usize, rect, data);
     }
 
     /// Starts a batch of stamps. Call it after each submit of an encoder
@@ -1013,8 +1013,10 @@ impl GpuHeightmap {
     /// Gives memory to each tile of a rectangle. A pass reads each tile from
     /// the pool, and a copy writes each tile.
     fn ensure(&self, queue: &wgpu::Queue, state: &mut State, face: usize, rect: TexelRect) {
-        for (tx, ty, _) in state.pool.tiles_in(rect) {
-            state.pool.ensure(&self.device, queue, face, tx, ty, true);
+        for (tx, ty, _) in state.pool.tiles_in(0, rect) {
+            state
+                .pool
+                .ensure(&self.device, queue, 0, face, tx, ty, true);
         }
     }
 
@@ -1066,8 +1068,11 @@ impl GpuHeightmap {
         rect: TexelRect,
     ) {
         let scratch = state.scratch[target].as_ref().expect("a pass drew it");
-        for (tx, ty, part) in state.pool.tiles_in(rect) {
-            let slot = state.pool.slot(face, tx, ty).expect("the tile has memory");
+        for (tx, ty, part) in state.pool.tiles_in(0, rect) {
+            let slot = state
+                .pool
+                .slot(0, face, tx, ty)
+                .expect("the tile has memory");
             enc.copy_texture_to_texture(
                 texels(&scratch.texture, part.x0 - rect.x0, part.y0 - rect.y0, 0),
                 state.pool.texels(slot, part.x0, part.y0),
@@ -1453,8 +1458,8 @@ pub(crate) fn read_rect(
         mapped_at_creation: false,
     });
     let mut holes = Vec::new();
-    for (tx, ty, part) in pool.tiles_in(rect) {
-        let Some(slot) = pool.slot(face as usize, tx, ty) else {
+    for (tx, ty, part) in pool.tiles_in(0, rect) {
+        let Some(slot) = pool.slot(0, face as usize, tx, ty) else {
             holes.push(part);
             continue;
         };

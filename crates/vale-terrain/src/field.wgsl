@@ -2,7 +2,8 @@
 // `pyramid.rs` fills group 2. `smooth.rs` has the same functions on the CPU.
 //
 // `n` is the face size of level 0, and level `k` has `max(1, n >> k)` texels
-// along one side. A value is from 0 to 1.
+// along one side. A value is from 0 to 1. The levels below `tiles.levels`
+// come from the tiles, and the higher levels from the pyramid.
 //
 // - `field(d, n, lod, max_level)`: the value at a world direction with a
 //   blend of levels, and its slope across one texel of level 0.
@@ -17,10 +18,11 @@
 
 const FIELD_QUARTER_PI: f32 = 0.7853981633974483;
 
-// The value of a texel at a level. The texel is on the face.
+// The value of a texel at a level. The texel is on the face. A level below
+// `tiles.levels` comes from the tiles.
 fn level_load(face: i32, x: i32, y: i32, level: u32) -> f32 {
-    if level == 0u {
-        return f32(tile_level(face, vec2<i32>(x, y))) / 65535.0;
+    if level < tiles.levels {
+        return f32(tile_level_of(face, vec2<i32>(x, y), level)) / 65535.0;
     }
     return f32(textureLoad(pyramid, vec2<i32>(x, y), face, i32(level) - 1).r) / 65535.0;
 }
