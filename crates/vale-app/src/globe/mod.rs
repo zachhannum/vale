@@ -1986,12 +1986,20 @@ impl Globe {
     /// while it waits for its main river. The main river shows until its
     /// basin goes to the GPU.
     pub fn basin_preview(&self) -> Option<(Vec<Pos2>, Vec<Pos2>)> {
+        // A point closer to the last point than 1.5 points is left out.
         let screen = |dirs: &[V3]| -> Vec<Pos2> {
-            dirs.iter().filter_map(|&dir| self.project(dir)).collect()
+            let mut points: Vec<Pos2> = Vec::new();
+            for pos in dirs.iter().filter_map(|&dir| self.project(dir)) {
+                match points.last() {
+                    Some(last) if last.distance(pos) < 1.5 => {}
+                    _ => points.push(pos),
+                }
+            }
+            points
         };
         let active = self.stroke.as_ref();
-        if let Some(outline) = active.and_then(|a| a.outline.as_ref()) {
-            return Some((screen(outline), Vec::new()));
+        if active.is_some_and(|a| a.outline.is_some()) {
+            return None;
         }
         if let Some(basin) = active.and_then(|a| a.basin.as_ref()) {
             return (!basin.done)
@@ -1999,6 +2007,25 @@ impl Globe {
         }
         let outline = self.basin_outline.as_ref()?;
         Some((screen(outline), Vec::new()))
+    }
+
+    /// The outline of a basin while the pen draws it, in screen points. It
+    /// ends at the pen and does not close.
+    pub fn outline_preview(&self) -> Option<Vec<Pos2>> {
+        let outline = self.stroke.as_ref()?.outline.as_ref()?;
+        let mut points: Vec<Pos2> = Vec::new();
+        let pen = self.input.pos.into_iter();
+        for pos in outline
+            .iter()
+            .filter_map(|&dir| self.project(dir))
+            .chain(pen)
+        {
+            match points.last() {
+                Some(last) if last.distance(pos) < 1.5 => {}
+                _ => points.push(pos),
+            }
+        }
+        Some(points)
     }
 
     /// The outline of the next basin. The next basin stroke draws its main
