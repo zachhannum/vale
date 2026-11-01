@@ -88,6 +88,14 @@ const BANK: f64 = 0.02;
 /// The half-width of the mouth, as a part of the brush radius.
 const MOUTH: f64 = 0.3;
 
+/// The weight of the old ground in the start surface, for a rise of the
+/// old ground of the Height setting.
+const GROUND: f64 = 1.0;
+
+/// The part of the old ground above the outlet that counts toward the
+/// relief of the basin.
+const KEEP: f64 = 0.7;
+
 /// The change goes to zero over this part of the brush radius at the side
 /// of the area.
 const EDGE: f64 = 0.1;
@@ -290,6 +298,8 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     );
     let wavelength = WAVELENGTH * density;
     let seed = spec.seed ^ SALT_BASIN;
+    let old_outlet = f64::from(old.levels[*chain.last().expect("the chain has cells")]);
+    let relief = spec.height.max(1.0);
     let mut h: Vec<f64> = (0..count)
         .map(|i| {
             let (d, u) = places[i];
@@ -300,7 +310,12 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             };
             let bump = octave(0) + octave(1) + octave(2);
             let across = if on_chain[i] { 0.0 } else { d / radius };
-            across + ALONG * (1.0 - u / length) + BUMPS * wavelength / radius * bump
+            // The old ground steers the streams, so they follow its valleys.
+            let ground = (f64::from(old.levels[i]) - old_outlet) / relief;
+            across
+                + ALONG * (1.0 - u / length)
+                + BUMPS * wavelength / radius * bump
+                + GROUND * ground
         })
         .collect();
 
@@ -411,24 +426,31 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
                 places[i].0 / radius
             };
             let shape = (1.0 - ACROSS) * (h[i] / top).max(0.0) + ACROSS * across;
-            let rise = (lift + spec.height * shape) * fade(places[i].0) * gap(dirs[i]);
+            // Where the old ground is already high, the basin adds less.
+            let target = spec.height * shape;
+            let already = (old_levels[i] - old_outlet).clamp(0.0, target);
+            let rise = (lift + target - KEEP * already) * fade(places[i].0) * gap(dirs[i]);
             old_levels[i] + if inside[i] { rise } else { 0.0 }
         })
         .collect();
     let inner: Vec<bool> = (0..count)
         .map(|i| on_chain[i] || (inside[i] && in_basin(dirs[i], places[i].0)))
         .collect();
-    // In the inner basin, each cell is above its receiver, and each cell next
-    // to the main river is above the river cells next to it. Thus the main
-    // river stays on the line.
-    let floor = |levels: &mut Vec<f64>| {
-        for &i in flow.stack.iter().filter(|&&i| inner[i]) {
-            if let r @ 0..OUT = flow.receiver[i] {
-                levels[i] = levels[i].max(levels[r as usize] + STEP);
-            }
+    // The main river goes down at each step to the outlet. It cuts down
+    // through a barrier of the old ground, not below the outlet, and it fills
+    // what is left.
+    let mouth_level = levels[outlet];
+    for pair in chain.windows(2) {
+        if pair[1] != outlet {
+            let cut = (levels[pair[0]] - STEP).max(mouth_level + STEP);
+            levels[pair[1]] = levels[pair[1]].min(cut);
         }
-    };
-    floor(&mut levels);
+    }
+    for pair in chain.windows(2).rev() {
+        levels[pair[0]] = levels[pair[0]].max(levels[pair[1]] + STEP);
+    }
+    // Each cell next to the main river is above the river cells next to it.
+    // Thus the main river stays on the line.
     let bank = STEP + BANK * spec.height;
     for i in (0..count).filter(|&i| inner[i] && !on_chain[i]) {
         let near = window.neighbors(i);
@@ -439,7 +461,6 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
             .fold(f64::MIN, f64::max);
         levels[i] = levels[i].max(river);
     }
-    floor(&mut levels);
     let min_area = TRIBUTARY_AREA * (density / cell) * (radius / cell) * mean_solid;
 
     // Finer levels add rough ground at their scale and erode it.
@@ -969,7 +990,7 @@ impl Level {
                     self.window.cell_dir(r % side, r / side),
                 ) / cell;
                 let f = ERODE * flow.area[i].powf(AREA_EXPONENT) / run;
-                let from = flow.filled[i];
+                let from = self.levels[i];
                 let drop = ((from - self.levels[r]) * f / (1.0 + f)).clamp(0.0, CARVE * rough);
                 self.levels[i] = from - drop;
             }
@@ -1493,9 +1514,25 @@ mod tests {
         };
         let n = var("N", 2048.0) as usize;
         let (from, to, z) = (var("FROM", -15.0), var("TO", 15.0), var("Z", 20.0));
-        let map = Heightmap::new(n, level(300.0));
+        let mut map = Heightmap::new(n, level(300.0));
+        if var("TERRAIN", 0.0) > 0.0 {
+            // Rough hills and a ridge across the basin.
+            for y in 0..n {
+                for x in 0..n {
+                    let p = map.texel_dir(0, x, y);
+                    let (lon, lat) = crate::math::dir_to_lonlat(p);
+                    let hills = 400.0 * fractal(p, 0.08, 3) + 300.0 * fractal(p, 0.02, 4);
+                    let ridge = 900.0 * (-((lon + 0.6 * lat - 2.0) / 2.5).powi(2)).exp();
+                    map.set(0, x, y, level(500.0 + hills + ridge));
+                }
+            }
+        }
         let line = line_of(n, spec(2.0, var("SEED", 7.0) as u32), from, to, 2.0);
-        let after = apply(&map, &basin(&map, &line));
+        let after = if var("BEFORE", 0.0) > 0.0 {
+            map.snapshot()
+        } else {
+            apply(&map, &basin(&map, &line))
+        };
         let step = 90.0 / n as f64;
         let (w, h) = (((to - from + 20.0) / step) as usize, (24.0 / step) as usize);
         let at = |x: usize, y: usize| {
