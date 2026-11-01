@@ -248,6 +248,7 @@ fn stamp(center: V3, radius: f64, hardness: f64, mode: Mode) -> Stamp {
         motion: [0.0; 3],
         ridged: false,
         relief: 0.0,
+        channel: vale_terrain::ChannelShape::default(),
         invert: false,
         limits: Limits::default(),
     }
@@ -583,7 +584,7 @@ fn river_land(n: usize) -> Heightmap {
     }
     assert_eq!(n, 256, "the channel map is for one size");
     let channels = CHANNELS.get_or_init(|| {
-        let channels = channel_map(&CoarseHeights::new(&map));
+        let channels = channel_map(&CoarseHeights::new(&map), 6371.0);
         assert!(channels.has_rivers());
         Arc::new(channels)
     });
@@ -743,9 +744,9 @@ fn window_land() -> Heightmap {
         let window = Window::centered(lonlat_to_dir(40.0, 3.0), n, 1, WINDOW_CELLS);
         assert_eq!(window.face, 0);
         assert!(window.x0 + WINDOW_CELLS as i64 > n as i64 + 150);
-        let window = window_channels(&WindowHeights::new(&land, window), &flow);
+        let window = window_channels(&WindowHeights::new(&land, window), &flow, 6371.0);
         assert!(window.has_rivers());
-        (faces, Arc::new(flow.channels()), Arc::new(window))
+        (faces, Arc::new(flow.channels(6371.0)), Arc::new(window))
     });
     map.store_rect(0, full(n), &faces[0]);
     map.store_rect(2, full(n), &faces[1]);

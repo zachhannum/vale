@@ -418,6 +418,7 @@ impl Tip<'_> {
             ridged: self.brush.noise_ridged,
             invert: self.brush.noise_inverted,
             relief: self.brush.noise_relief,
+            channel: vale_terrain::ChannelShape::default(),
             limits: self.brush.limits(),
         }
     }
@@ -1000,6 +1001,7 @@ mod tests {
             motion: [0.0; 3],
             ridged: false,
             relief: 0.0,
+            channel: vale_terrain::ChannelShape::default(),
             invert: false,
             limits: Limits::default(),
         })

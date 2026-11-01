@@ -2262,6 +2262,7 @@ mod tests {
             motion: [0.0; 3],
             ridged: false,
             relief: 0.0,
+            channel: crate::channel::ChannelShape::default(),
             invert: false,
             limits: Limits::default(),
         };

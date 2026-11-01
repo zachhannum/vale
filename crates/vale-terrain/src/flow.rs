@@ -14,9 +14,10 @@ use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_4};
 use std::sync::LazyLock;
 
 use crate::bands::SEA_LEVEL;
+use crate::channel::{ChannelCurve, ChannelLines, METERS_PER_LEVEL, plain_factor};
 use crate::cube::{FACES, face_dir, face_of, meters_to_level, unwarp, warp};
 use crate::heightmap::{Heightmap, TexelRect};
-use crate::math::{V3, add, normalize, scale};
+use crate::math::{V3, add, angle, normalize, scale};
 
 /// The largest number of flow cells along one side of a face.
 pub const FLOW_SIZE: usize = 512;
@@ -35,7 +36,7 @@ pub const CHANNEL_SCALE: f64 = 32.0;
 const CHANNEL_REACH: f64 = 255.0 / CHANNEL_SCALE;
 
 /// The number of smoothing passes over the river nodes.
-const SMOOTH_PASSES: usize = 2;
+const SMOOTH_PASSES: usize = 4;
 
 /// The number of cells that a river cell of a window drains at least. A
 /// river cell of the full map drains about this number of cells when the map
@@ -471,6 +472,8 @@ pub struct FlowMap {
     area: Vec<f32>,
     /// The level that the Deposit mode fills each cell to.
     fill: Vec<u16>,
+    /// The level of each cell after the flood fills the pits.
+    filled: Vec<u16>,
 }
 
 impl FlowMap {
@@ -487,6 +490,7 @@ impl FlowMap {
             receiver: flow.receiver,
             area: flow.area,
             fill,
+            filled: flow.filled,
         }
     }
 
@@ -533,8 +537,9 @@ impl FlowMap {
     }
 
     /// Draws each river into a channel map with 2 texels for each cell along
-    /// one axis.
-    pub fn channels(&self) -> ChannelMap {
+    /// one axis. The map also gets the lines of the channels. `world_km` is
+    /// the radius of the world.
+    pub fn channels(&self, world_km: f64) -> ChannelMap {
         let mut map = ChannelMap::empty(2 * self.m);
         map.fill.clone_from(&self.fill);
         let mut rivers = self.rivers();
@@ -543,6 +548,14 @@ impl FlowMap {
             let flow = flow_byte(f64::from(self.area[cell as usize]));
             map.draw(rivers.curve(k), flow);
         }
+        let curves = rivers.curves(
+            &self.receiver,
+            &self.area,
+            &self.filled,
+            normalize,
+            world_km,
+        );
+        map.lines = ChannelLines::faces(curves, self.m, world_km);
         map
     }
 }
@@ -652,6 +665,97 @@ impl Rivers {
             self.pos[down]
         };
         [start, half(half(start, end), at), end]
+    }
+
+    /// The curve of each river node for the channels. `dir` gives the
+    /// direction of a place of a node. A curve has the values of its node at
+    /// its middle, and the mean of the values of the node and the next node
+    /// at a joint, so the values do not jump along a river.
+    fn curves(
+        &self,
+        receiver: &[u32],
+        area: &[f32],
+        filled: &[u16],
+        dir: impl Fn(V3) -> V3,
+        world_km: f64,
+    ) -> Vec<ChannelCurve> {
+        let count = self.cells.len();
+        let dirs: Vec<V3> = self.pos.iter().map(|&p| dir(p)).collect();
+        let cell = |k: usize| self.cells[k] as usize;
+        let level = |k: usize| f64::from(filled[cell(k)]);
+        let area_of = |k: usize| f64::from(area[cell(k)]);
+        // The level of the place after node `k`. Water that leaves the grid
+        // keeps the level of its node. An ocean is at sea level.
+        let after = |k: usize| match self.down[k] as usize {
+            down if down < count => level(down),
+            _ if receiver[cell(k)] == OUT => level(k),
+            _ => f64::from(sea()),
+        };
+        // The slope at each node, over 2 nodes up and 2 nodes down.
+        let plains: Vec<f64> = (0..count)
+            .map(|k| {
+                let (mut up, mut length) = (k, 0.0);
+                for _ in 0..2 {
+                    let donor = self.donor[up];
+                    if donor == NONE {
+                        break;
+                    }
+                    length += angle(dirs[up], dirs[donor as usize]);
+                    up = donor as usize;
+                }
+                let (mut down, mut low) = (k, level(k));
+                for _ in 0..2 {
+                    let next = self.down[down] as usize;
+                    length += angle(dirs[down], dirs[next]);
+                    low = after(down);
+                    if next >= count {
+                        break;
+                    }
+                    down = next;
+                }
+                let drop = (level(up) - low) * METERS_PER_LEVEL;
+                let slope = if length > 0.0 {
+                    drop / (length * world_km * 1000.0)
+                } else {
+                    0.0
+                };
+                plain_factor(area_of(k), slope, world_km)
+            })
+            .collect();
+        let mean = |a: f64, b: f64| 0.5 * (a + b);
+        (0..count)
+            .map(|k| {
+                let [a, b, c] = self.curve(k);
+                let here = [level(k), area_of(k), plains[k]];
+                let start = match self.donor[k] {
+                    NONE => here,
+                    donor => {
+                        let d = donor as usize;
+                        [
+                            mean(level(d), here[0]),
+                            mean(area_of(d), here[1]),
+                            mean(plains[d], here[2]),
+                        ]
+                    }
+                };
+                let down = self.down[k] as usize;
+                let end = if down < count && self.donor[down] as usize == k {
+                    [
+                        mean(here[0], level(down)),
+                        mean(here[1], area_of(down)),
+                        mean(here[2], plains[down]),
+                    ]
+                } else {
+                    [after(k), here[1], here[2]]
+                };
+                ChannelCurve {
+                    points: [dir(a), dir(b), dir(c)],
+                    levels: [start[0], here[0], end[0]],
+                    areas: [start[1], here[1], end[1]],
+                    plains: [start[2], here[2], end[2]],
+                }
+            })
+            .collect()
     }
 }
 
@@ -803,6 +907,7 @@ pub struct ChannelMap {
     size: usize,
     data: Vec<u8>,
     fill: Vec<u16>,
+    lines: ChannelLines,
 }
 
 impl ChannelMap {
@@ -814,7 +919,13 @@ impl ChannelMap {
             size,
             data: EMPTY.repeat(FACES * size * size),
             fill: vec![0; FACES * cells * cells],
+            lines: ChannelLines::empty(),
         }
+    }
+
+    /// The lines of the channels that the Carve mode cuts.
+    pub fn lines(&self) -> &ChannelLines {
+        &self.lines
     }
 
     /// The size for a heightmap with `face_size` texels along one side of a
@@ -944,9 +1055,10 @@ impl ChannelMap {
     }
 }
 
-/// The channel map of the rivers on `heights`.
-pub fn channel_map(heights: &CoarseHeights) -> ChannelMap {
-    FlowMap::new(heights).channels()
+/// The channel map of the rivers on `heights`. `world_km` is the radius of
+/// the world.
+pub fn channel_map(heights: &CoarseHeights, world_km: f64) -> ChannelMap {
+    FlowMap::new(heights).channels(world_km)
 }
 
 /// A square of cells on the texel grid of one face. The grid continues past
@@ -1199,6 +1311,8 @@ struct WindowFlow {
     min_area: f64,
     /// The level that the Deposit mode fills each cell to.
     fill: Vec<u16>,
+    /// The level of each cell after the flood fills the pits.
+    filled: Vec<u16>,
 }
 
 impl WindowFlow {
@@ -1215,6 +1329,7 @@ impl WindowFlow {
             area: flow.area,
             min_area,
             fill,
+            filled: flow.filled,
         }
     }
 
@@ -1235,7 +1350,7 @@ impl WindowFlow {
         Rivers::new(&self.receiver, &self.area, self.min_area, place, outside)
     }
 
-    fn channels(&self) -> ChannelWindow {
+    fn channels(&self, world_km: f64) -> ChannelWindow {
         let size = self.window.channels();
         let mut data = EMPTY.repeat(size * size);
         let mut rivers = self.rivers();
@@ -1246,10 +1361,14 @@ impl WindowFlow {
             let flow = size_byte(f64::from(self.area[cell as usize]) / self.min_area);
             draw_curve(&mut data, size, rivers.curve(k).map(texel), flow);
         }
+        let window = self.window;
+        let dir = |p: V3| window.dir(p[0], p[1]);
+        let curves = rivers.curves(&self.receiver, &self.area, &self.filled, dir, world_km);
         ChannelWindow {
-            window: self.window,
+            window,
             data,
             fill: self.fill.clone(),
+            lines: ChannelLines::window(curves, window, world_km),
         }
     }
 }
@@ -1262,11 +1381,17 @@ pub struct ChannelWindow {
     window: Window,
     data: Vec<u8>,
     fill: Vec<u16>,
+    lines: ChannelLines,
 }
 
 impl ChannelWindow {
     pub fn window(&self) -> Window {
         self.window
+    }
+
+    /// The lines of the channels that the Carve mode cuts.
+    pub fn lines(&self) -> &ChannelLines {
+        &self.lines
     }
 
     /// The number of texels along one side.
@@ -1364,9 +1489,9 @@ impl ChannelWindow {
 }
 
 /// The channels of the rivers in a window. A river of `global` that comes
-/// into the window keeps its size.
-pub fn window_channels(heights: &WindowHeights, global: &FlowMap) -> ChannelWindow {
-    WindowFlow::new(heights, Some(global)).channels()
+/// into the window keeps its size. `world_km` is the radius of the world.
+pub fn window_channels(heights: &WindowHeights, global: &FlowMap, world_km: f64) -> ChannelWindow {
+    WindowFlow::new(heights, Some(global)).channels(world_km)
 }
 
 #[cfg(test)]
@@ -1374,6 +1499,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::cube::level_to_meters;
     use crate::math::{angle, dir_to_lonlat, lonlat_to_dir};
+
+    pub(crate) const WORLD_KM: f64 = 6371.0;
 
     pub(crate) const OCEAN: f64 = -1000.0;
 
@@ -1588,7 +1715,7 @@ pub(crate) mod tests {
                 assert!(!flow.is_river(face, x, y));
                 assert_eq!(flow.receiver(face, x, y), None);
             }
-            let channels = channel_map(&heights);
+            let channels = channel_map(&heights, WORLD_KM);
             assert_eq!(channels.size(), 2 * m);
             assert!(!channels.has_rivers());
             assert!(channels.bytes() == ChannelMap::empty(2 * m).bytes());
@@ -1622,7 +1749,7 @@ pub(crate) mod tests {
 
         // The texel `(k - 1, j)` of face 0 touches the texel `(j, k - 1)` of
         // face 2.
-        let channels = flow.channels();
+        let channels = flow.channels(WORLD_KM);
         let k = channels.size();
         let mut on_river = 0;
         for j in k / 2 - 12..k / 2 + 12 {
@@ -1653,7 +1780,7 @@ pub(crate) mod tests {
     #[test]
     fn the_distance_grows_away_from_a_river() {
         let m = 128;
-        let channels = straight(m).1.channels();
+        let channels = straight(m).1.channels(WORLD_KM);
         assert!(channels.has_rivers());
         // The center of cell row `m / 2` is between texel rows `m` and
         // `m + 1`.
@@ -1693,7 +1820,7 @@ pub(crate) mod tests {
     fn flow_byte_grows_downstream() {
         let m = 128;
         let (_, flow) = straight(m);
-        let channels = flow.channels();
+        let channels = flow.channels(WORLD_KM);
         let bytes: Vec<u8> = (20..2 * m - 20)
             .map(|x| channels.texel(0, x, m)[1])
             .collect();
@@ -1789,8 +1916,8 @@ pub(crate) mod tests {
     fn the_valley_depth_has_no_step() {
         let flow = FlowMap::new(&CoarseHeights::from_fn(64, lumpy));
         let window = Window::centered(lonlat_to_dir(10.0, 20.0), 1024, 1, 64);
-        let near = window_channels(&WindowHeights::from_fn(window, lumpy), &flow);
-        let map = flow.channels();
+        let near = window_channels(&WindowHeights::from_fn(window, lumpy), &flow, WORLD_KM);
+        let map = flow.channels(WORLD_KM);
         let (mut most, mut deepest) = (0.0_f64, 0.0_f64);
         for row in 0..40 {
             let v = 20.3 + 2.1 * row as f64;
@@ -1841,6 +1968,81 @@ pub(crate) mod tests {
         }
         assert!(sources >= 1 && outlets >= 1);
         assert!(moved > count / 4, "{moved} of {count}");
+    }
+
+    /// The place of a direction on face 0 in cells of `m`.
+    fn face_cells(m: usize, d: V3) -> (f64, f64) {
+        let (face, a, b) = face_of(d);
+        assert_eq!(face, 0);
+        let at = |a: f64| (warp(a) + 1.0) * 0.5 * m as f64;
+        (at(a), at(b))
+    }
+
+    #[test]
+    fn a_slanted_river_has_no_zigzag() {
+        // The 8 steps of the flow give a staircase along each of these
+        // directions.
+        for (dx, dy) in [(2.0, 1.0), (3.0, 1.0)] {
+            slanted_river(dx, dy);
+        }
+    }
+
+    /// A straight valley on face 0 in the direction `dx`, `dy` of the cells.
+    /// It goes down to the sea at its lower end.
+    fn slanted_river(dx: f64, dy: f64) {
+        let m = 128;
+        let (sx, sy) = (dx / dx.hypot(dy), dy / dx.hypot(dy));
+        let middle = 0.5 * m as f64;
+        let heights = CoarseHeights::from_fn(m, |d| {
+            let (face, a, b) = face_of(d);
+            if face != 0 {
+                return meters_to_level(-1000.0);
+            }
+            let (x, y) = face_cells(m, d);
+            let (x, y) = (x - middle, y - middle);
+            let (along, across) = (x * sx + y * sy, (y * sx - x * sy).abs());
+            let land = a.abs() < 0.9 && b.abs() < 0.9 && along > -40.0;
+            meters_to_level(if land {
+                100.0 + 10.0 * (along + 40.0) + 40.0 * across
+            } else {
+                -1000.0
+            })
+        });
+        let flow = FlowMap::new(&heights);
+        let mut rivers = flow.rivers();
+        rivers.smooth();
+        // The main river, from its mouth up.
+        let count = rivers.cells.len();
+        let area = |k: usize| flow.area[rivers.cells[k] as usize];
+        let mouth = (0..count)
+            .max_by(|&a, &b| area(a).total_cmp(&area(b)))
+            .unwrap();
+        let mut nodes = vec![mouth];
+        while rivers.donor[*nodes.last().unwrap()] != NONE {
+            nodes.push(rivers.donor[*nodes.last().unwrap()] as usize);
+        }
+        assert!(nodes.len() > 40, "{}", nodes.len());
+        // The pieces of the curves, without the 4 nodes at each end.
+        let mut points = Vec::new();
+        for &k in nodes[4..nodes.len() - 4].iter().rev() {
+            let [a, b, c] = rivers.curve(k).map(|p| face_cells(m, normalize(p)));
+            points.extend([a, b, c]);
+        }
+        points.dedup_by(|a, b| (a.0 - b.0).hypot(a.1 - b.1) < 1e-9);
+        // The river comes into the valley from the side at the upper end.
+        points.retain(|p| (p.0 - middle) * sx + (p.1 - middle) * sy < 50.0);
+        assert!(points.len() > 60, "{}", points.len());
+        let step = |i: usize| (points[i + 1].0 - points[i].0, points[i + 1].1 - points[i].1);
+        for i in 0..points.len() - 2 {
+            let (a, b) = (step(i), step(i + 1));
+            let turn = (a.0 * b.1 - a.1 * b.0).atan2(a.0 * b.0 + a.1 * b.1);
+            let turn = turn.abs().to_degrees();
+            assert!(turn < 1.0, "{dx} {dy}: piece {i} turns {turn} degrees");
+        }
+        for p in &points {
+            let offset = ((p.1 - middle) * sx - (p.0 - middle) * sy).abs();
+            assert!(offset < 0.05, "{dx} {dy}: {p:?} is {offset} cells off");
+        }
     }
 
     /// One large slope down to a sea, with low hills on it.
@@ -1965,7 +2167,7 @@ pub(crate) mod tests {
             assert!(x == 0 || y == 0 || x == cells - 1 || y == cells - 1);
         }
         assert!(flow.rivers_count() > 50);
-        assert!(flow.channels().has_rivers());
+        assert!(flow.channels(WORLD_KM).has_rivers());
     }
 
     #[test]
@@ -1975,8 +2177,8 @@ pub(crate) mod tests {
         // the valley.
         let window = Window::centered(lonlat_to_dir(20.0, 0.4), 8192, 2, 128);
         let heights = WindowHeights::from_fn(window, equator_valley);
-        let alone = WindowFlow::new(&heights, None).channels();
-        let fed = window_channels(&heights, &global);
+        let alone = WindowFlow::new(&heights, None).channels(WORLD_KM);
+        let fed = window_channels(&heights, &global, WORLD_KM);
         let size = fed.size();
         let texels = |map: &ChannelWindow| {
             let all = (0..size * size).map(|i| map.texel(i % size, i / size));
@@ -2059,7 +2261,7 @@ pub(crate) mod tests {
         assert!(level_at(48.0, 0.4) >= sea() && level_at(48.0, 6.0) < sea());
 
         // The river is in each column of texels, on both sides of the edge.
-        let channels = WindowFlow::new(&heights, None).channels();
+        let channels = WindowFlow::new(&heights, None).channels(WORLD_KM);
         let edge = 2 * (n - window.x0 as usize);
         assert!(edge > 40 && edge < 100);
         for x in 8..104 {
@@ -2092,7 +2294,7 @@ pub(crate) mod tests {
             let heights = WindowHeights::new(&map, window);
             let read = start.elapsed();
             let start = std::time::Instant::now();
-            let channels = window_channels(&heights, &global);
+            let channels = window_channels(&heights, &global, WORLD_KM);
             eprintln!(
                 "cell {cell}: heights {read:?}, channels {:?}",
                 start.elapsed()
@@ -2115,7 +2317,7 @@ pub(crate) mod tests {
         let start = std::time::Instant::now();
         let flow = FlowMap::new(&heights);
         let flow_time = start.elapsed();
-        let channels = flow.channels();
+        let channels = flow.channels(WORLD_KM);
         let rivers = flow
             .area
             .iter()

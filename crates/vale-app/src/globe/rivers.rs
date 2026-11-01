@@ -76,9 +76,10 @@ pub fn cell_angle(window: &Window) -> f64 {
 }
 
 /// One request, with its number.
+/// Each job has the radius of the world in kilometers.
 enum Job {
-    Global(u64, CoarseHeights),
-    Window(u64, WindowHeights),
+    Global(u64, CoarseHeights, f64),
+    Window(u64, WindowHeights, f64),
 }
 
 enum Done {
@@ -119,6 +120,8 @@ pub struct Rivers {
     /// The results that arrived and that no poll took.
     channels: Option<ChannelMap>,
     channel_window: Option<ChannelWindow>,
+    /// The radius of the world, in kilometers.
+    world_km: f64,
 }
 
 /// Computes the newest job of each kind until the sender is gone. A window
@@ -129,24 +132,24 @@ fn work(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>) {
     loop {
         if global.is_none() && window.is_none() {
             match jobs.recv() {
-                Ok(Job::Global(number, heights)) => global = Some((number, heights)),
-                Ok(Job::Window(number, heights)) => window = Some((number, heights)),
+                Ok(Job::Global(number, heights, km)) => global = Some((number, heights, km)),
+                Ok(Job::Window(number, heights, km)) => window = Some((number, heights, km)),
                 Err(_) => return,
             }
         }
         for job in jobs.try_iter() {
             match job {
-                Job::Global(number, heights) => global = Some((number, heights)),
-                Job::Window(number, heights) => window = Some((number, heights)),
+                Job::Global(number, heights, km) => global = Some((number, heights, km)),
+                Job::Window(number, heights, km) => window = Some((number, heights, km)),
             }
         }
-        let result = if let Some((number, heights)) = global.take() {
+        let result = if let Some((number, heights, km)) = global.take() {
             let new = flow.insert(FlowMap::new(&heights));
-            Done::Global(number, new.channels())
-        } else if let Some((number, heights)) = window.take() {
+            Done::Global(number, new.channels(km))
+        } else if let Some((number, heights, km)) = window.take() {
             // A window job comes after a global job, so the flow is there.
             let Some(flow) = &flow else { continue };
-            Done::Window(number, window_channels(&heights, flow))
+            Done::Window(number, window_channels(&heights, flow, km))
         } else {
             continue;
         };
@@ -171,7 +174,13 @@ impl Rivers {
             window: Count::default(),
             channels: None,
             channel_window: None,
+            world_km: 6371.0,
         }
+    }
+
+    /// Sets the radius of the world for the next requests, in kilometers.
+    pub fn set_world_km(&mut self, world_km: f64) {
+        self.world_km = world_km;
     }
 
     pub fn sync(&self) -> bool {
@@ -221,9 +230,11 @@ impl Rivers {
         let (number, heights) = (self.global.sent, self.coarse.clone());
         if self.sync {
             let flow = self.flow.insert(FlowMap::new(&heights));
-            let _ = self.done.send(Done::Global(number, flow.channels()));
+            let _ = self
+                .done
+                .send(Done::Global(number, flow.channels(self.world_km)));
         } else {
-            self.send(Job::Global(number, heights));
+            self.send(Job::Global(number, heights, self.world_km));
         }
     }
 
@@ -237,11 +248,10 @@ impl Rivers {
         let (number, heights) = (self.window.sent, WindowHeights::new(map, window));
         match &self.flow {
             Some(flow) if self.sync => {
-                let _ = self
-                    .done
-                    .send(Done::Window(number, window_channels(&heights, flow)));
+                let channels = window_channels(&heights, flow, self.world_km);
+                let _ = self.done.send(Done::Window(number, channels));
             }
-            _ => self.send(Job::Window(number, heights)),
+            _ => self.send(Job::Window(number, heights, self.world_km)),
         }
     }
 

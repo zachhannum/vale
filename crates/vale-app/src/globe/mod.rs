@@ -2198,6 +2198,7 @@ impl Globe {
         if !self.height {
             return;
         }
+        self.rivers.set_world_km(self.world_km);
         self.rivers.request();
         if let Some(window) = self.chosen {
             self.rivers.request_window(&self.map, window);
@@ -2301,7 +2302,10 @@ impl Globe {
         if window != self.chosen {
             self.chosen = window;
             match window {
-                Some(window) => self.rivers.request_window(&self.map, window),
+                Some(window) => {
+                    self.rivers.set_world_km(self.world_km);
+                    self.rivers.request_window(&self.map, window);
+                }
                 None => {
                     self.rivers.drop_window();
                     // The window on the GPU stays until the next one

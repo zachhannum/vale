@@ -1776,7 +1776,7 @@ fn carve_cuts_a_valley_along_a_river_and_stays_above_the_sea() {
     };
     let before = levels(map);
     // The rivers of the app are the rivers of the whole heightmap.
-    let channels = channel_map(&CoarseHeights::new(map));
+    let channels = channel_map(&CoarseHeights::new(map), 6371.0);
     assert!(channels.bytes() == h.state().globe.channels().unwrap().bytes());
 
     mouse_stroke(&mut h);
@@ -1857,7 +1857,7 @@ fn ridge_raises_the_land_between_the_rivers_and_leaves_the_sea() {
             .collect()
     };
     let before = levels(map);
-    let channels = channel_map(&CoarseHeights::new(map));
+    let channels = channel_map(&CoarseHeights::new(map), 6371.0);
     assert!(channels.bytes() == h.state().globe.channels().unwrap().bytes());
 
     mouse_stroke(&mut h);
@@ -1923,7 +1923,7 @@ fn deposit_raises_low_ground_to_the_fill_level_and_leaves_the_sea() {
             .collect()
     };
     let before = levels(map);
-    let channels = channel_map(&CoarseHeights::new(map));
+    let channels = channel_map(&CoarseHeights::new(map), 6371.0);
     assert!(channels.fills() == h.state().globe.channels().unwrap().fills());
 
     mouse_stroke(&mut h);
@@ -1975,9 +1975,9 @@ fn ridge_in_a_near_view_reads_the_window() {
     let w = h.state().globe.window().unwrap().window();
     assert_eq!(w.cell, 1);
     let flow = FlowMap::new(&CoarseHeights::new(map));
-    let window = window_channels(&WindowHeights::new(map, w), &flow);
+    let window = window_channels(&WindowHeights::new(map, w), &flow, 6371.0);
     assert!(window.bytes() == h.state().globe.window().unwrap().bytes());
-    let channels = flow.channels();
+    let channels = flow.channels(6371.0);
     let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / N as f64 - 0.5;
 
     mouse_stroke(&mut h);
@@ -2457,7 +2457,7 @@ fn carve_in_a_near_view_cuts_a_narrow_valley() {
     assert_eq!(w.cell, 1);
     // The window of the app has the rivers of the heightmap.
     let flow = FlowMap::new(&CoarseHeights::new(map));
-    let window = window_channels(&WindowHeights::new(map, w), &flow);
+    let window = window_channels(&WindowHeights::new(map, w), &flow, 6371.0);
     assert!(window.bytes() == h.state().globe.window().unwrap().bytes());
     // A channel texel of the map is this number of channel texels of the
     // window. A valley has the same width in channel texels in both.
