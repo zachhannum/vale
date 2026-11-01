@@ -27,6 +27,9 @@ pub struct Targets {
     pub ys: Vec<Line>,
     /// The vertices of the other frames.
     pub points: Vec<Point>,
+    /// The other vertices of the moving frame. A vertex lines up with them,
+    /// and it does not snap onto them.
+    pub align: Vec<Point>,
     /// The edges of the other frames.
     pub segments: Vec<(Point, Point)>,
     /// The spacing of the layout grid, when the grid shows.
@@ -126,6 +129,29 @@ pub fn targets(
     t
 }
 
+impl Targets {
+    /// The lines of the page and of the frames, and a vertical and a
+    /// horizontal line through each vertex of `points` and `align`. The
+    /// extent of a line through a vertex is the vertex, so its guide goes
+    /// from the vertex to the moving item.
+    fn lines(&self) -> (Vec<Line>, Vec<Line>) {
+        let (mut xs, mut ys) = (self.xs.clone(), self.ys.clone());
+        for p in self.points.iter().chain(&self.align) {
+            xs.push(Line {
+                at: p.x,
+                from: p.y,
+                to: p.y,
+            });
+            ys.push(Line {
+                at: p.y,
+                from: p.x,
+                to: p.x,
+            });
+        }
+        (xs, ys)
+    }
+}
+
 /// The nearest grid line to `c`.
 fn grid_line(c: f64, spacing: f64, extent: f64) -> Option<f64> {
     let at = (c / spacing).round() * spacing;
@@ -183,16 +209,21 @@ fn axis_guides(
         (t.page.x0, t.page.x1)
     };
     let extent = if vertical { t.page.x1 } else { t.page.y1 };
+    // One guide for each position, over the extents of all its targets.
     let mut hits: Vec<(f64, f64, f64)> = Vec::new();
+    let mut hit =
+        |at: f64, from: f64, to: f64| match hits.iter_mut().find(|h| (h.0 - at).abs() < SAME) {
+            Some(h) => (h.1, h.2) = (h.1.min(from), h.2.max(to)),
+            None => hits.push((at, from, to)),
+        };
     for &c in cands {
         for l in lines.iter().filter(|l| (l.at - c).abs() < SAME) {
-            hits.push((l.at, l.from, l.to));
+            hit(l.at, l.from, l.to);
         }
         if let Some(at) = t.grid.and_then(|s| grid_line(c, s, extent))
             && (at - c).abs() < SAME
-            && !hits.iter().any(|h| (h.0 - at).abs() < SAME)
         {
-            hits.push((at, full.0, full.1));
+            hit(at, full.0, full.1);
         }
     }
     for (at, from, to) in hits {
@@ -226,8 +257,9 @@ pub fn snap_rect(r: Rect, moving: Moving, t: &Targets, reach: f64) -> (Rect, Vec
             (x, y)
         }
     };
-    let dx = axis_delta(&xs, &t.xs, t.grid, t.page.x1, reach);
-    let dy = axis_delta(&ys, &t.ys, t.grid, t.page.y1, reach);
+    let (lx, ly) = t.lines();
+    let dx = axis_delta(&xs, &lx, t.grid, t.page.x1, reach);
+    let dy = axis_delta(&ys, &ly, t.grid, t.page.y1, reach);
     let mut out = r;
     match moving {
         Moving::Body => out = out + Vec2::new(dx.unwrap_or(0.0), dy.unwrap_or(0.0)),
@@ -262,8 +294,8 @@ pub fn snap_rect(r: Rect, moving: Moving, t: &Targets, reach: f64) -> (Rect, Vec
         (Moving::Handle(0..=2), Some(_)) => vec![out.y0],
         (Moving::Handle(_), Some(_)) => vec![out.y1],
     };
-    axis_guides(&x_cands, &t.xs, t, (out.y0, out.y1), true, &mut guides);
-    axis_guides(&y_cands, &t.ys, t, (out.x0, out.x1), false, &mut guides);
+    axis_guides(&x_cands, &lx, t, (out.y0, out.y1), true, &mut guides);
+    axis_guides(&y_cands, &ly, t, (out.x0, out.x1), false, &mut guides);
     (out, guides)
 }
 
@@ -279,7 +311,9 @@ fn nearest_on_segment(p: Point, (a, b): (Point, Point)) -> Point {
 
 /// Snaps a vertex. A vertex of another frame within reach wins. Else the
 /// vertex snaps to an edge of another frame, or its x and its y snap to the
-/// lines, whichever is nearer.
+/// lines, whichever is nearer. The lines include a vertical and a
+/// horizontal line through each other vertex, so the vertex lines up with
+/// it.
 pub fn snap_point(p: Point, t: &Targets, reach: f64) -> (Point, Vec<Guide>) {
     let vertex = t
         .points
@@ -290,8 +324,9 @@ pub fn snap_point(p: Point, t: &Targets, reach: f64) -> (Point, Vec<Guide>) {
     if let Some((q, _)) = vertex {
         return (q, vec![Guide::Point(q)]);
     }
-    let dx = axis_delta(&[p.x], &t.xs, t.grid, t.page.x1, reach);
-    let dy = axis_delta(&[p.y], &t.ys, t.grid, t.page.y1, reach);
+    let (lx, ly) = t.lines();
+    let dx = axis_delta(&[p.x], &lx, t.grid, t.page.x1, reach);
+    let dy = axis_delta(&[p.y], &ly, t.grid, t.page.y1, reach);
     let edge = t
         .segments
         .iter()
@@ -313,8 +348,8 @@ pub fn snap_point(p: Point, t: &Targets, reach: f64) -> (Point, Vec<Guide>) {
     let mut guides = Vec::new();
     let xc: Vec<f64> = dx.map(|_| out.x).into_iter().collect();
     let yc: Vec<f64> = dy.map(|_| out.y).into_iter().collect();
-    axis_guides(&xc, &t.xs, t, (out.y, out.y), true, &mut guides);
-    axis_guides(&yc, &t.ys, t, (out.x, out.x), false, &mut guides);
+    axis_guides(&xc, &lx, t, (out.y, out.y), true, &mut guides);
+    axis_guides(&yc, &ly, t, (out.x, out.x), false, &mut guides);
     (out, guides)
 }
 
@@ -369,8 +404,7 @@ pub fn lock_angle(
         let mut crossings: Vec<(Point, Guide)> = Vec::new();
         let vertical = Vec2::new(0.0, 1.0);
         let horizontal = Vec2::new(1.0, 0.0);
-        let mut xs: Vec<Line> = t.xs.clone();
-        let mut ys: Vec<Line> = t.ys.clone();
+        let (mut xs, mut ys) = t.lines();
         if let Some(s) = t.grid {
             let (w, h) = (t.page.x1, t.page.y1);
             xs.extend(grid_line(q.x, s, w).map(|at| Line {
@@ -473,10 +507,10 @@ mod tests {
             Point::new(150.0, 0.0),
             Point::new(150.0, 200.0)
         )));
-        // The guide of the frame edge spans the frame and the moved rect.
+        // The frame edge is on the page center, so one guide spans both.
         assert!(guides.contains(&Guide::Line(
-            Point::new(20.0, 100.0),
-            Point::new(190.0, 100.0)
+            Point::new(0.0, 100.0),
+            Point::new(300.0, 100.0)
         )));
     }
 
@@ -504,8 +538,9 @@ mod tests {
         let r = Rect::new(151.0, 30.0, 298.0, 99.0);
         let (out, guides) = snap_rect(r, Moving::Handle(4), &t, 3.0);
         assert_eq!(out, Rect::new(151.0, 30.0, 300.0, 100.0));
-        // The bottom edge is on the page center and on the other frame.
-        assert_eq!(guides.len(), 3);
+        // The bottom edge is on the page center and on the other frame, and
+        // one guide shows both.
+        assert_eq!(guides.len(), 2);
         // Handle 1 moves only the top edge.
         let r = Rect::new(151.0, 22.0, 298.0, 99.0);
         let (out, _) = snap_rect(r, Moving::Handle(1), &t, 3.0);
@@ -554,6 +589,34 @@ mod tests {
         let (out, guides) = snap_point(Point::new(148.0, 198.0), &t, 3.0);
         assert_eq!(out, Point::new(150.0, 200.0));
         assert_eq!(guides.len(), 2);
+    }
+
+    #[test]
+    fn a_vertex_lines_up_with_the_other_vertices_of_its_frame() {
+        let mut t = targets(&page(), FrameId(9), None, None);
+        t.align = vec![Point::new(230.0, 40.0), Point::new(265.0, 70.0)];
+        // The x lines up with the first vertex and the y with the second.
+        let (out, guides) = snap_point(Point::new(231.5, 68.0), &t, 3.0);
+        assert_eq!(out, Point::new(230.0, 70.0));
+        // Each guide goes from the vertex that it lines up with.
+        assert!(guides.contains(&Guide::Line(
+            Point::new(230.0, 40.0),
+            Point::new(230.0, 70.0)
+        )));
+        assert!(guides.contains(&Guide::Line(
+            Point::new(230.0, 70.0),
+            Point::new(265.0, 70.0)
+        )));
+    }
+
+    #[test]
+    fn a_vertex_lines_up_with_a_vertex_of_another_frame() {
+        let t = targets(&page(), FrameId(9), None, None);
+        // The corner of the frame at 200, 150 is far, and the vertex lines
+        // up with its x.
+        let (out, guides) = snap_point(Point::new(201.0, 45.0), &t, 3.0);
+        assert_eq!(out, Point::new(200.0, 45.0));
+        assert_eq!(guides.len(), 1);
     }
 
     #[test]

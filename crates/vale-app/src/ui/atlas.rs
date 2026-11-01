@@ -1733,6 +1733,16 @@ fn snap_targets(state: &AppState, moving: FrameId) -> Option<page_snap::Targets>
     Some(page_snap::targets(open_page(state), moving, None, spacing))
 }
 
+/// The vertices of a shape other than `v`.
+fn other_vertices(shape: &FrameShape, v: Vertex) -> Vec<Point> {
+    let rings = shape.rings();
+    let all = rings.iter().enumerate().flat_map(|(r, ring)| {
+        let ring = ring.iter().enumerate();
+        ring.map(move |(i, &[x, y])| ((r, i), Point::new(x, y)))
+    });
+    all.filter(|(at, _)| *at != v).map(|(_, p)| p).collect()
+}
+
 /// The vertices before and after a vertex in its ring.
 fn neighbors(shape: &FrameShape, (r, i): Vertex) -> Vec<Point> {
     let rings = shape.rings();
@@ -1774,6 +1784,10 @@ fn drag_to(state: &mut AppState, drag: Drag, place: PagePlace, pos: Pos2, d: Vec
                 }
                 Handle::Vertex(v) => {
                     let near = neighbors(&f.shape, v);
+                    let targets = targets.clone().map(|mut t| {
+                        t.align = other_vertices(&f.shape, v);
+                        t
+                    });
                     let (to, g) = match (&targets, lock && !near.is_empty()) {
                         (t, true) => page_snap::lock_angle(to, &near, t.as_ref(), reach),
                         (Some(t), false) => page_snap::snap_point(to, t, reach),

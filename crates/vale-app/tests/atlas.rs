@@ -585,6 +585,7 @@ fn ring_len(h: &Pad, ring: usize) -> usize {
 #[test]
 fn the_vertices_of_a_polygon_frame_move_add_and_go_away() {
     let mut h = inset_pad(BOARDS[0]);
+    h.state_mut().atlas.snap = false;
     tap(&mut h, POLYGON);
     assert_eq!(ring_len(&h, 0), 4);
     let ppm = h.state().atlas.place.unwrap().pts_per_mm;
@@ -5010,4 +5011,23 @@ fn the_grid_button_of_the_top_row_shows_the_layout_grid() {
         tap(&mut h, SHOW_GRID);
         assert!(!h.state().doc.project.atlas.grid.on, "{size:?}");
     }
+}
+
+#[test]
+fn a_vertex_lines_up_with_another_vertex_of_its_frame() {
+    let mut h = inset_pad(BOARDS[0]);
+    tap(&mut h, POLYGON);
+    // A drag of the middle of the top edge adds a vertex below the edge.
+    let edge = handle(&h, Handle::Edge((0, 0)));
+    drag(&mut h, edge, edge + vec2(0.0, 37.0), Input::Finger);
+    let [_, y] = ring(&h, 1)[1];
+    // The first vertex goes to 3 points below the new vertex, far from
+    // the other targets.
+    let from = handle(&h, Handle::Vertex((0, 0)));
+    let to = from + vec2(-30.0, 40.0);
+    drag_steps(&mut h, from, to, Input::Finger, 6);
+    assert!(!h.state().atlas.guides.is_empty());
+    screenshot::save(&mut h, "pad-atlas-vertex-alignment");
+    release(&mut h, to, Input::Finger);
+    assert_eq!(ring(&h, 1)[0][1], y);
 }
