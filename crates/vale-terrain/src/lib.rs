@@ -23,6 +23,7 @@ mod rain;
 mod range;
 mod reduce;
 mod ridge;
+mod route;
 mod smooth;
 mod swatch;
 #[cfg(feature = "gpu")]
@@ -53,6 +54,7 @@ pub use rain::Rain;
 pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, erode_range};
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{Ridge, RidgeLine, RidgePlan};
+pub use route::{MAX_GRADE, RouteSpec, fit_route, is_water};
 pub use smooth::{
     LocalPyramid, Pyramid, level_size, max_level, next_level, pyramid_bytes, smoothing_level,
 };
