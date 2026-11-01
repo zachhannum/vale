@@ -35,6 +35,7 @@ pub mod math;
 pub mod nav;
 pub mod polygon;
 pub mod preview;
+pub mod reshape;
 pub mod rivers;
 pub mod select;
 pub mod snap;
