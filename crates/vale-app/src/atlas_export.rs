@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 
 use image::{DynamicImage, ImageFormat, RgbaImage};
@@ -24,10 +24,30 @@ use crate::{furniture, headless};
 /// The pixels in one point of an exported raster layer: 300 pixels per inch.
 pub const RASTER_PIXEL_RATIO: f64 = 300.0 / 72.0;
 
+/// The fewest rows of pixels in a strip of an exported frame.
+pub const MIN_STRIP_ROWS: u32 = 64;
+
 static MASK_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The ids of the frames that an export draws. They are not the ids of the
+/// frames on the screen.
+static DRAW_ID: AtomicU32 = AtomicU32::new(1 << 31);
+
+fn next_draw_id() -> u32 {
+    DRAW_ID.fetch_add(1, Ordering::Relaxed) | (1 << 31)
+}
+
 struct PendingCapture {
+    /// The whole frame.
+    whole: FrameDraw,
+    /// The strip of the frame that the GPU draws next. A frame with one
+    /// strip has a strip of the whole frame.
     draw: FrameDraw,
+    /// The first row of pixels of the strip.
+    row: u32,
+    /// The premultiplied pixels of the whole frame, with the strips that
+    /// the GPU drew.
+    rgba: Vec<u8>,
     frame: FrameRecord,
     target: FrameTarget,
     part: Rect,
@@ -100,6 +120,22 @@ impl PdfExport {
     /// The page that the next step composes, and the total page count.
     pub fn progress(&self) -> (usize, usize) {
         ((self.page + 1).min(self.pages.len()), self.pages.len())
+    }
+
+    /// Draws the rest of the pending frame in strips of half the rows of
+    /// the strip that waits. Returns `false` if the strip has
+    /// `MIN_STRIP_ROWS` or fewer, or the GPU draws it now.
+    pub fn split_capture(&mut self) -> bool {
+        let Some(pending) = &mut self.pending else {
+            return false;
+        };
+        let rows = pending.draw.rect[3];
+        let half = rows.div_ceil(2).max(MIN_STRIP_ROWS);
+        if pending.receiver.is_some() || half >= rows {
+            return false;
+        }
+        pending.draw = strip(&pending.whole, pending.row, half);
+        true
     }
 
     /// Gives the pending raster capture its result channel.
@@ -202,7 +238,7 @@ impl PdfExport {
         let shown = self.shown_rasters(frame);
         let (raster_looks, image_looks) = raster_style::map_looks(&self.doc, frame.map);
         let draw = FrameDraw {
-            id: frame.id.0,
+            id: next_draw_id(),
             place: FramePlace {
                 center: [
                     (vt.origin.x * RASTER_PIXEL_RATIO) as f32,
@@ -226,6 +262,9 @@ impl PdfExport {
             image_looks,
         };
         Ok(PendingCapture {
+            rgba: vec![0; size[0] as usize * size[1] as usize * 4],
+            row: 0,
+            whole: draw.clone(),
             draw,
             frame: frame.clone(),
             target: page_target,
@@ -235,9 +274,30 @@ impl PdfExport {
         })
     }
 
-    fn finish_capture(&mut self, captured: Captured) -> anyhow::Result<()> {
-        let pending = self.pending.take().expect("a capture is pending");
-        let mut rgba = captured.rgba;
+    /// Puts the pixels of a strip into the pixels of the frame. Returns
+    /// `true` when the frame has each strip.
+    fn take_strip(&mut self, captured: Captured) -> anyhow::Result<bool> {
+        let pending = self.pending.as_mut().expect("a capture is pending");
+        let [.., width, height] = pending.whole.rect;
+        let rows = pending.draw.rect[3];
+        if captured.size != [width, rows] {
+            anyhow::bail!("the raster capture has the wrong size");
+        }
+        let start = pending.row as usize * width as usize * 4;
+        pending.rgba[start..start + captured.rgba.len()].copy_from_slice(&captured.rgba);
+        pending.row += rows;
+        pending.receiver = None;
+        if pending.row >= height {
+            return Ok(true);
+        }
+        pending.draw = strip(&pending.whole, pending.row, rows);
+        Ok(false)
+    }
+
+    fn finish_capture(&mut self) -> anyhow::Result<()> {
+        let mut pending = self.pending.take().expect("a capture is pending");
+        let [.., width, height] = pending.whole.rect;
+        let mut rgba = std::mem::take(&mut pending.rgba);
         for pixel in rgba.as_chunks_mut::<4>().0 {
             let alpha = u32::from(pixel[3]);
             for channel in &mut pixel[..3] {
@@ -247,7 +307,7 @@ impl PdfExport {
                     .min(255) as u8;
             }
         }
-        let image = RgbaImage::from_raw(captured.size[0], captured.size[1], rgba)
+        let image = RgbaImage::from_raw(width, height, rgba)
             .ok_or_else(|| anyhow::anyhow!("the raster capture has the wrong size"))?;
         let mut png = Cursor::new(Vec::new());
         DynamicImage::ImageRgba8(image).write_to(&mut png, ImageFormat::Png)?;
@@ -279,7 +339,13 @@ impl PdfExport {
                     return Ok(ExportStep::Capture(pending.draw.clone()));
                 };
                 match receiver.try_recv() {
-                    Ok(Ok(captured)) => self.finish_capture(captured)?,
+                    Ok(Ok(captured)) => {
+                        if !self.take_strip(captured)? {
+                            let draw = self.pending.as_ref().unwrap().draw.clone();
+                            return Ok(ExportStep::Capture(draw));
+                        }
+                        self.finish_capture()?;
+                    }
                     Ok(Err(error)) => anyhow::bail!(error),
                     Err(mpsc::TryRecvError::Empty) => return Ok(ExportStep::More),
                     Err(mpsc::TryRecvError::Disconnected) => {
@@ -375,6 +441,27 @@ impl PdfExport {
             Err(error) => ExportStep::Done(Err(error)),
         }
     }
+}
+
+/// The strip of `rows` rows of a frame from row `row`. Each strip has its
+/// own id and the part of the mask under it.
+fn strip(whole: &FrameDraw, row: u32, rows: u32) -> FrameDraw {
+    let [.., width, height] = whole.rect;
+    let rows = rows.min(height - row);
+    let mut draw = whole.clone();
+    draw.id = next_draw_id();
+    draw.place.center[1] -= row as f32;
+    draw.rect = [0, 0, width, rows];
+    draw.mask = whole.mask.as_ref().map(|mask| {
+        let w = mask.size[0] as usize;
+        let at = row as usize * w;
+        Arc::new(Mask {
+            id: MASK_ID.fetch_add(1, Ordering::Relaxed),
+            size: [mask.size[0], rows],
+            alpha: mask.alpha[at..at + rows as usize * w].to_vec(),
+        })
+    });
+    draw
 }
 
 /// Writes vector pages as one PDF without a window.

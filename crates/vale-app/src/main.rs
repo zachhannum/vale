@@ -118,8 +118,9 @@ fn run() -> anyhow::Result<u8> {
         harness.set_render_every_step(true);
         harness.run_steps(3);
         harness.state_mut().run_action(action);
-        let limit = harness.state().doc.project.atlas.pages.len() * 20 + 20;
-        for _ in 0..limit {
+        // The export waits for the tiles of the map frames.
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(600) {
             harness.run_steps(1);
             if harness.state().atlas_export.is_none() {
                 break;
