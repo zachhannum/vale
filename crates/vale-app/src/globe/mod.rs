@@ -1109,8 +1109,13 @@ impl Globe {
             .layer_mut(id)
             .filter(|l| l.face_size == map.face_size())
         {
+            // The reduced heightmap and its copy on the GPU already have
+            // these texels.
+            map.take_reset();
+            map.take_dirty();
             map.set_undo_steps(memory_undo);
             layer.full = Some(map);
+            self.forget_fields();
         }
         self.switch_if_idle();
     }

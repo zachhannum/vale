@@ -1033,20 +1033,21 @@ fn the_brush_layer_loads_its_tiles_from_the_working_copy_and_paints_on() {
     }
     assert!(state.globe.raster_map(b).is_none());
 
-    // In a window, the tiles come in parts, and the brush waits for them.
+    // In a window, a thread reads the tiles, and the brush waits for them.
     state.headless = false;
     state.select(Some(LayerRef::Raster(b)));
     assert_eq!(state.globe.raster(), Some(a));
     assert!(state.globe.busy() && !state.globe.paintable);
     assert!(!state.can_undo());
-    let mut calls = 0;
+    state.pump_layers(false);
+    assert!(state.loading_layer() && state.globe.raster() == Some(a));
+    let start = Instant::now();
     while state.globe.raster() != Some(b) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
         state.pump_layers(false);
-        calls += 1;
-        assert!(calls < 100_000, "the layer did not load");
+        assert!(start.elapsed().as_secs() < 60, "the layer did not load");
         assert_eq!(state.loading_layer(), state.globe.raster() != Some(b));
     }
-    assert!(calls >= 2, "{calls}");
     assert!(state.globe.paintable && !state.loading_layer());
     assert!(same_tiles(&state.globe.map, &wanted[1]));
     // The layer that the brush left goes out of the main memory.

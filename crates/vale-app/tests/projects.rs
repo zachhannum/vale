@@ -514,6 +514,46 @@ fn the_app_opens_at_the_last_project_and_the_last_view() {
 }
 
 #[test]
+fn a_thread_opens_the_project_while_the_loading_screen_shows_in_both_layouts() {
+    for layout in [Layout::Desktop, Layout::Pad] {
+        let dir = tempfile::tempdir().unwrap();
+        create(dir.path(), "Aurelia");
+        let path = create(dir.path(), "Borea");
+        let mut h = start(dir.path(), layout);
+        click(&mut h, "Open Borea");
+        let view = GlobeView::centered(-120.0, 35.0);
+        h.state_mut().globe.view = view;
+        h.state_mut().save_tick(false, Instant::now());
+        drop(h);
+
+        // A lock on the file keeps the thread waiting, so the screen shows.
+        let lock = rusqlite::Connection::open(&path).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        // In a window, the start returns before the file opens.
+        let mut h = app(dir.path(), layout);
+        h.state_mut().headless = false;
+        h.state_mut().restore();
+        assert_eq!(h.state().opening().as_deref(), Some("Borea"));
+        assert!(h.state().session.is_none());
+        h.run_steps(2);
+        h.get_by_label("Opening Borea…");
+        assert!(h.state().session.is_none());
+        drop(lock);
+
+        let started = Instant::now();
+        while h.state().opening().is_some() {
+            std::thread::sleep(Duration::from_millis(1));
+            h.step();
+            assert!(started.elapsed().as_secs() < 30, "the file did not open");
+        }
+        assert_eq!(h.state().screen, Screen::Editor);
+        assert_eq!(open_path(&h), path);
+        assert_eq!(h.state().globe.view, view);
+        assert!(h.query_by_label("Opening Borea…").is_none());
+    }
+}
+
+#[test]
 fn a_view_that_moves_goes_to_the_file_one_time_in_a_second() {
     let dir = tempfile::tempdir().unwrap();
     create(dir.path(), "Borea");

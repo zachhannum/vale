@@ -23,6 +23,7 @@ use vale_app::globe::{FACE_SIZE, Tool};
 use vale_app::globe::{edges, gpu};
 use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
+use vale_app::session::Session;
 use vale_app::ui::gradient::{DESKTOP, GRADIENT, band_row, stop_x};
 use vale_app::ui::{AppState, LayerRef, RasterSpec, Workspace, draw};
 use vale_import::geojson;
@@ -4728,6 +4729,51 @@ fn a_layer_that_is_not_selected_uses_the_reduced_size() {
     h.run_steps(2);
     assert_eq!(h.state().globe.display_face_size(small), Some(1024));
     assert!(!h.state().globe.draws_full(small));
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_layer_from_the_file_stays_drawn_while_it_becomes_the_brush_layer() {
+    let _gpu = one_gpu_test();
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = state();
+    state.session = Some(Session::open(&dir.path().join("project.gpkg"), &mut state.doc).unwrap());
+    state.globe.preview.graticule = false;
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    let other = plain_layer(&mut state, "Other", 4096);
+    let layer = plain_layer(&mut state, "Layer", 4096);
+    // Each tile is high, on a low base.
+    let map = state.globe.raster_map_mut(layer).unwrap();
+    map.fill(LOW);
+    for face in 0..6 {
+        for y in 0..4096 {
+            for x in 0..4096 {
+                map.set(face, x, y, HIGH);
+            }
+        }
+    }
+    state.set_raster_visible(other, false);
+    state.save_waiting().unwrap();
+    show_as(&mut state, RasterDisplay::Grey);
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.state_mut().select(Some(LayerRef::Raster(other)));
+    load(&mut h);
+    assert!(h.state().globe.raster_map(layer).is_none());
+    assert!(is_grey(middle(&mut h), HIGH));
+
+    // The layer loads from the file. Each frame draws it, from the reduced
+    // copy and then from the whole heightmap.
+    h.state_mut().select(Some(LayerRef::Raster(layer)));
+    for frame in 0.. {
+        let color = middle(&mut h);
+        assert!(is_grey(color, HIGH), "frame {frame}: {color:?}");
+        if h.state().globe.draws_full(layer) {
+            break;
+        }
+        assert!(frame < 200, "the layer did not load");
+    }
 }
 
 /// Gives each texel of a raster layer noise, so that each tile has memory.

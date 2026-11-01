@@ -22,7 +22,7 @@ pub use atlas::{
 pub use fill::{FillKind, FillPattern};
 pub use gpkg::{
     FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,
-    TileKey, summary,
+    TileKey, TileReader, summary,
 };
 pub use image_tile::{IMAGE_TILE_SIZE, decode_tile, encode_tile, image_levels, level_size};
 pub use scale_bar::{
