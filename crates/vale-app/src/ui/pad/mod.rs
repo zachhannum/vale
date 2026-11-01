@@ -1444,7 +1444,7 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
             let on = terrain && line.fit;
             percent_slider(&mut line.terrain, 0.0..=1.0, |fraction, text| {
                 let name = TERRAIN_BALANCE;
-                widgets::row_slider_enabled(ui, controls, name, "Terrain", fraction, text, on)
+                widgets::row_slider_enabled(ui, controls, name, "Balance", fraction, text, on)
             });
         }
         // The Measure tool in a map frame does not snap to color stops.

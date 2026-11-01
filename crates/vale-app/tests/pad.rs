@@ -21,8 +21,9 @@ use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DRAW, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
     POLYGON, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP, SNAP_DISTANCE, SNAP_EDGES,
-    SNAP_VERTICES, SNAPPING, TERRAIN, VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW,
-    brush_size_text, readout_line, readout_text, theme,
+    SNAP_VERTICES, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH,
+    VIEW_OPTIONS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, readout_line,
+    readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
@@ -5437,6 +5438,104 @@ fn a_line_stroke_is_one_feature_that_undo_removes_and_a_stroke_from_its_end_exte
     assert!(joined_parts[0].len() > parts[0].len());
     tap(&mut h, "Undo");
     assert_eq!(line_features(&h, rivers), after);
+}
+
+#[test]
+fn a_fitted_line_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = empty_pad(BOARDS[0]);
+    h.state_mut().globe.set_face_size(256);
+    h.state_mut().add_height();
+    h.run_steps(2);
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    h.run_steps(2);
+    let rivers = vector(&h, "Rivers");
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    tap(&mut h, LINE);
+    assert!(h.state().globe.fit_layer.is_some());
+    tap(&mut h, TERRAIN_FIT);
+    assert!(h.state().globe.line.fit);
+    let before = line_features(&h, rivers);
+    let saved = saves(&h);
+
+    let center = h.state().globe.rect.center();
+    line_stroke(
+        &mut h,
+        center + vec2(-150.0, 40.0),
+        center + vec2(150.0, -40.0),
+    );
+    let after = line_features(&h, rivers);
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(saves(&h), saved + 1);
+    tap(&mut h, "Undo");
+    assert_eq!(line_features(&h, rivers), before);
+    tap(&mut h, "Redo");
+    assert_eq!(line_features(&h, rivers), after);
+}
+
+#[test]
+fn the_terrain_fit_controls_are_touch_size_in_each_layout() {
+    let touch = |r: Rect| r.width() >= 44.0 && r.height() >= 44.0;
+    for (size, safe) in measure_screens() {
+        let what = format!("{size:?}");
+        let mut h = safe_pad(size, safe);
+        let lines = h.state_mut().doc.add_layer(vale_store::GeometryKind::Line);
+        h.state_mut().select(Some(LayerRef::Vector(lines)));
+        h.run_steps(2);
+        tap(&mut h, LINE);
+        if matches!(h.state().pad.rects.unwrap().brush_card, BrushCard::Full(_)) {
+            for name in [TERRAIN_FIT, SMOOTHING] {
+                let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
+                assert!(touch(rect), "{what}: {name} is {rect:?}");
+            }
+            assert!(!disabled(&h, TERRAIN_FIT), "{what}");
+            tap(&mut h, TERRAIN_FIT);
+            assert!(h.state().globe.line.fit, "{what}");
+            tap(&mut h, TERRAIN_FIT);
+            assert!(!h.state().globe.line.fit, "{what}");
+            check_controls(&h, &what);
+        } else {
+            assert!(control(&h, TERRAIN_FIT).is_none(), "{what}");
+        }
+        tap(&mut h, "Brush settings");
+        // The balance slider is disabled while the fit is off.
+        assert!(disabled(&h, TERRAIN_BALANCE), "{what}");
+        tap(&mut h, TERRAIN_FIT_SWITCH);
+        assert!(h.state().globe.line.fit, "{what}");
+        assert!(!disabled(&h, TERRAIN_BALANCE), "{what}");
+        for name in [TERRAIN_FIT_SWITCH, TERRAIN_BALANCE] {
+            let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
+            assert!(touch(rect), "{what}: {name} is {rect:?}");
+        }
+        check_controls(&h, &format!("{what} with the brush panel"));
+        check_safe(&h, size, safe, &what);
+        screenshot::save(&mut h, &format!("pad-terrain-fit-{}", size.0));
+    }
+}
+
+#[test]
+fn with_no_height_layer_the_terrain_fit_is_disabled() {
+    let mut h = empty_pad(BOARDS[0]);
+    let rivers = vector(&h, "Rivers");
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    tap(&mut h, LINE);
+    assert!(h.state().globe.fit_layer.is_none());
+    // A disabled control takes no touch.
+    assert!(disabled(&h, TERRAIN_FIT) && control(&h, TERRAIN_FIT).is_none());
+    tap(&mut h, "Brush settings");
+    for name in [TERRAIN_FIT_SWITCH, TERRAIN_BALANCE] {
+        assert!(disabled(&h, name) && control(&h, name).is_none(), "{name}");
+    }
+    // A height layer enables the switch.
+    h.state_mut().globe.set_face_size(64);
+    h.state_mut().add_height();
+    h.state_mut().select(Some(LayerRef::Vector(rivers)));
+    h.run_steps(2);
+    assert!(!disabled(&h, TERRAIN_FIT));
 }
 
 #[test]

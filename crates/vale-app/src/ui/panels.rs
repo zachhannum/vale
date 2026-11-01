@@ -42,7 +42,7 @@ pub const SMOOTHING: &str = "Smoothing";
 /// The check box of the terrain fit of the line tool.
 pub const TERRAIN_FIT: &str = "Terrain fit";
 /// The slider of the balance between the sketch and the terrain.
-pub const TERRAIN: &str = "Terrain";
+pub const BALANCE: &str = "Balance";
 /// The check box that turns all snapping on and off.
 pub const SNAP: &str = "Snap";
 /// The menu of the snap targets and the snap distance.
@@ -136,7 +136,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                         let mut percent = globe.line.terrain * 100.0;
                         let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
                             .suffix(" %")
-                            .text(TERRAIN);
+                            .text(BALANCE);
                         if ui.add_enabled(terrain && globe.line.fit, slider).changed() {
                             globe.line.terrain = percent / 100.0;
                         }
