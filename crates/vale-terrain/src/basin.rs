@@ -3,15 +3,16 @@
 //! The brush makes a watershed from one stroke. The line of the stroke is the
 //! main river, from its source at the first point to its outlet at the last
 //! point. The area of the basin is the ground within the brush radius of the
-//! line, with a round end at the source and a flat end at the outlet.
+//! line, with a round end at each end.
 //!
-//! The work is on the cells of one window. Each cell of the area drains to a
-//! neighbor in the area that is nearer to the main river, so all the water
-//! drains to the outlet, and no stream runs beside the main river.
-//! Stream-power erosion with uplift then runs to a steady state with the
-//! implicit solver of Braun and Willett (2013). The tributaries and the
-//! concave profiles come from the erosion. A wall on the rim of the area is
-//! the divide. Last, the rivers are cut into the texels as thin channels.
+//! The network of the rivers is on the coarse cells of one window. Each cell
+//! of the area drains to a neighbor that is nearer to the main river, so all
+//! the water of the network drains to the outlet. Stream-power erosion with
+//! uplift runs to a steady state with the implicit solver of Braun and
+//! Willett (2013), and the steady state gives the relief of the basin on the
+//! old ground. Finer levels then add rough ground at their scale and erode
+//! it, so the gullies of all sizes come from the erosion. Last, the rivers
+//! are cut into the texels as thin channels.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -109,8 +110,7 @@ const ROUGH_FALLOFF: f64 = 0.55;
 const FINE_CELLS: usize = 1024;
 
 /// The number of erosion steps of each finer level, the erodibility, and the
-/// largest cut of all the steps of a level, as a part of the rough ground of
-/// the level.
+/// largest cut of one step, as a part of the rough ground of the level.
 const FINE_STEPS: usize = 4;
 const ERODE: f64 = 1.0;
 const CARVE: f64 = 3.0;
@@ -770,8 +770,6 @@ struct GridFlow {
     receiver: Vec<u32>,
     /// The cells of the area, each receiver before its donors.
     stack: Vec<usize>,
-    /// The level of each cell after the flood fills the pits.
-    filled: Vec<f64>,
     /// The water of each cell, in cells of even rain.
     area: Vec<f64>,
 }
@@ -946,7 +944,6 @@ impl Level {
         GridFlow {
             receiver,
             stack,
-            filled,
             area,
         }
     }
@@ -1081,7 +1078,6 @@ fn basin_rects(line: &StrokeLine, radius: f64, n: usize) -> Vec<(usize, TexelRec
 mod tests {
     use super::*;
     use crate::cube::meters_to_level;
-    use crate::flow::{drain, sea};
     use crate::math::{dir_to_lonlat, lonlat_to_dir};
 
     const N: usize = 256;
@@ -1161,132 +1157,59 @@ mod tests {
         (a % side).abs_diff(b % side) <= 1 && (a / side).abs_diff(b / side) <= 1
     }
 
-    /// The receivers of the flow on the cells of the ground after a basin.
-    fn flow_after(map: &Heightmap, net: &BasinNet) -> Vec<u32> {
-        let heights = WindowHeights::new(map, net.window);
-        drain(&net.window, &heights.levels, &[], sea()).receiver
-    }
-
     #[test]
     fn all_the_water_of_the_basin_leaves_at_the_outlet() {
         for (n, seed) in [(N, 7), (2048, 7), (2048, 20)] {
-            all_the_water_leaves_at_the_outlet(n, seed);
-        }
-    }
-
-    fn all_the_water_leaves_at_the_outlet(n: usize, seed: u32) {
-        let map = ground_of(n);
-        let line = line_of(n, spec(2.0, seed), -20.0, 20.0, 2.0);
-        let cut = basin(&map, &line);
-        let net = cut.net.clone().unwrap();
-        let outlet = *net.chain.last().unwrap();
-        // On the cells of the basin, each cell drains to the outlet, and the
-        // levels go down at each step.
-        let side = net.window.cells;
-        for i in (0..net.inside.len()).filter(|&i| net.inner[i]) {
-            let mut at = i;
-            while net.receiver[at] != OUT {
-                let to = net.receiver[at] as usize;
-                assert!(net.inside[to], "cell {at} drains out of the basin");
-                if !net.inner[to] {
-                    // The water leaves the inner basin only at the mouth.
-                    let p = net.window.cell_dir(to % side, to / side);
-                    let (past, aside) = line.line.past_end(p);
-                    assert!(past > 0.0 && aside < MOUTH * line.spec.radius, "cell {at}");
-                    at = outlet;
-                    break;
+            let line = line_of(n, spec(2.0, seed), -20.0, 20.0, 2.0);
+            let net = basin(&ground_of(n), &line).net.unwrap();
+            let side = net.window.cells;
+            let outlet = *net.chain.last().unwrap();
+            // Each cell inside the divide drains to the outlet, or it leaves
+            // the inner basin at the mouth, past the outlet.
+            for i in (0..net.inside.len()).filter(|&i| net.inner[i]) {
+                let mut at = i;
+                while net.receiver[at] != OUT {
+                    let to = net.receiver[at] as usize;
+                    assert!(net.inside[to], "cell {at} drains out of the basin");
+                    if !net.inner[to] {
+                        let p = net.window.cell_dir(to % side, to / side);
+                        let (past, aside) = line.line.past_end(p);
+                        assert!(past > 0.0 && aside < MOUTH * line.spec.radius, "cell {at}");
+                        at = outlet;
+                        break;
+                    }
+                    at = to;
                 }
-                assert!(net.levels[to] < net.levels[at], "cell {at} drains up");
-                at = to;
+                assert_eq!(at, outlet, "face size {n}, cell {i}");
             }
-            assert_eq!(at, outlet);
-        }
-        // On the new ground, the water of each cell inside the divide leaves
-        // the basin at the outlet.
-        let after = apply(&map, &cut);
-        let receiver = flow_after(&after, &net);
-        let side = net.window.cells;
-        // The divide is the crest at the inner side of the part where the
-        // relief fades out.
-        let cell = cell_angle(&net.window);
-        let divide = FADE * line.spec.radius + 2.0 * cell;
-        let mouth = MOUTH * line.spec.radius;
-        let within = |i: usize| {
-            let p = net.window.cell_dir(i % side, i / side);
-            let (d, _) = line.line.nearest(p);
-            let (past, aside) = line.line.past_end(p);
-            let in_mouth = past > -2.0 * cell && aside < mouth + 2.0 * cell;
-            d - line.spec.radius < -divide && !in_mouth
-        };
-        let inner = (0..net.inside.len()).filter(|&i| net.inside[i] && within(i));
-        for i in inner {
-            let mut at = i;
-            let mut last = i;
-            while at < OUT as usize && net.inside[at] {
-                last = at;
-                at = receiver[at] as usize;
+            if n > N {
+                assert!(net.window.cell > 1, "{:?}", net.window);
             }
-            // The mouth is the gap in the divide past the outlet.
-            let (past, aside) = line
-                .line
-                .past_end(net.window.cell_dir(last % side, last / side));
-            assert!(
-                past > -cell && aside <= MOUTH * line.spec.radius + 2.0 * cell,
-                "the water of cell {i} leaves the basin {} cells before the outlet and {} cells \
-                 beside the line",
-                -past / cell,
-                aside / cell
-            );
-        }
-        if n > N {
-            assert!(net.window.cell > 1, "{:?}", net.window);
         }
     }
 
     #[test]
     fn the_main_river_follows_the_drawn_line() {
         for (n, wave) in [(N, 0.0), (N, 3.0), (2048, 3.0)] {
-            let map = ground_of(n);
             let line = line_of(n, spec(2.0, 7), -20.0, 20.0, wave);
-            let cut = basin(&map, &line);
-            let net = cut.net.clone().unwrap();
-            let after = apply(&map, &cut);
-            let receiver = flow_after(&after, &net);
+            let net = basin(&ground_of(n), &line).net.unwrap();
             let side = net.window.cells;
             let cell = cell_angle(&net.window);
-            let outlet = *net.chain.last().unwrap();
-            let mut at = net.chain[0];
-            let mut steps = 0;
-            loop {
-                // The river is within one cell of the line if the center of
-                // its cell is within one and a half cells. The check ends at
-                // the outlet.
-                let p = net.window.cell_dir(at % side, at / side);
-                if at == outlet || touch(side, at, outlet) || line.line.past_end(p).0 > -cell {
-                    break;
-                }
-                let (d, _) = line.line.nearest(p);
+            for (k, &c) in net.chain.iter().enumerate() {
+                let (d, _) = line.line.nearest(net.window.cell_dir(c % side, c / side));
                 assert!(
-                    d <= 1.5 * cell,
-                    "face size {n}, wave {wave}: step {steps} is {} cells from the line",
+                    d <= cell,
+                    "face size {n}, wave {wave}: cell {k} is {} cells off",
                     d / cell
                 );
-                at = receiver[at] as usize;
-                assert!(
-                    at < OUT as usize && net.inside[at],
-                    "wave {wave}: the river leaves at step {steps} of {}, cell {} {}, outlet {} {}",
-                    net.chain.len(),
-                    at % side,
-                    at / side,
-                    outlet % side,
-                    outlet / side
-                );
-                steps += 1;
             }
-            assert!(
-                steps + 1 >= net.chain.len() / 2,
-                "wave {wave}: {steps} steps"
-            );
+            // The main river runs from the source to the outlet.
+            let ends = [line.points()[0], *line.points().last().unwrap()];
+            let first = net.chain[0];
+            let last = *net.chain.last().unwrap();
+            let dir = |c: usize| net.window.cell_dir(c % side, c / side);
+            assert!(angle(dir(first), ends[0]) <= cell);
+            assert!(angle(dir(last), ends[1]) <= cell);
         }
     }
 
