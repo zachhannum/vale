@@ -478,6 +478,9 @@ pub(super) struct Details {
     needs: Vec<Need>,
     /// The frames of the last `want`.
     frames: Vec<u32>,
+    /// The frames of the last `want` that read a raster layer at a coarser
+    /// level than their pixels need, because of the budget.
+    coarser: Vec<u32>,
     /// The grid of each frame of the last `want`.
     grids: Vec<(u32, GridKey, Arc<Grid>)>,
     projections: Vec<(ProjectionSpec, Rc<Projection>)>,
@@ -588,7 +591,19 @@ impl Details {
                 fallback: None,
             });
         }
+        let wanted: Vec<(u32, RasterId, u32)> =
+            needs.iter().map(|n| (n.frame, n.raster, n.level)).collect();
         self.fit_budget(&mut needs);
+        self.coarser = wanted
+            .into_iter()
+            .filter(|&(frame, raster, level)| {
+                let kept = needs
+                    .iter()
+                    .find(|n| n.frame == frame && n.raster == raster);
+                kept.is_none_or(|n| n.level != level)
+            })
+            .map(|(frame, ..)| frame)
+            .collect();
 
         // A map for each need.
         for need in &needs {
@@ -911,6 +926,13 @@ impl Details {
         self.needs.clear();
         self.in_flight.clear();
         self.frames.clear();
+        self.coarser.clear();
+    }
+
+    /// True if a frame of the last `want` reads each raster layer at the
+    /// level that its pixels need.
+    pub(super) fn fits(&self, frame: u32) -> bool {
+        self.frames.contains(&frame) && !self.coarser.contains(&frame)
     }
 
     /// The detail map that a frame draws a raster layer from. `None`: the
@@ -1064,11 +1086,13 @@ mod tests {
         let big = frame(1, 1400, 3000.0, [0.0, 0.0]);
         globe.want_frames(std::slice::from_ref(&big));
         assert_eq!(globe.frame_detail_level(1, RASTER), Some(0));
+        assert!(globe.frame_fits(1));
         let budget = 20 << 20;
         let mut globe = super::tests::globe(true);
         globe.set_detail_budget(Some(budget));
         globe.want_frames(std::slice::from_ref(&big));
         assert_eq!(globe.frame_detail_level(1, RASTER), Some(1));
+        assert!(!globe.frame_fits(1));
         for _ in 0..10 {
             globe.want_frames(std::slice::from_ref(&big));
         }

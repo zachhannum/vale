@@ -3684,14 +3684,11 @@ impl Globe {
         }
     }
 
-    /// True while a map frame waits for tiles of a detail map that can
-    /// come: from the main memory, or from a request that waits.
+    /// True while a map frame waits for tiles of a detail map: from the
+    /// main memory, or from the project file.
     pub fn details_loading(&self) -> bool {
-        let memory = |req: &DetailRequest| {
-            memory_map(&self.layers, &self.map, self.raster, req.raster).is_some()
-        };
         self.details.loading()
-            && (self.details.in_flight() > 0 || self.details.missing().iter().any(memory))
+            && (self.details.in_flight() > 0 || !self.details.missing().is_empty())
     }
 
     /// The face size of the copy that a frame reads a raster layer from
@@ -3761,6 +3758,13 @@ impl Globe {
         let images = images.all(|id| self.image_source(*id).is_some());
         let copies = self.format.is_none() || (copies && images);
         copies && self.details.ready(frame.id)
+    }
+
+    /// True if a map frame of the last `want_frames` reads each raster
+    /// layer at the level that its pixels need. With a need over the
+    /// memory of the detail maps, a frame reads a coarser level.
+    pub fn frame_fits(&self, frame: u32) -> bool {
+        self.details.fits(frame)
     }
 
     /// The level of the whole heightmap that a map frame reads a raster
