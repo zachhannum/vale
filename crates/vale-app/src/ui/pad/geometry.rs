@@ -336,9 +336,9 @@ mod tests {
         assert_eq!(r.workspace, rect(16.0, 32.0, 230.0, 52.0));
         assert_eq!(r.view, Some(rect(527.0, 32.0, 140.0, 52.0)));
         assert_eq!(r.actions, rect(969.0, 32.0, 209.0, 52.0));
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 268.0));
+        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
         assert_eq!(r.brush_card, BrushCard::Full(140.0));
-        assert_eq!(r.brush, Some(rect(16.0, 376.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
         assert_eq!(r.brush_panel, pos2(92.0, 96.0));
         assert_eq!(r.right_panel, pos2(858.0, 96.0));
         assert!(!r.one_panel);
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(r.view.unwrap().center().x, 417.0);
         assert_eq!(r.actions, rect(609.0, 32.0, 209.0, 52.0));
         assert_eq!(r.right_panel, pos2(498.0, 96.0));
-        assert_eq!(r.brush, Some(rect(16.0, 376.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
         assert!(!r.one_panel);
     }
 
@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(r.class, WidthClass::Compact);
         assert_eq!(r.view, None);
         assert_eq!(r.menu, pos2(16.0, 88.0));
-        assert_eq!(r.brush, Some(rect(16.0, 376.0, 64.0, 340.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 428.0, 64.0, 340.0)));
         let readout = r.readout.unwrap();
         assert_eq!(
             (readout.left(), readout.top(), readout.bottom()),
@@ -380,7 +380,7 @@ mod tests {
         let r = layout(&input);
         assert_eq!(r.sheet, Some(rect(0.0, 434.0, 375.0, 400.0)));
         assert_eq!(r.readout, None);
-        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 268.0));
+        assert_eq!(r.tools, rect(16.0, 96.0, 64.0, 320.0));
         assert_eq!(r.tool_cells, TOOLS);
         // The open sheet leaves no room for the Brush button below the strip.
         assert_eq!(r.brush_card, BrushCard::Hidden);
@@ -391,26 +391,26 @@ mod tests {
         // The title row is above the bottom band.
         assert_eq!(sheet.top(), 834.0 - 20.0 - 52.0);
         assert_eq!(r.tool_cells, TOOLS);
-        assert_eq!(r.brush_card, BrushCard::Full(SLIDER));
+        assert_eq!(r.brush_card, BrushCard::Full(131.0));
     }
 
     #[test]
     fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
         let card = |height: f32| layout(&board(1024.0, height)).brush_card;
         assert_eq!(card(1194.0), BrushCard::Full(140.0));
-        assert_eq!(card(752.0), BrushCard::Full(140.0));
-        assert_eq!(card(732.0), BrushCard::Full(130.0));
-        assert_eq!(card(692.0), BrushCard::Full(110.0));
-        assert_eq!(card(691.0), BrushCard::Button);
+        assert_eq!(card(804.0), BrushCard::Full(140.0));
+        assert_eq!(card(784.0), BrushCard::Full(130.0));
+        assert_eq!(card(744.0), BrushCard::Full(110.0));
+        assert_eq!(card(743.0), BrushCard::Button);
         assert_eq!(card(480.0), BrushCard::Button);
     }
 
     #[test]
     fn the_small_boards_have_the_full_sliders() {
         let boards = [
-            (1133.0, 744.0, 136.0),
+            (1133.0, 744.0, 110.0),
             (744.0, 1133.0, SLIDER),
-            (1024.0, 768.0, SLIDER),
+            (1024.0, 768.0, 122.0),
         ];
         for (width, height, slider) in boards {
             let r = layout(&board(width, height));
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn a_very_short_window_scrolls_the_tool_strip() {
         // With no room below the strip, the Brush button goes to its right.
-        let r = layout(&board(1024.0, 412.0));
+        let r = layout(&board(1024.0, 464.0));
         assert_eq!((r.tool_cells, r.brush_card), (TOOLS, BrushCard::Button));
         let card = r.brush.unwrap();
         assert_eq!(card.min, pos2(r.tools.right() + GAP, r.tools.top()));

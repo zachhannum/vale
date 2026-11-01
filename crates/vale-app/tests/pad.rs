@@ -2084,7 +2084,7 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
             let row = control(&h, mode).unwrap();
             assert!(flyout.contains_rect(row), "{mode}");
         }
-        assert_eq!(strip(&h), [SCULPT, TERRAIN, "Pan", MEASURE]);
+        assert_eq!(strip(&h), [SCULPT, TERRAIN, select::TOOL, "Pan", MEASURE]);
         check_controls(&h, &format!("the flyout of {name}"));
 
         // A press outside closes the flyout and changes nothing.
@@ -3473,7 +3473,7 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     assert_eq!(lefts, [1082.0, 1130.0]);
     assert_eq!(
         r.tools,
-        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 268.0))
+        Rect::from_min_size(pos2(16.0, 96.0), vec2(64.0, 320.0))
     );
     assert_eq!(
         control(&h, SCULPT).unwrap(),
@@ -3485,11 +3485,11 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     );
     assert_eq!(
         r.brush.unwrap(),
-        Rect::from_min_size(pos2(16.0, 376.0), vec2(64.0, 340.0))
+        Rect::from_min_size(pos2(16.0, 428.0), vec2(64.0, 340.0))
     );
     assert_eq!(
         control(&h, "Brush settings").unwrap().min,
-        pos2(20.0, 660.0)
+        pos2(20.0, 712.0)
     );
 
     tap(&mut h, "Layers");
@@ -3646,12 +3646,12 @@ fn the_layout_follows_the_turn_of_the_ipad() {
 #[test]
 fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
     // The sliders fit with less height.
-    let h = pad((1024.0, 732.0));
+    let h = pad((1024.0, 784.0));
     assert_eq!(
         h.state().pad.rects.unwrap().brush_card,
         BrushCard::Full(130.0)
     );
-    check_controls(&h, "732 high");
+    check_controls(&h, "784 high");
 
     let mut h = pad((1024.0, 600.0));
     assert_eq!(h.state().pad.rects.unwrap().brush_card, BrushCard::Button);

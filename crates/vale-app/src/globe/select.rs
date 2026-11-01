@@ -502,7 +502,7 @@ mod tests {
             pos: a,
             pointer: Pointer::Finger,
         };
-        assert_eq!(press.events.drain(..).collect::<Vec<_>>(), [tap]);
+        assert_eq!(std::mem::take(&mut press.events), [tap]);
         // A finger drag is left to the view.
         press.down(1, a, Pointer::Finger);
         press.moved(1, b);
