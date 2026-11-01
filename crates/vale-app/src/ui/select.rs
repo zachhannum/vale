@@ -359,9 +359,8 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     );
     let (mut close, mut delete, mut commit) = (false, false, false);
     let radius = theme::CARD_RADIUS.into();
-    widgets::card(ctx, None, CARD, rect, Order::Foreground, radius, |ui| {
-        ui.painter()
-            .rect_filled(rect, radius, theme::card(false).to_opaque());
+    let backdrop = state.globe.backdrop();
+    widgets::card(ctx, backdrop, CARD, rect, Order::Foreground, radius, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         close = widgets::title_row(ui, controls, &title, None, false).close;
         let inner = ui.available_rect_before_wrap().shrink2(vec2(BODY_PAD, 0.0));
