@@ -191,6 +191,16 @@ impl StrokeLine {
         self.points.len()
     }
 
+    /// The brush radius as an angle, in radians.
+    pub(crate) fn radius(&self) -> f64 {
+        self.radius
+    }
+
+    /// The number of texels along one side of a face.
+    pub(crate) fn face_size(&self) -> usize {
+        self.face_size
+    }
+
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
