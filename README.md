@@ -56,7 +56,7 @@ Click "Atlas" in the tool bar to open the pages of the atlas. On iPad, tap "Atla
 - Click "Add map frame" to add a frame to the page. The frame shows the map of the project. On iPad, tap the Add button and then "Map frame".
 - Click a frame to select it. Drag the frame to move it, and drag a handle to resize it. The dock shows the tabs Frame, Projection, and Layers.
 - In the Frame tab, change the shape to a polygon. Drag a vertex to move it, drag the middle of an edge to add a vertex, and double-click a vertex to remove it. "Add hole" adds a hole.
-- With the Move tool, drag in the selected frame to pan its map. The key H selects the Move tool, and V selects the Select tool. Scroll in the selected frame to zoom its map. On a touch screen, two fingers in the selected frame pan, zoom, and rotate the map.
+- With the Move tool, drag in the selected frame to pan its map. The key H selects the Move tool, and V selects the Select tool. Scroll in the selected frame to zoom its map. On a touch screen, two fingers in the selected frame pan and zoom the map.
 - With the Measure tool, tap or click in the map frames to measure a path. The path shows in each frame of the page, and it can cross from one frame to another.
 - Drag the page outside the frames to pan it, and scroll outside the selected frame to zoom it. On a touch screen, two fingers pan and zoom the page. Double-click outside the page to fit the page in the window again.
 - To delete the selected frame, click "Delete frame" in the Frame tab, or press Delete when no vertex is selected.

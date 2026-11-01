@@ -1501,8 +1501,8 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         }
     }
 
-    // Two fingers move, zoom, and turn the map of the selected frame below
-    // them. Elsewhere, they move and zoom the page.
+    // Two fingers move and zoom the map of the selected frame below them.
+    // Elsewhere, they move and zoom the page.
     if let Some(touch) = fingers {
         let pinch = match state.atlas.pinch {
             Some(pinch) => Some(pinch),
@@ -1525,13 +1525,11 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
             let d = touch.translation_delta;
             let d = Vec2::new(f64::from(d.x), f64::from(d.y)) / place.pts_per_mm;
             let factor = f64::from(touch.zoom_delta);
-            let degrees = f64::from(touch.rotation_delta).to_degrees();
             edit_frame(state, id, |frame, projection| {
                 let panned = d != Vec2::ZERO && math::pan(frame, projection, d);
                 let zoomed =
                     (factor - 1.0).abs() > 1e-6 && math::zoom(frame, projection, at, factor);
-                let turned = degrees.abs() > 1e-6 && math::rotate(frame, projection, at, degrees);
-                panned || zoomed || turned
+                panned || zoomed
             });
         }
     }

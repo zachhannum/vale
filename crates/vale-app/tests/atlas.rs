@@ -706,7 +706,8 @@ fn pan_zoom_and_rotate_in_a_frame_set_its_center_scale_and_rotation() {
     // The frame does not move.
     assert_eq!(shape_bbox(&frame(&h, 0).shape).x0, 10.0);
 
-    // Two fingers zoom and turn the map about their middle.
+    // Two fingers zoom the map about their middle, and a twist does not
+    // turn it.
     let id = frame(&h, 0).id;
     h.state_mut()
         .doc
@@ -723,8 +724,7 @@ fn pan_zoom_and_rotate_in_a_frame_set_its_center_scale_and_rotation() {
     assert!((scale / zoomed - 1.5).abs() < 0.01, "{scale} {zoomed}");
     let place = place_at(&mut h, 0, at);
     pinch(&mut h, at, 120.0, 120.0, 30.0, Vec2::ZERO);
-    let rotation = frame(&h, 0).rotation;
-    assert!((rotation - 30.0).abs() < 0.5, "{rotation}");
+    assert_eq!(frame(&h, 0).rotation, 0.0);
     assert!(pos_of(&mut h, 0, place).distance(at) < 1.0);
     assert!((frame(&h, 0).scale / zoomed - 1.0).abs() < 0.01);
     // Two fingers also move the map, and never the frame.
