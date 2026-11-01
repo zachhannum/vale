@@ -7,12 +7,13 @@
 //! The textures hold only the tiles that have a level other than the base
 //! level. `tiles.rs` has the pool of the tiles.
 
-use std::f64::consts::FRAC_PI_4;
+use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 use std::num::NonZeroU64;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::bands::SEA_LEVEL;
+use crate::channel::{ChannelBuffers, ChannelLines, ChannelShape};
 use crate::cube::{FACES, meters_to_level};
 use crate::erode::{ErodeGrid, ErodeStep};
 use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
@@ -158,7 +159,93 @@ struct Uniforms {
     /// The texels of the drop texture that hold the drops of an erode pass:
     /// x0, y0, x1, y1. The drop of each other cell is 0.
     drop_rect: [i32; 4],
+    /// The number of bins along one side of a face of the channel lines, of
+    /// the window lines, and of the lines of an erode step. 0 is no lines.
+    lines_side: u32,
+    window_bins: u32,
+    erode_side: u32,
+    /// The angle of one texel step, in radians.
+    texel: f32,
+    /// The width of a channel at its reference area, that area, and the
+    /// width of a floodplain, as in `ChannelShape`.
+    channel: [f32; 4],
     stamps: [FaceStamp; GROUP_STAMPS],
+}
+
+fn channel_values(shape: ChannelShape) -> [f32; 4] {
+    [shape.width, shape.reference, shape.floodplain, 0.0].map(|v| v as f32)
+}
+
+/// New storage buffers that hold channel lines.
+fn lines_buffers(device: &wgpu::Device, data: &ChannelBuffers) -> [wgpu::Buffer; 2] {
+    use wgpu::util::DeviceExt;
+    let buffer = |label, contents: &[u8]| {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        })
+    };
+    [
+        buffer("channel curves", bytemuck::cast_slice(&data.curves)),
+        buffer("channel index", bytemuck::cast_slice(&data.index)),
+    ]
+}
+
+/// The bind group of the stamp pipeline, and the buffers of the channel
+/// lines in it.
+struct Bind {
+    group: wgpu::BindGroup,
+    /// The curves and the index of the channel lines, of the window lines,
+    /// and of the lines of the last erode step.
+    lines: [[wgpu::Buffer; 2]; 3],
+    /// The `bin_side` of each of those lines.
+    sides: [u32; 3],
+}
+
+/// The resources of the stamp bind group that do not change.
+struct BindParts {
+    layout: wgpu::BindGroupLayout,
+    uniforms: wgpu::Buffer,
+    ridge_uniforms: wgpu::Buffer,
+    /// The views of bindings 1 to 6.
+    views: [wgpu::TextureView; 6],
+}
+
+impl BindParts {
+    fn group(&self, device: &wgpu::Device, lines: &[[wgpu::Buffer; 2]; 3]) -> wgpu::BindGroup {
+        fn buffer(binding: u32, buffer: &wgpu::Buffer, size: usize) -> wgpu::BindGroupEntry<'_> {
+            wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer,
+                    offset: 0,
+                    size: NonZeroU64::new(size as u64),
+                }),
+            }
+        }
+        let mut entries = vec![
+            buffer(0, &self.uniforms, size_of::<Uniforms>()),
+            buffer(7, &self.ridge_uniforms, size_of::<RidgeUniforms>()),
+        ];
+        for (i, view) in self.views.iter().enumerate() {
+            entries.push(wgpu::BindGroupEntry {
+                binding: i as u32 + 1,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
+        for (i, buffers) in lines.iter().flatten().enumerate() {
+            entries.push(wgpu::BindGroupEntry {
+                binding: i as u32 + 8,
+                resource: buffers.as_entire_binding(),
+            });
+        }
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stamp"),
+            layout: &self.layout,
+            entries: &entries,
+        })
+    }
 }
 
 /// The settings and the segments of one ocean ridge plan. The layout matches
@@ -297,7 +384,8 @@ pub struct GpuHeightmap {
     /// The drops of an erode step on the cells of a window.
     window_drops: wgpu::Texture,
     pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
+    bind_parts: BindParts,
+    bind: Mutex<Bind>,
     /// One slot of `slot_size` bytes for each pass of a batch.
     uniforms: wgpu::Buffer,
     slot_size: u32,
@@ -443,6 +531,16 @@ impl GpuHeightmap {
             },
             count: None,
         };
+        let storage_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("stamp"),
             entries: &[
@@ -472,54 +570,34 @@ impl GpuHeightmap {
                     },
                     count: None,
                 },
+                storage_entry(8),
+                storage_entry(9),
+                storage_entry(10),
+                storage_entry(11),
+                storage_entry(12),
+                storage_entry(13),
             ],
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("stamp"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &uniforms,
-                        offset: 0,
-                        size: uniform_size,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&channels_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&window_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&drops_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&window_drops_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(&fills_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(&window_fills_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &ridge_uniforms,
-                        offset: 0,
-                        size: ridge_size,
-                    }),
-                },
+        let bind_parts = BindParts {
+            layout,
+            uniforms,
+            ridge_uniforms,
+            views: [
+                channels_view.clone(),
+                window_view.clone(),
+                drops_view,
+                window_drops_view,
+                fills_view,
+                window_fills_view,
             ],
-        });
+        };
+        let empty = ChannelLines::empty().to_gpu();
+        let lines = std::array::from_fn(|_| lines_buffers(device, &empty));
+        let bind = Bind {
+            group: bind_parts.group(device, &lines),
+            lines,
+            sides: [0; 3],
+        };
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stamp"),
@@ -529,7 +607,7 @@ impl GpuHeightmap {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("stamp"),
-            bind_group_layouts: &[Some(&layout), Some(&tiles_layout)],
+            bind_group_layouts: &[Some(&bind_parts.layout), Some(&tiles_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -577,11 +655,12 @@ impl GpuHeightmap {
             drops,
             window_drops,
             pipeline,
-            bind_group,
-            uniforms,
+            uniforms: bind_parts.uniforms.clone(),
+            ridge_uniforms: bind_parts.ridge_uniforms.clone(),
+            bind_parts,
+            bind: Mutex::new(bind),
             slot_size,
             used_slots: AtomicU32::new(0),
-            ridge_uniforms,
             ridge_slot_size,
             used_ridge_slots: AtomicU32::new(0),
         }
@@ -593,6 +672,34 @@ impl GpuHeightmap {
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().expect("no thread stops with the lock")
+    }
+
+    fn bind(&self) -> std::sync::MutexGuard<'_, Bind> {
+        self.bind.lock().expect("no thread stops with the lock")
+    }
+
+    /// Writes channel lines to the buffers of slot `slot`: 0 for the channel
+    /// map, 1 for the window, and 2 for an erode step. With `None`, the slot
+    /// has no lines. The write runs at the next submit. Larger lines get new
+    /// buffers and a new bind group.
+    fn write_lines(&self, queue: &wgpu::Queue, slot: usize, lines: Option<&ChannelLines>) {
+        let bind = &mut *self.bind();
+        let Some(lines) = lines else {
+            bind.sides[slot] = 0;
+            return;
+        };
+        let data = lines.to_gpu();
+        bind.sides[slot] = lines.bin_side() as u32;
+        let [curves, index] = &bind.lines[slot];
+        let fits = curves.size() >= (data.curves.len() * 4) as u64
+            && index.size() >= (data.index.len() * 4) as u64;
+        if fits {
+            queue.write_buffer(curves, 0, bytemuck::cast_slice(&data.curves));
+            queue.write_buffer(index, 0, bytemuck::cast_slice(&data.index));
+        } else {
+            bind.lines[slot] = lines_buffers(&self.device, &data);
+            bind.group = self.bind_parts.group(&self.device, &bind.lines);
+        }
     }
 
     /// The layout of the bind group that `tiles` returns. A pipeline with the
@@ -629,7 +736,7 @@ impl GpuHeightmap {
         &self.channels_view
     }
 
-    /// Writes the channel map and its fill levels. The write runs at the next submit, before the
+    /// Writes the channel map, its lines, and its fill levels. The write runs at the next submit, before the
     /// commands of each encoder in that submit. The size of the map comes
     /// from `ChannelMap::size_for`.
     pub fn upload_channels(&self, queue: &wgpu::Queue, map: &ChannelMap) {
@@ -645,6 +752,7 @@ impl GpuHeightmap {
             },
             size,
         );
+        self.write_lines(queue, 0, Some(map.lines()));
         let size = self.fills.size();
         queue.write_texture(
             texels(&self.fills, 0, 0, 0),
@@ -686,6 +794,7 @@ impl GpuHeightmap {
                 },
                 size,
             );
+            self.write_lines(queue, 1, Some(channels.lines()));
             let size = self.window_fills.size();
             queue.write_texture(
                 texels(&self.window_fills, 0, 0, 0),
@@ -786,7 +895,9 @@ impl GpuHeightmap {
         let mut count = 0;
         for plan in plans.iter().take(most) {
             let next = cover.with(plan);
-            let other = plan.stamp.mode != mode || plan.stamp.limits != first.stamp.limits;
+            let other = plan.stamp.mode != mode
+                || plan.stamp.limits != first.stamp.limits
+                || plan.stamp.channel != first.stamp.channel;
             let apart = count > 0 && (other || next.is_wide());
             if apart || next.passes() > free {
                 break;
@@ -805,6 +916,7 @@ impl GpuHeightmap {
         // The faces go in rising order, as in `Heightmap::stamp`. A smooth
         // pass reads the new levels of the faces before it.
         let window = *self.window.lock().expect("no thread stops with the lock");
+        let sides = self.bind().sides;
         let touched = cover.rects.iter().enumerate();
         let touched = touched.filter_map(|(face, rect)| Some((face, (*rect)?)));
         let touched: Vec<_> = touched.collect();
@@ -846,6 +958,10 @@ impl GpuHeightmap {
                 window_cell: window.map_or(1, |w| w.cell as u32),
                 origin: [rect.x0 as i32, rect.y0 as i32],
                 limits: packed(first.stamp.limits),
+                lines_side: sides[0],
+                window_bins: if window.is_some() { sides[1] } else { 0 },
+                texel: (FRAC_PI_2 / f64::from(self.face_size)) as f32,
+                channel: channel_values(first.stamp.channel),
                 ..bytemuck::Zeroable::zeroed()
             };
             // A stamp with no rectangle on this face is not in the list.
@@ -932,7 +1048,8 @@ impl GpuHeightmap {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &offsets);
+        let group = self.bind().group.clone();
+        pass.set_bind_group(0, &group, &offsets);
         pass.set_bind_group(1, state.pool.bind_group(), &[]);
         pass.set_scissor_rect(0, 0, size.width, size.height);
         pass.draw(0..3, 0..1);
@@ -1060,6 +1177,8 @@ impl GpuHeightmap {
             });
             Some(cells)
         });
+        self.write_lines(queue, 2, step.lines());
+        let erode_side = self.bind().sides[2];
         let touched = rects.iter().enumerate();
         let touched = touched.filter_map(|(face, rect)| Some((face, (*rect)?)));
         for (slot, (face, rect)) in (first_slot..).zip(touched) {
@@ -1100,6 +1219,9 @@ impl GpuHeightmap {
                 drop_rect: [cells.x0, cells.y0, cells.x1, cells.y1].map(|c| c as i32),
                 cells: self.drops.width() - 2,
                 limits: packed(step.limits()),
+                erode_side,
+                texel: (FRAC_PI_2 / f64::from(self.face_size)) as f32,
+                channel: channel_values(step.channel()),
                 ..bytemuck::Zeroable::zeroed()
             };
             let used = size_of::<Uniforms>() - GROUP_STAMPS * size_of::<FaceStamp>();
