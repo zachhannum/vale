@@ -12,6 +12,7 @@ pub use super::LayerRef;
 use super::atlas::AtlasTool;
 use super::point_form;
 use super::raster_form::{self, RasterForm};
+use super::select;
 use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::brush::BrushSettings;
@@ -548,6 +549,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     world_form::pad(&ctx, state, &mut controls, &rects);
     raster_form::pad(&ctx, state, &mut controls, &rects);
     point_form::pad(&ctx, state, &mut controls, &rects);
+    select::pad(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
         globe::paint_canvas(ui, state, rect, theme::CANVAS, true);
     }
@@ -781,7 +783,18 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     state.pad.modes = None;
                 }
                 let globe = &mut state.globe;
-                let active = !globe.brushing() && !globe.editing() && !globe.measuring();
+                let (name, active) = (select::TOOL, globe.selecting());
+                if widgets::tool_cell(ui, controls, name, name, Icon::Select, active, true)
+                    .clicked()
+                {
+                    globe.tool = Tool::Select;
+                    state.pad.modes = None;
+                }
+                let globe = &mut state.globe;
+                let active = !globe.brushing()
+                    && !globe.editing()
+                    && !globe.measuring()
+                    && !globe.selecting();
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()
                 {

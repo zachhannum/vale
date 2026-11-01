@@ -16,9 +16,9 @@ pub const TOUCH: f32 = 44.0;
 pub const ROW: f32 = TOUCH + 2.0 * PAD;
 /// The size of one cell of the tool strip.
 pub const CELL: (f32, f32) = (56.0, 52.0);
-/// The cells of the tool strip of the globe: Sculpt, Terrain, Draw, Move, and
-/// Measure.
-pub const TOOLS: usize = 5;
+/// The cells of the tool strip of the globe: Sculpt, Terrain, Draw, Select,
+/// Move, and Measure.
+pub const TOOLS: usize = 6;
 /// The number of cells of the card of the Measure tool.
 pub const MEASURE_CELLS: usize = 3;
 /// The height of one of the two sliders at the left edge.

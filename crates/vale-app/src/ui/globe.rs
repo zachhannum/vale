@@ -16,6 +16,7 @@ use crate::globe::brush::{FIXED_FLOW, Sample, pen_flow, slerp};
 use crate::globe::math::V3;
 use crate::globe::math::{angle, dir_to_lonlat, lonlat_to_dir};
 use crate::globe::nav::{Nav, Painting, Tap, on_canvas};
+use crate::globe::select::Pointer;
 use crate::globe::snap::Highlight;
 use crate::globe::symbol::{GlobeScatter, SymbolMesh, append_missing, view_places};
 use crate::globe::vector;
@@ -113,6 +114,9 @@ fn brush_input(
         globe.input.pos = None;
         if globe.measuring() && !globe.importing() {
             measure_input(ui, rect, resp, globe, &queue, from_queue);
+        }
+        if globe.selecting() && !globe.importing() {
+            return select_input(ui, rect, resp, globe, &queue, from_queue);
         }
         return Painting::default();
     }
@@ -277,6 +281,87 @@ fn measure_input(
     let down = down || ui.input(|i| i.pointer.any_down());
     let hover = globe.pen.hover.filter(|pos| on_canvas(ui, rect, *pos));
     globe.input.pos = resp.hover_pos().or(hover).filter(|_| !down);
+}
+
+/// Reads the pen, the touches, and the mouse for the Select tool. A pen
+/// and the mouse belong to the tool, and fingers still move the view.
+fn select_input(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    resp: &egui::Response,
+    globe: &mut Globe,
+    queue: &[(egui::Pos2, PenEvent)],
+    from_queue: bool,
+) -> Painting {
+    let on = |pos| on_canvas(ui, rect, pos);
+    let press = &mut globe.select_press;
+    for (pos, event) in queue {
+        match event.phase {
+            PenPhase::Down if on(*pos) => press.down(QUEUE_PEN, *pos, Pointer::Pen),
+            PenPhase::Move => press.moved(QUEUE_PEN, *pos),
+            PenPhase::Up => press.up(QUEUE_PEN, *pos),
+            PenPhase::Cancel => press.cancel(QUEUE_PEN),
+            _ => {}
+        }
+    }
+    let mut touched = false;
+    let events = ui.input(|i| i.events.clone());
+    for event in &events {
+        let egui::Event::Touch {
+            id,
+            phase,
+            pos,
+            force,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        touched = true;
+        if from_queue && force.is_some() {
+            continue;
+        }
+        let pointer = if force.is_some() {
+            Pointer::Pen
+        } else {
+            Pointer::Finger
+        };
+        match phase {
+            egui::TouchPhase::Start if on(*pos) => press.down(id.0, *pos, pointer),
+            egui::TouchPhase::Move => press.moved(id.0, *pos),
+            egui::TouchPhase::End => press.up(id.0, *pos),
+            egui::TouchPhase::Cancel => press.cancel(id.0),
+            egui::TouchPhase::Start => {}
+        }
+    }
+    // The first touch is also the egui pointer. A drag with Shift turns the
+    // view.
+    if !touched && !globe.nav.touching() {
+        let (pos, pressed, released, shift) = ui.input(|i| {
+            let p = &i.pointer;
+            let (pressed, released) = (p.primary_pressed(), p.primary_released());
+            (p.latest_pos(), pressed, released, i.modifiers.shift)
+        });
+        match pos {
+            Some(pos) => {
+                if pressed && !shift && resp.contains_pointer() {
+                    press.down(MOUSE, pos, Pointer::Mouse);
+                }
+                press.moved(MOUSE, pos);
+                if released {
+                    press.up(MOUSE, pos);
+                }
+            }
+            None if released => press.cancel(MOUSE),
+            None => {}
+        }
+    }
+    let hover = globe.pen.hover.filter(|pos| on(*pos));
+    globe.input.pos = resp.hover_pos().or(hover);
+    Painting {
+        pen: true,
+        mouse: globe.select_press.mouse(),
+    }
 }
 
 /// Feeds the touches and the mouse of this frame to a press of the Measure
@@ -826,7 +911,9 @@ pub(super) fn canvas_input(
     state.poll_line();
     state.poll_point();
     state.poll_measure();
+    state.poll_select();
     measure_keys(ui, state);
+    super::select::keys(ui, state);
     match history_input(ui, &mut state.globe.nav) {
         Some(true) => state.redo(),
         Some(false) => state.undo(),
@@ -954,7 +1041,8 @@ pub(super) fn paint_canvas(
         }
         painter.line(line, stroke);
     }
-    if globe.nav.active() || more {
+    super::select::paint(&painter, state);
+    if state.globe.nav.active() || more {
         ui.ctx().request_repaint();
     }
 }

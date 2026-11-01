@@ -7,7 +7,9 @@ use vale_store::{GeometryKind, RasterId, World};
 use super::pad::atlas::{LAYOUT_GRID, NEXT_PAGE, PREVIOUS_PAGE, SNAP_TO_LAYOUT, page_title};
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
-use super::{Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, atlas, elevation, pad};
+use super::{
+    Action, AppState, ExportFormat, LayerRef, SaveMark, Workspace, atlas, elevation, pad, select,
+};
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
@@ -92,7 +94,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 // With no layer for the tool, the tool is Navigate.
                 let globe = &mut state.globe;
                 let (paintable, lineable) = (globe.paintable, globe.lineable);
-                let navigate = !globe.brushing() && !globe.editing() && !globe.measuring();
+                let navigate = !globe.brushing()
+                    && !globe.editing()
+                    && !globe.measuring()
+                    && !globe.selecting();
                 if ui.selectable_label(navigate, "Navigate").clicked() {
                     globe.tool = Tool::Navigate;
                 }
@@ -113,6 +118,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 let able = lineable || globe.fillable || globe.pointable;
                 if ui.add_enabled(able, draw).clicked() {
                     globe.tool = tool;
+                }
+                if ui
+                    .selectable_label(globe.selecting(), select::TOOL)
+                    .clicked()
+                {
+                    globe.tool = Tool::Select;
                 }
                 if ui
                     .selectable_label(globe.measuring(), MEASURE_TOOL)

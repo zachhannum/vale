@@ -8,6 +8,7 @@ use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
+use vale_app::globe::select::FeatureRef;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{StackItem, Tool, WorldView};
 use vale_app::headless;
@@ -26,6 +27,7 @@ use vale_app::ui::pad::{
     readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
+use vale_app::ui::select;
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
 use vale_app::ui::{Action, AppState, FontTarget, Layout, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
@@ -1886,17 +1888,17 @@ fn strip(h: &Pad) -> Vec<String> {
 }
 
 #[test]
-fn the_tool_strip_has_five_cells_on_each_screen() {
+fn the_tool_strip_has_six_cells_on_each_screen() {
     for (size, safe) in measure_screens() {
         let what = format!("{size:?}");
         let mut h = safe_pad(size, safe);
         let rects = h.state().pad.rects.unwrap();
-        // The landscape iPhone is too short for five cells, so the strip
+        // The landscape iPhone is too short for six cells, so the strip
         // scrolls.
         let full = size.1 > 400.0;
         if full {
             assert_eq!(rects.tool_cells, TOOLS, "{what}");
-            assert_eq!(rects.tools.height(), 5.0 * 52.0 + 8.0, "{what}");
+            assert_eq!(rects.tools.height(), 6.0 * 52.0 + 8.0, "{what}");
         } else {
             assert_eq!(rects.tool_cells, 3, "{what}");
         }
@@ -1915,7 +1917,7 @@ fn the_tool_strip_has_five_cells_on_each_screen() {
             }
         };
         // With a raster layer, the Draw cell is off.
-        shows(&h, &[SCULPT, TERRAIN, "Pan", MEASURE]);
+        shows(&h, &[SCULPT, TERRAIN, select::TOOL, "Pan", MEASURE]);
         assert!(disabled(&h, DRAW), "{what}");
         check_controls(&h, &what);
         check_safe(&h, size, safe, &what);
@@ -1923,7 +1925,7 @@ fn the_tool_strip_has_five_cells_on_each_screen() {
         let rivers = vector(&h, "Rivers");
         h.state_mut().select(Some(LayerRef::Vector(rivers)));
         h.run_steps(2);
-        shows(&h, &[LINE, "Pan", MEASURE]);
+        shows(&h, &[LINE, select::TOOL, "Pan", MEASURE]);
         assert!(disabled(&h, SCULPT) && disabled(&h, TERRAIN), "{what}");
         check_controls(&h, &format!("{what} with a line layer"));
         check_safe(&h, size, safe, &what);
@@ -1937,11 +1939,11 @@ fn the_tool_strip_has_five_cells_on_each_screen() {
 
 #[test]
 fn the_small_ipads_show_the_full_sliders_with_a_raster_layer() {
-    // The smallest iPad in landscape has a little less room for the sliders.
+    // The small iPads in landscape have less room for the sliders.
     for (size, slider) in [
-        ((1133.0, 744.0), 136.0),
+        ((1133.0, 744.0), 110.0),
         ((744.0, 1133.0), 140.0),
-        ((1024.0, 768.0), 140.0),
+        ((1024.0, 768.0), 122.0),
         ((768.0, 1024.0), 140.0),
     ] {
         let what = format!("{size:?}");
@@ -8184,4 +8186,201 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         tap(&mut h, "Select");
         assert_eq!(h.state().atlas.tool, AtlasTool::Select, "{what}");
     }
+}
+
+/// The point, the line, and the polygon of `select_pad`.
+struct Picks {
+    point: FeatureRef,
+    line: FeatureRef,
+    polygon: FeatureRef,
+}
+
+/// A world with a project file, one new layer of each geometry kind with
+/// one feature each, and the Select tool. The other vector layers are
+/// hidden. The point is at the middle of the canvas, the line is above it,
+/// and the polygon is below it.
+fn select_pad(view: WorldView, dir: &std::path::Path) -> (Pad, Picks) {
+    use vale_store::{Feature, Geometry};
+    let mut h = saved_pad(BOARDS[0], dir);
+    let state = h.state_mut();
+    let shown: Vec<_> = state.doc.project.layers().iter().map(|l| l.id).collect();
+    for id in shown {
+        state.doc.project.set_layer_visible(id, false);
+    }
+    let mut add = |kind, geometry| {
+        let id = state.doc.add_layer(kind);
+        let feature = Feature::new(geometry, Default::default());
+        let uuid = feature.uuid();
+        assert!(state.doc.project.add_feature(id, feature));
+        FeatureRef { layer: id, uuid }
+    };
+    let point = add(GeometryKind::Point, Geometry::Points(vec![[0.0, 0.0]]));
+    let line = add(
+        GeometryKind::Line,
+        Geometry::Lines(vec![vec![[-8.0, 10.0], [8.0, 10.0]]]),
+    );
+    let square = vec![[-10.0, -25.0], [10.0, -25.0], [10.0, -12.0], [-10.0, -12.0]];
+    let polygon = add(
+        GeometryKind::Polygon,
+        Geometry::Polygons(vec![vec![square]]),
+    );
+    state.globe.world_view = view;
+    state.save_waiting().unwrap();
+    h.run_steps(2);
+    tap(&mut h, select::TOOL);
+    assert_eq!(h.state().globe.tool, Tool::Select);
+    let center = h.state().globe.rect.center();
+    let at = screen_at(&h, 0.0, 0.0);
+    h.state_mut().globe.move_place(at, center);
+    h.run_steps(2);
+    let picks = Picks {
+        point,
+        line,
+        polygon,
+    };
+    (h, picks)
+}
+
+/// The screen position of a place.
+fn screen_at(h: &Pad, lon: f64, lat: f64) -> Pos2 {
+    let dir = vale_app::globe::math::lonlat_to_dir(lon, lat);
+    let pos = h.state().globe.project(dir);
+    pos.unwrap_or_else(|| panic!("{lon}, {lat} does not show"))
+}
+
+fn finger_tap_at(h: &mut Pad, pos: Pos2) {
+    touch(h, egui::TouchPhase::Start, pos, None);
+    h.step();
+    touch(h, egui::TouchPhase::End, pos, None);
+    h.run_steps(3);
+}
+
+fn selection(h: &Pad) -> Vec<FeatureRef> {
+    h.state().feature_selection.clone()
+}
+
+#[test]
+fn a_finger_tap_selects_a_small_point_a_line_and_a_polygon_in_each_view() {
+    for view in WORLD_VIEWS {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, picks) = select_pad(view, dir.path());
+        let point = screen_at(&h, 0.0, 0.0);
+        // A finger reaches farther than a pen.
+        let off = point + vec2(18.0, 0.0);
+        pen_tap_at(&mut h, off);
+        assert_eq!(selection(&h), [], "{view:?}");
+        finger_tap_at(&mut h, off);
+        assert_eq!(selection(&h), [picks.point], "{view:?}");
+        let line = screen_at(&h, 2.0, 10.0) + vec2(0.0, 10.0);
+        finger_tap_at(&mut h, line);
+        assert_eq!(selection(&h), [picks.line], "{view:?}");
+        let inside = screen_at(&h, -2.0, -18.0);
+        finger_tap_at(&mut h, inside);
+        assert_eq!(selection(&h), [picks.polygon], "{view:?}");
+        // A tap on empty ground clears the selection.
+        let empty = screen_at(&h, 30.0, 0.0);
+        finger_tap_at(&mut h, empty);
+        assert_eq!(selection(&h), [], "{view:?}");
+    }
+}
+
+#[test]
+fn a_pen_drag_makes_a_box_and_a_finger_drag_moves_the_view() {
+    for view in WORLD_VIEWS {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut h, picks) = select_pad(view, dir.path());
+        // The box crosses the line between its vertices and holds the point.
+        let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
+        drag(&mut h, from, to, Some(0.5));
+        let mut found = selection(&h);
+        found.sort_by_key(|f| f.layer);
+        assert_eq!(found, [picks.point, picks.line], "{view:?}");
+        let before = screen_at(&h, 0.0, 0.0);
+        drag(&mut h, from, from + vec2(80.0, 0.0), None);
+        assert_ne!(screen_at(&h, 0.0, 0.0), before, "{view:?}");
+        assert_eq!(selection(&h).len(), 2, "{view:?}");
+    }
+}
+
+#[test]
+fn a_pen_drag_on_a_selected_point_moves_it_in_one_undo_step() {
+    use vale_store::Geometry;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let point = screen_at(&h, 0.0, 0.0);
+    finger_tap_at(&mut h, point);
+    assert_eq!(selection(&h), [picks.point]);
+    let saved = saves(&h);
+    let to = point + vec2(60.0, 30.0);
+    drag(&mut h, point, to, Some(0.5));
+    assert_eq!(saves(&h), saved + 1);
+    let features = line_features(&h, picks.point.layer);
+    assert_eq!(features.len(), 1);
+    assert_eq!(features[0].uuid(), picks.point.uuid);
+    let Geometry::Points(points) = &features[0].geometry else {
+        panic!("not a point");
+    };
+    let p = points[0];
+    let moved = screen_at(&h, p[0], p[1]);
+    assert!(moved.distance(to) < 0.5, "{moved:?} {to:?}");
+    // The move made no box, so the selection stays.
+    assert_eq!(selection(&h), [picks.point]);
+    h.state_mut().undo();
+    h.run_steps(2);
+    let features = line_features(&h, picks.point.layer);
+    assert_eq!(features[0].geometry, Geometry::Points(vec![[0.0, 0.0]]));
+}
+
+#[test]
+fn the_delete_button_deletes_the_selection_of_two_layers_in_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
+    drag(&mut h, from, to, Some(0.5));
+    assert_eq!(selection(&h).len(), 2);
+    let saved = saves(&h);
+    tap(&mut h, select::DELETE);
+    assert_eq!(saves(&h), saved + 1);
+    assert!(line_features(&h, picks.point.layer).is_empty());
+    assert!(line_features(&h, picks.line.layer).is_empty());
+    assert_eq!(line_features(&h, picks.polygon.layer).len(), 1);
+    assert_eq!(selection(&h), []);
+    assert!(control(&h, select::DELETE).is_none());
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(line_features(&h, picks.point.layer).len(), 1);
+    assert_eq!(line_features(&h, picks.line.layer).len(), 1);
+}
+
+#[test]
+fn the_selection_card_edits_the_attributes_of_the_selected_feature() {
+    use vale_store::Value;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    let point = screen_at(&h, 0.0, 0.0);
+    finger_tap_at(&mut h, point);
+    // A new point layer has a name field.
+    let form = h.state().selection_form.as_ref().expect("no form");
+    assert_eq!(form.feature, picks.point);
+    assert!(control(&h, select::DELETE).is_some());
+    let saved = saves(&h);
+    tap(&mut h, "name");
+    h.event(egui::Event::Text("Avalon".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(saves(&h), saved + 1);
+    let name = |h: &Pad| line_features(h, picks.point.layer)[0].attributes["name"].clone();
+    assert_eq!(name(&h), Value::Text("Avalon".into()));
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(name(&h), Value::Null);
+    let form = h.state().selection_form.as_ref().unwrap();
+    assert_eq!(form.fields[0].text, "");
+    // A selection of two features shows the count and no fields.
+    let (from, to) = (screen_at(&h, -3.0, 14.0), screen_at(&h, 3.0, -3.0));
+    drag(&mut h, from, to, Some(0.5));
+    assert!(h.state().selection_form.is_none());
+    assert!(control(&h, "name").is_none());
+    assert!(control(&h, select::DELETE).is_some());
 }
