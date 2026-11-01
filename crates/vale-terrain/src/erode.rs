@@ -2444,6 +2444,7 @@ mod tests {
             mode: Mode::Erode,
             level: 0,
             strength: 1000.0,
+            lower: 0.0,
             talus: 0.0,
             scale: 0.1,
             seed: 1,

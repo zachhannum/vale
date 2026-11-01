@@ -36,6 +36,8 @@ struct Stamp {
     relief: f32,
     relief_span: f32,
     octaves: u32,
+    // The largest drop of the noise mode. The strength is its largest rise.
+    lower: f32,
 }
 
 // The same number as `GROUP_STAMPS` in `gpu.rs`.
@@ -2096,7 +2098,9 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
                 let p = normalize(texel_dir(group.face, at));
                 let height = clamp((old - f32(group.sea)) / stamp.relief_span, 0.0, 1.0);
                 let gain = 1.0 - stamp.relief + stamp.relief * height;
-                change = amount * stamp.strength * fractal(p, stamp) * gain;
+                let value = fractal(p, stamp);
+                let size = select(stamp.lower, stamp.strength, value > 0.0);
+                change = amount * size * value * gain;
             }
             default {
                 change = (stamp.level - old) * min(amount, 1.0);

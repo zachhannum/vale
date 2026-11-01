@@ -75,8 +75,9 @@ pub enum Mode {
     /// level under the brush.
     Push,
     /// Adds fractal noise of the direction of each texel, times the effect
-    /// of the brush and the strength. `Stamp::ridged` and `Stamp::relief`
-    /// set its shape.
+    /// of the brush. The noise rises by `Stamp::strength` at most and drops
+    /// by `Stamp::lower` at most. `Stamp::ridged` and `Stamp::relief` set its
+    /// shape.
     Noise,
     /// The mode of the basin brush. A stamp of this mode changes nothing.
     /// `Heightmap::basin` makes the change.
@@ -147,9 +148,12 @@ pub struct Stamp {
     pub mode: Mode,
     /// The target of the flatten mode.
     pub level: u16,
-    /// The largest change of the raise, lower, and noise modes, in 16-bit
-    /// steps. In the warp mode, the largest offset as an angle, in radians.
+    /// The largest change of the raise and lower modes, in 16-bit steps. In
+    /// the noise mode, the largest rise. In the warp mode, the largest offset
+    /// as an angle, in radians.
     pub strength: f64,
+    /// The largest drop of the noise mode, in 16-bit steps.
+    pub lower: f64,
     /// The steepest slope that the weather mode leaves, in 16-bit steps for
     /// each texel step. `talus_levels` gives it for an angle.
     pub talus: f64,
@@ -1152,7 +1156,12 @@ impl Heightmap {
                                 let height = ((old - sea) / relief_span).clamp(0.0, 1.0);
                                 let relief = stamp.relief.clamp(0.0, 1.0);
                                 let gain = 1.0 - relief + relief * height;
-                                old + amount * stamp.strength * value * gain
+                                let size = if value > 0.0 {
+                                    stamp.strength
+                                } else {
+                                    stamp.lower
+                                };
+                                old + amount * size * value * gain
                             }
                             Mode::Carve => {
                                 let rate = amount * stamp.strength;
@@ -1747,6 +1756,7 @@ mod tests {
             mode: Mode::Raise,
             level: 0,
             strength: 1000.0,
+            lower: 1000.0,
             talus: 0.0,
             scale: 0.1,
             seed: 1,
@@ -4304,6 +4314,7 @@ mod tests {
             mode: Mode::Noise,
             hardness: 0.5,
             strength: 8000.0,
+            lower: 8000.0,
             seed: 7,
             ..raise(center, radius)
         }
@@ -4343,6 +4354,65 @@ mod tests {
                 }
                 assert!(changed > 1000, "{place}: {changed}");
             }
+        }
+    }
+
+    /// The number of texels that a stamp raises and the number that it
+    /// lowers, on ground 1000 meters above sea level.
+    fn rises_and_drops(stamp: Stamp) -> (usize, usize) {
+        let mut map = ground_at(256, 1000.0);
+        let old = map.get(0, 0, 0);
+        map.stamp(&stamp);
+        let levels = all_levels(&map);
+        let rises = levels.iter().filter(|&&l| l > old).count();
+        let drops = levels.iter().filter(|&&l| l < old).count();
+        (rises, drops)
+    }
+
+    #[test]
+    fn noise_with_no_drop_only_raises() {
+        let stamp = Stamp {
+            lower: 0.0,
+            ..noise_stamp(lonlat_to_dir(10.0, 5.0), 0.2)
+        };
+        let (rises, drops) = rises_and_drops(stamp);
+        assert!(rises > 500, "{rises}");
+        assert_eq!(drops, 0);
+    }
+
+    #[test]
+    fn noise_with_no_rise_only_lowers() {
+        let stamp = Stamp {
+            strength: 0.0,
+            lower: 8000.0,
+            ..noise_stamp(lonlat_to_dir(10.0, 5.0), 0.2)
+        };
+        let (rises, drops) = rises_and_drops(stamp);
+        assert_eq!(rises, 0);
+        assert!(drops > 500, "{drops}");
+    }
+
+    #[test]
+    fn noise_scales_the_rise_and_the_drop_apart() {
+        let n = 256;
+        let center = lonlat_to_dir(10.0, 5.0);
+        let mut map = ground_at(n, 1000.0);
+        let old = f64::from(map.get(0, 0, 0));
+        let stamp = Stamp {
+            lower: 2000.0,
+            ..noise_stamp(center, 0.2)
+        };
+        let plan = map.stamp_plan(&stamp);
+        let octaves = noise_octaves(plan.stamp.scale, n);
+        map.stamp(&stamp);
+        for (face, x, y) in plan_texels(&plan) {
+            let falloff = Falloff::new(face, &plan.stamp);
+            let amount = falloff.amount(map.flat[x], map.flat[y]).unwrap_or(0.0);
+            let value = fractal(map.texel_dir(face, x, y), &plan.stamp, octaves);
+            let size = if value > 0.0 { 8000.0 } else { 2000.0 };
+            let expected = (old + amount * size * value).round();
+            let level = f64::from(map.get(face, x as i64, y as i64));
+            assert_eq!(level, expected, "{face} {x} {y}");
         }
     }
 
