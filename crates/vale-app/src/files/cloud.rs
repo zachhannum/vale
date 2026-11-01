@@ -187,6 +187,10 @@ impl Files for CloudFiles {
         }
         result
     }
+
+    fn for_thread(&self) -> Option<Box<dyn Files + Send>> {
+        Some(Box::new(CloudFiles))
+    }
 }
 
 /// The Documents folder of the iCloud container. `None`: the device has no

@@ -139,12 +139,22 @@ pub trait Files {
     fn with_access(&self, _path: &Path, f: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
         f()
     }
+
+    /// The same file services for another thread. `None`: only this thread
+    /// can use them.
+    fn for_thread(&self) -> Option<Box<dyn Files + Send>> {
+        None
+    }
 }
 
 /// The files of a plain folder.
 pub struct PlainFiles;
 
-impl Files for PlainFiles {}
+impl Files for PlainFiles {
+    fn for_thread(&self) -> Option<Box<dyn Files + Send>> {
+        Some(Box::new(PlainFiles))
+    }
+}
 
 /// What the system tells the app between two frames.
 #[derive(Clone, Default)]

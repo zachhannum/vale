@@ -376,6 +376,37 @@ const LOAD_POLL: Duration = Duration::from_millis(30);
 /// The time that a loop of the UI thread reads tiles in one frame.
 const LOAD_TIME: Duration = Duration::from_millis(6);
 
+/// The open of a project file on another thread.
+struct Opening {
+    path: PathBuf,
+    /// The view of the last run, for the project of the last run.
+    view: Option<resume::View>,
+    done: mpsc::Receiver<Result<Opened, StoreError>>,
+}
+
+/// A project file that opened, with the heightmaps of `open_rasters`.
+struct Opened {
+    session: Session,
+    doc: Document,
+    maps: Vec<(RasterId, Heightmap)>,
+}
+
+/// Opens a project file into `doc` and reads the heightmap of the picture
+/// of each raster layer. `work_dir`: the folder of the working copy.
+fn open_project(
+    path: &Path,
+    work_dir: Option<&Path>,
+    files: &dyn Files,
+    mut doc: Document,
+) -> Result<Opened, StoreError> {
+    let session = match work_dir {
+        Some(dir) => Session::open_copy(path, dir, files, &mut doc)?,
+        None => Session::open(path, &mut doc)?,
+    };
+    let maps = session.load_display_maps()?;
+    Ok(Opened { session, doc, maps })
+}
+
 pub struct AppState {
     pub screen: Screen,
     pub browser: browser::BrowserState,
@@ -471,6 +502,8 @@ pub struct AppState {
     pub system: SystemEvents,
     /// The whole heightmap that comes from the project file for the brush.
     loader: Option<Loader>,
+    /// The project file that a thread opens.
+    opening: Option<Opening>,
     /// The edit count at the last save.
     saved_edits: u64,
     /// The number of edits of the line, polygon, and point tools.
@@ -554,6 +587,7 @@ impl AppState {
             files: Box::new(PlainFiles),
             system: SystemEvents::default(),
             loader: None,
+            opening: None,
             saved_edits: 0,
             line_edits: 0,
             history: 0,
@@ -2009,22 +2043,23 @@ impl AppState {
         let Some(path) = resume.project.filter(|path| path.is_file()) else {
             return;
         };
-        self.open_world(&path);
-        let open = self.session.as_ref().is_some_and(|s| s.path() == path);
-        if let (true, Some(view)) = (open, resume.view) {
-            self.workspace = view.workspace;
-            let globe = &mut self.globe;
-            globe.world_view = view.world_view;
-            globe.view = view.globe;
-            globe.flat.set_spec(view.flat_spec);
-            globe.flat.center = view.flat_center;
-            globe.flat.zoom = view.flat_zoom;
-            if let Some(page) = view
-                .page
-                .filter(|&p| self.doc.project.atlas.page(p).is_some())
-            {
-                self.atlas.page = page;
-            }
+        self.open_world_at(&path, resume.view);
+    }
+
+    /// Shows the open project at a view of an earlier run.
+    fn show_view(&mut self, view: resume::View) {
+        self.workspace = view.workspace;
+        let globe = &mut self.globe;
+        globe.world_view = view.world_view;
+        globe.view = view.globe;
+        globe.flat.set_spec(view.flat_spec);
+        globe.flat.center = view.flat_center;
+        globe.flat.zoom = view.flat_zoom;
+        if let Some(page) = view
+            .page
+            .filter(|&p| self.doc.project.atlas.page(p).is_some())
+        {
+            self.atlas.page = page;
         }
     }
 
@@ -2319,18 +2354,67 @@ impl AppState {
     /// each change that waits. If the file does not open, the old world
     /// stays open.
     fn open_world(&mut self, path: &Path) {
+        self.open_world_at(path, None);
+    }
+
+    /// Opens the world of a project file, at a view of an earlier run. In a
+    /// window, a thread reads the file, and `poll_open` shows the world.
+    fn open_world_at(&mut self, path: &Path, view: Option<resume::View>) {
         let open = self.session.as_ref().is_some_and(|s| s.path() == path);
         if open {
             self.screen = Screen::Editor;
         }
-        if open || !self.save_now() {
+        if open || self.opening.is_some() || !self.save_now() {
             return;
         }
-        let mut doc = self.doc.clone();
-        let opened = self
-            .open_session(path, Some(&mut doc))
-            .and_then(|session| session.load_display_maps().map(|maps| (session, maps)));
-        let (session, maps) = match opened {
+        let work_dir = self.projects.work_dir(path);
+        let doc = self.doc.clone();
+        let files = self.files.for_thread().filter(|_| !self.headless);
+        let Some(files) = files else {
+            let opened = open_project(path, work_dir.as_deref(), self.files.as_ref(), doc);
+            self.end_open(opened, view);
+            return;
+        };
+        let (send, done) = mpsc::sync_channel(1);
+        let at = path.to_path_buf();
+        std::thread::spawn(move || {
+            let opened = open_project(&at, work_dir.as_deref(), files.as_ref(), doc);
+            let _ = send.send(opened);
+        });
+        self.opening = Some(Opening {
+            path: path.to_path_buf(),
+            view,
+            done,
+        });
+    }
+
+    /// Call this in each frame. It shows the world of a project file that a
+    /// thread opened. Returns `true` while the thread reads the file.
+    pub fn poll_open(&mut self) -> bool {
+        let Some(opening) = &self.opening else {
+            return false;
+        };
+        let opened = match opening.done.try_recv() {
+            Ok(opened) => opened,
+            Err(mpsc::TryRecvError::Empty) => return true,
+            Err(mpsc::TryRecvError::Disconnected) => Err(StoreError::Corrupt(
+                "the open of the file stopped".to_string(),
+            )),
+        };
+        let view = self.opening.take().and_then(|opening| opening.view);
+        self.end_open(opened, view);
+        false
+    }
+
+    /// The name of the project file that a thread opens.
+    pub fn opening(&self) -> Option<String> {
+        let stem = self.opening.as_ref()?.path.file_stem()?;
+        Some(stem.to_string_lossy().into_owned())
+    }
+
+    /// Shows the world of a project file that opened, or the error.
+    fn end_open(&mut self, opened: Result<Opened, StoreError>, view: Option<resume::View>) {
+        let Opened { session, doc, maps } = match opened {
             Ok(opened) => opened,
             Err(e) => {
                 self.status = format!("Could not open world: {e}");
@@ -2352,6 +2436,9 @@ impl AppState {
         self.session = Some(session);
         self.start_world();
         self.show_world();
+        if let Some(view) = view {
+            self.show_view(view);
+        }
     }
 
     /// The number of strokes of the brush and of edits of the vector tools.
@@ -3112,6 +3199,48 @@ impl AppState {
     }
 }
 
+/// Draws the screen that shows while a thread opens a project file.
+fn draw_opening(ui: &mut egui::Ui, state: &AppState) {
+    let name = state.opening().unwrap_or_default();
+    let text = format!("Opening {name}…");
+    // The test harness puts a margin around the UI. See `browser::draw`.
+    let screen = ui.ctx().viewport_rect();
+    ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
+        ui.set_clip_rect(screen);
+        let pad = state.layout == Layout::Pad;
+        let (fill, color, font) = if pad {
+            (pad::theme::CANVAS, pad::theme::MUTE, pad::theme::body())
+        } else {
+            let style = ui.style();
+            (
+                style.visuals.panel_fill,
+                style.visuals.weak_text_color(),
+                egui::TextStyle::Body.resolve(style),
+            )
+        };
+        ui.painter().rect_filled(screen, 0.0, fill);
+        let size = if pad { 32.0 } else { 24.0 };
+        let gap = if pad { 16.0 } else { 12.0 };
+        let center = screen.center();
+        let spinner = egui::Rect::from_center_size(
+            center - egui::vec2(0.0, (size + gap) / 2.0),
+            egui::vec2(size, size),
+        );
+        let spinner_color = if pad { pad::theme::ACCENT } else { color };
+        ui.put(
+            spinner,
+            egui::Spinner::new().size(size).color(spinner_color),
+        );
+        let label =
+            egui::Label::new(egui::RichText::new(text).font(font).color(color)).selectable(false);
+        let below = egui::Rect::from_center_size(
+            center + egui::vec2(0.0, size / 2.0 + gap / 2.0),
+            egui::vec2(screen.width(), size),
+        );
+        ui.put(below, label);
+    });
+}
+
 /// Draws the whole UI.
 pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.globe.stats.tick(std::time::Instant::now());
@@ -3134,6 +3263,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         ui.ctx().request_repaint();
     }
     state.pump_images(state.headless);
+    if state.poll_open() {
+        draw_opening(ui, state);
+        ui.ctx().request_repaint_after(LOAD_POLL);
+        state.frames += 1;
+        return;
+    }
     if state.screen == Screen::Browser {
         if state.poll_downloads(Instant::now()) {
             ui.ctx().request_repaint_after(DOWNLOAD_POLL);
