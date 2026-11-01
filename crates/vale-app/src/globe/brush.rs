@@ -5,8 +5,9 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    ELEV_MAX, ELEV_MIN, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS, Mode, RangeSpec,
-    Ridge, Stamp, StampPlan, meters_to_level, talus_levels,
+    CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape, ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM,
+    FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS, Mode, RangeSpec, Ridge,
+    Stamp, StampPlan, meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -44,6 +45,12 @@ pub const RIDGE_SEGMENT_KM: std::ops::RangeInclusive<f64> = 100.0..=1500.0;
 pub const RIDGE_OFFSET_KM: std::ops::RangeInclusive<f64> = 0.0..=500.0;
 /// The limits of the ridge spacing of the range mode, in kilometers.
 pub const RANGE_SPACING_KM: std::ops::RangeInclusive<f64> = 5.0..=300.0;
+/// The limits of the channel width setting, in kilometers.
+pub const CHANNEL_KM: std::ops::RangeInclusive<f64> = CHANNEL_WIDTHS_KM.0..=CHANNEL_WIDTHS_KM.1;
+/// The limits of the floodplain setting, in kilometers.
+pub const FLOODPLAIN_WIDTH_KM: std::ops::RangeInclusive<f64> = FLOODPLAINS_KM.0..=FLOODPLAINS_KM.1;
+/// The hover text of the channel width setting.
+pub const CHANNEL_HELP: &str = "Width of a river that drains 1,000,000 km².";
 /// The part that the erosion setting of 1 adds to the rise of an uplift
 /// stamp. With it, an uplift stroke gives a range of about the height of a
 /// raise stroke at each erosion setting.
@@ -107,6 +114,11 @@ pub struct BrushSettings {
     /// The mean distance between two ridges of the range mode, in
     /// kilometers.
     pub range_spacing_km: f64,
+    /// The width of the channel of a river that drains
+    /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
+    pub channel_km: f64,
+    /// The full width of the floodplain of the carve mode, in kilometers.
+    pub floodplain_km: f64,
     /// The brush does not move ground across the floor.
     pub floor_on: bool,
     /// The value of the floor, in the unit of the layer. For a height, it
@@ -144,6 +156,8 @@ impl Default for BrushSettings {
             ridge_spread_mm: 25.0,
             ridge_magma: 0.0,
             range_spacing_km: 30.0,
+            channel_km: CHANNEL_WIDTH_KM,
+            floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
             floor_m: 0.0,
             ceiling_on: false,
@@ -219,6 +233,12 @@ impl BrushSettings {
             seed,
             limits: self.limits(),
         }
+    }
+
+    /// The channels of the carve mode and of the erode mode on a world with
+    /// a radius of `world_km`.
+    pub fn channel_shape(&self, world_km: f64) -> ChannelShape {
+        ChannelShape::new(self.channel_km, self.floodplain_km, world_km)
     }
 
     /// The settings of a range stroke with this brush radius, in radians.
@@ -409,8 +429,8 @@ impl Tip<'_> {
                     Mode::Uplift => 1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0),
                     _ => 1.0,
                 },
-            // `set_world` sets the slope, the warp strength, the scale, and the
-            // seed, which follow the world.
+            // `set_world` sets the slope, the warp strength, the scale, the
+            // seed, and the channel, which follow the world.
             talus: 0.0,
             scale: 0.0,
             seed: 0,
@@ -418,15 +438,15 @@ impl Tip<'_> {
             ridged: self.brush.noise_ridged,
             invert: self.brush.noise_inverted,
             relief: self.brush.noise_relief,
-            channel: vale_terrain::ChannelShape::default(),
+            channel: ChannelShape::default(),
             limits: self.brush.limits(),
         }
     }
 }
 
 /// Sets the parts of a stamp that follow the world: the slope limit, the
-/// size of the noise as an angle, and in the warp mode the offset as an
-/// angle.
+/// size of the noise as an angle, the channel shape, and in the warp mode
+/// the offset as an angle.
 /// `world_km` is the radius of the world.
 pub fn set_world(
     stamp: &mut Stamp,
@@ -438,6 +458,7 @@ pub fn set_world(
     stamp.talus = talus_levels(brush.talus_deg, face_size, world_km * 1000.0);
     stamp.scale = brush.scale_km / world_km;
     stamp.seed = seed;
+    stamp.channel = brush.channel_shape(world_km);
     if stamp.mode == Mode::Warp {
         stamp.strength = brush.warp_km * STAMP_SPACING / world_km;
     }

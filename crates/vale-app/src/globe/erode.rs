@@ -7,8 +7,8 @@ use std::sync::{Arc, mpsc};
 use std::f64::consts::FRAC_PI_2;
 
 use vale_terrain::{
-    CoarseHeights, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, Limits, OuterFlow, Rain,
-    RangeLine, RangeSpec, WINDOW_CELLS, Window, WindowHeights, erode_range,
+    ChannelShape, CoarseHeights, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, Limits,
+    OuterFlow, Rain, RangeLine, RangeSpec, WINDOW_CELLS, Window, WindowHeights, erode_range,
 };
 
 use super::math::V3;
@@ -177,9 +177,16 @@ enum Job {
     Begin(u64, Ground),
     /// The stroke goes on with this ground.
     Move(u64, Ground),
-    /// The brushes, the rate, the lift, the limits, and the rain of one
-    /// step.
-    Step(u64, Vec<ErodeBrush>, f64, Lift, Limits, Rain),
+    /// The brushes, the rate, the lift, and the settings of one step.
+    Step(u64, Vec<ErodeBrush>, f64, Lift, StepSettings),
+}
+
+/// The settings of one step that do not change in a stroke.
+#[derive(Clone, Copy)]
+struct StepSettings {
+    limits: Limits,
+    rain: Rain,
+    channel: ChannelShape,
 }
 
 /// What a request does to the cells before its steps.
@@ -212,6 +219,8 @@ pub struct Eroder {
     waiting: usize,
     /// The rain of each later request.
     rain: Rain,
+    /// The channels of each later request.
+    channel: ChannelShape,
 }
 
 /// The number of steps that lower the cells after an uplift.
@@ -219,18 +228,18 @@ const UPLIFT_STEPS: usize = 4;
 
 /// Without a lift, lowers the cells under the brushes one time. With an
 /// uplift, raises those cells and then lowers them `UPLIFT_STEPS` times.
-/// The cells and the step keep `limits`, and the step has `rain`. A range
-/// keeps the limits of its line.
+/// The cells and the step keep `limits`, and the step has `rain` and
+/// `channel`. A range keeps the limits of its line.
 fn step(
     erosion: &mut Erosion,
     brushes: &[ErodeBrush],
     rate: f64,
     lift: Lift,
-    limits: Limits,
-    rain: Rain,
+    settings: StepSettings,
 ) -> ErodeStep {
-    erosion.set_limits(limits);
-    erosion.set_rain(rain);
+    erosion.set_limits(settings.limits);
+    erosion.set_rain(settings.rain);
+    erosion.set_channel(settings.channel);
     match lift {
         Lift::Raise(uplift) if uplift > 0.0 => {
             erosion.raise(brushes, uplift);
@@ -253,11 +262,11 @@ fn work(jobs: mpsc::Receiver<Job>, done: mpsc::Sender<Done>) {
                     ground.move_work(work);
                 }
             }
-            Job::Step(stroke, brushes, rate, lift, limits, rain) => {
+            Job::Step(stroke, brushes, rate, lift, settings) => {
                 let Some((_, work)) = work.as_mut().filter(|(id, _)| *id == stroke) else {
                     continue;
                 };
-                let step = step(&mut work.erosion, &brushes, rate, lift, limits, rain);
+                let step = step(&mut work.erosion, &brushes, rate, lift, settings);
                 if done.send(Done(stroke, step)).is_err() {
                     return;
                 }
@@ -278,6 +287,7 @@ impl Eroder {
             stroke: 0,
             waiting: 0,
             rain: Rain::default(),
+            channel: ChannelShape::default(),
         }
     }
 
@@ -288,6 +298,11 @@ impl Eroder {
     /// Sets the rain of each later request.
     pub fn set_rain(&mut self, rain: Rain) {
         self.rain = rain;
+    }
+
+    /// Sets the channels of each later request.
+    pub fn set_channel(&mut self, channel: ChannelShape) {
+        self.channel = channel;
     }
 
     fn send(&mut self, job: Job) {
@@ -337,16 +352,20 @@ impl Eroder {
     /// Asks for one step of the stroke. The step starts from the heights
     /// that the step before it left, after `lift`. The lift and the step do
     /// not move a cell across a limit. The step has the rain of the last
-    /// `set_rain`.
+    /// `set_rain` and the channels of the last `set_channel`.
     pub fn request(&mut self, brushes: Vec<ErodeBrush>, rate: f64, lift: Lift, limits: Limits) {
         self.waiting += 1;
-        let rain = self.rain;
+        let settings = StepSettings {
+            limits,
+            rain: self.rain,
+            channel: self.channel,
+        };
         match &mut self.work {
             Some(work) => {
-                let step = step(&mut work.erosion, &brushes, rate, lift, limits, rain);
+                let step = step(&mut work.erosion, &brushes, rate, lift, settings);
                 let _ = self.done.send(Done(self.stroke, step));
             }
-            None => self.send(Job::Step(self.stroke, brushes, rate, lift, limits, rain)),
+            None => self.send(Job::Step(self.stroke, brushes, rate, lift, settings)),
         }
     }
 
