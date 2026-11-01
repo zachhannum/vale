@@ -260,6 +260,9 @@ pub(super) fn outlines(polygons: &[Vec<Vec<LonLat>>]) -> Option<Vec<Outline>> {
     for (i, polygon) in polygons.iter().enumerate() {
         for (j, ring) in polygon.iter().enumerate() {
             let mut ring = ring.clone();
+            if ring.len() > 1 && ring.first() != ring.last() {
+                ring.push(ring[0]);
+            }
             // An outer ring goes counterclockwise, and a hole clockwise.
             if (flat_area(&ring) > 0.0) == (j > 0) {
                 ring.reverse();

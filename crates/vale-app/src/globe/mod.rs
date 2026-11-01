@@ -10,7 +10,7 @@ use std::time::Instant;
 use eframe::egui::{Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 use vale_store::{
-    BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing,
+    BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing, Uuid,
 };
 use vale_terrain::{
     Bands, BasinLine, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES, Heightmap, Mode,
@@ -133,6 +133,8 @@ pub struct LineStroke {
     tracer: Option<Tracer>,
     /// The parts of the stroke after the pen comes up.
     pub runs: Vec<Run>,
+    /// The feature that a stroke of the Reshape tool reshapes.
+    pub reshape: Option<Uuid>,
 }
 
 /// A point that the point tool placed.
@@ -156,6 +158,8 @@ pub enum Tool {
     Measure,
     /// Selects, moves, and deletes features of any visible vector layer.
     Select,
+    /// Redraws a part of the outline of the selected line or polygon.
+    Reshape,
 }
 
 /// The way that the world workspace shows the world.
@@ -780,6 +784,9 @@ pub struct Globe {
     pub line: LineSettings,
     /// The line tool can draw: the selected layer is a visible line layer.
     pub lineable: bool,
+    /// The feature that the Reshape tool can reshape: the one selected line
+    /// or polygon.
+    pub reshape: Option<Uuid>,
     /// The height layer that the terrain fit of the line tool follows: the
     /// first height layer that the globe holds.
     pub fit_layer: Option<RasterId>,
@@ -924,6 +931,7 @@ impl Globe {
             paint_wanted: true,
             line: LineSettings::default(),
             lineable: false,
+            reshape: None,
             fit_layer: None,
             fillable: false,
             pointable: false,
@@ -1760,9 +1768,20 @@ impl Globe {
         self.tool == Tool::Select
     }
 
+    /// True if the Reshape tool is the tool and a feature is selected.
+    pub fn reshaping(&self) -> bool {
+        self.tool == Tool::Reshape && self.reshape.is_some()
+    }
+
+    /// True if a pen stroke draws a line: a stroke of the line tool, the
+    /// polygon tool, or the Reshape tool.
+    pub fn stroking(&self) -> bool {
+        self.drawing() || self.reshaping()
+    }
+
     /// True if the tool snaps, so the snap targets are needed.
     pub fn snapping(&self) -> bool {
-        self.editing() || self.measuring()
+        self.editing() || self.measuring() || self.reshaping()
     }
 
     /// Records a tap of the Measure tool at a screen position on the world.
@@ -1921,12 +1940,20 @@ impl Globe {
         };
     }
 
-    /// Starts a stroke of the line or polygon tool.
+    /// Starts a stroke of the line tool, the polygon tool, or the Reshape
+    /// tool.
     pub fn line_down(&mut self) {
         let scale = self.radius();
         let targets = self.targets.clone().zip(self.draw_layer);
         let snap = &self.snap;
-        let tracer = targets.map(|(t, layer)| Tracer::new(t, snap.clone(), scale, layer));
+        let reshape = self.reshape.filter(|_| self.reshaping());
+        let tracer = targets.map(|(t, layer)| {
+            let tracer = Tracer::new(t, snap.clone(), scale, layer);
+            match reshape {
+                Some(uuid) => tracer.excluding(uuid),
+                None => tracer,
+            }
+        });
         self.line_stroke = Some(LineStroke {
             screen: Vec::new(),
             dirs: Vec::new(),
@@ -1934,6 +1961,7 @@ impl Globe {
             off: false,
             tracer,
             runs: Vec::new(),
+            reshape,
         });
     }
 

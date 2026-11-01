@@ -784,7 +784,9 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     state.pad.modes = None;
                 }
                 let globe = &mut state.globe;
-                let (name, active) = (select::TOOL, globe.selecting());
+                // The Reshape tool is a part of the selection.
+                let active = globe.selecting() || globe.reshaping();
+                let name = select::TOOL;
                 if widgets::tool_cell(ui, controls, name, name, Icon::Select, active, true)
                     .clicked()
                 {
@@ -795,7 +797,8 @@ fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 let active = !globe.brushing()
                     && !globe.editing()
                     && !globe.measuring()
-                    && !globe.selecting();
+                    && !globe.selecting()
+                    && !globe.reshaping();
                 if widgets::tool_cell(ui, controls, "Pan", "Move", Icon::Move, active, true)
                     .clicked()
                 {

@@ -114,7 +114,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 let navigate = !globe.brushing()
                     && !globe.editing()
                     && !globe.measuring()
-                    && !globe.selecting();
+                    && !globe.selecting()
+                    && !globe.reshaping();
                 if ui.selectable_label(navigate, "Navigate").clicked() {
                     globe.tool = Tool::Navigate;
                 }
@@ -137,7 +138,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     globe.tool = tool;
                 }
                 if ui
-                    .selectable_label(globe.selecting(), select::TOOL)
+                    .selectable_label(globe.selecting() || globe.reshaping(), select::TOOL)
                     .clicked()
                 {
                     globe.tool = Tool::Select;

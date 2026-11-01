@@ -2564,7 +2564,8 @@ impl AppState {
     }
 
     /// Puts the last stroke of the line tool or the polygon tool in the
-    /// selected layer. The next save makes it one undo step.
+    /// selected layer, or reshapes a feature with the stroke of the
+    /// Reshape tool. The next save makes it one undo step.
     pub fn poll_line(&mut self) {
         let Some(stroke) = self.globe.take_line() else {
             return;
@@ -2572,6 +2573,9 @@ impl AppState {
         let Some(id) = self.selected_vector() else {
             return;
         };
+        if let Some(uuid) = stroke.reshape {
+            return self.reshape_feature(id, uuid, &stroke);
+        }
         let Some(layer) = self.doc.project.layer(id) else {
             return;
         };
