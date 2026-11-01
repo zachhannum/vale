@@ -1011,9 +1011,12 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         }
                     }
                 } else {
-                    size_slider(state, |f, text| slider("Size", f, text, paint));
+                    // The outline sets the size of a basin, and a basin has no
+                    // flow. The sliders keep their place in the card.
+                    let on = paint && state.globe.brush.mode != Mode::Basin;
+                    size_slider(state, |f, text| slider("Size", f, text, on));
                     percent_slider(&mut state.globe.brush.flow, FLOW, |f, text| {
-                        slider("Flow", f, text, paint)
+                        slider("Flow", f, text, on)
                     });
                 }
             }
@@ -1500,9 +1503,14 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         return;
     }
     let unit = state.shown_unit().to_string();
-    size_slider(state, |fraction, text| {
-        widgets::row_slider(ui, controls, "Brush size", "Size", fraction, text)
-    });
+    // The outline sets the size of a basin.
+    if state.globe.brush.mode == Mode::Basin {
+        basin_rows(ui, controls, &mut state.globe);
+    } else {
+        size_slider(state, |fraction, text| {
+            widgets::row_slider(ui, controls, "Brush size", "Size", fraction, text)
+        });
+    }
     let world_km = state.doc.project.world.radius_km;
     let radius_km = state.globe.brush.radius_km(state.globe.radius(), world_km);
     let height = state.globe.is_height();
@@ -1676,6 +1684,21 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
     );
     ui.spacing_mut().item_spacing.y = 6.0;
     panels::brush_settings(ui, state);
+}
+
+/// The hint of the basin mode, and the button that drops the outline of the
+/// next basin.
+fn basin_rows(ui: &mut egui::Ui, controls: &mut Controls, globe: &mut crate::globe::Globe) {
+    ui.add_space(8.0);
+    let text = egui::RichText::new(panels::basin_hint(globe)).color(theme::MUTE);
+    ui.add(egui::Label::new(text).selectable(false));
+    ui.add_space(8.0);
+    if globe.basin_outline().is_some() {
+        let clear = widgets::button_row(ui, controls, panels::CLEAR_OUTLINE, true);
+        if clear.clicked() {
+            globe.set_basin_outline(None);
+        }
+    }
 }
 
 /// The number of steps of the slider of a limit of the brush. A height has

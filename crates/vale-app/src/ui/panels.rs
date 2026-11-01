@@ -27,6 +27,21 @@ pub const OCEAN_RIDGE: &str = "Ocean ridge";
 pub const RANGE: &str = "Range";
 /// The name of the basin mode of the brush.
 pub const BASIN: &str = "Basin";
+/// The hint of the basin mode before the outline.
+pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
+/// The hint of the basin mode after the outline.
+pub const BASIN_RIVER_HINT: &str = "Draw the main river.";
+/// The button that drops the outline of the next basin.
+pub const CLEAR_OUTLINE: &str = "Clear outline";
+
+/// The hint of the basin mode.
+pub fn basin_hint(globe: &crate::globe::Globe) -> &'static str {
+    if globe.basin_outline().is_some() {
+        BASIN_RIVER_HINT
+    } else {
+        BASIN_OUTLINE_HINT
+    }
+}
 
 /// The button of the tool bar that opens the properties of the world.
 pub const WORLD_BUTTON: &str = "World…";
@@ -810,18 +825,26 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     let (unit_km, symbol) = world::large_unit(state.doc.project.world.units);
     let globe = &mut state.globe;
     let globe_radius = globe.radius();
-    let mut size = globe.brush.radius_km(globe_radius, world_km) / unit_km;
-    let range = globe.brush.radius_km_range(globe_radius, world_km);
-    let range = range.start() / unit_km..=range.end() / unit_km;
-    let slider = egui::Slider::new(&mut size, range)
-        .logarithmic(true)
-        .custom_formatter(|size, _| three_significant(size))
-        .suffix(format!(" {symbol}"))
-        .text("Radius");
-    if ui.add(slider).changed() {
-        globe
-            .brush
-            .set_radius_km(size * unit_km, globe_radius, world_km);
+    // The outline sets the size of a basin.
+    if globe.brush.mode == Mode::Basin {
+        ui.label(basin_hint(globe));
+        if globe.basin_outline().is_some() && ui.button(CLEAR_OUTLINE).clicked() {
+            globe.set_basin_outline(None);
+        }
+    } else {
+        let mut size = globe.brush.radius_km(globe_radius, world_km) / unit_km;
+        let range = globe.brush.radius_km_range(globe_radius, world_km);
+        let range = range.start() / unit_km..=range.end() / unit_km;
+        let slider = egui::Slider::new(&mut size, range)
+            .logarithmic(true)
+            .custom_formatter(|size, _| three_significant(size))
+            .suffix(format!(" {symbol}"))
+            .text("Radius");
+        if ui.add(slider).changed() {
+            globe
+                .brush
+                .set_radius_km(size * unit_km, globe_radius, world_km);
+        }
     }
     // The ocean ridge mode has no falloff and no strength, the range mode
     // has no falloff, and the basin mode has no falloff and no flow.

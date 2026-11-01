@@ -2707,10 +2707,12 @@ fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
     assert!(control(&h, "Brush density").is_none());
     choose_mode(&mut h, "Basin");
     assert_eq!(h.state().globe.brush.mode, Mode::Basin);
-    for row in ["Brush size"].into_iter().chain(BASIN_ROWS) {
+    for row in BASIN_ROWS {
         assert!(control(&h, row).is_some(), "{row}");
     }
+    // The outline sets the size of a basin.
     for row in [
+        "Brush size",
         "Brush hardness",
         "Brush flow",
         "Brush erosion",
@@ -2732,6 +2734,38 @@ fn the_brush_panel_has_the_sliders_of_the_basin_mode() {
     drag(&mut h, rect.center(), rect.right_center(), None);
     assert_eq!(h.state().globe.world_seed, 999);
     check_controls(&h, "the Basin mode");
+}
+
+#[test]
+fn the_basin_panel_shows_the_step_of_the_outline() {
+    use vale_app::globe::math::lonlat_to_dir;
+    for size in [BOARDS[0], BOARDS[1]] {
+        let mut h = pad(size);
+        tap(&mut h, "Brush settings");
+        choose_mode(&mut h, "Basin");
+        assert!(h.query_by_label(panels::BASIN_OUTLINE_HINT).is_some());
+        assert!(control(&h, panels::CLEAR_OUTLINE).is_none());
+        // The outline sets the size, so the size slider of the brush card is off.
+        if let Some(rect) = control(&h, "Size") {
+            let points = h.state().globe.brush.size_points;
+            drag(&mut h, rect.center(), rect.center_top(), None);
+            assert_eq!(h.state().globe.brush.size_points, points, "{size:?}");
+        }
+        // An outline waits for its main river.
+        let outline = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        let outline = outline.map(|(lon, lat)| lonlat_to_dir(lon, lat)).to_vec();
+        h.state_mut().globe.set_basin_outline(Some(outline));
+        h.run_steps(2);
+        assert!(h.query_by_label(panels::BASIN_RIVER_HINT).is_some());
+        let button = control(&h, panels::CLEAR_OUTLINE).unwrap();
+        assert!(button.height() >= 44.0, "{size:?}: {button:?}");
+        check_controls(&h, &format!("{size:?} with an outline"));
+        screenshot::save(&mut h, &format!("pad-basin-outline-{}", size.0));
+        tap(&mut h, panels::CLEAR_OUTLINE);
+        assert!(h.state().globe.basin_outline().is_none());
+        assert!(h.query_by_label(panels::BASIN_OUTLINE_HINT).is_some());
+        assert!(control(&h, panels::CLEAR_OUTLINE).is_none());
+    }
 }
 
 #[test]

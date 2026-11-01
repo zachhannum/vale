@@ -325,8 +325,8 @@ struct Ranging {
     done: bool,
 }
 
-/// The line of a basin stroke. After the pen goes up, the worker makes
-/// the basin, and its texels go to the GPU.
+/// The main river of a basin stroke, in the outline of the basin. After the
+/// pen goes up, the worker makes the basin, and its texels go to the GPU.
 struct Basining {
     line: BasinLine,
     /// The line went to the worker.
@@ -357,8 +357,10 @@ struct Active {
     uplift: Option<Uplifting>,
     /// `Some`: the stroke is an ocean ridge stroke or a range stroke.
     ridge: Option<Ridging>,
-    /// `Some`: the stroke is a basin stroke.
+    /// `Some`: the stroke draws the main river of a basin.
     basin: Option<Basining>,
+    /// `Some`: the stroke draws the outline of a basin. It changes no texels.
+    outline: Option<Vec<V3>>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
     /// The number of rectangles that the GPU has not given back. `None`: the
@@ -835,6 +837,9 @@ pub struct Globe {
     rivers: Rivers,
     eroder: Eroder,
     basiner: Basiner,
+    /// The outline of the next basin. The next basin stroke draws its main
+    /// river.
+    basin_outline: Option<Vec<V3>>,
     /// The newest channel map that went to the GPU.
     channels: Option<Arc<ChannelMap>>,
     /// The window of small rivers that the view asks for.
@@ -883,6 +888,7 @@ impl Globe {
             rivers: Rivers::new(&map, false),
             eroder: Eroder::new(false),
             basiner: Basiner::new(false),
+            basin_outline: None,
             channels: None,
             chosen: None,
             window: None,
@@ -1615,6 +1621,7 @@ impl Globe {
         self.rivers = Rivers::new(&self.map, self.rivers.sync());
         self.eroder.cancel();
         self.basiner.cancel();
+        self.basin_outline = None;
         self.channels = None;
         self.channels_sent = false;
         self.chosen = None;
@@ -1974,17 +1981,35 @@ impl Globe {
         self.line_stroke.as_ref().map(|s| s.screen.as_slice())
     }
 
-    /// The line of a basin stroke until its basin goes to the GPU, in
-    /// screen points, and the width of the basin in points.
-    pub fn basin_preview(&self) -> Option<(Vec<Pos2>, f32)> {
-        let basin = self.stroke.as_ref()?.basin.as_ref()?;
-        if basin.done {
-            return None;
+    /// The lines of a basin in screen points: the outline, which closes,
+    /// and the main river. The outline shows while the pen draws it and
+    /// while it waits for its main river. The main river shows until its
+    /// basin goes to the GPU.
+    pub fn basin_preview(&self) -> Option<(Vec<Pos2>, Vec<Pos2>)> {
+        let screen = |dirs: &[V3]| -> Vec<Pos2> {
+            dirs.iter().filter_map(|&dir| self.project(dir)).collect()
+        };
+        let active = self.stroke.as_ref();
+        if let Some(outline) = active.and_then(|a| a.outline.as_ref()) {
+            return Some((screen(outline), Vec::new()));
         }
-        let points = basin.line.points().into_iter();
-        let line: Vec<Pos2> = points.filter_map(|dir| self.project(dir)).collect();
-        let width = 2.0 * basin.line.spec().radius * self.radius();
-        Some((line, width as f32))
+        if let Some(basin) = active.and_then(|a| a.basin.as_ref()) {
+            return (!basin.done)
+                .then(|| (screen(basin.line.outline()), screen(&basin.line.points())));
+        }
+        let outline = self.basin_outline.as_ref()?;
+        Some((screen(outline), Vec::new()))
+    }
+
+    /// The outline of the next basin. The next basin stroke draws its main
+    /// river.
+    pub fn basin_outline(&self) -> Option<&[V3]> {
+        self.basin_outline.as_deref()
+    }
+
+    /// Sets the outline of the next basin. `None` clears it.
+    pub fn set_basin_outline(&mut self, outline: Option<Vec<V3>>) {
+        self.basin_outline = outline;
     }
 
     /// The last stroke of the line or polygon tool that ended.
@@ -2633,6 +2658,10 @@ impl Globe {
     /// Runs the brush for one frame. `now` is the start of the frame. Returns
     /// `true` if the brush needs one more frame.
     pub fn advance(&mut self, now: Instant) -> bool {
+        // Another tool or another mode drops the outline of the next basin.
+        if self.tool != Tool::Brush || self.brush.mode != Mode::Basin {
+            self.basin_outline = None;
+        }
         let zooming = self.run_zoom_test(now);
         if self.format.is_none() {
             self.sync_maps();
@@ -2780,6 +2809,7 @@ impl Globe {
                         uplift,
                         ridge: None,
                         basin: None,
+                        outline: None,
                         ended: false,
                         reading: None,
                     });
@@ -2791,17 +2821,22 @@ impl Globe {
                             let (km, seed, n) =
                                 (self.world_km, self.world_seed, self.map.face_size());
                             active.ridge = line_of(&self.brush, km, seed, n, sample.radius);
+                            // The first basin stroke draws the outline, and
+                            // the second one draws the main river.
                             if self.brush.mode == Mode::Basin {
-                                let rain = self.world_rain;
-                                let channel = self.brush.channel_shape(km);
-                                let spec =
-                                    self.brush
-                                        .basin_spec(sample.radius, km, seed, rain, channel);
-                                active.basin = Some(Basining {
-                                    line: BasinLine::new(spec, n),
-                                    asked: false,
-                                    done: false,
-                                });
+                                match self.basin_outline.take() {
+                                    Some(outline) => {
+                                        let rain = self.world_rain;
+                                        let channel = self.brush.channel_shape(km);
+                                        let spec = self.brush.basin_spec(km, seed, rain, channel);
+                                        active.basin = Some(Basining {
+                                            line: BasinLine::new(spec, &outline, n),
+                                            asked: false,
+                                            done: false,
+                                        });
+                                    }
+                                    None => active.outline = Some(Vec::new()),
+                                }
                             }
                         }
                         active.sampled = Some(time);
@@ -2825,6 +2860,9 @@ impl Globe {
                             if let Some(basin) = &mut active.basin {
                                 basin.extend(&stamps);
                                 stamps.clear();
+                            }
+                            if let Some(outline) = &mut active.outline {
+                                outline.extend(stamps.drain(..).map(|s| s.center));
                             }
                             for stamp in &mut stamps {
                                 set_world(
@@ -2861,6 +2899,16 @@ impl Globe {
                         if let Some(basin) = &mut active.basin {
                             basin.extend(&stamps);
                             stamps.clear();
+                        }
+                        // An outline with an area waits for its main river.
+                        if let Some(mut outline) = active.outline.take() {
+                            outline.extend(stamps.drain(..).map(|s| s.center));
+                            let (km, n) = (self.world_km, map.face_size());
+                            let channel = self.brush.channel_shape(km);
+                            let rain = self.world_rain;
+                            let spec = self.brush.basin_spec(km, self.world_seed, rain, channel);
+                            let usable = BasinLine::new(spec, &outline, n).has_outline();
+                            self.basin_outline = usable.then_some(outline);
                         }
                         for stamp in &mut stamps {
                             set_world(

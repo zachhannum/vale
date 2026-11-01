@@ -1010,12 +1010,18 @@ pub(super) fn paint_canvas(
             }
         }
     }
-    // The band of a basin stroke shows until the basin arrives.
-    if let Some((line, width)) = globe.basin_preview().filter(|(line, _)| line.len() > 1) {
-        let band = egui::Stroke::new(width, egui::Color32::from_white_alpha(40));
-        painter.line(line.clone(), band);
-        let center = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(200));
-        painter.line(line, center);
+    // The outline of a basin and its main river show until the basin arrives.
+    if let Some((outline, river)) = globe.basin_preview() {
+        let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));
+        let line = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220));
+        if outline.len() > 2 {
+            painter.add(egui::Shape::closed_line(outline.clone(), shade));
+            painter.add(egui::Shape::closed_line(outline, line));
+        }
+        if river.len() > 1 {
+            painter.line(river.clone(), shade);
+            painter.line(river, line);
+        }
     }
     // The stroke of the layer, or a plain white one.
     let entries = state.doc.frame.entries.iter();

@@ -260,11 +260,10 @@ impl BrushSettings {
         }
     }
 
-    /// The settings of a basin stroke with this brush radius, in radians.
-    /// `world_km` is the radius of the world. The height is the strength.
+    /// The settings of a basin. `world_km` is the radius of the world. The
+    /// height is the strength.
     pub fn basin_spec(
         &self,
-        radius: f64,
         world_km: f64,
         seed: u32,
         rain: Rain,
@@ -272,7 +271,6 @@ impl BrushSettings {
     ) -> BasinSpec {
         let height = meters_to_level(self.strength_m) - meters_to_level(0.0);
         BasinSpec {
-            radius,
             height: f64::from(height),
             density: self.basin_density_km / world_km,
             seed,
@@ -495,18 +493,17 @@ pub fn set_world(
     }
 }
 
-/// The distance between the points of the line of a basin stroke, as a part
-/// of the brush radius.
-const BASIN_SPACING: f64 = 0.02;
+/// The distance between the points of the line of a basin stroke, in
+/// texels. The outline and the main river keep the small bends of the
+/// stroke, and the brush radius has no effect.
+pub const BASIN_SPACING_TEXELS: f64 = 1.5;
 
 /// The distance between the stamps of a mode, as a part of the brush radius.
-/// The stamps of the ocean ridge mode, the range mode, and the basin mode
-/// are the points of the line of the stroke.
+/// The stamps of the ocean ridge mode and the range mode are the points of
+/// the line of the stroke.
 fn stamp_spacing(mode: Mode) -> f64 {
     match mode {
         Mode::OceanRidge | Mode::Range => LINE_SPACING,
-        // The main river of a basin keeps the small bends of the stroke.
-        Mode::Basin => BASIN_SPACING,
         _ => STAMP_SPACING,
     }
 }
@@ -528,10 +525,14 @@ impl Stroke {
 
     fn tip<'a>(&self, brush: &'a BrushSettings, face_size: usize, level: u16) -> Tip<'a> {
         let texel = FRAC_PI_2 / face_size as f64;
+        let spacing = match brush.mode {
+            Mode::Basin => texel * BASIN_SPACING_TEXELS,
+            mode => (self.radius * stamp_spacing(mode)).max(texel * 0.5),
+        };
         Tip {
             brush,
             radius: self.radius,
-            spacing: (self.radius * stamp_spacing(brush.mode)).max(texel * 0.5),
+            spacing,
             level,
         }
     }
@@ -847,6 +848,32 @@ mod tests {
     }
 
     #[test]
+    fn the_points_of_a_basin_stroke_are_a_few_texels_apart_at_each_radius() {
+        let brush = BrushSettings {
+            mode: Mode::Basin,
+            ..BrushSettings::default()
+        };
+        let texel = FRAC_PI_2 / 1024.0;
+        let arc = 0.1_f64.to_degrees();
+        for radius in [0.01, 0.1, 0.5] {
+            let mut stroke = Stroke::default();
+            let mut out = Vec::new();
+            for lon in [0.0, arc * 0.5, arc] {
+                stroke.add_sample(&brush, 1024, sample(lon, radius), |_| 0, &mut out);
+            }
+            stroke.finish(&brush, 1024, &mut out);
+            let steps = (0.1 / (texel * BASIN_SPACING_TEXELS)) as usize;
+            assert!(
+                out.len().abs_diff(steps + 2) <= 1,
+                "{radius}: {}",
+                out.len()
+            );
+            let gap = angle(out[0].center, out[1].center);
+            assert!((gap / texel - BASIN_SPACING_TEXELS).abs() < 1e-6, "{gap}");
+        }
+    }
+
+    #[test]
     fn the_basin_spec_follows_the_settings() {
         let brush = BrushSettings {
             mode: Mode::Basin,
@@ -861,8 +888,7 @@ mod tests {
             shadow: 0.5,
         };
         let channel = brush.channel_shape(6371.0);
-        let spec = brush.basin_spec(0.05, 6371.0, 9, rain, channel);
-        assert_eq!(spec.radius, 0.05);
+        let spec = brush.basin_spec(6371.0, 9, rain, channel);
         let height = meters_to_level(2000.0) - meters_to_level(0.0);
         assert_eq!(spec.height, f64::from(height));
         assert!((spec.density - 80.0 / 6371.0).abs() < 1e-12);

@@ -88,7 +88,6 @@ mod tests {
 
     fn line() -> BasinLine {
         let spec = BasinSpec {
-            radius: 0.15,
             height: f64::from(meters_to_level(1500.0) - meters_to_level(0.0)),
             density: 0.02,
             seed: 7,
@@ -97,7 +96,9 @@ mod tests {
             world_km: 6371.0,
             limits: Limits::default(),
         };
-        let mut line = BasinLine::new(spec, N);
+        let outline = [(-25.0, -9.0), (25.0, -9.0), (25.0, 9.0), (-25.0, 9.0)];
+        let outline = outline.map(|(lon, lat)| lonlat_to_dir(lon, lat));
+        let mut line = BasinLine::new(spec, &outline, N);
         for k in 0..=20 {
             line.push(lonlat_to_dir(-20.0 + 2.0 * f64::from(k), 0.0));
         }
@@ -153,7 +154,7 @@ mod tests {
 
             // A new request gives its own result, not the one before it.
             basiner.request(ground(), line());
-            let short = BasinLine::new(line().spec(), N);
+            let short = BasinLine::new(line().spec(), line().outline(), N);
             basiner.request(ground(), short);
             assert!(wait(&mut basiner).rects.is_empty());
             assert!(!basiner.pending());
