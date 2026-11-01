@@ -420,6 +420,18 @@ A measurement is temporary, and the project file and the undo log do not hold it
 
 The math is in `vale-sphere`, and the area and length expressions use the same functions.
 
+### Select
+
+The Select tool selects features of the visible vector layers, on the globe and in the flat view. A tap of a finger, of the pen, or of the mouse selects one feature, and a tap on empty ground clears the selection. A drag of the pen or of the mouse selects the features in a box. A drag of one finger turns the globe, and two fingers pan and zoom, as in the other tools.
+
+A tap hits a point or a line within its reach on the screen: 22 points for a finger, 12 points for the pen, and 8 points for the mouse. A finger thus has a target of 44 points. The nearest point or line wins. If no point or line is in reach, the top polygon under the tap wins. A feature on the far side of the globe is not hit.
+
+A box selects a feature if a vertex of the feature is in the box, if an edge crosses the box, or if the polygon holds the box. The selection can hold features of more than one layer. The selection shows in the accent color: a ring around each point, and a wide line on each line and each outline. In the flat view, the selection shows, but the vector layers do not show yet.
+
+A pen drag or a mouse drag that starts on a point of the selection moves that point. The move is one undo step when the pen or the mouse comes up. The tool moves points only. Lines and polygons change in vertex editing.
+
+On the iPad, a card at the top of the screen shows the selection. With one feature, the card has a field for each attribute, and a change of a field is one undo step when the field loses the focus. With more than one feature, the title of the card is the count. The card has "Delete selection", which deletes all selected features in one undo step. On the desktop, a window at the top right has the same contents. Delete and Backspace delete the selection, and Esc clears it.
+
 ### Attribute schema
 
 The panel of a vector layer lists the fields of the layer, each with its type. "Add field…" opens a page with the name, the type, and the default value of a new field. The name has the keyboard focus, so the on-screen keyboard opens. "Add", or Return in the name, adds the field. A tap on a field opens its page. There you change the name, the type, and the default value, and "Delete field" removes the field.
@@ -475,7 +487,7 @@ These rules apply to the layout:
 - Below 600 points, the view switch is in the workspace menu, and a panel is a sheet at the bottom. You can pull the sheet down to its title row. One sheet shows at a time.
 - If the Brush panel and the right panel do not fit side by side, one panel shows at a time.
 - The two sliders are 140 points high. In a short window they become shorter, down to 110 points, which fits an iPad that is 744 points high. In a window that is shorter than that, the card holds the Brush button alone, and the Brush panel holds the two sliders. If the tool strip and the Brush button do not fit, the tool strip scrolls.
-- The tool strip has five cells: Sculpt, Terrain, Draw, Move, and Measure. The strip has the same cells for each layer selection.
+- The tool strip has six cells: Sculpt, Terrain, Draw, Select, Move, and Measure. The strip has the same cells for each layer selection.
 - The brush modes are in two groups, and each group has a cell. The Sculpt cell holds the modes that shape the ground directly: Raise, Lower, Smooth, Flatten, Warp, Push, and Noise. The Terrain cell holds the modes that need heights in meters: Carve, Ridge, Deposit, Erode, Weather, Uplift, Ocean ridge, and Range. Each list fits next to the strip on each iPad, and each group has room for new modes.
 - Each of the two cells shows the icon and the name of a mode, with a small triangle in its corner. That mode is the brush mode if it is in the group of the cell, and otherwise it is the last mode that you chose in the group. A tap chooses the brush in that mode. A hold of 0.4 seconds, or a tap on the cell while the brush is in its group, opens the list of the modes of the group next to the cell. A tap on a mode chooses it and closes the list, and a tap outside the list closes it.
 - The Measure cell is always enabled. With Measure, the card below the strip holds Snap, Clear path, and the Brush button, which opens the snap settings.
@@ -527,7 +539,7 @@ These rules apply to the layout:
 - The eye of a layer always shows. A hidden layer shows a crossed eye.
 - Selected tools, segments, tabs, and rows have the same tint of the accent color.
 - Each tool and each action shows its name and its key in a tooltip, and the menus show the keys too.
-- The keys of the World tools are R for Raise, F for Lower, S for Smooth, E for Flatten, L for Line, P for Point, V for Select, A for Vertex, and H for the hand. B opens the Brush panel. The keys of the Atlas tools are V for Select, H for the hand, and T for Label. In both workspaces, M selects Measure. While Measure is on, Return closes the path, and Esc clears the path. In a map frame of the Atlas workspace, ] and [ go to the next and the previous label, Return pins a label, and Delete hides it.
+- The keys of the World tools are R for Raise, F for Lower, S for Smooth, E for Flatten, L for Line, P for Point, V for Select, A for Vertex, and H for the hand. B opens the Brush panel. The keys of the Atlas tools are V for Select, H for the hand, and T for Label. In both workspaces, M selects Measure. While Measure is on, Return closes the path, and Esc clears the path. While Select is on in the World workspace, Delete and Backspace delete the selection, and Esc clears it. In a map frame of the Atlas workspace, ] and [ go to the next and the previous label, Return pins a label, and Delete hides it.
 - A form, for example "New world" or "Export", is a sheet of the window. The attribute form of a new point is a window at the top of the canvas, and the canvas takes the next click.
 - The start screen has a sidebar with the places and the recent worlds, and a grid of cards. The tool bar has a search field, the sort order, a switch between a grid and a list, and "New world…". The menu of a card holds "Open", "Rename…", "Duplicate", "Show in Finder", and "Delete…".
 - The left mouse button and the pen paint. The middle button, or Space with the left button, turns the globe, and the wheel zooms. The brush outline follows the pointer and a hovering pen.
@@ -827,7 +839,7 @@ The prototype leaves out the following.
 - Polygon labels, label fallbacks, leader lines, and manual label changes (pin, move, exclude).
 - The overview of the pages, page templates, SVG export, and tiled raster export.
 - Projection suggestions and Tissot circles.
-- All editing tools other than the freehand line tool, the freehand polygon tool, and point placement: the attribute table and vertex editing.
+- All editing tools other than the freehand line tool, the freehand polygon tool, point placement, and the Select tool: the attribute table and vertex editing.
 - The GPU Vello backend. The prototype draws with `vello_cpu`.
 - Wholesale procedural world generation. This is a permanent non-goal.
 
@@ -876,4 +888,4 @@ One question is open, and eight are decided.
 - [x] Decided: a project is one file and not a folder, and an import copies its data into that file. One file keeps the transactions, QGIS reads it directly, and it is one item on each platform. A folder gives only readable diffs in version control. A sync service can break a SQLite file that is open, so the app edits a working copy and writes the project back as a whole file.
 - [x] Decided: the app is named Vale, and the crates have more specific names.
 - [x] Decided: the world does not mark one raster layer as its height. A raster layer with the unit `m` is a height layer. Each tool takes a layer or works on the selected layer, so a mark adds only a rule for the deletion of a layer.
-- [x] Decided: the tool strip keeps its five cells when the selected layer is not a raster layer and when the world has no layer. The Sculpt cell and the Terrain cell are disabled. The strip then does not move when you select another layer.
+- [x] Decided: the tool strip keeps its six cells when the selected layer is not a raster layer and when the world has no layer. The Sculpt cell and the Terrain cell are disabled. The strip then does not move when you select another layer.
