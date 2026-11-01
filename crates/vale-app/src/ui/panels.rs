@@ -13,9 +13,9 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    BASIN_DENSITY, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, RANGE_SPACING_KM,
-    RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED,
-    STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
+    BASIN_DENSITY, CHANNEL_HELP, CHANNEL_KM, EROSION, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_M,
+    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    RIDGE_SPREAD_MM, SCALE_KM, SEED, STRENGTH_M, TALUS_DEG, WARP_KM, needs_height,
 };
 use crate::globe::{Globe, Tool, WorldView, rivers, snap, stats, stroke_test, zoom_test};
 use crate::projects;
@@ -808,6 +808,27 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
     format!("Edge age {age} Myr")
 }
 
+/// A logarithmic slider of a height in meters. It shows the height as a
+/// value of the layer, which is `scale` times the meters, in a layer with
+/// the value range `span`.
+fn height_slider<'a>(
+    meters: &'a mut f64,
+    range: std::ops::RangeInclusive<f64>,
+    scale: f64,
+    span: f64,
+    unit: &str,
+) -> egui::Slider<'a> {
+    let unit = unit.to_string();
+    egui::Slider::new(meters, range)
+        .logarithmic(true)
+        .smallest_positive(10.0)
+        .custom_formatter(move |meters, _| world::value_text(meters * scale, span, &unit))
+        .custom_parser(move |text| {
+            let number: String = text.chars().take_while(|c| !c.is_alphabetic()).collect();
+            Some(number.trim().parse::<f64>().ok()? / scale)
+        })
+}
+
 /// The name of the strength slider. In the uplift mode, the strength is the
 /// rate of the uplift, and in the range mode and the basin mode the height
 /// of the ground.
@@ -910,22 +931,24 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         seed_slider(ui, state);
     } else if globe.brush.mode == Mode::Push {
         // The motion of the pen and the flow set the distance.
-    } else {
-        // The slider shows the strength as a value of the layer.
-        let (min, max) = globe.brush.value_range;
-        let (span, scale) = (
-            max - min,
-            globe.brush.strength_value() / globe.brush.strength_m,
+    } else if globe.brush.mode == Mode::Noise {
+        let brush = &mut globe.brush;
+        let (scale, span) = (
+            brush.meters_value(1.0),
+            brush.value_range.1 - brush.value_range.0,
         );
-        let strength = egui::Slider::new(&mut globe.brush.strength_m, STRENGTH_M)
-            .logarithmic(true)
-            .custom_formatter(move |meters, _| world::value_text(meters * scale, span, &unit))
-            .custom_parser(move |text| {
-                let number: String = text.chars().take_while(|c| !c.is_alphabetic()).collect();
-                Some(number.trim().parse::<f64>().ok()? / scale)
-            })
-            .text(strength_name(globe.brush.mode));
-        ui.add(strength);
+        let raise = &mut brush.noise_raise_m;
+        ui.add(height_slider(raise, NOISE_M, scale, span, &unit).text("Raise"));
+        let lower = &mut brush.noise_lower_m;
+        ui.add(height_slider(lower, NOISE_M, scale, span, &unit).text("Lower"));
+    } else {
+        let brush = &mut globe.brush;
+        let (scale, span) = (
+            brush.meters_value(1.0),
+            brush.value_range.1 - brush.value_range.0,
+        );
+        let strength = height_slider(&mut brush.strength_m, STRENGTH_M, scale, span, &unit);
+        ui.add(strength.text(strength_name(brush.mode)));
     }
     let globe = &mut state.globe;
     if globe.brush.mode == Mode::Noise {
