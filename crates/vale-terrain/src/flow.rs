@@ -722,29 +722,32 @@ impl Rivers {
                 plain_factor(area_of(k), slope, world_km)
             })
             .collect();
-        let mean = |a: f64, b: f64| 0.5 * (a + b);
+        let values = |k: usize| [level(k), area_of(k), plains[k]];
+        self.curves_of(dir, values, after)
+    }
+
+    /// The curve of each river node. `values` gives the level, the area,
+    /// and the plain part of a node. `after` gives the level at the end of a
+    /// node that is not the donor of the node after it.
+    fn curves_of(
+        &self,
+        dir: impl Fn(V3) -> V3,
+        values: impl Fn(usize) -> [f64; 3],
+        after: impl Fn(usize) -> f64,
+    ) -> Vec<ChannelCurve> {
+        let count = self.cells.len();
+        let mean = |a: [f64; 3], b: [f64; 3]| std::array::from_fn(|i| 0.5 * (a[i] + b[i]));
         (0..count)
             .map(|k| {
                 let [a, b, c] = self.curve(k);
-                let here = [level(k), area_of(k), plains[k]];
+                let here = values(k);
                 let start = match self.donor[k] {
                     NONE => here,
-                    donor => {
-                        let d = donor as usize;
-                        [
-                            mean(level(d), here[0]),
-                            mean(area_of(d), here[1]),
-                            mean(plains[d], here[2]),
-                        ]
-                    }
+                    donor => mean(values(donor as usize), here),
                 };
                 let down = self.down[k] as usize;
                 let end = if down < count && self.donor[down] as usize == k {
-                    [
-                        mean(here[0], level(down)),
-                        mean(here[1], area_of(down)),
-                        mean(here[2], plains[down]),
-                    ]
+                    mean(here, values(down))
                 } else {
                     [after(k), here[1], here[2]]
                 };
@@ -1059,6 +1062,31 @@ impl ChannelMap {
 /// the world.
 pub fn channel_map(heights: &CoarseHeights, world_km: f64) -> ChannelMap {
     FlowMap::new(heights).channels(world_km)
+}
+
+/// The curves of the rivers of a flow on the cells of all faces, with `m`
+/// cells along one side of a face, for the erode brush. The level of a curve
+/// is the drop of its cells, and a curve has no floodplain. A river cell
+/// drains `min_area` or more. Only the curves with a drop are kept.
+pub(crate) fn drop_curves(
+    m: usize,
+    flow: &Drain,
+    min_area: f64,
+    drops: &[u16],
+) -> Vec<ChannelCurve> {
+    let dir = |i: usize| index_dir(m, i);
+    let mut rivers = Rivers::new(&flow.receiver, &flow.area, min_area, dir, dir);
+    rivers.smooth();
+    let count = rivers.cells.len();
+    let drop = |k: usize| f64::from(drops[rivers.cells[k] as usize]);
+    let values = |k: usize| [drop(k), f64::from(flow.area[rivers.cells[k] as usize]), 0.0];
+    let after = |k: usize| match rivers.down[k] as usize {
+        down if down < count => drop(down),
+        _ => drop(k),
+    };
+    let mut curves = rivers.curves_of(normalize, values, after);
+    curves.retain(|curve| curve.levels.iter().any(|&level| level > 0.0));
+    curves
 }
 
 /// A square of cells on the texel grid of one face. The grid continues past

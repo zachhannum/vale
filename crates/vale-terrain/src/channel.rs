@@ -44,7 +44,7 @@ pub const PLAIN_SLOPES: (f64, f64) = (2.0e-4, 1.0e-3);
 const DEFAULT_WORLD_KM: f64 = 6371.0;
 
 /// The number of 32-bit numbers of one curve in `ChannelBuffers::curves`.
-pub const CURVE_FLOATS: usize = 20;
+pub const CURVE_FLOATS: usize = 24;
 
 /// The settings of the channels of one stamp, as angles on the sphere.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -216,9 +216,18 @@ impl ChannelCut {
     /// the texel, before the depth of the channel scales it.
     pub fn channel(&self, at: &ChannelPlace, old: f64, rate: f64) -> f64 {
         let bed = at.level - self.depth * at.size;
-        let rise = ((at.distance - at.half) / self.texel).clamp(0.0, 1.0);
-        let weight = 1.0 - rise;
-        toward(old, bed + (at.level - bed) * rise, rate * at.size * weight)
+        let weight = self.channel_weight(at);
+        toward(
+            old,
+            at.level - (at.level - bed) * weight,
+            rate * at.size * weight,
+        )
+    }
+
+    /// The weight of the channel of a curve at a place, from 0 to 1. It is
+    /// 1 out to the half-width, and it goes down to 0 over one texel.
+    pub fn channel_weight(&self, at: &ChannelPlace) -> f64 {
+        1.0 - ((at.distance - at.half) / self.texel).clamp(0.0, 1.0)
     }
 
     /// The weight of the floodplain of a curve at a place, from 0 to 1. It
@@ -271,14 +280,13 @@ pub struct ChannelLines {
 
 /// The curves and the bins in flat arrays for the GPU.
 pub struct ChannelBuffers {
-    /// `CURVE_FLOATS` numbers for each curve: the 3 points, each with 4
-    /// numbers, then the 3 levels, the 3 areas, and the 3 plain parts, and
-    /// then 2 zeros.
+    /// `CURVE_FLOATS` numbers for each curve: the 3 points, then the 3
+    /// levels, the 3 areas, and the 3 plain parts. Each group of 3 numbers
+    /// has a 0 after it. With no curves, the list has one curve of zeros.
     pub curves: Vec<f32>,
-    /// The first item of each bin, and the end of the items.
-    pub starts: Vec<u32>,
-    /// The curve of each item.
-    pub items: Vec<u32>,
+    /// The number of bin starts, then the first item of each bin and the end
+    /// of the items, and then the curve of each item.
+    pub index: Vec<u32>,
 }
 
 /// The largest reach of the cut of a curve past its line, in radians, at
@@ -458,6 +466,20 @@ impl ChannelLines {
         }
     }
 
+    /// The drop of the erode brush at a texel in `bin` from the channels of
+    /// the curves. The level of a curve of the erode brush is its drop. The
+    /// largest drop of a channel times its weight wins. `cut` gives the
+    /// width and the texel, and its depth has no effect.
+    pub fn channel_drop(&self, bin: usize, p: V3, cut: &ChannelCut) -> f64 {
+        let each = self.near(bin).map(|curve| {
+            let (distance, [level, area, _]) = curve.nearest(p);
+            let half = cut.half_width(area);
+            let rise = ((distance - half) / cut.texel).clamp(0.0, 1.0);
+            (1.0 - rise) * level
+        });
+        each.fold(0.0, f64::max)
+    }
+
     /// The least distance of a place past the outer edge of the floodplain
     /// of each curve, in radians. Each curve counts, not only the curves of
     /// one bin.
@@ -468,21 +490,30 @@ impl ChannelLines {
 
     /// The curves and the bins in flat arrays for the GPU.
     pub fn to_gpu(&self) -> ChannelBuffers {
-        let mut curves = Vec::with_capacity(self.curves.len() * CURVE_FLOATS);
+        let mut curves = Vec::with_capacity(self.curves.len().max(1) * CURVE_FLOATS);
         for curve in &self.curves {
-            for p in curve.points {
-                curves.extend(p.map(|c| c as f32));
+            let groups = [curve.levels, curve.areas, curve.plains];
+            for values in curve.points.into_iter().chain(groups) {
+                curves.extend(values.map(|v| v as f32));
                 curves.push(0.0);
             }
-            for values in [curve.levels, curve.areas, curve.plains] {
-                curves.extend(values.map(|v| v as f32));
-            }
-            curves.extend([0.0; 2]);
         }
-        ChannelBuffers {
-            curves,
-            starts: self.starts.clone(),
-            items: self.items.clone(),
+        if curves.is_empty() {
+            curves.resize(CURVE_FLOATS, 0.0);
+        }
+        let mut index = Vec::with_capacity(1 + self.starts.len() + self.items.len());
+        index.push(self.starts.len() as u32);
+        index.extend(&self.starts);
+        index.extend(&self.items);
+        ChannelBuffers { curves, index }
+    }
+
+    /// The number of bins along one side of a face or of the window. Lines
+    /// with no curves can have 0.
+    pub fn bin_side(&self) -> usize {
+        match self.bins {
+            Bins::Faces { side } => side,
+            Bins::Window { window } => window.cells.div_ceil(WINDOW_BIN_CELLS),
         }
     }
 }
