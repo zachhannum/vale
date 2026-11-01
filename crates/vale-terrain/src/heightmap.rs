@@ -612,10 +612,16 @@ impl Heightmap {
         }
     }
 
+    /// The face and the texel that hold a direction.
+    pub fn texel_of(&self, d: V3) -> (usize, usize, usize) {
+        let (face, a, b) = face_of(d);
+        (face, self.index(warp(a)), self.index(warp(b)))
+    }
+
     /// The level at a direction, from the nearest texel.
     pub fn sample(&self, d: V3) -> u16 {
-        let (face, a, b) = face_of(d);
-        self.texel(face, self.index(warp(a)), self.index(warp(b)))
+        let (face, x, y) = self.texel_of(d);
+        self.texel(face, x, y)
     }
 
     /// The level of a texel. `x` and `y` can be outside the face by less than

@@ -1476,6 +1476,39 @@ fn command_z(h: &mut Harness<'static, AppState>, shift: bool) {
 }
 
 #[test]
+fn the_toolbar_has_the_terrain_fit_of_the_line_tool() {
+    use vale_app::ui::panels::{BALANCE, LINE_TOOL, TERRAIN_FIT};
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    state.globe.set_face_size(64);
+    state.add_height();
+    let layers = state.doc.project.layers();
+    let rivers = layers.iter().find(|l| l.name == "Rivers").unwrap().id;
+    state.select(Some(LayerRef::Vector(rivers)));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    assert!(h.query_by_label(TERRAIN_FIT).is_none());
+    h.get_by_label(LINE_TOOL).click();
+    h.run_steps(3);
+    assert!(h.state().globe.lining());
+    // The slider and its text are two nodes with the label.
+    let disabled = |h: &Harness<'_, AppState>, name: &str| {
+        let mut nodes = h.query_all_by_label(name).peekable();
+        assert!(nodes.peek().is_some(), "no {name}");
+        nodes.all(|node| node.accesskit_node().is_disabled())
+    };
+    assert!(!disabled(&h, TERRAIN_FIT));
+    assert!(disabled(&h, BALANCE));
+    h.get_by_label(TERRAIN_FIT).click();
+    h.run_steps(3);
+    assert!(h.state().globe.line.fit);
+    assert!(!disabled(&h, BALANCE));
+}
+
+#[test]
 fn the_toolbar_and_the_keys_work_the_measure_tool() {
     use vale_app::ui::pad::CLEAR_PATH;
     use vale_app::ui::panels::{MEASURE_TOOL, SNAP, SNAP_OPTIONS};

@@ -17,7 +17,7 @@ pub const JOIN: f64 = 12.0;
 /// The spacing of the path before the filter.
 const SPACING: f64 = 1.0;
 /// The width of the filter at a smoothing of 1, as a standard deviation.
-const SIGMA: f64 = 8.0;
+pub(super) const SIGMA: f64 = 8.0;
 /// The largest distance of a removed vertex from the stored line.
 const TOLERANCE: f64 = 0.1;
 /// A shorter stroke is a tap, and it makes no line.
@@ -32,12 +32,19 @@ const MAX_DLON: f64 = 45.0;
 pub struct LineSettings {
     /// From 0, which keeps each wiggle of the pen, to 1.
     pub smoothing: f64,
+    /// The stroke moves onto the terrain when the pen lifts.
+    pub fit: bool,
+    /// The balance of the fit, from 0, which keeps the sketch, to 1, which
+    /// follows the terrain.
+    pub terrain: f64,
 }
 
 impl Default for LineSettings {
     fn default() -> Self {
         LineSettings {
             smoothing: DEFAULT_SMOOTHING,
+            fit: false,
+            terrain: 0.5,
         }
     }
 }
@@ -390,6 +397,11 @@ struct Join {
     others: Vec<Vec<LonLat>>,
 }
 
+/// The line end that a stroke from `p` extends, on the unit sphere.
+pub(super) fn join_end(features: &[Feature], p: V3, scale: f64) -> Option<V3> {
+    nearest_end(features, p, JOIN / scale).map(|join| join.end)
+}
+
 fn nearest_end(features: &[Feature], p: V3, reach: f64) -> Option<Join> {
     let mut best: Option<(f64, Join)> = None;
     for f in features {
@@ -462,7 +474,7 @@ pub(super) fn chains(parts: &[Vec<LonLat>]) -> Vec<Vec<usize>> {
 }
 
 /// The points of the parts on the unit sphere, with the joints once.
-fn dirs(parts: &[Vec<LonLat>]) -> Vec<V3> {
+pub(super) fn dirs(parts: &[Vec<LonLat>]) -> Vec<V3> {
     let mut out: Vec<V3> = Vec::new();
     for p in parts.iter().flatten() {
         let d = lonlat_to_dir(p[0], p[1]);
@@ -485,7 +497,7 @@ fn tail(path: &[V3], len: f64) -> Vec<V3> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeMap;
 
     use std::sync::Arc;
@@ -498,7 +510,7 @@ mod tests {
     use crate::globe::snap::tests as snap_test;
 
     /// Points per radian: a sphere with a radius of 300 points on screen.
-    const SCALE: f64 = 300.0;
+    pub(in crate::globe) const SCALE: f64 = 300.0;
 
     fn turns(path: &[V3]) -> Vec<f64> {
         path.windows(3)
@@ -574,16 +586,16 @@ mod tests {
         assert!(angle(path[path.len() - 1], samples[2]) < 1e-12);
     }
 
-    fn free(samples: Vec<V3>) -> Vec<Run> {
+    pub(in crate::globe) fn free(samples: Vec<V3>) -> Vec<Run> {
         vec![Run::Free(samples)]
     }
 
-    fn stroke(from: LonLat, to: LonLat, n: usize) -> Vec<V3> {
+    pub(in crate::globe) fn stroke(from: LonLat, to: LonLat, n: usize) -> Vec<V3> {
         let (a, b) = (lonlat_to_dir(from[0], from[1]), lonlat_to_dir(to[0], to[1]));
         (0..=n).map(|i| lerp(a, b, i as f64 / n as f64)).collect()
     }
 
-    fn lines(edit: &LineEdit) -> &Vec<Vec<LonLat>> {
+    pub(in crate::globe) fn lines(edit: &LineEdit) -> &Vec<Vec<LonLat>> {
         let (LineEdit::New(Geometry::Lines(parts))
         | LineEdit::Extend {
             geometry: Geometry::Lines(parts),
@@ -665,7 +677,7 @@ mod tests {
         assert!(steps_are_short(&parts));
     }
 
-    fn feature(parts: Vec<Vec<LonLat>>) -> Feature {
+    pub(in crate::globe) fn feature(parts: Vec<Vec<LonLat>>) -> Feature {
         Feature::new(Geometry::Lines(parts), BTreeMap::new())
     }
 

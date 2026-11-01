@@ -324,6 +324,19 @@ pub fn row_slider(
     fraction: &mut f64,
     value: &str,
 ) -> bool {
+    row_slider_enabled(ui, controls, name, label, fraction, value, true)
+}
+
+/// A `row_slider` that is dim and does not move while `enabled` is false.
+pub fn row_slider_enabled(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    fraction: &mut f64,
+    value: &str,
+    enabled: bool,
+) -> bool {
     let size = vec2(ui.available_width(), PANEL_ROW);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let resp = hit(
@@ -332,12 +345,13 @@ pub fn row_slider(
         rect,
         name,
         Sense::click_and_drag(),
-        true,
+        enabled,
         None,
     );
+    let text = fade(theme::TEXT, enabled);
     let label = ui
         .painter()
-        .layout_no_wrap(label.to_string(), theme::body(), theme::TEXT);
+        .layout_no_wrap(label.to_string(), theme::body(), text);
     let left = rect.left() + (label.size().x + 16.0).max(72.0) + THUMB / 2.0;
     let right = rect.right() - 56.0 - THUMB / 2.0;
     let before = *fraction;
@@ -359,12 +373,17 @@ pub fn row_slider(
     let x = left + *fraction as f32 * (right - left);
     let whole = Rect::from_min_max(pos2(left - 6.0, y - 3.0), pos2(right + 6.0, y + 3.0));
     let filled = Rect::from_min_max(whole.min, pos2(x, y + 3.0));
-    track(ui, whole, filled, pos2(x, y));
+    if enabled {
+        track(ui, whole, filled, pos2(x, y));
+    } else {
+        ui.painter().rect_filled(whole, 3.0, theme::track());
+    }
     let painter = ui.painter();
     let at = pos2(rect.left(), y - label.size().y / 2.0);
-    painter.galley(at, label, theme::TEXT);
+    painter.galley(at, label, text);
     let at = pos2(rect.right(), y);
-    painter.text(at, Align2::RIGHT_CENTER, value, theme::mono(), theme::MUTE);
+    let color = fade(theme::MUTE, enabled);
+    painter.text(at, Align2::RIGHT_CENTER, value, theme::mono(), color);
     *fraction != before
 }
 
@@ -381,18 +400,36 @@ pub fn switch_row(
     label: &str,
     on: &mut bool,
 ) -> bool {
+    switch_row_enabled(ui, controls, name, label, on, true)
+}
+
+/// A `switch_row` that is dim and does not change while `enabled` is
+/// false.
+pub fn switch_row_enabled(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    label: &str,
+    on: &mut bool,
+    enabled: bool,
+) -> bool {
     let size = vec2(ui.available_width(), PANEL_ROW);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(*on));
+    let resp = hit(ui, controls, rect, name, Sense::click(), enabled, Some(*on));
     let changed = resp.clicked();
     if changed {
         *on = !*on;
     }
     let y = rect.center().y;
-    paint_switch(ui, pos2(rect.right(), y), *on);
+    let mut track = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    if !enabled {
+        track.multiply_opacity(theme::OFF);
+    }
+    paint_switch(&track, pos2(rect.right(), y), *on);
     let at = pos2(rect.left(), y);
+    let color = fade(theme::TEXT, enabled);
     ui.painter()
-        .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+        .text(at, Align2::LEFT_CENTER, label, theme::body(), color);
     changed
 }
 

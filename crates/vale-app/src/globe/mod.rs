@@ -23,6 +23,7 @@ pub mod brush;
 pub mod edges;
 pub mod erode;
 pub mod export;
+pub mod fit;
 pub mod flat;
 pub mod gpu;
 pub mod image;
@@ -738,6 +739,9 @@ pub struct Globe {
     pub line: LineSettings,
     /// The line tool can draw: the selected layer is a visible line layer.
     pub lineable: bool,
+    /// The height layer that the terrain fit of the line tool follows: the
+    /// first height layer that the globe holds.
+    pub fit_layer: Option<RasterId>,
     /// The polygon tool can draw: the selected layer is a visible polygon
     /// layer.
     pub fillable: bool,
@@ -869,6 +873,7 @@ impl Globe {
             paint_wanted: true,
             line: LineSettings::default(),
             lineable: false,
+            fit_layer: None,
             fillable: false,
             pointable: false,
             draw_layer: None,
