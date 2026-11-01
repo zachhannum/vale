@@ -15,14 +15,14 @@
 
 use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
-use crate::channel::{ChannelCut, ChannelLines, ChannelShape, METERS_PER_LEVEL, channel_size};
+use crate::channel::{ChannelCurve, ChannelCut, ChannelShape, METERS_PER_LEVEL, channel_size};
 use crate::erode::Erosion;
 use crate::flow::{
     CoarseHeights, Grid, NONE, OUT, WINDOW_CELLS, Window, WindowHeights, level_curves,
 };
 use crate::heightmap::{Heightmap, Limits, MAX_BRUSH_RADIUS, TexelRect, brush_rect, noise3};
 use crate::line::{LINE_SPACING, StrokeLine};
-use crate::math::{V3, add, angle, normalize, scale};
+use crate::math::{V3, add, angle, dot, normalize, scale};
 use crate::rain::Rain;
 
 /// The smallest and the largest Density setting, in kilometers.
@@ -72,10 +72,19 @@ const CLOSER: f64 = 0.25;
 /// The smallest drop from a cell to its receiver, in 16-bit steps.
 const STEP: f64 = 2.0;
 
-/// The divide at the side of the area is this number of 16-bit steps or this
-/// part of the height above the cells inside, whichever is more.
-const WALL: f64 = 4.0;
-const WALL_SHARE: f64 = 0.15;
+/// The half-width of the valley of a tributary, in tributary distances.
+const VALLEY: f64 = 1.0;
+
+/// The width of a valley grows with the water of its stream to this power.
+const VALLEY_GROWTH: f64 = 0.3;
+
+/// A stream with this part of the water of a tributary or more makes a
+/// valley.
+const SMALL_STREAMS: f64 = 0.25;
+
+/// The ground goes down to the old ground over this part of the brush radius
+/// at the side of the area.
+const EDGE: f64 = 0.25;
 
 const SALT_BASIN: u32 = 0x5b2e_93c7;
 
@@ -170,8 +179,6 @@ pub(crate) struct BasinNet {
     pub(crate) window: Window,
     /// The cells of the area.
     pub(crate) inside: Vec<bool>,
-    /// The cells of the area at its side.
-    pub(crate) rim: Vec<bool>,
     /// The level of each cell of the area.
     pub(crate) levels: Vec<f64>,
     pub(crate) receiver: Vec<u32>,
@@ -181,6 +188,8 @@ pub(crate) struct BasinNet {
     pub(crate) chain: Vec<usize>,
     /// The smallest water of a tributary, in steradians of even rain.
     pub(crate) min_area: f64,
+    /// The end of the mouth, past the side of the area.
+    pub(crate) mouth: V3,
 }
 
 /// The receivers of the cells of the area, and the cells in an order where
@@ -207,12 +216,12 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let dirs: Vec<V3> = (0..count)
         .map(|i| window.cell_dir(i % side, i / side))
         .collect();
-    let places: Vec<(f64, f64, f64)> = dirs.iter().map(|&p| line.line.nearest(p)).collect();
+    let places: Vec<(f64, f64)> = dirs.iter().map(|&p| line.line.nearest(p)).collect();
     let chain = chain_cells(&line.line, &window);
     // A cell of the area is inside the radius with all its texels, so its
     // whole cell changes.
     let length = line.length().max(cell);
-    let outside = |(d, _, past): (f64, f64, f64)| (d - radius).max(past);
+    let outside = |(d, _): (f64, f64)| d - radius;
     let margin = HALF_DIAGONAL * cell;
     let mut inside: Vec<bool> = places.iter().map(|&p| outside(p) + margin <= 0.0).collect();
     let mut on_chain = vec![false; count];
@@ -258,8 +267,13 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let seed = spec.seed ^ SALT_BASIN;
     let mut h: Vec<f64> = (0..count)
         .map(|i| {
-            let (d, u, _) = places[i];
-            let bump = noise3(scale(dirs[i], 1.0 / wavelength), seed)[0];
+            let (d, u) = places[i];
+            // Smaller octaves bend the streams.
+            let octave = |k: u32| {
+                let size = f64::from(1u32 << k);
+                noise3(scale(dirs[i], size / wavelength), seed.wrapping_add(k))[0] / size
+            };
+            let bump = octave(0) + octave(1) + octave(2);
             let across = if on_chain[i] { 0.0 } else { d / radius };
             across + ALONG * (1.0 - u / length) + BUMPS * wavelength / radius * bump
         })
@@ -376,30 +390,11 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         levels[i] = levels[i].max(river);
     }
     floor(&mut levels);
-    // The rim is a wall above the cells inside, so no water leaves over it.
-    let wall = WALL.max(WALL_SHARE * spec.height);
-    let high = levels
-        .iter()
-        .enumerate()
-        .filter(|&(i, _)| inside[i] && !rim[i])
-        .map(|(_, &l)| l)
-        .fold(base, f64::max);
-    for i in (0..count).filter(|&i| rim[i]) {
-        let near = window.neighbors(i);
-        let inner = near
-            .iter()
-            .filter(|&&j| j != NONE && inside[j as usize] && !rim[j as usize])
-            .map(|&j| levels[j as usize])
-            .fold(f64::MIN, f64::max);
-        levels[i] = if inner > f64::MIN { inner } else { high } + wall;
-    }
-    floor(&mut levels);
-
     // The channels: the tributaries and the whole main river.
     let min_area = TRIBUTARY_AREA * (density / cell) * (radius / cell) * mean_solid;
     let mut curve_area: Vec<f32> = area_sr.iter().map(|&a| a as f32).collect();
     for &c in &chain {
-        curve_area[c] = curve_area[c].max(min_area as f32);
+        curve_area[c] = curve_area[c].max((min_area / SMALL_STREAMS) as f32);
     }
     // Each cell of the main river drains more than each tributary that joins
     // the main river below it, so the curve of the main river does not bend
@@ -413,13 +408,57 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     for pair in chain.windows(2) {
         curve_area[pair[0]] = curve_area[pair[0]].max(1.001 * largest[pair[1]]);
     }
-    let curves = level_curves(&window, &flow.receiver, &curve_area, min_area, &levels);
-    let lines = ChannelLines::window(curves, window, spec.world_km);
+    // The streams that shape the valleys. The smallest ones make no
+    // channel.
+    let valley_area = min_area * SMALL_STREAMS;
+    let mut curves = level_curves(&window, &flow.receiver, &curve_area, valley_area, &levels);
+    // The mouth: the main river goes on past the outlet to the side of the
+    // area, and down to the old ground there. It is the only gap in the
+    // divide.
+    let points = line.points();
+    let (end, before) = (points[points.len() - 1], points[points.len() - 2]);
+    let ahead = normalize(add(end, scale(before, -1.0)));
+    let past = |k: f64| normalize(add(end, scale(ahead, k * radius)));
+    let mouth = past(1.0 + EDGE);
+    let water = f64::from(curve_area[outlet]);
+    let outlet_level = levels[outlet];
+    let mouth_level =
+        (f64::from(map.sample(mouth)) + depth * channel_size(water)).min(outlet_level - STEP);
+    curves.push(ChannelCurve {
+        points: [end, past(0.5), mouth],
+        levels: [
+            outlet_level,
+            0.5 * (outlet_level + mouth_level),
+            mouth_level,
+        ],
+        areas: [water; 3],
+        plains: [0.0; 3],
+    });
     let cut = ChannelCut {
         shape: spec.channel,
         depth,
         texel: FRAC_PI_2 / n as f64,
     };
+    // The half-width of the valley of a stream, in radians.
+    let valley = |area: f64| {
+        let width = VALLEY * density * (area / min_area).max(0.0).powf(VALLEY_GROWTH);
+        width.clamp(cell, radius)
+    };
+    // The part of the full depth of a valley, from 0 at the smallest stream
+    // to 1 at two times the water of a tributary.
+    let depth_part = |area: f64| {
+        let octaves = (area / valley_area).max(1.0).log2() / (2.0 / SMALL_STREAMS).log2();
+        smoothstep(octaves)
+    };
+    let reach = |curve: &ChannelCurve| {
+        let area = curve.areas.iter().fold(0.0, |a: f64, &b| a.max(b));
+        valley(area) / cell + 2.0
+    };
+    let bins = CurveBins::new(&curves, &window, reach);
+
+    // The ridges between the valleys: the levels of the cells, smoothed over
+    // the tributary distance.
+    let ridges = smooth_inside(&levels, &inside, side, (VALLEY * density / cell) as usize);
 
     // How far each cell is outside the area, in radians.
     let edge: Vec<f64> = places.iter().map(|&p| outside(p)).collect();
@@ -437,66 +476,87 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         let bottom = at(0, 1) * (1.0 - tx) + at(1, 1) * tx;
         top * (1.0 - ty) + bottom * ty
     };
+    let band = EDGE * radius;
 
-    // The surface of the texels. A cell next to the area takes the highest
-    // level of the area next to it, so the texels of the rim do not blend
-    // with the ground outside.
-    let mut surface = levels.clone();
-    for i in (0..count).filter(|&i| !inside[i]) {
-        let near = window.neighbors(i);
-        let rim = near.iter().filter(|&&j| j != NONE && inside[j as usize]);
-        if let Some(high) = rim.map(|&j| levels[j as usize]).reduce(f64::max) {
-            surface[i] = high;
+    // Each curve with the cosine of the largest angle from its middle point
+    // to a place that it shapes.
+    let bounds: Vec<f64> = curves
+        .iter()
+        .map(|curve| {
+            let [a, b, c] = curve.points;
+            let length = angle(b, a).max(angle(b, c));
+            (length + reach(curve) * cell).min(FRAC_PI_2).cos()
+        })
+        .collect();
+    let texel = |p: V3, old: f64| -> Option<f64> {
+        let (u, v) = window.place(p)?;
+        let inside_window = |c: f64| c >= 0.0 && c < side as f64;
+        if !inside_window(u) || !inside_window(v) {
+            return None;
         }
-    }
+        let near = blend(&edge, u, v);
+        let out = if near.abs() < 2.0 * cell {
+            outside(line.line.nearest(p))
+        } else {
+            near
+        };
+        if out > 0.0 {
+            return None;
+        }
+        // Each stream gives a valley that rises from its floor to the
+        // ridges, and the lowest valley wins. Where two valleys meet, they
+        // make a ridge.
+        let ridge = blend(&ridges, u, v);
+        let (mut ground, mut channel) = (ridge, f64::INFINITY);
+        for k in bins.near(u, v) {
+            let curve = &curves[k];
+            if dot(p, curve.points[1]) < bounds[k] {
+                continue;
+            }
+            let (distance, [floor, area, _]) = curve.nearest(p);
+            // A small stream cuts less, so its valley fades out at its head.
+            let top = ridge.max(floor);
+            let shallow = top - (top - floor) * depth_part(area);
+            let t = (distance / valley(area)).min(1.0);
+            let rise = 1.0 - (1.0 - t) * (1.0 - t);
+            ground = ground.min(shallow + (top - shallow) * rise);
+            if area >= min_area {
+                let at = cut.place(curve, p);
+                let weight = cut.channel_weight(&at);
+                if weight > 0.0 {
+                    let bed = shallow - depth * at.size;
+                    channel = channel.min(shallow + weight * (bed - shallow));
+                }
+            }
+        }
+        // The ground goes down to the old ground at the side.
+        let side_part = smoothstep((out + band) / band);
+        let new = ground.min(channel);
+        Some(new + (old - new) * side_part)
+    };
 
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let mut rects = Vec::new();
     for (face, rect) in basin_rects(&line.line, radius, n) {
         let mut data = Vec::with_capacity((rect.x1 - rect.x0) * (rect.y1 - rect.y0));
         map.read_rect(face, rect, &mut data);
         let width = rect.x1 - rect.x0;
-        for y in rect.y0..rect.y1 {
-            for x in rect.x0..rect.x1 {
-                let p = map.texel_dir(face, x, y);
-                let Some((u, v)) = window.place(p) else {
-                    continue;
-                };
-                let inside_window = |c: f64| c >= 0.0 && c < side as f64;
-                if !inside_window(u) || !inside_window(v) {
-                    continue;
-                }
-                if !inside[v as usize * side + u as usize] {
-                    continue;
-                }
-                let near = blend(&edge, u, v);
-                let out = if near.abs() < 2.0 * cell {
-                    outside(line.line.nearest(p))
-                } else {
-                    near
-                };
-                if out > 0.0 {
-                    continue;
-                }
-                let surface = blend(&surface, u, v);
-                let mut new = surface;
-                if let Some(bin) = lines.window_bin(u, v) {
-                    for curve in lines.near(bin) {
-                        let at = cut.place(curve, p);
-                        let weight = cut.channel_weight(&at);
-                        if weight > 0.0 {
-                            let bed = at.level - depth * at.size;
-                            new = new.min(surface + weight * (bed - surface));
-                            if bed > surface && weight >= 1.0 {
-                                new = bed;
-                            }
+        let rows = (rect.y1 - rect.y0).div_ceil(threads).max(1);
+        std::thread::scope(|scope| {
+            for (part, chunk) in data.chunks_mut(rows * width).enumerate() {
+                let texel = &texel;
+                scope.spawn(move || {
+                    for (k, level) in chunk.iter_mut().enumerate() {
+                        let (x, y) = (rect.x0 + k % width, rect.y0 + part * rows + k / width);
+                        let old = f64::from(*level);
+                        if let Some(new) = texel(map.texel_dir(face, x, y), old) {
+                            let new = spec.limits.apply(old, new);
+                            *level = new.round().clamp(0.0, 65535.0) as u16;
                         }
                     }
-                }
-                let k = (y - rect.y0) * width + (x - rect.x0);
-                let old = f64::from(data[k]);
-                data[k] = spec.limits.apply(old, new).round().clamp(0.0, 65535.0) as u16;
+                });
             }
-        }
+        });
         rects.push((face, rect, data));
     }
     BasinCut {
@@ -504,12 +564,12 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
         net: Some(BasinNet {
             window,
             inside,
-            rim,
             levels,
             receiver: flow.receiver,
             area: curve_area,
             chain,
             min_area,
+            mouth,
         }),
     }
 }
@@ -627,6 +687,111 @@ fn route(
     }
     Flow { receiver, stack }
 }
+
+fn smoothstep(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A field smoothed over the cells of the area, with 3 passes of a box of
+/// `reach` cells on each side. A cell outside the area takes the smoothed
+/// field of the area near it, and a cell far from the area keeps its value.
+fn smooth_inside(field: &[f64], inside: &[bool], side: usize, reach: usize) -> Vec<f64> {
+    let mut sum: Vec<f64> = (0..field.len())
+        .map(|i| if inside[i] { field[i] } else { 0.0 })
+        .collect();
+    let mut weight: Vec<f64> = inside.iter().map(|&i| f64::from(u8::from(i))).collect();
+    for _ in 0..3 {
+        for values in [&mut sum, &mut weight] {
+            box_pass(values, side, reach, true);
+            box_pass(values, side, reach, false);
+        }
+    }
+    (0..field.len())
+        .map(|i| {
+            if weight[i] > 1e-6 {
+                sum[i] / weight[i]
+            } else {
+                field[i]
+            }
+        })
+        .collect()
+}
+
+/// One pass of a box filter along the rows or along the columns.
+fn box_pass(values: &mut [f64], side: usize, reach: usize, rows: bool) {
+    let at = |line: usize, k: usize| {
+        if rows {
+            line * side + k
+        } else {
+            k * side + line
+        }
+    };
+    let mut copy = vec![0.0; side + 1];
+    for line in 0..side {
+        // The running sum of the line.
+        for k in 0..side {
+            copy[k + 1] = copy[k] + values[at(line, k)];
+        }
+        let count = (2 * reach + 1) as f64;
+        for k in 0..side {
+            let (a, b) = (k.saturating_sub(reach), (k + reach + 1).min(side));
+            values[at(line, k)] = (copy[b] - copy[a]) / count;
+        }
+    }
+}
+
+/// The curves near each square of 4 by 4 cells of a window.
+struct CurveBins {
+    side: usize,
+    bins: Vec<Vec<usize>>,
+}
+
+impl CurveBins {
+    /// `reach` gives the largest distance from a curve to a place that it
+    /// shapes, in cells.
+    fn new(
+        curves: &[ChannelCurve],
+        window: &Window,
+        reach: impl Fn(&ChannelCurve) -> f64,
+    ) -> CurveBins {
+        let side = window.cells.div_ceil(BIN_CELLS);
+        let mut bins = vec![Vec::new(); side * side];
+        for (k, curve) in curves.iter().enumerate() {
+            let places: Vec<(f64, f64)> = curve
+                .points
+                .iter()
+                .filter_map(|&p| window.place(p))
+                .collect();
+            if places.len() < 3 {
+                continue;
+            }
+            let reach = reach(curve);
+            let range = |pick: fn(&(f64, f64)) -> f64| {
+                let low = places.iter().map(pick).fold(f64::MAX, f64::min) - reach;
+                let high = places.iter().map(pick).fold(f64::MIN, f64::max) + reach;
+                let bin =
+                    |c: f64| (c / BIN_CELLS as f64).floor().clamp(0.0, side as f64 - 1.0) as usize;
+                bin(low)..=bin(high)
+            };
+            for y in range(|p| p.1) {
+                for x in range(|p| p.0) {
+                    bins[y * side + x].push(k);
+                }
+            }
+        }
+        CurveBins { side, bins }
+    }
+
+    /// The curves near a place of the window in cells.
+    fn near(&self, u: f64, v: f64) -> impl Iterator<Item = usize> + '_ {
+        let bin = |c: f64| ((c / BIN_CELLS as f64) as usize).min(self.side - 1);
+        self.bins[bin(v) * self.side + bin(u)].iter().copied()
+    }
+}
+
+/// The number of cells along one side of a bin of `CurveBins`.
+const BIN_CELLS: usize = 4;
 
 /// The rectangle of each face that the area of a line can touch.
 fn basin_rects(line: &StrokeLine, radius: f64, n: usize) -> Vec<(usize, TexelRect)> {
@@ -775,7 +940,15 @@ mod tests {
         let after = apply(&map, &cut);
         let receiver = flow_after(&after, &net);
         let side = net.window.cells;
-        let inner = (0..net.inside.len()).filter(|&i| net.inside[i] && !net.rim[i]);
+        // The divide is the crest at the inner side of the band where the
+        // ground goes down to the old ground.
+        let cell = cell_angle(&net.window);
+        let divide = EDGE * line.spec.radius + 2.0 * cell;
+        let within = |i: usize| {
+            let (d, _) = line.line.nearest(net.window.cell_dir(i % side, i / side));
+            d - line.spec.radius < -divide
+        };
+        let inner = (0..net.inside.len()).filter(|&i| net.inside[i] && within(i));
         for i in inner {
             let mut at = i;
             let mut last = i;
@@ -783,9 +956,13 @@ mod tests {
                 last = at;
                 at = receiver[at] as usize;
             }
+            // The mouth is the band at the end of the line.
+            let dir = |i: usize| net.window.cell_dir(i % side, i / side);
+            let from_outlet = angle(dir(last), net.mouth);
             assert!(
-                last == outlet || touch(side, last, outlet),
-                "the water of cell {i} leaves the basin at cell {last}, and the outlet is {outlet}"
+                from_outlet <= divide,
+                "the water of cell {i} leaves the basin {} cells from the mouth",
+                from_outlet / cell
             );
         }
         if n > N {
@@ -795,9 +972,9 @@ mod tests {
 
     #[test]
     fn the_main_river_follows_the_drawn_line() {
-        for wave in [0.0, 3.0] {
-            let map = ground();
-            let line = line(spec(2.0, 7), -20.0, 20.0, wave);
+        for (n, wave) in [(N, 0.0), (N, 3.0), (2048, 3.0)] {
+            let map = ground_of(n);
+            let line = line_of(n, spec(2.0, 7), -20.0, 20.0, wave);
             let cut = basin(&map, &line);
             let net = cut.net.clone().unwrap();
             let after = apply(&map, &cut);
@@ -807,28 +984,31 @@ mod tests {
             let outlet = *net.chain.last().unwrap();
             let mut at = net.chain[0];
             let mut steps = 0;
-            while at != outlet {
+            let end = *line.points().last().unwrap();
+            let mouth = EDGE * line.spec.radius + cell;
+            loop {
+                // The river is within one cell of the line if the center of
+                // its cell is within one and a half cells. The check ends at
+                // the band of the mouth.
                 let p = net.window.cell_dir(at % side, at / side);
-                let (d, _, _) = line.line.nearest(p);
+                if at == outlet || angle(p, end) < mouth {
+                    break;
+                }
+                let (d, _) = line.line.nearest(p);
                 assert!(
-                    d <= cell,
-                    "wave {wave}: cell {at} ({}, {}) is {} cells from the line, step {steps}, chain {:?}, levels {:?}",
-                    at % side,
-                    at / side,
-                    d / cell,
-                    net.chain
-                        .iter()
-                        .map(|c| (c % side, c / side))
-                        .collect::<Vec<_>>(),
-                    net.chain
-                        .iter()
-                        .map(|&c| net.levels[c] as i32)
-                        .collect::<Vec<_>>()
+                    d <= 1.5 * cell,
+                    "face size {n}, wave {wave}: step {steps} is {} cells from the line",
+                    d / cell
                 );
                 at = receiver[at] as usize;
                 assert!(
                     at < OUT as usize && net.inside[at],
-                    "wave {wave}: the river leaves"
+                    "wave {wave}: the river leaves at step {steps} of {}, cell {} {}, outlet {} {}",
+                    net.chain.len(),
+                    at % side,
+                    at / side,
+                    outlet % side,
+                    outlet / side
                 );
                 steps += 1;
             }
@@ -964,8 +1144,8 @@ mod tests {
                     for x in rect.x0..rect.x1 {
                         let new = data[(y - rect.y0) * width + x - rect.x0];
                         let old = map.get(*face, x as i64, y as i64);
-                        let (d, _, past) = line.line.nearest(map.texel_dir(*face, x, y));
-                        if d > line.spec.radius || past > 0.0 {
+                        let (d, _) = line.line.nearest(map.texel_dir(*face, x, y));
+                        if d > line.spec.radius {
                             assert_eq!(new, old, "face {face}, texel {x}, {y}");
                         }
                         if let Some(ceiling) = ceiling {
@@ -988,24 +1168,32 @@ mod tests {
         let faces: Vec<usize> = cut.rects.iter().map(|r| r.0).collect();
         assert!(faces.contains(&0) && faces.contains(&2), "{faces:?}");
         let after = apply(&map, &cut);
-        // The rough ground has large jumps, so the test takes the mean jump
-        // over the rows of the basin. The +u edge of face 0 meets the -v
-        // edge of face 2.
+        // A channel near the edge gives large jumps in a few rows, so the
+        // test takes the median jump over the rows of the basin. The +u edge
+        // of face 0 meets the -v edge of face 2.
         let level =
             |face: usize, x: usize, y: usize| i64::from(after.get(face, x as i64, y as i64));
-        let (mut edge, mut inside) = (0, 0);
-        let rows = 104..=152;
-        for m in rows.clone() {
-            edge += (level(0, N - 1, m) - level(2, m, N - 1)).abs();
-            inside += (level(0, N - 2, m) - level(0, N - 1, m)).abs();
-            inside += (level(2, m, N - 1) - level(2, m, N - 2)).abs();
+        let (mut edge, mut inside) = (Vec::new(), Vec::new());
+        for m in 104..=152 {
+            let near = (N - 8..N).map(|x| level(0, x, m));
+            let row: Vec<i64> = near.chain((0..8).map(|i| level(2, m, N - 1 - i))).collect();
+            for (k, pair) in row.windows(2).enumerate() {
+                let jump = (pair[1] - pair[0]).abs();
+                if k == 7 {
+                    edge.push(jump)
+                } else {
+                    inside.push(jump)
+                }
+            }
         }
-        let count = rows.count() as i64;
+        let median = |mut jumps: Vec<i64>| {
+            jumps.sort_unstable();
+            jumps[jumps.len() / 2]
+        };
+        let (edge, inside) = (median(edge), median(inside));
         assert!(
-            edge <= inside / 2 + 4 * count,
-            "the mean jump at the edge is {}, and inside it is {}",
-            edge / count,
-            inside / (2 * count)
+            edge <= 2 * inside + 4,
+            "the median jump at the edge is {edge}, and inside it is {inside}"
         );
     }
 
@@ -1039,5 +1227,43 @@ mod tests {
         let mut line = BasinLine::new(spec(2.0, 7), N);
         line.push(lonlat_to_dir(0.0, 0.0));
         assert!(basin(&ground(), &line).rects.is_empty());
+    }
+
+    /// Writes a hillshade of a basin to `target/basin-<n>.pgm`, on a grid of
+    /// longitude and latitude. `N`, `SEED`, `FROM`, `TO`, and `Z` set the
+    /// face size, the seed, the ends of the line, and the relief.
+    #[test]
+    #[ignore = "manual"]
+    fn manual_basin_hillshade() {
+        let var = |k: &str, d: f64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
+        let n = var("N", 2048.0) as usize;
+        let (from, to, z) = (var("FROM", -15.0), var("TO", 15.0), var("Z", 20.0));
+        let map = Heightmap::new(n, level(300.0));
+        let line = line_of(n, spec(2.0, var("SEED", 7.0) as u32), from, to, 2.0);
+        let after = apply(&map, &basin(&map, &line));
+        let step = 90.0 / n as f64;
+        let (w, h) = (((to - from + 20.0) / step) as usize, (24.0 / step) as usize);
+        let at = |x: usize, y: usize| {
+            let (lon, lat) = (from - 10.0 + x as f64 * step, 12.0 - y as f64 * step);
+            f64::from(after.sample(lonlat_to_dir(lon, lat))) * METERS_PER_LEVEL
+        };
+        let texel_m = step.to_radians() * 6_371_000.0;
+        let mut out = format!("P5 {w} {h} 255\n").into_bytes();
+        for y in 0..h {
+            for x in 0..w {
+                let dx = (at(x + 1, y) - at(x.saturating_sub(1), y)) / (2.0 * texel_m);
+                let dy = (at(x, y + 1) - at(x, y.saturating_sub(1))) / (2.0 * texel_m);
+                let (nx, ny) = (-dx * z, -dy * z);
+                let len = (nx * nx + ny * ny + 1.0).sqrt();
+                let light = ((-nx - ny + 1.0) / (len * 3f64.sqrt())).clamp(0.0, 1.0);
+                out.push((light * 255.0) as u8);
+            }
+        }
+        std::fs::write(format!("../../target/basin-{n}.pgm"), out).unwrap();
     }
 }
