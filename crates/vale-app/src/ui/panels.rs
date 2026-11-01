@@ -39,6 +39,10 @@ pub const POINT_TOOL: &str = "Point";
 pub const MEASURE_TOOL: &str = "Measure";
 /// The slider of the smoothing of the line tool.
 pub const SMOOTHING: &str = "Smoothing";
+/// The check box of the terrain fit of the line tool.
+pub const TERRAIN_FIT: &str = "Terrain fit";
+/// The slider of the balance between the sketch and the terrain.
+pub const TERRAIN: &str = "Terrain";
 /// The check box that turns all snapping on and off.
 pub const SNAP: &str = "Snap";
 /// The menu of the snap targets and the snap distance.
@@ -123,6 +127,18 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                             .text(SMOOTHING);
                         if ui.add(slider).changed() {
                             globe.line.smoothing = percent / 100.0;
+                        }
+                    }
+                    if globe.lining() {
+                        let terrain = globe.fit_layer.is_some();
+                        let fit = egui::Checkbox::new(&mut globe.line.fit, TERRAIN_FIT);
+                        ui.add_enabled(terrain, fit);
+                        let mut percent = globe.line.terrain * 100.0;
+                        let slider = egui::Slider::new(&mut percent, 0.0..=100.0)
+                            .suffix(" %")
+                            .text(TERRAIN);
+                        if ui.add_enabled(terrain && globe.line.fit, slider).changed() {
+                            globe.line.terrain = percent / 100.0;
                         }
                     }
                     let rasters = raster_layers(state);

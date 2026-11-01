@@ -58,6 +58,13 @@ pub const POINT: &str = "Point";
 pub const SMOOTHING: &str = "Smoothing";
 /// The button of the brush card that turns all snapping on and off.
 pub const SNAP: &str = "Snap";
+/// The button of the brush card that turns the terrain fit of the line
+/// tool on and off.
+pub const TERRAIN_FIT: &str = "Terrain fit";
+/// The switch of the sheet that turns the terrain fit on and off.
+pub const TERRAIN_FIT_SWITCH: &str = "Line terrain fit";
+/// The slider of the balance between the sketch and the terrain.
+pub const TERRAIN_BALANCE: &str = "Terrain fit balance";
 /// The cell of the tool strip that chooses the Measure tool.
 pub const MEASURE: &str = "Measure";
 /// The cell of the card of the Measure tool that clears the path.
@@ -947,9 +954,11 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 // With a vector layer, the card has the snap button. With a
                 // line or polygon layer, it also has the smoothing of the
                 // tool.
+                // A line layer also has the terrain fit button.
+                let fit = state.globe.lineable;
                 if vector {
                     if line {
-                        let height = 2.0 * height - CELL.1;
+                        let height = 2.0 * height - CELL.1 - if fit { CELL.1 } else { 0.0 };
                         percent_slider(&mut state.globe.line.smoothing, 0.0..=1.0, |f, text| {
                             widgets::vertical_slider(
                                 &mut ui, controls, SMOOTHING, height, f, text, true,
@@ -968,6 +977,23 @@ fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                     );
                     if cell.clicked() {
                         *snap = !*snap;
+                    }
+                    if fit {
+                        let terrain = state.globe.fit_layer.is_some();
+                        let on = &mut state.globe.line.fit;
+                        let active = *on && terrain;
+                        let cell = widgets::tool_cell(
+                            &mut ui,
+                            controls,
+                            TERRAIN_FIT,
+                            "Fit",
+                            Icon::Range,
+                            active,
+                            terrain,
+                        );
+                        if cell.clicked() {
+                            *on = !*on;
+                        }
                     }
                 } else {
                     size_slider(state, |f, text| slider("Size", f, text, paint));
@@ -1409,6 +1435,17 @@ fn brush_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
                     widgets::row_slider(ui, controls, name, SMOOTHING, fraction, text)
                 },
             );
+        }
+        if !measuring && state.globe.lineable {
+            let terrain = state.globe.fit_layer.is_some();
+            let line = &mut state.globe.line;
+            let (name, label) = (TERRAIN_FIT_SWITCH, TERRAIN_FIT);
+            widgets::switch_row_enabled(ui, controls, name, label, &mut line.fit, terrain);
+            let on = terrain && line.fit;
+            percent_slider(&mut line.terrain, 0.0..=1.0, |fraction, text| {
+                let name = TERRAIN_BALANCE;
+                widgets::row_slider_enabled(ui, controls, name, "Terrain", fraction, text, on)
+            });
         }
         // The Measure tool in a map frame does not snap to color stops.
         let rasters = match state.workspace {
